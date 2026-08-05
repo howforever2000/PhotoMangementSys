@@ -1,0 +1,101 @@
+
+> photo-management-sys@0.1.0 tauri
+> tauri dev
+
+     Running BeforeDevCommand (`npm run dev`)
+
+> photo-management-sys@0.1.0 dev
+> vite
+
+
+  [32m[1mVITE[22m v6.4.3[39m  [2mready in [0m[1m410[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m1420[22m/[39m
+     Running DevCommand (`cargo  run --no-default-features --color always --`)
+        Info Watching D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\src-tauri for changes...
+[1m[92m   Compiling[0m photo-management-sys v0.1.0 (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\src-tauri)
+[1m[96m    Building[0m [=======================> ] 407/409: photo-m…[1m[96m    Building[0m [=======================> ] 408/409: photo-m…                                                            [1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 29.09s
+[1m[92m     Running[0m `target\debug\photo-management-sys.exe`
+[2026-08-11 14:04:03.998] [LOGGER] 日志系统初始化完成，保留 60 分钟
+[2026-08-11 14:04:03.998] [INFO] 数据库初始化中...
+[2026-08-11 14:04:04.001] [INFO] 数据库初始化完成
+[DB] fill_album_folder OK: album_id=31, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=24, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=25, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=26, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=27, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=14, folder_id=Some(4)
+[DB] fill_album_folder OK: album_id=15, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=16, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=17, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=18, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=19, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=20, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=21, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=22, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=3, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=4, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=6, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=7, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=9, folder_id=Some(4)
+[DB] fill_album_folder OK: album_id=10, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=12, folder_id=Some(4)
+[DB] fill_album_folder OK: album_id=13, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=1, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=2, folder_id=Some(1)
+[BACKEND] get_album CALLED: id=2
+[DB] fill_album_folder OK: album_id=2, folder_id=Some(1)
+[BACKEND] get_album AFTER DB: id=2, folder_id=Some(1)
+[BACKEND] get_album RETURNING: id=2, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=2, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=31, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=24, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=25, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=26, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=27, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=14, folder_id=Some(4)
+[DB] fill_album_folder OK: album_id=15, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=16, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=17, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=18, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=19, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=20, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=21, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=22, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=3, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=4, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=6, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=7, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=9, folder_id=Some(4)
+[DB] fill_album_folder OK: album_id=10, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=12, folder_id=Some(4)
+[DB] fill_album_folder OK: album_id=13, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=1, folder_id=Some(1)
+[BACKEND] get_album CALLED: id=2
+[DB] fill_album_folder OK: album_id=2, folder_id=Some(1)
+[BACKEND] get_album AFTER DB: id=2, folder_id=Some(1)
+[BACKEND] get_album RETURNING: id=2, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=2, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=31, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=24, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=25, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=26, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=27, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=14, folder_id=Some(4)
+[DB] fill_album_folder OK: album_id=15, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=16, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=17, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=18, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=19, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=20, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=21, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=22, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=3, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=4, folder_id=Some(2)
+[DB] fill_album_folder OK: album_id=6, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=7, folder_id=Some(1)
+[DB] fill_album_folder OK: album_id=9, folder_id=Some(4)
+[DB] fill_album_folder OK: album_id=10, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=12, folder_id=Some(4)
+[DB] fill_album_folder OK: album_id=13, folder_id=Some(3)
+[DB] fill_album_folder OK: album_id=1, folder_id=Some(1)

@@ -1,0 +1,82 @@
+{
+  "version": "1.0.0",
+  "description": "编程过程 Bug 记录档案：记录遇到的 bug、原因、解决方案，供后续编程参考",
+  "records": [
+    {
+      "id": "BUG-2026-0801-001",
+      "date": "2026-08-01",
+      "status": "resolved",
+      "title": "手动排序拖拽移动相册到分组后，folder_id 未持久化，刷新后相册被移出分组",
+      "module": "手动排序 / 分组持久化",
+      "symptom": [
+        "手动拖拽相册到相册集（分组）后，进入详情页第一次显示父相册标签，第二次标签消失",
+        "返回列表或刷新后，相册被移出到顶级（未分组）",
+        "右键移动可用但拖拽不行"
+      ],
+      "root_cause": {
+        "summary": "前端拖拽系统将【点击】误判为【拖拽】，pointerup 触发 move_album(albumId, null) 把相册移到顶级",
+        "detail": [
+          "用户在手动排序界面点击相册卡片进入详情时，HTML Pointer 事件的 pointerdown 会被触发",
+          "onAlbumPointerDown 无条件注册了全局 pointermove/pointerup 监听，并设置 isDragging=true",
+          "路由跳转到详情页后，ManualSort 卸载，但全局 pointerup 监听未被完整清理，状态残留",
+          "全局 pointerup 在详情页触发时，targetFolder 为 null（指针不在任何分组上）",
+          "onGlobalPointerUp 判断 targetFolder !== dragSourceFolder，调用 moveAlbum(albumId, null)",
+          "move_album 命令把 albums.folder_id 更新为 NULL，相册被移到顶级"
+        ]
+      },
+      "evidence_log": [
+        "[BACKEND] move_album CALLED: album_id=1, folder_id=None  (用户未主动操作，被点击误触发)",
+        "[BACKEND] move_album COMMITTED: album_id=1, folder_id=None",
+        "[BACKEND] move_album VERIFY: album_id=1, folder_id_in_db=None",
+        "[DB] fill_album_folder OK: album_id=1, folder_id=None"
+      ],
+      "solution": {
+        "summary": "增加拖拽阈值，区分点击与拖拽；pointerup 先清理状态再判断；cleanupDrag 完整重置",
+        "steps": [
+          "onAlbumPointerDown 不立即设 isDragging=true，仅记录起始坐标，注册全局监听",
+          "onGlobalPointerMove 中，指针移动超过 DRAG_THRESHOLD(5px) 才真正开始拖拽（isDragging=true）",
+          "onGlobalPointerUp 无条件先清理监听和重置所有拖拽状态（isDragging/draggingAlbumId/dragSourceFolder/dragOverFolder/dragInsertIndex）",
+          "只有 wasDragging=true 才执行移动/排序操作；纯点击场景只清理不移动",
+          "cleanupDrag（组件卸载时）完整重置所有拖拽状态，防止残留"
+        ]
+      },
+      "lessons": [
+        "Pointer Events 实现拖拽时，必须用移动阈值区分【点击】与【拖拽】，否则点击会被误判为拖拽操作",
+        "全局事件监听必须在清理时完整重置所有相关状态，避免卸载后残留导致误触发",
+        "日志记录（前后端）对定位此类『用户未主动操作但数据被修改』的 bug 至关重要"
+      ]
+    },
+    {
+      "id": "BUG-2026-0801-002",
+      "date": "2026-08-01",
+      "status": "resolved",
+      "title": "WebView2 对 HTML5 原生 drag/drop 支持不可靠，拖拽无效",
+      "module": "拖拽实现",
+      "symptom": [
+        "初始用 HTML5 draggable/dragstart/drop 实现拖拽，相册无法拖拽到分组",
+        "右键移动可用但拖拽无效"
+      ],
+      "root_cause": {
+        "summary": "Tauri 的 WebView2 内核支持 HTML5 DnD，但 dataTransfer.getData 在 drop 事件中经常返回空，且拖拽动作触发不稳定",
+        "detail": [
+          "原实现用 event.dataTransfer.getData('text/plain') 在 drop 中读取被拖拽相册 ID",
+          "WebView2 中该 API 在 drop 时返回空字符串，导致 moveAlbum 未被执行",
+          "即使改用响应式状态传递 ID，HTML5 DnD 的拖拽动作本身在 WebView2 中仍不可靠"
+        ]
+      },
+      "solution": {
+        "summary": "改用 Pointer Events（pointerdown/pointermove/pointerup）实现拖拽，完全绕开 HTML5 DnD",
+        "steps": [
+          "用 @pointerdown 在相册上启动拖拽",
+          "全局 window pointermove 跟踪位置 + elementFromPoint 判断悬停分组",
+          "pointerup 根据落点调用 move_album/reorder_album",
+          "用拖拽浮层（position:fixed）跟随鼠标提供视觉反馈"
+        ]
+      },
+      "lessons": [
+        "在 Tauri/WebView2 中优先用 Pointer Events 实现拖拽，避免 HTML5 DnD 的兼容性问题",
+        "elementFromPoint 判断悬停目标时，拖拽浮层需 pointer-events:none 避免遮挡"
+      ]
+    }
+  ]
+}
