@@ -201,7 +201,7 @@ async function submitRename() {
   if (isRenaming.value) return;
   isRenaming.value = true;
   try {
-    await store.updateAlbum({ id, name });
+    await store.renameAlbum(id, name, true);
     showRenameDialog.value = false;
   } catch (e) {
     alert(`重命名失败：${e}`);

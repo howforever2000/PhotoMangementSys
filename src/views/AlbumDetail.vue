@@ -132,10 +132,7 @@ const saveName = trace("saveName", async () => {
   }
   savingName.value = true;
   try {
-    await store.updateAlbum({
-      id: albumId,
-      name,
-    });
+    await store.renameAlbum(albumId, name, true);
     editingName.value = false;
   } catch (e) {
     alert(`保存名称失败：${e}`);

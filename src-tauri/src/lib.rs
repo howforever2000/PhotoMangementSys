@@ -242,6 +242,84 @@ fn update_album(
     db.update_album(input).map_err(|e| e.to_string())
 }
 
+/// 重命名相册（可同时重命名绑定的本地文件夹）
+///
+/// - 先重命名本地文件夹（`rename_folder=true` 时），成功后才更新数据库，
+///   失败则报错且数据库不变（保持名称与文件夹一致）
+/// - 文件夹不存在/目标已存在/无权限 → 返回明确错误
+/// - 文件夹路径变化后清除统计缓存（cover_source 指向旧路径），下次加载重扫
+#[tauri::command]
+fn rename_album(
+    id: i64,
+    new_name: String,
+    rename_folder: bool,
+    state: tauri::State<AppState>,
+) -> Result<db::Album, String> {
+    let _t = log_call!(
+        "rename_album",
+        &format!("id={id}, new_name={new_name}, rename_folder={rename_folder}")
+    );
+    let new_name = new_name.trim().to_string();
+    if new_name.is_empty() {
+        return Err("相册名称不能为空".into());
+    }
+    if new_name.chars().count() > 100 {
+        return Err("相册名称不能超过 100 个字符".into());
+    }
+    // 读取当前相册
+    let current = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        db.get_album(id).map_err(|e| e.to_string())?
+    };
+    let mut final_path = current.path.clone();
+    // 同步重命名本地文件夹
+    if rename_folder {
+        let old_path = std::path::Path::new(&current.path);
+        let old_name = old_path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .ok_or_else(|| "无法解析相册文件夹路径".to_string())?;
+        if new_name != old_name {
+            let parent = old_path
+                .parent()
+                .ok_or_else(|| "无法解析相册文件夹上级目录".to_string())?;
+            let target = parent.join(&new_name);
+            if target.exists() {
+                logger::log_call_end_with(
+                    "rename_album",
+                    _t,
+                    &format!("FAILED | 目标文件夹已存在: {}", target.display()),
+                );
+                return Err(format!("目标文件夹已存在: {}", target.display()));
+            }
+            std::fs::rename(old_path, &target)
+                .map_err(|e| format!("重命名文件夹失败: {e}"))?;
+            final_path = target.to_string_lossy().into_owned();
+        }
+    }
+    // 更新数据库（名称 + 路径）
+    {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        db.update_album_name_path(id, &new_name, &final_path)
+            .map_err(|e| e.to_string())?;
+        // 路径变化 → 统计缓存失效（cover_source 指向旧路径），下次访问重扫
+        if final_path != current.path {
+            let _ = db.delete_album_stats(id);
+        }
+    }
+    // 返回更新后的相册
+    let album = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        db.get_album(id).map_err(|e| e.to_string())?
+    };
+    logger::log_call_end_with(
+        "rename_album",
+        _t,
+        &format!("OK | id={id}, path={final_path}"),
+    );
+    Ok(album)
+}
+
 /// 设置相册标签（覆盖式，最多 5 个）
 #[tauri::command]
 fn update_album_tags(
@@ -827,6 +905,7 @@ pub fn run() {
             get_albums,
             get_album,
             update_album,
+            rename_album,
             update_album_tags,
             delete_album,
             delete_albums,

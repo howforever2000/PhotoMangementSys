@@ -74,6 +74,16 @@ export const useAlbumStore = defineStore("album", {
       }
     },
 
+    /** 重命名相册（可选同步重命名本地文件夹） */
+    async renameAlbum(id: number, newName: string, renameFolder = true): Promise<Album> {
+      const album = await invoke<Album>("rename_album", { id, newName, renameFolder });
+      await this.fetchAlbums();
+      if (this.currentAlbum?.id === id) {
+        this.currentAlbum = album;
+      }
+      return album;
+    },
+
     /** 删除相册，成功后刷新列表 */
     async deleteAlbum(id: number): Promise<void> {
       await invoke<void>("delete_album", { id });

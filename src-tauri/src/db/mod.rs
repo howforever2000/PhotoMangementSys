@@ -799,6 +799,19 @@ impl Database {
         Ok(())
     }
 
+    /// 更新相册名称与绑定路径（rename_album 命令专用，文件夹已重命名成功后调用）
+    pub fn update_album_name_path(&self, id: i64, name: &str, path: &str) -> Result<(), DbError> {
+        let now = Self::now_secs();
+        let affected = self.conn.execute(
+            "UPDATE albums SET name = ?1, path = ?2, updated_at = ?3 WHERE id = ?4",
+            params![name, path, now, id],
+        )?;
+        if affected == 0 {
+            return Err(DbError::NotFound(id));
+        }
+        Ok(())
+    }
+
     /// 设置相册标签（覆盖式，最多 5 个）
     ///
     /// 相册不存在返回 NotFound。标签数量超过 5 返回错误。
