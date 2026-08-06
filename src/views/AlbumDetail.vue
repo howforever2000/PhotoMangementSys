@@ -109,6 +109,32 @@ const doDelete = async () => {
   }
 };
 
+/** 说明编辑（导入后也可修改） */
+const editingDesc = ref(false);
+const descInput = ref("");
+const savingDesc = ref(false);
+
+function startEditDesc() {
+  descInput.value = store.currentAlbum?.description ?? "";
+  editingDesc.value = true;
+}
+
+const saveDesc = trace("saveDesc", async () => {
+  if (savingDesc.value) return;
+  savingDesc.value = true;
+  try {
+    await store.updateAlbum({
+      id: albumId,
+      description: descInput.value.trim(),
+    });
+    editingDesc.value = false;
+  } catch (e) {
+    alert(`保存说明失败：${e}`);
+  } finally {
+    savingDesc.value = false;
+  }
+});
+
 /** 地点标签编辑 */
 const editingLocation = ref(false);
 const locationInput = ref("");
@@ -225,7 +251,26 @@ onMounted(load);
               📁 {{ store.currentAlbum.path }}
             </span>
           </p>
-          <p class="detail-desc">{{ store.currentAlbum.description || "暂无说明" }}</p>
+          <!-- 说明（可点击编辑，导入后也可修改） -->
+          <div v-if="!editingDesc" class="detail-desc-wrap" @click="startEditDesc" title="点击编辑说明">
+            <p class="detail-desc">{{ store.currentAlbum.description || "暂无说明" }}</p>
+            <span class="desc-edit-hint">✏️ 点击编辑</span>
+          </div>
+          <div v-else class="desc-edit">
+            <textarea
+              v-model="descInput"
+              class="desc-textarea"
+              rows="3"
+              maxlength="500"
+              placeholder="介绍一下这个相册的内容…"
+            ></textarea>
+            <div class="desc-edit-actions">
+              <button class="btn btn-sm btn-primary" :disabled="savingDesc" @click="saveDesc">
+                {{ savingDesc ? "保存中…" : "保存" }}
+              </button>
+              <button class="btn btn-sm" @click="editingDesc = false">取消</button>
+            </div>
+          </div>
 
           <!-- 父相册（所属分组）归属，点击跳转到手动排序对应分组 -->
           <p v-if="store.currentAlbum.folder_id != null" class="detail-parent">
@@ -472,6 +517,63 @@ onMounted(load);
   color: #666;
   font-size: 15px;
   line-height: 1.6;
+}
+
+/* 说明编辑（点击进入） */
+.detail-desc-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 2px 6px;
+  margin: 0 -6px;
+  transition: background 0.15s;
+}
+
+.detail-desc-wrap:hover {
+  background: #f5f7ff;
+}
+
+.detail-desc-wrap:hover .desc-edit-hint {
+  opacity: 1;
+}
+
+.desc-edit-hint {
+  font-size: 11px;
+  color: #396cd8;
+  opacity: 0;
+  white-space: nowrap;
+  transition: opacity 0.15s;
+  margin-top: 3px;
+}
+
+.desc-edit {
+  margin-bottom: 8px;
+}
+
+.desc-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+}
+
+.desc-textarea:focus {
+  border-color: #396cd8;
+}
+
+.desc-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 /* 父相册归属 */
