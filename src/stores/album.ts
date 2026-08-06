@@ -30,20 +30,8 @@ export const useAlbumStore = defineStore("album", {
     async fetchAlbums(): Promise<Album[]> {
       this.isLoading = true;
       try {
-        const fresh = await invoke<Album[]>("get_albums");
-        const withFolder = fresh.filter(a => a.folder_id != null);
-        console.log("[STORE] fetchAlbums: total=", fresh.length, "with_folder_id=", withFolder.length,
-          "ids=", withFolder.map(a => `${a.id}=${a.folder_id}`));
-        // 兜底：如果新返回的相册 folder_id 为 null 但旧缓存中有值，保留旧值
-        for (const album of fresh) {
-          const old = this.albums.find((a) => a.id === album.id);
-          if (old && old.folder_id != null && album.folder_id == null) {
-            console.log("[STORE] fetchAlbums FALLBACK: album_id=", album.id, "keeping old folder_id=", old.folder_id);
-            album.folder_id = old.folder_id;
-            album.folder_path = old.folder_path || album.folder_path;
-          }
-        }
-        this.albums = fresh;
+        // folder_id/folder_path 由后端以 folder_albums 为唯一事实源填充，前端不做兜底
+        this.albums = await invoke<Album[]>("get_albums");
         return this.albums;
       } finally {
         this.isLoading = false;
@@ -54,18 +42,8 @@ export const useAlbumStore = defineStore("album", {
     async fetchAlbum(id: number): Promise<Album> {
       this.isLoading = true;
       try {
-        const album = await invoke<Album>("get_album", { id });
-        console.log("[STORE] fetchAlbum: id=", id, "folder_id=", album.folder_id, "folder_path=", album.folder_path);
-        // 如果后端返回的 folder_id 为 null，但 store.albums 中该相册已有 folder_id，
-        // 保留已有的值（防止后端偶发覆盖导致的显示丢失）
-        const existing = this.albums.find((a) => a.id === id);
-        if (existing && existing.folder_id != null && album.folder_id == null) {
-          console.log("[STORE] fetchAlbum FALLBACK: keeping old folder_id=", existing.folder_id);
-          album.folder_id = existing.folder_id;
-          album.folder_path = existing.folder_path || album.folder_path;
-        }
-        this.currentAlbum = album;
-        return album;
+        this.currentAlbum = await invoke<Album>("get_album", { id });
+        return this.currentAlbum;
       } finally {
         this.isLoading = false;
       }

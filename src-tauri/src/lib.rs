@@ -154,30 +154,6 @@ fn get_albums(
     for a in albums.iter_mut() {
         fill_album_stats(a, &thumbs);
     }
-    // 兜底：如果 fill_album_folder 未正确设置 folder_id，从 DB 再查
-    {
-        let db = state.0.lock().map_err(|e| e.to_string())?;
-        for album in albums.iter_mut() {
-            if album.folder_id.is_none() {
-                if let Ok(Some(fid)) = db.conn().query_row(
-                    "SELECT folder_id FROM albums WHERE id = ?1",
-                    rusqlite::params![album.id],
-                    |r| r.get::<_, Option<i64>>(0),
-                ) {
-                    album.folder_id = Some(fid);
-                }
-                if album.folder_id.is_none() {
-                    if let Ok(fid) = db.conn().query_row(
-                        "SELECT folder_id FROM folder_albums WHERE album_id = ?1 LIMIT 1",
-                        rusqlite::params![album.id],
-                        |r| r.get::<_, i64>(0),
-                    ) {
-                        album.folder_id = Some(fid);
-                    }
-                }
-            }
-        }
-    }
     logger::log_call_end_with("get_albums", _t, &format!("OK | count={}", albums.len()));
     Ok(albums)
 }
@@ -189,39 +165,12 @@ fn get_album(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
 ) -> Result<db::Album, String> {
-    eprintln!("[BACKEND] get_album CALLED: id={}", id);
     let thumbs = thumbs_dir(&app)?;
     let mut album = {
         let db = state.0.lock().map_err(|e| e.to_string())?;
         db.get_album(id).map_err(|e| e.to_string())?
     };
-    eprintln!("[BACKEND] get_album AFTER DB: id={}, folder_id={:?}", id, album.folder_id);
-    // 兜底：如果 fill_album_folder 未正确设置 folder_id，再从 DB 查一次
-    if album.folder_id.is_none() {
-        eprintln!("[BACKEND] get_album FALLBACK: id={}, folder_id is NONE, querying DB directly", id);
-        let db = state.0.lock().map_err(|e| e.to_string())?;
-        if let Ok(Some(fid)) = db.conn().query_row(
-            "SELECT folder_id FROM albums WHERE id = ?1",
-            rusqlite::params![id],
-            |r| r.get::<_, Option<i64>>(0),
-        ) {
-            album.folder_id = Some(fid);
-            eprintln!("[BACKEND] get_album FALLBACK albums.folder_id: id={}, fid={}", id, fid);
-        }
-        // 如果 folder_albums 也有值，用它补充
-        if album.folder_id.is_none() {
-            if let Ok(fid) = db.conn().query_row(
-                "SELECT folder_id FROM folder_albums WHERE album_id = ?1 LIMIT 1",
-                rusqlite::params![id],
-                |r| r.get::<_, i64>(0),
-            ) {
-                album.folder_id = Some(fid);
-                eprintln!("[BACKEND] get_album FALLBACK folder_albums: id={}, fid={}", id, fid);
-            }
-        }
-    }
     fill_album_stats(&mut album, &thumbs);
-    eprintln!("[BACKEND] get_album RETURNING: id={}, folder_id={:?}", id, album.folder_id);
     Ok(album)
 }
 
@@ -580,32 +529,32 @@ fn move_album(
         }
     }
 
-    // 新位置排序（组内末尾）
-    let sort_order: i64 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM albums
-             WHERE folder_id = ?1 OR (folder_id IS NULL AND ?1 IS NULL)",
-            rusqlite::params![folder_id],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
+    // 新位置排序：组内末尾（唯一事实源 folder_albums；移出到顶级时无排序 UI，归 0）
+    let sort_order: i64 = match folder_id {
+        Some(fid) => conn
+            .query_row(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM folder_albums WHERE folder_id = ?1",
+                rusqlite::params![fid],
+                |r| r.get(0),
+            )
+            .unwrap_or(0),
+        None => 0,
+    };
 
-    // 事务内更新，确保 folder_id 持久化
+    // 事务内更新，确保 folder_id 持久化（albums.folder_id/sort_order 为冗余缓存列，同事务同步）
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    // 1. 更新 albums.folder_id（相册记父节点）
+    // 1. 冗余列：albums.folder_id（读取不依赖它，仅保持数据完整）
     tx.execute(
         "UPDATE albums SET folder_id = ?1, sort_order = ?2 WHERE id = ?3",
         rusqlite::params![folder_id, sort_order, album_id],
     )
     .map_err(|e| e.to_string())?;
-    // 2. 更新 folder_albums 关联表（folders 记录子相册列表）
-    //    删除该相册的旧关联
+    // 2. 事实源：folder_albums 关联表（先删旧关联，再插入新关联）
     tx.execute(
         "DELETE FROM folder_albums WHERE album_id = ?1",
         rusqlite::params![album_id],
     )
     .map_err(|e| e.to_string())?;
-    //    若移入分组，插入新关联
     if let Some(fid) = folder_id {
         tx.execute(
             "INSERT OR REPLACE INTO folder_albums (folder_id, album_id, sort_order) VALUES (?1, ?2, ?3)",
@@ -614,9 +563,7 @@ fn move_album(
         .map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
-    let verify: Option<i64> = conn.query_row(
-        "SELECT folder_id FROM albums WHERE id = ?1", rusqlite::params![album_id], |r| r.get(0)).unwrap_or(None);
-    logger::log_call_end_with("move_album", _start, &format!("folder_id_in_db={verify:?}"));
+    logger::log_call_end_with("move_album", _start, &format!("album_id={album_id}, folder_id={folder_id:?}"));
     Ok(())
 }
 
@@ -631,7 +578,6 @@ fn reorder_album(
     new_index: i64,
     state: tauri::State<AppState>,
 ) -> Result<(), String> {
-    eprintln!("[BACKEND] reorder_album CALLED: album_id={}, folder_id={:?}, new_index={}", album_id, folder_id, new_index);
     let db = state.0.lock().map_err(|e| e.to_string())?;
     let conn = db.conn();
 
@@ -670,7 +616,7 @@ fn reorder_album(
         .map_err(|e| e.to_string())?;
     }
 
-    // 目标分组所有相册按当前顺序取出
+    // 目标分组所有相册按当前顺序取出（唯一事实源 folder_albums）
     let mut items: Vec<i64> = {
         let mut stmt = tx
             .prepare(
@@ -688,7 +634,7 @@ fn reorder_album(
     let new_index = new_index.max(0).min(items.len() as i64);
     items.insert(new_index as usize, album_id);
 
-    // 重写 albums.sort_order 和 folder_albums.sort_order
+    // 重写 folder_albums.sort_order（事实源）+ albums.sort_order（冗余缓存列）
     for (i, &id) in items.iter().enumerate() {
         tx.execute(
             "UPDATE albums SET sort_order = ?1 WHERE id = ?2",
@@ -703,10 +649,6 @@ fn reorder_album(
     }
 
     tx.commit().map_err(|e| e.to_string())?;
-    eprintln!("[BACKEND] reorder_album COMMITTED: album_id={}, folder_id={:?}", album_id, folder_id);
-    let verify: Option<i64> = conn.query_row(
-        "SELECT folder_id FROM albums WHERE id = ?1", rusqlite::params![album_id], |r| r.get(0)).unwrap_or(None);
-    eprintln!("[BACKEND] reorder_album VERIFY: album_id={}, folder_id_in_db={:?}", album_id, verify);
     Ok(())
 }
 
