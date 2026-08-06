@@ -157,6 +157,44 @@
         "缓存命中路径必须有'数据不一致'的自愈兜底（封面该有却没有 → 重扫），否则异常状态永久存在",
         "命中判断不要只依赖单一信号（file_count），关键数据缺失（封面）也应触发重扫"
       ]
+    },
+    {
+      "id": "BUG-2026-0815-003",
+      "date": "2026-08-15",
+      "status": "resolved",
+      "title": "更换封面卡顿 - image::open 全尺寸解码大图耗时 7.7 秒",
+      "module": "缩略图生成 / 图片解码（dev 分支 d344e97 引入日志暴露，5d6590b 修复）",
+      "symptom": [
+        "前端更换封面明显卡顿（等待数秒）",
+        "日志 [SET_COVER] 阶段2 生成封面缩略图: 7670ms / 7752ms"
+      ],
+      "root_cause": {
+        "summary": "generate_cover / ensure_thumbnail_from_source 用 image::open 全尺寸解码原图（6000x4000 约 2400 万像素）后才 thumbnail 缩小到 256px，99.9% 时间花在全尺寸解码上（debug 构建 5~14 秒/张）",
+        "detail": [
+          "image::open 解码整个 6000x4000 JPEG 需要 5~14 秒（debug 构建无优化）",
+          "thumbnail(256,256) 的缩放计算量可忽略，真正的瓶颈是全尺寸解码",
+          "实测 5525x3104 大图：全尺寸解码+缩略 8161ms"
+        ]
+      },
+      "evidence_log": [
+        "[SET_COVER] 阶段2 生成封面缩略图: 7670ms（album_id=26）",
+        "[SET_COVER] 阶段2 生成封面缩略图: 7752ms（album_id=20）",
+        "其余阶段均 <5ms"
+      ],
+      "solution": {
+        "summary": "改用 JPEG DCT 降采样解码（jpeg-decoder scale 参数），解码时只解所需 DCT 块直接降采样到接近 256px，再 thumbnail 收尾",
+        "steps": [
+          "添加 jpeg-decoder 依赖；新增 decode_jpeg_scaled（image_dimensions 读头选 scale 1/2/4/8/16）",
+          "新增 save_thumbnail 统一入口：JPEG 走降采样快速路径，失败降级全尺寸解码；其他格式保持 image crate",
+          "ensure_thumbnail_from_source / generate_cover 均改用快速路径",
+          "实测 5525x3104：8161ms → 763ms（11x，release 预计 <200ms）"
+        ]
+      },
+      "lessons": [
+        "生成缩略图必须降采样解码（JPEG DCT scale / 渐进解码），绝不能全尺寸解码后再缩小",
+        "给耗时的关键操作加阶段日志（set_cover 的 [SET_COVER] 日志）能快速定位性能瓶颈",
+        "debug 构建的解码性能与 release 差距巨大（3~5x），性能问题需在 release 下评估"
+      ]
     }
   ]
 }

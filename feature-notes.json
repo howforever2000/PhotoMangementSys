@@ -271,7 +271,8 @@
           "非图片文件增减会误触发重扫（无害，重扫后统计不变）",
           "封面源缺失降级自愈逻辑保留（delete_album_stats + 重扫换图）",
           "触发校验路径：① 软件启动 App 挂载时预校验一次（fetchAlbums → get_albums 全量探测，列表/详情打开前数据已最新）；② 点击相册进详情（get_album 对该相册探测，打开前是旧信息、点开后即最新准确信息）；③ 列表加载（get_albums 全量探测）",
-          "封面持久化（d344e97）：自动封面地址写回 albums.cover_path（SQL），加载直接读；命中路径 photo_count>0 但 cover_path 为空 → 强制重扫自愈。修复 cover_source 为 NULL 时封面永久丢失的 bug（详见 BUG-2026-0815-002）"
+          "封面持久化（d344e97）：自动封面地址写回 albums.cover_path（SQL），加载直接读；命中路径 photo_count>0 但 cover_path 为空 → 强制重扫自愈。修复 cover_source 为 NULL 时封面永久丢失的 bug（详见 BUG-2026-0815-002）",
+          "缩略图生成加速（5d6590b）：JPEG DCT 降采样解码（jpeg-decoder scale），解码时只解所需 DCT 块，换封面从 7.7s 降至 0.76s（11x，release 预计 <200ms）。详见 BUG-2026-0815-003"
         ]
       },
       "highlights": [
