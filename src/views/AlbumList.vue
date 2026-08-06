@@ -722,7 +722,12 @@ onBeforeUnmount(() => {
 
     <!-- 手动排序模式：文件夹树 + 拖拽 -->
     <main v-else class="manual-view">
-      <ManualSort :jump-folder-id="manualJumpFolderId" />
+      <ManualSort
+        :jump-folder-id="manualJumpFolderId"
+        :select-mode="isSelectMode"
+        :selected-ids="selectedIds"
+        @toggle-select="toggleSelect"
+      />
     </main>
 
     <!-- 空状态引导（需求 §2.1，手动模式不显示） -->
