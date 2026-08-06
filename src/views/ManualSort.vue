@@ -150,6 +150,33 @@ const rootNodes = computed<TreeNode[]>(() => {
 /** 顶级游离相册（不属于任何文件夹） */
 const rootAlbums = computed(() => tree.value?.root_albums ?? []);
 
+/** 管理模式：所有可见相册 ID（顶级游离 + 各级分组内，用于全选） */
+const allAlbumIds = computed<number[]>(() => {
+  if (!tree.value) return [];
+  const ids: number[] = [];
+  const collect = (node: TreeNode) => {
+    ids.push(...node.albumIds);
+    node.children.forEach(collect);
+  };
+  tree.value.root_albums.forEach((e) => ids.push(e.album_id));
+  rootNodes.value.forEach(collect);
+  return ids;
+});
+
+/** 是否全部选中 */
+const allSelected = computed(
+  () => allAlbumIds.value.length > 0 && selectedIds.value.size === allAlbumIds.value.length,
+);
+
+/** 全选 / 取消全选 */
+function toggleSelectAll() {
+  if (allSelected.value) {
+    selectedIds.value = new Set();
+  } else {
+    selectedIds.value = new Set(allAlbumIds.value);
+  }
+}
+
 /** 相册 by id（预构建 Map，避免模板内 O(N²) 线性查找） */
 const albumMap = computed(() => new Map(store.albums.map((a) => [a.id, a])));
 function albumById(id: number): Album | null {
@@ -509,18 +536,19 @@ onBeforeUnmount(() => {
     <!-- 顶部工具栏 -->
     <div class="manual-toolbar">
       <button class="btn btn-primary" @click="openCreateFolder(null)">新建分组</button>
-      <button
-        v-if="!selectMode"
-        class="btn"
-        @click="toggleSelectMode"
-      >
-        🗂️ 管理
-      </button>
+      <button v-if="!selectMode" class="btn" @click="toggleSelectMode">管理</button>
       <template v-if="selectMode">
-        <button class="btn btn-danger" :disabled="selectedIds.size === 0 || isBatchDeleting" @click="batchDelete">
+        <button
+          class="btn btn-danger"
+          :disabled="selectedIds.size === 0 || isBatchDeleting"
+          @click="batchDelete"
+        >
           {{ isBatchDeleting ? "删除中…" : `删除所选 (${selectedIds.size})` }}
         </button>
-        <button class="btn" @click="toggleSelectMode">退出管理</button>
+        <button class="btn" @click="toggleSelectAll">
+          {{ allSelected ? "取消全选" : "全选" }}
+        </button>
+        <button class="btn" @click="toggleSelectMode">取消</button>
         <span class="manual-hint">勾选相册后可批量删除；仅删记录不影响本地照片</span>
       </template>
       <span v-else class="manual-hint">拖拽相册到分组中即可归类，最多支持三级</span>
