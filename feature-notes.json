@@ -280,6 +280,26 @@
         "真实数据验证：缓存命中 24/24，总耗时 12.3ms（纯文件计数 + SQL 快查）",
         "验证：cargo check 0 warning；cargo test --lib 6/6（新增 count_files_recursive / file_count 读写测试）"
       ]
+    },
+    {
+      "id": "FEAT-016",
+      "name": "前端组件拆分（AlbumCard / AlbumMiniCard）",
+      "module": "前端重构 / DRY（dev 分支 1fe8a3f）",
+      "purpose": "消除相册卡片与迷你相册卡共 7 处重复模板，抽成两个可复用组件，改一处全生效；顺带优化查找性能（O(N²)→O(1)）、封面懒加载、消除非空断言崩溃点",
+      "implementation": {
+        "backend": "无后端改动",
+        "frontend": "① AlbumCard.vue（233 行）吸收 AlbumList 3 份重复卡片（日期视图未分类/月分组 + 地点视图），showLocation prop 控制地点徽标；② AlbumMiniCard.vue（99 行）吸收 ManualSort 4 份重复迷你卡（顶级/一/二/三级分组），data-folder-id/data-album-index 透传保持拖拽逻辑；③ albumById 线性查找改预构建 Map；④ 封面 loading=\"lazy\"；⑤ 非空断言 albumById(...)!.name → album?.name + 占位符",
+        "key_points": [
+          "重复模板 7 处 → 0 残留（grep 验证）",
+          "AlbumList.vue 1607→1390 行；ManualSort.vue 模板瘦身",
+          "改进：AlbumMiniCard album 为 null 时显示 '…' 占位名称（原为空白）"
+        ]
+      },
+      "highlights": [
+        "解决的问题：改样式/加字段要同步改 7 处（易漏改导致界面不一致）；每张迷你卡线性查找相册 O(N²)；albumById 非空断言相册未加载时崩溃；封面一次性全加载",
+        "收益：DRY 改一处全生效；查找 O(1)；消除崩溃点；首屏更快",
+        "验证：vue-tsc 0 错误；vite build 成功"
+      ]
     }
   ]
 }
