@@ -120,6 +120,43 @@
         "缓存文件名格式变更必须考虑老数据迁移：新命名不识别旧文件时，应提供旧文件复用/重命名路径，否则老用户首次升级会全量重建（大图场景 = 卡死）",
         "大图缩略图生成（6000x4000 JPEG 解码 5~14s）在 debug 构建下必须依赖缓存命中，任何导致缓存失效的因素都会被放大成可用性问题"
       ]
+    },
+    {
+      "id": "BUG-2026-0815-002",
+      "date": "2026-08-15",
+      "status": "resolved",
+      "title": "所有相册封面丢失 - 自动封面不落库，依赖 cover_source + 缩略图生成链",
+      "module": "封面 / 统计缓存命中路径（dev 分支 e8fbbc6 引入，d344e97 修复）",
+      "symptom": [
+        "所有相册的封面丢失（前端 <img> 无 src）",
+        "cover_path 为 NULL 时命中路径不重扫，封面永久丢失"
+      ],
+      "root_cause": {
+        "summary": "自动封面路径不写回 albums.cover_path（SQL），每次加载依赖 album_stats.cover_source 重新生成缩略图；cover_source 为 NULL/源图缺失时，命中路径认为'相册无图'直接 return，且 file_count 一致 → 永远命中 → 永不重扫",
+        "detail": [
+          "fill_album_stats 命中路径：cover_source 为 NULL → 不生成封面 → cover_ok=true → return",
+          "cover_path 不持久化：即使生成成功，也只是内存值，下次加载重新依赖生成链",
+          "一旦 cover_source 被置 NULL（历史数据/异常），封面丢失且无法自愈"
+        ]
+      },
+      "evidence_log": [
+        "模拟命中路径：所有相册 cov_src=None → cover=None（22/24）",
+        "albums 表 cover_path 24/24 为 NULL（自动封面从未持久化）"
+      ],
+      "solution": {
+        "summary": "按用户方案重构：封面地址持久化到 albums.cover_path（SQL），加载直接读；重扫时生成封面写回 SQL；命中路径加封面兜底自愈",
+        "steps": [
+          "新增 db::update_album_cover（只更新 cover_path，不动 updated_at）",
+          "fill_album_stats 扫描路径：生成封面缩略图后写回 albums.cover_path（SQL）",
+          "fill_album_stats 命中路径：封面直接读 albums.cover_path，不重新生成；photo_count>0 但 cover_path 为空 → 强制重扫自愈（一次性）",
+          "set_cover 换封面更新 SQL + 清理旧封面缩略图（已有 generate_cover 清理 + cleanup_album_auto_thumbs）"
+        ]
+      },
+      "lessons": [
+        "自动封面等'计算属性'若依赖文件系统，应持久化到 SQL（封面地址），加载直接读，避免每次重新计算的脆弱链路",
+        "缓存命中路径必须有'数据不一致'的自愈兜底（封面该有却没有 → 重扫），否则异常状态永久存在",
+        "命中判断不要只依赖单一信号（file_count），关键数据缺失（封面）也应触发重扫"
+      ]
     }
   ]
 }
