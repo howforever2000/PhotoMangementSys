@@ -239,7 +239,7 @@
     },
     {
       "id": "FEAT-014",
-      "name": "统计缓存 + 缩略图指纹化（含主动失效与封面降级）",
+      "name": "统计缓存 + 缩略图指纹化（含主动失效与封面降级）（v1 TTL 方案，已被 FEAT-015 取代）",
       "module": "后端性能 / SQLite 缓存（dev 分支 f89ba67）",
       "purpose": "将相册的照片数量/大小/拍摄时间/封面源图路径持久化缓存到 album_stats 表，列表与详情加载从每相册 3~4 次全目录遍历降为 1 次 SQL 快查；缩略图文件名改为内容指纹解决换图不失效问题；并补上主动失效钩子与封面缺失自愈，修复原提交 TTL 无主动失效的体验缺陷",
       "implementation": {
@@ -256,6 +256,26 @@
         "收益：列表加载性能从 O(每相册全目录遍历) 降为 O(1 次 SQL 快查)；缩略图缓存永远与内容一致且无孤儿文件；统计可主动刷新、封面缺失自动自愈",
         "验证：cargo check 0 warning；cargo test --lib 2/2 通过（含指纹失效/清理断言）",
         "修复记录（122282b）：指纹哈希 DefaultHasher 种子每次编译时随机 → 重编译后缓存全失效 → 每次启动全量重生成缩略图卡死 140s；改用 FNV-1a 确定性哈希 + 旧命名缩略图复用，修复后全量处理 140s→61ms（快 2300 倍）。详见 bug-notes.json BUG-2026-0815-001"
+      ]
+    },
+    {
+      "id": "FEAT-015",
+      "name": "统计缓存 v2：文件数变更探测（替代 TTL 定时失效）",
+      "module": "后端性能 / SQLite 缓存（dev 分支 e8fbbc6）",
+      "purpose": "统计缓存失效策略从 TTL 定时过期改为「文件数变更探测」：每次加载轻量统计目录递归文件数，与 album_stats.file_count 比对，一致则直接用 SQL 统计，不一致才重扫该相册——消除 TTL 滞后窗口与过期全量重扫峰值",
+      "implementation": {
+        "backend": "① album_stats 表新增 file_count 列（旧库迁移默认 -1 强制首次重扫）；② 新增 count_files_recursive（walkdir 递归只数文件，不读内容不判格式，每相册约 0.5ms）；③ fill_album_stats 重写：探测文件数 → 与缓存一致直接用 SQL（photo_count/size_bytes/shoot_time/封面）→ 不一致仅重扫该相册并写回新 file_count；④ 删除 STATS_TTL_SECS / scanned_at TTL 逻辑 / invalidate_album_stats 命令 / clear_all_album_stats",
+        "frontend": "无前端改动（不再需要手动刷新入口，探测自动失效）",
+        "key_points": [
+          "盲区取舍：同名替换内容（文件数不变）不触发重扫；照片管理最常见操作是增删，可接受",
+          "非图片文件增减会误触发重扫（无害，重扫后统计不变）",
+          "封面源缺失降级自愈逻辑保留（delete_album_stats + 重扫换图）"
+        ]
+      },
+      "highlights": [
+        "相比 TTL 方案：无 600s 滞后窗口（增删照片立即正确）；无过期全量重扫峰值（只重扫变化相册）；无需手动失效命令",
+        "真实数据验证：缓存命中 24/24，总耗时 12.3ms（纯文件计数 + SQL 快查）",
+        "验证：cargo check 0 warning；cargo test --lib 6/6（新增 count_files_recursive / file_count 读写测试）"
       ]
     }
   ]
