@@ -195,6 +195,38 @@
         "给耗时的关键操作加阶段日志（set_cover 的 [SET_COVER] 日志）能快速定位性能瓶颈",
         "debug 构建的解码性能与 release 差距巨大（3~5x），性能问题需在 release 下评估"
       ]
+    },
+    {
+      "id": "BUG-2026-0815-004",
+      "date": "2026-08-15",
+      "status": "resolved",
+      "title": "拍摄日期定位错误 - 无 EXIF 照片日期缺失，需 mtime 兜底",
+      "module": "日期定位 / EXIF（dev 分支 05d4bf1 修复）",
+      "symptom": [
+        "相册拍摄日期全部为空（实测 24/24 shoot_time 为 NULL）",
+        "时间分组视图无法按拍摄日期归位",
+        "多数照片（微信导出/截图/后期处理）不含 EXIF DateTimeOriginal"
+      ],
+      "root_cause": {
+        "summary": "read_shoot_time 只读 EXIF DateTimeOriginal，缺失时直接返回 None，没有兜底",
+        "detail": [
+          "微信导出、截图、压缩处理过的图片通常没有 EXIF 拍摄时间",
+          "JPEG 文件本身的修改时间（mtime）通常接近实际拍摄时刻",
+          "原实现 EXIF 失败即放弃 → 大量相册无拍摄日期"
+        ]
+      },
+      "solution": {
+        "summary": "两级优先级：EXIF DateTimeOriginal 优先，mtime 兜底",
+        "steps": [
+          "read_shoot_time：EXIF 读取失败 → 回退 read_file_mtime（文件修改时间）",
+          "新增 unix_secs_to_date（Howard Hinnant civil_from_days 公历算法，避免引入日期库）",
+          "清空 album_stats 缓存触发全量重扫，用新逻辑重写 shoot_time（封面已持久化，重扫不重新生成）"
+        ]
+      },
+      "lessons": [
+        "外部文件的时间信息需多级兜底：EXIF 优先、文件时间兜底、创建时间最后",
+        "日期转换避免引入重量级依赖，civil_from_days 算法可靠且几行实现"
+      ]
     }
   ]
 }
