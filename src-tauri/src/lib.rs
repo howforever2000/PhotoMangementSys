@@ -102,20 +102,20 @@ fn thumbs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// **变更探测 + SQL 复用**（替代 TTL 定时失效）：
 /// 1. 读 album_stats 缓存的统计；
 /// 2. 轻量统计当前目录递归文件数（`count_files_recursive`，只数不读）；
-/// 3. 文件数与缓存一致 → 目录未变，直接用 SQL 里的统计（不扫描不重生成）；
-/// 4. 不一致 → 仅此相册全量重扫（单次 walkdir 完成全部统计）并写回，
-///    其他相册不受影响（无 TTL 过期全量重扫的峰值）。
+/// 3. 文件数与缓存一致 → 目录未变，直接用 SQL 里的统计（含 albums.cover_path
+///    封面，持久化值，不重新生成）并返回；
+/// 4. 不一致 → 仅此相册全量重扫（单次 walkdir 完成全部统计），封面用第一张图
+///    生成缩略图并<b>写回 albums.cover_path</b>（SQL 持久化，下次加载直接读）。
 ///
-/// 代价：每次加载都要做一次轻量文件计数（每相册几 ms），换来增删照片后
-/// 统计立即正确、且无需手动失效命令。盲区：同名替换内容（数量不变）不会
-/// 触发重扫，照片管理最常见操作是增删，此取舍可接受。
+/// 封面地址持久化到 SQL（albums.cover_path），每次加载直接调用，不依赖
+/// cover_source 与缩略图生成链——修复：cover_source 为 NULL/源图缺失时
+/// 命中路径封面丢失且永不恢复的 bug。更换封面（set_cover）同样更新 SQL
+/// 并清理旧的封面缩略图文件。
 ///
 /// - `photo_count`: 图片数量
 /// - `size_bytes`: 文件夹真实占用空间
 /// - `shoot_time`: 相册内图片的 EXIF 拍摄时间（YYYY-MM-DD）
-/// - `cover_path`: 若没有封面，自动用文件夹内第一张图片的缩略图作为封面
-///
-/// 缩略图与统计均不污染 albums 主表（保留用户手动设置封面的能力）。
+/// - `cover_path`: 若没有封面，自动用文件夹内第一张图片的缩略图作为封面（写回 SQL）
 fn fill_album_stats(album: &mut db::Album, thumbs_dir: &Path, state: &tauri::State<AppState>) {
     let dir = std::path::Path::new(&album.path);
 
@@ -128,36 +128,17 @@ fn fill_album_stats(album: &mut db::Album, thumbs_dir: &Path, state: &tauri::Sta
         db.and_then(|db| db.get_album_stats(album.id).ok().flatten())
     };
     if let Some(stats) = cached {
-        // 2. 文件数一致 → 目录未变，直接用 SQL 里的统计
+        // 2. 文件数一致 → 目录未变，直接用 SQL 里的统计与封面（cover_path 已持久化）
         if stats.file_count == file_count as i64 {
             album.photo_count = stats.photo_count;
             album.size_bytes = stats.size_bytes;
             album.shoot_time = stats.shoot_time.clone();
-            // 封面：尝试用缓存的源图路径复用缩略图（不重新扫描目录）
-            let mut cover_ok = true;
-            if album.cover_path.is_none() {
-                if let Some(src) = &stats.cover_source {
-                    let src_path = std::path::Path::new(src);
-                    if src_path.is_file() {
-                        if let Ok(res) = thumbnail::ensure_thumbnail_from_source(
-                            album.id,
-                            src_path,
-                            thumbs_dir,
-                        ) {
-                            album.cover_path = Some(res.thumb_path);
-                        }
-                    }
-                }
-                // 缓存里有源图但缩略图生成失败（源图被删/损坏）→ 缓存不可信，
-                // 清除该条缓存并落入扫描路径自愈（目录内其他图片会自动上位）
-                if stats.cover_source.is_some() && album.cover_path.is_none() {
-                    cover_ok = false;
-                    if let Ok(db) = state.0.lock() {
-                        let _ = db.delete_album_stats(album.id);
-                    }
-                }
-            }
-            if cover_ok {
+            // 封面兜底：photo_count>0 但 albums.cover_path 为空（旧库未持久化自动封面
+            // /封面异常丢失）→ 落入重扫路径，生成封面并写回 SQL，一次性自愈。
+            // 相册无图（photo_count==0）则正常返回（无封面是正确状态）。
+            if album.cover_path.is_none() && stats.photo_count > 0 {
+                // fall through 到全量重扫
+            } else {
                 return;
             }
         }
@@ -169,11 +150,14 @@ fn fill_album_stats(album: &mut db::Album, thumbs_dir: &Path, state: &tauri::Sta
     album.photo_count = scan.photo_count as i64;
     album.size_bytes = scan.size_bytes;
 
-    // 无封面时自动用第一张图片的缩略图作为封面
+    // 无封面时自动用第一张图片的缩略图作为封面，并持久化到 SQL（albums.cover_path）
     if album.cover_path.is_none() {
         if let Some(src) = &scan.first_image {
             if let Ok(res) = thumbnail::ensure_thumbnail_from_source(album.id, src, thumbs_dir) {
-                album.cover_path = Some(res.thumb_path);
+                album.cover_path = Some(res.thumb_path.clone());
+                if let Ok(db) = state.0.lock() {
+                    let _ = db.update_album_cover(album.id, album.cover_path.clone());
+                }
             }
         }
     }

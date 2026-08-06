@@ -787,6 +787,18 @@ impl Database {
         Ok(())
     }
 
+    /// 更新相册封面路径（仅改 cover_path，不动 updated_at，避免统计刷新影响列表排序）
+    ///
+    /// 自动封面在扫描/换封面时持久化到 albums.cover_path，加载时直接读取，
+    /// 不依赖缩略图生成链（修复：cover_source 为 NULL 时命中路径封面丢失）。
+    pub fn update_album_cover(&self, id: i64, cover_path: Option<String>) -> Result<(), DbError> {
+        self.conn.execute(
+            "UPDATE albums SET cover_path = ?1 WHERE id = ?2",
+            params![cover_path, id],
+        )?;
+        Ok(())
+    }
+
     /// 设置相册标签（覆盖式，最多 5 个）
     ///
     /// 相册不存在返回 NotFound。标签数量超过 5 返回错误。
