@@ -295,22 +295,15 @@ fn is_jpeg_path(file_name: &str) -> bool {
 /// JPEG DCT 降采样解码（只解所需 DCT 块，比全尺寸解码快 16~64 倍）
 ///
 /// 修复：`image::open` 全尺寸解码 6000x4000 大图需 5~14 秒（debug 构建），
-/// 前端更换封面/生成缩略图卡顿。JPEG 解码器支持 scale 参数（1/2/4/8/16），
-/// 解码时直接降采样到接近目标尺寸，再 `thumbnail` 收尾到精确 256px。
+/// 前端更换封面/生成缩略图卡顿。jpeg-decoder 0.3.1+ 的 `scale` API 直接
+/// 请求目标尺寸（内部自动选择 IDCT 降采样），输出接近目标后由调用方
+/// `thumbnail` 收尾到精确尺寸。
 fn decode_jpeg_scaled(source: &Path, target_px: u32) -> Result<image::RgbImage, ThumbError> {
     use std::io::BufReader;
-    // 读取原始尺寸（仅解析文件头，亚毫秒级）
-    let (w, h) = image::image_dimensions(source)?;
-    let max_dim = w.max(h);
-    // jpeg-decoder 的 scale 仅支持 2 的幂（1/2/4/8/16），取满足输出 ≥ target 的最大降采样
-    let mut scale: u16 = 1;
-    while scale < 16 && max_dim / ((scale as u32) * 2) > target_px {
-        scale *= 2;
-    }
     let file = std::fs::File::open(source)?;
     let mut decoder = jpeg_decoder::Decoder::new(BufReader::new(file));
-    // scale(scale_factor, max_allowed_size)：降采样到尽量接近目标尺寸
-    let _ = decoder.scale(scale, THUMB_SIZE as u16);
+    // 直接请求目标尺寸：jpeg-decoder 按需只解码对应的 DCT 块，输出接近 target_px
+    let _ = decoder.scale(target_px as u16, target_px as u16)?;
     let pixels = decoder.decode()?;
     let info = decoder.info().ok_or(ThumbError::Decode)?;
     image::RgbImage::from_raw(info.width as u32, info.height as u32, pixels)
