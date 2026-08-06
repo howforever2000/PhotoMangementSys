@@ -109,6 +109,41 @@ const doDelete = async () => {
   }
 };
 
+/** 名称编辑（创建后也可改名） */
+const editingName = ref(false);
+const nameInput = ref("");
+const savingName = ref(false);
+
+function startEditName() {
+  nameInput.value = store.currentAlbum?.name ?? "";
+  editingName.value = true;
+}
+
+const saveName = trace("saveName", async () => {
+  if (savingName.value) return;
+  const name = nameInput.value.trim();
+  if (!name) {
+    alert("相册名称不能为空");
+    return;
+  }
+  if (name.length > 100) {
+    alert("相册名称不能超过 100 个字符");
+    return;
+  }
+  savingName.value = true;
+  try {
+    await store.updateAlbum({
+      id: albumId,
+      name,
+    });
+    editingName.value = false;
+  } catch (e) {
+    alert(`保存名称失败：${e}`);
+  } finally {
+    savingName.value = false;
+  }
+});
+
 /** 说明编辑（导入后也可修改） */
 const editingDesc = ref(false);
 const descInput = ref("");
@@ -241,7 +276,27 @@ onMounted(load);
           <div class="cover-overlay">{{ settingCover ? "设置中…" : "点击更换封面" }}</div>
         </div>
         <div class="detail-info">
-          <h1 class="detail-name">{{ store.currentAlbum.name }}</h1>
+          <!-- 名称（可点击编辑，创建后也可改名） -->
+          <div v-if="!editingName" class="detail-name-wrap" @click="startEditName" title="点击编辑名称">
+            <h1 class="detail-name">{{ store.currentAlbum.name }}</h1>
+            <span class="name-edit-hint">✏️</span>
+          </div>
+          <div v-else class="name-edit">
+            <input
+              v-model="nameInput"
+              class="name-input"
+              maxlength="100"
+              placeholder="相册名称"
+              @keydown.enter="saveName"
+              @keydown.esc="editingName = false"
+            />
+            <div class="name-edit-actions">
+              <button class="btn btn-sm btn-primary" :disabled="savingName" @click="saveName">
+                {{ savingName ? "保存中…" : "保存" }}
+              </button>
+              <button class="btn btn-sm" @click="editingName = false">取消</button>
+            </div>
+          </div>
           <p class="detail-path">
             <span
               class="path-link"
@@ -491,8 +546,56 @@ onMounted(load);
 }
 
 .detail-name {
-  margin: 0 0 12px;
+  margin: 0;
   font-size: 28px;
+}
+
+/* 名称编辑（点击进入） */
+.detail-name-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 2px 8px;
+  margin: 0 -8px 12px;
+  transition: background 0.15s;
+}
+
+.detail-name-wrap:hover {
+  background: #f5f7ff;
+}
+
+.name-edit-hint {
+  font-size: 14px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.detail-name-wrap:hover .name-edit-hint {
+  opacity: 1;
+}
+
+.name-edit {
+  margin-bottom: 12px;
+}
+
+.name-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #396cd8;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 20px;
+  font-weight: 600;
+  outline: none;
+}
+
+.name-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .detail-path {

@@ -171,6 +171,45 @@ const contextMenu = ref<{ visible: boolean; x: number; y: number; albumId: numbe
 });
 const isDeletingOne = ref(false);
 
+// ---------- 重命名相册 ----------
+const showRenameDialog = ref(false);
+const renameInput = ref("");
+const isRenaming = ref(false);
+
+/** 打开重命名对话框（右键菜单） */
+function openRenameDialog() {
+  const id = contextMenu.value.albumId;
+  closeContextMenu();
+  const album = store.albums.find((a) => a.id === id);
+  if (!album) return;
+  renameInput.value = album.name;
+  showRenameDialog.value = true;
+}
+
+/** 提交重命名 */
+async function submitRename() {
+  const id = contextMenu.value.albumId;
+  const name = renameInput.value.trim();
+  if (!name) {
+    alert("相册名称不能为空");
+    return;
+  }
+  if (name.length > 100) {
+    alert("相册名称不能超过 100 个字符");
+    return;
+  }
+  if (isRenaming.value) return;
+  isRenaming.value = true;
+  try {
+    await store.updateAlbum({ id, name });
+    showRenameDialog.value = false;
+  } catch (e) {
+    alert(`重命名失败：${e}`);
+  } finally {
+    isRenaming.value = false;
+  }
+}
+
 /** 右键打开自定义菜单 */
 function onRightClick(albumId: number, event: MouseEvent) {
   event.preventDefault(); // 阻止浏览器默认右键菜单
@@ -747,6 +786,9 @@ onBeforeUnmount(() => {
       <div class="context-menu-item" @click="router.push(`/album/${contextMenu.albumId}`)">
         <span class="ctx-icon">📂</span> 打开
       </div>
+      <div class="context-menu-item" @click="openRenameDialog">
+        <span class="ctx-icon">✏️</span> 重命名
+      </div>
       <div class="context-menu-item context-menu-danger" @click="contextDelete">
         <span class="ctx-icon">🗑️</span> 删除
       </div>
@@ -797,6 +839,30 @@ onBeforeUnmount(() => {
           <button class="btn" @click="showCreateDialog = false">取消</button>
           <button class="btn btn-primary" :disabled="isCreating" @click="submitCreate">
             {{ isCreating ? "创建中…" : "创建" }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 重命名相册对话框（右键菜单） -->
+    <div v-if="showRenameDialog" class="dialog-mask" @click.self="showRenameDialog = false">
+      <div class="dialog">
+        <h2 class="dialog-title">重命名相册</h2>
+        <div class="form-field">
+          <label class="form-label">相册名称</label>
+          <input
+            v-model="renameInput"
+            class="input"
+            maxlength="100"
+            placeholder="相册名称"
+            @keydown.enter="submitRename"
+            @keydown.esc="showRenameDialog = false"
+          />
+        </div>
+        <div class="dialog-actions">
+          <button class="btn" @click="showRenameDialog = false">取消</button>
+          <button class="btn btn-primary" :disabled="isRenaming" @click="submitRename">
+            {{ isRenaming ? "保存中…" : "保存" }}
           </button>
         </div>
       </div>
