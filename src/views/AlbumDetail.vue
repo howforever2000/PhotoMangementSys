@@ -7,6 +7,7 @@ import { useAlbumStore } from "../stores/album";
 import type { Album } from "../types/album";
 import { formatSize } from "../types/album";
 import { trace } from "../utils/trace";
+import ConfirmDialog from "../components/ConfirmDialog.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -82,14 +83,20 @@ function jumpToParentFolder() {
 
 /** 删除相册（仅删数据库记录，不删本地照片），删除后返回列表 */
 const deleting = ref(false);
+/** 自定义二次确认弹窗状态 */
+const showDeleteConfirm = ref(false);
+const deleteConfirmMessage = ref("");
 const deleteAlbum = trace("deleteAlbum", async () => {
   if (deleting.value) return;
   const name = store.currentAlbum?.name ?? "";
-  const ok = confirm(
-    `确定要删除相册「${name}」吗？\n\n此操作仅删除相册记录，不会删除本地照片文件。`,
-  );
-  if (!ok) return;
-
+  deleteConfirmMessage.value =
+    `确定要删除相册「${name}」吗？\n\n此操作仅删除相册记录，不会删除本地照片文件。`;
+  showDeleteConfirm.value = true;
+});
+/** 确认后真正执行删除 */
+const doDelete = async () => {
+  showDeleteConfirm.value = false;
+  if (deleting.value) return;
   deleting.value = true;
   try {
     await store.deleteAlbum(albumId);
@@ -100,7 +107,7 @@ const deleteAlbum = trace("deleteAlbum", async () => {
   } finally {
     deleting.value = false;
   }
-});
+};
 
 /** 地点标签编辑 */
 const editingLocation = ref(false);
@@ -305,6 +312,15 @@ onMounted(load);
         <p class="photo-hint">图片扫描功能即将上线，敬请期待</p>
       </section>
     </template>
+
+    <!-- 删除相册二次确认 -->
+    <ConfirmDialog
+      :visible="showDeleteConfirm"
+      title="删除相册"
+      :message="deleteConfirmMessage"
+      @confirm="doDelete"
+      @cancel="showDeleteConfirm = false"
+    />
   </div>
 </template>
 

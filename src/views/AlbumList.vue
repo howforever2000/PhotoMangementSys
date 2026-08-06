@@ -10,6 +10,7 @@ import { groupByTime, seasonName, MONTH_NAMES } from "../utils/timeGroup";
 import type { YearGroup } from "../utils/timeGroup";
 import ManualSort from "./ManualSort.vue";
 import AlbumCard from "../components/AlbumCard.vue";
+import ConfirmDialog from "../components/ConfirmDialog.vue";
 
 const router = useRouter();
 const route = useRoute();
@@ -131,15 +132,23 @@ function exitSelectMode() {
 }
 
 /** 批量删除：二次确认后仅删数据库记录，不删本地文件 */
+const batchDeleteConfirm = ref<{ visible: boolean; message: string }>({ visible: false, message: "" });
 async function batchDelete() {
   const ids = [...selectedIds.value];
   if (ids.length === 0) return;
   if (isDeleting.value) return;
 
-  const ok = confirm(
-    `确定要删除选中的 ${ids.length} 个相册吗？\n\n此操作仅删除相册记录，不会删除本地照片文件。`,
-  );
-  if (!ok) return;
+  batchDeleteConfirm.value = {
+    visible: true,
+    message: `确定要删除选中的 ${ids.length} 个相册吗？\n\n此操作仅删除相册记录，不会删除本地照片文件。`,
+  };
+}
+/** 确认后真正执行批量删除 */
+async function doBatchDelete() {
+  batchDeleteConfirm.value.visible = false;
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  if (isDeleting.value) return;
 
   isDeleting.value = true;
   try {
@@ -180,16 +189,28 @@ function closeContextMenu() {
 }
 
 /** 点击菜单「删除」选项 */
+/** 待确认删除的相册 ID（确认弹窗回调时使用，contextMenu 已关闭） */
+const pendingDeleteId = ref<number | null>(null);
+const contextDeleteConfirm = ref<{ visible: boolean; message: string }>({ visible: false, message: "" });
 async function contextDelete() {
   const albumId = contextMenu.value.albumId;
   closeContextMenu();
   if (isDeletingOne.value) return;
 
   const album = store.albums.find((a) => a.id === albumId);
-  const ok = confirm(
-    `确定要删除相册「${album?.name ?? ""}」吗？\n\n此操作仅删除相册记录，不会删除本地照片文件。`,
-  );
-  if (!ok) return;
+  pendingDeleteId.value = albumId;
+  contextDeleteConfirm.value = {
+    visible: true,
+    message: `确定要删除相册「${album?.name ?? ""}」吗？\n\n此操作仅删除相册记录，不会删除本地照片文件。`,
+  };
+}
+/** 确认后真正执行删除 */
+async function doContextDelete() {
+  contextDeleteConfirm.value.visible = false;
+  const albumId = pendingDeleteId.value;
+  pendingDeleteId.value = null;
+  if (albumId == null) return;
+  if (isDeletingOne.value) return;
 
   isDeletingOne.value = true;
   try {
@@ -775,6 +796,25 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    <!-- 删除相册二次确认（右键菜单） -->
+    <ConfirmDialog
+      :visible="contextDeleteConfirm.visible"
+      title="删除相册"
+      :message="contextDeleteConfirm.message"
+      @confirm="doContextDelete"
+      @cancel="contextDeleteConfirm.visible = false"
+    />
+
+    <!-- 批量删除二次确认 -->
+    <ConfirmDialog
+      :visible="batchDeleteConfirm.visible"
+      title="批量删除相册"
+      :message="batchDeleteConfirm.message"
+      confirm-text="删除所选"
+      @confirm="doBatchDelete"
+      @cancel="batchDeleteConfirm.visible = false"
+    />
   </div>
 </template>
 
