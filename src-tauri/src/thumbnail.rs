@@ -133,11 +133,50 @@ pub fn scan_album_dir(dir: &Path) -> AlbumScan {
     scan
 }
 
-/// 读取图片的拍摄时间（EXIF DateTimeOriginal），返回 "YYYY-MM-DD"
+/// Unix 秒 → (年, 月, 日)（Howard Hinnant civil_from_days 算法，无需日期库依赖）
+fn unix_secs_to_date(secs: i64) -> (i32, u32, u32) {
+    let days = secs.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m as u32, d as u32)
+}
+
+/// 读取文件修改时间（mtime）作为拍摄时间参考，返回 "YYYY-MM-DD"
 ///
-/// - 无 EXIF 或读取失败时返回 None
-/// - 提取年月日，精确到日
+/// 很多图片（微信导出/截图/后期处理）没有 EXIF 拍摄时间，但文件修改时间
+/// 通常接近实际拍摄时刻，作为兜底能补齐日期定位。
+fn read_file_mtime(path: &Path) -> Option<String> {
+    let meta = path.metadata().ok()?;
+    let modified = meta.modified().ok()?;
+    let dur = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let (y, m, d) = unix_secs_to_date(dur.as_secs() as i64);
+    Some(format!("{y:04}-{m:02}-{d:02}"))
+}
+
+/// 读取图片的拍摄时间，返回 "YYYY-MM-DD"
+///
+/// 优先级：
+/// 1. EXIF DateTimeOriginal（相机记录的准确拍摄时间）
+/// 2. 文件修改时间 mtime 兜底（无 EXIF 时，修改时间接近拍摄时刻）
 pub fn read_shoot_time(path: &Path) -> Option<String> {
+    // 优先 EXIF DateTimeOriginal
+    if let Some(exif_time) = read_exif_shoot_time(path) {
+        return Some(exif_time);
+    }
+    // EXIF 缺失/读取失败 → 回退文件修改时间（修复：无 EXIF 图片日期定位缺失）
+    read_file_mtime(path)
+}
+
+/// 读取 EXIF DateTimeOriginal，返回 "YYYY-MM-DD"；缺失/失败返回 None
+fn read_exif_shoot_time(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let mut bufreader = std::io::BufReader::new(&file);
     let exif_reader = exif::Reader::new();
@@ -477,6 +516,47 @@ mod tests {
         // 3 顶层 + 1 子目录 + 1 子目录2 = 5（隐藏目录内不计）
         assert_eq!(count_files_recursive(&tmp), 5);
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// mtime 兜底：无 EXIF 的图片，read_shoot_time 应回退到文件修改时间
+    #[test]
+    fn shoot_time_mtime_fallback() {
+        let tmp = std::env::temp_dir().join(format!("mtime_test_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let img_path = tmp.join("no_exif.jpg");
+        // image crate 保存的 JPEG 不含 EXIF DateTimeOriginal
+        let img = image::RgbImage::new(64, 48);
+        img.save(&img_path).unwrap();
+        // EXIF 读取应失败 → 走 mtime 兜底
+        let t = read_shoot_time(&img_path);
+        assert!(t.is_some(), "无 EXIF 时应回退 mtime 返回日期");
+        let date = t.unwrap();
+        // 格式 YYYY-MM-DD 且年份合理
+        assert_eq!(date.len(), 10);
+        let year: i32 = date[0..4].parse().unwrap();
+        assert!((2000..2100).contains(&year), "年份异常: {date}");
+        // 与文件 mtime 的日期一致
+        let meta = std::fs::metadata(&img_path).unwrap();
+        let modified = meta.modified().unwrap();
+        let secs = modified.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let (y, m, d) = unix_secs_to_date(secs);
+        assert_eq!(date, format!("{y:04}-{m:02}-{d:02}"), "日期应与 mtime 一致");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 公历转换正确性（已知日期验证）
+    #[test]
+    fn unix_date_known_values() {
+        // 1970-01-01
+        assert_eq!(unix_secs_to_date(0), (1970, 1, 1));
+        // 2000-01-01
+        assert_eq!(unix_secs_to_date(946_684_800), (2000, 1, 1));
+        // 2024-02-29（闰年）
+        assert_eq!(unix_secs_to_date(1_709_164_800), (2024, 2, 29));
+        // 2025-12-31
+        assert_eq!(unix_secs_to_date(1_767_139_200), (2025, 12, 31));
+        // 2026-01-01
+        assert_eq!(unix_secs_to_date(1_767_225_600), (2026, 1, 1));
     }
 
     /// 生成测试图片并验证扫描与缩略图
