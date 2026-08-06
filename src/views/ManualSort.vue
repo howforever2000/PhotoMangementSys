@@ -7,6 +7,7 @@ import type { Album } from "../types/album";
 import type { Folder, ManualTree } from "../types/folder";
 import { trace } from "../utils/trace";
 import AlbumMiniCard from "../components/AlbumMiniCard.vue";
+import ConfirmDialog from "../components/ConfirmDialog.vue";
 
 const props = defineProps<{
   /** 从搜索结果传入：需要跳转到的分组 id */
@@ -36,6 +37,72 @@ const tagInput = ref("");
 const contextMenu = ref<{ visible: boolean; x: number; y: number; target: "folder" | "album"; id: number; showMoveList: boolean }>({
   visible: false, x: 0, y: 0, target: "album", id: 0, showMoveList: false,
 });
+
+// ---------- 管理模式（批量选择/删除） ----------
+const selectMode = ref(false);
+const selectedIds = ref<Set<number>>(new Set());
+const isBatchDeleting = ref(false);
+/** 批量删除确认弹窗 */
+const batchDeleteConfirm = ref<{ visible: boolean; message: string }>({ visible: false, message: "" });
+/** 单删（右键）确认弹窗 */
+const oneDeleteConfirm = ref<{ visible: boolean; message: string; id: number; kind: "album" | "folder" }>({
+  visible: false, message: "", id: 0, kind: "album",
+});
+
+/** 进入/退出管理模式 */
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value;
+  if (!selectMode.value) {
+    selectedIds.value = new Set();
+  }
+}
+
+/** 勾选/取消勾选（管理模式） */
+function toggleSelect(id: number) {
+  const next = new Set(selectedIds.value);
+  if (next.has(id)) {
+    next.delete(id);
+  } else {
+    next.add(id);
+  }
+  selectedIds.value = next;
+}
+
+/** 卡片点击：管理模式勾选，否则跳转详情 */
+function onMiniCardClick(id: number) {
+  if (selectMode.value) {
+    toggleSelect(id);
+  } else {
+    router.push(`/album/${id}`);
+  }
+}
+
+/** 批量删除：二次确认后执行 */
+async function batchDelete() {
+  if (selectedIds.value.size === 0 || isBatchDeleting.value) return;
+  batchDeleteConfirm.value = {
+    visible: true,
+    message: `确定要删除选中的 ${selectedIds.value.size} 个相册吗？\n\n此操作仅删除相册记录，不会删除本地照片文件。`,
+  };
+}
+/** 确认后真正执行批量删除 */
+async function doBatchDelete() {
+  batchDeleteConfirm.value.visible = false;
+  const ids = [...selectedIds.value];
+  if (ids.length === 0 || isBatchDeleting.value) return;
+  isBatchDeleting.value = true;
+  try {
+    const deleted = await store.deleteAlbums(ids);
+    alert(`已删除 ${deleted} 个相册`);
+    selectedIds.value = new Set();
+    selectMode.value = false;
+    await loadTree();
+  } catch (e) {
+    alert(`删除失败：${e}`);
+  } finally {
+    isBatchDeleting.value = false;
+  }
+}
 
 /** 加载手动树 */
 async function loadTree() {
@@ -164,7 +231,17 @@ async function saveEditFolder() {
 
 // ---------- 删除分组 ----------
 async function deleteFolder(id: number) {
-  if (!confirm("确定删除该分组吗？其下的相册会移到顶级，子分组会升级。")) return;
+  oneDeleteConfirm.value = {
+    visible: true,
+    message: "确定删除该分组吗？其下的相册会移到顶级，子分组会升级。",
+    id,
+    kind: "folder",
+  };
+}
+/** 确认后真正删除分组 */
+async function doDeleteFolder() {
+  const { id } = oneDeleteConfirm.value;
+  oneDeleteConfirm.value.visible = false;
   try {
     await invoke("delete_folder", { id });
     contextMenu.value.visible = false;
@@ -177,12 +254,19 @@ async function deleteFolder(id: number) {
 // ---------- 删除相册（手动排序右键） ----------
 async function deleteAlbumContext(albumId: number) {
   const album = store.albums.find((a) => a.id === albumId);
-  const ok = confirm(
-    `确定要删除相册「${album?.name ?? ""}」吗？\n\n此操作仅删除系统中的相册视图，不会删除本地照片文件。`,
-  );
-  if (!ok) return;
+  oneDeleteConfirm.value = {
+    visible: true,
+    message: `确定要删除相册「${album?.name ?? ""}」吗？\n\n此操作仅删除系统中的相册视图，不会删除本地照片文件。`,
+    id: albumId,
+    kind: "album",
+  };
+}
+/** 确认后真正删除相册 */
+async function doDeleteAlbumContext() {
+  const { id } = oneDeleteConfirm.value;
+  oneDeleteConfirm.value.visible = false;
   try {
-    await store.deleteAlbum(albumId);
+    await store.deleteAlbum(id);
     closeContextMenu();
     await loadTree();
   } catch (e) {
@@ -425,7 +509,21 @@ onBeforeUnmount(() => {
     <!-- 顶部工具栏 -->
     <div class="manual-toolbar">
       <button class="btn btn-primary" @click="openCreateFolder(null)">新建分组</button>
-      <span class="manual-hint">拖拽相册到分组中即可归类，最多支持三级</span>
+      <button
+        v-if="!selectMode"
+        class="btn"
+        @click="toggleSelectMode"
+      >
+        🗂️ 管理
+      </button>
+      <template v-if="selectMode">
+        <button class="btn btn-danger" :disabled="selectedIds.size === 0 || isBatchDeleting" @click="batchDelete">
+          {{ isBatchDeleting ? "删除中…" : `删除所选 (${selectedIds.size})` }}
+        </button>
+        <button class="btn" @click="toggleSelectMode">退出管理</button>
+        <span class="manual-hint">勾选相册后可批量删除；仅删记录不影响本地照片</span>
+      </template>
+      <span v-else class="manual-hint">拖拽相册到分组中即可归类，最多支持三级</span>
     </div>
 
     <!-- 目录导航（类似日期排序的路线图，点击跳转分组） -->
@@ -453,8 +551,10 @@ onBeforeUnmount(() => {
           :index="idx"
           :album="albumById(entry.album_id)"
           :dragging="isDragging && draggingAlbumId === entry.album_id"
+          :select-mode="selectMode"
+          :selected="selectedIds.has(entry.album_id)"
           @pointerdown="onAlbumPointerDown(entry.album_id, null, $event)"
-          @click="router.push(`/album/${entry.album_id}`)"
+          @click="onMiniCardClick(entry.album_id)"
           @contextmenu="onRightClick('album', entry.album_id, $event)"
         />
       </div>
@@ -492,8 +592,10 @@ onBeforeUnmount(() => {
               :index="idx"
               :album="albumById(aid)"
               :dragging="isDragging && draggingAlbumId === aid"
+              :select-mode="selectMode"
+              :selected="selectedIds.has(aid)"
               @pointerdown="onAlbumPointerDown(aid, node.folder.id, $event)"
-              @click="router.push(`/album/${aid}`)"
+              @click="onMiniCardClick(aid)"
               @contextmenu="onRightClick('album', aid, $event)"
             />
           </div>
@@ -523,8 +625,10 @@ onBeforeUnmount(() => {
                 :index="idx"
                 :album="albumById(aid)"
                 :dragging="isDragging && draggingAlbumId === aid"
+                :select-mode="selectMode"
+                :selected="selectedIds.has(aid)"
                 @pointerdown="onAlbumPointerDown(aid, child.folder.id, $event)"
-                @click="router.push(`/album/${aid}`)"
+                @click="onMiniCardClick(aid)"
                 @contextmenu="onRightClick('album', aid, $event)"
               />
             </div>
@@ -552,8 +656,10 @@ onBeforeUnmount(() => {
                   :index="idx"
                   :album="albumById(aid)"
                   :dragging="isDragging && draggingAlbumId === aid"
+                  :select-mode="selectMode"
+                  :selected="selectedIds.has(aid)"
                   @pointerdown="onAlbumPointerDown(aid, grand.folder.id, $event)"
-                  @click="router.push(`/album/${aid}`)"
+                  @click="onMiniCardClick(aid)"
                   @contextmenu="onRightClick('album', aid, $event)"
                 />
               </div>
@@ -629,6 +735,34 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    <!-- 删除分组确认 -->
+    <ConfirmDialog
+      :visible="oneDeleteConfirm.visible && oneDeleteConfirm.kind === 'folder'"
+      title="删除分组"
+      :message="oneDeleteConfirm.message"
+      @confirm="doDeleteFolder"
+      @cancel="oneDeleteConfirm.visible = false"
+    />
+
+    <!-- 删除相册确认（右键） -->
+    <ConfirmDialog
+      :visible="oneDeleteConfirm.visible && oneDeleteConfirm.kind === 'album'"
+      title="删除相册"
+      :message="oneDeleteConfirm.message"
+      @confirm="doDeleteAlbumContext"
+      @cancel="oneDeleteConfirm.visible = false"
+    />
+
+    <!-- 批量删除确认 -->
+    <ConfirmDialog
+      :visible="batchDeleteConfirm.visible"
+      title="批量删除相册"
+      :message="batchDeleteConfirm.message"
+      confirm-text="删除所选"
+      @confirm="doBatchDelete"
+      @cancel="batchDeleteConfirm.visible = false"
+    />
   </div>
 </template>
 

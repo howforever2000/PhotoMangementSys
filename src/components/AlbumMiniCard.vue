@@ -15,6 +15,10 @@ const props = defineProps<{
   album: Album | null;
   /** 是否正在拖拽该卡片 */
   dragging: boolean;
+  /** 是否处于勾选管理模式（显示勾选角标） */
+  selectMode?: boolean;
+  /** 是否被勾选 */
+  selected?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -34,11 +38,13 @@ function fileUrl(path: string | null): string {
     class="album-mini"
     :data-folder-id="props.folderId === null ? '' : String(props.folderId)"
     :data-album-index="index"
-    :class="{ dragging }"
+    :class="{ dragging, 'mini-selected': selected, 'mini-select-mode': selectMode }"
     @pointerdown="emit('pointerdown', $event)"
     @click="emit('click', $event)"
     @contextmenu="emit('contextmenu', $event)"
   >
+    <!-- 勾选角标（管理模式） -->
+    <span v-if="selectMode" class="mini-check" :class="{ checked: selected }">✓</span>
     <img v-if="album?.cover_path" :src="fileUrl(album.cover_path)" class="mini-cover" loading="lazy" />
     <div v-else class="mini-cover placeholder">📷</div>
     <!-- album 未加载/缺失时显示占位，避免空白卡片（改进自 7fd21dd） -->
@@ -95,5 +101,46 @@ function fileUrl(path: string | null): string {
 .album-mini.dragging {
   opacity: 0.4;
   border-color: #396cd8;
+}
+
+/* 勾选管理模式：卡片点击提示 */
+.album-mini.mini-select-mode {
+  cursor: pointer;
+}
+
+/* 被勾选的卡片 */
+.album-mini.mini-selected {
+  border-color: #396cd8;
+  box-shadow: 0 0 0 2px rgba(57, 108, 216, 0.25);
+}
+
+/* 勾选角标 */
+.mini-check {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid #bbb;
+  background: #fff;
+  font-size: 11px;
+  color: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  transition: all 0.15s;
+}
+
+.mini-check.checked {
+  background: #396cd8;
+  border-color: #396cd8;
+  color: #fff;
+}
+
+/* 角标需相对卡片定位 */
+.album-mini {
+  position: relative;
 }
 </style>
