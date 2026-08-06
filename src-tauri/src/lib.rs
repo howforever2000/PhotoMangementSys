@@ -358,19 +358,45 @@ fn set_cover(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
 ) -> Result<db::Album, String> {
-    // 校验图片路径存在
+    let _t = log_call!("set_cover", &format!("album_id={id}, image_path={image_path}"));
+    logger::log_info(&format!("[SET_COVER] 开始更换封面: album_id={id}, 选择图片={image_path}"));
+
+    // 阶段1：校验图片路径存在（用户选择封面）
+    let t1 = std::time::Instant::now();
     let img = std::path::Path::new(&image_path);
     if !img.is_file() {
-        return Err(format!("图片不存在: {image_path}"));
+        let e = format!("图片不存在: {image_path}");
+        logger::log_error("set_cover", &e);
+        logger::log_call_end_with("set_cover", _t, "FAILED | 图片不存在");
+        return Err(e);
     }
+    logger::log_info(&format!(
+        "[SET_COVER] 阶段1 图片校验通过: {}ms",
+        t1.elapsed().as_millis()
+    ));
 
+    // 阶段2：生成封面缩略图（统一存到缓存目录）
     let thumbs = thumbs_dir(&app)?;
+    let t2 = std::time::Instant::now();
+    let cover = match thumbnail::generate_cover(id, img, &thumbs) {
+        Ok(c) => {
+            logger::log_info(&format!(
+                "[SET_COVER] 阶段2 生成封面缩略图: {}ms → {}",
+                t2.elapsed().as_millis(),
+                c
+            ));
+            c
+        }
+        Err(e) => {
+            let e = format!("无法生成封面缩略图: {e}");
+            logger::log_error("set_cover", &e);
+            logger::log_call_end_with("set_cover", _t, "FAILED | 生成缩略图失败");
+            return Err(e);
+        }
+    };
 
-    // 生成封面缩略图（统一存到缓存目录）
-    let cover = thumbnail::generate_cover(id, img, &thumbs)
-        .map_err(|e| format!("无法生成封面缩略图: {e}"))?;
-
-    // 更新数据库 cover_path
+    // 阶段3：更新数据库 cover_path（更换封面）
+    let t3 = std::time::Instant::now();
     {
         let db = state.0.lock().map_err(|e| e.to_string())?;
         db.update_album(db::UpdateAlbumInput {
@@ -382,8 +408,13 @@ fn set_cover(
         })
         .map_err(|e| e.to_string())?;
     }
+    logger::log_info(&format!(
+        "[SET_COVER] 阶段3 更新数据库 cover_path: {}ms",
+        t3.elapsed().as_millis()
+    ));
 
-    // 返回更新后的相册（含封面）
+    // 阶段4：读取更新后的相册 + 清理残留自动缩略图 + 刷新统计
+    let t4 = std::time::Instant::now();
     let mut album = {
         let db = state.0.lock().map_err(|e| e.to_string())?;
         db.get_album(id).map_err(|e| e.to_string())?
@@ -392,6 +423,12 @@ fn set_cover(
     thumbnail::cleanup_album_auto_thumbs(id, &thumbs);
     // 此时 cover_path 已设置，fill_album_stats 不会覆盖它
     fill_album_stats(&mut album, &thumbs, &state);
+    logger::log_info(&format!(
+        "[SET_COVER] 阶段4 清理旧缩略图+刷新统计: {}ms",
+        t4.elapsed().as_millis()
+    ));
+
+    logger::log_call_end_with("set_cover", _t, &format!("OK | album_id={id}"));
     Ok(album)
 }
 
