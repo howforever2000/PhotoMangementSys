@@ -77,6 +77,49 @@
         "在 Tauri/WebView2 中优先用 Pointer Events 实现拖拽，避免 HTML5 DnD 的兼容性问题",
         "elementFromPoint 判断悬停目标时，拖拽浮层需 pointer-events:none 避免遮挡"
       ]
+    },
+    {
+      "id": "BUG-2026-0815-001",
+      "date": "2026-08-15",
+      "status": "resolved",
+      "title": "缩略图指纹使用 DefaultHasher 随机种子，重编译后缓存全失效，get_albums 卡死 140 秒",
+      "module": "缩略图缓存 / 指纹命名（dev 分支 f89ba67 引入，122282b 修复）",
+      "symptom": [
+        "打开软件后前端点击无反应、页面内容消失、应用卡死",
+        "日志显示 get_albums START 后长时间无 END（卡 140 秒）",
+        "时好时坏：某些启动正常（缓存命中），某些启动卡死",
+        "thumbs 目录中同相册出现多个不同 hash 的指纹文件（如 album_14 两个 hash 166925300 与 3053189282757412854）"
+      ],
+      "root_cause": {
+        "summary": "file_fingerprint 使用 std::hash::DefaultHasher::new()，其种子在每次编译时随机生成，跨编译不稳定",
+        "detail": [
+          "DefaultHasher 的 keys 在编译期随机生成 → 重新编译应用后，同一文件的指纹（len + mtime + 8KB hash）全部改变",
+          "指纹变化 → album_{id}_auto_{fp}.jpg 缓存文件全部失效（新编译产物不认旧文件名）",
+          "缓存全失效 → 每次 get_albums 对全部相册重新解码 6000x4000 全尺寸 JPEG 生成缩略图",
+          "debug 构建解码一张大图需 5~14 秒，24 个相册串行处理 → get_albums 阻塞约 140 秒",
+          "前端 invoke 等待超时 → 列表空白、点击全部无响应（表现为卡死）",
+          "真实数据复现：修复前全量处理 140.35s；同进程内指纹 3 次相同但跨编译不同（album_14 两 hash 值不同为证）"
+        ]
+      },
+      "evidence_log": [
+        "日志: [AOP:CALL] get_albums START → 无 END（阻塞）",
+        "repro 测试: id=3 thumb=8050ms, id=10 thumb=14422ms, id=16 thumb=14537ms ... 总计 140s",
+        "thumbs 中 album_14 两个指纹文件 hash 不同：166925300 vs 3053189282757412854"
+      ],
+      "solution": {
+        "summary": "指纹改用自实现 FNV-1a 64 位确定性哈希 + 旧命名缩略图复用，老用户零成本迁移",
+        "steps": [
+          "file_fingerprint 弃用 DefaultHasher，改用 FNV-1a 64 位（OFFSET_BASIS + PRIME 迭代异或乘），跨编译/跨平台结果恒定",
+          "新增 reuse_legacy_thumb：指纹缓存未命中时，将基线 era 的 album_{id}_{safe_stem}.jpg 复制为指纹文件，避免重新解码大图",
+          "新增回归测试 fingerprint_deterministic（同文件多次指纹一致）与 legacy_thumb_reuse（旧文件复用）",
+          "真实数据验证：修复后全量处理 61ms（原 140s），23 个相册全部复用旧缩略图，0 个重新生成"
+        ]
+      },
+      "lessons": [
+        "持久化缓存命名（文件名/指纹/URL）禁止使用 DefaultHasher：其种子每次编译时随机，跨进程/跨编译不稳定；必须用确定性哈希（FNV-1a/xxhash/CRC32）",
+        "缓存文件名格式变更必须考虑老数据迁移：新命名不识别旧文件时，应提供旧文件复用/重命名路径，否则老用户首次升级会全量重建（大图场景 = 卡死）",
+        "大图缩略图生成（6000x4000 JPEG 解码 5~14s）在 debug 构建下必须依赖缓存命中，任何导致缓存失效的因素都会被放大成可用性问题"
+      ]
     }
   ]
 }
