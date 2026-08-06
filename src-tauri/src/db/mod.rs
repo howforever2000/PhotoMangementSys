@@ -93,6 +93,21 @@ pub struct UpdateAlbumInput {
     pub location: Option<String>,
 }
 
+/// 相册文件系统统计缓存（对应 album_stats 表）
+///
+/// 将 photo_count / size_bytes / shoot_time / 封面源图路径持久化缓存，
+/// 避免每次列表/详情加载都全目录遍历。
+#[derive(Debug, Clone)]
+pub struct AlbumStats {
+    pub photo_count: i64,
+    pub size_bytes: u64,
+    pub shoot_time: Option<String>,
+    /// 封面源图绝对路径（无封面时用于生成/复用缩略图）
+    pub cover_source: Option<String>,
+    /// 上次扫描时间（Unix 秒），用于 TTL 失效判断
+    pub scanned_at: i64,
+}
+
 // =====================================================================
 // 错误类型（对应 SpringBoot 自定义异常 + 全局异常处理）
 // =====================================================================
@@ -704,6 +719,61 @@ impl Database {
         tx.execute("DELETE FROM folder_albums WHERE album_id = ?1", params![album_id])?;
         tx.execute("DELETE FROM album_tags WHERE album_id = ?1", params![album_id])?;
         tx.execute("DELETE FROM album_stats WHERE album_id = ?1", params![album_id])?;
+        Ok(())
+    }
+
+    /// 读取相册文件系统统计缓存（photo_count/size_bytes/shoot_time/封面源图）
+    pub fn get_album_stats(&self, album_id: i64) -> Result<Option<AlbumStats>, DbError> {
+        let result = self.conn.query_row(
+            "SELECT photo_count, size_bytes, shoot_time, cover_source, scanned_at
+             FROM album_stats WHERE album_id = ?1",
+            params![album_id],
+            |r| {
+                Ok(AlbumStats {
+                    photo_count: r.get::<_, i64>(0)?,
+                    size_bytes: r.get::<_, u64>(1)?,
+                    shoot_time: r.get(2)?,
+                    cover_source: r.get(3)?,
+                    scanned_at: r.get(4)?,
+                })
+            },
+        );
+        match result {
+            Ok(s) => Ok(Some(s)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(DbError::Sqlite(e)),
+        }
+    }
+
+    /// 写入/更新相册文件系统统计缓存
+    pub fn upsert_album_stats(
+        &self,
+        album_id: i64,
+        photo_count: i64,
+        size_bytes: u64,
+        shoot_time: Option<String>,
+        cover_source: Option<String>,
+    ) -> Result<(), DbError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO album_stats
+             (album_id, photo_count, size_bytes, shoot_time, cover_source, scanned_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![album_id, photo_count, size_bytes, shoot_time, cover_source, Self::now_secs()],
+        )?;
+        Ok(())
+    }
+
+    /// 删除某个相册的统计缓存（主动失效：用户增删照片/目录变更后调用，
+    /// 下次 fill_album_stats 将强制重新扫描，保证统计实时刷新）
+    pub fn delete_album_stats(&self, album_id: i64) -> Result<(), DbError> {
+        self.conn
+            .execute("DELETE FROM album_stats WHERE album_id = ?1", params![album_id])?;
+        Ok(())
+    }
+
+    /// 清空全部统计缓存（invalidate_album_stats 空列表时调用）
+    pub fn clear_all_album_stats(&self) -> Result<(), DbError> {
+        self.conn.execute("DELETE FROM album_stats", [])?;
         Ok(())
     }
 

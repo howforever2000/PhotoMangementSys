@@ -20,7 +20,6 @@ const THUMB_SIZE: u32 = 256;
 /// 缩略图模块错误
 #[derive(Debug)]
 pub enum ThumbError {
-    NoImage,
     Io(std::io::Error),
     Image(image::ImageError),
 }
@@ -28,7 +27,6 @@ pub enum ThumbError {
 impl std::fmt::Display for ThumbError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ThumbError::NoImage => write!(f, "文件夹中没有支持的图片"),
             ThumbError::Io(e) => write!(f, "IO 错误: {e}"),
             ThumbError::Image(e) => write!(f, "图片处理错误: {e}"),
         }
@@ -52,84 +50,54 @@ fn is_image_file(file_name: &str) -> bool {
     IMAGE_EXTS.iter().any(|ext| lower.ends_with(&format!(".{ext}")))
 }
 
-/// 扫描目录，返回第一张图片的完整路径
+/// 相册目录单次扫描结果（一次 walkdir 同时完成数量/大小/首图三项统计）
 ///
-/// 使用 `walkdir` 递归遍历（含子目录），按文件系统顺序取第一个匹配的图片。
-/// 对应"默认以第一张图片为封面图"的需求。
-pub fn find_first_image(dir: &Path) -> Result<PathBuf, ThumbError> {
-    if !dir.is_dir() {
-        return Err(ThumbError::NoImage);
-    }
-    for entry in walkdir::WalkDir::new(dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| {
-            // 跳过隐藏目录和缩略图缓存目录，避免无限递归或扫到缓存
-            !e.file_name().to_string_lossy().starts_with('.')
-        })
-    {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if entry.file_type().is_file() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if is_image_file(&name) {
-                return Ok(entry.into_path());
-            }
-        }
-    }
-    Err(ThumbError::NoImage)
+/// 替代原先 count_images + folder_size + find_first_image 的三次独立遍历，
+/// 列表加载时每相册从 3~4 次全目录遍历降为 1 次。
+pub struct AlbumScan {
+    /// 支持的图片文件数
+    pub photo_count: usize,
+    /// 目录真实占用空间（字节，累加所有文件）
+    pub size_bytes: u64,
+    /// 扫描到的第一张图片路径（无图片则为 None）
+    pub first_image: Option<PathBuf>,
 }
 
-/// 统计文件夹中图片的总数量
+/// 单次遍历统计相册目录：图片数量 + 总大小 + 第一张图片
 ///
-/// 递归遍历目录（含子目录），统计所有支持的图片文件数。
-pub fn count_images(dir: &Path) -> usize {
+/// 递归遍历目录（含子目录），跳过隐藏目录/文件。
+pub fn scan_album_dir(dir: &Path) -> AlbumScan {
+    let mut scan = AlbumScan {
+        photo_count: 0,
+        size_bytes: 0,
+        first_image: None,
+    };
     if !dir.is_dir() {
-        return 0;
+        return scan;
     }
-    let mut count = 0usize;
     for entry in walkdir::WalkDir::new(dir)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
     {
-        if let Ok(e) = entry {
-            if e.file_type().is_file() {
-                let name = e.file_name().to_string_lossy().to_string();
-                if is_image_file(&name) {
-                    count += 1;
-                }
+        let Ok(e) = entry else { continue };
+        if !e.file_type().is_file() {
+            continue;
+        }
+        // 大小：累加所有文件（不限于图片，保持与旧 folder_size 语义一致）
+        if let Ok(meta) = e.metadata() {
+            scan.size_bytes += meta.len();
+        }
+        // 图片计数 + 首图：仅图片文件
+        let name = e.file_name().to_string_lossy().to_string();
+        if is_image_file(&name) {
+            scan.photo_count += 1;
+            if scan.first_image.is_none() {
+                scan.first_image = Some(e.into_path());
             }
         }
     }
-    count
-}
-
-/// 统计文件夹总大小（字节）—— 真实占用空间
-///
-/// 递归遍历目录（含子目录），累加所有文件大小。
-/// Windows 目录自身的元数据不包含内容大小，因此必须遍历才能获得真实占用空间。
-pub fn folder_size(dir: &Path) -> u64 {
-    if !dir.is_dir() {
-        return 0;
-    }
-    let mut total = 0u64;
-    for entry in walkdir::WalkDir::new(dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
-    {
-        if let Ok(e) = entry {
-            if e.file_type().is_file() {
-                if let Ok(meta) = e.metadata() {
-                    total += meta.len();
-                }
-            }
-        }
-    }
-    total
+    scan
 }
 
 /// 读取图片的拍摄时间（EXIF DateTimeOriginal），返回 "YYYY-MM-DD"
@@ -166,30 +134,92 @@ pub struct ThumbResult {
     pub source_path: String,
 }
 
-/// 为相册生成缩略图（若无缓存则生成），返回缓存路径
+/// 计算文件内容指纹（用于缩略图缓存命名）
 ///
-/// - 扫描 `album_path` 找第一张图片
-/// - 生成 256px 缩略图写入 `thumbs_dir/<相册id>_<hash>.jpg`
+/// 组合：文件长度 + 最后修改时间 + 文件头 8KB 的哈希。
+/// 用户替换/修改照片后指纹必然变化，缓存自动失效并换名（旧文件随后被清理），
+/// 修复旧版"同名文件缓存不失效"的问题。
+fn file_fingerprint(path: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut fp = String::new();
+    if let Ok(meta) = path.metadata() {
+        fp.push_str(&meta.len().to_string());
+        if let Ok(m) = meta.modified() {
+            if let Ok(d) = m.duration_since(std::time::UNIX_EPOCH) {
+                fp.push('_');
+                fp.push_str(&d.as_secs().to_string());
+            }
+        }
+    }
+    // 文件头 8KB 哈希，覆盖"拷贝保留 mtime"的场景
+    let mut head = [0u8; 8192];
+    let mut n = 0usize;
+    if let Ok(mut f) = std::fs::File::open(path) {
+        use std::io::Read;
+        n = f.read(&mut head).unwrap_or(0);
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (&head[..n]).hash(&mut hasher);
+    fp.push('_');
+    fp.push_str(&hasher.finish().to_string());
+    fp
+}
+
+/// 删除相册的自动缩略图缓存文件（`album_{id}_auto_*.jpg`）
+///
+/// 在生成新缓存前调用，确保每个相册最多只有一个自动缩略图，
+/// 避免图片变更后旧指纹文件成为孤儿占用磁盘。
+pub fn cleanup_album_auto_thumbs(album_id: i64, thumbs_dir: &Path) {
+    cleanup_album_prefix(album_id, "auto", thumbs_dir);
+}
+
+/// 删除相册的手动封面缓存文件（`album_{id}_manual_*.jpg`）
+///
+/// 用户更换封面图时调用，避免旧封面指纹文件成为孤儿。
+pub fn cleanup_album_manual_thumbs(album_id: i64, thumbs_dir: &Path) {
+    cleanup_album_prefix(album_id, "manual", thumbs_dir);
+}
+
+/// 按前缀清理相册的某类缩略图缓存（auto / manual）
+fn cleanup_album_prefix(album_id: i64, kind: &str, thumbs_dir: &Path) {
+    let prefix = format!("album_{album_id}_{kind}_");
+    if let Ok(entries) = std::fs::read_dir(thumbs_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&prefix) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+/// 删除相册的全部缩略图缓存文件（自动 + 手动封面）
+///
+/// 在删除相册记录成功后调用，清理对应缓存目录，避免磁盘持续增长。
+pub fn cleanup_all_album_thumbs(album_id: i64, thumbs_dir: &Path) {
+    let prefix = format!("album_{album_id}_");
+    if let Ok(entries) = std::fs::read_dir(thumbs_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&prefix) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+/// 基于已知原图路径生成缩略图（若无缓存则生成），返回缓存路径
+///
+/// - 缓存文件名基于内容指纹：`album_<id>_auto_<fingerprint>.jpg`
 /// - 缓存命中则直接返回，避免重复生成
-pub fn ensure_thumbnail(
+/// - 生成前清理该相册旧的自动缩略图，避免指纹变更后留下孤儿文件
+pub fn ensure_thumbnail_from_source(
     album_id: i64,
-    album_path: &Path,
+    source: &Path,
     thumbs_dir: &Path,
 ) -> Result<ThumbResult, ThumbError> {
-    let source = find_first_image(album_path)?;
-
-    // 缓存文件命名：album_<id>_<原文件名去掉扩展名>.jpg
-    let file_stem = source
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "cover".to_string());
-    // 文件名可能含非法字符，做清理
-    let safe_stem: String = file_stem
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .take(40)
-        .collect();
-    let cached_name = format!("album_{album_id}_{}.jpg", if safe_stem.is_empty() { "cover".to_string() } else { safe_stem });
+    let fingerprint = file_fingerprint(source);
+    let cached_name = format!("album_{album_id}_auto_{fingerprint}.jpg");
     let thumb_path = thumbs_dir.join(&cached_name);
 
     // 若缓存已存在则直接复用
@@ -200,8 +230,11 @@ pub fn ensure_thumbnail(
         });
     }
 
+    // 清理旧指纹缓存（文件名变更才会走到这里）
+    cleanup_album_auto_thumbs(album_id, thumbs_dir);
+
     // 生成缩略图
-    let img = image::open(&source)?;
+    let img = image::open(source)?;
     let thumb = img.thumbnail(THUMB_SIZE, THUMB_SIZE);
 
     // 确保缓存目录存在
@@ -228,12 +261,18 @@ pub fn generate_cover(
     source: &Path,
     thumbs_dir: &Path,
 ) -> Result<String, ThumbError> {
-    let cached_name = format!("album_{album_id}_manual_cover.jpg");
+    // 缓存文件名基于内容指纹：用户更换封面图时生成新文件并清理旧文件，
+    // 修复旧版"固定文件名导致换图后仍显示旧封面"的问题。
+    let fingerprint = file_fingerprint(source);
+    let cached_name = format!("album_{album_id}_manual_{fingerprint}.jpg");
     let thumb_path = thumbs_dir.join(&cached_name);
 
     if thumb_path.exists() {
         return Ok(thumb_path.to_string_lossy().into_owned());
     }
+
+    // 清理旧封面缓存（换图才会走到这里）
+    cleanup_album_manual_thumbs(album_id, thumbs_dir);
 
     let img = image::open(source)?;
     let thumb = img.thumbnail(THUMB_SIZE, THUMB_SIZE);
@@ -269,18 +308,49 @@ mod tests {
         }
         img.save(&img_path).unwrap();
 
-        // 第一张图应能被找到
-        let first = find_first_image(&img_dir).unwrap();
+        // 单次遍历扫描应找到首图、统计数量与大小
+        let scan = scan_album_dir(&img_dir);
+        assert_eq!(scan.photo_count, 1);
+        assert!(scan.size_bytes > 0);
+        let first = scan.first_image.unwrap();
         assert_eq!(first.file_name().unwrap(), "first.png");
 
-        // 生成缩略图
+        // 基于源图生成缩略图
         let thumbs = tmp.join("thumbs");
-        let res = ensure_thumbnail(1, &img_dir, &thumbs).unwrap();
+        let res = ensure_thumbnail_from_source(1, &first, &thumbs).unwrap();
         assert!(Path::new(&res.thumb_path).exists());
         assert!(res.thumb_path.ends_with(".jpg"));
 
         // 二次调用应命中缓存
-        let res2 = ensure_thumbnail(1, &img_dir, &thumbs).unwrap();
+        let res2 = ensure_thumbnail_from_source(1, &first, &thumbs).unwrap();
         assert_eq!(res2.thumb_path, res.thumb_path);
+
+        // 同一路径文件内容变化 → 指纹变化 → 缓存文件名变更（旧缓存被清理）
+        let mut img2 = RgbImage::new(100, 50);
+        for px in img2.pixels_mut() {
+            *px = Rgb([10, 200, 90]);
+        }
+        img2.save(&img_path).unwrap();
+        let first2 = scan_album_dir(&img_dir).first_image.unwrap();
+        let res3 = ensure_thumbnail_from_source(1, &first2, &thumbs).unwrap();
+        assert_ne!(res3.thumb_path, res.thumb_path, "内容变化后缓存文件名应变化");
+        // 旧指纹缓存文件应已被清理，目录中只保留一个自动缩略图
+        let auto_files: Vec<_> = std::fs::read_dir(&thumbs)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("album_1_auto_"))
+            .collect();
+        assert_eq!(auto_files.len(), 1, "应只保留一个自动缩略图");
+
+        // 清理全部缓存
+        cleanup_all_album_thumbs(1, &thumbs);
+        let remaining: Vec<_> = std::fs::read_dir(&thumbs)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("album_1_"))
+            .collect();
+        assert_eq!(remaining.len(), 0, "删除相册后缓存应全部清理");
     }
 }

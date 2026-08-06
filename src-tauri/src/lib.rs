@@ -97,43 +97,122 @@ fn thumbs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir.join(THUMBS_DIR))
 }
 
+/// 主动失效相册统计缓存（改进自 bd5e9b9：原实现仅有 TTL 被动过期，
+/// 用户增删照片后统计最多滞后 1 小时。此命令供前端在「导入照片 / 手动刷新」
+/// 后调用，强制下次访问重新扫描文件系统，保证统计实时正确。）
+///
+/// - ids: 需要刷新统计的相册 ID 列表（空列表则全部失效）
+#[tauri::command]
+fn invalidate_album_stats(
+    ids: Vec<i64>,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let _t = log_call!("invalidate_album_stats", &format!("ids={ids:?}"));
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    if ids.is_empty() {
+        db.clear_all_album_stats().map_err(|e| e.to_string())?;
+    } else {
+        for id in &ids {
+            db.delete_album_stats(*id).map_err(|e| e.to_string())?;
+        }
+    }
+    logger::log_call_end_with("invalidate_album_stats", _t, "OK");
+    Ok(())
+}
+
+/// 文件系统统计缓存有效期（秒）：10 分钟内不重复全目录遍历
+///
+/// 权衡：照片目录的文件增删不频繁，TTL 缓存把"每相册 3~4 次遍历"降为"1 次 SQL 快查"。
+/// 相对原提交 bd5e9b9 的 3600s，缩为 600s：在性能与"增删照片后统计尽快刷新"之间取平衡；
+/// 相册创建/批量导入后首次访问必然 miss，仍会完整扫描一次，保证数据正确。
+/// 主动失效路径（优先级更高）：invalidate_album_stats 命令（前端手动刷新）/ 封面源缺失降级重扫。
+const STATS_TTL_SECS: i64 = 600;
+
 /// 填充相册的统计属性（照片数量、文件夹大小、拍摄时间、默认封面）
 ///
-/// - `photo_count`: 扫描文件夹统计图片数量
-/// - `size_bytes`: 文件夹真实占用空间（递归遍历累加所有文件大小）
+/// **缓存优先**：先查 album_stats 表，TTL 内直接复用；过期/缺失才扫描文件系统
+/// （单次遍历完成全部统计，见 `thumbnail::scan_album_dir`），并写回缓存。
+///
+/// - `photo_count`: 图片数量
+/// - `size_bytes`: 文件夹真实占用空间
 /// - `shoot_time`: 相册内图片的 EXIF 拍摄时间（YYYY-MM-DD）
 /// - `cover_path`: 若没有封面，自动用文件夹内第一张图片的缩略图作为封面
 ///
-/// 拍摄时间从"相册内第一张原图"读取（缩略图是生成的，不含 EXIF）。
-/// 这些都是返回给前端的计算属性，不写回数据库（保留用户手动设置封面的能力）。
-fn fill_album_stats(
-    album: &mut db::Album,
-    thumbs_dir: &Path,
-) {
+/// 缩略图与统计均不污染 albums 主表（保留用户手动设置封面的能力）。
+fn fill_album_stats(album: &mut db::Album, thumbs_dir: &Path, state: &tauri::State<AppState>) {
     let dir = std::path::Path::new(&album.path);
 
-    // 统计照片数量
-    album.photo_count = thumbnail::count_images(dir) as i64;
-
-    // 统计文件夹总大小（真实占用空间，递归累加所有文件）
-    album.size_bytes = thumbnail::folder_size(dir);
-
-    // 无封面时自动用第一张图片的缩略图作为封面
-    let mut source_path = None;
-    if album.cover_path.is_none() {
-        if let Ok(res) = thumbnail::ensure_thumbnail(album.id, dir, thumbs_dir) {
-            source_path = Some(res.source_path);
-            album.cover_path = Some(res.thumb_path);
+    // 1. 尝试命中缓存（锁内仅 SQLite 快查，不碰文件系统）
+    let cached = {
+        let db = state.0.lock().ok();
+        db.and_then(|db| db.get_album_stats(album.id).ok().flatten())
+    };
+    if let Some(stats) = cached {
+        if now() - stats.scanned_at < STATS_TTL_SECS {
+            // 有手动封面：统计直接复用缓存（封面不依赖缓存源图）
+            let mut cache_usable = true;
+            if album.cover_path.is_none() {
+                // 无手动封面：尝试用缓存的源图路径复用/生成缩略图（不重新扫描目录）
+                if let Some(src) = &stats.cover_source {
+                    let src_path = std::path::Path::new(src);
+                    if src_path.is_file() {
+                        if let Ok(res) = thumbnail::ensure_thumbnail_from_source(
+                            album.id,
+                            src_path,
+                            thumbs_dir,
+                        ) {
+                            album.cover_path = Some(res.thumb_path);
+                        }
+                    }
+                }
+                // 源图已被删除/缩略图生成失败 → 缓存不再可信，降级重新扫描。
+                // （改进自 bd5e9b9：原实现此处静默 return，封面丢失且统计冻结到 TTL 过期；
+                //   现清除该条缓存并落入扫描路径，目录中若仍有其他图片会自动换封面）
+                if album.cover_path.is_none() {
+                    cache_usable = false;
+                    if let Ok(db) = state.0.lock() {
+                        let _ = db.delete_album_stats(album.id);
+                    }
+                }
+            }
+            if cache_usable {
+                album.photo_count = stats.photo_count;
+                album.size_bytes = stats.size_bytes;
+                album.shoot_time = stats.shoot_time.clone();
+                return;
+            }
         }
     }
 
-    // 拍摄时间：从相册内第一张原图读取 EXIF（缩略图是生成的，不含 EXIF）
-    // 优先用自动封面时的原图；若已有手动封面，则重新扫描找一张图读
-    let exif_source = source_path
-        .map(std::path::PathBuf::from)
-        .or_else(|| thumbnail::find_first_image(dir).ok());
-    if let Some(img) = exif_source {
-        album.shoot_time = thumbnail::read_shoot_time(&img);
+    // 2. 缓存缺失/过期：单次遍历完成全部统计
+    let scan = thumbnail::scan_album_dir(dir);
+    album.photo_count = scan.photo_count as i64;
+    album.size_bytes = scan.size_bytes;
+
+    // 无封面时自动用第一张图片的缩略图作为封面
+    if album.cover_path.is_none() {
+        if let Some(src) = &scan.first_image {
+            if let Ok(res) = thumbnail::ensure_thumbnail_from_source(album.id, src, thumbs_dir) {
+                album.cover_path = Some(res.thumb_path);
+            }
+        }
+    }
+
+    // 拍摄时间：从第一张原图读取 EXIF（缩略图是生成的，不含 EXIF）
+    album.shoot_time = scan
+        .first_image
+        .as_ref()
+        .and_then(|p| thumbnail::read_shoot_time(p));
+
+    // 3. 写回缓存
+    if let Ok(db) = state.0.lock() {
+        let _ = db.upsert_album_stats(
+            album.id,
+            album.photo_count,
+            album.size_bytes,
+            album.shoot_time.clone(),
+            scan.first_image.map(|p| p.to_string_lossy().into_owned()),
+        );
     }
 }
 
@@ -152,7 +231,7 @@ fn get_albums(
             db.get_albums().map_err(|e| e.to_string())?
         };
     for a in albums.iter_mut() {
-        fill_album_stats(a, &thumbs);
+        fill_album_stats(a, &thumbs, &state);
     }
     logger::log_call_end_with("get_albums", _t, &format!("OK | count={}", albums.len()));
     Ok(albums)
@@ -170,7 +249,7 @@ fn get_album(
         let db = state.0.lock().map_err(|e| e.to_string())?;
         db.get_album(id).map_err(|e| e.to_string())?
     };
-    fill_album_stats(&mut album, &thumbs);
+    fill_album_stats(&mut album, &thumbs, &state);
     Ok(album)
 }
 
@@ -210,13 +289,21 @@ fn update_album_tags(
 }
 
 /// 删除相册（需求 §4.2 delete_album，仅删记录不删本地文件）
+///
+/// 删除成功后同时清理该相册的缩略图缓存文件（数据库级联删除见 db::delete_album）。
 #[tauri::command]
-fn delete_album(id: i64, state: tauri::State<AppState>) -> Result<(), String> {
+fn delete_album(id: i64, app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
     let _t = log_call!("delete_album", &format!("id={id}"));
     let r = (|| -> Result<(), String> {
         let db = state.0.lock().map_err(|e| e.to_string())?;
         db.delete_album(id).map_err(|e| e.to_string())
     })();
+    if r.is_ok() {
+        // 记录已删除，清理缓存文件（失败不影响删除结果）
+        if let Ok(thumbs) = thumbs_dir(&app) {
+            thumbnail::cleanup_all_album_thumbs(id, &thumbs);
+        }
+    }
     match &r {
         Ok(_) => logger::log_call_end_with("delete_album", _t, "OK"),
         Err(e) => logger::log_call_end_with("delete_album", _t, &format!("ERR | {e}")),
@@ -228,14 +315,27 @@ fn delete_album(id: i64, state: tauri::State<AppState>) -> Result<(), String> {
 ///
 /// 接收相册 ID 数组，事务内批量删除记录。
 /// **仅删除数据库记录，不删除本地照片文件。**
-/// 返回实际删除数量。
+/// 返回实际删除数量。删除成功后清理对应缩略图缓存。
 #[tauri::command]
-fn delete_albums(ids: Vec<i64>, state: tauri::State<AppState>) -> Result<usize, String> {
+fn delete_albums(
+    ids: Vec<i64>,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<usize, String> {
     let _t = log_call!("delete_albums", &format!("ids={ids:?}"));
     let r = (|| -> Result<usize, String> {
         let db = state.0.lock().map_err(|e| e.to_string())?;
         db.delete_albums(&ids).map_err(|e| e.to_string())
     })();
+    if let Ok(n) = &r {
+        if *n > 0 {
+            if let Ok(thumbs) = thumbs_dir(&app) {
+                for id in &ids {
+                    thumbnail::cleanup_all_album_thumbs(*id, &thumbs);
+                }
+            }
+        }
+    }
     match &r {
         Ok(n) => logger::log_call_end_with("delete_albums", _t, &format!("OK | deleted={n}")),
         Err(e) => logger::log_call_end_with("delete_albums", _t, &format!("ERR | {e}")),
@@ -323,8 +423,10 @@ fn set_cover(
         let db = state.0.lock().map_err(|e| e.to_string())?;
         db.get_album(id).map_err(|e| e.to_string())?
     };
+    // 手动封面已确定，清理可能残留的自动缩略图缓存，避免孤儿文件
+    thumbnail::cleanup_album_auto_thumbs(id, &thumbs);
     // 此时 cover_path 已设置，fill_album_stats 不会覆盖它
-    fill_album_stats(&mut album, &thumbs);
+    fill_album_stats(&mut album, &thumbs, &state);
     Ok(album)
 }
 
@@ -729,6 +831,7 @@ pub fn run() {
             open_folder,
             set_cover,
             import_albums,
+            invalidate_album_stats,
             create_folder,
             update_folder,
             delete_folder,
