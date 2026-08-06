@@ -236,6 +236,26 @@
         "收益：读取路径确定化（分组归属单一来源，N+1 每相册 1 次查询 → 1 次批量查询）；消除 4 层兜底代码（后端 2 层 + 前端 2 层）；级联删除杜绝孤儿数据；一次性迁移保证升级不丢分组",
         "验证：cargo check / vue-tsc / cargo test --lib 2/2 全通过（album_crud_roundtrip 实际建库执行迁移 SQL）"
       ]
+    },
+    {
+      "id": "FEAT-014",
+      "name": "统计缓存 + 缩略图指纹化（含主动失效与封面降级）",
+      "module": "后端性能 / SQLite 缓存（dev 分支 f89ba67）",
+      "purpose": "将相册的照片数量/大小/拍摄时间/封面源图路径持久化缓存到 album_stats 表，列表与详情加载从每相册 3~4 次全目录遍历降为 1 次 SQL 快查；缩略图文件名改为内容指纹解决换图不失效问题；并补上主动失效钩子与封面缺失自愈，修复原提交 TTL 无主动失效的体验缺陷",
+      "implementation": {
+        "backend": "① fill_album_stats 缓存优先：命中时锁内仅 SQLite 快查 + 复用缩略图；miss/过期才单次 walkdir 完成 photo_count/size_bytes/shoot_time/首图四项统计并写回缓存；② 缩略图指纹化：缓存文件名 = len + mtime + 文件头 8KB hash，同名内容变更自动失效，生成前清理旧指纹文件；③ delete_album/delete_albums 删除时清理 thumbs 缓存；④ set_cover 后清理自动缩略图避免孤儿；⑤ 新增 invalidate_album_stats 命令（含 delete_album_stats / clear_all_album_stats），前端可在导入照片后主动失效缓存；⑥ 封面源图缺失时删除缓存并降级重扫自愈",
+        "frontend": "本次无前端改动（invalidate_album_stats 命令已注册，供后续前端导入后调用）",
+        "key_points": [
+          "TTL 600s（原提交 3600s）：缩短增删照片后的统计滞后窗口",
+          "主动失效优先级高于 TTL：手动刷新立即生效，不等待过期",
+          "缓存命中路径若 cover_source 源图已删，不再静默 return（会丢封面+统计冻结），改为清缓存重扫，目录内其他图片自动上位"
+        ]
+      },
+      "highlights": [
+        "解决的问题：原实现每次列表加载都遍历文件系统（相册多时明显卡顿）；同名文件内容变化后缩略图缓存不失效；换封面后仍显示旧图；增删照片后统计最多滞后 1 小时且无法手动刷新；封面源图被删后封面丢失且统计冻结到 TTL 过期",
+        "收益：列表加载性能从 O(每相册全目录遍历) 降为 O(1 次 SQL 快查)；缩略图缓存永远与内容一致且无孤儿文件；统计可主动刷新、封面缺失自动自愈",
+        "验证：cargo check 0 warning；cargo test --lib 2/2 通过（含指纹失效/清理断言）"
+      ]
     }
   ]
 }
