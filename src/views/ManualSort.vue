@@ -3,8 +3,10 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useRouter } from "vue-router";
 import { useAlbumStore } from "../stores/album";
+import type { Album } from "../types/album";
 import type { Folder, ManualTree } from "../types/folder";
 import { trace } from "../utils/trace";
+import AlbumMiniCard from "../components/AlbumMiniCard.vue";
 
 const props = defineProps<{
   /** 从搜索结果传入：需要跳转到的分组 id */
@@ -81,10 +83,13 @@ const rootNodes = computed<TreeNode[]>(() => {
 /** 顶级游离相册（不属于任何文件夹） */
 const rootAlbums = computed(() => tree.value?.root_albums ?? []);
 
-/** 相册 by id */
-function albumById(id: number) {
-  return store.albums.find((a) => a.id === id);
+/** 相册 by id（预构建 Map，避免模板内 O(N²) 线性查找） */
+const albumMap = computed(() => new Map(store.albums.map((a) => [a.id, a])));
+function albumById(id: number): Album | null {
+  return albumMap.value.get(id) ?? null;
 }
+
+/** 将本地文件路径转为前端可访问的 URL（Tauri asset 协议，拖拽浮层用） */
 function fileUrl(path: string | null): string {
   return path ? convertFileSrc(path) : "";
 }
@@ -440,21 +445,18 @@ onBeforeUnmount(() => {
       <div class="root-title">未分组相册</div>
       <div v-if="rootAlbums.length === 0" class="empty-hint">暂无未分组相册</div>
       <div class="album-mini-row">
-        <div
+        <AlbumMiniCard
           v-for="(entry, idx) in rootAlbums"
           :key="entry.album_id"
-          class="album-mini"
-          :data-folder-id="''"
-          :data-album-index="idx"
-          :class="{ 'dragging': isDragging && draggingAlbumId === entry.album_id }"
+          :album-id="entry.album_id"
+          :folder-id="null"
+          :index="idx"
+          :album="albumById(entry.album_id)"
+          :dragging="isDragging && draggingAlbumId === entry.album_id"
           @pointerdown="onAlbumPointerDown(entry.album_id, null, $event)"
           @click="router.push(`/album/${entry.album_id}`)"
           @contextmenu="onRightClick('album', entry.album_id, $event)"
-        >
-          <img v-if="albumById(entry.album_id)?.cover_path" :src="fileUrl(albumById(entry.album_id)!.cover_path)" class="mini-cover" />
-          <div v-else class="mini-cover placeholder">📷</div>
-          <span class="mini-name">{{ albumById(entry.album_id)?.name }}</span>
-        </div>
+        />
       </div>
     </div>
 
@@ -482,21 +484,18 @@ onBeforeUnmount(() => {
 
           <!-- 组内相册 -->
           <div class="folder-albums">
-            <div
+            <AlbumMiniCard
               v-for="(aid, idx) in node.albumIds"
               :key="aid"
-              class="album-mini"
-              :data-folder-id="node.folder.id"
-              :data-album-index="idx"
-              :class="{ 'dragging': isDragging && draggingAlbumId === aid }"
+              :album-id="aid"
+              :folder-id="node.folder.id"
+              :index="idx"
+              :album="albumById(aid)"
+              :dragging="isDragging && draggingAlbumId === aid"
               @pointerdown="onAlbumPointerDown(aid, node.folder.id, $event)"
               @click="router.push(`/album/${aid}`)"
               @contextmenu="onRightClick('album', aid, $event)"
-            >
-              <img v-if="albumById(aid)?.cover_path" :src="fileUrl(albumById(aid)!.cover_path)" class="mini-cover" />
-              <div v-else class="mini-cover placeholder">📷</div>
-              <span class="mini-name">{{ albumById(aid)?.name }}</span>
-            </div>
+            />
           </div>
 
           <!-- 子分组（二级） -->
@@ -516,15 +515,18 @@ onBeforeUnmount(() => {
               </span>
             </div>
             <div class="folder-albums">
-              <div v-for="(aid, idx) in child.albumIds" :key="aid" class="album-mini"
-                   :data-folder-id="child.folder.id" :data-album-index="idx"
-                   :class="{ 'dragging': isDragging && draggingAlbumId === aid }"
-                   @pointerdown="onAlbumPointerDown(aid, child.folder.id, $event)"
-                   @click="router.push(`/album/${aid}`)" @contextmenu="onRightClick('album', aid, $event)">
-                <img v-if="albumById(aid)?.cover_path" :src="fileUrl(albumById(aid)!.cover_path)" class="mini-cover" />
-                <div v-else class="mini-cover placeholder">📷</div>
-                <span class="mini-name">{{ albumById(aid)?.name }}</span>
-              </div>
+              <AlbumMiniCard
+                v-for="(aid, idx) in child.albumIds"
+                :key="aid"
+                :album-id="aid"
+                :folder-id="child.folder.id"
+                :index="idx"
+                :album="albumById(aid)"
+                :dragging="isDragging && draggingAlbumId === aid"
+                @pointerdown="onAlbumPointerDown(aid, child.folder.id, $event)"
+                @click="router.push(`/album/${aid}`)"
+                @contextmenu="onRightClick('album', aid, $event)"
+              />
             </div>
             <!-- 三级分组 -->
             <div v-for="grand in child.children" :key="grand.folder.id"
@@ -542,15 +544,18 @@ onBeforeUnmount(() => {
                 </span>
               </div>
               <div class="folder-albums">
-                <div v-for="(aid, idx) in grand.albumIds" :key="aid" class="album-mini"
-                     :data-folder-id="grand.folder.id" :data-album-index="idx"
-                     :class="{ 'dragging': isDragging && draggingAlbumId === aid }"
-                     @pointerdown="onAlbumPointerDown(aid, grand.folder.id, $event)"
-                     @click="router.push(`/album/${aid}`)" @contextmenu="onRightClick('album', aid, $event)">
-                  <img v-if="albumById(aid)?.cover_path" :src="fileUrl(albumById(aid)!.cover_path)" class="mini-cover" />
-                  <div v-else class="mini-cover placeholder">📷</div>
-                  <span class="mini-name">{{ albumById(aid)?.name }}</span>
-                </div>
+                <AlbumMiniCard
+                  v-for="(aid, idx) in grand.albumIds"
+                  :key="aid"
+                  :album-id="aid"
+                  :folder-id="grand.folder.id"
+                  :index="idx"
+                  :album="albumById(aid)"
+                  :dragging="isDragging && draggingAlbumId === aid"
+                  @pointerdown="onAlbumPointerDown(aid, grand.folder.id, $event)"
+                  @click="router.push(`/album/${aid}`)"
+                  @contextmenu="onRightClick('album', aid, $event)"
+                />
               </div>
             </div>
           </div>
@@ -700,15 +705,6 @@ onBeforeUnmount(() => {
 .root-title { font-size: 13px; color: #888; margin-bottom: 8px; }
 .empty-hint { color: #bbb; font-size: 13px; }
 .album-mini-row { display: flex; flex-wrap: wrap; gap: 10px; }
-
-.album-mini { display: flex; flex-direction: column; align-items: center; width: 90px; padding: 8px; border-radius: 8px; cursor: grab; background: #fff; border: 1px solid #f0f0f0; transition: all .2s; }
-.album-mini:hover { border-color: #396cd8; box-shadow: 0 2px 8px rgba(0,0,0,.1); }
-.mini-cover { width: 70px; height: 50px; object-fit: cover; border-radius: 6px; margin-bottom: 6px; }
-.mini-cover.placeholder { background: #f0f0f0; display: flex; align-items: center; justify-content: center; font-size: 20px; }
-.mini-name { font-size: 12px; text-align: center; color: #333; max-width: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-/* 拖拽中的相册 */
-.album-mini.dragging { opacity: 0.4; border-color: #396cd8; }
 
 /* 拖拽浮层 */
 .drag-ghost {
