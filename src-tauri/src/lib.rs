@@ -97,41 +97,18 @@ fn thumbs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir.join(THUMBS_DIR))
 }
 
-/// 主动失效相册统计缓存（改进自 bd5e9b9：原实现仅有 TTL 被动过期，
-/// 用户增删照片后统计最多滞后 1 小时。此命令供前端在「导入照片 / 手动刷新」
-/// 后调用，强制下次访问重新扫描文件系统，保证统计实时正确。）
-///
-/// - ids: 需要刷新统计的相册 ID 列表（空列表则全部失效）
-#[tauri::command]
-fn invalidate_album_stats(
-    ids: Vec<i64>,
-    state: tauri::State<AppState>,
-) -> Result<(), String> {
-    let _t = log_call!("invalidate_album_stats", &format!("ids={ids:?}"));
-    let db = state.0.lock().map_err(|e| e.to_string())?;
-    if ids.is_empty() {
-        db.clear_all_album_stats().map_err(|e| e.to_string())?;
-    } else {
-        for id in &ids {
-            db.delete_album_stats(*id).map_err(|e| e.to_string())?;
-        }
-    }
-    logger::log_call_end_with("invalidate_album_stats", _t, "OK");
-    Ok(())
-}
-
-/// 文件系统统计缓存有效期（秒）：10 分钟内不重复全目录遍历
-///
-/// 权衡：照片目录的文件增删不频繁，TTL 缓存把"每相册 3~4 次遍历"降为"1 次 SQL 快查"。
-/// 相对原提交 bd5e9b9 的 3600s，缩为 600s：在性能与"增删照片后统计尽快刷新"之间取平衡；
-/// 相册创建/批量导入后首次访问必然 miss，仍会完整扫描一次，保证数据正确。
-/// 主动失效路径（优先级更高）：invalidate_album_stats 命令（前端手动刷新）/ 封面源缺失降级重扫。
-const STATS_TTL_SECS: i64 = 600;
-
 /// 填充相册的统计属性（照片数量、文件夹大小、拍摄时间、默认封面）
 ///
-/// **缓存优先**：先查 album_stats 表，TTL 内直接复用；过期/缺失才扫描文件系统
-/// （单次遍历完成全部统计，见 `thumbnail::scan_album_dir`），并写回缓存。
+/// **变更探测 + SQL 复用**（替代 TTL 定时失效）：
+/// 1. 读 album_stats 缓存的统计；
+/// 2. 轻量统计当前目录递归文件数（`count_files_recursive`，只数不读）；
+/// 3. 文件数与缓存一致 → 目录未变，直接用 SQL 里的统计（不扫描不重生成）；
+/// 4. 不一致 → 仅此相册全量重扫（单次 walkdir 完成全部统计）并写回，
+///    其他相册不受影响（无 TTL 过期全量重扫的峰值）。
+///
+/// 代价：每次加载都要做一次轻量文件计数（每相册几 ms），换来增删照片后
+/// 统计立即正确、且无需手动失效命令。盲区：同名替换内容（数量不变）不会
+/// 触发重扫，照片管理最常见操作是增删，此取舍可接受。
 ///
 /// - `photo_count`: 图片数量
 /// - `size_bytes`: 文件夹真实占用空间
@@ -142,17 +119,23 @@ const STATS_TTL_SECS: i64 = 600;
 fn fill_album_stats(album: &mut db::Album, thumbs_dir: &Path, state: &tauri::State<AppState>) {
     let dir = std::path::Path::new(&album.path);
 
-    // 1. 尝试命中缓存（锁内仅 SQLite 快查，不碰文件系统）
+    // 变更探测：递归文件总数（轻量，只数不读，每相册几 ms）
+    let file_count = thumbnail::count_files_recursive(dir);
+
+    // 1. 读取缓存的统计（锁内仅 SQLite 快查）
     let cached = {
         let db = state.0.lock().ok();
         db.and_then(|db| db.get_album_stats(album.id).ok().flatten())
     };
     if let Some(stats) = cached {
-        if now() - stats.scanned_at < STATS_TTL_SECS {
-            // 有手动封面：统计直接复用缓存（封面不依赖缓存源图）
-            let mut cache_usable = true;
+        // 2. 文件数一致 → 目录未变，直接用 SQL 里的统计
+        if stats.file_count == file_count as i64 {
+            album.photo_count = stats.photo_count;
+            album.size_bytes = stats.size_bytes;
+            album.shoot_time = stats.shoot_time.clone();
+            // 封面：尝试用缓存的源图路径复用缩略图（不重新扫描目录）
+            let mut cover_ok = true;
             if album.cover_path.is_none() {
-                // 无手动封面：尝试用缓存的源图路径复用/生成缩略图（不重新扫描目录）
                 if let Some(src) = &stats.cover_source {
                     let src_path = std::path::Path::new(src);
                     if src_path.is_file() {
@@ -165,26 +148,23 @@ fn fill_album_stats(album: &mut db::Album, thumbs_dir: &Path, state: &tauri::Sta
                         }
                     }
                 }
-                // 源图已被删除/缩略图生成失败 → 缓存不再可信，降级重新扫描。
-                // （改进自 bd5e9b9：原实现此处静默 return，封面丢失且统计冻结到 TTL 过期；
-                //   现清除该条缓存并落入扫描路径，目录中若仍有其他图片会自动换封面）
-                if album.cover_path.is_none() {
-                    cache_usable = false;
+                // 缓存里有源图但缩略图生成失败（源图被删/损坏）→ 缓存不可信，
+                // 清除该条缓存并落入扫描路径自愈（目录内其他图片会自动上位）
+                if stats.cover_source.is_some() && album.cover_path.is_none() {
+                    cover_ok = false;
                     if let Ok(db) = state.0.lock() {
                         let _ = db.delete_album_stats(album.id);
                     }
                 }
             }
-            if cache_usable {
-                album.photo_count = stats.photo_count;
-                album.size_bytes = stats.size_bytes;
-                album.shoot_time = stats.shoot_time.clone();
+            if cover_ok {
                 return;
             }
         }
+        // 3. 文件数不一致 → 仅此相册全量重扫（fall through）
     }
 
-    // 2. 缓存缺失/过期：单次遍历完成全部统计
+    // 4. 全量扫描（单次 walkdir 完成全部统计）
     let scan = thumbnail::scan_album_dir(dir);
     album.photo_count = scan.photo_count as i64;
     album.size_bytes = scan.size_bytes;
@@ -204,7 +184,7 @@ fn fill_album_stats(album: &mut db::Album, thumbs_dir: &Path, state: &tauri::Sta
         .as_ref()
         .and_then(|p| thumbnail::read_shoot_time(p));
 
-    // 3. 写回缓存
+    // 3. 写回缓存（记录当前文件数作为下次变更探测信号）
     if let Ok(db) = state.0.lock() {
         let _ = db.upsert_album_stats(
             album.id,
@@ -212,6 +192,7 @@ fn fill_album_stats(album: &mut db::Album, thumbs_dir: &Path, state: &tauri::Sta
             album.size_bytes,
             album.shoot_time.clone(),
             scan.first_image.map(|p| p.to_string_lossy().into_owned()),
+            file_count as i64,
         );
     }
 }
@@ -831,7 +812,6 @@ pub fn run() {
             open_folder,
             set_cover,
             import_albums,
-            invalidate_album_stats,
             create_folder,
             update_folder,
             delete_folder,

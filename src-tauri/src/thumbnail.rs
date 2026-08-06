@@ -66,6 +66,28 @@ pub struct AlbumScan {
 /// 单次遍历统计相册目录：图片数量 + 总大小 + 第一张图片
 ///
 /// 递归遍历目录（含子目录），跳过隐藏目录/文件。
+/// 轻量变更探测：递归统计目录内文件总数（只数不读，不判格式）
+///
+/// 用于统计缓存的脏检测信号：与 album_stats.file_count 比对，不一致才触发全量重扫。
+/// 成本远低于 `scan_album_dir`（后者还要累加大小/读 EXIF/生成缩略图）。
+pub fn count_files_recursive(dir: &Path) -> u64 {
+    if !dir.is_dir() {
+        return 0;
+    }
+    let mut count = 0u64;
+    for entry in walkdir::WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
+    {
+        let Ok(e) = entry else { continue };
+        if e.file_type().is_file() {
+            count += 1;
+        }
+    }
+    count
+}
+
 pub fn scan_album_dir(dir: &Path) -> AlbumScan {
     let mut scan = AlbumScan {
         photo_count: 0,
@@ -389,6 +411,23 @@ mod tests {
         // 再次调用应命中指纹缓存（幂等）
         let res2 = ensure_thumbnail_from_source(99, &img_path, &thumbs).unwrap();
         assert_eq!(res.thumb_path, res2.thumb_path);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 递归文件计数：含子目录、跳过隐藏目录、不读内容
+    #[test]
+    fn count_files_recursive_ok() {
+        let tmp = std::env::temp_dir().join(format!("count_files_test_{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("sub/.hidden")).unwrap();
+        std::fs::create_dir_all(tmp.join("sub2")).unwrap();
+        for f in ["a.jpg", "b.png", "c.txt"] {
+            std::fs::write(tmp.join(f), b"x").unwrap();
+        }
+        std::fs::write(tmp.join("sub/d.jpg"), b"x").unwrap();
+        std::fs::write(tmp.join("sub/.hidden/e.jpg"), b"x").unwrap();
+        std::fs::write(tmp.join("sub2/f.webp"), b"x").unwrap();
+        // 3 顶层 + 1 子目录 + 1 子目录2 = 5（隐藏目录内不计）
+        assert_eq!(count_files_recursive(&tmp), 5);
         std::fs::remove_dir_all(&tmp).ok();
     }
 

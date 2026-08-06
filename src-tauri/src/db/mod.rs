@@ -104,8 +104,11 @@ pub struct AlbumStats {
     pub shoot_time: Option<String>,
     /// 封面源图绝对路径（无封面时用于生成/复用缩略图）
     pub cover_source: Option<String>,
-    /// 上次扫描时间（Unix 秒），用于 TTL 失效判断
-    pub scanned_at: i64,
+    /// 上次扫描时的目录递归文件总数（变更探测信号）
+    ///
+    /// 每次加载时轻量统计当前文件数与此值比对：不一致说明目录内容变了，
+    /// 才需要全量重扫该相册（替代 TTL 定时失效，消除滞后窗口与全量重扫峰值）
+    pub file_count: i64,
 }
 
 // =====================================================================
@@ -237,9 +240,12 @@ impl Database {
                 size_bytes   INTEGER NOT NULL DEFAULT 0,
                 shoot_time   TEXT,
                 cover_source TEXT,
-                scanned_at   INTEGER NOT NULL
+                scanned_at   INTEGER NOT NULL,
+                file_count   INTEGER NOT NULL DEFAULT -1
             );",
         )?;
+        // 迁移：为旧库 album_stats 补充 file_count 列（变更探测信号，旧行默认 -1 即强制首次重扫）
+        let _ = self.conn.execute_batch("ALTER TABLE album_stats ADD COLUMN file_count INTEGER NOT NULL DEFAULT -1;");
         // 迁移：为旧库补充 albums 新列（若已存在则忽略）
         let _ = self.conn.execute_batch("ALTER TABLE albums ADD COLUMN location TEXT;");
         let _ = self.conn.execute_batch("ALTER TABLE albums ADD COLUMN folder_id INTEGER;");
@@ -725,7 +731,7 @@ impl Database {
     /// 读取相册文件系统统计缓存（photo_count/size_bytes/shoot_time/封面源图）
     pub fn get_album_stats(&self, album_id: i64) -> Result<Option<AlbumStats>, DbError> {
         let result = self.conn.query_row(
-            "SELECT photo_count, size_bytes, shoot_time, cover_source, scanned_at
+            "SELECT photo_count, size_bytes, shoot_time, cover_source, file_count
              FROM album_stats WHERE album_id = ?1",
             params![album_id],
             |r| {
@@ -734,7 +740,7 @@ impl Database {
                     size_bytes: r.get::<_, u64>(1)?,
                     shoot_time: r.get(2)?,
                     cover_source: r.get(3)?,
-                    scanned_at: r.get(4)?,
+                    file_count: r.get(4)?,
                 })
             },
         );
@@ -746,6 +752,8 @@ impl Database {
     }
 
     /// 写入/更新相册文件系统统计缓存
+    ///
+    /// `file_count` 为扫描时的目录递归文件总数，作为下次加载的变更探测信号。
     pub fn upsert_album_stats(
         &self,
         album_id: i64,
@@ -753,27 +761,29 @@ impl Database {
         size_bytes: u64,
         shoot_time: Option<String>,
         cover_source: Option<String>,
+        file_count: i64,
     ) -> Result<(), DbError> {
         self.conn.execute(
             "INSERT OR REPLACE INTO album_stats
-             (album_id, photo_count, size_bytes, shoot_time, cover_source, scanned_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![album_id, photo_count, size_bytes, shoot_time, cover_source, Self::now_secs()],
+             (album_id, photo_count, size_bytes, shoot_time, cover_source, scanned_at, file_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                album_id,
+                photo_count,
+                size_bytes,
+                shoot_time,
+                cover_source,
+                Self::now_secs(),
+                file_count
+            ],
         )?;
         Ok(())
     }
 
-    /// 删除某个相册的统计缓存（主动失效：用户增删照片/目录变更后调用，
-    /// 下次 fill_album_stats 将强制重新扫描，保证统计实时刷新）
+    /// 删除某个相册的统计缓存（封面源缺失降级重扫时调用）
     pub fn delete_album_stats(&self, album_id: i64) -> Result<(), DbError> {
         self.conn
             .execute("DELETE FROM album_stats WHERE album_id = ?1", params![album_id])?;
-        Ok(())
-    }
-
-    /// 清空全部统计缓存（invalidate_album_stats 空列表时调用）
-    pub fn clear_all_album_stats(&self) -> Result<(), DbError> {
-        self.conn.execute("DELETE FROM album_stats", [])?;
         Ok(())
     }
 
@@ -819,7 +829,39 @@ impl Database {
 mod tests {
     use super::*;
 
+    /// album_stats 变更探测：file_count 读写一致（新方案核心）
+    #[test]
+    fn album_stats_file_count_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        let db = Database { conn };
+        db.init_schema().unwrap();
+
+        // 初始无记录
+        assert!(db.get_album_stats(1).unwrap().is_none());
+
+        // 写入含 file_count
+        db.upsert_album_stats(1, 10, 2048, Some("2026-01-01".into()), Some("/x/a.jpg".into()), 42)
+            .unwrap();
+        let s = db.get_album_stats(1).unwrap().unwrap();
+        assert_eq!(s.photo_count, 10);
+        assert_eq!(s.size_bytes, 2048);
+        assert_eq!(s.file_count, 42);
+        assert_eq!(s.cover_source.as_deref(), Some("/x/a.jpg"));
+
+        // 更新 file_count（目录变化后重扫写回）
+        db.upsert_album_stats(1, 12, 4096, Some("2026-02-02".into()), Some("/x/b.jpg".into()), 44)
+            .unwrap();
+        let s = db.get_album_stats(1).unwrap().unwrap();
+        assert_eq!(s.photo_count, 12);
+        assert_eq!(s.file_count, 44, "file_count 应反映目录文件数变化");
+
+        // 删除（降级重扫路径）
+        db.delete_album_stats(1).unwrap();
+        assert!(db.get_album_stats(1).unwrap().is_none());
+    }
+
     /// 内存数据库单元测试，验证建表与完整 CRUD 流程
+
     #[test]
     fn album_crud_roundtrip() {
         let conn = Connection::open_in_memory().unwrap();
