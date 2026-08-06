@@ -27,6 +27,9 @@ serde_json = "1"
 thiserror = "1"
 # 图片解码/缩略图生成。支持常见图片格式，jpeg/png/webp 等由 feature 控制
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+# JPEG DCT 降采样解码（scale 参数只解所需 DCT 块，生成缩略图比全尺寸解码快 16~64 倍）
+# 修复：image::open 全尺寸解码 6000x4000 大图需 5~14 秒，前端换封面卡顿
+jpeg-decoder = "0.3"
 # 遍历目录找图片
 walkdir = "2"
 # 读取图片 EXIF（拍摄时间）

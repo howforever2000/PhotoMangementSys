@@ -22,6 +22,10 @@ const THUMB_SIZE: u32 = 256;
 pub enum ThumbError {
     Io(std::io::Error),
     Image(image::ImageError),
+    /// JPEG 降采样解码失败（详见 jpeg_decoder::Error）
+    Jpeg(jpeg_decoder::Error),
+    /// 解码结果尺寸信息缺失/像素缓冲无效
+    Decode,
 }
 
 impl std::fmt::Display for ThumbError {
@@ -29,6 +33,8 @@ impl std::fmt::Display for ThumbError {
         match self {
             ThumbError::Io(e) => write!(f, "IO 错误: {e}"),
             ThumbError::Image(e) => write!(f, "图片处理错误: {e}"),
+            ThumbError::Jpeg(e) => write!(f, "JPEG 解码错误: {e}"),
+            ThumbError::Decode => write!(f, "图片解码结果无效"),
         }
     }
 }
@@ -41,6 +47,11 @@ impl From<std::io::Error> for ThumbError {
 impl From<image::ImageError> for ThumbError {
     fn from(e: image::ImageError) -> Self {
         ThumbError::Image(e)
+    }
+}
+impl From<jpeg_decoder::Error> for ThumbError {
+    fn from(e: jpeg_decoder::Error) -> Self {
+        ThumbError::Jpeg(e)
     }
 }
 
@@ -275,6 +286,64 @@ fn reuse_legacy_thumb(
     false
 }
 
+/// 判断文件名是否为 JPEG（.jpg / .jpeg）
+fn is_jpeg_path(file_name: &str) -> bool {
+    let lower = file_name.to_lowercase();
+    lower.ends_with(".jpg") || lower.ends_with(".jpeg")
+}
+
+/// JPEG DCT 降采样解码（只解所需 DCT 块，比全尺寸解码快 16~64 倍）
+///
+/// 修复：`image::open` 全尺寸解码 6000x4000 大图需 5~14 秒（debug 构建），
+/// 前端更换封面/生成缩略图卡顿。JPEG 解码器支持 scale 参数（1/2/4/8/16），
+/// 解码时直接降采样到接近目标尺寸，再 `thumbnail` 收尾到精确 256px。
+fn decode_jpeg_scaled(source: &Path, target_px: u32) -> Result<image::RgbImage, ThumbError> {
+    use std::io::BufReader;
+    // 读取原始尺寸（仅解析文件头，亚毫秒级）
+    let (w, h) = image::image_dimensions(source)?;
+    let max_dim = w.max(h);
+    // jpeg-decoder 的 scale 仅支持 2 的幂（1/2/4/8/16），取满足输出 ≥ target 的最大降采样
+    let mut scale: u16 = 1;
+    while scale < 16 && max_dim / ((scale as u32) * 2) > target_px {
+        scale *= 2;
+    }
+    let file = std::fs::File::open(source)?;
+    let mut decoder = jpeg_decoder::Decoder::new(BufReader::new(file));
+    // scale(scale_factor, max_allowed_size)：降采样到尽量接近目标尺寸
+    let _ = decoder.scale(scale, THUMB_SIZE as u16);
+    let pixels = decoder.decode()?;
+    let info = decoder.info().ok_or(ThumbError::Decode)?;
+    image::RgbImage::from_raw(info.width as u32, info.height as u32, pixels)
+        .ok_or(ThumbError::Decode)
+}
+
+/// 生成 256px 缩略图并保存为 JPEG（统一入口）
+///
+/// - JPEG 源图：走 DCT 降采样快速路径（快 16~64 倍）；若降采样失败自动降级全尺寸解码
+/// - 其他格式（png/webp/gif/bmp）：保持 image::open 全尺寸解码 + thumbnail
+fn save_thumbnail(source: &Path, thumb_path: &Path) -> Result<(), ThumbError> {
+    let thumb = if is_jpeg_path(
+        source
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
+            .as_str(),
+    ) {
+        match decode_jpeg_scaled(source, THUMB_SIZE) {
+            Ok(img) => image::DynamicImage::ImageRgb8(img).thumbnail(THUMB_SIZE, THUMB_SIZE),
+            // 降采样失败（异常 JPEG）降级为全尺寸解码，保证可用性
+            Err(_) => image::open(source)?.thumbnail(THUMB_SIZE, THUMB_SIZE),
+        }
+    } else {
+        image::open(source)?.thumbnail(THUMB_SIZE, THUMB_SIZE)
+    };
+    if let Some(parent) = thumb_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    thumb.save_with_format(thumb_path, ImageFormat::Jpeg)?;
+    Ok(())
+}
+
 /// 基于已知原图路径生成缩略图（若无缓存则生成），返回缓存路径
 ///
 /// - 缓存文件名基于内容指纹：`album_<id>_auto_<fingerprint>.jpg`
@@ -310,16 +379,8 @@ pub fn ensure_thumbnail_from_source(
     // 清理旧指纹缓存（文件名变更才会走到这里）
     cleanup_album_auto_thumbs(album_id, thumbs_dir);
 
-    // 生成缩略图
-    let img = image::open(source)?;
-    let thumb = img.thumbnail(THUMB_SIZE, THUMB_SIZE);
-
-    // 确保缓存目录存在
-    if let Some(parent) = thumb_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    thumb.save_with_format(&thumb_path, ImageFormat::Jpeg)?;
+    // 生成缩略图（JPEG 走 DCT 降采样快速路径）
+    save_thumbnail(source, &thumb_path)?;
 
     Ok(ThumbResult {
         thumb_path: thumb_path.to_string_lossy().into_owned(),
@@ -351,14 +412,8 @@ pub fn generate_cover(
     // 清理旧封面缓存（换图才会走到这里）
     cleanup_album_manual_thumbs(album_id, thumbs_dir);
 
-    let img = image::open(source)?;
-    let thumb = img.thumbnail(THUMB_SIZE, THUMB_SIZE);
-
-    if let Some(parent) = thumb_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    thumb.save_with_format(&thumb_path, ImageFormat::Jpeg)?;
+    // 生成缩略图（JPEG 走 DCT 降采样快速路径）
+    save_thumbnail(source, &thumb_path)?;
 
     Ok(thumb_path.to_string_lossy().into_owned())
 }
