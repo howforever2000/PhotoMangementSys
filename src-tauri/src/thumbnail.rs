@@ -139,8 +139,27 @@ pub struct ThumbResult {
 /// 组合：文件长度 + 最后修改时间 + 文件头 8KB 的哈希。
 /// 用户替换/修改照片后指纹必然变化，缓存自动失效并换名（旧文件随后被清理），
 /// 修复旧版"同名文件缓存不失效"的问题。
+/// FNV-1a 64 位哈希（确定性：跨编译/跨平台结果恒定，适合持久化缓存命名）
+///
+/// 注意：不能使用 `std::hash::DefaultHasher`——其种子在每次编译时随机生成，
+/// 会导致重新编译应用后同一文件的指纹全变、缩略图缓存全部失效（曾导致
+/// 每次启动都重新生成全部缩略图，列表加载卡死约 140 秒）。
+fn fnv1a64(data: &[u8]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x100000001b3;
+    let mut hash = OFFSET_BASIS;
+    for &b in data {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
+/// 计算文件内容指纹（用于缩略图缓存命名）
+///
+/// 组合：文件长度 + 最后修改时间 + 文件头 8KB 的确定性哈希。
+/// 用户替换/修改照片后指纹必然变化，缓存自动失效并换名（旧文件随后被清理）。
 fn file_fingerprint(path: &Path) -> String {
-    use std::hash::{Hash, Hasher};
     let mut fp = String::new();
     if let Ok(meta) = path.metadata() {
         fp.push_str(&meta.len().to_string());
@@ -158,10 +177,8 @@ fn file_fingerprint(path: &Path) -> String {
         use std::io::Read;
         n = f.read(&mut head).unwrap_or(0);
     }
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (&head[..n]).hash(&mut hasher);
     fp.push('_');
-    fp.push_str(&hasher.finish().to_string());
+    fp.push_str(&fnv1a64(&head[..n]).to_string());
     fp
 }
 
@@ -208,6 +225,34 @@ pub fn cleanup_all_album_thumbs(album_id: i64, thumbs_dir: &Path) {
     }
 }
 
+/// 尝试复用旧版命名缩略图（基线 era 的 `album_{id}_{safe_stem}.jpg`，基于源图文件名）
+///
+/// 旧版缓存命名不含内容指纹，只要源图文件名不变即可命中。升级到指纹命名后，
+/// 将旧文件直接复制为指纹文件名，老用户零成本迁移，无需重新解码大图生成。
+fn reuse_legacy_thumb(
+    album_id: i64,
+    source: &Path,
+    thumbs_dir: &Path,
+    thumb_path: &Path,
+) -> bool {
+    let safe_stem: String = source
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .take(40)
+        .collect();
+    if safe_stem.is_empty() {
+        return false;
+    }
+    let legacy = thumbs_dir.join(format!("album_{album_id}_{safe_stem}.jpg"));
+    if legacy.is_file() {
+        return std::fs::copy(&legacy, thumb_path).is_ok();
+    }
+    false
+}
+
 /// 基于已知原图路径生成缩略图（若无缓存则生成），返回缓存路径
 ///
 /// - 缓存文件名基于内容指纹：`album_<id>_auto_<fingerprint>.jpg`
@@ -224,6 +269,16 @@ pub fn ensure_thumbnail_from_source(
 
     // 若缓存已存在则直接复用
     if thumb_path.exists() {
+        return Ok(ThumbResult {
+            thumb_path: thumb_path.to_string_lossy().into_owned(),
+            source_path: source.to_string_lossy().into_owned(),
+        });
+    }
+
+    // 指纹缓存未命中：尝试复用旧版命名缩略图（基线 era 的 `album_{id}_{safe_stem}.jpg`，
+    // 基于源图文件名）。老用户升级后所有旧缩略图立即复用，避免首次全量重新生成
+    // 导致列表加载卡死（修复：每次重编译后指纹全变 → 缓存全失效 → 全量重生成的卡死 bug）
+    if reuse_legacy_thumb(album_id, source, thumbs_dir, &thumb_path) {
         return Ok(ThumbResult {
             thumb_path: thumb_path.to_string_lossy().into_owned(),
             source_path: source.to_string_lossy().into_owned(),
@@ -289,6 +344,53 @@ pub fn generate_cover(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 指纹确定性：同一文件多次计算必须完全一致（回归 DefaultHasher 随机种子 bug：
+    /// 种子每次编译时随机 → 重编译后缓存全失效 → 每次启动全量重生成缩略图卡死）
+    #[test]
+    fn fingerprint_deterministic() {
+        let tmp = std::env::temp_dir().join(format!("fp_det_test_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let img_path = tmp.join("photo.jpg");
+        let img = image::RgbImage::new(64, 64);
+        img.save(&img_path).unwrap();
+        let fp1 = file_fingerprint(&img_path);
+        let fp2 = file_fingerprint(&img_path);
+        let fp3 = file_fingerprint(&img_path);
+        assert_eq!(fp1, fp2, "同进程内指纹必须稳定");
+        assert_eq!(fp2, fp3);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 旧命名缩略图复用：album_{id}_{safe_stem}.jpg（基线产物）应被复制为指纹文件，
+    /// 老用户升级后无需重新解码大图生成缩略图
+    #[test]
+    fn legacy_thumb_reuse() {
+        let tmp = std::env::temp_dir().join(format!("legacy_reuse_test_{}", std::process::id()));
+        let thumbs = tmp.join("thumbs");
+        let img_dir = tmp.join("album_dir");
+        std::fs::create_dir_all(&thumbs).unwrap();
+        std::fs::create_dir_all(&img_dir).unwrap();
+        let img_path = img_dir.join("DSC_0001.jpg");
+        let img = image::RgbImage::new(80, 60);
+        img.save(&img_path).unwrap();
+        // 构造基线时代的旧命名缩略图
+        let legacy = thumbs.join("album_99_DSC_0001.jpg");
+        let legacy_img = image::RgbImage::new(80, 60);
+        legacy_img.save(&legacy).unwrap();
+        let res = ensure_thumbnail_from_source(99, &img_path, &thumbs).unwrap();
+        assert!(Path::new(&res.thumb_path).exists());
+        // 指纹文件内容应与 legacy 完全一致（证明是复用而非重新生成）
+        assert_eq!(
+            std::fs::read(&legacy).unwrap(),
+            std::fs::read(&res.thumb_path).unwrap(),
+            "指纹文件应复用 legacy 缩略图内容"
+        );
+        // 再次调用应命中指纹缓存（幂等）
+        let res2 = ensure_thumbnail_from_source(99, &img_path, &thumbs).unwrap();
+        assert_eq!(res.thumb_path, res2.thumb_path);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 
     /// 生成测试图片并验证扫描与缩略图
     #[test]
