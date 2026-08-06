@@ -216,6 +216,26 @@
         "AOP 风格（面向切面）：调用前/后绑定日志，无需侵入业务逻辑",
         "核心命令（move/reorder/create/delete/get/search）已接入，前端核心组件函数已接入"
       ]
+    },
+    {
+      "id": "FEAT-013",
+      "name": "数据模型收敛（folder_id 单源）+ 迁移回填",
+      "module": "数据模型 / SQLite 迁移（dev 分支 41cdff5）",
+      "purpose": "将分组归属的双写不一致（albums.folder_id + folder_albums + 4 层兜底）收敛为 folder_albums 唯一事实源，并通过一次性迁移回填历史数据，保证旧库升级后分组归属不丢失",
+      "implementation": {
+        "backend": "① folder_albums 关联表成为分组归属唯一事实源：fill_album_folder 改为一次 SELECT 批量填充（原为每相册 query_row + 4 层兜底）；search_albums 分组匹配/祖先链全部改 JOIN folder_albums；move_album/reorder_album 组内排序改读 folder_albums；② delete_album/delete_albums 事务内级联清理 folder_albums/album_tags/album_stats（修复孤儿残留）；③ albums.folder_id/sort_order 降级为冗余缓存列（同事务同步，读取不依赖）；④ 顺带修复 update_album location 参数占位符错位、create_folder 空名误报 NotFound 两个真实 bug；⑤ 迁移回填：Database 建表阶段执行 INSERT INTO folder_albums SELECT … FROM albums WHERE folder_id IS NOT NULL AND NOT EXISTS（已有关联）",
+        "frontend": "移除 Pinia store 中 2 层 folder_id 兜底 fallback 与调试 console.log，folder_id/folder_path 完全信任后端填充",
+        "key_points": [
+          "回填迁移用 NOT EXISTS 守卫：只补充「albums.folder_id 有值但 folder_albums 无该相册任何关联」的相册，不触碰已有关联（含历史孤儿行），最保守地保证旧数据不丢失",
+          "迁移在 Database::new 建表阶段幂等执行，旧库打开即自动回填，无需手动操作",
+          "这是相对原始提交 12ccfb2 的关键改进——原提交缺此迁移，是此前 3 提交整体回退的最可疑根因"
+        ]
+      },
+      "highlights": [
+        "解决的问题：早期版本 create_album / 部分写入路径只写 albums.folder_id 不写 folder_albums，导致双源不一致，需要 4 层兜底补偿；旧版 delete_album 只删 albums 行导致 folder_albums 孤儿数据残留；移除兜底后若无迁移，旧库相册会在升级后静默丢失分组显示",
+        "收益：读取路径确定化（分组归属单一来源，N+1 每相册 1 次查询 → 1 次批量查询）；消除 4 层兜底代码（后端 2 层 + 前端 2 层）；级联删除杜绝孤儿数据；一次性迁移保证升级不丢分组",
+        "验证：cargo check / vue-tsc / cargo test --lib 2/2 全通过（album_crud_roundtrip 实际建库执行迁移 SQL）"
+      ]
     }
   ]
 }
