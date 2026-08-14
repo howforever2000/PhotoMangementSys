@@ -60,6 +60,8 @@ pub struct RootAlbumEntry {
 pub enum FolderError {
     /// 层级超过 3 级
     LevelExceeded,
+    /// 分组名称为空
+    EmptyName,
     /// 父分组不存在
     ParentNotFound,
     /// 标签数量超过 5
@@ -74,6 +76,7 @@ impl std::fmt::Display for FolderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FolderError::LevelExceeded => write!(f, "分组层级最多支持 3 级"),
+            FolderError::EmptyName => write!(f, "分组名称不能为空"),
             FolderError::ParentNotFound => write!(f, "父分组不存在"),
             FolderError::TooManyTags => write!(f, "最多只能添加 5 个标签"),
             FolderError::NotFound => write!(f, "分组不存在"),
@@ -107,7 +110,7 @@ pub fn create_folder(
 ) -> Result<Folder, FolderError> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(FolderError::NotFound); // 空名用 NotFound 不合适，但这里简单处理，调用层校验
+        return Err(FolderError::EmptyName);
     }
 
     let level = match parent_id {

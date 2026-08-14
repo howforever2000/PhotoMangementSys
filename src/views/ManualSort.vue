@@ -3,12 +3,24 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useRouter } from "vue-router";
 import { useAlbumStore } from "../stores/album";
+import type { Album } from "../types/album";
 import type { Folder, ManualTree } from "../types/folder";
 import { trace } from "../utils/trace";
+import AlbumMiniCard from "../components/AlbumMiniCard.vue";
+import ConfirmDialog from "../components/ConfirmDialog.vue";
 
 const props = defineProps<{
   /** 从搜索结果传入：需要跳转到的分组 id */
   jumpFolderId?: number | null;
+  /** 是否处于勾选管理模式（由 AlbumList 的'管理'按钮控制，两种排序视图复用） */
+  selectMode?: boolean;
+  /** 已勾选的相册 ID 集合（AlbumList 层维护） */
+  selectedIds?: Set<number>;
+}>();
+
+const emit = defineEmits<{
+  /** 管理模式点击卡片：通知 AlbumList 切换勾选 */
+  (e: "toggle-select", id: number): void;
 }>();
 
 const router = useRouter();
@@ -34,6 +46,29 @@ const tagInput = ref("");
 const contextMenu = ref<{ visible: boolean; x: number; y: number; target: "folder" | "album"; id: number; showMoveList: boolean }>({
   visible: false, x: 0, y: 0, target: "album", id: 0, showMoveList: false,
 });
+
+// ---------- 管理模式（复用 AlbumList 的'管理'按钮，仅负责渲染勾选状态） ----------
+/** 单删（右键）确认弹窗 */
+const oneDeleteConfirm = ref<{ visible: boolean; message: string; id: number; kind: "album" | "folder" }>({
+  visible: false, message: "", id: 0, kind: "album",
+});
+
+/** 卡片点击：管理模式由 AlbumList 勾选（emit），普通模式跳转详情 */
+function onMiniCardClick(id: number) {
+  if (props.selectMode) {
+    emit("toggle-select", id);
+  } else {
+    router.push(`/album/${id}`);
+  }
+}
+
+/** 相册列表变化（批量删除等）后刷新分组树 */
+watch(
+  () => store.albums.length,
+  () => {
+    loadTree();
+  },
+);
 
 /** 加载手动树 */
 async function loadTree() {
@@ -81,10 +116,13 @@ const rootNodes = computed<TreeNode[]>(() => {
 /** 顶级游离相册（不属于任何文件夹） */
 const rootAlbums = computed(() => tree.value?.root_albums ?? []);
 
-/** 相册 by id */
-function albumById(id: number) {
-  return store.albums.find((a) => a.id === id);
+/** 相册 by id（预构建 Map，避免模板内 O(N²) 线性查找） */
+const albumMap = computed(() => new Map(store.albums.map((a) => [a.id, a])));
+function albumById(id: number): Album | null {
+  return albumMap.value.get(id) ?? null;
 }
+
+/** 将本地文件路径转为前端可访问的 URL（Tauri asset 协议，拖拽浮层用） */
 function fileUrl(path: string | null): string {
   return path ? convertFileSrc(path) : "";
 }
@@ -159,7 +197,17 @@ async function saveEditFolder() {
 
 // ---------- 删除分组 ----------
 async function deleteFolder(id: number) {
-  if (!confirm("确定删除该分组吗？其下的相册会移到顶级，子分组会升级。")) return;
+  oneDeleteConfirm.value = {
+    visible: true,
+    message: "确定删除该分组吗？其下的相册会移到顶级，子分组会升级。",
+    id,
+    kind: "folder",
+  };
+}
+/** 确认后真正删除分组 */
+async function doDeleteFolder() {
+  const { id } = oneDeleteConfirm.value;
+  oneDeleteConfirm.value.visible = false;
   try {
     await invoke("delete_folder", { id });
     contextMenu.value.visible = false;
@@ -172,12 +220,19 @@ async function deleteFolder(id: number) {
 // ---------- 删除相册（手动排序右键） ----------
 async function deleteAlbumContext(albumId: number) {
   const album = store.albums.find((a) => a.id === albumId);
-  const ok = confirm(
-    `确定要删除相册「${album?.name ?? ""}」吗？\n\n此操作仅删除系统中的相册视图，不会删除本地照片文件。`,
-  );
-  if (!ok) return;
+  oneDeleteConfirm.value = {
+    visible: true,
+    message: `确定要删除相册「${album?.name ?? ""}」吗？\n\n此操作仅删除系统中的相册视图，不会删除本地照片文件。`,
+    id: albumId,
+    kind: "album",
+  };
+}
+/** 确认后真正删除相册 */
+async function doDeleteAlbumContext() {
+  const { id } = oneDeleteConfirm.value;
+  oneDeleteConfirm.value.visible = false;
   try {
-    await store.deleteAlbum(albumId);
+    await store.deleteAlbum(id);
     closeContextMenu();
     await loadTree();
   } catch (e) {
@@ -440,21 +495,20 @@ onBeforeUnmount(() => {
       <div class="root-title">未分组相册</div>
       <div v-if="rootAlbums.length === 0" class="empty-hint">暂无未分组相册</div>
       <div class="album-mini-row">
-        <div
+        <AlbumMiniCard
           v-for="(entry, idx) in rootAlbums"
           :key="entry.album_id"
-          class="album-mini"
-          :data-folder-id="''"
-          :data-album-index="idx"
-          :class="{ 'dragging': isDragging && draggingAlbumId === entry.album_id }"
+          :album-id="entry.album_id"
+          :folder-id="null"
+          :index="idx"
+          :album="albumById(entry.album_id)"
+          :dragging="isDragging && draggingAlbumId === entry.album_id"
+          :select-mode="props.selectMode"
+          :selected="props.selectedIds?.has(entry.album_id)"
           @pointerdown="onAlbumPointerDown(entry.album_id, null, $event)"
-          @click="router.push(`/album/${entry.album_id}`)"
+          @click="onMiniCardClick(entry.album_id)"
           @contextmenu="onRightClick('album', entry.album_id, $event)"
-        >
-          <img v-if="albumById(entry.album_id)?.cover_path" :src="fileUrl(albumById(entry.album_id)!.cover_path)" class="mini-cover" />
-          <div v-else class="mini-cover placeholder">📷</div>
-          <span class="mini-name">{{ albumById(entry.album_id)?.name }}</span>
-        </div>
+        />
       </div>
     </div>
 
@@ -482,21 +536,20 @@ onBeforeUnmount(() => {
 
           <!-- 组内相册 -->
           <div class="folder-albums">
-            <div
+            <AlbumMiniCard
               v-for="(aid, idx) in node.albumIds"
               :key="aid"
-              class="album-mini"
-              :data-folder-id="node.folder.id"
-              :data-album-index="idx"
-              :class="{ 'dragging': isDragging && draggingAlbumId === aid }"
+              :album-id="aid"
+              :folder-id="node.folder.id"
+              :index="idx"
+              :album="albumById(aid)"
+              :dragging="isDragging && draggingAlbumId === aid"
+              :select-mode="props.selectMode"
+              :selected="props.selectedIds?.has(aid)"
               @pointerdown="onAlbumPointerDown(aid, node.folder.id, $event)"
-              @click="router.push(`/album/${aid}`)"
+              @click="onMiniCardClick(aid)"
               @contextmenu="onRightClick('album', aid, $event)"
-            >
-              <img v-if="albumById(aid)?.cover_path" :src="fileUrl(albumById(aid)!.cover_path)" class="mini-cover" />
-              <div v-else class="mini-cover placeholder">📷</div>
-              <span class="mini-name">{{ albumById(aid)?.name }}</span>
-            </div>
+            />
           </div>
 
           <!-- 子分组（二级） -->
@@ -516,15 +569,20 @@ onBeforeUnmount(() => {
               </span>
             </div>
             <div class="folder-albums">
-              <div v-for="(aid, idx) in child.albumIds" :key="aid" class="album-mini"
-                   :data-folder-id="child.folder.id" :data-album-index="idx"
-                   :class="{ 'dragging': isDragging && draggingAlbumId === aid }"
-                   @pointerdown="onAlbumPointerDown(aid, child.folder.id, $event)"
-                   @click="router.push(`/album/${aid}`)" @contextmenu="onRightClick('album', aid, $event)">
-                <img v-if="albumById(aid)?.cover_path" :src="fileUrl(albumById(aid)!.cover_path)" class="mini-cover" />
-                <div v-else class="mini-cover placeholder">📷</div>
-                <span class="mini-name">{{ albumById(aid)?.name }}</span>
-              </div>
+              <AlbumMiniCard
+                v-for="(aid, idx) in child.albumIds"
+                :key="aid"
+                :album-id="aid"
+                :folder-id="child.folder.id"
+                :index="idx"
+                :album="albumById(aid)"
+                :dragging="isDragging && draggingAlbumId === aid"
+                :select-mode="props.selectMode"
+                :selected="props.selectedIds?.has(aid)"
+                @pointerdown="onAlbumPointerDown(aid, child.folder.id, $event)"
+                @click="onMiniCardClick(aid)"
+                @contextmenu="onRightClick('album', aid, $event)"
+              />
             </div>
             <!-- 三级分组 -->
             <div v-for="grand in child.children" :key="grand.folder.id"
@@ -542,15 +600,20 @@ onBeforeUnmount(() => {
                 </span>
               </div>
               <div class="folder-albums">
-                <div v-for="(aid, idx) in grand.albumIds" :key="aid" class="album-mini"
-                     :data-folder-id="grand.folder.id" :data-album-index="idx"
-                     :class="{ 'dragging': isDragging && draggingAlbumId === aid }"
-                     @pointerdown="onAlbumPointerDown(aid, grand.folder.id, $event)"
-                     @click="router.push(`/album/${aid}`)" @contextmenu="onRightClick('album', aid, $event)">
-                  <img v-if="albumById(aid)?.cover_path" :src="fileUrl(albumById(aid)!.cover_path)" class="mini-cover" />
-                  <div v-else class="mini-cover placeholder">📷</div>
-                  <span class="mini-name">{{ albumById(aid)?.name }}</span>
-                </div>
+                <AlbumMiniCard
+                  v-for="(aid, idx) in grand.albumIds"
+                  :key="aid"
+                  :album-id="aid"
+                  :folder-id="grand.folder.id"
+                  :index="idx"
+                  :album="albumById(aid)"
+                  :dragging="isDragging && draggingAlbumId === aid"
+                  :select-mode="props.selectMode"
+                  :selected="props.selectedIds?.has(aid)"
+                  @pointerdown="onAlbumPointerDown(aid, grand.folder.id, $event)"
+                  @click="onMiniCardClick(aid)"
+                  @contextmenu="onRightClick('album', aid, $event)"
+                />
               </div>
             </div>
           </div>
@@ -624,6 +687,24 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    <!-- 删除分组确认 -->
+    <ConfirmDialog
+      :visible="oneDeleteConfirm.visible && oneDeleteConfirm.kind === 'folder'"
+      title="删除分组"
+      :message="oneDeleteConfirm.message"
+      @confirm="doDeleteFolder"
+      @cancel="oneDeleteConfirm.visible = false"
+    />
+
+    <!-- 删除相册确认（右键） -->
+    <ConfirmDialog
+      :visible="oneDeleteConfirm.visible && oneDeleteConfirm.kind === 'album'"
+      title="删除相册"
+      :message="oneDeleteConfirm.message"
+      @confirm="doDeleteAlbumContext"
+      @cancel="oneDeleteConfirm.visible = false"
+    />
   </div>
 </template>
 
@@ -700,15 +781,6 @@ onBeforeUnmount(() => {
 .root-title { font-size: 13px; color: #888; margin-bottom: 8px; }
 .empty-hint { color: #bbb; font-size: 13px; }
 .album-mini-row { display: flex; flex-wrap: wrap; gap: 10px; }
-
-.album-mini { display: flex; flex-direction: column; align-items: center; width: 90px; padding: 8px; border-radius: 8px; cursor: grab; background: #fff; border: 1px solid #f0f0f0; transition: all .2s; }
-.album-mini:hover { border-color: #396cd8; box-shadow: 0 2px 8px rgba(0,0,0,.1); }
-.mini-cover { width: 70px; height: 50px; object-fit: cover; border-radius: 6px; margin-bottom: 6px; }
-.mini-cover.placeholder { background: #f0f0f0; display: flex; align-items: center; justify-content: center; font-size: 20px; }
-.mini-name { font-size: 12px; text-align: center; color: #333; max-width: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-/* 拖拽中的相册 */
-.album-mini.dragging { opacity: 0.4; border-color: #396cd8; }
 
 /* 拖拽浮层 */
 .drag-ghost {

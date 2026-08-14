@@ -93,6 +93,24 @@ pub struct UpdateAlbumInput {
     pub location: Option<String>,
 }
 
+/// 相册文件系统统计缓存（对应 album_stats 表）
+///
+/// 将 photo_count / size_bytes / shoot_time / 封面源图路径持久化缓存，
+/// 避免每次列表/详情加载都全目录遍历。
+#[derive(Debug, Clone)]
+pub struct AlbumStats {
+    pub photo_count: i64,
+    pub size_bytes: u64,
+    pub shoot_time: Option<String>,
+    /// 封面源图绝对路径（无封面时用于生成/复用缩略图）
+    pub cover_source: Option<String>,
+    /// 上次扫描时的目录递归文件总数（变更探测信号）
+    ///
+    /// 每次加载时轻量统计当前文件数与此值比对：不一致说明目录内容变了，
+    /// 才需要全量重扫该相册（替代 TTL 定时失效，消除滞后窗口与全量重扫峰值）
+    pub file_count: i64,
+}
+
 // =====================================================================
 // 错误类型（对应 SpringBoot 自定义异常 + 全局异常处理）
 // =====================================================================
@@ -213,10 +231,39 @@ impl Database {
                 UNIQUE(folder_id, album_id)
             );",
         )?;
+        // 相册统计缓存表（photo_count/size_bytes/shoot_time/封面源图路径）
+        // 文件系统统计结果缓存，避免每次列表加载都全目录遍历（详见 fill_album_stats）
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS album_stats (
+                album_id     INTEGER PRIMARY KEY,
+                photo_count  INTEGER NOT NULL DEFAULT 0,
+                size_bytes   INTEGER NOT NULL DEFAULT 0,
+                shoot_time   TEXT,
+                cover_source TEXT,
+                scanned_at   INTEGER NOT NULL,
+                file_count   INTEGER NOT NULL DEFAULT -1
+            );",
+        )?;
+        // 迁移：为旧库 album_stats 补充 file_count 列（变更探测信号，旧行默认 -1 即强制首次重扫）
+        let _ = self.conn.execute_batch("ALTER TABLE album_stats ADD COLUMN file_count INTEGER NOT NULL DEFAULT -1;");
         // 迁移：为旧库补充 albums 新列（若已存在则忽略）
         let _ = self.conn.execute_batch("ALTER TABLE albums ADD COLUMN location TEXT;");
         let _ = self.conn.execute_batch("ALTER TABLE albums ADD COLUMN folder_id INTEGER;");
         let _ = self.conn.execute_batch("ALTER TABLE albums ADD COLUMN sort_order INTEGER DEFAULT 0;");
+        // 迁移：folder_albums 数据回填（12ccfb2 改进）
+        // 自 folder_albums 成为分组归属唯一事实源后，读取不再依赖 albums.folder_id。
+        // 但历史数据库可能存在「仅在 albums.folder_id 记录归属、folder_albums 无关联行」
+        // 的相册（早期版本 create_album / 部分写入路径只更新 albums 表），若不同步回填，
+        // 这些相册会在升级后静默丢失分组显示。
+        // 只补充「albums.folder_id 有值且 folder_albums 尚无该相册任何关联」的相册，
+        // 不触碰已有关联（含历史孤儿行），最保守地保证旧数据不丢失。
+        self.conn.execute_batch(
+            "INSERT INTO folder_albums (folder_id, album_id, sort_order)\n\
+             SELECT a.folder_id, a.id, COALESCE(a.sort_order, 0)\n\
+             FROM albums a\n\
+             WHERE a.folder_id IS NOT NULL\n\
+               AND NOT EXISTS (SELECT 1 FROM folder_albums fa WHERE fa.album_id = a.id);",
+        )?;
         Ok(())
     }
 
@@ -322,30 +369,29 @@ impl Database {
     }
 
     /// 填充相册的分组信息（folder_id + folder_path）
+    ///
+    /// **唯一事实源是 `folder_albums` 关联表**，`albums.folder_id` 仅是事务内同步的
+    /// 冗余缓存列，读取不依赖它。一次查询批量填充，避免 N+1 与四层兜底。
     fn fill_album_folder(&self, albums: &mut [Album]) -> Result<(), DbError> {
         // 构建分组路径映射
         let folder_path_map = self.build_folder_paths()?;
+        // 从 folder_albums 一次读取所有相册的分组归属
+        let mut stmt = self.conn.prepare("SELECT album_id, folder_id FROM folder_albums")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut folder_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+        for row in rows {
+            let (aid, fid) = row?;
+            folder_map.insert(aid, fid);
+        }
         for album in albums.iter_mut() {
-            // 查询相册的 folder_id，只在成功时才设置（避免 unwrap_or(None) 覆盖已有值）
-            let result: rusqlite::Result<Option<i64>> = self
-                .conn
-                .query_row(
-                    "SELECT folder_id FROM albums WHERE id = ?1",
-                    params![album.id],
-                    |r| r.get(0),
-                );
-            match &result {
-                Ok(folder_id) => {
-                    eprintln!("[DB] fill_album_folder OK: album_id={}, folder_id={:?}", album.id, folder_id);
-                    album.folder_id = *folder_id;
-                    album.folder_path = folder_id
-                        .as_ref()
-                        .and_then(|fid| folder_path_map.get(fid).cloned())
-                        .unwrap_or_default();
+            match folder_map.get(&album.id) {
+                Some(&fid) => {
+                    album.folder_id = Some(fid);
+                    album.folder_path = folder_path_map.get(&fid).cloned().unwrap_or_default();
                 }
-                Err(e) => {
-                    eprintln!("[DB] fill_album_folder ERROR: album_id={}, error={}", album.id, e);
-                    // 查询失败时保留 album 已有的 folder_id/folder_path（不覆盖）
+                None => {
+                    album.folder_id = None;
+                    album.folder_path = String::new();
                 }
             }
         }
@@ -407,11 +453,12 @@ impl Database {
             }
         }
         // 3. 分组名/分组标签匹配 → 命中分组的相册
+        //    分组归属以 folder_albums 关联表为唯一事实源
         {
             let mut stmt = self.conn.prepare(
-                "SELECT a.id
-                 FROM albums a
-                 JOIN folders f ON a.folder_id = f.id
+                "SELECT fa.album_id
+                 FROM folder_albums fa
+                 JOIN folders f ON f.id = fa.folder_id
                  WHERE f.name LIKE ?1
                     OR EXISTS (
                         SELECT 1 FROM folder_tags ft WHERE ft.folder_id = f.id AND ft.tag LIKE ?1
@@ -424,11 +471,9 @@ impl Database {
         }
         // 4. 祖先分组名/标签匹配（相册分组的祖先链）
         {
-            // 获取所有相册及其所属分组，逐一检查祖先链
+            // 获取所有分组归属，逐一检查祖先链
             let mut stmt = self.conn.prepare(
-                "SELECT a.id, a.folder_id
-                 FROM albums a
-                 WHERE a.folder_id IS NOT NULL",
+                "SELECT album_id, folder_id FROM folder_albums",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
@@ -503,11 +548,11 @@ impl Database {
             let folder_path_map = self.build_folder_paths()?;
             for id in matched_ids {
                 if let Ok(album) = self.get_album(id) {
-                    // 获取 folder_id
+                    // 获取 folder_id（唯一事实源：folder_albums）
                     let folder_id: Option<i64> = self
                         .conn
                         .query_row(
-                            "SELECT folder_id FROM albums WHERE id = ?1",
+                            "SELECT folder_id FROM folder_albums WHERE album_id = ?1 LIMIT 1",
                             params![id],
                             |r| r.get(0),
                         )
@@ -606,16 +651,22 @@ impl Database {
     pub fn update_album(&self, input: UpdateAlbumInput) -> Result<(), DbError> {
         let now = Self::now_secs();
         // location 支持三种情况：None=保留原值，Some("")=清除，Some("x")=设置
-        let location_sql = match &input.location {
-            None => "location".to_string(),              // 保留原值
-            Some(s) if s.trim().is_empty() => "NULL".to_string(), // 清除
-            Some(_) => "?6".to_string(),                 // 设置新值
-        };
-        let location_param: Option<String> = input
-            .location
-            .as_ref()
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| s.trim().to_string());
+        // 占位符随 location_sql 动态决定，参数列表同步构建，避免参数个数不匹配
+        let location_sql: &str;
+        let mut p: Vec<rusqlite::types::Value> = Vec::new();
+        p.push(input.id.into());
+        p.push(input.name.into());
+        p.push(input.description.into());
+        p.push(input.cover_path.into());
+        p.push(now.into());
+        match &input.location {
+            None => location_sql = "location",            // 保留原值
+            Some(s) if s.trim().is_empty() => location_sql = "NULL", // 清除
+            Some(s) => {
+                location_sql = "?6";                      // 设置新值
+                p.push(rusqlite::types::Value::Text(s.trim().to_string()));
+            }
+        }
         let affected = self.conn.execute(
             &format!(
                 "UPDATE albums
@@ -626,14 +677,7 @@ impl Database {
                      updated_at  = ?5
                  WHERE id = ?1"
             ),
-            params![
-                input.id,
-                input.name,
-                input.description,
-                input.cover_path,
-                now,
-                location_param
-            ],
+            rusqlite::params_from_iter(p),
         )?;
         if affected == 0 {
             return Err(DbError::NotFound(input.id));
@@ -641,16 +685,34 @@ impl Database {
         Ok(())
     }
 
-    /// 删除相册（需求 §4.2 delete_album）
+    /// 更新相册地点（自动识别用）：仅写 location，**不动 updated_at**
     ///
-    /// 仅删除数据库记录，不触碰本地文件（需求 §2.3 核心原则）
-    pub fn delete_album(&self, id: i64) -> Result<(), DbError> {
-        let affected = self
-            .conn
-            .execute("DELETE FROM albums WHERE id = ?1", params![id])?;
+    /// 自动地点检测不应打乱列表排序（updated_at 降序），
+    /// 手动编辑地点仍走 update_album（会刷新 updated_at）。
+    pub fn update_album_location(&self, id: i64, location: &str) -> Result<(), DbError> {
+        let affected = self.conn.execute(
+            "UPDATE albums SET location = ?2 WHERE id = ?1",
+            params![id, location.trim()],
+        )?;
         if affected == 0 {
             return Err(DbError::NotFound(id));
         }
+        Ok(())
+    }
+
+    /// 删除相册（需求 §4.2 delete_album）
+    ///
+    /// 仅删除数据库记录，不触碰本地文件（需求 §2.3 核心原则）。
+    /// 事务内级联清理关联表（folder_albums / album_tags / album_stats），
+    /// 避免孤儿数据残留导致手动树归属判断出错。
+    pub fn delete_album(&self, id: i64) -> Result<(), DbError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let affected = tx.execute("DELETE FROM albums WHERE id = ?1", params![id])?;
+        if affected == 0 {
+            return Err(DbError::NotFound(id));
+        }
+        self.delete_album_refs(&tx, id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -664,10 +726,105 @@ impl Database {
         let mut deleted = 0usize;
         for id in ids {
             let affected = tx.execute("DELETE FROM albums WHERE id = ?1", params![id])?;
-            deleted += affected as usize;
+            if affected > 0 {
+                deleted += 1;
+                self.delete_album_refs(&tx, *id)?;
+            }
         }
         tx.commit()?;
         Ok(deleted)
+    }
+
+    /// 级联清理某个相册在所有关联表中的记录（须在事务内调用）
+    fn delete_album_refs(&self, tx: &rusqlite::Transaction, album_id: i64) -> Result<(), DbError> {
+        tx.execute("DELETE FROM folder_albums WHERE album_id = ?1", params![album_id])?;
+        tx.execute("DELETE FROM album_tags WHERE album_id = ?1", params![album_id])?;
+        tx.execute("DELETE FROM album_stats WHERE album_id = ?1", params![album_id])?;
+        Ok(())
+    }
+
+    /// 读取相册文件系统统计缓存（photo_count/size_bytes/shoot_time/封面源图）
+    pub fn get_album_stats(&self, album_id: i64) -> Result<Option<AlbumStats>, DbError> {
+        let result = self.conn.query_row(
+            "SELECT photo_count, size_bytes, shoot_time, cover_source, file_count
+             FROM album_stats WHERE album_id = ?1",
+            params![album_id],
+            |r| {
+                Ok(AlbumStats {
+                    photo_count: r.get::<_, i64>(0)?,
+                    size_bytes: r.get::<_, u64>(1)?,
+                    shoot_time: r.get(2)?,
+                    cover_source: r.get(3)?,
+                    file_count: r.get(4)?,
+                })
+            },
+        );
+        match result {
+            Ok(s) => Ok(Some(s)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(DbError::Sqlite(e)),
+        }
+    }
+
+    /// 写入/更新相册文件系统统计缓存
+    ///
+    /// `file_count` 为扫描时的目录递归文件总数，作为下次加载的变更探测信号。
+    pub fn upsert_album_stats(
+        &self,
+        album_id: i64,
+        photo_count: i64,
+        size_bytes: u64,
+        shoot_time: Option<String>,
+        cover_source: Option<String>,
+        file_count: i64,
+    ) -> Result<(), DbError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO album_stats
+             (album_id, photo_count, size_bytes, shoot_time, cover_source, scanned_at, file_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                album_id,
+                photo_count,
+                size_bytes,
+                shoot_time,
+                cover_source,
+                Self::now_secs(),
+                file_count
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 删除某个相册的统计缓存（封面源缺失降级重扫时调用）
+    pub fn delete_album_stats(&self, album_id: i64) -> Result<(), DbError> {
+        self.conn
+            .execute("DELETE FROM album_stats WHERE album_id = ?1", params![album_id])?;
+        Ok(())
+    }
+
+    /// 更新相册封面路径（仅改 cover_path，不动 updated_at，避免统计刷新影响列表排序）
+    ///
+    /// 自动封面在扫描/换封面时持久化到 albums.cover_path，加载时直接读取，
+    /// 不依赖缩略图生成链（修复：cover_source 为 NULL 时命中路径封面丢失）。
+    pub fn update_album_cover(&self, id: i64, cover_path: Option<String>) -> Result<(), DbError> {
+        self.conn.execute(
+            "UPDATE albums SET cover_path = ?1 WHERE id = ?2",
+            params![cover_path, id],
+        )?;
+        Ok(())
+    }
+
+    /// 更新相册名称与绑定路径（rename_album 命令专用，文件夹已重命名成功后调用）
+    pub fn update_album_name_path(&self, id: i64, name: &str, path: &str) -> Result<(), DbError> {
+        let now = Self::now_secs();
+        let affected = self.conn.execute(
+            "UPDATE albums SET name = ?1, path = ?2, updated_at = ?3 WHERE id = ?4",
+            params![name, path, now, id],
+        )?;
+        if affected == 0 {
+            return Err(DbError::NotFound(id));
+        }
+        Ok(())
     }
 
     /// 设置相册标签（覆盖式，最多 5 个）
@@ -712,7 +869,39 @@ impl Database {
 mod tests {
     use super::*;
 
+    /// album_stats 变更探测：file_count 读写一致（新方案核心）
+    #[test]
+    fn album_stats_file_count_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        let db = Database { conn };
+        db.init_schema().unwrap();
+
+        // 初始无记录
+        assert!(db.get_album_stats(1).unwrap().is_none());
+
+        // 写入含 file_count
+        db.upsert_album_stats(1, 10, 2048, Some("2026-01-01".into()), Some("/x/a.jpg".into()), 42)
+            .unwrap();
+        let s = db.get_album_stats(1).unwrap().unwrap();
+        assert_eq!(s.photo_count, 10);
+        assert_eq!(s.size_bytes, 2048);
+        assert_eq!(s.file_count, 42);
+        assert_eq!(s.cover_source.as_deref(), Some("/x/a.jpg"));
+
+        // 更新 file_count（目录变化后重扫写回）
+        db.upsert_album_stats(1, 12, 4096, Some("2026-02-02".into()), Some("/x/b.jpg".into()), 44)
+            .unwrap();
+        let s = db.get_album_stats(1).unwrap().unwrap();
+        assert_eq!(s.photo_count, 12);
+        assert_eq!(s.file_count, 44, "file_count 应反映目录文件数变化");
+
+        // 删除（降级重扫路径）
+        db.delete_album_stats(1).unwrap();
+        assert!(db.get_album_stats(1).unwrap().is_none());
+    }
+
     /// 内存数据库单元测试，验证建表与完整 CRUD 流程
+
     #[test]
     fn album_crud_roundtrip() {
         let conn = Connection::open_in_memory().unwrap();

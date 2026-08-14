@@ -1,0 +1,22 @@
+{
+  "groups": [
+    "portrait", "street", "animal", "food", "flower",
+    "landscape", "cityscape", "night_scene", "document"
+  ],
+  "fold": {
+    "architecture": "cityscape",
+    "plant_flower": "flower",
+    "plant": "other",
+    "text": "document",
+    "sports": "other",
+    "vehicle": "other",
+    "indoor": "other",
+    "landscape_nature": "landscape"
+  },
+  "conflicts": [
+    "person 优先于一切",
+    "document(OCR 强证据) 优先于 scene/object",
+    "flower/food 专家优先于 object",
+    "night_scene 优先于 cityscape/landscape"
+  ]
+}

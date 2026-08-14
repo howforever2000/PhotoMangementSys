@@ -16,9 +16,10 @@ const modules = [
   {
     id: "scan",
     title: "图片扫描",
-    desc: "扫描并索引相册内的图片（待开发）",
+    desc: "扫描文件夹内图片，按时间/地点排序，按年·地点组织移动",
     icon: "🔍",
-    ready: false,
+    path: "/scan",
+    ready: true,
   },
   {
     id: "process",

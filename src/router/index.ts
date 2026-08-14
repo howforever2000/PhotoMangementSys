@@ -28,6 +28,12 @@ const router = createRouter({
       component: AlbumList,
     },
     {
+      // 懒加载图片扫描测试页
+      path: "/scan",
+      name: "test-scan",
+      component: () => import("../views/TestScan.vue"),
+    },
+    {
       // 懒加载详情页
       path: "/album/:id",
       name: "album-detail",

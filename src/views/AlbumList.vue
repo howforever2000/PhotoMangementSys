@@ -6,10 +6,11 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useAlbumStore } from "../stores/album";
 import type { Album, CreateAlbumInput } from "../types/album";
-import { formatSize } from "../types/album";
 import { groupByTime, seasonName, MONTH_NAMES } from "../utils/timeGroup";
 import type { YearGroup } from "../utils/timeGroup";
 import ManualSort from "./ManualSort.vue";
+import AlbumCard from "../components/AlbumCard.vue";
+import ConfirmDialog from "../components/ConfirmDialog.vue";
 
 const router = useRouter();
 const route = useRoute();
@@ -104,8 +105,8 @@ function enterSelectMode() {
 }
 
 /** 切换单个相册的勾选状态 */
-function toggleSelect(id: number, event: MouseEvent) {
-  event.stopPropagation(); // 阻止触发卡片点击跳转
+function toggleSelect(id: number, event?: MouseEvent) {
+  event?.stopPropagation(); // 阻止触发卡片点击跳转
   const next = new Set(selectedIds.value);
   if (next.has(id)) {
     next.delete(id);
@@ -131,15 +132,23 @@ function exitSelectMode() {
 }
 
 /** 批量删除：二次确认后仅删数据库记录，不删本地文件 */
+const batchDeleteConfirm = ref<{ visible: boolean; message: string }>({ visible: false, message: "" });
 async function batchDelete() {
   const ids = [...selectedIds.value];
   if (ids.length === 0) return;
   if (isDeleting.value) return;
 
-  const ok = confirm(
-    `确定要删除选中的 ${ids.length} 个相册吗？\n\n此操作仅删除相册记录，不会删除本地照片文件。`,
-  );
-  if (!ok) return;
+  batchDeleteConfirm.value = {
+    visible: true,
+    message: `确定要删除选中的 ${ids.length} 个相册吗？\n\n此操作仅删除相册记录，不会删除本地照片文件。`,
+  };
+}
+/** 确认后真正执行批量删除 */
+async function doBatchDelete() {
+  batchDeleteConfirm.value.visible = false;
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  if (isDeleting.value) return;
 
   isDeleting.value = true;
   try {
@@ -162,6 +171,45 @@ const contextMenu = ref<{ visible: boolean; x: number; y: number; albumId: numbe
 });
 const isDeletingOne = ref(false);
 
+// ---------- 重命名相册 ----------
+const showRenameDialog = ref(false);
+const renameInput = ref("");
+const isRenaming = ref(false);
+
+/** 打开重命名对话框（右键菜单） */
+function openRenameDialog() {
+  const id = contextMenu.value.albumId;
+  closeContextMenu();
+  const album = store.albums.find((a) => a.id === id);
+  if (!album) return;
+  renameInput.value = album.name;
+  showRenameDialog.value = true;
+}
+
+/** 提交重命名 */
+async function submitRename() {
+  const id = contextMenu.value.albumId;
+  const name = renameInput.value.trim();
+  if (!name) {
+    alert("相册名称不能为空");
+    return;
+  }
+  if (name.length > 100) {
+    alert("相册名称不能超过 100 个字符");
+    return;
+  }
+  if (isRenaming.value) return;
+  isRenaming.value = true;
+  try {
+    await store.renameAlbum(id, name, true);
+    showRenameDialog.value = false;
+  } catch (e) {
+    alert(`重命名失败：${e}`);
+  } finally {
+    isRenaming.value = false;
+  }
+}
+
 /** 右键打开自定义菜单 */
 function onRightClick(albumId: number, event: MouseEvent) {
   event.preventDefault(); // 阻止浏览器默认右键菜单
@@ -180,16 +228,28 @@ function closeContextMenu() {
 }
 
 /** 点击菜单「删除」选项 */
+/** 待确认删除的相册 ID（确认弹窗回调时使用，contextMenu 已关闭） */
+const pendingDeleteId = ref<number | null>(null);
+const contextDeleteConfirm = ref<{ visible: boolean; message: string }>({ visible: false, message: "" });
 async function contextDelete() {
   const albumId = contextMenu.value.albumId;
   closeContextMenu();
   if (isDeletingOne.value) return;
 
   const album = store.albums.find((a) => a.id === albumId);
-  const ok = confirm(
-    `确定要删除相册「${album?.name ?? ""}」吗？\n\n此操作仅删除相册记录，不会删除本地照片文件。`,
-  );
-  if (!ok) return;
+  pendingDeleteId.value = albumId;
+  contextDeleteConfirm.value = {
+    visible: true,
+    message: `确定要删除相册「${album?.name ?? ""}」吗？\n\n此操作仅删除相册记录，不会删除本地照片文件。`,
+  };
+}
+/** 确认后真正执行删除 */
+async function doContextDelete() {
+  contextDeleteConfirm.value.visible = false;
+  const albumId = pendingDeleteId.value;
+  pendingDeleteId.value = null;
+  if (albumId == null) return;
+  if (isDeletingOne.value) return;
 
   isDeletingOne.value = true;
   try {
@@ -615,36 +675,17 @@ onBeforeUnmount(() => {
               </h3>
               <div v-show="!isCollapsed(`${yearKey(yg.year)}-uc`)" class="group-body">
                 <div class="album-grid">
-                  <article
+                  <AlbumCard
                     v-for="album in yg.uncategorized"
                     :key="album.id"
-                    class="album-card"
-                    :class="{ 'card-selected': selectedIds.has(album.id), 'card-manage': isSelectMode }"
-                    @click="isSelectMode ? toggleSelect(album.id, $event) : router.push(`/album/${album.id}`)"
+                    :album="album"
+                    :select-mode="isSelectMode"
+                    :selected="selectedIds.has(album.id)"
+                    @click="isSelectMode ? toggleSelect(album.id) : router.push(`/album/${album.id}`)"
                     @contextmenu="onRightClick(album.id, $event)"
-                  >
-                    <div v-if="isSelectMode" class="card-checkbox" @click="toggleSelect(album.id, $event)">
-                      <span :class="['checkmark', { checked: selectedIds.has(album.id) }]">✓</span>
-                    </div>
-                    <div class="card-cover">
-                      <img v-if="album.cover_path" :src="fileUrl(album.cover_path)" alt="封面" />
-                      <div v-else class="cover-placeholder">📷</div>
-                    </div>
-                    <div class="card-body">
-                      <h3 class="card-name" :title="album.name">{{ album.name }}</h3>
-                      <p v-if="album.description" class="card-desc">{{ album.description }}</p>
-                      <p class="card-path">
-                        <span class="path-link" :title="`在文件资源管理器中打开：${album.path}`" @click="openAlbumPath(album.path, $event)">
-                          📁 {{ album.path }}
-                        </span>
-                      </p>
-                      <div class="card-stats">
-                        <span class="stat-item">🖼️ {{ album.photo_count }} 张</span>
-                        <span class="stat-item">💾 {{ formatSize(album.size_bytes) }}</span>
-                        <span v-if="album.shoot_time" class="stat-item">📅 {{ album.shoot_time }}</span>
-                      </div>
-                    </div>
-                  </article>
+                    @toggle-select="toggleSelect(album.id, $event)"
+                    @open-path="openAlbumPath(album.path, $event)"
+                  />
                 </div>
               </div>
             </div>
@@ -678,36 +719,17 @@ onBeforeUnmount(() => {
                   </h4>
                   <div v-show="!isCollapsed(monthKey(yg.year, sg.season, mg.month))" class="group-body">
                     <div class="album-grid">
-                      <article
+                      <AlbumCard
                         v-for="album in mg.albums"
                         :key="album.id"
-                        class="album-card"
-                        :class="{ 'card-selected': selectedIds.has(album.id), 'card-manage': isSelectMode }"
-                        @click="isSelectMode ? toggleSelect(album.id, $event) : router.push(`/album/${album.id}`)"
+                        :album="album"
+                        :select-mode="isSelectMode"
+                        :selected="selectedIds.has(album.id)"
+                        @click="isSelectMode ? toggleSelect(album.id) : router.push(`/album/${album.id}`)"
                         @contextmenu="onRightClick(album.id, $event)"
-                      >
-                        <div v-if="isSelectMode" class="card-checkbox" @click="toggleSelect(album.id, $event)">
-                          <span :class="['checkmark', { checked: selectedIds.has(album.id) }]">✓</span>
-                        </div>
-                        <div class="card-cover">
-                          <img v-if="album.cover_path" :src="fileUrl(album.cover_path)" alt="封面" />
-                          <div v-else class="cover-placeholder">📷</div>
-                        </div>
-                        <div class="card-body">
-                          <h3 class="card-name" :title="album.name">{{ album.name }}</h3>
-                          <p v-if="album.description" class="card-desc">{{ album.description }}</p>
-                          <p class="card-path">
-                            <span class="path-link" :title="`在文件资源管理器中打开：${album.path}`" @click="openAlbumPath(album.path, $event)">
-                              📁 {{ album.path }}
-                            </span>
-                          </p>
-                          <div class="card-stats">
-                            <span class="stat-item">🖼️ {{ album.photo_count }} 张</span>
-                            <span class="stat-item">💾 {{ formatSize(album.size_bytes) }}</span>
-                            <span v-if="album.shoot_time" class="stat-item">📅 {{ album.shoot_time }}</span>
-                          </div>
-                        </div>
-                      </article>
+                        @toggle-select="toggleSelect(album.id, $event)"
+                        @open-path="openAlbumPath(album.path, $event)"
+                      />
                     </div>
                   </div>
                 </section>
@@ -723,45 +745,28 @@ onBeforeUnmount(() => {
       <!-- 按地点字母分组的卡片 -->
       <div v-if="locationSortedAlbums.length > 0" class="album-grid">
         <div v-for="album in locationSortedAlbums" :key="album.id" class="location-card-wrap">
-          <article
-            class="album-card"
-            :class="{ 'card-selected': selectedIds.has(album.id), 'card-manage': isSelectMode }"
-            @click="isSelectMode ? toggleSelect(album.id, $event) : router.push(`/album/${album.id}`)"
+          <AlbumCard
+            :album="album"
+            :select-mode="isSelectMode"
+            :selected="selectedIds.has(album.id)"
+            show-location
+            @click="isSelectMode ? toggleSelect(album.id) : router.push(`/album/${album.id}`)"
             @contextmenu="onRightClick(album.id, $event)"
-          >
-            <div v-if="isSelectMode" class="card-checkbox" @click="toggleSelect(album.id, $event)">
-              <span :class="['checkmark', { checked: selectedIds.has(album.id) }]">✓</span>
-            </div>
-            <div class="card-cover">
-              <img v-if="album.cover_path" :src="fileUrl(album.cover_path)" alt="封面" />
-              <div v-else class="cover-placeholder">📷</div>
-            </div>
-            <div class="card-body">
-              <h3 class="card-name" :title="album.name">{{ album.name }}</h3>
-              <!-- 地点徽标 -->
-              <p class="location-tag" :class="{ 'no-loc': !album.location }">
-                📍 {{ album.location || "未知地点" }}
-              </p>
-              <p v-if="album.description" class="card-desc">{{ album.description }}</p>
-              <p class="card-path">
-                <span class="path-link" :title="`在文件资源管理器中打开：${album.path}`" @click="openAlbumPath(album.path, $event)">
-                  📁 {{ album.path }}
-                </span>
-              </p>
-              <div class="card-stats">
-                <span class="stat-item">🖼️ {{ album.photo_count }} 张</span>
-                <span class="stat-item">💾 {{ formatSize(album.size_bytes) }}</span>
-                <span v-if="album.shoot_time" class="stat-item">📅 {{ album.shoot_time }}</span>
-              </div>
-            </div>
-          </article>
+            @toggle-select="toggleSelect(album.id, $event)"
+            @open-path="openAlbumPath(album.path, $event)"
+          />
         </div>
       </div>
     </main>
 
     <!-- 手动排序模式：文件夹树 + 拖拽 -->
     <main v-else class="manual-view">
-      <ManualSort :jump-folder-id="manualJumpFolderId" />
+      <ManualSort
+        :jump-folder-id="manualJumpFolderId"
+        :select-mode="isSelectMode"
+        :selected-ids="selectedIds"
+        @toggle-select="toggleSelect"
+      />
     </main>
 
     <!-- 空状态引导（需求 §2.1，手动模式不显示） -->
@@ -780,6 +785,9 @@ onBeforeUnmount(() => {
     >
       <div class="context-menu-item" @click="router.push(`/album/${contextMenu.albumId}`)">
         <span class="ctx-icon">📂</span> 打开
+      </div>
+      <div class="context-menu-item" @click="openRenameDialog">
+        <span class="ctx-icon">✏️</span> 重命名
       </div>
       <div class="context-menu-item context-menu-danger" @click="contextDelete">
         <span class="ctx-icon">🗑️</span> 删除
@@ -835,6 +843,49 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    <!-- 重命名相册对话框（右键菜单） -->
+    <div v-if="showRenameDialog" class="dialog-mask" @click.self="showRenameDialog = false">
+      <div class="dialog">
+        <h2 class="dialog-title">重命名相册</h2>
+        <div class="form-field">
+          <label class="form-label">相册名称</label>
+          <input
+            v-model="renameInput"
+            class="input"
+            maxlength="100"
+            placeholder="相册名称"
+            @keydown.enter="submitRename"
+            @keydown.esc="showRenameDialog = false"
+          />
+        </div>
+        <div class="dialog-actions">
+          <button class="btn" @click="showRenameDialog = false">取消</button>
+          <button class="btn btn-primary" :disabled="isRenaming" @click="submitRename">
+            {{ isRenaming ? "保存中…" : "保存" }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 删除相册二次确认（右键菜单） -->
+    <ConfirmDialog
+      :visible="contextDeleteConfirm.visible"
+      title="删除相册"
+      :message="contextDeleteConfirm.message"
+      @confirm="doContextDelete"
+      @cancel="contextDeleteConfirm.visible = false"
+    />
+
+    <!-- 批量删除二次确认 -->
+    <ConfirmDialog
+      :visible="batchDeleteConfirm.visible"
+      title="批量删除相册"
+      :message="batchDeleteConfirm.message"
+      confirm-text="删除所选"
+      @confirm="doBatchDelete"
+      @cancel="batchDeleteConfirm.visible = false"
+    />
   </div>
 </template>
 
@@ -1201,101 +1252,6 @@ onBeforeUnmount(() => {
   gap: 20px;
 }
 
-.album-card {
-  position: relative;
-  background: #fff;
-  border-radius: 12px;
-  overflow: hidden;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  cursor: pointer;
-  transition: transform 0.2s, box-shadow 0.2s;
-}
-
-.album-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
-}
-
-.card-cover {
-  height: 160px;
-  background: #f0f0f0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.card-cover img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.cover-placeholder {
-  font-size: 48px;
-  opacity: 0.4;
-}
-
-.card-body {
-  padding: 14px;
-}
-
-.card-name {
-  margin: 0 0 6px;
-  font-size: 16px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.card-desc {
-  margin: 0 0 8px;
-  font-size: 13px;
-  color: #666;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.card-path {
-  margin: 0;
-  font-size: 12px;
-  color: #999;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.path-link {
-  display: inline-block;
-  max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  vertical-align: bottom;
-  color: #396cd8;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.path-link:hover {
-  color: #2f5cc2;
-}
-
-.card-stats {
-  display: flex;
-  gap: 14px;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid #f0f0f0;
-}
-
-.stat-item {
-  font-size: 12px;
-  color: #666;
-}
-
 .empty-state {
   text-align: center;
   padding: 80px 0;
@@ -1448,53 +1404,6 @@ onBeforeUnmount(() => {
   text-decoration: underline;
 }
 
-/* 卡片勾选框 */
-.card-checkbox {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.checkmark {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 2px solid #ccc;
-  background: rgba(255, 255, 255, 0.9);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  color: transparent;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.checkmark.checked {
-  background: #396cd8;
-  border-color: #396cd8;
-  color: #fff;
-}
-
-.card-selected {
-  border: 2px solid #396cd8;
-  box-shadow: 0 0 0 2px rgba(57, 108, 216, 0.2);
-}
-
-/* 勾选管理模式：禁用悬停上浮，光标为默认 */
-.card-manage {
-  cursor: default;
-}
-
-.card-manage:hover {
-  transform: none;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
 /* 地点模式 */
 .location-view {
   padding-bottom: 20px;
@@ -1502,21 +1411,6 @@ onBeforeUnmount(() => {
 
 .location-card-wrap {
   break-inside: avoid;
-}
-
-.location-tag {
-  display: inline-block;
-  margin: 0 0 8px;
-  padding: 2px 10px;
-  font-size: 12px;
-  color: #396cd8;
-  background: #eef3ff;
-  border-radius: 12px;
-}
-
-.location-tag.no-loc {
-  color: #999;
-  background: #f0f0f0;
 }
 
 /* 对话框 */

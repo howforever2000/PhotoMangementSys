@@ -1,0 +1,1280 @@
+{
+  "test_dir": "D:/YUAN HAO/Pictures/2026/test",
+  "total": 53,
+  "total_sec": 21.6,
+  "avg_ms": 513.8,
+  "results": [
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\20240220-DSC_3583.jpg",
+      "file_name": "20240220-DSC_3583.jpg",
+      "category": "portrait",
+      "sub_category": "",
+      "label": "人物特写·1人",
+      "confidence": 0.9074,
+      "top3": [
+        {
+          "category": "portrait",
+          "label": "人物特写·1人",
+          "confidence": 0.9073696136474609
+        }
+      ],
+      "person_ids": [
+        "P012"
+      ],
+      "person_count": 1,
+      "source": "det+face",
+      "elapsed_ms": 742.9
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\20240220-DSC_3584.jpg",
+      "file_name": "20240220-DSC_3584.jpg",
+      "category": "portrait",
+      "sub_category": "",
+      "label": "人物特写·1人",
+      "confidence": 0.9147,
+      "top3": [
+        {
+          "category": "portrait",
+          "label": "人物特写·1人",
+          "confidence": 0.914716362953186
+        }
+      ],
+      "person_ids": [
+        "P012"
+      ],
+      "person_count": 1,
+      "source": "det+face",
+      "elapsed_ms": 595.2
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\20240220-DSC_3585.jpg",
+      "file_name": "20240220-DSC_3585.jpg",
+      "category": "street",
+      "sub_category": "",
+      "label": "扫街·3人",
+      "confidence": 0.8942,
+      "top3": [
+        {
+          "category": "street",
+          "label": "扫街·3人",
+          "confidence": 0.894208550453186
+        }
+      ],
+      "person_ids": [
+        "P015"
+      ],
+      "person_count": 3,
+      "source": "det",
+      "elapsed_ms": 459.7
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\20240220-DSC_3589.jpg",
+      "file_name": "20240220-DSC_3589.jpg",
+      "category": "street",
+      "sub_category": "",
+      "label": "扫街·3人",
+      "confidence": 0.9172,
+      "top3": [
+        {
+          "category": "street",
+          "label": "扫街·3人",
+          "confidence": 0.9172423481941223
+        }
+      ],
+      "person_ids": [
+        "P029"
+      ],
+      "person_count": 3,
+      "source": "det",
+      "elapsed_ms": 572.0
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\20240220-DSC_3591.jpg",
+      "file_name": "20240220-DSC_3591.jpg",
+      "category": "street",
+      "sub_category": "",
+      "label": "扫街·3人",
+      "confidence": 0.8329,
+      "top3": [
+        {
+          "category": "street",
+          "label": "扫街·3人",
+          "confidence": 0.8328668475151062
+        }
+      ],
+      "person_ids": [
+        "P012",
+        "P029",
+        "P030"
+      ],
+      "person_count": 3,
+      "source": "det",
+      "elapsed_ms": 700.1
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\20240220-DSC_3604-已增强-降噪.jpg",
+      "file_name": "20240220-DSC_3604-已增强-降噪.jpg",
+      "category": "architecture",
+      "sub_category": "",
+      "label": "breakwater",
+      "confidence": 0.4083,
+      "top3": [
+        {
+          "category": "architecture",
+          "label": "breakwater",
+          "confidence": 0.7631582021713257
+        },
+        {
+          "category": "other",
+          "label": "submarine",
+          "confidence": 0.03068300522863865
+        },
+        {
+          "category": "vehicle",
+          "label": "airship",
+          "confidence": 0.02462347038090229
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 361.9
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\20240220-DSC_3607-已增强-降噪.jpg",
+      "file_name": "20240220-DSC_3607-已增强-降噪.jpg",
+      "category": "architecture",
+      "sub_category": "",
+      "label": "steel arch bridge",
+      "confidence": 0.4346,
+      "top3": [
+        {
+          "category": "architecture",
+          "label": "steel arch bridge",
+          "confidence": 0.8720792243257165
+        },
+        {
+          "category": "animal",
+          "label": "monitor",
+          "confidence": 0.04566986486315727
+        },
+        {
+          "category": "vehicle",
+          "label": "liner",
+          "confidence": 0.007207362912595272
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 324.4
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\20240220-DSC_3609.jpg",
+      "file_name": "20240220-DSC_3609.jpg",
+      "category": "vehicle",
+      "sub_category": "",
+      "label": "tricycle",
+      "confidence": 0.3571,
+      "top3": [
+        {
+          "category": "vehicle",
+          "label": "tricycle",
+          "confidence": 0.9560281783342361
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 272.8
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\20240220-DSC_3611.jpg",
+      "file_name": "20240220-DSC_3611.jpg",
+      "category": "street",
+      "sub_category": "",
+      "label": "扫街·3人",
+      "confidence": 0.5789,
+      "top3": [
+        {
+          "category": "street",
+          "label": "扫街·3人",
+          "confidence": 0.5789474844932556
+        }
+      ],
+      "person_ids": [],
+      "person_count": 3,
+      "source": "det",
+      "elapsed_ms": 356.5
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\20240220-DSC_3613.jpg",
+      "file_name": "20240220-DSC_3613.jpg",
+      "category": "street",
+      "sub_category": "",
+      "label": "扫街·5人",
+      "confidence": 0.7304,
+      "top3": [
+        {
+          "category": "street",
+          "label": "扫街·5人",
+          "confidence": 0.7304383516311646
+        }
+      ],
+      "person_ids": [],
+      "person_count": 5,
+      "source": "det",
+      "elapsed_ms": 281.5
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\20240220-DSC_3618-已增强-降噪.jpg",
+      "file_name": "20240220-DSC_3618-已增强-降噪.jpg",
+      "category": "architecture",
+      "sub_category": "",
+      "label": "pier",
+      "confidence": 0.731,
+      "top3": [
+        {
+          "category": "architecture",
+          "label": "pier",
+          "confidence": 0.7871528901159763
+        },
+        {
+          "category": "other",
+          "label": "lumbermill",
+          "confidence": 0.15366231929510832
+        },
+        {
+          "category": "vehicle",
+          "label": "freight car",
+          "confidence": 0.033571962267160416
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 300.6
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\20260716-1784173966302.jpg",
+      "file_name": "20260716-1784173966302.jpg",
+      "category": "architecture",
+      "sub_category": "",
+      "label": "castle",
+      "confidence": 0.3576,
+      "top3": [
+        {
+          "category": "architecture",
+          "label": "castle",
+          "confidence": 0.6413720995187759
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 348.7
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200207_173741.jpg",
+      "file_name": "IMG_20200207_173741.jpg",
+      "category": "animal",
+      "sub_category": "其他动物",
+      "label": "其他动物·impala",
+      "confidence": 0.5006,
+      "top3": [
+        {
+          "category": "animal",
+          "label": "impala",
+          "confidence": 0.7393428981304169
+        },
+        {
+          "category": "landscape_nature",
+          "label": "lakeside",
+          "confidence": 0.023867635056376457
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 319.0
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200209_201138.jpg",
+      "file_name": "IMG_20200209_201138.jpg",
+      "category": "architecture",
+      "sub_category": "",
+      "label": "water tower",
+      "confidence": 0.3767,
+      "top3": [
+        {
+          "category": "architecture",
+          "label": "water tower",
+          "confidence": 0.46638549864292145
+        },
+        {
+          "category": "other",
+          "label": "flagpole",
+          "confidence": 0.09587818756699562
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 298.9
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200209_203753.jpg",
+      "file_name": "IMG_20200209_203753.jpg",
+      "category": "landscape_nature",
+      "sub_category": "",
+      "label": "自然·alp",
+      "confidence": 0.7106,
+      "top3": [
+        {
+          "category": "landscape_nature",
+          "label": "alp",
+          "confidence": 0.9747460167855024
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 321.6
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200211_193215.jpg",
+      "file_name": "IMG_20200211_193215.jpg",
+      "category": "other",
+      "sub_category": "",
+      "label": "plate",
+      "confidence": 0.6353,
+      "top3": [
+        {
+          "category": "other",
+          "label": "plate",
+          "confidence": 0.6353326439857483
+        },
+        {
+          "category": "food",
+          "label": "mashed potato",
+          "confidence": 0.31036995351314545
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 316.8
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200228_121553.jpg",
+      "file_name": "IMG_20200228_121553.jpg",
+      "category": "text",
+      "sub_category": "",
+      "label": "文本·menu",
+      "confidence": 0.5465,
+      "top3": [
+        {
+          "category": "text",
+          "label": "menu",
+          "confidence": 0.7023561596870422
+        },
+        {
+          "category": "other",
+          "label": "brass",
+          "confidence": 0.17509782314300537
+        },
+        {
+          "category": "architecture",
+          "label": "fountain pen",
+          "confidence": 0.03649955987930298
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 1014.6
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200228_131234.jpg",
+      "file_name": "IMG_20200228_131234.jpg",
+      "category": "landscape_nature",
+      "sub_category": "",
+      "label": "/f/forest/broadleaf 150",
+      "confidence": 0.0226,
+      "top3": [
+        {
+          "category": "other",
+          "label": "maypole",
+          "confidence": 0.30759401246905327
+        },
+        {
+          "category": "architecture",
+          "label": "water tower",
+          "confidence": 0.07033173739910126
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls+scene",
+      "elapsed_ms": 384.7
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200228_132402.jpg",
+      "file_name": "IMG_20200228_132402.jpg",
+      "category": "animal",
+      "sub_category": "其他动物",
+      "label": "其他动物·damselfly",
+      "confidence": 0.4937,
+      "top3": [
+        {
+          "category": "animal",
+          "label": "damselfly",
+          "confidence": 0.9476818172261119
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 128.0
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200228_165450.jpg",
+      "file_name": "IMG_20200228_165450.jpg",
+      "category": "text",
+      "sub_category": "",
+      "label": "文本·menu",
+      "confidence": 0.8659,
+      "top3": [
+        {
+          "category": "text",
+          "label": "menu",
+          "confidence": 0.9183308631181717
+        },
+        {
+          "category": "architecture",
+          "label": "fountain pen",
+          "confidence": 0.01318267546594143
+        },
+        {
+          "category": "other",
+          "label": "brass",
+          "confidence": 0.011769171804189682
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 1015.7
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200228_183531.jpg",
+      "file_name": "IMG_20200228_183531.jpg",
+      "category": "landscape_nature",
+      "sub_category": "",
+      "label": "自然·alp",
+      "confidence": 0.6342,
+      "top3": [
+        {
+          "category": "landscape_nature",
+          "label": "alp",
+          "confidence": 0.8514398224651814
+        },
+        {
+          "category": "architecture",
+          "label": "castle",
+          "confidence": 0.011784940958023071
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 343.0
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200228_183829.jpg",
+      "file_name": "IMG_20200228_183829.jpg",
+      "category": "landscape_nature",
+      "sub_category": "",
+      "label": "自然·alp",
+      "confidence": 0.3474,
+      "top3": [
+        {
+          "category": "landscape_nature",
+          "label": "alp",
+          "confidence": 0.5156566239893436
+        },
+        {
+          "category": "other",
+          "label": "balloon",
+          "confidence": 0.04641915485262871
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 341.2
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200228_184239.jpg",
+      "file_name": "IMG_20200228_184239.jpg",
+      "category": "portrait",
+      "sub_category": "",
+      "label": "人物特写·1人",
+      "confidence": 0.8568,
+      "top3": [
+        {
+          "category": "portrait",
+          "label": "人物特写·1人",
+          "confidence": 0.85684734582901
+        }
+      ],
+      "person_ids": [
+        "P035"
+      ],
+      "person_count": 1,
+      "source": "det+face",
+      "elapsed_ms": 594.7
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200229_100526.jpg",
+      "file_name": "IMG_20200229_100526.jpg",
+      "category": "portrait",
+      "sub_category": "",
+      "label": "人物特写·1人",
+      "confidence": 0.7721,
+      "top3": [
+        {
+          "category": "portrait",
+          "label": "人物特写·1人",
+          "confidence": 0.7720630168914795
+        }
+      ],
+      "person_ids": [
+        "P036"
+      ],
+      "person_count": 1,
+      "source": "det+face",
+      "elapsed_ms": 570.7
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200229_191718.jpg",
+      "file_name": "IMG_20200229_191718.jpg",
+      "category": "landscape_nature",
+      "sub_category": "",
+      "label": "/s/sky 306",
+      "confidence": 0.0222,
+      "top3": [
+        {
+          "category": "other",
+          "label": "balloon",
+          "confidence": 0.10858189687132835
+        },
+        {
+          "category": "vehicle",
+          "label": "airship",
+          "confidence": 0.08203253895044327
+        },
+        {
+          "category": "animal",
+          "label": "vulture",
+          "confidence": 0.05745590850710869
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls+scene",
+      "elapsed_ms": 169.4
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200301_150106.jpg",
+      "file_name": "IMG_20200301_150106.jpg",
+      "category": "portrait",
+      "sub_category": "",
+      "label": "人物特写·1人",
+      "confidence": 0.8622,
+      "top3": [
+        {
+          "category": "portrait",
+          "label": "人物特写·1人",
+          "confidence": 0.8622363209724426
+        }
+      ],
+      "person_ids": [
+        "P037"
+      ],
+      "person_count": 1,
+      "source": "det+face",
+      "elapsed_ms": 1020.6
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200301_150946.jpg",
+      "file_name": "IMG_20200301_150946.jpg",
+      "category": "portrait",
+      "sub_category": "",
+      "label": "人物特写·1人",
+      "confidence": 0.8772,
+      "top3": [
+        {
+          "category": "portrait",
+          "label": "人物特写·1人",
+          "confidence": 0.8772376775741577
+        }
+      ],
+      "person_ids": [
+        "P035"
+      ],
+      "person_count": 1,
+      "source": "det+face",
+      "elapsed_ms": 1028.6
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200304_162315.jpg",
+      "file_name": "IMG_20200304_162315.jpg",
+      "category": "other",
+      "sub_category": "",
+      "label": "paintbrush",
+      "confidence": 0.4529,
+      "top3": [
+        {
+          "category": "other",
+          "label": "paintbrush",
+          "confidence": 0.5856807641685009
+        },
+        {
+          "category": "landscape_nature",
+          "label": "alp",
+          "confidence": 0.03179917111992836
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 276.5
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200307_113915.jpg",
+      "file_name": "IMG_20200307_113915.jpg",
+      "category": "portrait",
+      "sub_category": "",
+      "label": "人物特写·1人",
+      "confidence": 0.9118,
+      "top3": [
+        {
+          "category": "portrait",
+          "label": "人物特写·1人",
+          "confidence": 0.9118465185165405
+        }
+      ],
+      "person_ids": [
+        "P038"
+      ],
+      "person_count": 1,
+      "source": "det+face",
+      "elapsed_ms": 580.7
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\e--7.jpg",
+      "file_name": "e--7.jpg",
+      "category": "street",
+      "sub_category": "",
+      "label": "扫街·3人",
+      "confidence": 0.8787,
+      "top3": [
+        {
+          "category": "street",
+          "label": "扫街·3人",
+          "confidence": 0.8787447214126587
+        }
+      ],
+      "person_ids": [
+        "P039",
+        "P040"
+      ],
+      "person_count": 3,
+      "source": "det",
+      "elapsed_ms": 407.5
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\e-.jpg",
+      "file_name": "e-.jpg",
+      "category": "animal",
+      "sub_category": "dog",
+      "label": "狗·West Highland white terrier",
+      "confidence": 0.218,
+      "top3": [
+        {
+          "category": "animal",
+          "label": "West Highland white terrier",
+          "confidence": 0.5079905092716217
+        },
+        {
+          "category": "other",
+          "label": "doormat",
+          "confidence": 0.13980484008789062
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 572.6
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\e-7005.jpg",
+      "file_name": "e-7005.jpg",
+      "category": "portrait",
+      "sub_category": "",
+      "label": "合影·2人",
+      "confidence": 0.8973,
+      "top3": [
+        {
+          "category": "portrait",
+          "label": "合影·2人",
+          "confidence": 0.8972970247268677
+        }
+      ],
+      "person_ids": [
+        "P041",
+        "P021"
+      ],
+      "person_count": 4,
+      "source": "det+face",
+      "elapsed_ms": 931.7
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\e-7007.jpg",
+      "file_name": "e-7007.jpg",
+      "category": "vehicle",
+      "sub_category": "",
+      "label": "mountain bike",
+      "confidence": 0.4344,
+      "top3": [
+        {
+          "category": "vehicle",
+          "label": "mountain bike",
+          "confidence": 0.9034597277641296
+        },
+        {
+          "category": "landscape_nature",
+          "label": "alp",
+          "confidence": 0.011579067446291447
+        },
+        {
+          "category": "other",
+          "label": "parking meter",
+          "confidence": 0.009074553847312927
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 617.2
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\e-7013.jpg",
+      "file_name": "e-7013.jpg",
+      "category": "other",
+      "sub_category": "",
+      "label": "flagpole",
+      "confidence": 0.7416,
+      "top3": [
+        {
+          "category": "other",
+          "label": "flagpole",
+          "confidence": 0.7919206973165274
+        },
+        {
+          "category": "sports",
+          "label": "pole",
+          "confidence": 0.12634940445423126
+        },
+        {
+          "category": "vehicle",
+          "label": "space shuttle",
+          "confidence": 0.0198152344673872
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 603.9
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\e-7097.jpg",
+      "file_name": "e-7097.jpg",
+      "category": "portrait",
+      "sub_category": "",
+      "label": "人物特写·1人",
+      "confidence": 0.8779,
+      "top3": [
+        {
+          "category": "portrait",
+          "label": "人物特写·1人",
+          "confidence": 0.877886176109314
+        }
+      ],
+      "person_ids": [
+        "P042"
+      ],
+      "person_count": 1,
+      "source": "det+face",
+      "elapsed_ms": 959.8
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\e-7123.jpg",
+      "file_name": "e-7123.jpg",
+      "category": "other",
+      "sub_category": "",
+      "label": "teddy",
+      "confidence": 0.6979,
+      "top3": [
+        {
+          "category": "other",
+          "label": "teddy",
+          "confidence": 0.7766725961118937
+        },
+        {
+          "category": "architecture",
+          "label": "toyshop",
+          "confidence": 0.03847329691052437
+        },
+        {
+          "category": "food",
+          "label": "butternut squash",
+          "confidence": 0.029367724433541298
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 356.7
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\e-7125.jpg",
+      "file_name": "e-7125.jpg",
+      "category": "other",
+      "sub_category": "",
+      "label": "traffic light",
+      "confidence": 0.9997,
+      "top3": [
+        {
+          "category": "other",
+          "label": "traffic light",
+          "confidence": 0.9998764065749128
+        },
+        {
+          "category": "text",
+          "label": "oscilloscope",
+          "confidence": 4.5118551497580484e-05
+        },
+        {
+          "category": "animal",
+          "label": "monitor",
+          "confidence": 1.3096618204144761e-05
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 560.2
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\e-7157.jpg",
+      "file_name": "e-7157.jpg",
+      "category": "animal",
+      "sub_category": "cat",
+      "label": "猫·Persian cat",
+      "confidence": 0.5881,
+      "top3": [
+        {
+          "category": "animal",
+          "label": "Persian cat",
+          "confidence": 0.8127257041633129
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls+det",
+      "elapsed_ms": 658.0
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\e-7278.jpg",
+      "file_name": "e-7278.jpg",
+      "category": "street",
+      "sub_category": "",
+      "label": "扫街·3人",
+      "confidence": 0.7326,
+      "top3": [
+        {
+          "category": "street",
+          "label": "扫街·3人",
+          "confidence": 0.7326441407203674
+        }
+      ],
+      "person_ids": [],
+      "person_count": 3,
+      "source": "det",
+      "elapsed_ms": 451.5
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\good-.jpg",
+      "file_name": "good-.jpg",
+      "category": "sports",
+      "sub_category": "",
+      "label": "scoreboard",
+      "confidence": 0.1851,
+      "top3": [
+        {
+          "category": "sports",
+          "label": "scoreboard",
+          "confidence": 0.2565975785255432
+        },
+        {
+          "category": "other",
+          "label": "traffic light",
+          "confidence": 0.20580146461725235
+        },
+        {
+          "category": "text",
+          "label": "abacus",
+          "confidence": 0.18506444990634918
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 459.6
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\nice-6995.jpg",
+      "file_name": "nice-6995.jpg",
+      "category": "architecture",
+      "sub_category": "",
+      "label": "palace",
+      "confidence": 0.2359,
+      "top3": [
+        {
+          "category": "architecture",
+          "label": "palace",
+          "confidence": 0.38888031989336014
+        },
+        {
+          "category": "vehicle",
+          "label": "airship",
+          "confidence": 0.13202320039272308
+        },
+        {
+          "category": "landscape_nature",
+          "label": "seashore",
+          "confidence": 0.09585300832986832
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 270.3
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\nice-7124.jpg",
+      "file_name": "nice-7124.jpg",
+      "category": "vehicle",
+      "sub_category": "",
+      "label": "trailer truck",
+      "confidence": 0.2635,
+      "top3": [
+        {
+          "category": "vehicle",
+          "label": "trailer truck",
+          "confidence": 0.7426960058510303
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 545.6
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20191001_132524.jpg",
+      "file_name": "IMG_20191001_132524.jpg",
+      "category": "plant_flower",
+      "sub_category": "",
+      "label": "daisy",
+      "confidence": 0.8832,
+      "top3": [
+        {
+          "category": "plant_flower",
+          "label": "daisy",
+          "confidence": 0.8832419514656067
+        },
+        {
+          "category": "animal",
+          "label": "bee",
+          "confidence": 0.09853588812984526
+        },
+        {
+          "category": "other",
+          "label": "pot",
+          "confidence": 0.0025379646103829145
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 320.7
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20191001_132642.jpg",
+      "file_name": "IMG_20191001_132642.jpg",
+      "category": "plant_flower",
+      "sub_category": "",
+      "label": "daisy",
+      "confidence": 0.9948,
+      "top3": [
+        {
+          "category": "plant_flower",
+          "label": "daisy",
+          "confidence": 0.9948010444641113
+        },
+        {
+          "category": "animal",
+          "label": "bee",
+          "confidence": 0.004591175886162091
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 241.9
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20191001_133106.jpg",
+      "file_name": "IMG_20191001_133106.jpg",
+      "category": "plant_flower",
+      "sub_category": "",
+      "label": "daisy",
+      "confidence": 0.5774,
+      "top3": [
+        {
+          "category": "plant_flower",
+          "label": "daisy",
+          "confidence": 0.5773779153823853
+        },
+        {
+          "category": "animal",
+          "label": "sulphur butterfly",
+          "confidence": 0.2992847189307213
+        },
+        {
+          "category": "other",
+          "label": "pot",
+          "confidence": 0.06485956907272339
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 93.2
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200123_224520.jpg",
+      "file_name": "IMG_20200123_224520.jpg",
+      "category": "landscape_nature",
+      "sub_category": "",
+      "label": "/s/sky 306",
+      "confidence": 0.0302,
+      "top3": [
+        {
+          "category": "other",
+          "label": "umbrella",
+          "confidence": 0.20636220648884773
+        },
+        {
+          "category": "landscape_nature",
+          "label": "lakeside",
+          "confidence": 0.1449516899883747
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls+scene",
+      "elapsed_ms": 270.7
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200125_000407.jpg",
+      "file_name": "IMG_20200125_000407.jpg",
+      "category": "other",
+      "sub_category": "",
+      "label": "spotlight",
+      "confidence": 0.1443,
+      "top3": [
+        {
+          "category": "other",
+          "label": "spotlight",
+          "confidence": 0.16542496904730797
+        },
+        {
+          "category": "animal",
+          "label": "sea urchin",
+          "confidence": 0.14431175589561462
+        },
+        {
+          "category": "landscape_nature",
+          "label": "volcano",
+          "confidence": 0.07780548930168152
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 236.8
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200605_200129.jpg",
+      "file_name": "IMG_20200605_200129.jpg",
+      "category": "landscape_nature",
+      "sub_category": "",
+      "label": "/s/sky 306",
+      "confidence": 0.023,
+      "top3": [
+        {
+          "category": "other",
+          "label": "balloon",
+          "confidence": 0.8701949026435614
+        },
+        {
+          "category": "sports",
+          "label": "soccer ball",
+          "confidence": 0.010101652704179287
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls+scene",
+      "elapsed_ms": 235.2
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200807_203428.jpg",
+      "file_name": "IMG_20200807_203428.jpg",
+      "category": "landscape_nature",
+      "sub_category": "",
+      "label": "自然·volcano",
+      "confidence": 0.1159,
+      "top3": [
+        {
+          "category": "landscape_nature",
+          "label": "volcano",
+          "confidence": 0.25708261504769325
+        },
+        {
+          "category": "architecture",
+          "label": "barn",
+          "confidence": 0.06566651165485382
+        },
+        {
+          "category": "other",
+          "label": "balloon",
+          "confidence": 0.03443339467048645
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 275.6
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20200930_124607.jpg",
+      "file_name": "IMG_20200930_124607.jpg",
+      "category": "other",
+      "sub_category": "",
+      "label": "hot pot",
+      "confidence": 0.5084,
+      "top3": [
+        {
+          "category": "other",
+          "label": "hot pot",
+          "confidence": 0.7686881367117167
+        },
+        {
+          "category": "food",
+          "label": "pizza",
+          "confidence": 0.14621058478951454
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 310.4
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20201003_123356.jpg",
+      "file_name": "IMG_20201003_123356.jpg",
+      "category": "other",
+      "sub_category": "",
+      "label": "plate",
+      "confidence": 0.2125,
+      "top3": [
+        {
+          "category": "other",
+          "label": "plate",
+          "confidence": 0.3665226176381111
+        },
+        {
+          "category": "food",
+          "label": "soup bowl",
+          "confidence": 0.10919767618179321
+        },
+        {
+          "category": "architecture",
+          "label": "restaurant",
+          "confidence": 0.07836956530809402
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 331.5
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20201113_125501.jpg",
+      "file_name": "IMG_20201113_125501.jpg",
+      "category": "other",
+      "sub_category": "",
+      "label": "hot pot",
+      "confidence": 0.746,
+      "top3": [
+        {
+          "category": "other",
+          "label": "hot pot",
+          "confidence": 0.9879270987585187
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 339.8
+    },
+    {
+      "path": "D:/YUAN HAO/Pictures/2026/test\\IMG_20201214_115130.jpg",
+      "file_name": "IMG_20201214_115130.jpg",
+      "category": "animal",
+      "sub_category": "其他动物",
+      "label": "其他动物·king crab",
+      "confidence": 0.4055,
+      "top3": [
+        {
+          "category": "animal",
+          "label": "king crab",
+          "confidence": 0.7393672838807106
+        },
+        {
+          "category": "other",
+          "label": "plate",
+          "confidence": 0.07806729525327682
+        }
+      ],
+      "person_ids": [],
+      "person_count": 0,
+      "source": "cls",
+      "elapsed_ms": 323.6
+    }
+  ]
+}

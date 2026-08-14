@@ -77,6 +77,213 @@
         "在 Tauri/WebView2 中优先用 Pointer Events 实现拖拽，避免 HTML5 DnD 的兼容性问题",
         "elementFromPoint 判断悬停目标时，拖拽浮层需 pointer-events:none 避免遮挡"
       ]
+    },
+    {
+      "id": "BUG-2026-0815-001",
+      "date": "2026-08-15",
+      "status": "resolved",
+      "title": "缩略图指纹使用 DefaultHasher 随机种子，重编译后缓存全失效，get_albums 卡死 140 秒",
+      "module": "缩略图缓存 / 指纹命名（dev 分支 f89ba67 引入，122282b 修复）",
+      "symptom": [
+        "打开软件后前端点击无反应、页面内容消失、应用卡死",
+        "日志显示 get_albums START 后长时间无 END（卡 140 秒）",
+        "时好时坏：某些启动正常（缓存命中），某些启动卡死",
+        "thumbs 目录中同相册出现多个不同 hash 的指纹文件（如 album_14 两个 hash 166925300 与 3053189282757412854）"
+      ],
+      "root_cause": {
+        "summary": "file_fingerprint 使用 std::hash::DefaultHasher::new()，其种子在每次编译时随机生成，跨编译不稳定",
+        "detail": [
+          "DefaultHasher 的 keys 在编译期随机生成 → 重新编译应用后，同一文件的指纹（len + mtime + 8KB hash）全部改变",
+          "指纹变化 → album_{id}_auto_{fp}.jpg 缓存文件全部失效（新编译产物不认旧文件名）",
+          "缓存全失效 → 每次 get_albums 对全部相册重新解码 6000x4000 全尺寸 JPEG 生成缩略图",
+          "debug 构建解码一张大图需 5~14 秒，24 个相册串行处理 → get_albums 阻塞约 140 秒",
+          "前端 invoke 等待超时 → 列表空白、点击全部无响应（表现为卡死）",
+          "真实数据复现：修复前全量处理 140.35s；同进程内指纹 3 次相同但跨编译不同（album_14 两 hash 值不同为证）"
+        ]
+      },
+      "evidence_log": [
+        "日志: [AOP:CALL] get_albums START → 无 END（阻塞）",
+        "repro 测试: id=3 thumb=8050ms, id=10 thumb=14422ms, id=16 thumb=14537ms ... 总计 140s",
+        "thumbs 中 album_14 两个指纹文件 hash 不同：166925300 vs 3053189282757412854"
+      ],
+      "solution": {
+        "summary": "指纹改用自实现 FNV-1a 64 位确定性哈希 + 旧命名缩略图复用，老用户零成本迁移",
+        "steps": [
+          "file_fingerprint 弃用 DefaultHasher，改用 FNV-1a 64 位（OFFSET_BASIS + PRIME 迭代异或乘），跨编译/跨平台结果恒定",
+          "新增 reuse_legacy_thumb：指纹缓存未命中时，将基线 era 的 album_{id}_{safe_stem}.jpg 复制为指纹文件，避免重新解码大图",
+          "新增回归测试 fingerprint_deterministic（同文件多次指纹一致）与 legacy_thumb_reuse（旧文件复用）",
+          "真实数据验证：修复后全量处理 61ms（原 140s），23 个相册全部复用旧缩略图，0 个重新生成"
+        ]
+      },
+      "lessons": [
+        "持久化缓存命名（文件名/指纹/URL）禁止使用 DefaultHasher：其种子每次编译时随机，跨进程/跨编译不稳定；必须用确定性哈希（FNV-1a/xxhash/CRC32）",
+        "缓存文件名格式变更必须考虑老数据迁移：新命名不识别旧文件时，应提供旧文件复用/重命名路径，否则老用户首次升级会全量重建（大图场景 = 卡死）",
+        "大图缩略图生成（6000x4000 JPEG 解码 5~14s）在 debug 构建下必须依赖缓存命中，任何导致缓存失效的因素都会被放大成可用性问题"
+      ]
+    },
+    {
+      "id": "BUG-2026-0815-002",
+      "date": "2026-08-15",
+      "status": "resolved",
+      "title": "所有相册封面丢失 - 自动封面不落库，依赖 cover_source + 缩略图生成链",
+      "module": "封面 / 统计缓存命中路径（dev 分支 e8fbbc6 引入，d344e97 修复）",
+      "symptom": [
+        "所有相册的封面丢失（前端 <img> 无 src）",
+        "cover_path 为 NULL 时命中路径不重扫，封面永久丢失"
+      ],
+      "root_cause": {
+        "summary": "自动封面路径不写回 albums.cover_path（SQL），每次加载依赖 album_stats.cover_source 重新生成缩略图；cover_source 为 NULL/源图缺失时，命中路径认为'相册无图'直接 return，且 file_count 一致 → 永远命中 → 永不重扫",
+        "detail": [
+          "fill_album_stats 命中路径：cover_source 为 NULL → 不生成封面 → cover_ok=true → return",
+          "cover_path 不持久化：即使生成成功，也只是内存值，下次加载重新依赖生成链",
+          "一旦 cover_source 被置 NULL（历史数据/异常），封面丢失且无法自愈"
+        ]
+      },
+      "evidence_log": [
+        "模拟命中路径：所有相册 cov_src=None → cover=None（22/24）",
+        "albums 表 cover_path 24/24 为 NULL（自动封面从未持久化）"
+      ],
+      "solution": {
+        "summary": "按用户方案重构：封面地址持久化到 albums.cover_path（SQL），加载直接读；重扫时生成封面写回 SQL；命中路径加封面兜底自愈",
+        "steps": [
+          "新增 db::update_album_cover（只更新 cover_path，不动 updated_at）",
+          "fill_album_stats 扫描路径：生成封面缩略图后写回 albums.cover_path（SQL）",
+          "fill_album_stats 命中路径：封面直接读 albums.cover_path，不重新生成；photo_count>0 但 cover_path 为空 → 强制重扫自愈（一次性）",
+          "set_cover 换封面更新 SQL + 清理旧封面缩略图（已有 generate_cover 清理 + cleanup_album_auto_thumbs）"
+        ]
+      },
+      "lessons": [
+        "自动封面等'计算属性'若依赖文件系统，应持久化到 SQL（封面地址），加载直接读，避免每次重新计算的脆弱链路",
+        "缓存命中路径必须有'数据不一致'的自愈兜底（封面该有却没有 → 重扫），否则异常状态永久存在",
+        "命中判断不要只依赖单一信号（file_count），关键数据缺失（封面）也应触发重扫"
+      ]
+    },
+    {
+      "id": "BUG-2026-0815-003",
+      "date": "2026-08-15",
+      "status": "resolved",
+      "title": "更换封面卡顿 - image::open 全尺寸解码大图耗时 7.7 秒",
+      "module": "缩略图生成 / 图片解码（dev 分支 d344e97 引入日志暴露，5d6590b 修复）",
+      "symptom": [
+        "前端更换封面明显卡顿（等待数秒）",
+        "日志 [SET_COVER] 阶段2 生成封面缩略图: 7670ms / 7752ms"
+      ],
+      "root_cause": {
+        "summary": "generate_cover / ensure_thumbnail_from_source 用 image::open 全尺寸解码原图（6000x4000 约 2400 万像素）后才 thumbnail 缩小到 256px，99.9% 时间花在全尺寸解码上（debug 构建 5~14 秒/张）",
+        "detail": [
+          "image::open 解码整个 6000x4000 JPEG 需要 5~14 秒（debug 构建无优化）",
+          "thumbnail(256,256) 的缩放计算量可忽略，真正的瓶颈是全尺寸解码",
+          "实测 5525x3104 大图：全尺寸解码+缩略 8161ms"
+        ]
+      },
+      "evidence_log": [
+        "[SET_COVER] 阶段2 生成封面缩略图: 7670ms（album_id=26）",
+        "[SET_COVER] 阶段2 生成封面缩略图: 7752ms（album_id=20）",
+        "其余阶段均 <5ms"
+      ],
+      "solution": {
+        "summary": "改用 JPEG DCT 降采样解码（jpeg-decoder scale 参数），解码时只解所需 DCT 块直接降采样到接近 256px，再 thumbnail 收尾",
+        "steps": [
+          "添加 jpeg-decoder 依赖；新增 decode_jpeg_scaled（image_dimensions 读头选 scale 1/2/4/8/16）",
+          "新增 save_thumbnail 统一入口：JPEG 走降采样快速路径，失败降级全尺寸解码；其他格式保持 image crate",
+          "ensure_thumbnail_from_source / generate_cover 均改用快速路径",
+          "实测 5525x3104：8161ms → 763ms（11x，release 预计 <200ms）"
+        ]
+      },
+      "lessons": [
+        "生成缩略图必须降采样解码（JPEG DCT scale / 渐进解码），绝不能全尺寸解码后再缩小",
+        "给耗时的关键操作加阶段日志（set_cover 的 [SET_COVER] 日志）能快速定位性能瓶颈",
+        "debug 构建的解码性能与 release 差距巨大（3~5x），性能问题需在 release 下评估"
+      ]
+    },
+    {
+      "id": "BUG-2026-0815-004",
+      "date": "2026-08-15",
+      "status": "resolved",
+      "title": "拍摄日期定位错误 - 无 EXIF 照片日期缺失，需 mtime 兜底",
+      "module": "日期定位 / EXIF（dev 分支 05d4bf1 修复）",
+      "symptom": [
+        "相册拍摄日期全部为空（实测 24/24 shoot_time 为 NULL）",
+        "时间分组视图无法按拍摄日期归位",
+        "多数照片（微信导出/截图/后期处理）不含 EXIF DateTimeOriginal"
+      ],
+      "root_cause": {
+        "summary": "read_shoot_time 只读 EXIF DateTimeOriginal，缺失时直接返回 None，没有兜底",
+        "detail": [
+          "微信导出、截图、压缩处理过的图片通常没有 EXIF 拍摄时间",
+          "JPEG 文件本身的修改时间（mtime）通常接近实际拍摄时刻",
+          "原实现 EXIF 失败即放弃 → 大量相册无拍摄日期"
+        ]
+      },
+      "solution": {
+        "summary": "两级优先级：EXIF DateTimeOriginal 优先，mtime 兜底",
+        "steps": [
+          "read_shoot_time：EXIF 读取失败 → 回退 read_file_mtime（文件修改时间）",
+          "新增 unix_secs_to_date（Howard Hinnant civil_from_days 公历算法，避免引入日期库）",
+          "清空 album_stats 缓存触发全量重扫，用新逻辑重写 shoot_time（封面已持久化，重扫不重新生成）"
+        ]
+      },
+      "lessons": [
+        "外部文件的时间信息需多级兜底：EXIF 优先、文件时间兜底、创建时间最后",
+        "日期转换避免引入重量级依赖，civil_from_days 算法可靠且几行实现"
+      ]
+    },
+    {
+      "id": "BUG-2026-0816-001",
+      "date": "2026-08-16",
+      "status": "resolved",
+      "title": "图片点击不跳转/不允许打开 - 三表无点击事件 + opener 插件空作用域",
+      "module": "相册详情页结果表 / AlbumDetail.vue（dev 分支 修复）",
+      "symptom": [
+        "相册详情页 EXIF 扫描表、影调分析表里点击照片名字无任何反应",
+        "内容识别表点击照片名字报『不允许打开』（openPath 抛 ForbiddenPath）",
+        "用户期望点击照片名用默认看图程序打开原图"
+      ],
+      "root_cause": {
+        "summary": "两层问题叠加：① EXIF/影调表 col-name 是纯文本未绑定点击事件；② 即使有事件（内容识别表），opener 插件 allow-open-path 无预配置作用域 → CommandScope.allows() 为空 → 任意路径都被拒绝",
+        "detail": [
+          "plugin-opener 的 allow-open-path 权限定义：『Enables the open_path command WITHOUT any pre-configured scope』——光加权限不放行任何路径",
+          "open_path 命令双重校验：fs_scope.is_allowed(path) 且 allowed 条目 matches_path_program(with)；with=None 时需 Application::Default 条目",
+          "照片位于 D: 盘任意目录，不在默认 fs 作用域内",
+          "三张表各自独立编写，仅内容识别表复用了 openImage"
+        ]
+      },
+      "solution": {
+        "summary": "统一点击事件 + 给 opener:allow-open-path 配置通配作用域",
+        "steps": [
+          "capabilities/default.json：opener:allow-open-path 改为对象形式 {\"identifier\": \"opener:allow-open-path\", \"allow\": [{\"path\": \"**\"}]} —— ** 通配所有路径",
+          "EXIF/影调表照片名字包 span.img-name-link 绑定 @click=openImage(p.path)，与内容识别表一致",
+          "cargo build 验证能力文件通过 schema 校验并嵌入二进制",
+          "vue-tsc 0 错误、cargo build 成功"
+        ]
+      },
+      "lessons": [
+        "Tauri v2 插件权限与作用域是两回事：allow-open-path 需显式配置 scope（allow 数组），否则命令存在但路径全拒",
+        "同页多处相似交互应统一事件绑定，避免行为漂移",
+        "排查『点击无反应/不允许』先看权限定义文档：autogenerated/commands/*.toml 明确标注有无预配置 scope"
+      ]
+    },
+    {
+      "id": "B08",
+      "date": "2026-08-12",
+      "status": "已修复",
+      "title": "YOLOv8-cls 置信度被二次 softmax 压垮（界面置信度 0.3%~0.7%）",
+      "module": "python/vcr/services/classifier.py",
+      "symptom": "所有非人像照片置信度显示 ~0.005，实测 beagle 图应 0.94",
+      "root_cause": "ultralytics 导出的 yolov8s-cls.onnx 输出已是概率分布（值域[0,1]），旧 server.py 再套 _softmax 把 1000 维近平均匀分布压缩，top1≈1/1000",
+      "solution": "删除二次 softmax，输出 clip 后直接作概率并归一化",
+      "lessons": "导出模型的输出语义（logits vs probs）必须实测验证，不能想当然；用真实置信度标定阈值"
+    },
+    {
+      "id": "B09",
+      "date": "2026-08-12",
+      "status": "已修复",
+      "title": "SCRFD 人脸检测解码三连坑（人数/坐标/嵌入全错）",
+      "module": "python/vcr/services/face_service.py",
+      "symptom": "①det_500m 解码框 8px 级错误 ②对齐后嵌入恒等 ③skimage 导入崩溃",
+      "root_cause": "①SCRFD bbox/kps 输出是归一化距离必须乘 stride（官方 scrfd.py: bbox*stride）②预处理必须 (x-127.5)/128 黑边而非 /255 灰边 ③skimage 与 numpy2.5 二进制不兼容 ④kps 解码又二次乘了 stride",
+      "solution": "对照 insightface scrfd.py 逐行核对：距离乘 stride、输入 (x-127.5)/128、cv2.estimateAffinePartial2D 替代 skimage.SimilarityTransform",
+      "lessons": "第三方导出模型务必读官方推理代码，输出形状/命名/预处理全都要对齐；flat 格式 SCRFD 输出按 (N,D) 形状自适应分组"
     }
   ]
 }

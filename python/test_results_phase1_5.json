@@ -1,0 +1,732 @@
+{
+ "summary": {
+  "total": 53,
+  "ok": 48,
+  "accuracy_pct": 90.6,
+  "elapsed_sec": 23.1,
+  "avg_ms": 437.0,
+  "by_gt": {
+   "portrait": {
+    "n": 8,
+    "ok": 8,
+    "miss": []
+   },
+   "street": {
+    "n": 7,
+    "ok": 6,
+    "miss": [
+     {
+      "file": "e-7005.jpg",
+      "pred": "portrait",
+      "label": "合影·2人",
+      "source": "det+face"
+     }
+    ]
+   },
+   "cityscape": {
+    "n": 4,
+    "ok": 4,
+    "miss": []
+   },
+   "other": {
+    "n": 7,
+    "ok": 7,
+    "miss": []
+   },
+   "landscape": {
+    "n": 4,
+    "ok": 3,
+    "miss": [
+     {
+      "file": "20260716-1784173966302.jpg",
+      "pred": "cityscape",
+      "label": "castle",
+      "source": "cls"
+     }
+    ]
+   },
+   "flower": {
+    "n": 6,
+    "ok": 3,
+    "miss": [
+     {
+      "file": "IMG_20200207_173741.jpg",
+      "pred": "animal",
+      "label": "其他动物·impala",
+      "source": "cls"
+     },
+     {
+      "file": "IMG_20200228_131234.jpg",
+      "pred": "other",
+      "label": "maypole",
+      "source": "cls"
+     },
+     {
+      "file": "IMG_20200228_132402.jpg",
+      "pred": "animal",
+      "label": "其他动物·damselfly",
+      "source": "cls"
+     }
+    ]
+   },
+   "night_scene": {
+    "n": 7,
+    "ok": 7,
+    "miss": []
+   },
+   "food": {
+    "n": 5,
+    "ok": 5,
+    "miss": []
+   },
+   "document": {
+    "n": 3,
+    "ok": 3,
+    "miss": []
+   },
+   "animal": {
+    "n": 2,
+    "ok": 2,
+    "miss": []
+   }
+  }
+ },
+ "rows": [
+  {
+   "file": "20240220-DSC_3583.jpg",
+   "gt": "portrait",
+   "gt_zh": "个人特写",
+   "gt_folded": "portrait",
+   "pred": "portrait",
+   "pred_folded": "portrait",
+   "label": "人物特写·1人",
+   "source": "det+face",
+   "conf": 0.9074,
+   "ok": true
+  },
+  {
+   "file": "20240220-DSC_3584.jpg",
+   "gt": "portrait",
+   "gt_zh": "个人特写",
+   "gt_folded": "portrait",
+   "pred": "portrait",
+   "pred_folded": "portrait",
+   "label": "人物特写·1人",
+   "source": "det+face",
+   "conf": 0.9147,
+   "ok": true
+  },
+  {
+   "file": "20240220-DSC_3585.jpg",
+   "gt": "street",
+   "gt_zh": "人文随拍",
+   "gt_folded": "street",
+   "pred": "street",
+   "pred_folded": "street",
+   "label": "扫街·3人",
+   "source": "det",
+   "conf": 0.8942,
+   "ok": true
+  },
+  {
+   "file": "20240220-DSC_3589.jpg",
+   "gt": "street",
+   "gt_zh": "人文随拍",
+   "gt_folded": "street",
+   "pred": "street",
+   "pred_folded": "street",
+   "label": "扫街·3人",
+   "source": "det",
+   "conf": 0.9172,
+   "ok": true
+  },
+  {
+   "file": "20240220-DSC_3591.jpg",
+   "gt": "street",
+   "gt_zh": "人文随拍",
+   "gt_folded": "street",
+   "pred": "street",
+   "pred_folded": "street",
+   "label": "扫街·3人",
+   "source": "det",
+   "conf": 0.8329,
+   "ok": true
+  },
+  {
+   "file": "20240220-DSC_3604-已增强-降噪.jpg",
+   "gt": "architecture",
+   "gt_zh": "城市风光",
+   "gt_folded": "cityscape",
+   "pred": "architecture",
+   "pred_folded": "cityscape",
+   "label": "breakwater",
+   "source": "cls",
+   "conf": 0.4083,
+   "ok": true
+  },
+  {
+   "file": "20240220-DSC_3607-已增强-降噪.jpg",
+   "gt": "architecture",
+   "gt_zh": "城市风光",
+   "gt_folded": "cityscape",
+   "pred": "architecture",
+   "pred_folded": "cityscape",
+   "label": "steel arch bridge",
+   "source": "cls",
+   "conf": 0.4346,
+   "ok": true
+  },
+  {
+   "file": "20240220-DSC_3609.jpg",
+   "gt": "vehicle",
+   "gt_zh": "车辆",
+   "gt_folded": "other",
+   "pred": "vehicle",
+   "pred_folded": "other",
+   "label": "tricycle",
+   "source": "cls",
+   "conf": 0.3571,
+   "ok": true
+  },
+  {
+   "file": "20240220-DSC_3611.jpg",
+   "gt": "street",
+   "gt_zh": "人文随拍",
+   "gt_folded": "street",
+   "pred": "street",
+   "pred_folded": "street",
+   "label": "扫街·3人",
+   "source": "det",
+   "conf": 0.5789,
+   "ok": true
+  },
+  {
+   "file": "20240220-DSC_3613.jpg",
+   "gt": "street",
+   "gt_zh": "人文随拍",
+   "gt_folded": "street",
+   "pred": "street",
+   "pred_folded": "street",
+   "label": "扫街·5人",
+   "source": "det",
+   "conf": 0.7304,
+   "ok": true
+  },
+  {
+   "file": "20240220-DSC_3618-已增强-降噪.jpg",
+   "gt": "architecture",
+   "gt_zh": "城市风光",
+   "gt_folded": "cityscape",
+   "pred": "architecture",
+   "pred_folded": "cityscape",
+   "label": "pier",
+   "source": "cls",
+   "conf": 0.731,
+   "ok": true
+  },
+  {
+   "file": "20260716-1784173966302.jpg",
+   "gt": "landscape_nature",
+   "gt_zh": "自然风景",
+   "gt_folded": "landscape",
+   "pred": "architecture",
+   "pred_folded": "cityscape",
+   "label": "castle",
+   "source": "cls",
+   "conf": 0.3576,
+   "ok": false
+  },
+  {
+   "file": "IMG_20200207_173741.jpg",
+   "gt": "plant_flower",
+   "gt_zh": "花朵/植物",
+   "gt_folded": "flower",
+   "pred": "animal",
+   "pred_folded": "animal",
+   "label": "其他动物·impala",
+   "source": "cls",
+   "conf": 0.5006,
+   "ok": false
+  },
+  {
+   "file": "IMG_20200209_201138.jpg",
+   "gt": "night_scene",
+   "gt_zh": "夜景",
+   "gt_folded": "night_scene",
+   "pred": "night_scene",
+   "pred_folded": "night_scene",
+   "label": "夜景",
+   "source": "tone",
+   "conf": 0.85,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200209_203753.jpg",
+   "gt": "landscape_nature",
+   "gt_zh": "自然风景",
+   "gt_folded": "landscape",
+   "pred": "landscape_nature",
+   "pred_folded": "landscape",
+   "label": "自然·alp",
+   "source": "cls",
+   "conf": 0.7106,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200211_193215.jpg",
+   "gt": "food",
+   "gt_zh": "食物",
+   "gt_folded": "food",
+   "pred": "food",
+   "pred_folded": "food",
+   "label": "plate",
+   "source": "cls",
+   "conf": 0.6353,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200228_121553.jpg",
+   "gt": "text",
+   "gt_zh": "文档",
+   "gt_folded": "document",
+   "pred": "document",
+   "pred_folded": "document",
+   "label": "文档",
+   "source": "ocr",
+   "conf": 0.99,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200228_131234.jpg",
+   "gt": "plant_flower",
+   "gt_zh": "花朵/植物",
+   "gt_folded": "flower",
+   "pred": "other",
+   "pred_folded": "other",
+   "label": "maypole",
+   "source": "cls",
+   "conf": 0.1074,
+   "ok": false
+  },
+  {
+   "file": "IMG_20200228_132402.jpg",
+   "gt": "plant_flower",
+   "gt_zh": "花朵",
+   "gt_folded": "flower",
+   "pred": "animal",
+   "pred_folded": "animal",
+   "label": "其他动物·damselfly",
+   "source": "cls",
+   "conf": 0.4937,
+   "ok": false
+  },
+  {
+   "file": "IMG_20200228_165450.jpg",
+   "gt": "text",
+   "gt_zh": "文档",
+   "gt_folded": "document",
+   "pred": "document",
+   "pred_folded": "document",
+   "label": "文档",
+   "source": "ocr",
+   "conf": 0.99,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200228_183531.jpg",
+   "gt": "landscape_nature",
+   "gt_zh": "自然风景",
+   "gt_folded": "landscape",
+   "pred": "landscape_nature",
+   "pred_folded": "landscape",
+   "label": "自然·alp",
+   "source": "cls",
+   "conf": 0.6342,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200228_183829.jpg",
+   "gt": "landscape_nature",
+   "gt_zh": "自然风景",
+   "gt_folded": "landscape",
+   "pred": "landscape_nature",
+   "pred_folded": "landscape",
+   "label": "自然·alp",
+   "source": "cls",
+   "conf": 0.3474,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200228_184239.jpg",
+   "gt": "portrait",
+   "gt_zh": "个人特写",
+   "gt_folded": "portrait",
+   "pred": "portrait",
+   "pred_folded": "portrait",
+   "label": "人物特写·1人",
+   "source": "det+face",
+   "conf": 0.8568,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200229_100526.jpg",
+   "gt": "portrait",
+   "gt_zh": "个人特写",
+   "gt_folded": "portrait",
+   "pred": "portrait",
+   "pred_folded": "portrait",
+   "label": "人物特写·1人",
+   "source": "det+face",
+   "conf": 0.7721,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200229_191718.jpg",
+   "gt": "night_scene",
+   "gt_zh": "夜景",
+   "gt_folded": "night_scene",
+   "pred": "night_scene",
+   "pred_folded": "night_scene",
+   "label": "夜景",
+   "source": "tone",
+   "conf": 0.85,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200301_150106.jpg",
+   "gt": "portrait",
+   "gt_zh": "个人特写",
+   "gt_folded": "portrait",
+   "pred": "portrait",
+   "pred_folded": "portrait",
+   "label": "人物特写·1人",
+   "source": "det+face",
+   "conf": 0.8622,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200301_150946.jpg",
+   "gt": "portrait",
+   "gt_zh": "个人特写",
+   "gt_folded": "portrait",
+   "pred": "portrait",
+   "pred_folded": "portrait",
+   "label": "人物特写·1人",
+   "source": "det+face",
+   "conf": 0.8772,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200304_162315.jpg",
+   "gt": "text",
+   "gt_zh": "文档",
+   "gt_folded": "document",
+   "pred": "document",
+   "pred_folded": "document",
+   "label": "文档",
+   "source": "ocr",
+   "conf": 0.6477,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200307_113915.jpg",
+   "gt": "portrait",
+   "gt_zh": "个人特写",
+   "gt_folded": "portrait",
+   "pred": "portrait",
+   "pred_folded": "portrait",
+   "label": "人物特写·1人",
+   "source": "det+face",
+   "conf": 0.9118,
+   "ok": true
+  },
+  {
+   "file": "e--7.jpg",
+   "gt": "street",
+   "gt_zh": "人文随拍",
+   "gt_folded": "street",
+   "pred": "street",
+   "pred_folded": "street",
+   "label": "扫街·3人",
+   "source": "det",
+   "conf": 0.8787,
+   "ok": true
+  },
+  {
+   "file": "e-.jpg",
+   "gt": "animal",
+   "gt_zh": "动物(猫)",
+   "gt_folded": "animal",
+   "pred": "animal",
+   "pred_folded": "animal",
+   "label": "其他动物·West Highland white terrier",
+   "source": "cls",
+   "conf": 0.218,
+   "ok": true
+  },
+  {
+   "file": "e-7005.jpg",
+   "gt": "street",
+   "gt_zh": "人文随拍",
+   "gt_folded": "street",
+   "pred": "portrait",
+   "pred_folded": "portrait",
+   "label": "合影·2人",
+   "source": "det+face",
+   "conf": 0.8973,
+   "ok": false
+  },
+  {
+   "file": "e-7007.jpg",
+   "gt": "vehicle",
+   "gt_zh": "车辆",
+   "gt_folded": "other",
+   "pred": "vehicle",
+   "pred_folded": "other",
+   "label": "mountain bike",
+   "source": "cls",
+   "conf": 0.4344,
+   "ok": true
+  },
+  {
+   "file": "e-7013.jpg",
+   "gt": "other",
+   "gt_zh": "其他",
+   "gt_folded": "other",
+   "pred": "other",
+   "pred_folded": "other",
+   "label": "flagpole",
+   "source": "cls",
+   "conf": 0.7416,
+   "ok": true
+  },
+  {
+   "file": "e-7097.jpg",
+   "gt": "portrait",
+   "gt_zh": "个人特写",
+   "gt_folded": "portrait",
+   "pred": "portrait",
+   "pred_folded": "portrait",
+   "label": "人物特写·1人",
+   "source": "det+face",
+   "conf": 0.8779,
+   "ok": true
+  },
+  {
+   "file": "e-7123.jpg",
+   "gt": "other",
+   "gt_zh": "其他",
+   "gt_folded": "other",
+   "pred": "other",
+   "pred_folded": "other",
+   "label": "teddy",
+   "source": "cls",
+   "conf": 0.6979,
+   "ok": true
+  },
+  {
+   "file": "e-7125.jpg",
+   "gt": "other",
+   "gt_zh": "其他",
+   "gt_folded": "other",
+   "pred": "other",
+   "pred_folded": "other",
+   "label": "traffic light",
+   "source": "cls",
+   "conf": 0.9997,
+   "ok": true
+  },
+  {
+   "file": "e-7157.jpg",
+   "gt": "animal",
+   "gt_zh": "动物(猫)",
+   "gt_folded": "animal",
+   "pred": "animal",
+   "pred_folded": "animal",
+   "label": "猫·Persian cat",
+   "source": "cls+det",
+   "conf": 0.5881,
+   "ok": true
+  },
+  {
+   "file": "e-7278.jpg",
+   "gt": "vehicle",
+   "gt_zh": "车辆",
+   "gt_folded": "other",
+   "pred": "vehicle",
+   "pred_folded": "other",
+   "label": "limousine",
+   "source": "cls",
+   "conf": 0.2222,
+   "ok": true
+  },
+  {
+   "file": "good-.jpg",
+   "gt": "night_scene",
+   "gt_zh": "夜景",
+   "gt_folded": "night_scene",
+   "pred": "night_scene",
+   "pred_folded": "night_scene",
+   "label": "夜景",
+   "source": "tone",
+   "conf": 0.85,
+   "ok": true
+  },
+  {
+   "file": "nice-6995.jpg",
+   "gt": "architecture",
+   "gt_zh": "城市风光",
+   "gt_folded": "cityscape",
+   "pred": "architecture",
+   "pred_folded": "cityscape",
+   "label": "palace",
+   "source": "cls",
+   "conf": 0.2359,
+   "ok": true
+  },
+  {
+   "file": "nice-7124.jpg",
+   "gt": "vehicle",
+   "gt_zh": "车辆",
+   "gt_folded": "other",
+   "pred": "vehicle",
+   "pred_folded": "other",
+   "label": "trailer truck",
+   "source": "cls",
+   "conf": 0.2635,
+   "ok": true
+  },
+  {
+   "file": "IMG_20191001_132524.jpg",
+   "gt": "plant_flower",
+   "gt_zh": "花朵/植物",
+   "gt_folded": "flower",
+   "pred": "plant_flower",
+   "pred_folded": "flower",
+   "label": "植物花卉·flower",
+   "source": "cls",
+   "conf": 0.8832,
+   "ok": true
+  },
+  {
+   "file": "IMG_20191001_132642.jpg",
+   "gt": "plant_flower",
+   "gt_zh": "花朵/植物",
+   "gt_folded": "flower",
+   "pred": "flower",
+   "pred_folded": "flower",
+   "label": "花朵·花朵",
+   "source": "cls+flower-expert",
+   "conf": 0.5189,
+   "ok": true
+  },
+  {
+   "file": "IMG_20191001_133106.jpg",
+   "gt": "plant_flower",
+   "gt_zh": "花朵/植物",
+   "gt_folded": "flower",
+   "pred": "flower",
+   "pred_folded": "flower",
+   "label": "花朵·花朵",
+   "source": "cls+flower-expert",
+   "conf": 0.4327,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200123_224520.jpg",
+   "gt": "night_scene",
+   "gt_zh": "夜景",
+   "gt_folded": "night_scene",
+   "pred": "night_scene",
+   "pred_folded": "night_scene",
+   "label": "夜景",
+   "source": "tone",
+   "conf": 0.85,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200125_000407.jpg",
+   "gt": "night_scene",
+   "gt_zh": "夜景",
+   "gt_folded": "night_scene",
+   "pred": "night_scene",
+   "pred_folded": "night_scene",
+   "label": "夜景",
+   "source": "tone",
+   "conf": 0.85,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200605_200129.jpg",
+   "gt": "night_scene",
+   "gt_zh": "夜景",
+   "gt_folded": "night_scene",
+   "pred": "night_scene",
+   "pred_folded": "night_scene",
+   "label": "夜景",
+   "source": "tone",
+   "conf": 0.85,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200807_203428.jpg",
+   "gt": "night_scene",
+   "gt_zh": "夜景",
+   "gt_folded": "night_scene",
+   "pred": "night_scene",
+   "pred_folded": "night_scene",
+   "label": "夜景",
+   "source": "tone",
+   "conf": 0.85,
+   "ok": true
+  },
+  {
+   "file": "IMG_20200930_124607.jpg",
+   "gt": "food",
+   "gt_zh": "食物",
+   "gt_folded": "food",
+   "pred": "food",
+   "pred_folded": "food",
+   "label": "hot pot",
+   "source": "cls",
+   "conf": 0.5084,
+   "ok": true
+  },
+  {
+   "file": "IMG_20201003_123356.jpg",
+   "gt": "food",
+   "gt_zh": "食物",
+   "gt_folded": "food",
+   "pred": "food",
+   "pred_folded": "food",
+   "label": "plate",
+   "source": "cls",
+   "conf": 0.2125,
+   "ok": true
+  },
+  {
+   "file": "IMG_20201113_125501.jpg",
+   "gt": "food",
+   "gt_zh": "食物",
+   "gt_folded": "food",
+   "pred": "food",
+   "pred_folded": "food",
+   "label": "hot pot",
+   "source": "cls",
+   "conf": 0.746,
+   "ok": true
+  },
+  {
+   "file": "IMG_20201214_115130.jpg",
+   "gt": "food",
+   "gt_zh": "食物",
+   "gt_folded": "food",
+   "pred": "food",
+   "pred_folded": "food",
+   "label": "king crab",
+   "source": "cls",
+   "conf": 0.4055,
+   "ok": true
+  }
+ ]
+}
