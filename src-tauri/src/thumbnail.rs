@@ -163,9 +163,11 @@ fn read_file_mtime(path: &Path) -> Option<String> {
 
 /// 读取图片的拍摄时间，返回 "YYYY-MM-DD"
 ///
-/// 优先级：
+/// 优先级（三级 EXIF 兜底 + mtime）：
 /// 1. EXIF DateTimeOriginal（相机记录的准确拍摄时间）
-/// 2. 文件修改时间 mtime 兜底（无 EXIF 时，修改时间接近拍摄时刻）
+/// 2. EXIF DateTime（扫描图/后期处理图兜底）
+/// 3. GPS UTC 时间 +8h（相机时间漂移兜底）
+/// 4. 文件修改时间 mtime 兜底（无 EXIF 时，修改时间接近拍摄时刻）
 pub fn read_shoot_time(path: &Path) -> Option<String> {
     // 优先 EXIF DateTimeOriginal
     if let Some(exif_time) = read_exif_shoot_time(path) {
@@ -175,26 +177,114 @@ pub fn read_shoot_time(path: &Path) -> Option<String> {
     read_file_mtime(path)
 }
 
-/// 读取 EXIF DateTimeOriginal，返回 "YYYY-MM-DD"；缺失/失败返回 None
+/// 读取 EXIF 拍摄时间，返回 "YYYY-MM-DD"；缺失/失败返回 None
+///
+/// 三级 EXIF 兜底
+///   1. DateTimeOriginal（0x9003，相机快门时刻）
+///   2. DateTime（0x0132，扫描图/后期处理图常有 Original 缺失但保留 DateTime）
+///   3. GPS 时间（GPSDateStamp+GPSTimeStamp，UTC +8 换算本地日期；相机时间漂移时的兜底）
 fn read_exif_shoot_time(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let mut bufreader = std::io::BufReader::new(&file);
     let exif_reader = exif::Reader::new();
     let exif = exif_reader.read_from_container(&mut bufreader).ok()?;
 
-    let field = exif.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)?;
-    // DateTimeOriginal 存储为 ASCII，格式 "YYYY:MM:DD HH:MM:SS"
-    let raw = field.display_value().to_string();
-    // 提取前 10 个字符，把冒号换成横线 -> "YYYY-MM-DD"
+    // 1) DateTimeOriginal（"YYYY:MM:DD HH:MM:SS"）
+    if let Some(field) = exif.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY) {
+        if let Some(date) = exif_date_to_iso(&field.display_value().to_string()) {
+            return Some(date);
+        }
+    }
+    // 2) DateTime 兜底（相机 vs 数字化时间；DateTimeOriginal 缺失时用）
+    if let Some(field) = exif.get_field(exif::Tag::DateTime, exif::In::PRIMARY) {
+        if let Some(date) = exif_date_to_iso(&field.display_value().to_string()) {
+            return Some(date);
+        }
+    }
+    // 3) GPS 时间兜底（UTC）→ +8 小时换算本地日期（东八区假设，面向国内相册）
+    if let Some(date) = read_gps_utc_date(&exif) {
+        return Some(date);
+    }
+    None
+}
+
+/// "2023:01:15 10:30:00" → "2023-01-15"（取前 10 字符，冒号换横线；容错引号）
+fn exif_date_to_iso(raw: &str) -> Option<String> {
+    let raw = raw.trim().trim_matches('"');
     let digits: Vec<char> = raw.chars().take(10).collect();
     if digits.len() < 10 {
         return None;
     }
+    let d = [
+        digits[0], digits[1], digits[2], digits[3],
+        digits[5], digits[6], digits[8], digits[9],
+    ];
+    // 仅接受数字日期（防非法 ASCII 值）
+    if !d.iter().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
     Some(format!(
         "{}{}{}{}-{}{}-{}{}",
-        digits[0], digits[1], digits[2], digits[3],
-        digits[5], digits[6], digits[8], digits[9]
+        d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]
     ))
+}
+
+/// GPS 时间（UTC）→ +8 小时 → 本地日期 "YYYY-MM-DD"
+///
+/// GPSDateStamp 为 ASCII "YYYY:MM:DD"，GPSTimeStamp 为 Rational 时分秒。
+/// GPS 时间属 UTC，东八区直接 +8h（可能跨天进位，用 unix 秒换算保证正确）。
+fn read_gps_utc_date(exif: &exif::Exif) -> Option<String> {
+    let ds = exif.get_field(exif::Tag::GPSDateStamp, exif::In::PRIMARY)?;
+    let date = match &ds.value {
+        exif::Value::Ascii(v) => v
+            .iter()
+            .map(|b| String::from_utf8_lossy(b).trim_matches('\0').to_string())
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => return None,
+    };
+    // "YYYY:MM:DD" → 三个数字
+    let parts: Vec<&str> = date.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let y: i64 = parts[0].parse().ok()?;
+    let mo: i64 = parts[1].parse().ok()?;
+    let d: i64 = parts[2].parse().ok()?;
+
+    let ts = exif.get_field(exif::Tag::GPSTimeStamp, exif::In::PRIMARY)?;
+    let mut t = [0i64; 3];
+    if let exif::Value::Rational(v) = &ts.value {
+        if v.len() < 3 {
+            return None;
+        }
+        for i in 0..3 {
+            let den = v[i].denom;
+            t[i] = if den != 0 { (v[i].num / den) as i64 } else { 0 };
+        }
+    } else {
+        return None;
+    }
+    // 年月日时分秒 → unix 秒（UTC）→ +8h
+    let secs = date_to_unix_secs(y, mo, d, t[0], t[1], t[2])? + 8 * 3600;
+    let (yy, mm, dd) = unix_secs_to_date(secs);
+    Some(format!("{yy:04}-{mm:02}-{dd:02}"))
+}
+
+/// (年,月,日,时,分,秒) → unix 秒（Howard Hinnant days_from_civil 算法）
+fn date_to_unix_secs(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64) -> Option<i64> {
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || !(0..=23).contains(&h)
+        || !(0..=59).contains(&mi) || !(0..=59).contains(&s) {
+        return None;
+    }
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;                                  // [0, 399]
+    let mp = (m + 9) % 12;                                    // [0, 11]
+    let doy = (153 * mp + 2) / 5 + d - 1;                     // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;          // [0, 146096]
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3600 + mi * 60 + s)
 }
 
 /// 缩略图结果信息

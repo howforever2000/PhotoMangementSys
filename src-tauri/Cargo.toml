@@ -24,6 +24,8 @@ tauri-plugin-dialog = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "native-tls"] }
+tokio = { version = "1", features = ["time"] }
 thiserror = "1"
 # 图片解码/缩略图生成。支持常见图片格式，jpeg/png/webp 等由 feature 控制
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }

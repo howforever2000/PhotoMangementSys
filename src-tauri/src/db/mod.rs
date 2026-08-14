@@ -685,6 +685,21 @@ impl Database {
         Ok(())
     }
 
+    /// 更新相册地点（自动识别用）：仅写 location，**不动 updated_at**
+    ///
+    /// 自动地点检测不应打乱列表排序（updated_at 降序），
+    /// 手动编辑地点仍走 update_album（会刷新 updated_at）。
+    pub fn update_album_location(&self, id: i64, location: &str) -> Result<(), DbError> {
+        let affected = self.conn.execute(
+            "UPDATE albums SET location = ?2 WHERE id = ?1",
+            params![id, location.trim()],
+        )?;
+        if affected == 0 {
+            return Err(DbError::NotFound(id));
+        }
+        Ok(())
+    }
+
     /// 删除相册（需求 §4.2 delete_album）
     ///
     /// 仅删除数据库记录，不触碰本地文件（需求 §2.3 核心原则）。

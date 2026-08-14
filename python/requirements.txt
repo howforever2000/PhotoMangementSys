@@ -1,0 +1,9 @@
+# 视觉内容识别微服务依赖（模型导出仅需一次，推理期只需以下运行时依赖）
+#   pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+fastapi>=0.110
+uvicorn>=0.29
+onnxruntime>=1.17
+Pillow>=10.0
+numpy>=1.26
+# 人脸检测/对齐（SCRFD + ArcFace 推理期必需）
+opencv-python>=4.8
