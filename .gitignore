@@ -29,22 +29,6 @@ src-tauri/gen
 *.sln
 *.sw?
 
-# Python 视觉识别微服务（模型文件过大不入库，由 export_model.py / download_models.py 生成）
-python/models/*.onnx
-python/models/*.pt
-python/models/*.pth.tar
-python/models/*.zip
-python/models/categories_places365.txt
-python/data/
-python/__pycache__/
-python/vcr/**/__pycache__/
-*.pyc
-
 # 本地地理数据下载缓存（python/download_geo_data.py 的原始 JSON 缓存，可随时重下）
-python/.geo_cache/
-
-# 根目录模型文件（与 python/models/*.pt 同理，过大不入库）
-python/*.pt
-
 # 早期本地地理实验（experiments/local_geocode，已被 python/download_geo_data.py + geo_index 取代）
 experiments/

@@ -20,8 +20,6 @@ mod logger;
 mod photo_scan;
 mod test_scan;
 mod thumbnail;
-mod tone;
-mod vision;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -247,58 +245,7 @@ fn update_album(
     db.update_album(input).map_err(|e| e.to_string())
 }
 
-/// 地点自动识别（FEAT-004 自动化）：扫描相册照片 GPS → 反向地理编码 → 落库
-///
-/// - `force=false`：相册已有手动地点标签时保留（不覆盖），返回 changed=false
-/// - 无 GPS 照片 / 反编码失败 / 相册不存在 → 明确错误
-/// - 仅写 location，不刷新 updated_at（避免打乱列表排序）
-/// - async + spawn_blocking：含网络请求，同步命令会阻塞主线程卡死 UI
-#[derive(serde::Serialize)]
-struct LocationDetectResult {
-    location: String,
-    changed: bool,
-    lat: f64,
-    lon: f64,
-}
 
-#[tauri::command]
-async fn auto_detect_album_location(
-    album_id: i64,
-    force: bool,
-    state: tauri::State<'_, AppState>,
-) -> Result<LocationDetectResult, String> {
-    let _t = log_call!("auto_detect_album_location", &format!("album_id={album_id} force={force}"));
-    let db = state.0.lock().map_err(|e| e.to_string())?;
-    let album = db.get_album(album_id).map_err(|e| e.to_string())?;
-    if album.location.is_some() && !force {
-        let msg = format!("相册已有地点标签（{}），跳过自动识别；如需覆盖请用 force",
-            album.location.as_deref().unwrap_or(""));
-        logger::log_call_end_with("auto_detect_album_location", _t, &format!("SKIP | {msg}"));
-        return Err(msg);
-    }
-    let dir = album.path;
-    drop(db); // 网络/文件 IO 期间不持有数据库锁
-    // 1) GPS 众数坐标（~1km 网格）
-    let coord = photo_scan::detect_album_location(&dir)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "相册内照片无 GPS 坐标，无法自动识别地点".to_string())?;
-    // 2) 反向地理编码：本地省/市优先（离线秒回），未命中再联网精确查询
-    let place = match geo_index::find_region(coord.0, coord.1) {
-        Some(p) => p,
-        None => photo_scan::reverse_geocode_coord(coord.0, coord.1)
-            .ok_or_else(|| "地名解析失败（本地未命中且联网查询失败）".to_string())?,
-    };
-    // 3) 落库（不动 updated_at）
-    let db = state.0.lock().map_err(|e| e.to_string())?;
-    db.update_album_location(album_id, &place).map_err(|e| e.to_string())?;
-    drop(db);
-    logger::log_call_end_with(
-        "auto_detect_album_location",
-        _t,
-        &format!("OK | {place} @ {:.4},{:.4}", coord.0, coord.1),
-    );
-    Ok(LocationDetectResult { location: place, changed: true, lat: coord.0, lon: coord.1 })
-}
 
 /// 重命名相册（可同时重命名绑定的本地文件夹）
 ///
@@ -444,131 +391,9 @@ fn delete_albums(
     r
 }
 
-/// 扫描相册目录内所有图片的 EXIF 拍摄参数（测试功能，不落库）
-///
-/// 信息提取逻辑全部在独立模块 `photo_scan` 中，此处仅保留薄命令壳
-/// （功能解耦：photo_scan 不依赖数据库，可独立测试）。
-#[tauri::command]
-fn scan_album_photos(path: String) -> Result<Vec<photo_scan::PhotoExif>, String> {
-    let _t = log_call!("scan_album_photos", &format!("path={path}"));
-    let r = photo_scan::scan_album_photos(&path);
-    match &r {
-        Ok(list) => logger::log_call_end_with(
-            "scan_album_photos",
-            _t,
-            &format!("OK | photos={}", list.len()),
-        ),
-        Err(e) => logger::log_call_end_with("scan_album_photos", _t, &format!("ERR | {e}")),
-    }
-    r
-}
 
-/// 扫描 EXIF + 本地行政区划反查（离线 · 省/市，无网络请求）
-///
-/// 内嵌民政部口径边界数据（resources/china_geo.json），bbox 预筛 + 射线法点面判断，
-/// 万张照片 <1s；未命中（国外/公海）时 place 为 None，由前端显示坐标链接。
-/// async：保持与 with_place 同构（内部实际为纯 CPU 计算，spawn_blocking 由命令层承担）。
-#[tauri::command]
-async fn scan_album_photos_local_place(path: String) -> Result<Vec<photo_scan::PhotoExif>, String> {
-    let _t = log_call!("scan_album_photos_local_place", &format!("path={path}"));
-    let r = photo_scan::scan_album_photos_with_place_local(&path);
-    match &r {
-        Ok(list) => logger::log_call_end_with(
-            "scan_album_photos_local_place",
-            _t,
-            &format!("OK | photos={} place={}", list.len(), list.iter().filter(|p| p.place.is_some()).count()),
-        ),
-        Err(e) => logger::log_call_end_with("scan_album_photos_local_place", _t, &format!("ERR | {e}")),
-    }
-    r
-}
 
-/// 扫描 EXIF + 反向地理编码（联网，BigDataCloud 中文地名）
-///
-/// 仅对有 GPS 坐标的照片发起请求；扫描速度受网络影响（~200ms/张）。
-/// async：含网络请求，同步命令会阻塞主线程。
-#[tauri::command]
-async fn scan_album_photos_with_place(path: String) -> Result<Vec<photo_scan::PhotoExif>, String> {
-    let _t = log_call!("scan_album_photos_with_place", &format!("path={path}"));
-    let r = photo_scan::scan_album_photos_with_place(&path);
-    match &r {
-        Ok(list) => logger::log_call_end_with(
-            "scan_album_photos_with_place",
-            _t,
-            &format!("OK | photos={} place={}", list.len(), list.iter().filter(|p| p.place.is_some()).count()),
-        ),
-        Err(e) => logger::log_call_end_with("scan_album_photos_with_place", _t, &format!("ERR | {e}")),
-    }
-    r
-}
 
-// ---------------------------------------------------------------------------
-// 主页面「图片扫描测试」命令（不落库，仅验证时间/地点识别 + 照片移动）
-// ---------------------------------------------------------------------------
-
-/// 扫描相册目录内所有图片的影调分析（灰度直方图 + 影调类型，测试功能，不落库）
-/// 影调提取逻辑全部在独立模块 `tone` 中，此处仅保留薄命令壳（功能解耦）。
-#[tauri::command]
-fn scan_album_tones(path: String) -> Result<Vec<tone::PhotoTone>, String> {
-    let _t = log_call!("scan_album_tones", &format!("path={path}"));
-    let r = tone::scan_album_tones(&path);
-    match &r {
-        Ok(list) => logger::log_call_end_with(
-            "scan_album_tones",
-            _t,
-            &format!("OK | photos={}", list.len()),
-        ),
-        Err(e) => logger::log_call_end_with("scan_album_tones", _t, &format!("ERR | {e}")),
-    }
-    r
-}
-
-/// 视觉内容识别（YOLOv8n-cls，测试功能，不落库）
-///
-/// 启动/复用独立 Python 微服务，批量识别相册目录内图片的内容，
-/// 通过 `classify-progress` 事件实时上报进度。识别逻辑全部在
-/// 独立模块 `vision` 中，此处仅保留薄命令壳（功能解耦）。
-#[tauri::command]
-async fn classify_album(
-    path: String,
-    app: tauri::AppHandle,
-) -> Result<Vec<vision::VisionResult>, String> {
-    let _t = log_call!("classify_album", &format!("path={path}"));
-    let r = vision::classify_album(&path, &app).await;
-    match &r {
-        Ok(list) => logger::log_call_end_with(
-            "classify_album",
-            _t,
-            &format!("OK | photos={}", list.len()),
-        ),
-        Err(e) => logger::log_call_end_with("classify_album", _t, &format!("ERR | {e}")),
-    }
-    r
-}
-
-/// 人物注册表：列出全部已标号人物
-#[tauri::command]
-async fn list_persons() -> Result<Vec<vision::PersonInfo>, String> {
-    vision::list_persons().await
-}
-
-/// 人物注册表：重命名人物
-#[tauri::command]
-async fn rename_person(pid: String, name: String) -> Result<(), String> {
-    vision::rename_person(&pid, &name).await
-}
-
-/// 人物注册表：合并人物（source 并入 target）
-#[tauri::command]
-async fn merge_persons(target: String, source: String) -> Result<(), String> {
-    vision::merge_persons(&target, &source).await
-}
-
-/// 人物注册表：删除人物
-#[tauri::command]
-async fn delete_person(pid: String) -> Result<(), String> {
-    vision::delete_person(&pid).await
-}
 
 /// 在系统文件管理器中打开文件夹内部
 ///
@@ -1089,7 +914,6 @@ pub fn run() {
             get_albums,
             get_album,
             update_album,
-            auto_detect_album_location,
             rename_album,
             update_album_tags,
             delete_album,
@@ -1105,18 +929,9 @@ pub fn run() {
             reorder_album,
             reorder_folder,
             search_albums,
-            scan_album_photos,
-            scan_album_photos_with_place,
-            scan_album_photos_local_place,
             test_scan::commands::scan_test_photos,
             test_scan::commands::resolve_test_places,
             test_scan::commands::organize_test_photos,
-            scan_album_tones,
-            classify_album,
-            list_persons,
-            rename_person,
-            merge_persons,
-            delete_person,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
