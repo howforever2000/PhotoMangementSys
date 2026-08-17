@@ -103,8 +103,10 @@ fn now_secs() -> i64 {
 ///
 /// - `parent_id` 为 None 时创建顶级（level=1）
 /// - 有父分组时，level = 父.level + 1，最多 3 级
+/// - `user_id` 为归属用户（多用户隔离，分组属于当前登录用户）
 pub fn create_folder(
     conn: &Connection,
+    user_id: i64,
     name: &str,
     parent_id: Option<i64>,
 ) -> Result<Folder, FolderError> {
@@ -116,8 +118,8 @@ pub fn create_folder(
     let level = match parent_id {
         Some(pid) => {
             let parent_level = conn.query_row(
-                "SELECT level FROM folders WHERE id = ?1",
-                params![pid],
+                "SELECT level FROM folders WHERE id = ?1 AND user_id = ?2",
+                params![pid, user_id],
                 |r| r.get::<_, i64>(0),
             );
             match parent_level {
@@ -138,16 +140,16 @@ pub fn create_folder(
 
     // 同级中排在末尾
     let sort_order: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM folders WHERE parent_id IS ?1",
-        params![parent_id],
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM folders WHERE parent_id IS ?1 AND user_id = ?2",
+        params![parent_id, user_id],
         |r| r.get(0),
     )?;
 
     let now = now_secs();
     conn.execute(
-        "INSERT INTO folders (name, parent_id, level, sort_order, description, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)",
-        params![name, parent_id, level, sort_order, now, now],
+        "INSERT INTO folders (name, parent_id, level, sort_order, description, created_at, updated_at, user_id)
+         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
+        params![name, parent_id, level, sort_order, now, now, user_id],
     )?;
     let id = conn.last_insert_rowid();
 
@@ -166,17 +168,19 @@ pub fn create_folder(
 ///
 /// - `name`/`description` 为 None 时保留原值
 /// - `tags` 覆盖式设置，最多 5 个
+/// - `user_id` 校验分组归属（多用户隔离，他人分组等同不存在）
 pub fn update_folder(
     conn: &Connection,
+    user_id: i64,
     id: i64,
     name: Option<&str>,
     description: Option<&str>,
     tags: Option<Vec<String>>,
 ) -> Result<Folder, FolderError> {
-    // 检查存在
+    // 检查存在（归属当前用户）
     let exists: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM folders WHERE id = ?1",
-        params![id],
+        "SELECT COUNT(*) > 0 FROM folders WHERE id = ?1 AND user_id = ?2",
+        params![id, user_id],
         |r| r.get(0),
     )?;
     if !exists {
@@ -218,7 +222,7 @@ pub fn update_folder(
         }
     }
 
-    get_folder(conn, id)
+    get_folder(conn, user_id, id)
 }
 
 /// 删除分组
@@ -226,10 +230,11 @@ pub fn update_folder(
 /// - 删除分组本身
 /// - 其下直接相册移到顶级（folder_id=NULL）
 /// - 子分组升级为顶级（parent_id=NULL, level=1）
-pub fn delete_folder(conn: &Connection, id: i64) -> Result<(), FolderError> {
+/// - `user_id` 校验分组归属（多用户隔离）
+pub fn delete_folder(conn: &Connection, user_id: i64, id: i64) -> Result<(), FolderError> {
     let exists: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM folders WHERE id = ?1",
-        params![id],
+        "SELECT COUNT(*) > 0 FROM folders WHERE id = ?1 AND user_id = ?2",
+        params![id, user_id],
         |r| r.get(0),
     )?;
     if !exists {
@@ -238,15 +243,15 @@ pub fn delete_folder(conn: &Connection, id: i64) -> Result<(), FolderError> {
 
     // 该分组的相册移到顶级
     conn.execute(
-        "UPDATE albums SET folder_id = NULL, sort_order = 0 WHERE folder_id = ?1",
-        params![id],
+        "UPDATE albums SET folder_id = NULL, sort_order = 0 WHERE folder_id = ?1 AND user_id = ?2",
+        params![id, user_id],
     )?;
     // 清理该分组的子相册关联
     conn.execute("DELETE FROM folder_albums WHERE folder_id = ?1", params![id])?;
     // 子分组升级为顶级
     conn.execute(
-        "UPDATE folders SET parent_id = NULL, level = 1 WHERE parent_id = ?1",
-        params![id],
+        "UPDATE folders SET parent_id = NULL, level = 1 WHERE parent_id = ?1 AND user_id = ?2",
+        params![id, user_id],
     )?;
     // 删除标签
     conn.execute("DELETE FROM folder_tags WHERE folder_id = ?1", params![id])?;
@@ -255,11 +260,11 @@ pub fn delete_folder(conn: &Connection, id: i64) -> Result<(), FolderError> {
     Ok(())
 }
 
-/// 查询单个分组
-pub fn get_folder(conn: &Connection, id: i64) -> Result<Folder, FolderError> {
+/// 查询单个分组（多用户隔离：仅能查询归属 `user_id` 的分组）
+pub fn get_folder(conn: &Connection, user_id: i64, id: i64) -> Result<Folder, FolderError> {
     let folder = conn.query_row(
-        "SELECT id, name, parent_id, level, sort_order, description FROM folders WHERE id = ?1",
-        params![id],
+        "SELECT id, name, parent_id, level, sort_order, description FROM folders WHERE id = ?1 AND user_id = ?2",
+        params![id, user_id],
         |r| {
             Ok(Folder {
                 id: r.get(0)?,
@@ -286,28 +291,30 @@ pub fn get_folder(conn: &Connection, id: i64) -> Result<Folder, FolderError> {
 ///
 /// 兼容旧数据：之前只有 albums.folder_id，现在双写。此函数把已有的
 /// albums.folder_id 迁移到 folder_albums，避免旧数据在手动树中丢失。
-fn sync_folder_albums(conn: &Connection) -> Result<(), FolderError> {
+/// 多用户隔离：仅同步归属 `user_id` 的相册。
+fn sync_folder_albums(conn: &Connection, user_id: i64) -> Result<(), FolderError> {
     // 从 albums 读取 folder_id 有值的相册，INSERT OR IGNORE 到 folder_albums
     conn.execute(
         "INSERT OR IGNORE INTO folder_albums (folder_id, album_id, sort_order)
-         SELECT folder_id, id, sort_order FROM albums WHERE folder_id IS NOT NULL",
-        [],
+         SELECT folder_id, id, sort_order FROM albums WHERE folder_id IS NOT NULL AND user_id = ?1",
+        params![user_id],
     )?;
     Ok(())
 }
 
-/// 获取手动排序整体结构
-pub fn get_manual_tree(conn: &Connection) -> Result<ManualTree, FolderError> {
+/// 获取手动排序整体结构（多用户隔离：仅返回归属 `user_id` 的分组与相册）
+pub fn get_manual_tree(conn: &Connection, user_id: i64) -> Result<ManualTree, FolderError> {
     // 兼容旧数据：把 albums.folder_id 同步到 folder_albums
-    sync_folder_albums(conn)?;
+    sync_folder_albums(conn, user_id)?;
 
-    // 所有分组
+    // 当前用户所有分组
     let mut folders = Vec::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT id, name, parent_id, level, sort_order, description FROM folders ORDER BY level, parent_id, sort_order",
+            "SELECT id, name, parent_id, level, sort_order, description FROM folders
+             WHERE user_id = ?1 ORDER BY level, parent_id, sort_order",
         )?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map(params![user_id], |r| {
             Ok(Folder {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -322,10 +329,16 @@ pub fn get_manual_tree(conn: &Connection) -> Result<ManualTree, FolderError> {
             folders.push(f?);
         }
     }
-    // 加载所有标签
+    // 加载当前用户所有分组的标签
     {
-        let mut stmt = conn.prepare("SELECT folder_id, tag FROM folder_tags ORDER BY id")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        let mut stmt = conn.prepare(
+            "SELECT ft.folder_id, ft.tag
+             FROM folder_tags ft
+             JOIN folders f ON f.id = ft.folder_id
+             WHERE f.user_id = ?1 ORDER BY ft.id",
+        )?;
+        let rows = stmt
+            .query_map(params![user_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
         let mut tag_map: std::collections::HashMap<i64, Vec<String>> =
             std::collections::HashMap::new();
         for row in rows {
@@ -339,13 +352,19 @@ pub fn get_manual_tree(conn: &Connection) -> Result<ManualTree, FolderError> {
         }
     }
 
-    // 文件夹内相册（从 folder_albums 关联表读取，保证分组归属可靠）
+    // 文件夹内相册（从 folder_albums 关联表读取，保证分组归属可靠；限定当前用户）
     let mut folder_albums = Vec::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT folder_id, album_id FROM folder_albums ORDER BY folder_id, sort_order, id",
+            "SELECT fa.folder_id, fa.album_id
+             FROM folder_albums fa
+             JOIN folders f ON f.id = fa.folder_id
+             JOIN albums a ON a.id = fa.album_id
+             WHERE f.user_id = ?1 AND a.user_id = ?1
+             ORDER BY fa.folder_id, fa.sort_order, fa.id",
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+        let rows = stmt
+            .query_map(params![user_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
         let mut map: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
         for row in rows {
             let (fid, aid) = row?;
@@ -356,16 +375,17 @@ pub fn get_manual_tree(conn: &Connection) -> Result<ManualTree, FolderError> {
         }
     }
 
-    // 顶级相册（不在任何 folder_albums 关联里的相册）
+    // 顶级相册（不在任何 folder_albums 关联里的相册，限定当前用户）
     let mut root_albums = Vec::new();
     {
         let mut stmt = conn.prepare(
             "SELECT a.id, a.sort_order
              FROM albums a
-             WHERE NOT EXISTS (SELECT 1 FROM folder_albums fa WHERE fa.album_id = a.id)
+             WHERE a.user_id = ?1
+               AND NOT EXISTS (SELECT 1 FROM folder_albums fa WHERE fa.album_id = a.id)
              ORDER BY a.sort_order, a.id",
         )?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map(params![user_id], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
         })?;
         for row in rows {

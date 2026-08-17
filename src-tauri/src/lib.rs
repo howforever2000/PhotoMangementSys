@@ -13,6 +13,7 @@ macro_rules! log_call {
     };
 }
 
+mod auth;
 mod db;
 mod folder;
 mod geo_index;
@@ -39,6 +40,18 @@ const THUMBS_DIR: &str = "thumbs";
 /// 对应 SpringBoot 中被 `@Autowired` 注入的单例 `DataSource` / `Service`。
 pub struct AppState(pub Mutex<Database>);
 
+/// 登录会话状态：当前登录用户 id（None 表示未登录）
+///
+/// 多用户登录的核心状态：注册/登录成功后写入，登出后清空。
+/// 所有相册/分组命令通过 `require_user` 读取它，实现相册空间按用户隔离。
+pub struct SessionState(pub Mutex<Option<i64>>);
+
+/// 读取当前登录用户 id，未登录返回「请先登录」错误
+fn require_user(session: &tauri::State<SessionState>) -> Result<i64, String> {
+    let guard = session.0.lock().map_err(|e| e.to_string())?;
+    guard.ok_or_else(|| "请先登录".to_string())
+}
+
 // =====================================================================
 // Tauri 命令层（对应 SpringBoot @RestController）
 // =====================================================================
@@ -52,6 +65,112 @@ pub struct AppState(pub Mutex<Database>);
 //
 // 注册：在下方 `run()` 的 `invoke_handler!` 中列出全部命令名。
 // 调用：前端 `invoke('create_album', { input: {...} })`。
+
+// =====================================================================
+// 认证命令（多用户登录）
+// =====================================================================
+
+/// 注册新用户（需求：账户名、邮箱、手机号、密码、密码确认）
+///
+/// 校验通过后写入 users 表（密码存 Argon2id 哈希），并自动登录。
+#[tauri::command]
+fn register(
+    input: auth::RegisterInput,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<auth::User, String> {
+    let _t = log_call!(
+        "register",
+        &format!("username={}", input.username)
+    );
+    let r = (|| -> Result<auth::User, String> {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let user = auth::register_user(db.conn(), input)?;
+        // 注册成功自动登录
+        let mut guard = session.0.lock().map_err(|e| e.to_string())?;
+        *guard = Some(user.id);
+        Ok(user)
+    })();
+    match &r {
+        Ok(u) => logger::log_call_end_with("register", _t, &format!("OK | id={}", u.id)),
+        Err(e) => logger::log_call_end_with("register", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// 登录（需求：同一 app 多用户登录）
+///
+/// `account` 支持账户名 / 邮箱 / 手机号 任一 + 密码。
+/// 成功后写入会话，后续相册/分组命令均以该用户空间为准。
+#[tauri::command]
+fn login(
+    input: auth::LoginInput,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<auth::User, String> {
+    let _t = log_call!("login", "account=***");
+    let r = (|| -> Result<auth::User, String> {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let user = auth::verify_login(db.conn(), &input.account, &input.password)?;
+        let mut guard = session.0.lock().map_err(|e| e.to_string())?;
+        *guard = Some(user.id);
+        Ok(user)
+    })();
+    match &r {
+        Ok(u) => logger::log_call_end_with("login", _t, &format!("OK | id={}", u.id)),
+        Err(e) => logger::log_call_end_with("login", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// 退出登录（清空会话）
+#[tauri::command]
+fn logout(session: tauri::State<SessionState>) -> Result<(), String> {
+    let _t = log_call!("logout");
+    let mut guard = session.0.lock().map_err(|e| e.to_string())?;
+    *guard = None;
+    logger::log_call_end_with("logout", _t, "OK");
+    Ok(())
+}
+
+/// 获取当前登录用户（应用启动时恢复会话用），未登录返回 None
+#[tauri::command]
+fn get_current_user(
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<Option<auth::User>, String> {
+    let user_id = {
+        let guard = session.0.lock().map_err(|e| e.to_string())?;
+        *guard
+    };
+    match user_id {
+        None => Ok(None),
+        Some(id) => {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            auth::find_user_by_id(db.conn(), id).map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// 忘记密码重置（需求：填手机号、账户名、邮箱校验通过后重设密码）
+///
+/// 无需登录即可调用；三者必须匹配同一用户。
+#[tauri::command]
+fn reset_password(
+    input: auth::ResetPasswordInput,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let _t = log_call!("reset_password", "username=***");
+    let r = (|| -> Result<(), String> {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        auth::reset_password(db.conn(), input)
+    })();
+    match &r {
+        Ok(_) => logger::log_call_end_with("reset_password", _t, "OK"),
+        Err(e) => logger::log_call_end_with("reset_password", _t, &format!("ERR | {e}")),
+    }
+    r
+}
 
 /// 输入参数长度校验
 ///
@@ -76,15 +195,19 @@ fn validate_create(input: &CreateAlbumInput) -> Result<(), String> {
 }
 
 /// 创建相册（需求 §4.2 create_album）
+///
+/// 多用户隔离：新相册归属当前登录用户。
 #[tauri::command]
 fn create_album(
     input: CreateAlbumInput,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<db::Album, String> {
     let _t = log_call!("create_album", &format!("name={}, path={}", input.name, input.path));
+    let user_id = require_user(&session)?;
     validate_create(&input)?;
     let db = state.0.lock().map_err(|e| e.to_string())?;
-    let r = db.create_album(input).map_err(|e| e.to_string());
+    let r = db.create_album(input, user_id).map_err(|e| e.to_string());
     if let Ok(album) = &r {
         logger::log_call_end_with("create_album", _t, &format!("created id={}", album.id));
     } else {
@@ -188,17 +311,20 @@ fn fill_album_stats(album: &mut db::Album, thumbs_dir: &Path, state: &tauri::Sta
 
 /// 获取相册列表（需求 §4.2 get_albums，按 updated_at 降序）
 ///
-/// 返回时为无封面的相册自动补第一张图缩略图
+/// 返回时为无封面的相册自动补第一张图缩略图。
+/// 多用户隔离：仅返回当前登录用户的相册。
 #[tauri::command]
 fn get_albums(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<Vec<db::Album>, String> {
     let _t = log_call!("get_albums");
+    let user_id = require_user(&session)?;
     let thumbs = thumbs_dir(&app)?;
         let mut albums = {
             let db = state.0.lock().map_err(|e| e.to_string())?;
-            db.get_albums().map_err(|e| e.to_string())?
+            db.get_albums(user_id).map_err(|e| e.to_string())?
         };
     for a in albums.iter_mut() {
         fill_album_stats(a, &thumbs, &state);
@@ -208,27 +334,35 @@ fn get_albums(
 }
 
 /// 获取单个相册详情（需求 §4.2 get_album）
+///
+/// 多用户隔离：仅能获取归属当前用户的相册。
 #[tauri::command]
 fn get_album(
     id: i64,
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<db::Album, String> {
+    let user_id = require_user(&session)?;
     let thumbs = thumbs_dir(&app)?;
     let mut album = {
         let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.get_album(id).map_err(|e| e.to_string())?
+        db.get_album(id, user_id).map_err(|e| e.to_string())?
     };
     fill_album_stats(&mut album, &thumbs, &state);
     Ok(album)
 }
 
 /// 更新相册信息（需求 §4.2 update_album）
+///
+/// 多用户隔离：仅能更新归属当前用户的相册。
 #[tauri::command]
 fn update_album(
     input: UpdateAlbumInput,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<(), String> {
+    let user_id = require_user(&session)?;
     if let Some(name) = &input.name {
         let name = name.trim();
         if name.is_empty() {
@@ -244,7 +378,7 @@ fn update_album(
         }
     }
     let db = state.0.lock().map_err(|e| e.to_string())?;
-    db.update_album(input).map_err(|e| e.to_string())
+    db.update_album(input, user_id).map_err(|e| e.to_string())
 }
 
 /// 地点自动识别（FEAT-004 自动化）：扫描相册照片 GPS → 反向地理编码 → 落库
@@ -266,10 +400,12 @@ async fn auto_detect_album_location(
     album_id: i64,
     force: bool,
     state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, SessionState>,
 ) -> Result<LocationDetectResult, String> {
     let _t = log_call!("auto_detect_album_location", &format!("album_id={album_id} force={force}"));
+    let user_id = require_user(&session)?;
     let db = state.0.lock().map_err(|e| e.to_string())?;
-    let album = db.get_album(album_id).map_err(|e| e.to_string())?;
+    let album = db.get_album(album_id, user_id).map_err(|e| e.to_string())?;
     if album.location.is_some() && !force {
         let msg = format!("相册已有地点标签（{}），跳过自动识别；如需覆盖请用 force",
             album.location.as_deref().unwrap_or(""));
@@ -290,7 +426,7 @@ async fn auto_detect_album_location(
     };
     // 3) 落库（不动 updated_at）
     let db = state.0.lock().map_err(|e| e.to_string())?;
-    db.update_album_location(album_id, &place).map_err(|e| e.to_string())?;
+    db.update_album_location(album_id, user_id, &place).map_err(|e| e.to_string())?;
     drop(db);
     logger::log_call_end_with(
         "auto_detect_album_location",
@@ -312,11 +448,13 @@ fn rename_album(
     new_name: String,
     rename_folder: bool,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<db::Album, String> {
     let _t = log_call!(
         "rename_album",
         &format!("id={id}, new_name={new_name}, rename_folder={rename_folder}")
     );
+    let user_id = require_user(&session)?;
     let new_name = new_name.trim().to_string();
     if new_name.is_empty() {
         return Err("相册名称不能为空".into());
@@ -327,7 +465,7 @@ fn rename_album(
     // 读取当前相册
     let current = {
         let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.get_album(id).map_err(|e| e.to_string())?
+        db.get_album(id, user_id).map_err(|e| e.to_string())?
     };
     let mut final_path = current.path.clone();
     // 同步重命名本地文件夹
@@ -358,7 +496,7 @@ fn rename_album(
     // 更新数据库（名称 + 路径）
     {
         let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.update_album_name_path(id, &new_name, &final_path)
+        db.update_album_name_path(id, user_id, &new_name, &final_path)
             .map_err(|e| e.to_string())?;
         // 路径变化 → 统计缓存失效（cover_source 指向旧路径），下次访问重扫
         if final_path != current.path {
@@ -368,7 +506,7 @@ fn rename_album(
     // 返回更新后的相册
     let album = {
         let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.get_album(id).map_err(|e| e.to_string())?
+        db.get_album(id, user_id).map_err(|e| e.to_string())?
     };
     logger::log_call_end_with(
         "rename_album",
@@ -379,25 +517,36 @@ fn rename_album(
 }
 
 /// 设置相册标签（覆盖式，最多 5 个）
+///
+/// 多用户隔离：仅能操作归属当前登录用户的相册。
 #[tauri::command]
 fn update_album_tags(
     album_id: i64,
     tags: Vec<String>,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<(), String> {
+    let user_id = require_user(&session)?;
     let db = state.0.lock().map_err(|e| e.to_string())?;
-    db.update_album_tags(album_id, tags).map_err(|e| e.to_string())
+    db.update_album_tags(album_id, user_id, tags).map_err(|e| e.to_string())
 }
 
 /// 删除相册（需求 §4.2 delete_album，仅删记录不删本地文件）
 ///
 /// 删除成功后同时清理该相册的缩略图缓存文件（数据库级联删除见 db::delete_album）。
+/// 多用户隔离：仅能删除归属当前登录用户的相册。
 #[tauri::command]
-fn delete_album(id: i64, app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
+fn delete_album(
+    id: i64,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<(), String> {
     let _t = log_call!("delete_album", &format!("id={id}"));
+    let user_id = require_user(&session)?;
     let r = (|| -> Result<(), String> {
         let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.delete_album(id).map_err(|e| e.to_string())
+        db.delete_album(id, user_id).map_err(|e| e.to_string())
     })();
     if r.is_ok() {
         // 记录已删除，清理缓存文件（失败不影响删除结果）
@@ -417,16 +566,19 @@ fn delete_album(id: i64, app: tauri::AppHandle, state: tauri::State<AppState>) -
 /// 接收相册 ID 数组，事务内批量删除记录。
 /// **仅删除数据库记录，不删除本地照片文件。**
 /// 返回实际删除数量。删除成功后清理对应缩略图缓存。
+/// 多用户隔离：仅能删除归属当前登录用户的相册。
 #[tauri::command]
 fn delete_albums(
     ids: Vec<i64>,
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<usize, String> {
     let _t = log_call!("delete_albums", &format!("ids={ids:?}"));
+    let user_id = require_user(&session)?;
     let r = (|| -> Result<usize, String> {
         let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.delete_albums(&ids).map_err(|e| e.to_string())
+        db.delete_albums(&ids, user_id).map_err(|e| e.to_string())
     })();
     if let Ok(n) = &r {
         if *n > 0 {
@@ -619,9 +771,11 @@ fn set_cover(
     image_path: String,
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<db::Album, String> {
     let _t = log_call!("set_cover", &format!("album_id={id}, image_path={image_path}"));
     logger::log_info(&format!("[SET_COVER] 开始更换封面: album_id={id}, 选择图片={image_path}"));
+    let user_id = require_user(&session)?;
 
     // 阶段1：校验图片路径存在（用户选择封面）
     let t1 = std::time::Instant::now();
@@ -661,13 +815,16 @@ fn set_cover(
     let t3 = std::time::Instant::now();
     {
         let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.update_album(db::UpdateAlbumInput {
-            id,
-            name: None,
-            description: None,
-            cover_path: Some(cover),
-            location: None,
-        })
+        db.update_album(
+            db::UpdateAlbumInput {
+                id,
+                name: None,
+                description: None,
+                cover_path: Some(cover),
+                location: None,
+            },
+            user_id,
+        )
         .map_err(|e| e.to_string())?;
     }
     logger::log_info(&format!(
@@ -679,7 +836,7 @@ fn set_cover(
     let t4 = std::time::Instant::now();
     let mut album = {
         let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.get_album(id).map_err(|e| e.to_string())?
+        db.get_album(id, user_id).map_err(|e| e.to_string())?
     };
     // 手动封面已确定，清理可能残留的自动缩略图缓存，避免孤儿文件
     thumbnail::cleanup_album_auto_thumbs(id, &thumbs);
@@ -724,12 +881,15 @@ struct ImportProgress {
 /// 每个子文件夹默认作为独立相册（相册名 = 子文件夹名）。
 /// 已作为相册存在的文件夹自动跳过，避免重复。
 /// 处理过程中通过 `import-progress` 事件实时上报进度，供前端进度条显示。
+/// 多用户隔离：导入的相册归属当前登录用户。
 #[tauri::command]
 fn import_albums(
     root_path: String,
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<ImportResult, String> {
+    let user_id = require_user(&session)?;
     let root = std::path::Path::new(&root_path);
     if !root.is_dir() {
         return Err(format!("路径不存在或不是文件夹: {root_path}"));
@@ -760,16 +920,19 @@ fn import_albums(
     for (folder_name, path) in folders {
         let path_str = path.to_string_lossy().into_owned();
 
-        // 检查是否已作为相册存在，存在则跳过
-        if let Ok(Some(_)) = db.find_album_by_path(&path_str) {
+        // 检查是否已作为相册存在（当前用户空间内），存在则跳过
+        if let Ok(Some(_)) = db.find_album_by_path(&path_str, user_id) {
             result.skipped += 1;
         } else {
-            // 创建相册，名称用子文件夹名
-            let created = db.create_album(db::CreateAlbumInput {
-                name: folder_name.clone(),
-                path: path_str,
-                description: None,
-            });
+            // 创建相册，名称用子文件夹名（归属当前用户）
+            let created = db.create_album(
+                db::CreateAlbumInput {
+                    name: folder_name.clone(),
+                    path: path_str,
+                    description: None,
+                },
+                user_id,
+            );
             match created {
                 Ok(_) => result.imported += 1,
                 Err(e) => result.errors.push(format!("{folder_name}: {e}")),
@@ -797,21 +960,27 @@ fn import_albums(
 // =====================================================================
 
 /// 创建分组（文件夹）
+///
+/// 多用户隔离：分组归属当前登录用户。
 #[tauri::command]
 fn create_folder(
     name: String,
     parent_id: Option<i64>,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<folder::Folder, String> {
+    let user_id = require_user(&session)?;
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err("分组名称不能为空".into());
     }
     let db = state.0.lock().map_err(|e| e.to_string())?;
-    folder::create_folder(db.conn(), &name, parent_id).map_err(|e| e.to_string())
+    folder::create_folder(db.conn(), user_id, &name, parent_id).map_err(|e| e.to_string())
 }
 
 /// 更新分组（名称/说明/标签，标签最多 5 个）
+///
+/// 多用户隔离：仅能操作归属当前登录用户的分组。
 #[tauri::command]
 fn update_folder(
     id: i64,
@@ -819,10 +988,13 @@ fn update_folder(
     description: Option<String>,
     tags: Option<Vec<String>>,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<folder::Folder, String> {
+    let user_id = require_user(&session)?;
     let db = state.0.lock().map_err(|e| e.to_string())?;
     folder::update_folder(
         db.conn(),
+        user_id,
         id,
         name.as_deref(),
         description.as_deref(),
@@ -832,19 +1004,32 @@ fn update_folder(
 }
 
 /// 删除分组
+///
+/// 多用户隔离：仅能删除归属当前登录用户的分组。
 #[tauri::command]
-fn delete_folder(id: i64, state: tauri::State<AppState>) -> Result<(), String> {
+fn delete_folder(
+    id: i64,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<(), String> {
+    let user_id = require_user(&session)?;
     let db = state.0.lock().map_err(|e| e.to_string())?;
-    folder::delete_folder(db.conn(), id).map_err(|e| e.to_string())
+    folder::delete_folder(db.conn(), user_id, id).map_err(|e| e.to_string())
 }
 
 /// 获取手动排序结构
+///
+/// 多用户隔离：仅返回当前登录用户的分组与相册。
 #[tauri::command]
-fn get_manual_tree(state: tauri::State<AppState>) -> Result<folder::ManualTree, String> {
+fn get_manual_tree(
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<folder::ManualTree, String> {
     let _t = log_call!("get_manual_tree");
+    let user_id = require_user(&session)?;
     let r = (|| -> Result<folder::ManualTree, String> {
         let db = state.0.lock().map_err(|e| e.to_string())?;
-        folder::get_manual_tree(db.conn()).map_err(|e| e.to_string())
+        folder::get_manual_tree(db.conn(), user_id).map_err(|e| e.to_string())
     })();
     match &r {
         Ok(t) => logger::log_call_end_with("get_manual_tree", _t, &format!("OK | folders={}", t.folders.len())),
@@ -854,15 +1039,19 @@ fn get_manual_tree(state: tauri::State<AppState>) -> Result<folder::ManualTree, 
 }
 
 /// 按名称模糊搜索相册（含分组归属路径）
+///
+/// 多用户隔离：仅搜索当前登录用户的相册空间。
 #[tauri::command]
 fn search_albums(
     keyword: String,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<Vec<db::AlbumSearchResult>, String> {
     let _t = log_call!("search_albums", &format!("keyword={keyword}"));
+    let user_id = require_user(&session)?;
     let r = (|| -> Result<Vec<db::AlbumSearchResult>, String> {
         let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.search_albums(&keyword).map_err(|e| e.to_string())
+        db.search_albums(&keyword, user_id).map_err(|e| e.to_string())
     })();
     match &r {
         Ok(list) => logger::log_call_end_with("search_albums", _t, &format!("OK | count={}", list.len())),
@@ -875,20 +1064,39 @@ fn search_albums(
 ///
 /// - `folder_id` 为 None 表示移到顶级
 /// - 相册移到目标分组后排在组内末尾
+/// - 多用户隔离：仅能移动归属当前登录用户的相册到自己的分组
 #[tauri::command]
 fn move_album(
     album_id: i64,
     folder_id: Option<i64>,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<(), String> {
     let _start = logger::log_call_start("move_album", &format!("album_id={album_id}, folder_id={folder_id:?}"));
+    let user_id = require_user(&session)?;
     let db = state.0.lock().map_err(|e| e.to_string())?;
     let conn = db.conn();
 
-    // 校验文件夹存在
+    // 校验相册归属当前用户（他人相册等同不存在）
+    let album_owned: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM albums WHERE id = ?1 AND user_id = ?2",
+            rusqlite::params![album_id, user_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !album_owned {
+        return Err("相册不存在".into());
+    }
+
+    // 校验文件夹存在（归属当前用户）
     if let Some(fid) = folder_id {
         let exists: bool = conn
-            .query_row("SELECT COUNT(*) > 0 FROM folders WHERE id = ?1", rusqlite::params![fid], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM folders WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![fid, user_id],
+                |r| r.get(0),
+            )
             .map_err(|e| e.to_string())?;
         if !exists {
             return Err("目标分组不存在".into());
@@ -911,8 +1119,8 @@ fn move_album(
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     // 1. 冗余列：albums.folder_id（读取不依赖它，仅保持数据完整）
     tx.execute(
-        "UPDATE albums SET folder_id = ?1, sort_order = ?2 WHERE id = ?3",
-        rusqlite::params![folder_id, sort_order, album_id],
+        "UPDATE albums SET folder_id = ?1, sort_order = ?2 WHERE id = ?3 AND user_id = ?4",
+        rusqlite::params![folder_id, sort_order, album_id, user_id],
     )
     .map_err(|e| e.to_string())?;
     // 2. 事实源：folder_albums 关联表（先删旧关联，再插入新关联）
@@ -937,20 +1145,39 @@ fn move_album(
 ///
 /// 将相册移到同一分组内的新位置。`new_index` 为该相册在目标分组（同一分组）中的新下标。
 /// 若 `folder_id` 提供且与相册当前分组不同，则先移动到该分组再插入指定位置。
+/// 多用户隔离：仅能排序归属当前登录用户的相册与分组。
 #[tauri::command]
 fn reorder_album(
     album_id: i64,
     folder_id: Option<i64>,
     new_index: i64,
     state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
 ) -> Result<(), String> {
+    let user_id = require_user(&session)?;
     let db = state.0.lock().map_err(|e| e.to_string())?;
     let conn = db.conn();
 
-    // 校验文件夹存在
+    // 校验相册归属当前用户（他人相册等同不存在）
+    let album_owned: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM albums WHERE id = ?1 AND user_id = ?2",
+            rusqlite::params![album_id, user_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !album_owned {
+        return Err("相册不存在".into());
+    }
+
+    // 校验文件夹存在（归属当前用户）
     if let Some(fid) = folder_id {
         let exists: bool = conn
-            .query_row("SELECT COUNT(*) > 0 FROM folders WHERE id = ?1", rusqlite::params![fid], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM folders WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![fid, user_id],
+                |r| r.get(0),
+            )
             .map_err(|e| e.to_string())?;
         if !exists {
             return Err("目标分组不存在".into());
@@ -962,8 +1189,8 @@ fn reorder_album(
 
     // 移到目标分组（先放末尾）
     tx.execute(
-        "UPDATE albums SET folder_id = ?1, sort_order = 999999 WHERE id = ?2",
-        rusqlite::params![folder_id, album_id],
+        "UPDATE albums SET folder_id = ?1, sort_order = 999999 WHERE id = ?2 AND user_id = ?3",
+        rusqlite::params![folder_id, album_id, user_id],
     )
     .map_err(|e| e.to_string())?;
 
@@ -1019,18 +1246,26 @@ fn reorder_album(
 }
 
 /// 调整分组在兄弟中的顺序
+///
+/// 多用户隔离：仅能调整归属当前登录用户的分组顺序。
 #[tauri::command]
-fn reorder_folder(folder_id: i64, new_index: i64, state: tauri::State<AppState>) -> Result<(), String> {
+fn reorder_folder(
+    folder_id: i64,
+    new_index: i64,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<(), String> {
+    let user_id = require_user(&session)?;
     let db = state.0.lock().map_err(|e| e.to_string())?;
     let conn = db.conn();
-    let folder = folder::get_folder(conn, folder_id).map_err(|e| e.to_string())?;
-    // 兄弟分组排序
+    let folder = folder::get_folder(conn, user_id, folder_id).map_err(|e| e.to_string())?;
+    // 兄弟分组排序（仅当前用户的分组）
     let mut siblings: Vec<(i64, i64)> = {
         let mut stmt = conn
-            .prepare("SELECT id, sort_order FROM folders WHERE parent_id IS ?1 ORDER BY sort_order")
+            .prepare("SELECT id, sort_order FROM folders WHERE parent_id IS ?1 AND user_id = ?2 ORDER BY sort_order")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(rusqlite::params![folder.parent_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+            .query_map(rusqlite::params![folder.parent_id, user_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
     };
@@ -1082,9 +1317,18 @@ pub fn run() {
             logger::log_info("数据库初始化完成");
             // 注册为全局状态，后续命令通过 tauri::State<AppState> 注入使用
             app.manage(AppState(Mutex::new(database)));
+            // 登录会话状态（多用户隔离）：初始未登录，注册/登录后写入当前用户
+            app.manage(SessionState(Mutex::new(None)));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // 认证（多用户注册/登录/登出/忘记密码）
+            register,
+            login,
+            logout,
+            get_current_user,
+            reset_password,
+            // 相册管理（按用户隔离）
             create_album,
             get_albums,
             get_album,

@@ -176,6 +176,17 @@ impl Database {
     ///
     /// 使用 `IF NOT EXISTS`，应用每次启动安全调用
     fn init_schema(&self) -> Result<(), DbError> {
+        // 用户表（多用户登录：账户名/邮箱/手机号三者唯一，密码只存 Argon2id 哈希）
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS users (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                username      TEXT    NOT NULL UNIQUE,
+                email         TEXT    NOT NULL UNIQUE,
+                phone         TEXT    NOT NULL UNIQUE,
+                password_hash TEXT    NOT NULL,
+                created_at    INTEGER NOT NULL
+            );",
+        )?;
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS albums (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,6 +275,62 @@ impl Database {
              WHERE a.folder_id IS NOT NULL\n\
                AND NOT EXISTS (SELECT 1 FROM folder_albums fa WHERE fa.album_id = a.id);",
         )?;
+        // 迁移：多用户隔离 —— 为旧库 albums / folders 补充 user_id 列（若已存在则忽略）
+        let _ = self.conn.execute_batch("ALTER TABLE albums ADD COLUMN user_id INTEGER;");
+        let _ = self.conn.execute_batch("ALTER TABLE folders ADD COLUMN user_id INTEGER;");
+        // 旧数据归属：存在无主（user_id IS NULL）相册/分组时，自动创建内置管理员账户接管，
+        // 保证多用户功能上线后旧数据仍可访问（凭据见 auth::DEFAULT_ADMIN_*，仅迁移时创建）。
+        let orphan_count: i64 = self
+            .conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM albums WHERE user_id IS NULL)\n\
+                 + (SELECT COUNT(*) FROM folders WHERE user_id IS NULL)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if orphan_count > 0 {
+            let admin_exists: bool = self
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM users WHERE username = ?1",
+                    params![crate::auth::DEFAULT_ADMIN_USERNAME],
+                    |r| r.get(0),
+                )
+                .unwrap_or(false);
+            if !admin_exists {
+                let hash = crate::auth::hash_password(crate::auth::DEFAULT_ADMIN_PASSWORD)
+                    .map_err(|e| DbError::Other(e))?;
+                let now = Self::now_secs();
+                self.conn.execute(
+                    "INSERT INTO users (username, email, phone, password_hash, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        crate::auth::DEFAULT_ADMIN_USERNAME,
+                        crate::auth::DEFAULT_ADMIN_EMAIL,
+                        crate::auth::DEFAULT_ADMIN_PHONE,
+                        hash,
+                        now
+                    ],
+                )?;
+            }
+            let admin_id: i64 = self
+                .conn
+                .query_row(
+                    "SELECT id FROM users WHERE username = ?1",
+                    params![crate::auth::DEFAULT_ADMIN_USERNAME],
+                    |r| r.get(0),
+                )
+                .map_err(|e| DbError::Sqlite(e))?;
+            self.conn.execute(
+                "UPDATE albums SET user_id = ?1 WHERE user_id IS NULL",
+                params![admin_id],
+            )?;
+            self.conn.execute(
+                "UPDATE folders SET user_id = ?1 WHERE user_id IS NULL",
+                params![admin_id],
+            )?;
+        }
         Ok(())
     }
 
@@ -302,21 +369,22 @@ impl Database {
     /// 创建相册
     ///
     /// 1. 校验路径是否存在（需求 §2.2 路径合法性校验）
-    /// 2. 插入记录，捕获 UNIQUE 冲突并返回占用该路径的相册名（需求 §7.2）
-    pub fn create_album(&self, input: CreateAlbumInput) -> Result<Album, DbError> {
+    /// 2. 插入记录（归属当前登录用户 user_id），捕获 UNIQUE 冲突并返回占用该路径的
+    ///    相册名（需求 §7.2）
+    pub fn create_album(&self, input: CreateAlbumInput, user_id: i64) -> Result<Album, DbError> {
         if !Path::new(&input.path).is_dir() {
             return Err(DbError::PathNotExist(input.path));
         }
         let now = Self::now_secs();
         let result = self.conn.execute(
-            "INSERT INTO albums (name, path, description, cover_path, created_at, updated_at)
-             VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
-            params![input.name, input.path, input.description, now, now],
+            "INSERT INTO albums (name, path, description, cover_path, created_at, updated_at, user_id)
+             VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6)",
+            params![input.name, input.path, input.description, now, now, user_id],
         );
         match result {
             Ok(_) => {
                 let id = self.conn.last_insert_rowid();
-                self.get_album(id)
+                self.get_album(id, user_id)
             }
             Err(rusqlite::Error::SqliteFailure(err, _))
                 if err.code == rusqlite::ErrorCode::ConstraintViolation =>
@@ -339,12 +407,13 @@ impl Database {
     /// 根据路径查找相册（不存在返回 None）
     ///
     /// 用于批量导入时检查某个文件夹是否已作为相册存在，避免重复创建。
-    pub fn find_album_by_path(&self, path: &str) -> Result<Option<Album>, DbError> {
+    /// 限定在当前登录用户的相册空间内查询。
+    pub fn find_album_by_path(&self, path: &str, user_id: i64) -> Result<Option<Album>, DbError> {
         let result = self.conn.query_row(
             "SELECT id, name, path, description, cover_path, created_at, updated_at, location
              FROM albums
-             WHERE path = ?1",
-            params![path],
+             WHERE path = ?1 AND user_id = ?2",
+            params![path, user_id],
             Self::row_to_album,
         );
         match result {
@@ -354,17 +423,20 @@ impl Database {
         }
     }
 
-    /// 获取所有相册，按 updated_at 降序（需求 §4.2 get_albums）
-    pub fn get_albums(&self) -> Result<Vec<Album>, DbError> {
+    /// 获取当前用户的全部相册，按 updated_at 降序（需求 §4.2 get_albums）
+    ///
+    /// 多用户隔离：仅返回归属 `user_id` 的相册。
+    pub fn get_albums(&self, user_id: i64) -> Result<Vec<Album>, DbError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, path, description, cover_path, created_at, updated_at, location
              FROM albums
+             WHERE user_id = ?1
              ORDER BY updated_at DESC",
         )?;
-        let rows = stmt.query_map([], Self::row_to_album)?;
+        let rows = stmt.query_map(params![user_id], Self::row_to_album)?;
         let mut albums: Vec<Album> = rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)?;
         self.load_album_tags(&mut albums)?;
-        self.fill_album_folder(&mut albums)?;
+        self.fill_album_folder(&mut albums, user_id)?;
         Ok(albums)
     }
 
@@ -372,12 +444,19 @@ impl Database {
     ///
     /// **唯一事实源是 `folder_albums` 关联表**，`albums.folder_id` 仅是事务内同步的
     /// 冗余缓存列，读取不依赖它。一次查询批量填充，避免 N+1 与四层兜底。
-    fn fill_album_folder(&self, albums: &mut [Album]) -> Result<(), DbError> {
-        // 构建分组路径映射
-        let folder_path_map = self.build_folder_paths()?;
-        // 从 folder_albums 一次读取所有相册的分组归属
-        let mut stmt = self.conn.prepare("SELECT album_id, folder_id FROM folder_albums")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+    ///
+    /// 多用户隔离：分组归属只读取当前用户的分组（albums 本身已按用户过滤）。
+    fn fill_album_folder(&self, albums: &mut [Album], user_id: i64) -> Result<(), DbError> {
+        // 构建当前用户的分组路径映射
+        let folder_path_map = self.build_folder_paths_for_user(user_id)?;
+        // 从 folder_albums 一次读取当前用户所有相册的分组归属
+        let mut stmt = self.conn.prepare(
+            "SELECT fa.album_id, fa.folder_id
+             FROM folder_albums fa
+             JOIN folders f ON f.id = fa.folder_id
+             WHERE f.user_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![user_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
         let mut folder_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
         for row in rows {
             let (aid, fid) = row?;
@@ -428,16 +507,19 @@ impl Database {
     /// - 相册所属分组（及其祖先分组）的名称
     /// - 相册所属分组（及其祖先分组）的标签（folder_tags）
     ///
+    /// 多用户隔离：全部查询限定在当前登录用户的相册空间内。
     /// 返回匹配相册及其所属分组路径。
-    pub fn search_albums(&self, keyword: &str) -> Result<Vec<AlbumSearchResult>, DbError> {
+    pub fn search_albums(&self, keyword: &str, user_id: i64) -> Result<Vec<AlbumSearchResult>, DbError> {
         let kw = format!("%{}%", keyword.trim());
 
         // 收集所有能匹配关键词的相册 id 集合（去重）
         let mut matched_ids: Vec<i64> = Vec::new();
         // 1. 相册名匹配
         {
-            let mut stmt = self.conn.prepare("SELECT id FROM albums WHERE name LIKE ?1")?;
-            let rows = stmt.query_map(params![kw], |r| r.get::<_, i64>(0))?;
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id FROM albums WHERE name LIKE ?1 AND user_id = ?2")?;
+            let rows = stmt.query_map(params![kw, user_id], |r| r.get::<_, i64>(0))?;
             for row in rows {
                 matched_ids.push(row?);
             }
@@ -445,9 +527,12 @@ impl Database {
         // 2. 相册标签匹配
         {
             let mut stmt = self.conn.prepare(
-                "SELECT at.album_id FROM album_tags at WHERE at.tag LIKE ?1",
+                "SELECT at.album_id
+                 FROM album_tags at
+                 JOIN albums a ON a.id = at.album_id
+                 WHERE at.tag LIKE ?1 AND a.user_id = ?2",
             )?;
-            let rows = stmt.query_map(params![kw], |r| r.get::<_, i64>(0))?;
+            let rows = stmt.query_map(params![kw, user_id], |r| r.get::<_, i64>(0))?;
             for row in rows {
                 matched_ids.push(row?);
             }
@@ -459,44 +544,53 @@ impl Database {
                 "SELECT fa.album_id
                  FROM folder_albums fa
                  JOIN folders f ON f.id = fa.folder_id
-                 WHERE f.name LIKE ?1
+                 WHERE f.user_id = ?2
+                   AND (f.name LIKE ?1
                     OR EXISTS (
                         SELECT 1 FROM folder_tags ft WHERE ft.folder_id = f.id AND ft.tag LIKE ?1
-                    )",
+                    ))",
             )?;
-            let rows = stmt.query_map(params![kw], |r| r.get::<_, i64>(0))?;
+            let rows = stmt.query_map(params![kw, user_id], |r| r.get::<_, i64>(0))?;
             for row in rows {
                 matched_ids.push(row?);
             }
         }
         // 4. 祖先分组名/标签匹配（相册分组的祖先链）
         {
-            // 获取所有分组归属，逐一检查祖先链
+            // 获取当前用户的所有分组归属，逐一检查祖先链
             let mut stmt = self.conn.prepare(
-                "SELECT album_id, folder_id FROM folder_albums",
+                "SELECT fa.album_id, fa.folder_id
+                 FROM folder_albums fa
+                 JOIN folders f ON f.id = fa.folder_id
+                 WHERE f.user_id = ?1",
             )?;
-            let rows = stmt.query_map([], |r| {
+            let rows = stmt.query_map(params![user_id], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
             })?;
-            // 构建分组名/标签查找
+            // 构建当前用户的分组名/标签查找
             let mut folder_name_stmt =
-                self.conn.prepare("SELECT id, name FROM folders")?;
+                self.conn.prepare("SELECT id, name FROM folders WHERE user_id = ?1")?;
             let folder_name_map: std::collections::HashMap<i64, String> = folder_name_stmt
-                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                .query_map(params![user_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
                 .collect::<Result<_, _>>()?;
             let mut folder_parent_stmt =
-                self.conn.prepare("SELECT id, parent_id FROM folders")?;
+                self.conn.prepare("SELECT id, parent_id FROM folders WHERE user_id = ?1")?;
             let folder_parent_map: std::collections::HashMap<i64, Option<i64>> =
                 folder_parent_stmt
-                    .query_map([], |r| {
+                    .query_map(params![user_id], |r| {
                         Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
                     })?
                     .collect::<Result<_, _>>()?;
             let folder_tag_map: std::collections::HashMap<i64, Vec<String>> = {
                 let mut map: std::collections::HashMap<i64, Vec<String>> =
                     std::collections::HashMap::new();
-                let mut stmt2 = self.conn.prepare("SELECT folder_id, tag FROM folder_tags")?;
-                let tag_rows = stmt2.query_map([], |r| {
+                let mut stmt2 = self.conn.prepare(
+                    "SELECT ft.folder_id, ft.tag
+                     FROM folder_tags ft
+                     JOIN folders f ON f.id = ft.folder_id
+                     WHERE f.user_id = ?1",
+                )?;
+                let tag_rows = stmt2.query_map(params![user_id], |r| {
                     Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
                 })?;
                 for tr in tag_rows {
@@ -544,16 +638,20 @@ impl Database {
         matched_ids.dedup();
         let mut results = Vec::new();
         if !matched_ids.is_empty() {
-            // 构建文件夹路径映射
-            let folder_path_map = self.build_folder_paths()?;
+            // 构建当前用户的文件夹路径映射
+            let folder_path_map = self.build_folder_paths_for_user(user_id)?;
             for id in matched_ids {
-                if let Ok(album) = self.get_album(id) {
-                    // 获取 folder_id（唯一事实源：folder_albums）
+                if let Ok(album) = self.get_album(id, user_id) {
+                    // 获取 folder_id（唯一事实源：folder_albums，限定当前用户）
                     let folder_id: Option<i64> = self
                         .conn
                         .query_row(
-                            "SELECT folder_id FROM folder_albums WHERE album_id = ?1 LIMIT 1",
-                            params![id],
+                            "SELECT fa.folder_id
+                             FROM folder_albums fa
+                             JOIN folders f ON f.id = fa.folder_id
+                             WHERE fa.album_id = ?1 AND f.user_id = ?2
+                             LIMIT 1",
+                            params![id, user_id],
                             |r| r.get(0),
                         )
                         .unwrap_or(None);
@@ -573,11 +671,18 @@ impl Database {
         Ok(results)
     }
 
-    /// 构建所有分组的完整路径映射（folder_id → "父/子/孙"）
-    fn build_folder_paths(&self) -> Result<std::collections::HashMap<i64, String>, DbError> {
-        // 读取所有分组
-        let mut stmt = self.conn.prepare("SELECT id, name, parent_id FROM folders")?;
-        let rows = stmt.query_map([], |r| {
+    /// 构建当前用户分组的完整路径映射（folder_id → "父/子/孙"）
+    ///
+    /// 多用户隔离：仅读取归属 `user_id` 的分组。
+    fn build_folder_paths_for_user(
+        &self,
+        user_id: i64,
+    ) -> Result<std::collections::HashMap<i64, String>, DbError> {
+        // 读取当前用户所有分组
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, parent_id FROM folders WHERE user_id = ?1")?;
+        let rows = stmt.query_map(params![user_id], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
@@ -623,14 +728,16 @@ impl Database {
     }
 
     /// 根据 ID 获取单个相册（需求 §4.2 get_album）
-    pub fn get_album(&self, id: i64) -> Result<Album, DbError> {
+    ///
+    /// 多用户隔离：仅能获取归属 `user_id` 的相册，他人相册等同不存在。
+    pub fn get_album(&self, id: i64, user_id: i64) -> Result<Album, DbError> {
         let mut album = self
             .conn
             .query_row(
                 "SELECT id, name, path, description, cover_path, created_at, updated_at, location
                  FROM albums
-                 WHERE id = ?1",
-                params![id],
+                 WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
                 Self::row_to_album,
             )
             .map_err(|e| match e {
@@ -639,7 +746,7 @@ impl Database {
             })?;
         let mut arr = [album.clone()];
         self.load_album_tags(&mut arr)?;
-        self.fill_album_folder(&mut arr)?;
+        self.fill_album_folder(&mut arr, user_id)?;
         album = arr[0].clone();
         Ok(album)
     }
@@ -648,25 +755,27 @@ impl Database {
     ///
     /// 使用 COALESCE 实现"提供则更新，不提供则保留原值"，
     /// 并自动刷新 updated_at。返回受影响行数为 0 时表示 ID 不存在。
-    pub fn update_album(&self, input: UpdateAlbumInput) -> Result<(), DbError> {
+    /// 多用户隔离：WHERE 限定归属 `user_id`，他人相册更新等同不存在。
+    pub fn update_album(&self, input: UpdateAlbumInput, user_id: i64) -> Result<(), DbError> {
         let now = Self::now_secs();
         // location 支持三种情况：None=保留原值，Some("")=清除，Some("x")=设置
         // 占位符随 location_sql 动态决定，参数列表同步构建，避免参数个数不匹配
-        let location_sql: &str;
         let mut p: Vec<rusqlite::types::Value> = Vec::new();
         p.push(input.id.into());
         p.push(input.name.into());
         p.push(input.description.into());
         p.push(input.cover_path.into());
         p.push(now.into());
-        match &input.location {
-            None => location_sql = "location",            // 保留原值
-            Some(s) if s.trim().is_empty() => location_sql = "NULL", // 清除
+        // location 占用 ?6 时 user_id 为 ?7，否则 user_id 为 ?6
+        let (location_sql, user_id_ph): (&str, &str) = match &input.location {
+            None => ("location", "?6"),                      // 保留原值
+            Some(s) if s.trim().is_empty() => ("NULL", "?6"), // 清除
             Some(s) => {
-                location_sql = "?6";                      // 设置新值
                 p.push(rusqlite::types::Value::Text(s.trim().to_string()));
+                ("?6", "?7")                                 // 设置新值
             }
-        }
+        };
+        p.push(user_id.into());
         let affected = self.conn.execute(
             &format!(
                 "UPDATE albums
@@ -675,7 +784,7 @@ impl Database {
                      cover_path  = COALESCE(?4, cover_path),
                      location    = {location_sql},
                      updated_at  = ?5
-                 WHERE id = ?1"
+                 WHERE id = ?1 AND user_id = {user_id_ph}"
             ),
             rusqlite::params_from_iter(p),
         )?;
@@ -689,10 +798,11 @@ impl Database {
     ///
     /// 自动地点检测不应打乱列表排序（updated_at 降序），
     /// 手动编辑地点仍走 update_album（会刷新 updated_at）。
-    pub fn update_album_location(&self, id: i64, location: &str) -> Result<(), DbError> {
+    /// 多用户隔离：WHERE 限定归属 `user_id`。
+    pub fn update_album_location(&self, id: i64, user_id: i64, location: &str) -> Result<(), DbError> {
         let affected = self.conn.execute(
-            "UPDATE albums SET location = ?2 WHERE id = ?1",
-            params![id, location.trim()],
+            "UPDATE albums SET location = ?2 WHERE id = ?1 AND user_id = ?3",
+            params![id, location.trim(), user_id],
         )?;
         if affected == 0 {
             return Err(DbError::NotFound(id));
@@ -705,9 +815,11 @@ impl Database {
     /// 仅删除数据库记录，不触碰本地文件（需求 §2.3 核心原则）。
     /// 事务内级联清理关联表（folder_albums / album_tags / album_stats），
     /// 避免孤儿数据残留导致手动树归属判断出错。
-    pub fn delete_album(&self, id: i64) -> Result<(), DbError> {
+    /// 多用户隔离：仅能删除归属 `user_id` 的相册，他人相册等同不存在。
+    pub fn delete_album(&self, id: i64, user_id: i64) -> Result<(), DbError> {
         let tx = self.conn.unchecked_transaction()?;
-        let affected = tx.execute("DELETE FROM albums WHERE id = ?1", params![id])?;
+        let affected =
+            tx.execute("DELETE FROM albums WHERE id = ?1 AND user_id = ?2", params![id, user_id])?;
         if affected == 0 {
             return Err(DbError::NotFound(id));
         }
@@ -721,11 +833,13 @@ impl Database {
     /// 在一个事务中删除多个相册记录，保证原子性（全部成功或全部失败）。
     /// 仅删除数据库记录，**不删除本地照片文件**。
     /// 返回实际删除的数量（不存在的 ID 会被忽略，不算错误）。
-    pub fn delete_albums(&self, ids: &[i64]) -> Result<usize, DbError> {
+    /// 多用户隔离：仅能删除归属 `user_id` 的相册。
+    pub fn delete_albums(&self, ids: &[i64], user_id: i64) -> Result<usize, DbError> {
         let tx = self.conn.unchecked_transaction()?;
         let mut deleted = 0usize;
         for id in ids {
-            let affected = tx.execute("DELETE FROM albums WHERE id = ?1", params![id])?;
+            let affected =
+                tx.execute("DELETE FROM albums WHERE id = ?1 AND user_id = ?2", params![id, user_id])?;
             if affected > 0 {
                 deleted += 1;
                 self.delete_album_refs(&tx, *id)?;
@@ -815,11 +929,19 @@ impl Database {
     }
 
     /// 更新相册名称与绑定路径（rename_album 命令专用，文件夹已重命名成功后调用）
-    pub fn update_album_name_path(&self, id: i64, name: &str, path: &str) -> Result<(), DbError> {
+    ///
+    /// 多用户隔离：WHERE 限定归属 `user_id`。
+    pub fn update_album_name_path(
+        &self,
+        id: i64,
+        user_id: i64,
+        name: &str,
+        path: &str,
+    ) -> Result<(), DbError> {
         let now = Self::now_secs();
         let affected = self.conn.execute(
-            "UPDATE albums SET name = ?1, path = ?2, updated_at = ?3 WHERE id = ?4",
-            params![name, path, now, id],
+            "UPDATE albums SET name = ?1, path = ?2, updated_at = ?3 WHERE id = ?4 AND user_id = ?5",
+            params![name, path, now, id, user_id],
         )?;
         if affected == 0 {
             return Err(DbError::NotFound(id));
@@ -830,13 +952,19 @@ impl Database {
     /// 设置相册标签（覆盖式，最多 5 个）
     ///
     /// 相册不存在返回 NotFound。标签数量超过 5 返回错误。
-    pub fn update_album_tags(&self, album_id: i64, tags: Vec<String>) -> Result<(), DbError> {
-        // 检查相册存在
+    /// 多用户隔离：仅能操作归属 `user_id` 的相册。
+    pub fn update_album_tags(
+        &self,
+        album_id: i64,
+        user_id: i64,
+        tags: Vec<String>,
+    ) -> Result<(), DbError> {
+        // 检查相册存在（归属当前用户）
         let exists: bool = self
             .conn
             .query_row(
-                "SELECT COUNT(*) > 0 FROM albums WHERE id = ?1",
-                params![album_id],
+                "SELECT COUNT(*) > 0 FROM albums WHERE id = ?1 AND user_id = ?2",
+                params![album_id, user_id],
                 |r| r.get(0),
             )?;
         if !exists {
@@ -901,7 +1029,8 @@ mod tests {
     }
 
     /// 内存数据库单元测试，验证建表与完整 CRUD 流程
-
+    ///
+    /// 多用户隔离：全部操作归属 user_id=1（无 users 行也可，albums.user_id 无外键约束）。
     #[test]
     fn album_crud_roundtrip() {
         let conn = Connection::open_in_memory().unwrap();
@@ -914,42 +1043,119 @@ mod tests {
 
         // create
         let created = db
-            .create_album(CreateAlbumInput {
-                name: "测试相册".into(),
-                path: tmp.to_string_lossy().into_owned(),
-                description: Some("desc".into()),
-            })
+            .create_album(
+                CreateAlbumInput {
+                    name: "测试相册".into(),
+                    path: tmp.to_string_lossy().into_owned(),
+                    description: Some("desc".into()),
+                },
+                1,
+            )
             .unwrap();
         assert_eq!(created.name, "测试相册");
 
         // 重复路径应报冲突
-        let dup = db.create_album(CreateAlbumInput {
-            name: "另一个".into(),
-            path: tmp.to_string_lossy().into_owned(),
-            description: None,
-        });
+        let dup = db.create_album(
+            CreateAlbumInput {
+                name: "另一个".into(),
+                path: tmp.to_string_lossy().into_owned(),
+                description: None,
+            },
+            1,
+        );
         assert!(matches!(dup, Err(DbError::PathAlreadyUsed(_))));
 
-        // get_albums
-        let list = db.get_albums().unwrap();
+        // get_albums（仅返回当前用户的相册）
+        let list = db.get_albums(1).unwrap();
         assert_eq!(list.len(), 1);
+        assert_eq!(db.get_albums(2).unwrap().len(), 0, "其他用户看不到该相册");
 
         // update
-        db.update_album(UpdateAlbumInput {
-            id: created.id,
-            name: Some("改名".into()),
-            description: None,
-            cover_path: None,
-            location: None,
-        })
+        db.update_album(
+            UpdateAlbumInput {
+                id: created.id,
+                name: Some("改名".into()),
+                description: None,
+                cover_path: None,
+                location: None,
+            },
+            1,
+        )
         .unwrap();
-        assert_eq!(db.get_album(created.id).unwrap().name, "改名");
-
-        // delete
-        db.delete_album(created.id).unwrap();
+        assert_eq!(db.get_album(created.id, 1).unwrap().name, "改名");
+        // 其他用户更新/读取 → 等同不存在
         assert!(matches!(
-            db.get_album(created.id),
+            db.update_album(
+                UpdateAlbumInput {
+                    id: created.id,
+                    name: Some("越权改名".into()),
+                    description: None,
+                    cover_path: None,
+                    location: None,
+                },
+                2,
+            ),
             Err(DbError::NotFound(_))
         ));
+        assert!(matches!(
+            db.get_album(created.id, 2),
+            Err(DbError::NotFound(_))
+        ));
+
+        // delete（其他用户删除 → 等同不存在，数据不受影响）
+        assert!(matches!(
+            db.delete_album(created.id, 2),
+            Err(DbError::NotFound(_))
+        ));
+        assert!(db.get_album(created.id, 1).is_ok());
+        db.delete_album(created.id, 1).unwrap();
+        assert!(matches!(
+            db.get_album(created.id, 1),
+            Err(DbError::NotFound(_))
+        ));
+    }
+
+    /// 多用户相册空间隔离：两个用户各建相册互不可见
+    #[test]
+    fn album_user_isolation() {
+        let conn = Connection::open_in_memory().unwrap();
+        let db = Database { conn };
+        db.init_schema().unwrap();
+
+        let dir_a = std::env::temp_dir().join("pm_test_user_a");
+        let dir_b = std::env::temp_dir().join("pm_test_user_b");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+
+        let a = db
+            .create_album(
+                CreateAlbumInput {
+                    name: "用户A的相册".into(),
+                    path: dir_a.to_string_lossy().into_owned(),
+                    description: None,
+                },
+                1,
+            )
+            .unwrap();
+        let b = db
+            .create_album(
+                CreateAlbumInput {
+                    name: "用户B的相册".into(),
+                    path: dir_b.to_string_lossy().into_owned(),
+                    description: None,
+                },
+                2,
+            )
+            .unwrap();
+
+        assert_eq!(db.get_albums(1).unwrap().len(), 1);
+        assert_eq!(db.get_albums(1).unwrap()[0].id, a.id);
+        assert_eq!(db.get_albums(2).unwrap().len(), 1);
+        assert_eq!(db.get_albums(2).unwrap()[0].id, b.id);
+
+        // 搜索同样隔离
+        assert_eq!(db.search_albums("相册", 1).unwrap().len(), 1);
+        assert_eq!(db.search_albums("相册", 1).unwrap()[0].album.id, a.id);
+        assert_eq!(db.search_albums("相册", 2).unwrap()[0].album.id, b.id);
     }
 }

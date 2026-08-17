@@ -36,4 +36,8 @@ jpeg-decoder = "0.3"
 walkdir = "2"
 # 读取图片 EXIF（拍摄时间）
 kamadak-exif = "0.6"
+# 密码哈希（多用户登录，Argon2id 抗 GPU 暴力破解）
+# password-hash 的 getrandom feature 启用 rand_core::OsRng（生成随机盐）
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["getrandom"] }
 
