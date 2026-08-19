@@ -337,9 +337,7 @@ async function submitCreate() {
 }
 
 // ---------- 时间分组 / 显示视图状态 ----------
-/** 分组粒度 */
-type GroupGranularity = "year" | "season" | "month";
-const groupGranularity = ref<GroupGranularity>("year"); // 默认按年分组
+
 /** 排序方式：date=按日期，location=按地点，manual=手动排序（localStorage 持久化） */
 const sortMode = ref<"date" | "location" | "manual">(
   (localStorage.getItem("album-sort-mode") as "date" | "location" | "manual") ?? "date",
@@ -393,11 +391,6 @@ function seasonKey(year: number, season: string): string {
 /** 月份折叠 key */
 function monthKey(year: number, season: string, month: number): string {
   return `m-${year}-${season}-${month}`;
-}
-
-/** 切换分组粒度 */
-function setGranularity(g: GroupGranularity) {
-  groupGranularity.value = g;
 }
 
 /** 路线图点击：滚动到对应年分组并展开 */
@@ -535,12 +528,6 @@ onBeforeUnmount(() => {
             <option value="date">按日期</option>
             <option value="location">按地点</option>
             <option value="manual">手动排序</option>
-          </select>
-          <!-- 日期排序粒度（仅日期模式下显示） -->
-          <select v-if="sortMode === 'date'" class="select" v-model="groupGranularity" @change="(e) => setGranularity((e.target as HTMLSelectElement).value as GroupGranularity)">
-            <option value="year">按年</option>
-            <option value="season">按季节</option>
-            <option value="month">按月</option>
           </select>
           <button v-if="sortMode === 'date'" class="btn" @click="toggleAllGroups">
             {{ collapsed.size > 0 ? "全部展开" : "全部折叠" }}
