@@ -375,8 +375,28 @@ const locationSortedAlbums = computed(() => {
 /** 切换排序方式并持久化到 localStorage */
 function setSortMode(mode: "date" | "location" | "manual") {
   sortMode.value = mode;
+  // 切换排序方式时清空折叠状态（各模式共用 collapsed，避免串扰）
+  collapsed.value = new Set();
   localStorage.setItem("album-sort-mode", mode);
 }
+
+/** 手动排序组件实例引用（用于调用其全部折叠/展开） */
+const manualSortRef = ref<InstanceType<typeof ManualSort> | null>(null);
+
+/** 地点分组：按地点名分组（保持 A-Z 顺序，无地点排最后） */
+const locationGroups = computed<Array<{ location: string | null; albums: Album[] }>>(() => {
+  const groups: Array<{ location: string | null; albums: Album[] }> = [];
+  const map = new Map<string | null, Album[]>();
+  for (const a of locationSortedAlbums.value) {
+    const loc = a.location ?? null;
+    if (!map.has(loc)) map.set(loc, []);
+    map.get(loc)!.push(a);
+  }
+  for (const [loc, albums] of map) {
+    groups.push({ location: loc, albums });
+  }
+  return groups;
+});
 
 /** 折叠状态：key 为分组的唯一标识 */
 const collapsed = ref<Set<string>>(new Set());
@@ -412,6 +432,10 @@ function seasonKey(year: number, season: string): string {
 function monthKey(year: number, season: string, month: number): string {
   return `m-${year}-${season}-${month}`;
 }
+/** 地点折叠 key */
+function locationKey(location: string | null): string {
+  return `loc-${location ?? "__none__"}`;
+}
 
 /** 路线图点击：滚动到对应年分组并展开 */
 function jumpToYear(year: number) {
@@ -432,16 +456,22 @@ function jumpToYear(year: number) {
   }
 }
 
-/** 展开 / 折叠全部 */
+/** 展开 / 折叠全部（日期 / 地点模式） */
 function toggleAllGroups() {
-  // 收集所有分组 key
+  // 收集当前模式下的所有分组 key
   const keys: string[] = [];
-  for (const yg of groupedYears.value) {
-    keys.push(yearKey(yg.year));
-    for (const sg of yg.seasons) {
-      keys.push(seasonKey(yg.year, sg.season));
-      for (const mg of sg.months) {
-        keys.push(monthKey(yg.year, sg.season, mg.month));
+  if (sortMode.value === "location") {
+    for (const g of locationGroups.value) {
+      keys.push(locationKey(g.location));
+    }
+  } else {
+    for (const yg of groupedYears.value) {
+      keys.push(yearKey(yg.year));
+      for (const sg of yg.seasons) {
+        keys.push(seasonKey(yg.year, sg.season));
+        for (const mg of sg.months) {
+          keys.push(monthKey(yg.year, sg.season, mg.month));
+        }
       }
     }
   }
@@ -449,6 +479,23 @@ function toggleAllGroups() {
     collapsed.value = new Set(); // 全部展开
   } else {
     collapsed.value = new Set(keys); // 全部折叠
+  }
+}
+
+/** 当前模式是否处于"全部折叠"状态（用于按钮文字） */
+const allCollapsed = computed(() => {
+  if (sortMode.value === "manual") {
+    return manualSortRef.value?.isAllCollapsed ?? false;
+  }
+  return collapsed.value.size > 0;
+});
+
+/** 工具栏"全部折叠 / 展开"按钮：按当前模式分发 */
+function onToggleAll() {
+  if (sortMode.value === "manual") {
+    manualSortRef.value?.toggleAll();
+  } else {
+    toggleAllGroups();
   }
 }
 
@@ -552,8 +599,8 @@ onBeforeUnmount(() => {
             <option value="location">按地点</option>
             <option value="manual">手动排序</option>
           </select>
-          <button v-if="sortMode === 'date'" class="btn" @click="toggleAllGroups">
-            {{ collapsed.size > 0 ? "全部展开" : "全部折叠" }}
+          <button class="btn" @click="onToggleAll">
+            {{ allCollapsed ? "全部展开" : "全部折叠" }}
           </button>
           <button class="btn" :disabled="isImporting" @click="batchImport">
             {{ isImporting ? "导入中…" : "批量导入" }}
@@ -750,28 +797,39 @@ onBeforeUnmount(() => {
       </template>
     </main>
 
-    <!-- 地点模式：按地点 A-Z 排序的相册列表 -->
+    <!-- 地点模式：按地点分组（A-Z 顺序，可折叠） -->
     <main v-else-if="sortMode === 'location'" class="location-view">
-      <!-- 按地点字母分组的卡片 -->
-      <div v-if="locationSortedAlbums.length > 0" class="album-grid">
-        <div v-for="album in locationSortedAlbums" :key="album.id" class="location-card-wrap">
-          <AlbumCard
-            :album="album"
-            :select-mode="isSelectMode"
-            :selected="selectedIds.has(album.id)"
-            show-location
-            @click="isSelectMode ? toggleSelect(album.id) : router.push(`/album/${album.id}`)"
-            @contextmenu="onRightClick(album.id, $event)"
-            @toggle-select="toggleSelect(album.id, $event)"
-            @open-path="openAlbumPath(album.path, $event)"
-          />
-        </div>
-      </div>
+      <template v-for="g in locationGroups" :key="g.location ?? '__none__'">
+        <section class="location-group" :class="{ collapsed: isCollapsed(locationKey(g.location)) }">
+          <h3 class="group-head group-location" @click="toggleCollapse(locationKey(g.location))">
+            <span class="fold-arrow">{{ isCollapsed(locationKey(g.location)) ? "▸" : "▾" }}</span>
+            <span class="group-title">📍 {{ g.location || "未知地点" }}</span>
+            <span class="group-count">{{ g.albums.length }} 个相册</span>
+          </h3>
+          <div v-show="!isCollapsed(locationKey(g.location))" class="group-body">
+            <div class="album-grid">
+              <div v-for="album in g.albums" :key="album.id" class="location-card-wrap">
+                <AlbumCard
+                  :album="album"
+                  :select-mode="isSelectMode"
+                  :selected="selectedIds.has(album.id)"
+                  show-location
+                  @click="isSelectMode ? toggleSelect(album.id) : router.push(`/album/${album.id}`)"
+                  @contextmenu="onRightClick(album.id, $event)"
+                  @toggle-select="toggleSelect(album.id, $event)"
+                  @open-path="openAlbumPath(album.path, $event)"
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+      </template>
     </main>
 
     <!-- 手动排序模式：文件夹树 + 拖拽 -->
     <main v-else class="manual-view">
       <ManualSort
+        ref="manualSortRef"
         :jump-folder-id="manualJumpFolderId"
         :select-mode="isSelectMode"
         :selected-ids="selectedIds"
@@ -1427,6 +1485,19 @@ onBeforeUnmount(() => {
 /* 地点模式 */
 .location-view {
   padding-bottom: 20px;
+}
+
+.location-group {
+  border: 1px solid #eef0f4;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+  margin-bottom: 12px;
+}
+
+.group-location {
+  background: #eef3ff;
+  border-bottom: 1px solid #e0e9fa;
 }
 
 .location-card-wrap {

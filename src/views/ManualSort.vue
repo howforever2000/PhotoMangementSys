@@ -127,6 +127,51 @@ function fileUrl(path: string | null): string {
   return path ? convertFileSrc(path) : "";
 }
 
+// ---------- 折叠功能（配合父组件"全部折叠/展开"按钮） ----------
+/** 折叠的分组 id 集合 */
+const collapsed = ref<Set<number>>(new Set());
+/** 顶级"未分组相册"区域是否折叠 */
+const rootCollapsed = ref(false);
+
+/** 是否折叠某分组 */
+function isFolderCollapsed(id: number): boolean {
+  return collapsed.value.has(id);
+}
+
+/** 切换分组折叠 */
+function toggleFolder(id: number) {
+  const next = new Set(collapsed.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  collapsed.value = next;
+}
+
+/** 递归收集所有分组 id */
+function collectFolderIds(nodes: TreeNode[]): number[] {
+  const ids: number[] = [];
+  for (const n of nodes) {
+    ids.push(n.folder.id);
+    ids.push(...collectFolderIds(n.children));
+  }
+  return ids;
+}
+
+/** 全部折叠 / 全部展开（由父组件按钮触发） */
+function toggleAll() {
+  if (collapsed.value.size > 0) {
+    collapsed.value = new Set();
+    rootCollapsed.value = false;
+  } else {
+    collapsed.value = new Set(collectFolderIds(rootNodes.value));
+    rootCollapsed.value = true;
+  }
+}
+
+/** 当前是否处于"全部折叠"状态（供父组件按钮显示文字） */
+const isAllCollapsed = computed(() => collapsed.value.size > 0);
+
+defineExpose({ toggleAll, isAllCollapsed });
+
 // ---------- 创建分组 ----------
 function openCreateFolder(parentId: number | null) {
   createParentId.value = parentId;
@@ -492,9 +537,13 @@ onBeforeUnmount(() => {
 
     <!-- 顶级游离相册（可拖入分组） -->
     <div class="root-albums" data-root-drop>
-      <div class="root-title">未分组相册</div>
-      <div v-if="rootAlbums.length === 0" class="empty-hint">暂无未分组相册</div>
-      <div class="album-mini-row">
+      <div class="root-title" @click="rootCollapsed = !rootCollapsed">
+        <span class="fold-arrow">{{ rootCollapsed ? "▸" : "▾" }}</span>
+        <span>未分组相册</span>
+      </div>
+      <div v-show="!rootCollapsed">
+        <div v-if="rootAlbums.length === 0" class="empty-hint">暂无未分组相册</div>
+        <div class="album-mini-row">
         <AlbumMiniCard
           v-for="(entry, idx) in rootAlbums"
           :key="entry.album_id"
@@ -509,6 +558,7 @@ onBeforeUnmount(() => {
           @click="onMiniCardClick(entry.album_id)"
           @contextmenu="onRightClick('album', entry.album_id, $event)"
         />
+        </div>
       </div>
     </div>
 
@@ -523,6 +573,7 @@ onBeforeUnmount(() => {
           :class="{ 'drag-over': dragOverFolder === node.folder.id }"
         >
           <div class="folder-head" @contextmenu="onRightClick('folder', node.folder.id, $event)">
+            <span class="fold-arrow" @click.stop="toggleFolder(node.folder.id)">{{ isFolderCollapsed(node.folder.id) ? "▸" : "▾" }}</span>
             <span class="folder-icon">📁</span>
             <span class="folder-name">{{ node.folder.name }}</span>
             <span class="folder-tags">
@@ -535,7 +586,7 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- 组内相册 -->
-          <div class="folder-albums">
+          <div v-show="!isFolderCollapsed(node.folder.id)" class="folder-albums">
             <AlbumMiniCard
               v-for="(aid, idx) in node.albumIds"
               :key="aid"
@@ -554,10 +605,12 @@ onBeforeUnmount(() => {
 
           <!-- 子分组（二级） -->
           <div v-for="child in node.children" :key="child.folder.id"
+               v-show="!isFolderCollapsed(node.folder.id)"
                :id="`folder-node-${child.folder.id}`" class="folder-node level-2"
                :data-folder-id="child.folder.id"
                :class="{ 'drag-over': dragOverFolder === child.folder.id }">
             <div class="folder-head" @contextmenu="onRightClick('folder', child.folder.id, $event)">
+              <span class="fold-arrow" @click.stop="toggleFolder(child.folder.id)">{{ isFolderCollapsed(child.folder.id) ? "▸" : "▾" }}</span>
               <span class="folder-icon">📂</span>
               <span class="folder-name">{{ child.folder.name }}</span>
               <span class="folder-tags">
@@ -568,7 +621,7 @@ onBeforeUnmount(() => {
                 <button class="mini-btn" @click.stop="openEditFolder(child.folder.id)">编辑</button>
               </span>
             </div>
-            <div class="folder-albums">
+            <div v-show="!isFolderCollapsed(child.folder.id)" class="folder-albums">
               <AlbumMiniCard
                 v-for="(aid, idx) in child.albumIds"
                 :key="aid"
@@ -586,10 +639,12 @@ onBeforeUnmount(() => {
             </div>
             <!-- 三级分组 -->
             <div v-for="grand in child.children" :key="grand.folder.id"
+                 v-show="!isFolderCollapsed(child.folder.id)"
                  :id="`folder-node-${grand.folder.id}`" class="folder-node level-3"
                  :data-folder-id="grand.folder.id"
                  :class="{ 'drag-over': dragOverFolder === grand.folder.id }">
               <div class="folder-head" @contextmenu="onRightClick('folder', grand.folder.id, $event)">
+                <span class="fold-arrow" @click.stop="toggleFolder(grand.folder.id)">{{ isFolderCollapsed(grand.folder.id) ? "▸" : "▾" }}</span>
                 <span class="folder-icon">📂</span>
                 <span class="folder-name">{{ grand.folder.name }}</span>
                 <span class="folder-tags">
@@ -599,7 +654,7 @@ onBeforeUnmount(() => {
                   <button class="mini-btn" @click.stop="openEditFolder(grand.folder.id)">编辑</button>
                 </span>
               </div>
-              <div class="folder-albums">
+              <div v-show="!isFolderCollapsed(grand.folder.id)" class="folder-albums">
                 <AlbumMiniCard
                   v-for="(aid, idx) in grand.albumIds"
                   :key="aid"
@@ -778,7 +833,18 @@ onBeforeUnmount(() => {
 .btn:disabled { opacity: .6; }
 
 .root-albums { border: 1px dashed #ccc; border-radius: 10px; padding: 12px; margin-bottom: 20px; background: #fafbfd; }
-.root-title { font-size: 13px; color: #888; margin-bottom: 8px; }
+.root-title { font-size: 13px; color: #888; margin-bottom: 8px; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
+
+/* 折叠箭头 */
+.fold-arrow {
+  color: #999;
+  font-size: 12px;
+  width: 14px;
+  text-align: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+}
 .empty-hint { color: #bbb; font-size: 13px; }
 .album-mini-row { display: flex; flex-wrap: wrap; gap: 10px; }
 

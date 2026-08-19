@@ -460,7 +460,39 @@
    "description": "用民政部口径中国省/市边界（阿里 DataV.GeoAtlas，免 key、WGS84）把照片 GPS 本地解析为省/市，0 网络请求。数据：python/download_geo_data.py 一次性下载预处理（去连续重复点 + Douglas-Peucker 0.002° + 坐标圆整 4 位小数）→ src-tauri/resources/china_geo.json（2956KB 原始 / gzip 883KB：省级 35 要素 + 市级 363 要素 27 省；直辖市/港澳台不下钻，台湾因市级数据缺失直接省级）。模块：src-tauri/src/geo_index.rs（include_str! 内嵌 + OnceLock 解析一次 + bbox 预筛 + 射线法 even-odd，逐 polygon 统计全部环交点处理飞地如安徽天长在江苏界内；0.01° 网格结果缓存）。接入：①scan_album_photos_local_place 新命令（Tauri）本地秒回；②scan_album_photos_with_place 保持联网精确地名；③auto_detect_album_location 本地优先联网兜底；④test_scan resolve_test_places 本地优先 + 联网兜底（懒创建 HTTP 客户端）。前端：AlbumDetail.vue 扫描区按钮拆两档「本地省/市（秒回·离线）」+「精确地名（联网）」并更新文案；TestScan.vue 文案去「需联网」+ 修 unlistenProgress 未清理 TS6133。验证：geo_index 单测 3/3（北京/成都/台北/香港/三亚/天长飞地/公海/巴黎）；photo_scan 端到端 53 张真实照片 27 个 GPS 全部解析（参考点 31.92128,107.63749 → 四川省 · 达州市），扫描+解析 0.16s（原联网 30~60s）；cargo test 22/22 通过、vue-tsc 0 错误。",
    "tests": "cargo test --lib（22 通过，2 联网测试 ignore）；python python/download_geo_data.py 自检 14/14",
    "date": "2026-08-14"
+  },
+  {
+   "id": "FEAT-020",
+   "name": "『全部折叠/展开』扩展到地点 + 手动排序视图",
+   "status": "done",
+   "description": "原『全部折叠/展开』仅日期排序（sortMode==date）显示并只作用于年→季节→月分组。本次将其扩展到三种排序模式：①日期模式不变；②地点模式新增按地点分组（locationGroups computed，按 A-Z 顺序、无地点归入『未知地点』），每组可折叠（loc-* key），toggleAllGroups 按当前模式收集 key；③手动排序模式：ManualSort.vue 新增分组折叠状态（collapsed Set + rootCollapsed『未分组相册』区），三级分组头均加 ▸/▾ 折叠箭头，toggleAll() 与 isAllCollapsed 通过 defineExpose 暴露，父组件 AlbumList 用 ref 调用；工具栏『全部折叠』按钮改为三模式均显示，文字按当前模式判断『全部折叠/全部展开』；切换排序方式时清空 collapsed 避免三模式 key 串扰。前端实现，无后端改动。",
+   "related_files": [
+    "src/views/AlbumList.vue",
+    "src/views/ManualSort.vue"
+   ],
+   "keywords": [
+    "全部折叠",
+    "折叠",
+    "地点排序",
+    "手动排序",
+    "ManualSort",
+    "collapse"
+   ],
+   "implementation": {
+    "frontend": "AlbumList.vue：locationGroups computed（Map 分组保持 A-Z）；locationKey(loc)=loc-<loc>；toggleAllGroups 分支 date/location；allCollapsed computed + onToggleAll 按模式分发（manual 调 ManualSort.toggleAll）；setSortMode 清空 collapsed；toolbar 按钮 v-if 移除日期限制；ManualSort ref 绑定。ManualSort.vue：collapsed Set + rootCollapsed + isFolderCollapsed/toggleFolder/collectFolderIds/toggleAll/isAllCollapsed + defineExpose；三级 folder-head 加 fold-arrow，folder-albums 与子级 div 加 v-show 控制折叠；CSS 新增 .location-group/.group-location/.fold-arrow/root-title 可点击。",
+    "key_points": [
+     "手动模式折叠由子组件自管理，父组件仅通过 ref + defineExpose 调度（toggleAll / isAllCollapsed）",
+     "三种模式共用一个 collapsed Set，切模式清空防串扰（key 命名空间 loc- / y- / s- / m-）",
+     "ManualSort 用 v-show 加在 folder-albums 与子级 folder-node 上而非包一层 div，避免破坏拖拽 data-folder-id 结构"
+    ]
+   },
+   "highlights": [
+    "复用日期模式的 toggleCollapse/isCollapsed 折叠状态机，地点模式成本低",
+    "子组件 defineExpose 暴露方法，父组件按模式分发调用，无跨组件状态耦合"
+   ],
+   "created_at": "2026-08-19T15:20:00+08:00",
+   "updated_at": "2026-08-19T15:20:00+08:00"
   }
  ],
- "updated": "2026-08-14"
+ "updated": "2026-08-19"
 }
