@@ -16,6 +16,26 @@ const router = useRouter();
 const route = useRoute();
 const store = useAlbumStore();
 
+// ---------- 回到顶部按钮状态 ----------
+const scrollTop = ref(0);
+let rafId: number | null = null;
+
+/** 节流监听页面滚动 */
+function onScroll() {
+  if (rafId != null) return;
+  rafId = requestAnimationFrame(() => {
+    scrollTop.value = window.scrollY;
+    rafId = null;
+  });
+}
+
+const showBackToTop = computed(() => scrollTop.value > 300);
+
+/** 平滑滚动回顶部 */
+function scrollToTop() {
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
 /** 将本地文件路径转为前端可访问的 URL（Tauri asset 协议） */
 function fileUrl(path: string | null): string {
   return path ? convertFileSrc(path) : "";
@@ -496,6 +516,8 @@ onMounted(() => {
   store.fetchAlbums();
   // 全局点击关闭右键菜单
   window.addEventListener("click", onGlobalClick);
+  // 滚动监听（用于回到顶部按钮显示）
+  window.addEventListener("scroll", onScroll, { passive: true });
 
   // 从路由 query 处理跳转（如从详情页跳转父相册）
   const q = route.query;
@@ -509,6 +531,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   window.removeEventListener("click", onGlobalClick);
+  window.removeEventListener("scroll", onScroll);
 });
 </script>
 
@@ -873,6 +896,16 @@ onBeforeUnmount(() => {
       @confirm="doBatchDelete"
       @cancel="batchDeleteConfirm.visible = false"
     />
+
+    <!-- 回到顶部按钮 -->
+    <button
+      v-show="showBackToTop"
+      class="back-to-top"
+      @click="scrollToTop"
+      title="回到顶部"
+    >
+      ↑
+    </button>
   </div>
 </template>
 
@@ -1484,5 +1517,36 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* 回到顶部按钮 */
+.back-to-top {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid #ddd;
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+  font-size: 20px;
+  color: #396cd8;
+  cursor: pointer;
+  transition: opacity 0.3s ease, transform 0.3s ease, background 0.2s;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.back-to-top:hover {
+  background: #eef3ff;
+  transform: scale(1.08);
+}
+
+.back-to-top:active {
+  transform: scale(0.95);
 }
 </style>
