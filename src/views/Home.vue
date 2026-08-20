@@ -1,7 +1,22 @@
 <script setup lang="ts">
 import { useRouter } from "vue-router";
+import { useAuthStore } from "../stores/auth";
 
 const router = useRouter();
+const auth = useAuthStore();
+
+/** 当前登录账户名（未登录时显示默认文案） */
+const username = () => auth.user?.username ?? "未登录";
+
+/** 退出登录并回到登录页 */
+async function handleLogout() {
+  try {
+    await auth.logout();
+  } catch (e) {
+    console.error("退出登录失败:", e);
+  }
+  router.replace("/login");
+}
 
 /** 应用功能板块定义 */
 const modules = [
@@ -47,8 +62,14 @@ function openModule(m: (typeof modules)[number]) {
 <template>
   <div class="home-page">
     <header class="home-header">
-      <h1 class="app-title">本地相册管理</h1>
-      <p class="app-subtitle">轻量级本地相册管理系统</p>
+      <div class="header-text">
+        <h1 class="app-title">本地相册管理</h1>
+        <p class="app-subtitle">轻量级本地相册管理系统</p>
+      </div>
+      <div class="user-box">
+        <span class="user-name">👤 {{ username() }}</span>
+        <button class="logout-btn" type="button" @click="handleLogout">退出登录</button>
+      </div>
     </header>
 
     <main class="module-grid">
@@ -84,8 +105,45 @@ function openModule(m: (typeof modules)[number]) {
 }
 
 .home-header {
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   margin-bottom: 40px;
+  text-align: left;
+}
+
+.header-text {
+  text-align: left;
+}
+
+.user-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.user-name {
+  font-size: 14px;
+  color: #4a5568;
+}
+
+.logout-btn {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
+  color: #4a5568;
+  background: #fff;
+  border: 1px solid #d8dce3;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.logout-btn:hover {
+  color: #d64545;
+  border-color: #d64545;
 }
 
 .app-title {

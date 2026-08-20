@@ -32,3 +32,9 @@ src-tauri/gen
 # 本地地理数据下载缓存（python/download_geo_data.py 的原始 JSON 缓存，可随时重下）
 # 早期本地地理实验（experiments/local_geocode，已被 python/download_geo_data.py + geo_index 取代）
 experiments/
+
+# 开发环境搭建脚本与安装器（不入库）
+setup-env.ps1
+manual-install-rust.md
+rustup-init.exe
+nul
