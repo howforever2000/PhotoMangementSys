@@ -1,8 +1,12 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AlbumContentRow,
+  CombinedScanOutcome,
+  ContentScanFilters,
   ContentSearchHit,
   ScanOutcome,
+  UnifiedScanRow,
   VcrGpuStatus,
 } from "../types/content";
 
@@ -23,6 +27,14 @@ export const useContentStore = defineStore("content", {
     isScanning: false,
     /** 上次内容扫描报告 */
     lastReport: null as ScanOutcome | null,
+    /** 组合扫描统一行（FEAT-026） */
+    combinedRows: [] as UnifiedScanRow[],
+    /** 读表统一行（FEAT-026） */
+    albumContentRows: [] as AlbumContentRow[],
+    /** 读表总条数 */
+    albumContentTotal: 0 as number,
+    /** 过滤搜索命中 */
+    filterHits: [] as AlbumContentRow[],
     /** GPU 加速可行性状态 */
     gpuStatus: null as VcrGpuStatus | null,
   }),
@@ -69,6 +81,72 @@ export const useContentStore = defineStore("content", {
     /** 清空内容搜索结果 */
     clearHits() {
       this.hits = [];
+    },
+
+    // ---- FEAT-026：组合扫描 + 读表 + 条件搜索 ----
+
+    /** 组合扫描（EXIF + 影调 + AI 可选组合） */
+    async scanAlbumCombined(
+      albumId: number,
+      scanTypes: string[],
+      batchSize = 8,
+    ): Promise<CombinedScanOutcome> {
+      this.isScanning = true;
+      try {
+        const outcome = await invoke<CombinedScanOutcome>("scan_album_combined", {
+          albumId,
+          scanTypes,
+          batchSize,
+        });
+        this.combinedRows = outcome.rows;
+        this.lastReport = { report: outcome.report, results: [] };
+        return outcome;
+      } finally {
+        this.isScanning = false;
+      }
+    },
+
+    /** 读表：分页读取单相册已扫描内容 */
+    async readAlbumContent(
+      albumId: number,
+      page = 1,
+      pageSize = 20,
+    ): Promise<{ rows: AlbumContentRow[]; total: number }> {
+      this.isSearching = true;
+      try {
+        const res: [AlbumContentRow[], number] = await invoke<
+          [AlbumContentRow[], number]
+        >("read_album_content", {
+          albumId,
+          page,
+          pageSize,
+        });
+        this.albumContentRows = res[0];
+        this.albumContentTotal = res[1];
+        return { rows: res[0], total: res[1] };
+      } finally {
+        this.isSearching = false;
+      }
+    },
+
+    /** 带过滤条件的内容搜索 */
+    async searchPhotoContentWithFilters(
+      keyword: string,
+      albumId: number,
+      filters: ContentScanFilters,
+    ): Promise<AlbumContentRow[]> {
+      this.isSearching = true;
+      try {
+        const res = await invoke<AlbumContentRow[]>("search_photo_content_with_filters", {
+          keyword,
+          albumId,
+          filters,
+        });
+        this.filterHits = res;
+        return res;
+      } finally {
+        this.isSearching = false;
+      }
     },
   },
 });

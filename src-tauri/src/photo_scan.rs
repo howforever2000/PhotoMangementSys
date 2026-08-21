@@ -35,6 +35,14 @@ pub struct PhotoExif {
     pub shutter_speed: Option<String>,
     /// 拍摄时间，如 "2023-01-15 10:30:00"
     pub shoot_time: Option<String>,
+    /// ISO 数值（范围筛选用，与 iso 文本字段同源）
+    pub iso_num: Option<u32>,
+    /// 焦段数值，mm
+    pub focal_num: Option<f64>,
+    /// 光圈数值，f-number
+    pub aperture_num: Option<f64>,
+    /// 快门速度数值，曝光时间（秒；1/200s → 0.005）
+    pub shutter_num: Option<f64>,
     /// 纬度（十进制度，WGS84），如 31.921282
     pub lat: Option<f64>,
     /// 经度（十进制度，WGS84）
@@ -195,6 +203,10 @@ pub(crate) fn read_photo_exif(path: &Path, name: &str) -> PhotoExif {
         aperture: None,
         shutter_speed: None,
         shoot_time: None,
+        iso_num: None,
+        focal_num: None,
+        aperture_num: None,
+        shutter_num: None,
         lat: None,
         lon: None,
         lat_raw: None,
@@ -215,18 +227,22 @@ pub(crate) fn read_photo_exif(path: &Path, name: &str) -> PhotoExif {
     };
 
     // ISO：0x8827（PhotographicSensitivity / ISOSpeedRatings）为主，0x8833（ISOSpeed）兜底
-    photo.iso = field_by_number(&exif, 0x8827)
+    // 同时保留数值版（供范围筛选，FEAT-026）
+    let iso_raw = field_by_number(&exif, 0x8827)
         .or_else(|| field_by_number(&exif, 0x8833))
         .and_then(|f| match &f.value {
-            exif::Value::Short(v) => v.first().map(|x| format_iso(*x as u32)),
-            exif::Value::Long(v) => v.first().map(|x| format_iso(*x)),
+            exif::Value::Short(v) => v.first().copied().map(|x| x as u32),
+            exif::Value::Long(v) => v.first().copied(),
             _ => None,
         });
+    photo.iso = iso_raw.map(format_iso);
+    photo.iso_num = iso_raw;
 
     // 焦段：FocalLength（0x920A）
     if let Some(f) = field_by_number(&exif, 0x920a) {
         if let Some(v) = field_value_f64(f) {
             photo.focal_length = Some(format_focal(v));
+            photo.focal_num = Some(v);
         }
     }
 
@@ -234,6 +250,7 @@ pub(crate) fn read_photo_exif(path: &Path, name: &str) -> PhotoExif {
     if let Some(f) = field_by_number(&exif, 0x829d) {
         if let Some(v) = field_value_f64(f) {
             photo.aperture = Some(format_aperture(v));
+            photo.aperture_num = Some(v);
         }
     }
 
@@ -241,6 +258,7 @@ pub(crate) fn read_photo_exif(path: &Path, name: &str) -> PhotoExif {
     if let Some(f) = field_by_number(&exif, 0x829a) {
         if let Some(v) = field_value_f64(f) {
             photo.shutter_speed = Some(format_shutter(v));
+            photo.shutter_num = Some(v);
         }
     }
 

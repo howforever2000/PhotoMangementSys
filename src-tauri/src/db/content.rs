@@ -40,6 +40,13 @@ pub struct PhotoContentRecord {
     pub iso: Option<String>,
     pub aperture: Option<String>,
     pub focal_length: Option<String>,
+    // FEAT-026：数值化 EXIF（供范围筛选）+ 影调类型 + 平均亮度
+    pub iso_num: Option<u32>,
+    pub focal_num: Option<f64>,
+    pub aperture_num: Option<f64>,
+    pub shutter_num: Option<f64>,
+    pub tone_type: Option<String>,
+    pub avg_luma: Option<f64>,
     pub lat: Option<f64>,
     pub lon: Option<f64>,
 }
@@ -72,6 +79,54 @@ pub struct ContentSearchHit {
     pub aperture: Option<String>,
     pub shutter_speed: Option<String>,
     pub focal_length: Option<String>,
+}
+
+/// 单相册内容读表行（FEAT-026）：统一呈现 EXIF / 影调 / AI 全部字段
+#[derive(Debug, Clone, Serialize)]
+pub struct AlbumContentRow {
+    pub id: i64,
+    pub path: String,
+    pub parent_dir: String,
+    pub album_id: Option<i64>,
+    pub album_name: Option<String>,
+    pub album_path: Option<String>,
+    // EXIF
+    pub iso: Option<String>,
+    pub aperture: Option<String>,
+    pub shutter_speed: Option<String>,
+    pub focal_length: Option<String>,
+    pub shoot_time: Option<String>,
+    // EXIF 数值版（供前端范围展示）
+    pub iso_num: Option<u32>,
+    pub focal_num: Option<f64>,
+    pub aperture_num: Option<f64>,
+    pub shutter_num: Option<f64>,
+    // 影调
+    pub tone_type: Option<String>,
+    pub avg_luma: Option<f64>,
+    // AI 内容
+    pub content: String,
+    pub category: Option<String>,
+    pub sub_category: Option<String>,
+    pub label: Option<String>,
+    pub confidence: Option<f64>,
+    pub top3_json: Option<String>,
+    pub person_ids: Vec<String>,
+    pub person_count: i64,
+}
+
+/// 内容搜索过滤条件（FEAT-026）：未设置（None）表示不启用该维度过滤
+#[derive(Debug)]
+pub struct ContentFilters {
+    pub iso_min: Option<u32>,
+    pub iso_max: Option<u32>,
+    pub shutter_min: Option<f64>,
+    pub shutter_max: Option<f64>,
+    pub aperture_min: Option<f64>,
+    pub aperture_max: Option<f64>,
+    pub focal_min: Option<f64>,
+    pub focal_max: Option<f64>,
+    pub tone_type: Option<String>,
 }
 
 impl Database {
@@ -117,6 +172,13 @@ impl Database {
         let _ = self
             .conn
             .execute_batch("CREATE INDEX IF NOT EXISTS idx_pcs_album ON photo_content_scan(album_id);");
+        // FEAT-026 新增列（数值 EXIF + 影调；旧库无这些列，IF NOT EXISTS 等价）
+        let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN iso_num INTEGER;");
+        let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN focal_num REAL;");
+        let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN aperture_num REAL;");
+        let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN shutter_num REAL;");
+        let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN tone_type TEXT;");
+        let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN avg_luma REAL;");
         Ok(())
     }
 
@@ -171,8 +233,7 @@ impl Database {
         keyword: &str,
         user_id: i64,
         album_id: Option<i64>,
-    ) -> Result<Vec<ContentSearchHit>, DbError> {
-        let kw = format!("%{}%", keyword.trim());
+    ) -> Result<Vec<ContentSearchHit>, DbError> {        let kw = format!("%{}%", keyword.trim());
         let mut stmt = self.conn.prepare(
             "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
                     p.content, p.category, p.sub_category, p.label, p.confidence,
@@ -215,6 +276,160 @@ impl Database {
         Ok(out)
     }
 
+    // ---- FEAT-026：统一读表 + 条件搜索（数值 EXIF + 影调）----
+
+    /// 单相册内容读表（分页）：把该相册已扫描的全部记录读出
+    ///
+    /// 返回 `(rows, total)`：`rows` 为当前页数据（`page_size` 条），`total` 为总条数。
+    pub fn read_album_content(
+        &self,
+        album_id: i64,
+        user_id: i64,
+        page: i64,
+        page_size: i64,
+    ) -> Result<(Vec<AlbumContentRow>, i64), DbError> {
+        let total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM photo_content_scan WHERE user_id = ?1 AND album_id = ?2",
+            params![user_id, album_id],
+            |r| r.get(0),
+        )?;
+        let offset = (page - 1) * page_size;
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
+                    p.iso, p.aperture, p.shutter_speed, p.focal_length, p.shoot_time,
+                    p.iso_num, p.focal_num, p.aperture_num, p.shutter_num,
+                    p.tone_type, p.avg_luma,
+                    p.content, p.category, p.sub_category, p.label, p.confidence,
+                    p.top3_json, p.person_ids, p.person_count
+             FROM photo_content_scan p
+             LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
+             WHERE p.user_id = ?1 AND p.album_id = ?2
+             ORDER BY p.scanned_at DESC, p.path ASC
+             LIMIT ?3 OFFSET ?4",
+        )?;
+        let rows = stmt.query_map(params![user_id, album_id, page_size, offset], |r| {
+            Ok(AlbumContentRow {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                parent_dir: r.get(2)?,
+                album_id: r.get(3)?,
+                album_name: r.get(4)?,
+                album_path: r.get(5)?,
+                iso: r.get(6)?,
+                aperture: r.get(7)?,
+                shutter_speed: r.get(8)?,
+                focal_length: r.get(9)?,
+                shoot_time: r.get(10)?,
+                iso_num: r.get(11)?,
+                focal_num: r.get(12)?,
+                aperture_num: r.get(13)?,
+                shutter_num: r.get(14)?,
+                tone_type: r.get(15)?,
+                avg_luma: r.get(16)?,
+                content: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
+                category: r.get(18)?,
+                sub_category: r.get(19)?,
+                label: r.get(20)?,
+                confidence: r.get(21)?,
+                top3_json: r.get(22)?,
+                person_ids: r.get::<_, Option<String>>(23)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
+                person_count: r.get(24)?,
+            })
+        })?;
+        Ok((
+            rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)?,
+            total,
+        ))
+    }
+
+    /// 带过滤条件的单相册内容搜索（FEAT-026）
+    ///
+    /// - `keyword`：空串 → 不启用关键词过滤
+    /// - `filters`：数值范围 + 影调类型过滤（未设置即不限）
+    pub fn search_photo_content_with_filters(
+        &self,
+        keyword: &str,
+        user_id: i64,
+        album_id: Option<i64>,
+        filters: &ContentFilters,
+    ) -> Result<Vec<AlbumContentRow>, DbError> {
+        let kw = if keyword.trim().is_empty() {
+            None
+        } else {
+            Some(format!("%{}%", keyword.trim()))
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
+                    p.iso, p.aperture, p.shutter_speed, p.focal_length, p.shoot_time,
+                    p.iso_num, p.focal_num, p.aperture_num, p.shutter_num,
+                    p.tone_type, p.avg_luma,
+                    p.content, p.category, p.sub_category, p.label, p.confidence,
+                    p.top3_json, p.person_ids, p.person_count
+             FROM photo_content_scan p
+             LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
+             WHERE p.user_id = ?1
+               AND (?2 IS NULL OR p.album_id = ?2)
+               AND (?3 IS NULL OR p.content LIKE ?3)
+               AND (?4 IS NULL OR p.iso_num >= ?4)
+               AND (?5 IS NULL OR p.iso_num <= ?5)
+               AND (?6 IS NULL OR p.shutter_num >= ?6)
+               AND (?7 IS NULL OR p.shutter_num <= ?7)
+               AND (?8 IS NULL OR p.aperture_num >= ?8)
+               AND (?9 IS NULL OR p.aperture_num <= ?9)
+               AND (?10 IS NULL OR p.focal_num >= ?10)
+               AND (?11 IS NULL OR p.focal_num <= ?11)
+               AND (?12 IS NULL OR p.tone_type = ?12)
+             ORDER BY p.scanned_at DESC, p.path ASC",
+        )?;
+        let tone_filter = filters.tone_type.clone();
+        let rows = stmt.query_map(
+            params![
+                user_id,
+                album_id,
+                kw,
+                filters.iso_min,
+                filters.iso_max,
+                filters.shutter_min,
+                filters.shutter_max,
+                filters.aperture_min,
+                filters.aperture_max,
+                filters.focal_min,
+                filters.focal_max,
+                tone_filter.as_deref(),
+            ],
+            |r| {
+                Ok(AlbumContentRow {
+                    id: r.get(0)?,
+                    path: r.get(1)?,
+                    parent_dir: r.get(2)?,
+                    album_id: r.get(3)?,
+                    album_name: r.get(4)?,
+                    album_path: r.get(5)?,
+                    iso: r.get(6)?,
+                    aperture: r.get(7)?,
+                    shutter_speed: r.get(8)?,
+                    focal_length: r.get(9)?,
+                    shoot_time: r.get(10)?,
+                    iso_num: r.get(11)?,
+                    focal_num: r.get(12)?,
+                    aperture_num: r.get(13)?,
+                    shutter_num: r.get(14)?,
+                    tone_type: r.get(15)?,
+                    avg_luma: r.get(16)?,
+                    content: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
+                    category: r.get(18)?,
+                    sub_category: r.get(19)?,
+                    label: r.get(20)?,
+                    confidence: r.get(21)?,
+                    top3_json: r.get(22)?,
+                    person_ids: r.get::<_, Option<String>>(23)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
+                    person_count: r.get(24)?,
+                })
+            },
+        )?;
+        rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
+    }
+
     /// 删除某个相册的全部内容扫描记录（删除相册时级联调用）
     pub fn delete_album_content(&self, album_id: i64) -> Result<(), DbError> {
         self.conn
@@ -229,8 +444,10 @@ fn upsert_one(tx: &Transaction, rec: &PhotoContentRecord) -> Result<(), DbError>
         "INSERT INTO photo_content_scan
             (photo_hash, path, parent_dir, album_id, user_id, content,
              category, sub_category, label, confidence, top3_json, person_ids, person_count,
-             shoot_time, location, shutter_speed, iso, aperture, focal_length, lat, lon, scanned_at)
-         VALUES (?1,?2,?3,?4,?5,?6, ?7,?8,?9,?10,?11,?12,?13, ?14,?15,?16,?17,?18,?19,?20,?21,?22)
+             shoot_time, location, shutter_speed, iso, aperture, focal_length, lat, lon,
+             iso_num, focal_num, aperture_num, shutter_num, tone_type, avg_luma, scanned_at)
+         VALUES (?1,?2,?3,?4,?5,?6, ?7,?8,?9,?10,?11,?12,?13, ?14,?15,?16,?17,?18,?19,?20,?21,
+                 ?22,?23,?24,?25,?26,?27,?28)
          ON CONFLICT(photo_hash) DO UPDATE SET
              path=excluded.path, parent_dir=excluded.parent_dir, album_id=excluded.album_id,
              content=excluded.content, category=excluded.category, sub_category=excluded.sub_category,
@@ -239,6 +456,9 @@ fn upsert_one(tx: &Transaction, rec: &PhotoContentRecord) -> Result<(), DbError>
              shoot_time=excluded.shoot_time, location=excluded.location,
              shutter_speed=excluded.shutter_speed, iso=excluded.iso, aperture=excluded.aperture,
              focal_length=excluded.focal_length, lat=excluded.lat, lon=excluded.lon,
+             iso_num=excluded.iso_num, focal_num=excluded.focal_num,
+             aperture_num=excluded.aperture_num, shutter_num=excluded.shutter_num,
+             tone_type=excluded.tone_type, avg_luma=excluded.avg_luma,
              scanned_at=excluded.scanned_at",
         params![
             rec.photo_hash, rec.path, rec.parent_dir, rec.album_id, rec.user_id, rec.content,
@@ -246,6 +466,8 @@ fn upsert_one(tx: &Transaction, rec: &PhotoContentRecord) -> Result<(), DbError>
             rec.person_ids, rec.person_count,
             rec.shoot_time, rec.location, rec.shutter_speed, rec.iso, rec.aperture,
             rec.focal_length, rec.lat, rec.lon,
+            rec.iso_num, rec.focal_num, rec.aperture_num, rec.shutter_num,
+            rec.tone_type, rec.avg_luma,
             Database::now_secs(),
         ],
     )?;
@@ -286,6 +508,12 @@ mod tests {
             iso: Some("100".into()),
             aperture: Some("f/2.8".into()),
             focal_length: Some("50mm".into()),
+            iso_num: Some(100),
+            focal_num: Some(50.0),
+            aperture_num: Some(2.8),
+            shutter_num: Some(0.005),
+            tone_type: Some("low-key".into()),
+            avg_luma: Some(72.0),
             lat: Some(31.921282),
             lon: Some(107.6375),
         }

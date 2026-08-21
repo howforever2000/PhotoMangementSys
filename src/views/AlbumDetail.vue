@@ -9,7 +9,7 @@ import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import type { Album } from "../types/album";
 import { formatSize } from "../types/album";
-import type { ContentSearchHit, VcrGpuStatus } from "../types/content";
+import type { AlbumContentRow, ContentScanFilters, ContentSearchHit, ScanReport, UnifiedScanRow, VcrGpuStatus } from "../types/content";
 import type {
   ClassifyProgress,
   PersonInfo,
@@ -590,6 +590,55 @@ function clearContentSearch() {
   contentHits.value = [];
 }
 
+// ---- FEAT-026：内容搜索过滤条件 ----
+const contentFilter = ref<ContentScanFilters>({
+  iso_min: null,
+  iso_max: null,
+  shutter_min: null,
+  shutter_max: null,
+  aperture_min: null,
+  aperture_max: null,
+  focal_min: null,
+  focal_max: null,
+  tone_type: null,
+});
+const contentFilterHits = ref<AlbumContentRow[]>([]);
+const contentFilterSearching = ref(false);
+
+/** 带过滤条件的内容搜索 */
+async function searchPhotoContentWithFilters() {
+  if (!store.currentAlbum) return;
+  contentFilterSearching.value = true;
+  try {
+    contentFilterHits.value = await contentStore.searchPhotoContentWithFilters(
+      contentKeyword.value,
+      store.currentAlbum.id,
+      contentFilter.value,
+    );
+    contentHits.value = [];
+  } catch (e) {
+    alert(`过滤搜索失败：${e}`);
+  } finally {
+    contentFilterSearching.value = false;
+  }
+}
+
+/** 重置过滤条件 */
+function clearContentFilters() {
+  contentFilter.value = {
+    iso_min: null,
+    iso_max: null,
+    shutter_min: null,
+    shutter_max: null,
+    aperture_min: null,
+    aperture_max: null,
+    focal_min: null,
+    focal_max: null,
+    tone_type: null,
+  };
+  contentFilterHits.value = [];
+}
+
 /** 点击单相册内容搜索命中：用系统默认看图程序打开原图 */
 async function openContentHit(path: string) {
   try {
@@ -606,6 +655,90 @@ function contentHitName(hit: ContentSearchHit): string {
   const i = Math.max(hit.path.lastIndexOf("/"), hit.path.lastIndexOf("\\"));
   return i >= 0 ? hit.path.slice(i + 1) : hit.path;
 }
+
+// ---- FEAT-026：组合扫描 + 读表 + 条件搜索 ----
+
+/** 影调类型中文映射（配合 combo-table 中的 tone- 类名） */
+const toneLabelMap: Record<string, string> = {
+  "low-key": "低调",
+  "mid-key": "中间调",
+  "high-key": "高调",
+  LowKey: "低调",
+  MidKey: "中间调",
+  HighKey: "高调",
+};
+
+/** 组合扫描：勾选类型 */
+const comboScanTypes = ref<string[]>([]);
+/** 组合扫描批次 */
+const comboBatch = ref(8);
+/** 组合扫描状态 */
+const comboScanning = ref(false);
+const comboError = ref("");
+/** 组合扫描结果行 */
+const comboRows = ref<UnifiedScanRow[]>([]);
+/** 组合扫描报告 */
+const comboReport = ref<ScanReport | null>(null);
+/** 读表状态 */
+const readScanning = ref(false);
+
+/** 组合扫描调用 */
+const scanAlbumCombined = trace("scanAlbumCombined", async () => {
+  if (comboScanning.value || !store.currentAlbum) return;
+  if (comboScanTypes.value.length === 0) {
+    comboError.value = "请至少勾选一项扫描类型";
+    return;
+  }
+  comboScanning.value = true;
+  comboError.value = "";
+  try {
+    const result = await contentStore.scanAlbumCombined(
+      store.currentAlbum.id,
+      comboScanTypes.value,
+      comboBatch.value,
+    );
+    comboReport.value = result.report;
+  } catch (e) {
+    comboError.value = `组合扫描失败：${e}`;
+  } finally {
+    comboScanning.value = false;
+  }
+});
+
+/** 读表：分页读取当前相册已扫描内容 */
+const readAlbumContent = trace("readAlbumContent", async () => {
+  if (readScanning.value || !store.currentAlbum) return;
+  readScanning.value = true;
+  try {
+    const { rows } = await contentStore.readAlbumContent(store.currentAlbum.id, 1, 1000);
+    comboRows.value = rows.map((r) => ({
+      file_name: r.path.split("/").pop()?.split("\\").pop() ?? r.path,
+      path: r.path,
+      iso: r.iso,
+      aperture: r.aperture,
+      shutter_speed: r.shutter_speed,
+      focal_length: r.focal_length,
+      shoot_time: r.shoot_time,
+      iso_num: r.iso_num,
+      focal_num: r.focal_num,
+      aperture_num: r.aperture_num,
+      shutter_num: r.shutter_num,
+      tone_type: r.tone_type,
+      avg_luma: r.avg_luma,
+      category: r.category,
+      sub_category: r.sub_category,
+      label: r.label,
+      confidence: r.confidence,
+      top3: [] as VisionResult["top3"],
+      person_ids: r.person_ids,
+      person_count: r.person_count,
+    }));
+  } catch (e) {
+    comboError.value = `读表失败：${e}`;
+  } finally {
+    readScanning.value = false;
+  }
+});
 </script>
 
 <template>
@@ -768,6 +901,111 @@ function contentHitName(hit: ContentSearchHit): string {
           </div>
         </div>
       </div>
+
+      <!-- FEAT-026：组合扫描（EXIF + 影调 + AI 统一界面） -->
+      <section class="scan-area combo-area">
+        <div class="scan-toolbar">
+          <div>
+            <h3 class="scan-title">🧩 组合扫描</h3>
+            <p class="scan-sub">勾选扫描类型（可多选），一次完成 EXIF / 影调 / AI 内容识别；勾选「内容识别」时结果同时写入内容库，可用于智能搜索</p>
+          </div>
+          <div class="combo-actions">
+            <button class="btn btn-primary" :disabled="comboScanning" @click="scanAlbumCombined">
+              {{ comboScanning ? "扫描中…" : "开始组合扫描" }}
+            </button>
+          </div>
+        </div>
+
+        <div class="combo-controls">
+          <div class="combo-checks">
+            <label class="combo-check" :class="{ active: comboScanTypes.includes('basic') }">
+              <input type="checkbox" value="basic" v-model="comboScanTypes" />
+              <span class="combo-check-label">EXIF 基础</span>
+              <span class="combo-check-desc">ISO / 焦段 / 光圈 / 快门</span>
+            </label>
+            <label class="combo-check" :class="{ active: comboScanTypes.includes('tone') }">
+              <input type="checkbox" value="tone" v-model="comboScanTypes" />
+              <span class="combo-check-label">影调分析</span>
+              <span class="combo-check-desc">低调 / 中间调 / 高调</span>
+            </label>
+            <label class="combo-check" :class="{ active: comboScanTypes.includes('ai') }">
+              <input type="checkbox" value="ai" v-model="comboScanTypes" />
+              <span class="combo-check-label">AI 内容识别</span>
+              <span class="combo-check-desc">写入内容库 · 支持搜索</span>
+            </label>
+          </div>
+          <div class="combo-meta">
+            <label class="batch-select">
+              批次
+              <select v-model="comboBatch">
+                <option v-for="b in BATCH_OPTIONS" :key="b" :value="b">{{ b }}</option>
+              </select>
+            </label>
+            <button class="btn btn-mini" :disabled="gpuLoading" @click="fetchGpuStatus">
+              {{ gpuLoading ? "检测中…" : "检测 GPU" }}
+            </button>
+            <div v-if="gpuStatus" class="gpu-info" :class="{ ok: gpuStatus.use_gpu }">
+              GPU: {{ gpuStatus.use_gpu ? "✅ " + gpuStatus.provider : "❌ CPU (" + gpuStatus.provider + ")" }}
+            </div>
+          </div>
+        </div>
+
+        <p v-if="comboError" class="scan-error">{{ comboError }}</p>
+        <div v-if="!comboScanning && !comboRows.length && !comboError" class="scan-empty">
+          <p>请勾选扫描类型后点击「开始组合扫描」</p>
+        </div>
+        <div v-if="comboScanning" class="scan-empty">
+          <p class="scan-loading">⏳ 正在扫描… 请稍候</p>
+        </div>
+
+        <div v-if="comboRows.length" class="scan-table-wrap">
+          <div class="scan-toolbar" style="padding:10px 14px 0;border:none">
+            <p class="scan-sub">
+              {{ comboReport ? "✅ 已写入内容库 " + comboReport.written + "/" + comboReport.total + " 张" : "✅ 扫描完成" }}
+            </p>
+            <div class="scan-actions" style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-primary" :disabled="comboScanning" @click="scanAlbumCombined">重新扫描</button>
+              <button class="btn btn-ghost" :disabled="readScanning" @click="readAlbumContent">
+                {{ readScanning ? "读取中…" : "📖 读表" }}
+              </button>
+            </div>
+          </div>
+          <table class="scan-table combo-table">
+            <thead>
+              <tr>
+                <th class="col-idx">#</th>
+                <th>照片名字</th>
+                <th>ISO</th>
+                <th>焦段</th>
+                <th>光圈</th>
+                <th>快门</th>
+                <th>影调</th>
+                <th>AI 类别</th>
+                <th>细类</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(r, i) in comboRows" :key="r.path">
+                <td class="col-idx">{{ i + 1 }}</td>
+                <td class="col-name" :title="r.path">
+                  <span class="img-name-link" @click="openImage(r.path)">{{ r.file_name }}</span>
+                </td>
+                <td>{{ r.iso ?? r.iso_num != null ? "ISO " + r.iso_num : "—" }}</td>
+                <td>{{ r.focal_length ?? r.focal_num != null ? r.focal_num + "mm" : "—" }}</td>
+                <td>{{ r.aperture ?? r.aperture_num != null ? "f/" + r.aperture_num : "—" }}</td>
+                <td>{{ r.shutter_speed ?? (r.shutter_num ? (1 / r.shutter_num).toFixed(1) + "s" : "—") }}</td>
+                <td>
+                  <span v-if="r.tone_type" class="tone-badge tone-" :class="r.tone_type">{{ toneLabelMap[r.tone_type] || r.tone_type }}</span>
+                  <span v-else>—</span>
+                </td>
+                <td>{{ r.category ?? "—" }}</td>
+                <td>{{ r.label ?? "—" }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="scan-count">共 {{ comboRows.length }} 张图片</p>
+        </div>
+      </section>
 
       <!-- 图片 EXIF 扫描（测试功能） -->
       <section class="scan-area">
@@ -1100,6 +1338,101 @@ function contentHitName(hit: ContentSearchHit): string {
             />
             <button v-if="contentKeyword" class="search-clear" @click="clearContentSearch">×</button>
           </div>
+
+          <!-- FEAT-026：数值过滤 + 影调下拉（预设范围） -->
+          <div class="content-search-filters">
+            <div class="filter-group">
+              <label class="filter-label">ISO</label>
+              <select v-model="contentFilter.iso_min" class="filter-select" title="ISO 下限">
+                <option :value="null">不限</option>
+                <option value="80">80+</option>
+                <option value="200">200+</option>
+                <option value="400">400+</option>
+                <option value="800">800+</option>
+                <option value="1600">1600+</option>
+              </select>
+              <select v-model="contentFilter.iso_max" class="filter-select" title="ISO 上限">
+                <option :value="null">不限</option>
+                <option value="200">≤200</option>
+                <option value="400">≤400</option>
+                <option value="800">≤800</option>
+                <option value="1600">≤1600</option>
+                <option value="3200">≤3200</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label class="filter-label">快门</label>
+              <select v-model="contentFilter.shutter_min" class="filter-select" title="快门下限">
+                <option :value="null">不限</option>
+                <option value="0.001">≥1/1000</option>
+                <option value="0.005">≥1/200</option>
+                <option value="0.01">≥1/100</option>
+                <option value="0.02">≥1/50</option>
+                <option value="0.1">≥1/10</option>
+              </select>
+              <select v-model="contentFilter.shutter_max" class="filter-select" title="快门上限">
+                <option :value="null">不限</option>
+                <option value="0.01">≤1/100</option>
+                <option value="0.05">≤1/20</option>
+                <option value="0.1">≤1/10</option>
+                <option value="1">≤1s</option>
+                <option value="10">≤10s</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label class="filter-label">光圈</label>
+              <select v-model="contentFilter.aperture_min" class="filter-select" title="光圈下限">
+                <option :value="null">不限</option>
+                <option value="1.4">≥f/1.4</option>
+                <option value="2">≥f/2</option>
+                <option value="2.8">≥f/2.8</option>
+                <option value="4">≥f/4</option>
+                <option value="5.6">≥f/5.6</option>
+              </select>
+              <select v-model="contentFilter.aperture_max" class="filter-select" title="光圈上限">
+                <option :value="null">不限</option>
+                <option value="2.8">≤f/2.8</option>
+                <option value="4">≤f/4</option>
+                <option value="5.6">≤f/5.6</option>
+                <option value="8">≤f/8</option>
+                <option value="16">≤f/16</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label class="filter-label">焦段</label>
+              <select v-model="contentFilter.focal_min" class="filter-select" title="焦段下限">
+                <option :value="null">不限</option>
+                <option value="24">≥24mm</option>
+                <option value="35">≥35mm</option>
+                <option value="50">≥50mm</option>
+                <option value="85">≥85mm</option>
+                <option value="135">≥135mm</option>
+              </select>
+              <select v-model="contentFilter.focal_max" class="filter-select" title="焦段上限">
+                <option :value="null">不限</option>
+                <option value="35">≤35mm</option>
+                <option value="50">≤50mm</option>
+                <option value="85">≤85mm</option>
+                <option value="135">≤135mm</option>
+                <option value="200">≤200mm</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label class="filter-label">影调</label>
+              <select v-model="contentFilter.tone_type" class="filter-select">
+                <option :value="null">不限</option>
+                <option value="low-key">低调</option>
+                <option value="mid-key">中间调</option>
+                <option value="high-key">高调</option>
+              </select>
+            </div>
+            <div class="filter-actions">
+              <button class="btn btn-primary btn-sm" @click="searchPhotoContentWithFilters">
+                🔍 过滤搜索
+              </button>
+              <button class="btn btn-ghost btn-sm" @click="clearContentFilters">重置</button>
+            </div>
+          </div>
           <div v-if="contentKeyword.trim()" class="content-search-results">
             <div v-if="contentSearching" class="scan-empty">正在搜索照片内容…</div>
             <div v-else-if="contentHits.length === 0" class="scan-empty">
@@ -1121,6 +1454,32 @@ function contentHitName(hit: ContentSearchHit): string {
                   <span v-if="hit.shoot_time" class="top3-chip">{{ hit.shoot_time }}</span>
                   <span v-if="hit.iso" class="top3-chip">ISO {{ hit.iso }}</span>
                   <span v-if="hit.aperture" class="top3-chip">{{ hit.aperture }}</span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- FEAT-026：过滤搜索结果 -->
+          <div v-if="contentFilterHits.length > 0 || contentFilterSearching" class="content-search-results">
+            <div v-if="contentFilterSearching" class="scan-empty">正在按条件过滤…</div>
+            <div v-else-if="contentFilterHits.length === 0" class="scan-empty">
+              未在当前相册中找到匹配过滤条件的照片
+            </div>
+            <div v-else class="content-hit-list">
+              <div
+                v-for="hit in contentFilterHits"
+                :key="hit.id"
+                class="content-hit-item"
+                :title="hit.path"
+                @click="openContentHit(hit.path)"
+              >
+                <span class="content-hit-name">{{ hit.path.split('/').pop() || hit.path.split('\\').pop() }}</span>
+                <span class="content-hit-tags">
+                  <span v-if="hit.label" class="top3-chip">{{ hit.label }}</span>
+                  <span v-if="hit.category" class="top3-chip">{{ hit.category }}</span>
+                  <span v-if="hit.tone_type" class="tone-badge tone-" :class="hit.tone_type">{{ toneLabelMap[hit.tone_type] || hit.tone_type }}</span>
+                  <span v-if="hit.iso" class="top3-chip">ISO {{ hit.iso }}</span>
+                  <span v-if="hit.shoot_time" class="top3-chip">{{ hit.shoot_time }}</span>
                 </span>
               </div>
             </div>
@@ -2198,4 +2557,153 @@ function contentHitName(hit: ContentSearchHit): string {
   padding: 80px 0;
   color: #888;
 }
+/* ---- FEAT-026：组合扫描 UI ---- */
+.combo-area {
+  margin-bottom: 24px;
+}
+
+.combo-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 14px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+.combo-checks {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.combo-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid #d0d5dd;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+  min-width: 0;
+}
+
+.combo-check:hover {
+  border-color: #396cd8;
+  background: #eef3fb;
+}
+
+.combo-check.active {
+  border-color: #396cd8;
+  background: #eef3fb;
+}
+
+.combo-check input[type="checkbox"] {
+  margin-right: 2px;
+}
+
+.combo-check-label {
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.combo-check-desc {
+  font-size: 11px;
+  color: #667085;
+}
+
+.combo-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.combo-table th:nth-child(7),
+.combo-table td:nth-child(7) {
+  width: 80px;
+}
+
+.combo-table th:nth-child(8),
+.combo-table td:nth-child(8) {
+  width: 120px;
+}
+
+.combo-table th:nth-child(9),
+.combo-table td:nth-child(9) {
+  width: 180px;
+}
+
+/* 过滤条 */
+.content-search-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  align-items: flex-end;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.filter-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #667085;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.filter-select {
+  font-size: 12px;
+  padding: 2px 4px;
+  border: 1px solid #d0d5dd;
+  border-radius: 4px;
+  background: #fff;
+  min-width: 68px;
+}
+
+.filter-actions {
+  display: flex;
+  gap: 4px;
+  padding-left: 8px;
+  margin-left: auto;
+}
+
+/* 影调标签在扫描表格中的显示 */
+.tone-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.tone-low-key,
+.tone-low_key {
+  background: #2a2a2a;
+  color: #fff;
+}
+
+.tone-mid-key,
+.tone-mid_key {
+  background: #667085;
+  color: #fff;
+}
+
+.tone-high-key,
+.tone-high_key {
+  background: #e5e7eb;
+  color: #1f2328;
+}
+
 </style>

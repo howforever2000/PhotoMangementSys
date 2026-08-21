@@ -574,6 +574,21 @@
    "highlights": ["GPU 自动探测自动选，无 GPU 自动回退 CPU，不中断功能", "批次可调，服务端安全封顶 64"],
    "created_at": "2026-08-20T13:00:00+08:00",
    "updated_at": "2026-08-20T13:00:00+08:00"
+  },
+  {
+    "id": "FEAT-026",
+    "name": "组合扫描 + 读表 + 条件过滤搜索（统一 EXIF / 影调 / AI 三合一）",
+    "status": "done",
+    "description": "将原本分散的『扫描照片』(EXIF)、『扫描影调』、『内容扫描』(AI) 三个独立扫描入口合并为一个『组合扫描』界面：用户通过下拉勾选选择扫描类型（可单选 / 多选 / 全勾），一次完成多类扫描，结果统一展示在一张表格里。新增『读表』按钮从 photo_content_scan 库分页读取历史扫描结果。新增『过滤搜索』条，支持 ISO / 快门 / 光圈 / 焦段数值范围预设下拉 + 影调类型（低调/中间调/高调）枚举下拉，后端按 ?x IS NULL OR ... 模式动态拼接 SQL 过滤。表结构扩展 6 个新列（iso_num/focal_num/aperture_num/shutter_num/tone_type/avg_luma），EXIF 扫描模块同步补充数值字段解析。",
+    "related_files": ["src-tauri/src/photo_scan.rs", "src-tauri/src/db/content.rs", "src-tauri/src/db/mod.rs", "src-tauri/src/content.rs", "src-tauri/src/lib.rs", "src/types/content.ts", "src/stores/content.ts", "src/views/AlbumDetail.vue"],
+    "keywords": ["组合扫描", "读表", "过滤搜索", "EXIF 数值化", "影调筛选", "三合一"],
+    "implementation": {
+      "backend": "photo_scan.rs 新增 iso_num/focal_num/aperture_num/shutter_num 数值字段 + read_photo_exif 解析；db/content.rs ALTER TABLE 加 6 新列 + AlbumContentRow/ContentFilters + read_album_content(分页)/search_photo_content_with_filters(?NULL OR ... 动态过滤)；content.rs 新增 UnifiedScanRow/CombinedScanOutcome/ContentScanFilters + build_records_combined + 三个新命令；lib.rs 注册。",
+      "frontend": "AlbumDetail 新增『组合扫描』区块：类型勾选(3 项)+批次下拉+GPU 检测+统一结果表(9 列)+读表按钮；搜索区新增过滤条(ISO/快门/光圈/焦段各 2 下拉 + 影调 1 下拉)" 
+    },
+    "highlights": ["三合一扫描入口，勾选即扫，统一表格", "读表从库取数，支持分页", "过滤搜索 8 维数值 + 3 档影调预设"],
+    "created_at": "2026-08-20T13:30:00+08:00",
+    "updated_at": "2026-08-20T13:30:00+08:00"
   }
  ],
  "updated": "2026-08-19"

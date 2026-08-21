@@ -1432,7 +1432,10 @@ pub fn run() {
             merge_persons,
             delete_person,
             content::commands::scan_album_content,
+            content::commands::scan_album_combined,
+            content::commands::read_album_content,
             content::commands::search_photo_content,
+            content::commands::search_photo_content_with_filters,
             get_vcr_gpu_status,
         ])
         .run(tauri::generate_context!())
