@@ -16,6 +16,7 @@ class ModelRegistry:
         self._sessions: dict[str, ort.InferenceSession] = {}
         self._ready: dict[str, bool] = {}
         self._load_errors: dict[str, str] = {}
+        self._providers_sel: list[str] | None = None
 
     # ------------------------------------------------------------------
     def _so(self) -> ort.SessionOptions:
@@ -24,6 +25,43 @@ class ModelRegistry:
         so.inter_op_num_threads = 1
         return so
 
+    # ------------------------------------------------------------------
+    # GPU 提供方选择（R3）：自动探测 + 可选 env 开关，CPU 兜底
+    # ------------------------------------------------------------------
+    def _providers(self) -> list[str]:
+        """返回优先提供方列表（GPU 优先，CPU 兜底）。"""
+        if self._providers_sel is not None:
+            return self._providers_sel
+        available = ort.get_available_providers()
+        pref: list[str] = []
+        if config.VCR_PROVIDER != "cpu":
+            # DirectML（通用 GPU，免 CUDA）优先，其次 CUDA（NVIDIA）
+            for g in ("DmlExecutionProvider", "CUDAExecutionProvider"):
+                if g in available:
+                    pref.append(g)
+                    break
+        pref.append("CPUExecutionProvider")
+        self._providers_sel = pref
+        return pref
+
+    def gpu_info(self) -> dict:
+        """GPU 可行性探测：可用提供方、当前是否走 GPU、选中提供方。"""
+        available = ort.get_available_providers()
+        # 仅统计真正的本地 GPU 加速器（排除 Azure 等云端提供方）
+        known_gpu = {
+            "DmlExecutionProvider", "CUDAExecutionProvider", "ROCmExecutionProvider",
+            "TensorrtExecutionProvider", "OpenVINOExecutionProvider",
+        }
+        gpu = [p for p in available if p in known_gpu]
+        providers = self._providers()
+        using_gpu = bool(providers) and providers[0] != "CPUExecutionProvider"
+        return {
+            "available": available,
+            "gpu": gpu,
+            "use_gpu": using_gpu,
+            "provider": providers[0] if providers else "cpu",
+        }
+
     def _load(self, key: str, paths: list[str], required: bool = False):
         if key in self._ready:
             return
@@ -31,7 +69,7 @@ class ModelRegistry:
             if os.path.isfile(p):
                 try:
                     self._sessions[key] = ort.InferenceSession(
-                        p, sess_options=self._so(), providers=["CPUExecutionProvider"]
+                        p, sess_options=self._so(), providers=self._providers()
                     )
                     self._ready[key] = True
                     return

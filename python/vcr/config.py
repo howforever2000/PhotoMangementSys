@@ -35,7 +35,16 @@ CLS_SIZE = 224
 DET_SIZE = 640
 THREADS = 4
 TOP_K = 5
-BATCH_CHUNK = 8          # /classify_batch 单次最大张数
+BATCH_CHUNK = 8          # /classify_batch 单次最大张数（客户端默认）
+BATCH_CHUNK_MAX = 64     # /classify_batch 安全封顶（前端批次选择上限）
+
+# ---------------------------------------------------------------------------
+# GPU 加速（R3）
+#   默认自动：若安装的 onnxruntime 包含 GPU 提供方（onnxruntime-directml /
+#   onnxruntime-gpu）且 GPU 可用，则自动选用 GPU，否则回退 CPU。
+#   可通过环境变量 VCR_PROVIDER=cpu 强制禁用 GPU。
+# ---------------------------------------------------------------------------
+VCR_PROVIDER = os.environ.get("VCR_PROVIDER", "auto").lower()  # auto | cpu | gpu
 
 # ---------------------------------------------------------------------------
 # 阈值（仲裁规则）

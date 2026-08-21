@@ -492,6 +492,88 @@
    ],
    "created_at": "2026-08-19T15:20:00+08:00",
    "updated_at": "2026-08-19T15:20:00+08:00"
+  },
+  {
+   "id": "FEAT-022",
+   "name": "内容扫描表 + 照片智能搜索（AI 内容入库 + 群相册/单相册搜索）",
+   "status": "done",
+   "description": "新增 photo_content_scan 内容扫描表：相册 AI 内容扫描结果持久化入库，照片以「路径+大小+修改时间」组合哈希唯一标定，二次扫描按哈希覆盖更新（以二次结果为准）；表预留时间/地点/快门速度/ISO/光圈/焦段字段，并以父目录+绝对地址优化索引；加入照片内容智能搜索，支持群相册全局搜索（相册列表页）与单相册内部搜索（相册详情页），搜索范围随界面不同。多用户按 user_id 隔离。",
+   "related_files": [
+    "src-tauri/src/db/content.rs",
+    "src-tauri/src/content.rs",
+    "src-tauri/src/db/mod.rs",
+    "src-tauri/src/lib.rs",
+    "src/types/content.ts",
+    "src/stores/content.ts",
+    "src/views/AlbumList.vue",
+    "src/views/AlbumDetail.vue"
+   ],
+   "keywords": [
+    "内容扫描",
+    "智能搜索",
+    "photo_content_scan",
+    "photo_hash",
+    "哈希去重",
+    "upsert",
+    "群相册搜索",
+    "单相册搜索",
+    "EXIF",
+    "FEAT-022"
+   ],
+   "implementation": {
+    "backend": "db/content.rs 建表(photo_hash UNIQUE, path, parent_dir, album_id, user_id, content/category/sub_category/label/confidence/top3/person_ids, shoot_time/location/shutter_speed/iso/aperture/focal_length/lat/lon, scanned_at) + 索引(idx_pcs_parent/path/user/album)；upsert_photo_contents 用 INSERT ON CONFLICT(photo_hash) DO UPDATE 实现二次扫描覆盖；search_photo_content 按 user_id 隔离 + 可选 album_id 限定单相册范围。content.rs 服务层 photo_hash(FNV-1a 对 大小|mtime|路径) + build_records(复用 vision::classify_album 识别 + photo_scan::read_photo_exif 提取 EXIF) + commands 薄壳(scan_album_content/search_photo_content)。db::open 建表，delete_album_refs 级联删内容表。",
+    "frontend": "types/content.ts(ContentSearchHit/ScanOutcome)、stores/content.ts(scanAlbumContent/searchPhotoContent)；AlbumList 全局搜索框同时搜相册+照片内容(分组展示、点击跳所属相册)；AlbumDetail 内容识别改调 scan_album_content 落库并显示写库报告，新增单相册内容搜索框展示命中照片(点开原图)。"
+   },
+   "highlights": [
+    "照片以哈希唯一标定，重复扫描不产生重复行，二次扫描结果覆盖",
+    "预留 EXIF 拍摄参数字段并随扫描填充",
+    "搜索范围按界面区分：列表页全局、详情页单相册"
+   ],
+   "created_at": "2026-08-20T12:00:00+08:00",
+   "updated_at": "2026-08-20T12:00:00+08:00"
+  },
+  {
+   "id": "FEAT-023",
+   "name": "内容识别结果表格分页（10/20/50/100 条每页）",
+   "status": "done",
+   "description": "相册详情页「内容识别」结果表支持分页显示，页大小可选 10/20/50/100 条每页，含上一页/下一页翻页与页码信息，切换页大小回到第 1 页，新扫描自动回第 1 页。",
+   "related_files": ["src/views/AlbumDetail.vue"],
+   "keywords": ["分页", "paginate", "pageSize", "10/20/50/100", "内容识别", "pagination"],
+   "implementation": {
+    "frontend": "AlbumDetail.vue 新增 PAGE_SIZES/pageSize/currentPage/pagedVision/visionPageCount/visionRowOffset，watch 页大小/结果自动收拢页码，classifyAlbum 开始置第 1 页；模板 v-for 改 pagedVision + vision-pager 控件（每页下拉 + 上一页/下一页）。"
+   },
+   "highlights": ["页大小可切换，切页自动回到第 1 页，越界自动收拢"],
+   "created_at": "2026-08-20T13:00:00+08:00",
+   "updated_at": "2026-08-20T13:00:00+08:00"
+  },
+  {
+   "id": "FEAT-024",
+   "name": "记住登录：默认 3 天免密复用上次用户",
+   "status": "done",
+   "description": "登录/注册成功后写入随机 token（sessions 表 + 磁盘 session.token 文件），默认 3 天有效；应用启动自动校验并恢复上次登录用户（免密复用）；点击退出登录清除 token（DB + 磁盘）。同用户新登录替换旧 token，多用户各自独立。",
+   "related_files": ["src-tauri/src/session.rs", "src-tauri/src/lib.rs"],
+   "keywords": ["记住登录", "remember", "token", "免密", "免登录", "3天", "session"],
+   "implementation": {
+    "backend": "新模块 session.rs：sessions 表 + generate_token(OsRng 32B hex) + create_remember_session/validate_remember_session/clear_remember_session + token 文件读写清除；lib.rs setup 启动时读 token 恢复会话、login/register 写 token（remember_login 辅助）、logout 清 token；前端无需改动，启动走 get_current_user 自动恢复。"
+   },
+   "highlights": ["启动即复用上次用户，3 天免密，登出彻底清除", "单用户单 token，多用户隔离"],
+   "created_at": "2026-08-20T13:00:00+08:00",
+   "updated_at": "2026-08-20T13:00:00+08:00"
+  },
+  {
+   "id": "FEAT-025",
+   "name": "内容扫描批次选择 + GPU 加速可行性（自动探测，DirectML 起步）",
+   "status": "done",
+   "description": "内容识别界面支持选择推理批次（8/16/32），并支持检测 GPU 加速可行性：Python 服务启动时自动探测可用 GPU 提供方（DirectML 优先，其次 CUDA），可用则自动走 GPU 推理、否则回退 CPU；前端展示 GPU 状态与当前提供方。",
+   "related_files": ["python/vcr/model_registry.py", "python/vcr/config.py", "python/server.py", "src-tauri/src/vision.rs", "src-tauri/src/content.rs", "src-tauri/src/lib.rs", "src/views/AlbumDetail.vue", "src/stores/content.ts", "src/types/content.ts"],
+   "keywords": ["批次", "batch", "GPU", "DirectML", "CUDA", "onnxruntime", "加速"],
+   "implementation": {
+    "backend": "Python model_registry._providers() 探测 ort.get_available_providers() 自动选 DML/CUDA 否则 CPU；config 加 VCR_PROVIDER env 开关与 BATCH_CHUNK_MAX=64 封顶；server /classify_batch 按客户端批次安全封顶 + /gpu 端点；vision.rs classify_album 加 batch_size 参数 + vcr_gpu_status()；content.rs scan_album_content 透传 batch_size；lib.rs 注册 get_vcr_gpu_status。",
+    "frontend": "AlbumDetail 批次下拉(8/16/32)+「检测 GPU」按钮+GPU 状态条（use_gpu 变绿）；扫描后自动刷新 GPU 状态；store.scanAlbumContent 传 batchSize，fetchGpuStatus 查状态。"
+   },
+   "highlights": ["GPU 自动探测自动选，无 GPU 自动回退 CPU，不中断功能", "批次可调，服务端安全封顶 64"],
+   "created_at": "2026-08-20T13:00:00+08:00",
+   "updated_at": "2026-08-20T13:00:00+08:00"
   }
  ],
  "updated": "2026-08-19"

@@ -19,8 +19,6 @@ use tauri::Emitter;
 
 /// Python 微服务固定端口（与 server.py 默认一致，服务地址由 VCR_URL 引用）
 const VCR_URL: &str = "http://127.0.0.1:8765";
-/// 每批提交给微服务的图片数（配合 server.py 的 BATCH_CHUNK）
-const BATCH_SIZE: usize = 8;
 /// 服务启动就绪等待上限
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -80,9 +78,13 @@ pub struct ClassifyProgress {
 
 /// 识别相册目录内所有图片的内容（递归子目录，跳过隐藏文件/目录）
 ///
-/// 流程：收集图片路径 → 确保微服务就绪 → 分批 /classify_batch →
+/// 流程：收集图片路径 → 确保微服务就绪 → 按 `batch_size` 分批 /classify_batch →
 /// 每批 emit `classify-progress` 事件 → 汇总返回。
-pub async fn classify_album(dir: &str, app: &tauri::AppHandle) -> Result<Vec<VisionResult>, String> {
+pub async fn classify_album(
+    dir: &str,
+    batch_size: usize,
+    app: &tauri::AppHandle,
+) -> Result<Vec<VisionResult>, String> {
     let photos = collect_images(dir)?;
     if photos.is_empty() {
         return Ok(Vec::new());
@@ -95,11 +97,12 @@ pub async fn classify_album(dir: &str, app: &tauri::AppHandle) -> Result<Vec<Vis
 
     ensure_service_ready(&client).await?;
 
+    let batch = batch_size.max(1);
     let mut results: Vec<VisionResult> = Vec::with_capacity(photos.len());
     let mut done = 0usize;
     let mut failed = 0usize;
 
-    for chunk in photos.chunks(BATCH_SIZE) {
+    for chunk in photos.chunks(batch) {
         let resp: serde_json::Value = client
             .post(format!("{VCR_URL}/classify_batch"))
             .json(&serde_json::json!({ "paths": chunk }))
@@ -228,6 +231,55 @@ pub struct PersonInfo {
     pub name: String,
     pub face_count: i64,
     pub created_at: String,
+}
+
+/// GPU 加速可行性状态（R3，来自微服务 /gpu）
+#[derive(Debug, Clone, Serialize)]
+pub struct VcrGpuStatus {
+    /// 服务是否在运行
+    pub running: bool,
+    /// 当前是否实际走 GPU 推理
+    pub use_gpu: bool,
+    /// 当前选中的提供方（如 DmlExecutionProvider / CPUExecutionProvider）
+    pub provider: String,
+    /// 检测到的 GPU 提供方列表
+    pub gpu: Vec<String>,
+    /// 全部可用提供方
+    pub available: Vec<String>,
+    /// 批次安全上限
+    pub batch_max: usize,
+}
+
+/// 查询 GPU 加速可行性：确保服务就绪后请求 /gpu
+pub async fn vcr_gpu_status() -> Result<VcrGpuStatus, String> {
+    let client = http_client().await?;
+    ensure_service_ready(&client).await?;
+    let resp: serde_json::Value = client
+        .get(format!("{VCR_URL}/gpu"))
+        .send()
+        .await
+        .map_err(|e| format!("调用识别服务失败: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("解析结果失败: {e}"))?;
+    let gpu = resp
+        .get("gpu")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    let available = resp
+        .get("available")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    Ok(VcrGpuStatus {
+        running: true,
+        use_gpu: resp.get("use_gpu").and_then(|v| v.as_bool()).unwrap_or(false),
+        provider: resp.get("provider").and_then(|v| v.as_str()).unwrap_or("cpu").to_string(),
+        gpu,
+        available,
+        batch_max: resp.get("batch_max").and_then(|v| v.as_u64()).unwrap_or(8) as usize,
+    })
 }
 
 async fn http_client() -> Result<reqwest::Client, String> {

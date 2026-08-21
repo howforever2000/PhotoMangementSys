@@ -88,7 +88,19 @@ def health():
         "classes": 1000 if ready else 0,
         "categories": d["categories"],
         "persons": d["persons"],
+        "gpu": reg.gpu_info(),
+        "batch_max": config.BATCH_CHUNK_MAX,
     }
+
+
+@app.get("/gpu")
+def gpu():
+    """GPU 加速可行性探测（R3）：可用提供方 + 当前是否走 GPU + 提供方。"""
+    reg = get_registry()
+    reg.status()  # 触发模型加载（提供方在加载时选定）
+    info = reg.gpu_info()
+    info["batch_max"] = config.BATCH_CHUNK_MAX
+    return info
 
 
 @app.post("/classify")
@@ -105,8 +117,10 @@ def classify(req: ClassifyRequest):
 def classify_batch(req: ClassifyBatchRequest):
     if not get_registry().is_ready("cls"):
         raise HTTPException(503, "分类模型未就绪")
+    # 批次由客户端控制（R3），此处仅做安全封顶，避免单次超大请求
+    paths = req.paths[: config.BATCH_CHUNK_MAX]
     results: list = []
-    for p in req.paths[: config.BATCH_CHUNK]:
+    for p in paths:
         r = classify_one(p, get_registry())
         if r is None:
             results.append(

@@ -7,6 +7,9 @@
 //! - `init_schema`  →  `schema.sql` 建表脚本
 //! - `DbError`  →  自定义业务异常（配合全局异常处理）
 
+pub mod content;
+pub use content::{ContentSearchHit, PhotoContentRecord};
+
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -331,6 +334,8 @@ impl Database {
                 params![admin_id],
             )?;
         }
+        // 内容扫描表（FEAT-022：AI 内容扫描入库 + 照片智能搜索）
+        self.init_content_schema()?;
         Ok(())
     }
 
@@ -854,6 +859,7 @@ impl Database {
         tx.execute("DELETE FROM folder_albums WHERE album_id = ?1", params![album_id])?;
         tx.execute("DELETE FROM album_tags WHERE album_id = ?1", params![album_id])?;
         tx.execute("DELETE FROM album_stats WHERE album_id = ?1", params![album_id])?;
+        tx.execute("DELETE FROM photo_content_scan WHERE album_id = ?1", params![album_id])?;
         Ok(())
     }
 

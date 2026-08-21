@@ -14,11 +14,13 @@ macro_rules! log_call {
 }
 
 mod auth;
+mod content;
 mod db;
 mod folder;
 mod geo_index;
 mod logger;
 mod photo_scan;
+mod session;
 mod test_scan;
 mod thumbnail;
 mod tone;
@@ -76,6 +78,7 @@ fn require_user(session: &tauri::State<SessionState>) -> Result<i64, String> {
 #[tauri::command]
 fn register(
     input: auth::RegisterInput,
+    app: tauri::AppHandle,
     state: tauri::State<AppState>,
     session: tauri::State<SessionState>,
 ) -> Result<auth::User, String> {
@@ -86,7 +89,8 @@ fn register(
     let r = (|| -> Result<auth::User, String> {
         let db = state.0.lock().map_err(|e| e.to_string())?;
         let user = auth::register_user(db.conn(), input)?;
-        // 注册成功自动登录
+        // 注册成功自动登录 + 写入记住登录 token（默认 3 天免密复用）
+        remember_login(&db, &app, user.id);
         let mut guard = session.0.lock().map_err(|e| e.to_string())?;
         *guard = Some(user.id);
         Ok(user)
@@ -105,6 +109,7 @@ fn register(
 #[tauri::command]
 fn login(
     input: auth::LoginInput,
+    app: tauri::AppHandle,
     state: tauri::State<AppState>,
     session: tauri::State<SessionState>,
 ) -> Result<auth::User, String> {
@@ -112,6 +117,8 @@ fn login(
     let r = (|| -> Result<auth::User, String> {
         let db = state.0.lock().map_err(|e| e.to_string())?;
         let user = auth::verify_login(db.conn(), &input.account, &input.password)?;
+        // 记住登录（默认 3 天免密复用上次用户）
+        remember_login(&db, &app, user.id);
         let mut guard = session.0.lock().map_err(|e| e.to_string())?;
         *guard = Some(user.id);
         Ok(user)
@@ -125,8 +132,21 @@ fn login(
 
 /// 退出登录（清空会话）
 #[tauri::command]
-fn logout(session: tauri::State<SessionState>) -> Result<(), String> {
+fn logout(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<(), String> {
     let _t = log_call!("logout");
+    // 清除记住登录 token（DB + 磁盘文件），下次启动需重新登录
+    if let Ok(dir) = app_data_dir(&app) {
+        if let Some(token) = session::read_token_file(&dir) {
+            if let Ok(db) = state.0.lock() {
+                let _ = session::clear_remember_session(db.conn(), &token);
+            }
+        }
+        session::clear_token_file(&dir);
+    }
     let mut guard = session.0.lock().map_err(|e| e.to_string())?;
     *guard = None;
     logger::log_call_end_with("logout", _t, "OK");
@@ -223,6 +243,26 @@ fn thumbs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map_err(|e| format!("无法获取应用数据目录: {e}"))?;
     Ok(data_dir.join(THUMBS_DIR))
+}
+
+/// 应用数据目录（记住登录 token 文件所在）
+fn app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|e| format!("无法获取应用数据目录: {e}"))
+}
+
+/// 登录/注册成功后写入记住登录 token（默认 3 天免密复用上次用户）
+///
+/// 失败不阻断登录（仅记日志）：记住登录是体验增强，不影响本次会话。
+fn remember_login(db: &db::Database, app: &tauri::AppHandle, user_id: i64) {
+    if let Ok(dir) = app_data_dir(app) {
+        if let Ok(token) = session::create_remember_session(db.conn(), user_id) {
+            if let Err(e) = session::write_token_file(&dir, &token) {
+                logger::log_error("session", &format!("写入记住登录 token 失败: {e}"));
+            }
+        }
+    }
 }
 
 /// 填充相册的统计属性（照片数量、文件夹大小、拍摄时间、默认封面）
@@ -683,10 +723,11 @@ fn scan_album_tones(path: String) -> Result<Vec<tone::PhotoTone>, String> {
 #[tauri::command]
 async fn classify_album(
     path: String,
+    batch_size: Option<i64>,
     app: tauri::AppHandle,
 ) -> Result<Vec<vision::VisionResult>, String> {
     let _t = log_call!("classify_album", &format!("path={path}"));
-    let r = vision::classify_album(&path, &app).await;
+    let r = vision::classify_album(&path, batch_size.unwrap_or(8).max(1) as usize, &app).await;
     match &r {
         Ok(list) => logger::log_call_end_with(
             "classify_album",
@@ -720,6 +761,12 @@ async fn merge_persons(target: String, source: String) -> Result<(), String> {
 #[tauri::command]
 async fn delete_person(pid: String) -> Result<(), String> {
     vision::delete_person(&pid).await
+}
+
+/// GPU 加速可行性（R3）：确保服务就绪后查询 /gpu，返回是否可用 GPU
+#[tauri::command]
+async fn get_vcr_gpu_status() -> Result<vision::VcrGpuStatus, String> {
+    vision::vcr_gpu_status().await
 }
 
 /// 在系统文件管理器中打开文件夹内部
@@ -1315,10 +1362,33 @@ pub fn run() {
             logger::log_info("数据库初始化中...");
             let database = Database::open(&db_path).expect("数据库初始化失败");
             logger::log_info("数据库初始化完成");
-            // 注册为全局状态，后续命令通过 tauri::State<AppState> 注入使用
-            app.manage(AppState(Mutex::new(database)));
-            // 登录会话状态（多用户隔离）：初始未登录，注册/登录后写入当前用户
-            app.manage(SessionState(Mutex::new(None)));
+            // 记住登录表（R2）：登录时写入 3 天 token，启动时恢复免密登录
+            if let Err(e) = session::init_schema(database.conn()) {
+                logger::log_error("session", &format!("记住登录表初始化失败: {e}"));
+            }
+            // 恢复上次登录（默认 3 天免密复用上次用户）；失败则清 token
+            let restored_user = session::read_token_file(&data_dir)
+                .and_then(|token| {
+                    session::validate_remember_session(database.conn(), &token)
+                        .map_err(|e| {
+                            logger::log_error("session", &format!("记住登录校验失败: {e}"));
+                        })
+                        .ok()
+                        .flatten()
+                });
+            match restored_user {
+                Some(uid) => {
+                    logger::log_info(&format!("已恢复上次登录用户 id={uid}（记住登录 3 天）"));
+                    app.manage(AppState(Mutex::new(database)));
+                    app.manage(SessionState(Mutex::new(Some(uid))));
+                }
+                None => {
+                    // token 缺失/失效 → 清理磁盘文件，按未登录启动
+                    session::clear_token_file(&data_dir);
+                    app.manage(AppState(Mutex::new(database)));
+                    app.manage(SessionState(Mutex::new(None)));
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1361,6 +1431,9 @@ pub fn run() {
             rename_person,
             merge_persons,
             delete_person,
+            content::commands::scan_album_content,
+            content::commands::search_photo_content,
+            get_vcr_gpu_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

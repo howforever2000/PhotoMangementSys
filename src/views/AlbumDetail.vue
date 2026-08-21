@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
 import { useAlbumStore } from "../stores/album";
+import { useContentStore } from "../stores/content";
 import type { Album } from "../types/album";
 import { formatSize } from "../types/album";
+import type { ContentSearchHit, VcrGpuStatus } from "../types/content";
 import type {
   ClassifyProgress,
   PersonInfo,
@@ -21,6 +23,7 @@ import ConfirmDialog from "../components/ConfirmDialog.vue";
 const route = useRoute();
 const router = useRouter();
 const store = useAlbumStore();
+const contentStore = useContentStore();
 
 /** 将本地文件路径转为前端可访问的 URL（Tauri asset 协议） */
 function fileUrl(path: string | null): string {
@@ -384,9 +387,69 @@ function histBars(h: number[]): { k: number; v: number }[] {
 /** 内容识别（YOLOv8n-cls，测试功能）：调用 Python 微服务批量识别图片内容 */
 const visionScanning = ref(false);
 const visionError = ref("");
+const visionScanMessage = ref("");
 const visionResult = ref<VisionResult[] | null>(null);
 const visionProgress = ref<ClassifyProgress | null>(null);
 let unlistenProgress: (() => void) | null = null;
+
+// ---------- 批次与 GPU（R3） ----------
+/** 推理批次（8/16/32，透传给 Python 服务） */
+const scanBatch = ref(8);
+const BATCH_OPTIONS = [8, 16, 32];
+/** GPU 加速可行性状态 */
+const gpuStatus = ref<VcrGpuStatus | null>(null);
+const gpuLoading = ref(false);
+
+/** 查询 GPU 可行性（会确保识别服务就绪） */
+async function fetchGpuStatus() {
+  gpuLoading.value = true;
+  try {
+    gpuStatus.value = await contentStore.fetchGpuStatus();
+  } catch (e) {
+    gpuStatus.value = null;
+    visionError.value = `GPU 检测失败：${e}`;
+  } finally {
+    gpuLoading.value = false;
+  }
+}
+
+/** GPU 状态展示文案 */
+function gpuStatusText(): string {
+  const g = gpuStatus.value;
+  if (!g) return "未检测";
+  if (!g.running) return "服务未运行";
+  if (g.use_gpu) return `GPU 加速已启用（${g.provider}）`;
+  return `CPU 推理（未检测到可用 GPU${g.gpu.length ? "；已安装 GPU 提供方 " + g.gpu.join(",") : ""}）`;
+}
+
+// ---------- 内容识别结果分页（R1：10/20/50/100 条每页） ----------
+const PAGE_SIZES = [10, 20, 50, 100];
+const pageSize = ref(50);
+const currentPage = ref(1);
+/** 当前页结果（切片，供表格渲染） */
+const pagedVision = computed(() => {
+  if (!visionResult.value) return [];
+  const start = (currentPage.value - 1) * pageSize.value;
+  return visionResult.value.slice(start, start + pageSize.value);
+});
+/** 总页数 */
+const visionPageCount = computed(() =>
+  Math.max(1, Math.ceil((visionResult.value?.length ?? 0) / pageSize.value))
+);
+/** 全局序号偏移（第几行，跨页连续） */
+const visionRowOffset = computed(() => (currentPage.value - 1) * pageSize.value);
+/** 切换页大小 → 回到第 1 页 */
+watch(pageSize, () => {
+  currentPage.value = 1;
+});
+/** 结果/页大小变化后，当前页越界则收拢到末页 */
+watch([visionResult, pageSize], () => {
+  if (currentPage.value > visionPageCount.value) currentPage.value = visionPageCount.value;
+});
+function changeVisionPage(p: number) {
+  const next = Math.min(Math.max(1, p), visionPageCount.value);
+  currentPage.value = next;
+}
 
 /** 人物注册表 */
 const persons = ref<PersonInfo[]>([]);
@@ -472,6 +535,7 @@ const classifyAlbum = trace("classifyAlbum", async () => {
   visionScanning.value = true;
   visionError.value = "";
   visionProgress.value = null;
+  currentPage.value = 1;
   try {
     // 监听进度事件（首次进入时注册一次，结束后不卸载，方便重复点击）
     if (!unlistenProgress) {
@@ -479,16 +543,69 @@ const classifyAlbum = trace("classifyAlbum", async () => {
         visionProgress.value = e.payload;
       });
     }
-    visionResult.value = await invoke<VisionResult[]>("classify_album", {
-      path: store.currentAlbum.path,
-    });
+    // 内容扫描并落库（二次扫描按哈希覆盖更新；返回识别明细供表格展示）
+    const outcome = await contentStore.scanAlbumContent(albumId, scanBatch.value);
+    visionResult.value = outcome.results;
+    const r = outcome.report;
+    visionScanMessage.value = `✅ 已写入内容库 ${r.written}/${r.total} 张${r.failed ? `，失败 ${r.failed}` : ""}；识别结果已可用于照片内容搜索`;
     await loadPersons();
+    // 扫描后刷新 GPU 可行性（识别服务此时已在运行）
+    fetchGpuStatus();
   } catch (e) {
     visionError.value = `内容识别失败：${e}`;
   } finally {
     visionScanning.value = false;
   }
 });
+
+// ---------- 单相册内部内容搜索（智能搜索，范围 = 当前相册） ----------
+const contentKeyword = ref("");
+const contentHits = ref<ContentSearchHit[]>([]);
+const contentSearching = ref(false);
+let contentSearchTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 单相册内容搜索输入（防抖） */
+function onContentSearchInput() {
+  if (contentSearchTimer) clearTimeout(contentSearchTimer);
+  contentSearchTimer = setTimeout(async () => {
+    const kw = contentKeyword.value.trim();
+    if (!kw) {
+      contentHits.value = [];
+      return;
+    }
+    contentSearching.value = true;
+    try {
+      contentHits.value = await contentStore.searchPhotoContent(kw, albumId);
+    } catch {
+      contentHits.value = [];
+    } finally {
+      contentSearching.value = false;
+    }
+  }, 300);
+}
+
+/** 清空单相册内容搜索 */
+function clearContentSearch() {
+  contentKeyword.value = "";
+  contentHits.value = [];
+}
+
+/** 点击单相册内容搜索命中：用系统默认看图程序打开原图 */
+async function openContentHit(path: string) {
+  try {
+    await openPath(path);
+  } catch (e) {
+    alert(`无法打开图片：${path}\n\n${e}`);
+  }
+}
+
+/** 单相册内容搜索命中显示名：label / category / 文件名 依次回退 */
+function contentHitName(hit: ContentSearchHit): string {
+  if (hit.label) return hit.label;
+  if (hit.category) return hit.category;
+  const i = Math.max(hit.path.lastIndexOf("/"), hit.path.lastIndexOf("\\"));
+  return i >= 0 ? hit.path.slice(i + 1) : hit.path;
+}
 </script>
 
 <template>
@@ -823,13 +940,34 @@ const classifyAlbum = trace("classifyAlbum", async () => {
             <h3 class="scan-title">内容识别</h3>
             <p class="scan-sub">三路识别（YOLOv8s-cls 分类 + YOLOv8n 检测 + Places365 场景）融合为相册大类：人物特写/扫街/自然风景/建筑城市/动物/文本等；人物自动标号（同人同 P 编号），动物细分狗/猫/鸟。点击照片名字可用默认看图程序打开原图</p>
           </div>
-          <button class="btn btn-primary" :disabled="visionScanning" @click="classifyAlbum">
-            {{ visionScanning ? "识别中…" : visionResult ? "重新识别" : "开始识别" }}
-          </button>
+          <div class="scan-tool-actions">
+            <!-- 批次选择（R3） -->
+            <label class="batch-select">
+              批次
+              <select v-model="scanBatch" title="推理批次：每批提交识别的图片数">
+                <option v-for="b in BATCH_OPTIONS" :key="b" :value="b">{{ b }}</option>
+              </select>
+            </label>
+            <!-- GPU 可行性 -->
+            <button class="btn btn-mini" :disabled="gpuLoading" @click="fetchGpuStatus" title="检测 GPU 加速可行性">
+              {{ gpuLoading ? "检测中…" : "检测 GPU" }}
+            </button>
+            <button class="btn btn-primary" :disabled="visionScanning" @click="classifyAlbum">
+              {{ visionScanning ? "识别中…" : visionResult ? "重新识别" : "开始识别" }}
+            </button>
+          </div>
         </div>
+
+        <!-- GPU 状态 -->
+        <p v-if="gpuStatus" class="gpu-status" :class="{ 'gpu-on': gpuStatus.use_gpu }">
+          🖥 {{ gpuStatusText() }}
+        </p>
 
         <!-- 错误提示 -->
         <p v-if="visionError" class="scan-error">{{ visionError }}</p>
+
+        <!-- 成功提示（已写入内容库） -->
+        <p v-if="visionScanMessage && !visionError" class="scan-ok">{{ visionScanMessage }}</p>
 
         <!-- 空状态 -->
         <div v-if="!visionScanning && !visionResult && !visionError" class="scan-empty">
@@ -865,8 +1003,8 @@ const classifyAlbum = trace("classifyAlbum", async () => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(p, i) in visionResult" :key="p.path">
-                <td class="col-idx">{{ i + 1 }}</td>
+              <tr v-for="(p, i) in pagedVision" :key="p.path">
+                <td class="col-idx">{{ visionRowOffset + i + 1 }}</td>
                 <td>
                   <span class="img-name-link" :title="p.path" @click="openImage(p.path)">
                     {{ p.file_name }}
@@ -907,6 +1045,21 @@ const classifyAlbum = trace("classifyAlbum", async () => {
               </tr>
             </tbody>
           </table>
+          <!-- 分页控件（R1：10/20/50/100 条每页） -->
+          <div class="vision-pager">
+            <label class="pager-size">
+              每页
+              <select v-model="pageSize">
+                <option v-for="s in PAGE_SIZES" :key="s" :value="s">{{ s }}</option>
+              </select>
+              条
+            </label>
+            <div class="pager-nav">
+              <button class="btn-mini" :disabled="currentPage <= 1" @click="changeVisionPage(currentPage - 1)">上一页</button>
+              <span class="pager-info">第 {{ currentPage }} / {{ visionPageCount }} 页</span>
+              <button class="btn-mini" :disabled="currentPage >= visionPageCount" @click="changeVisionPage(currentPage + 1)">下一页</button>
+            </div>
+          </div>
           <p class="scan-count">共 {{ visionResult.length }} 张图片（识别服务常驻，重复识别更快）</p>
         </div>
 
@@ -931,6 +1084,44 @@ const classifyAlbum = trace("classifyAlbum", async () => {
                 />
                 <button class="btn-mini" @click="askMerge(ps)">并入他</button>
                 <button class="btn-mini danger" @click="removePerson(ps)">删除</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 单相册内容搜索（智能搜索，范围 = 当前相册） -->
+        <div class="content-search-area">
+          <div class="content-search-input-wrap">
+            <input
+              v-model="contentKeyword"
+              class="content-search-input"
+              placeholder="在本相册内按内容搜索照片，如：狗 / 人物 / 建筑 / P001…"
+              @input="onContentSearchInput"
+            />
+            <button v-if="contentKeyword" class="search-clear" @click="clearContentSearch">×</button>
+          </div>
+          <div v-if="contentKeyword.trim()" class="content-search-results">
+            <div v-if="contentSearching" class="scan-empty">正在搜索照片内容…</div>
+            <div v-else-if="contentHits.length === 0" class="scan-empty">
+              未在本相册中找到匹配的照片（可先点击上方「内容识别」写入内容库）
+            </div>
+            <div v-else class="content-hit-list">
+              <div
+                v-for="hit in contentHits"
+                :key="hit.id"
+                class="content-hit-item"
+                :title="hit.path"
+                @click="openContentHit(hit.path)"
+              >
+                <span class="content-hit-name">{{ contentHitName(hit) }}</span>
+                <span class="content-hit-tags">
+                  <span v-if="hit.label" class="top3-chip">{{ hit.label }}</span>
+                  <span v-for="pid in hit.person_ids" :key="pid" class="person-chip">{{ pid }}</span>
+                  <span v-if="hit.location" class="top3-chip">{{ hit.location }}</span>
+                  <span v-if="hit.shoot_time" class="top3-chip">{{ hit.shoot_time }}</span>
+                  <span v-if="hit.iso" class="top3-chip">ISO {{ hit.iso }}</span>
+                  <span v-if="hit.aperture" class="top3-chip">{{ hit.aperture }}</span>
+                </span>
               </div>
             </div>
           </div>
@@ -1479,6 +1670,86 @@ const classifyAlbum = trace("classifyAlbum", async () => {
   margin-bottom: 12px;
 }
 
+.scan-ok {
+  color: #1a7f37;
+  font-size: 13px;
+  background: #f0fdf4;
+  border: 1px solid #bbe8c8;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+
+/* 单相册内容搜索 */
+.content-search-area {
+  margin-top: 16px;
+  border-top: 1px dashed #eef0f4;
+  padding-top: 14px;
+}
+
+.content-search-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.content-search-input {
+  width: 100%;
+  padding: 10px 36px 10px 14px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 14px;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.2s;
+}
+
+.content-search-input:focus {
+  border-color: #396cd8;
+}
+
+.content-search-results {
+  margin-top: 10px;
+}
+
+.content-hit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.content-hit-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fafbfc;
+  border: 1px solid #eef0f4;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.content-hit-item:hover {
+  background: #f0f5ff;
+  border-color: #bcd4f7;
+}
+
+.content-hit-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #2c3e50;
+  min-width: 140px;
+}
+
+.content-hit-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .scan-table-wrap {
   overflow-x: auto;
 }
@@ -1530,6 +1801,95 @@ const classifyAlbum = trace("classifyAlbum", async () => {
   margin: 12px 0 0;
   font-size: 12px;
   color: #999;
+}
+
+/* 内容识别结果分页（R1） */
+.vision-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.pager-size {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #555;
+}
+
+.pager-size select {
+  padding: 4px 6px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+  outline: none;
+}
+
+.pager-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pager-info {
+  font-size: 13px;
+  color: #666;
+}
+
+.pager-nav .btn-mini:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 内容识别工具区：批次选择 + GPU 状态（R3） */
+.scan-tool-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.batch-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #555;
+}
+
+.batch-select select {
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+  outline: none;
+}
+
+.gpu-status {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: #8a6d3b;
+  background: #fdf6e3;
+  border: 1px solid #f0e0b0;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.gpu-status.gpu-on {
+  color: #1a7f37;
+  background: #f0fdf4;
+  border-color: #bbe8c8;
+}
+
+.scan-tool-actions .btn-mini {
+  padding: 8px 12px;
 }
 
 /* 影调分析区 */

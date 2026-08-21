@@ -5,7 +5,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useAlbumStore } from "../stores/album";
+import { useContentStore } from "../stores/content";
 import type { Album, CreateAlbumInput } from "../types/album";
+import type { ContentSearchHit } from "../types/content";
 import { groupByTime, seasonName, MONTH_NAMES } from "../utils/timeGroup";
 import type { YearGroup } from "../utils/timeGroup";
 import ManualSort from "./ManualSort.vue";
@@ -15,6 +17,7 @@ import ConfirmDialog from "../components/ConfirmDialog.vue";
 const router = useRouter();
 const route = useRoute();
 const store = useAlbumStore();
+const contentStore = useContentStore();
 
 // ---------- 回到顶部按钮状态 ----------
 const scrollTop = ref(0);
@@ -508,30 +511,39 @@ interface SearchHit {
 }
 const searchKeyword = ref("");
 const searchResults = ref<SearchHit[]>([]);
+/** 全局照片内容搜索命中（群相册搜索：跨全部相册的照片内容） */
+const contentHits = ref<ContentSearchHit[]>([]);
 const isSearching = ref(false);
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** 搜索框输入（防抖） */
+/** 搜索框输入（防抖）：同时搜相册 + 全局照片内容 */
 function onSearchInput() {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(async () => {
     const kw = searchKeyword.value.trim();
     if (!kw) {
       searchResults.value = [];
+      contentHits.value = [];
       return;
     }
     isSearching.value = true;
     try {
-      const res = await invoke<
-        Array<{ album: Album; folder_id: number | null; folder_path: string }>
-      >("search_albums", { keyword: kw });
-      searchResults.value = res.map((r) => ({
+      const [albums, contents] = await Promise.all([
+        invoke<Array<{ album: Album; folder_id: number | null; folder_path: string }>>(
+          "search_albums",
+          { keyword: kw }
+        ),
+        contentStore.searchPhotoContent(kw), // album_id=null → 全局群相册内容搜索
+      ]);
+      searchResults.value = albums.map((r) => ({
         album: r.album,
         folder_id: r.folder_id,
         folder_path: r.folder_path,
       }));
+      contentHits.value = contents;
     } catch {
       searchResults.value = [];
+      contentHits.value = [];
     } finally {
       isSearching.value = false;
     }
@@ -545,6 +557,22 @@ const isSearchingActive = computed(() => searchKeyword.value.trim().length > 0);
 function clearSearch() {
   searchKeyword.value = "";
   searchResults.value = [];
+  contentHits.value = [];
+}
+
+/** 点击照片内容命中：跳转到所属相册（无相册则打开所在文件夹） */
+async function gotoContentHit(hit: ContentSearchHit) {
+  if (hit.album_id != null) {
+    router.push(`/album/${hit.album_id}`);
+    return;
+  }
+  if (hit.album_path) {
+    try {
+      await invoke("open_folder", { path: hit.album_path });
+    } catch (e) {
+      alert(`无法打开文件夹：${e}`);
+    }
+  }
 }
 
 /** 手动排序模式下待跳转的分组 id（搜索结果点击分组路径触发） */
@@ -636,35 +664,69 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 搜索结果面板 -->
+    <!-- 搜索结果面板：相册 + 照片内容（全局智能搜索） -->
     <div v-if="isSearchingActive" class="search-results">
       <div v-if="isSearching" class="search-status">正在搜索…</div>
-      <div v-else-if="searchResults.length === 0" class="search-status">未找到匹配的相册</div>
-      <div v-else class="search-result-list">
-        <div
-          v-for="hit in searchResults"
-          :key="hit.album.id"
-          class="search-result-item"
-          @click="router.push(`/album/${hit.album.id}`)"
-        >
-          <img v-if="hit.album.cover_path" :src="fileUrl(hit.album.cover_path)" class="result-cover" />
-          <div v-else class="result-cover result-placeholder">📷</div>
-          <div class="result-info">
-            <span class="result-name">{{ hit.album.name }}</span>
-            <div class="result-meta">
-              <span v-if="hit.folder_id != null" class="result-path">{{ hit.folder_path || "分组" }}</span>
-              <span v-else class="result-path">未分组</span>
-              <button
-                v-if="hit.folder_id != null"
-                class="result-jump"
-                title="跳转到该分组"
-                @click.stop="jumpToFolderInManual(hit.folder_id)"
-              >📁 跳转分组</button>
+      <template v-else>
+        <!-- 相册匹配 -->
+        <div v-if="searchResults.length" class="search-section">
+          <div class="search-section-title">相册</div>
+          <div class="search-result-list">
+            <div
+              v-for="hit in searchResults"
+              :key="'a' + hit.album.id"
+              class="search-result-item"
+              @click="router.push(`/album/${hit.album.id}`)"
+            >
+              <img v-if="hit.album.cover_path" :src="fileUrl(hit.album.cover_path)" class="result-cover" />
+              <div v-else class="result-cover result-placeholder">📷</div>
+              <div class="result-info">
+                <span class="result-name">{{ hit.album.name }}</span>
+                <div class="result-meta">
+                  <span v-if="hit.folder_id != null" class="result-path">{{ hit.folder_path || "分组" }}</span>
+                  <span v-else class="result-path">未分组</span>
+                  <button
+                    v-if="hit.folder_id != null"
+                    class="result-jump"
+                    title="跳转到该分组"
+                    @click.stop="jumpToFolderInManual(hit.folder_id)"
+                  >📁 跳转分组</button>
+                </div>
+              </div>
+              <span class="result-arrow">→</span>
             </div>
           </div>
-          <span class="result-arrow">→</span>
         </div>
-      </div>
+        <!-- 照片内容匹配（智能搜索，跨全部相册） -->
+        <div v-if="contentHits.length" class="search-section">
+          <div class="search-section-title">照片内容（{{ contentHits.length }}）</div>
+          <div class="search-result-list">
+            <div
+              v-for="hit in contentHits"
+              :key="'c' + hit.id"
+              class="search-result-item"
+              title="点击跳转到所属相册"
+              @click="gotoContentHit(hit)"
+            >
+              <div class="result-cover result-placeholder">🖼</div>
+              <div class="result-info">
+                <span class="result-name">{{ hit.label || hit.category || "照片" }}</span>
+                <div class="result-meta">
+                  <span class="result-path">{{ hit.album_name || hit.parent_dir }}</span>
+                  <span v-if="hit.location" class="result-path">{{ hit.location }}</span>
+                </div>
+                <div class="result-meta" v-if="hit.person_ids.length || hit.shoot_time">
+                  <span class="result-path">{{ [hit.person_ids.join(" "), hit.shoot_time].filter(Boolean).join(" · ") }}</span>
+                </div>
+              </div>
+              <span class="result-arrow">→</span>
+            </div>
+          </div>
+        </div>
+        <div v-if="!searchResults.length && !contentHits.length" class="search-status">
+          未找到匹配的相册或照片内容
+        </div>
+      </template>
     </div>
 
     <!-- 日期模式：年 → 季节 → 月 路线图（点击年份可跳转） -->
@@ -1119,6 +1181,20 @@ onBeforeUnmount(() => {
   font-size: 14px;
   text-align: center;
   padding: 20px 0;
+}
+
+/* 搜索结果分组（相册 / 照片内容） */
+.search-section + .search-section {
+  margin-top: 6px;
+  border-top: 1px solid #eef0f4;
+  padding-top: 8px;
+}
+
+.search-section-title {
+  font-size: 12px;
+  color: #999;
+  padding: 2px 10px 6px;
+  letter-spacing: 0.5px;
 }
 
 .search-result-item {
