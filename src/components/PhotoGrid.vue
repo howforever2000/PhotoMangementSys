@@ -2,8 +2,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
+import { useNotify } from "../composables/useNotify";
 import type { AlbumContentRow } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import ConfirmDialog from "./ConfirmDialog.vue";
@@ -26,6 +28,7 @@ const emit = defineEmits<{
 
 const albumStore = useAlbumStore();
 const contentStore = useContentStore();
+const notify = useNotify();
 
 /** 跨挂载的缩略图路径缓存（模块级，组件重建不丢失）。
  *  后端本身已持久化在 app_data/thumbs/grid/，这里避免前端每次进入都回到占位条重新查询/加载。 */
@@ -319,6 +322,30 @@ async function doConfirmedDelete() {
   }
 }
 
+/* ---- 批量导出：选文件夹 → 复制原图（可选生成信息清单）---- */
+const exporting = ref(false);
+async function doExport() {
+  const paths = [...selectedPaths.value];
+  if (!paths.length || exporting.value) return;
+  try {
+    const dir = await open({ directory: true, title: "选择导出目录" });
+    if (!dir || typeof dir !== "string") return; // 用户取消
+    exporting.value = true;
+    const outcome = await albumStore.exportPhotos(paths, dir, true);
+    notify.success(
+      "导出完成",
+      `已导出 ${outcome.copied} 张到 ${dir}` +
+        (outcome.skipped ? `（跳过已存在 ${outcome.skipped} 张）` : "") +
+        (outcome.failed ? `（${outcome.failed} 张失败：${outcome.failed_paths.slice(0, 3).join("、")}）` : ""),
+    );
+    exitSelectMode();
+  } catch (e) {
+    notify.error("导出失败", String(e));
+  } finally {
+    exporting.value = false;
+  }
+}
+
 function resetFilter() {
   activeCategory.value = null;
 }
@@ -369,6 +396,7 @@ onBeforeUnmount(() => {
       <span class="pg-selected-count">已选 {{ selectedPaths.size }} 张</span>
       <span class="pg-select-tip">点击照片进行勾选；记录删除可恢复，文件删除不可恢复</span>
       <div class="pg-select-actions">
+        <button class="btn" :disabled="!selectedPaths.size || exporting" @click="doExport">导出选中…</button>
         <button class="btn" :disabled="!selectedPaths.size || deleting" @click="requestDelete('record')">删除相册记录</button>
         <button class="btn btn-danger-pg" :disabled="!selectedPaths.size || deleting" @click="requestDelete('file')">删除本地文件…</button>
       </div>

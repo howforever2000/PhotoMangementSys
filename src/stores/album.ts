@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import type { Album, CreateAlbumInput, UpdateAlbumInput } from "../types/album";
-import type { PhotoInfo, PhotoDeleteOutcome } from "../types/photo";
+import type { PhotoInfo, PhotoDeleteOutcome, ExportOutcome } from "../types/photo";
 
 /** 批量导入结果（对应后端 Rust `ImportResult`） */
 export interface ImportResult {
@@ -74,6 +74,11 @@ export const useAlbumStore = defineStore("album", {
     /** 批量「本地文件删除」：删磁盘文件并级联清理记录与缩略图缓存（不可恢复） */
     async deletePhotoFiles(albumId: number, paths: string[]): Promise<PhotoDeleteOutcome> {
       return await invoke<PhotoDeleteOutcome>("delete_photo_files", { albumId, paths });
+    },
+
+    /** 批量导出：把选中照片原图复制到目标目录，可选生成信息清单 */
+    async exportPhotos(paths: string[], destDir: string, exportInfo = true): Promise<ExportOutcome> {
+      return await invoke<ExportOutcome>("export_photos", { paths, destDir, exportInfo });
     },
 
     /** 获取人物头像缓存路径（代表脸 bbox 裁剪；服务未运行时抛错由调用方回退） */

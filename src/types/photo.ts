@@ -104,6 +104,15 @@ export interface PhotoDeleteOutcome {
   failed_paths: string[];
 }
 
+/** 批量导出结果 —— 对应 Rust `ExportOutcome` */
+export interface ExportOutcome {
+  copied: number;
+  skipped: number;
+  failed: number;
+  failed_paths: string[];
+  dest_dir: string;
+}
+
 /** 单张照片的影调分析结果 —— 对应 Rust `tone::PhotoTone` */
 export interface PhotoTone {
   /** 文件名（不含路径） */

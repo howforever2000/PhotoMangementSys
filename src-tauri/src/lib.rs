@@ -503,6 +503,95 @@ async fn get_photo_thumbs(
     Ok(res)
 }
 
+
+/// 批量导出结果 —— 对应前端 `ExportOutcome`
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExportOutcome {
+    pub copied: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub failed_paths: Vec<String>,
+    pub dest_dir: String,
+}
+
+/// 批量导出照片：把选中的原图复制到目标目录（扁平化、重名自动加序号），可选生成信息清单
+///
+/// - `paths`：选中照片原图路径列表
+/// - `dest_dir`：目标目录（需已通过文件夹对话框选择）
+/// - `export_info`：是否同时写入 `导出清单.txt`（含导出时间与原始路径对照）
+#[tauri::command]
+async fn export_photos(
+    paths: Vec<String>,
+    dest_dir: String,
+    export_info: bool,
+    session: tauri::State<'_, SessionState>,
+) -> Result<ExportOutcome, String> {
+    let _t = log_call!("export_photos", &format!("n={} dest={dest_dir}", paths.len()));
+    require_user(&session)?;
+    if paths.is_empty() {
+        return Ok(ExportOutcome { copied: 0, skipped: 0, failed: 0, failed_paths: vec![], dest_dir });
+    }
+    std::fs::create_dir_all(&dest_dir).map_err(|e| format!("创建导出目录失败: {e}"))?;
+
+    let mut copied = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+    let mut failed_paths: Vec<String> = vec![];
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut manifest = String::new();
+
+    for p in &paths {
+        let base = std::path::Path::new(p);
+        let Some(fname) = base.file_name().and_then(|s| s.to_str()) else { failed += 1; failed_paths.push(p.clone()); continue };
+        let stem = std::path::Path::new(fname).file_stem().and_then(|s| s.to_str()).unwrap_or(fname);
+        let ext = std::path::Path::new(fname).extension().and_then(|s| s.to_str()).unwrap_or("");
+
+        // 重名去重：file.jpg → file_1.jpg → file_2.jpg
+        let mut target_name = fname.to_string();
+        let mut i = 1;
+        while used.contains(&target_name) {
+            target_name = if ext.is_empty() {
+                format!("{stem}_{i}")
+            } else {
+                format!("{stem}_{i}.{ext}")
+            };
+            i += 1;
+        }
+        used.insert(target_name.clone());
+
+        let target = std::path::Path::new(&dest_dir).join(&target_name);
+        if target.exists() {
+            skipped += 1;
+            continue;
+        }
+        match std::fs::copy(p, &target) {
+            Ok(_) => {
+                copied += 1;
+                manifest.push_str(&format!("{target_name}\t{p}\n"));
+            }
+            Err(e) => {
+                failed += 1;
+                failed_paths.push(format!("{p} ({e})"));
+            }
+        }
+    }
+
+    if export_info && copied > 0 {
+        use std::io::Write;
+        let mut now = "".to_string();
+        if let Ok(secs) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            now = format!("{}", secs.as_secs());
+        }
+        let content = format!("导出时间戳：{now}\n共导出 {copied} 张\n\n原图路径清单：\n{manifest}");
+        if let Ok(mut f) = std::fs::File::create(std::path::Path::new(&dest_dir).join("导出清单.txt")) {
+            let _ = f.write_all(content.as_bytes());
+        }
+    }
+
+    logger::log_call_end_with("export_photos", _t, &format!("OK | copied={copied} failed={failed} skipped={skipped}"));
+    Ok(ExportOutcome { copied, skipped, failed, failed_paths, dest_dir })
+}
+
 /// 照片批量删除结果 —— 对应前端 `PhotoDeleteOutcome`
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PhotoDeleteOutcome {
@@ -1755,6 +1844,7 @@ pub fn run() {
             content::commands::search_photo_content_with_filters,
             content::commands::list_timeline,
             content::commands::smart_search,
+            export_photos,
             get_vcr_gpu_status,
             cancel_scan,
         ])
