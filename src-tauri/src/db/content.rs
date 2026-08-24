@@ -115,6 +115,22 @@ pub struct AlbumContentRow {
     pub person_count: i64,
 }
 
+/// 智能搜索结果行（FEAT-034）：检索命中照片 + 展示所需字段（含 location）
+#[derive(Debug, Clone, Serialize)]
+pub struct SmartHit {
+    pub id: i64,
+    pub path: String,
+    pub album_id: Option<i64>,
+    pub album_name: Option<String>,
+    pub category: Option<String>,
+    pub sub_category: Option<String>,
+    pub label: Option<String>,
+    pub location: Option<String>,
+    pub shoot_time: Option<String>,
+    pub tone_type: Option<String>,
+    pub person_ids: Vec<String>,
+}
+
 /// 内容搜索过滤条件（FEAT-026）：未设置（None）表示不启用该维度过滤
 #[derive(Debug)]
 pub struct ContentFilters {
@@ -385,6 +401,118 @@ impl Database {
             rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)?,
             total,
         ))
+    }
+
+    // ---- FEAT-034（dev-ai002）：智能搜索（半自然语言解析 + 多维筛选）----
+
+    /// 跨相册智能搜索：`keyword` 宽匹配 + 可选结构化筛选
+    ///
+    /// 命中字段：聚合内容 / 地点 / 标签 / 子类 / 相册名 / 文件名
+    /// 可选筛选：时间区间 / 地点 / 大类 / 标签 / 人物标号 / 影调
+    /// 返回 `Vec<AlbumContentRow>`（统一字段），按拍摄时间降序。
+    #[allow(clippy::too_many_arguments)]
+    pub fn smart_search(
+        &self,
+        user_id: i64,
+        keyword: &str,
+        date_from: Option<&str>,
+        date_to: Option<&str>,
+        location: Option<&str>,
+        category: Option<&str>,
+        label: Option<&str>,
+        person_id: Option<&str>,
+        tone_type: Option<&str>,
+    ) -> Result<Vec<SmartHit>, DbError> {
+        let mut sql = String::from(
+            "SELECT p.id, p.path, p.album_id, a.name, p.category, p.sub_category, p.label,
+                    p.location, p.shoot_time, p.tone_type, p.person_ids
+             FROM photo_content_scan p
+             LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
+             WHERE p.user_id = ?1",
+        );
+        let mut binds: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(user_id)];
+        let mut n = 2usize;
+
+        let kw = keyword.trim();
+        if !kw.is_empty() {
+            let like = format!("%{kw}%");
+            sql.push_str(&format!(
+                " AND (p.content LIKE ?{n} OR p.location LIKE ?{n} OR p.label LIKE ?{n} OR p.sub_category LIKE ?{n} OR a.name LIKE ?{n} OR p.path LIKE ?{n})"
+            ));
+            binds.push(rusqlite::types::Value::Text(like));
+            n += 1;
+        }
+        if let Some(df) = date_from {
+            if !df.trim().is_empty() {
+                sql.push_str(&format!(" AND p.shoot_time >= ?{n}"));
+                binds.push(rusqlite::types::Value::Text(df.trim().to_string()));
+                n += 1;
+            }
+        }
+        if let Some(dt) = date_to {
+            if !dt.trim().is_empty() {
+                let end = format!("{} 23:59:59", dt.trim());
+                sql.push_str(&format!(" AND p.shoot_time <= ?{n}"));
+                binds.push(rusqlite::types::Value::Text(end));
+                n += 1;
+            }
+        }
+        if let Some(loc) = location {
+            if !loc.trim().is_empty() {
+                let like = format!("%{}%", loc.trim());
+                sql.push_str(&format!(" AND p.location LIKE ?{n}"));
+                binds.push(rusqlite::types::Value::Text(like));
+                n += 1;
+            }
+        }
+        if let Some(cat) = category {
+            if !cat.trim().is_empty() {
+                sql.push_str(&format!(" AND p.category = ?{n}"));
+                binds.push(rusqlite::types::Value::Text(cat.trim().to_string()));
+                n += 1;
+            }
+        }
+        if let Some(lb) = label {
+            if !lb.trim().is_empty() {
+                let like = format!("%{}%", lb.trim());
+                sql.push_str(&format!(" AND p.label LIKE ?{n}"));
+                binds.push(rusqlite::types::Value::Text(like));
+                n += 1;
+            }
+        }
+        if let Some(pid) = person_id {
+            if !pid.trim().is_empty() {
+                let like = format!("%{}%", pid.trim());
+                sql.push_str(&format!(" AND p.person_ids LIKE ?{n}"));
+                binds.push(rusqlite::types::Value::Text(like));
+                n += 1;
+            }
+        }
+        if let Some(tone) = tone_type {
+            if !tone.trim().is_empty() {
+                sql.push_str(&format!(" AND p.tone_type = ?{n}"));
+                binds.push(rusqlite::types::Value::Text(tone.trim().to_string()));
+            }
+        }
+        sql.push_str(" ORDER BY (p.shoot_time IS NULL), p.shoot_time DESC, p.id DESC");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(binds.iter()), |r| {
+            Ok(SmartHit {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                album_id: r.get(2)?,
+                album_name: r.get(3)?,
+                category: r.get(4)?,
+                sub_category: r.get(5)?,
+                label: r.get(6)?,
+                location: r.get(7)?,
+                shoot_time: r.get(8)?,
+                tone_type: r.get(9)?,
+                person_ids: r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
+            })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
     }
 
     /// 带过滤条件的单相册内容搜索（FEAT-026）

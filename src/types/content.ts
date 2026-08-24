@@ -157,3 +157,18 @@ export interface AlbumContentRow {
   person_ids: string[];
   person_count: number;
 }
+
+/** 智能搜索结果行 —— 对应 Rust `db::SmartHit`（FEAT-034） */
+export interface SmartHit {
+  id: number;
+  path: string;
+  album_id: number | null;
+  album_name: string | null;
+  category: string | null;
+  sub_category: string | null;
+  label: string | null;
+  location: string | null;
+  shoot_time: string | null;
+  tone_type: string | null;
+  person_ids: string[];
+}

@@ -8,7 +8,7 @@
 //! - `DbError`  →  自定义业务异常（配合全局异常处理）
 
 pub mod content;
-pub use content::{AlbumContentRow, ContentFilters, ContentSearchHit, PhotoContentRecord};
+pub use content::{AlbumContentRow, ContentFilters, ContentSearchHit, PhotoContentRecord, SmartHit};
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};

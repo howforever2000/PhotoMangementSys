@@ -1754,6 +1754,7 @@ pub fn run() {
             content::commands::search_photo_content,
             content::commands::search_photo_content_with_filters,
             content::commands::list_timeline,
+            content::commands::smart_search,
             get_vcr_gpu_status,
             cancel_scan,
         ])

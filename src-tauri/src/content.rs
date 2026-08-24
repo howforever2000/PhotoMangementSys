@@ -761,6 +761,46 @@ pub mod commands {
         }
         r
     }
+
+    /// 智能搜索（FEAT-034）：关键词宽匹配 + 多维筛选，跨相册
+    #[allow(clippy::too_many_arguments)]
+    #[tauri::command]
+    pub async fn smart_search(
+        keyword: String,
+        date_from: Option<String>,
+        date_to: Option<String>,
+        location: Option<String>,
+        category: Option<String>,
+        label: Option<String>,
+        person_id: Option<String>,
+        tone_type: Option<String>,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Vec<db::SmartHit>, String> {
+        let _t = log_call!("smart_search", &format!("keyword={keyword}"));
+        let user_id = require_user(&session)?;
+
+        let r = (|| -> Result<Vec<db::SmartHit>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.smart_search(
+                user_id,
+                &keyword,
+                date_from.as_deref(),
+                date_to.as_deref(),
+                location.as_deref(),
+                category.as_deref(),
+                label.as_deref(),
+                person_id.as_deref(),
+                tone_type.as_deref(),
+            )
+            .map_err(|e| format!("{:?}", e))
+        })();
+        match &r {
+            Ok(list) => logger::log_call_end_with("smart_search", _t, &format!("OK | hits={}", list.len())),
+            Err(e) => logger::log_call_end_with("smart_search", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
 }
 
 #[cfg(test)]

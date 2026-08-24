@@ -77,6 +77,14 @@ const modules = [
     path: "/timeline",
     ready: true,
   },
+  {
+    id: "search",
+    title: "智能搜索",
+    desc: "自然语言 + 多维筛选，跨相册检索照片",
+    icon: "🔎",
+    path: "/search",
+    ready: true,
+  },
 ] as const;
 
 function openModule(m: (typeof modules)[number]) {

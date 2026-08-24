@@ -74,6 +74,12 @@ const router = createRouter({
       component: () => import("../views/Timeline.vue"),
     },
     {
+      // 智能搜索（FEAT-034）
+      path: "/search",
+      name: "smart-search",
+      component: () => import("../views/SmartSearch.vue"),
+    },
+    {
       // 懒加载详情页
       path: "/album/:id",
       name: "album-detail",
