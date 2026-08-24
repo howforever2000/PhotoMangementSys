@@ -8,6 +8,7 @@ import type { Folder, ManualTree } from "../types/folder";
 import { trace } from "../utils/trace";
 import AlbumMiniCard from "../components/AlbumMiniCard.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
+import { useNotify } from "../composables/useNotify";
 
 const props = defineProps<{
   /** 从搜索结果传入：需要跳转到的分组 id */
@@ -25,6 +26,7 @@ const emit = defineEmits<{
 
 const router = useRouter();
 const store = useAlbumStore();
+const notify = useNotify();
 
 // ---------- 状态 ----------
 const tree = ref<ManualTree | null>(null);
@@ -185,8 +187,9 @@ async function submitCreateFolder() {
     await invoke("create_folder", { name: createName.value, parentId: createParentId.value });
     showCreateFolder.value = false;
     await loadTree();
+    notify.success("分组创建成功");
   } catch (e) {
-    alert(`创建分组失败：${e}`);
+    notify.error("创建分组失败", String(e));
   }
 }
 
@@ -211,7 +214,7 @@ function addTag() {
   const t = tagInput.value.trim();
   if (!t) return;
   if (editTags.value.length >= 5) {
-    alert("最多只能添加 5 个标签");
+    notify.warning("最多只能添加 5 个标签");
     return;
   }
   if (!editTags.value.includes(t)) {
@@ -235,8 +238,9 @@ async function saveEditFolder() {
     });
     editingFolder.value = null;
     await loadTree();
+    notify.success("分组保存成功");
   } catch (e) {
-    alert(`保存失败：${e}`);
+    notify.error("保存失败", String(e));
   }
 }
 
@@ -258,7 +262,7 @@ async function doDeleteFolder() {
     contextMenu.value.visible = false;
     await loadTree();
   } catch (e) {
-    alert(`删除失败：${e}`);
+    notify.error("删除失败", String(e));
   }
 }
 
@@ -281,7 +285,7 @@ async function doDeleteAlbumContext() {
     closeContextMenu();
     await loadTree();
   } catch (e) {
-    alert(`删除失败：${e}`);
+    notify.error("删除失败", String(e));
   }
 }
 
@@ -310,7 +314,7 @@ const moveAlbum = trace("moveAlbum", async (albumId: number, folderId: number | 
     }
     await loadTree();
   } catch (e) {
-    alert(`移动失败：${e}`);
+    notify.error("移动失败", String(e));
   }
 });
 
@@ -446,7 +450,7 @@ async function onGlobalPointerUp(event: PointerEvent) {
       }
       await loadTree();
     } catch (e) {
-      alert(`排序失败：${e}`);
+      notify.error("排序失败", String(e));
     }
   }
 }

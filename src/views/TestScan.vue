@@ -14,8 +14,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { TestPhoto, OrganizeReport, ScanProgress } from "../types/photo";
+import { useNotify } from "../composables/useNotify";
 
 const router = useRouter();
+const notify = useNotify();
 
 /** 目标文件夹路径 */
 const dirPath = ref("");
@@ -106,11 +108,13 @@ async function resolvePlaces() {
 async function organizePhotos() {
   if (organizing.value || !dirPath.value || !photos.value) return;
   const hasPlace = photos.value.some((p) => p.place);
-  const ok = window.confirm(
+  const ok = await notify.confirm(
+    "组织移动照片",
     (hasPlace ? "" : "将自动解析照片地点（本地省/市离线查询，秒回；未命中才联网）。\n\n") +
       "按「年份/地点」创建两级文件夹并移动照片到其中。\n" +
       "移动后原目录中照片将消失（可在新文件夹找到）。\n" +
-      "确认执行移动？"
+      "确认执行移动？",
+    { type: "danger", confirmText: "确认移动" },
   );
   if (!ok) return;
   organizing.value = true;

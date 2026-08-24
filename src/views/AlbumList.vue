@@ -13,11 +13,13 @@ import type { YearGroup } from "../utils/timeGroup";
 import ManualSort from "./ManualSort.vue";
 import AlbumCard from "../components/AlbumCard.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
+import { useNotify } from "../composables/useNotify";
 
 const router = useRouter();
 const route = useRoute();
 const store = useAlbumStore();
 const contentStore = useContentStore();
+const notify = useNotify();
 
 // ---------- 回到顶部按钮状态 ----------
 const scrollTop = ref(0);
@@ -50,7 +52,7 @@ async function openAlbumPath(path: string, event: MouseEvent) {
   try {
     await invoke("open_folder", { path });
   } catch (e) {
-    alert(`无法打开文件夹：${path}\n\n${e}`);
+    notify.error("无法打开文件夹", `${path}\n${e}`);
   }
 }
 
@@ -98,9 +100,9 @@ async function batchImport() {
       parts.push(`失败 ${result.errors.length} 个`);
       console.error("导入失败的文件夹:", result.errors);
     }
-    alert(parts.join("，"));
+    notify.success("批量导入完成", parts.join("，"));
   } catch (e) {
-    alert(`批量导入失败：${e}`);
+    notify.error("批量导入失败", String(e));
   } finally {
     if (unlistenImport) {
       unlistenImport();
@@ -176,10 +178,10 @@ async function doBatchDelete() {
   isDeleting.value = true;
   try {
     const deleted = await store.deleteAlbums(ids);
-    alert(`已删除 ${deleted} 个相册`);
+    notify.success("批量删除完成", `已删除 ${deleted} 个相册`);
     exitSelectMode();
   } catch (e) {
-    alert(`删除失败：${e}`);
+    notify.error("删除失败", String(e));
   } finally {
     isDeleting.value = false;
   }
@@ -214,11 +216,11 @@ async function submitRename() {
   const id = contextMenu.value.albumId;
   const name = renameInput.value.trim();
   if (!name) {
-    alert("相册名称不能为空");
+    notify.warning("相册名称不能为空");
     return;
   }
   if (name.length > 100) {
-    alert("相册名称不能超过 100 个字符");
+    notify.warning("相册名称不能超过 100 个字符");
     return;
   }
   if (isRenaming.value) return;
@@ -226,8 +228,9 @@ async function submitRename() {
   try {
     await store.renameAlbum(id, name, true);
     showRenameDialog.value = false;
+    notify.success("重命名成功");
   } catch (e) {
-    alert(`重命名失败：${e}`);
+    notify.error("重命名失败", String(e));
   } finally {
     isRenaming.value = false;
   }
@@ -284,7 +287,7 @@ async function doContextDelete() {
       selectedIds.value = next;
     }
   } catch (e) {
-    alert(`删除失败：${e}`);
+    notify.error("删除失败", String(e));
   } finally {
     isDeletingOne.value = false;
   }
@@ -570,7 +573,7 @@ async function gotoContentHit(hit: ContentSearchHit) {
     try {
       await invoke("open_folder", { path: hit.album_path });
     } catch (e) {
-      alert(`无法打开文件夹：${e}`);
+      notify.error("无法打开文件夹", String(e));
     }
   }
 }

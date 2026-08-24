@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import type { PersonInfo } from "../types/photo";
+import { useNotify } from "../composables/useNotify";
 
 defineProps<{ persons: PersonInfo[] }>();
 const emit = defineEmits<{ refresh: [] }>();
+const notify = useNotify();
 
 const renamePerson = async (ps: PersonInfo, name: string) => {
   const n = name.trim();
@@ -12,8 +14,9 @@ const renamePerson = async (ps: PersonInfo, name: string) => {
     await invoke("rename_person", { pid: ps.id, name: n });
     ps.name = n;
     emit("refresh");
+    notify.success("重命名成功", `已重命名为 ${n}`);
   } catch (e) {
-    alert(`重命名失败：${e}`);
+    notify.error("重命名失败", String(e));
   }
 };
 
@@ -23,18 +26,25 @@ const askMerge = async (ps: PersonInfo) => {
   try {
     await invoke("merge_persons", { target: target.trim(), source: ps.id });
     emit("refresh");
+    notify.success("合并完成", `${ps.id} 已并入 ${target.trim()}`);
   } catch (e) {
-    alert(`合并失败：${e}`);
+    notify.error("合并失败", String(e));
   }
 };
 
 const removePerson = async (ps: PersonInfo) => {
-  if (!confirm(`确定删除人物 ${ps.id}（${ps.name}）？其标号将从已识别照片中移除`)) return;
+  const ok = await notify.confirm(
+    "删除人物",
+    `确定删除人物 ${ps.id}（${ps.name}）？其标号将从已识别照片中移除`,
+    { type: "danger", confirmText: "删除" },
+  );
+  if (!ok) return;
   try {
     await invoke("delete_person", { pid: ps.id });
     emit("refresh");
+    notify.success("已删除人物", ps.id);
   } catch (e) {
-    alert(`删除失败：${e}`);
+    notify.error("删除失败", String(e));
   }
 };
 </script>

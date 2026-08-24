@@ -7,9 +7,11 @@ import type { VcrGpuStatus } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import { trace } from "../utils/trace";
 import PersonPanel from "./PersonPanel.vue";
+import { useNotify } from "../composables/useNotify";
 
 const props = defineProps<{ albumId: number; albumPath: string }>();
 const contentStore = useContentStore();
+const notify = useNotify();
 
 // ===================== 组合扫描（FEAT-026，统一入口） =====================
 const toneLabelMap: Record<string, string> = {
@@ -136,7 +138,7 @@ const openImage = trace("openImage", async (path: string) => {
   try {
     await openPath(path);
   } catch (e) {
-    alert(`无法打开图片：${path}\n\n${e}`);
+    notify.error("无法打开图片", `${path}\n${e}`);
   }
 });
 </script>

@@ -9,10 +9,12 @@ import CollapseSection from "../components/CollapseSection.vue";
 import ContentSearch from "../components/ContentSearch.vue";
 import ScanPanel from "../components/ScanPanel.vue";
 import PhotoGrid from "../components/PhotoGrid.vue";
+import { useNotify } from "../composables/useNotify";
 
 const route = useRoute();
 const router = useRouter();
 const store = useAlbumStore();
+const notify = useNotify();
 
 const albumId = Number(route.params.id);
 const loadError = ref(false);
@@ -50,10 +52,10 @@ const doDelete = async () => {
   deleting.value = true;
   try {
     await store.deleteAlbum(albumId);
-    alert("相册已删除");
+    notify.success("相册已删除");
     router.push("/albums");
   } catch (e) {
-    alert(`删除失败：${e}`);
+    notify.error("删除失败", String(e));
   } finally {
     deleting.value = false;
   }

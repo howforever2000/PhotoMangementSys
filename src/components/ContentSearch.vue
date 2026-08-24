@@ -3,9 +3,11 @@ import { computed, ref, watch } from "vue";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useContentStore } from "../stores/content";
 import type { AlbumContentRow, ContentScanFilters, ContentSearchHit } from "../types/content";
+import { useNotify } from "../composables/useNotify";
 
 const props = defineProps<{ albumId: number }>();
 const contentStore = useContentStore();
+const notify = useNotify();
 
 const contentKeyword = ref("");
 const contentHits = ref<ContentSearchHit[]>([]);
@@ -100,7 +102,7 @@ async function searchPhotoContentWithFilters() {
     );
     contentHits.value = [];
   } catch (e) {
-    alert(`过滤搜索失败：${e}`);
+    notify.error("过滤搜索失败", String(e));
   } finally {
     contentFilterSearching.value = false;
   }
@@ -151,7 +153,7 @@ async function openContentHit(path: string) {
   try {
     await openPath(path);
   } catch (e) {
-    alert(`无法打开图片：${path}\n\n${e}`);
+    notify.error("无法打开图片", `${path}\n${e}`);
   }
 }
 

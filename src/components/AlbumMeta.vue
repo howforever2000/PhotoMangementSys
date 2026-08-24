@@ -7,6 +7,7 @@ import { useAlbumStore } from "../stores/album";
 import type { Album } from "../types/album";
 import { formatSize } from "../types/album";
 import { trace } from "../utils/trace";
+import { useNotify } from "../composables/useNotify";
 
 const props = defineProps<{ album: Album; settingCover: boolean }>();
 const emit = defineEmits<{
@@ -15,6 +16,7 @@ const emit = defineEmits<{
 }>();
 const router = useRouter();
 const store = useAlbumStore();
+const notify = useNotify();
 
 function fileUrl(path: string | null): string {
   return path ? convertFileSrc(path) : "";
@@ -25,7 +27,7 @@ const openAlbumPath = trace("openAlbumPath", async (path: string) => {
   try {
     await invoke("open_folder", { path });
   } catch (e) {
-    alert(`无法打开文件夹：${path}\n\n${e}`);
+    notify.error("无法打开文件夹", `${path}\n${e}`);
   }
 });
 
@@ -47,9 +49,10 @@ const chooseCover = trace("chooseCover", async () => {
       });
       emit("update:album", updated);
       await store.fetchAlbums();
+      notify.success("封面设置成功");
     }
   } catch (e) {
-    alert(`设置封面失败：${e}`);
+    notify.error("设置封面失败", String(e));
   }
 });
 
@@ -73,14 +76,15 @@ function startEditName() {
 const saveName = trace("saveName", async () => {
   if (savingName.value) return;
   const name = nameInput.value.trim();
-  if (!name) { alert("相册名称不能为空"); return; }
-  if (name.length > 100) { alert("相册名称不能超过 100 个字符"); return; }
+  if (!name) { notify.warning("相册名称不能为空"); return; }
+  if (name.length > 100) { notify.warning("相册名称不能超过 100 个字符"); return; }
   savingName.value = true;
   try {
     await store.renameAlbum(props.album.id, name, true);
     editingName.value = false;
+    notify.success("名称保存成功");
   } catch (e) {
-    alert(`保存名称失败：${e}`);
+    notify.error("保存名称失败", String(e));
   } finally {
     savingName.value = false;
   }
@@ -102,8 +106,9 @@ const saveDesc = trace("saveDesc", async () => {
   try {
     await store.updateAlbum({ id: props.album.id, description: descInput.value.trim() });
     editingDesc.value = false;
+    notify.success("说明保存成功");
   } catch (e) {
-    alert(`保存说明失败：${e}`);
+    notify.error("保存说明失败", String(e));
   } finally {
     savingDesc.value = false;
   }
@@ -127,9 +132,9 @@ const autoDetectLocation = trace("autoDetectLocation", async () => {
       const updated = { ...props.album, location: r.location };
       emit("update:album", updated);
     }
-    alert(`自动识别地点：${r.location}（${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}）`);
+    notify.success("自动识别地点成功", `${r.location}（${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}）`);
   } catch (e) {
-    alert(`自动识别地点失败：${e}`);
+    notify.error("自动识别地点失败", String(e));
   } finally {
     detectingLocation.value = false;
   }
@@ -148,8 +153,9 @@ const saveLocation = trace("saveLocation", async () => {
     const updated = { ...props.album, location: locationInput.value.trim() || null };
     emit("update:album", updated);
     editingLocation.value = false;
+    notify.success("地点保存成功");
   } catch (e) {
-    alert(`保存地点失败：${e}`);
+    notify.error("保存地点失败", String(e));
   } finally {
     savingLocation.value = false;
   }
@@ -170,7 +176,7 @@ function startEditTags() {
 function addTag() {
   const t = tagInput.value.trim();
   if (!t) return;
-  if (editTags.value.length >= 5) { alert("最多只能添加 5 个标签"); return; }
+  if (editTags.value.length >= 5) { notify.warning("最多只能添加 5 个标签"); return; }
   if (!editTags.value.includes(t)) editTags.value.push(t);
   tagInput.value = "";
 }
@@ -187,8 +193,9 @@ const saveTags = trace("saveTags", async () => {
     const updated = { ...props.album, tags: [...editTags.value] };
     emit("update:album", updated);
     editingTags.value = false;
+    notify.success("标签保存成功");
   } catch (e) {
-    alert(`保存标签失败：${e}`);
+    notify.error("保存标签失败", String(e));
   } finally {
     savingTags.value = false;
   }

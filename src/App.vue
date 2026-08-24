@@ -3,8 +3,9 @@ import { onMounted } from "vue";
 import { useAlbumStore } from "./stores/album";
 import { useAuthStore } from "./stores/auth";
 import { useThemeStore } from "./stores/theme";
+import ToastContainer from "./components/ToastContainer.vue";
 
-// 应用根组件：渲染全局背景层 + 路由出口
+// 应用根组件：渲染全局背景层 + 路由出口 + 全局 Toast 容器
 // 启动流程：
 // 1. 恢复登录会话（get_current_user）；未登录由路由守卫导向登录页
 // 2. 已登录才触发相册预校验：后端对全部相册做文件数变更探测，
@@ -29,6 +30,7 @@ onMounted(async () => {
     <div class="app-content">
       <router-view />
     </div>
+    <ToastContainer />
   </div>
 </template>
 
