@@ -15,11 +15,14 @@ macro_rules! log_call {
 
 mod auth;
 mod content;
+mod crypto;
 mod db;
 mod folder;
 mod geo_index;
 mod logger;
+mod photo_info;
 mod photo_scan;
+mod persons;
 mod session;
 mod test_scan;
 mod thumbnail;
@@ -27,7 +30,8 @@ mod tone;
 mod vision;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use db::{CreateAlbumInput, Database, UpdateAlbumInput};
 use tauri::{Emitter, Manager};
@@ -47,6 +51,28 @@ pub struct AppState(pub Mutex<Database>);
 /// 多用户登录的核心状态：注册/登录成功后写入，登出后清空。
 /// 所有相册/分组命令通过 `require_user` 读取它，实现相册空间按用户隔离。
 pub struct SessionState(pub Mutex<Option<i64>>);
+
+/// 扫描任务取消标记（组合扫描/内容识别通用）
+///
+/// - 后端命令启动扫描时置 `false`，扫描循环每批/每步检查该标记
+/// - 前端点击「停止」→ `cancel_scan` 置 `true` → 扫描在下个检查点提前结束
+/// - `Arc<AtomicBool>` 保证跨异步任务 / 阻塞线程共享且线程安全
+#[derive(Clone, Default)]
+pub struct ScanState(pub Arc<AtomicBool>);
+
+/// 请求停止当前扫描：置位取消标记，扫描循环在下一个检查点提前结束
+#[tauri::command]
+fn cancel_scan(scan: tauri::State<'_, ScanState>) -> Result<(), String> {
+    scan.0.store(true, Ordering::SeqCst);
+    logger::log_info("scan | 收到停止请求，已置取消标记");
+    Ok(())
+}
+
+/// 取消标记是否已置位（true = 收到停止请求）
+#[allow(dead_code)]
+pub fn scan_cancelled(scan: &ScanState) -> bool {
+    scan.0.load(Ordering::SeqCst)
+}
 
 /// 读取当前登录用户 id，未登录返回「请先登录」错误
 fn require_user(session: &tauri::State<SessionState>) -> Result<i64, String> {
@@ -188,6 +214,26 @@ fn reset_password(
     match &r {
         Ok(_) => logger::log_call_end_with("reset_password", _t, "OK"),
         Err(e) => logger::log_call_end_with("reset_password", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// 修改当前用户基本信息（邮箱/手机号），需先验证当前密码
+#[tauri::command]
+fn update_profile(
+    input: auth::UpdateProfileInput,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<auth::User, String> {
+    let _t = log_call!("update_profile", "id=***");
+    let r = (|| -> Result<auth::User, String> {
+        let user_id = require_user(&session)?;
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        auth::update_profile(db.conn(), user_id, input)
+    })();
+    match &r {
+        Ok(u) => logger::log_call_end_with("update_profile", _t, &format!("OK | id={}", u.id)),
+        Err(e) => logger::log_call_end_with("update_profile", _t, &format!("ERR | {e}")),
     }
     r
 }
@@ -391,6 +437,165 @@ fn get_album(
     };
     fill_album_stats(&mut album, &thumbs, &state);
     Ok(album)
+}
+
+/// 列出相册文件夹内所有图片的绝对路径（供照片网格浏览）
+///
+/// 无需先执行内容扫描即可展示照片：轻量 walkdir 收集图片路径。
+/// 多用户隔离：仅能列出归属当前用户的相册。
+#[tauri::command]
+fn list_album_photos(
+    album_id: i64,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<Vec<String>, String> {
+    let _t = log_call!("list_album_photos", &format!("album_id={album_id}"));
+    let user_id = require_user(&session)?;
+    let dir = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        db.get_album(album_id, user_id)
+            .map_err(|e| e.to_string())?
+            .path
+    };
+    // 过滤已被「记录删除」排除的照片（本地文件保留，但不再出现在网格中）
+    let excluded: std::collections::HashSet<String> = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        db.list_excluded_photos(album_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .collect()
+    };
+    let mut count = 0usize;
+    let paths: Vec<String> = crate::thumbnail::list_album_images(Path::new(&dir))
+        .into_iter()
+        .filter(|p| !excluded.contains(p))
+        .inspect(|_| count += 1)
+        .collect();
+    logger::log_call_end_with("list_album_photos", _t, &format!("OK | count={count}"));
+    Ok(paths)
+}
+
+/// 批量生成/复用照片网格缩略图（供前端分批懒加载）
+///
+/// - 输入：相册 id + 一批原图路径
+/// - 输出：`[(原图路径, 缩略图缓存路径)]`，缓存命中直接复用，未命中生成 256px JPEG
+/// - 在阻塞线程执行，避免首次生成占用异步运行时
+#[tauri::command]
+async fn get_photo_thumbs(
+    album_id: i64,
+    paths: Vec<String>,
+    app: tauri::AppHandle,
+    session: tauri::State<'_, SessionState>,
+) -> Result<Vec<(String, String)>, String> {
+    let _t = log_call!("get_photo_thumbs", &format!("album_id={album_id} paths={}", paths.len()));
+    require_user(&session)?;
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let requested = paths.len();
+    let thumbs = thumbs_dir(&app)?;
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::thumbnail::ensure_grid_thumbs(album_id, &paths, &thumbs)
+    })
+    .await
+    .map_err(|e| format!("缩略图任务线程失败: {e}"))?;
+    logger::log_call_end_with("get_photo_thumbs", _t, &format!("OK | done={} requested={}", res.len(), requested));
+    Ok(res)
+}
+
+/// 照片批量删除结果 —— 对应前端 `PhotoDeleteOutcome`
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PhotoDeleteOutcome {
+    /// 请求删除的照片数
+    pub requested: usize,
+    /// 成功处理数（记录模式=排除数；文件模式=实际删掉的文件数）
+    pub deleted: usize,
+    pub failed: usize,
+    pub failed_paths: Vec<String>,
+}
+
+/// 批量「相册记录删除」：从该相册网格浏览中移除 + 清除扫描/AI 记录，本地文件保留
+///
+/// 可通过 restore 命令撤销（排除表回滚）。
+#[tauri::command]
+fn delete_photo_records(
+    album_id: i64,
+    paths: Vec<String>,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<PhotoDeleteOutcome, String> {
+    let _t = log_call!("delete_photo_records", &format!("album_id={album_id} paths={}", paths.len()));
+    let user_id = require_user(&session)?;
+    let requested = paths.len();
+    let outcome = if paths.is_empty() {
+        PhotoDeleteOutcome { requested, deleted: 0, failed: 0, failed_paths: Vec::new() }
+    } else {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        // 归属校验在 exclude_album_photos 内（非本人相册 → NotFound）
+        let excluded = db.exclude_album_photos(album_id, user_id, &paths).map_err(|e| e.to_string())?;
+        let removed = db.delete_content_by_paths(&paths).map_err(|e| e.to_string())?;
+        logger::log_call_end_with("delete_photo_records", _t,
+            &format!("OK | excluded={excluded} scan_removed={removed}"));
+        PhotoDeleteOutcome { requested, deleted: excluded, failed: 0, failed_paths: Vec::new() }
+    };
+    Ok(outcome)
+}
+
+/// 批量「本地文件删除」：删除磁盘照片文件，并级联清理扫描记录、排除表与网格缩略图缓存
+///
+/// 危险操作：文件不可恢复，前端必须二次确认后才调用。
+#[tauri::command]
+fn delete_photo_files(
+    album_id: i64,
+    paths: Vec<String>,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+    app: tauri::AppHandle,
+) -> Result<PhotoDeleteOutcome, String> {
+    let _t = log_call!("delete_photo_files", &format!("album_id={album_id} paths={}", paths.len()));
+    let user_id = require_user(&session)?;
+    let requested = paths.len();
+    if paths.is_empty() {
+        return Ok(PhotoDeleteOutcome { requested, deleted: 0, failed: 0, failed_paths: Vec::new() });
+    }
+    // 相册归属校验（不直接操作 albums 表，借 exclude 的校验逻辑前置于事务外会写脏数据，
+    // 因此先只读查一次归属）
+    {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        db.get_album(album_id, user_id).map_err(|e| e.to_string())?;
+    }
+    // 1. 先算每张原图的缩略图缓存名（指纹依赖原文件存在，必须在删文件前算好）
+    let thumb_names: Vec<String> = paths
+        .iter()
+        .map(|p| thumbnail::grid_thumb_cache_name(album_id, std::path::Path::new(p)))
+        .collect();
+    // 2. 删磁盘文件，逐张统计成败
+    let mut deleted = 0usize;
+    let mut failed_paths = Vec::new();
+    for p in &paths {
+        match std::fs::remove_file(p) {
+            Ok(_) => deleted += 1,
+            Err(e) => {
+                logger::log_info(&format!("[delete_photo_files] 删除失败 path={p} err={e}"));
+                failed_paths.push(p.clone());
+            }
+        }
+    }
+    // 3. 级联清理：缩略图缓存 + 成功删除文件的扫描记录与排除表（失败项保留原状可重试）
+    if let Ok(thumbs) = thumbs_dir(&app) {
+        thumbnail::remove_grid_thumb_files(&thumb_names, &thumbs);
+    }
+    if deleted > 0 {
+        let ok_paths: Vec<String> = paths.iter().filter(|p| !failed_paths.contains(p)).cloned().collect();
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let _ = db.exclude_album_photos(album_id, user_id, &ok_paths);
+        let _ = db.delete_content_by_paths(&ok_paths);
+    }
+    let failed = failed_paths.len();
+    let outcome = PhotoDeleteOutcome { requested, deleted, failed, failed_paths };
+    logger::log_call_end_with("delete_photo_files", _t,
+        &format!("OK | deleted={deleted} failed={failed}"));
+    Ok(outcome)
 }
 
 /// 更新相册信息（需求 §4.2 update_album）
@@ -715,6 +920,26 @@ fn scan_album_tones(path: String) -> Result<Vec<tone::PhotoTone>, String> {
     r
 }
 
+/// 读取单张照片信息（分辨率/文件大小/RGB 像素分布直方图，按需实时读，不落库）
+///
+/// 大图查看器「详细信息」面板专用；解码在阻塞线程执行避免卡异步运行时。
+#[tauri::command]
+async fn get_photo_info(path: String) -> Result<photo_info::PhotoInfo, String> {
+    let _t = log_call!("get_photo_info", &format!("path={path}"));
+    let r = tauri::async_runtime::spawn_blocking(move || photo_info::read_photo_info(&path))
+        .await
+        .map_err(|e| format!("照片信息任务线程失败: {e}"))?;
+    match &r {
+        Ok(info) => logger::log_call_end_with(
+            "get_photo_info",
+            _t,
+            &format!("OK | {}x{} size={}", info.width, info.height, info.file_size),
+        ),
+        Err(e) => logger::log_call_end_with("get_photo_info", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
 /// 视觉内容识别（YOLOv8n-cls，测试功能，不落库）
 ///
 /// 启动/复用独立 Python 微服务，批量识别相册目录内图片的内容，
@@ -725,9 +950,17 @@ async fn classify_album(
     path: String,
     batch_size: Option<i64>,
     app: tauri::AppHandle,
+    scan: tauri::State<'_, ScanState>,
 ) -> Result<Vec<vision::VisionResult>, String> {
     let _t = log_call!("classify_album", &format!("path={path}"));
-    let r = vision::classify_album(&path, batch_size.unwrap_or(8).max(1) as usize, &app).await;
+    scan.0.store(false, Ordering::SeqCst);
+    let r = vision::classify_album(
+        &path,
+        batch_size.unwrap_or(8).max(1) as usize,
+        &app,
+        Some(scan.0.clone()),
+    )
+    .await;
     match &r {
         Ok(list) => logger::log_call_end_with(
             "classify_album",
@@ -739,28 +972,101 @@ async fn classify_album(
     r
 }
 
-/// 人物注册表：列出全部已标号人物
+/// 人物注册表：列出全部已标号人物（直读 persons.db，按脸数降序；不依赖微服务）
 #[tauri::command]
-async fn list_persons() -> Result<Vec<vision::PersonInfo>, String> {
-    vision::list_persons().await
+fn list_persons() -> Result<Vec<persons::PersonEntry>, String> {
+    let _t = log_call!("list_persons", "db-direct");
+    let r = persons::list_persons();
+    match &r {
+        Ok(list) => logger::log_call_end_with("list_persons", _t, &format!("OK | n={}", list.len())),
+        Err(e) => logger::log_call_end_with("list_persons", _t, &format!("ERR | {e}")),
+    }
+    r
 }
 
-/// 人物注册表：重命名人物
-#[tauri::command]
-async fn rename_person(pid: String, name: String) -> Result<(), String> {
-    vision::rename_person(&pid, &name).await
+/// 人物头像缓存目录（app_data_dir/avatars）
+fn avatars_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法获取应用数据目录: {e}"))?;
+    Ok(data_dir.join("avatars"))
 }
 
-/// 人物注册表：合并人物（source 并入 target）
+/// 获取人物头像（本地优先：磁盘缓存命中直接返回，未命中则从代表脸 bbox 本地裁剪）
+///
+/// 完全离线可用，不再依赖 Python 微服务。
 #[tauri::command]
-async fn merge_persons(target: String, source: String) -> Result<(), String> {
-    vision::merge_persons(&target, &source).await
+async fn get_person_avatar(
+    pid: String,
+    force_refresh: Option<bool>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let _t = log_call!("get_person_avatar", &format!("pid={pid} force={force_refresh:?}"));
+    let dir = avatars_dir(&app)?;
+    let cache_path = dir.join(format!("avatar_{pid}.jpg"));
+    if !force_refresh.unwrap_or(false) && cache_path.is_file() {
+        logger::log_call_end_with("get_person_avatar", _t, "OK | cache");
+        return Ok(cache_path.to_string_lossy().into_owned());
+    }
+    // 裁剪解码在阻塞线程执行，避免大图解码占用异步运行时
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        persons::crop_avatar_local(&pid, &cache_path)?;
+        Ok(cache_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| format!("头像任务线程失败: {e}"))?;
+    match &r {
+        Ok(_) => logger::log_call_end_with("get_person_avatar", _t, "OK | cropped"),
+        Err(e) => logger::log_call_end_with("get_person_avatar", _t, &format!("ERR | {e}")),
+    }
+    r
 }
 
-/// 人物注册表：删除人物
+/// 人物注册表：重命名人物（直写 persons.db）
 #[tauri::command]
-async fn delete_person(pid: String) -> Result<(), String> {
-    vision::delete_person(&pid).await
+fn rename_person(pid: String, name: String) -> Result<(), String> {
+    let _t = log_call!("rename_person", &format!("pid={pid}"));
+    let r = persons::rename_person(&pid, &name);
+    match &r {
+        Ok(_) => logger::log_call_end_with("rename_person", _t, "OK"),
+        Err(e) => logger::log_call_end_with("rename_person", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// 人物注册表：合并人物（source 并入 target；直写 persons.db，质心加权平均与 Python 逻辑一致）
+#[tauri::command]
+fn merge_persons(target: String, source: String) -> Result<(), String> {
+    let _t = log_call!("merge_persons", &format!("target={target} source={source}"));
+    let r = persons::merge_persons(&target, &source);
+    match &r {
+        Ok(_) => logger::log_call_end_with("merge_persons", _t, "OK"),
+        Err(e) => logger::log_call_end_with("merge_persons", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// 人物注册表：删除人物（直写 persons.db，离线可用；同步清理头像缓存）
+#[tauri::command]
+fn delete_person(
+    pid: String,
+    app: tauri::AppHandle,
+    session: tauri::State<SessionState>,
+) -> Result<(), String> {
+    let _t = log_call!("delete_person", &format!("pid={pid}"));
+    require_user(&session)?;
+    let r = persons::delete_person(&pid);
+    if r.is_ok() {
+        // 头像缓存文件已无意义，一并清理
+        if let Ok(dir) = avatars_dir(&app) {
+            let _ = std::fs::remove_file(dir.join(format!("avatar_{pid}.jpg")));
+        }
+        logger::log_call_end_with("delete_person", _t, "OK");
+    } else if let Err(e) = &r {
+        logger::log_call_end_with("delete_person", _t, &format!("ERR | {e}"));
+    }
+    r
 }
 
 /// GPU 加速可行性（R3）：确保服务就绪后查询 /gpu，返回是否可用 GPU
@@ -1358,6 +1664,8 @@ pub fn run() {
                 .expect("无法获取应用数据目录");
             // 初始化日志组件（保留 60 分钟，可调节）
             logger::init(&data_dir, 60);
+            // 初始化用户敏感字段加密密钥（必须早于数据库迁移，迁移需用密钥加密历史明文）
+            crypto::init(&data_dir).expect("初始化应用加密密钥失败");
             let db_path = data_dir.join("photos.db");
             logger::log_info("数据库初始化中...");
             let database = Database::open(&db_path).expect("数据库初始化失败");
@@ -1381,12 +1689,14 @@ pub fn run() {
                     logger::log_info(&format!("已恢复上次登录用户 id={uid}（记住登录 3 天）"));
                     app.manage(AppState(Mutex::new(database)));
                     app.manage(SessionState(Mutex::new(Some(uid))));
+                    app.manage(ScanState::default());
                 }
                 None => {
                     // token 缺失/失效 → 清理磁盘文件，按未登录启动
                     session::clear_token_file(&data_dir);
                     app.manage(AppState(Mutex::new(database)));
                     app.manage(SessionState(Mutex::new(None)));
+                    app.manage(ScanState::default());
                 }
             }
             Ok(())
@@ -1398,11 +1708,14 @@ pub fn run() {
             logout,
             get_current_user,
             reset_password,
+            update_profile,
             // 相册管理（按用户隔离）
             create_album,
             get_albums,
             get_album,
             update_album,
+            list_album_photos,
+            get_photo_thumbs,
             auto_detect_album_location,
             rename_album,
             update_album_tags,
@@ -1426,8 +1739,12 @@ pub fn run() {
             test_scan::commands::resolve_test_places,
             test_scan::commands::organize_test_photos,
             scan_album_tones,
+            get_photo_info,
+            delete_photo_records,
+            delete_photo_files,
             classify_album,
             list_persons,
+            get_person_avatar,
             rename_person,
             merge_persons,
             delete_person,
@@ -1437,6 +1754,7 @@ pub fn run() {
             content::commands::search_photo_content,
             content::commands::search_photo_content_with_filters,
             get_vcr_gpu_status,
+            cancel_scan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

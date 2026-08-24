@@ -258,6 +258,17 @@ impl Database {
                 file_count   INTEGER NOT NULL DEFAULT -1
             );",
         )?;
+        // 相册照片排除表（「记录删除」：从相册浏览中移除但保留本地文件）
+        // 多用户隔离：user_id 校验；主键 (album_id, path) 防重复排除
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS album_photo_excluded (
+                album_id    INTEGER NOT NULL,
+                path        TEXT    NOT NULL,
+                user_id     INTEGER NOT NULL,
+                excluded_at INTEGER NOT NULL,
+                PRIMARY KEY(album_id, path)
+            );",
+        )?;
         // 迁移：为旧库 album_stats 补充 file_count 列（变更探测信号，旧行默认 -1 即强制首次重扫）
         let _ = self.conn.execute_batch("ALTER TABLE album_stats ADD COLUMN file_count INTEGER NOT NULL DEFAULT -1;");
         // 迁移：为旧库补充 albums 新列（若已存在则忽略）
@@ -304,15 +315,21 @@ impl Database {
             if !admin_exists {
                 let hash = crate::auth::hash_password(crate::auth::DEFAULT_ADMIN_PASSWORD)
                     .map_err(|e| DbError::Other(e))?;
+                // 落库前加密（邮箱/手机号/密码哈希不以原字段存在）
+                let email_enc = crate::crypto::encrypt(crate::auth::DEFAULT_ADMIN_EMAIL)
+                    .map_err(|e| DbError::Other(e))?;
+                let phone_enc = crate::crypto::encrypt(crate::auth::DEFAULT_ADMIN_PHONE)
+                    .map_err(|e| DbError::Other(e))?;
+                let hash_enc = crate::crypto::encrypt(&hash).map_err(|e| DbError::Other(e))?;
                 let now = Self::now_secs();
                 self.conn.execute(
                     "INSERT INTO users (username, email, phone, password_hash, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
                     params![
                         crate::auth::DEFAULT_ADMIN_USERNAME,
-                        crate::auth::DEFAULT_ADMIN_EMAIL,
-                        crate::auth::DEFAULT_ADMIN_PHONE,
-                        hash,
+                        email_enc,
+                        phone_enc,
+                        hash_enc,
                         now
                     ],
                 )?;
@@ -336,6 +353,8 @@ impl Database {
         }
         // 内容扫描表（FEAT-022：AI 内容扫描入库 + 照片智能搜索）
         self.init_content_schema()?;
+        // 迁移：将历史以明文存储的用户邮箱/手机号/密码哈希重加密（无历史明文则为空操作）
+        let _ = crate::auth::migrate_legacy_user_fields(self.conn());
         Ok(())
     }
 
@@ -821,6 +840,53 @@ impl Database {
     /// 事务内级联清理关联表（folder_albums / album_tags / album_stats），
     /// 避免孤儿数据残留导致手动树归属判断出错。
     /// 多用户隔离：仅能删除归属 `user_id` 的相册，他人相册等同不存在。
+    /// 批量排除相册照片（「记录删除」：网格不再显示，本地文件保留）
+    ///
+    /// 返回新排除的数量（已排除过的忽略，不算错误）。
+    /// 多用户隔离：仅能操作归属当前用户的相册。
+    pub fn exclude_album_photos(
+        &self,
+        album_id: i64,
+        user_id: i64,
+        paths: &[String],
+    ) -> Result<usize, DbError> {
+        let tx = self.conn.unchecked_transaction()?;
+        // 先校验相册归属（0 行 → NotFound）
+        let owned: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM albums WHERE id = ?1 AND user_id = ?2",
+                params![album_id, user_id],
+                |r| r.get(0),
+            )
+            .map_err(DbError::Sqlite)?;
+        if owned == 0 {
+            return Err(DbError::NotFound(album_id));
+        }
+        let mut n = 0usize;
+        for p in paths {
+            let affected = tx.execute(
+                "INSERT OR IGNORE INTO album_photo_excluded(album_id, path, user_id, excluded_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![album_id, p, user_id, Self::now_secs()],
+            )?;
+            n += affected;
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// 列出某相册已被排除的照片路径（过滤 list_album_photos 用）
+    pub fn list_excluded_photos(&self, album_id: i64) -> Result<Vec<String>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM album_photo_excluded WHERE album_id = ?1")
+            .map_err(DbError::Sqlite)?;
+        let rows = stmt
+            .query_map(params![album_id], |r| r.get::<_, String>(0))
+            .map_err(DbError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)
+    }
+
     pub fn delete_album(&self, id: i64, user_id: i64) -> Result<(), DbError> {
         let tx = self.conn.unchecked_transaction()?;
         let affected =
@@ -860,6 +926,7 @@ impl Database {
         tx.execute("DELETE FROM album_tags WHERE album_id = ?1", params![album_id])?;
         tx.execute("DELETE FROM album_stats WHERE album_id = ?1", params![album_id])?;
         tx.execute("DELETE FROM photo_content_scan WHERE album_id = ?1", params![album_id])?;
+        tx.execute("DELETE FROM album_photo_excluded WHERE album_id = ?1", params![album_id])?;
         Ok(())
     }
 

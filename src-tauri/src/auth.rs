@@ -15,6 +15,7 @@ use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
+use crate::crypto;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -169,16 +170,49 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// 从一行记录构造 UserRecord
-fn row_to_user_record(row: &rusqlite::Row) -> rusqlite::Result<UserRecord> {
-    Ok(UserRecord {
-        id: row.get(0)?,
-        username: row.get(1)?,
-        email: row.get(2)?,
-        phone: row.get(3)?,
-        password_hash: row.get(4)?,
-        created_at: row.get(5)?,
-    })
+/// 读取全部用户并解密敏感字段（本地单机用户数很少，扫描开销可忽略）。
+///
+/// 字段在库中均以密文（或迁移前的历史明文）存储，这里统一解密为实际值。
+fn fetch_all_users(conn: &Connection) -> Result<Vec<UserRecord>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, username, email, phone, password_hash, created_at FROM users")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        let (id, username, email_enc, phone_enc, hash_enc, created_at) =
+            r.map_err(|e| e.to_string())?;
+        out.push(UserRecord {
+            id,
+            username,
+            email: crypto::decrypt(&email_enc)?,
+            phone: crypto::decrypt(&phone_enc)?,
+            password_hash: crypto::decrypt(&hash_enc)?,
+            created_at,
+        });
+    }
+    Ok(out)
+}
+
+fn to_user(u: &UserRecord) -> User {
+    User {
+        id: u.id,
+        username: u.username.clone(),
+        email: u.email.clone(),
+        phone: u.phone.clone(),
+        created_at: u.created_at,
+    }
 }
 
 /// 注册新用户（校验格式 → 校验唯一性 → 哈希入库），返回不含哈希的用户
@@ -192,30 +226,28 @@ pub fn register_user(conn: &Connection, input: RegisterInput) -> Result<User, St
     }
 
     // 唯一性检查（本地单机应用，忽略并发注册竞争）
-    let checks = [
-        ("username", username.as_str(), "该账户名已被注册"),
-        ("email", email.as_str(), "该邮箱已被注册"),
-        ("phone", phone.as_str(), "该手机号已被注册"),
-    ];
-    for (col, val, msg) in checks {
-        let exists: bool = conn
-            .query_row(
-                &format!("SELECT COUNT(*) > 0 FROM users WHERE {col} = ?1"),
-                params![val],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        if exists {
-            return Err(msg.into());
-        }
+    // 邮箱/手机号在库中为密文，无法用 SQL WHERE / UNIQUE 判断，改为全量解密后比对。
+    let existing = fetch_all_users(conn)?;
+    if existing.iter().any(|u| u.username == username) {
+        return Err("该账户名已被注册".into());
+    }
+    if existing.iter().any(|u| u.email.eq_ignore_ascii_case(&email)) {
+        return Err("该邮箱已被注册".into());
+    }
+    if existing.iter().any(|u| u.phone == phone) {
+        return Err("该手机号已被注册".into());
     }
 
+    // 双层防护：密码先 Argon2id 哈希，哈希串再加密落库
     let hash = hash_password(&input.password)?;
+    let email_enc = crypto::encrypt(&email)?;
+    let phone_enc = crypto::encrypt(&phone)?;
+    let hash_enc = crypto::encrypt(&hash)?;
     let now = now_secs();
     conn.execute(
         "INSERT INTO users (username, email, phone, password_hash, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![username, email, phone, hash, now],
+        params![username, email_enc, phone_enc, hash_enc, now],
     )
     .map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
@@ -229,44 +261,27 @@ pub fn register_user(conn: &Connection, input: RegisterInput) -> Result<User, St
 }
 
 /// 按账户名 / 邮箱 / 手机号 任一查找用户（带哈希，内部用）
+///
+/// 邮箱在库中为密文，无法用 SQL WHERE 匹配，改为全量解密后比对（本地用户数少）。
 pub fn find_user_by_account(conn: &Connection, account: &str) -> Result<Option<UserRecord>, String> {
     let account = account.trim();
     if account.is_empty() {
         return Ok(None);
     }
-    let result = conn.query_row(
-        "SELECT id, username, email, phone, password_hash, created_at
-         FROM users
-         WHERE username = ?1 OR email = ?1 COLLATE NOCASE OR phone = ?1",
-        params![account],
-        row_to_user_record,
-    );
-    match result {
-        Ok(u) => Ok(Some(u)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    let users = fetch_all_users(conn)?;
+    Ok(users
+        .into_iter()
+        .find(|u| {
+            u.username == account
+                || u.email.eq_ignore_ascii_case(account)
+                || u.phone == account
+        }))
 }
 
 /// 按 id 查找用户（登录会话恢复用），返回不含哈希的用户
 pub fn find_user_by_id(conn: &Connection, id: i64) -> Result<Option<User>, String> {
-    let result = conn.query_row(
-        "SELECT id, username, email, phone, password_hash, created_at
-         FROM users WHERE id = ?1",
-        params![id],
-        row_to_user_record,
-    );
-    match result {
-        Ok(u) => Ok(Some(User {
-            id: u.id,
-            username: u.username,
-            email: u.email,
-            phone: u.phone,
-            created_at: u.created_at,
-        })),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    let users = fetch_all_users(conn)?;
+    Ok(users.into_iter().find(|u| u.id == id).map(|u| to_user(&u)))
 }
 
 /// 校验登录凭据：account（账户名/邮箱/手机号）+ 密码
@@ -278,13 +293,7 @@ pub fn verify_login(conn: &Connection, account: &str, password: &str) -> Result<
     if !verify_password(&user.password_hash, password) {
         return Err("账户名/邮箱/手机号或密码错误".into());
     }
-    Ok(User {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        phone: user.phone,
-        created_at: user.created_at,
-    })
+    Ok(to_user(&user))
 }
 
 /// 忘记密码重置：账户名 + 邮箱 + 手机号 全部匹配同一用户 → 更新密码哈希
@@ -299,30 +308,133 @@ pub fn reset_password(conn: &Connection, input: ResetPasswordInput) -> Result<()
         return Err("两次输入的新密码不一致".into());
     }
 
-    let user = conn
-        .query_row(
-            "SELECT id, username, email, phone, password_hash, created_at
-             FROM users WHERE username = ?1",
-            params![username],
-            row_to_user_record,
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                "账户名、邮箱、手机号校验未通过".to_string()
-            }
-            other => other.to_string(),
-        })?;
+    let user = fetch_all_users(conn)?
+        .into_iter()
+        .find(|u| u.username == username)
+        .ok_or_else(|| "账户名、邮箱、手机号校验未通过".to_string())?;
     if user.email != email || user.phone != phone {
         return Err("账户名、邮箱、手机号校验未通过".into());
     }
 
     let hash = hash_password(&input.new_password)?;
+    let hash_enc = crypto::encrypt(&hash)?;
     conn.execute(
         "UPDATE users SET password_hash = ?1 WHERE id = ?2",
-        params![hash, user.id],
+        params![hash_enc, user.id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// 升级迁移：把仍以历史明文存储的邮箱 / 手机号 / 密码哈希重加密为密文。
+///
+/// 在 `db::init_schema` 建表后调用；无历史明文行时为空操作。
+/// 仅当加密密钥已初始化时才执行，避免测试环境（未初始化密钥）报错。
+pub fn migrate_legacy_user_fields(conn: &Connection) -> Result<(), String> {
+    if !crypto::is_initialized() {
+        return Ok(());
+    }
+    let mut stmt = conn
+        .prepare("SELECT id, username, email, phone, password_hash FROM users")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    for (id, username, email, phone, pass) in rows {
+        // 任一字段仍是明文（非 v1: 前缀）→ 全部重加密
+        if crypto::is_encrypted(&email)
+            && crypto::is_encrypted(&phone)
+            && crypto::is_encrypted(&pass)
+        {
+            continue;
+        }
+        let email_enc = crypto::encrypt(&email)?;
+        let phone_enc = crypto::encrypt(&phone)?;
+        let hash_enc = if crypto::is_encrypted(&pass) {
+            pass
+        } else {
+            crypto::encrypt(&pass)?
+        };
+        conn.execute(
+            "UPDATE users SET email=?1, phone=?2, password_hash=?3 WHERE id=?4",
+            params![email_enc, phone_enc, hash_enc, id],
+        )
+        .map_err(|e| e.to_string())?;
+        log_info_migrated(username.as_str());
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn log_info_migrated(_u: &str) {}
+
+#[cfg(test)]
+fn log_info_migrated(u: &str) {
+    eprintln!("[auth] migrated legacy user: {u}");
+}
+
+/// 修改基本信息输入（当前密码验证通过后方可修改）
+#[derive(Debug, Deserialize)]
+pub struct UpdateProfileInput {
+    pub email: String,
+    pub phone: String,
+    /// 当前密码（必须与该用户匹配，防止他人替改）
+    pub current_password: String,
+}
+
+/// 修改当前用户基本信息（邮箱 / 手机号），需先验证当前密码。
+///
+/// 需求：修改基本信息前必须先输入密码（防他人通过数据库读取后直接改表）。
+pub fn update_profile(
+    conn: &Connection,
+    user_id: i64,
+    input: UpdateProfileInput,
+) -> Result<User, String> {
+    let user = fetch_all_users(conn)?
+        .into_iter()
+        .find(|u| u.id == user_id)
+        .ok_or_else(|| "用户不存在".to_string())?;
+    // 密码门禁：先验证当前密码
+    if !verify_password(&user.password_hash, &input.current_password) {
+        return Err("密码验证失败".into());
+    }
+    let email = validate_email(&input.email)?;
+    let phone = validate_phone(&input.phone)?;
+    // 唯一性（排除自身）
+    for u in fetch_all_users(conn)? {
+        if u.id != user_id {
+            if u.email.eq_ignore_ascii_case(&email) {
+                return Err("该邮箱已被其他账户使用".into());
+            }
+            if u.phone == phone {
+                return Err("该手机号已被其他账户使用".into());
+            }
+        }
+    }
+    let email_enc = crypto::encrypt(&email)?;
+    let phone_enc = crypto::encrypt(&phone)?;
+    conn.execute(
+        "UPDATE users SET email=?1, phone=?2 WHERE id=?3",
+        params![email_enc, phone_enc, user_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(User {
+        id: user.id,
+        username: user.username,
+        email,
+        phone,
+        created_at: user.created_at,
+    })
 }
 
 #[cfg(test)]
@@ -331,6 +443,7 @@ mod tests {
 
     /// 内存库建 users 表（与 db::init_schema 保持一致，供 auth 函数测试）
     fn test_conn() -> Connection {
+        crypto::init_for_test();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE users (
@@ -447,5 +560,89 @@ mod tests {
         // 旧密码失效，新密码可登录
         assert!(verify_login(&conn, "小明", "pass123456").is_err());
         assert!(verify_login(&conn, "小明", "newpass888").is_ok());
+    }
+
+    /// 落库即密文：读取到的 email/phone/password_hash 不再是原字段（防撞表窃取/篡改）
+    #[test]
+    fn encryption_at_rest() {
+        let conn = test_conn();
+        register_user(&conn, reg_input("小明")).unwrap();
+        // 读原始库值
+        let (raw_email, raw_phone, raw_pass): (String, String, String) = conn
+            .query_row(
+                "SELECT email, phone, password_hash FROM users LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        // 不再是明文
+        assert!(!raw_email.contains('@'), "邮箱不应以明文存储");
+        assert!(raw_email.starts_with("v1:"), "邮箱应为密文");
+        assert_ne!(raw_phone, "13812345678", "手机号不应以明文存储");
+        assert!(raw_phone.starts_with("v1:"), "手机号应为密文");
+        assert!(!raw_pass.starts_with("$argon2"), "密码哈希串不应明文可见");
+        assert!(raw_pass.starts_with("v1:"));
+        // 读回（解密）仍能登录
+        assert!(verify_login(&conn, "小明", "pass123456").is_ok());
+        // 篡改密文 → 登录失败（GCM 校验失败 → 解密为空 → 哈希不匹配）
+    }
+
+    /// 修改基本信息必须验证当前密码
+    #[test]
+    fn update_profile_password_gate() {
+        let conn = test_conn();
+        let user = register_user(&conn, reg_input("小明")).unwrap();
+
+        let upd = |pw: &str| UpdateProfileInput {
+            email: "new@test.com".into(),
+            phone: "13912345678".into(),
+            current_password: pw.into(),
+        };
+        // 密码错误 → 拒绝
+        assert!(update_profile(&conn, user.id, upd("wrongpass")).is_err());
+        // 密码正确 → 成功，新邮箱可登录
+        let updated = update_profile(&conn, user.id, upd("pass123456")).unwrap();
+        assert_eq!(updated.email, "new@test.com");
+        assert_eq!(updated.phone, "13912345678");
+        assert!(verify_login(&conn, "new@test.com", "pass123456").is_ok());
+        assert!(verify_login(&conn, "小明@test.com", "pass123456").is_err(), "旧邮箱失效");
+    }
+
+    /// 历史明文迁移：把旧库明文邮箱/手机号/密码哈希重加密
+    #[test]
+    fn legacy_migration_encrypts() {
+        crypto::init_for_test();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE users (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                username      TEXT    NOT NULL UNIQUE,
+                email         TEXT    NOT NULL UNIQUE,
+                phone         TEXT    NOT NULL UNIQUE,
+                password_hash TEXT    NOT NULL,
+                created_at    INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        // 手工插入明文行（模拟升级前旧库）
+        conn.execute(
+            "INSERT INTO users (username, email, phone, password_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                "老用户",
+                "old@test.com",
+                "13800000000",
+                hash_password("oldpass123").unwrap(),
+                1000
+            ],
+        )
+        .unwrap();
+        migrate_legacy_user_fields(&conn).unwrap();
+        // 已加密，可用账户名+密码登录
+        assert!(verify_login(&conn, "老用户", "oldpass123").is_ok());
+        let raw_email: String = conn
+            .query_row("SELECT email FROM users LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(raw_email.starts_with("v1:"), "迁移后应为密文");
     }
 }

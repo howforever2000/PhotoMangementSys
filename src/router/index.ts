@@ -62,6 +62,12 @@ const router = createRouter({
       component: () => import("../views/TestScan.vue"),
     },
     {
+      // 智慧相册：人脸/人物识别结果总览（FEAT-030）
+      path: "/smart",
+      name: "smart-album",
+      component: () => import("../views/SmartAlbum.vue"),
+    },
+    {
       // 懒加载详情页
       path: "/album/:id",
       name: "album-detail",

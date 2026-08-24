@@ -1,14 +1,45 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { ClassifyProgress } from "../types/photo";
 import type {
   AlbumContentRow,
   CombinedScanOutcome,
   ContentScanFilters,
   ContentSearchHit,
   ScanOutcome,
+  ScanReport,
   UnifiedScanRow,
   VcrGpuStatus,
 } from "../types/content";
+
+/** 组合扫描的单个后台任务状态（按相册隔离，键 = albumId） */
+export interface CombinedScanJob {
+  running: boolean;
+  /** 勾选的扫描类型（basic / tone / ai） */
+  types: string[];
+  batch: number;
+  error: string;
+  report: ScanReport | null;
+  rows: UnifiedScanRow[];
+  /** AI 识别进度（来自 classify-progress 事件） */
+  progress: ClassifyProgress | null;
+  /** 自增代次号：防止旧扫描的收尾覆盖新扫描状态 */
+  scanId: number;
+}
+
+function emptyJob(): CombinedScanJob {
+  return {
+    running: false,
+    types: [],
+    batch: 8,
+    error: "",
+    report: null,
+    rows: [],
+    progress: null,
+    scanId: 0,
+  };
+}
 
 /**
  * 内容扫描与智能搜索状态 —— 对应 Rust `content` 服务层
@@ -37,6 +68,12 @@ export const useContentStore = defineStore("content", {
     filterHits: [] as AlbumContentRow[],
     /** GPU 加速可行性状态 */
     gpuStatus: null as VcrGpuStatus | null,
+    /** 组合扫描后台任务（键 = albumId；脱离组件存活，支持退出相册后后台继续） */
+    combinedJobs: {} as Record<number, CombinedScanJob>,
+    /** 当前接收 `classify-progress` 进度事件的相册（同一时刻只追踪一个活动扫描） */
+    activeScanAlbum: null as number | null,
+    /** 全局进度监听是否已就绪（只注册一次） */
+    _progressReady: false,
   }),
 
   actions: {
@@ -147,6 +184,88 @@ export const useContentStore = defineStore("content", {
       } finally {
         this.isSearching = false;
       }
+    },
+
+    // ---- 组合扫描后台任务（FEAT-026 增强） ----
+
+    /** 取某相册的组合扫描任务；不存在则初始化 */
+    jobFor(albumId: number): CombinedScanJob {
+      if (!this.combinedJobs[albumId]) {
+        this.combinedJobs[albumId] = emptyJob();
+      }
+      return this.combinedJobs[albumId];
+    },
+
+    /** 全局注册一次 `classify-progress` 事件监听，路由到当前活动扫描任务 */
+    ensureProgressListener() {
+      if (this._progressReady) return;
+      this._progressReady = true;
+      listen<ClassifyProgress>("classify-progress", (e) => {
+        const albumId = this.activeScanAlbum;
+        if (albumId == null) return;
+        const job = this.combinedJobs[albumId];
+        if (job) job.progress = e.payload;
+      }).catch(() => {
+        // 监听失败不阻塞；扫描仍能正常完成，仅无实时进度
+      });
+    },
+
+    /**
+     * 后台启动组合扫描（EXIF + 影调 + AI 可选组合）
+     *
+     * 任务状态存于 store（脱离组件），即使退出相册页后端仍继续扫描、
+     * 重新进入时能读到进度与结果。至少勾选一项即可扫描（支持单选项）。
+     */
+    async startCombinedScan(albumId: number, types: string[], batchSize = 8): Promise<void> {
+      const job = this.jobFor(albumId);
+      if (job.running) return; // 已有任务进行中，忽略重复点击
+      job.running = true;
+      job.error = "";
+      job.report = null;
+      job.progress = null;
+      job.types = [...types];
+      job.batch = batchSize;
+      job.scanId += 1;
+      const myId = job.scanId;
+      this.activeScanAlbum = albumId;
+      this.ensureProgressListener();
+      try {
+        const outcome = await invoke<CombinedScanOutcome>("scan_album_combined", {
+          albumId,
+          scanTypes: types,
+          batchSize,
+        });
+        // 若期间已发起新扫描，丢弃这次旧结果
+        if (job.scanId !== myId) return;
+        job.report = outcome.report;
+        // 用扫描返回的统一行直接填充表格（含单选项场景）
+        job.rows = outcome.rows;
+      } catch (e) {
+        if (job.scanId !== myId) return;
+        job.error = `组合扫描失败：${e}`;
+      } finally {
+        if (job.scanId === myId) {
+          job.running = false;
+          if (this.activeScanAlbum === albumId) this.activeScanAlbum = null;
+        }
+      }
+    },
+
+    /**
+     * 停止组合扫描：通知后端提前结束，并立即结束 UI 的“扫描中”状态。
+     * 后端返回的部分结果仍会写入任务（显示已处理部分）。
+     */
+    async stopCombinedScan(albumId: number): Promise<void> {
+      const job = this.jobFor(albumId);
+      if (!job.running) return;
+      try {
+        await invoke("cancel_scan");
+      } catch {
+        // 忽略取消命令异常；后端任务仍会自行结束
+      }
+      // 递增代次：让仍在后台的 invoke 收尾不再改写状态
+      job.scanId += 1;
+      job.running = false;
     },
   },
 });

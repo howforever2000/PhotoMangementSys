@@ -284,6 +284,74 @@
       "root_cause": "①SCRFD bbox/kps 输出是归一化距离必须乘 stride（官方 scrfd.py: bbox*stride）②预处理必须 (x-127.5)/128 黑边而非 /255 灰边 ③skimage 与 numpy2.5 二进制不兼容 ④kps 解码又二次乘了 stride",
       "solution": "对照 insightface scrfd.py 逐行核对：距离乘 stride、输入 (x-127.5)/128、cv2.estimateAffinePartial2D 替代 skimage.SimilarityTransform",
       "lessons": "第三方导出模型务必读官方推理代码，输出形状/命名/预处理全都要对齐；flat 格式 SCRFD 输出按 (N,D) 形状自适应分组"
+    },
+    {
+      "id": "BUG-2026-0821-001",
+      "date": "2026-08-21",
+      "status": "resolved",
+      "title": "组合扫描：旧扫描小组件未清除 / 单选项不可扫 / 退出相册即中断 / 无停止按钮",
+      "module": "组合扫描 FEAT-026 / ScanPanel",
+      "symptom": [
+        "组合扫描已统一 EXIF/影调/AI 三合一，但前端 ScanPanel 仍渲染旧的「EXIF 扫描/影调分析/内容识别」三个小组件，界面冗余",
+        "组合扫描只勾选一项（如仅 EXIF 基础）时点击扫描无结果展示，疑似「不能扫描」",
+        "扫描过程中退出相册详情页，回到页面后扫描状态丢失（前台状态随组件销毁），希望后台继续",
+        "组合扫描过程中没有「停止」按钮，无法提前结束长扫描"
+      ],
+      "root_cause": {
+        "summary": "前端 ScanPanel 未清理旧组件；组合扫描结果未回填展示（comboRows 仅由「读表」填充，扫描返回的 rows 未写入）；扫描状态为组件局部 ref，随组件卸载而丢失；后端无取消入口。",
+        "detail": [
+          "FEAT-026 只新增了 combo 区，旧的 EXIF/影调/AI 三个 section 及对应状态/函数仍保留，未移除",
+          "scanAlbumCombined 后端支持单选项（仅校验非空），但前端扫描后只赋值 comboReport 而不写 comboRows，表格永不显示，表现为单选项「不能扫描」",
+          "comboScanning/comboRows 等均为组件局部 ref，组件卸载（路由切换）即重置；后端 async 任务虽在 Rust 运行时继续，但前端无法恢复展示",
+          "后端 scan_album_combined 的影调/EXIF 为同步调用直接跑在 async 命令里，可能占用异步运行时线程"
+        ]
+      },
+      "solution": {
+        "summary": "前端只保留组合扫描统一入口（移除三个旧小组件）；扫描状态迁入 Pinia content store（按 albumId 隔离的后台任务），支持退出相册后台继续；后端加全局取消标记 cancel_scan 命令 + classify_album 分批检查 + 同步重活放 spawn_blocking；扫描返回 rows 直接回填表格。",
+        "steps": [
+          "ScanPanel 删除 EXIF/影调/内容识别三个旧 section 及无关状态/函数，保留组合扫描 + PersonPanel + ContentSearch",
+          "content store 新增 combinedJobs（键=albumId）后台任务：startCombinedScan/stopCombinedScan/jobFor，含 scanId 代次防旧结果覆盖新扫描",
+          "store 注册一次全局 classify-progress 监听路由到 activeScanAlbum",
+          "scanAlbumCombined 返回的 rows 写入 job.rows → 单选项也有结果展示",
+          "后端 lib.rs 新增 ScanState(Arc<AtomicBool>)+cancel_scan 命令；scan_album_combined/scan_album_content 置位取消标记，vision::classify_album 每批检查提前结束",
+          "影调/EXIF 同步扫描放 spawn_blocking，避免占满异步运行时"
+        ]
+      },
+      "lessons": [
+        "「组合扫描替换旧组件」应同时清理前端 UI 与旧状态，避免界面冗余",
+        "后台任务状态应放全局 store 而非组件局部 ref，才能跨路由存活",
+        "取消功能需前后端配合：前端按钮→后端全局取消标记→扫描循环检查点提前结束"
+      ]
+    },
+    {
+      "id": "BUG-2026-0821-002",
+      "date": "2026-08-21",
+      "status": "resolved",
+      "title": "内容过滤搜索报错：invalid type: string \"1.4\", expected f64",
+      "module": "内容搜索 / ContentSearch.vue",
+      "symptom": [
+        "在相册详情页使用 ISO/快门/光圈/焦段过滤条件点击「过滤搜索」时弹出错误：过滤搜索失败：invalid args `filters` for command `search_photo_content_with_filters`: invalid type: string \"1.4\", expected f64"
+      ],
+      "root_cause": {
+        "summary": "前端下拉框 v-model 绑定的是字符串（如 \"1.4\"），直接传给后端 ContentScanFilters（字段为 f64/u32），Tauri 序列化时类型校验失败。",
+        "detail": [
+          "ContentSearch.vue 的 contentFilter 各数值字段由 <select> 绑定，值为字符串",
+          "searchPhotoContentWithFilters 直接把 contentFilter.value 原样传给 store，store 再 invoke 后端命令",
+          "后端 ContentScanFilters 的 iso_min/iso_max 为 Option<u32>，shutter/aperture/focal 为 Option<f64>，字符串无法反序列化"
+        ]
+      },
+      "solution": {
+        "summary": "调用前把下拉框字符串值转为数字；空/非数字视为 null（不限）。",
+        "steps": [
+          "新增 toNum() 辅助函数：null/undefined/空串 → null，否则 Number()，非有限值 → null",
+          "新增 buildFilterParams() 把 contentFilter 的 8 个数值字段转为数字，tone_type 保持字符串",
+          "searchPhotoContentWithFilters 改用 buildFilterParams() 构造参数后再调用 store"
+        ]
+      },
+      "lessons": [
+        "Tauri invoke 会做严格的类型校验，前端表单值（尤其 <select>）需在调用前转为后端期望的数字类型",
+        "数值型过滤条件建议统一用 toNum 转换，避免字符串/数字混用"
+      ]
     }
   ]
 }

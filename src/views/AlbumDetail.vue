@@ -5,7 +5,10 @@ import { useAlbumStore } from "../stores/album";
 import { trace } from "../utils/trace";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import AlbumMeta from "../components/AlbumMeta.vue";
+import CollapseSection from "../components/CollapseSection.vue";
+import ContentSearch from "../components/ContentSearch.vue";
 import ScanPanel from "../components/ScanPanel.vue";
+import PhotoGrid from "../components/PhotoGrid.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -90,11 +93,27 @@ onMounted(load);
         @delete="deleteAlbum"
       />
 
-      <!-- 扫描面板：组合扫描 + EXIF + 影调 + AI + 人物 + 搜索 -->
-      <ScanPanel
-        :album-id="albumId"
-        :album-path="store.currentAlbum.path"
-      />
+      <!-- 三个功能区统一用 CollapseSection 折叠：搜索 / 扫描在前，缩略图浏览在最后 -->
+      <CollapseSection title="🔍 照片搜索" storage-key="detail-search">
+        <ContentSearch :album-id="albumId" />
+      </CollapseSection>
+
+      <!-- 扫描面板：组合扫描（EXIF/影调/AI 统一入口，后台执行）+ 人物 -->
+      <CollapseSection
+        title="🧩 组合扫描"
+        subtitle="EXIF / 影调 / AI 统一入口 · 后台执行 · 退出页面不中断"
+        storage-key="detail-scan"
+      >
+        <ScanPanel
+          :album-id="albumId"
+          :album-path="store.currentAlbum.path"
+        />
+      </CollapseSection>
+
+      <!-- 照片网格浏览：相册内照片一览 + 大图查看（放在最后，作为浏览区） -->
+      <CollapseSection title="🖼️ 缩略图浏览" storage-key="detail-photos">
+        <PhotoGrid :album-id="albumId" />
+      </CollapseSection>
     </template>
 
     <!-- 删除相册二次确认 -->

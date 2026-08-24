@@ -416,6 +416,7 @@ pub mod commands {
         album_id: i64,
         batch_size: Option<i64>,
         app: tauri::AppHandle,
+        scan: tauri::State<'_, crate::ScanState>,
         state: tauri::State<'_, AppState>,
         session: tauri::State<'_, SessionState>,
     ) -> Result<ScanOutcome, String> {
@@ -426,9 +427,10 @@ pub mod commands {
             let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
             db.get_album(album_id, user_id).map_err(|e| format!("{:?}", e))?.path
         };
-        // AI 内容识别（async，复用 vision 微服务）
+        // AI 内容识别（async，复用 vision 微服务）；支持停止
         let batch = batch_size.unwrap_or(8).max(1) as usize;
-        let results = crate::vision::classify_album(&path, batch, &app).await?;
+        scan.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        let results = crate::vision::classify_album(&path, batch, &app, Some(scan.0.clone())).await?;
         let total = results.len();
         let failed = results.iter().filter(|r| r.error.is_some()).count();
         // 构建记录（阻塞线程：逐张 EXIF + 哈希 + 上报进度）
@@ -505,6 +507,7 @@ pub mod commands {
         scan_types: Vec<String>,
         batch_size: Option<i64>,
         app: tauri::AppHandle,
+        scan: tauri::State<'_, crate::ScanState>,
         state: tauri::State<'_, AppState>,
         session: tauri::State<'_, SessionState>,
     ) -> Result<CombinedScanOutcome, String> {
@@ -518,6 +521,10 @@ pub mod commands {
             return Err("非法 scan_types，允许 basic / tone / ai".to_string());
         }
 
+        // 重置取消标记：本次扫描全新开始；前端「停止」→ `cancel_scan` 置位后提前结束
+        scan.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        let cancel = scan.0.clone();
+
         let dir = {
             let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
             db.get_album(album_id, user_id).map_err(|e| format!("{:?}", e))?.path
@@ -528,20 +535,34 @@ pub mod commands {
         let do_ai = scan_types.contains(&"ai".to_string());
         let batch = batch_size.unwrap_or(8).clamp(4, 64) as usize;
 
-        // AI 识别是异步的，先 await
+        // AI 识别为异步 HTTP（在异步运行时上每批检查取消标记），不占用主线程
         let vision_results = if do_ai {
-            crate::vision::classify_album(&dir, batch, &app).await?
+            crate::vision::classify_album(&dir, batch, &app, Some(cancel.clone())).await?
+        } else {
+            Vec::new()
+        };
+
+        // 影调扫描为同步重活 → 放入阻塞线程，避免占满异步运行时影响其他命令
+        let tones = if do_tone {
+            let dir2 = dir.clone();
+            tauri::async_runtime::spawn_blocking(move || crate::tone::scan_album_tones(&dir2))
+                .await
+                .map_err(|e| format!("影调任务线程失败: {e}"))??
+        } else {
+            Vec::new()
+        };
+
+        // EXIF 扫描（仅非 AI 分支需要）→ 同样放入阻塞线程
+        let exifs = if do_basic && !do_ai {
+            let dir2 = dir.clone();
+            tauri::async_runtime::spawn_blocking(move || crate::photo_scan::scan_album_photos(&dir2))
+                .await
+                .map_err(|e| format!("EXIF 任务线程失败: {e}"))??
         } else {
             Vec::new()
         };
 
         let outcome: Result<CombinedScanOutcome, String> = (|| -> Result<CombinedScanOutcome, String> {
-            let tones = if do_tone {
-                crate::tone::scan_album_tones(&dir)?
-            } else {
-                Vec::new()
-            };
-
             if do_ai {
                 let tone_ref = if do_tone { Some(&tones) } else { None };
                 let (recs, rows) =
@@ -564,12 +585,6 @@ pub mod commands {
                     } else {
                         std::collections::HashMap::new()
                     };
-
-                let exifs = if do_basic {
-                    crate::photo_scan::scan_album_photos(&dir)?
-                } else {
-                    Vec::new()
-                };
 
                 let mut all_rows: Vec<UnifiedScanRow> = Vec::new();
                 if do_basic {

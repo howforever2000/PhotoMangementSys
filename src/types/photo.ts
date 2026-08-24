@@ -78,6 +78,32 @@ export interface ScanProgress {
   message: string;
 }
 
+/** 单张照片信息 —— 对应 Rust `photo_info::PhotoInfo`（按需实时读，不落库） */
+export interface PhotoInfo {
+  path: string;
+  file_name: string;
+  /** 格式（小写扩展名） */
+  format: string;
+  /** 原始宽度（px） */
+  width: number;
+  /** 原始高度（px） */
+  height: number;
+  /** 文件大小（字节） */
+  file_size: number;
+  /** R/G/B 三通道直方图，各 256 bin；解码失败为空数组 */
+  hist_r: number[];
+  hist_g: number[];
+  hist_b: number[];
+}
+
+/** 照片批量删除结果 —— 对应 Rust `PhotoDeleteOutcome` */
+export interface PhotoDeleteOutcome {
+  requested: number;
+  deleted: number;
+  failed: number;
+  failed_paths: string[];
+}
+
 /** 单张照片的影调分析结果 —— 对应 Rust `tone::PhotoTone` */
 export interface PhotoTone {
   /** 文件名（不含路径） */

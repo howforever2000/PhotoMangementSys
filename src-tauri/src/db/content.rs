@@ -436,6 +436,19 @@ impl Database {
             .execute("DELETE FROM photo_content_scan WHERE album_id = ?1", params![album_id])?;
         Ok(())
     }
+
+    /// 按绝对路径批量删除内容扫描记录（照片记录删除/文件删除后级联调用）
+    /// 返回实际删除的行数。
+    pub fn delete_content_by_paths(&self, paths: &[String]) -> Result<usize, DbError> {
+        let mut n = 0usize;
+        for p in paths {
+            n += self
+                .conn
+                .execute("DELETE FROM photo_content_scan WHERE path = ?1", params![p])
+                .map_err(DbError::Sqlite)?;
+        }
+        Ok(n)
+    }
 }
 
 /// 事务内写入一条记录（供批量 upsert 复用）

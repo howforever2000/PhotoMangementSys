@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import type { Album, CreateAlbumInput, UpdateAlbumInput } from "../types/album";
+import type { PhotoInfo, PhotoDeleteOutcome } from "../types/photo";
 
 /** 批量导入结果（对应后端 Rust `ImportResult`） */
 export interface ImportResult {
@@ -47,6 +48,37 @@ export const useAlbumStore = defineStore("album", {
       } finally {
         this.isLoading = false;
       }
+    },
+
+    /** 列出相册文件夹内所有图片的绝对路径（无需扫描即可浏览照片） */
+    async listAlbumPhotos(albumId: number): Promise<string[]> {
+      return await invoke<string[]>("list_album_photos", { albumId });
+    },
+
+    /** 批量生成/复用照片网格缩略图，返回 [(原图路径, 缩略图路径)] */
+    async getPhotoThumbs(albumId: number, paths: string[]): Promise<[string, string][]> {
+      if (!paths.length) return [];
+      return await invoke<[string, string][]>("get_photo_thumbs", { albumId, paths });
+    },
+
+    /** 读取单张照片信息（分辨率/文件大小/RGB 直方图，按需实时读，不落库） */
+    async getPhotoInfo(path: string): Promise<PhotoInfo> {
+      return await invoke<PhotoInfo>("get_photo_info", { path });
+    },
+
+    /** 批量「相册记录删除」：从网格浏览中移除+清扫描记录，本地文件保留（可恢复） */
+    async deletePhotoRecords(albumId: number, paths: string[]): Promise<PhotoDeleteOutcome> {
+      return await invoke<PhotoDeleteOutcome>("delete_photo_records", { albumId, paths });
+    },
+
+    /** 批量「本地文件删除」：删磁盘文件并级联清理记录与缩略图缓存（不可恢复） */
+    async deletePhotoFiles(albumId: number, paths: string[]): Promise<PhotoDeleteOutcome> {
+      return await invoke<PhotoDeleteOutcome>("delete_photo_files", { albumId, paths });
+    },
+
+    /** 获取人物头像缓存路径（代表脸 bbox 裁剪；服务未运行时抛错由调用方回退） */
+    async getPersonAvatar(pid: string, forceRefresh = false): Promise<string> {
+      return await invoke<string>("get_person_avatar", { pid, forceRefresh });
     },
 
     /** 创建相册，成功后刷新列表并返回新相册 */

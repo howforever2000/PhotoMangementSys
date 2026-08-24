@@ -12,6 +12,7 @@
   POST /classify               → 单张 {path}
   POST /classify_batch         → 批量 {paths: [...]}（≤ BATCH_CHUNK）
   GET  /persons                → 人物列表
+  GET  /persons/{id}/avatar    → 人物头像（代表脸 bbox 裁剪，JPEG）
   POST /persons/{id}/rename    → {name}
   POST /persons/merge          → {target, source}
   DELETE /persons/{id}         → 删除人物
@@ -137,6 +138,50 @@ def classify_batch(req: ClassifyBatchRequest):
 @app.get("/persons")
 def list_persons():
     return {"persons": get_store().list_persons()}
+
+
+@app.get("/persons/{pid}/avatar")
+def person_avatar(pid: str, size: int = 96):
+    """人物头像：取代表脸按 bbox 裁剪原图并缩放到 size×size JPEG。
+
+    - 代表脸 = 该人物最早登记的一张脸（稳定不跳变）
+    - 原图文件已被删除/无法读取 → 404（前端回退到编号占位样式）
+    """
+    import io
+    import re
+
+    import cv2
+    from fastapi import Response
+
+    face = get_store().representative_face(pid)
+    if face is None:
+        raise HTTPException(404, f"人物无登记人脸: {pid}")
+    photo_path, bbox_raw = face
+    if not os.path.isfile(photo_path):
+        raise HTTPException(404, f"代表脸原图不存在: {photo_path}")
+    nums = [int(v) for v in re.findall(r"-?\d+", bbox_raw)]
+    if len(nums) < 4:
+        raise HTTPException(500, f"bbox 格式异常: {bbox_raw}")
+    x1, y1, x2, y2 = nums[:4]
+    # 轻微外扩 12%，避免裁得太贴五官；并夹紧到图内
+    bw, bh = max(x2 - x1, 1), max(y2 - y1, 1)
+    dx, dy = int(bw * 0.12), int(bh * 0.12)
+    img = cv2.imread(photo_path)
+    if img is None:
+        raise HTTPException(404, f"代表脸原图无法读取: {photo_path}")
+    h, w = img.shape[:2]
+    x1, y1 = max(0, x1 - dx), max(0, y1 - dy)
+    x2, y2 = min(w, x2 + dx), min(h, y2 + dy)
+    crop = img[y1:y2, x1:x2]
+    if crop.size == 0:
+        raise HTTPException(500, "人脸裁剪结果为空")
+    side = max(size, 32)
+    crop = cv2.resize(crop, (side, side), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+    if not ok:
+        raise HTTPException(500, "头像编码失败")
+    return Response(content=buf.tobytes(), media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.post("/persons/{pid}/rename")

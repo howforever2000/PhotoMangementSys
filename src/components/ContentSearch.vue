@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useContentStore } from "../stores/content";
 import type { AlbumContentRow, ContentScanFilters, ContentSearchHit } from "../types/content";
@@ -52,13 +52,51 @@ const contentFilter = ref<ContentScanFilters>({
 const contentFilterHits = ref<AlbumContentRow[]>([]);
 const contentFilterSearching = ref(false);
 
+// ---- 分页（关键词结果与过滤结果各自独立分页，10 / 20 / 50 每页，默认 10） ----
+const PAGE_SIZES = [10, 20, 50];
+const pageSize = ref(10);
+const keywordPage = ref(1);
+const filterPage = ref(1);
+
+const keywordPageCount = computed(() =>
+  Math.max(1, Math.ceil(contentHits.value.length / pageSize.value)),
+);
+const pagedKeywordHits = computed(() => {
+  const start = (keywordPage.value - 1) * pageSize.value;
+  return contentHits.value.slice(start, start + pageSize.value);
+});
+
+const filterPageCount = computed(() =>
+  Math.max(1, Math.ceil(contentFilterHits.value.length / pageSize.value)),
+);
+const pagedFilterHits = computed(() => {
+  const start = (filterPage.value - 1) * pageSize.value;
+  return contentFilterHits.value.slice(start, start + pageSize.value);
+});
+
+watch(pageSize, () => { keywordPage.value = 1; filterPage.value = 1; });
+watch(contentHits, () => {
+  if (keywordPage.value > keywordPageCount.value) keywordPage.value = keywordPageCount.value;
+});
+watch(contentFilterHits, () => {
+  if (filterPage.value > filterPageCount.value) filterPage.value = filterPageCount.value;
+});
+
+function changeKeywordPage(p: number) {
+  keywordPage.value = Math.min(Math.max(1, p), keywordPageCount.value);
+}
+function changeFilterPage(p: number) {
+  filterPage.value = Math.min(Math.max(1, p), filterPageCount.value);
+}
+
 async function searchPhotoContentWithFilters() {
   contentFilterSearching.value = true;
   try {
+    const filters = buildFilterParams();
     contentFilterHits.value = await contentStore.searchPhotoContentWithFilters(
       contentKeyword.value,
       props.albumId,
-      contentFilter.value,
+      filters,
     );
     contentHits.value = [];
   } catch (e) {
@@ -81,6 +119,32 @@ function clearContentFilters() {
     tone_type: null,
   };
   contentFilterHits.value = [];
+}
+
+/**
+ * 下拉框值为字符串，后端 `search_photo_content_with_filters` 期望 f64 / u32，
+ * 需在调用前转为数字；空字符串 / null / 非数字一律视为「不限」（null）。
+ * 修复报错：invalid type: string "1.4", expected f64
+ */
+function toNum(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function buildFilterParams(): ContentScanFilters {
+  const f = contentFilter.value;
+  return {
+    iso_min: toNum(f.iso_min),
+    iso_max: toNum(f.iso_max),
+    shutter_min: toNum(f.shutter_min),
+    shutter_max: toNum(f.shutter_max),
+    aperture_min: toNum(f.aperture_min),
+    aperture_max: toNum(f.aperture_max),
+    focal_min: toNum(f.focal_min),
+    focal_max: toNum(f.focal_max),
+    tone_type: f.tone_type,
+  };
 }
 
 async function openContentHit(path: string) {
@@ -111,15 +175,20 @@ const toneLabelMap: Record<string, string> = {
 
 <template>
   <div class="content-search-area">
-    <div class="content-search-input-wrap">
-      <input
-        v-model="contentKeyword"
-        class="content-search-input"
-        placeholder="在本相册内按内容搜索照片，如：狗 / 人物 / 建筑 / P001…"
-        @input="onContentSearchInput"
-      />
-      <button v-if="contentKeyword" class="search-clear" @click="clearContentSearch">×</button>
+    <div class="search-header">
+      <div class="content-search-input-wrap">
+        <input
+          v-model="contentKeyword"
+          class="content-search-input"
+          placeholder="在本相册内按内容搜索照片，如：狗 / 人物 / 建筑 / P001…"
+          @input="onContentSearchInput"
+        />
+        <button v-if="contentKeyword" class="search-clear" @click="clearContentSearch">×</button>
+      </div>
+      <p class="search-hint">💡 提示：可输入关键词搜索，如「人像」「风景」「夜景」「建筑」「美食」；也可配合下方 ISO / 快门 / 光圈 / 焦段 / 影调 过滤条件缩小范围。</p>
     </div>
+
+    <div class="search-body">
 
     <!-- 过滤条 -->
     <div class="content-search-filters">
@@ -223,7 +292,7 @@ const toneLabelMap: Record<string, string> = {
       </div>
       <div v-else class="content-hit-list">
         <div
-          v-for="hit in contentHits"
+          v-for="hit in pagedKeywordHits"
           :key="hit.id"
           class="content-hit-item"
           :title="hit.path"
@@ -240,6 +309,14 @@ const toneLabelMap: Record<string, string> = {
           </span>
         </div>
       </div>
+      <div v-if="contentHits.length > pageSize" class="content-pager">
+        <label class="pager-size">每页<select v-model="pageSize"><option v-for="s in PAGE_SIZES" :key="s" :value="s">{{ s }}</option></select>条</label>
+        <div class="pager-nav">
+          <button class="btn-mini" :disabled="keywordPage <= 1" @click="changeKeywordPage(keywordPage - 1)">上一页</button>
+          <span class="pager-info">第 {{ keywordPage }} / {{ keywordPageCount }} 页 · 共 {{ contentHits.length }} 条</span>
+          <button class="btn-mini" :disabled="keywordPage >= keywordPageCount" @click="changeKeywordPage(keywordPage + 1)">下一页</button>
+        </div>
+      </div>
     </div>
 
     <!-- 过滤搜索结果 -->
@@ -250,7 +327,7 @@ const toneLabelMap: Record<string, string> = {
       </div>
       <div v-else class="content-hit-list">
         <div
-          v-for="hit in contentFilterHits"
+          v-for="hit in pagedFilterHits"
           :key="hit.id"
           class="content-hit-item"
           :title="hit.path"
@@ -266,15 +343,102 @@ const toneLabelMap: Record<string, string> = {
           </span>
         </div>
       </div>
+      <div v-if="contentFilterHits.length > pageSize" class="content-pager">
+        <label class="pager-size">每页<select v-model="pageSize"><option v-for="s in PAGE_SIZES" :key="s" :value="s">{{ s }}</option></select>条</label>
+        <div class="pager-nav">
+          <button class="btn-mini" :disabled="filterPage <= 1" @click="changeFilterPage(filterPage - 1)">上一页</button>
+          <span class="pager-info">第 {{ filterPage }} / {{ filterPageCount }} 页 · 共 {{ contentFilterHits.length }} 条</span>
+          <button class="btn-mini" :disabled="filterPage >= filterPageCount" @click="changeFilterPage(filterPage + 1)">下一页</button>
+        </div>
+      </div>
+    </div>
     </div>
   </div>
 </template>
 
 <style scoped>
 .content-search-area {
-  margin-top: 20px;
-  border-top: 1px solid #e5e7eb;
-  padding-top: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px;
+}
+
+.search-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.search-body {
+  margin-top: 12px;
+}
+
+.search-hint {
+  font-size: 12px;
+  color: #667085;
+  margin: 4px 0 0;
+  line-height: 1.5;
+}
+
+.search-collapse {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: #667085;
+  padding: 2px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+}
+
+.search-collapse:hover {
+  background: #eef1f6;
+  color: #1f2328;
+}
+
+.collapse-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+/* 分页 */
+.content-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.pager-size {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #667085;
+}
+
+.pager-size select {
+  padding: 2px 4px;
+  border: 1px solid #d0d5dd;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.pager-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pager-info {
+  font-size: 12px;
+  color: #667085;
 }
 
 .content-search-input-wrap {

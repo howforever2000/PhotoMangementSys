@@ -153,6 +153,19 @@ class PersonStore:
             cur = conn.execute("DELETE FROM persons WHERE id=?", (person_id,))
             return cur.rowcount > 0
 
+    def representative_face(self, person_id: str) -> tuple[str, str] | None:
+        """返回该人物的代表脸 (photo_path, bbox)，无脸时返回 None。
+
+        代表脸取最早登记的一张（created_at 最小），稳定不跳变；
+        bbox 为 JSON 字符串（如 '[l,t,r,b]' 或 {"left":...}，由检测端写入）。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT photo_path, bbox FROM faces WHERE person_id=? "
+                "ORDER BY created_at ASC, id ASC LIMIT 1",
+                (person_id,),
+            ).fetchone()
+        return (row["photo_path"], row["bbox"]) if row is not None else None
+
 
 _store: PersonStore | None = None
 

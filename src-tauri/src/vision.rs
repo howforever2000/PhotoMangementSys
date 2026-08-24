@@ -12,6 +12,8 @@
 //! - 服务不可用 / 模型缺失 → 返回明确错误，不影响其他功能
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -84,6 +86,7 @@ pub async fn classify_album(
     dir: &str,
     batch_size: usize,
     app: &tauri::AppHandle,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<Vec<VisionResult>, String> {
     let photos = collect_images(dir)?;
     if photos.is_empty() {
@@ -103,6 +106,14 @@ pub async fn classify_album(
     let mut failed = 0usize;
 
     for chunk in photos.chunks(batch) {
+        // 收到停止请求 → 提前结束，保留已识别部分
+        if cancel
+            .as_ref()
+            .map(|c| c.load(Ordering::SeqCst))
+            .unwrap_or(false)
+        {
+            break;
+        }
         let resp: serde_json::Value = client
             .post(format!("{VCR_URL}/classify_batch"))
             .json(&serde_json::json!({ "paths": chunk }))
@@ -224,14 +235,7 @@ async fn ensure_service_ready(client: &reqwest::Client) -> Result<(), String> {
     Err("识别服务启动超时".into())
 }
 
-/// 人物注册表管理：列表 / 重命名 / 合并 / 删除（代理到 Python 微服务 /persons 接口）
-#[derive(Debug, Clone, Serialize)]
-pub struct PersonInfo {
-    pub id: String,
-    pub name: String,
-    pub face_count: i64,
-    pub created_at: String,
-}
+/// （人物列表/重命名/合并/头像已迁移到 `persons` 模块直读 persons.db；此处仅保留删除代理）
 
 /// GPU 加速可行性状态（R3，来自微服务 /gpu）
 #[derive(Debug, Clone, Serialize)]
@@ -287,75 +291,6 @@ async fn http_client() -> Result<reqwest::Client, String> {
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))
-}
-
-/// 列出人物注册表
-pub async fn list_persons() -> Result<Vec<PersonInfo>, String> {
-    let client = http_client().await?;
-    let resp: serde_json::Value = client
-        .get(format!("{VCR_URL}/persons"))
-        .send()
-        .await
-        .map_err(|e| format!("调用识别服务失败: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("解析结果失败: {e}"))?;
-    let mut out = Vec::new();
-    if let Some(arr) = resp.get("persons").and_then(|v| v.as_array()) {
-        for p in arr {
-            out.push(PersonInfo {
-                id: p.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                name: p.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                face_count: p.get("face_count").and_then(|v| v.as_i64()).unwrap_or(0),
-                created_at: p.get("created_at").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            });
-        }
-    }
-    Ok(out)
-}
-
-/// 重命名人物
-pub async fn rename_person(pid: &str, name: &str) -> Result<(), String> {
-    let client = http_client().await?;
-    let resp = client
-        .post(format!("{VCR_URL}/persons/{pid}/rename"))
-        .json(&serde_json::json!({ "name": name }))
-        .send()
-        .await
-        .map_err(|e| format!("调用识别服务失败: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("重命名失败 HTTP {}", resp.status()));
-    }
-    Ok(())
-}
-
-/// 合并人物（source 并入 target）
-pub async fn merge_persons(target: &str, source: &str) -> Result<(), String> {
-    let client = http_client().await?;
-    let resp = client
-        .post(format!("{VCR_URL}/persons/merge"))
-        .json(&serde_json::json!({ "target": target, "source": source }))
-        .send()
-        .await
-        .map_err(|e| format!("调用识别服务失败: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("合并失败 HTTP {}", resp.status()));
-    }
-    Ok(())
-}
-
-/// 删除人物
-pub async fn delete_person(pid: &str) -> Result<(), String> {
-    let client = http_client().await?;
-    let resp = client
-        .delete(format!("{VCR_URL}/persons/{pid}"))
-        .send()
-        .await
-        .map_err(|e| format!("调用识别服务失败: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("删除失败 HTTP {}", resp.status()));
-    }
-    Ok(())
 }
 
 /// Python 微服务目录（项目根/python）
