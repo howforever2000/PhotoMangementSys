@@ -8,6 +8,13 @@ const router = useRouter();
 const auth = useAuthStore();
 const theme = useThemeStore();
 
+/** 弹窗面板主题样式：深/浅色模式下背景与边框自适应 */
+const pmStyle = computed(() =>
+  theme.isDark
+    ? { background: "rgba(30,34,46,.96)", border: "1px solid rgba(255,255,255,.09)", color: theme.textColor }
+    : { background: "#fff", border: "1px solid rgba(0,0,0,.07)", color: theme.textColor },
+);
+
 /** 当前登录账户名（未登录时显示默认文案） */
 const username = () => auth.user?.username ?? "未登录";
 
@@ -255,9 +262,9 @@ function setBgStyle(v: string) {
     <teleport to="body">
       <transition name="modal">
         <div v-if="profileOpen" class="pm-modal" @click.self="profileOpen = false">
-          <div class="pm-dialog" role="dialog" aria-modal="true">
+          <div class="pm-dialog" role="dialog" aria-modal="true" :style="pmStyle">
             <div class="pm-dialog-head">
-              <h3>基本信息</h3>
+              <h3 :style="{ color: theme.textColor }">基本信息</h3>
               <span class="pm-hint">修改需输入当前密码</span>
             </div>
             <div class="pm-field">
@@ -289,9 +296,9 @@ function setBgStyle(v: string) {
       <!-- 主题 / 皮肤设置弹窗 -->
       <transition name="modal">
         <div v-if="themeOpen" class="pm-modal" @click.self="themeOpen = false">
-          <div class="pm-dialog" role="dialog" aria-modal="true">
+          <div class="pm-dialog" role="dialog" aria-modal="true" :style="pmStyle">
             <div class="pm-dialog-head">
-              <h3>主题 / 皮肤</h3>
+              <h3 :style="{ color: theme.textColor }">主题 / 皮肤</h3>
               <span class="pm-hint">主页与各页共用，设置自动保存</span>
             </div>
 

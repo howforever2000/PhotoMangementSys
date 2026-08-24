@@ -110,6 +110,26 @@ function onKey(e: KeyboardEvent) {
   else if (e.key === "ArrowRight") next();
 }
 
+/* ---- 触屏：左右滑动切换上一张/下一张（缩放状态下滑动留给平移，不切图）---- */
+let touchStartX = 0;
+let touchStartY = 0;
+let touchStartTime = 0;
+function onTouchStart(e: TouchEvent) {
+  const t = e.touches[0];
+  touchStartX = t.clientX;
+  touchStartY = t.clientY;
+  touchStartTime = Date.now();
+}
+function onTouchEnd(e: TouchEvent) {
+  const t = e.changedTouches[0];
+  const dx = t.clientX - touchStartX;
+  const dy = t.clientY - touchStartY;
+  const dt = Date.now() - touchStartTime;
+  if (scale.value !== 1 || Math.abs(dx) < 60 || Math.abs(dy) > 80 || dt > 500) return;
+  if (dx > 0) prev();
+  else next();
+}
+
 onMounted(() => {
   window.addEventListener("keydown", onKey);
   // wheel 必须用非 passive 监听才能 preventDefault 拦截页面缩放
@@ -204,7 +224,7 @@ function personLabel(pid: string): string {
 </script>
 
 <template>
-  <div ref="overlayEl" class="lb-overlay" @click.self="emit('close')">
+  <div ref="overlayEl" class="lb-overlay" @click.self="emit('close')" @touchstart="onTouchStart" @touchend="onTouchEnd">
     <button class="lb-close" title="关闭 (Esc)" @click="emit('close')">✕</button>
 
     <!-- 操作提示与当前倍率 -->

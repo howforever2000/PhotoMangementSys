@@ -5,6 +5,8 @@
  * 用于删除等危险操作：显示标题 + 明确后果提示 + 红色危险按钮，
  * 避免误点；点击遮罩或取消按钮关闭。
  */
+import { useThemeStore } from "../stores/theme";
+
 defineProps<{
   visible: boolean;
   /** 标题（如「删除相册」） */
@@ -23,6 +25,8 @@ const emit = defineEmits<{
   (e: "confirm"): void;
   (e: "cancel"): void;
 }>();
+
+const theme = useThemeStore();
 </script>
 
 <template>
@@ -34,11 +38,26 @@ const emit = defineEmits<{
         @click.self="emit('cancel')"
         @keydown.esc="emit('cancel')"
       >
-        <div class="confirm-dialog" role="dialog" aria-modal="true">
-          <div class="confirm-title">⚠️ {{ title }}</div>
-          <div class="confirm-msg">{{ message }}</div>
+        <div
+          class="confirm-dialog"
+          role="dialog"
+          aria-modal="true"
+          :style="{
+            background: theme.isDark ? 'rgba(30,34,46,.96)' : '#fff',
+            border: `1px solid ${theme.isDark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)'}`,
+          }"
+        >
+          <div class="confirm-title" :style="{ color: theme.textColor }">⚠️ {{ title }}</div>
+          <div class="confirm-msg" :style="{ color: theme.subTextColor }">{{ message }}</div>
           <div class="confirm-actions">
-            <button class="btn btn-cancel" @click="emit('cancel')">
+            <button
+              class="btn btn-cancel"
+              :style="{
+                background: theme.isDark ? 'rgba(255,255,255,.06)' : '#fff',
+                color: theme.isDark ? '#e6e9f5' : '#555',
+              }"
+              @click="emit('cancel')"
+            >
               {{ cancelText || "取消" }}
             </button>
             <button
