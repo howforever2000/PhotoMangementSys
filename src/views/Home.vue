@@ -69,6 +69,14 @@ const modules = [
     path: "/smart",
     ready: true,
   },
+  {
+    id: "timeline",
+    title: "照片时间线",
+    desc: "跨相册按拍摄时间聚合浏览，重现回忆旅程",
+    icon: "📅",
+    path: "/timeline",
+    ready: true,
+  },
 ] as const;
 
 function openModule(m: (typeof modules)[number]) {

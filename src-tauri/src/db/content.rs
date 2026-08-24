@@ -276,6 +276,51 @@ impl Database {
         Ok(out)
     }
 
+    // ---- FEAT-033（dev-ai002）：跨相册照片时间线 ----
+
+    /// 跨相册照片时间线：把当前用户所有已扫描且有拍摄时间的照片按时间升序返回（空时间置底）
+    ///
+    /// 复用 `ContentSearchHit`（含 path / album_name / shoot_time / location / category / label），
+    /// 供前端按年·月分组展示。
+    pub fn list_timeline(&self, user_id: i64) -> Result<Vec<ContentSearchHit>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
+                    p.content, p.category, p.sub_category, p.label, p.confidence,
+                    p.person_ids, p.shoot_time, p.location, p.iso, p.aperture,
+                    p.shutter_speed, p.focal_length
+             FROM photo_content_scan p
+             LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
+             WHERE p.user_id = ?1
+             ORDER BY (p.shoot_time IS NULL), p.shoot_time ASC, p.id ASC",
+        )?;
+        let rows = stmt.query_map(params![user_id], |r| {
+            Ok(ContentSearchHit {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                parent_dir: r.get(2)?,
+                album_id: r.get(3)?,
+                album_name: r.get(4)?,
+                album_path: r.get(5)?,
+                content: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                category: r.get(7)?,
+                sub_category: r.get(8)?,
+                label: r.get(9)?,
+                confidence: r.get(10)?,
+                person_ids: r
+                    .get::<_, Option<String>>(11)?
+                    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                    .unwrap_or_default(),
+                shoot_time: r.get(12)?,
+                location: r.get(13)?,
+                iso: r.get(14)?,
+                aperture: r.get(15)?,
+                shutter_speed: r.get(16)?,
+                focal_length: r.get(17)?,
+            })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
+    }
+
     // ---- FEAT-026：统一读表 + 条件搜索（数值 EXIF + 影调）----
 
     /// 单相册内容读表（分页）：把该相册已扫描的全部记录读出

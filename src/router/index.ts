@@ -68,6 +68,12 @@ const router = createRouter({
       component: () => import("../views/SmartAlbum.vue"),
     },
     {
+      // 跨相册照片时间线（FEAT-033）
+      path: "/timeline",
+      name: "timeline",
+      component: () => import("../views/Timeline.vue"),
+    },
+    {
       // 懒加载详情页
       path: "/album/:id",
       name: "album-detail",

@@ -741,6 +741,26 @@ pub mod commands {
         }
         r
     }
+
+    /// 跨相册照片时间线（FEAT-033）：返回当前用户全部已扫描照片按时间升序
+    #[tauri::command]
+    pub async fn list_timeline(
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Vec<db::ContentSearchHit>, String> {
+        let _t = log_call!("list_timeline", "");
+        let user_id = require_user(&session)?;
+
+        let r = (|| -> Result<Vec<db::ContentSearchHit>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.list_timeline(user_id).map_err(|e| format!("{:?}", e))
+        })();
+        match &r {
+            Ok(list) => logger::log_call_end_with("list_timeline", _t, &format!("OK | rows={}", list.len())),
+            Err(e) => logger::log_call_end_with("list_timeline", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
 }
 
 #[cfg(test)]
