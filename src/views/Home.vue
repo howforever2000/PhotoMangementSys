@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, computed } from "vue";
+import { onBeforeUnmount, onMounted, reactive, ref, computed } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "../stores/auth";
 import { useThemeStore } from "../stores/theme";
@@ -71,25 +71,9 @@ const modules = [
   {
     id: "smart",
     title: "智慧相册",
-    desc: "人脸/人物识别结果总览：头像、命名与脸数一览",
+    desc: "照片时间线 · 智能搜索 · 批量整理，人物总览，聚合智慧功能（含回忆）",
     icon: "🧠",
     path: "/smart",
-    ready: true,
-  },
-  {
-    id: "timeline",
-    title: "照片时间线",
-    desc: "跨相册按拍摄时间聚合浏览，重现回忆旅程",
-    icon: "📅",
-    path: "/timeline",
-    ready: true,
-  },
-  {
-    id: "search",
-    title: "智能搜索",
-    desc: "自然语言 + 多维筛选，跨相册检索照片",
-    icon: "🔎",
-    path: "/search",
     ready: true,
   },
 ] as const;
@@ -206,6 +190,26 @@ function setBgStyle(v: string) {
   theme.bgStyle = v as "image" | "gradient" | "color";
   theme.persist();
 }
+
+/* ---------------- Esc 关闭打开的弹窗（不依赖 mask focus） ---------------- */
+function onGlobalKey(e: KeyboardEvent) {
+  if (e.key !== "Escape") return;
+  if (profileOpen.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    profileOpen.value = false;
+  } else if (themeOpen.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    themeOpen.value = false;
+  }
+}
+onMounted(() => {
+  document.addEventListener("keydown", onGlobalKey);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("keydown", onGlobalKey);
+});
 </script>
 
 <template>
@@ -620,7 +624,7 @@ function setBgStyle(v: string) {
 }
 .pm-hint {
   font-size: 12px;
-  color: #8a93a6;
+  color: #6b7280;
 }
 .pm-field {
   margin-bottom: 14px;
@@ -648,7 +652,7 @@ function setBgStyle(v: string) {
   box-shadow: 0 0 0 3px rgba(90, 139, 247, 0.15);
 }
 .pm-field input:disabled {
-  color: #98a0b0;
+  color: #4b5563;
   background: #eef1f5;
 }
 .pm-error {
