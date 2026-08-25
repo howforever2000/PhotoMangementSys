@@ -21,6 +21,8 @@ const notify = useNotify();
 
 /** 目标文件夹路径 */
 const dirPath = ref("");
+/** 是否递归扫描子目录（小组件功能，用户可选；后续全局扫描沿用同一开关） */
+const recursive = ref(false);
 /** 扫描结果 */
 const photos = ref<TestPhoto[] | null>(null);
 /** 视图模式：time=按时间（年→月） / place=按地点 */
@@ -52,23 +54,25 @@ async function browseDir() {
   const selected = await open({
     directory: true,
     multiple: false,
-    title: "选择要扫描的文件夹（只扫直接图片，不递归子目录）",
+    title: recursive.value ? "选择要扫描的文件夹（递归子目录）" : "选择要扫描的文件夹（只扫直接图片，不递归子目录）",
   });
   if (typeof selected === "string") {
     dirPath.value = selected;
   }
 }
 
-/** 扫描：时间 + GPS 坐标 */
+/** 扫描：时间 + GPS 坐标（recursive 控制是否递归子目录） */
 async function scanPhotos() {
   if (scanning.value || !dirPath.value) return;
   scanning.value = true;
   error.value = "";
   report.value = null;
   try {
-    photos.value = await invoke<TestPhoto[]>("scan_test_photos", { path: dirPath.value });
+    photos.value = await invoke<TestPhoto[]>("scan_test_photos", { path: dirPath.value, recurse: recursive.value });
     if (photos.value.length === 0) {
-      error.value = "扫描到 0 张直接图片。本功能只扫描所选文件夹下的直接图片（不递归子目录），请确认照片直接放在该文件夹中。";
+      error.value = recursive.value
+        ? "扫描到 0 张图片（已递归子目录）。请确认所选文件夹及其子目录下含有图片。"
+        : "扫描到 0 张直接图片。本功能只扫描所选文件夹下的直接图片（不递归子目录），请确认照片直接放在该文件夹中，或在下方勾选「递归子目录」。";
     }
   } catch (e) {
     error.value = `扫描失败：${e}`;
@@ -85,7 +89,7 @@ async function resolvePlaces() {
   error.value = "";
   progress.value = null;
   try {
-    photos.value = await invoke<TestPhoto[]>("resolve_test_places", { path: dirPath.value });
+    photos.value = await invoke<TestPhoto[]>("resolve_test_places", { path: dirPath.value, recurse: recursive.value });
     // 完成：进度条置满
     if (photos.value) {
       const withGps = photos.value.filter((p) => p.lat !== null).length;
@@ -121,7 +125,7 @@ async function organizePhotos() {
   error.value = "";
   progress.value = null;
   try {
-    report.value = await invoke<OrganizeReport>("organize_test_photos", { path: dirPath.value });
+    report.value = await invoke<OrganizeReport>("organize_test_photos", { path: dirPath.value, recurse: recursive.value });
     // 完成：进度条置满（organize 阶段 total=全部照片）
     progress.value = {
       phase: "organize",
@@ -219,13 +223,13 @@ const stats = () => {
       </div>
     </header>
 
-    <!-- 目录选择 + 操作 -->
+    <!-- 目录选择 + 操作（扫描小组件：支持递归模式选择） -->
     <section class="toolbar glass-card">
       <div class="dir-row">
         <input
           v-model="dirPath"
           class="dir-input"
-          placeholder="输入文件夹路径，或点击「浏览」选择（只扫直接图片，不递归）"
+          placeholder="输入文件夹路径，或点击「浏览」选择（勾选递归则扫子目录）"
           @keyup.enter="scanPhotos"
         />
         <button class="btn" @click="browseDir">浏览…</button>
@@ -239,6 +243,12 @@ const stats = () => {
           {{ organizing ? "移动中…" : "按年·地点组织移动" }}
         </button>
       </div>
+      <!-- 递归模式开关（小组件功能） -->
+      <label class="recursive-toggle" :class="{ active: recursive }">
+        <input type="checkbox" v-model="recursive" />
+        <span class="recursive-label">递归子目录</span>
+        <span class="recursive-desc">{{ recursive ? "扫描所选文件夹及其所有子目录" : "只扫所选文件夹直接图片（不递归）" }}</span>
+      </label>
       <p class="hint">解析地名：本地省/市离线查询（GPS 聚类，秒回）；仅未命中（国外/公海）时才联网。组织移动为破坏性操作，执行前有确认。</p>
     </section>
 
@@ -387,9 +397,42 @@ const stats = () => {
   border-color: #396cd8;
 }
 .hint {
-  color: #999;
+  color: #6b7280;
   font-size: 12px;
   margin: 10px 0 0;
+}
+.recursive-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 6px 12px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+}
+.recursive-toggle:hover {
+  border-color: #396cd8;
+  background: #eef3fb;
+}
+.recursive-toggle.active {
+  border-color: #396cd8;
+  background: #eef3fb;
+}
+.recursive-toggle input {
+  margin: 0;
+  cursor: pointer;
+}
+.recursive-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #333;
+}
+.recursive-desc {
+  font-size: 12px;
+  color: #667085;
 }
 /* 进度条 */
 .progress-card {
@@ -618,7 +661,7 @@ const stats = () => {
 }
 .empty-tip {
   text-align: center;
-  color: #999;
+  color: #6b7280;
   padding: 40px 0;
   font-size: 13px;
 }
