@@ -123,14 +123,14 @@ function toggle() {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
-  color: #8a93a6;
+  color: #6b7280;
 }
 
 .cs-action-hint {
   margin-left: auto;
   flex-shrink: 0;
   font-size: 12px;
-  color: #aab3c5;
+  color: #6b7280;
 }
 
 .cs-subtitle + .cs-action-hint,
