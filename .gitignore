@@ -46,6 +46,12 @@ python/.geo_cache/
 # 根目录模型文件（与 python/models/*.pt 同理，过大不入库）
 python/*.pt
 
+# Python 视觉微服务打包产物（PyInstaller 生成，体积过大不入库；由 build_vcr_exe.ps1 重建）
+python/.venv-vcr/
+python/build/
+python/dist/
+python/staging/
+
 # 早期本地地理实验（experiments/local_geocode，已被 python/download_geo_data.py + geo_index 取代）
 experiments/
 

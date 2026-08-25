@@ -3,14 +3,31 @@
 所有硬编码集中于此，服务层只引用 config 常量。
 """
 import os
+import sys
 
 # ---------------------------------------------------------------------------
 # 路径
 # ---------------------------------------------------------------------------
-HERE = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.dirname(HERE)          # python/
-MODEL_DIR = os.path.join(PROJECT_DIR, "models")
-DATA_DIR = os.path.join(PROJECT_DIR, "data")
+def _project_dir() -> str:
+    """返回微服务根目录（其下应含 models/、data/）。
+
+    解析优先级：
+      1. 环境变量 VCR_ROOT —— 部署时由宿主（Tauri/MSI）显式指定；
+      2. PyInstaller 打包后（sys.frozen）—— 可执行文件所在目录，
+         即部署布局 <install>/vcr/vcr-server.exe + 旁侧的 models/、data/；
+      3. 开发态 —— python/ 目录（__file__ 位于 python/vcr/ 下）。
+    """
+    env = os.environ.get("VCR_ROOT") or ""
+    if env:
+        return env
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+PROJECT_DIR = _project_dir()
+MODEL_DIR = os.environ.get("VCR_MODEL_DIR") or os.path.join(PROJECT_DIR, "models")
+DATA_DIR = os.environ.get("VCR_DATA_DIR") or os.path.join(PROJECT_DIR, "data")
 PERSONS_DB = os.path.join(DATA_DIR, "persons.db")
 ALBUM_GROUPS = os.path.join(MODEL_DIR, "album_groups.json")   # taxonomy 9 组定义
 
