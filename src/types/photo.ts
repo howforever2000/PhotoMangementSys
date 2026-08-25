@@ -113,6 +113,36 @@ export interface ExportOutcome {
   dest_dir: string;
 }
 
+/** 照片移动结果 —— 对应 Rust `PhotoMoveOutcome` */
+export interface PhotoMoveOutcome {
+  requested: number;
+  moved: number;
+  failed: number;
+  failed_paths: string[];
+  target_id: number;
+}
+
+/** 打分录 —— (path, rating)，rating 0-5（0 表示未打分/已清除） */
+export type PhotoRating = [string, number];
+
+/** 人物照片条目 —— 对应 Rust `PersonPhotoItem`：
+ *  - path 原图绝对路径
+ *  - thumb 已算好的网格缩略图缓存路径（生成失败/未识别相册时为 null）
+ *  - album_id 照片归属相册（解析失败为 null） */
+export interface PersonPhotoItem {
+  path: string;
+  thumb: string | null;
+  album_id: number | null;
+}
+
+/** 预热缩略图结果 —— 对应 Rust `PrewarmOutcome` */
+export interface PrewarmOutcome {
+  requested: number;
+  hit: number;
+  generated: number;
+  failed: number;
+}
+
 /** 单张照片的影调分析结果 —— 对应 Rust `tone::PhotoTone` */
 export interface PhotoTone {
   /** 文件名（不含路径） */

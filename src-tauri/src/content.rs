@@ -494,6 +494,70 @@ pub mod commands {
         r
     }
 
+    /// FEAT-D：确保单张照片已扫描并落库（用于大图查看器点击原图时）
+    ///
+    /// 行为：
+    /// 1. 若 photo_content_scan 中已有该 path 的记录 → 直接返回（复用已有信息）。
+    /// 2. 否则 → 调 vision::classify_album 识别该单张图片（最小扫描开销），
+    ///    提取 EXIF + 计算哈希 → 落库 → 返回单条 AlbumContentRow。
+    /// 3. 照片不存在 / 识别失败 → 返回 None（让前端继续展示原图）。
+    ///
+    /// 与 scan_album_content 区别：仅扫描 1 张（最小 IO），用于“打开原图时静默补全”。
+    /// 多用户隔离：限定 user_id。
+    #[tauri::command]
+    pub async fn ensure_photo_scanned(
+        album_id: i64,
+        path: String,
+        app: tauri::AppHandle,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Option<db::AlbumContentRow>, String> {
+        let _t = log_call!("ensure_photo_scanned", &format!("album_id={album_id} path={path}"));
+        let user_id = require_user(&session)?;
+
+        // 1. 先查表：已有就直接返回
+        let existing = (|| -> Result<Option<db::AlbumContentRow>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.get_photo_content_by_path(&path, user_id)
+                .map_err(|e| format!("{:?}", e))
+        })()?;
+        if let Some(row) = existing {
+            logger::log_call_end_with("ensure_photo_scanned", _t, "HIT | from_db");
+            return Ok(Some(row));
+        }
+
+        // 2. 没有 → 识别单张图片
+        let result = crate::vision::classify_single(&path, &app).await?;
+
+        // 3. 构建记录（哈希 + EXIF + 拍摄时间 + 人物）
+        let app2 = app.clone();
+        let recs = tauri::async_runtime::spawn_blocking(move || {
+            build_records(album_id, user_id, std::slice::from_ref(&result), &app2)
+        })
+        .await
+        .map_err(|e| format!("任务线程失败: {e}"))??;
+
+        let wrote = (|| -> Result<usize, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.upsert_photo_contents(&recs).map_err(|e| format!("{:?}", e))?;
+            Ok(recs.len())
+        })()?;
+
+        // 4. 再读一次返回（拿 AlbumContentRow 全字段）
+        let out = (|| -> Result<Option<db::AlbumContentRow>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.get_photo_content_by_path(&path, user_id)
+                .map_err(|e| format!("{:?}", e))
+        })()?;
+
+        logger::log_call_end_with(
+            "ensure_photo_scanned",
+            _t,
+            &format!("SCAN | wrote={wrote} returned={}", out.is_some()),
+        );
+        Ok(out)
+    }
+
     // ---- FEAT-026：组合扫描 + 读表 + 条件搜索 ----
 
     /// 组合扫描（EXIF + 影调 + AI 可选组合）并统一入库

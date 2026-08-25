@@ -4,6 +4,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import type { AlbumContentRow } from "../types/content";
 import type { PhotoInfo } from "../types/photo";
 import { useAlbumStore } from "../stores/album";
+import { useContentStore } from "../stores/content";
 
 /**
  * 大图查看器（Lightbox）
@@ -11,11 +12,18 @@ import { useAlbumStore } from "../stores/album";
  * - 全屏遮罩展示当前照片原图
  * - 上一张/下一张（左右方向键）、关闭（ESC）
  * - 底部元数据面板：文件名、AI 分类/人物/置信度、EXIF、影调
+ *
+ * FEAT-D：自动扫描复用
+ *   若当前照片在 photo_content_scan 中尚无记录，watch photo 变化时静默调
+ *   ensure_photo_scanned 命令触发单张扫描并落库；扫描完成后 meta 实时刷新。
+ *   已有记录时直接使用（零 IO）。
  */
 
 interface LightboxPhoto {
   path: string;
   meta?: AlbumContentRow;
+  /** FEAT-D：原图所属相册 ID（用于 ensure_photo_scanned）；非相册上下文（如 Memories 跨相册）传 null */
+  albumId?: number | null;
 }
 
 const props = defineProps<{
@@ -105,7 +113,10 @@ function next() {
 }
 
 function onKey(e: KeyboardEvent) {
-  if (e.key === "Escape") emit("close");
+  if (e.key === "Escape") {
+    e.preventDefault(); // 避免全局 ESC 处理同时触发 router.back
+    emit("close");
+  }
   else if (e.key === "ArrowLeft") prev();
   else if (e.key === "ArrowRight") next();
 }
@@ -140,13 +151,27 @@ onBeforeUnmount(() => {
   overlayEl.value?.removeEventListener("wheel", onWheel);
 });
 
-const meta = computed(() => photo.value.meta);
+// meta 定义在 scanState 之后（FEAT-D）。
 
 /* ---- 照片详细信息（分辨率/文件大小/像素分布图，按需实时读取）---- */
 const albumStore = useAlbumStore();
+const contentStore = useContentStore();
 const photoInfo = ref<PhotoInfo | null>(null);
 const infoError = ref("");
 const histCanvas = ref<HTMLCanvasElement | null>(null);
+
+/** FEAT-D：扫描状态机（"未扫描" / "扫描中" / "已扫描" / "扫描失败"）
+ *  - scanning: 静默后台扫描进行中
+ *  - scanFailed: 后端服务未运行/其他原因扫描失败
+ *  - 三者独立于 meta：meta 未填时驱动用户可见状态
+ */
+const scanState = ref<"idle" | "scanning" | "failed" | "done">("idle");
+
+/** FEAT-D：实际用于面板展示的 meta —— 优先用本地缓存（扫描后），其次用 props 传入 */
+const meta = computed<AlbumContentRow | undefined>(() => {
+  const cur = photo.value;
+  return metaOverrides.value[cur.path] ?? cur.meta;
+});
 
 async function loadPhotoInfo(path: string) {
   photoInfo.value = null;
@@ -207,7 +232,62 @@ function drawHistogram() {
 watch([photoInfo, histCanvas], () => nextTick(drawHistogram), { deep: false });
 
 // 切换照片时重新加载信息（immediate 覆盖首次打开）
-watch(() => photo.value.path, (p) => void loadPhotoInfo(p), { immediate: true });
+watch(
+  () => photo.value.path,
+  (p) => {
+    void loadPhotoInfo(p);
+    void tryEnsureScanned(p);
+  },
+  { immediate: true },
+);
+
+/**
+ * FEAT-D：保证当前照片已扫描并落库。
+ * - 若 photo.meta 已存在（overrides 或 props 传入）→ 跳过（避免重复 IO）。
+ * - 调 ensure_photo_scanned；后端命中库内已有记录直接返回 / 否则单张扫描并落库。
+ * - 扫描完成后写入 metaOverrides（path → row），供 meta computed 查找，
+ *   不依赖 props 数组项引用（避逸 Vue props 不可变问题）。
+ * - 扫描期间 scanState = "scanning" 用于面板提示用户正在后台识别。
+ */
+const scanningPhoto = ref(false);
+/** path → 扫描后落库的 row（FEAT-D 缓存层） */
+const metaOverrides = ref<Record<string, AlbumContentRow>>({});
+
+async function tryEnsureScanned(path: string) {
+  if (metaOverrides.value[path] || props.photos.find((p) => p.path === path)?.meta) {
+    scanState.value = "done";
+    return;
+  }
+  const p = photo.value;
+  if (p.albumId == null) {
+    // 非相册上下文（Memories / Timeline）不触发
+    scanState.value = "idle";
+    return;
+  }
+  if (scanningPhoto.value) return;
+  scanningPhoto.value = true;
+  scanState.value = "scanning";
+  try {
+    const row = await contentStore.ensurePhotoScanned(p.albumId, path);
+    if (row) {
+      metaOverrides.value = { ...metaOverrides.value, [path]: row };
+      scanState.value = "done";
+    } else {
+      // 后端返回 null（服务未运行 / 识别失败 / 照片丢失）—— 提示用户“未扫描”
+      scanState.value = "failed";
+    }
+  } catch {
+    scanState.value = "failed";
+  } finally {
+    scanningPhoto.value = false;
+  }
+}
+
+/** FEAT-D：手动重试扫描（点击面板中的“手动重试”按钮） */
+async function retryScan() {
+  if (scanningPhoto.value) return;
+  await tryEnsureScanned(photo.value.path);
+}
 
 /** 字节数人性化显示 */
 function fmtSize(bytes: number): string {
@@ -229,7 +309,9 @@ function personLabel(pid: string): string {
 
     <!-- 操作提示与当前倍率 -->
     <div class="lb-zoombar">
-      <span class="lb-hint">Ctrl + 滚轮缩放 · 放大后拖动平移 · 双击放大/复原</span>
+      <span class="lb-hint">
+        <kbd>←</kbd> <kbd>→</kbd> 切图 · <kbd>Esc</kbd> 关闭 · <kbd>Ctrl</kbd>+滚轮缩放 · 双击放大/复原
+      </span>
       <span v-if="scale !== 1" class="lb-scale">{{ Math.round(scale * 100) }}%</span>
     </div>
 
@@ -297,8 +379,24 @@ function personLabel(pid: string): string {
         <template v-if="meta?.tone_type">
           <dt>影调</dt><dd>{{ meta.tone_type }}<span v-if="meta.avg_luma != null">（亮度 {{ meta.avg_luma.toFixed(1) }}）</span></dd>
         </template>
-        <template v-if="!meta">
-          <dt>提示</dt><dd>尚未扫描该照片的 AI/EXIF 信息。运行「综合扫描」后在此显示分类、人物与拍摄参数。</dd>
+        <template v-if="!meta && scanState === 'scanning'">
+          <dt>AI 识别</dt><dd class="lb-scanning">⏳ 正在后台识别该照片的 AI/EXIF 信息…识别完成后面板自动刷新。</dd>
+        </template>
+        <template v-else-if="!meta && scanState === 'failed'">
+          <dt>提示</dt>
+          <dd>
+            尚未扫描该照片的 AI/EXIF 信息。
+            <br />运行相册详情页的「<b>综合扫描</b>」后即可在此显示分类、人物与拍摄参数。
+            <br /><button class="lb-retry-btn" :disabled="scanningPhoto" @click="retryScan">⟳ 重试扫描</button>
+          </dd>
+        </template>
+        <template v-else-if="!meta">
+          <dt>提示</dt>
+          <dd>
+            尚未扫描该照片的 AI/EXIF 信息。
+            <br />运行相册详情页的「<b>综合扫描</b>」后即可在此显示分类、人物与拍摄参数。
+            <br /><button class="lb-retry-btn" :disabled="scanningPhoto" @click="retryScan">⟳ 立即扫描</button>
+          </dd>
         </template>
       </dl>
 
@@ -407,6 +505,20 @@ function personLabel(pid: string): string {
   color: rgba(255, 255, 255, 0.75);
   font-size: 12px;
 }
+.lb-hint kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 6px;
+  margin: 0 1px;
+  font-size: 11px;
+  font-family: inherit;
+  line-height: 1.4;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 4px;
+  vertical-align: 1px;
+}
 .lb-scale {
   color: #fff;
   font-size: 13px;
@@ -452,6 +564,37 @@ function personLabel(pid: string): string {
   margin-top: 10px;
   font-size: 12px;
   color: #aab0bd;
+}
+
+/* FEAT-D：扫描中/未扫描提示 */
+.lb-scanning {
+  color: #ffd43b;
+  font-size: 12.5px;
+  line-height: 1.5;
+  animation: lb-scan-pulse 1.2s ease-in-out infinite;
+}
+@keyframes lb-scan-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+.lb-retry-btn {
+  margin-top: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.lb-retry-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.22);
+  transform: translateY(-1px);
+}
+.lb-retry-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* 像素分布图（RGB 直方图） */

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 /// Python 微服务固定端口（与 server.py 默认一致，服务地址由 VCR_URL 引用）
 const VCR_URL: &str = "http://127.0.0.1:8765";
@@ -98,7 +98,7 @@ pub async fn classify_album(
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
-    ensure_service_ready(&client).await?;
+    ensure_service_ready(&client, app).await?;
 
     let batch = batch_size.max(1);
     let mut results: Vec<VisionResult> = Vec::with_capacity(photos.len());
@@ -176,8 +176,63 @@ fn collect_images(dir: &str) -> Result<Vec<String>, String> {
     Ok(photos)
 }
 
-/// 确保 Python 微服务已就绪；未运行则启动并轮询 /health
-async fn ensure_service_ready(client: &reqwest::Client) -> Result<(), String> {
+/// FEAT-D：单张图片识别（不依赖相册目录扫描）
+///
+/// 为「ensure_photo_scanned」专用：
+/// - 走 /classify_batch 但只传 1 个 path（仍受服务是否就绪控制）
+/// - 复用 parse_item 避免重复代码
+/// - 失败 / 服务不可用时返回 error 项（不是抛错），让上层仍能落库
+pub async fn classify_single(path: &str, app: &tauri::AppHandle) -> Result<VisionResult, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    ensure_service_ready(&client, app).await?;
+    let resp: serde_json::Value = client
+        .post(format!("{VCR_URL}/classify_batch"))
+        .json(&serde_json::json!({ "paths": [path] }))
+        .send()
+        .await
+        .map_err(|e| format!("调用识别服务失败: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("解析识别结果失败: {e}"))?;
+    if let Some(items) = resp.get("results").and_then(|v| v.as_array()) {
+        if let Some(item) = items.first() {
+            return Ok(parse_item(item));
+        }
+    }
+    // 服务返回结构异常：返回 error 项而不是抛错
+    Ok(VisionResult {
+        file_name: Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        path: path.to_string(),
+        category: String::new(),
+        sub_category: String::new(),
+        label: String::new(),
+        confidence: 0.0,
+        top3: Vec::new(),
+        person_ids: Vec::new(),
+        person_count: 0,
+        elapsed_ms: 0.0,
+        error: Some("服务未返回结果".into()),
+    })
+}
+
+/// 确保视觉识别微服务已就绪；未运行则启动并轮询 /health
+///
+/// 启动优先级：
+///   1. 打包版：`resource_dir/vcr/vcr-server.exe`（PyInstaller 单文件，随 MSI 内置）
+///   2. 开发版：`python/server.py`（需 `pip install -r python/requirements.txt` 并在 PATH 中）
+///
+/// 打包版通过环境变量把「模型目录」指向随安装包内置的资源目录（只读）、
+/// 把「数据目录」指向 app_data_dir（可写，避免写入 Program Files）。
+async fn ensure_service_ready(
+    client: &reqwest::Client,
+    app: &tauri::AppHandle,
+) -> Result<(), String> {
     // 快速探测：已在运行且模型就绪 → 直接返回
     if let Ok(resp) = client
         .get(format!("{VCR_URL}/health"))
@@ -192,26 +247,63 @@ async fn ensure_service_ready(client: &reqwest::Client) -> Result<(), String> {
         }
     }
 
-    // 启动服务（Windows 下隐藏控制台窗口）
-    let server_script = project_python_dir().join("server.py");
-    if !server_script.is_file() {
-        return Err(format!("识别服务脚本不存在: {}", server_script.display()));
+    // 解析资源/数据目录（打包版定位依赖这两个路径）
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("获取资源目录失败: {e}"))?;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("获取应用数据目录失败: {e}"))?
+        .join("vcr-data");
+    let bundled_dir = resource_dir.join("vcr");
+    let bundled_exe = bundled_dir.join("vcr-server.exe");
+
+    let mut cmd: std::process::Command;
+    let mut workdir = bundled_dir.clone(); // 打包版默认工作目录
+
+    if bundled_exe.is_file() {
+        // 打包版：直接启动内置单文件 exe
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd = std::process::Command::new(&bundled_exe);
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW（隐藏控制台窗口）
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            cmd = std::process::Command::new(&bundled_exe);
+        }
+        // 模型在资源目录（随 MSI 安装，只读）；人物数据在 app_data_dir（可写）
+        cmd.env("VCR_MODEL_DIR", bundled_dir.join("models"));
+        cmd.env("VCR_DATA_DIR", &data_dir);
+    } else {
+        // 开发版：python server.py
+        let server_script = project_python_dir().join("server.py");
+        if !server_script.is_file() {
+            return Err(format!("识别服务脚本不存在: {}", server_script.display()));
+        }
+        let py_dir = project_python_dir();
+        workdir = py_dir.clone();
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd = std::process::Command::new("python");
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            cmd = std::process::Command::new("python");
+        }
+        cmd.arg(&server_script);
     }
-    #[cfg(target_os = "windows")]
-    let mut cmd = {
-        use std::os::windows::process::CommandExt;
-        let mut c = std::process::Command::new("python");
-        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        c
-    };
-    #[cfg(not(target_os = "windows"))]
-    let mut cmd = std::process::Command::new("python");
-    let child = cmd
-        .arg(&server_script)
-        .current_dir(&project_python_dir())
-        .spawn();
+
+    let child = cmd.current_dir(&workdir).spawn();
     if let Err(e) = child {
-        return Err(format!("启动识别服务失败（请确认已 pip install -r python/requirements.txt）: {e}"));
+        return Err(format!(
+            "启动识别服务失败（打包版请确认安装目录 vcr/vcr-server.exe 存在；开发版请 pip install -r python/requirements.txt）: {e}"
+        ));
     }
 
     // 轮询 /health 直到模型就绪
@@ -226,7 +318,7 @@ async fn ensure_service_ready(client: &reqwest::Client) -> Result<(), String> {
                 // 服务在但模型未就绪（如模型文件缺失）→ 直接报错，不再等待
                 if let Some(classes) = v.get("classes").and_then(|x| x.as_u64()) {
                     if classes == 0 {
-                        return Err("识别模型未加载（检查 python/models/ 目录下 ONNX 模型是否存在）".into());
+                        return Err("识别模型未加载（检查模型目录下 ONNX 模型是否存在）".into());
                     }
                 }
             }
@@ -255,9 +347,9 @@ pub struct VcrGpuStatus {
 }
 
 /// 查询 GPU 加速可行性：确保服务就绪后请求 /gpu
-pub async fn vcr_gpu_status() -> Result<VcrGpuStatus, String> {
+pub async fn vcr_gpu_status(app: &tauri::AppHandle) -> Result<VcrGpuStatus, String> {
     let client = http_client().await?;
-    ensure_service_ready(&client).await?;
+    ensure_service_ready(&client, app).await?;
     let resp: serde_json::Value = client
         .get(format!("{VCR_URL}/gpu"))
         .send()

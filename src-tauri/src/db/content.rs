@@ -337,6 +337,65 @@ impl Database {
         rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
     }
 
+    /// 按 path 读取单张照片已扫描的内容（FEAT-D）
+    ///
+    /// 大图查看器在打开原图时调用：若 photo_content_scan 中已有该 path 的记录，
+    /// 直接返回 AlbumContentRow；若无则返回 None（让上层调 ensure_photo_scanned 触发扫描）。
+    /// 多用户隔离：限定 `user_id`。
+    pub fn get_photo_content_by_path(
+        &self,
+        path: &str,
+        user_id: i64,
+    ) -> Result<Option<AlbumContentRow>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
+                    p.iso, p.aperture, p.shutter_speed, p.focal_length, p.shoot_time,
+                    p.iso_num, p.focal_num, p.aperture_num, p.shutter_num,
+                    p.tone_type, p.avg_luma,
+                    p.content, p.category, p.sub_category, p.label, p.confidence,
+                    p.top3_json, p.person_ids, p.person_count
+             FROM photo_content_scan p
+             LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
+             WHERE p.user_id = ?1 AND p.path = ?2
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![user_id, path], |r| {
+            Ok(AlbumContentRow {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                parent_dir: r.get(2)?,
+                album_id: r.get(3)?,
+                album_name: r.get(4)?,
+                album_path: r.get(5)?,
+                iso: r.get(6)?,
+                aperture: r.get(7)?,
+                shutter_speed: r.get(8)?,
+                focal_length: r.get(9)?,
+                shoot_time: r.get(10)?,
+                iso_num: r.get(11)?,
+                focal_num: r.get(12)?,
+                aperture_num: r.get(13)?,
+                shutter_num: r.get(14)?,
+                tone_type: r.get(15)?,
+                avg_luma: r.get(16)?,
+                content: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
+                category: r.get(18)?,
+                sub_category: r.get(19)?,
+                label: r.get(20)?,
+                confidence: r.get(21)?,
+                top3_json: r.get(22)?,
+                person_ids: r.get::<_, Option<String>>(23)?
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_default(),
+                person_count: r.get(24)?,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row.map_err(DbError::Sqlite)?)),
+            None => Ok(None),
+        }
+    }
+
     // ---- FEAT-026：统一读表 + 条件搜索（数值 EXIF + 影调）----
 
     /// 单相册内容读表（分页）：把该相册已扫描的全部记录读出

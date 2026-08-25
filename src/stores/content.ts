@@ -115,6 +115,25 @@ export const useContentStore = defineStore("content", {
       }
     },
 
+    /**
+     * FEAT-D：确保单张照片已扫描并落库（用于大图查看器点击原图时）。
+     *
+     * 行为：
+     * - photo_content_scan 中已有 → 命中返回（零 IO）。
+     * - 没有 → 后台调单张识别、EXIF + 哈希 → 落库。
+     * - 失败返回 null（前端继续展示原图，不阻塞浏览）。
+     *
+     * 本接口在调用者（PhotoLightbox）中以 fire-and-forget 方式调用，
+     * 不阻塞 lightbox 打开速度；扫描完成后再轻量更新一次 meta。
+     */
+    async ensurePhotoScanned(albumId: number, path: string): Promise<AlbumContentRow | null> {
+      try {
+        return await invoke<AlbumContentRow | null>("ensure_photo_scanned", { albumId, path });
+      } catch {
+        return null;
+      }
+    },
+
     /** 清空内容搜索结果 */
     clearHits() {
       this.hits = [];
