@@ -20,11 +20,19 @@ const emit = defineEmits<{
   (e: "contextmenu", ev: MouseEvent): void;
   (e: "toggle-select", ev: MouseEvent): void;
   (e: "open-path", ev: MouseEvent): void;
+  /** FEAT-A：点击合并来源路径时触发（path 链接回系统文件夹） */
+  (e: "open-source-path", payload: { id: number; path: string }): void;
 }>();
 
 /** 将本地文件路径转为前端可访问的 URL（Tauri asset 协议） */
 function fileUrl(path: string | null): string {
   return path ? convertFileSrc(path) : "";
+}
+
+/** FEAT-A：合并来源路径点击 —— emit 携带 path，由父组件负责打开系统文件夹。 */
+function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
+  ev.stopPropagation();
+  emit("open-source-path", { id: src.id, path: src.path });
 }
 </script>
 
@@ -32,8 +40,12 @@ function fileUrl(path: string | null): string {
   <article
     class="album-card"
     :class="{ 'card-selected': selected, 'card-manage': selectMode }"
+    :tabindex="0"
+    role="button"
+    :aria-pressed="selectMode ? selected : undefined"
     @click="emit('click')"
     @contextmenu="(e) => emit('contextmenu', e)"
+    @keydown.enter.space.prevent="emit('click')"
   >
     <!-- 勾选模式下显示勾选框 -->
     <div v-if="selectMode" class="card-checkbox" @click.stop="emit('toggle-select', $event)">
@@ -63,6 +75,24 @@ function fileUrl(path: string | null): string {
         >📁 {{ album.path }}</span>
       </p>
 
+      <!-- FEAT-A：合并来源（FEAT-A）
+        当该相册历史上被合并过，列出所有源相册路径。
+        每条路径可点击 → 在系统文件管理器中打开源文件夹（已删除的源相册不会跳转；只展示信息） -->
+      <div v-if="album.merged_sources && album.merged_sources.length" class="card-merged">
+        <div class="merged-head">
+          <span class="merged-label">由 {{ album.merged_sources.length }} 个相册合并而来</span>
+        </div>
+        <ul class="merged-list">
+          <li v-for="src in album.merged_sources" :key="src.id" class="merged-item" :title="`${src.name}（已合并）`">
+            <span
+              class="merged-path"
+              :title="`在文件管理器中打开源文件夹：${src.path}`"
+              @click.stop="emitSourcePath({ id: src.id, path: src.path }, $event)"
+            >📁 {{ src.path }}</span>
+          </li>
+        </ul>
+      </div>
+
       <div class="card-stats">
         <span class="stat-item">🖼️ {{ album.photo_count }} 张</span>
         <span class="stat-item">💾 {{ formatSize(album.size_bytes) }}</span>
@@ -75,12 +105,17 @@ function fileUrl(path: string | null): string {
 <style scoped>
 .album-card {
   position: relative;
-  background: #fff;
+  background: var(--card-bg, #fff);
+  color: var(--text, #333);
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   cursor: pointer;
   transition: transform 0.2s, box-shadow 0.2s;
+}
+.album-card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(57, 108, 216, 0.45);
 }
 
 .album-card:hover {
@@ -90,7 +125,7 @@ function fileUrl(path: string | null): string {
 
 .card-cover {
   height: 160px;
-  background: #f0f0f0;
+  background: var(--panel-bg, #f0f0f0);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -122,7 +157,7 @@ function fileUrl(path: string | null): string {
 .card-desc {
   margin: 0 0 8px;
   font-size: 13px;
-  color: #666;
+  color: var(--sub-text, #666);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -132,7 +167,7 @@ function fileUrl(path: string | null): string {
 .card-path {
   margin: 0;
   font-size: 12px;
-  color: #999;
+  color: var(--muted, #999);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -160,12 +195,12 @@ function fileUrl(path: string | null): string {
   gap: 14px;
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid #f0f0f0;
+  border-top: 1px solid var(--card-border, #f0f0f0);
 }
 
 .stat-item {
   font-size: 12px;
-  color: #666;
+  color: var(--sub-text, #666);
 }
 
 /* 勾选模式 */
@@ -183,8 +218,8 @@ function fileUrl(path: string | null): string {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  border: 2px solid #ccc;
-  background: rgba(255, 255, 255, 0.9);
+  border: 2px solid var(--input-border, #ccc);
+  background: var(--card-bg, rgba(255, 255, 255, 0.9));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -227,7 +262,57 @@ function fileUrl(path: string | null): string {
 }
 
 .location-tag.no-loc {
-  color: #999;
-  background: #f0f0f0;
+  color: var(--muted, #999);
+  background: var(--panel-bg, #f0f0f0);
+}
+
+/* FEAT-A：合并来源列表 */
+.card-merged {
+  margin: 6px 0 4px;
+  padding: 6px 8px;
+  background: rgba(255, 153, 0, 0.06);
+  border: 1px solid rgba(255, 153, 0, 0.18);
+  border-radius: 6px;
+}
+.merged-head {
+  font-size: 11px;
+  font-weight: 600;
+  color: #9a5b00;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.merged-label {
+  letter-spacing: 0.2px;
+}
+.merged-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 88px;
+  overflow-y: auto;
+}
+.merged-item {
+  font-size: 11px;
+  line-height: 1.45;
+}
+.merged-path {
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  color: #a06700;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.merged-path:hover {
+  color: #6f4800;
 }
 </style>

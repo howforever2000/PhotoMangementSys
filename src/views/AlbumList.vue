@@ -6,7 +6,9 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
+import { useThemeStore } from "../stores/theme";
 import type { Album, CreateAlbumInput } from "../types/album";
+import type { Folder, ManualTree } from "../types/folder";
 import type { ContentSearchHit } from "../types/content";
 import { groupByTime, seasonName, MONTH_NAMES } from "../utils/timeGroup";
 import type { YearGroup } from "../utils/timeGroup";
@@ -19,6 +21,7 @@ const router = useRouter();
 const route = useRoute();
 const store = useAlbumStore();
 const contentStore = useContentStore();
+const theme = useThemeStore();
 const notify = useNotify();
 
 // ---------- 回到顶部按钮状态 ----------
@@ -53,6 +56,15 @@ async function openAlbumPath(path: string, event: MouseEvent) {
     await invoke("open_folder", { path });
   } catch (e) {
     notify.error("无法打开文件夹", `${path}\n${e}`);
+  }
+}
+
+/** FEAT-A：合并来源路径点击 —— 直接调 open_folder，事件已由子组件 stopPropagation */
+async function openSourcePath(payload: { id: number; path: string }) {
+  try {
+    await invoke("open_folder", { path: payload.path });
+  } catch (e) {
+    notify.error("无法打开源文件夹", `${payload.path}\n${e}`);
   }
 }
 
@@ -119,14 +131,34 @@ const selectedIds = ref<Set<number>>(new Set());
 const isSelectMode = ref(false); // 是否处于勾选管理模式
 const isDeleting = ref(false);
 
-/** 是否全部选中 */
+/** 是否全部选中（当前可见的） */
 const allSelected = computed(
-  () => store.albums.length > 0 && selectedIds.value.size === store.albums.length,
+  () => currentVisibleAlbumIds.value.length > 0 && selectedIds.value.size === currentVisibleAlbumIds.value.length,
 );
+
+/** 合并按钮的动态 title：解释「为什么禁用」 */
+const mergeTitle = computed(() => {
+  if (selectedIds.value.size === 0) return "请先勾选至少 1 个相册（合并是 N → 1）";
+  if (store.albums.length - selectedIds.value.size === 0)
+    return "需要至少 1 个未被勾选的目标相册（合并目标不能是源）";
+  if (selectedIds.value.size === 1)
+    return `将所选 1 个相册合并到目标相册（单个也支持，仅「仅删记录」模式生效；物理移动到自身路径会被跳过）`;
+  return `把 ${selectedIds.value.size} 个源相册合并到目标相册（可选「物理移动文件」或「仅删记录」）`;
+});
 
 /** 进入勾选管理模式（默认全不选） */
 function enterSelectMode() {
+  if (!store.albums.length) return;
   isSelectMode.value = true;
+  // 首次进入显示教学 toast：告知快捷键 + 勾选说明（一次）
+  if (!sessionStorage.getItem("pm-album-manage-hint")) {
+    sessionStorage.setItem("pm-album-manage-hint", "1");
+    notify.info(
+      "已进入批量管理",
+      "点击卡片勾选 · Ctrl+A 全选当前可见 · Esc 退出 · Del 删除（仅除记录）",
+      5000,
+    );
+  }
 }
 
 /** 切换单个相册的勾选状态 */
@@ -143,12 +175,56 @@ function toggleSelect(id: number, event?: MouseEvent) {
 
 /** 全选 / 取消全选 */
 function toggleSelectAll() {
+  // 仅在选模式下操作
   if (allSelected.value) {
     selectedIds.value = new Set();
-  } else {
-    selectedIds.value = new Set(store.albums.map((a) => a.id));
+    return;
+  }
+  // 全选当前模式下的可见相册（折叠中的不计入）
+  const visible = currentVisibleAlbumIds.value;
+  selectedIds.value = new Set(visible);
+  // 提示用户：折叠中的不会勾选
+  const total = store.albums.length;
+  if (visible.length < total) {
+    notify.info(
+      "已选当前可见",
+      `勾选 ${visible.length} / ${total} 个相册，折叠中的不会自动勾选。`,
+      3500,
+    );
   }
 }
+
+/** 当前模式（日期 / 地点 / 手动）下，展开中的相册 id 集合。
+ *  用于全选只勾选可见 —避免误全选折叠区域。 */
+const currentVisibleAlbumIds = computed<number[]>(() => {
+  if (sortMode.value === "manual") {
+    // 手动模式：所有相册都视为可见（拖拽时也要能全选）
+    return store.albums.map((a) => a.id);
+  }
+  if (sortMode.value === "location") {
+    const ids: number[] = [];
+    for (const g of locationGroups.value) {
+      if (!isCollapsed(locationKey(g.location))) {
+        for (const a of g.albums) ids.push(a.id);
+      }
+    }
+    return ids;
+  }
+  // date mode
+  const ids: number[] = [];
+  for (const yg of groupedYears.value) {
+    if (isCollapsed(yearKey(yg.year))) continue;
+    for (const a of yg.uncategorized) ids.push(a.id);
+    for (const sg of yg.seasons) {
+      if (isCollapsed(seasonKey(yg.year, sg.season))) continue;
+      for (const mg of sg.months) {
+        if (isCollapsed(monthKey(yg.year, sg.season, mg.month))) continue;
+        for (const a of mg.albums) ids.push(a.id);
+      }
+    }
+  }
+  return ids;
+});
 
 /** 退出勾选管理模式，清空所有选择 */
 function exitSelectMode() {
@@ -184,6 +260,190 @@ async function doBatchDelete() {
     notify.error("删除失败", String(e));
   } finally {
     isDeleting.value = false;
+  }
+}
+
+// ---------- 批量整理：移动分组 / 打标签 / 改地点 / 合并相册 ----------
+const batchRunning = ref(false);
+
+/* 移动分组 */
+const moveFolderOpen = ref(false);
+const moveFolders = ref<Folder[]>([]);
+const moveTarget = ref<number | null>(null);
+
+/** 选中相册当前所在分组（用于提示） */
+const moveSelectedFolders = computed(() => {
+  const ids = [...selectedIds.value];
+  const set = new Set<number | null>();
+  const names: string[] = [];
+  for (const id of ids) {
+    const album = store.albums.find((a) => a.id === id);
+    if (!album) continue;
+    const fid = album.folder_id ?? null;
+    if (!set.has(fid)) {
+      set.add(fid);
+      const f = moveFolders.value.find((x) => x.id === fid);
+      names.push(f ? f.name : "未分组");
+    }
+  }
+  return names;
+});
+async function openMoveFolder() {
+  try {
+    const tree = await invoke<ManualTree>("get_manual_tree");
+    moveFolders.value = tree.folders;
+    moveTarget.value = null;
+    moveFolderOpen.value = true;
+  } catch (e) {
+    notify.error("加载分组失败", String(e));
+  }
+}
+async function doMoveFolder() {
+  const ids = [...selectedIds.value];
+  if (!ids.length || batchRunning.value) return;
+  batchRunning.value = true;
+  moveFolderOpen.value = false;
+  try {
+    const r = await store.batchMoveAlbumToFolder(ids, moveTarget.value);
+    const parts = [`成功 ${r.ok} / ${r.requested} 个相册`];
+    if (r.failed) parts.push(`失败 ${r.failed}`);
+    notify.success("移动分组完成", parts.join("；"));
+    await store.fetchAlbums();
+  } catch (e) {
+    notify.error("移动分组失败", String(e));
+  } finally {
+    batchRunning.value = false;
+  }
+}
+
+/* 打标签 */
+const tagDialogOpen = ref(false);
+const tagInput = ref("");
+const tagMode = ref<"add" | "remove">("add");
+function openTagDialog(mode: "add" | "remove") {
+  tagMode.value = mode;
+  tagInput.value = "";
+  tagDialogOpen.value = true;
+}
+async function doTagDialog() {
+  const ids = [...selectedIds.value];
+  const tag = tagInput.value.trim();
+  if (!tag || !ids.length || batchRunning.value) return;
+  batchRunning.value = true;
+  tagDialogOpen.value = false;
+  try {
+    const r = await store.batchSetAlbumTag(ids, [tag], tagMode.value);
+    const parts = [`成功 ${r.ok} / ${r.requested} 个相册`];
+    if (r.failed) parts.push(`失败 ${r.failed}`);
+    notify.success(tagMode.value === "add" ? "批量打标签完成" : "批量移除标签完成", parts.join("；"));
+    await store.fetchAlbums();
+  } catch (e) {
+    notify.error("批量打标签失败", String(e));
+  } finally {
+    batchRunning.value = false;
+  }
+}
+
+/* 改地点 */
+const locDialogOpen = ref(false);
+const locInput = ref("");
+
+/** 选中相册当前地点（用于覆盖警告） */
+const locCurrent = computed(() => {
+  const ids = [...selectedIds.value];
+  const set = new Set<string>();
+  let unlocated = 0;
+  for (const id of ids) {
+    const a = store.albums.find((x) => x.id === id);
+    if (!a) continue;
+    if (a.location) set.add(a.location);
+    else unlocated++;
+  }
+  const list = [...set];
+  if (unlocated) list.push(`未设置 ×${unlocated}`);
+  return list;
+});
+/** 覆盖警告：若选中相册中已有同名地点，输入框新值会覆盖 */
+const locWillOverwrite = computed(() => {
+  const v = locInput.value.trim();
+  if (!v) return false;
+  return locCurrent.value.some((c) => c === v);
+});
+function openLocDialog() {
+  locInput.value = "";
+  locDialogOpen.value = true;
+}
+async function doLocDialog() {
+  const ids = [...selectedIds.value];
+  if (!ids.length || batchRunning.value) return;
+  batchRunning.value = true;
+  locDialogOpen.value = false;
+  try {
+    const r = await store.batchSetAlbumLocation(ids, locInput.value.trim());
+    const parts = [`成功 ${r.ok} / ${r.requested} 个相册`];
+    if (r.failed) parts.push(`失败 ${r.failed}`);
+    notify.success("批量改地点完成", parts.join("；"));
+    await store.fetchAlbums();
+  } catch (e) {
+    notify.error("批量改地点失败", String(e));
+  } finally {
+    batchRunning.value = false;
+  }
+}
+
+/* 合并相册：先选目标相册 + 合并模式，再二次确认 */
+const mergeOpen = ref(false);
+const mergeTarget = ref<number | null>(null);
+const mergeMode = ref<"move" | "record">("move");
+const mergeConfirm = ref<{ visible: boolean; message: string }>({ visible: false, message: "" });
+const mergeTargets = computed(() => store.albums.filter((a) => !selectedIds.value.has(a.id)));
+function openMerge() {
+  mergeTarget.value = null;
+  // 单选场景默认走“仅删记录”（物理移动对于单选仅在“合并到其他路径”时有意义；为防误判默认 record）
+  mergeMode.value = selectedIds.value.size === 1 ? "record" : "move";
+  mergeOpen.value = true;
+}
+async function requestMerge() {
+  const sourceIds = [...selectedIds.value];
+  const targetId = mergeTarget.value;
+  if (!targetId || !sourceIds.length) return;
+  const target = store.albums.find((a) => a.id === targetId);
+  const targetName = target?.name ?? "";
+  mergeOpen.value = false;
+  // 单选场景特殊提示：物理移动模式下若目标路径与源路径不同时才会真正移动文件；
+  // 仅“仅删记录”模式下仅删除源记录，文件保留原地。
+  const n = sourceIds.length;
+  const moveHint = n === 1
+    ? `将「物理移动」所选 1 个源相册「${store.albums.find((a) => a.id === sourceIds[0])?.name ?? ""}」内的照片到「${targetName}」相册，\n合并后源相册记录与文件会被移除；该操作不可恢复，确定继续吗？`
+    : `将把所选 ${n} 个源相册的照片「物理移动」到「${targetName}」相册，\n合并后源相册记录与文件会被移除；该操作不可恢复，确定继续吗？`;
+  const recordHint = n === 1
+    ? `将「仅删除」所选 1 个源相册的记录，照片文件保留在磁盘原处，\n不会移动任何文件；该操作不可恢复，确定继续吗？`
+    : `将「仅删除」所选 ${n} 个源相册的记录，照片文件保留在磁盘原处，\n不会移动任何文件；该操作不可恢复，确定继续吗？`;
+  mergeConfirm.value = {
+    visible: true,
+    message: mergeMode.value === "move" ? moveHint : recordHint,
+  };
+}
+async function doMerge() {
+  const sourceIds = [...selectedIds.value];
+  const targetId = mergeTarget.value;
+  if (!targetId || batchRunning.value) return;
+  batchRunning.value = true;
+  mergeConfirm.value.visible = false;
+  try {
+    const r = await store.mergeAlbums(sourceIds, targetId, mergeMode.value);
+    const parts =
+      mergeMode.value === "move"
+        ? [`已合并 ${r.merged} 个源相册，移动 ${r.files_moved} 张照片`]
+        : [`已合并 ${r.merged} 个源相册（仅删除记录，文件保留）`];
+    if (r.files_failed) parts.push(`${r.files_failed} 张移动失败`);
+    notify.success("合并相册完成", parts.join("；"));
+    exitSelectMode();
+    await store.fetchAlbums();
+  } catch (e) {
+    notify.error("合并相册失败", String(e));
+  } finally {
+    batchRunning.value = false;
   }
 }
 
@@ -240,6 +500,8 @@ async function submitRename() {
 function onRightClick(albumId: number, event: MouseEvent) {
   event.preventDefault(); // 阻止浏览器默认右键菜单
   event.stopPropagation(); // 阻止触发卡片点击跳转
+  // 选模式下禁用右键菜单（避免和勾选交互冲突）
+  if (isSelectMode.value) return;
   contextMenu.value = {
     visible: true,
     x: event.clientX,
@@ -596,6 +858,8 @@ onMounted(() => {
   window.addEventListener("click", onGlobalClick);
   // 滚动监听（用于回到顶部按钮显示）
   window.addEventListener("scroll", onScroll, { passive: true });
+  // 选模式快捷键
+  window.addEventListener("keydown", onKey);
 
   // 从路由 query 处理跳转（如从详情页跳转父相册）
   const q = route.query;
@@ -610,11 +874,84 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("click", onGlobalClick);
   window.removeEventListener("scroll", onScroll);
+  window.removeEventListener("keydown", onKey);
 });
+
+/* ---------------- 选模式快捷键 ---------------- */
+/**
+ * 选模式下提供键盘交互：
+ *  - Esc 退出选模式
+ *  - Ctrl/Cmd + A 全选/取消全选
+ *  - Delete 打开删除确认（仅相册记录，文件未删）
+ * 输入框中、任一对话框打开时不响应。
+ */
+/* ---------------- 键盘交互 ---------------- */
+/**
+ * 选模式下提供快捷键：
+ *  - Esc：优先关闭打开的弹窗；无弹窗则退出选模式
+ *  - Ctrl/Cmd + A：全选/取消全选
+ *  - Delete：打开删除确认
+ * 输入框中不响应。
+ */
+function onKey(e: KeyboardEvent) {
+  const target = e.target as HTMLElement | null;
+  const tag = target?.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+
+  // 打开的对话框优先处理 Esc：依次关闭即可
+  if (e.key === "Escape") {
+    if (showCreateDialog.value) { e.preventDefault(); showCreateDialog.value = false; return; }
+    if (showRenameDialog.value) { e.preventDefault(); showRenameDialog.value = false; return; }
+    if (mergeOpen.value) { e.preventDefault(); mergeOpen.value = false; return; }
+    if (moveFolderOpen.value) { e.preventDefault(); moveFolderOpen.value = false; return; }
+    if (tagDialogOpen.value) { e.preventDefault(); tagDialogOpen.value = false; return; }
+    if (locDialogOpen.value) { e.preventDefault(); locDialogOpen.value = false; return; }
+    if (batchDeleteConfirm.value.visible) { e.preventDefault(); batchDeleteConfirm.value.visible = false; return; }
+  }
+
+  if (!isSelectMode.value) return;
+  if (
+    showCreateDialog.value ||
+    showRenameDialog.value ||
+    mergeOpen.value ||
+    moveFolderOpen.value ||
+    tagDialogOpen.value ||
+    locDialogOpen.value ||
+    batchDeleteConfirm.value.visible
+  ) return;
+
+  if (e.key === "Escape") {
+    e.preventDefault();
+    exitSelectMode();
+  } else if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
+    e.preventDefault();
+    toggleSelectAll();
+  } else if (e.key === "Delete" && selectedIds.value.size > 0 && !isDeleting.value) {
+    e.preventDefault();
+    batchDelete();
+  }
+}
 </script>
 
 <template>
-  <div class="album-page">
+  <div
+    class="album-page"
+    :style="{
+      color: theme.textColor,
+      '--text': theme.textColor,
+      '--sub-text': theme.subTextColor,
+      '--muted': theme.isDark ? 'rgba(214,221,240,.55)' : 'rgba(60,70,90,.55)',
+      '--card-bg': theme.isDark ? 'rgba(30,34,46,.92)' : 'rgba(255,255,255,.94)',
+      '--card-border': theme.isDark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)',
+      '--panel-bg': theme.isDark ? 'rgba(255,255,255,.06)' : '#f7f9fc',
+      '--input-bg': theme.isDark ? 'rgba(20,22,30,.7)' : '#fff',
+      '--input-border': theme.isDark ? 'rgba(255,255,255,.14)' : '#ddd',
+      '--tint-bg': theme.isDark ? 'rgba(57,108,216,.18)' : '#eef3ff',
+      '--tint-border': theme.isDark ? 'rgba(57,108,216,.35)' : '#e0e9fa',
+      '--hover-bg': theme.isDark ? 'rgba(255,255,255,.07)' : 'rgba(57,108,216,.08)',
+      '--danger-bg': theme.isDark ? 'rgba(229,72,77,.15)' : '#fdf0f0',
+    }"
+  >
     <!-- 顶部工具栏（需求 §5.3） -->
     <header class="toolbar">
       <div class="toolbar-left">
@@ -636,19 +973,72 @@ onBeforeUnmount(() => {
           <button class="btn" :disabled="isImporting" @click="batchImport">
             {{ isImporting ? "导入中…" : "批量导入" }}
           </button>
-          <button class="btn" @click="enterSelectMode">管理</button>
+          <button class="btn" :disabled="!store.albums.length" :title="!store.albums.length ? '请先创建相册后才能进入管理' : '进入批量管理模式（支持选择多个相册进行整理）'" @click="enterSelectMode">
+            📋 批量管理
+          </button>
           <button class="btn btn-primary" @click="openCreateDialog">新建相册</button>
         </template>
-        <!-- 勾选模式：删除 / 取消 -->
+        <!-- 勾选模式：批量整理 / 删除 / 取消 -->
         <template v-else>
-          <button
-            class="btn btn-danger"
-            :disabled="isDeleting || selectedIds.size === 0"
-            @click="batchDelete"
-          >
-            {{ isDeleting ? "删除中…" : `删除所选 (${selectedIds.size})` }}
-          </button>
-          <button class="btn" @click="exitSelectMode">取消</button>
+          <div class="tb-group tb-state">
+            <span class="tb-selected-pill" :title="`已选 ${selectedIds.size} / ${store.albums.length} 个相册`">
+              ✓ 已选 <b>{{ selectedIds.size }}</b>
+            </span>
+            <button class="link-btn" @click="toggleSelectAll" :title="allSelected ? '取消全选当前可见' : '全选当前可见（折叠中的不会勾选）'">
+              {{ allSelected ? "取消全选" : "全选" }}
+            </button>
+            <button class="btn" @click="exitSelectMode" title="退出批量管理（Esc）">取消</button>
+          </div>
+
+          <div class="tb-divider"></div>
+
+          <div class="tb-group tb-organize">
+            <span class="tb-group-label">整理</span>
+            <button
+              class="btn"
+              :disabled="selectedIds.size < 1 || batchRunning"
+              :title="mergeTitle"
+              @click="openMerge"
+            >🪢 合并…</button>
+            <button
+              class="btn"
+              :disabled="selectedIds.size === 0 || batchRunning"
+              :title="selectedIds.size === 0 ? '请先勾选至少 1 个相册' : '把选中相册移动到其他分组（顶级/二级/三级）'"
+              @click="openMoveFolder"
+            >📁 移动分组…</button>
+          </div>
+
+          <div class="tb-divider"></div>
+
+          <div class="tb-group tb-label">
+            <span class="tb-group-label">标签</span>
+            <button
+              class="btn"
+              :disabled="selectedIds.size === 0 || batchRunning"
+              :title="selectedIds.size === 0 ? '请先勾选至少 1 个相册' : '批量添加 / 移除标签（弹窗内选择模式）'"
+              @click="openTagDialog('add')"
+            >🏷️ 标签…</button>
+            <button
+              class="btn"
+              :disabled="selectedIds.size === 0 || batchRunning"
+              :title="selectedIds.size === 0 ? '请先勾选至少 1 个相册' : '批量修改选中相册的地点（留空清除）'"
+              @click="openLocDialog"
+            >📍 改地点…</button>
+          </div>
+
+          <div class="tb-divider"></div>
+
+          <div class="tb-group tb-danger">
+            <span class="tb-group-label">危险</span>
+            <button
+              class="btn btn-danger"
+              :disabled="isDeleting || selectedIds.size === 0"
+              :title="selectedIds.size === 0 ? '请先勾选至少 1 个相册' : `仅删除选中相册的数据库记录，照片文件保留在磁盘原处`"
+              @click="batchDelete"
+            >
+              {{ isDeleting ? "删除中…" : `🗑️ 删除 (${selectedIds.size})` }}
+            </button>
+          </div>
         </template>
       </div>
     </header>
@@ -761,15 +1151,11 @@ onBeforeUnmount(() => {
       <p class="import-status">{{ importStatus }}</p>
     </div>
 
-    <!-- 批量选择提示栏（勾选模式下且有勾选时显示） -->
-    <div v-if="isSelectMode && selectedIds.size > 0" class="select-bar">
-      <span>
-        已选 {{ selectedIds.size }} 个相册
-        <button class="link-btn" @click="toggleSelectAll">
-          {{ allSelected ? "取消全选" : "全选" }}
-        </button>
+    <!-- 批量选择提示栏（勾选模式下提示快捷键；计数与全选在工具栏中） -->
+    <div v-if="isSelectMode" class="select-bar">
+      <span class="select-hint">
+        点击卡片勾选 · <kbd>Esc</kbd> 退出 · <kbd>Ctrl+A</kbd> 全选当前可见 · <kbd>Del</kbd> 删除（仅除记录）
       </span>
-      <span class="select-hint">勾选后删除仅移除相册记录，不影响本地照片</span>
     </div>
 
     <!-- 日期模式：时间分组视图（年 → 季节 → 月，可折叠） -->
@@ -807,6 +1193,7 @@ onBeforeUnmount(() => {
                     @contextmenu="onRightClick(album.id, $event)"
                     @toggle-select="toggleSelect(album.id, $event)"
                     @open-path="openAlbumPath(album.path, $event)"
+                    @open-source-path="openSourcePath($event)"
                   />
                 </div>
               </div>
@@ -851,6 +1238,7 @@ onBeforeUnmount(() => {
                         @contextmenu="onRightClick(album.id, $event)"
                         @toggle-select="toggleSelect(album.id, $event)"
                         @open-path="openAlbumPath(album.path, $event)"
+                        @open-source-path="openSourcePath($event)"
                       />
                     </div>
                   </div>
@@ -883,6 +1271,7 @@ onBeforeUnmount(() => {
                   @contextmenu="onRightClick(album.id, $event)"
                   @toggle-select="toggleSelect(album.id, $event)"
                   @open-path="openAlbumPath(album.path, $event)"
+                  @open-source-path="openSourcePath($event)"
                 />
               </div>
             </div>
@@ -1010,6 +1399,136 @@ onBeforeUnmount(() => {
       @cancel="contextDeleteConfirm.visible = false"
     />
 
+    <!-- 批量整理：移动分组 -->
+    <div v-if="moveFolderOpen" class="dialog-mask" @click.self="moveFolderOpen = false">
+      <div class="dialog">
+        <h2 class="dialog-title">移动分组</h2>
+        <p v-if="moveSelectedFolders.length" class="batch-current-tip">
+          当前所在：<b>{{ moveSelectedFolders.join(" · ") }}</b>
+        </p>
+        <p class="batch-select-tip">选择目标分组（缩进表示层级），或选「不分组」移到顶级</p>
+        <div class="folder-list">
+          <button class="folder-item" :class="{ active: moveTarget === null }" @click="moveTarget = null">
+            <span>— 不分组（顶级）—</span>
+          </button>
+          <button
+            v-for="f in moveFolders"
+            :key="f.id"
+            class="folder-item"
+            :class="{ active: moveTarget === f.id }"
+            :style="{ paddingLeft: (f.level - 1) * 16 + 12 + 'px' }"
+            @click="moveTarget = f.id"
+          >
+            <span>📁 {{ f.name }}</span>
+          </button>
+        </div>
+        <div class="dialog-actions">
+          <button class="btn" @click="moveFolderOpen = false">取消</button>
+          <button class="btn btn-primary" :disabled="batchRunning" @click="doMoveFolder">移动所选</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 批量整理：打标签 -->
+    <div v-if="tagDialogOpen" class="dialog-mask" @click.self="tagDialogOpen = false">
+      <div class="dialog">
+        <h2 class="dialog-title">批量标签</h2>
+        <p class="batch-select-tip">模式：</p>
+        <div class="tag-mode">
+          <button class="bmode" :class="{ active: tagMode === 'add' }" @click="tagMode = 'add'">
+            ➕ 添加标签
+          </button>
+          <button class="bmode" :class="{ active: tagMode === 'remove' }" @click="tagMode = 'remove'">
+            ➖ 移除标签
+          </button>
+        </div>
+        <div class="form-field">
+          <label class="form-label">标签名（单个）</label>
+          <input
+            v-model="tagInput"
+            class="input"
+            :placeholder="tagMode === 'add' ? '如：精选 / 旅行 / 家人' : '要移除的标签名（必须完全匹配）'"
+            @keydown.enter="doTagDialog"
+            @keydown.esc="tagDialogOpen = false"
+          />
+        </div>
+        <div class="dialog-actions">
+          <button class="btn" @click="tagDialogOpen = false">取消</button>
+          <button class="btn btn-primary" :disabled="batchRunning || !tagInput.trim()" @click="doTagDialog">
+            {{ tagMode === "add" ? "添加" : "移除" }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 批量整理：改地点 -->
+    <div v-if="locDialogOpen" class="dialog-mask" @click.self="locDialogOpen = false">
+      <div class="dialog">
+        <h2 class="dialog-title">批量改地点</h2>
+        <p v-if="locCurrent.length" class="batch-current-tip">
+          当前地点：<b>{{ locCurrent.join(" · ") }}</b>
+        </p>
+        <div class="form-field">
+          <label class="form-label">新地点标签（留空清除）</label>
+          <input
+            v-model="locInput"
+            class="input"
+            placeholder="如：成都"
+            @keydown.enter="doLocDialog"
+            @keydown.esc="locDialogOpen = false"
+          />
+        </div>
+        <p v-if="locWillOverwrite" class="batch-overwrite-warn">
+          ⚠️ 部分选中相册已为「{{ locInput.trim() }}」，本次保存会<strong>覆盖</strong>原有值。
+        </p>
+        <div class="dialog-actions">
+          <button class="btn" @click="locDialogOpen = false">取消</button>
+          <button class="btn btn-primary" :disabled="batchRunning" @click="doLocDialog">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 批量整理：合并相册目标选择 -->
+    <div v-if="mergeOpen" class="dialog-mask" @click.self="mergeOpen = false">
+      <div class="dialog">
+        <h2 class="dialog-title">合并到目标相册</h2>
+        <div class="merge-mode">
+          <button class="bmode" :class="{ active: mergeMode === 'move' }" @click="mergeMode = 'move'">物理移动</button>
+          <button class="bmode" :class="{ active: mergeMode === 'record' }" @click="mergeMode = 'record'">仅删记录</button>
+        </div>
+        <p class="batch-select-tip">
+          {{ mergeMode === "move"
+            ? "把照片文件移入目标相册文件夹（源相册记录随之删除）。"
+            : "仅删除源相册记录，照片文件留在磁盘原处（不再归属任何相册）。" }}
+        </p>
+        <div class="folder-list">
+          <button
+            v-for="t in mergeTargets"
+            :key="t.id"
+            class="folder-item"
+            :class="{ active: mergeTarget === t.id }"
+            @click="mergeTarget = t.id"
+          >
+            <span>📁 {{ t.name }}（{{ t.photo_count }} 张）</span>
+          </button>
+        </div>
+        <div class="dialog-actions">
+          <button class="btn" @click="mergeOpen = false">取消</button>
+          <button class="btn btn-primary" :disabled="batchRunning || mergeTarget === null" @click="requestMerge">下一步：确认合并</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 合并且二次确认（物理移动文件，不可恢复） -->
+    <ConfirmDialog
+      :visible="mergeConfirm.visible"
+      title="合并相册"
+      :message="mergeConfirm.message"
+      confirm-text="确认合并"
+      @confirm="doMerge"
+      @cancel="mergeConfirm.visible = false"
+    />
+
     <!-- 批量删除二次确认 -->
     <ConfirmDialog
       :visible="batchDeleteConfirm.visible"
@@ -1057,14 +1576,80 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ---- 选模式工具栏：按用途分组 ---- */
+.tb-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 10px;
+}
+.tb-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  opacity: 0.7;
+  margin-right: 2px;
+  user-select: none;
+}
+.tb-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--card-border);
+  flex-shrink: 0;
+}
+.tb-state {
+  background: var(--tint-bg);
+  border: 1px solid var(--tint-border);
+}
+.tb-state .btn {
+  background: transparent;
+  border: 1px solid var(--tint-border);
+  color: inherit;
+}
+.tb-state .btn:hover {
+  background: var(--hover-bg);
+}
+.tb-organize {
+  background: rgba(57, 108, 216, 0.06);
+  border: 1px solid rgba(57, 108, 216, 0.18);
+}
+.tb-label {
+  background: rgba(34, 159, 110, 0.06);
+  border: 1px solid rgba(34, 159, 110, 0.18);
+}
+.tb-danger {
+  background: rgba(229, 72, 77, 0.08);
+  border: 1px solid rgba(229, 72, 77, 0.22);
+}
+.tb-selected-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #2f5de0;
+  background: rgba(57, 108, 216, 0.15);
+  border: 1px solid rgba(57, 108, 216, 0.3);
+  border-radius: 999px;
+}
+.tb-selected-pill b {
+  font-size: 14px;
+  color: #2f5de0;
 }
 
 .select {
   padding: 8px 12px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--input-border);
   border-radius: 8px;
   font-size: 14px;
-  background: #fff;
+  background: var(--input-bg);
+  color: var(--text);
   outline: none;
   cursor: pointer;
 }
@@ -1082,13 +1667,13 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  background: #f7f9fc;
-  border: 1px solid #eef0f4;
+  background: var(--panel-bg);
+  border: 1px solid var(--card-border);
   border-radius: 8px;
   padding: 8px 16px;
   margin-bottom: 20px;
   font-size: 13px;
-  color: #555;
+  color: var(--sub-text);
   overflow-x: auto;
   white-space: nowrap;
 }
@@ -1100,7 +1685,7 @@ onBeforeUnmount(() => {
 }
 
 .bc-sep {
-  color: #bbb;
+  color: var(--muted);
 }
 
 .bc-item {
@@ -1134,19 +1719,25 @@ onBeforeUnmount(() => {
   position: absolute;
   left: 12px;
   font-size: 14px;
-  color: #999;
+  color: var(--muted);
   pointer-events: none;
 }
 
 .search-input {
   width: 100%;
   padding: 10px 36px 10px 36px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--input-border);
   border-radius: 8px;
   font-size: 14px;
   outline: none;
   box-sizing: border-box;
+  color: var(--text);
+  background: var(--input-bg);
   transition: border-color 0.2s;
+}
+
+.search-input::placeholder {
+  color: var(--muted);
 }
 
 .search-input:focus {
@@ -1158,20 +1749,20 @@ onBeforeUnmount(() => {
   right: 10px;
   border: none;
   background: none;
-  color: #999;
+  color: var(--muted);
   font-size: 18px;
   cursor: pointer;
   line-height: 1;
 }
 
 .search-clear:hover {
-  color: #333;
+  color: var(--text);
 }
 
 /* 搜索结果面板 */
 .search-results {
-  background: #fff;
-  border: 1px solid #eef0f4;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
   border-radius: 10px;
   padding: 12px;
   margin-bottom: 16px;
@@ -1180,7 +1771,7 @@ onBeforeUnmount(() => {
 }
 
 .search-status {
-  color: #999;
+  color: var(--muted);
   font-size: 14px;
   text-align: center;
   padding: 20px 0;
@@ -1189,13 +1780,13 @@ onBeforeUnmount(() => {
 /* 搜索结果分组（相册 / 照片内容） */
 .search-section + .search-section {
   margin-top: 6px;
-  border-top: 1px solid #eef0f4;
+  border-top: 1px solid var(--card-border);
   padding-top: 8px;
 }
 
 .search-section-title {
   font-size: 12px;
-  color: #999;
+  color: var(--muted);
   padding: 2px 10px 6px;
   letter-spacing: 0.5px;
 }
@@ -1211,7 +1802,7 @@ onBeforeUnmount(() => {
 }
 
 .search-result-item:hover {
-  background: #f0f5ff;
+  background: var(--hover-bg);
 }
 
 .result-cover {
@@ -1223,7 +1814,7 @@ onBeforeUnmount(() => {
 }
 
 .result-placeholder {
-  background: #f0f0f0;
+  background: var(--panel-bg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1240,7 +1831,7 @@ onBeforeUnmount(() => {
 
 .result-name {
   font-size: 14px;
-  color: #2c3e50;
+  color: var(--text);
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -1249,7 +1840,7 @@ onBeforeUnmount(() => {
 
 .result-path {
   font-size: 12px;
-  color: #888;
+  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1265,7 +1856,7 @@ onBeforeUnmount(() => {
 .result-jump {
   flex-shrink: 0;
   border: 1px solid #396cd8;
-  background: #eef3ff;
+  background: var(--tint-bg);
   color: #396cd8;
   font-size: 11px;
   padding: 2px 8px;
@@ -1280,7 +1871,7 @@ onBeforeUnmount(() => {
 }
 
 .result-arrow {
-  color: #999;
+  color: var(--muted);
   flex-shrink: 0;
 }
 
@@ -1311,10 +1902,10 @@ onBeforeUnmount(() => {
 }
 
 .year-group {
-  border: 1px solid #eef0f4;
+  border: 1px solid var(--card-border);
   border-radius: 12px;
   overflow: hidden;
-  background: #fff;
+  background: var(--card-bg);
 }
 
 /* 路线图跳转后的高亮动画 */
@@ -1325,11 +1916,11 @@ onBeforeUnmount(() => {
 @keyframes yearFlash {
   0% {
     box-shadow: 0 0 0 3px rgba(57, 108, 216, 0.4);
-    background: #f0f5ff;
+    background: var(--hover-bg);
   }
   100% {
     box-shadow: none;
-    background: #fff;
+    background: var(--card-bg);
   }
 }
 
@@ -1345,34 +1936,34 @@ onBeforeUnmount(() => {
 }
 
 .group-head:hover {
-  background: #f5f8ff;
+  background: var(--hover-bg);
 }
 
 .group-year {
-  background: #eef3ff;
-  border-bottom: 1px solid #e0e9fa;
+  background: var(--tint-bg);
+  border-bottom: 1px solid var(--tint-border);
 }
 
 .group-season {
-  background: #f7f9fc;
-  border-bottom: 1px solid #f0f0f0;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--card-border);
 }
 
 .group-month {
-  background: #fafbfd;
-  border-bottom: 1px solid #f5f5f5;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--card-border);
   padding: 8px 16px 8px 32px;
 }
 
 .group-title {
   font-weight: 600;
   font-size: 15px;
-  color: #2c3e50;
+  color: var(--text);
 }
 
 .group-count {
   font-size: 12px;
-  color: #999;
+  color: var(--muted);
   font-weight: normal;
 }
 
@@ -1385,7 +1976,7 @@ onBeforeUnmount(() => {
 }
 
 .fold-arrow {
-  color: #999;
+  color: var(--muted);
   font-size: 13px;
   width: 14px;
   text-align: center;
@@ -1412,7 +2003,7 @@ onBeforeUnmount(() => {
 .empty-state {
   text-align: center;
   padding: 80px 0;
-  color: #888;
+  color: var(--muted);
 }
 
 .empty-icon {
@@ -1425,8 +2016,8 @@ onBeforeUnmount(() => {
   position: fixed;
   z-index: 200;
   min-width: 140px;
-  background: #fff;
-  border: 1px solid #eee;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
   border-radius: 8px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
   padding: 6px;
@@ -1439,13 +2030,13 @@ onBeforeUnmount(() => {
   padding: 8px 12px;
   border-radius: 6px;
   font-size: 14px;
-  color: #2c3e50;
+  color: var(--text);
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .context-menu-item:hover {
-  background: #f0f4ff;
+  background: var(--hover-bg);
 }
 
 .context-menu-danger {
@@ -1453,7 +2044,7 @@ onBeforeUnmount(() => {
 }
 
 .context-menu-danger:hover {
-  background: #fdf0f0;
+  background: var(--danger-bg);
 }
 
 .ctx-icon {
@@ -1464,8 +2055,8 @@ onBeforeUnmount(() => {
 .btn {
   padding: 8px 16px;
   border-radius: 8px;
-  border: 1px solid #ddd;
-  background: #fff;
+  border: 1px solid var(--input-border);
+  background: var(--card-bg);
   cursor: pointer;
   font-size: 14px;
   transition: all 0.2s;
@@ -1511,7 +2102,7 @@ onBeforeUnmount(() => {
 .import-track {
   width: 100%;
   height: 8px;
-  background: #eee;
+  background: var(--panel-bg);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -1526,26 +2117,41 @@ onBeforeUnmount(() => {
 .import-status {
   margin: 6px 0 0;
   font-size: 13px;
-  color: #666;
+  color: var(--sub-text);
 }
 
 /* 批量选择提示栏 */
 .select-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  background: #eef3ff;
-  border: 1px solid #d0dcf8;
+  justify-content: center;
+  gap: 8px;
+  background: var(--tint-bg);
+  border: 1px solid var(--tint-border);
   border-radius: 8px;
   padding: 8px 16px;
   margin-bottom: 16px;
   font-size: 14px;
-  color: #2c3e50;
+  color: var(--text);
 }
 
 .select-hint {
   font-size: 12px;
-  color: #888;
+  color: var(--muted);
+}
+.select-hint kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 6px;
+  margin: 0 1px;
+  font-size: 11px;
+  font-family: inherit;
+  line-height: 1.4;
+  color: var(--text, #4a5568);
+  background: var(--panel-bg, rgba(127, 127, 127, 0.12));
+  border: 1px solid var(--input-border, rgba(127, 127, 127, 0.3));
+  border-radius: 4px;
+  vertical-align: 1px;
 }
 
 .link-btn {
@@ -1567,16 +2173,16 @@ onBeforeUnmount(() => {
 }
 
 .location-group {
-  border: 1px solid #eef0f4;
+  border: 1px solid var(--card-border);
   border-radius: 12px;
   overflow: hidden;
-  background: #fff;
+  background: var(--card-bg);
   margin-bottom: 12px;
 }
 
 .group-location {
-  background: #eef3ff;
-  border-bottom: 1px solid #e0e9fa;
+  background: var(--tint-bg);
+  border-bottom: 1px solid var(--tint-border);
 }
 
 .location-card-wrap {
@@ -1597,7 +2203,7 @@ onBeforeUnmount(() => {
 .dialog {
   width: 520px;
   max-width: 90vw;
-  background: #fff;
+  background: var(--card-bg);
   border-radius: 12px;
   padding: 24px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
@@ -1616,7 +2222,7 @@ onBeforeUnmount(() => {
   display: block;
   margin-bottom: 6px;
   font-size: 14px;
-  color: #333;
+  color: var(--text);
 }
 
 .path-row {
@@ -1627,10 +2233,12 @@ onBeforeUnmount(() => {
 .input {
   flex: 1;
   padding: 8px 12px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--input-border);
   border-radius: 8px;
   font-size: 14px;
   outline: none;
+  color: var(--text);
+  background: var(--input-bg);
 }
 
 .input:focus {
@@ -1641,11 +2249,13 @@ onBeforeUnmount(() => {
   width: 100%;
   min-height: 90px;
   padding: 8px 12px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--input-border);
   border-radius: 8px;
   font-size: 14px;
   outline: none;
   resize: vertical;
+  color: var(--text);
+  background: var(--input-bg);
   box-sizing: border-box;
 }
 
@@ -1653,7 +2263,7 @@ onBeforeUnmount(() => {
   display: block;
   text-align: right;
   font-size: 12px;
-  color: #999;
+  color: var(--muted);
   margin-top: 4px;
 }
 
@@ -1669,6 +2279,82 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+/* 批量整理弹窗：分组/合并目标列表 */
+.batch-select-tip {
+  font-size: 12px;
+  opacity: 0.72;
+  margin: 0 0 10px;
+}
+.batch-current-tip {
+  font-size: 12.5px;
+  color: #4a5568;
+  background: var(--tint-bg, #eef3ff);
+  border: 1px solid var(--tint-border, #dbe3ff);
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin: 0 0 8px;
+}
+.batch-overwrite-warn {
+  font-size: 12.5px;
+  color: #6a4f00;
+  background: #fff8e6;
+  border: 1px solid #ffe2a0;
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin: 6px 0 0;
+}
+.batch-overwrite-warn strong { color: #d95a00; }
+.folder-list {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 4px;
+  margin-bottom: 14px;
+}
+.folder-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 6px;
+  font-size: 14px;
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.folder-item:hover {
+  background: rgba(120, 120, 140, 0.1);
+}
+.folder-item.active {
+  background: rgba(57, 108, 216, 0.12);
+  font-weight: 600;
+}
+
+/* 合并模式切换 */
+.merge-mode {
+  display: inline-flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.bmode {
+  padding: 6px 14px;
+  border: 1px solid var(--input-border);
+  border-radius: 999px;
+  background: var(--card-bg);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.bmode.active {
+  background: rgba(57, 108, 216, 0.12);
+  border-color: rgba(57, 108, 216, 0.5);
+  font-weight: 600;
+}
+
 /* 回到顶部按钮 */
 .back-to-top {
   position: fixed;
@@ -1677,8 +2363,8 @@ onBeforeUnmount(() => {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  border: 1px solid #ddd;
-  background: #fff;
+  border: 1px solid var(--input-border);
+  background: var(--card-bg);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
   font-size: 20px;
   color: #396cd8;
@@ -1692,7 +2378,7 @@ onBeforeUnmount(() => {
 }
 
 .back-to-top:hover {
-  background: #eef3ff;
+  background: var(--tint-bg);
   transform: scale(1.08);
 }
 

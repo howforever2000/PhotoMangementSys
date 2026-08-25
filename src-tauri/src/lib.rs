@@ -687,8 +687,226 @@ fn delete_photo_files(
     Ok(outcome)
 }
 
-/// 更新相册信息（需求 §4.2 update_album）
-///
+/// 给一批照片打分（rating 0-5，0 清除）。按 (user_id, path) upsert，无需扫描记录即可打分。
+#[tauri::command]
+fn set_photo_rating(
+    paths: Vec<String>,
+    rating: i64,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<(), String> {
+    let _t = log_call!("set_photo_rating", &format!("paths={} rating={rating}", paths.len()));
+    let user_id = require_user(&session)?;
+    let rating = rating.clamp(0, 5);
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    db.set_photo_rating(user_id, &paths, rating)
+        .map_err(|e| e.to_string())?;
+    logger::log_call_end_with("set_photo_rating", _t, &format!("OK | n={}", paths.len()));
+    Ok(())
+}
+
+/// 查询一批照片的打分，返回 [(path, rating)]（未打分的不会出现）。
+#[tauri::command]
+fn get_photo_ratings(
+    paths: Vec<String>,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<Vec<(String, i64)>, String> {
+    let _t = log_call!("get_photo_ratings", &format!("paths={}", paths.len()));
+    let user_id = require_user(&session)?;
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let r = db.get_photo_ratings(user_id, &paths).map_err(|e| e.to_string())?;
+    logger::log_call_end_with("get_photo_ratings", _t, &format!("OK | n={}", r.len()));
+    Ok(r)
+}
+
+/// 照片移动结果 —— 对应前端 `PhotoMoveOutcome`
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PhotoMoveOutcome {
+    pub requested: usize,
+    pub moved: usize,
+    pub failed: usize,
+    pub failed_paths: Vec<String>,
+    pub target_id: i64,
+}
+
+/// 把一批照片移动到另一相册（物理移动文件进入目标相册文件夹，并同步内容/打分记录）。
+/// 目标目录重名自动加 _1/_2 序号；成功后清理源相册的缩略图缓存。
+#[tauri::command]
+fn move_photos_to_album(
+    album_id: i64,
+    paths: Vec<String>,
+    target_album_id: i64,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<PhotoMoveOutcome, String> {
+    let _t = log_call!("move_photos_to_album", &format!("album_id={album_id} target={target_album_id} paths={}", paths.len()));
+    let user_id = require_user(&session)?;
+    if album_id == target_album_id {
+        return Err("目标相册不能是当前相册".into());
+    }
+    let target_path = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        db.get_album(target_album_id, user_id).map_err(|e| e.to_string())?.path
+    };
+    std::fs::create_dir_all(&target_path).map_err(|e| format!("目标相册文件夹不可用: {e}"))?;
+    // 目标目录已存在的文件名（避免覆盖）
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Ok(rd) = std::fs::read_dir(&target_path) {
+        for e in rd.flatten() {
+            if let Some(name) = e.file_name().to_str() {
+                used.insert(name.to_string());
+            }
+        }
+    }
+    let requested = paths.len();
+    let mut moved = 0usize;
+    let mut failed_paths = Vec::new();
+    for src in &paths {
+        if !std::path::Path::new(src).is_file() {
+            failed_paths.push(src.clone());
+            continue;
+        }
+        let base = std::path::Path::new(src);
+        let fname = base.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or(fname);
+        let ext = base.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let mut name = fname.to_string();
+        let mut i = 1;
+        while used.contains(&name) {
+            name = if ext.is_empty() {
+                format!("{stem}_{i}")
+            } else {
+                format!("{stem}_{i}.{ext}")
+            };
+            i += 1;
+        }
+        used.insert(name.clone());
+        let dest = std::path::Path::new(&target_path).join(&name);
+        let ok = std::fs::rename(src, &dest).is_ok()
+            || (std::fs::copy(src, &dest).is_ok() && std::fs::remove_file(src).is_ok());
+        if !ok {
+            failed_paths.push(src.clone());
+            continue;
+        }
+        moved += 1;
+        let dest_str = dest.to_string_lossy().to_string();
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let _ = db.move_photo_content_path(user_id, src, &dest_str, target_album_id);
+        let _ = db.move_photo_rating_path(user_id, src, &dest_str);
+    }
+    // 清理源相册中已成功移走照片的缩略图缓存（失败不影响结果）
+    if let Ok(thumbs) = thumbs_dir(&app) {
+        let names: Vec<String> = paths
+            .iter()
+            .filter(|p| !failed_paths.contains(p))
+            .map(|p| thumbnail::grid_thumb_cache_name(album_id, std::path::Path::new(p)))
+            .collect();
+        thumbnail::remove_grid_thumb_files(&names, &thumbs);
+    }
+    let failed = failed_paths.len();
+    let out = PhotoMoveOutcome { requested, moved, failed, failed_paths, target_id: target_album_id };
+    logger::log_call_end_with("move_photos_to_album", _t, &format!("OK | moved={moved} failed={failed}"));
+    Ok(out)
+}
+
+/// 人物照片条目 —— 对应前端 `PersonPhotoItem`：
+///  - path: 原图绝对路径
+///  - thumb: 已算好的网格缩略图缓存路径（生成失败/未识别相册时为 None）
+///  - album_id: 照片归属相册（解析失败为 None）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PersonPhotoItem {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumb: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album_id: Option<i64>,
+}
+
+/// 读取某人物出现的全部照片：直接查询已算好的缩略图缓存地址，**不重新运算缩略图**。
+/// 未缓存的照片返回 thumb=None，前端回退原图显示。
+#[tauri::command]
+fn get_person_photos(
+    pid: String,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<Vec<PersonPhotoItem>, String> {
+    let _t = log_call!("get_person_photos", &format!("pid={pid}"));
+    let user_id = require_user(&session)?;
+    let paths = crate::persons::list_person_photos(&pid)?;
+    // 一次性取出本次用户相册 (id, path) 用于归属解析
+    let albums: Vec<(i64, String)> = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        db.get_albums(user_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|a| (a.id, a.path))
+            .collect()
+    };
+    let thumbs_dir = thumbs_dir(&app).ok();
+    let mut out = Vec::with_capacity(paths.len());
+    let mut generated = 0usize;
+    for path in paths {
+        // 解析归属相册 → 计算缩略图缓存名 → 若存在直接复用
+        let resolved: Option<i64> = albums
+            .iter()
+            .filter(|(_, ap)| {
+                p_is_under(ap, &path)
+            })
+            .max_by_key(|(_, ap)| ap.len())
+            .map(|(id, _)| *id);
+        let cached = resolved.and_then(|album_id| {
+            let thumbs = thumbs_dir.as_ref()?;
+            let name = thumbnail::grid_thumb_cache_name(album_id, std::path::Path::new(&path));
+            let tp = thumbs.join("grid").join(&name);
+            if tp.is_file() {
+                Some(tp.to_string_lossy().to_string())
+            } else {
+                // 缺图 → 调用 ensure_grid_thumb 补齐（256px JPEG 生成后落盘，返回缓存路径），
+                // 后续任何场景（PhotoGrid/Timeline/Memories/智能搜索）再访问都直接命中。
+                // 补齐失败（原图丢失等）静默兑底 None，前端可回退占位。
+                match thumbnail::ensure_grid_thumb(
+                    album_id,
+                    std::path::Path::new(&path),
+                    thumbs,
+                ) {
+                    Ok(p) => {
+                        generated += 1;
+                        Some(p)
+                    }
+                    Err(_) => None,
+                }
+            }
+        });
+        out.push(PersonPhotoItem {
+            path,
+            thumb: cached,
+            album_id: resolved,
+        });
+    }
+    let cached_count = out.iter().filter(|i| i.thumb.is_some()).count();
+    logger::log_call_end_with(
+        "get_person_photos",
+        _t,
+        &format!(
+            "OK | n={} thumb_hit={} generated={generated}",
+            out.len(),
+            cached_count.saturating_sub(generated),
+        ),
+    );
+    Ok(out)
+}
+
+/// 判断照片路径是否位于相册目录之下（目录是祖先，且照片不是目录本身）。
+fn p_is_under(dir: &str, photo: &str) -> bool {
+    std::path::Path::new(photo)
+        .strip_prefix(std::path::Path::new(dir))
+        .ok()
+        .map(|rel| !rel.as_os_str().is_empty())
+        .unwrap_or(false)
+}
 /// 多用户隔离：仅能更新归属当前用户的相册。
 #[tauri::command]
 fn update_album(
@@ -713,6 +931,63 @@ fn update_album(
     }
     let db = state.0.lock().map_err(|e| e.to_string())?;
     db.update_album(input, user_id).map_err(|e| e.to_string())
+}
+
+/// 批量预热缩略图结果 —— 对应前端 `PrewarmOutcome`
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PrewarmOutcome {
+    pub requested: usize,
+    pub hit: usize,
+    pub generated: usize,
+    pub failed: usize,
+}
+
+#[tauri::command]
+fn prewarm_thumbs(
+    album_id: i64,
+    paths: Vec<String>,
+    app: tauri::AppHandle,
+    session: tauri::State<SessionState>,
+) -> Result<PrewarmOutcome, String> {
+    let _t = log_call!("prewarm_thumbs", &format!("album_id={album_id} paths={}", paths.len()));
+    let _user = require_user(&session)?;
+    let thumbs_dir = thumbs_dir(&app).map_err(|e| e.to_string())?;
+    // 预统计已缓存数量（避免重复 IO）
+    let mut hit = 0usize;
+    let mut pending: Vec<&String> = Vec::with_capacity(paths.len());
+    for p in &paths {
+        let name = thumbnail::grid_thumb_cache_name(album_id, std::path::Path::new(p));
+        let tp = thumbs_dir.join("grid").join(&name);
+        if tp.is_file() {
+            hit += 1;
+        } else {
+            pending.push(p);
+        }
+    }
+    // 批量生成未命中的（ensure_grid_thumb 逐张内部仍逐张判断；性能足够）
+    let mut generated = 0usize;
+    let mut failed = 0usize;
+    for p in &pending {
+        match thumbnail::ensure_grid_thumb(album_id, std::path::Path::new(p), &thumbs_dir) {
+            Ok(_) => generated += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    let out = PrewarmOutcome {
+        requested: paths.len(),
+        hit,
+        generated,
+        failed,
+    };
+    logger::log_call_end_with(
+        "prewarm_thumbs",
+        _t,
+        &format!(
+            "OK | hit={} generated={generated} failed={failed}",
+            out.hit
+        ),
+    );
+    Ok(out)
 }
 
 /// 地点自动识别（FEAT-004 自动化）：扫描相册照片 GPS → 反向地理编码 → 落库
@@ -863,6 +1138,338 @@ fn update_album_tags(
     let user_id = require_user(&session)?;
     let db = state.0.lock().map_err(|e| e.to_string())?;
     db.update_album_tags(album_id, user_id, tags).map_err(|e| e.to_string())
+}
+
+/// 批量整理结果 —— 对应前端 `BatchAlbumOutcome`
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BatchAlbumOutcome {
+    pub requested: usize,
+    pub ok: usize,
+    pub failed: usize,
+    pub failed_ids: Vec<i64>,
+}
+
+fn _batch_album_outcome(requested: usize, failed_ids: Vec<i64>) -> BatchAlbumOutcome {
+    let failed = failed_ids.len();
+    BatchAlbumOutcome {
+        requested,
+        ok: requested.saturating_sub(failed),
+        failed,
+        failed_ids,
+    }
+}
+
+/// 批量移动相册到指定分组（`folder_id`=None → 顶级/不分组）
+///
+/// 复用 `move_album` 的归属逻辑，逐相册执行并汇总成功/失败。多用户隔离。
+#[tauri::command]
+fn batch_move_album_to_folder(
+    album_ids: Vec<i64>,
+    folder_id: Option<i64>,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, SessionState>,
+) -> Result<BatchAlbumOutcome, String> {
+    let _t = log_call!("batch_move_album_to_folder", &format!("ids={album_ids:?} folder={folder_id:?}"));
+    let _user_id = require_user(&session)?;
+
+    let mut failed_ids = Vec::new();
+    for id in &album_ids {
+        // 逐个执行（move_album 内部校验归属与目标分组）
+        if move_album(*id, folder_id, state.clone(), session.clone()).is_err() {
+            failed_ids.push(*id);
+        }
+    }
+
+    let out = _batch_album_outcome(album_ids.len(), failed_ids);
+    logger::log_call_end_with(
+        "batch_move_album_to_folder",
+        _t,
+        &format!("OK | ok={} failed={}", out.ok, out.failed),
+    );
+    Ok(out)
+}
+
+/// 批量设置相册地点（可清空：传空字符串）
+#[tauri::command]
+fn batch_set_album_location(
+    album_ids: Vec<i64>,
+    location: String,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<BatchAlbumOutcome, String> {
+    let _t = log_call!("batch_set_album_location", &format!("ids={album_ids:?} loc={location}"));
+    let user_id = require_user(&session)?;
+    let mut failed_ids = Vec::new();
+    {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        for id in &album_ids {
+            if db.update_album_location(*id, user_id, &location).is_err() {
+                failed_ids.push(*id);
+            }
+        }
+    }
+    let out = _batch_album_outcome(album_ids.len(), failed_ids);
+    logger::log_call_end_with(
+        "batch_set_album_location",
+        _t,
+        &format!("OK | ok={} failed={}", out.ok, out.failed),
+    );
+    Ok(out)
+}
+
+/// 批量加/删相册标签（mode：`add` 追加 / `remove` 移除；最多 5 个）
+#[tauri::command]
+fn batch_set_album_tag(
+    album_ids: Vec<i64>,
+    tags: Vec<String>,
+    mode: String,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<BatchAlbumOutcome, String> {
+    let _t = log_call!("batch_set_album_tag", &format!("ids={album_ids:?} mode={mode} tags={tags:?}"));
+    let user_id = require_user(&session)?;
+    if mode != "add" && mode != "remove" {
+        return Err("mode 仅支持 add / remove".into());
+    }
+    let clean: Vec<String> = tags
+        .into_iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if mode == "add" && clean.is_empty() {
+        return Err("请至少输入一个标签".into());
+    }
+
+    let mut failed_ids = Vec::new();
+    {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        for id in &album_ids {
+            let r = (|| -> Result<(), String> {
+                let existing = db.get_album_tag_list(*id, user_id).map_err(|e| e.to_string())?;
+                if mode == "add" {
+                    let mut merged = existing.clone();
+                    for t in &clean {
+                        if !merged.iter().any(|x| x == t) {
+                            merged.push(t.clone());
+                        }
+                    }
+                    if merged.len() > 5 {
+                        return Err("标签数不能超过 5 个".into());
+                    }
+                    db.update_album_tags(*id, user_id, merged).map_err(|e| e.to_string())
+                } else {
+                    let filtered: Vec<String> = existing
+                        .into_iter()
+                        .filter(|x| !clean.contains(x))
+                        .collect();
+                    db.update_album_tags(*id, user_id, filtered).map_err(|e| e.to_string())
+                }
+            })();
+            if r.is_err() {
+                failed_ids.push(*id);
+            }
+        }
+    }
+    let out = _batch_album_outcome(album_ids.len(), failed_ids);
+    logger::log_call_end_with(
+        "batch_set_album_tag",
+        _t,
+        &format!("OK | mode={mode} ok={} failed={}", out.ok, out.failed),
+    );
+    Ok(out)
+}
+
+/// 批量整理合并结果 —— 对应前端 `MergeAlbumOutcome`
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MergeAlbumOutcome {
+    /// 请求的源相册数（含最终被跳过的自合并/同目录）
+    pub requested: usize,
+    /// 成功合并（文件全部移动 + 记录已删）的源相册数
+    pub merged: usize,
+    pub files_moved: usize,
+    pub files_failed: usize,
+    /// 因存在移动失败而保留记录的源相册 ID
+    pub skipped: Vec<i64>,
+    /// 整体出错的源相册 ID
+    pub failed_ids: Vec<i64>,
+    pub target_id: i64,
+}
+
+/// 合并相册：把源相册文件夹中所有照片**物理移动**到目标相册文件夹，
+/// 再把源相册记录及关联数据（统计/内容/标签/分组/排除表）一并删除。
+///
+/// - 重名自动加序号（`_1`、`_2`…）避免覆盖；同卷用 rename，跨卷回退 copy+remove
+/// - 仅当源相册所有照片成功移动后才删除其记录；有失败则保留记录并列入 `skipped`
+/// - `mode="move"`（默认）：照片**物理移动**进目标相册文件夹；`mode="record"`：仅删除源相册记录、**不移动文件**（文件保留在磁盘原处）
+/// - 多用户隔离：仅能合并归属当前用户的相册
+#[tauri::command]
+fn merge_albums(
+    source_ids: Vec<i64>,
+    target_id: i64,
+    mode: Option<String>,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<MergeAlbumOutcome, String> {
+    let mode = mode.as_deref().unwrap_or("move");
+    let is_move = mode != "record";
+    let _t = log_call!("merge_albums", &format!("source={source_ids:?} target={target_id} mode={mode}"));
+    let user_id = require_user(&session)?;
+
+    let target_path = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        db.get_album(target_id, user_id).map_err(|e| e.to_string())?.path
+    };
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+
+    // 目标目录中已存在的文件名（避免覆盖）—— 仅物理移动模式需要
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if is_move {
+        std::fs::create_dir_all(&target_path).map_err(|e| format!("目标相册文件夹不可用: {e}"))?;
+        if let Ok(rd) = std::fs::read_dir(&target_path) {
+            for e in rd.flatten() {
+                if let Some(name) = e.file_name().to_str() {
+                    used.insert(name.to_string());
+                }
+            }
+        }
+    }
+
+    let mut merged = 0usize;
+    let mut files_moved = 0usize;
+    let mut files_failed = 0usize;
+    let mut skipped = Vec::new();
+    let mut failed_ids = Vec::new();
+    let mut removed_ids = Vec::new();
+    // 合并来源收集：成功删除源记录后插入 album_merged_sources，供卡片显示历史来源
+    // 收集顺序为处理顺序（去重：同一源不会被处理多次）。
+    let mut merged_sources_to_record: Vec<(i64, String, String)> = Vec::new();
+
+    for sid in &source_ids {
+        if *sid == target_id {
+            continue; // 不能合并到自身
+        }
+        // 先取源相册信息（无论 move/record 都要）；取不到则失败跳过
+        let src_album = match db.get_album(*sid, user_id) {
+            Ok(a) => a,
+            Err(_) => {
+                failed_ids.push(*sid);
+                continue;
+            }
+        };
+        // 同目录无需移动，但来源仍可记录（语义上 = 标记为合并来源）
+        // 这里只在删除前检查路径一致性
+        if is_move {
+            let src_path = src_album.path.clone();
+            if src_path != target_path {
+                let src_images = crate::thumbnail::list_album_images(std::path::Path::new(&src_path));
+                let mut moved_ok = true;
+                for src in &src_images {
+                    let base = std::path::Path::new(src);
+                    let fname = base.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                    let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or(fname);
+                    let ext = base.extension().and_then(|s| s.to_str()).unwrap_or("");
+                    // 重名去重
+                    let mut name = fname.to_string();
+                    let mut i = 1;
+                    while used.contains(&name) {
+                        name = if ext.is_empty() {
+                            format!("{stem}_{i}")
+                        } else {
+                            format!("{stem}_{i}.{ext}")
+                        };
+                        i += 1;
+                    }
+                    used.insert(name.clone());
+                    let dest = std::path::Path::new(&target_path).join(&name);
+                    // 同卷 rename，失败再尝试 copy+remove
+                    let ok = std::fs::rename(src, &dest).is_ok()
+                        || (std::fs::copy(src, &dest).is_ok() && std::fs::remove_file(src).is_ok());
+                    if ok {
+                        files_moved += 1;
+                    } else {
+                        files_failed += 1;
+                        moved_ok = false;
+                    }
+                }
+                // 尽力清理已空的原文件夹
+                let _ = std::fs::remove_dir(&src_path);
+                if !moved_ok {
+                    skipped.push(*sid);
+                    continue;
+            }
+            }
+        }
+        // 收集来源（删除前先记录）
+        merged_sources_to_record.push((src_album.id, src_album.name, src_album.path));
+
+        if db.delete_album(*sid, user_id).is_ok() {
+            merged += 1;
+            removed_ids.push(*sid);
+        } else {
+            failed_ids.push(*sid);
+        }
+    }
+
+    // 在事务内把成功合并的源相册信息写入 album_merged_sources（供卡片显示历史来源）。
+    // 只对 merged 的源记录；唯一约束 (album_id, source_id) 防重复。
+    if !merged_sources_to_record.is_empty() {
+        match db.conn().unchecked_transaction() {
+            Ok(tx) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let mut had_error = false;
+                for (sid, sname, spath) in &merged_sources_to_record {
+                    if tx.execute(
+                        "INSERT OR IGNORE INTO album_merged_sources
+                           (album_id, source_id, source_name, source_path, user_id, merged_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        rusqlite::params![target_id, sid, sname, spath, user_id, now],
+                    ).is_err() {
+                        had_error = true;
+                        break;
+                    }
+                }
+                if had_error {
+                    // 写来源失败不回滚合并：用户已经合并成功了，写来源只是元信息
+                    let _ = tx.rollback();
+                } else {
+                    let _ = tx.commit();
+                }
+            }
+            Err(_) => {
+                // 事务创建失败不阻塞合并主流程
+            }
+        }
+    }
+
+    // 清理已删除源相册的缩略图缓存（失败不影响结果）
+    if let Ok(thumbs) = thumbs_dir(&app) {
+        for id in &removed_ids {
+            thumbnail::cleanup_all_album_thumbs(*id, &thumbs);
+        }
+    }
+
+    drop(db);
+    let skipped_count = skipped.len();
+    let out = MergeAlbumOutcome {
+        requested: source_ids.len(),
+        merged,
+        files_moved,
+        files_failed,
+        skipped,
+        failed_ids,
+        target_id,
+    };
+
+    logger::log_call_end_with(
+        "merge_albums",
+        _t,
+        &format!("OK | merged={merged} files_moved={files_moved} files_failed={files_failed} skipped={skipped_count}"),
+    );
+    Ok(out)
 }
 
 /// 删除相册（需求 §4.2 delete_album，仅删记录不删本地文件）
@@ -1073,6 +1680,18 @@ fn list_persons() -> Result<Vec<persons::PersonEntry>, String> {
     r
 }
 
+/// 人物注册表：列出某人物出现的全部照片路径（直读 persons.db；供前端展示缩略图）
+#[tauri::command]
+fn list_person_photos(pid: String) -> Result<Vec<String>, String> {
+    let _t = log_call!("list_person_photos", &format!("pid={pid}"));
+    let r = persons::list_person_photos(&pid);
+    match &r {
+        Ok(list) => logger::log_call_end_with("list_person_photos", _t, &format!("OK | n={}", list.len())),
+        Err(e) => logger::log_call_end_with("list_person_photos", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
 /// 人物头像缓存目录（app_data_dir/avatars）
 fn avatars_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let data_dir = app
@@ -1160,8 +1779,8 @@ fn delete_person(
 
 /// GPU 加速可行性（R3）：确保服务就绪后查询 /gpu，返回是否可用 GPU
 #[tauri::command]
-async fn get_vcr_gpu_status() -> Result<vision::VcrGpuStatus, String> {
-    vision::vcr_gpu_status().await
+async fn get_vcr_gpu_status(app: tauri::AppHandle) -> Result<vision::VcrGpuStatus, String> {
+    vision::vcr_gpu_status(&app).await
 }
 
 /// 在系统文件管理器中打开文件夹内部
@@ -1803,6 +2422,7 @@ pub fn run() {
             get_albums,
             get_album,
             update_album,
+            prewarm_thumbs,
             list_album_photos,
             get_photo_thumbs,
             auto_detect_album_location,
@@ -1817,6 +2437,10 @@ pub fn run() {
             update_folder,
             delete_folder,
             get_manual_tree,
+            batch_move_album_to_folder,
+            batch_set_album_location,
+            batch_set_album_tag,
+            merge_albums,
             move_album,
             reorder_album,
             reorder_folder,
@@ -1831,8 +2455,13 @@ pub fn run() {
             get_photo_info,
             delete_photo_records,
             delete_photo_files,
+            set_photo_rating,
+            get_photo_ratings,
+            move_photos_to_album,
             classify_album,
             list_persons,
+            list_person_photos,
+            get_person_photos,
             get_person_avatar,
             rename_person,
             merge_persons,
@@ -1841,6 +2470,7 @@ pub fn run() {
             content::commands::scan_album_combined,
             content::commands::read_album_content,
             content::commands::search_photo_content,
+            content::commands::ensure_photo_scanned,
             content::commands::search_photo_content_with_filters,
             content::commands::list_timeline,
             content::commands::smart_search,
