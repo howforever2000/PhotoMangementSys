@@ -8,11 +8,15 @@
  */
 import { computed, onMounted, ref, type Directive } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { PersonInfo } from "../types/photo";
+import type { PersonInfo, PersonPhotoItem } from "../types/photo";
 import ConfirmDialog from "./ConfirmDialog.vue";
+import PhotoLightbox from "./PhotoLightbox.vue";
+import { useAlbumStore } from "../stores/album";
 import { useThemeStore } from "../stores/theme";
 
 const theme = useThemeStore();
+/** 用于调用 prewarmThumbs 等相册级缩略图命令 */
+const albumStore = useAlbumStore();
 /** 卡片/弹窗底色：跟随主题浅深模式，保证文字始终可读 */
 const surfaceStyle = computed(() => theme.cardStyle);
 const persons = ref<PersonInfo[]>([]);
@@ -118,6 +122,70 @@ function flash(msg: string) {
 
 onMounted(load);
 
+/* ---- 查看该人物的照片（复用预计算缩略图 + 大图看图器）---- */
+const viewingPerson = ref<PersonInfo | null>(null);
+const viewingPhotos = ref<PersonPhotoItem[]>([]);
+const viewingLoading = ref(false);
+const viewingError = ref("");
+const lightboxOpen = ref(false);
+const lightboxIndex = ref(0);
+
+/** 缩略图优先用已算好的缓存；未缓存时展示占位（不退回原图，避免 4K 大图拉慢） */
+function photoThumbSrc(p: PersonPhotoItem): string {
+  return p.thumb ? convertFileSrc(p.thumb) : "";
+}
+
+/** 供看图器使用的人物照片列表（原图路径 + 所属相册 ID，便于大图查看器触发自动扫描） */
+const lightboxPhotos = computed(() =>
+  viewingPhotos.value.map((it) => ({ path: it.path, albumId: it.album_id })),
+);
+
+async function openPhotos(p: PersonInfo) {
+  viewingPerson.value = p;
+  viewingPhotos.value = [];
+  viewingError.value = "";
+  viewingLoading.value = true;
+  try {
+    // 第一次拉取：后端已自动补齐缩略图（缺图则 ensure_grid_thumb 生成后落盘）
+    let items = await invoke<PersonPhotoItem[]>("get_person_photos", { pid: p.id });
+    // 兜底：若仍有 thumb=null，按相册分组显式预热一次（覆盖"原图丢失导致补齐失败"的边角场景）
+    const missing = items.filter((it) => !it.thumb && it.album_id != null);
+    if (missing.length) {
+      const byAlbum = new Map<number, string[]>();
+      for (const it of missing) {
+        const aid = it.album_id!;
+        if (!byAlbum.has(aid)) byAlbum.set(aid, []);
+        byAlbum.get(aid)!.push(it.path);
+      }
+      // 预热各相册（失败也不阻塞）
+      await Promise.all(
+        [...byAlbum.entries()].map(([aid, paths]) =>
+          albumStore.prewarmThumbs(aid, paths).catch(() => null),
+        ),
+      );
+      // 再拉一次：此时缓存应已就绪，thumb 字段会带路径
+      items = await invoke<PersonPhotoItem[]>("get_person_photos", { pid: p.id });
+    }
+    viewingPhotos.value = items;
+    if (!items.length) viewingError.value = "该人物暂无登记照片。";
+  } catch (e) {
+    viewingError.value = String(e);
+  } finally {
+    viewingLoading.value = false;
+  }
+}
+
+function closePhotos() {
+  viewingPerson.value = null;
+  viewingPhotos.value = [];
+  lightboxOpen.value = false;
+}
+
+function openPhoto(i: number) {
+  lightboxIndex.value = i;
+  lightboxOpen.value = true;
+}
+
 /** 本地指令：进入重命名时自动聚焦 */
 const vFocus: Directive<HTMLElement> = {
   mounted: (el) => el.focus(),
@@ -150,7 +218,7 @@ const vFocus: Directive<HTMLElement> = {
     <!-- 人物卡片网格 -->
     <div v-else class="person-grid">
       <article v-for="p in persons" :key="p.id" class="person-card" :style="surfaceStyle" :title="`${displayName(p)}（${p.id}）`">
-        <div class="person-avatar-wrap">
+        <div class="person-avatar-wrap" @click.stop="openPhotos(p)" title="点击查看该人物的照片">
           <img v-if="avatarMap[p.id]" :src="avatarMap[p.id]" class="person-avatar" alt="" />
           <span v-else class="person-avatar person-avatar-fallback">{{ displayName(p).slice(0, 1) }}</span>
           <span class="person-face-count">{{ p.face_count }} 张脸</span>
@@ -226,9 +294,44 @@ const vFocus: Directive<HTMLElement> = {
       @confirm="doMerge"
       @cancel="pendingTarget = null"
     />
+
+    <!-- 查看该人物的照片（缩略图网格） -->
+    <Teleport to="body">
+      <div v-if="viewingPerson" class="viewer-mask" @click.self="closePhotos">
+        <div class="viewer-dialog" :style="surfaceStyle">
+          <div class="viewer-head">
+            <span class="viewer-title">{{ displayName(viewingPerson) }} 的照片</span>
+            <span class="viewer-count">{{ viewingPhotos.length }} 张</span>
+            <button class="btn viewer-close" @click="closePhotos">✕</button>
+          </div>
+          <div v-if="viewingLoading" class="viewer-state">正在读取缩略图…</div>
+          <div v-else-if="viewingError" class="viewer-state viewer-error">{{ viewingError }}</div>
+          <div v-else class="viewer-grid">
+            <div v-for="(it, i) in viewingPhotos" :key="it.path" class="viewer-cell">
+              <img
+                v-if="it.thumb"
+                :src="photoThumbSrc(it)"
+                class="viewer-photo"
+                :title="it.path"
+                loading="lazy"
+                alt=""
+                @click="openPhoto(i)"
+              />
+              <div v-else class="viewer-photo viewer-photo-missing" :title="`缩略图生成中或原图不可用：${it.path}`">🖼</div>
+            </div>
+          </div>
+          <!-- 原图看图器 -->
+          <PhotoLightbox
+            v-if="lightboxOpen"
+            :photos="lightboxPhotos"
+            :index="lightboxIndex"
+            @close="lightboxOpen = false"
+          />
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
-
 <style scoped>
 .pg-wrap { min-width: 0; }
 
@@ -411,4 +514,66 @@ const vFocus: Directive<HTMLElement> = {
 .merge-id { font-size: 11px; color: #396cd8; }
 .merge-count { margin-left: auto; font-size: 12px; opacity: 0.7; }
 .merge-actions { margin-top: 14px; display: flex; justify-content: flex-end; }
+
+/* 人物头像：可点击进入照片查看 */
+.person-avatar-wrap { cursor: pointer; }
+
+/* 查看某人物照片弹窗 */
+.viewer-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.viewer-dialog {
+  background: transparent; /* 底色由 surfaceStyle(主题) 提供 */
+  border-radius: 16px;
+  padding: 20px 22px;
+  width: min(720px, 94vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+}
+.viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.viewer-title { font-size: 17px; font-weight: 700; }
+.viewer-count { font-size: 13px; opacity: 0.7; }
+.viewer-close { margin-left: auto; padding: 4px 12px; font-size: 14px; }
+.viewer-state { text-align: center; padding: 40px 20px; opacity: 0.8; }
+.viewer-error { color: #e5484d; }
+.viewer-grid {
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+.viewer-cell { position: relative; }
+.viewer-photo {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 8px;
+  cursor: zoom-in;
+  transition: transform 0.15s;
+  display: block;
+}
+.viewer-photo:hover { transform: scale(1.04); }
+.viewer-photo-missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  opacity: 0.45;
+  background: rgba(127, 127, 127, 0.1);
+  cursor: default;
+}
+.viewer-photo-missing:hover { transform: none; }
+
 </style>

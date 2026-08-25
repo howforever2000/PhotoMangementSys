@@ -65,6 +65,24 @@ pub fn list_persons() -> Result<Vec<PersonEntry>, String> {
         .map_err(|e| format!("读取人物行失败: {e}"))
 }
 
+/// 列出某人物出现的全部照片（按拍摄/录入时间升序去重）。
+/// 返回 persons.db 中该人物 faces 行对应的 photo_path；图片可能缺失，交由前端占比占位。
+pub fn list_person_photos(pid: &str) -> Result<Vec<String>, String> {
+    let Some(conn) = open_db()? else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT photo_path FROM faces WHERE person_id = ?1 ORDER BY created_at ASC, id ASC")
+        .map_err(|e| format!("查询人物照片失败: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![pid], |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(|e| format!("读取人物照片失败: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("读取人物照片行失败: {e}"))
+}
+
 /// 重命名人物（自定义命名；空名回退为编号本身）
 pub fn rename_person(pid: &str, name: &str) -> Result<(), String> {
     let trimmed = name.trim();
