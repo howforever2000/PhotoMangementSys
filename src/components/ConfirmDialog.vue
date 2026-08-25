@@ -3,11 +3,13 @@
  * 通用二次确认对话框 —— 替换原生 confirm()
  *
  * 用于删除等危险操作：显示标题 + 明确后果提示 + 红色危险按钮，
- * 避免误点；点击遮罩或取消按钮关闭。
+ * 避免误点；点击遮罩、Esc 键或取消按钮关闭。
+ * A11y：显示后自动聚焦到取消按钮（避免误触危险按钮）。
  */
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useThemeStore } from "../stores/theme";
 
-defineProps<{
+const props = defineProps<{
   visible: boolean;
   /** 标题（如「删除相册」） */
   title: string;
@@ -27,6 +29,33 @@ const emit = defineEmits<{
 }>();
 
 const theme = useThemeStore();
+const cancelBtnEl = ref<HTMLButtonElement | null>(null);
+
+/** ESC 键关闭（document 级监听，div 不获焦无法捕获） */
+function onKey(e: KeyboardEvent) {
+  if (e.key === "Escape" && props.visible) {
+    // 同时阻止默认与传播：全局 ESC 逻辑（router.back）不会随后触发
+    e.preventDefault();
+    e.stopPropagation();
+    emit("cancel");
+  }
+}
+
+onMounted(() => {
+  document.addEventListener("keydown", onKey);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("keydown", onKey);
+});
+
+/** 打开后下一帧聚焦取消按钮（避免误触确认/危险键） */
+watch(
+  () => props.visible,
+  (v) => {
+    if (!v) return;
+    requestAnimationFrame(() => cancelBtnEl.value?.focus());
+  },
+);
 </script>
 
 <template>
@@ -36,7 +65,6 @@ const theme = useThemeStore();
         v-if="visible"
         class="confirm-mask"
         @click.self="emit('cancel')"
-        @keydown.esc="emit('cancel')"
       >
         <div
           class="confirm-dialog"
@@ -51,6 +79,7 @@ const theme = useThemeStore();
           <div class="confirm-msg" :style="{ color: theme.subTextColor }">{{ message }}</div>
           <div class="confirm-actions">
             <button
+              ref="cancelBtnEl"
               class="btn btn-cancel"
               :style="{
                 background: theme.isDark ? 'rgba(255,255,255,.06)' : '#fff',

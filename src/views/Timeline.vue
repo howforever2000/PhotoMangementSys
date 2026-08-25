@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 import type { ContentSearchHit } from "../types/content";
@@ -12,8 +12,13 @@ import type { ContentSearchHit } from "../types/content";
  * 数据源：`photo_content_scan`（组合扫描入库），含 path / album_id / shoot_time / location。
  * 缩略图：按 album_id 分组调用 `get_photo_thumbs`（复用指纹缓存），懒加载填充。
  * 分组：年 → 月，未记录拍摄时间的归入「未记录」。
+ *
+ * FEAT-E：回忆页面跳转定位
+ *   从 Memories.vue 跳转时携带 query { year, month }，
+ *   加载完成后自动滚动到对应年 / 月分组并高亮提示。
  */
 const router = useRouter();
+const route = useRoute();
 const theme = useThemeStore();
 const notify = useNotify();
 
@@ -23,6 +28,8 @@ const error = ref("");
 /** path → 缩略图缓存路径 */
 const thumbMap = ref<Record<string, string>>({});
 const yearFilter = ref<string>("all");
+/** FEAT-E：高亮标记的目标节点 id（仅在 query 指定 year/month 时设置） */
+const highlightKey = ref<string | null>(null);
 
 const years = computed(() => {
   const set = new Set<string>();
@@ -128,6 +135,8 @@ onMounted(async () => {
   try {
     rows.value = await invoke<ContentSearchHit[]>("list_timeline");
     await loadThumbs();
+    // FEAT-E：根据 query 跳转到目标年 / 月（Memories 跳过来时使用）
+    applyJumpQuery();
   } catch (e) {
     error.value = String(e);
     notify.error("加载时间线失败", String(e));
@@ -135,6 +144,36 @@ onMounted(async () => {
     loading.value = false;
   }
 });
+
+/**
+ * FEAT-E：读取路由 query 中的 year / month，自动滚动并高亮。
+ * - 仅有 year：选中该年的过滤器并滚动到该年分组。
+ * - 既有 year 又有 month：定位到该月的具体分组块并高亮。
+ */
+function applyJumpQuery() {
+  const y = String(route.query.year ?? "").trim();
+  const m = String(route.query.month ?? "").trim();
+  if (!y) return;
+  // 1. 选中该年（保持其他年折叠效果由过滤器收敛到仅当前年）
+  yearFilter.value = y;
+  if (m) {
+    // 高亮定位到月份
+    highlightKey.value = `y-${y}-m-${m}`;
+  } else {
+    highlightKey.value = `y-${y}`;
+  }
+  // 等待 computed groups 渲染完
+  nextTick(() => {
+    const el = document.getElementById(highlightKey.value!);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      // 高亮动画 1.8s 后清除
+      window.setTimeout(() => {
+        highlightKey.value = null;
+      }, 1800);
+    }
+  });
+}
 </script>
 
 <template>
@@ -183,12 +222,24 @@ onMounted(async () => {
 
     <!-- 时间线分组 -->
     <div v-else class="tl-content">
-      <section v-for="g in groups" :key="g.year" class="tl-year">
+      <section
+        v-for="g in groups"
+        :key="g.year"
+        :id="`y-${g.year}`"
+        class="tl-year"
+        :class="{ 'tl-highlight': highlightKey === `y-${g.year}` }"
+      >
         <h2 class="tl-year-title">
           {{ g.year === "未记录" ? "🕐 未记录拍摄时间" : `🗓️ ${g.year} 年` }}
           <span class="tl-year-count">{{ g.months.reduce((n, mg) => n + mg.items.length, 0) }} 张</span>
         </h2>
-        <div v-for="mg in g.months" :key="mg.month" class="tl-month">
+        <div
+          v-for="mg in g.months"
+          :key="mg.month"
+          :id="mg.month ? `y-${g.year}-m-${mg.month}` : `y-${g.year}-m-none`"
+          class="tl-month"
+          :class="{ 'tl-highlight': highlightKey === `y-${g.year}-m-${mg.month}` }"
+        >
           <h3 class="tl-month-title">{{ mg.label }} <span>{{ mg.items.length }}</span></h3>
           <div class="tl-grid">
             <figure
@@ -253,6 +304,14 @@ onMounted(async () => {
   border-radius: 12px;
   padding: 16px 16px 4px;
   margin-bottom: 18px;
+  transition: background 0.4s, box-shadow 0.4s;
+}
+/* FEAT-E：跳定位高亮（query 定位 + 滚动后亮色边框 1.8s 淡出） */
+.tl-year.tl-highlight,
+.tl-month.tl-highlight {
+  background: rgba(57, 108, 216, 0.12);
+  box-shadow: 0 0 0 3px rgba(57, 108, 216, 0.35) inset;
+  border-radius: 10px;
 }
 .tl-year-title {
   font-size: 17px;

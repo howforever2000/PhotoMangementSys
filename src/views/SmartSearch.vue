@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, reactive } from "vue";
+import { ref, reactive } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
@@ -204,7 +204,6 @@ function openAlbum(r: SmartHit) {
   if (r.album_id != null) router.push(`/album/${r.album_id}`);
 }
 
-const hasResults = computed(() => searched.value && !error.value);
 const toneLabel = (t: string | null) =>
   t === "high-key" ? "高调" : t === "mid-key" ? "中间调" : t === "low-key" ? "低调" : "";
 
@@ -214,9 +213,7 @@ function showTag(r: SmartHit): string {
   return "照片";
 }
 
-onMounted(() => {
-  runSearch();
-});
+// 进入页面不再自动拉空结果：让用户主动输入词后再搜索，避免首屏全空造成的「好像坏掉」错觉
 </script>
 
 <template>
@@ -287,15 +284,22 @@ onMounted(() => {
       <p class="ss-empty-text">搜索失败：{{ error }}</p>
     </div>
 
+    <!-- 未开始搜索：引导输入 -->
+    <div v-else-if="!searched" class="ss-empty">
+      <div class="ss-empty-icon">🔍</div>
+      <p class="ss-empty-title">输入关键词开始检索</p>
+      <p class="ss-empty-text">试试「<b>2023年的猫</b>」/「<b>成都 人像</b>」/「<b>去年春天</b>」/「<b>暗调</b>」；也可以使用下方的结构化筛选。</p>
+    </div>
+
     <!-- 空结果 -->
-    <div v-else-if="searched && results.length === 0" class="ss-empty">
+    <div v-else-if="results.length === 0" class="ss-empty">
       <div class="ss-empty-icon">🔍</div>
       <p class="ss-empty-title">没有找到匹配的照片</p>
       <p class="ss-empty-text">试试放宽条件，或先在相册中执行「组合扫描」让照片具备 AI 内容与拍摄时间。</p>
     </div>
 
     <!-- 结果 -->
-    <div v-else-if="hasResults" class="ss-results">
+    <div v-else class="ss-results">
       <p class="ss-count">找到 {{ results.length }} 张照片</p>
       <div class="ss-grid">
         <figure

@@ -34,8 +34,21 @@ const load = trace("load", async () => {
   }
 });
 
+/** FEAT-E：返回上一级
+ *  - 优先 router.back()（从 Memores/Timeline 跳转过来时回到上一页）
+ *  - 若无历史（直接进入），回退到相册列表
+ *  - 主页按钮始终可用（提供"随时回到主页"的兜底）
+ */
 function goBack() {
-  router.push("/albums");
+  if (window.history.length > 1) {
+    router.back();
+  } else {
+    router.push("/albums");
+  }
+}
+
+function goHome() {
+  router.push("/home");
 }
 
 const deleteAlbum = trace("deleteAlbum", async () => {
@@ -72,7 +85,10 @@ onMounted(load);
   <div class="detail-page">
     <!-- 顶部导航栏 -->
     <nav class="detail-nav">
-      <button class="btn" @click="goBack">← 返回相册列表</button>
+      <div class="nav-left">
+        <button class="btn" @click="goBack" title="返回上一级">← 返回</button>
+        <button class="btn btn-home" @click="goHome" title="回到主页">🏠 主页</button>
+      </div>
       <div class="nav-actions">
         <button class="btn btn-danger" :disabled="deleting" @click="deleteAlbum">
           {{ deleting ? "删除中…" : "删除相册" }}
@@ -142,6 +158,21 @@ onMounted(load);
   align-items: center;
   justify-content: space-between;
   margin-bottom: 24px;
+}
+.nav-left {
+  display: flex;
+  gap: 8px;
+}
+.btn-home {
+  /* 主页按钮与返回按钮区分：紫色调 */
+  background: linear-gradient(135deg, #6a8df0 0%, #a764ec 100%);
+  color: #fff;
+  border-color: transparent;
+}
+.btn-home:hover {
+  background: linear-gradient(135deg, #5a7de0 0%, #9754dc 100%);
+  color: #fff;
+  border-color: transparent;
 }
 
 .nav-actions {

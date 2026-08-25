@@ -62,6 +62,32 @@ export const useToastStore = defineStore("toast", () => {
     timers.set(id, t);
   }
 
+  /**
+   * 暂停某个 toast 的自动消失（鼠标 hover 时调用）。
+   * 仅取消计时器，不改变原 duration。
+   */
+  function pauseDismiss(id: number) {
+    const t = timers.get(id);
+    if (t) {
+      clearTimeout(t);
+      timers.delete(id);
+    }
+  }
+
+  /**
+   * 恢复某个 toast 的自动消失（鼠标离开时调用）。
+   * 使用统一较短剩余时间（保证暂停后不会停留太久）。
+   */
+  function resumeDismiss(id: number) {
+    const toast = toasts.value.find((t2) => t2.id === id);
+    if (!toast || !toast.duration || toast.duration <= 0) return;
+    // 重置为与原长成比例的“剩余时间” 走一个简化的统一策略：使用 1.6s 剩余时间
+    // 避免 hover 来回切后 toasts 持续很久。
+    const remaining = 1600;
+    const t = setTimeout(() => remove(id), remaining);
+    timers.set(id, t);
+  }
+
   function clear() {
     for (const t of timers.values()) clearTimeout(t);
     timers.clear();
@@ -92,7 +118,7 @@ export const useToastStore = defineStore("toast", () => {
     const id = add("error", title, {
       message,
       duration: 0,
-      actions: [{ label: "知道了", onClick: () => {}, style: "primary" }],
+      actions: [{ label: "知道了", onClick: () => remove(id), style: "primary" }],
     });
     return id;
   }
@@ -108,7 +134,7 @@ export const useToastStore = defineStore("toast", () => {
     return id;
   }
 
-  return { toasts, add, remove, clear, success, warning, error, info, persistentError, action };
+  return { toasts, add, remove, clear, success, warning, error, info, persistentError, action, pauseDismiss, resumeDismiss };
 });
 
 /** 按类型返回默认显示时长（ms），0 表示不自动消失 */

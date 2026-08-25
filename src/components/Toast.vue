@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import type { Toast } from "../stores/toast";
 import { useToastStore } from "../stores/toast";
 import { useThemeStore } from "../stores/theme";
@@ -47,10 +47,30 @@ const subStyle = computed(() => ({
 function close() {
   toastStore.remove(props.toast.id);
 }
+
+/** hover 时暂停计时与进度动画，离开后恢复（不要让用户错过关键信息） */
+const progressPaused = ref(false);
+function onEnter() {
+  if (!props.toast.duration || props.toast.duration <= 0) return;
+  progressPaused.value = true;
+  toastStore.pauseDismiss(props.toast.id);
+}
+function onLeave() {
+  if (!props.toast.duration || props.toast.duration <= 0) return;
+  progressPaused.value = false;
+  toastStore.resumeDismiss(props.toast.id);
+}
 </script>
 
 <template>
-  <div class="toast" :style="panelStyle" role="status" :aria-live="toast.type === 'error' ? 'assertive' : 'polite'">
+  <div
+    class="toast"
+    :style="panelStyle"
+    role="status"
+    :aria-live="toast.type === 'error' ? 'assertive' : 'polite'"
+    @mouseenter="onEnter"
+    @mouseleave="onLeave"
+  >
     <span class="toast-icon" :style="{ color: typeColor }">{{ icons[toast.type] || "ℹ" }}</span>
     <div class="toast-body">
       <div class="toast-title">{{ toast.title }}</div>
@@ -68,7 +88,12 @@ function close() {
       </div>
     </div>
     <button class="toast-close" title="关闭" @click="close">×</button>
-    <div v-if="toast.duration && toast.duration > 0" class="toast-progress" :style="{ animationDuration: toast.duration + 'ms' }"></div>
+    <div
+      v-if="toast.duration && toast.duration > 0"
+      class="toast-progress"
+      :class="{ paused: progressPaused }"
+      :style="{ animationDuration: toast.duration + 'ms' }"
+    ></div>
   </div>
 </template>
 
@@ -162,6 +187,9 @@ function close() {
   animation-name: toast-shrink;
   animation-timing-function: linear;
   animation-fill-mode: forwards;
+}
+.toast-progress.paused {
+  animation-play-state: paused;
 }
 @keyframes toast-shrink {
   from {

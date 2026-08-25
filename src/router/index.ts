@@ -74,6 +74,12 @@ const router = createRouter({
       component: () => import("../views/Timeline.vue"),
     },
     {
+      // 回忆页 —— 百度网盘智能相册风格（故事海报 + 月度/年度回顾）
+      path: "/memories",
+      name: "memories",
+      component: () => import("../views/Memories.vue"),
+    },
+    {
       // 智能搜索（FEAT-034）
       path: "/search",
       name: "smart-search",
