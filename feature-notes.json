@@ -804,7 +804,54 @@
       ],
       "created_at": "2026-08-23T23:19:02+08:00",
       "updated_at": "2026-08-23T23:19:02+08:00"
+    },
+    {
+      "id": "FEAT-033",
+      "name": "相册合并来源记录 + 智能选封面按钮 + 大图自动扫描 + 回忆跳转定位 + 主页清理",
+      "status": "done",
+      "description": "本次 UX 优化合集：①相册合并支持单选 + 记录来源路径列表供目标卡片显示且可点击跳转；②手动排序小相册卡新增智能选封面小按钮（悬停弹出）；③PhotoGrid 选择/刷新按钮加重边框突出；④大图查看器点击原图时静默后台扫描并复用已有信息；⑤Memories 跳转 Timeline 携带 year/month query 自动定位与高亮 + AlbumDetail 返回改 router.back() 并加主页按钮；⑥主页移除「回忆」小卡片（属智慧相册子项）。",
+      "related_files": [
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/AlbumCard.vue",
+        "src/components/AlbumMiniCard.vue",
+        "src/components/PhotoGrid.vue",
+        "src/components/PhotoLightbox.vue",
+        "src/views/AlbumList.vue",
+        "src/views/AlbumDetail.vue",
+        "src/views/Memories.vue",
+        "src/views/Timeline.vue",
+        "src/views/Home.vue",
+        "src/views/ManualSort.vue",
+        "src/stores/album.ts",
+        "src/stores/content.ts"
+      ],
+      "keywords": [
+        "merged_sources",
+        "智能选封面",
+        "ensure_photo_scanned",
+        "回忆跳转",
+        "router.back",
+        "主页清理"
+      ],
+      "implementation": {
+        "backend": "新增 album_merged_sources 表(album_id, source_id, source_name, source_path, user_id, merged_at, UNIQUE(album_id, source_id)) + load_merged_sources 一次批量填充 + delete_album_refs 级联清理；merge_albums 在删除源记录后事务内插入来源；vision::classify_single 单张识别接口；content::commands::ensure_photo_scanned(album_id, path) 命中复用 / 缺失则单张扫并落库；Album 实体新增 merged_sources: Vec<MergedSource>。",
+        "frontend": "AlbumCard 渲染 merged_sources 列表 + open-source-path 事件；AlbumList 放开单选合并 + 1 个时默认 record 模式 + requestMerge 文案适配 + openSourcePath 处理器；AlbumMiniCard 顶部 ✨ 按钮 + pickSmartCover + smart-cover-applied 事件；PhotoGrid pg-action 加粗边框/虚线/选择实心区分；PhotoLightbox 接 albumId + watch photo → tryEnsureScanned；Memories gotoMonth/gotoYear 携 query；Timeline applyJumpQuery 读 query 跳定位+高亮1.8s；AlbumDetail goBack 改 router.back + 加 goHome 按钮 + 主页移除 memories 模块。"
+      },
+      "highlights": [
+        "合并来源表唯一约束 (album_id, source_id) 防重复，UNIQUE IGNORE 幂等；级联删除确保不产生孤儿行",
+        "PhotoLightbox 大图查看器静默后台扫描：用户感知 0延迟（首屏立即展示原图），扫描完成后元数据面板自动刷新",
+        "Memories 跳转 Timeline 携 year/month query：自动 scrollIntoView + 1.8s 边框高亮淡出，比 toast 提示更直观",
+        "AlbumDetail 返回上一级 + 主页按钮同时提供：从 Memories 进来回到 Memories，直接进入则回相册列表（无历史兜底）",
+        "主页去除回忆卡片：减少一级入口，回忆仍可通过智慧相册→回忆路径访问（架构更聚焦）"
+      ],
+      "tests": "cargo test --lib 44/44 (新增 merged_sources_persist_and_cascade); vue-tsc 0 错误",
+      "created_at": "2026-08-24T00:30:00+08:00",
+      "updated_at": "2026-08-24T00:30:00+08:00"
     }
   ],
-  "updated": "2026-08-23T23:19:02+08:00"
+  "updated": "2026-08-24T00:30:00+08:00"
 }
