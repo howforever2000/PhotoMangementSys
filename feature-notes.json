@@ -1,498 +1,857 @@
 {
- "version": "1.0.0",
- "description": "重点功能记录档案：记录功能的目的、实现方式和技术亮点，供项目发展与参考",
- "features": [
-  {
-   "id": "FEAT-001",
-   "name": "相册管理核心",
-   "module": "相册 CRUD / SQLite 持久化",
-   "purpose": "用户对本地图片文件夹的抽象化管理：创建相册、绑定本地文件夹、设置元数据（名称/简介/封面）",
-   "implementation": {
-    "backend": "Tauri(Rust) + rusqlite(SQLite)，Database 结构体封装 Connection，提供 create/get/update/delete 等 CRUD",
-    "frontend": "Vue3 + Pinia store 封装 invoke 调用，相册列表卡片网格 + 新建对话框（系统文件夹选择）",
-    "key_points": [
-     "Album 实体通过 serde 序列化直接转 JSON 给前端",
-     "Mutex<Database> 注册为 Tauri 全局状态，供命令注入",
-     "路径 UNIQUE 约束防重复，捕获 ConstraintViolation 返回友好错误"
-    ]
-   },
-   "highlights": [
-    "后端三层分离：数据层(Database) / 命令层(#[tauri::command]) / 启动装配(setup 注入 State)",
-    "对应 SpringBoot 概念：@Entity + @Repository + @RestController"
-   ]
-  },
-  {
-   "id": "FEAT-002",
-   "name": "自动封面与相册统计",
-   "module": "缩略图 / EXIF / 文件扫描",
-   "purpose": "加载时默认以相册第一张图片作为封面（缩略图），并统计照片数量、相册大小、拍摄时间",
-   "implementation": {
-    "backend": "image crate 生成 256px 缩略图缓存到 app_data_dir/thumbs；kamadak-exif 读拍摄时间；walkdir 遍历统计",
-    "frontend": "convertFileSrc 将本地缩略图转 asset:// URL 显示",
-    "key_points": [
-     "缩略图只写缓存目录，不写回数据库（保留用户手动设置封面能力）",
-     "拍摄时间从相册内第一张原图读取 EXIF（缩略图是生成的，不含 EXIF）",
-     "asset 协议需在 tauri.conf.json 配置 assetProtocol.enable + scope + Cargo.toml 加 protocol-asset feature"
-    ]
-   },
-   "highlights": [
-    "asset 协议正确配置是缩略图显示的关键（否则 WebView 403）",
-    "统计字段为计算属性，实时从文件系统计算，不污染数据库"
-   ]
-  },
-  {
-   "id": "FEAT-003",
-   "name": "时间分组排序视图",
-   "module": "时间线 / 分组 / 折叠",
-   "purpose": "相册按 年→季节→月 三层目录结构分组显示，支持折叠、路线图导航、颗粒度切换",
-   "implementation": {
-    "backend": "Album 返回 shoot_time(EXIF 拍摄时间) + created_at 回退",
-    "frontend": "timeGroup.ts 实现 groupByTime 三层树形分组，computed 驱动；折叠用 Set 记录 key",
-    "key_points": [
-     "分组粒度（年/季节/月）切换，默认展开层级由粒度控制",
-     "年→季节→月路线图（面包屑）支持点击滚动跳转 + 高亮动画",
-     "显示方向（竖向/横向）可切换"
-    ]
-   },
-   "highlights": [
-    "纯前端 computed 派生数据，无后端额外开销",
-    "scrollIntoView + classList 实现平滑跳转与高亮提示"
-   ]
-  },
-  {
-   "id": "FEAT-004",
-   "name": "地点排序（手动标签）",
-   "module": "地点字段 / 排序",
-   "purpose": "相册支持手动设置地点标签，按地点 A-Z 排序",
-   "implementation": {
-    "backend": "Album 增加 location 字段（TEXT），update_album 支持设置/清除（空串=清除）",
-    "frontend": "详情页地点标签可点击编辑；排序模式切换按 location A-Z",
-    "key_points": [
-     "最初方案是读照片 GPS + 逆地理编码，但需联网且大陆受限，改为手动标签更可靠",
-     "location 存数据库，支持三种语义：None=保留/空串=清除/有值=设置"
-    ]
-   },
-   "highlights": [
-    "从『自动 GPS 逆地理编码』迭代为『手动标签』，规避网络依赖，更稳定"
-   ],
-   "status": "done",
-   "description": "地点排序：手动标签（albums.location + 前端地点编辑/按地点排序视图）→ 自动化扩展：auto_detect_album_location 命令（扫描相册照片 GPS → 0.01° 网格众数 → BigDataCloud 反向地理编码 → 落库，不覆盖手动标签、不动 updated_at）。配套 photo_scan.detect_album_location / reverse_geocode_coord 公开函数 + 详情页自动识别按钮。",
-   "updated_at": "2026-08-13T23:50:00+08:00"
-  },
-  {
-   "id": "FEAT-005",
-   "name": "批量导入",
-   "module": "批量建相册 / 进度条",
-   "purpose": "选择大文件夹，遍历其一级子文件夹批量创建相册，支持实时进度",
-   "implementation": {
-    "backend": "import_albums 命令先收集子文件夹数，逐个 create_album，用 app.emit 发 import-progress 事件",
-    "frontend": "listen 监听进度事件，实时更新进度条（current/total/imported）",
-    "key_points": [
-     "跳过已作为相册存在的文件夹，避免重复",
-     "进度通过 Tauri 事件通道（Emitter/Listener）实现，比轮询高效"
-    ]
-   },
-   "highlights": [
-    "Tauri 事件系统（emit/listen）用于长任务进度上报，解耦前后端"
-   ]
-  },
-  {
-   "id": "FEAT-006",
-   "name": "勾选批量删除",
-   "module": "多选 / 批量操作",
-   "purpose": "相册列表支持勾选多选 + 批量删除（仅删记录，不删本地文件）",
-   "implementation": {
-    "backend": "delete_albums 命令事务内批量 DELETE",
-    "frontend": "卡片勾选框 + 全选/取消 + 二次确认，selectedIds Set 管理",
-    "key_points": [
-     "删除仅执行 SQL DELETE，完全不触碰本地照片",
-     "二次确认明确告知『仅删除记录，不影响本地照片』"
-    ]
-   },
-   "highlights": [
-    "事务保证原子性，前端界面即时移除所选"
-   ]
-  },
-  {
-   "id": "FEAT-007",
-   "name": "手动排序（分组文件夹树）",
-   "module": "文件夹树 / 拖拽 / 多级",
-   "purpose": "手动自主排序：自定义分组（模仿文件夹），最多三级父子关系，拖拽移动相册，父文件夹支持标签和说明",
-   "implementation": {
-    "backend": "folders 表(level 1-3) + folder_tags(≤5) + folder_albums 关联表；move_album/reorder_album 双写 albums.folder_id + folder_albums",
-    "frontend": "ManualSort.vue 文件夹树递归渲染；Pointer Events 实现拖拽（移动阈值防点击误触）",
-    "key_points": [
-     "folder_albums 关联表记录分组包含哪些子相册，保证分组归属可靠持久化",
-     "拖拽用 Pointer Events + 5px 阈值区分点击与拖拽（修复点击误触 bug）",
-     "get_manual_tree 从 folder_albums 读，旧数据 sync 迁移"
-    ]
-   },
-   "highlights": [
-    "双写持久化方案（albums.folder_id + folder_albums）确保刷新不丢失",
-    "Pointer Events + elementFromPoint + 拖拽浮层实现可靠拖拽",
-    "AOP 日志 + 数据库验证定位并修复了『点击误触发移出』bug"
-   ]
-  },
-  {
-   "id": "FEAT-008",
-   "name": "搜索功能",
-   "module": "模糊搜索 / 分组归属",
-   "purpose": "按关键词模糊搜索相册，支持匹配相册名/相册标签/分组名/分组标签，显示分组归属并可跳转",
-   "implementation": {
-    "backend": "search_albums 扩展搜索范围：相册名+相册标签+分组名+分组标签+祖先分组链；构建分组路径",
-    "frontend": "搜索栏防抖 300ms，结果面板显示分组路径，点击跳转手动模式对应分组",
-    "key_points": [
-     "LIKE %kw% 模糊匹配，覆盖相册集/父相册",
-     "分组路径递归构建（如 旅行/欧洲/巴黎）"
-    ]
-   },
-   "highlights": [
-    "搜索命中父相册（分组）时，其下所有相册都会出现，支持点击分组路径跳转定位"
-   ]
-  },
-  {
-   "id": "FEAT-009",
-   "name": "详情页父相册定位",
-   "module": "分组归属展示 / 跳转",
-   "purpose": "进入最小相册详情页时显示所属父相册（分组）标签，点击可跳转到手动排序的对应分组",
-   "implementation": {
-    "backend": "Album 增加 folder_id/folder_path 计算字段，get_album/get_albums 填充分组信息（含 DB 双重兜底）",
-    "frontend": "详情页显示『所属相册：📁 路径』，点击通过路由 query(?sort=manual&folder=ID) 跳转手动模式并定位",
-    "key_points": [
-     "命令层双重兜底查询（albums.folder_id + folder_albums），确保 folder_id 可靠返回",
-     "前端 fetchAlbum/fetchAlbums 内存兜底，后端返回 null 时保留旧值"
-    ]
-   },
-   "highlights": [
-    "四层防护确保 folder_id 可靠：DB 双写 + fill_album_folder + 命令层兜底 + 前端内存兜底"
-   ]
-  },
-  {
-   "id": "FEAT-010",
-   "name": "相册标签",
-   "module": "标签管理",
-   "purpose": "最小相册支持最多 5 个标签，与相册集（分组）标签管理一致",
-   "implementation": {
-    "backend": "album_tags 表（album_id, tag, UNIQUE）+ update_album_tags 命令（覆盖式，≤5）",
-    "frontend": "详情页『相册标签』区，添加/删除/保存（≤5）",
-    "key_points": [
-     "标签数量校验 ≤5，覆盖式设置",
-     "get_albums/get_album/search_albums 返回相册标签"
-    ]
-   },
-   "highlights": [
-    "统一标签模式：相册（album_tags）与分组（folder_tags）结构一致"
-   ]
-  },
-  {
-   "id": "FEAT-011",
-   "name": "右键菜单",
-   "module": "交互增强",
-   "purpose": "相册卡片支持右键自定义菜单（打开/删除），分组右键（删除），相册右键（移动到分组/删除）",
-   "implementation": {
-    "backend": "无新增命令，复用 delete_album/move_album",
-    "frontend": "contextmenu 事件 + 自定义菜单组件（position:fixed），点击外部关闭",
-    "key_points": [
-     "删除/移动前二次确认，明确『仅删系统视图，不删本地照片』",
-     "右键菜单含子菜单（移动到分组的折叠列表）"
-    ]
-   },
-   "highlights": [
-    "自定义 context menu 替代浏览器默认菜单，交互一致"
-   ]
-  },
-  {
-   "id": "FEAT-012",
-   "name": "日志系统",
-   "module": "AOP 日志 / 文件持久化",
-   "purpose": "为所有自建函数提供调用前后日志记录，支持文件存储、时间戳、定时清理，辅助 bug 定位",
-   "implementation": {
-    "backend": "logger.rs：log_call_start/log_call_end AOP 风格 + 文件写入 app_data_dir/logs/app.log + 后台线程定时清理（默认60分钟）",
-    "frontend": "trace.ts 装饰器自动包装函数记录调用前后",
-    "key_points": [
-     "后端 log_call! 宏简化命令接入",
-     "前端 trace(name, fn) 高阶函数自动记录参数/耗时/结果/错误",
-     "定时清理：删除过期日志文件 + 超 5MB 清空刷新"
-    ]
-   },
-   "highlights": [
-    "AOP 风格（面向切面）：调用前/后绑定日志，无需侵入业务逻辑",
-    "核心命令（move/reorder/create/delete/get/search）已接入，前端核心组件函数已接入"
-   ]
-  },
-  {
-   "id": "FEAT-013",
-   "name": "数据模型收敛（folder_id 单源）+ 迁移回填",
-   "module": "数据模型 / SQLite 迁移（dev 分支 41cdff5）",
-   "purpose": "将分组归属的双写不一致（albums.folder_id + folder_albums + 4 层兜底）收敛为 folder_albums 唯一事实源，并通过一次性迁移回填历史数据，保证旧库升级后分组归属不丢失",
-   "implementation": {
-    "backend": "① folder_albums 关联表成为分组归属唯一事实源：fill_album_folder 改为一次 SELECT 批量填充（原为每相册 query_row + 4 层兜底）；search_albums 分组匹配/祖先链全部改 JOIN folder_albums；move_album/reorder_album 组内排序改读 folder_albums；② delete_album/delete_albums 事务内级联清理 folder_albums/album_tags/album_stats（修复孤儿残留）；③ albums.folder_id/sort_order 降级为冗余缓存列（同事务同步，读取不依赖）；④ 顺带修复 update_album location 参数占位符错位、create_folder 空名误报 NotFound 两个真实 bug；⑤ 迁移回填：Database 建表阶段执行 INSERT INTO folder_albums SELECT … FROM albums WHERE folder_id IS NOT NULL AND NOT EXISTS（已有关联）",
-    "frontend": "移除 Pinia store 中 2 层 folder_id 兜底 fallback 与调试 console.log，folder_id/folder_path 完全信任后端填充",
-    "key_points": [
-     "回填迁移用 NOT EXISTS 守卫：只补充「albums.folder_id 有值但 folder_albums 无该相册任何关联」的相册，不触碰已有关联（含历史孤儿行），最保守地保证旧数据不丢失",
-     "迁移在 Database::new 建表阶段幂等执行，旧库打开即自动回填，无需手动操作",
-     "这是相对原始提交 12ccfb2 的关键改进——原提交缺此迁移，是此前 3 提交整体回退的最可疑根因"
-    ]
-   },
-   "highlights": [
-    "解决的问题：早期版本 create_album / 部分写入路径只写 albums.folder_id 不写 folder_albums，导致双源不一致，需要 4 层兜底补偿；旧版 delete_album 只删 albums 行导致 folder_albums 孤儿数据残留；移除兜底后若无迁移，旧库相册会在升级后静默丢失分组显示",
-    "收益：读取路径确定化（分组归属单一来源，N+1 每相册 1 次查询 → 1 次批量查询）；消除 4 层兜底代码（后端 2 层 + 前端 2 层）；级联删除杜绝孤儿数据；一次性迁移保证升级不丢分组",
-    "验证：cargo check / vue-tsc / cargo test --lib 2/2 全通过（album_crud_roundtrip 实际建库执行迁移 SQL）"
-   ]
-  },
-  {
-   "id": "FEAT-014",
-   "name": "统计缓存 + 缩略图指纹化（含主动失效与封面降级）（v1 TTL 方案，已被 FEAT-015 取代）",
-   "module": "后端性能 / SQLite 缓存（dev 分支 f89ba67）",
-   "purpose": "将相册的照片数量/大小/拍摄时间/封面源图路径持久化缓存到 album_stats 表，列表与详情加载从每相册 3~4 次全目录遍历降为 1 次 SQL 快查；缩略图文件名改为内容指纹解决换图不失效问题；并补上主动失效钩子与封面缺失自愈，修复原提交 TTL 无主动失效的体验缺陷",
-   "implementation": {
-    "backend": "① fill_album_stats 缓存优先：命中时锁内仅 SQLite 快查 + 复用缩略图；miss/过期才单次 walkdir 完成 photo_count/size_bytes/shoot_time/首图四项统计并写回缓存；② 缩略图指纹化：缓存文件名 = len + mtime + 文件头 8KB hash，同名内容变更自动失效，生成前清理旧指纹文件；③ delete_album/delete_albums 删除时清理 thumbs 缓存；④ set_cover 后清理自动缩略图避免孤儿；⑤ 新增 invalidate_album_stats 命令（含 delete_album_stats / clear_all_album_stats），前端可在导入照片后主动失效缓存；⑥ 封面源图缺失时删除缓存并降级重扫自愈",
-    "frontend": "本次无前端改动（invalidate_album_stats 命令已注册，供后续前端导入后调用）",
-    "key_points": [
-     "TTL 600s（原提交 3600s）：缩短增删照片后的统计滞后窗口",
-     "主动失效优先级高于 TTL：手动刷新立即生效，不等待过期",
-     "缓存命中路径若 cover_source 源图已删，不再静默 return（会丢封面+统计冻结），改为清缓存重扫，目录内其他图片自动上位"
-    ]
-   },
-   "highlights": [
-    "解决的问题：原实现每次列表加载都遍历文件系统（相册多时明显卡顿）；同名文件内容变化后缩略图缓存不失效；换封面后仍显示旧图；增删照片后统计最多滞后 1 小时且无法手动刷新；封面源图被删后封面丢失且统计冻结到 TTL 过期",
-    "收益：列表加载性能从 O(每相册全目录遍历) 降为 O(1 次 SQL 快查)；缩略图缓存永远与内容一致且无孤儿文件；统计可主动刷新、封面缺失自动自愈",
-    "验证：cargo check 0 warning；cargo test --lib 2/2 通过（含指纹失效/清理断言）",
-    "修复记录（122282b）：指纹哈希 DefaultHasher 种子每次编译时随机 → 重编译后缓存全失效 → 每次启动全量重生成缩略图卡死 140s；改用 FNV-1a 确定性哈希 + 旧命名缩略图复用，修复后全量处理 140s→61ms（快 2300 倍）。详见 bug-notes.json BUG-2026-0815-001"
-   ]
-  },
-  {
-   "id": "FEAT-015",
-   "name": "统计缓存 v2：文件数变更探测（替代 TTL 定时失效）",
-   "module": "后端性能 / SQLite 缓存（dev 分支 e8fbbc6）",
-   "purpose": "统计缓存失效策略从 TTL 定时过期改为「文件数变更探测」：每次加载轻量统计目录递归文件数，与 album_stats.file_count 比对，一致则直接用 SQL 统计，不一致才重扫该相册——消除 TTL 滞后窗口与过期全量重扫峰值",
-   "implementation": {
-    "backend": "① album_stats 表新增 file_count 列（旧库迁移默认 -1 强制首次重扫）；② 新增 count_files_recursive（walkdir 递归只数文件，不读内容不判格式，每相册约 0.5ms）；③ fill_album_stats 重写：探测文件数 → 与缓存一致直接用 SQL（photo_count/size_bytes/shoot_time/封面）→ 不一致仅重扫该相册并写回新 file_count；④ 删除 STATS_TTL_SECS / scanned_at TTL 逻辑 / invalidate_album_stats 命令 / clear_all_album_stats",
-    "frontend": "无前端改动（不再需要手动刷新入口，探测自动失效）",
-    "key_points": [
-     "盲区取舍：同名替换内容（文件数不变）不触发重扫；照片管理最常见操作是增删，可接受",
-     "非图片文件增减会误触发重扫（无害，重扫后统计不变）",
-     "封面源缺失降级自愈逻辑保留（delete_album_stats + 重扫换图）",
-     "触发校验路径：① 软件启动 App 挂载时预校验一次（fetchAlbums → get_albums 全量探测，列表/详情打开前数据已最新）；② 点击相册进详情（get_album 对该相册探测，打开前是旧信息、点开后即最新准确信息）；③ 列表加载（get_albums 全量探测）",
-     "封面持久化（d344e97）：自动封面地址写回 albums.cover_path（SQL），加载直接读；命中路径 photo_count>0 但 cover_path 为空 → 强制重扫自愈。修复 cover_source 为 NULL 时封面永久丢失的 bug（详见 BUG-2026-0815-002）",
-     "缩略图生成加速（5d6590b）：JPEG DCT 降采样解码（jpeg-decoder scale），解码时只解所需 DCT 块，换封面从 7.7s 降至 0.76s（11x，release 预计 <200ms）。详见 BUG-2026-0815-003"
-    ]
-   },
-   "highlights": [
-    "相比 TTL 方案：无 600s 滞后窗口（增删照片立即正确）；无过期全量重扫峰值（只重扫变化相册）；无需手动失效命令",
-    "真实数据验证：缓存命中 24/24，总耗时 12.3ms（纯文件计数 + SQL 快查）",
-    "验证：cargo check 0 warning；cargo test --lib 6/6（新增 count_files_recursive / file_count 读写测试）"
-   ]
-  },
-  {
-   "id": "FEAT-016",
-   "name": "前端组件拆分（AlbumCard / AlbumMiniCard）",
-   "module": "前端重构 / DRY（dev 分支 1fe8a3f）",
-   "purpose": "消除相册卡片与迷你相册卡共 7 处重复模板，抽成两个可复用组件，改一处全生效；顺带优化查找性能（O(N²)→O(1)）、封面懒加载、消除非空断言崩溃点",
-   "implementation": {
-    "backend": "无后端改动",
-    "frontend": "① AlbumCard.vue（233 行）吸收 AlbumList 3 份重复卡片（日期视图未分类/月分组 + 地点视图），showLocation prop 控制地点徽标；② AlbumMiniCard.vue（99 行）吸收 ManualSort 4 份重复迷你卡（顶级/一/二/三级分组），data-folder-id/data-album-index 透传保持拖拽逻辑；③ albumById 线性查找改预构建 Map；④ 封面 loading=\"lazy\"；⑤ 非空断言 albumById(...)!.name → album?.name + 占位符",
-    "key_points": [
-     "重复模板 7 处 → 0 残留（grep 验证）",
-     "AlbumList.vue 1607→1390 行；ManualSort.vue 模板瘦身",
-     "改进：AlbumMiniCard album 为 null 时显示 '…' 占位名称（原为空白）"
-    ]
-   },
-   "highlights": [
-    "解决的问题：改样式/加字段要同步改 7 处（易漏改导致界面不一致）；每张迷你卡线性查找相册 O(N²)；albumById 非空断言相册未加载时崩溃；封面一次性全加载",
-    "收益：DRY 改一处全生效；查找 O(1)；消除崩溃点；首屏更快",
-    "验证：vue-tsc 0 错误；vite build 成功"
-   ]
-  },
-  {
-   "id": "FEAT-017",
-   "name": "相册照片 EXIF 扫描（测试功能，独立模块）",
-   "module": "EXIF 提取 / photo_scan 独立组件（dev 分支）",
-   "purpose": "相册详情页提供『图片 EXIF 扫描』按钮，点击后遍历相册目录内所有图片，提取 ISO/焦段/光圈/快门速度/拍摄时间，前端表格展示——功能解耦的示范：EXIF 提取独立成模块，lib.rs 只留薄命令壳，不落库",
-   "implementation": {
-    "backend": "① 新建 src-tauri/src/photo_scan.rs 独立模块：scan_album_photos 递归 walkdir（跳过隐藏文件/目录）→ PhotoExif 结构体（file_name/path/iso/focal_length/aperture/shutter_speed/shoot_time 全 Option）；② 按 tag 数字匹配字段（跨上下文）：真实相机写 Exif IFD，PIL 等工具写 IFD0，直接比较带上下文的 Tag 枚举会漏读；③ field_value_f64 兼容 Rational 与 Short/Long 二元组 [num,denom]（PIL 写入形态）；④ 拍摄时间 display_value 去引号 + 冒号转横线；⑤ lib.rs 仅注册 scan_album_photos 薄命令壳（log_call AOP 接入）",
-    "frontend": "AlbumDetail.vue 替换『即将上线』占位区为扫描区：开始扫描/重新扫描按钮、扫描中/错误/空状态、结果表格（照片名字/ISO/焦段/光圈/快门速度/拍摄时间，缺失显示 —，文件名 hover 显示完整路径）；新增 src/types/photo.ts PhotoExif 类型",
-    "key_points": [
-     "解耦：photo_scan.rs 不依赖 db/thumbnail/folder 模块，图片扩展名列表本地复制，可独立单测",
-     "格式化：焦段 50mm / 4.3mm；光圈 f/2.8；快门 ≥1s 用 30s、<1s 用 1/200s；拍摄时间 2023-01-15 10:30:00",
-     "ISO 双 tag 兼容：0x8827（PhotographicSensitivity）主 + 0x8833（ISOSpeed）兜底",
-     "项目根 test_fixture_photos 目录内置 PIL 生成的带 EXIF/无 EXIF/子目录/隐藏目录 4 张测试图，供 UI 手动验证"
-    ]
-   },
-   "highlights": [
-    "踩坑记录：kamadak-exif 0.6 的 Tag 枚举带 IFD 上下文（Tag(Tiff,0x8827)≠Tag(Exif,0x8827)），get_field 会漏读 PIL 等工具写入 IFD0 的字段 → 按 tag.number() 数字匹配解决",
-    "PIL 直接把 (1,200) 等有理数以 Short 二元组写入（而非 Rational），field_value_f64 统一兼容两种形态",
-    "验证：cargo test --lib 12/12（新增 4 个 photo_scan 测试含端到端 fixture 扫描）；vue-tsc 0 错误"
-   ],
-   "status": "done",
-   "description": "相册照片 EXIF 扫描（测试功能，独立模块）：ISO/焦段/光圈/快门 + 拍摄时间三级兜底(DateTimeOriginal→DateTime→GPS-UTC+8，参考 exif_extractor) + GPS 地点提取(度分秒→十进制/海拔/地图链接) + scan_album_photos_with_place 反向地理编码(BigDataCloud 中文地名，reqwest native-tls)。53 张实测 27 张有 GPS，坐标与参考值 1e-4 一致。",
-   "updated_at": "2026-08-13T23:30:00+08:00"
-  },
-  {
-   "id": "FEAT-018",
-   "name": "相册照片影调分析（独立组件，下采样直方图 + 平均亮度法）",
-   "module": "影调分析 / tone 独立组件（dev 分支）",
-   "purpose": "相册详情页提供『图片影调分析』按钮，先下采样到 256px 再统计灰度直方图，按平均亮度法判断影调类型（低调/中间调/高调），前端表格每行显示照片名、影调标签、平均亮度 L̄ 与迷你 SVG 柱状图——延续功能解耦：独立 tone.rs 模块，lib.rs 只留薄命令壳，不落库",
-   "implementation": {
-    "backend": "① 新建 src-tauri/src/tone.rs 独立模块：scan_album_tones 递归 walkdir（跳过隐藏文件/目录）→ PhotoTone 结构体（file_name/path/histogram[256]/avg_luma/tone_type）；② 下采样关键路径：JPEG 走 jpeg-decoder DCT 降采样（只解所需 DCT 块，输出约 256px，大图从秒级降到几十毫秒），其他格式 image 解码后 thumbnail(256,256)；③ 灰度直方图用 BT.601 加权整数定点（0.299R+0.587G+0.114B，/1000 整数运算避免浮点逐像素）；④ 平均亮度法 L̄=Σ(k·h(k))/Σ(h(k))：L̄<85→低调、L̄>170→高调、否则中间调；⑤ 解码失败图片 histogram 空 + tone_type None 照常列出；⑥ lib.rs 注册 scan_album_tones 薄命令壳（log_call AOP 接入）",
-    "frontend": "AlbumDetail.vue 在 EXIF 扫描区下方新增独立『图片影调分析』区：开始分析/重新分析按钮、分析中/错误/空状态、结果表格（照片名字/影调类型标签/平均亮度/灰度柱状图）；柱状图 256 bin 前端合并为 128 条 SVG rect（viewBox 256x36，降低 DOM 节点量），低调深色标签/中间调灰色/高调浅色；新增 src/types/photo.ts PhotoTone 类型与 ToneType 联合类型",
-    "key_points": [
-     "解耦：tone.rs 不依赖 db/thumbnail/folder，图片扩展名列表本地复制，独立单测",
-     "下采样 256px 是性能核心：直方图是统计分布，6.5 万像素 vs 全尺寸百万级像素分布几乎无差，JPEG DCT 降采样避免全尺寸解码卡顿",
-     "阈值边界：85 与 170 均归中间调（classify 单测覆盖 84.9/85.0/170.0/170.1）",
-     "test_fixture_photos 新增 IMG_0005_dark.jpg（L̄=10→低调）与 IMG_0006_bright.jpg（L̄=240→高调），覆盖三种影调验证"
-    ]
-   },
-   "highlights": [
-    "真实数据验证（fixture 扫描）：暗图 L̄=10→低调、亮图 L̄=240→高调、中间调 124~135；直方图像素数 76800（JPEG 320x240 DCT 输出）与 65536（PNG 256x256 精确）",
-    "前端直方图合并 128 bin 渲染，256 bin 全精度数据保留在 PhotoTone 中",
-    "验证：cargo test --lib 14/14（新增 classify 阈值 + fixture 端到端影调扫描）；vue-tsc 0 错误"
-   ]
-  },
-  {
-   "id": "FEAT-019",
-   "name": "视觉内容识别 v2（YOLOv8s-cls 分类 + YOLOv8n-det 人像检测 + Python 微服务 + ImageNet 映射层）",
-   "module": "VCR 视觉识别 / python 微服务 + vision 独立组件（dev 分支）",
-   "purpose": "相册详情页提供『内容识别』按钮：YOLOv8s-cls（ONNX + ONNX Runtime CPU）识别图片主体，ImageNet 1000 细类经映射表转译为相册大类（动物/食物/植物/建筑/运动/风景/文档/其他）；YOLOv8n-det（COCO 80 类）补 ImageNet 盲区——检出 person 置信度≥0.35 即判定「人像」，解决有人的场景识别不出人/错误识别。前端表格展示类别/细类/置信度/Top3/耗时，进度条 + 点击照片名打开原图，Python 微服务与 Rust vision 模块功能解耦",
-   "implementation": {
-    "backend": "① python/server.py 独立 FastAPI 微服务：/health、/classify（单张）、/classify_batch（批量≤8），双模型并行加载——分类 yolov8s-cls.onnx 优先 / yolov8n-cls.onnx 兜底（自动选择），检测 yolov8n-det.onnx（缺失降级纯分类）；② 分类预处理修复：等比缩放短边=224 + 中心裁剪（替代直接拉伸 224²，宽图畸变丢精度）；③ 人像检测：letterbox 640 + ONNX 推理，取全部锚点 person(类0) 概率最大值，≥PERSON_CONF_MIN(0.35) → category=portrait，top3 头部插入 portrait·人物 并保留分类候选作补充，source=visual+det；④ 其余（export_model.py / generate_mapping.py / Rust vision.rs 生命周期与进度）保持不变，Rust 侧 JSON 透传零改动",
-    "frontend": "AlbumDetail.vue 新增『内容识别』区（EXIF/影调区下方）：开始识别/重新识别按钮、进度条（监听 classify-progress 事件）、结果表格（照片名字[可点击打开原图]/内容类别中文标签/识别细类/置信度条+百分比/Top3 候选 chips/耗时）；新增 src/types/photo.ts VisionResult/VisionTopItem/ClassifyProgress 类型",
-    "key_points": [
-     "模型获取：GitHub 被墙 → ghfast.top 代理下载 yolov8n-cls.pt（5.56MB）→ ultralytics 导出 ONNX（10.9MB）；onnxslim/matplotlib 需预装避免导出中断",
-     "映射表三层归类：主关键词（词边界 \b 匹配防 'matchstick' 含 'tick' 误伤）→ 动物特征词（词边界+长子串≥5 双模式补复合词 foxhound/flatworm）→ 显式补丁（狗品种/口语名）；最终 other 残留动物 0，动物 410 类",
-     "性能实测（7840HS）：warmup 后单张 6.5~11ms（远超方案预估 40-70ms）；首次启动服务约 5-10 秒（模型加载）",
-     "微服务常驻：测试期不主动停止，重复识别秒回；服务/模型缺失时返回明确错误，主功能不受影响",
-     "纯色测试图置信度低（~0.3%）是正常现象（无真实内容），真实图片（游戏截图）识别合理（chain mail/comic book）",
-     "人像根因：ImageNet-1k 无通用 person 类（只有 suit/maillot 等服装类），实测运动员照片被分类为 suit→其他；换更大的分类模型修不了，必须加 COCO 目标检测（person=类0）",
-     "性能实测（本机 CPU）：s-cls 单张 ~4-8ms + n-det640 ~32-38ms + 预处理 ≈70ms/张，批量场景（100 张 ≈7s，有进度条）完全可接受；精度优先保留 640 输入"
-    ]
-   },
-   "highlights": [
-    "踩坑记录：pip 源慢改用清华镜像；matplotlib 与 numpy 2.5 ABI 不兼容需升级 matplotlib 3.11；ultralytics 导出自动装 onnxslim 超时需预装；GitHub Releases 被墙（curl 35）改用 ghfast.top 代理",
-    "ImageNet 类名从本地 pt 权重读的是 WordNet ID（n01440764），可读名从 pytorch/hub 官方列表经 ghfast 代理获取",
-    "验证：cargo test --lib 16/16（新增 vision 2 个）；cargo check 0 warning；vue-tsc 0 错误；Python 服务 health/单张/批量 curl 全通",
-    "遗留：image_processor 融合仲裁（参数树 portrait/night_scene）未实现，本期纯视觉结果；bat 启动器/安装打包未做，模型文件已 gitignore",
-    "v2 变更（2026-08-12）：模型 n-cls→s-cls（ghfast.top 代理下载 + ultralytics 导出，s 24.3MB / det 12.3MB ONNX）；新增 yolov8n-det 人像检测通道；修复预处理拉伸失真；三张结果表（EXIF/影调/内容识别）照片名字统一可点击打开原图；验证：zidane.jpg 人像 0.83 ✓、bus.jpg 人像 0.90 + 场景 ✓、纯色/截图无 person 不误判；vue-tsc 0 错误、cargo check 0 warning"
-   ]
-  },
-  {
-   "id": "F20",
-   "name": "视觉内容识别 v3（分层重构 + 置信度修复 + 扫街/特写拆分 + 人脸标号 + Places365 场景通道）",
-   "module": "python/vcr 分层包 + vision.rs 人物管理命令 + AlbumDetail 人物面板",
-   "purpose": "按『接口层/服务层/持久层』重构 Python 微服务；修复 P0 双重 softmax 置信度崩溃；人像三态仲裁拆分 特写/扫街/不覆盖；动物细分狗/猫/鸟；截图启发式；InsightFace 人脸标号（同人同 P 编号）；Places365 场景通道提升自然风景/建筑城市准确度",
-   "implementation": "接口层 server.py（薄路由）/ 服务层 vcr/services（classifier、detector+NMS、face_service、scene_service、arbitrator、pipeline）/ 持久层 vcr/persistence/person_store（SQLite persons.db）/ 基础设施 model_registry、preprocess（SCRFD 用 (x-127.5)/128 黑边、cv2.estimateAffinePartial2D 对齐避开 skimage）、mapping；映射表 v2：整词正则+OVERRIDES+索引兜底（0-397 全动物、crane 134/517 索引区分、vehicle 大类 56 类、other 39%→34.5%）；Rust 新增 list_persons/rename_person/merge_persons/delete_person 四个命令（代理 Python /persons 接口）；前端 VisionResult 增 sub_category/person_ids/person_count，人物注册表面板支持重命名/合并/删除",
-   "highlights": [
-    "P0 修复：yolov8s-cls ONNX 输出已是概率分布，删除二次 softmax——beagle 置信度 0.007→0.94",
-    "扫街可识别：NMS 人数≥3 且最大人框面积<15% → street；实测 76 人街拍从 portrait 误判修正为 扫街·12人",
-    "特写/扫街拆分：人框面积占比 73%(特写) vs 0.2~8.6%(扫街)，阈值裕量近 10 倍",
-    "人脸标号：buffalo_sc（SCRFD det_500m 2.5MB + ArcFace w600k_mbf 13.6MB），同人跨照片 sim≥0.96 稳定归同 P 编号；不同人 ~0",
-    "SCRFD 解码三坑记录：①距离需乘 stride ②预处理 (x-127.5)/128 黑边 ③skimage 与 numpy2.x 二进制不兼容→改用 cv2.estimateAffinePartial2D",
-    "截图启发式：PNG+无EXIF+屏幕比例+弱分类证据 → text；实测合成截图命中",
-    "Places365：resnet18 ONNX 45.4MB（MIT 官方权重分段下载+torch 导出，hf-mirror 无可用镜像），scene 通道仅在其他/弱证据时接管（other→scene 接管、landscape/architecture 需 scene≥0.15 才翻转），实测夜景城市 other→建筑城市",
-    "11 图回归全绿：风景×2/动物狗猫/特写×2/扫街×2/食物/建筑/车辆/文本/截图全部正确"
-   ]
-  },
-  {
-   "id": "F21",
-   "name": "视觉内容识别 v4（夜景/城市风光拆分 + 实测校准 + taxonomy 收敛 + 专家通道骨架）",
-   "status": "done",
-   "description": "按《VCR 渐进式实施工程手册》落实全部后端通道 + 专家模型补齐。53 张实测 64.2%→90.6%（48/53）：夜景 7/7（tone 纯影调分档）、文档 3/3（paddleocr-det DB 检测+多框过滤）、食物 5/5（hot pot/蟹/plate 映射兜底）、城市风光 4/4、人物 8/8。新增模型：paddleocr-det.onnx（modelscope RapidOCR）、efficientnet-b2-flowers.onnx（HF Lumia101 导出）。剩余 5 错：花朵 3（专家模型盲区）+ 黄昏城堡 1（cls 误判）+ 夜市合影 1（边界）。 P2 优化：人脸标号条件触发（_needs_face 与仲裁器人物规则对齐，仅 portrait/street/合影 分支跑人脸，真实相册省大量单人半身图人脸开销）；清理 dead config（OCR_AREA_WEAK/OCR_UNCLIP_RATIO/NIGHT_SCENE_CONF）；plate 映射补风险注释。53 张回归 90.6% 保持，437ms/张。",
-   "related_files": [
-    "python/vcr/services/tone_service.py",
-    "python/vcr/services/ocr_service.py",
-    "python/vcr/services/flower_service.py",
-    "python/vcr/services/food_service.py",
-    "python/vcr/taxonomy.py",
-    "python/models/album_groups.json",
-    "python/vcr/services/arbitrator.py",
-    "python/vcr/services/scene_service.py",
-    "python/vcr/services/detector.py",
-    "python/vcr/services/pipeline.py",
-    "python/vcr/config.py",
-    "python/server.py",
-    "python/eval_vcr.py",
-    "python/models/imagenet_to_album.json"
-   ],
-   "keywords": [
-    "VCR",
-    "夜景",
-    "night_scene",
-    "cityscape",
-    "taxonomy",
-    "tone",
-    "OCR",
-    "花朵专家",
-    "eval_vcr",
-    "回归"
-   ],
-   "created_at": "2026-08-13T20:30:00+08:00",
-   "updated_at": "2026-08-13T23:55:00+08:00"
-  },
-  {
-   "id": "FEAT-SCAN-001",
-   "name": "主页面图片扫描测试（时间/地点识别 + 按年·地点组织移动）",
-   "status": "done",
-   "description": "独立大组件 test_scan.rs（命令层与逻辑解耦，lib.rs 仅注册）：①scan_test_photos 非递归扫描直接图片，复用 photo_scan 时间三级兜底 + GPS 提取；②resolve_test_places GPS 0.01° 网格聚类每聚类一次反编码（同聚类共享地名，省 70%+ 请求）；③organize_test_photos 按「年→地点」两级文件夹创建 + fs::rename 移动（同名跳过/无年→未知年份/无地点→无地点）。前端：Home 启用图片扫描模块 + 路由 /scan + TestScan.vue（目录选择/扫描/解析地名/时间·地点双视图/移动报告）。端到端验证：4 张临时照片（3 GPS+1 无）扫描 4/4、地名达州市·万源市 3/3、移动 4/4 成功。log_call 宏改绝对路径以支持子模块调用。 修复：①命令改 async + spawn_blocking（Tauri 2 同步命令在主线程执行，含网络/文件 IO 会冻结 UI 卡死）；②网络超时 10s→5s；③扫描 0 张明确报错提示（非递归目录无直接图片时）；④组织前 confirm 提示自动联网解析。连带修复 auto_detect_album_location / scan_album_photos_with_place 同步阻塞。 日志+进度：①每张照片解析地点/移动均记日志（logger::log_info/log_error，格式 [resolve] 文件 → 地名 / [organize] 文件 → 年/地点 或跳过/失败原因）；②ScanProgress 逐张进度回调 + tauri emit \"test-scan-progress\" 事件；③前端进度条（phase 区分解析地名/组织移动，蓝色→完成绿色，显示当前文件与结果）；④反编码失败重试 3 次（网络抖动容错）。",
-   "related_files": [
-    "src-tauri/src/test_scan.rs",
-    "src-tauri/src/photo_scan.rs",
-    "src-tauri/src/lib.rs",
-    "src/views/TestScan.vue",
-    "src/views/Home.vue",
-    "src/router/index.ts",
-    "src/types/photo.ts"
-   ],
-   "keywords": [
-    "图片扫描",
-    "test_scan",
-    "时间识别",
-    "地点识别",
-    "组织移动",
-    "GPS聚类"
-   ],
-   "created_at": "2026-08-13T23:58:00+08:00",
-   "updated_at": "2026-08-14T00:30:00+08:00"
-  },
-  {
-   "id": "FEAT-GEO-001",
-   "name": "GPS→省/市 本地离线反查（geo_index，替代逐张联网反编码）",
-   "status": "done",
-   "description": "用民政部口径中国省/市边界（阿里 DataV.GeoAtlas，免 key、WGS84）把照片 GPS 本地解析为省/市，0 网络请求。数据：python/download_geo_data.py 一次性下载预处理（去连续重复点 + Douglas-Peucker 0.002° + 坐标圆整 4 位小数）→ src-tauri/resources/china_geo.json（2956KB 原始 / gzip 883KB：省级 35 要素 + 市级 363 要素 27 省；直辖市/港澳台不下钻，台湾因市级数据缺失直接省级）。模块：src-tauri/src/geo_index.rs（include_str! 内嵌 + OnceLock 解析一次 + bbox 预筛 + 射线法 even-odd，逐 polygon 统计全部环交点处理飞地如安徽天长在江苏界内；0.01° 网格结果缓存）。接入：①scan_album_photos_local_place 新命令（Tauri）本地秒回；②scan_album_photos_with_place 保持联网精确地名；③auto_detect_album_location 本地优先联网兜底；④test_scan resolve_test_places 本地优先 + 联网兜底（懒创建 HTTP 客户端）。前端：AlbumDetail.vue 扫描区按钮拆两档「本地省/市（秒回·离线）」+「精确地名（联网）」并更新文案；TestScan.vue 文案去「需联网」+ 修 unlistenProgress 未清理 TS6133。验证：geo_index 单测 3/3（北京/成都/台北/香港/三亚/天长飞地/公海/巴黎）；photo_scan 端到端 53 张真实照片 27 个 GPS 全部解析（参考点 31.92128,107.63749 → 四川省 · 达州市），扫描+解析 0.16s（原联网 30~60s）；cargo test 22/22 通过、vue-tsc 0 错误。",
-   "tests": "cargo test --lib（22 通过，2 联网测试 ignore）；python python/download_geo_data.py 自检 14/14",
-   "date": "2026-08-14"
-  },
-  {
-   "id": "FEAT-020",
-   "name": "『全部折叠/展开』扩展到地点 + 手动排序视图",
-   "status": "done",
-   "description": "原『全部折叠/展开』仅日期排序（sortMode==date）显示并只作用于年→季节→月分组。本次将其扩展到三种排序模式：①日期模式不变；②地点模式新增按地点分组（locationGroups computed，按 A-Z 顺序、无地点归入『未知地点』），每组可折叠（loc-* key），toggleAllGroups 按当前模式收集 key；③手动排序模式：ManualSort.vue 新增分组折叠状态（collapsed Set + rootCollapsed『未分组相册』区），三级分组头均加 ▸/▾ 折叠箭头，toggleAll() 与 isAllCollapsed 通过 defineExpose 暴露，父组件 AlbumList 用 ref 调用；工具栏『全部折叠』按钮改为三模式均显示，文字按当前模式判断『全部折叠/全部展开』；切换排序方式时清空 collapsed 避免三模式 key 串扰。前端实现，无后端改动。",
-   "related_files": [
-    "src/views/AlbumList.vue",
-    "src/views/ManualSort.vue"
-   ],
-   "keywords": [
-    "全部折叠",
-    "折叠",
-    "地点排序",
-    "手动排序",
-    "ManualSort",
-    "collapse"
-   ],
-   "implementation": {
-    "frontend": "AlbumList.vue：locationGroups computed（Map 分组保持 A-Z）；locationKey(loc)=loc-<loc>；toggleAllGroups 分支 date/location；allCollapsed computed + onToggleAll 按模式分发（manual 调 ManualSort.toggleAll）；setSortMode 清空 collapsed；toolbar 按钮 v-if 移除日期限制；ManualSort ref 绑定。ManualSort.vue：collapsed Set + rootCollapsed + isFolderCollapsed/toggleFolder/collectFolderIds/toggleAll/isAllCollapsed + defineExpose；三级 folder-head 加 fold-arrow，folder-albums 与子级 div 加 v-show 控制折叠；CSS 新增 .location-group/.group-location/.fold-arrow/root-title 可点击。",
-    "key_points": [
-     "手动模式折叠由子组件自管理，父组件仅通过 ref + defineExpose 调度（toggleAll / isAllCollapsed）",
-     "三种模式共用一个 collapsed Set，切模式清空防串扰（key 命名空间 loc- / y- / s- / m-）",
-     "ManualSort 用 v-show 加在 folder-albums 与子级 folder-node 上而非包一层 div，避免破坏拖拽 data-folder-id 结构"
-    ]
-   },
-   "highlights": [
-    "复用日期模式的 toggleCollapse/isCollapsed 折叠状态机，地点模式成本低",
-    "子组件 defineExpose 暴露方法，父组件按模式分发调用，无跨组件状态耦合"
-   ],
-   "created_at": "2026-08-19T15:20:00+08:00",
-   "updated_at": "2026-08-19T15:20:00+08:00"
-  }
- ],
- "updated": "2026-08-19"
+  "version": "1.0.0",
+  "description": "重点功能记录档案：记录功能的目的、实现方式和技术亮点，供项目发展与参考",
+  "features": [
+    {
+      "id": "FEAT-001",
+      "name": "相册管理核心",
+      "module": "相册 CRUD / SQLite 持久化",
+      "purpose": "用户对本地图片文件夹的抽象化管理：创建相册、绑定本地文件夹、设置元数据（名称/简介/封面）",
+      "implementation": {
+        "backend": "Tauri(Rust) + rusqlite(SQLite)，Database 结构体封装 Connection，提供 create/get/update/delete 等 CRUD",
+        "frontend": "Vue3 + Pinia store 封装 invoke 调用，相册列表卡片网格 + 新建对话框（系统文件夹选择）",
+        "key_points": [
+          "Album 实体通过 serde 序列化直接转 JSON 给前端",
+          "Mutex<Database> 注册为 Tauri 全局状态，供命令注入",
+          "路径 UNIQUE 约束防重复，捕获 ConstraintViolation 返回友好错误"
+        ]
+      },
+      "highlights": [
+        "后端三层分离：数据层(Database) / 命令层(#[tauri::command]) / 启动装配(setup 注入 State)",
+        "对应 SpringBoot 概念：@Entity + @Repository + @RestController"
+      ]
+    },
+    {
+      "id": "FEAT-002",
+      "name": "自动封面与相册统计",
+      "module": "缩略图 / EXIF / 文件扫描",
+      "purpose": "加载时默认以相册第一张图片作为封面（缩略图），并统计照片数量、相册大小、拍摄时间",
+      "implementation": {
+        "backend": "image crate 生成 256px 缩略图缓存到 app_data_dir/thumbs；kamadak-exif 读拍摄时间；walkdir 遍历统计",
+        "frontend": "convertFileSrc 将本地缩略图转 asset:// URL 显示",
+        "key_points": [
+          "缩略图只写缓存目录，不写回数据库（保留用户手动设置封面能力）",
+          "拍摄时间从相册内第一张原图读取 EXIF（缩略图是生成的，不含 EXIF）",
+          "asset 协议需在 tauri.conf.json 配置 assetProtocol.enable + scope + Cargo.toml 加 protocol-asset feature"
+        ]
+      },
+      "highlights": [
+        "asset 协议正确配置是缩略图显示的关键（否则 WebView 403）",
+        "统计字段为计算属性，实时从文件系统计算，不污染数据库"
+      ]
+    },
+    {
+      "id": "FEAT-003",
+      "name": "时间分组排序视图",
+      "module": "时间线 / 分组 / 折叠",
+      "purpose": "相册按 年→季节→月 三层目录结构分组显示，支持折叠、路线图导航、颗粒度切换",
+      "implementation": {
+        "backend": "Album 返回 shoot_time(EXIF 拍摄时间) + created_at 回退",
+        "frontend": "timeGroup.ts 实现 groupByTime 三层树形分组，computed 驱动；折叠用 Set 记录 key",
+        "key_points": [
+          "分组粒度（年/季节/月）切换，默认展开层级由粒度控制",
+          "年→季节→月路线图（面包屑）支持点击滚动跳转 + 高亮动画",
+          "显示方向（竖向/横向）可切换"
+        ]
+      },
+      "highlights": [
+        "纯前端 computed 派生数据，无后端额外开销",
+        "scrollIntoView + classList 实现平滑跳转与高亮提示"
+      ]
+    },
+    {
+      "id": "FEAT-004",
+      "name": "地点排序（手动标签）",
+      "module": "地点字段 / 排序",
+      "purpose": "相册支持手动设置地点标签，按地点 A-Z 排序",
+      "implementation": {
+        "backend": "Album 增加 location 字段（TEXT），update_album 支持设置/清除（空串=清除）",
+        "frontend": "详情页地点标签可点击编辑；排序模式切换按 location A-Z",
+        "key_points": [
+          "最初方案是读照片 GPS + 逆地理编码，但需联网且大陆受限，改为手动标签更可靠",
+          "location 存数据库，支持三种语义：None=保留/空串=清除/有值=设置"
+        ]
+      },
+      "highlights": [
+        "从『自动 GPS 逆地理编码』迭代为『手动标签』，规避网络依赖，更稳定"
+      ],
+      "status": "done",
+      "description": "地点排序：手动标签（albums.location + 前端地点编辑/按地点排序视图）→ 自动化扩展：auto_detect_album_location 命令（扫描相册照片 GPS → 0.01° 网格众数 → BigDataCloud 反向地理编码 → 落库，不覆盖手动标签、不动 updated_at）。配套 photo_scan.detect_album_location / reverse_geocode_coord 公开函数 + 详情页自动识别按钮。",
+      "updated_at": "2026-08-13T23:50:00+08:00"
+    },
+    {
+      "id": "FEAT-005",
+      "name": "批量导入",
+      "module": "批量建相册 / 进度条",
+      "purpose": "选择大文件夹，遍历其一级子文件夹批量创建相册，支持实时进度",
+      "implementation": {
+        "backend": "import_albums 命令先收集子文件夹数，逐个 create_album，用 app.emit 发 import-progress 事件",
+        "frontend": "listen 监听进度事件，实时更新进度条（current/total/imported）",
+        "key_points": [
+          "跳过已作为相册存在的文件夹，避免重复",
+          "进度通过 Tauri 事件通道（Emitter/Listener）实现，比轮询高效"
+        ]
+      },
+      "highlights": [
+        "Tauri 事件系统（emit/listen）用于长任务进度上报，解耦前后端"
+      ]
+    },
+    {
+      "id": "FEAT-006",
+      "name": "勾选批量删除",
+      "module": "多选 / 批量操作",
+      "purpose": "相册列表支持勾选多选 + 批量删除（仅删记录，不删本地文件）",
+      "implementation": {
+        "backend": "delete_albums 命令事务内批量 DELETE",
+        "frontend": "卡片勾选框 + 全选/取消 + 二次确认，selectedIds Set 管理",
+        "key_points": [
+          "删除仅执行 SQL DELETE，完全不触碰本地照片",
+          "二次确认明确告知『仅删除记录，不影响本地照片』"
+        ]
+      },
+      "highlights": [
+        "事务保证原子性，前端界面即时移除所选"
+      ]
+    },
+    {
+      "id": "FEAT-007",
+      "name": "手动排序（分组文件夹树）",
+      "module": "文件夹树 / 拖拽 / 多级",
+      "purpose": "手动自主排序：自定义分组（模仿文件夹），最多三级父子关系，拖拽移动相册，父文件夹支持标签和说明",
+      "implementation": {
+        "backend": "folders 表(level 1-3) + folder_tags(≤5) + folder_albums 关联表；move_album/reorder_album 双写 albums.folder_id + folder_albums",
+        "frontend": "ManualSort.vue 文件夹树递归渲染；Pointer Events 实现拖拽（移动阈值防点击误触）",
+        "key_points": [
+          "folder_albums 关联表记录分组包含哪些子相册，保证分组归属可靠持久化",
+          "拖拽用 Pointer Events + 5px 阈值区分点击与拖拽（修复点击误触 bug）",
+          "get_manual_tree 从 folder_albums 读，旧数据 sync 迁移"
+        ]
+      },
+      "highlights": [
+        "双写持久化方案（albums.folder_id + folder_albums）确保刷新不丢失",
+        "Pointer Events + elementFromPoint + 拖拽浮层实现可靠拖拽",
+        "AOP 日志 + 数据库验证定位并修复了『点击误触发移出』bug"
+      ]
+    },
+    {
+      "id": "FEAT-008",
+      "name": "搜索功能",
+      "module": "模糊搜索 / 分组归属",
+      "purpose": "按关键词模糊搜索相册，支持匹配相册名/相册标签/分组名/分组标签，显示分组归属并可跳转",
+      "implementation": {
+        "backend": "search_albums 扩展搜索范围：相册名+相册标签+分组名+分组标签+祖先分组链；构建分组路径",
+        "frontend": "搜索栏防抖 300ms，结果面板显示分组路径，点击跳转手动模式对应分组",
+        "key_points": [
+          "LIKE %kw% 模糊匹配，覆盖相册集/父相册",
+          "分组路径递归构建（如 旅行/欧洲/巴黎）"
+        ]
+      },
+      "highlights": [
+        "搜索命中父相册（分组）时，其下所有相册都会出现，支持点击分组路径跳转定位"
+      ]
+    },
+    {
+      "id": "FEAT-009",
+      "name": "详情页父相册定位",
+      "module": "分组归属展示 / 跳转",
+      "purpose": "进入最小相册详情页时显示所属父相册（分组）标签，点击可跳转到手动排序的对应分组",
+      "implementation": {
+        "backend": "Album 增加 folder_id/folder_path 计算字段，get_album/get_albums 填充分组信息（含 DB 双重兜底）",
+        "frontend": "详情页显示『所属相册：📁 路径』，点击通过路由 query(?sort=manual&folder=ID) 跳转手动模式并定位",
+        "key_points": [
+          "命令层双重兜底查询（albums.folder_id + folder_albums），确保 folder_id 可靠返回",
+          "前端 fetchAlbum/fetchAlbums 内存兜底，后端返回 null 时保留旧值"
+        ]
+      },
+      "highlights": [
+        "四层防护确保 folder_id 可靠：DB 双写 + fill_album_folder + 命令层兜底 + 前端内存兜底"
+      ]
+    },
+    {
+      "id": "FEAT-010",
+      "name": "相册标签",
+      "module": "标签管理",
+      "purpose": "最小相册支持最多 5 个标签，与相册集（分组）标签管理一致",
+      "implementation": {
+        "backend": "album_tags 表（album_id, tag, UNIQUE）+ update_album_tags 命令（覆盖式，≤5）",
+        "frontend": "详情页『相册标签』区，添加/删除/保存（≤5）",
+        "key_points": [
+          "标签数量校验 ≤5，覆盖式设置",
+          "get_albums/get_album/search_albums 返回相册标签"
+        ]
+      },
+      "highlights": [
+        "统一标签模式：相册（album_tags）与分组（folder_tags）结构一致"
+      ]
+    },
+    {
+      "id": "FEAT-011",
+      "name": "右键菜单",
+      "module": "交互增强",
+      "purpose": "相册卡片支持右键自定义菜单（打开/删除），分组右键（删除），相册右键（移动到分组/删除）",
+      "implementation": {
+        "backend": "无新增命令，复用 delete_album/move_album",
+        "frontend": "contextmenu 事件 + 自定义菜单组件（position:fixed），点击外部关闭",
+        "key_points": [
+          "删除/移动前二次确认，明确『仅删系统视图，不删本地照片』",
+          "右键菜单含子菜单（移动到分组的折叠列表）"
+        ]
+      },
+      "highlights": [
+        "自定义 context menu 替代浏览器默认菜单，交互一致"
+      ]
+    },
+    {
+      "id": "FEAT-012",
+      "name": "日志系统",
+      "module": "AOP 日志 / 文件持久化",
+      "purpose": "为所有自建函数提供调用前后日志记录，支持文件存储、时间戳、定时清理，辅助 bug 定位",
+      "implementation": {
+        "backend": "logger.rs：log_call_start/log_call_end AOP 风格 + 文件写入 app_data_dir/logs/app.log + 后台线程定时清理（默认60分钟）",
+        "frontend": "trace.ts 装饰器自动包装函数记录调用前后",
+        "key_points": [
+          "后端 log_call! 宏简化命令接入",
+          "前端 trace(name, fn) 高阶函数自动记录参数/耗时/结果/错误",
+          "定时清理：删除过期日志文件 + 超 5MB 清空刷新"
+        ]
+      },
+      "highlights": [
+        "AOP 风格（面向切面）：调用前/后绑定日志，无需侵入业务逻辑",
+        "核心命令（move/reorder/create/delete/get/search）已接入，前端核心组件函数已接入"
+      ]
+    },
+    {
+      "id": "FEAT-013",
+      "name": "数据模型收敛（folder_id 单源）+ 迁移回填",
+      "module": "数据模型 / SQLite 迁移（dev 分支 41cdff5）",
+      "purpose": "将分组归属的双写不一致（albums.folder_id + folder_albums + 4 层兜底）收敛为 folder_albums 唯一事实源，并通过一次性迁移回填历史数据，保证旧库升级后分组归属不丢失",
+      "implementation": {
+        "backend": "① folder_albums 关联表成为分组归属唯一事实源：fill_album_folder 改为一次 SELECT 批量填充（原为每相册 query_row + 4 层兜底）；search_albums 分组匹配/祖先链全部改 JOIN folder_albums；move_album/reorder_album 组内排序改读 folder_albums；② delete_album/delete_albums 事务内级联清理 folder_albums/album_tags/album_stats（修复孤儿残留）；③ albums.folder_id/sort_order 降级为冗余缓存列（同事务同步，读取不依赖）；④ 顺带修复 update_album location 参数占位符错位、create_folder 空名误报 NotFound 两个真实 bug；⑤ 迁移回填：Database 建表阶段执行 INSERT INTO folder_albums SELECT … FROM albums WHERE folder_id IS NOT NULL AND NOT EXISTS（已有关联）",
+        "frontend": "移除 Pinia store 中 2 层 folder_id 兜底 fallback 与调试 console.log，folder_id/folder_path 完全信任后端填充",
+        "key_points": [
+          "回填迁移用 NOT EXISTS 守卫：只补充「albums.folder_id 有值但 folder_albums 无该相册任何关联」的相册，不触碰已有关联（含历史孤儿行），最保守地保证旧数据不丢失",
+          "迁移在 Database::new 建表阶段幂等执行，旧库打开即自动回填，无需手动操作",
+          "这是相对原始提交 12ccfb2 的关键改进——原提交缺此迁移，是此前 3 提交整体回退的最可疑根因"
+        ]
+      },
+      "highlights": [
+        "解决的问题：早期版本 create_album / 部分写入路径只写 albums.folder_id 不写 folder_albums，导致双源不一致，需要 4 层兜底补偿；旧版 delete_album 只删 albums 行导致 folder_albums 孤儿数据残留；移除兜底后若无迁移，旧库相册会在升级后静默丢失分组显示",
+        "收益：读取路径确定化（分组归属单一来源，N+1 每相册 1 次查询 → 1 次批量查询）；消除 4 层兜底代码（后端 2 层 + 前端 2 层）；级联删除杜绝孤儿数据；一次性迁移保证升级不丢分组",
+        "验证：cargo check / vue-tsc / cargo test --lib 2/2 全通过（album_crud_roundtrip 实际建库执行迁移 SQL）"
+      ]
+    },
+    {
+      "id": "FEAT-014",
+      "name": "统计缓存 + 缩略图指纹化（含主动失效与封面降级）（v1 TTL 方案，已被 FEAT-015 取代）",
+      "module": "后端性能 / SQLite 缓存（dev 分支 f89ba67）",
+      "purpose": "将相册的照片数量/大小/拍摄时间/封面源图路径持久化缓存到 album_stats 表，列表与详情加载从每相册 3~4 次全目录遍历降为 1 次 SQL 快查；缩略图文件名改为内容指纹解决换图不失效问题；并补上主动失效钩子与封面缺失自愈，修复原提交 TTL 无主动失效的体验缺陷",
+      "implementation": {
+        "backend": "① fill_album_stats 缓存优先：命中时锁内仅 SQLite 快查 + 复用缩略图；miss/过期才单次 walkdir 完成 photo_count/size_bytes/shoot_time/首图四项统计并写回缓存；② 缩略图指纹化：缓存文件名 = len + mtime + 文件头 8KB hash，同名内容变更自动失效，生成前清理旧指纹文件；③ delete_album/delete_albums 删除时清理 thumbs 缓存；④ set_cover 后清理自动缩略图避免孤儿；⑤ 新增 invalidate_album_stats 命令（含 delete_album_stats / clear_all_album_stats），前端可在导入照片后主动失效缓存；⑥ 封面源图缺失时删除缓存并降级重扫自愈",
+        "frontend": "本次无前端改动（invalidate_album_stats 命令已注册，供后续前端导入后调用）",
+        "key_points": [
+          "TTL 600s（原提交 3600s）：缩短增删照片后的统计滞后窗口",
+          "主动失效优先级高于 TTL：手动刷新立即生效，不等待过期",
+          "缓存命中路径若 cover_source 源图已删，不再静默 return（会丢封面+统计冻结），改为清缓存重扫，目录内其他图片自动上位"
+        ]
+      },
+      "highlights": [
+        "解决的问题：原实现每次列表加载都遍历文件系统（相册多时明显卡顿）；同名文件内容变化后缩略图缓存不失效；换封面后仍显示旧图；增删照片后统计最多滞后 1 小时且无法手动刷新；封面源图被删后封面丢失且统计冻结到 TTL 过期",
+        "收益：列表加载性能从 O(每相册全目录遍历) 降为 O(1 次 SQL 快查)；缩略图缓存永远与内容一致且无孤儿文件；统计可主动刷新、封面缺失自动自愈",
+        "验证：cargo check 0 warning；cargo test --lib 2/2 通过（含指纹失效/清理断言）",
+        "修复记录（122282b）：指纹哈希 DefaultHasher 种子每次编译时随机 → 重编译后缓存全失效 → 每次启动全量重生成缩略图卡死 140s；改用 FNV-1a 确定性哈希 + 旧命名缩略图复用，修复后全量处理 140s→61ms（快 2300 倍）。详见 bug-notes.json BUG-2026-0815-001"
+      ]
+    },
+    {
+      "id": "FEAT-015",
+      "name": "统计缓存 v2：文件数变更探测（替代 TTL 定时失效）",
+      "module": "后端性能 / SQLite 缓存（dev 分支 e8fbbc6）",
+      "purpose": "统计缓存失效策略从 TTL 定时过期改为「文件数变更探测」：每次加载轻量统计目录递归文件数，与 album_stats.file_count 比对，一致则直接用 SQL 统计，不一致才重扫该相册——消除 TTL 滞后窗口与过期全量重扫峰值",
+      "implementation": {
+        "backend": "① album_stats 表新增 file_count 列（旧库迁移默认 -1 强制首次重扫）；② 新增 count_files_recursive（walkdir 递归只数文件，不读内容不判格式，每相册约 0.5ms）；③ fill_album_stats 重写：探测文件数 → 与缓存一致直接用 SQL（photo_count/size_bytes/shoot_time/封面）→ 不一致仅重扫该相册并写回新 file_count；④ 删除 STATS_TTL_SECS / scanned_at TTL 逻辑 / invalidate_album_stats 命令 / clear_all_album_stats",
+        "frontend": "无前端改动（不再需要手动刷新入口，探测自动失效）",
+        "key_points": [
+          "盲区取舍：同名替换内容（文件数不变）不触发重扫；照片管理最常见操作是增删，可接受",
+          "非图片文件增减会误触发重扫（无害，重扫后统计不变）",
+          "封面源缺失降级自愈逻辑保留（delete_album_stats + 重扫换图）",
+          "触发校验路径：① 软件启动 App 挂载时预校验一次（fetchAlbums → get_albums 全量探测，列表/详情打开前数据已最新）；② 点击相册进详情（get_album 对该相册探测，打开前是旧信息、点开后即最新准确信息）；③ 列表加载（get_albums 全量探测）",
+          "封面持久化（d344e97）：自动封面地址写回 albums.cover_path（SQL），加载直接读；命中路径 photo_count>0 但 cover_path 为空 → 强制重扫自愈。修复 cover_source 为 NULL 时封面永久丢失的 bug（详见 BUG-2026-0815-002）",
+          "缩略图生成加速（5d6590b）：JPEG DCT 降采样解码（jpeg-decoder scale），解码时只解所需 DCT 块，换封面从 7.7s 降至 0.76s（11x，release 预计 <200ms）。详见 BUG-2026-0815-003"
+        ]
+      },
+      "highlights": [
+        "相比 TTL 方案：无 600s 滞后窗口（增删照片立即正确）；无过期全量重扫峰值（只重扫变化相册）；无需手动失效命令",
+        "真实数据验证：缓存命中 24/24，总耗时 12.3ms（纯文件计数 + SQL 快查）",
+        "验证：cargo check 0 warning；cargo test --lib 6/6（新增 count_files_recursive / file_count 读写测试）"
+      ]
+    },
+    {
+      "id": "FEAT-016",
+      "name": "前端组件拆分（AlbumCard / AlbumMiniCard）",
+      "module": "前端重构 / DRY（dev 分支 1fe8a3f）",
+      "purpose": "消除相册卡片与迷你相册卡共 7 处重复模板，抽成两个可复用组件，改一处全生效；顺带优化查找性能（O(N²)→O(1)）、封面懒加载、消除非空断言崩溃点",
+      "implementation": {
+        "backend": "无后端改动",
+        "frontend": "① AlbumCard.vue（233 行）吸收 AlbumList 3 份重复卡片（日期视图未分类/月分组 + 地点视图），showLocation prop 控制地点徽标；② AlbumMiniCard.vue（99 行）吸收 ManualSort 4 份重复迷你卡（顶级/一/二/三级分组），data-folder-id/data-album-index 透传保持拖拽逻辑；③ albumById 线性查找改预构建 Map；④ 封面 loading=\"lazy\"；⑤ 非空断言 albumById(...)!.name → album?.name + 占位符",
+        "key_points": [
+          "重复模板 7 处 → 0 残留（grep 验证）",
+          "AlbumList.vue 1607→1390 行；ManualSort.vue 模板瘦身",
+          "改进：AlbumMiniCard album 为 null 时显示 '…' 占位名称（原为空白）"
+        ]
+      },
+      "highlights": [
+        "解决的问题：改样式/加字段要同步改 7 处（易漏改导致界面不一致）；每张迷你卡线性查找相册 O(N²)；albumById 非空断言相册未加载时崩溃；封面一次性全加载",
+        "收益：DRY 改一处全生效；查找 O(1)；消除崩溃点；首屏更快",
+        "验证：vue-tsc 0 错误；vite build 成功"
+      ]
+    },
+    {
+      "id": "FEAT-017",
+      "name": "相册照片 EXIF 扫描（测试功能，独立模块）",
+      "module": "EXIF 提取 / photo_scan 独立组件（dev 分支）",
+      "purpose": "相册详情页提供『图片 EXIF 扫描』按钮，点击后遍历相册目录内所有图片，提取 ISO/焦段/光圈/快门速度/拍摄时间，前端表格展示——功能解耦的示范：EXIF 提取独立成模块，lib.rs 只留薄命令壳，不落库",
+      "implementation": {
+        "backend": "① 新建 src-tauri/src/photo_scan.rs 独立模块：scan_album_photos 递归 walkdir（跳过隐藏文件/目录）→ PhotoExif 结构体（file_name/path/iso/focal_length/aperture/shutter_speed/shoot_time 全 Option）；② 按 tag 数字匹配字段（跨上下文）：真实相机写 Exif IFD，PIL 等工具写 IFD0，直接比较带上下文的 Tag 枚举会漏读；③ field_value_f64 兼容 Rational 与 Short/Long 二元组 [num,denom]（PIL 写入形态）；④ 拍摄时间 display_value 去引号 + 冒号转横线；⑤ lib.rs 仅注册 scan_album_photos 薄命令壳（log_call AOP 接入）",
+        "frontend": "AlbumDetail.vue 替换『即将上线』占位区为扫描区：开始扫描/重新扫描按钮、扫描中/错误/空状态、结果表格（照片名字/ISO/焦段/光圈/快门速度/拍摄时间，缺失显示 —，文件名 hover 显示完整路径）；新增 src/types/photo.ts PhotoExif 类型",
+        "key_points": [
+          "解耦：photo_scan.rs 不依赖 db/thumbnail/folder 模块，图片扩展名列表本地复制，可独立单测",
+          "格式化：焦段 50mm / 4.3mm；光圈 f/2.8；快门 ≥1s 用 30s、<1s 用 1/200s；拍摄时间 2023-01-15 10:30:00",
+          "ISO 双 tag 兼容：0x8827（PhotographicSensitivity）主 + 0x8833（ISOSpeed）兜底",
+          "项目根 test_fixture_photos 目录内置 PIL 生成的带 EXIF/无 EXIF/子目录/隐藏目录 4 张测试图，供 UI 手动验证"
+        ]
+      },
+      "highlights": [
+        "踩坑记录：kamadak-exif 0.6 的 Tag 枚举带 IFD 上下文（Tag(Tiff,0x8827)≠Tag(Exif,0x8827)），get_field 会漏读 PIL 等工具写入 IFD0 的字段 → 按 tag.number() 数字匹配解决",
+        "PIL 直接把 (1,200) 等有理数以 Short 二元组写入（而非 Rational），field_value_f64 统一兼容两种形态",
+        "验证：cargo test --lib 12/12（新增 4 个 photo_scan 测试含端到端 fixture 扫描）；vue-tsc 0 错误"
+      ],
+      "status": "done",
+      "description": "相册照片 EXIF 扫描（测试功能，独立模块）：ISO/焦段/光圈/快门 + 拍摄时间三级兜底(DateTimeOriginal→DateTime→GPS-UTC+8，参考 exif_extractor) + GPS 地点提取(度分秒→十进制/海拔/地图链接) + scan_album_photos_with_place 反向地理编码(BigDataCloud 中文地名，reqwest native-tls)。53 张实测 27 张有 GPS，坐标与参考值 1e-4 一致。",
+      "updated_at": "2026-08-13T23:30:00+08:00"
+    },
+    {
+      "id": "FEAT-018",
+      "name": "相册照片影调分析（独立组件，下采样直方图 + 平均亮度法）",
+      "module": "影调分析 / tone 独立组件（dev 分支）",
+      "purpose": "相册详情页提供『图片影调分析』按钮，先下采样到 256px 再统计灰度直方图，按平均亮度法判断影调类型（低调/中间调/高调），前端表格每行显示照片名、影调标签、平均亮度 L̄ 与迷你 SVG 柱状图——延续功能解耦：独立 tone.rs 模块，lib.rs 只留薄命令壳，不落库",
+      "implementation": {
+        "backend": "① 新建 src-tauri/src/tone.rs 独立模块：scan_album_tones 递归 walkdir（跳过隐藏文件/目录）→ PhotoTone 结构体（file_name/path/histogram[256]/avg_luma/tone_type）；② 下采样关键路径：JPEG 走 jpeg-decoder DCT 降采样（只解所需 DCT 块，输出约 256px，大图从秒级降到几十毫秒），其他格式 image 解码后 thumbnail(256,256)；③ 灰度直方图用 BT.601 加权整数定点（0.299R+0.587G+0.114B，/1000 整数运算避免浮点逐像素）；④ 平均亮度法 L̄=Σ(k·h(k))/Σ(h(k))：L̄<85→低调、L̄>170→高调、否则中间调；⑤ 解码失败图片 histogram 空 + tone_type None 照常列出；⑥ lib.rs 注册 scan_album_tones 薄命令壳（log_call AOP 接入）",
+        "frontend": "AlbumDetail.vue 在 EXIF 扫描区下方新增独立『图片影调分析』区：开始分析/重新分析按钮、分析中/错误/空状态、结果表格（照片名字/影调类型标签/平均亮度/灰度柱状图）；柱状图 256 bin 前端合并为 128 条 SVG rect（viewBox 256x36，降低 DOM 节点量），低调深色标签/中间调灰色/高调浅色；新增 src/types/photo.ts PhotoTone 类型与 ToneType 联合类型",
+        "key_points": [
+          "解耦：tone.rs 不依赖 db/thumbnail/folder，图片扩展名列表本地复制，独立单测",
+          "下采样 256px 是性能核心：直方图是统计分布，6.5 万像素 vs 全尺寸百万级像素分布几乎无差，JPEG DCT 降采样避免全尺寸解码卡顿",
+          "阈值边界：85 与 170 均归中间调（classify 单测覆盖 84.9/85.0/170.0/170.1）",
+          "test_fixture_photos 新增 IMG_0005_dark.jpg（L̄=10→低调）与 IMG_0006_bright.jpg（L̄=240→高调），覆盖三种影调验证"
+        ]
+      },
+      "highlights": [
+        "真实数据验证（fixture 扫描）：暗图 L̄=10→低调、亮图 L̄=240→高调、中间调 124~135；直方图像素数 76800（JPEG 320x240 DCT 输出）与 65536（PNG 256x256 精确）",
+        "前端直方图合并 128 bin 渲染，256 bin 全精度数据保留在 PhotoTone 中",
+        "验证：cargo test --lib 14/14（新增 classify 阈值 + fixture 端到端影调扫描）；vue-tsc 0 错误"
+      ]
+    },
+    {
+      "id": "FEAT-019",
+      "name": "视觉内容识别 v2（YOLOv8s-cls 分类 + YOLOv8n-det 人像检测 + Python 微服务 + ImageNet 映射层）",
+      "module": "VCR 视觉识别 / python 微服务 + vision 独立组件（dev 分支）",
+      "purpose": "相册详情页提供『内容识别』按钮：YOLOv8s-cls（ONNX + ONNX Runtime CPU）识别图片主体，ImageNet 1000 细类经映射表转译为相册大类（动物/食物/植物/建筑/运动/风景/文档/其他）；YOLOv8n-det（COCO 80 类）补 ImageNet 盲区——检出 person 置信度≥0.35 即判定「人像」，解决有人的场景识别不出人/错误识别。前端表格展示类别/细类/置信度/Top3/耗时，进度条 + 点击照片名打开原图，Python 微服务与 Rust vision 模块功能解耦",
+      "implementation": {
+        "backend": "① python/server.py 独立 FastAPI 微服务：/health、/classify（单张）、/classify_batch（批量≤8），双模型并行加载——分类 yolov8s-cls.onnx 优先 / yolov8n-cls.onnx 兜底（自动选择），检测 yolov8n-det.onnx（缺失降级纯分类）；② 分类预处理修复：等比缩放短边=224 + 中心裁剪（替代直接拉伸 224²，宽图畸变丢精度）；③ 人像检测：letterbox 640 + ONNX 推理，取全部锚点 person(类0) 概率最大值，≥PERSON_CONF_MIN(0.35) → category=portrait，top3 头部插入 portrait·人物 并保留分类候选作补充，source=visual+det；④ 其余（export_model.py / generate_mapping.py / Rust vision.rs 生命周期与进度）保持不变，Rust 侧 JSON 透传零改动",
+        "frontend": "AlbumDetail.vue 新增『内容识别』区（EXIF/影调区下方）：开始识别/重新识别按钮、进度条（监听 classify-progress 事件）、结果表格（照片名字[可点击打开原图]/内容类别中文标签/识别细类/置信度条+百分比/Top3 候选 chips/耗时）；新增 src/types/photo.ts VisionResult/VisionTopItem/ClassifyProgress 类型",
+        "key_points": [
+          "模型获取：GitHub 被墙 → ghfast.top 代理下载 yolov8n-cls.pt（5.56MB）→ ultralytics 导出 ONNX（10.9MB）；onnxslim/matplotlib 需预装避免导出中断",
+          "映射表三层归类：主关键词（词边界 \b 匹配防 'matchstick' 含 'tick' 误伤）→ 动物特征词（词边界+长子串≥5 双模式补复合词 foxhound/flatworm）→ 显式补丁（狗品种/口语名）；最终 other 残留动物 0，动物 410 类",
+          "性能实测（7840HS）：warmup 后单张 6.5~11ms（远超方案预估 40-70ms）；首次启动服务约 5-10 秒（模型加载）",
+          "微服务常驻：测试期不主动停止，重复识别秒回；服务/模型缺失时返回明确错误，主功能不受影响",
+          "纯色测试图置信度低（~0.3%）是正常现象（无真实内容），真实图片（游戏截图）识别合理（chain mail/comic book）",
+          "人像根因：ImageNet-1k 无通用 person 类（只有 suit/maillot 等服装类），实测运动员照片被分类为 suit→其他；换更大的分类模型修不了，必须加 COCO 目标检测（person=类0）",
+          "性能实测（本机 CPU）：s-cls 单张 ~4-8ms + n-det640 ~32-38ms + 预处理 ≈70ms/张，批量场景（100 张 ≈7s，有进度条）完全可接受；精度优先保留 640 输入"
+        ]
+      },
+      "highlights": [
+        "踩坑记录：pip 源慢改用清华镜像；matplotlib 与 numpy 2.5 ABI 不兼容需升级 matplotlib 3.11；ultralytics 导出自动装 onnxslim 超时需预装；GitHub Releases 被墙（curl 35）改用 ghfast.top 代理",
+        "ImageNet 类名从本地 pt 权重读的是 WordNet ID（n01440764），可读名从 pytorch/hub 官方列表经 ghfast 代理获取",
+        "验证：cargo test --lib 16/16（新增 vision 2 个）；cargo check 0 warning；vue-tsc 0 错误；Python 服务 health/单张/批量 curl 全通",
+        "遗留：image_processor 融合仲裁（参数树 portrait/night_scene）未实现，本期纯视觉结果；bat 启动器/安装打包未做，模型文件已 gitignore",
+        "v2 变更（2026-08-12）：模型 n-cls→s-cls（ghfast.top 代理下载 + ultralytics 导出，s 24.3MB / det 12.3MB ONNX）；新增 yolov8n-det 人像检测通道；修复预处理拉伸失真；三张结果表（EXIF/影调/内容识别）照片名字统一可点击打开原图；验证：zidane.jpg 人像 0.83 ✓、bus.jpg 人像 0.90 + 场景 ✓、纯色/截图无 person 不误判；vue-tsc 0 错误、cargo check 0 warning"
+      ]
+    },
+    {
+      "id": "F20",
+      "name": "视觉内容识别 v3（分层重构 + 置信度修复 + 扫街/特写拆分 + 人脸标号 + Places365 场景通道）",
+      "module": "python/vcr 分层包 + vision.rs 人物管理命令 + AlbumDetail 人物面板",
+      "purpose": "按『接口层/服务层/持久层』重构 Python 微服务；修复 P0 双重 softmax 置信度崩溃；人像三态仲裁拆分 特写/扫街/不覆盖；动物细分狗/猫/鸟；截图启发式；InsightFace 人脸标号（同人同 P 编号）；Places365 场景通道提升自然风景/建筑城市准确度",
+      "implementation": "接口层 server.py（薄路由）/ 服务层 vcr/services（classifier、detector+NMS、face_service、scene_service、arbitrator、pipeline）/ 持久层 vcr/persistence/person_store（SQLite persons.db）/ 基础设施 model_registry、preprocess（SCRFD 用 (x-127.5)/128 黑边、cv2.estimateAffinePartial2D 对齐避开 skimage）、mapping；映射表 v2：整词正则+OVERRIDES+索引兜底（0-397 全动物、crane 134/517 索引区分、vehicle 大类 56 类、other 39%→34.5%）；Rust 新增 list_persons/rename_person/merge_persons/delete_person 四个命令（代理 Python /persons 接口）；前端 VisionResult 增 sub_category/person_ids/person_count，人物注册表面板支持重命名/合并/删除",
+      "highlights": [
+        "P0 修复：yolov8s-cls ONNX 输出已是概率分布，删除二次 softmax——beagle 置信度 0.007→0.94",
+        "扫街可识别：NMS 人数≥3 且最大人框面积<15% → street；实测 76 人街拍从 portrait 误判修正为 扫街·12人",
+        "特写/扫街拆分：人框面积占比 73%(特写) vs 0.2~8.6%(扫街)，阈值裕量近 10 倍",
+        "人脸标号：buffalo_sc（SCRFD det_500m 2.5MB + ArcFace w600k_mbf 13.6MB），同人跨照片 sim≥0.96 稳定归同 P 编号；不同人 ~0",
+        "SCRFD 解码三坑记录：①距离需乘 stride ②预处理 (x-127.5)/128 黑边 ③skimage 与 numpy2.x 二进制不兼容→改用 cv2.estimateAffinePartial2D",
+        "截图启发式：PNG+无EXIF+屏幕比例+弱分类证据 → text；实测合成截图命中",
+        "Places365：resnet18 ONNX 45.4MB（MIT 官方权重分段下载+torch 导出，hf-mirror 无可用镜像），scene 通道仅在其他/弱证据时接管（other→scene 接管、landscape/architecture 需 scene≥0.15 才翻转），实测夜景城市 other→建筑城市",
+        "11 图回归全绿：风景×2/动物狗猫/特写×2/扫街×2/食物/建筑/车辆/文本/截图全部正确"
+      ]
+    },
+    {
+      "id": "F21",
+      "name": "视觉内容识别 v4（夜景/城市风光拆分 + 实测校准 + taxonomy 收敛 + 专家通道骨架）",
+      "status": "done",
+      "description": "按《VCR 渐进式实施工程手册》落实全部后端通道 + 专家模型补齐。53 张实测 64.2%→90.6%（48/53）：夜景 7/7（tone 纯影调分档）、文档 3/3（paddleocr-det DB 检测+多框过滤）、食物 5/5（hot pot/蟹/plate 映射兜底）、城市风光 4/4、人物 8/8。新增模型：paddleocr-det.onnx（modelscope RapidOCR）、efficientnet-b2-flowers.onnx（HF Lumia101 导出）。剩余 5 错：花朵 3（专家模型盲区）+ 黄昏城堡 1（cls 误判）+ 夜市合影 1（边界）。 P2 优化：人脸标号条件触发（_needs_face 与仲裁器人物规则对齐，仅 portrait/street/合影 分支跑人脸，真实相册省大量单人半身图人脸开销）；清理 dead config（OCR_AREA_WEAK/OCR_UNCLIP_RATIO/NIGHT_SCENE_CONF）；plate 映射补风险注释。53 张回归 90.6% 保持，437ms/张。",
+      "related_files": [
+        "python/vcr/services/tone_service.py",
+        "python/vcr/services/ocr_service.py",
+        "python/vcr/services/flower_service.py",
+        "python/vcr/services/food_service.py",
+        "python/vcr/taxonomy.py",
+        "python/models/album_groups.json",
+        "python/vcr/services/arbitrator.py",
+        "python/vcr/services/scene_service.py",
+        "python/vcr/services/detector.py",
+        "python/vcr/services/pipeline.py",
+        "python/vcr/config.py",
+        "python/server.py",
+        "python/eval_vcr.py",
+        "python/models/imagenet_to_album.json"
+      ],
+      "keywords": [
+        "VCR",
+        "夜景",
+        "night_scene",
+        "cityscape",
+        "taxonomy",
+        "tone",
+        "OCR",
+        "花朵专家",
+        "eval_vcr",
+        "回归"
+      ],
+      "created_at": "2026-08-13T20:30:00+08:00",
+      "updated_at": "2026-08-13T23:55:00+08:00"
+    },
+    {
+      "id": "FEAT-SCAN-001",
+      "name": "主页面图片扫描测试（时间/地点识别 + 按年·地点组织移动）",
+      "status": "done",
+      "description": "独立大组件 test_scan.rs（命令层与逻辑解耦，lib.rs 仅注册）：①scan_test_photos 非递归扫描直接图片，复用 photo_scan 时间三级兜底 + GPS 提取；②resolve_test_places GPS 0.01° 网格聚类每聚类一次反编码（同聚类共享地名，省 70%+ 请求）；③organize_test_photos 按「年→地点」两级文件夹创建 + fs::rename 移动（同名跳过/无年→未知年份/无地点→无地点）。前端：Home 启用图片扫描模块 + 路由 /scan + TestScan.vue（目录选择/扫描/解析地名/时间·地点双视图/移动报告）。端到端验证：4 张临时照片（3 GPS+1 无）扫描 4/4、地名达州市·万源市 3/3、移动 4/4 成功。log_call 宏改绝对路径以支持子模块调用。 修复：①命令改 async + spawn_blocking（Tauri 2 同步命令在主线程执行，含网络/文件 IO 会冻结 UI 卡死）；②网络超时 10s→5s；③扫描 0 张明确报错提示（非递归目录无直接图片时）；④组织前 confirm 提示自动联网解析。连带修复 auto_detect_album_location / scan_album_photos_with_place 同步阻塞。 日志+进度：①每张照片解析地点/移动均记日志（logger::log_info/log_error，格式 [resolve] 文件 → 地名 / [organize] 文件 → 年/地点 或跳过/失败原因）；②ScanProgress 逐张进度回调 + tauri emit \"test-scan-progress\" 事件；③前端进度条（phase 区分解析地名/组织移动，蓝色→完成绿色，显示当前文件与结果）；④反编码失败重试 3 次（网络抖动容错）。",
+      "related_files": [
+        "src-tauri/src/test_scan.rs",
+        "src-tauri/src/photo_scan.rs",
+        "src-tauri/src/lib.rs",
+        "src/views/TestScan.vue",
+        "src/views/Home.vue",
+        "src/router/index.ts",
+        "src/types/photo.ts"
+      ],
+      "keywords": [
+        "图片扫描",
+        "test_scan",
+        "时间识别",
+        "地点识别",
+        "组织移动",
+        "GPS聚类"
+      ],
+      "created_at": "2026-08-13T23:58:00+08:00",
+      "updated_at": "2026-08-14T00:30:00+08:00"
+    },
+    {
+      "id": "FEAT-GEO-001",
+      "name": "GPS→省/市 本地离线反查（geo_index，替代逐张联网反编码）",
+      "status": "done",
+      "description": "用民政部口径中国省/市边界（阿里 DataV.GeoAtlas，免 key、WGS84）把照片 GPS 本地解析为省/市，0 网络请求。数据：python/download_geo_data.py 一次性下载预处理（去连续重复点 + Douglas-Peucker 0.002° + 坐标圆整 4 位小数）→ src-tauri/resources/china_geo.json（2956KB 原始 / gzip 883KB：省级 35 要素 + 市级 363 要素 27 省；直辖市/港澳台不下钻，台湾因市级数据缺失直接省级）。模块：src-tauri/src/geo_index.rs（include_str! 内嵌 + OnceLock 解析一次 + bbox 预筛 + 射线法 even-odd，逐 polygon 统计全部环交点处理飞地如安徽天长在江苏界内；0.01° 网格结果缓存）。接入：①scan_album_photos_local_place 新命令（Tauri）本地秒回；②scan_album_photos_with_place 保持联网精确地名；③auto_detect_album_location 本地优先联网兜底；④test_scan resolve_test_places 本地优先 + 联网兜底（懒创建 HTTP 客户端）。前端：AlbumDetail.vue 扫描区按钮拆两档「本地省/市（秒回·离线）」+「精确地名（联网）」并更新文案；TestScan.vue 文案去「需联网」+ 修 unlistenProgress 未清理 TS6133。验证：geo_index 单测 3/3（北京/成都/台北/香港/三亚/天长飞地/公海/巴黎）；photo_scan 端到端 53 张真实照片 27 个 GPS 全部解析（参考点 31.92128,107.63749 → 四川省 · 达州市），扫描+解析 0.16s（原联网 30~60s）；cargo test 22/22 通过、vue-tsc 0 错误。",
+      "tests": "cargo test --lib（22 通过，2 联网测试 ignore）；python python/download_geo_data.py 自检 14/14",
+      "date": "2026-08-14"
+    },
+    {
+      "id": "FEAT-020",
+      "name": "『全部折叠/展开』扩展到地点 + 手动排序视图",
+      "status": "done",
+      "description": "原『全部折叠/展开』仅日期排序（sortMode==date）显示并只作用于年→季节→月分组。本次将其扩展到三种排序模式：①日期模式不变；②地点模式新增按地点分组（locationGroups computed，按 A-Z 顺序、无地点归入『未知地点』），每组可折叠（loc-* key），toggleAllGroups 按当前模式收集 key；③手动排序模式：ManualSort.vue 新增分组折叠状态（collapsed Set + rootCollapsed『未分组相册』区），三级分组头均加 ▸/▾ 折叠箭头，toggleAll() 与 isAllCollapsed 通过 defineExpose 暴露，父组件 AlbumList 用 ref 调用；工具栏『全部折叠』按钮改为三模式均显示，文字按当前模式判断『全部折叠/全部展开』；切换排序方式时清空 collapsed 避免三模式 key 串扰。前端实现，无后端改动。",
+      "related_files": [
+        "src/views/AlbumList.vue",
+        "src/views/ManualSort.vue"
+      ],
+      "keywords": [
+        "全部折叠",
+        "折叠",
+        "地点排序",
+        "手动排序",
+        "ManualSort",
+        "collapse"
+      ],
+      "implementation": {
+        "frontend": "AlbumList.vue：locationGroups computed（Map 分组保持 A-Z）；locationKey(loc)=loc-<loc>；toggleAllGroups 分支 date/location；allCollapsed computed + onToggleAll 按模式分发（manual 调 ManualSort.toggleAll）；setSortMode 清空 collapsed；toolbar 按钮 v-if 移除日期限制；ManualSort ref 绑定。ManualSort.vue：collapsed Set + rootCollapsed + isFolderCollapsed/toggleFolder/collectFolderIds/toggleAll/isAllCollapsed + defineExpose；三级 folder-head 加 fold-arrow，folder-albums 与子级 div 加 v-show 控制折叠；CSS 新增 .location-group/.group-location/.fold-arrow/root-title 可点击。",
+        "key_points": [
+          "手动模式折叠由子组件自管理，父组件仅通过 ref + defineExpose 调度（toggleAll / isAllCollapsed）",
+          "三种模式共用一个 collapsed Set，切模式清空防串扰（key 命名空间 loc- / y- / s- / m-）",
+          "ManualSort 用 v-show 加在 folder-albums 与子级 folder-node 上而非包一层 div，避免破坏拖拽 data-folder-id 结构"
+        ]
+      },
+      "highlights": [
+        "复用日期模式的 toggleCollapse/isCollapsed 折叠状态机，地点模式成本低",
+        "子组件 defineExpose 暴露方法，父组件按模式分发调用，无跨组件状态耦合"
+      ],
+      "created_at": "2026-08-19T15:20:00+08:00",
+      "updated_at": "2026-08-19T15:20:00+08:00"
+    },
+    {
+      "id": "FEAT-022",
+      "name": "内容扫描表 + 照片智能搜索（AI 内容入库 + 群相册/单相册搜索）",
+      "status": "done",
+      "description": "新增 photo_content_scan 内容扫描表：相册 AI 内容扫描结果持久化入库，照片以「路径+大小+修改时间」组合哈希唯一标定，二次扫描按哈希覆盖更新（以二次结果为准）；表预留时间/地点/快门速度/ISO/光圈/焦段字段，并以父目录+绝对地址优化索引；加入照片内容智能搜索，支持群相册全局搜索（相册列表页）与单相册内部搜索（相册详情页），搜索范围随界面不同。多用户按 user_id 隔离。",
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/lib.rs",
+        "src/types/content.ts",
+        "src/stores/content.ts",
+        "src/views/AlbumList.vue",
+        "src/views/AlbumDetail.vue"
+      ],
+      "keywords": [
+        "内容扫描",
+        "智能搜索",
+        "photo_content_scan",
+        "photo_hash",
+        "哈希去重",
+        "upsert",
+        "群相册搜索",
+        "单相册搜索",
+        "EXIF",
+        "FEAT-022"
+      ],
+      "implementation": {
+        "backend": "db/content.rs 建表(photo_hash UNIQUE, path, parent_dir, album_id, user_id, content/category/sub_category/label/confidence/top3/person_ids, shoot_time/location/shutter_speed/iso/aperture/focal_length/lat/lon, scanned_at) + 索引(idx_pcs_parent/path/user/album)；upsert_photo_contents 用 INSERT ON CONFLICT(photo_hash) DO UPDATE 实现二次扫描覆盖；search_photo_content 按 user_id 隔离 + 可选 album_id 限定单相册范围。content.rs 服务层 photo_hash(FNV-1a 对 大小|mtime|路径) + build_records(复用 vision::classify_album 识别 + photo_scan::read_photo_exif 提取 EXIF) + commands 薄壳(scan_album_content/search_photo_content)。db::open 建表，delete_album_refs 级联删内容表。",
+        "frontend": "types/content.ts(ContentSearchHit/ScanOutcome)、stores/content.ts(scanAlbumContent/searchPhotoContent)；AlbumList 全局搜索框同时搜相册+照片内容(分组展示、点击跳所属相册)；AlbumDetail 内容识别改调 scan_album_content 落库并显示写库报告，新增单相册内容搜索框展示命中照片(点开原图)。"
+      },
+      "highlights": [
+        "照片以哈希唯一标定，重复扫描不产生重复行，二次扫描结果覆盖",
+        "预留 EXIF 拍摄参数字段并随扫描填充",
+        "搜索范围按界面区分：列表页全局、详情页单相册"
+      ],
+      "created_at": "2026-08-20T12:00:00+08:00",
+      "updated_at": "2026-08-20T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-023",
+      "name": "内容识别结果表格分页（10/20/50/100 条每页）",
+      "status": "done",
+      "description": "相册详情页「内容识别」结果表支持分页显示，页大小可选 10/20/50/100 条每页，含上一页/下一页翻页与页码信息，切换页大小回到第 1 页，新扫描自动回第 1 页。",
+      "related_files": [
+        "src/views/AlbumDetail.vue"
+      ],
+      "keywords": [
+        "分页",
+        "paginate",
+        "pageSize",
+        "10/20/50/100",
+        "内容识别",
+        "pagination"
+      ],
+      "implementation": {
+        "frontend": "AlbumDetail.vue 新增 PAGE_SIZES/pageSize/currentPage/pagedVision/visionPageCount/visionRowOffset，watch 页大小/结果自动收拢页码，classifyAlbum 开始置第 1 页；模板 v-for 改 pagedVision + vision-pager 控件（每页下拉 + 上一页/下一页）。"
+      },
+      "highlights": [
+        "页大小可切换，切页自动回到第 1 页，越界自动收拢"
+      ],
+      "created_at": "2026-08-20T13:00:00+08:00",
+      "updated_at": "2026-08-20T13:00:00+08:00"
+    },
+    {
+      "id": "FEAT-024",
+      "name": "记住登录：默认 3 天免密复用上次用户",
+      "status": "done",
+      "description": "登录/注册成功后写入随机 token（sessions 表 + 磁盘 session.token 文件），默认 3 天有效；应用启动自动校验并恢复上次登录用户（免密复用）；点击退出登录清除 token（DB + 磁盘）。同用户新登录替换旧 token，多用户各自独立。",
+      "related_files": [
+        "src-tauri/src/session.rs",
+        "src-tauri/src/lib.rs"
+      ],
+      "keywords": [
+        "记住登录",
+        "remember",
+        "token",
+        "免密",
+        "免登录",
+        "3天",
+        "session"
+      ],
+      "implementation": {
+        "backend": "新模块 session.rs：sessions 表 + generate_token(OsRng 32B hex) + create_remember_session/validate_remember_session/clear_remember_session + token 文件读写清除；lib.rs setup 启动时读 token 恢复会话、login/register 写 token（remember_login 辅助）、logout 清 token；前端无需改动，启动走 get_current_user 自动恢复。"
+      },
+      "highlights": [
+        "启动即复用上次用户，3 天免密，登出彻底清除",
+        "单用户单 token，多用户隔离"
+      ],
+      "created_at": "2026-08-20T13:00:00+08:00",
+      "updated_at": "2026-08-20T13:00:00+08:00"
+    },
+    {
+      "id": "FEAT-025",
+      "name": "内容扫描批次选择 + GPU 加速可行性（自动探测，DirectML 起步）",
+      "status": "done",
+      "description": "内容识别界面支持选择推理批次（8/16/32），并支持检测 GPU 加速可行性：Python 服务启动时自动探测可用 GPU 提供方（DirectML 优先，其次 CUDA），可用则自动走 GPU 推理、否则回退 CPU；前端展示 GPU 状态与当前提供方。",
+      "related_files": [
+        "python/vcr/model_registry.py",
+        "python/vcr/config.py",
+        "python/server.py",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/lib.rs",
+        "src/views/AlbumDetail.vue",
+        "src/stores/content.ts",
+        "src/types/content.ts"
+      ],
+      "keywords": [
+        "批次",
+        "batch",
+        "GPU",
+        "DirectML",
+        "CUDA",
+        "onnxruntime",
+        "加速"
+      ],
+      "implementation": {
+        "backend": "Python model_registry._providers() 探测 ort.get_available_providers() 自动选 DML/CUDA 否则 CPU；config 加 VCR_PROVIDER env 开关与 BATCH_CHUNK_MAX=64 封顶；server /classify_batch 按客户端批次安全封顶 + /gpu 端点；vision.rs classify_album 加 batch_size 参数 + vcr_gpu_status()；content.rs scan_album_content 透传 batch_size；lib.rs 注册 get_vcr_gpu_status。",
+        "frontend": "AlbumDetail 批次下拉(8/16/32)+「检测 GPU」按钮+GPU 状态条（use_gpu 变绿）；扫描后自动刷新 GPU 状态；store.scanAlbumContent 传 batchSize，fetchGpuStatus 查状态。"
+      },
+      "highlights": [
+        "GPU 自动探测自动选，无 GPU 自动回退 CPU，不中断功能",
+        "批次可调，服务端安全封顶 64"
+      ],
+      "created_at": "2026-08-20T13:00:00+08:00",
+      "updated_at": "2026-08-20T13:00:00+08:00"
+    },
+    {
+      "id": "FEAT-026",
+      "name": "组合扫描 + 读表 + 条件过滤搜索（统一 EXIF / 影调 / AI 三合一）",
+      "status": "done",
+      "description": "将原本分散的『扫描照片』(EXIF)、『扫描影调』、『内容扫描』(AI) 三个独立扫描入口合并为一个『组合扫描』界面：用户通过下拉勾选选择扫描类型（可单选 / 多选 / 全勾），一次完成多类扫描，结果统一展示在一张表格里。新增『读表』按钮从 photo_content_scan 库分页读取历史扫描结果。新增『过滤搜索』条，支持 ISO / 快门 / 光圈 / 焦段数值范围预设下拉 + 影调类型（低调/中间调/高调）枚举下拉，后端按 ?x IS NULL OR ... 模式动态拼接 SQL 过滤。表结构扩展 6 个新列（iso_num/focal_num/aperture_num/shutter_num/tone_type/avg_luma），EXIF 扫描模块同步补充数值字段解析。",
+      "related_files": [
+        "src-tauri/src/photo_scan.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/lib.rs",
+        "src/types/content.ts",
+        "src/stores/content.ts",
+        "src/views/AlbumDetail.vue"
+      ],
+      "keywords": [
+        "组合扫描",
+        "读表",
+        "过滤搜索",
+        "EXIF 数值化",
+        "影调筛选",
+        "三合一"
+      ],
+      "implementation": {
+        "backend": "photo_scan.rs 新增 iso_num/focal_num/aperture_num/shutter_num 数值字段 + read_photo_exif 解析；db/content.rs ALTER TABLE 加 6 新列 + AlbumContentRow/ContentFilters + read_album_content(分页)/search_photo_content_with_filters(?NULL OR ... 动态过滤)；content.rs 新增 UnifiedScanRow/CombinedScanOutcome/ContentScanFilters + build_records_combined + 三个新命令；lib.rs 注册。",
+        "frontend": "AlbumDetail 新增『组合扫描』区块：类型勾选(3 项)+批次下拉+GPU 检测+统一结果表(9 列)+读表按钮；搜索区新增过滤条(ISO/快门/光圈/焦段各 2 下拉 + 影调 1 下拉)"
+      },
+      "highlights": [
+        "三合一扫描入口，勾选即扫，统一表格",
+        "读表从库取数，支持分页",
+        "过滤搜索 8 维数值 + 3 档影调预设"
+      ],
+      "created_at": "2026-08-20T13:30:00+08:00",
+      "updated_at": "2026-08-21",
+      "enhancement": "2026-08-21 增强：统一入口只保留组合扫描（移除旧的 EXIF/影调/AI 三个小组件）；扫描迁入 Pinia store 后台任务（按 albumId 隔离，退出相册不中断）；支持单选项扫描；新增「停止」按钮（后端 cancel_scan 全局取消标记 + classify_album 分批检查 + 同步重活放 spawn_blocking） | UI 增强：扫描内容可折叠（▶/▼ 切换）；读表与扫描结果支持分页（10/20/50 每页，默认 10，带上一页/下一页）；内容搜索框移至扫描框之前（AlbumDetail 中 ContentSearch 前置） | 搜索页 UI 增强：① 搜索页支持折叠/展开（搜索框始终可见，折叠过滤条件与结果区）；② 关键词搜索结果与过滤搜索结果各自独立分页（10/20/50 每页，默认 10，带上一页/下一页）；③ 搜索框下方新增搜索标签提示词（可搜关键词示例 + 过滤条件说明）"
+    },
+    {
+      "id": "FEAT-027",
+      "name": "照片详细信息面板（分辨率/大小/RGB 像素分布图）",
+      "status": "done",
+      "description": "新增 photo_info.rs 模块 + get_photo_info 命令：只读文件头取分辨率（image::ImageReader::into_dimensions，规避全尺寸解码卡顿 BUG-2026-0815-003 同类问题）+ 文件大小/格式 + RGB 三通道直方图（256px 下采样，JPEG 走 DCT 降采样）。PhotoLightbox 集成：分辨率(含 MP)/大小人性化显示/格式三行 + canvas screen 叠加模式绘制 R/G/B 直方图，切图自动重载。按需实时读、不落库。单测 photo_info::tests。",
+      "related_files": [
+        "src-tauri/src/photo_info.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/PhotoLightbox.vue",
+        "src/stores/album.ts",
+        "src/types/photo.ts"
+      ],
+      "keywords": [
+        "照片信息",
+        "分辨率",
+        "直方图",
+        "像素分布",
+        "get_photo_info",
+        "photo_info"
+      ],
+      "created_at": "2026-08-23T22:26:14+08:00",
+      "updated_at": "2026-08-23T22:26:14+08:00"
+    },
+    {
+      "id": "FEAT-028",
+      "name": "缩略图人物命名 + 人脸头像角标",
+      "status": "done",
+      "description": "Python 微服务新增 GET /persons/{pid}/avatar：person_store.representative_face 取最早登记的脸，PIL/cv2 按 bbox 外扩 12% 裁剪缩放到 96px JPEG；Rust vision::get_person_avatar 代理并缓存到 app_data/avatars/avatar_<pid>.jpg（force_refresh 支持失效重拉），前端 get_person_avatar 命令。PhotoGrid 人物角标重做：头像小框(18px 圆形) + 自定义命名(personName，未命名回退 P 编号)，最多 3 个超出折叠 +N，悬停显示全名；Lightbox 人物行同样用命名。",
+      "related_files": [
+        "python/server.py",
+        "python/vcr/persistence/person_store.py",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/PhotoGrid.vue",
+        "src/components/PhotoLightbox.vue",
+        "src/stores/album.ts"
+      ],
+      "keywords": [
+        "人物头像",
+        "人脸裁剪",
+        "bbox",
+        "代表脸",
+        "人物命名",
+        "avatar",
+        "角标"
+      ],
+      "created_at": "2026-08-23T22:26:14+08:00",
+      "updated_at": "2026-08-23T22:26:14+08:00"
+    },
+    {
+      "id": "FEAT-029",
+      "name": "照片多选删除（相册记录删除 / 本地文件删除 + 二次确认）",
+      "status": "done",
+      "description": "新表 album_photo_excluded(album_id,path,user_id)：「记录删除」=排除出网格浏览+清 photo_content_scan 扫描记录，本地文件保留可恢复（list_album_photos 过滤排除表）；「文件删除」=删磁盘文件+级联清扫描记录/排除表/网格缩略图缓存（thumb 指纹在删文件前预计算 thumbnail::grid_thumb_cache_name/remove_grid_thumb_files）。命令 delete_photo_records / delete_photo_files 返回 PhotoDeleteOutcome(requested/deleted/failed_paths)。前端 PhotoGrid「选择」模式：勾选框多选、全选、双按钮分别触发两种删除，ConfirmDialog 二次确认文案明确区分后果（文件删除红字不可恢复），结果提示自动消失。删除相册时级联清理排除表。",
+      "related_files": [
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/thumbnail.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/PhotoGrid.vue",
+        "src/components/ConfirmDialog.vue",
+        "src/stores/album.ts",
+        "src/types/photo.ts"
+      ],
+      "keywords": [
+        "多选删除",
+        "记录删除",
+        "文件删除",
+        "二次确认",
+        "排除表",
+        "delete_photo_records",
+        "delete_photo_files",
+        "album_photo_excluded"
+      ],
+      "created_at": "2026-08-23T22:26:14+08:00",
+      "updated_at": "2026-08-23T22:26:14+08:00"
+    },
+    {
+      "id": "FEAT-030",
+      "name": "智慧相册主页板块 + 网格筛选仅留大类",
+      "status": "done",
+      "description": "① PhotoGrid 筛选区移除人物 chips 行，仅保留大类（分类）筛选（缩略图人物头像角标保留；人物筛选职责移交智慧相册板块）。② 主页第四卡片由「标签系统·待开发」改为「智慧相册」（🧠 ready），新增 /smart 路由 + SmartAlbum.vue：读取 persons.db 人物注册表（list_persons）展示头像(代表脸裁剪 get_person_avatar)/自定义命名/编号/脸数/登记时间，含空态/服务不可用提示；重命名/合并仍在相册详情页扫描面板。",
+      "related_files": [
+        "src/components/PhotoGrid.vue",
+        "src/views/Home.vue",
+        "src/views/SmartAlbum.vue",
+        "src/router/index.ts"
+      ],
+      "keywords": [
+        "智慧相册",
+        "SmartAlbum",
+        "人物总览",
+        "人脸识别",
+        "大类筛选",
+        "/smart"
+      ],
+      "created_at": "2026-08-23T22:47:42+08:00",
+      "updated_at": "2026-08-23T22:47:42+08:00"
+    },
+    {
+      "id": "FEAT-031",
+      "name": "智慧相册组件化 + 人物注册表 Rust 直读（离线可用）",
+      "status": "done",
+      "description": "① 新增 src-tauri/src/persons.rs：rusqlite 直读 python/data/persons.db——list_persons 按 face_count 降序、rename、merge（质心 float32 加权平均+归一化+faces 迁移，复刻 Python 逻辑）、crop_avatar_local 本地头像裁剪（JPEG 分级降采样 1/8→1 选裁剪框≥160px 的最快档，外扩12%，96×96 JPEG 缓存）。lib.rs 四命令全部切换，vision.rs HTTP 人物函数已删（保留 delete_person）。② SmartAlbum.vue 改组件化壳：分类方式标签栏（人物启用；内容分类/地点禁用占位待开发），新分类只需注册 tab+挂画廊组件。③ 新增 PersonGallery.vue：人物卡片网格+行内重命名(v-focus)+合并流程(选源→弹窗挑目标→ConfirmDialog 二次确认→合并后强制刷新目标头像)。修复：Python 服务未运行时智慧相册报连接错误。",
+      "related_files": [
+        "src-tauri/src/persons.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/vision.rs",
+        "src/views/SmartAlbum.vue",
+        "src/components/PersonGallery.vue"
+      ],
+      "keywords": [
+        "智慧相册",
+        "persons.db",
+        "直读",
+        "离线可用",
+        "合并人物",
+        "重命名",
+        "头像本地裁剪",
+        "组件化",
+        "face_count 排序"
+      ],
+      "created_at": "2026-08-23T23:08:47+08:00",
+      "updated_at": "2026-08-23T23:08:47+08:00"
+    },
+    {
+      "id": "FEAT-032",
+      "name": "删除人物离线化 + 智慧相册主题适配（字体对比度修复）",
+      "status": "done",
+      "description": "① persons.rs 新增 delete_person（事务删 faces+persons 行），lib.rs delete_person 命令切换并级联清理 app_data/avatars 头像缓存，vision.rs HTTP 版删除；至此人物注册表全部操作离线可用。② SmartAlbum/PersonGallery 接入 theme store：根元素绑定 textColor、卡片/弹窗用 cardStyle 实底、次要文字改继承+opacity——修复深色模式/背景图下文字与背景融为一体的问题。",
+      "related_files": [
+        "src-tauri/src/persons.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/vision.rs",
+        "src/views/SmartAlbum.vue",
+        "src/components/PersonGallery.vue"
+      ],
+      "keywords": [
+        "删除人物",
+        "离线",
+        "主题适配",
+        "文字对比度",
+        "cardStyle",
+        "textColor"
+      ],
+      "created_at": "2026-08-23T23:19:02+08:00",
+      "updated_at": "2026-08-23T23:19:02+08:00"
+    },
+    {
+      "id": "FEAT-033",
+      "name": "相册合并来源记录 + 智能选封面按钮 + 大图自动扫描 + 回忆跳转定位 + 主页清理",
+      "status": "done",
+      "description": "本次 UX 优化合集：①相册合并支持单选 + 记录来源路径列表供目标卡片显示且可点击跳转；②手动排序小相册卡新增智能选封面小按钮（悬停弹出）；③PhotoGrid 选择/刷新按钮加重边框突出；④大图查看器点击原图时静默后台扫描并复用已有信息；⑤Memories 跳转 Timeline 携带 year/month query 自动定位与高亮 + AlbumDetail 返回改 router.back() 并加主页按钮；⑥主页移除「回忆」小卡片（属智慧相册子项）。",
+      "related_files": [
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/AlbumCard.vue",
+        "src/components/AlbumMiniCard.vue",
+        "src/components/PhotoGrid.vue",
+        "src/components/PhotoLightbox.vue",
+        "src/views/AlbumList.vue",
+        "src/views/AlbumDetail.vue",
+        "src/views/Memories.vue",
+        "src/views/Timeline.vue",
+        "src/views/Home.vue",
+        "src/views/ManualSort.vue",
+        "src/stores/album.ts",
+        "src/stores/content.ts"
+      ],
+      "keywords": [
+        "merged_sources",
+        "智能选封面",
+        "ensure_photo_scanned",
+        "回忆跳转",
+        "router.back",
+        "主页清理"
+      ],
+      "implementation": {
+        "backend": "新增 album_merged_sources 表(album_id, source_id, source_name, source_path, user_id, merged_at, UNIQUE(album_id, source_id)) + load_merged_sources 一次批量填充 + delete_album_refs 级联清理；merge_albums 在删除源记录后事务内插入来源；vision::classify_single 单张识别接口；content::commands::ensure_photo_scanned(album_id, path) 命中复用 / 缺失则单张扫并落库；Album 实体新增 merged_sources: Vec<MergedSource>。",
+        "frontend": "AlbumCard 渲染 merged_sources 列表 + open-source-path 事件；AlbumList 放开单选合并 + 1 个时默认 record 模式 + requestMerge 文案适配 + openSourcePath 处理器；AlbumMiniCard 顶部 ✨ 按钮 + pickSmartCover + smart-cover-applied 事件；PhotoGrid pg-action 加粗边框/虚线/选择实心区分；PhotoLightbox 接 albumId + watch photo → tryEnsureScanned；Memories gotoMonth/gotoYear 携 query；Timeline applyJumpQuery 读 query 跳定位+高亮1.8s；AlbumDetail goBack 改 router.back + 加 goHome 按钮 + 主页移除 memories 模块。"
+      },
+      "highlights": [
+        "合并来源表唯一约束 (album_id, source_id) 防重复，UNIQUE IGNORE 幂等；级联删除确保不产生孤儿行",
+        "PhotoLightbox 大图查看器静默后台扫描：用户感知 0延迟（首屏立即展示原图），扫描完成后元数据面板自动刷新",
+        "Memories 跳转 Timeline 携 year/month query：自动 scrollIntoView + 1.8s 边框高亮淡出，比 toast 提示更直观",
+        "AlbumDetail 返回上一级 + 主页按钮同时提供：从 Memories 进来回到 Memories，直接进入则回相册列表（无历史兜底）",
+        "主页去除回忆卡片：减少一级入口，回忆仍可通过智慧相册→回忆路径访问（架构更聚焦）"
+      ],
+      "tests": "cargo test --lib 44/44 (新增 merged_sources_persist_and_cascade); vue-tsc 0 错误",
+      "created_at": "2026-08-24T00:30:00+08:00",
+      "updated_at": "2026-08-24T00:30:00+08:00"
+    }
+  ],
+  "updated": "2026-08-24T00:30:00+08:00"
 }

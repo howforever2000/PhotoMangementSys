@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhotoMangementSys Cover</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  }
+  .cover-container {
+    width: 1920px;
+    height: 1080px;
+    background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+    position: relative;
+    overflow: hidden;
+    image-rendering: -webkit-optimize-contrast;
+  }
+  
+  /* Dots pattern */
+  .dots {
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(rgba(255,255,255,0.06) 1.5px, transparent 1.5px);
+    background-size: 40px 40px;
+  }
+  
+  /* Glows */
+  .glow-1 {
+    position: absolute;
+    top: 10%;
+    right: 20%;
+    width: 800px;
+    height: 800px;
+    background: radial-gradient(circle, rgba(0,210,255,0.2) 0%, transparent 70%);
+    border-radius: 50%;
+  }
+  .glow-2 {
+    position: absolute;
+    bottom: 10%;
+    left: 10%;
+    width: 700px;
+    height: 700px;
+    background: radial-gradient(circle, rgba(123,104,238,0.18) 0%, transparent 70%);
+    border-radius: 50%;
+  }
+  
+  /* Decorative circles */
+  .deco-circle {
+    position: absolute;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+  .dc1 { width: 240px; height: 240px; top: 80px; left: 100px; border-color: rgba(0,210,255,0.15); }
+  .dc2 { width: 160px; height: 160px; top: 120px; left: 140px; border-color: rgba(123,104,238,0.12); }
+  .dc3 { width: 300px; height: 300px; bottom: 120px; right: 180px; border-color: rgba(0,210,255,0.1); }
+  .dc4 { width: 200px; height: 200px; bottom: 160px; right: 230px; border-color: rgba(123,104,238,0.08); }
+  .dc5 { width: 120px; height: 120px; top: 140px; right: 380px; border-color: rgba(0,210,255,0.08); }
+  
+  /* Scattered stars */
+  .star {
+    position: absolute;
+    border-radius: 50%;
+    background: #fff;
+  }
+  .s1 { width: 6px; height: 6px; top: 800px; left: 100px; background: rgba(0,210,255,0.3); }
+  .s2 { width: 4px; height: 4px; top: 80px; left: 220px; background: rgba(123,104,238,0.3); }
+  .s3 { width: 5px; height: 5px; top: 180px; right: 120px; background: rgba(0,210,255,0.3); }
+  .s4 { width: 4px; height: 4px; bottom: 230px; left: 550px; }
+  .s5 { width: 3px; height: 3px; bottom: 180px; left: 380px; opacity: 0.15; }
+  .s6 { width: 4px; height: 4px; top: 120px; right: 100px; background: rgba(123,104,238,0.25); }
+  
+  /* Photo frames */
+  .photo-frame {
+    position: absolute;
+    border-radius: 12px;
+    border: 2px solid rgba(255,255,255,0.08);
+    backdrop-filter: blur(2px);
+  }
+  .pf1 { width: 180px; height: 220px; top: 600px; left: 120px; background: rgba(255,255,255,0.02); }
+  .pf1::before { content:''; position:absolute; top:15px; left:15px; right:15px; height:110px; border-radius:8px; background:rgba(255,255,255,0.03); }
+  .pf1::after { content:''; position:absolute; top:135px; left:15px; right:15px; bottom:15px; border-radius:6px; background:rgba(255,255,255,0.02); }
+  
+  .pf2 { width: 140px; height: 170px; top: 680px; left: 280px; transform: rotate(-12deg); background: rgba(255,255,255,0.015); }
+  
+  .pf3 { width: 160px; height: 200px; top: 550px; right: 140px; background: rgba(0,210,255,0.02); border-color: rgba(0,210,255,0.08); }
+  .pf3::before { content:''; position:absolute; top:10px; left:10px; right:10px; height:90px; border-radius:6px; background:rgba(0,210,255,0.04); }
+  
+  .pf4 { width: 130px; height: 160px; top: 620px; right: 190px; transform: rotate(8deg); border-color: rgba(123,104,238,0.06); }
+  
+  /* Camera icon */
+  .camera-icon {
+    position: absolute;
+    top: 280px;
+    right: 320px;
+    filter: drop-shadow(0 8px 12px rgba(0,0,0,0.4));
+  }
+  .cam-body {
+    width: 180px;
+    height: 130px;
+    background: linear-gradient(135deg, #00d2ff, #7B68EE);
+    border-radius: 20px;
+    position: relative;
+    opacity: 0.9;
+  }
+  .cam-lens-outer {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 80px;
+    height: 80px;
+    background: rgba(15,12,41,0.6);
+    border-radius: 50%;
+  }
+  .cam-lens-inner {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 56px;
+    height: 56px;
+    border: 2.5px solid rgba(0,210,255,0.8);
+    border-radius: 50%;
+  }
+  .cam-lens-glass {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 30px;
+    height: 30px;
+    background: #1a1a3e;
+    border-radius: 50%;
+  }
+  .cam-reflection {
+    position: absolute;
+    top: 38%;
+    left: 42%;
+    width: 12px;
+    height: 8px;
+    background: rgba(255,255,255,0.3);
+    border-radius: 50%;
+    transform: rotate(-30deg);
+  }
+  .cam-shutter {
+    position: absolute;
+    top: 15px;
+    right: 30px;
+    width: 12px;
+    height: 12px;
+    background: rgba(255,107,107,0.8);
+    border-radius: 50%;
+  }
+  .cam-flash {
+    position: absolute;
+    top: 10px;
+    left: 12px;
+    width: 20px;
+    height: 8px;
+    background: rgba(255,217,61,0.7);
+    border-radius: 4px;
+  }
+  
+  /* Small floating cameras */
+  .mini-cam {
+    position: absolute;
+    opacity: 0.1;
+  }
+  .mc1 { top: 180px; left: 850px; }
+  .mc1 .cam-body { width: 60px; height: 40px; border-radius: 8px; }
+  .mc1 .cam-lens-outer { width: 24px; height: 24px; }
+  .mc1 .cam-lens-inner { width: 14px; height: 14px; }
+  .mc1 .cam-lens-glass { width: 10px; height: 10px; }
+  
+  .mc2 { bottom: 480px; right: 570px; opacity: 0.06; transform: rotate(8deg); }
+  .mc2 .cam-body { width: 45px; height: 30px; border-radius: 6px; background: linear-gradient(135deg, #7B68EE, #00d2ff); }
+  .mc2 .cam-lens-outer { width: 18px; height: 18px; }
+  .mc2 .cam-lens-inner { width: 10px; height: 10px; border-color: rgba(123,104,238,0.5); }
+  .mc2 .cam-lens-glass { width: 6px; height: 6px; }
+  
+  /* Title area */
+  .title-area {
+    position: absolute;
+    top: 420px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+  }
+  .title-text {
+    font-size: 72px;
+    font-weight: 700;
+    background: linear-gradient(90deg, #ffffff, #a8d8ea);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: 2px;
+    filter: drop-shadow(0 8px 12px rgba(0,0,0,0.4));
+  }
+  
+  .subtitle {
+    margin-top: 20px;
+    font-size: 24px;
+    font-weight: 300;
+    color: rgba(255,255,255,0.7);
+    letter-spacing: 1px;
+  }
+  
+  .deco-line {
+    margin: 20px auto 0;
+    width: 300px;
+    height: 2px;
+    background: linear-gradient(90deg, #00d2ff, #7B68EE);
+    border-radius: 2px;
+    opacity: 0.5;
+  }
+  
+  /* Feature badges */
+  .badges {
+    position: absolute;
+    top: 640px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 0;
+  }
+  .badge {
+    padding: 8px 20px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 500;
+    backdrop-filter: blur(4px);
+    transition: all 0.2s;
+  }
+  .badge:nth-child(odd) {
+    background: rgba(0,210,255,0.12);
+    border: 1px solid rgba(0,210,255,0.4);
+    color: #00d2ff;
+  }
+  .badge:nth-child(even) {
+    background: rgba(123,104,238,0.12);
+    border: 1px solid rgba(123,104,238,0.4);
+    color: #7B68EE;
+    margin-left: -20px;
+  }
+  
+  /* Bottom tagline */
+  .tagline {
+    position: absolute;
+    bottom: 260px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 16px;
+    color: rgba(255,255,255,0.35);
+    letter-spacing: 2px;
+  }
+  
+  /* Bottom bar */
+  .bottom-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 20px;
+    background: rgba(0,210,255,0.05);
+  }
+  .bottom-accent {
+    position: absolute;
+    bottom: 5px;
+    left: 0;
+    right: 0;
+    height: 5px;
+    background: linear-gradient(90deg, #00d2ff, #7B68EE);
+    opacity: 0.2;
+  }
+</style>
+</head>
+<body>
+  <div class="cover-container" id="cover">
+    <div class="dots"></div>
+    <div class="glow-1"></div>
+    <div class="glow-2"></div>
+    
+    <!-- Decorative circles -->
+    <div class="deco-circle dc1"></div>
+    <div class="deco-circle dc2"></div>
+    <div class="deco-circle dc3"></div>
+    <div class="deco-circle dc4"></div>
+    <div class="deco-circle dc5"></div>
+    
+    <!-- Stars -->
+    <div class="star s1"></div>
+    <div class="star s2"></div>
+    <div class="star s3"></div>
+    <div class="star s4"></div>
+    <div class="star s5"></div>
+    <div class="star s6"></div>
+    
+    <!-- Photo frames -->
+    <div class="photo-frame pf1"></div>
+    <div class="photo-frame pf2"></div>
+    <div class="photo-frame pf3"></div>
+    <div class="photo-frame pf4"></div>
+    
+    <!-- Main camera icon -->
+    <div class="camera-icon">
+      <div class="cam-body">
+        <div class="cam-flash"></div>
+        <div class="cam-shutter"></div>
+        <div class="cam-lens-outer">
+          <div class="cam-lens-inner"></div>
+          <div class="cam-lens-glass">
+            <div class="cam-reflection"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Mini cameras -->
+    <div class="mini-cam mc1">
+      <div class="cam-body">
+        <div class="cam-lens-outer">
+          <div class="cam-lens-inner">
+            <div class="cam-lens-glass"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="mini-cam mc2">
+      <div class="cam-body">
+        <div class="cam-lens-outer">
+          <div class="cam-lens-inner">
+            <div class="cam-lens-glass"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Title -->
+    <div class="title-area">
+      <div class="title-text">PhotoMangementSys</div>
+      <div class="subtitle">智能相册管理系统 · 让每一张照片都有家可归</div>
+      <div class="deco-line"></div>
+    </div>
+    
+    <!-- Badges -->
+    <div class="badges">
+      <span class="badge">📅 按时间排序</span>
+      <span class="badge">📍 按地点分类</span>
+      <span class="badge">🤖 AI 识别标签</span>
+      <span class="badge">⚡ 本地化运行</span>
+    </div>
+    
+    <!-- Tagline -->
+    <div class="tagline">VUE + TAURI + RUST · POWERED BY AI</div>
+    
+    <!-- Bottom bar -->
+    <div class="bottom-bar">
+      <div class="bottom-accent"></div>
+    </div>
+  </div>
+</body>
+</html>

@@ -40,3 +40,10 @@ export interface ResetPasswordInput {
   new_password: string;
   confirm_password: string;
 }
+
+/** 修改基本信息输入 —— 对应 Rust `auth::UpdateProfileInput`（需先验证当前密码） */
+export interface UpdateProfileInput {
+  email: string;
+  phone: string;
+  current_password: string;
+}

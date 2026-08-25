@@ -175,7 +175,7 @@ async function handleRegister() {
 .auth-subtitle {
   margin: 0;
   font-size: 13px;
-  color: #8892a6;
+  color: #5f6b7a;
 }
 
 .auth-form {
@@ -257,7 +257,7 @@ async function handleRegister() {
 }
 
 .footer-text {
-  color: #8892a6;
+  color: #5f6b7a;
 }
 
 .auth-link {

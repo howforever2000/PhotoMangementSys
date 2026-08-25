@@ -133,6 +133,106 @@ pub fn scan_album_dir(dir: &Path) -> AlbumScan {
     scan
 }
 
+/// 网格缩略图缓存子目录（与封面缩略图隔离，避免 cleanup_album_auto_thumbs 误删）
+const GRID_THUMBS_SUBDIR: &str = "grid";
+
+/// 确保单个照片的网格缩略图存在，返回缓存绝对路径
+///
+/// - 缓存名：`thumbs/grid/album_<id>_photo_<fingerprint>.jpg`
+/// - 指纹命名：文件内容变化 → 指纹变化 → 自动换名（与封面缩略图一致）
+/// - 与封面缩略图互不干扰：封面清理只扫 `thumbs/` 根目录，网格缩略图在 `grid/` 子目录
+/// - 网格只加载 256px 缩略图，避免网格展示原图造成内存/IO 压力
+pub fn ensure_grid_thumb(
+    album_id: i64,
+    source: &Path,
+    thumbs_dir: &Path,
+) -> Result<String, ThumbError> {
+    let grid_dir = thumbs_dir.join(GRID_THUMBS_SUBDIR);
+    let fingerprint = file_fingerprint(source);
+    let cached_name = format!("album_{album_id}_photo_{fingerprint}.jpg");
+    let thumb_path = grid_dir.join(&cached_name);
+
+    if thumb_path.exists() {
+        return Ok(thumb_path.to_string_lossy().into_owned());
+    }
+
+    // 缓存未命中：生成（JPEG 走 DCT 降采样快速路径）
+    save_thumbnail(source, &thumb_path)?;
+    Ok(thumb_path.to_string_lossy().into_owned())
+}
+
+/// 批量确保网格缩略图存在（供前端分批懒加载），返回 `(原图路径, 缩略图路径)` 列表
+///
+/// 单张失败不影响其余：失败项跳过，前端可稍后重试。
+pub fn ensure_grid_thumbs(
+    album_id: i64,
+    sources: &[String],
+    thumbs_dir: &Path,
+) -> Vec<(String, String)> {
+    sources
+        .iter()
+        .filter_map(|s| {
+            ensure_grid_thumb(album_id, Path::new(s), thumbs_dir)
+                .ok()
+                .map(|thumb| (s.clone(), thumb))
+        })
+        .collect()
+}
+
+/// 删除相册的全部网格缩略图（删除相册记录时调用，避免缓存磁盘持续增长）
+pub fn cleanup_album_grid_thumbs(album_id: i64, thumbs_dir: &Path) {
+    let grid_dir = thumbs_dir.join(GRID_THUMBS_SUBDIR);
+    let prefix = format!("album_{album_id}_photo_");
+    if let Ok(entries) = std::fs::read_dir(&grid_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&prefix) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+/// 计算单张原图的网格缩略图缓存文件名（须在原图仍存在时调用：指纹依赖文件内容）
+pub fn grid_thumb_cache_name(album_id: i64, source: &Path) -> String {
+    format!("album_{album_id}_photo_{}.jpg", file_fingerprint(source))
+}
+
+/// 删除指定缓存文件名列表对应的网格缩略图（照片删除后级联清理）
+pub fn remove_grid_thumb_files(names: &[String], thumbs_dir: &Path) {
+    let grid_dir = thumbs_dir.join(GRID_THUMBS_SUBDIR);
+    for n in names {
+        let _ = std::fs::remove_file(grid_dir.join(n));
+    }
+}
+
+/// 递归收集相册文件夹内所有图片的绝对路径（无需扫描/入库即可展示照片）
+///
+/// 用于照片网格浏览：轻量 walkdir 遍历（只取路径不读图），过滤隐藏目录与图片扩展名。
+/// 返回按路径字典序稳定排序，便于前端分页/对比。
+pub fn list_album_images(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if !dir.is_dir() {
+        return out;
+    }
+    for entry in walkdir::WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
+    {
+        let Ok(e) = entry else { continue };
+        if !e.file_type().is_file() {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().to_string();
+        if is_image_file(&name) {
+            out.push(e.into_path().to_string_lossy().into_owned());
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Unix 秒 → (年, 月, 日)（Howard Hinnant civil_from_days 算法，无需日期库依赖）
 fn unix_secs_to_date(secs: i64) -> (i32, u32, u32) {
     let days = secs.div_euclid(86_400);
@@ -372,7 +472,7 @@ fn cleanup_album_prefix(album_id: i64, kind: &str, thumbs_dir: &Path) {
     }
 }
 
-/// 删除相册的全部缩略图缓存文件（自动 + 手动封面）
+/// 删除相册的全部缩略图缓存文件（自动 + 手动封面 + 网格缩略图）
 ///
 /// 在删除相册记录成功后调用，清理对应缓存目录，避免磁盘持续增长。
 pub fn cleanup_all_album_thumbs(album_id: i64, thumbs_dir: &Path) {
@@ -385,6 +485,8 @@ pub fn cleanup_all_album_thumbs(album_id: i64, thumbs_dir: &Path) {
             }
         }
     }
+    // 网格缩略图在 grid/ 子目录，需单独清理
+    cleanup_album_grid_thumbs(album_id, thumbs_dir);
 }
 
 /// 尝试复用旧版命名缩略图（基线 era 的 `album_{id}_{safe_stem}.jpg`，基于源图文件名）
@@ -543,6 +645,47 @@ pub fn generate_cover(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 网格缩略图：生成 + 缓存命中 + 与封面缩略图互不干扰（独立 grid/ 子目录）
+    #[test]
+    fn grid_thumb_generate_and_cache() {
+        let tmp = std::env::temp_dir().join(format!("pm_grid_thumb_{}", std::process::id()));
+        let img_dir = tmp.join("photos");
+        std::fs::create_dir_all(&img_dir).unwrap();
+
+        let img_path = img_dir.join("a.jpg");
+        let img = image::RgbImage::new(100, 80);
+        img.save(&img_path).unwrap();
+        let src = img_path.to_string_lossy().into_owned();
+
+        let thumbs = tmp.join("thumbs");
+        // 首次：生成（落在 thumbs/grid/ 子目录）
+        let pairs = ensure_grid_thumbs(7, &[src.clone()], &thumbs);
+        assert_eq!(pairs.len(), 1);
+        let (p, t) = &pairs[0];
+        assert_eq!(p, &src);
+        assert!(t.contains("grid"));
+        assert!(t.ends_with(".jpg"));
+        assert!(Path::new(t).exists());
+
+        // 二次：缓存命中（目录内文件数不增长）
+        let before = std::fs::read_dir(thumbs.join("grid")).unwrap().count();
+        ensure_grid_thumbs(7, &[src.clone()], &thumbs);
+        let after = std::fs::read_dir(thumbs.join("grid")).unwrap().count();
+        assert_eq!(before, after);
+
+        // 封面清理不影响网格缩略图（auto 前缀只扫根目录）
+        let res = ensure_thumbnail_from_source(7, Path::new(&src), &thumbs).unwrap();
+        cleanup_album_auto_thumbs(7, &thumbs);
+        assert!(!Path::new(&res.thumb_path).exists());
+        assert!(Path::new(t).exists());
+
+        // 删除相册：网格缩略图一并清理
+        cleanup_all_album_thumbs(7, &thumbs);
+        assert!(!Path::new(t).exists());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     /// 指纹确定性：同一文件多次计算必须完全一致（回归 DefaultHasher 随机种子 bug：
     /// 种子每次编译时随机 → 重编译后缓存全失效 → 每次启动全量重生成缩略图卡死）

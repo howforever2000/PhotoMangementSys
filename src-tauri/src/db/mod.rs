@@ -7,6 +7,9 @@
 //! - `init_schema`  →  `schema.sql` 建表脚本
 //! - `DbError`  →  自定义业务异常（配合全局异常处理）
 
+pub mod content;
+pub use content::{AlbumContentRow, ContentFilters, ContentSearchHit, PhotoContentRecord, SmartHit};
+
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -55,6 +58,22 @@ pub struct Album {
     /// 所属分组完整路径（如 "旅行/欧洲/巴黎"）
     #[serde(default)]
     pub folder_path: String,
+    /// 合并来源相册列表（FEAT-A）：
+    /// 该相册历史上由哪些相册合并而来，用于封面下显示"由 X 个相册合并而成"。
+    /// 不在数据库行里，命令层从 `album_merged_sources` 表填充。
+    #[serde(default)]
+    pub merged_sources: Vec<MergedSource>,
+}
+
+/// 单个合并来源条目（FEAT-A）
+///
+/// 记录被合并掉的那个相册的 id / name / path，用于相册卡片上展示
+/// 「由以下相册合并而来：xxx / yyy / ...」，每条路径可点击跳转。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergedSource {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
 }
 
 /// 相册搜索结果：相册 + 所属分组路径
@@ -255,6 +274,48 @@ impl Database {
                 file_count   INTEGER NOT NULL DEFAULT -1
             );",
         )?;
+        // 相册照片排除表（「记录删除」：从相册浏览中移除但保留本地文件）
+        // 多用户隔离：user_id 校验；主键 (album_id, path) 防重复排除
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS album_photo_excluded (
+                album_id    INTEGER NOT NULL,
+                path        TEXT    NOT NULL,
+                user_id     INTEGER NOT NULL,
+                excluded_at INTEGER NOT NULL,
+                PRIMARY KEY(album_id, path)
+            );",
+        )?;
+        // 照片打分（星标）：按 (user_id, path) 唯一，独立于扫描记录，任何照片都可打分
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS photo_ratings (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                path       TEXT    NOT NULL,
+                rating     INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(user_id, path)
+            );",
+        )?;
+        // 合并来源记录（FEAT-A）：
+        //   记录「目标相册 id」被合并时合并掉的源相册（id / name / path）。
+        //   用于相册卡片下显示"由 X 个相册合并而来"，每条路径可点击跳转。
+        //   注意：源相册本身已被 delete_album 删除，但这里保留其历史信息以便展示。
+        //   多用户隔离：user_id 跟随目标相册的归属。
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS album_merged_sources (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                album_id   INTEGER NOT NULL,
+                source_id  INTEGER NOT NULL,
+                source_name TEXT   NOT NULL,
+                source_path TEXT   NOT NULL,
+                user_id    INTEGER NOT NULL,
+                merged_at  INTEGER NOT NULL,
+                UNIQUE(album_id, source_id)
+            );",
+        )?;
+        let _ = self.conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_merged_sources_album ON album_merged_sources(album_id);");
+        let _ = self.conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_photo_ratings_user ON photo_ratings(user_id);");
+        let _ = self.conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_photo_ratings_path ON photo_ratings(path);");
         // 迁移：为旧库 album_stats 补充 file_count 列（变更探测信号，旧行默认 -1 即强制首次重扫）
         let _ = self.conn.execute_batch("ALTER TABLE album_stats ADD COLUMN file_count INTEGER NOT NULL DEFAULT -1;");
         // 迁移：为旧库补充 albums 新列（若已存在则忽略）
@@ -301,15 +362,21 @@ impl Database {
             if !admin_exists {
                 let hash = crate::auth::hash_password(crate::auth::DEFAULT_ADMIN_PASSWORD)
                     .map_err(|e| DbError::Other(e))?;
+                // 落库前加密（邮箱/手机号/密码哈希不以原字段存在）
+                let email_enc = crate::crypto::encrypt(crate::auth::DEFAULT_ADMIN_EMAIL)
+                    .map_err(|e| DbError::Other(e))?;
+                let phone_enc = crate::crypto::encrypt(crate::auth::DEFAULT_ADMIN_PHONE)
+                    .map_err(|e| DbError::Other(e))?;
+                let hash_enc = crate::crypto::encrypt(&hash).map_err(|e| DbError::Other(e))?;
                 let now = Self::now_secs();
                 self.conn.execute(
                     "INSERT INTO users (username, email, phone, password_hash, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
                     params![
                         crate::auth::DEFAULT_ADMIN_USERNAME,
-                        crate::auth::DEFAULT_ADMIN_EMAIL,
-                        crate::auth::DEFAULT_ADMIN_PHONE,
-                        hash,
+                        email_enc,
+                        phone_enc,
+                        hash_enc,
                         now
                     ],
                 )?;
@@ -331,6 +398,10 @@ impl Database {
                 params![admin_id],
             )?;
         }
+        // 内容扫描表（FEAT-022：AI 内容扫描入库 + 照片智能搜索）
+        self.init_content_schema()?;
+        // 迁移：将历史以明文存储的用户邮箱/手机号/密码哈希重加密（无历史明文则为空操作）
+        let _ = crate::auth::migrate_legacy_user_fields(self.conn());
         Ok(())
     }
 
@@ -361,6 +432,7 @@ impl Database {
             tags: Vec::new(),
             folder_id: None,
             folder_path: String::new(),
+            merged_sources: Vec::new(),
         })
     }
 
@@ -437,6 +509,7 @@ impl Database {
         let mut albums: Vec<Album> = rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)?;
         self.load_album_tags(&mut albums)?;
         self.fill_album_folder(&mut albums, user_id)?;
+        self.load_merged_sources(&mut albums)?;
         Ok(albums)
     }
 
@@ -494,6 +567,53 @@ impl Database {
         for album in albums.iter_mut() {
             if let Some(t) = tag_map.get(&album.id) {
                 album.tags = t.clone();
+            }
+        }
+        Ok(())
+    }
+
+    /// 填充相册的合并来源列表（FEAT-A）
+    ///
+    /// 从 `album_merged_sources` 表加载每个相册的合并历史，
+    /// 用于卡片上显示「由 X 个相册合并而来」，每条路径可点击跳转。
+    /// 一次 SELECT 批量填充，避免 N+1。
+    fn load_merged_sources(&self, albums: &mut [Album]) -> Result<(), DbError> {
+        if albums.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<i64> = albums.iter().map(|a| a.id).collect();
+        // 构造占位符 ?,?,?...
+        let placeholders = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT album_id, source_id, source_name, source_path
+             FROM album_merged_sources
+             WHERE album_id IN ({})
+             ORDER BY merged_at ASC",
+            placeholders
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_vec: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_vec.as_slice(), |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut map: std::collections::HashMap<i64, Vec<MergedSource>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (aid, sid, name, path) = row?;
+            map.entry(aid).or_default().push(MergedSource { id: sid, name, path });
+        }
+        for album in albums.iter_mut() {
+            if let Some(s) = map.get(&album.id) {
+                album.merged_sources = s.clone();
             }
         }
         Ok(())
@@ -747,6 +867,7 @@ impl Database {
         let mut arr = [album.clone()];
         self.load_album_tags(&mut arr)?;
         self.fill_album_folder(&mut arr, user_id)?;
+        self.load_merged_sources(&mut arr)?;
         album = arr[0].clone();
         Ok(album)
     }
@@ -794,12 +915,75 @@ impl Database {
         Ok(())
     }
 
+    /// 更新相册地点（自动识别用）：仅写 location，**不动 updated_at**
+    ///
+    /// 自动地点检测不应打乱列表排序（updated_at 降序），
+    /// 手动编辑地点仍走 update_album（会刷新 updated_at）。
+    /// 多用户隔离：WHERE 限定归属 `user_id`。
+    pub fn update_album_location(&self, id: i64, user_id: i64, location: &str) -> Result<(), DbError> {
+        let affected = self.conn.execute(
+            "UPDATE albums SET location = ?2 WHERE id = ?1 AND user_id = ?3",
+            params![id, location.trim(), user_id],
+        )?;
+        if affected == 0 {
+            return Err(DbError::NotFound(id));
+        }
+        Ok(())
+    }
+
     /// 删除相册（需求 §4.2 delete_album）
     ///
     /// 仅删除数据库记录，不触碰本地文件（需求 §2.3 核心原则）。
     /// 事务内级联清理关联表（folder_albums / album_tags / album_stats），
     /// 避免孤儿数据残留导致手动树归属判断出错。
     /// 多用户隔离：仅能删除归属 `user_id` 的相册，他人相册等同不存在。
+    /// 批量排除相册照片（「记录删除」：网格不再显示，本地文件保留）
+    ///
+    /// 返回新排除的数量（已排除过的忽略，不算错误）。
+    /// 多用户隔离：仅能操作归属当前用户的相册。
+    pub fn exclude_album_photos(
+        &self,
+        album_id: i64,
+        user_id: i64,
+        paths: &[String],
+    ) -> Result<usize, DbError> {
+        let tx = self.conn.unchecked_transaction()?;
+        // 先校验相册归属（0 行 → NotFound）
+        let owned: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM albums WHERE id = ?1 AND user_id = ?2",
+                params![album_id, user_id],
+                |r| r.get(0),
+            )
+            .map_err(DbError::Sqlite)?;
+        if owned == 0 {
+            return Err(DbError::NotFound(album_id));
+        }
+        let mut n = 0usize;
+        for p in paths {
+            let affected = tx.execute(
+                "INSERT OR IGNORE INTO album_photo_excluded(album_id, path, user_id, excluded_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![album_id, p, user_id, Self::now_secs()],
+            )?;
+            n += affected;
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// 列出某相册已被排除的照片路径（过滤 list_album_photos 用）
+    pub fn list_excluded_photos(&self, album_id: i64) -> Result<Vec<String>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM album_photo_excluded WHERE album_id = ?1")
+            .map_err(DbError::Sqlite)?;
+        let rows = stmt
+            .query_map(params![album_id], |r| r.get::<_, String>(0))
+            .map_err(DbError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)
+    }
+
     pub fn delete_album(&self, id: i64, user_id: i64) -> Result<(), DbError> {
         let tx = self.conn.unchecked_transaction()?;
         let affected =
@@ -838,6 +1022,10 @@ impl Database {
         tx.execute("DELETE FROM folder_albums WHERE album_id = ?1", params![album_id])?;
         tx.execute("DELETE FROM album_tags WHERE album_id = ?1", params![album_id])?;
         tx.execute("DELETE FROM album_stats WHERE album_id = ?1", params![album_id])?;
+        tx.execute("DELETE FROM photo_content_scan WHERE album_id = ?1", params![album_id])?;
+        tx.execute("DELETE FROM album_photo_excluded WHERE album_id = ?1", params![album_id])?;
+        // 合并来源：清理「作为目标相册」的来源记录 + 「作为源被合并」的来源记录
+        tx.execute("DELETE FROM album_merged_sources WHERE album_id = ?1 OR source_id = ?1", params![album_id])?;
         Ok(())
     }
 
@@ -897,6 +1085,67 @@ impl Database {
     pub fn delete_album_stats(&self, album_id: i64) -> Result<(), DbError> {
         self.conn
             .execute("DELETE FROM album_stats WHERE album_id = ?1", params![album_id])?;
+        Ok(())
+    }
+
+    /// 设置一批照片的打分（rating 0-5，0 清除）。按 (user_id, path) upsert，任意照片可打分。
+    pub fn set_photo_rating(&self, user_id: i64, paths: &[String], rating: i64) -> Result<(), DbError> {
+        let now = Self::now_secs();
+        for p in paths {
+            self.conn.execute(
+                "INSERT INTO photo_ratings (user_id, path, rating, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(user_id, path) DO UPDATE SET
+                   rating = excluded.rating, updated_at = excluded.updated_at",
+                params![user_id, p, rating, now],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// 查询一批照片的打分，返回 [(path, rating)]（未打分的不出现在结果中）。
+    pub fn get_photo_ratings(&self, user_id: i64, paths: &[String]) -> Result<Vec<(String, i64)>, DbError> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = (1..=paths.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT path, rating FROM photo_ratings WHERE user_id = ?1 AND path IN ({placeholders})"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&user_id];
+        for p in paths {
+            params_vec.push(p);
+        }
+        let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)
+    }
+
+    /// 移动照片后同步打分表的路径归属（照片合并/移动时调用）。
+    pub fn move_photo_rating_path(&self, user_id: i64, old_path: &str, new_path: &str) -> Result<(), DbError> {
+        self.conn.execute(
+            "UPDATE photo_ratings SET path = ?1, updated_at = ?2 WHERE user_id = ?3 AND path = ?4",
+            params![new_path, Self::now_secs(), user_id, old_path],
+        )?;
+        Ok(())
+    }
+
+    /// 移动照片后同步内容扫描表的路径与相册归属（用户 + 旧路径定位）。
+    pub fn move_photo_content_path(&self, user_id: i64, old_path: &str, new_path: &str, album_id: i64) -> Result<(), DbError> {
+        let parent = std::path::Path::new(new_path)
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or("");
+        self.conn.execute(
+            "UPDATE photo_content_scan SET path = ?1, parent_dir = ?2, album_id = ?3
+             WHERE user_id = ?4 AND path = ?5",
+            params![new_path, parent, album_id, user_id, old_path],
+        )?;
         Ok(())
     }
 
@@ -974,6 +1223,29 @@ impl Database {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// 读取相册标签列表（批量整理：加/删标签前需先取现有）
+    pub fn get_album_tag_list(&self, album_id: i64, user_id: i64) -> Result<Vec<String>, DbError> {
+        let exists: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM albums WHERE id = ?1 AND user_id = ?2",
+                params![album_id, user_id],
+                |r| r.get(0),
+            )?;
+        if !exists {
+            return Err(DbError::NotFound(album_id));
+        }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT tag FROM album_tags WHERE album_id = ?1 ORDER BY id")?;
+        let rows = stmt.query_map(params![album_id], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 }
 
@@ -1142,4 +1414,105 @@ mod tests {
         assert_eq!(db.search_albums("相册", 1).unwrap()[0].album.id, a.id);
         assert_eq!(db.search_albums("相册", 2).unwrap()[0].album.id, b.id);
     }
+
+    /// FEAT-A：合并来源表 album_merged_sources 读写 / 多用户隔离 / 级联删除
+    ///
+    /// 验证：
+    /// 1. 插入 → get_albums / get_album 能看到 merged_sources
+    /// 2. 重复插入同 (album_id, source_id) 被 IGNORE 幂等
+    /// 3. 删除源相册时级联清空（album_merged_sources 不会产生孤儿行）
+    #[test]
+    fn merged_sources_persist_and_cascade() {
+        let conn = Connection::open_in_memory().unwrap();
+        let db = Database { conn };
+        db.init_schema().unwrap();
+
+        let dir_target = std::env::temp_dir().join("pm_test_merge_target");
+        let dir_src1 = std::env::temp_dir().join("pm_test_merge_src1");
+        let dir_src2 = std::env::temp_dir().join("pm_test_merge_src2");
+        std::fs::create_dir_all(&dir_target).unwrap();
+        std::fs::create_dir_all(&dir_src1).unwrap();
+        std::fs::create_dir_all(&dir_src2).unwrap();
+
+        let target = db
+            .create_album(
+                CreateAlbumInput {
+                    name: "目标".into(),
+                    path: dir_target.to_string_lossy().into_owned(),
+                    description: None,
+                },
+                1,
+            )
+            .unwrap();
+        let src1 = db
+            .create_album(
+                CreateAlbumInput {
+                    name: "源1".into(),
+                    path: dir_src1.to_string_lossy().into_owned(),
+                    description: None,
+                },
+                1,
+            )
+            .unwrap();
+        let src2 = db
+            .create_album(
+                CreateAlbumInput {
+                    name: "源2".into(),
+                    path: dir_src2.to_string_lossy().into_owned(),
+                    description: None,
+                },
+                1,
+            )
+            .unwrap();
+
+        let now = Database::now_secs();
+        // 直接写 source 记录（避开 UI、模拟 merge_albums 写入的路径）
+        db.conn.execute(
+            "INSERT INTO album_merged_sources (album_id, source_id, source_name, source_path, user_id, merged_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![target.id, src1.id, "源1", dir_src1.to_string_lossy(), 1, now],
+        ).unwrap();
+        db.conn.execute(
+            "INSERT INTO album_merged_sources (album_id, source_id, source_name, source_path, user_id, merged_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![target.id, src2.id, "源2", dir_src2.to_string_lossy(), 1, now],
+        ).unwrap();
+
+        // 重复插入同 (album_id, source_id) 应被 UNIQUE IGNORE
+        db.conn.execute(
+            "INSERT OR IGNORE INTO album_merged_sources (album_id, source_id, source_name, source_path, user_id, merged_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![target.id, src1.id, "源1-重复", "/x/y", 1, now],
+        ).unwrap();
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM album_merged_sources WHERE album_id = ?1",
+            rusqlite::params![target.id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 2, "UNIQUE 约束应阻止重复");
+
+        // get_albums 应能读到 merged_sources
+        let list = db.get_albums(1).unwrap();
+        let target_filled = list.iter().find(|a| a.id == target.id).unwrap();
+        assert_eq!(target_filled.merged_sources.len(), 2);
+        let names: Vec<&str> = target_filled.merged_sources.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"源1") && names.contains(&"源2"));
+
+        // get_album 也应填充
+        let one = db.get_album(target.id, 1).unwrap();
+        assert_eq!(one.merged_sources.len(), 2);
+
+        // 删除源1 → 级联清空 (album_id, source_id=src1) 与 (album_id=src1, *) 两种行
+        db.delete_album(src1.id, 1).unwrap();
+        let count_after: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM album_merged_sources WHERE album_id = ?1",
+            rusqlite::params![target.id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count_after, 1, "删除源1后应只剩 src2");
+        let remaining = &db.get_album(target.id, 1).unwrap().merged_sources;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, src2.id);
+    }
+
 }

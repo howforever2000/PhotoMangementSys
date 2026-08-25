@@ -1,7 +1,7 @@
 //! 大组件：主页面「图片扫描测试」（不落库，仅验证时间/地点识别 + 照片移动）
 //!
 //! 职责：
-//!   1. scan_test_photos       扫描目录下**直接**图片（不递归），提取时间 + GPS 坐标
+//!   1. scan_test_photos       扫描目录下图片（默认只扫直接图片；recurse=true 时递归子目录），提取时间 + GPS 坐标
 //!   2. resolve_test_places    GPS 聚类 → 本地省/市点面判断（未命中再联网）→ 地名填充
 //!   3. organize_test_photos   按「年 → 地点」两级文件夹创建 + 移动照片
 //!
@@ -62,36 +62,70 @@ pub struct ScanProgress {
     pub message: String,
 }
 
-/// 扫描目录下**直接**图片（不递归子目录），提取时间 + GPS 坐标
+/// 扫描目录下图片，提取时间 + GPS 坐标
+///
+/// - `recurse=false`：只扫所选目录下的**直接**图片（不进入子目录）
+/// - `recurse=true`：递归遍历所有子目录（跳过隐藏目录，类似 walkdir 语义）
 ///
 /// place 初始为 None（解析地名需联网，见 resolve_test_places）。
-pub fn scan_test_photos(dir: &str) -> Result<Vec<TestPhoto>, String> {
+pub fn scan_test_photos(dir: &str, recurse: bool) -> Result<Vec<TestPhoto>, String> {
     let root = Path::new(dir);
     if !root.is_dir() {
         return Err(format!("路径不存在或不是文件夹: {dir}"));
     }
     let mut photos = Vec::new();
-    let rd = std::fs::read_dir(root).map_err(|e| format!("读取目录失败: {e}"))?;
-    for entry in rd.flatten() {
-        let p = entry.path();
-        if !p.is_file() {
-            continue;
+    if !recurse {
+        // 只扫直接图片
+        let rd = std::fs::read_dir(root).map_err(|e| format!("读取目录失败: {e}"))?;
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if !p.is_file() {
+                continue;
+            }
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if !photo_scan::is_image_file(&name) {
+                continue;
+            }
+            let ex = photo_scan::read_photo_exif(&p, &name);
+            let year = ex.shoot_time.as_deref().and_then(|t| t.get(0..4)).map(str::to_string);
+            photos.push(TestPhoto {
+                file_name: name,
+                path: p.to_string_lossy().into_owned(),
+                shoot_time: ex.shoot_time,
+                year,
+                lat: ex.lat,
+                lon: ex.lon,
+                place: None,
+            });
         }
-        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        if !photo_scan::is_image_file(&name) {
-            continue;
+    } else {
+        // 递归遍历子目录（跳过隐藏目录/文件）
+        for entry in walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        {
+            let Ok(e) = entry else { continue };
+            if !e.file_type().is_file() {
+                continue;
+            }
+            let p = e.into_path();
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if !photo_scan::is_image_file(&name) {
+                continue;
+            }
+            let ex = photo_scan::read_photo_exif(&p, &name);
+            let year = ex.shoot_time.as_deref().and_then(|t| t.get(0..4)).map(str::to_string);
+            photos.push(TestPhoto {
+                file_name: name,
+                path: p.to_string_lossy().into_owned(),
+                shoot_time: ex.shoot_time,
+                year,
+                lat: ex.lat,
+                lon: ex.lon,
+                place: None,
+            });
         }
-        let ex = photo_scan::read_photo_exif(&p, &name);
-        let year = ex.shoot_time.as_deref().and_then(|t| t.get(0..4)).map(str::to_string);
-        photos.push(TestPhoto {
-            file_name: name,
-            path: p.to_string_lossy().into_owned(),
-            shoot_time: ex.shoot_time,
-            year,
-            lat: ex.lat,
-            lon: ex.lon,
-            place: None,
-        });
     }
     photos.sort_by(|a, b| a.file_name.cmp(&b.file_name));
     Ok(photos)
@@ -106,9 +140,10 @@ pub fn scan_test_photos(dir: &str) -> Result<Vec<TestPhoto>, String> {
 /// 每张有 GPS 的照片处理完回调一次进度 + 记录日志。
 pub fn resolve_test_places(
     dir: &str,
+    recurse: bool,
     on_progress: &mut dyn FnMut(ScanProgress),
 ) -> Result<Vec<TestPhoto>, String> {
-    let mut photos = scan_test_photos(dir)?;
+    let mut photos = scan_test_photos(dir, recurse)?;
     // 聚类：网格 key → 中心坐标
     let mut grid: std::collections::BTreeMap<(i32, i32), (f64, f64)> = std::collections::BTreeMap::new();
     for p in &photos {
@@ -189,11 +224,17 @@ fn shorten_place(full: &str) -> String {
 ///  - 每张照片移动完回调一次进度 + 记录日志；内部解析地名阶段进度照常转发
 pub fn organize_test_photos(
     dir: &str,
+    recurse: bool,
     on_progress: &mut dyn FnMut(ScanProgress),
 ) -> Result<OrganizeReport, String> {
-    let photos = resolve_test_places(dir, on_progress)?;
+    let photos = resolve_test_places(dir, recurse, on_progress)?;
     if photos.is_empty() {
-        return Err(format!("扫描到 0 张直接图片（不递归子目录），无法组织移动。请确认所选文件夹下直接存放图片。"));
+        let hint = if recurse {
+            "扫描到 0 张图片（已递归子目录）。请确认所选文件夹下含有图片。"
+        } else {
+            "扫描到 0 张直接图片（不递归子目录），无法组织移动。请确认所选文件夹下直接存放图片。"
+        };
+        return Err(format!("\n{hint}"));
     }
     let root = Path::new(dir);
     let mut report = OrganizeReport {
@@ -294,12 +335,12 @@ fn sanitize_folder(name: &str) -> String {
 pub mod commands {
     use super::*;
 
-    /// 扫描目录下直接图片（不递归）：时间 + GPS 坐标
+    /// 扫描目录下图片（recurse=false 只扫直接图片；recurse=true 递归子目录）：时间 + GPS 坐标
     #[tauri::command]
-    pub async fn scan_test_photos(path: String) -> Result<Vec<TestPhoto>, String> {
-        let _t = log_call!("scan_test_photos", &format!("path={path}"));
+    pub async fn scan_test_photos(path: String, recurse: bool) -> Result<Vec<TestPhoto>, String> {
+        let _t = log_call!("scan_test_photos", &format!("path={path} recurse={recurse}"));
         let r: Result<Vec<TestPhoto>, String> = tauri::async_runtime::spawn_blocking(move || {
-            super::scan_test_photos(&path)
+            super::scan_test_photos(&path, recurse)
         })
         .await
         .map_err(|e| format!("任务线程失败: {e}"))?;
@@ -316,11 +357,11 @@ pub mod commands {
 
     /// 解析地点：GPS 聚类 + 每聚类一次反向地理编码（联网），每张照片上报进度
     #[tauri::command]
-    pub async fn resolve_test_places(app: tauri::AppHandle, path: String) -> Result<Vec<TestPhoto>, String> {
-        let _t = log_call!("resolve_test_places", &format!("path={path}"));
+    pub async fn resolve_test_places(app: tauri::AppHandle, path: String, recurse: bool) -> Result<Vec<TestPhoto>, String> {
+        let _t = log_call!("resolve_test_places", &format!("path={path} recurse={recurse}"));
         let emitter = app.clone();
         let r: Result<Vec<TestPhoto>, String> = tauri::async_runtime::spawn_blocking(move || {
-            super::resolve_test_places(&path, &mut |p| {
+            super::resolve_test_places(&path, recurse, &mut |p| {
                 let _ = emitter.emit("test-scan-progress", &p);
             })
         })
@@ -339,11 +380,11 @@ pub mod commands {
 
     /// 按「年 → 地点」两级文件夹组织移动（测试功能），每张照片上报进度
     #[tauri::command]
-    pub async fn organize_test_photos(app: tauri::AppHandle, path: String) -> Result<OrganizeReport, String> {
-        let _t = log_call!("organize_test_photos", &format!("path={path}"));
+    pub async fn organize_test_photos(app: tauri::AppHandle, path: String, recurse: bool) -> Result<OrganizeReport, String> {
+        let _t = log_call!("organize_test_photos", &format!("path={path} recurse={recurse}"));
         let emitter = app.clone();
         let r: Result<OrganizeReport, String> = tauri::async_runtime::spawn_blocking(move || {
-            super::organize_test_photos(&path, &mut |p| {
+            super::organize_test_photos(&path, recurse, &mut |p| {
                 let _ = emitter.emit("test-scan-progress", &p);
             })
         })
@@ -392,7 +433,7 @@ mod tests {
         }
 
         // 1) 扫描：4 张直接图片，3 张有 GPS
-        let photos = scan_test_photos(tmp.to_str().unwrap()).unwrap();
+        let photos = scan_test_photos(tmp.to_str().unwrap(), false).unwrap();
         assert_eq!(photos.len(), 4, "应扫到 4 张直接图片");
         assert_eq!(photos.iter().filter(|p| p.lat.is_some()).count(), 3, "3 张应有 GPS");
         assert_eq!(photos.iter().filter(|p| p.year.is_some()).count(), 4, "时间三级兜底应覆盖全部（含 mtime）");
@@ -402,7 +443,7 @@ mod tests {
 
         // 2) 解析地名（联网）：A/B 两点各 1 次请求 → 3 张有 place
         let mut resolved = 0usize;
-        let with_place = resolve_test_places(tmp.to_str().unwrap(), &mut |p| {
+        let with_place = resolve_test_places(tmp.to_str().unwrap(), false, &mut |p| {
             resolved += 1;
             eprintln!("  [progress {}/{}] {} → {}", p.current, p.total, p.file_name, p.message);
         })
@@ -418,7 +459,7 @@ mod tests {
         // 3) 组织移动：创建 年/地点 两级文件夹（进度回调按张，含内部 resolve 阶段）
         let mut organize_cb = 0usize;
         let mut resolve_cb = 0usize;
-        let rep = organize_test_photos(tmp.to_str().unwrap(), &mut |p| {
+        let rep = organize_test_photos(tmp.to_str().unwrap(), false, &mut |p| {
             if p.phase == "organize" {
                 organize_cb += 1;
             } else {
@@ -444,5 +485,45 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
         eprintln!("[e2e] 完成并清理临时目录");
+    }
+}
+
+#[cfg(test)]
+mod recurse_tests {
+    use super::*;
+    use std::fs;
+
+    fn setup_dir(tag: &str) -> std::path::PathBuf {
+        // 每个测试用唯一目录名前缀，避免并行执行时相互删除/重建导致竞态
+        let tmp = std::env::temp_dir().join(format!("test_scan_recurse_{tag}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("sub/deep")).unwrap();
+        // 根目录 2 张 + 子目录 1 张 + 深层 1 张 + 非图片 1 个
+        fs::write(tmp.join("root1.jpg"), b"x").unwrap();
+        fs::write(tmp.join("root2.png"), b"x").unwrap();
+        fs::write(tmp.join("sub/child1.jpg"), b"x").unwrap();
+        fs::write(tmp.join("sub/deep/leaf2.jpg"), b"x").unwrap();
+        fs::write(tmp.join("note.txt"), b"x").unwrap();
+        tmp
+    }
+
+    #[test]
+    fn recurse_false_only_direct() {
+        let dir = setup_dir("flat");
+        let photos = scan_test_photos(dir.to_str().unwrap(), false).unwrap();
+        // 只扫直接图片：root1.jpg + root2.png = 2 张
+        let roots_only = photos.iter().filter(|p| !p.path.contains("sub")).count();
+        assert_eq!(photos.len(), 2, "非递归只应扫到根目录 2 张");
+        assert_eq!(roots_only, 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recurse_true_includes_subdirs() {
+        let dir = setup_dir("tree");
+        let photos = scan_test_photos(dir.to_str().unwrap(), true).unwrap();
+        // 递归：root1 + root2 + sub/child1 + sub/deep/leaf2 = 4 张
+        assert_eq!(photos.len(), 4, "递归应扫到 4 张（含子目录）");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

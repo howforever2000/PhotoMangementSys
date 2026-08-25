@@ -62,6 +62,30 @@ const router = createRouter({
       component: () => import("../views/TestScan.vue"),
     },
     {
+      // 智慧相册：人脸/人物识别结果总览（FEAT-030）
+      path: "/smart",
+      name: "smart-album",
+      component: () => import("../views/SmartAlbum.vue"),
+    },
+    {
+      // 跨相册照片时间线（FEAT-033）
+      path: "/timeline",
+      name: "timeline",
+      component: () => import("../views/Timeline.vue"),
+    },
+    {
+      // 回忆页 —— 百度网盘智能相册风格（故事海报 + 月度/年度回顾）
+      path: "/memories",
+      name: "memories",
+      component: () => import("../views/Memories.vue"),
+    },
+    {
+      // 智能搜索（FEAT-034）
+      path: "/search",
+      name: "smart-search",
+      component: () => import("../views/SmartSearch.vue"),
+    },
+    {
       // 懒加载详情页
       path: "/album/:id",
       name: "album-detail",

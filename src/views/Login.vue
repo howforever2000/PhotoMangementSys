@@ -2,6 +2,8 @@
 import { ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "../stores/auth";
+// 登录页固定使用设计封面（不随主题/皮肤变化）
+import coverImg from "../../covers/cover.png";
 
 const auth = useAuthStore();
 const router = useRouter();
@@ -41,6 +43,8 @@ async function handleLogin() {
 
 <template>
   <div class="auth-page">
+    <div class="auth-cover" :style="{ backgroundImage: `url(${coverImg})` }"></div>
+    <div class="auth-overlay"></div>
     <div class="auth-card">
       <header class="auth-header">
         <h1 class="auth-title">本地相册管理</h1>
@@ -88,21 +92,43 @@ async function handleLogin() {
 
 <style scoped>
 .auth-page {
+  position: relative;
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: linear-gradient(160deg, #f5f7fb 0%, #eef1f6 100%);
+  overflow: hidden;
+}
+
+/* 固定设计封面：登录页专属，不受主题设置影响 */
+.auth-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-size: cover;
+  background-position: center;
+}
+
+.auth-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background:
+    radial-gradient(120% 120% at 20% 0%, rgba(20, 28, 64, 0.55) 0%, rgba(8, 12, 28, 0.86) 100%),
+    linear-gradient(180deg, rgba(8, 12, 28, 0.78) 0%, rgba(8, 12, 28, 0.9) 100%);
 }
 
 .auth-card {
+  position: relative;
+  z-index: 2;
   width: 100%;
   max-width: 400px;
-  background: #fff;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(16px);
   border-radius: 16px;
-  border: 1px solid #eceef2;
-  box-shadow: 0 12px 40px rgba(30, 41, 59, 0.1);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
   padding: 36px 32px 28px;
 }
 
@@ -114,13 +140,14 @@ async function handleLogin() {
 .auth-title {
   margin: 0 0 8px;
   font-size: 24px;
-  color: #2c3e50;
+  color: #f5f7ff;
+  text-shadow: 0 0 20px rgba(120, 160, 255, 0.5), 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
 .auth-subtitle {
   margin: 0;
   font-size: 13px;
-  color: #8892a6;
+  color: rgba(214, 221, 240, 0.74);
 }
 
 .auth-form {
@@ -137,24 +164,24 @@ async function handleLogin() {
 
 .field-label {
   font-size: 13px;
-  color: #4a5568;
+  color: #e6ebf8;
 }
 
 .field-input {
   height: 42px;
   padding: 0 12px;
   font-size: 14px;
-  color: #2c3e50;
-  border: 1px solid #d8dce3;
+  color: #1f2733;
+  border: 1px solid rgba(255, 255, 255, 0.28);
   border-radius: 8px;
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
-  background: #fafbfc;
+  background: #f6f8fb;
 }
 
 .field-input:focus {
-  border-color: #396cd8;
-  box-shadow: 0 0 0 3px rgba(57, 108, 216, 0.12);
+  border-color: #6ea8ff;
+  box-shadow: 0 0 0 3px rgba(110, 168, 255, 0.25);
   background: #fff;
 }
 
@@ -202,7 +229,7 @@ async function handleLogin() {
 }
 
 .auth-link {
-  color: #396cd8;
+  color: #aacbff;
   text-decoration: none;
 }
 
@@ -211,6 +238,6 @@ async function handleLogin() {
 }
 
 .auth-divider {
-  color: #c3c9d4;
+  color: rgba(214, 221, 240, 0.4);
 }
 </style>

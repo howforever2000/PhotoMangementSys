@@ -4,6 +4,7 @@ import type {
   LoginInput,
   RegisterInput,
   ResetPasswordInput,
+  UpdateProfileInput,
   User,
 } from "../types/auth";
 
@@ -58,6 +59,12 @@ export const useAuthStore = defineStore("auth", {
     /** 忘记密码重置（账户名 + 邮箱 + 手机号校验通过后重设密码） */
     async resetPassword(input: ResetPasswordInput): Promise<void> {
       await invoke("reset_password", { input });
+    },
+
+    /** 修改基本信息（需先验证当前密码） */
+    async updateProfile(input: UpdateProfileInput): Promise<User> {
+      this.user = await invoke<User>("update_profile", { input });
+      return this.user;
     },
   },
 });

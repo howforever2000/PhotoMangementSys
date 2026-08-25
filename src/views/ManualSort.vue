@@ -8,6 +8,7 @@ import type { Folder, ManualTree } from "../types/folder";
 import { trace } from "../utils/trace";
 import AlbumMiniCard from "../components/AlbumMiniCard.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
+import { useNotify } from "../composables/useNotify";
 
 const props = defineProps<{
   /** 从搜索结果传入：需要跳转到的分组 id */
@@ -25,6 +26,7 @@ const emit = defineEmits<{
 
 const router = useRouter();
 const store = useAlbumStore();
+const notify = useNotify();
 
 // ---------- 状态 ----------
 const tree = ref<ManualTree | null>(null);
@@ -185,8 +187,9 @@ async function submitCreateFolder() {
     await invoke("create_folder", { name: createName.value, parentId: createParentId.value });
     showCreateFolder.value = false;
     await loadTree();
+    notify.success("分组创建成功");
   } catch (e) {
-    alert(`创建分组失败：${e}`);
+    notify.error("创建分组失败", String(e));
   }
 }
 
@@ -211,7 +214,7 @@ function addTag() {
   const t = tagInput.value.trim();
   if (!t) return;
   if (editTags.value.length >= 5) {
-    alert("最多只能添加 5 个标签");
+    notify.warning("最多只能添加 5 个标签");
     return;
   }
   if (!editTags.value.includes(t)) {
@@ -235,8 +238,9 @@ async function saveEditFolder() {
     });
     editingFolder.value = null;
     await loadTree();
+    notify.success("分组保存成功");
   } catch (e) {
-    alert(`保存失败：${e}`);
+    notify.error("保存失败", String(e));
   }
 }
 
@@ -258,7 +262,7 @@ async function doDeleteFolder() {
     contextMenu.value.visible = false;
     await loadTree();
   } catch (e) {
-    alert(`删除失败：${e}`);
+    notify.error("删除失败", String(e));
   }
 }
 
@@ -281,7 +285,7 @@ async function doDeleteAlbumContext() {
     closeContextMenu();
     await loadTree();
   } catch (e) {
-    alert(`删除失败：${e}`);
+    notify.error("删除失败", String(e));
   }
 }
 
@@ -310,7 +314,7 @@ const moveAlbum = trace("moveAlbum", async (albumId: number, folderId: number | 
     }
     await loadTree();
   } catch (e) {
-    alert(`移动失败：${e}`);
+    notify.error("移动失败", String(e));
   }
 });
 
@@ -446,7 +450,7 @@ async function onGlobalPointerUp(event: PointerEvent) {
       }
       await loadTree();
     } catch (e) {
-      alert(`排序失败：${e}`);
+      notify.error("排序失败", String(e));
     }
   }
 }
@@ -766,7 +770,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .manual-sort { padding-bottom: 30px; }
 .manual-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-.manual-hint { color: #999; font-size: 13px; }
+.manual-hint { color: #6b7280; font-size: 13px; }
 
 /* 目录导航 */
 .manual-nav {
@@ -791,7 +795,7 @@ onBeforeUnmount(() => {
 }
 
 .manual-nav-empty {
-  color: #999;
+  color: #6b7280;
 }
 
 .manual-nav-sep {
@@ -833,11 +837,11 @@ onBeforeUnmount(() => {
 .btn:disabled { opacity: .6; }
 
 .root-albums { border: 1px dashed #ccc; border-radius: 10px; padding: 12px; margin-bottom: 20px; background: #fafbfd; }
-.root-title { font-size: 13px; color: #888; margin-bottom: 8px; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
+.root-title { font-size: 13px; color: #5f6b7a; margin-bottom: 8px; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
 
 /* 折叠箭头 */
 .fold-arrow {
-  color: #999;
+  color: #6b7280;
   font-size: 12px;
   width: 14px;
   text-align: center;
@@ -896,7 +900,7 @@ onBeforeUnmount(() => {
 .folder-tags { display: flex; gap: 4px; }
 .tag-chip { background: #eef3ff; color: #396cd8; font-size: 11px; padding: 1px 8px; border-radius: 10px; }
 .tag-chip.editable { display: inline-flex; align-items: center; gap: 4px; }
-.tag-del { border: none; background: none; color: #999; cursor: pointer; font-size: 12px; }
+.tag-del { border: none; background: none; color: #9a6a00; cursor: pointer; font-size: 12px; }
 .folder-actions { margin-left: auto; display: flex; gap: 4px; }
 .mini-btn { border: 1px solid #ddd; background: #fff; border-radius: 6px; font-size: 11px; padding: 3px 8px; cursor: pointer; }
 .mini-btn:hover { border-color: #396cd8; color: #396cd8; }

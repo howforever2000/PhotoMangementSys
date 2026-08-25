@@ -1,0 +1,10 @@
+# VCR 微服务打包期运行时依赖（不含模型，模型为外部文件）
+# 注释使用英文/ASCII，避免 Windows GBK 控制台读取 pip requirements 时报 UnicodeDecodeError。
+# 用途：为 PyInstaller 打包独立 exe 创建最小化 venv（不污染全局 base 环境）。
+fastapi>=0.110
+uvicorn>=0.29
+onnxruntime>=1.17
+Pillow>=10.0
+numpy>=1.26
+opencv-python>=4.8
+pyinstaller>=6.0

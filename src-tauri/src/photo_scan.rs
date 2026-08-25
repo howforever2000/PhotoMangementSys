@@ -35,6 +35,14 @@ pub struct PhotoExif {
     pub shutter_speed: Option<String>,
     /// 拍摄时间，如 "2023-01-15 10:30:00"
     pub shoot_time: Option<String>,
+    /// ISO 数值（范围筛选用，与 iso 文本字段同源）
+    pub iso_num: Option<u32>,
+    /// 焦段数值，mm
+    pub focal_num: Option<f64>,
+    /// 光圈数值，f-number
+    pub aperture_num: Option<f64>,
+    /// 快门速度数值，曝光时间（秒；1/200s → 0.005）
+    pub shutter_num: Option<f64>,
     /// 纬度（十进制度，WGS84），如 31.921282
     pub lat: Option<f64>,
     /// 经度（十进制度，WGS84）
@@ -49,6 +57,105 @@ pub struct PhotoExif {
     pub map_url: Option<String>,
     /// 反向地理编码地名（仅 with_place 扫描时填充）
     pub place: Option<String>,
+}
+
+/// 扫描相册目录内所有图片的 EXIF 信息（递归子目录，跳过隐藏文件/目录）
+///
+/// - 目录不存在或不是文件夹 → 返回错误
+/// - 单张图片打开/EXIF 读取失败不影响整体，该图片字段置 `None` 照常返回
+/// - 结果按文件名升序排列，便于人工核对
+pub fn scan_album_photos(dir: &str) -> Result<Vec<PhotoExif>, String> {
+    let root = Path::new(dir);
+    if !root.is_dir() {
+        return Err(format!("路径不存在或不是文件夹: {dir}"));
+    }
+
+    let mut photos: Vec<PhotoExif> = Vec::new();
+    for entry in walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
+    {
+        let Ok(e) = entry else { continue };
+        if !e.file_type().is_file() {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().to_string();
+        if !is_image_file(&name) {
+            continue;
+        }
+        let path = e.into_path();
+        photos.push(read_photo_exif(&path, &name));
+    }
+
+    photos.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    Ok(photos)
+}
+
+/// 在扫描基础上补充反向地理编码（联网，每张有坐标的照片 ~1.1s 限速）
+///
+/// BigDataCloud（免 key、国内直连、中文行政区划）为主，
+/// Nominatim/OSM 为备选。仅对带 GPS 坐标的照片发起请求。
+pub fn scan_album_photos_with_place(dir: &str) -> Result<Vec<PhotoExif>, String> {
+    let mut photos = scan_album_photos(dir)?;
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("photo-manager/0.1 (album location research)")
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("HTTP 客户端创建失败: {e}"))?;
+    for p in photos.iter_mut() {
+        if let (Some(lat), Some(lon)) = (p.lat, p.lon) {
+            p.place = reverse_geocode(&client, lat, lon);
+            // Nominatim 限速（BigDataCloud 无强制限速，但保持礼貌间隔）
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+    Ok(photos)
+}
+
+/// 在扫描基础上补充**本地**省/市地名（离线，零网络请求）
+///
+/// 用内嵌的民政部口径边界数据（geo_index）做点面判断，
+/// 万张照片 <1s，远快于在线反编码（~2s/张）；未命中（国外/公海）时 place 置 None。
+pub fn scan_album_photos_with_place_local(dir: &str) -> Result<Vec<PhotoExif>, String> {
+    let mut photos = scan_album_photos(dir)?;
+    for p in photos.iter_mut() {
+        if let (Some(lat), Some(lon)) = (p.lat, p.lon) {
+            p.place = crate::geo_index::find_region(lat, lon);
+        }
+    }
+    Ok(photos)
+}
+
+/// 检测相册地点：扫描全部照片 GPS，取 ~1km（0.01°）网格众数坐标
+///
+/// 相册常跨多个拍摄点（旅行），众数代表拍摄最多的位置。
+/// 无 GPS 照片返回 None（不报错，调用方决定提示）。
+pub fn detect_album_location(dir: &str) -> Result<Option<(f64, f64)>, String> {
+    let photos = scan_album_photos(dir)?;
+    let mut grid: std::collections::BTreeMap<(i32, i32), usize> = std::collections::BTreeMap::new();
+    for p in &photos {
+        if let (Some(lat), Some(lon)) = (p.lat, p.lon) {
+            let key = ((lat * 100.0).round() as i32, (lon * 100.0).round() as i32); // 0.01° ≈ 1.1km
+            *grid.entry(key).or_insert(0) += 1;
+        }
+    }
+    let Some(((gx, gy), _)) = grid.into_iter().max_by_key(|(_, n)| *n) else {
+        return Ok(None);
+    };
+    Ok(Some((gx as f64 / 100.0, gy as f64 / 100.0)))
+}
+
+/// 反向地理编码单点坐标（供地点自动识别命令复用）
+///
+/// BigDataCloud 为主（免 key、国内直连、中文），Nominatim 备选。
+pub fn reverse_geocode_coord(lat: f64, lon: f64) -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("photo-manager/0.1 (album location research)")
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+    reverse_geocode(&client, lat, lon)
 }
 
 /// 反向地理编码：坐标 → 中文地名。
@@ -96,6 +203,10 @@ pub(crate) fn read_photo_exif(path: &Path, name: &str) -> PhotoExif {
         aperture: None,
         shutter_speed: None,
         shoot_time: None,
+        iso_num: None,
+        focal_num: None,
+        aperture_num: None,
+        shutter_num: None,
         lat: None,
         lon: None,
         lat_raw: None,
@@ -116,18 +227,22 @@ pub(crate) fn read_photo_exif(path: &Path, name: &str) -> PhotoExif {
     };
 
     // ISO：0x8827（PhotographicSensitivity / ISOSpeedRatings）为主，0x8833（ISOSpeed）兜底
-    photo.iso = field_by_number(&exif, 0x8827)
+    // 同时保留数值版（供范围筛选，FEAT-026）
+    let iso_raw = field_by_number(&exif, 0x8827)
         .or_else(|| field_by_number(&exif, 0x8833))
         .and_then(|f| match &f.value {
-            exif::Value::Short(v) => v.first().map(|x| format_iso(*x as u32)),
-            exif::Value::Long(v) => v.first().map(|x| format_iso(*x)),
+            exif::Value::Short(v) => v.first().copied().map(|x| x as u32),
+            exif::Value::Long(v) => v.first().copied(),
             _ => None,
         });
+    photo.iso = iso_raw.map(format_iso);
+    photo.iso_num = iso_raw;
 
     // 焦段：FocalLength（0x920A）
     if let Some(f) = field_by_number(&exif, 0x920a) {
         if let Some(v) = field_value_f64(f) {
             photo.focal_length = Some(format_focal(v));
+            photo.focal_num = Some(v);
         }
     }
 
@@ -135,6 +250,7 @@ pub(crate) fn read_photo_exif(path: &Path, name: &str) -> PhotoExif {
     if let Some(f) = field_by_number(&exif, 0x829d) {
         if let Some(v) = field_value_f64(f) {
             photo.aperture = Some(format_aperture(v));
+            photo.aperture_num = Some(v);
         }
     }
 
@@ -142,6 +258,7 @@ pub(crate) fn read_photo_exif(path: &Path, name: &str) -> PhotoExif {
     if let Some(f) = field_by_number(&exif, 0x829a) {
         if let Some(v) = field_value_f64(f) {
             photo.shutter_speed = Some(format_shutter(v));
+            photo.shutter_num = Some(v);
         }
     }
 
@@ -422,5 +539,107 @@ mod tests {
         assert_eq!(format_focal(50.0), "50mm");
         assert_eq!(format_focal(4.3), "4.3mm");
         assert_eq!(format_aperture(2.8), "f/2.8");
+    }
+
+    #[test]
+    fn test_scan_fixture_dir() {
+        // 测试图片目录：项目根 test_fixture_photos（不存在则跳过）
+        let dir = format!("{}/../test_fixture_photos", env!("CARGO_MANIFEST_DIR"));
+        if !std::path::Path::new(&dir).is_dir() {
+            eprintln!("跳过：无测试图片目录 {dir}");
+            return;
+        }
+        let photos = scan_album_photos(&dir).expect("扫描应成功");
+        // 期望 6 张：2 张 EXIF + 1 张无 EXIF jpg + 1 张 png + 2 张影调测试图（隐藏目录被跳过）
+        assert_eq!(photos.len(), 6, "got: {:?}", photos.iter().map(|p| &p.file_name).collect::<Vec<_>>());
+        let camera = photos.iter().find(|p| p.file_name == "IMG_0001_camera.jpg").unwrap();
+        assert_eq!(camera.iso.as_deref(), Some("400"));
+        assert_eq!(camera.focal_length.as_deref(), Some("50mm"));
+        assert_eq!(camera.aperture.as_deref(), Some("f/2.8"));
+        assert_eq!(camera.shutter_speed.as_deref(), Some("1/200s"));
+        assert_eq!(camera.shoot_time.as_deref(), Some("2023-01-15 10:30:00"));
+        let screenshot = photos.iter().find(|p| p.file_name == "IMG_0002_screenshot.jpg").unwrap();
+        assert!(screenshot.iso.is_none() && screenshot.shoot_time.is_none());
+        let wide = photos.iter().find(|p| p.file_name == "IMG_0004_wide.jpg").unwrap();
+        assert_eq!(wide.iso.as_deref(), Some("400")); // 递归子目录
+        assert!(!photos.iter().any(|p| p.file_name.contains("hidden")));
+    }
+
+    #[test]
+    fn test_real_dir_gps_extraction() {
+        // 真实测试集（含 GPS 坐标的照片，2026-08 实测 53 张中 ~50 张有坐标）
+        // 目录不存在则跳过（与其他 fixture 测试一致）
+        let dir = "D:/YUAN HAO/Pictures/2026/test";
+        if !std::path::Path::new(dir).is_dir() {
+            eprintln!("跳过：无真实测试目录 {dir}");
+            return;
+        }
+        let photos = scan_album_photos(dir).expect("扫描应成功");
+        let with_gps = photos.iter().filter(|p| p.lat.is_some()).count();
+        assert!(with_gps >= 20, "期望大部分照片有 GPS，实际 {with_gps}/{}", photos.len());
+
+        // 抽查：IMG_20200207_173741.jpg（参考值 31.9212818, 107.6374893）
+        let p = photos.iter().find(|p| p.file_name == "IMG_20200207_173741.jpg").unwrap();
+        let lat = p.lat.expect("应有纬度");
+        let lon = p.lon.expect("应有经度");
+        assert!((lat - 31.9212818144).abs() < 1e-4, "lat={lat}");
+        assert!((lon - 107.6374893186).abs() < 1e-4, "lon={lon}");
+        // 时间三级兜底：DateTimeOriginal 优先
+        assert!(p.shoot_time.as_deref().unwrap().starts_with("2020-02-07 17:37"), "{:?}", p.shoot_time);
+        // 海拔（该图参考 alt=0.0，仅验证字段存在）
+        assert!(p.alt_m.is_some());
+        assert!(p.map_url.as_deref().unwrap().contains("31.921282"));
+    }
+
+    #[test]
+    fn test_real_dir_local_place() {
+        // 本地省/市反查（离线）：53 张真实照片应全部解析，且落点与参考一致（达州/宣汉）
+        let dir = "D:/YUAN HAO/Pictures/2026/test";
+        if !std::path::Path::new(dir).is_dir() {
+            eprintln!("跳过：无真实测试目录 {dir}");
+            return;
+        }
+        let photos = scan_album_photos_with_place_local(dir).expect("扫描应成功");
+        let with_place = photos.iter().filter(|p| p.place.is_some()).count();
+        eprintln!("[local-place] 有地名 {with_place}/{}", photos.len());
+        for p in photos.iter().filter(|p| p.place.is_some()).take(5) {
+            eprintln!("  {} → {}", p.file_name, p.place.as_deref().unwrap());
+        }
+        assert!(with_place >= 20, "期望大部分照片解析出省/市地名，实际 {with_place}/{}", photos.len());
+        // 抽查参考点：31.92128, 107.63749 → 四川省 · 达州市
+        let p = photos.iter().find(|p| p.file_name == "IMG_20200207_173741.jpg").unwrap();
+        assert!(p.place.as_deref().unwrap_or("").contains("四川省"), "{:?}", p.place);
+        assert!(p.place.as_deref().unwrap_or("").contains("达州"), "{:?}", p.place);
+    }
+
+    #[test]
+    #[ignore] // 联网测试：手动 cargo test -- --ignored photo_scan::tests::test_real_dir_reverse_geocode
+    fn test_real_dir_reverse_geocode() {
+        let dir = "D:/YUAN HAO/Pictures/2026/test";
+        if !std::path::Path::new(dir).is_dir() {
+            eprintln!("跳过：无真实测试目录 {dir}");
+            return;
+        }
+        let photos = scan_album_photos_with_place(dir).expect("扫描应成功");
+        let with_place = photos.iter().filter(|p| p.place.is_some()).count();
+        eprintln!("[geocode] 有地名 {with_place}/{}", photos.len());
+        for p in photos.iter().filter(|p| p.place.is_some()).take(3) {
+            eprintln!("  {} → {}", p.file_name, p.place.as_deref().unwrap());
+        }
+        assert!(with_place > 0, "期望至少 1 张照片获得地名");
+    }
+
+    #[test]
+    fn test_real_dir_detect_location() {
+        // 地点众数检测（纯本地，不联网）：相册 GPS 众数应落在达州（31.92, 107.64）附近
+        let dir = "D:/YUAN HAO/Pictures/2026/test";
+        if !std::path::Path::new(dir).is_dir() {
+            eprintln!("跳过：无真实测试目录 {dir}");
+            return;
+        }
+        let coord = detect_album_location(dir).expect("检测应成功").expect("应有 GPS 众数");
+        eprintln!("[detect] 众数坐标: {:.4}, {:.4}", coord.0, coord.1);
+        assert!((coord.0 - 31.92).abs() < 0.05, "lat 偏离达州: {}", coord.0);
+        assert!((coord.1 - 107.64).abs() < 0.05, "lon 偏离达州: {}", coord.1);
     }
 }

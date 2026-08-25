@@ -32,6 +32,18 @@ export interface Album {
   folder_id: number | null;
   /** 所属分组完整路径（如 "旅行/欧洲/巴黎"） */
   folder_path: string;
+  /** 合并来源相册列表（FEAT-A）
+   *  记录该相册历史上被合并进来的源相册（id / name / path），
+   *  用于相册卡片下显示「由 X 个相册合并而来」，每条路径可点击跳转。
+   *  后端在 get_albums / get_album / search_albums 时填充；非合并产物为空数组。 */
+  merged_sources: MergedSource[];
+}
+
+/** 单个合并来源条目（FEAT-A） */
+export interface MergedSource {
+  id: number;
+  name: string;
+  path: string;
 }
 
 /** 将字节数格式化为可读大小（KB/MB/GB） */
@@ -59,4 +71,23 @@ export interface UpdateAlbumInput {
   cover_path?: string;
   /** 地点标签（空字符串清除） */
   location?: string;
+}
+
+/** 批量整理结果 —— 对应 Rust `BatchAlbumOutcome` */
+export interface BatchAlbumOutcome {
+  requested: number;
+  ok: number;
+  failed: number;
+  failed_ids: number[];
+}
+
+/** 相册合并结果 —— 对应 Rust `MergeAlbumOutcome` */
+export interface MergeAlbumOutcome {
+  requested: number;
+  merged: number;
+  files_moved: number;
+  files_failed: number;
+  skipped: number[];
+  failed_ids: number[];
+  target_id: number;
 }
