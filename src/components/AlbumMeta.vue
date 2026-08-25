@@ -393,6 +393,12 @@ const saveTags = trace("saveTags", async () => {
   opacity: 1;
 }
 
+.cover-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+
 .detail-info {
   flex: 1;
   min-width: 0;

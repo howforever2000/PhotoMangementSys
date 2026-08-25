@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
-import type { Album, CreateAlbumInput, UpdateAlbumInput } from "../types/album";
-import type { PhotoInfo, PhotoDeleteOutcome, ExportOutcome } from "../types/photo";
+import type { Album, CreateAlbumInput, UpdateAlbumInput, BatchAlbumOutcome, MergeAlbumOutcome } from "../types/album";
+import type { PhotoInfo, PhotoDeleteOutcome, ExportOutcome, PhotoMoveOutcome, PhotoRating, PrewarmOutcome } from "../types/photo";
 
 /** 批量导入结果（对应后端 Rust `ImportResult`） */
 export interface ImportResult {
@@ -81,6 +81,38 @@ export const useAlbumStore = defineStore("album", {
       return await invoke<ExportOutcome>("export_photos", { paths, destDir, exportInfo });
     },
 
+    /** 给一批照片打分（rating 0-5，0 清除） */
+    async setPhotoRatings(paths: string[], rating: number): Promise<void> {
+      await invoke<void>("set_photo_rating", { paths, rating });
+    },
+
+    /** 查询一批照片的打分，返回 [(path, rating)] */
+    async getPhotoRatings(paths: string[]): Promise<PhotoRating[]> {
+      if (!paths.length) return [];
+      return await invoke<PhotoRating[]>("get_photo_ratings", { paths });
+    },
+
+    /** 把一批照片移动到另一相册（物理移动文件并同步记录），返回移动统计 */
+    async movePhotosToAlbum(albumId: number, paths: string[], targetAlbumId: number): Promise<PhotoMoveOutcome> {
+      return await invoke<PhotoMoveOutcome>("move_photos_to_album", {
+        albumId,
+        paths,
+        targetAlbumId,
+      });
+    },
+
+    /**
+     * 显式预热一个相册下若干照片的网格缩略图缓存。
+     * 任何调用者都可使用：PersonGallery、Memories、首页热门照片等
+     * 都需要「缩略图快速复用」的场景都能调。与 PhotoGrid 内部
+     * IntersectionObserver 互补：PhotoGrid 是边滚边热；本接口是
+     * 「一次全量」预热，适用于“拉一批照片后一次性展示”。
+     */
+    async prewarmThumbs(albumId: number, paths: string[]): Promise<PrewarmOutcome> {
+      if (!paths.length) return { requested: 0, hit: 0, generated: 0, failed: 0 };
+      return await invoke<PrewarmOutcome>("prewarm_thumbs", { albumId, paths });
+    },
+
     /** 获取人物头像缓存路径（代表脸 bbox 裁剪；服务未运行时抛错由调用方回退） */
     async getPersonAvatar(pid: string, forceRefresh = false): Promise<string> {
       return await invoke<string>("get_person_avatar", { pid, forceRefresh });
@@ -139,6 +171,29 @@ export const useAlbumStore = defineStore("album", {
         this.currentAlbum = null;
       }
       return deleted;
+    },
+
+    /** 批量移动相册到指定分组（folderId=null → 顶级/不分组） */
+    async batchMoveAlbumToFolder(ids: number[], folderId: number | null): Promise<BatchAlbumOutcome> {
+      return await invoke<BatchAlbumOutcome>("batch_move_album_to_folder", {
+        albumIds: ids,
+        folderId,
+      });
+    },
+
+    /** 批量设置相册地点（空字符串清除） */
+    async batchSetAlbumLocation(ids: number[], location: string): Promise<BatchAlbumOutcome> {
+      return await invoke<BatchAlbumOutcome>("batch_set_album_location", { albumIds: ids, location });
+    },
+
+    /** 批量加/删相册标签（mode: add / remove） */
+    async batchSetAlbumTag(ids: number[], tags: string[], mode: "add" | "remove"): Promise<BatchAlbumOutcome> {
+      return await invoke<BatchAlbumOutcome>("batch_set_album_tag", { albumIds: ids, tags, mode });
+    },
+
+    /** 合并相册：mode="move" 物理移入目标文件夹；mode="record" 仅删源相册记录（文件保留原地） */
+    async mergeAlbums(sourceIds: number[], targetId: number, mode: "move" | "record" = "move"): Promise<MergeAlbumOutcome> {
+      return await invoke<MergeAlbumOutcome>("merge_albums", { sourceIds, targetId, mode });
     },
   },
 });

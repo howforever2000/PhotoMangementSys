@@ -113,6 +113,11 @@ const categoryOptions = computed<string[]>(() => {
   return [...s].sort();
 });
 
+/** FEAT-D：传给大图查看器的照片列表，每项带 albumId 以便 Lightbox 触发 ensure_photo_scanned */
+const lightboxPhotos = computed(() =>
+  visiblePhotos.value.map((p) => ({ path: p.path, meta: p.meta, albumId: props.albumId })),
+);
+
 /** 是否已有扫描元数据（大类）可用于筛选 */
 function hasAnyMeta() {
   return categoryOptions.value.length > 0;
@@ -141,6 +146,15 @@ async function load() {
     for (const r of rows) metaMap.set(r.path, r);
     photos.value = paths.map((p) => ({ path: p, meta: metaMap.get(p) }));
     emit("count", paths.length);
+    // 打分：一次性拉取当前相册照片的打分（不依赖扫描记录）
+    try {
+      const ratingRows = await albumStore.getPhotoRatings(paths);
+      const rm: Record<string, number> = {};
+      for (const [p, r] of ratingRows) rm[p] = r;
+      ratingMap.value = rm;
+    } catch {
+      /* 打分服务不可用不影响浏览 */
+    }
     // 命中模块级缓存的缩略图直接回填，重进页面不再闪占位符
     for (const p of paths) {
       const t = thumbCache.get(p);
@@ -246,6 +260,43 @@ const confirmState = ref<null | { mode: "record" | "file"; paths: string[] }>(nu
 const deleting = ref(false);
 const deleteMsg = ref("");
 
+/* ---- 打分（星标） ---- */
+/** path → 打分（0/缺失视为未打分） */
+const ratingMap = ref<Record<string, number>>({});
+const ratingOpen = ref(false);
+const ratingPick = ref(5);
+const busyRating = ref(false);
+
+/** 打分弹窗状态统计：选中照片中已有分数的分布 */
+const ratingStats = computed(() => {
+  const paths = [...selectedPaths.value];
+  const scores: number[] = [];
+  for (const p of paths) {
+    const r = ratingMap.value[p];
+    if (r && r > 0) scores.push(r);
+  }
+  if (!scores.length) return { count: 0, max: 0, min: 0, avg: 0, hasRated: false };
+  return {
+    count: scores.length,
+    max: Math.max(...scores),
+    min: Math.min(...scores),
+    avg: scores.reduce((a, b) => a + b, 0) / scores.length,
+    hasRated: true,
+  };
+});
+
+/** 打开打分：默认使用现有平均分（取整）以免突变 */
+function openRating() {
+  const avg = ratingStats.value.avg;
+  ratingPick.value = avg >= 1 ? Math.round(avg) : 5;
+  ratingOpen.value = true;
+}
+
+/* ---- 合并到其他相册 ---- */
+const mergeOpen = ref(false);
+const mergeTargetId = ref<number | null>(null);
+const merging = ref(false);
+
 function toggleSelectMode() {
   selectMode.value = !selectMode.value;
   selectedPaths.value = new Set();
@@ -346,10 +397,63 @@ async function doExport() {
   }
 }
 
+/* ---- 合并到其他相册 ---- */
+/** 可作目标的相册（排除当前相册） */
+const mergeCandidates = computed(() => albumStore.albums.filter((a) => a.id !== props.albumId));
+
+function openMerge() {
+  mergeTargetId.value = null;
+  mergeOpen.value = true;
+}
+
+async function doMerge() {
+  const target = mergeTargetId.value;
+  const paths = [...selectedPaths.value];
+  if (!target || !paths.length || merging.value) return;
+  merging.value = true;
+  try {
+    const out = await albumStore.movePhotosToAlbum(props.albumId, paths, target);
+    notify.success(
+      "合并完成",
+      `已移动 ${out.moved} / ${out.requested} 张到目标相册` +
+        (out.failed ? `（${out.failed} 张失败）` : ""),
+    );
+    mergeOpen.value = false;
+    exitSelectMode();
+    await load();
+    await albumStore.fetchAlbums();
+  } catch (e) {
+    notify.error("合并失败", String(e));
+  } finally {
+    merging.value = false;
+  }
+}
+
+/* ---- 打分（星标）----
+ * openRating / applyRating 已在上面以「打分统计」感知版定义。
+ * 此处仅保留 applyRating。 */
+async function applyRating() {
+  const paths = [...selectedPaths.value];
+  if (!paths.length || busyRating.value) return;
+  busyRating.value = true;
+  try {
+    await albumStore.setPhotoRatings(paths, ratingPick.value);
+    const next = { ...ratingMap.value };
+    for (const p of paths) next[p] = ratingPick.value;
+    ratingMap.value = next;
+    notify.success("打分完成", `已为 ${paths.length} 张照片设置 ${ratingPick.value} 星`);
+    ratingOpen.value = false;
+    exitSelectMode();
+  } catch (e) {
+    notify.error("打分失败", String(e));
+  } finally {
+    busyRating.value = false;
+  }
+}
+
 function resetFilter() {
   activeCategory.value = null;
 }
-
 function refresh() {
   resetFilter();
   load();
@@ -370,11 +474,59 @@ watch(visiblePhotos, () => {
 onMounted(() => {
   load();
   loadPersons();
+  // 预取相册列表（供「合并到相册」选择目标）
+  albumStore.fetchAlbums().catch(() => {});
+  window.addEventListener("keydown", onKey);
 });
 
 onBeforeUnmount(() => {
   cellObserver?.disconnect();
+  window.removeEventListener("keydown", onKey);
 });
+
+/* ---------------- 选模式快捷键 ---------------- */
+/**
+ * 选模式下提供键盘交互，减少鼠标点按：
+ *  - Esc 退出选模式
+ *  - Ctrl/Cmd + A 全选/取消全选（仅当前可见区）
+ *  - Delete 删除记录（默认「安全」语义，本地文件保留）
+ *  输入框/弹窗/按 Enter 键时不拦截（避免误退/误删）。
+ */
+/* ---------------- 键盘交互 ---------------- */
+/**
+ * 选模式下提供快捷键：
+ *  - Esc：优先关闭打开的弹窗；无弹窗则退出选模式
+ *  - Ctrl/Cmd + A：全选/取消全选（仅当前可见区）
+ *  - Delete：删除记录（默认「安全」语义，本地文件保留）
+ * 输入框中不响应。
+ */
+function onKey(e: KeyboardEvent) {
+  const target = e.target as HTMLElement | null;
+  const tag = target?.tagName;
+  const editable = tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable;
+  if (editable) return;
+
+  // 打开的对话框优先处理 Esc：依次关闭评分 → 合并 → 删除确认
+  if (e.key === "Escape") {
+    if (ratingOpen.value) { e.preventDefault(); ratingOpen.value = false; return; }
+    if (mergeOpen.value) { e.preventDefault(); mergeOpen.value = false; return; }
+    if (confirmState.value) { e.preventDefault(); confirmState.value = null; return; }
+  }
+
+  if (!selectMode.value) return;
+  if (mergeOpen.value || ratingOpen.value || confirmState.value) return;
+
+  if (e.key === "Escape") {
+    e.preventDefault();
+    exitSelectMode();
+  } else if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
+    e.preventDefault();
+    toggleSelectAll();
+  } else if (e.key === "Delete" && selectedPaths.value.size > 0) {
+    e.preventDefault();
+    requestDelete("record");
+  }
+}
 </script>
 
 <template>
@@ -382,10 +534,20 @@ onBeforeUnmount(() => {
     <header class="pg-header">
       <h3 class="pg-title">照片浏览</h3>
       <span v-if="!loading" class="pg-count">{{ visiblePhotos.length }} / {{ photos.length }} 张</span>
-      <button v-if="photos.length" class="btn pg-refresh" :class="{ 'pg-selecting': selectMode }" @click="toggleSelectMode">
+      <button
+        v-if="photos.length"
+        class="btn pg-action pg-action-select"
+        :class="{ 'pg-selecting': selectMode }"
+        @click="toggleSelectMode"
+      >
         {{ selectMode ? "退出选择" : "选择" }}
       </button>
-      <button v-if="photos.length && !selectMode" class="btn pg-refresh" title="重新加载" @click="refresh">刷新</button>
+      <button
+        v-if="photos.length && !selectMode"
+        class="btn pg-action pg-action-refresh"
+        title="重新加载"
+        @click="refresh"
+      >刷新</button>
     </header>
 
     <!-- 多选模式操作条 -->
@@ -394,8 +556,12 @@ onBeforeUnmount(() => {
         <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" /> 全选
       </label>
       <span class="pg-selected-count">已选 {{ selectedPaths.size }} 张</span>
-      <span class="pg-select-tip">点击照片进行勾选；记录删除可恢复，文件删除不可恢复</span>
+      <span class="pg-select-tip">
+        点击照片勾选 · <kbd>Esc</kbd> 退出 · <kbd>Ctrl+A</kbd> 全选 · <kbd>Delete</kbd> 删记录
+      </span>
       <div class="pg-select-actions">
+        <button class="btn" :disabled="!selectedPaths.size || merging" @click="openMerge">合并到相册…</button>
+        <button class="btn" :disabled="!selectedPaths.size || busyRating" @click="openRating">打分…</button>
         <button class="btn" :disabled="!selectedPaths.size || exporting" @click="doExport">导出选中…</button>
         <button class="btn" :disabled="!selectedPaths.size || deleting" @click="requestDelete('record')">删除相册记录</button>
         <button class="btn btn-danger-pg" :disabled="!selectedPaths.size || deleting" @click="requestDelete('file')">删除本地文件…</button>
@@ -471,6 +637,8 @@ onBeforeUnmount(() => {
           />
           <div v-else class="pg-thumb-placeholder"></div>
         </div>
+        <!-- 打分星标（>0 才显示，左上角） -->
+        <span v-if="ratingMap[ph.path] > 0" class="pg-rating" :title="`打分 ${ratingMap[ph.path]} 星`">{{ "★".repeat(ratingMap[ph.path]) }}</span>
         <figcaption v-if="ph.meta?.category" class="pg-badge">{{ ph.meta.category }}</figcaption>
         <!-- 人物角标：头像小框 + 自定义命名（最多 3 人，超出 +N） -->
         <div v-if="(ph.meta?.person_ids ?? []).length" class="pg-person">
@@ -496,7 +664,7 @@ onBeforeUnmount(() => {
     <!-- 大图查看器：点击照片打开，按需加载单张原图（含详细信息面板与像素分布图） -->
     <PhotoLightbox
       v-if="lightboxOpen"
-      :photos="visiblePhotos"
+      :photos="lightboxPhotos"
       :index="lightboxIndex"
       :persons="personsMap"
       @close="closeLightbox"
@@ -512,6 +680,68 @@ onBeforeUnmount(() => {
       @confirm="doConfirmedDelete"
       @cancel="confirmState = null"
     />
+
+    <!-- 合并到其他相册：选择目标 -->
+    <Teleport to="body">
+      <div v-if="mergeOpen" class="pg-mask" @click.self="mergeOpen = false">
+        <div class="pg-dialog">
+          <h4>合并 {{ selectedPaths.size }} 张照片到…</h4>
+          <p class="pg-dialog-tip">选择目标相册后，照片将物理移入该相册文件夹，并同步内容/打分记录。</p>
+          <div class="pg-target-list">
+            <button
+              v-for="a in mergeCandidates"
+              :key="a.id"
+              class="pg-target-item"
+              :class="{ active: mergeTargetId === a.id }"
+              @click="mergeTargetId = a.id"
+            >
+              <span class="pg-target-name">{{ a.name }}</span>
+              <span class="pg-target-meta">{{ a.photo_count }} 张·{{ a.path }}</span>
+            </button>
+            <p v-if="!mergeCandidates.length" class="pg-dialog-empty">暂无其他相册可合并。</p>
+          </div>
+          <div class="pg-dialog-actions">
+            <button class="btn" @click="mergeOpen = false">取消</button>
+            <button class="btn btn-primary" :disabled="!mergeTargetId || merging" @click="doMerge">
+              {{ merging ? "合并中…" : "确认合并" }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 打分：星标选择 -->
+    <Teleport to="body">
+      <div v-if="ratingOpen" class="pg-mask" @click.self="ratingOpen = false">
+        <div class="pg-dialog">
+          <h4>为 {{ selectedPaths.size }} 张照片打分</h4>
+          <!-- 已打分数提示：避免用户不知会覆盖原分 -->
+          <p v-if="ratingStats.hasRated" class="pg-rating-warn">
+            其中 {{ ratingStats.count }} 张已打过 <b>{{ ratingStats.min }}–{{ ratingStats.max }} 星</b>
+            （平均 {{ ratingStats.avg.toFixed(1) }}），本次评分将<strong>覆盖</strong>原有分数。
+          </p>
+          <p v-else class="pg-rating-hint">
+            选中照片均未打分（平均取整默认 {{ ratingPick }} 星）。
+          </p>
+          <div class="pg-rating-picker">
+            <button
+              v-for="s in 5"
+              :key="s"
+              class="pg-star"
+              :class="{ on: s <= ratingPick }"
+              @click="ratingPick = s"
+            >★</button>
+            <span class="pg-rating-value">{{ ratingPick }} 星</span>
+          </div>
+          <div class="pg-dialog-actions">
+            <button class="btn" @click="ratingOpen = false">取消</button>
+            <button class="btn btn-primary" :disabled="busyRating" @click="applyRating">
+              {{ busyRating ? "保存中…" : "确定打分" }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -583,10 +813,42 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
-.pg-refresh {
+/* FEAT-C：选择/刷新按钮加重边框 + 高亮背景，让两个动作按钮一眼可见 */
+.pg-action {
   margin-left: auto;
-  padding: 4px 12px;
+  padding: 6px 16px;
   font-size: 13px;
+  font-weight: 600;
+  border-radius: 8px;
+  border: 1.5px solid #396cd8;
+  background: #f0f5ff;
+  color: #2f5cc2;
+  box-shadow: 0 1px 3px rgba(57, 108, 216, 0.18);
+  transition: background 0.15s, transform 0.1s, box-shadow 0.15s, border-color 0.15s;
+}
+.pg-action:hover:not(:disabled) {
+  background: #e0ebff;
+  border-color: #2f5cc2;
+  color: #1f4caa;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(57, 108, 216, 0.28);
+}
+.pg-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* 同一个类多实例时仅靠 margin-left:auto 可能会重叠，用 :not(:first-of-type) 给后续按钮加点左间距 */
+.pg-action + .pg-action {
+  margin-left: 8px;
+}
+/* 选择按钮与刷新按钮轻微区分：选择多一个微微高亮的虚线轮廓 */
+.pg-action-select {
+  border-style: solid;
+}
+.pg-action-refresh {
+  border-style: dashed;
+  background: #fafbff;
+  color: #396cd8;
 }
 
 .pg-hint {
@@ -759,10 +1021,12 @@ onBeforeUnmount(() => {
 }
 
 /* ---- 多选删除 ---- */
-.pg-refresh.pg-selecting {
+.pg-action.pg-selecting {
   background: #396cd8;
   border-color: #396cd8;
   color: #fff;
+  border-style: solid;
+  box-shadow: 0 2px 8px rgba(57, 108, 216, 0.35);
 }
 
 .pg-select-bar {
@@ -776,6 +1040,11 @@ onBeforeUnmount(() => {
   padding: 8px 12px;
   margin-bottom: 10px;
   font-size: 13px;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 2px 10px rgba(57, 108, 216, 0.08);
 }
 .pg-select-all {
   display: flex;
@@ -789,8 +1058,22 @@ onBeforeUnmount(() => {
   color: #396cd8;
 }
 .pg-select-tip {
-  color: #8a92a3;
+  color: #5f6b7a;
   font-size: 12px;
+}
+.pg-select-tip kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 6px;
+  margin: 0 1px;
+  font-size: 11px;
+  font-family: inherit;
+  line-height: 1.4;
+  color: #4a5568;
+  background: rgba(127, 127, 127, 0.12);
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  border-radius: 4px;
+  vertical-align: 1px;
 }
 .pg-select-actions {
   margin-left: auto;
@@ -840,4 +1123,96 @@ onBeforeUnmount(() => {
   background: #396cd8;
   border-color: #fff;
 }
+
+/* 打分星标（左上方覆盖） */
+.pg-rating {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffd43b;
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+  backdrop-filter: blur(2px);
+  letter-spacing: 1px;
+  pointer-events: none;
+}
+
+/* 弹窗遮罩与对话框（合并/打分） */
+.pg-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pg-dialog {
+  background: #fff;
+  border-radius: 14px;
+  padding: 18px 20px;
+  width: min(460px, 92vw);
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+}
+.pg-dialog h4 { margin: 0 0 6px; }
+.pg-dialog-tip { font-size: 12px; color: #667085; margin: 0 0 12px; }
+.pg-dialog-empty { text-align: center; opacity: 0.6; font-size: 13px; padding: 20px 0; }
+.pg-target-list { overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.pg-target-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(128, 138, 158, 0.4);
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s;
+}
+.pg-target-item:hover { border-color: #396cd8; }
+.pg-target-item.active { border-color: #396cd8; background: rgba(57, 108, 216, 0.08); }
+.pg-target-name { font-weight: 600; font-size: 14px; }
+.pg-target-meta { font-size: 12px; opacity: 0.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pg-dialog-actions { margin-top: 14px; display: flex; justify-content: flex-end; gap: 8px; }
+
+/* 打分星标选择 */
+.pg-rating-picker { display: flex; align-items: center; gap: 4px; padding: 6px 0 2px; }
+.pg-star {
+  background: transparent;
+  border: none;
+  font-size: 30px;
+  color: #d3d7df;
+  cursor: pointer;
+  transition: color 0.12s, transform 0.12s;
+}
+.pg-star.on { color: #ffd43b; }
+.pg-star:hover { transform: scale(1.12); }
+.pg-rating-value { margin-left: 10px; font-size: 14px; color: #396cd8; font-weight: 600; }
+.pg-rating-warn,
+.pg-rating-hint {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+.pg-rating-warn {
+  background: #fff8e6;
+  border: 1px solid #ffe2a0;
+  color: #6a4f00;
+}
+.pg-rating-warn strong { color: #d95a00; }
+.pg-rating-hint {
+  background: #eef3ff;
+  border: 1px solid #dbe3ff;
+  color: #3a4a6a;
+}
+
 </style>
