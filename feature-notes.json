@@ -851,7 +851,41 @@
       "tests": "cargo test --lib 44/44 (新增 merged_sources_persist_and_cascade); vue-tsc 0 错误",
       "created_at": "2026-08-24T00:30:00+08:00",
       "updated_at": "2026-08-24T00:30:00+08:00"
+    },
+    {
+      "id": "FEAT-034",
+      "name": "批量导入失败详情对话框 + 时间线点击进内部 Lightbox",
+      "status": "done",
+      "description": "两处 UX 问题修复：①批量导入部分失败时仅 console.error，用户看不到原因也不便重试，新增 ImportErrorsDialog 错误详情+分类建议+一键重试；②时间线缩略图点击错误跳转到相册详情，缩略图右下角「⧉」调系统外部应用。改为点击缩略图进内部 Lightbox，右下角按钮「↗」跳转到该照片所在相册并携带 ?focus=path 高亮定位。",
+      "related_files": [
+        "src/components/ImportErrorsDialog.vue",
+        "src/components/PhotoGrid.vue",
+        "src/views/AlbumList.vue",
+        "src/views/AlbumDetail.vue",
+        "src/views/Timeline.vue"
+      ],
+      "keywords": [
+        "ImportErrorsDialog",
+        "批量导入失败",
+        "重试",
+        "时间线 Lightbox",
+        "focus 跳转",
+        "pg-cell-focus"
+      ],
+      "implementation": {
+        "frontend": "①ImportErrorsDialog：解析 result.errors（后端格式 {folder}: {msg}）后按错误类型分类（路径不存在/同名已存在/权限不足/路径非法/其他）并给出解决建议；每项支持「复制」+「单条重试」；顶部「全部重试」+「重新选择根目录」；AlbumList.batchImport 失败时弹窗 + Toast「查看详情」按钮直达对话框（持久化）。②Timeline：引入 PhotoLightbox；openCard 改为设置 lightboxIndex/Open 打开内部查看器；右下角「↗」按钮 click=gotoAlbum 跳 /album/:id?focus=encode(path)；AlbumDetail 读 route.query.focus → focusPath computed 透传；PhotoGrid 新增 focusPath prop + applyFocus（querySelector [data-path] + scrollIntoView + 1.8s 橙色高亮 + 10×200ms 退避适配懒加载）。"
+      },
+      "highlights": [
+        "ImportErrorsDialog 错误分类+解决建议是「提升导入成功率」的关键闭环：用户能直接看到「以管理员身份运行」/「检查目录权限」/「改纯英文路径」等具体动作",
+        "重试复用原根目录：后端 find_album_by_path 会自动跳过同名/已存在项（不重复导入已成功项），不需要后端改动",
+        "PhotoGrid focusPath prop + applyFocus 10×200ms 退避：缩略图 IntersectionObserver 懒加载，DOM 可能在 0-1.5s 后才挂上；退避避免 cell 找不到导致高亮失效",
+        "跳转 query 用 encodeURIComponent(decode) 兑底处理路径中的特殊字符（Windows 路径含空格、&、#）",
+        "Timeline 右下角按钮图标「↗」明确语义：跳上下文（相册）而非「打开原图」"
+      ],
+      "tests": "vue-tsc 0 错误；类型边界：ContentSearchHit 不需转换直接喂 Lightbox（LightboxPhoto.meta 是可选）",
+      "created_at": "2026-08-25T00:00:00+08:00",
+      "updated_at": "2026-08-25T00:00:00+08:00"
     }
   ],
-  "updated": "2026-08-24T00:30:00+08:00"
+  "updated": "2026-08-25T00:00:00+08:00"
 }
