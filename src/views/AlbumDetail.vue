@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAlbumStore } from "../stores/album";
 import { trace } from "../utils/trace";
@@ -17,6 +17,20 @@ const store = useAlbumStore();
 const notify = useNotify();
 
 const albumId = Number(route.params.id);
+
+/** FEAT-034-B：来自路由 query.focus 的需要高亮定位的照片路径。
+ *  - Timeline 右下角按钮跳转携带该 query。
+ *  - 路径含特殊字符时由 encodeURIComponent/decodeURIComponent 处理。
+ *  - reactive：路由 query 变化（如同页中切换）也会响应。 */
+const focusPath = computed(() => {
+  const v = route.query.focus;
+  if (typeof v !== "string" || !v) return undefined;
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+});
 const loadError = ref(false);
 const settingCover = ref(false);
 const deleting = ref(false);
@@ -130,7 +144,8 @@ onMounted(load);
 
       <!-- 照片网格浏览：相册内照片一览 + 大图查看（放在最后，作为浏览区） -->
       <CollapseSection title="🖼️ 缩略图浏览" storage-key="detail-photos">
-        <PhotoGrid :album-id="albumId" />
+        <!-- FEAT-034-B：接收路由 query.focus（时间线跳转定位目标照片路径） -->
+        <PhotoGrid :album-id="albumId" :focus-path="focusPath" />
       </CollapseSection>
     </template>
 

@@ -21,7 +21,9 @@ import PhotoLightbox from "./PhotoLightbox.vue";
  * 元数据叠加：`read_album_content`（AI 分类/人脸/EXIF），扫描后支持按分类/人物筛选。
  */
 
-const props = defineProps<{ albumId: number }>();
+const props = defineProps<{ albumId: number; /** FEAT-034-B：需要滚动定位并高亮的照片路径（来自外部路由 query），加载完成后 1.8s 高亮 */
+  focusPath?: string;
+}>();
 const emit = defineEmits<{
   (e: "count", n: number): void;
 }>();
@@ -53,6 +55,9 @@ const activeCategory = ref<string | null>(null);
 /** 大图查看器状态 */
 const lightboxOpen = ref(false);
 const lightboxIndex = ref(0);
+
+/** FEAT-034-B：当前高亮（focus）的照片 path，加载完成后 scrollIntoView + 1.8s 边框高亮 */
+const highlightedPath = ref<string | null>(null);
 
 /* ---- 人物注册表：编号 → 自定义命名 + 头像（代表脸裁剪）---- */
 const personsMap = ref<Record<string, string>>({});
@@ -461,6 +466,42 @@ function refresh() {
 
 defineExpose({ refresh });
 
+/** FEAT-034-B：根据 focusPath 滚动定位并高亮 1.8s
+ *  - wait 一下以确保格子已渲染（visiblePhotos 更新后）
+ *  - 多次调用安全：后续以最后一次 focusPath 为准；高亮计时器会重置
+ */
+function applyFocus(focusPath: string | undefined) {
+  if (!focusPath) return;
+  const doScroll = () => {
+    const root = scrollEl.value ?? document;
+    const cell = root.querySelector<HTMLElement>(`[data-path="${CSS.escape(focusPath)}"]`);
+    if (!cell) return false;
+    cell.scrollIntoView({ behavior: "smooth", block: "center" });
+    highlightedPath.value = focusPath;
+    window.setTimeout(() => {
+      // 避免覆盖后一次高亮
+      if (highlightedPath.value === focusPath) highlightedPath.value = null;
+    }, 1800);
+    return true;
+  };
+  // 首轮重试：缩略图懒加载，DOM 可能刚挂载；最多重试 10 次 × 200ms（共 2s）。
+  let tries = 0;
+  const tryApply = () => {
+    if (doScroll()) return;
+    if (++tries > 10) return;
+    window.setTimeout(tryApply, 200);
+  };
+  nextTick(tryApply);
+}
+
+/** FEAT-034-B：监听 focusPath 变化（路由 query 在同一相册内点击不同照片时） */
+watch(
+  () => props.focusPath,
+  (p) => {
+    if (p) applyFocus(p);
+  },
+);
+
 // 筛选变化导致网格重建时，重置观察器与队列（重新渲染后由 registerCell 重新挂观察）；切筛选后回到顶部
 watch(visiblePhotos, () => {
   nextTick(() => {
@@ -472,7 +513,10 @@ watch(visiblePhotos, () => {
 });
 
 onMounted(() => {
-  load();
+  load().then(() => {
+    // FEAT-034-B：首次加载完成后如有 focusPath（路由 query 携带）则滚动定位
+    if (props.focusPath) applyFocus(props.focusPath);
+  });
   loadPersons();
   // 预取相册列表（供「合并到相册」选择目标）
   albumStore.fetchAlbums().catch(() => {});
@@ -617,7 +661,7 @@ function onKey(e: KeyboardEvent) {
         v-for="(ph, i) in visiblePhotos"
         :key="ph.path"
         class="pg-cell"
-        :class="{ 'pg-cell-selected': selectMode && isSelected(ph.path) }"
+        :class="{ 'pg-cell-selected': selectMode && isSelected(ph.path), 'pg-cell-focus': highlightedPath === ph.path }"
         :title="ph.path"
         :data-path="ph.path"
         :ref="(el) => registerCell(el, ph.path)"
@@ -1102,6 +1146,14 @@ function onKey(e: KeyboardEvent) {
 .pg-cell-selected {
   outline: 3px solid #396cd8;
   outline-offset: -3px;
+}
+
+/* FEAT-034-B：来自外部跳转的高亮（外部路由 query.focus） */
+.pg-cell-focus {
+  outline: 3px solid #ff9f1a;
+  outline-offset: -3px;
+  box-shadow: 0 0 0 6px rgba(255, 159, 26, 0.18);
+  transition: box-shadow 0.6s ease-out;
 }
 .pg-check {
   position: absolute;

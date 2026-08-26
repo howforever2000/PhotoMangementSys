@@ -4,6 +4,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useRoute, useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
+import PhotoLightbox from "../components/PhotoLightbox.vue";
 import type { ContentSearchHit } from "../types/content";
 
 /**
@@ -109,14 +110,29 @@ async function loadThumbs() {
   );
 }
 
+/* ---- FEAT-034-B：内部大图查看器 ---- */
+const lightboxOpen = ref(false);
+const lightboxIndex = ref(0);
+/** 传给 Lightbox 的 photos：path + albumId （Lightbox 借此触发 ensure_photo_scanned） */
+const lightboxPhotos = computed(() =>
+  rows.value.map((r) => ({ path: r.path, albumId: r.album_id ?? null })),
+);
+
+/** 点击照片：打开内部 Lightbox（FEAT-034-B）。
+ *  - 之前错误地跳转到相册详情页，现改为内部大图查看体验。
+ *  - 如该照片无 albumId（理论上不会出现，但兑底）走 openOriginal。 */
 function openCard(r: ContentSearchHit) {
-  if (r.album_id != null) {
-    router.push(`/album/${r.album_id}`);
-  } else {
+  if (r.album_id == null) {
     void openOriginal(r);
+    return;
   }
+  const idx = rows.value.findIndex((x) => x.path === r.path);
+  if (idx < 0) return;
+  lightboxIndex.value = idx;
+  lightboxOpen.value = true;
 }
 
+/** FEAT-034-B：兑底调用——极少数无 albumId 的记录仍可用系统默认看图器打开原图。 */
 async function openOriginal(r: ContentSearchHit) {
   try {
     const { openPath } = await import("@tauri-apps/plugin-opener");
@@ -124,6 +140,20 @@ async function openOriginal(r: ContentSearchHit) {
   } catch (e) {
     notify.error("无法打开原图", String(e));
   }
+}
+
+/** 点击右下角按钮：跳转到该照片所属相册并定位（FEAT-034-B）。
+ *  - 携带 ?focus=path 查询参数，AlbumDetail 接收后高亮该照片。
+ *  - 之前错误地调用系统外部打开器，现改为跳相册以保持上一级上下文。 */
+function gotoAlbum(r: ContentSearchHit) {
+  if (r.album_id == null) {
+    notify.warning("无法定位", "该照片未关联到任何相册");
+    return;
+  }
+  router.push({
+    path: `/album/${r.album_id}`,
+    query: { focus: r.path },
+  });
 }
 
 /** 年份过滤器变化时仅需重算分组（无需重新拉缩略图） */
@@ -254,13 +284,21 @@ function applyJumpQuery() {
               <figcaption class="tl-cap">
                 <span v-if="r.label" class="tl-label">{{ r.label }}</span>
                 <span v-if="r.location" class="tl-loc">📍 {{ r.location }}</span>
-                <button class="tl-open" title="打开原图" @click.stop="openOriginal(r)">⧉</button>
+                <button class="tl-open" title="跳转到该照片所在相册" @click.stop="gotoAlbum(r)">↗</button>
               </figcaption>
             </figure>
           </div>
         </div>
       </section>
     </div>
+
+    <!-- FEAT-034-B：内部大图查看器（点击缩略图打开） -->
+    <PhotoLightbox
+      v-if="lightboxOpen"
+      :photos="lightboxPhotos"
+      :index="lightboxIndex"
+      @close="lightboxOpen = false"
+    />
   </div>
 </template>
 
