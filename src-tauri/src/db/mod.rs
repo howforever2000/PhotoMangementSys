@@ -47,6 +47,11 @@ pub struct Album {
     /// 相册文件夹总大小（字节，从文件系统统计，非数据库字段）
     #[serde(default)]
     pub size_bytes: u64,
+    /// FEAT-036：该相册已扫描入库的照片数（photo_content_scan 中的行数）。
+    /// 非数据库行字段，命令层从 photo_content_scan 表聚合填充。
+    /// 用于「是否已入库」标记 + 智慧相册 Hero 的已入库相册数统计。
+    #[serde(default)]
+    pub scanned_photo_count: i64,
     /// 相册地点标签（手动设置，数据库字段）
     pub location: Option<String>,
     /// 相册标签（最多 5 个，来自 album_tags 表）
@@ -429,6 +434,7 @@ impl Database {
             photo_count: 0,
             shoot_time: None,
             size_bytes: 0,
+            scanned_photo_count: 0,
             tags: Vec::new(),
             folder_id: None,
             folder_path: String::new(),

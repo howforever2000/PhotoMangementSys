@@ -37,11 +37,13 @@ const tabs: SmartTab[] = [
 const activeTab = ref<string>("face");
 const activeDef = computed(() => tabs.find((t) => t.key === activeTab.value));
 
-/* -------- Hero 统计：总照片 / 占存储 / 已扫描入库 / 总人物 -------- */
+/* -------- Hero 统计：总照片 / 占存储 / 相册 / 已导入 / 已扫描入库照片 / 人物 -------- */
 const totalPhotos = ref(0);
 const totalBytes = ref(0);
 const scannedIn = ref(0);
 const totalPersons = ref(0);
+const totalAlbums = ref(0);
+const scannedAlbums = ref(0);
 
 /** 字节数人性化显示（B/KB/MB/GB） */
 function fmtSize(bytes: number): string {
@@ -68,13 +70,17 @@ async function loadStats() {
   }
 }
 
-/** 总照片数 / 占存储：从相册列表聚合（fill_album_stats 已填充 photo_count / size_bytes） */
+/** 总照片数 / 占存储 / 相册数 / 已入库相册数：从相册列表聚合（fill_album_stats 已填充）
+ *  - photo_count / size_bytes：文件系统统计
+ *  - scanned_photo_count：该相册已扫描入库的照片数（FEAT-036），> 0 计为「已导入相册」 */
 // 在 albums 变化时刷新，保证 async 拉取后更新
 watch(
   () => store.albums,
   (list) => {
     totalPhotos.value = list.reduce((n, a) => n + (a.photo_count || 0), 0);
     totalBytes.value = list.reduce((n, a) => n + (a.size_bytes || 0), 0);
+    totalAlbums.value = list.length;
+    scannedAlbums.value = list.filter((a) => (a.scanned_photo_count || 0) > 0).length;
   },
   { immediate: true },
 );
@@ -152,8 +158,18 @@ function openSub(m: SubModule) {
           </div>
           <div class="stat-divider"></div>
           <div class="stat">
+            <span class="stat-num">{{ totalAlbums }}</span>
+            <span class="stat-label">个相册</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat">
+            <span class="stat-num">{{ scannedAlbums }}</span>
+            <span class="stat-label">已入库相册</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat">
             <span class="stat-num">{{ scannedIn }}</span>
-            <span class="stat-label">已扫描入库</span>
+            <span class="stat-label">已扫描入库照片</span>
           </div>
           <div class="stat-divider"></div>
           <div class="stat">
@@ -217,7 +233,7 @@ function openSub(m: SubModule) {
 /* ---- Hero ---- */
 .smart-hero {
   position: relative;
-  height: 200px;
+  height: 210px;
   border-radius: 20px;
   overflow: hidden;
   margin-bottom: 22px;
@@ -259,14 +275,15 @@ function openSub(m: SubModule) {
 .smart-stats {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
+  column-gap: 20px;
   flex-wrap: wrap;
 }
 .stat {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 60px;
+  min-width: 52px;
 }
 .stat-num {
   font-size: 20px;
@@ -279,8 +296,9 @@ function openSub(m: SubModule) {
   font-size: 18px;
 }
 .stat-label {
-  font-size: 12px;
+  font-size: 11.5px;
   opacity: 0.9;
+  white-space: nowrap;
 }
 .stat-divider {
   width: 1px;

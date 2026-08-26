@@ -395,6 +395,17 @@ fn fill_album_stats(album: &mut db::Album, thumbs_dir: &Path, state: &tauri::Sta
     }
 }
 
+/// FEAT-036：批量填充每个相册的「已入库照片数」（photo_content_scan 中该相册的行数）。
+/// 一次分组统计（count_scanned_by_album），避免逐相册 N+1 查询。
+/// 多用户隔离：`user_id` 由调用方传入，仅统计当前用户已入库行。
+fn fill_scanned_counts(albums: &mut [db::Album], user_id: i64, state: &tauri::State<AppState>) {
+    let Ok(db) = state.0.lock() else { return };
+    let Ok(map) = db.count_scanned_by_album(user_id) else { return };
+    for a in albums.iter_mut() {
+        a.scanned_photo_count = map.get(&a.id).copied().unwrap_or(0);
+    }
+}
+
 /// 获取相册列表（需求 §4.2 get_albums，按 updated_at 降序）
 ///
 /// 返回时为无封面的相册自动补第一张图缩略图。
@@ -415,6 +426,8 @@ fn get_albums(
     for a in albums.iter_mut() {
         fill_album_stats(a, &thumbs, &state);
     }
+    // FEAT-036：批量填充每个相册的已入库照片数（一次 SQL 分组统计，避免 N+1）
+    fill_scanned_counts(&mut albums, user_id, &state);
     logger::log_call_end_with("get_albums", _t, &format!("OK | count={}", albums.len()));
     Ok(albums)
 }
@@ -436,6 +449,8 @@ fn get_album(
         db.get_album(id, user_id).map_err(|e| e.to_string())?
     };
     fill_album_stats(&mut album, &thumbs, &state);
+    // FEAT-036：填充该相册已入库照片数（单元素切片复用批量逻辑）
+    fill_scanned_counts(std::slice::from_mut(&mut album), user_id, &state);
     Ok(album)
 }
 

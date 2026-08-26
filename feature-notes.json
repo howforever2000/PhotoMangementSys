@@ -922,7 +922,44 @@
       "tests": "vue-tsc 0 错误",
       "created_at": "2026-08-25T00:40:00+08:00",
       "updated_at": "2026-08-25T00:40:00+08:00"
+    },
+    {
+      "id": "FEAT-036",
+      "name": "相册「已入库」标记 + 智慧相册 Hero 相册数/已入库相册数",
+      "status": "done",
+      "description": "①智慧相册 Hero 增加「个相册」与「已入库相册」统计，与既有「总照片/占用存储/已扫描入库照片/人物」构成 6 项；②相册管理界面（主网格 AlbumCard + 手动排序 AlbumMiniCard）给每个相册加「已入库 / 未入库」标记，一眼看出哪些相册已扫码入库存有 AI 识别数据。定义：相册「已入库」= 该相册在 photo_content_scan 表至少有 1 行（即有照片被内容扫描识别入库）。",
+      "related_files": [
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/db/content.rs",
+        "src/types/album.ts",
+        "src/views/SmartAlbum.vue",
+        "src/components/AlbumCard.vue",
+        "src/components/AlbumMiniCard.vue"
+      ],
+      "keywords": [
+        "scanned_photo_count",
+        "count_scanned_by_album",
+        "fill_scanned_counts",
+        "已入库",
+        "smart-hero 相册统计",
+        "scan-badge"
+      ],
+      "implementation": {
+        "backend": "Album 结构体新增 scanned_photo_count 字段（serde default）；db::content::count_scanned_by_album(user_id) 一次 GROUP BY 统计每个相册的已入库行数（避免 N+1）；lib.rs 新增 fill_scanned_counts(albums, user_id, state) 批量填充，get_albums 与 get_album 调用。",
+        "frontend": "album.ts Album 增加 scanned_photo_count；SmartAlbum watch(store.albums) 聚合 totalAlbums(list.length) 与 scannedAlbums(filter scanned_photo_count>0)。AlbumCard 封面右上角 scan-badge（✓ 已入库 / ○ 未入库，绿/灰），title 提示已入库张数；AlbumMiniCard 封面右下角 mini-scan 小圆点（绿=已入库/灰=未入库）。"
+      },
+      "highlights": [
+        "count_scanned_by_album 用一次 GROUP BY 查询批量统计，避免对 N 个相册逐条 COUNT 的 N+1 开销（相册多时性能关键）",
+        "已入库判断以 photo_content_scan 有行（scanned_photo_count>0）为准，语义与「已扫描入库照片数」一致",
+        "AlbumCard 徽标带 title 提示具体已入库张数，用户 hover 即知；未入库相册提示去详情页执行综合扫描",
+        "徽标颜色：绿=已入库（#2f9e44），灰=未入库，符合直觉",
+        "手动排序迷你卡用极小圆点而不是文字徽标，避免 90px 小卡片拥挤"
+      ],
+      "tests": "cargo test --lib 48/48（新增 count_scanned_by_album_groups）; vue-tsc 0 错误",
+      "created_at": "2026-08-25T00:50:00+08:00",
+      "updated_at": "2026-08-25T00:50:00+08:00"
     }
   ],
-  "updated": "2026-08-25T00:40:00+08:00"
+  "updated": "2026-08-25T00:50:00+08:00"
 }
