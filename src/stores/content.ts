@@ -286,5 +286,51 @@ export const useContentStore = defineStore("content", {
       job.scanId += 1;
       job.running = false;
     },
+
+    /**
+     * FEAT-037：对多个相册批量组合扫描入库（批量管理用）。
+     *
+     * 逐个相册串行调用 `startCombinedScan`（后端 scan_album_combined 是单相册命令，
+     * 且共享同一取消标记 + 单 activeScanAlbum 进度路由，串行可避免并发冲突与进度混乱）。
+     * 每个相册扫描在后台完成后返回，全部结束返回汇总。
+     *
+     * @param albumIds 选中的相册 id 列表
+     * @param types 扫描类型（basic / tone / ai，默认三项全选）
+     * @param batchSize 批次大小
+     * @returns 已扫描相册数 / 失败信息
+     */
+    async scanAlbumsCombined(
+      albumIds: number[],
+      types: string[],
+      batchSize = 8,
+      onProgress?: (done: number, total: number, currentAlbumId: number) => void,
+    ): Promise<{ scanned: number; failed: { albumId: number; error: string }[] }> {
+      const result = { scanned: 0, failed: [] as { albumId: number; error: string }[] };
+      const total = albumIds.length;
+      let done = 0;
+      for (const albumId of albumIds) {
+        const job = this.jobFor(albumId);
+        onProgress?.(done, total, albumId);
+        try {
+          // 若该相册已有扫描任务在运行，跳过（避免 startCombinedScan 因 running 直接 return 被误判为成功）
+          if (job.running) {
+            result.failed.push({ albumId, error: "该相册已有扫描任务进行中，已跳过" });
+          } else {
+            // 串行等待该相册扫描完成（startCombinedScan 内部 await invoke）
+            await this.startCombinedScan(albumId, types, batchSize);
+            if (job.error) {
+              result.failed.push({ albumId, error: job.error });
+            } else {
+              result.scanned += 1;
+            }
+          }
+        } catch (e) {
+          result.failed.push({ albumId, error: String(e) });
+        }
+        done += 1;
+        onProgress?.(done, total, albumId);
+      }
+      return result;
+    },
   },
 });

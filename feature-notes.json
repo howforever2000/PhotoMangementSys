@@ -959,7 +959,37 @@
       "tests": "cargo test --lib 48/48（新增 count_scanned_by_album_groups）; vue-tsc 0 错误",
       "created_at": "2026-08-25T00:50:00+08:00",
       "updated_at": "2026-08-25T00:50:00+08:00"
+    },
+    {
+      "id": "FEAT-037",
+      "name": "批量管理新增「批量扫描入库」功能（默认三种扫描方式全选）",
+      "status": "done",
+      "description": "在相册列表「批量管理」模式的工具条新增「批量扫描入库」：对勾选的多个相册一次性执行组合内容扫描（EXIF 基础 / 影调分析 / AI 内容识别）并写入 photo_content_scan 内容库，用于智能搜索与库存统计。弹窗中默认三种扫描方式全选，可选批次，执行时实时显示扫描进度。",
+      "related_files": [
+        "src/stores/content.ts",
+        "src/views/AlbumList.vue"
+      ],
+      "keywords": [
+        "scanAlbumsCombined",
+        "批量扫描入库",
+        "scanDialogOpen",
+        "onProgress",
+        "组合扫描"
+      ],
+      "implementation": {
+        "frontend": "①content store 新增 scanAlbumsCombined(albumIds, types, batchSize, onProgress)：逐个相册串行 await startCombinedScan（后端 scan_album_combined 是单相册命令且共享全局取消标记 + 单 activeScanAlbum 进度路由，串行避免并发冲突与进度混乱）；每个相册扫描完更新 onProgress(done, total)；若相册已有扫描任务运行则记“跳过”到 failed。②AlbumList 工具条新 gp tb-scan 分组 + 「📥 批量扫描入库」按钮；弹窗复刻 ScanPanel 的三种扫描方式 checkbox（默认 ['basic','tone','ai'] 全选）+ 批次选择；执行时弹窗内显示进度、完成后 toast 汇总成功/失败，最后 fetchAlbums 刷新「已入库」标记并退出批量模式。"
+      },
+      "highlights": [
+        "默认三种扫描方式全选（basic/tone/ai），符合“一次入库”直觉，用户可取消勾选任意项",
+        "串行扫描避免共享取消标记（ScanState.scan.0）与单 activeScanAlbum 进度路由的并发冲突，保证不串相册、进度清晰",
+        "已在运行扫描的相册自动跳过并记入失败列表，避免 startCombinedScan 因 running 直接 return 被误判为成功",
+        "插入位置：整理/标签/危险分组之间新增独立的「扫描」分组，操作语义清晰；复用已有 dialog-mask/dialog 弹窗与 combo-check 样式",
+        "扫描完成刷新相册列表，用户可立即看到「已入库」标记与智慧相册统计更新"
+      ],
+      "tests": "vue-tsc 0 错误；cargo test --lib 48/48（无后端改动）",
+      "created_at": "2026-08-25T01:00:00+08:00",
+      "updated_at": "2026-08-25T01:00:00+08:00"
     }
   ],
-  "updated": "2026-08-25T00:50:00+08:00"
+  "updated": "2026-08-25T01:00:00+08:00"
 }
