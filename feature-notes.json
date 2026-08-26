@@ -893,7 +893,36 @@
       "tests": "cargo test --lib 47/47（新增 find_any_album_by_path_cross_user）; vue-tsc 0 错误",
       "created_at": "2026-08-25T00:00:00+08:00",
       "updated_at": "2026-08-25T00:30:00+08:00"
+    },
+    {
+      "id": "FEAT-035",
+      "name": "智慧相册 Hero 统计改版：总照片 / 占用存储 / 已扫描入库",
+      "status": "done",
+      "description": "智慧相册顶部 Hero 原本显示「总照片 / 位人物 / 个相册 / 本月」。用户描述统计语义与期望不符（如「本月」无意义、照片数与已扫描数混淆）。改为展示用户关心的三件套：总照片张数（相册内全部图片文件数）、占用存储（相册 size_bytes 汇总）、已扫描入库（photo_content_scan 中已识别照片数），并保留「位人物」。",
+      "related_files": [
+        "src/views/SmartAlbum.vue"
+      ],
+      "keywords": [
+        "智慧相册 Hero",
+        "总照片",
+        "占用存储",
+        "已扫描入库",
+        "fill_album_stats",
+        "fmtSize"
+      ],
+      "implementation": {
+        "frontend": "SmartAlbum.vue loadStats 改为：①若 store.albums 为空先 fetchAlbums（get_albums 内部 fill_album_stats 已填充 photo_count / size_bytes）；②watch(store.albums) 聚合 photo_count 得 totalPhotos、聚合 size_bytes 得 totalBytes；③list_timeline 长度得 scannedIn（photo_content_scan 已入库照片）；④list_persons 长度得 totalPersons。模板 4 项统计：张照片 / 占用存储（fmtSize 人性化 B/KB/MB/GB）/ 已扫描入库 / 位人物。"
+      },
+      "highlights": [
+        "区分两种照片数：总照片（相册内文件系统 photo_count）与已扫描入库（photo_content_scan 表行数），语义准确避免误导",
+        "占用存储复用 get_albums→fill_album_stats 的 size_bytes 缓存，无需额外遍历文件系统（带变更探测，几 ms 级别）",
+        "fmtSize 人性化单位：B/KB/MB/GB，避免大数字裸撑布局",
+        "移除「本月」无意义统计，优化信息密度"
+      ],
+      "tests": "vue-tsc 0 错误",
+      "created_at": "2026-08-25T00:40:00+08:00",
+      "updated_at": "2026-08-25T00:40:00+08:00"
     }
   ],
-  "updated": "2026-08-25T00:30:00+08:00"
+  "updated": "2026-08-25T00:40:00+08:00"
 }
