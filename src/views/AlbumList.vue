@@ -15,7 +15,9 @@ import type { YearGroup } from "../utils/timeGroup";
 import ManualSort from "./ManualSort.vue";
 import AlbumCard from "../components/AlbumCard.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
+import ImportErrorsDialog from "../components/ImportErrorsDialog.vue";
 import { useNotify } from "../composables/useNotify";
+import type { ImportResult } from "../stores/album";
 
 const router = useRouter();
 const route = useRoute();
@@ -74,9 +76,19 @@ const importProgress = ref(0); // 0-100
 const importStatus = ref(""); // 进度提示文案
 let unlistenImport: (() => void) | null = null;
 
+/** FEAT-034-A：最近一次导入结果（用于错误详情对话框） */
+const lastImportResult = ref<ImportResult | null>(null);
+/** 错误详情弹窗显示状态 */
+const showImportErrors = ref(false);
+/** 用户选择的根目录（重试用） */
+const importRoot = ref<string>("");
+
 /**
  * 批量导入：选择一个大文件夹，遍历其一级子文件夹创建相册
  * 通过监听后端 import-progress 事件实时更新进度条
+ *
+ * FEAT-034-A：失败时弹窗 ImportErrorsDialog 展示明细 + 解决建议；
+ * Toast 上提供「查看详情」按钮直达对话框。
  */
 async function batchImport() {
   if (isImporting.value) return;
@@ -87,6 +99,12 @@ async function batchImport() {
   });
   if (typeof selected !== "string") return;
 
+  importRoot.value = selected;
+  await runImport(selected, /* showErrorsOnFail */ true);
+}
+
+/** 执行一次导入（用于首次/重试），失败时是否弹窗 */
+async function runImport(rootPath: string, showErrorsOnFail: boolean) {
   isImporting.value = true;
   importProgress.value = 0;
   importStatus.value = "准备中…";
@@ -104,15 +122,38 @@ async function batchImport() {
   });
 
   try {
-    const result = await store.importAlbums(selected);
+    const result = await store.importAlbums(rootPath);
     importProgress.value = 100;
+    lastImportResult.value = result;
     const parts = [`成功导入 ${result.imported} 个相册`];
     if (result.skipped > 0) parts.push(`跳过 ${result.skipped} 个已存在的`);
+    if (result.errors.length > 0) parts.push(`失败 ${result.errors.length} 个`);
+
     if (result.errors.length > 0) {
-      parts.push(`失败 ${result.errors.length} 个`);
-      console.error("导入失败的文件夹:", result.errors);
+      // 失败：Toast 提示 + 「查看详情」按钮直达对话框
+      notify.action(
+        "error",
+        "批量导入部分失败",
+        [
+          {
+            label: "查看详情",
+            style: "primary",
+            onClick: () => {
+              showImportErrors.value = true;
+            },
+          },
+        ],
+        parts.join("，") + "\n点击「查看详情」可逐项查看原因与解决建议。",
+        0, // 持久化
+      );
+      console.error("[FEAT-034-A] 导入失败的文件夹:", result.errors);
+      if (showErrorsOnFail) {
+        // 首次失败自动弹窗，避免用户必须再点一次
+        showImportErrors.value = true;
+      }
+    } else {
+      notify.success("批量导入完成", parts.join("，"));
     }
-    notify.success("批量导入完成", parts.join("，"));
   } catch (e) {
     notify.error("批量导入失败", String(e));
   } finally {
@@ -124,6 +165,33 @@ async function batchImport() {
     importProgress.value = 0;
     importStatus.value = "";
   }
+}
+
+/** FEAT-034-A：失败详情对话框中点击「重试」后回调（folderNames 是失败项的子目录名） */
+async function retryImport(folderNames: string[]) {
+  if (!importRoot.value) {
+    notify.warning("无法重试", "未记录根目录路径，请重新选择。");
+    showImportErrors.value = false;
+    return;
+  }
+  // 关闭对话框并重新执行：原 `importAlbums` 会自动跳过同名/已存在的相册，
+  // 因此重试只会处理「上次失败」的项目（同名冲突会再次跳过，但不会重复导入已成功的项）。
+  showImportErrors.value = false;
+  notify.info("正在重试失败项", `根目录：${importRoot.value}\n失败项数：${folderNames.length}`);
+  await runImport(importRoot.value, /* showErrorsOnFail */ true);
+}
+
+/** FEAT-034-A：失败详情对话框中点击「重新选择根目录」 */
+async function reimportFromRoot() {
+  showImportErrors.value = false;
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    title: "重新选择根文件夹",
+  });
+  if (typeof selected !== "string") return;
+  importRoot.value = selected;
+  await runImport(selected, true);
 }
 
 // ---------- 勾选 / 批量删除状态 ----------
@@ -1537,6 +1605,15 @@ function onKey(e: KeyboardEvent) {
       confirm-text="删除所选"
       @confirm="doBatchDelete"
       @cancel="batchDeleteConfirm.visible = false"
+    />
+
+    <!-- FEAT-034-A：批量导入失败详情（错误分类 + 解决建议 + 重试） -->
+    <ImportErrorsDialog
+      :visible="showImportErrors"
+      :result="lastImportResult"
+      @close="showImportErrors = false"
+      @retry="retryImport"
+      @reimport="reimportFromRoot"
     />
 
     <!-- 回到顶部按钮 -->
