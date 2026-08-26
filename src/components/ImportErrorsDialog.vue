@@ -37,6 +37,16 @@ const props = defineProps<{
   retriedPaths?: string[];
 }>();
 
+/** FEAT-034-C：是否有相对「已存在」的跳过项（跨/同用户占用）——用于友好展示 */
+const existsItems = computed(() => props.result?.skipped_conflicts ?? []);
+/** 是否仅有「已存在」（无真实失败）——此时弹窗应为信息态而非报错态 */
+const onlyExists = computed(() => (props.result?.errors?.length ?? 0) === 0 && existsItems.value.length > 0);
+const dialogTitle = computed(() =>
+  onlyExists.value
+    ? `📂 ${existsItems.value.length} 个相册已导入`
+    : "⚠️ 批量导入未全部完成",
+);
+
 const emit = defineEmits<{
   (e: "close"): void;
   /** 「重试单个失败项」或「全部重试」：把该目录路径传回给调用方 */
@@ -250,7 +260,7 @@ const listEl = ref<HTMLDivElement | null>(null);
       <div v-if="visible" class="ier-mask" @click.self="close">
         <div class="ier-dialog" :style="panelStyle" role="dialog" aria-modal="true">
           <div class="ier-head">
-            <div class="ier-title">⚠️ 批量导入未全部完成</div>
+            <div class="ier-title">{{ dialogTitle }}</div>
             <button class="ier-close" title="关闭 (Esc)" @click="close">×</button>
           </div>
 
@@ -258,7 +268,7 @@ const listEl = ref<HTMLDivElement | null>(null);
           <div class="ier-summary" :style="subStyle">
             <span class="ier-pill ier-pill-ok">✓ 成功 {{ result?.imported ?? 0 }}</span>
             <span class="ier-pill ier-pill-skip">⏭ 跳过 {{ result?.skipped ?? 0 }}</span>
-            <span class="ier-pill ier-pill-fail">✕ 失败 {{ counts.total }}</span>
+            <span v-if="counts.total > 0" class="ier-pill ier-pill-fail">✕ 失败 {{ counts.total }}</span>
           </div>
 
           <!-- 分类统计（仅在有失败时显示） -->
@@ -270,9 +280,23 @@ const listEl = ref<HTMLDivElement | null>(null);
             <span v-if="counts.unknown > 0">❓ 其他 {{ counts.unknown }}</span>
           </div>
 
-          <!-- 错误明细列表 -->
+          <!-- FEAT-034-C：已经导入（跳过冲突）的相册清单，绿色友好展示 -->
+          <div v-if="existsItems.length > 0" ref="listEl" class="ier-list ier-list-exists">
+            <div v-if="onlyExists" class="ier-exists-head">{{ existsItems.length }} 个相册此前已导入，本次自动跳过：</div>
+            <div v-for="(it, i) in existsItems" :key="'ex-'+i" class="ier-item ier-item-exists">
+              <header class="ier-item-head">
+                <span class="ier-cat ier-cat-exists">✓ 已存在</span>
+                <span class="ier-folder" :title="it.folder">📂 {{ it.folder }}</span>
+              </header>
+              <div class="ier-advice ier-advice-exists">
+                💡 该文件夹已作为相册「{{ it.conflict_album }}」存在，无需重复导入。
+              </div>
+            </div>
+          </div>
+
+          <!-- 错误明细列表（仅真实失败） -->
           <div ref="listEl" class="ier-list">
-            <div v-if="counts.total === 0" class="ier-empty">🎉 没有失败项</div>
+            <div v-if="counts.total === 0 && existsItems.length === 0" class="ier-empty">🎉 没有失败项</div>
             <article
               v-for="(e, i) in parsedErrors"
               :key="i"
@@ -297,7 +321,7 @@ const listEl = ref<HTMLDivElement | null>(null);
 
           <!-- 底部操作 -->
           <footer class="ier-foot">
-            <button class="btn btn-cancel" @click="close">关闭</button>
+            <button class="btn btn-cancel" @click="close">{{ onlyExists ? "知道了" : "关闭" }}</button>
             <button
               v-if="counts.total > 0"
               class="btn btn-secondary"
@@ -410,6 +434,27 @@ const listEl = ref<HTMLDivElement | null>(null);
   border-radius: 10px;
   padding: 10px 12px;
   background: rgba(127, 127, 127, 0.05);
+}
+
+/* FEAT-034-C：已导入（跳过冲突）友好展示 */
+.ier-list-exists {
+  margin-top: 6px;
+}
+.ier-exists-head {
+  font-size: 13px;
+  font-weight: 600;
+  color: #2f9e44;
+  margin-bottom: 6px;
+}
+.ier-item-exists {
+  border-color: rgba(47, 158, 68, 0.35);
+  background: rgba(47, 158, 68, 0.07);
+}
+.ier-cat-exists {
+  background: #2f9e44 !important;
+}
+.ier-advice-exists {
+  color: #2f9e44 !important;
 }
 .ier-item-head {
   display: flex;

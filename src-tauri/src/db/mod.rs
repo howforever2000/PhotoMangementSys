@@ -476,6 +476,27 @@ impl Database {
         }
     }
 
+    /// 根据路径查找相册（不限用户）
+    ///
+    /// 用于批量导入时检查某路径是否已被任一用户的相册占用。
+    /// 出现于多用户场景下：旧数据被 admin 接管后，新用户再导入同路径会撞全局 UNIQUE。
+    /// 查得表示 path 已被其他用户占用，需提示为「已存在」友好跳过场景。
+    pub fn find_any_album_by_path(&self, path: &str) -> Result<Option<Album>, DbError> {
+        let result = self.conn.query_row(
+            "SELECT id, name, path, description, cover_path, created_at, updated_at, location
+             FROM albums
+             WHERE path = ?1
+             LIMIT 1",
+            params![path],
+            Self::row_to_album,
+        );
+        match result {
+            Ok(album) => Ok(Some(album)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(DbError::Sqlite(e)),
+        }
+    }
+
     /// 根据路径查找相册（不存在返回 None）
     ///
     /// 用于批量导入时检查某个文件夹是否已作为相册存在，避免重复创建。
@@ -1513,6 +1534,37 @@ mod tests {
         let remaining = &db.get_album(target.id, 1).unwrap().merged_sources;
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, src2.id);
+    }
+
+    /// FEAT-034-C：find_any_album_by_path 不限用户匹配，用于批量导入时判断
+    /// 路径是否已被任一用户占用（配合全局 UNIQUE 避免误报“已被相册使用”）。
+    #[test]
+    fn find_any_album_by_path_cross_user() {
+        let conn = Connection::open_in_memory().unwrap();
+        let db = Database { conn };
+        db.init_schema().unwrap();
+
+        let dir = std::env::temp_dir().join("pm_find_any_path");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.to_string_lossy().into_owned();
+
+        // 用户 1 创建该路径相册
+        db.create_album(
+            CreateAlbumInput { name: "用户A相册".into(), path: p.clone(), description: None },
+            1,
+        )
+        .unwrap();
+
+        // 同用户查询命中
+        assert!(db.find_album_by_path(&p, 1).unwrap().is_some());
+        // 不同用户 find_album_by_path 查不到（多用户隔离）
+        assert!(db.find_album_by_path(&p, 2).unwrap().is_none());
+        // 不限用户查询命中（FEAT-034-C 关键）
+        let any = db.find_any_album_by_path(&p).unwrap().unwrap();
+        assert_eq!(any.name, "用户A相册");
+
+        // 未存在路径返回 None
+        assert!(db.find_any_album_by_path("/no/such/path").unwrap().is_none());
     }
 
 }

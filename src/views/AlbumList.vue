@@ -125,6 +125,8 @@ async function runImport(rootPath: string, showErrorsOnFail: boolean) {
     const result = await store.importAlbums(rootPath);
     importProgress.value = 100;
     lastImportResult.value = result;
+    // FEAT-034-C：跨用户占用现在是“已存在”友好跳过场景，不再视为失败
+    const alreadyExists = (result.skipped_conflicts ?? []).length;
     const parts = [`成功导入 ${result.imported} 个相册`];
     if (result.skipped > 0) parts.push(`跳过 ${result.skipped} 个已存在的`);
     if (result.errors.length > 0) parts.push(`失败 ${result.errors.length} 个`);
@@ -151,6 +153,15 @@ async function runImport(rootPath: string, showErrorsOnFail: boolean) {
         // 首次失败自动弹窗，避免用户必须再点一次
         showImportErrors.value = true;
       }
+    } else if (alreadyExists > 0) {
+      // FEAT-034-C：所有项都已存在（跨用户或同用户占用的合并场景）→ 友好信息框
+      const msg =
+        result.imported > 0
+          ? `${result.imported} 个新相册已导入；${alreadyExists} 个相册此前已导入，自动跳过。`
+          : `${alreadyExists} 个相册已被导入，无需重复导入。`;
+      // 弹信息框列出具体哪些相册已存在（不标红为错误）；同时给友好 toast
+      showImportErrors.value = true;
+      notify.success("批量导入完成", msg);
     } else {
       notify.success("批量导入完成", parts.join("，"));
     }
