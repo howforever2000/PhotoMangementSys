@@ -8,12 +8,31 @@ const router = useRouter();
 const auth = useAuthStore();
 const theme = useThemeStore();
 
-/** 弹窗面板主题样式：深/浅色模式下背景与边框自适应 */
-const pmStyle = computed(() =>
-  theme.isDark
-    ? { background: "rgba(30,34,46,.96)", border: "1px solid rgba(255,255,255,.09)", color: theme.textColor }
-    : { background: "#fff", border: "1px solid rgba(0,0,0,.07)", color: theme.textColor },
-);
+/**
+ * 弹窗面板主题样式：深/浅色模式下背景与边框自适应。
+ * 同时导出一组 `--pm-*` CSS 变量，供下方非 scoped 的 `.pm-*` 规则消费——
+ * 弹窗通过 teleport 挂到 body，无法继承 scoped 样式，若把颜色写死，
+ * 深色模式下会出现「深底 + 深色标题 + 浅色输入框」的不可读组合。
+ */
+const pmStyle = computed(() => {
+  const dark = theme.isDark;
+  return {
+    background: dark ? "rgba(30,34,46,.96)" : "#fff",
+    border: dark ? "1px solid rgba(255,255,255,.09)" : "1px solid rgba(0,0,0,.07)",
+    color: theme.textColor,
+    "--pm-text": dark ? "#f5f7ff" : "#1f2733",
+    "--pm-label": dark ? "rgba(214,221,240,.78)" : "#5a6474",
+    "--pm-hint": dark ? "rgba(214,221,240,.55)" : "#6b7280",
+    "--pm-input-bg": dark ? "rgba(18,20,28,.75)" : "#f4f6f9",
+    "--pm-input-border": dark ? "rgba(255,255,255,.14)" : "#e2e6ee",
+    "--pm-input-disabled-bg": dark ? "rgba(255,255,255,.04)" : "#eef1f5",
+    "--pm-btn-bg": dark ? "rgba(255,255,255,.07)" : "#f0f2f6",
+    "--pm-btn-color": dark ? "#e6e9f5" : "#4a5568",
+    "--pm-btn-hover": dark ? "rgba(255,255,255,.13)" : "#e6e9f0",
+    "--pm-soft-border": dark ? "rgba(255,255,255,.14)" : "#e2e6ee",
+    "--pm-danger-hover": dark ? "rgba(229,72,77,.22)" : "#fdf0f0",
+  };
+});
 
 /** 当前登录账户名（未登录时显示默认文案） */
 const username = () => auth.user?.username ?? "未登录";
@@ -56,7 +75,7 @@ const modules = [
   {
     id: "scan",
     title: "图片扫描",
-    desc: "扫描文件夹内图片，按时间/地点排序，按年·地点组织移动",
+    desc: "勾选相册批量扫描入库（EXIF/影调/AI），或扫描文件夹按年·地点组织移动",
     icon: "🔍",
     path: "/scan",
     ready: true,
@@ -213,7 +232,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="home-page">
+  <div
+    class="home-page"
+    :style="{
+      '--card-shadow': theme.isDark
+        ? '0 16px 40px rgba(0,0,0,.55)'
+        : '0 12px 28px rgba(16,24,40,.14)',
+    }"
+  >
     <div class="home-content">
       <header class="home-header">
         <div class="header-text">
@@ -520,7 +546,7 @@ onBeforeUnmount(() => {
 }
 
 .module-card:hover {
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--card-shadow);
   border-color: rgba(140, 180, 255, 0.45);
 }
 
@@ -620,11 +646,11 @@ onBeforeUnmount(() => {
 .pm-dialog-head h3 {
   margin: 0;
   font-size: 18px;
-  color: #1f2733;
+  color: var(--pm-text);
 }
 .pm-hint {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--pm-hint);
 }
 .pm-field {
   margin-bottom: 14px;
@@ -632,7 +658,7 @@ onBeforeUnmount(() => {
 .pm-field label {
   display: block;
   font-size: 13px;
-  color: #5a6474;
+  color: var(--pm-label);
   margin-bottom: 6px;
 }
 .pm-field input {
@@ -640,9 +666,9 @@ onBeforeUnmount(() => {
   height: 40px;
   padding: 0 12px;
   font-size: 14px;
-  color: #1f2733;
-  background: #f4f6f9;
-  border: 1px solid #e2e6ee;
+  color: var(--pm-text);
+  background: var(--pm-input-bg);
+  border: 1px solid var(--pm-input-border);
   border-radius: 10px;
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
@@ -652,8 +678,8 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 3px rgba(90, 139, 247, 0.15);
 }
 .pm-field input:disabled {
-  color: #4b5563;
-  background: #eef1f5;
+  color: var(--pm-hint);
+  background: var(--pm-input-disabled-bg);
 }
 .pm-error {
   margin: 4px 0 10px;
@@ -675,15 +701,15 @@ onBeforeUnmount(() => {
   height: 38px;
   padding: 0 18px;
   font-size: 14px;
-  color: #4a5568;
-  background: #f0f2f6;
-  border: 1px solid #e2e6ee;
+  color: var(--pm-btn-color);
+  background: var(--pm-btn-bg);
+  border: 1px solid var(--pm-soft-border);
   border-radius: 10px;
   cursor: pointer;
   transition: background 0.2s;
 }
 .pm-btn:hover {
-  background: #e6e9f0;
+  background: var(--pm-btn-hover);
 }
 .pm-btn-primary {
   color: #fff;
@@ -698,7 +724,7 @@ onBeforeUnmount(() => {
   color: #e5484d;
 }
 .pm-btn-clear:hover {
-  background: #fdf0f0;
+  background: var(--pm-danger-hover);
 }
 .pm-section {
   margin-bottom: 16px;
@@ -707,7 +733,7 @@ onBeforeUnmount(() => {
   display: block;
   font-size: 13px;
   font-weight: 600;
-  color: #5a6474;
+  color: var(--pm-label);
   margin-bottom: 8px;
 }
 .pm-seg {
@@ -718,9 +744,9 @@ onBeforeUnmount(() => {
   flex: 1;
   height: 34px;
   font-size: 13px;
-  color: #5a6474;
-  background: #f4f6f9;
-  border: 1px solid #e2e6ee;
+  color: var(--pm-label);
+  background: var(--pm-input-bg);
+  border: 1px solid var(--pm-input-border);
   border-radius: 10px;
   cursor: pointer;
   transition: all 0.2s;
@@ -739,15 +765,15 @@ onBeforeUnmount(() => {
   width: 52px;
   height: 40px;
   padding: 2px;
-  border: 1px solid #e2e6ee;
+  border: 1px solid var(--pm-soft-border);
   border-radius: 10px;
-  background: #fff;
+  background: var(--pm-input-bg);
   cursor: pointer;
 }
 .pm-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
-  color: #5a6474;
+  color: var(--pm-label);
 }
 .pm-grade {
   display: flex;
@@ -757,9 +783,9 @@ onBeforeUnmount(() => {
   width: 52px;
   height: 40px;
   padding: 2px;
-  border: 1px solid #e2e6ee;
+  border: 1px solid var(--pm-soft-border);
   border-radius: 10px;
-  background: #fff;
+  background: var(--pm-input-bg);
   cursor: pointer;
 }
 .pm-range {
@@ -767,7 +793,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   font-size: 13px;
-  color: #5a6474;
+  color: var(--pm-label);
   margin-top: 12px;
 }
 .pm-range input[type="range"] {
@@ -776,7 +802,7 @@ onBeforeUnmount(() => {
 .pm-range b {
   min-width: 40px;
   text-align: right;
-  color: #1f2733;
+  color: var(--pm-text);
 }
 .pm-hidden-input {
   display: none;
@@ -787,7 +813,7 @@ onBeforeUnmount(() => {
   background-size: cover;
   background-position: center;
   margin-top: 12px;
-  border: 1px solid #e2e6ee;
+  border: 1px solid var(--pm-soft-border);
 }
 
 .modal-enter-active,

@@ -8,16 +8,32 @@
  *   3. 视图切换：按时间（年→月）/ 按地点 查看识别结果，验证准确率
  *   4. 「按年·地点组织移动」：创建 {dir}/{年份}/{地点}/ 两级文件夹并移动照片（破坏性，需确认）
  */
-import { onUnmounted, ref } from "vue";
+import { computed, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { TestPhoto, OrganizeReport, ScanProgress } from "../types/photo";
+import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 
 const router = useRouter();
+const theme = useThemeStore();
 const notify = useNotify();
+
+/** 页面级主题变量：卡片/按钮原为固定白底，深色模式下会突兀发白 */
+const tsVars = computed(() => {
+  const dark = theme.isDark;
+  return {
+    "--ts-panel-bg": dark ? "rgba(255,255,255,.045)" : "#fff",
+    "--ts-panel-border": dark ? "rgba(255,255,255,.1)" : "#e5e7eb",
+    "--ts-btn-bg": dark ? "rgba(255,255,255,.06)" : "#fff",
+    "--ts-btn-border": dark ? "rgba(255,255,255,.18)" : "#ddd",
+    "--ts-btn-hover": dark ? "rgba(255,255,255,.12)" : "#f2f4f7",
+    "--ts-text": dark ? "#f5f7ff" : "#2c3e50",
+    "--ts-muted": dark ? "rgba(214,221,240,.6)" : "#888",
+  };
+});
 
 /** 目标文件夹路径 */
 const dirPath = ref("");
@@ -214,9 +230,9 @@ const stats = () => {
 </script>
 
 <template>
-  <div class="scan-page">
+  <div class="scan-page" :style="tsVars">
     <header class="page-header">
-      <button class="btn" @click="router.push('/home')">← 返回主页</button>
+      <button class="btn" @click="router.push('/scan')">← 返回图片扫描</button>
       <div class="header-text">
         <h1>图片扫描测试</h1>
         <p class="page-sub">扫描文件夹内直接图片 → 按时间/地点排序 → 按「年·地点」组织移动（仅测试，不入相册）</p>
@@ -354,7 +370,7 @@ const stats = () => {
   margin: 0 auto;
   padding: 24px 20px 60px;
   font-size: 14px;
-  color: #333;
+  color: var(--ts-text);
 }
 .page-header {
   display: flex;
@@ -367,16 +383,17 @@ const stats = () => {
   margin: 0;
 }
 .page-sub {
-  color: #888;
+  color: var(--ts-muted);
   font-size: 12.5px;
   margin: 4px 0 0;
 }
 .glass-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--ts-panel-bg);
+  border: 1px solid var(--ts-panel-border);
   border-radius: 10px;
   padding: 16px 18px;
   margin-bottom: 16px;
+  color: var(--ts-text);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 .toolbar .dir-row {
@@ -428,7 +445,7 @@ const stats = () => {
 .recursive-label {
   font-size: 13px;
   font-weight: 500;
-  color: #333;
+  color: var(--ts-text);
 }
 .recursive-desc {
   font-size: 12px;
@@ -452,7 +469,7 @@ const stats = () => {
 .progress-count {
   font-family: "Consolas", monospace;
   font-size: 12px;
-  color: #666;
+  color: var(--ts-muted);
 }
 .progress-track {
   height: 8px;
@@ -484,21 +501,24 @@ const stats = () => {
   white-space: nowrap;
 }
 .progress-result {
-  color: #888;
+  color: var(--ts-muted);
   white-space: nowrap;
 }
 .btn {
   padding: 8px 16px;
   border-radius: 8px;
-  border: 1px solid #ddd;
-  background: #fff;
+  border: 1px solid var(--ts-btn-border);
+  background: var(--ts-btn-bg);
+  color: var(--ts-text);
   cursor: pointer;
   font-size: 13px;
   transition: all 0.2s;
 }
-.btn:hover {
+/* 排除带自身语义色的按钮，避免悬停态覆盖它们的主色 */
+.btn:hover:not(.btn-primary):not(.btn-danger) {
   border-color: #396cd8;
   color: #396cd8;
+  background: var(--ts-btn-hover);
 }
 .btn-primary {
   background: #396cd8;
@@ -552,11 +572,11 @@ const stats = () => {
 }
 .report-stats .kpi {
   font-size: 13px;
-  color: #666;
+  color: var(--ts-muted);
 }
 .report-stats .kpi b {
   font-size: 16px;
-  color: #333;
+  color: var(--ts-text);
 }
 .report-stats .ok b {
   color: #16a34a;
@@ -568,7 +588,7 @@ const stats = () => {
   color: #e5484d;
 }
 .report-root {
-  color: #888;
+  color: var(--ts-muted);
   font-size: 12.5px;
   margin: 6px 0;
 }
@@ -586,7 +606,7 @@ const stats = () => {
   margin: 8px 0;
   padding-left: 20px;
   font-size: 12.5px;
-  color: #555;
+  color: var(--ts-muted);
   font-family: "Consolas", monospace;
 }
 .result-bar {
@@ -598,11 +618,11 @@ const stats = () => {
   padding: 12px 18px;
 }
 .stat-line {
-  color: #555;
+  color: var(--ts-muted);
   font-size: 13px;
 }
 .stat-line b {
-  color: #333;
+  color: var(--ts-text);
 }
 .view-switch {
   display: flex;
@@ -627,7 +647,7 @@ const stats = () => {
 .month-title {
   margin: 0 0 6px;
   font-size: 13px;
-  color: #666;
+  color: var(--ts-muted);
 }
 .photo-table {
   width: 100%;
@@ -637,7 +657,7 @@ const stats = () => {
 .photo-table td {
   padding: 7px 10px;
   border-bottom: 1px solid #f3f4f6;
-  color: #555;
+  color: var(--ts-muted);
 }
 .photo-table tr:last-child td {
   border-bottom: none;
@@ -652,7 +672,7 @@ const stats = () => {
 }
 .p-coord {
   white-space: nowrap;
-  color: #888;
+  color: var(--ts-muted);
   font-family: "Consolas", monospace;
   font-size: 12px;
 }

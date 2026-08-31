@@ -234,7 +234,7 @@ function enterSelectMode() {
     sessionStorage.setItem("pm-album-manage-hint", "1");
     notify.info(
       "已进入批量管理",
-      "点击卡片勾选 · Ctrl+A 全选当前可见 · Esc 退出 · Del 删除（仅除记录）",
+      "点击卡片勾选 · Ctrl+A 全选当前可见 · Esc 退出 · Del 删除（仅删记录）",
       5000,
     );
   }
@@ -997,6 +997,9 @@ onMounted(() => {
   window.addEventListener("click", onGlobalClick);
   // 滚动监听（用于回到顶部按钮显示）
   window.addEventListener("scroll", onScroll, { passive: true });
+  // 右键菜单以 fixed 定位，页面滚动/窗口变化时会与卡片脱锚，需关闭
+  window.addEventListener("scroll", closeContextMenu, { passive: true });
+  window.addEventListener("resize", closeContextMenu);
   // 选模式快捷键
   window.addEventListener("keydown", onKey);
 
@@ -1013,23 +1016,20 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("click", onGlobalClick);
   window.removeEventListener("scroll", onScroll);
+  window.removeEventListener("scroll", closeContextMenu);
+  window.removeEventListener("resize", closeContextMenu);
   window.removeEventListener("keydown", onKey);
+  // 清理防抖定时器与未完成的 rAF，避免组件卸载后回调仍执行
+  if (searchTimer) clearTimeout(searchTimer);
+  if (rafId != null) cancelAnimationFrame(rafId);
 });
 
-/* ---------------- 选模式快捷键 ---------------- */
-/**
- * 选模式下提供键盘交互：
- *  - Esc 退出选模式
- *  - Ctrl/Cmd + A 全选/取消全选
- *  - Delete 打开删除确认（仅相册记录，文件未删）
- * 输入框中、任一对话框打开时不响应。
- */
 /* ---------------- 键盘交互 ---------------- */
 /**
  * 选模式下提供快捷键：
  *  - Esc：优先关闭打开的弹窗；无弹窗则退出选模式
  *  - Ctrl/Cmd + A：全选/取消全选
- *  - Delete：打开删除确认
+ *  - Delete：打开删除确认（仅删相册记录，本地照片文件不动）
  * 输入框中不响应。
  */
 function onKey(e: KeyboardEvent) {
@@ -1308,7 +1308,7 @@ function onKey(e: KeyboardEvent) {
     <!-- 批量选择提示栏（勾选模式下提示快捷键；计数与全选在工具栏中） -->
     <div v-if="isSelectMode" class="select-bar">
       <span class="select-hint">
-        点击卡片勾选 · <kbd>Esc</kbd> 退出 · <kbd>Ctrl+A</kbd> 全选当前可见 · <kbd>Del</kbd> 删除（仅除记录）
+        点击卡片勾选 · <kbd>Esc</kbd> 退出 · <kbd>Ctrl+A</kbd> 全选当前可见 · <kbd>Del</kbd> 删除（仅删记录）
       </span>
     </div>
 
@@ -2658,5 +2658,59 @@ function onKey(e: KeyboardEvent) {
 
 .back-to-top:active {
   transform: scale(0.95);
+}
+
+/* 窗口较窄时（桌面窗口可自由缩放）：工具栏与卡片网格降级排布，避免按钮溢出 */
+@media (max-width: 900px) {
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .toolbar-left {
+    justify-content: space-between;
+  }
+
+  .toolbar-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  /* 批量管理模式：分组容器换行铺满，分隔线改为横向更直观 */
+  .tb-group {
+    flex-wrap: wrap;
+  }
+
+  .tb-divider {
+    width: auto;
+    height: 1px;
+    flex: 1 1 100%;
+    background: var(--card-border);
+  }
+
+  .album-grid {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 14px;
+  }
+}
+
+@media (max-width: 640px) {
+  .album-page {
+    padding: 16px;
+  }
+
+  .page-title {
+    font-size: 20px;
+  }
+
+  .album-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dialog {
+    width: 100%;
+    padding: 20px;
+  }
 }
 </style>

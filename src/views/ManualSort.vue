@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useRouter } from "vue-router";
 import { useAlbumStore } from "../stores/album";
+import { useThemeStore } from "../stores/theme";
 import type { Album } from "../types/album";
 import type { Folder, ManualTree } from "../types/folder";
 import { trace } from "../utils/trace";
@@ -26,7 +27,35 @@ const emit = defineEmits<{
 
 const router = useRouter();
 const store = useAlbumStore();
+const theme = useThemeStore();
 const notify = useNotify();
+
+/** 页面级主题变量。
+ *  本页原本全部写死浅色（白底 #fff / 灰边 #ddd / 深蓝字 #2c3e50），深色模式下
+ *  会出现「深色背景 + 纯白卡片 + 深色文字」的割裂观感，且对比度不可控。
+ *  改为统一下发 `--ms-*` 变量，样式块消费变量；浅色模式取值与原设计一致。 */
+const msVars = computed(() => {
+  const dark = theme.isDark;
+  return {
+    "--ms-text": dark ? "#f5f7ff" : "#2c3e50",
+    "--ms-muted": dark ? "rgba(214,221,240,.6)" : "#8a94a6",
+    "--ms-panel-bg": dark ? "rgba(255,255,255,.04)" : "#fff",
+    "--ms-panel-bg-2": dark ? "rgba(255,255,255,.06)" : "#fbfcfe",
+    "--ms-panel-bg-3": dark ? "rgba(255,255,255,.09)" : "#f7f9fc",
+    "--ms-border": dark ? "rgba(255,255,255,.1)" : "#e6e9f0",
+    "--ms-border-strong": dark ? "rgba(255,255,255,.18)" : "#d8dee9",
+    "--ms-hover": dark ? "rgba(255,255,255,.08)" : "#f4f6fa",
+    "--ms-nav-color": dark ? "rgba(214,221,240,.72)" : "#555",
+    "--ms-tag-bg": dark ? "rgba(57,108,216,.2)" : "#eef3ff",
+    "--ms-tag-color": dark ? "#93b4f5" : "#396cd8",
+    "--ms-accent-tint": dark ? "rgba(57,108,216,.22)" : "#f0f5ff",
+    "--ms-input-bg": dark ? "rgba(18,20,28,.7)" : "#fff",
+    "--ms-menu-bg": dark ? "rgba(30,34,46,.98)" : "#fff",
+    "--ms-shadow": dark ? "0 8px 28px rgba(0,0,0,.5)" : "0 8px 24px rgba(16,24,40,.12)",
+    "--ms-ghost-bg": dark ? "rgba(255,255,255,.1)" : "#f0f3f8",
+    "--ms-danger-hover": dark ? "rgba(229,72,77,.2)" : "#fdf0f0",
+  };
+});
 
 // ---------- 状态 ----------
 const tree = ref<ManualTree | null>(null);
@@ -520,7 +549,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="manual-sort">
+  <div class="manual-sort" :style="msVars">
     <!-- 顶部工具栏 -->
     <div class="manual-toolbar">
       <button class="btn btn-primary" @click="openCreateFolder(null)">新建分组</button>
@@ -768,22 +797,22 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.manual-sort { padding-bottom: 30px; }
+.manual-sort { padding-bottom: 30px; color: var(--ms-text); }
 .manual-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-.manual-hint { color: #6b7280; font-size: 13px; }
+.manual-hint { color: var(--ms-muted); font-size: 13px; }
 
 /* 目录导航 */
 .manual-nav {
   display: flex;
   align-items: center;
   gap: 6px;
-  background: #f7f9fc;
-  border: 1px solid #eef0f4;
+  background: var(--ms-panel-bg-3);
+  border: 1px solid var(--ms-border);
   border-radius: 8px;
   padding: 8px 16px;
   margin-bottom: 20px;
   font-size: 13px;
-  color: #555;
+  color: var(--ms-nav-color);
   overflow-x: auto;
   white-space: nowrap;
 }
@@ -795,11 +824,11 @@ onBeforeUnmount(() => {
 }
 
 .manual-nav-empty {
-  color: #6b7280;
+  color: var(--ms-muted);
 }
 
 .manual-nav-sep {
-  color: #bbb;
+  color: var(--ms-muted);
 }
 
 .manual-nav-item {
@@ -827,21 +856,21 @@ onBeforeUnmount(() => {
   }
   100% {
     box-shadow: none;
-    background: #fff;
+    background: var(--ms-panel-bg);
   }
 }
 
-.btn { padding: 8px 16px; border-radius: 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 14px; }
+.btn { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--ms-border-strong); background: var(--ms-panel-bg); color: var(--ms-text); cursor: pointer; font-size: 14px; }
 .btn-primary { background: #396cd8; color: #fff; border-color: #396cd8; }
 .btn-sm { padding: 5px 10px; font-size: 12px; }
 .btn:disabled { opacity: .6; }
 
-.root-albums { border: 1px dashed #ccc; border-radius: 10px; padding: 12px; margin-bottom: 20px; background: #fafbfd; }
-.root-title { font-size: 13px; color: #5f6b7a; margin-bottom: 8px; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
+.root-albums { border: 1px dashed var(--ms-border-strong); border-radius: 10px; padding: 12px; margin-bottom: 20px; background: var(--ms-panel-bg-2); }
+.root-title { font-size: 13px; color: var(--ms-muted); margin-bottom: 8px; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
 
 /* 折叠箭头 */
 .fold-arrow {
-  color: #6b7280;
+  color: var(--ms-muted);
   font-size: 12px;
   width: 14px;
   text-align: center;
@@ -849,7 +878,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   user-select: none;
 }
-.empty-hint { color: #bbb; font-size: 13px; }
+.empty-hint { color: var(--ms-muted); font-size: 13px; }
 .album-mini-row { display: flex; flex-wrap: wrap; gap: 10px; }
 
 /* 拖拽浮层 */
@@ -860,10 +889,10 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 6px 12px 6px 6px;
-  background: #fff;
+  background: var(--ms-panel-bg);
   border: 1px solid #396cd8;
   border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--ms-shadow);
   pointer-events: none;
 }
 
@@ -875,7 +904,7 @@ onBeforeUnmount(() => {
 }
 
 .ghost-placeholder {
-  background: #f0f0f0;
+  background: var(--ms-ghost-bg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -884,7 +913,7 @@ onBeforeUnmount(() => {
 
 .ghost-name {
   font-size: 13px;
-  color: #2c3e50;
+  color: var(--ms-text);
   max-width: 140px;
   white-space: nowrap;
   overflow: hidden;
@@ -892,37 +921,37 @@ onBeforeUnmount(() => {
 }
 
 .folder-tree { display: flex; flex-direction: column; gap: 12px; }
-.folder-node { border: 1px solid #eef0f4; border-radius: 10px; background: #fff; }
-.folder-node.drag-over { border-color: #396cd8; background: #f0f5ff; box-shadow: 0 0 0 2px rgba(57,108,216,.2); }
-.folder-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; border-bottom: 1px solid #f5f5f5; }
+.folder-node { border: 1px solid var(--ms-border); border-radius: 10px; background: var(--ms-panel-bg); }
+.folder-node.drag-over { border-color: #396cd8; background: var(--ms-accent-tint); box-shadow: 0 0 0 2px rgba(57,108,216,.2); }
+.folder-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--ms-border); }
 .folder-icon { font-size: 16px; }
-.folder-name { font-weight: 600; font-size: 14px; color: #2c3e50; }
+.folder-name { font-weight: 600; font-size: 14px; color: var(--ms-text); }
 .folder-tags { display: flex; gap: 4px; }
-.tag-chip { background: #eef3ff; color: #396cd8; font-size: 11px; padding: 1px 8px; border-radius: 10px; }
+.tag-chip { background: var(--ms-tag-bg); color: var(--ms-tag-color); font-size: 11px; padding: 1px 8px; border-radius: 10px; }
 .tag-chip.editable { display: inline-flex; align-items: center; gap: 4px; }
 .tag-del { border: none; background: none; color: #9a6a00; cursor: pointer; font-size: 12px; }
 .folder-actions { margin-left: auto; display: flex; gap: 4px; }
-.mini-btn { border: 1px solid #ddd; background: #fff; border-radius: 6px; font-size: 11px; padding: 3px 8px; cursor: pointer; }
+.mini-btn { border: 1px solid var(--ms-border-strong); background: var(--ms-panel-bg); color: var(--ms-text); border-radius: 6px; font-size: 11px; padding: 3px 8px; cursor: pointer; }
 .mini-btn:hover { border-color: #396cd8; color: #396cd8; }
 .folder-albums { display: flex; flex-wrap: wrap; gap: 10px; padding: 10px 14px; }
 
-.level-2 { margin-left: 24px; margin-bottom: 8px; background: #fafbfd; }
-.level-3 { margin-left: 24px; margin-bottom: 8px; background: #f7f9fc; }
+.level-2 { margin-left: 24px; margin-bottom: 8px; background: var(--ms-panel-bg-2); }
+.level-3 { margin-left: 24px; margin-bottom: 8px; background: var(--ms-panel-bg-3); }
 
-.context-menu { position: fixed; z-index: 200; min-width: 140px; max-height: 300px; overflow-y: auto; background: #fff; border: 1px solid #eee; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.15); padding: 6px; }
+.context-menu { position: fixed; z-index: 200; min-width: 140px; max-height: 300px; overflow-y: auto; background: var(--ms-menu-bg); border: 1px solid var(--ms-border); border-radius: 8px; box-shadow: var(--ms-shadow); padding: 6px; color: var(--ms-text); }
 .context-menu-item { padding: 8px 12px; border-radius: 6px; font-size: 14px; cursor: pointer; }
-.context-menu-item:hover { background: #f0f4ff; }
-.ctx-submenu { border-top: 1px solid #f0f0f0; margin-top: 4px; padding-top: 4px; }
-.ctx-sub { font-size: 13px; color: #555; }
+.context-menu-item:hover { background: var(--ms-hover); }
+.ctx-submenu { border-top: 1px solid var(--ms-border); margin-top: 4px; padding-top: 4px; }
+.ctx-sub { font-size: 13px; color: var(--ms-nav-color); }
 .context-menu-danger { color: #e5484d; }
-.context-menu-danger:hover { background: #fdf0f0; }
+.context-menu-danger:hover { background: var(--ms-danger-hover); }
 
 .dialog-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.dialog { width: 420px; max-width: 90vw; background: #fff; border-radius: 12px; padding: 24px; }
+.dialog { width: 420px; max-width: 90vw; background: var(--ms-menu-bg); color: var(--ms-text); border-radius: 12px; padding: 24px; }
 .dialog h3 { margin: 0 0 16px; }
-.input { width: 100%; box-sizing: border-box; padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; margin-bottom: 12px; }
-.textarea { width: 100%; box-sizing: border-box; min-height: 70px; padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; margin-bottom: 12px; resize: vertical; }
-.form-label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; }
+.input { width: 100%; box-sizing: border-box; padding: 8px 12px; border: 1px solid var(--ms-border-strong); background: var(--ms-input-bg); color: var(--ms-text); border-radius: 8px; font-size: 14px; margin-bottom: 12px; }
+.textarea { width: 100%; box-sizing: border-box; min-height: 70px; padding: 8px 12px; border: 1px solid var(--ms-border-strong); background: var(--ms-input-bg); color: var(--ms-text); border-radius: 8px; font-size: 14px; margin-bottom: 12px; resize: vertical; }
+.form-label { display: block; font-size: 13px; color: var(--ms-muted); margin-bottom: 4px; }
 .tag-edit { display: flex; gap: 8px; margin-bottom: 8px; }
 .tag-edit .input { margin-bottom: 0; }
 .tag-list { display: flex; flex-wrap: wrap; gap: 6px; min-height: 28px; }

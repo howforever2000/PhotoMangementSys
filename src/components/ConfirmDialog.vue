@@ -73,6 +73,10 @@ watch(
           :style="{
             background: theme.isDark ? 'rgba(30,34,46,.96)' : '#fff',
             border: `1px solid ${theme.isDark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.07)'}`,
+            '--cd-btn-bg': theme.isDark ? 'rgba(255,255,255,.06)' : '#fff',
+            '--cd-btn-color': theme.isDark ? '#e6e9f5' : '#555',
+            '--cd-btn-border': theme.isDark ? 'rgba(255,255,255,.18)' : '#ddd',
+            '--cd-btn-hover': theme.isDark ? 'rgba(255,255,255,.13)' : '#f5f5f5',
           }"
         >
           <div class="confirm-title" :style="{ color: theme.textColor }">⚠️ {{ title }}</div>
@@ -81,10 +85,6 @@ watch(
             <button
               ref="cancelBtnEl"
               class="btn btn-cancel"
-              :style="{
-                background: theme.isDark ? 'rgba(255,255,255,.06)' : '#fff',
-                color: theme.isDark ? '#e6e9f5' : '#555',
-              }"
               @click="emit('cancel')"
             >
               {{ cancelText || "取消" }}
@@ -148,18 +148,18 @@ watch(
   padding: 8px 18px;
   font-size: 13px;
   border-radius: 8px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--cd-btn-border, #ddd);
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .btn-cancel {
-  background: #fff;
-  color: #555;
+  background: var(--cd-btn-bg, #fff);
+  color: var(--cd-btn-color, #555);
 }
 
 .btn-cancel:hover {
-  background: #f5f5f5;
+  background: var(--cd-btn-hover, #f5f5f5);
 }
 
 .btn-danger {
