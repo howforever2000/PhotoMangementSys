@@ -56,8 +56,15 @@ const router = createRouter({
       component: AlbumList,
     },
     {
-      // 懒加载图片扫描测试页
+      // 图片扫描板块 Hub（FEAT-038）：模仿智慧相册，
+      // 包含「全局照片扫描入库」子功能（默认 tab）与「扫描测试工具」子页面
       path: "/scan",
+      name: "scan-hub",
+      component: () => import("../views/ScanHub.vue"),
+    },
+    {
+      // 扫描测试工具子页面（按时间/地点组织移动，原 TestScan 独立功能）
+      path: "/scan/test",
       name: "test-scan",
       component: () => import("../views/TestScan.vue"),
     },

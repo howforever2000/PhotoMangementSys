@@ -124,9 +124,11 @@ async function handleLogin() {
   z-index: 2;
   width: 100%;
   max-width: 400px;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  backdrop-filter: blur(16px);
+  /* backdrop-filter 半径过大（16px）会让覆盖层下文字发糊，这里降到 8px */
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border-radius: 16px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
   padding: 36px 32px 28px;
@@ -140,14 +142,21 @@ async function handleLogin() {
 .auth-title {
   margin: 0 0 8px;
   font-size: 24px;
+  font-weight: 700;
   color: #f5f7ff;
-  text-shadow: 0 0 20px rgba(120, 160, 255, 0.5), 0 2px 8px rgba(0, 0, 0, 0.5);
+  /* 替换原本"靠阴影发光"的做法：用 text-stroke + 微阴影，笔画边缘清晰。
+     注意：-webkit-text-stroke 在 Win/Chrome 上对中文支持有限，阴影作为兜底。 */
+  -webkit-text-stroke: 0.3px rgba(255, 255, 255, 0.4);
+  text-shadow:
+    0 0 14px rgba(120, 160, 255, 0.35),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+  letter-spacing: 0.5px;
 }
 
 .auth-subtitle {
   margin: 0;
   font-size: 13px;
-  color: rgba(214, 221, 240, 0.74);
+  color: rgba(225, 232, 255, 0.82);
 }
 
 .auth-form {
@@ -164,24 +173,30 @@ async function handleLogin() {
 
 .field-label {
   font-size: 13px;
-  color: #e6ebf8;
+  color: #f0f3fb;
+  font-weight: 500;
 }
 
 .field-input {
   height: 42px;
   padding: 0 12px;
   font-size: 14px;
+  /* 输入框背景由灰白改为更纯的白，避免在玻璃面板上发灰 */
   color: #1f2733;
-  border: 1px solid rgba(255, 255, 255, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.32);
   border-radius: 8px;
   outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
-  background: #f6f8fb;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+  background: #ffffff;
+}
+
+.field-input::placeholder {
+  color: #98a2b3;
 }
 
 .field-input:focus {
   border-color: #6ea8ff;
-  box-shadow: 0 0 0 3px rgba(110, 168, 255, 0.25);
+  box-shadow: 0 0 0 3px rgba(110, 168, 255, 0.28);
   background: #fff;
 }
 
@@ -198,12 +213,14 @@ async function handleLogin() {
 .btn-primary {
   height: 44px;
   font-size: 15px;
+  font-weight: 600;
   color: #fff;
   background: #396cd8;
   border: none;
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.2s, transform 0.1s;
+  letter-spacing: 1px;
 }
 
 .btn-primary:hover {
@@ -231,6 +248,7 @@ async function handleLogin() {
 .auth-link {
   color: #aacbff;
   text-decoration: none;
+  font-weight: 500;
 }
 
 .auth-link:hover {
@@ -238,6 +256,6 @@ async function handleLogin() {
 }
 
 .auth-divider {
-  color: rgba(214, 221, 240, 0.4);
+  color: rgba(214, 221, 240, 0.5);
 }
 </style>

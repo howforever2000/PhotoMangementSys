@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useContentStore } from "../stores/content";
 import type { AlbumContentRow, ContentScanFilters, ContentSearchHit } from "../types/content";
 import { useNotify } from "../composables/useNotify";
+import { categoryLabel } from "../utils/categoryLabel";
 
 const props = defineProps<{ albumId: number }>();
 const contentStore = useContentStore();
@@ -14,15 +15,52 @@ const contentHits = ref<ContentSearchHit[]>([]);
 const contentSearching = ref(false);
 let contentSearchTimer: ReturnType<typeof setTimeout> | null = null;
 
+// ---------- P1 搜索历史（localStorage 持久化） ----------
+const SEARCH_HISTORY_KEY = "photo_search_history";
+const MAX_HISTORY = 8;
+const searchHistory = ref<string[]>([]);
+const showSuggestions = ref(false);
+
+onMounted(() => {
+  try {
+    const raw = localStorage.getItem(SEARCH_HISTORY_KEY);
+    if (raw) searchHistory.value = JSON.parse(raw);
+  } catch { /* ignore */ }
+});
+
+function saveSearchHistory(kw: string) {
+  const trimmed = kw.trim();
+  if (!trimmed) return;
+  const filtered = searchHistory.value.filter((h) => h !== trimmed);
+  searchHistory.value = [trimmed, ...filtered].slice(0, MAX_HISTORY);
+  localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(searchHistory.value));
+}
+
+function clearHistory() {
+  searchHistory.value = [];
+  localStorage.removeItem(SEARCH_HISTORY_KEY);
+}
+
+/** 搜索建议过滤（匹配输入前缀） */
+const suggestions = computed(() => {
+  const kw = contentKeyword.value.toLowerCase().trim();
+  if (!kw) return [];
+  return searchHistory.value.filter((h) => h.toLowerCase().startsWith(kw)).slice(0, 5);
+});
+
 /** 防抖搜索 */
 function onContentSearchInput() {
+  showSuggestions.value = contentKeyword.value.length > 0;
   if (contentSearchTimer) clearTimeout(contentSearchTimer);
   contentSearchTimer = setTimeout(async () => {
     const kw = contentKeyword.value.trim();
     if (!kw) {
       contentHits.value = [];
+      showSuggestions.value = false;
       return;
     }
+    showSuggestions.value = false;
+    saveSearchHistory(kw);
     contentSearching.value = true;
     try {
       contentHits.value = await contentStore.searchPhotoContent(kw, props.albumId);
@@ -32,6 +70,29 @@ function onContentSearchInput() {
       contentSearching.value = false;
     }
   }, 300);
+}
+
+function applySuggestion(s: string) {
+  contentKeyword.value = s;
+  showSuggestions.value = false;
+  void onContentSearchInput();
+}
+
+function hideSuggestionsDelayed() {
+  globalThis.setTimeout(() => { showSuggestions.value = false; }, 150);
+}
+
+/** 高亮搜索关键词（在字符串中标记匹配部分） */
+function highlight(text: string, kw: string): string {
+  if (!kw || !text) return text;
+  const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.replace(new RegExp(`(${escaped})`, "gi"), "<mark>$1</mark>");
+}
+
+/** 结果项名称高亮 */
+function contentHitNameHighlighted(hit: ContentSearchHit, kw: string): string {
+  const name = contentHitName(hit);
+  return highlight(name, kw);
 }
 
 function clearContentSearch() {
@@ -159,7 +220,7 @@ async function openContentHit(path: string) {
 
 function contentHitName(hit: ContentSearchHit): string {
   if (hit.label) return hit.label;
-  if (hit.category) return hit.category;
+  if (hit.category) return categoryLabel(hit.category);
   const i = Math.max(hit.path.lastIndexOf("/"), hit.path.lastIndexOf("\\"));
   return i >= 0 ? hit.path.slice(i + 1) : hit.path;
 }
@@ -184,8 +245,25 @@ const toneLabelMap: Record<string, string> = {
           class="content-search-input"
           placeholder="在本相册内按内容搜索照片，如：狗 / 人物 / 建筑 / P001…"
           @input="onContentSearchInput"
+          @focus="showSuggestions = contentKeyword.length > 0 && suggestions.length > 0"
+          @blur="hideSuggestionsDelayed()"
+          @keydown.enter.prevent="suggestions.length ? applySuggestion(suggestions[0]) : undefined"
+          autocomplete="off"
         />
         <button v-if="contentKeyword" class="search-clear" @click="clearContentSearch">×</button>
+        <!-- P1 搜索建议下拉 -->
+        <div v-if="showSuggestions && suggestions.length > 0" class="suggestions-dropdown">
+          <div class="suggestions-header">
+            <span class="suggestions-label">搜索历史</span>
+            <button class="suggestions-clear" @click.stop="clearHistory">清除</button>
+          </div>
+          <button
+            v-for="s in suggestions"
+            :key="s"
+            class="suggestion-item"
+            @mousedown.prevent="applySuggestion(s)"
+          >{{ s }}</button>
+        </div>
       </div>
       <p class="search-hint">💡 提示：可输入关键词搜索，如「人像」「风景」「夜景」「建筑」「美食」；也可配合下方 ISO / 快门 / 光圈 / 焦段 / 影调 过滤条件缩小范围。</p>
     </div>
@@ -300,7 +378,8 @@ const toneLabelMap: Record<string, string> = {
           :title="hit.path"
           @click="openContentHit(hit.path)"
         >
-          <span class="content-hit-name">{{ contentHitName(hit) }}</span>
+          <!-- P1 结果关键词高亮 -->
+          <span class="content-hit-name" v-html="contentHitNameHighlighted(hit, contentKeyword)"></span>
           <span class="content-hit-tags">
             <span v-if="hit.label" class="top3-chip">{{ hit.label }}</span>
             <span v-for="pid in hit.person_ids" :key="pid" class="person-chip">{{ pid }}</span>
@@ -338,7 +417,7 @@ const toneLabelMap: Record<string, string> = {
           <span class="content-hit-name">{{ hit.path.split('/').pop() || hit.path.split('\\').pop() }}</span>
           <span class="content-hit-tags">
             <span v-if="hit.label" class="top3-chip">{{ hit.label }}</span>
-            <span v-if="hit.category" class="top3-chip">{{ hit.category }}</span>
+            <span v-if="hit.category" class="top3-chip">{{ categoryLabel(hit.category) }}</span>
             <span v-if="hit.tone_type" class="tone-badge tone-" :class="hit.tone_type">{{ toneLabelMap[hit.tone_type] || hit.tone_type }}</span>
             <span v-if="hit.iso" class="top3-chip">ISO {{ hit.iso }}</span>
             <span v-if="hit.shoot_time" class="top3-chip">{{ hit.shoot_time }}</span>
@@ -360,10 +439,11 @@ const toneLabelMap: Record<string, string> = {
 
 <style scoped>
 .content-search-area {
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-border, #e5e7eb);
   border-radius: 8px;
-  background: #fff;
+  background: var(--color-surface, #fff);
   padding: 14px;
+  color: var(--color-text);
 }
 
 .search-header {
@@ -378,7 +458,7 @@ const toneLabelMap: Record<string, string> = {
 
 .search-hint {
   font-size: 12px;
-  color: #667085;
+  color: var(--color-text-2);
   margin: 4px 0 0;
   line-height: 1.5;
 }
@@ -387,7 +467,7 @@ const toneLabelMap: Record<string, string> = {
   background: transparent;
   border: none;
   cursor: pointer;
-  color: #667085;
+  color: var(--color-text-2);
   padding: 2px;
   border-radius: 4px;
   display: inline-flex;
@@ -397,8 +477,8 @@ const toneLabelMap: Record<string, string> = {
 }
 
 .search-collapse:hover {
-  background: #eef1f6;
-  color: #1f2328;
+  background: var(--color-primary-soft, #eef1f6);
+  color: var(--color-text);
 }
 
 .collapse-icon {
@@ -422,14 +502,16 @@ const toneLabelMap: Record<string, string> = {
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: #667085;
+  color: var(--color-text-2);
 }
 
 .pager-size select {
   padding: 2px 4px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--color-border, #d0d5dd);
   border-radius: 4px;
   font-size: 12px;
+  background: var(--color-surface, #fff);
+  color: var(--color-text);
 }
 
 .pager-nav {
@@ -440,7 +522,7 @@ const toneLabelMap: Record<string, string> = {
 
 .pager-info {
   font-size: 12px;
-  color: #667085;
+  color: var(--color-text-2);
 }
 
 .content-search-input-wrap {
@@ -452,11 +534,13 @@ const toneLabelMap: Record<string, string> = {
 .content-search-input {
   flex: 1;
   padding: 8px 12px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--color-border, #d0d5dd);
   border-radius: 6px;
   font-size: 13px;
   outline: none;
   transition: border-color 0.15s;
+  background: var(--color-surface, #fff);
+  color: var(--color-text);
 }
 
 .content-search-input:focus {
@@ -468,7 +552,7 @@ const toneLabelMap: Record<string, string> = {
   border: none;
   font-size: 18px;
   cursor: pointer;
-  color: #667085;
+  color: var(--color-text-2);
   padding: 4px 8px;
 }
 
@@ -498,13 +582,14 @@ const toneLabelMap: Record<string, string> = {
 }
 
 .content-hit-item:hover {
-  background: #f0f4ff;
+  background: var(--color-primary-soft, #f0f4ff);
 }
 
 .content-hit-name {
   font-weight: 500;
   font-size: 13px;
   min-width: 80px;
+  color: var(--color-text);
 }
 
 .content-hit-tags {
@@ -519,7 +604,7 @@ const toneLabelMap: Record<string, string> = {
   flex-wrap: wrap;
   gap: 8px;
   padding: 10px 12px;
-  background: #f8f9fa;
+  background: rgba(120, 130, 150, 0.06);
   border-radius: 6px;
   margin-bottom: 8px;
   align-items: flex-end;
@@ -535,7 +620,7 @@ const toneLabelMap: Record<string, string> = {
 .filter-label {
   font-size: 10px;
   font-weight: 600;
-  color: #667085;
+  color: var(--color-text-2);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -543,9 +628,10 @@ const toneLabelMap: Record<string, string> = {
 .filter-select {
   font-size: 12px;
   padding: 2px 4px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--color-border, #d0d5dd);
   border-radius: 4px;
-  background: #fff;
+  background: var(--color-surface, #fff);
+  color: var(--color-text);
   min-width: 68px;
 }
 
@@ -559,7 +645,7 @@ const toneLabelMap: Record<string, string> = {
 /* 复用标签 */
 .scan-empty {
   padding: 12px;
-  color: #667085;
+  color: var(--color-text-2);
   font-size: 13px;
 }
 
@@ -604,5 +690,64 @@ const toneLabelMap: Record<string, string> = {
 .tone-badge.tone-high_key {
   background: #e5e7eb;
   color: #1f2328;
+}
+
+/* P1 搜索建议下拉 */
+.content-search-input-wrap {
+  position: relative;
+}
+.suggestions-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #d0d5dd);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.12);
+  overflow: hidden;
+}
+.suggestions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 4px;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+}
+.suggestions-label {
+  font-size: 11px;
+  color: var(--color-text-2, #667085);
+  font-weight: 600;
+}
+.suggestions-clear {
+  background: transparent;
+  border: none;
+  font-size: 11px;
+  color: #396cd8;
+  cursor: pointer;
+  padding: 0;
+}
+.suggestions-clear:hover { text-decoration: underline; }
+.suggestion-item {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  font-size: 13px;
+  color: var(--color-text, #2c3e50);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.suggestion-item:hover { background: rgba(57,108,216,.08); }
+
+/* P1 搜索结果关键词高亮 */
+.content-hit-name mark {
+  background: #ffe066;
+  color: #1f1f1f;
+  border-radius: 2px;
+  padding: 0 2px;
 }
 </style>

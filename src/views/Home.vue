@@ -40,17 +40,12 @@ const username = () => auth.user?.username ?? "未登录";
 /** 深色模式视觉（与背景样式自由搭配） */
 const isDark = computed(() => theme.isDark);
 
-const titleColor = computed(() => theme.textColor);
-const subtitleColor = computed(() => theme.subTextColor);
 const cardStyle = computed(() => theme.cardStyle);
-const cardTitleColor = computed(() => theme.textColor);
-const cardDescColor = computed(() => theme.subTextColor);
 const badgeStyle = computed(() =>
   isDark.value
     ? { color: "rgba(255,255,255,.85)", background: "rgba(120,120,130,.4)", border: "1px solid rgba(255,255,255,.18)" }
     : { color: "rgba(50,60,80,.85)", background: "rgba(0,0,0,.06)", border: "1px solid rgba(0,0,0,.08)" },
 );
-const arrowColor = computed(() => (isDark.value ? "#bcd0ff" : "#3a6cf5"));
 
 /** 退出登录并回到登录页 */
 async function handleLogout() {
@@ -243,19 +238,18 @@ onBeforeUnmount(() => {
     <div class="home-content">
       <header class="home-header">
         <div class="header-text">
-          <h1 class="app-title" :style="{ color: titleColor }">本地相册管理</h1>
-          <p class="app-subtitle" :style="{ color: subtitleColor }">轻量级本地相册管理系统</p>
+          <h1 class="app-title">本地相册管理</h1>
+          <p class="app-subtitle">轻量级本地相册管理系统</p>
         </div>
         <div class="user-box" :style="cardStyle">
           <button class="user-chip" type="button" @click="openProfile" :title="'修改基本信息'">
             <span class="avatar">👤</span>
-            <span class="user-name" :style="{ color: cardTitleColor }">{{ username() }}</span>
+            <span class="user-name">{{ username() }}</span>
           </button>
           <button
             class="icon-btn"
             type="button"
             title="主题 / 皮肤设置"
-            :style="{ color: cardTitleColor }"
             @click="openTheme"
           >
             🎨
@@ -275,13 +269,13 @@ onBeforeUnmount(() => {
         >
           <div class="module-icon">{{ m.icon }}</div>
           <div class="module-body">
-            <h2 class="module-title" :style="{ color: cardTitleColor }">
+            <h2 class="module-title">
               {{ m.title }}
               <span v-if="!m.ready" class="pending-badge" :style="badgeStyle">待开发</span>
             </h2>
-            <p class="module-desc" :style="{ color: cardDescColor }">{{ m.desc }}</p>
+            <p class="module-desc">{{ m.desc }}</p>
           </div>
-          <div class="module-arrow" :style="{ color: arrowColor }">
+          <div class="module-arrow">
             {{ m.ready ? "进入 →" : "🔒" }}
           </div>
         </article>
@@ -454,13 +448,17 @@ onBeforeUnmount(() => {
 
 .app-title {
   font-size: 32px;
+  font-weight: 700;
   margin: 0 0 8px;
   letter-spacing: 0.5px;
+  /* 不靠模糊/阴影"假装通透"，靠字重 + 字距 + 颜色对比 */
+  color: var(--color-text);
 }
 
 .app-subtitle {
   margin: 0;
   font-size: 15px;
+  color: var(--color-text-2);
 }
 
 .user-box {
@@ -469,7 +467,10 @@ onBeforeUnmount(() => {
   gap: 10px;
   flex-shrink: 0;
   padding: 6px 12px;
-  backdrop-filter: blur(12px);
+  /* blur 半径过大（12-16px）会让文字下方的背景"糊一片"，反而发雾。
+     改为 6px，仍保留玻璃质感但不再拖累文字。 */
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   border-radius: 999px;
 }
 
@@ -491,6 +492,7 @@ onBeforeUnmount(() => {
 .user-name {
   font-size: 14px;
   font-weight: 600;
+  color: var(--color-text);
 }
 
 .icon-btn {
@@ -505,6 +507,7 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.2s;
+  color: var(--color-text);
 }
 
 .icon-btn:hover {
@@ -515,7 +518,8 @@ onBeforeUnmount(() => {
   height: 30px;
   padding: 0 14px;
   font-size: 13px;
-  color: inherit;
+  font-weight: 500;
+  color: var(--color-text);
   background: rgba(120, 120, 130, 0.12);
   border: 1px solid rgba(120, 120, 130, 0.22);
   border-radius: 8px;
@@ -539,7 +543,9 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 16px;
   padding: 22px 20px;
-  backdrop-filter: blur(14px);
+  /* blur 由 14px 降到 6px，避免卡片文字发雾 */
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   border-radius: var(--radius-lg);
   transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s, background 0.2s;
   cursor: pointer;
@@ -576,12 +582,15 @@ onBeforeUnmount(() => {
 .module-title {
   margin: 0 0 6px;
   font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text);
 }
 
 .module-desc {
   margin: 0;
   font-size: 13px;
   line-height: 1.5;
+  color: var(--color-text-2);
 }
 
 .pending-badge {
@@ -589,6 +598,7 @@ onBeforeUnmount(() => {
   margin-left: 8px;
   padding: 1px 8px;
   font-size: 11px;
+  font-weight: 600;
   border-radius: 10px;
   vertical-align: middle;
 }
@@ -597,6 +607,7 @@ onBeforeUnmount(() => {
   font-size: 14px;
   flex-shrink: 0;
   white-space: nowrap;
+  color: var(--color-text-2);
 }
 
 @media (max-width: 640px) {
@@ -635,6 +646,7 @@ onBeforeUnmount(() => {
   border-radius: 18px;
   padding: 24px 24px 20px;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+  color: var(--pm-text);
 }
 .pm-dialog-head {
   display: flex;
@@ -646,6 +658,7 @@ onBeforeUnmount(() => {
 .pm-dialog-head h3 {
   margin: 0;
   font-size: 18px;
+  font-weight: 600;
   color: var(--pm-text);
 }
 .pm-hint {
@@ -701,6 +714,7 @@ onBeforeUnmount(() => {
   height: 38px;
   padding: 0 18px;
   font-size: 14px;
+  font-weight: 500;
   color: var(--pm-btn-color);
   background: var(--pm-btn-bg);
   border: 1px solid var(--pm-soft-border);
@@ -803,6 +817,7 @@ onBeforeUnmount(() => {
   min-width: 40px;
   text-align: right;
   color: var(--pm-text);
+  font-weight: 600;
 }
 .pm-hidden-input {
   display: none;

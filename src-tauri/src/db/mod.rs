@@ -10,6 +10,8 @@
 pub mod content;
 pub use content::{AlbumContentRow, ContentFilters, ContentSearchHit, PhotoContentRecord, SmartHit};
 
+use crate::RecentlyExcludedItem;
+
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -1009,6 +1011,80 @@ impl Database {
             .query_map(params![album_id], |r| r.get::<_, String>(0))
             .map_err(DbError::Sqlite)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)
+    }
+
+    /// 恢复已「记录删除」的照片（从 album_photo_excluded 中移除），撤销时调用
+    pub fn restore_excluded_photos(
+        &self,
+        album_id: i64,
+        user_id: i64,
+        paths: &[String],
+    ) -> Result<usize, DbError> {
+        // 归属校验：确保相册属于当前用户
+        let owned = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM albums WHERE id = ?1 AND user_id = ?2",
+                params![album_id, user_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(DbError::Sqlite)?;
+        if owned == 0 {
+            return Err(DbError::NotFound(album_id));
+        }
+        let mut n = 0usize;
+        for p in paths {
+            n += self
+                .conn
+                .execute(
+                    "DELETE FROM album_photo_excluded WHERE album_id = ?1 AND path = ?2",
+                    params![album_id, p],
+                )
+                .map_err(DbError::Sqlite)?;
+        }
+        Ok(n)
+    }
+
+    /// 获取最近删除记录（album_photo_excluded），用于「最近删除」列表展示
+    pub fn list_recently_excluded(
+        &self,
+        user_id: i64,
+        limit: usize,
+    ) -> Result<Vec<RecentlyExcludedItem>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT e.album_id, e.path, e.excluded_at, a.name as album_name
+                 FROM album_photo_excluded e
+                 JOIN albums a ON a.id = e.album_id AND a.user_id = e.user_id
+                 WHERE e.user_id = ?1
+                 ORDER BY e.excluded_at DESC
+                 LIMIT ?2",
+            )
+            .map_err(DbError::Sqlite)?;
+        let rows = stmt
+            .query_map(params![user_id, limit as i64], |r| {
+                Ok(RecentlyExcludedItem {
+                    album_id: r.get(0)?,
+                    path: r.get(1)?,
+                    excluded_at: r.get(2)?,
+                    album_name: r.get(3)?,
+                })
+            })
+            .map_err(DbError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)
+    }
+
+    /// 清除所有已排除记录（用户清空最近删除时调用）
+    pub fn clear_all_excluded(&self, user_id: i64) -> Result<usize, DbError> {
+        let affected = self
+            .conn
+            .execute(
+                "DELETE FROM album_photo_excluded WHERE user_id = ?1",
+                params![user_id],
+            )
+            .map_err(DbError::Sqlite)?;
+        Ok(affected)
     }
 
     pub fn delete_album(&self, id: i64, user_id: i64) -> Result<(), DbError> {

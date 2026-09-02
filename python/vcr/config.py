@@ -32,11 +32,13 @@ PERSONS_DB = os.path.join(DATA_DIR, "persons.db")
 ALBUM_GROUPS = os.path.join(MODEL_DIR, "album_groups.json")   # taxonomy 9 组定义
 
 # 模型文件（缺失则对应通道自动降级）
-CLS_MODELS = ["yolov8s-cls.onnx", "yolov8n-cls.onnx"]   # 依次尝试
+# 2025-09：cls 升级为 yolov8m-cls（准确率 76.0% vs n 的 66.6%，7840HS CPU 推理单张 ~30-40ms）。
+# ImageNet 仍是物体库，"风景/城市/室内"依靠 SCENE_MODEL（Places365）补齐，二者互不重叠互补。
+CLS_MODELS = ["yolov8m-cls.onnx", "yolov8s-cls.onnx", "yolov8n-cls.onnx"]   # 按准确率依次尝试
 DET_MODEL = "yolov8n-det.onnx"                           # COCO 80 类
 FACE_DET_MODELS = ["det_10g.onnx", "det_500m.onnx"]     # SCRFD（buffalo_l/s → sc 兜底）
 FACE_REC_MODELS = ["w600k_mbf.onnx", "w600k_r50.onnx"]  # ArcFace 识别
-SCENE_MODEL = "resnet18_places365.onnx"                  # Places365（可选）
+SCENE_MODEL = "resnet18_places365.onnx"                  # Places365（必启用：覆盖自然/城市/室内场景）
 SCENE_CATEGORIES = "categories_places365.txt"
 OCR_MODEL = "paddleocr-det.onnx"                        # PaddleOCR ch_PP-OCRv4 det（可选）
 FLOWER_MODEL = "efficientnet-b2-flowers.onnx"       # Lumia101 B2 微调（oxford-102，31MB，实测优于 b0）

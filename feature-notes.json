@@ -989,7 +989,187 @@
       "tests": "vue-tsc 0 错误；cargo test --lib 48/48（无后端改动）",
       "created_at": "2026-08-25T01:00:00+08:00",
       "updated_at": "2026-08-25T01:00:00+08:00"
+    },
+    {
+      "id": "FEAT-038",
+      "name": "图片扫描板块 Hub（模仿智慧相册模式）：全局扫描入库作为子组件 + 测试工具子页面",
+      "status": "done",
+      "description": "在 Home「图片扫描」模块下建立板块级 Hub 页（/scan），模仿「智慧相册」SmartAlbum 的模式：顶部 Hero 渐变 + 关键统计（相册数 / 总照片 / 已入库相册 / 已入库照片 / 全局扫描任务状态），中部 4 个渐变色子模块入口卡（全局扫描入库 / 按年·地点浏览 / 重复扫描清理 / 扫描测试工具），下方 tab 切换当前展示的子功能内容。FEAT-038 重点交付的「全局照片扫描入库」作为 Hub 的默认子组件，勾选要扫描入库的相册（支持全选 / 反选 / 过滤搜索 / 显示已入库数），选择扫描类型（EXIF 基础 / 影调分析 / AI 内容识别）与批次，点击「开始扫描入库」后台串行执行；支持「停止」（取消当前相册识别，已扫描部分仍会入库）；两级进度条（相册级总进度 + 当前相册照片级实时进度），逐相册状态表（等待/扫描中/完成/失败/已停止 + 入库 / 失败张数 + 错误信息）；完成汇总。复用相册管理中的组合扫描后端命令 scan_album_combined（与 ScanPanel 完全相同的扫描能力）。任务状态存于 Pinia store，脱离组件存活——切换 tab / 离开 Hub / 离开主页，扫描不中断，重新进入恢复显示。",
+      "related_files": [
+        "src/stores/content.ts",
+        "src/components/GlobalScanPanel.vue",
+        "src/views/ScanHub.vue",
+        "src/views/TestScan.vue",
+        "src/views/Home.vue",
+        "src/router/index.ts"
+      ],
+      "keywords": [
+        "globalScanJob",
+        "beginGlobalScan",
+        "runGlobalScanLoop",
+        "stopGlobalScan",
+        "GlobalScanPanel",
+        "ScanHub",
+        "图片扫描板块",
+        "Hub",
+        "子组件",
+        "子模块",
+        "全选",
+        "反选",
+        "后台执行",
+        "扫描入库",
+        "scan_album_combined"
+      ],
+      "implementation": {
+        "frontend": "①content store 新增 GlobalScanJob 单例（running / stopping / items / currentIndex / currentProgress / scanId / finishedAt）+ GlobalScanItem 五态状态机；beginGlobalScan(entries, types, batch) 同步校验 + 初始化队列后立即返回 true，void 启动 runGlobalScanLoop 后台 fire-and-forget 循环，串行逐相册 await invoke('scan_album_combined')，scanId 代次号守护，每个相册完成后 fetchAlbums 刷新已入库徽标；stopGlobalScan 调 invoke('cancel_scan') 并置 stopping，剩余 pending → stopped；扩展 ensureProgressListener 路由 classify-progress 到 globalScanJob.currentAlbum；在 startCombinedScan 加全局扫描互斥校验。②GlobalScanPanel.vue：相册勾选区（全选/反选/过滤/indeterminate/锁定运行中）+ 扫描设置（三种类型 checkbox + 批次 select）+ 主控按钮（开始/停止/清除记录）+ 进度区（总进度 + 当前相册照片级进度 + 不确定动画 fallback）+ 完成汇总 + 逐相册状态表（sticky 表头，行高亮当前行，max-height 300）。③ScanHub.vue（板块级 Hub 页）：Hero 渐变（相册数 / 总照片 / 已入库相册 / 已入库照片 / 全局扫描任务状态）+ 4 个子模块入口卡（与 SmartAlbum 风格一致：渐变背景 + 图标 + 标题 + 描述 + 箭头，点击切换 inline tab 或跳子页面）+ 下方 tab 栏（默认全局扫描入库）+ 当前子内容区（默认渲染 GlobalScanPanel；待开发 tab 显示占位；有 path 的子功能显示跳转提示）。④路由：/scan → ScanHub.vue；/scan/test → TestScan.vue（拆分子页面，'← 返回图片扫描'回 /scan）。⑤Home.vue：图片扫描卡恢复为普通导航卡，链接到 /scan；移除之前的英雄卡/折叠按钮/嵌入式布局，回归 4 模块 2 列网格。"
+      },
+      "highlights": [
+        "模仿智慧相册 Hub 模式：图片扫描板块独立成页（/scan），顶部 Hero + 中部 4 个子模块入口卡 + 下方 tab + 当前子内容，与 SmartAlbum 视觉与交互完全一致",
+        "FEAT-038 的「全局照片扫描入库」作为 Hub 的默认子组件渲染（activeTab='global'），用户进入图片扫描板块即可直接操作，零额外跳转",
+        "子模块入口卡既是导航（点击切 tab 或跳子页面）也是状态展示（active 高亮 outline 描边 + 上浮 + 缩放 transition）",
+        "Hero 内置「全局扫描任务状态」统计：运行中显示 ⏳ 后台运行中（脉冲动画）；完成后显示「X / X+Y 完成」；无任务显示 —",
+        "beginGlobalScan 同步返回 + runGlobalScanLoop 后台循环的拆分设计：避免 fire-and-forget 模式下 toast 提示在所有扫描结束后才显示的错位",
+        "任务状态存 Pinia store，脱离组件存活：切 tab / 离开 Hub / 离开主页 / 关闭浏览器都不会中断扫描；任意时刻回到 /scan 都自动恢复",
+        "scanId 代次号守护：用户连续点击「开始/停止/开始」时旧任务的收尾写不会覆盖新任务状态",
+        "与相册管理组合扫描的互斥校验：两个入口共享后端 cancel flag 与单 activeScanAlbum 进度路由，启动前互斥保护",
+        "复用后端 scan_album_combined 命令 + 与 ScanPanel 完全一致的扫描类型/批次交互，零后端改动",
+        "全选/反选/过滤搜索支持，并显示每个相册的 photo_count 与已入库 scanned_photo_count 徽标，便于选库决策"
+      ],
+      "tests": "vue-tsc --noEmit 0 错误；vite build 成功（ScanHub chunk 15.58 kB 按需懒加载，TestScan chunk 9.46 kB 独立）",
+      "created_at": "2026-08-27T10:30:00+08:00",
+      "updated_at": "2026-08-27T11:45:00+08:00"
+    },
+    {
+      "id": "FEAT-039",
+      "name": "撤销机制：Toast 撤销按钮 + 最近删除列表",
+      "status": "done",
+      "description": "PhotoGrid 删除操作后弹出带「撤销」按钮的 Toast（参考 Gmail 5 秒窗口）；相册记录删除（album_photo_excluded）可撤销；文件删除（不可逆）不显示撤销。配合后端 restore_photo_records + list_recently_deleted + clear_recently_deleted 命令，支持从「最近删除」列表恢复或清空。",
+      "related_files": [
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/db/mod.rs",
+        "src/stores/album.ts",
+        "src/types/photo.ts",
+        "src/components/PhotoGrid.vue",
+        "src/stores/toast.ts"
+      ],
+      "keywords": [
+        "撤销",
+        "undo",
+        "restore",
+        "recently_deleted",
+        "Toast撤销按钮",
+        "Gmail撤销"
+      ],
+      "implementation": {
+        "backend": "db/mod.rs 新增 restore_excluded_photos/list_recently_excluded/clear_all_excluded；lib.rs 新增 restore_photo_records/list_recently_deleted/clear_recently_deleted 命令；RecentlyExcludedItem 结构体含 album_id/path/excluded_at/album_name。",
+        "frontend": "PhotoGrid.doConfirmedDelete 记录删除成功后调 toastStore.action() 带撤销函数；store.album 新增 restorePhotoRecords/listRecentlyDeleted/clearRecentlyDeleted。"
+      },
+      "highlights": [
+        "记录删除（album_photo_excluded）有撤销窗口，文件删除（std::fs::remove_file）不可逆不显示撤销",
+        "撤销函数在 Toast 按钮点击时才执行（惰性），避免提前调用"
+      ],
+      "created_at": "2026-08-27T12:00:00+08:00",
+      "updated_at": "2026-08-27T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-040",
+      "name": "骨架屏 + 固定宽高比（消除 CLS）",
+      "status": "done",
+      "description": "PhotoGrid 加载时显示骨架屏（12 个闪烁占位格子），避免缩略图加载导致的布局抖动（CLS）；pg-thumb-wrap 固定 aspect-ratio: 1/1，骨架屏期间格子尺寸已确定。",
+      "related_files": [
+        "src/components/PhotoGrid.vue"
+      ],
+      "keywords": [
+        "骨架屏",
+        "skeleton",
+        "CLS",
+        "布局抖动",
+        "aspect-ratio",
+        "shimmer"
+      ],
+      "implementation": {
+        "frontend": "pg-skeleton 网格（12 个占位格）替代 pg-loading 文字；pg-thumb-wrap 固定 1:1 宽高比；pg-thumb-shimmer 动画闪烁过渡。"
+      },
+      "highlights": [
+        "骨架屏期间格子尺寸已确定，图片加载后无缝过渡，消除布局抖动"
+      ],
+      "created_at": "2026-08-27T12:00:00+08:00",
+      "updated_at": "2026-08-27T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-041",
+      "name": "面包屑导航",
+      "status": "done",
+      "description": "相册详情页（AlbumDetail）+ 相册列表页（AlbumList）顶部添加面包屑导航，明确当前位置与返回路径。详情页支持显示父分组路径。",
+      "related_files": [
+        "src/components/BreadcrumbNav.vue",
+        "src/views/AlbumDetail.vue",
+        "src/views/AlbumList.vue"
+      ],
+      "keywords": [
+        "面包屑",
+        "breadcrumb",
+        "导航",
+        "FEAT-041"
+      ],
+      "implementation": {
+        "frontend": "BreadcrumbNav.vue 可复用组件，接收 crumbs[{label, to?}] 数组，最后一项为当前页（不可点击）；AlbumDetail 显示「相册列表 → [父分组] → [相册名]」；AlbumList 显示「主页 → 相册列表」。"
+      },
+      "highlights": [
+        "低实施成本，高导航收益，解决深层页面用户迷失问题"
+      ],
+      "created_at": "2026-08-27T12:00:00+08:00",
+      "updated_at": "2026-08-27T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-042",
+      "name": "搜索即时反馈：debounce + 历史 + 高亮",
+      "status": "done",
+      "description": "ContentSearch 搜索框增强：已有 300ms debounce；新增搜索历史记录（localStorage 持久化，最多 8 条）+ 建议下拉；搜索结果中照片名称关键词高亮（mark 标签）。",
+      "related_files": [
+        "src/components/ContentSearch.vue"
+      ],
+      "keywords": [
+        "搜索历史",
+        "suggestions",
+        "高亮",
+        "highlight",
+        "debounce",
+        "FEAT-042"
+      ],
+      "implementation": {
+        "frontend": "searchHistory ref（localStorage）+ suggestions computed（过滤历史前缀）；showSuggestions 下拉；highlight() 函数用正则包裹匹配词为 <mark>；contentHitNameHighlighted 对结果名称应用高亮。"
+      },
+      "highlights": [
+        "已有 300ms debounce 无需改动；搜索历史 + 高亮低成本增强"
+      ],
+      "created_at": "2026-08-27T12:00:00+08:00",
+      "updated_at": "2026-08-27T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-043",
+      "name": "右键上下文菜单（照片）",
+      "status": "done",
+      "description": "PhotoGrid 照片格子支持右键上下文菜单：查看大图 / 选中此照片 / 从相册移除 / 永久删除本地文件。ContextMenu.vue 通用组件支持 items 数组 + divider 分隔线 + danger 样式。",
+      "related_files": [
+        "src/components/ContextMenu.vue",
+        "src/components/PhotoGrid.vue"
+      ],
+      "keywords": [
+        "contextmenu",
+        "右键菜单",
+        "ContextMenu",
+        "FEAT-043"
+      ],
+      "implementation": {
+        "frontend": "ContextMenu.vue：Teleport to body + 边界修正（超视口自动调整位置）+ 点击外部关闭 + 原生右键二次关闭；PhotoGrid openPhotoContextMenu 生成 entries，ctxMenu ref 驱动显示/关闭。"
+      },
+      "highlights": [
+        "通用 ContextMenu 组件可复用于其他右键场景（相册卡片、人物等）"
+      ],
+      "created_at": "2026-08-27T12:00:00+08:00",
+      "updated_at": "2026-08-27T12:00:00+08:00"
     }
   ],
-  "updated": "2026-08-25T01:00:00+08:00"
+  "updated": "2026-08-27T12:00:00+08:00"
 }

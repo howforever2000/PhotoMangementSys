@@ -6,6 +6,7 @@ import { useContentStore } from "../stores/content";
 import type { VcrGpuStatus } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import { trace } from "../utils/trace";
+import { categoryLabel } from "../utils/categoryLabel";
 import PersonPanel from "./PersonPanel.vue";
 import { useNotify } from "../composables/useNotify";
 
@@ -220,7 +221,7 @@ const openImage = trace("openImage", async (path: string) => {
               <td>{{ r.aperture ?? r.aperture_num != null ? "f/" + r.aperture_num : "—" }}</td>
               <td>{{ r.shutter_speed ?? (r.shutter_num ? (1 / r.shutter_num).toFixed(1) + "s" : "—") }}</td>
               <td><span v-if="r.tone_type" class="tone-badge tone-" :class="r.tone_type">{{ toneLabelMap[r.tone_type] || r.tone_type }}</span><span v-else>—</span></td>
-              <td>{{ r.category ?? "—" }}</td>
+              <td>{{ r.category ? categoryLabel(r.category) : "—" }}</td>
               <td>{{ r.label ?? "—" }}</td>
             </tr>
           </tbody>
@@ -266,12 +267,12 @@ const openImage = trace("openImage", async (path: string) => {
   font-size: 16px;
   font-weight: 600;
   margin: 0;
-  color: #1f2328;
+  color: var(--color-text);
 }
 
 .scan-sub {
   font-size: 12px;
-  color: #667085;
+  color: var(--color-text-2);
   margin: 4px 0 0 0;
   max-width: 640px;
   line-height: 1.5;
@@ -302,8 +303,8 @@ const openImage = trace("openImage", async (path: string) => {
 }
 
 .combo-collapse:hover {
-  background: #eef1f6;
-  color: #1f2328;
+  background: var(--color-primary-soft, #eef1f6);
+  color: var(--color-text);
 }
 
 .collapse-icon {
@@ -350,27 +351,28 @@ const openImage = trace("openImage", async (path: string) => {
 .scan-table th {
   text-align: left;
   padding: 6px 8px;
-  background: #f8f9fa;
-  border-bottom: 2px solid #e5e7eb;
+  background: rgba(120, 130, 150, 0.08);
+  border-bottom: 2px solid var(--color-border);
   font-weight: 600;
-  color: #333;
+  color: var(--color-text);
   white-space: nowrap;
 }
 
 .scan-table td {
   padding: 5px 8px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--color-border);
   vertical-align: middle;
+  color: var(--color-text);
 }
 
 .scan-table tr:hover td {
-  background: #fafbfc;
+  background: rgba(57, 108, 216, 0.06);
 }
 
 .col-idx {
   width: 32px;
   text-align: center;
-  color: #888;
+  color: var(--color-text-2);
 }
 
 .col-name {

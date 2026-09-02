@@ -347,19 +347,23 @@ const vFocus: Directive<HTMLElement> = {
 .pg-refresh-btn { margin-left: auto; padding: 4px 12px; font-size: 13px; }
 
 .pg-action-msg {
-  background: #eef5ff;
-  border: 1px solid #d3e3ff;
+  background: var(--color-primary-soft, #eef5ff);
+  border: 1px solid rgba(57, 108, 216, 0.3);
   color: #2f5bc0;
   border-radius: 8px;
   padding: 8px 12px;
   font-size: 13px;
   margin-bottom: 12px;
 }
+body.theme-dark .pg-action-msg {
+  color: #93b4f5;
+}
 
 .pg-state {
   text-align: center;
   padding: 48px 20px;
   opacity: 0.8;
+  color: inherit;
 }
 .pg-error { color: #e5484d; }
 .pg-hint {
@@ -404,6 +408,7 @@ const vFocus: Directive<HTMLElement> = {
   font-size: 26px;
   line-height: 60px;
   text-align: center;
+  display: inline-block;
 }
 .person-face-count {
   position: absolute;

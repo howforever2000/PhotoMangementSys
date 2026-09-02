@@ -5,11 +5,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
+import { useToastStore } from "../stores/toast";
 import { useNotify } from "../composables/useNotify";
 import type { AlbumContentRow } from "../types/content";
 import type { PersonInfo } from "../types/photo";
+import { categoryLabel } from "../utils/categoryLabel";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import PhotoLightbox from "./PhotoLightbox.vue";
+import ContextMenu from "./ContextMenu.vue";
+import type { ContextMenuEntry } from "./ContextMenu.vue";
 
 /**
  * 照片网格浏览组件
@@ -30,6 +34,7 @@ const emit = defineEmits<{
 
 const albumStore = useAlbumStore();
 const contentStore = useContentStore();
+const toastStore = useToastStore();
 const notify = useNotify();
 
 /** 跨挂载的缩略图路径缓存（模块级，组件重建不丢失）。
@@ -116,6 +121,13 @@ const categoryOptions = computed<string[]>(() => {
     if (ph.meta?.category) s.add(ph.meta.category);
   }
   return [...s].sort();
+});
+
+/** 分类筛选 chip 的显示标签（后端 key → 中文） */
+const categoryOptionLabels = computed(() => {
+  const out: Record<string, string> = {};
+  for (const c of categoryOptions.value) out[c] = categoryLabel(c);
+  return out;
 });
 
 /** FEAT-D：传给大图查看器的照片列表，每项带 albumId 以便 Lightbox 触发 ensure_photo_scanned */
@@ -252,6 +264,63 @@ function openLightbox(index: number) {
   lightboxOpen.value = true;
 }
 
+/* ---- P1 右键上下文菜单 ---- */
+const ctxMenu = ref<{ x: number; y: number; entries: ContextMenuEntry[] } | null>(null);
+
+/** 照片右键菜单：选中和查看 */
+function openPhotoContextMenu(e: MouseEvent, path: string, index: number) {
+  e.preventDefault();
+  e.stopPropagation();
+  // 如果未在选择模式，先选中该照片
+  if (!selectMode.value) {
+    toggleSelectMode();
+    toggleSelect(path);
+  }
+  const entries: ContextMenuEntry[] = [
+    {
+      label: "查看大图",
+      icon: "🖼️",
+      onClick: () => {
+        lightboxIndex.value = index;
+        lightboxOpen.value = true;
+      },
+    },
+    {
+      label: "选中此照片",
+      icon: "✓",
+      onClick: () => {
+        if (!selectMode.value) toggleSelectMode();
+        toggleSelect(path);
+      },
+    },
+    { divider: true },
+    {
+      label: "从相册移除（记录删除）",
+      icon: "🗑️",
+      onClick: () => {
+        if (!selectMode.value) toggleSelectMode();
+        toggleSelect(path);
+        requestDelete("record");
+      },
+    },
+    {
+      label: "永久删除本地文件",
+      icon: "⚠️",
+      danger: true,
+      onClick: () => {
+        if (!selectMode.value) toggleSelectMode();
+        toggleSelect(path);
+        requestDelete("file");
+      },
+    },
+  ];
+  ctxMenu.value = { x: e.clientX, y: e.clientY, entries };
+}
+
+function closeCtxMenu() {
+  ctxMenu.value = null;
+}
+
 function closeLightbox() {
   lightboxOpen.value = false;
 }
@@ -352,7 +421,9 @@ const confirmMessage = computed(() => {
     : `将从本相册移除 ${n} 张照片并清除其扫描/AI 记录，本地文件保留、可重新扫描找回。确定继续吗？`;
 });
 
-/** 确认后执行删除：调后端命令 → 刷新网格 → 报告结果 */
+/** 确认后执行删除：调后端命令 → 刷新网格 → 报告结果
+ *  - 记录删除模式显示「撤销」Toast（参考 Gmail）
+ *  - 文件删除模式（不可逆）仅提示结果 */
 async function doConfirmedDelete() {
   if (!confirmState.value || deleting.value) return;
   const { mode, paths } = confirmState.value;
@@ -363,18 +434,40 @@ async function doConfirmedDelete() {
       mode === "file"
         ? await albumStore.deletePhotoFiles(props.albumId, paths)
         : await albumStore.deletePhotoRecords(props.albumId, paths);
-    deleteMsg.value =
-      `已处理 ${outcome.deleted} / ${outcome.requested} 张` +
-      (outcome.failed ? `，${outcome.failed} 张失败：${outcome.failed_paths.slice(0, 3).join("、")}` : "");
     exitSelectMode();
     await load(); // 重新拉取列表（后端已过滤被移除项）并回传新计数
+    if (mode === "file") {
+      // 文件删除不可逆，不给撤销按钮
+      deleteMsg.value =
+        `已处理 ${outcome.deleted} / ${outcome.requested} 张` +
+        (outcome.failed ? `，${outcome.failed} 张失败：${outcome.failed_paths.slice(0, 3).join("、")}` : "");
+      if (deleteMsg.value) setTimeout(() => (deleteMsg.value = ""), 5000);
+    } else {
+      // 记录删除显示撤销 Toast（5 秒窗口，参考 Gmail）
+      const deleted = outcome.deleted;
+      const undoPaths = paths.slice(0, deleted);
+      const undoFn = async () => {
+        try {
+          const restored = await albumStore.restorePhotoRecords(props.albumId, undoPaths);
+          toastStore.success("已恢复", `成功恢复 ${restored} 张照片`);
+          await load(); // 重新显示
+        } catch (e) {
+          toastStore.error("恢复失败", String(e));
+        }
+      };
+      toastStore.action(
+        "success",
+        `已移除 ${deleted} 张照片`,
+        [{ label: "撤销", onClick: undoFn, style: "primary" }],
+        "从相册移除，可在「最近删除」中恢复",
+        5000,
+      );
+    }
   } catch (e) {
     deleteMsg.value = `删除失败：${String(e)}`;
   } finally {
     confirmState.value = null;
     deleting.value = false;
-    // 结果提示停留几秒后自动消失
-    if (deleteMsg.value) setTimeout(() => (deleteMsg.value = ""), 5000);
   }
 }
 
@@ -633,12 +726,16 @@ function onKey(e: KeyboardEvent) {
           class="chip"
           :class="{ active: activeCategory === c }"
           @click="activeCategory = activeCategory === c ? null : c"
-        >{{ c }}</button>
+        >{{ categoryOptionLabels[c] }}</button>
       </div>
     </div>
 
-    <!-- 加载中 -->
-    <div v-if="loading" class="pg-loading">正在加载照片…</div>
+    <!-- P0 骨架屏：加载中显示占位格子，避免 CLS 布局抖动 -->
+    <div v-if="loading" class="pg-skeleton">
+      <div v-for="i in 12" :key="i" class="pg-skeleton-cell">
+        <div class="pg-skeleton-shimmer"></div>
+      </div>
+    </div>
 
     <!-- 加载失败 -->
     <div v-else-if="loadError" class="pg-error">加载失败：{{ loadError }}</div>
@@ -666,6 +763,7 @@ function onKey(e: KeyboardEvent) {
         :data-path="ph.path"
         :ref="(el) => registerCell(el, ph.path)"
         @click="openLightbox(i)"
+        @contextmenu.prevent="openPhotoContextMenu($event, ph.path, i)"
       >
         <!-- 多选勾选框（仅选择模式显示） -->
         <span v-if="selectMode" class="pg-check" :class="{ on: isSelected(ph.path) }">
@@ -678,12 +776,16 @@ function onKey(e: KeyboardEvent) {
             loading="lazy"
             decoding="async"
             alt=""
+            class="pg-thumb-img"
           />
-          <div v-else class="pg-thumb-placeholder"></div>
+          <!-- P0 固定宽高比：骨架屏保证格子尺寸稳定，图片加载后无缝过渡 -->
+          <div v-else class="pg-thumb-placeholder">
+            <div class="pg-thumb-shimmer"></div>
+          </div>
         </div>
         <!-- 打分星标（>0 才显示，左上角） -->
         <span v-if="ratingMap[ph.path] > 0" class="pg-rating" :title="`打分 ${ratingMap[ph.path]} 星`">{{ "★".repeat(ratingMap[ph.path]) }}</span>
-        <figcaption v-if="ph.meta?.category" class="pg-badge">{{ ph.meta.category }}</figcaption>
+        <figcaption v-if="ph.meta?.category" class="pg-badge" :title="ph.meta.category">{{ categoryLabel(ph.meta.category) }}</figcaption>
         <!-- 人物角标：头像小框 + 自定义命名（最多 3 人，超出 +N） -->
         <div v-if="(ph.meta?.person_ids ?? []).length" class="pg-person">
           <span v-for="pid in ph.meta!.person_ids.slice(0, MAX_BADGE_PERSONS)" :key="pid" class="pg-person-chip" :title="`${personName(pid)}（${pid}）`">
@@ -712,6 +814,15 @@ function onKey(e: KeyboardEvent) {
       :index="lightboxIndex"
       :persons="personsMap"
       @close="closeLightbox"
+    />
+
+    <!-- P1 右键上下文菜单 -->
+    <ContextMenu
+      v-if="ctxMenu"
+      :items="ctxMenu.entries"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      @close="closeCtxMenu"
     />
 
     <!-- 删除二次确认：明确区分两种模式及后果 -->
@@ -969,23 +1080,68 @@ function onKey(e: KeyboardEvent) {
 .pg-thumb-wrap {
   aspect-ratio: 1 / 1;
   overflow: hidden;
+  background: #f2f4f7;
 }
-.pg-thumb-wrap img {
+.pg-thumb-wrap img,
+.pg-thumb-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
+/* P0 固定宽高比骨架屏：保证格子尺寸在图片加载前已确定，消除 CLS */
 .pg-thumb-placeholder {
   width: 100%;
   height: 100%;
-  background: repeating-linear-gradient(
-    45deg,
-    #eef1f5 0px,
-    #eef1f5 8px,
-    #e6eaf0 8px,
-    #e6eaf0 16px
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pg-thumb-shimmer {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    #eef1f5 0%,
+    #f5f7fb 50%,
+    #eef1f5 100%
   );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* P0 骨架屏格子（加载中占位） */
+.pg-skeleton {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+.pg-skeleton-cell {
+  aspect-ratio: 1 / 1;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f2f4f7;
+}
+.pg-skeleton-shimmer {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    #e8ecf0 0%,
+    #f4f6f9 50%,
+    #e8ecf0 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* 加载中旧占位文字（已由骨架屏替代） */
+.pg-loading {
+  display: none;
 }
 
 .pg-badge {

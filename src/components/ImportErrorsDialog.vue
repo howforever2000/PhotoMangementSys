@@ -377,6 +377,7 @@ const listEl = ref<HTMLDivElement | null>(null);
 .ier-title {
   font-size: 16px;
   font-weight: 700;
+  color: inherit;
 }
 .ier-close {
   font-size: 22px;
@@ -394,6 +395,7 @@ const listEl = ref<HTMLDivElement | null>(null);
   gap: 8px;
   padding: 10px 20px;
   font-size: 13px;
+  color: inherit;
 }
 .ier-pill {
   padding: 3px 10px;
@@ -427,6 +429,7 @@ const listEl = ref<HTMLDivElement | null>(null);
   padding: 40px 0;
   opacity: 0.7;
   font-size: 14px;
+  color: inherit;
 }
 
 .ier-item {
@@ -446,6 +449,9 @@ const listEl = ref<HTMLDivElement | null>(null);
   color: #2f9e44;
   margin-bottom: 6px;
 }
+body.theme-dark .ier-exists-head {
+  color: #6ed27a;
+}
 .ier-item-exists {
   border-color: rgba(47, 158, 68, 0.35);
   background: rgba(47, 158, 68, 0.07);
@@ -453,8 +459,14 @@ const listEl = ref<HTMLDivElement | null>(null);
 .ier-cat-exists {
   background: #2f9e44 !important;
 }
+body.theme-dark .ier-cat-exists {
+  background: #2f9e44 !important;
+}
 .ier-advice-exists {
   color: #2f9e44 !important;
+}
+body.theme-dark .ier-advice-exists {
+  color: #6ed27a !important;
 }
 .ier-item-head {
   display: flex;

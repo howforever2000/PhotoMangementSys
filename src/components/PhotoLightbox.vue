@@ -5,6 +5,7 @@ import type { AlbumContentRow } from "../types/content";
 import type { PhotoInfo } from "../types/photo";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
+import { categoryLabel } from "../utils/categoryLabel";
 
 /**
  * 大图查看器（Lightbox）
@@ -353,7 +354,7 @@ function personLabel(pid: string): string {
           <dt>格式</dt><dd>{{ photoInfo.format.toUpperCase() }}</dd>
         </template>
         <template v-if="meta?.category">
-          <dt>AI 分类</dt><dd>{{ meta.category }}<span v-if="meta.sub_category"> / {{ meta.sub_category }}</span></dd>
+          <dt>AI 分类</dt><dd>{{ categoryLabel(meta.category) }}<span v-if="meta.sub_category"> / {{ meta.sub_category }}</span></dd>
           <dt v-if="meta.label">标签</dt><dd v-if="meta.label">{{ meta.label }}</dd>
           <dt v-if="meta.confidence">置信度</dt><dd v-if="meta.confidence">{{ (meta.confidence * 100).toFixed(1) }}%</dd>
         </template>
@@ -545,10 +546,10 @@ function personLabel(pid: string): string {
   backdrop-filter: blur(4px);
   font-size: 13px;
 }
-.lb-meta h4 { margin: 0 0 8px; color: #fff; font-size: 14px; }
+.lb-meta h4 { margin: 0 0 8px; color: #fff; font-size: 14px; font-weight: 600; }
 .lb-filename {
   font-size: 12px;
-  color: #aab0bd;
+  color: #c8cdd9;
   word-break: break-all;
   margin-bottom: 8px;
 }
@@ -558,12 +559,12 @@ function personLabel(pid: string): string {
   grid-template-columns: 72px 1fr;
   gap: 4px 10px;
 }
-.lb-meta dt { color: #9aa1ae; }
+.lb-meta dt { color: #b8bfcc; font-weight: 500; }
 .lb-meta dd { margin: 0; color: #e7e9ee; }
 .lb-counter {
   margin-top: 10px;
   font-size: 12px;
-  color: #aab0bd;
+  color: #c8cdd9;
 }
 
 /* FEAT-D：扫描中/未扫描提示 */
@@ -603,7 +604,7 @@ function personLabel(pid: string): string {
 }
 .lb-hist-title {
   font-size: 12px;
-  color: #9aa1ae;
+  color: #c8cdd9;
   margin-bottom: 4px;
 }
 .lb-hist {

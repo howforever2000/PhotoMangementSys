@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ClassifyProgress } from "../types/photo";
+import { useAlbumStore } from "./album";
 import type {
   AlbumContentRow,
   CombinedScanOutcome,
@@ -12,6 +13,62 @@ import type {
   UnifiedScanRow,
   VcrGpuStatus,
 } from "../types/content";
+
+// ---- FEAT-038：全局照片扫描入库（跨相册批量，后台执行） ----
+
+/** 全局扫描中单个相册的执行状态 */
+export type GlobalScanItemStatus = "pending" | "running" | "done" | "failed" | "stopped";
+
+/** 全局扫描任务里的一个相册条目（状态机：pending → running → done/failed；停止时 pending → stopped） */
+export interface GlobalScanItem {
+  albumId: number;
+  albumName: string;
+  status: GlobalScanItemStatus;
+  /** 本次扫描报告：识别总张数 */
+  total: number;
+  /** 成功写入/更新的记录数（入库张数） */
+  written: number;
+  /** 识别失败张数 */
+  failed: number;
+  /** 失败/异常信息 */
+  error: string;
+}
+
+/** 全局照片扫描入库任务（单例：同一时刻只有一个全局扫描） */
+export interface GlobalScanJob {
+  running: boolean;
+  /** 用户已请求停止：当前相册完成后不再继续下一个 */
+  stopping: boolean;
+  /** 勾选的扫描类型（basic / tone / ai） */
+  types: string[];
+  batch: number;
+  /** 逐相册条目（扫描队列快照，含执行状态） */
+  items: GlobalScanItem[];
+  /** 正在扫描的 items 下标（空闲 -1） */
+  currentIndex: number;
+  /** 当前相册的照片级进度（来自 classify-progress 事件，仅 AI 类型有） */
+  currentProgress: ClassifyProgress | null;
+  error: string;
+  /** 自增代次号：防止旧任务的收尾覆盖新任务状态 */
+  scanId: number;
+  /** 任务结束时间（ms，null=未结束/运行中） */
+  finishedAt: number | null;
+}
+
+function emptyGlobalJob(): GlobalScanJob {
+  return {
+    running: false,
+    stopping: false,
+    types: [],
+    batch: 8,
+    items: [],
+    currentIndex: -1,
+    currentProgress: null,
+    error: "",
+    scanId: 0,
+    finishedAt: null,
+  };
+}
 
 /** 组合扫描的单个后台任务状态（按相册隔离，键 = albumId） */
 export interface CombinedScanJob {
@@ -70,6 +127,8 @@ export const useContentStore = defineStore("content", {
     gpuStatus: null as VcrGpuStatus | null,
     /** 组合扫描后台任务（键 = albumId；脱离组件存活，支持退出相册后后台继续） */
     combinedJobs: {} as Record<number, CombinedScanJob>,
+    /** FEAT-038：全局照片扫描入库任务（单例；脱离组件存活，后台执行） */
+    globalScanJob: emptyGlobalJob(),
     /** 当前接收 `classify-progress` 进度事件的相册（同一时刻只追踪一个活动扫描） */
     activeScanAlbum: null as number | null,
     /** 全局进度监听是否已就绪（只注册一次） */
@@ -224,6 +283,11 @@ export const useContentStore = defineStore("content", {
         if (albumId == null) return;
         const job = this.combinedJobs[albumId];
         if (job) job.progress = e.payload;
+        // FEAT-038：全局扫描也接收当前相册的照片级进度
+        const g = this.globalScanJob;
+        if (g.running && g.currentIndex >= 0 && g.items[g.currentIndex]?.albumId === albumId) {
+          g.currentProgress = e.payload;
+        }
       }).catch(() => {
         // 监听失败不阻塞；扫描仍能正常完成，仅无实时进度
       });
@@ -238,6 +302,11 @@ export const useContentStore = defineStore("content", {
     async startCombinedScan(albumId: number, types: string[], batchSize = 8): Promise<void> {
       const job = this.jobFor(albumId);
       if (job.running) return; // 已有任务进行中，忽略重复点击
+      // FEAT-038：与全局扫描互斥（后端共享取消标记 + 单活动进度路由）
+      if (this.globalScanJob.running) {
+        job.error = "全局照片扫描进行中，请等待其完成或停止后再开始单相册扫描";
+        return;
+      }
       job.running = true;
       job.error = "";
       job.report = null;
@@ -331,6 +400,147 @@ export const useContentStore = defineStore("content", {
         onProgress?.(done, total, albumId);
       }
       return result;
+    },
+
+    // ---- FEAT-038：全局照片扫描入库（跨相册批量，后台执行） ----
+
+    /**
+     * 启动全局照片扫描入库：同步校验 + 初始化队列后立即返回，
+     * 扫描循环在后台执行（fire-and-forget，脱离组件存活）。
+     *
+     * 串行逐相册调用后端 `scan_album_combined`
+     * （与相册管理中的组合扫描同一后端命令，复用 EXIF / 影调 / AI 识别能力）。
+     * - 与单相册组合扫描互斥（共享后端取消标记与进度路由）
+     * - 每个相册完成后刷新相册列表（更新「已入库」徽标）
+     *
+     * @returns 校验与启动是否成功（false 时原因见 `globalScanJob.error`）
+     */
+    beginGlobalScan(
+      entries: { id: number; name: string }[],
+      types: string[],
+      batchSize = 8,
+    ): boolean {
+      const job = this.globalScanJob;
+      if (job.running) {
+        job.error = "全局扫描已在进行中";
+        return false;
+      }
+      if (!entries.length) {
+        job.error = "请至少勾选一个相册";
+        return false;
+      }
+      if (!types.length) {
+        job.error = "请至少勾选一项扫描类型";
+        return false;
+      }
+      // 与单相册组合扫描互斥：后端共享取消标记 + 单活动进度路由
+      const runningSingle = Object.values(this.combinedJobs).some((j) => j.running);
+      if (runningSingle) {
+        job.error = "有单相册扫描任务进行中，请等待其完成或停止后再开始全局扫描";
+        return false;
+      }
+      job.running = true;
+      job.stopping = false;
+      job.error = "";
+      job.types = [...types];
+      job.batch = batchSize;
+      job.items = entries.map((e) => ({
+        albumId: e.id,
+        albumName: e.name,
+        status: "pending" as GlobalScanItemStatus,
+        total: 0,
+        written: 0,
+        failed: 0,
+        error: "",
+      }));
+      job.currentIndex = -1;
+      job.currentProgress = null;
+      job.finishedAt = null;
+      job.scanId += 1;
+      this.ensureProgressListener();
+      // 后台执行扫描循环：不 await，任务独立于组件生命周期存活
+      const myId = job.scanId;
+      void this.runGlobalScanLoop(myId, [...types], batchSize);
+      return true;
+    },
+
+    /** 全局扫描后台循环：串行逐相册扫描（由 beginGlobalScan 启动） */
+    async runGlobalScanLoop(myId: number, types: string[], batchSize: number): Promise<void> {
+      const job = this.globalScanJob;
+      const albumStore = useAlbumStore();
+      try {
+        for (let i = 0; i < job.items.length; i++) {
+          if (job.scanId !== myId) return; // 已被重置/新任务接管
+          // 用户请求停止：剩余相册标记「已停止」并结束
+          if (job.stopping) {
+            for (let k = i; k < job.items.length; k++) {
+              if (job.items[k].status === "pending") job.items[k].status = "stopped";
+            }
+            break;
+          }
+          const item = job.items[i];
+          item.status = "running";
+          job.currentIndex = i;
+          job.currentProgress = null;
+          this.activeScanAlbum = item.albumId;
+          try {
+            const outcome = await invoke<CombinedScanOutcome>("scan_album_combined", {
+              albumId: item.albumId,
+              scanTypes: types,
+              batchSize,
+            });
+            if (job.scanId !== myId) return;
+            item.total = outcome.report.total;
+            item.written = outcome.report.written;
+            item.failed = outcome.report.failed;
+            item.status = "done";
+          } catch (e) {
+            if (job.scanId !== myId) return;
+            item.status = "failed";
+            item.error = String(e);
+          }
+          job.currentProgress = null;
+          job.currentIndex = -1;
+          this.activeScanAlbum = null;
+          // 刷新相册列表，让「已入库」徽标与统计实时更新（失败不影响流程）
+          albumStore.fetchAlbums().catch(() => {});
+        }
+        job.finishedAt = Date.now();
+      } finally {
+        if (job.scanId === myId) {
+          job.running = false;
+          job.stopping = false;
+          job.currentIndex = -1;
+          job.currentProgress = null;
+          if (this.activeScanAlbum != null) this.activeScanAlbum = null;
+        }
+      }
+    },
+
+    /**
+     * 停止全局扫描：通知后端取消当前相册的识别（部分结果仍会落库），
+     * 当前相册收尾后不再继续剩余相册（标记为「已停止」）。
+     */
+    async stopGlobalScan(): Promise<void> {
+      const job = this.globalScanJob;
+      if (!job.running || job.stopping) return;
+      job.stopping = true;
+      try {
+        await invoke("cancel_scan");
+      } catch {
+        // 忽略取消命令异常；当前相册完成后循环仍会按 stopping 结束
+      }
+    },
+
+    /** 清空全局扫描记录（仅运行中禁用） */
+    clearGlobalScan(): void {
+      const job = this.globalScanJob;
+      if (job.running) return;
+      job.items = [];
+      job.currentProgress = null;
+      job.currentIndex = -1;
+      job.error = "";
+      job.finishedAt = null;
     },
   },
 });

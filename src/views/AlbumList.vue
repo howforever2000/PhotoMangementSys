@@ -16,6 +16,7 @@ import ManualSort from "./ManualSort.vue";
 import AlbumCard from "../components/AlbumCard.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import ImportErrorsDialog from "../components/ImportErrorsDialog.vue";
+import BreadcrumbNav from "../components/BreadcrumbNav.vue";
 import { useNotify } from "../composables/useNotify";
 import type { ImportResult } from "../stores/album";
 
@@ -45,6 +46,9 @@ const showBackToTop = computed(() => scrollTop.value > 300);
 function scrollToTop() {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
+
+/** P1 面包屑导航：仅一级「主页→相册列表」 */
+const breadcrumbs = [{ label: "主页", to: "/home" }, { label: "相册列表" }];
 
 /** 将本地文件路径转为前端可访问的 URL（Tauri asset 协议） */
 function fileUrl(path: string | null): string {
@@ -1098,6 +1102,8 @@ function onKey(e: KeyboardEvent) {
       <div class="toolbar-left">
         <button class="btn btn-back" @click="router.push('/home')">← 主页</button>
         <h1 class="page-title">我的相册</h1>
+        <!-- P1 面包屑导航 -->
+        <BreadcrumbNav :crumbs="breadcrumbs" />
       </div>
       <div class="toolbar-actions">
         <!-- 非勾选模式：排序控件 + 批量导入 / 管理 / 新建 -->
@@ -2495,7 +2501,7 @@ function onKey(e: KeyboardEvent) {
 }
 .batch-current-tip {
   font-size: 12.5px;
-  color: #4a5568;
+  color: var(--sub-text, #4a5568);
   background: var(--tint-bg, #eef3ff);
   border: 1px solid var(--tint-border, #dbe3ff);
   border-radius: 8px;
@@ -2515,10 +2521,11 @@ function onKey(e: KeyboardEvent) {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--input-border, #d0d5dd);
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.15s;
+  color: var(--text, inherit);
 }
 .combo-check:hover {
   border-color: #396cd8;
@@ -2537,7 +2544,7 @@ function onKey(e: KeyboardEvent) {
 }
 .combo-check-desc {
   font-size: 11px;
-  color: #667085;
+  color: var(--muted, #667085);
 }
 .batch-scan-meta {
   display: flex;
@@ -2550,14 +2557,15 @@ function onKey(e: KeyboardEvent) {
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: #667085;
+  color: var(--muted, #667085);
 }
 .batch-scan-meta .batch-select select {
   padding: 2px 4px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--input-border, #d0d5dd);
   border-radius: 4px;
   font-size: 12px;
-  background: #fff;
+  background: var(--input-bg, #fff);
+  color: var(--text, inherit);
 }
 .batch-scan-progress {
   font-size: 12.5px;

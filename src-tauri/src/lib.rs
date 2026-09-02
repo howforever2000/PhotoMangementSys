@@ -618,6 +618,15 @@ pub struct PhotoDeleteOutcome {
     pub failed_paths: Vec<String>,
 }
 
+/// 最近删除记录条目
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RecentlyExcludedItem {
+    pub album_id: i64,
+    pub path: String,
+    pub excluded_at: i64,
+    pub album_name: String,
+}
+
 /// 批量「相册记录删除」：从该相册网格浏览中移除 + 清除扫描/AI 记录，本地文件保留
 ///
 /// 可通过 restore 命令撤销（排除表回滚）。
@@ -700,6 +709,48 @@ fn delete_photo_files(
     logger::log_call_end_with("delete_photo_files", _t,
         &format!("OK | deleted={deleted} failed={failed}"));
     Ok(outcome)
+}
+
+/// 恢复已「记录删除」的照片（撤销删除）：从 album_photo_excluded 移除对应条目
+#[tauri::command]
+fn restore_photo_records(
+    album_id: i64,
+    paths: Vec<String>,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<usize, String> {
+    let _t = log_call!("restore_photo_records", &format!("album_id={album_id} paths={}", paths.len()));
+    let user_id = require_user(&session)?;
+    if paths.is_empty() {
+        return Ok(0);
+    }
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let restored = db.restore_excluded_photos(album_id, user_id, &paths).map_err(|e| e.to_string())?;
+    logger::log_call_end_with("restore_photo_records", _t,
+        &format!("OK | restored={restored}"));
+    Ok(restored)
+}
+
+/// 获取最近删除记录（用户可在此列表中恢复）
+#[tauri::command]
+fn list_recently_deleted(
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<Vec<RecentlyExcludedItem>, String> {
+    let user_id = require_user(&session)?;
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    db.list_recently_excluded(user_id, 200).map_err(|e| e.to_string())
+}
+
+/// 清空所有最近删除记录
+#[tauri::command]
+fn clear_recently_deleted(
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<usize, String> {
+    let user_id = require_user(&session)?;
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    db.clear_all_excluded(user_id).map_err(|e| e.to_string())
 }
 
 /// 给一批照片打分（rating 0-5，0 清除）。按 (user_id, path) upsert，无需扫描记录即可打分。
@@ -2502,6 +2553,9 @@ pub fn run() {
             get_photo_info,
             delete_photo_records,
             delete_photo_files,
+            restore_photo_records,
+            list_recently_deleted,
+            clear_recently_deleted,
             set_photo_rating,
             get_photo_ratings,
             move_photos_to_album,

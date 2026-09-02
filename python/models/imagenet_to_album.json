@@ -1025,16 +1025,22 @@
   ],
   "landscape_nature": [
    "alp",
+   "beacon",            # 灯塔/山崖标识
+   "breakwater",
    "cliff",
    "coral reef",
    "geyser",
    "lakeside",
    "mountain tent",
+   "plateau",
    "promontory",
    "sandbar",
    "seashore",
    "valley",
-   "volcano"
+   "volcano",
+   "iceberg",
+   "snowmobile",        # 雪地场景提示
+   "dogsled"
   ],
   "plant_flower": [
    "acorn",

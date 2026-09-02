@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 
 /** 偏好设置与背景图分开存储：
  *  - 背景图 data URL 可能几百 KB，若和偏好一起写，超出 localStorage 配额时会导致
@@ -164,9 +164,22 @@ export const useThemeStore = defineStore("theme", () => {
 
   const isDark = computed(() => mode.value === "dark");
   const textColor = computed(() => (isDark.value ? "#f5f7ff" : "#1f2733"));
+  /** 次要文字：对比度从原 0.72 → 0.86（深色）/ 75 → 88（浅色），
+     小字号下不再发糊。 */
   const subTextColor = computed(() =>
-    isDark.value ? "rgba(214,221,240,.72)" : "rgba(60,70,90,.75)",
+    isDark.value ? "rgba(225,232,255,.86)" : "rgba(36,48,68,.88)",
   );
+
+  /* ---------- 把深/浅色模式同步到 body ----------
+     这样 main.css 中的 `body.theme-dark { --color-text: ... }` 才能覆盖全局，
+     让 `color: inherit` 的元素也跟随主题（修复此前深色模式全局文字隐身的 Bug）。*/
+  function applyBodyTheme(dark: boolean) {
+    if (typeof document === "undefined") return;
+    document.body.classList.toggle("theme-dark", dark);
+  }
+  // 初始化同步一次（覆盖刷新场景）
+  applyBodyTheme(mode.value === "dark");
+  watch(mode, (m) => applyBodyTheme(m === "dark"));
   /** 卡片/容器底色：深色模式用深色实底，浅色模式用白色实底，保证图标与文字始终可读 */
   const cardStyle = computed(() =>
     isDark.value

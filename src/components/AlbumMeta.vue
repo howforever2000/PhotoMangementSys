@@ -418,7 +418,7 @@ const saveTags = trace("saveTags", async () => {
   font-size: 24px;
   font-weight: 700;
   margin: 0;
-  color: #1f2328;
+  color: var(--color-text);
 }
 
 .name-edit-hint {
@@ -453,7 +453,7 @@ const saveTags = trace("saveTags", async () => {
 
 .detail-path {
   font-size: 12px;
-  color: #667085;
+  color: var(--color-text-2);
   margin: 0;
 }
 
@@ -474,7 +474,7 @@ const saveTags = trace("saveTags", async () => {
 .detail-desc {
   margin: 0;
   font-size: 13px;
-  color: #667085;
+  color: var(--color-text-2);
   line-height: 1.5;
 }
 
@@ -512,12 +512,12 @@ const saveTags = trace("saveTags", async () => {
 
 .detail-parent {
   font-size: 12px;
-  color: #667085;
+  color: var(--color-text-2);
   margin: 0;
 }
 
 .parent-label {
-  color: #888;
+  color: var(--color-text-2);
 }
 
 .parent-path {
@@ -540,18 +540,18 @@ const saveTags = trace("saveTags", async () => {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  background: #f8f9fa;
+  background: rgba(120, 130, 150, 0.08);
   border-radius: 6px;
   font-size: 12px;
 }
 
 .stat-label {
-  color: #888;
+  color: var(--color-text-2);
   font-weight: 500;
 }
 
 .stat-value {
-  color: #1f2328;
+  color: var(--color-text);
   font-weight: 600;
 }
 
@@ -584,11 +584,13 @@ const saveTags = trace("saveTags", async () => {
 
 .input-sm {
   padding: 4px 8px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--color-border);
   border-radius: 4px;
   font-size: 12px;
   outline: none;
   max-width: 160px;
+  background: var(--color-surface);
+  color: var(--color-text);
 }
 
 .input-sm:focus {
@@ -610,7 +612,7 @@ const saveTags = trace("saveTags", async () => {
 .album-tags-label {
   font-size: 11px;
   font-weight: 600;
-  color: #888;
+  color: var(--color-text-2);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -642,7 +644,7 @@ const saveTags = trace("saveTags", async () => {
   border: none;
   cursor: pointer;
   font-size: 14px;
-  color: #667085;
+  color: var(--color-text-2);
   padding: 0;
   line-height: 1;
 }
@@ -653,7 +655,7 @@ const saveTags = trace("saveTags", async () => {
 
 .tag-empty {
   font-size: 12px;
-  color: #bbb;
+  color: var(--color-text-2);
 }
 
 .album-tags-edit {
@@ -683,11 +685,12 @@ const saveTags = trace("saveTags", async () => {
 .btn {
   padding: 8px 16px;
   border-radius: 8px;
-  border: 1px solid #ddd;
-  background: #fff;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
   cursor: pointer;
   font-size: 14px;
   transition: all 0.2s;
+  color: var(--color-text);
 }
 
 .btn:hover {

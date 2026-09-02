@@ -106,7 +106,8 @@ class ModelRegistry:
 
     @property
     def scene(self) -> ort.InferenceSession | None:
-        self._load("scene", [os.path.join(config.MODEL_DIR, config.SCENE_MODEL)])
+        # Places365 是场景分类主通道，依赖性强：标记为 required=True，缺失时服务启动会显式提醒。
+        self._load("scene", [os.path.join(config.MODEL_DIR, config.SCENE_MODEL)], required=True)
         return self._sessions.get("scene")
 
     @property

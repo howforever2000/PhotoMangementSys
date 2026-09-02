@@ -93,20 +93,21 @@ const removePerson = async (ps: PersonInfo) => {
 .persons-title {
   font-size: 13px;
   font-weight: 600;
-  color: #1f2328;
+  color: var(--color-text);
 }
 
 .persons-refresh {
   background: transparent;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--color-border);
   border-radius: 4px;
   padding: 2px 8px;
   font-size: 11px;
   cursor: pointer;
+  color: var(--color-text);
 }
 
 .persons-refresh:hover {
-  background: #f0f4ff;
+  background: var(--color-primary-soft);
 }
 
 .persons-grid {
@@ -120,11 +121,12 @@ const removePerson = async (ps: PersonInfo) => {
   flex-direction: column;
   gap: 6px;
   padding: 8px 10px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-border);
   border-radius: 6px;
-  background: #fafbfc;
+  background: var(--color-surface);
   min-width: 140px;
   max-width: 200px;
+  color: var(--color-text);
 }
 
 .person-card-top {
@@ -136,17 +138,18 @@ const removePerson = async (ps: PersonInfo) => {
 .person-card-id {
   font-size: 11px;
   font-weight: 600;
-  color: #667085;
+  color: var(--color-text-2);
 }
 
 .person-card-name {
   font-size: 13px;
   font-weight: 500;
+  color: var(--color-text);
 }
 
 .person-card-count {
   font-size: 11px;
-  color: #667085;
+  color: var(--color-text-2);
   margin-left: auto;
 }
 
@@ -161,10 +164,12 @@ const removePerson = async (ps: PersonInfo) => {
   flex: 1;
   min-width: 60px;
   padding: 2px 4px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--color-border);
   border-radius: 3px;
   font-size: 11px;
   outline: none;
+  background: var(--color-surface);
+  color: var(--color-text);
 }
 
 .person-rename-input:focus {
@@ -174,10 +179,11 @@ const removePerson = async (ps: PersonInfo) => {
 .btn-mini {
   padding: 2px 6px;
   font-size: 11px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--color-border);
   border-radius: 3px;
-  background: #fff;
+  background: var(--color-surface);
   cursor: pointer;
+  color: var(--color-text);
 }
 
 .btn-mini.danger {
