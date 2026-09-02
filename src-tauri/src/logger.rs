@@ -42,7 +42,7 @@ static LOGGER: LoggerState = LoggerState {
 /// 初始化日志系统
 ///
 /// - `log_dir`: 日志目录（通常为 app_data_dir/logs）
-/// - `retention_minutes`: 日志保留时长（分钟），默认 60（1 小时）
+/// - `retention_minutes`: 日志保留时长（分钟），默认 4320（3 天）
 /// - 启动后台定时清理线程
 pub fn init(log_dir: &Path, retention_minutes: u64) {
     let dir = log_dir.join(LOGS_DIR);

@@ -2468,8 +2468,8 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .expect("无法获取应用数据目录");
-            // 初始化日志组件（保留 60 分钟，可调节）
-            logger::init(&data_dir, 60);
+            // 初始化日志组件（保留 3 天 = 4320 分钟）
+            logger::init(&data_dir, 4320);
             // 初始化用户敏感字段加密密钥（必须早于数据库迁移，迁移需用密钥加密历史明文）
             crypto::init(&data_dir).expect("初始化应用加密密钥失败");
             let db_path = data_dir.join("photos.db");
