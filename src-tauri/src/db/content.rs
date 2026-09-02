@@ -10,6 +10,8 @@
 //! 本模块只做持久化（建表/写入/查询），扫描编排与哈希计算在 `content.rs` 服务层完成，
 //! 保持分层解耦、单文件轻量。
 
+use std::collections::HashMap;
+
 use rusqlite::{params, Transaction};
 use serde::Serialize;
 
@@ -335,6 +337,30 @@ impl Database {
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
+    }
+
+    /// FEAT-036：批量统计每个相册的已入库照片数。
+    ///
+    /// 返回 `HashMap<album_id, count>`。用于：
+    /// 1. 给相册卡片标记「是否已入库」（count > 0）；
+    /// 2. 智慧相册 Hero 聚合「已入库相册数」。
+    /// 多用户隔离：仅统计当前用户的相册。
+    pub fn count_scanned_by_album(&self, user_id: i64) -> Result<HashMap<i64, i64>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT album_id, COUNT(*) AS cnt
+             FROM photo_content_scan
+             WHERE user_id = ?1 AND album_id IS NOT NULL
+             GROUP BY album_id",
+        )?;
+        let rows = stmt.query_map(params![user_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        let mut map = HashMap::new();
+        for r in rows {
+            let (album_id, cnt) = r?;
+            map.insert(album_id, cnt);
+        }
+        Ok(map)
     }
 
     /// 按 path 读取单张照片已扫描的内容（FEAT-D）
@@ -802,5 +828,26 @@ mod tests {
         db.upsert_photo_content(&sample_rec("A", "/alb1/a.jpg")).unwrap();
         db.delete_album_content(1).unwrap();
         assert!(db.search_photo_content("狗", 1, None).unwrap().is_empty());
+    }
+
+    /// FEAT-036：按相册聚合已入库照片数；count>0 表示该相册已入库。
+    #[test]
+    fn count_scanned_by_album_groups() {
+        let db = mem_db();
+        // album 1 有两张，album 2 无（未入库），album 3 一张
+        db.upsert_photo_content(&sample_rec("A", "/alb1/a.jpg")).unwrap();
+        db.upsert_photo_content(&sample_rec("B", "/alb1/b.jpg")).unwrap();
+        let mut r3 = sample_rec("C", "/alb3/c.jpg");
+        r3.album_id = Some(3);
+        db.upsert_photo_content(&r3).unwrap();
+
+        let map = db.count_scanned_by_album(1).unwrap();
+        assert_eq!(map.get(&1), Some(&2), "album 1 应统计到 2 张已入库");
+        assert_eq!(map.get(&3), Some(&1), "album 3 应统计到 1 张已入库");
+        assert!(map.get(&2).is_none(), "album 2 无已入库记录");
+
+        // 其他用户看不到
+        let map_u2 = db.count_scanned_by_album(2).unwrap();
+        assert!(map_u2.is_empty());
     }
 }

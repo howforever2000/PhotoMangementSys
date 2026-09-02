@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // 手动排序视图的迷你相册卡 —— 从 ManualSort.vue 抽取
 // 消除顶级/二级/三级分组中 3 份重复的相册条目模板
+import { computed } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Album } from "../types/album";
 
@@ -31,6 +32,9 @@ const emit = defineEmits<{
 function fileUrl(path: string | null): string {
   return path ? convertFileSrc(path) : "";
 }
+
+/** FEAT-036：该相册是否已入库（如有已识别照片） */
+const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
 </script>
 
 <template>
@@ -49,6 +53,12 @@ function fileUrl(path: string | null): string {
     <div v-else class="mini-cover placeholder">📷</div>
     <!-- album 未加载/缺失时显示占位，避免空白卡片（改进自 7fd21dd） -->
     <span class="mini-name">{{ album?.name || "…" }}</span>
+    <!-- FEAT-036：已入库 / 未入库 小圆点（封面右下角） -->
+    <span
+      class="mini-scan"
+      :class="isScanned ? 'mini-scan-in' : 'mini-scan-out'"
+      :title="isScanned ? '已入库' : '未入库'"
+    ></span>
   </div>
 </template>
 
@@ -142,5 +152,22 @@ function fileUrl(path: string | null): string {
 /* 角标需相对卡片定位 */
 .album-mini {
   position: relative;
+}
+
+/* FEAT-036：已入库 / 未入库 小圆点（封面右下角，避免与勾选角标冲突） */
+.mini-scan {
+  position: absolute;
+  bottom: 26px;
+  right: 12px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+}
+.mini-scan-in {
+  background: #2f9e44;
+}
+.mini-scan-out {
+  background: #b3b3b3;
 }
 </style>

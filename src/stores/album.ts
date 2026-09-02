@@ -3,11 +3,19 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Album, CreateAlbumInput, UpdateAlbumInput, BatchAlbumOutcome, MergeAlbumOutcome } from "../types/album";
 import type { PhotoInfo, PhotoDeleteOutcome, ExportOutcome, PhotoMoveOutcome, PhotoRating, PrewarmOutcome } from "../types/photo";
 
+/** 批量导入跳过项（path 已被其他用户占用时返回，供前端友好提示） */
+export interface SkippedConflict {
+  folder: string;
+  conflict_album: string;
+}
+
 /** 批量导入结果（对应后端 Rust `ImportResult`） */
 export interface ImportResult {
   imported: number;
   skipped: number;
   errors: string[];
+  /** FEAT-034-C：被其他用户占用导致跳过的明细（不计入 errors） */
+  skipped_conflicts: SkippedConflict[];
 }
 
 /**

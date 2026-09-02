@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAlbumStore } from "../stores/album";
+import { useThemeStore } from "../stores/theme";
 import { trace } from "../utils/trace";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import AlbumMeta from "../components/AlbumMeta.vue";
@@ -14,9 +15,38 @@ import { useNotify } from "../composables/useNotify";
 const route = useRoute();
 const router = useRouter();
 const store = useAlbumStore();
+const theme = useThemeStore();
 const notify = useNotify();
 
+/** 页面级主题变量：本页按钮/文本原先写死浅色（#fff / #ddd / #2c3e50），
+ *  深色模式下会变成"深底 + 白按钮 + 深色字"的刺眼组合。
+ *  这里统一以 `--detail-*` 下发，样式块消费变量，浅色模式保持原外观。 */
+const detailVars = computed(() => {
+  const dark = theme.isDark;
+  return {
+    "--detail-text": dark ? "#f5f7ff" : "#2c3e50",
+    "--detail-muted": dark ? "rgba(214,221,240,.62)" : "#667085",
+    "--detail-btn-bg": dark ? "rgba(255,255,255,.06)" : "#fff",
+    "--detail-btn-border": dark ? "rgba(255,255,255,.18)" : "#ddd",
+    "--detail-btn-hover": dark ? "rgba(255,255,255,.13)" : "#f2f4f7",
+  };
+});
+
 const albumId = Number(route.params.id);
+
+/** FEAT-034-B：来自路由 query.focus 的需要高亮定位的照片路径。
+ *  - Timeline 右下角按钮跳转携带该 query。
+ *  - 路径含特殊字符时由 encodeURIComponent/decodeURIComponent 处理。
+ *  - reactive：路由 query 变化（如同页中切换）也会响应。 */
+const focusPath = computed(() => {
+  const v = route.query.focus;
+  if (typeof v !== "string" || !v) return undefined;
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+});
 const loadError = ref(false);
 const settingCover = ref(false);
 const deleting = ref(false);
@@ -82,7 +112,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="detail-page">
+  <div class="detail-page" :style="detailVars">
     <!-- 顶部导航栏 -->
     <nav class="detail-nav">
       <div class="nav-left">
@@ -130,7 +160,8 @@ onMounted(load);
 
       <!-- 照片网格浏览：相册内照片一览 + 大图查看（放在最后，作为浏览区） -->
       <CollapseSection title="🖼️ 缩略图浏览" storage-key="detail-photos">
-        <PhotoGrid :album-id="albumId" />
+        <!-- FEAT-034-B：接收路由 query.focus（时间线跳转定位目标照片路径） -->
+        <PhotoGrid :album-id="albumId" :focus-path="focusPath" />
       </CollapseSection>
     </template>
 
@@ -151,6 +182,7 @@ onMounted(load);
   margin: 0 auto;
   padding: 24px;
   min-height: 100vh;
+  color: var(--detail-text);
 }
 
 .detail-nav {
@@ -184,16 +216,20 @@ onMounted(load);
 .btn {
   padding: 8px 16px;
   border-radius: 8px;
-  border: 1px solid #ddd;
-  background: #fff;
+  border: 1px solid var(--detail-btn-border);
+  background: var(--detail-btn-bg);
+  color: var(--detail-text);
   cursor: pointer;
   font-size: 14px;
   transition: all 0.2s;
 }
 
-.btn:hover {
+/* 悬停态只作用于「普通按钮」：若直接写 `.btn:hover`，其选择符权重与
+   `.btn-home:hover` 相同、且位于其后，会覆盖主页按钮的紫色背景与白色文字。 */
+.btn:hover:not(.btn-home):not(.btn-primary):not(.btn-danger) {
   border-color: #396cd8;
   color: #396cd8;
+  background: var(--detail-btn-hover);
 }
 
 .btn-danger {
@@ -226,7 +262,7 @@ onMounted(load);
 .not-found {
   text-align: center;
   padding: 60px 20px;
-  color: #667085;
+  color: var(--detail-muted);
 }
 
 .not-found p {

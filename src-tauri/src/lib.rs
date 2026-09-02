@@ -395,6 +395,17 @@ fn fill_album_stats(album: &mut db::Album, thumbs_dir: &Path, state: &tauri::Sta
     }
 }
 
+/// FEAT-036：批量填充每个相册的「已入库照片数」（photo_content_scan 中该相册的行数）。
+/// 一次分组统计（count_scanned_by_album），避免逐相册 N+1 查询。
+/// 多用户隔离：`user_id` 由调用方传入，仅统计当前用户已入库行。
+fn fill_scanned_counts(albums: &mut [db::Album], user_id: i64, state: &tauri::State<AppState>) {
+    let Ok(db) = state.0.lock() else { return };
+    let Ok(map) = db.count_scanned_by_album(user_id) else { return };
+    for a in albums.iter_mut() {
+        a.scanned_photo_count = map.get(&a.id).copied().unwrap_or(0);
+    }
+}
+
 /// 获取相册列表（需求 §4.2 get_albums，按 updated_at 降序）
 ///
 /// 返回时为无封面的相册自动补第一张图缩略图。
@@ -415,6 +426,8 @@ fn get_albums(
     for a in albums.iter_mut() {
         fill_album_stats(a, &thumbs, &state);
     }
+    // FEAT-036：批量填充每个相册的已入库照片数（一次 SQL 分组统计，避免 N+1）
+    fill_scanned_counts(&mut albums, user_id, &state);
     logger::log_call_end_with("get_albums", _t, &format!("OK | count={}", albums.len()));
     Ok(albums)
 }
@@ -436,6 +449,8 @@ fn get_album(
         db.get_album(id, user_id).map_err(|e| e.to_string())?
     };
     fill_album_stats(&mut album, &thumbs, &state);
+    // FEAT-036：填充该相册已入库照片数（单元素切片复用批量逻辑）
+    fill_scanned_counts(std::slice::from_mut(&mut album), user_id, &state);
     Ok(album)
 }
 
@@ -1921,6 +1936,16 @@ pub struct ImportResult {
     pub skipped: usize,
     /// 创建失败的文件夹及原因
     pub errors: Vec<String>,
+    /// FEAT-034-C：路径已被其他用户占用导致跳过的条目明细
+    /// 元素格式：{ folder: "xxx", conflict_album: "已存在相册名" }
+    /// 这些项目本质不重复入档（path 全局 UNIQUE），对当前用户是「已存在」友好提示。
+    pub skipped_conflicts: Vec<SkippedConflict>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SkippedConflict {
+    pub folder: String,
+    pub conflict_album: String,
 }
 
 /// 批量导入进度事件载荷
@@ -1960,6 +1985,7 @@ fn import_albums(
         imported: 0,
         skipped: 0,
         errors: Vec::new(),
+        skipped_conflicts: Vec::new(),
     };
 
     let db = state.0.lock().map_err(|e| e.to_string())?;
@@ -1981,22 +2007,43 @@ fn import_albums(
     for (folder_name, path) in folders {
         let path_str = path.to_string_lossy().into_owned();
 
-        // 检查是否已作为相册存在（当前用户空间内），存在则跳过
+        // FEAT-034-C：检查是否已作为相册存在
+        // 1) 先查当前用户：同 user_id 下已存在 → skipped（不重计）
+        // 2) 查任一用户：path 全局 UNIQUE 被其他用户占用 → 跳冲突明细（不报错）
+        //    这避免了多用户迁移后旧数据被 admin 接管、新用户再批量导入时全部误报
+        //    「已被相册 X 使用」错位问题。
         if let Ok(Some(_)) = db.find_album_by_path(&path_str, user_id) {
             result.skipped += 1;
         } else {
-            // 创建相册，名称用子文件夹名（归属当前用户）
-            let created = db.create_album(
-                db::CreateAlbumInput {
-                    name: folder_name.clone(),
-                    path: path_str,
-                    description: None,
-                },
-                user_id,
-            );
-            match created {
-                Ok(_) => result.imported += 1,
-                Err(e) => result.errors.push(format!("{folder_name}: {e}")),
+            match db.find_any_album_by_path(&path_str) {
+                Ok(Some(other)) => {
+                    // path 已被其他用户的相册占用（全局 UNIQUE 冲突）。
+                    // 视为友好跳过，不计入 errors；保留明细供前端提示。
+                    result.skipped += 1;
+                    result.skipped_conflicts.push(SkippedConflict {
+                        folder: folder_name.clone(),
+                        conflict_album: other.name,
+                    });
+                }
+                Ok(None) => {
+                    // 真正未占用：创建相册
+                    let created = db.create_album(
+                        db::CreateAlbumInput {
+                            name: folder_name.clone(),
+                            path: path_str,
+                            description: None,
+                        },
+                        user_id,
+                    );
+                    match created {
+                        Ok(_) => result.imported += 1,
+                        Err(e) => result.errors.push(format!("{folder_name}: {e}")),
+                    }
+                }
+                Err(e) => {
+                    // 查询出错 → 仍报告为错误（避免静默丢失）
+                    result.errors.push(format!("{folder_name}: {e}"));
+                }
             }
         }
 

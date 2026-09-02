@@ -1,11 +1,12 @@
 <script setup lang="ts">
 // 相册卡片组件 —— 从 AlbumList.vue 抽取
 // 消除日期视图（未分类/月分组）与地点视图中 3 份重复的卡片模板
+import { computed } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Album } from "../types/album";
 import { formatSize } from "../types/album";
 
-defineProps<{
+const props = defineProps<{
   album: Album;
   /** 是否处于勾选管理模式 */
   selectMode: boolean;
@@ -23,6 +24,9 @@ const emit = defineEmits<{
   /** FEAT-A：点击合并来源路径时触发（path 链接回系统文件夹） */
   (e: "open-source-path", payload: { id: number; path: string }): void;
 }>();
+
+/** FEAT-036：该相册是否已入库（只要有一张照片被内容扫描识别入库即视为已入库） */
+const isScanned = computed(() => (props.album.scanned_photo_count || 0) > 0);
 
 /** 将本地文件路径转为前端可访问的 URL（Tauri asset 协议） */
 function fileUrl(path: string | null): string {
@@ -55,6 +59,14 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
     <div class="card-cover">
       <img v-if="album.cover_path" :src="fileUrl(album.cover_path)" alt="封面" loading="lazy" />
       <div v-else class="cover-placeholder">📷</div>
+      <!-- FEAT-036：已入库 / 未入库 标记 -->
+      <span
+        class="scan-badge"
+        :class="isScanned ? 'scan-badge-in' : 'scan-badge-out'"
+        :title="isScanned ? `该相册已扫描入库 ${album.scanned_photo_count} 张照片` : '该相册尚未扫描入库，建议在详情页执行综合扫描'"
+      >
+        {{ isScanned ? "✓ 已入库" : "○ 未入库" }}
+      </span>
     </div>
 
     <div class="card-body">
@@ -124,11 +136,35 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 }
 
 .card-cover {
+  position: relative;
   height: 160px;
   background: var(--panel-bg, #f0f0f0);
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* FEAT-036：已入库 / 未入库 徽标（封面右上角） */
+.scan-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  backdrop-filter: blur(3px);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+}
+.scan-badge-in {
+  background: rgba(47, 158, 68, 0.85);
+  color: #fff;
+}
+.scan-badge-out {
+  background: rgba(138, 128, 120, 0.75);
+  color: #fff;
 }
 
 .card-cover img {

@@ -15,7 +15,9 @@ import type { YearGroup } from "../utils/timeGroup";
 import ManualSort from "./ManualSort.vue";
 import AlbumCard from "../components/AlbumCard.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
+import ImportErrorsDialog from "../components/ImportErrorsDialog.vue";
 import { useNotify } from "../composables/useNotify";
+import type { ImportResult } from "../stores/album";
 
 const router = useRouter();
 const route = useRoute();
@@ -74,9 +76,19 @@ const importProgress = ref(0); // 0-100
 const importStatus = ref(""); // 进度提示文案
 let unlistenImport: (() => void) | null = null;
 
+/** FEAT-034-A：最近一次导入结果（用于错误详情对话框） */
+const lastImportResult = ref<ImportResult | null>(null);
+/** 错误详情弹窗显示状态 */
+const showImportErrors = ref(false);
+/** 用户选择的根目录（重试用） */
+const importRoot = ref<string>("");
+
 /**
  * 批量导入：选择一个大文件夹，遍历其一级子文件夹创建相册
  * 通过监听后端 import-progress 事件实时更新进度条
+ *
+ * FEAT-034-A：失败时弹窗 ImportErrorsDialog 展示明细 + 解决建议；
+ * Toast 上提供「查看详情」按钮直达对话框。
  */
 async function batchImport() {
   if (isImporting.value) return;
@@ -87,6 +99,12 @@ async function batchImport() {
   });
   if (typeof selected !== "string") return;
 
+  importRoot.value = selected;
+  await runImport(selected, /* showErrorsOnFail */ true);
+}
+
+/** 执行一次导入（用于首次/重试），失败时是否弹窗 */
+async function runImport(rootPath: string, showErrorsOnFail: boolean) {
   isImporting.value = true;
   importProgress.value = 0;
   importStatus.value = "准备中…";
@@ -104,15 +122,49 @@ async function batchImport() {
   });
 
   try {
-    const result = await store.importAlbums(selected);
+    const result = await store.importAlbums(rootPath);
     importProgress.value = 100;
+    lastImportResult.value = result;
+    // FEAT-034-C：跨用户占用现在是“已存在”友好跳过场景，不再视为失败
+    const alreadyExists = (result.skipped_conflicts ?? []).length;
     const parts = [`成功导入 ${result.imported} 个相册`];
     if (result.skipped > 0) parts.push(`跳过 ${result.skipped} 个已存在的`);
+    if (result.errors.length > 0) parts.push(`失败 ${result.errors.length} 个`);
+
     if (result.errors.length > 0) {
-      parts.push(`失败 ${result.errors.length} 个`);
-      console.error("导入失败的文件夹:", result.errors);
+      // 失败：Toast 提示 + 「查看详情」按钮直达对话框
+      notify.action(
+        "error",
+        "批量导入部分失败",
+        [
+          {
+            label: "查看详情",
+            style: "primary",
+            onClick: () => {
+              showImportErrors.value = true;
+            },
+          },
+        ],
+        parts.join("，") + "\n点击「查看详情」可逐项查看原因与解决建议。",
+        0, // 持久化
+      );
+      console.error("[FEAT-034-A] 导入失败的文件夹:", result.errors);
+      if (showErrorsOnFail) {
+        // 首次失败自动弹窗，避免用户必须再点一次
+        showImportErrors.value = true;
+      }
+    } else if (alreadyExists > 0) {
+      // FEAT-034-C：所有项都已存在（跨用户或同用户占用的合并场景）→ 友好信息框
+      const msg =
+        result.imported > 0
+          ? `${result.imported} 个新相册已导入；${alreadyExists} 个相册此前已导入，自动跳过。`
+          : `${alreadyExists} 个相册已被导入，无需重复导入。`;
+      // 弹信息框列出具体哪些相册已存在（不标红为错误）；同时给友好 toast
+      showImportErrors.value = true;
+      notify.success("批量导入完成", msg);
+    } else {
+      notify.success("批量导入完成", parts.join("，"));
     }
-    notify.success("批量导入完成", parts.join("，"));
   } catch (e) {
     notify.error("批量导入失败", String(e));
   } finally {
@@ -124,6 +176,33 @@ async function batchImport() {
     importProgress.value = 0;
     importStatus.value = "";
   }
+}
+
+/** FEAT-034-A：失败详情对话框中点击「重试」后回调（folderNames 是失败项的子目录名） */
+async function retryImport(folderNames: string[]) {
+  if (!importRoot.value) {
+    notify.warning("无法重试", "未记录根目录路径，请重新选择。");
+    showImportErrors.value = false;
+    return;
+  }
+  // 关闭对话框并重新执行：原 `importAlbums` 会自动跳过同名/已存在的相册，
+  // 因此重试只会处理「上次失败」的项目（同名冲突会再次跳过，但不会重复导入已成功的项）。
+  showImportErrors.value = false;
+  notify.info("正在重试失败项", `根目录：${importRoot.value}\n失败项数：${folderNames.length}`);
+  await runImport(importRoot.value, /* showErrorsOnFail */ true);
+}
+
+/** FEAT-034-A：失败详情对话框中点击「重新选择根目录」 */
+async function reimportFromRoot() {
+  showImportErrors.value = false;
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    title: "重新选择根文件夹",
+  });
+  if (typeof selected !== "string") return;
+  importRoot.value = selected;
+  await runImport(selected, true);
 }
 
 // ---------- 勾选 / 批量删除状态 ----------
@@ -155,7 +234,7 @@ function enterSelectMode() {
     sessionStorage.setItem("pm-album-manage-hint", "1");
     notify.info(
       "已进入批量管理",
-      "点击卡片勾选 · Ctrl+A 全选当前可见 · Esc 退出 · Del 删除（仅除记录）",
+      "点击卡片勾选 · Ctrl+A 全选当前可见 · Esc 退出 · Del 删除（仅删记录）",
       5000,
     );
   }
@@ -265,6 +344,66 @@ async function doBatchDelete() {
 
 // ---------- 批量整理：移动分组 / 打标签 / 改地点 / 合并相册 ----------
 const batchRunning = ref(false);
+
+/* FEAT-037：批量扫描入库（勾选模式下对选中相册组合扫描 EXIF/影调/AI 并写库） */
+const scanDialogOpen = ref(false);
+const batchScanTypes = ref<string[]>(["basic", "tone", "ai"]); // 默认三种全选
+const batchScanBatch = ref(8);
+const batchScanning = ref(false);
+const batchScanResult = ref<{ scanned: number; failed: { albumId: number; error: string }[]; total: number } | null>(null);
+
+/** 打开批量扫描弹窗 */
+function openBatchScan() {
+  // 默认三种扫描方式全选
+  batchScanTypes.value = ["basic", "tone", "ai"];
+  batchScanBatch.value = 8;
+  batchScanResult.value = null;
+  scanDialogOpen.value = true;
+}
+
+const batchScanProgress = ref("");
+
+/** 执行批量扫描：串行逐个相册扫描，弹窗内展示进度，完成后反馈汇总 */
+async function doBatchScan() {
+  const ids = [...selectedIds.value];
+  if (!ids.length) return;
+  if (batchScanning.value) return;
+  if (batchScanTypes.value.length === 0) {
+    notify.warning("请选择至少一种扫描方式");
+    return;
+  }
+  batchScanning.value = true;
+  batchScanResult.value = null;
+  try {
+    const res = await contentStore.scanAlbumsCombined(
+      ids,
+      batchScanTypes.value,
+      batchScanBatch.value,
+      (done, total) => {
+        batchScanProgress.value = `已完成 ${done} / ${total} 个相册`;
+      },
+    );
+    batchScanResult.value = { ...res, total: ids.length };
+    // 成功后刷新相册列表，让「已入库」标记与统计更新
+    await store.fetchAlbums().catch(() => {});
+    if (res.failed.length) {
+      notify.warning(
+        "批量扫描完成（部分失败）",
+        `成功 ${res.scanned}/${ids.length} 个相册；失败 ${res.failed.length} 个`,
+      );
+    } else {
+      notify.success("批量扫描入库完成", `已扫描入库 ${res.scanned} 个相册`);
+    }
+    batchScanProgress.value = "";
+    scanDialogOpen.value = false;
+    exitSelectMode();
+  } catch (e) {
+    notify.error("批量扫描失败", String(e));
+    batchScanProgress.value = "";
+  } finally {
+    batchScanning.value = false;
+  }
+}
 
 /* 移动分组 */
 const moveFolderOpen = ref(false);
@@ -858,6 +997,9 @@ onMounted(() => {
   window.addEventListener("click", onGlobalClick);
   // 滚动监听（用于回到顶部按钮显示）
   window.addEventListener("scroll", onScroll, { passive: true });
+  // 右键菜单以 fixed 定位，页面滚动/窗口变化时会与卡片脱锚，需关闭
+  window.addEventListener("scroll", closeContextMenu, { passive: true });
+  window.addEventListener("resize", closeContextMenu);
   // 选模式快捷键
   window.addEventListener("keydown", onKey);
 
@@ -874,23 +1016,20 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("click", onGlobalClick);
   window.removeEventListener("scroll", onScroll);
+  window.removeEventListener("scroll", closeContextMenu);
+  window.removeEventListener("resize", closeContextMenu);
   window.removeEventListener("keydown", onKey);
+  // 清理防抖定时器与未完成的 rAF，避免组件卸载后回调仍执行
+  if (searchTimer) clearTimeout(searchTimer);
+  if (rafId != null) cancelAnimationFrame(rafId);
 });
 
-/* ---------------- 选模式快捷键 ---------------- */
-/**
- * 选模式下提供键盘交互：
- *  - Esc 退出选模式
- *  - Ctrl/Cmd + A 全选/取消全选
- *  - Delete 打开删除确认（仅相册记录，文件未删）
- * 输入框中、任一对话框打开时不响应。
- */
 /* ---------------- 键盘交互 ---------------- */
 /**
  * 选模式下提供快捷键：
  *  - Esc：优先关闭打开的弹窗；无弹窗则退出选模式
  *  - Ctrl/Cmd + A：全选/取消全选
- *  - Delete：打开删除确认
+ *  - Delete：打开删除确认（仅删相册记录，本地照片文件不动）
  * 输入框中不响应。
  */
 function onKey(e: KeyboardEvent) {
@@ -906,6 +1045,7 @@ function onKey(e: KeyboardEvent) {
     if (moveFolderOpen.value) { e.preventDefault(); moveFolderOpen.value = false; return; }
     if (tagDialogOpen.value) { e.preventDefault(); tagDialogOpen.value = false; return; }
     if (locDialogOpen.value) { e.preventDefault(); locDialogOpen.value = false; return; }
+    if (scanDialogOpen.value) { e.preventDefault(); scanDialogOpen.value = false; return; }
     if (batchDeleteConfirm.value.visible) { e.preventDefault(); batchDeleteConfirm.value.visible = false; return; }
   }
 
@@ -917,6 +1057,7 @@ function onKey(e: KeyboardEvent) {
     moveFolderOpen.value ||
     tagDialogOpen.value ||
     locDialogOpen.value ||
+    scanDialogOpen.value ||
     batchDeleteConfirm.value.visible
   ) return;
 
@@ -1006,6 +1147,19 @@ function onKey(e: KeyboardEvent) {
               :title="selectedIds.size === 0 ? '请先勾选至少 1 个相册' : '把选中相册移动到其他分组（顶级/二级/三级）'"
               @click="openMoveFolder"
             >📁 移动分组…</button>
+          </div>
+
+          <div class="tb-divider"></div>
+
+          <!-- FEAT-037：批量扫描入库（勾选模式下对选中相册组合扫描写库） -->
+          <div class="tb-group tb-scan">
+            <span class="tb-group-label">扫描</span>
+            <button
+              class="btn"
+              :disabled="selectedIds.size === 0 || batchRunning"
+              :title="selectedIds.size === 0 ? '请先勾选至少 1 个相册' : `对选中的 ${selectedIds.size} 个相册执行 EXIF / 影调 / AI 内容识别并写库，用于智能搜索与统计`"
+              @click="openBatchScan"
+            >📥 批量扫描入库…</button>
           </div>
 
           <div class="tb-divider"></div>
@@ -1154,7 +1308,7 @@ function onKey(e: KeyboardEvent) {
     <!-- 批量选择提示栏（勾选模式下提示快捷键；计数与全选在工具栏中） -->
     <div v-if="isSelectMode" class="select-bar">
       <span class="select-hint">
-        点击卡片勾选 · <kbd>Esc</kbd> 退出 · <kbd>Ctrl+A</kbd> 全选当前可见 · <kbd>Del</kbd> 删除（仅除记录）
+        点击卡片勾选 · <kbd>Esc</kbd> 退出 · <kbd>Ctrl+A</kbd> 全选当前可见 · <kbd>Del</kbd> 删除（仅删记录）
       </span>
     </div>
 
@@ -1429,6 +1583,51 @@ function onKey(e: KeyboardEvent) {
       </div>
     </div>
 
+    <!-- FEAT-037：批量扫描入库弹窗（扫描方式选择，默认三种全选） -->
+    <div v-if="scanDialogOpen" class="dialog-mask" @click.self="scanDialogOpen = false">
+      <div class="dialog">
+        <h2 class="dialog-title">📥 批量扫描入库</h2>
+        <p class="batch-select-tip">
+          将对选中的 <b>{{ selectedIds.size }}</b> 个相册执行内容识别并写入内容库（用于智能搜索与库存统计）。
+        </p>
+        <p class="batch-select-tip">选择扫描方式（可多选）：</p>
+        <div class="combo-checks batch-scan-types">
+          <label class="combo-check" :class="{ active: batchScanTypes.includes('basic') }">
+            <input type="checkbox" value="basic" v-model="batchScanTypes" />
+            <span class="combo-check-label">EXIF 基础</span>
+            <span class="combo-check-desc">ISO / 焦段 / 光圈 / 快门</span>
+          </label>
+          <label class="combo-check" :class="{ active: batchScanTypes.includes('tone') }">
+            <input type="checkbox" value="tone" v-model="batchScanTypes" />
+            <span class="combo-check-label">影调分析</span>
+            <span class="combo-check-desc">低调 / 中间调 / 高调</span>
+          </label>
+          <label class="combo-check" :class="{ active: batchScanTypes.includes('ai') }">
+            <input type="checkbox" value="ai" v-model="batchScanTypes" />
+            <span class="combo-check-label">AI 内容识别</span>
+            <span class="combo-check-desc">写入内容库 · 支持搜索</span>
+          </label>
+        </div>
+        <div class="batch-scan-meta">
+          <label class="batch-select">批次
+            <select v-model="batchScanBatch">
+              <option v-for="b in [8, 16, 32]" :key="b" :value="b">{{ b }}</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- FEAT-037：扫描进度（串行逐个相册扫描时展示） -->
+        <p v-if="batchScanning" class="batch-scan-progress">⏳ {{ batchScanProgress || "准备中…" }} · 后台扫描中，请稍候</p>
+
+        <div class="dialog-actions">
+          <button class="btn" :disabled="batchScanning" @click="scanDialogOpen = false">取消</button>
+          <button class="btn btn-primary" :disabled="batchScanning" @click="doBatchScan">
+            {{ batchScanning ? "扫描中…" : "开始扫描" }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- 批量整理：打标签 -->
     <div v-if="tagDialogOpen" class="dialog-mask" @click.self="tagDialogOpen = false">
       <div class="dialog">
@@ -1537,6 +1736,15 @@ function onKey(e: KeyboardEvent) {
       confirm-text="删除所选"
       @confirm="doBatchDelete"
       @cancel="batchDeleteConfirm.visible = false"
+    />
+
+    <!-- FEAT-034-A：批量导入失败详情（错误分类 + 解决建议 + 重试） -->
+    <ImportErrorsDialog
+      :visible="showImportErrors"
+      :result="lastImportResult"
+      @close="showImportErrors = false"
+      @retry="retryImport"
+      @reimport="reimportFromRoot"
     />
 
     <!-- 回到顶部按钮 -->
@@ -2294,6 +2502,72 @@ function onKey(e: KeyboardEvent) {
   padding: 6px 10px;
   margin: 0 0 8px;
 }
+
+/* FEAT-037：批量扫描弹窗 —— 扫描方式选择（复刻 ScanPanel 的 combo-check 样式） */
+.batch-scan-types {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.combo-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid #d0d5dd;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.combo-check:hover {
+  border-color: #396cd8;
+  background: #eef3fb;
+}
+.combo-check.active {
+  border-color: #396cd8;
+  background: #eef3fb;
+}
+.combo-check input[type="checkbox"] {
+  margin-right: 2px;
+}
+.combo-check-label {
+  font-weight: 500;
+  font-size: 13px;
+}
+.combo-check-desc {
+  font-size: 11px;
+  color: #667085;
+}
+.batch-scan-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.batch-scan-meta .batch-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #667085;
+}
+.batch-scan-meta .batch-select select {
+  padding: 2px 4px;
+  border: 1px solid #d0d5dd;
+  border-radius: 4px;
+  font-size: 12px;
+  background: #fff;
+}
+.batch-scan-progress {
+  font-size: 12.5px;
+  color: #396cd8;
+  background: #eef3fb;
+  border: 1px solid #dbe3ff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 0 0 12px;
+}
 .batch-overwrite-warn {
   font-size: 12.5px;
   color: #6a4f00;
@@ -2384,5 +2658,59 @@ function onKey(e: KeyboardEvent) {
 
 .back-to-top:active {
   transform: scale(0.95);
+}
+
+/* 窗口较窄时（桌面窗口可自由缩放）：工具栏与卡片网格降级排布，避免按钮溢出 */
+@media (max-width: 900px) {
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .toolbar-left {
+    justify-content: space-between;
+  }
+
+  .toolbar-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  /* 批量管理模式：分组容器换行铺满，分隔线改为横向更直观 */
+  .tb-group {
+    flex-wrap: wrap;
+  }
+
+  .tb-divider {
+    width: auto;
+    height: 1px;
+    flex: 1 1 100%;
+    background: var(--card-border);
+  }
+
+  .album-grid {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 14px;
+  }
+}
+
+@media (max-width: 640px) {
+  .album-page {
+    padding: 16px;
+  }
+
+  .page-title {
+    font-size: 20px;
+  }
+
+  .album-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dialog {
+    width: 100%;
+    padding: 20px;
+  }
 }
 </style>

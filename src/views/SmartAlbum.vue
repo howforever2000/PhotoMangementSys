@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
@@ -37,30 +37,56 @@ const tabs: SmartTab[] = [
 const activeTab = ref<string>("face");
 const activeDef = computed(() => tabs.find((t) => t.key === activeTab.value));
 
-/* -------- Hero 统计：总照片 / 总人物 / 总相册 / 本月 -------- */
+/* -------- Hero 统计：总照片 / 占存储 / 相册 / 已导入 / 已扫描入库照片 / 人物 -------- */
 const totalPhotos = ref(0);
+const totalBytes = ref(0);
+const scannedIn = ref(0);
 const totalPersons = ref(0);
-const totalThisMonth = ref(0);
+const totalAlbums = ref(0);
+const scannedAlbums = ref(0);
+
+/** 字节数人性化显示（B/KB/MB/GB） */
+function fmtSize(bytes: number): string {
+  if (!bytes) return "0 B";
+  if (bytes >= 1024 * 1024 * 1024) return (bytes / 1024 / 1024 / 1024).toFixed(1) + " GB";
+  if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + " MB";
+  if (bytes >= 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return bytes + " B";
+}
 
 async function loadStats() {
   try {
+    // 相册统计（photo_count / size_bytes 来自 get_albums 的 fill_album_stats）
+    if (!store.albums.length) await store.fetchAlbums();
+    // 已扫描入库数（photo_content_scan 中的照片，跨相册）
     const [tl, pl] = await Promise.all([
       invoke<ContentSearchHit[]>("list_timeline"),
       invoke<PersonInfo[]>("list_persons"),
     ]);
-    totalPhotos.value = tl.length;
+    scannedIn.value = tl.length;
     totalPersons.value = pl.length;
-    const now = new Date();
-    const k = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    totalThisMonth.value = tl.filter((r) => r.shoot_time?.startsWith(k)).length;
   } catch {
     /* 统计不可用也不阻塞入口 */
   }
 }
 
+/** 总照片数 / 占存储 / 相册数 / 已入库相册数：从相册列表聚合（fill_album_stats 已填充）
+ *  - photo_count / size_bytes：文件系统统计
+ *  - scanned_photo_count：该相册已扫描入库的照片数（FEAT-036），> 0 计为「已导入相册」 */
+// 在 albums 变化时刷新，保证 async 拉取后更新
+watch(
+  () => store.albums,
+  (list) => {
+    totalPhotos.value = list.reduce((n, a) => n + (a.photo_count || 0), 0);
+    totalBytes.value = list.reduce((n, a) => n + (a.size_bytes || 0), 0);
+    totalAlbums.value = list.length;
+    scannedAlbums.value = list.filter((a) => (a.scanned_photo_count || 0) > 0).length;
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   loadStats();
-  if (!store.albums.length) store.fetchAlbums().catch(() => {});
 });
 
 interface SubModule {
@@ -127,18 +153,28 @@ function openSub(m: SubModule) {
           </div>
           <div class="stat-divider"></div>
           <div class="stat">
-            <span class="stat-num">{{ totalPersons }}</span>
-            <span class="stat-label">位人物</span>
+            <span class="stat-num stat-num-size">{{ fmtSize(totalBytes) }}</span>
+            <span class="stat-label">占用存储</span>
           </div>
           <div class="stat-divider"></div>
           <div class="stat">
-            <span class="stat-num">{{ store.albums.length }}</span>
+            <span class="stat-num">{{ totalAlbums }}</span>
             <span class="stat-label">个相册</span>
           </div>
           <div class="stat-divider"></div>
           <div class="stat">
-            <span class="stat-num">{{ totalThisMonth }}</span>
-            <span class="stat-label">本月</span>
+            <span class="stat-num">{{ scannedAlbums }}</span>
+            <span class="stat-label">已入库相册</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat">
+            <span class="stat-num">{{ scannedIn }}</span>
+            <span class="stat-label">已扫描入库照片</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat">
+            <span class="stat-num">{{ totalPersons }}</span>
+            <span class="stat-label">位人物</span>
           </div>
         </div>
       </div>
@@ -197,7 +233,7 @@ function openSub(m: SubModule) {
 /* ---- Hero ---- */
 .smart-hero {
   position: relative;
-  height: 200px;
+  height: 210px;
   border-radius: 20px;
   overflow: hidden;
   margin-bottom: 22px;
@@ -239,23 +275,30 @@ function openSub(m: SubModule) {
 .smart-stats {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
+  column-gap: 20px;
   flex-wrap: wrap;
 }
 .stat {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 60px;
+  min-width: 52px;
 }
 .stat-num {
   font-size: 20px;
   font-weight: 700;
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  white-space: nowrap;
+}
+/* 存储字节数（如 12.3 GB）较长，字号略小避免挤压 */
+.stat-num-size {
+  font-size: 18px;
 }
 .stat-label {
-  font-size: 12px;
+  font-size: 11.5px;
   opacity: 0.9;
+  white-space: nowrap;
 }
 .stat-divider {
   width: 1px;

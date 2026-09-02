@@ -24,6 +24,9 @@ export interface Album {
   shoot_time: string | null;
   /** 相册文件夹总大小（字节） */
   size_bytes: number;
+  /** FEAT-036：该相册已扫描入库的照片数（photo_content_scan 行数）。
+   *  > 0 表示该相册「已入库」（已有照片被内容扫描识别）；0 表示未入库。 */
+  scanned_photo_count: number;
   /** 相册地点标签（手动设置） */
   location: string | null;
   /** 相册标签（最多 5 个） */
