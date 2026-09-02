@@ -197,6 +197,38 @@ impl Database {
         let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN shutter_num REAL;");
         let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN tone_type TEXT;");
         let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN avg_luma REAL;");
+
+        // P2 FTS5 全文索引：加速内容搜索（label/category/sub_category/person_ids）
+        // FTS5 表通过 Porter stemming 分词（中文场景按字分），content 列同步主表
+        let _ = self.conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS photo_content_fts USING fts5(
+                photo_hash,
+                content,
+                tokenize='porter unicode61',
+                content='photo_content_scan',
+                content_rowid='id'
+            );"
+        );
+        // 同步触发器：INSERT / UPDATE / DELETE 主表时同步 FTS5
+        let _ = self.conn.execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS pcs_fts_insert AFTER INSERT ON photo_content_scan BEGIN
+                INSERT INTO photo_content_fts(rowid, photo_hash, content) VALUES (new.id, new.photo_hash, new.content);
+             END;"
+        );
+        let _ = self.conn.execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS pcs_fts_update AFTER UPDATE ON photo_content_scan BEGIN
+                INSERT INTO photo_content_fts(photo_content_fts, rowid, photo_hash, content)
+                    VALUES ('delete', old.id, old.photo_hash, old.content);
+                INSERT INTO photo_content_fts(rowid, photo_hash, content)
+                    VALUES (new.id, new.photo_hash, new.content);
+             END;"
+        );
+        let _ = self.conn.execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS pcs_fts_delete AFTER DELETE ON photo_content_scan BEGIN
+                INSERT INTO photo_content_fts(photo_content_fts, rowid, photo_hash, content)
+                    VALUES ('delete', old.id, old.photo_hash, old.content);
+             END;"
+        );
         Ok(())
     }
 
@@ -241,17 +273,88 @@ impl Database {
         Ok(())
     }
 
-    /// 按关键词搜索照片内容（智能搜索）
-    ///
-    /// - `user_id`：多用户隔离（硬性限定）
-    /// - `album_id`：`Some` → 单相册内部搜索；`None` → 群相册/全局搜索（需求 R4）
-    /// - 匹配字段：聚合 `content`（含大类/细类/label/人物标号）
+    /// P2 FTS5 全文搜索：利用 photo_content_fts 虚拟表加速关键词匹配
+    /// FALLBACK: FTS5 表不存在/查询失败时降级为 LIKE 模糊搜索
     pub fn search_photo_content(
         &self,
         keyword: &str,
         user_id: i64,
         album_id: Option<i64>,
-    ) -> Result<Vec<ContentSearchHit>, DbError> {        let kw = format!("%{}%", keyword.trim());
+    ) -> Result<Vec<ContentSearchHit>, DbError> {
+        // 尝试 FTS5 全文搜索
+        let fts_kw = keyword.trim();
+        if !fts_kw.is_empty() {
+            if let Ok(hits) = self.search_photo_content_fts(fts_kw, user_id, album_id) {
+                return Ok(hits);
+            }
+        }
+        // FALLBACK: LIKE 模糊搜索（兼容无 FTS5 表的旧库）
+        self.search_photo_content_like(keyword, user_id, album_id)
+    }
+
+    /// FTS5 全文搜索实现
+    fn search_photo_content_fts(
+        &self,
+        keyword: &str,
+        user_id: i64,
+        album_id: Option<i64>,
+    ) -> Result<Vec<ContentSearchHit>, DbError> {
+        // FTS5 MATCH 支持 * 前缀匹配（label*），转为 rank/bm25 排序
+        let fts_query = format!("{}{}",
+            keyword.replace(' ', " OR "),
+            if keyword.contains('*') { "" } else { "*" }
+        );
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
+                    p.content, p.category, p.sub_category, p.label, p.confidence,
+                    p.person_ids, p.shoot_time, p.location, p.iso, p.aperture,
+                    p.shutter_speed, p.focal_length
+             FROM photo_content_scan p
+             JOIN photo_content_fts f ON f.rowid = p.id
+             LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
+             WHERE f MATCH ?1
+               AND p.user_id = ?2
+               AND (?3 IS NULL OR p.album_id = ?3)
+             ORDER BY rank",
+        )?;
+        let rows = stmt.query_map(params![fts_query, user_id, album_id], |r| {
+            Ok(ContentSearchHit {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                parent_dir: r.get(2)?,
+                album_id: r.get(3)?,
+                album_name: r.get(4)?,
+                album_path: r.get(5)?,
+                content: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                category: r.get(7)?,
+                sub_category: r.get(8)?,
+                label: r.get(9)?,
+                confidence: r.get(10)?,
+                person_ids: r
+                    .get::<_, Option<String>>(11)?
+                    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                    .unwrap_or_default(),
+                shoot_time: r.get(12)?,
+                location: r.get(13)?,
+                iso: r.get(14)?,
+                aperture: r.get(15)?,
+                shutter_speed: r.get(16)?,
+                focal_length: r.get(17)?,
+            })
+        })?;
+        let mut out: Vec<ContentSearchHit> = rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)?;
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(out)
+    }
+
+    /// LIKE 模糊搜索（降级路径，兼容旧库）
+    fn search_photo_content_like(
+        &self,
+        keyword: &str,
+        user_id: i64,
+        album_id: Option<i64>,
+    ) -> Result<Vec<ContentSearchHit>, DbError> {
+        let kw = format!("%{}%", keyword.trim());
         let mut stmt = self.conn.prepare(
             "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
                     p.content, p.category, p.sub_category, p.label, p.confidence,
@@ -289,9 +392,7 @@ impl Database {
                 focal_length: r.get(17)?,
             })
         })?;
-        let mut out: Vec<ContentSearchHit> = rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)?;
-        out.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(out)
+        rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
     }
 
     // ---- FEAT-033（dev-ai002）：跨相册照片时间线 ----

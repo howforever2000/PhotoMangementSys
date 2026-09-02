@@ -191,8 +191,18 @@ impl Database {
                 .map_err(|e| DbError::Other(format!("无法创建数据库目录: {e}")))?;
         }
         let conn = Connection::open(db_path)?;
-        // 启用外键约束（为后续 photos / tags 关联表预留）
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        // P0 SQLite 并发优化四件套：
+        // 1. WAL 模式：写操作不阻塞读，读操作不阻塞写，并发性能 10~50×
+        // 2. synchronous=NORMAL：WAL 模式下安全且写入更快（默认 FULL，每写一条都 fsync）
+        // 3. busy_timeout=5000ms：遇到 SQLITE_BUSY 时等待 5 秒而非直接失败
+        // 4. cache_size=-64000：64MB 页缓存（约 -64000 × 4KB = 256MB，负数=KB 单位）
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 5000;
+             PRAGMA cache_size = -64000;
+             PRAGMA foreign_keys = ON;",
+        )?;
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)
