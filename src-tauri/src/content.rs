@@ -19,6 +19,8 @@ use std::time::UNIX_EPOCH;
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
+use crate::AppState;
+
 use crate::db::PhotoContentRecord;
 
 /// 支持向上游上报的扫描进度事件载荷
@@ -400,6 +402,116 @@ fn opt_nonempty(s: &str) -> Option<String> {
     }
 }
 
+/// FEAT-044：扫描入库成功后预热本批缩略图，让智慧相册子页面首屏 0 IO 命中。
+///
+/// 与 lib.rs `prewarm_thumbs` 独立：这里不返回计数（入库主路径不希望预热失败
+/// 拖到入库失败）；且本函数为 async 供扫描主路径调用。
+async fn prewarm_thumbs_after_scan(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+    album_id: i64,
+    user_id: i64,
+    paths: &[String],
+) -> Result<(), String> {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let thumbs_dir = match crate::thumbs_dir(app) {
+        Ok(t) => t,
+        Err(_) => return Ok(()), // 拿不到 thumbs 目录 → 静默跳过，不影响入库
+    };
+
+    // 1. 主流程加锁查表（短锁）
+    let hit_map_outer: Arc<HashMap<String, String>> = {
+        let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+        let hashes: Vec<String> = paths
+            .iter()
+            .filter_map(|p| {
+                let path = std::path::Path::new(p);
+                let (len, mtime) = std::fs::metadata(path).ok().map(|md| {
+                    (
+                        md.len(),
+                        md.modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_nanos())
+                            .unwrap_or(0),
+                    )
+                })?;
+                Some(crate::thumbnail::thumb_photo_hash(path, len, mtime))
+            })
+            .collect();
+        match db.lookup_thumb_caches(&hashes) {
+            Ok(hits) => Arc::new(
+                hits.into_iter()
+                    .filter(|h| {
+                        !h.thumb_path.is_empty()
+                            && std::path::Path::new(&h.thumb_path).is_file()
+                    })
+                    .map(|h| (h.photo_hash, h.thumb_path))
+                    .collect(),
+            ),
+            Err(_) => Arc::new(HashMap::new()),
+        }
+    };
+
+    // 2. spawn_blocking 内走生成
+    #[derive(Default)]
+    struct GenBuf(std::sync::Mutex<Vec<(String, String, u64, u128)>>);
+    let gen_buf = Arc::new(GenBuf::default());
+    let gen_buf_for_cb = gen_buf.clone();
+    let hit_for_cb = hit_map_outer.clone();
+    let paths_owned: Vec<String> = paths.to_vec();
+    let thumbs_dir_clone = thumbs_dir.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        crate::thumbnail::ensure_grid_thumbs_with_lookup(
+            album_id,
+            &paths_owned,
+            &thumbs_dir_clone,
+            &move |hashes| -> HashMap<String, String> {
+                let mut out = HashMap::new();
+                for h in hashes {
+                    if let Some(t) = hit_for_cb.get(h) {
+                        out.insert(h.clone(), t.clone());
+                    }
+                }
+                out
+            },
+            move |generated| {
+                if let Ok(mut g) = gen_buf_for_cb.0.lock() {
+                    g.extend(generated.iter().cloned());
+                }
+            },
+        )
+    })
+    .await
+    .map_err(|e| format!("缩略图预热任务失败: {e}"))?;
+
+    // 3. 写表（主流程加锁）
+    let items = gen_buf.0.lock().map_err(|e| format!("{:?}", e))?;
+    if !items.is_empty() {
+        let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+        let recs: Vec<crate::db::ThumbCacheRecord> = items
+            .iter()
+            .map(|(src, thumb, len, mtime)| {
+                let path = std::path::Path::new(src.as_str());
+                let hash = crate::thumbnail::thumb_photo_hash(path, *len, *mtime);
+                crate::db::ThumbCacheRecord {
+                    photo_hash: hash,
+                    source_path: src.clone(),
+                    thumb_path: thumb.clone(),
+                    album_id: Some(album_id),
+                    user_id,
+                    size_bytes: *len,
+                    mtime_ns: *mtime,
+                }
+            })
+            .collect();
+        let _ = db.upsert_thumb_caches(&recs); // 写表失败不阻塞
+    }
+    Ok(())
+}
+
 /// 命令层（薄壳，逻辑见上；`lib.rs` 仅注册）
 pub mod commands {
     use super::*;
@@ -449,6 +561,14 @@ pub mod commands {
             db.upsert_photo_contents(&recs).map_err(|e| format!("{:?}", e))?;
             Ok(ScanReport { total, written, failed })
         })();
+        // FEAT-044：扫描入库完成后预热缩略图（为智慧相册子页面提供首屏 0 IO 命中）
+        // 独立 try，避免预热失败不影响入库结果。
+        if upsert.is_ok() {
+            let paths: Vec<String> = recs.iter().map(|r| r.path.clone()).collect();
+            if !paths.is_empty() {
+                let _ = prewarm_thumbs_after_scan(&app, &state, album_id, user_id, &paths).await;
+            }
+        }
         let outcome = upsert.map(|rep| ScanOutcome { report: rep, results });
 
         match &outcome {
@@ -636,6 +756,9 @@ pub mod commands {
                     let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
                     db.upsert_photo_contents(&recs).map_err(|e| format!("{:?}", e))?;
                 }
+                // FEAT-044：组合扫描入库完成后预热缩略图。
+                // recs 准备返回外层用于 in-progress 预热——避免闭包生命周期问题
+                // 在这里直接持有 recs paths，outcome 返回后在外层调预热。
                 let report = ScanReport {
                     total: vision_results.len(),
                     written: written_count,
@@ -721,6 +844,17 @@ pub mod commands {
                 &format!("OK | total={} written={}", o.report.total, o.report.written),
             ),
             Err(e) => logger::log_call_end_with("scan_album_combined", _t, &format!("ERR | {e}")),
+        }
+        // FEAT-044：组合扫描入库成功后预热缩略图（仅 do_ai 路径写库，prewarm 也只对 do_ai 生效）
+        if do_ai && outcome.is_ok() {
+            let prewarm_paths: Vec<String> = vision_results
+                .iter()
+                .filter(|r| r.error.is_none())
+                .map(|r| r.path.clone())
+                .collect();
+            if !prewarm_paths.is_empty() {
+                let _ = prewarm_thumbs_after_scan(&app, &state, album_id, user_id, &prewarm_paths).await;
+            }
         }
         outcome
     }

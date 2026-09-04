@@ -500,20 +500,126 @@ async fn get_photo_thumbs(
     album_id: i64,
     paths: Vec<String>,
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
     session: tauri::State<'_, SessionState>,
 ) -> Result<Vec<(String, String)>, String> {
     let _t = log_call!("get_photo_thumbs", &format!("album_id={album_id} paths={}", paths.len()));
-    require_user(&session)?;
+    let user_id = require_user(&session)?;
     if paths.is_empty() {
         return Ok(Vec::new());
     }
     let requested = paths.len();
     let thumbs = thumbs_dir(&app)?;
+
+    // FEAT-044：走表命中（避免重算指纹 + stat）
+    //
+    // 拆为三个动作以避开 Mutex 跨 spawn_blocking 问题：
+    // 1. 主流程加锁查表（短锁）→ 拿 hit_map: hash → thumb_path
+    // 2. spawn_blocking 内纯文件系统+生成（传 hit_map + on_generated 闭包）
+    // 3. 主流程加锁调 on_generated 写表（短锁）
+    //
+    // hit_map 必须可在 spawn_blocking 闭包中使用（Fn 闭包捕获），on_generated 也要 Fn。
+    // 两者都通过 Arc<...> 共享。
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let hit_map_outer: Arc<HashMap<String, String>> = {
+        let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+        let hashes: Vec<String> = paths
+            .iter()
+            .filter_map(|p| {
+                let path = std::path::Path::new(p);
+                let (len, mtime) = std::fs::metadata(path).ok().map(|md| {
+                    (
+                        md.len(),
+                        md.modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_nanos())
+                            .unwrap_or(0),
+                    )
+                })?;
+                Some(crate::thumbnail::thumb_photo_hash(path, len, mtime))
+            })
+            .collect();
+        match db.lookup_thumb_caches(&hashes) {
+            Ok(hits) => Arc::new(
+                hits.into_iter()
+                    .filter(|h| {
+                        !h.thumb_path.is_empty()
+                            && std::path::Path::new(&h.thumb_path).is_file()
+                    })
+                    .map(|h| (h.photo_hash, h.thumb_path))
+                    .collect(),
+            ),
+            Err(_) => Arc::new(HashMap::new()),
+        }
+    };
+
+    // 生成项收集到共享 buffer；on_generated 闭包往里 push
+    #[derive(Default)]
+    struct GeneratedBuf {
+        items: std::sync::Mutex<Vec<(String, String, u64, u128)>>,
+    }
+    let gen_buf = Arc::new(GeneratedBuf::default());
+    let gen_buf_for_cb = gen_buf.clone();
+
+    let album_id_copy = album_id;
+    let thumbs_copy = thumbs.clone();
+    let paths_copy: Vec<String> = paths.clone();
+    let hit_for_cb = hit_map_outer.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        crate::thumbnail::ensure_grid_thumbs(album_id, &paths, &thumbs)
+        crate::thumbnail::ensure_grid_thumbs_with_lookup(
+            album_id_copy,
+            &paths_copy,
+            &thumbs_copy,
+            &move |hashes| -> HashMap<String, String> {
+                // 从外层 hit_map 中抽需要的项（O(n) 过滤）
+                let mut out = HashMap::new();
+                for h in hashes {
+                    if let Some(t) = hit_for_cb.get(h) {
+                        out.insert(h.clone(), t.clone());
+                    }
+                }
+                out
+            },
+            move |generated| {
+                if let Ok(mut g) = gen_buf_for_cb.items.lock() {
+                    g.extend(generated.iter().cloned());
+                }
+            },
+        )
     })
     .await
     .map_err(|e| format!("缩略图任务线程失败: {e}"))?;
+
+    // 写表（新生成项）：主流程加锁批量 upsert
+    {
+        let items = gen_buf.items.lock().map_err(|e| format!("{:?}", e))?;
+        if !items.is_empty() {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            let recs: Vec<db::ThumbCacheRecord> = items
+                .iter()
+                .map(|(src, thumb, len, mtime)| {
+                    let path = std::path::Path::new(src.as_str());
+                    let hash = crate::thumbnail::thumb_photo_hash(path, *len, *mtime);
+                    db::ThumbCacheRecord {
+                        photo_hash: hash,
+                        source_path: src.clone(),
+                        thumb_path: thumb.clone(),
+                        album_id: Some(album_id),
+                        user_id,
+                        size_bytes: *len,
+                        mtime_ns: *mtime,
+                    }
+                })
+                .collect();
+            if let Err(e) = db.upsert_thumb_caches(&recs) {
+                logger::log_error("thumb_cache", &format!("upsert failed: {e:?}"));
+            }
+        }
+    }
+
     logger::log_call_end_with("get_photo_thumbs", _t, &format!("OK | done={} requested={}", res.len(), requested));
     Ok(res)
 }
@@ -933,10 +1039,13 @@ fn get_person_photos(
                 // 缺图 → 调用 ensure_grid_thumb 补齐（256px JPEG 生成后落盘，返回缓存路径），
                 // 后续任何场景（PhotoGrid/Timeline/Memories/智能搜索）再访问都直接命中。
                 // 补齐失败（原图丢失等）静默兑底 None，前端可回退占位。
+                // 本路径（人物照片）不写表（不在主流程加锁），保持与旧版兼容。
                 match thumbnail::ensure_grid_thumb(
                     album_id,
                     std::path::Path::new(&path),
                     thumbs,
+                    None,
+                    0,
                 ) {
                     Ok(p) => {
                         generated += 1;
@@ -1009,39 +1118,127 @@ pub struct PrewarmOutcome {
 }
 
 #[tauri::command]
-fn prewarm_thumbs(
+async fn prewarm_thumbs(
     album_id: i64,
     paths: Vec<String>,
     app: tauri::AppHandle,
-    session: tauri::State<SessionState>,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, SessionState>,
 ) -> Result<PrewarmOutcome, String> {
     let _t = log_call!("prewarm_thumbs", &format!("album_id={album_id} paths={}", paths.len()));
-    let _user = require_user(&session)?;
+    let user_id = require_user(&session)?;
+    if paths.is_empty() {
+        return Ok(PrewarmOutcome { requested: 0, hit: 0, generated: 0, failed: 0 });
+    }
     let thumbs_dir = thumbs_dir(&app).map_err(|e| e.to_string())?;
-    // 预统计已缓存数量（避免重复 IO）
-    let mut hit = 0usize;
-    let mut pending: Vec<&String> = Vec::with_capacity(paths.len());
-    for p in &paths {
-        let name = thumbnail::grid_thumb_cache_name(album_id, std::path::Path::new(p));
-        let tp = thumbs_dir.join("grid").join(&name);
-        if tp.is_file() {
-            hit += 1;
-        } else {
-            pending.push(p);
+    // FEAT-044：走表命中 → hit；未命中走文件系统生成 → generated
+    //
+    // 拆为查（短锁）→ 生成（纯文件系统）→ 写表（短锁）三步
+    // 避免 MutexGuard 跨 spawn_blocking 边界。
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let hit_map_outer: Arc<HashMap<String, String>> = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let hashes: Vec<String> = paths
+            .iter()
+            .filter_map(|p| {
+                let path = std::path::Path::new(p);
+                let (len, mtime) = std::fs::metadata(path).ok().map(|md| {
+                    (
+                        md.len(),
+                        md.modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_nanos())
+                            .unwrap_or(0),
+                    )
+                })?;
+                Some(crate::thumbnail::thumb_photo_hash(path, len, mtime))
+            })
+            .collect();
+        match db.lookup_thumb_caches(&hashes) {
+            Ok(hits) => Arc::new(
+                hits.into_iter()
+                    .filter(|h| {
+                        !h.thumb_path.is_empty()
+                            && std::path::Path::new(&h.thumb_path).is_file()
+                    })
+                    .map(|h| (h.photo_hash, h.thumb_path))
+                    .collect(),
+            ),
+            Err(_) => Arc::new(HashMap::new()),
+        }
+    };
+
+    // 表命中原图 path（避免在生成项中重复）
+    let _hit_source_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // **不依赖 source_path 标记**：表命中且文件存在 → hit；生成返回 OK → generated。
+    let hit_from_table = hit_map_outer.len();
+
+    #[derive(Default)]
+    struct GenBuf(std::sync::Mutex<Vec<(String, String, u64, u128)>>);
+    let gen_buf = Arc::new(GenBuf::default());
+    let gen_buf_for_cb = gen_buf.clone();
+    let hit_for_cb = hit_map_outer.clone();
+    let paths_for_blocking = paths.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::thumbnail::ensure_grid_thumbs_with_lookup(
+            album_id,
+            &paths_for_blocking,
+            &thumbs_dir,
+            &move |hashes| -> HashMap<String, String> {
+                let mut out = HashMap::new();
+                for h in hashes {
+                    if let Some(t) = hit_for_cb.get(h) {
+                        out.insert(h.clone(), t.clone());
+                    }
+                }
+                out
+            },
+            move |generated| {
+                if let Ok(mut g) = gen_buf_for_cb.0.lock() {
+                    g.extend(generated.iter().cloned());
+                }
+            },
+        )
+    })
+    .await
+    .map_err(|e| format!("缩略图预热任务失败: {e}"))?;
+
+    // 写表（新生成项）
+    {
+        let items = gen_buf.0.lock().map_err(|e| e.to_string())?;
+        if !items.is_empty() {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            let recs: Vec<db::ThumbCacheRecord> = items
+                .iter()
+                .map(|(src, thumb, len, mtime)| {
+                    let path = std::path::Path::new(src.as_str());
+                    let hash = crate::thumbnail::thumb_photo_hash(path, *len, *mtime);
+                    db::ThumbCacheRecord {
+                        photo_hash: hash,
+                        source_path: src.clone(),
+                        thumb_path: thumb.clone(),
+                        album_id: Some(album_id),
+                        user_id,
+                        size_bytes: *len,
+                        mtime_ns: *mtime,
+                    }
+                })
+                .collect();
+            if let Err(e) = db.upsert_thumb_caches(&recs) {
+                logger::log_error("thumb_cache", &format!("prewarm upsert failed: {e:?}"));
+            }
         }
     }
-    // 批量生成未命中的（ensure_grid_thumb 逐张内部仍逐张判断；性能足够）
-    let mut generated = 0usize;
-    let mut failed = 0usize;
-    for p in &pending {
-        match thumbnail::ensure_grid_thumb(album_id, std::path::Path::new(p), &thumbs_dir) {
-            Ok(_) => generated += 1,
-            Err(_) => failed += 1,
-        }
-    }
+
+    // 统计：成功的 (源 → 缩略图) 数 - 表命中数 = 本次生成数；未成功 = failed
+    let generated = res.len().saturating_sub(hit_from_table);
+    let failed = paths.len().saturating_sub(res.len());
     let out = PrewarmOutcome {
         requested: paths.len(),
-        hit,
+        hit: hit_from_table, // 表命中且文件存在的项数
         generated,
         failed,
     };

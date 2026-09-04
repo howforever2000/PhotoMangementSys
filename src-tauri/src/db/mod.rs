@@ -8,7 +8,9 @@
 //! - `DbError`  →  自定义业务异常（配合全局异常处理）
 
 pub mod content;
+pub mod thumb_cache;
 pub use content::{AlbumContentRow, ContentFilters, ContentSearchHit, PhotoContentRecord, SmartHit};
+pub use thumb_cache::ThumbCacheRecord;
 
 use crate::RecentlyExcludedItem;
 
@@ -417,6 +419,8 @@ impl Database {
         }
         // 内容扫描表（FEAT-022：AI 内容扫描入库 + 照片智能搜索）
         self.init_content_schema()?;
+        // 缩略图反向索引表（FEAT-044）：path/photo_hash → thumb_path
+        self.init_thumb_cache_schema()?;
         // 迁移：将历史以明文存储的用户邮箱/手机号/密码哈希重加密（无历史明文则为空操作）
         let _ = crate::auth::migrate_legacy_user_fields(self.conn());
         Ok(())
@@ -1139,6 +1143,8 @@ impl Database {
         tx.execute("DELETE FROM album_photo_excluded WHERE album_id = ?1", params![album_id])?;
         // 合并来源：清理「作为目标相册」的来源记录 + 「作为源被合并」的来源记录
         tx.execute("DELETE FROM album_merged_sources WHERE album_id = ?1 OR source_id = ?1", params![album_id])?;
+        // FEAT-044：清理缩略图反向索引表（实际缩略图文件由调用方负责，本函数只清表）
+        tx.execute("DELETE FROM photo_thumb_cache WHERE album_id = ?1", params![album_id])?;
         Ok(())
     }
 
