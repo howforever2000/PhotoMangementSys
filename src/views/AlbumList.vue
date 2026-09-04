@@ -1158,10 +1158,11 @@ function onKey(e: KeyboardEvent) {
           <div class="tb-divider"></div>
 
           <!-- FEAT-037：批量扫描入库（勾选模式下对选中相册组合扫描写库） -->
+          <!-- 视觉重点分组：底色用主题色淡填充 + 左侧色块，作为工具条内唯一的功能入口强调 -->
           <div class="tb-group tb-scan">
             <span class="tb-group-label">扫描</span>
             <button
-              class="btn"
+              class="btn btn-scan-feature"
               :disabled="selectedIds.size === 0 || batchRunning"
               :title="selectedIds.size === 0 ? '请先勾选至少 1 个相册' : `对选中的 ${selectedIds.size} 个相册执行 EXIF / 影调 / AI 内容识别并写库，用于智能搜索与统计`"
               @click="openBatchScan"
@@ -1591,8 +1592,8 @@ function onKey(e: KeyboardEvent) {
 
     <!-- FEAT-037：批量扫描入库弹窗（扫描方式选择，默认三种全选） -->
     <div v-if="scanDialogOpen" class="dialog-mask" @click.self="scanDialogOpen = false">
-      <div class="dialog">
-        <h2 class="dialog-title">📥 批量扫描入库</h2>
+      <div class="dialog dialog-scan-feature">
+        <h2 class="dialog-title dialog-title-accent">📥 批量扫描入库</h2>
         <p class="batch-select-tip">
           将对选中的 <b>{{ selectedIds.size }}</b> 个相册执行内容识别并写入内容库（用于智能搜索与库存统计）。
         </p>
@@ -1627,8 +1628,8 @@ function onKey(e: KeyboardEvent) {
 
         <div class="dialog-actions">
           <button class="btn" :disabled="batchScanning" @click="scanDialogOpen = false">取消</button>
-          <button class="btn btn-primary" :disabled="batchScanning" @click="doBatchScan">
-            {{ batchScanning ? "扫描中…" : "开始扫描" }}
+          <button class="btn btn-scan-feature" :disabled="batchScanning" @click="doBatchScan">
+            {{ batchScanning ? "扫描中…" : "🚀 开始扫描" }}
           </button>
         </div>
       </div>
@@ -2306,6 +2307,75 @@ function onKey(e: KeyboardEvent) {
 .btn-danger:hover {
   background: #d13438;
   color: #fff;
+}
+
+/* FEAT-037：批量扫描入库「强调」按钮（深浅色主题适配）
+   目的：让工具条扫描分组在众多 .btn 中一眼可见，浅色主题下不再"看不见"。
+   实现：实心渐变背景 + 强对比边框 + 阴影 + 左侧色块，并同时作用于工具条按钮和弹窗「开始扫描」按钮。 */
+.tb-group.tb-scan {
+  position: relative;
+  padding: 2px 10px 2px 12px;
+  margin-left: 4px;
+  border-radius: 10px;
+  background: var(--tint-bg);
+  border: 1px solid var(--tint-border);
+}
+.tb-group.tb-scan::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: linear-gradient(180deg, #396cd8 0%, #6a4ec9 100%);
+}
+.tb-group.tb-scan .tb-group-label {
+  color: #396cd8;
+  font-weight: 600;
+}
+
+.btn-scan-feature {
+  background: linear-gradient(135deg, #396cd8 0%, #5a5ad8 50%, #6a4ec9 100%);
+  color: #fff;
+  border: 1px solid #2f5cc2;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  box-shadow: 0 1px 2px rgba(57, 108, 216, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+.btn-scan-feature:hover:not(:disabled) {
+  background: linear-gradient(135deg, #2f5cc2 0%, #4a4ac8 50%, #5a3eb9 100%);
+  color: #fff;
+  border-color: #264db0;
+  box-shadow: 0 2px 6px rgba(57, 108, 216, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  transform: translateY(-1px);
+}
+.btn-scan-feature:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(57, 108, 216, 0.3);
+}
+.btn-scan-feature:disabled {
+  background: var(--input-border);
+  color: var(--sub-text, #6b7280);
+  border-color: var(--input-border);
+  box-shadow: none;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+/* 弹窗标题：扫描功能专属高亮（与按钮同色系渐变文字） */
+.dialog-title-accent {
+  background: linear-gradient(135deg, #396cd8 0%, #6a4ec9 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  font-weight: 700;
+}
+.dialog-scan-feature {
+  border-top: 3px solid #396cd8;
 }
 
 /* 批量导入进度条 */
