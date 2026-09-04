@@ -166,6 +166,22 @@ impl Database {
         }
     }
 
+    /// FEAT-044（补充）：全量统计当前用户的缩略图缓存行数
+    ///
+    /// 用于前端「未预热覆盖率」提示。返回 `photo_thumb_cache` 中该用户的行数。
+    /// 多用户隔离：`WHERE user_id = ?1`。
+    pub fn count_thumb_caches(&self, user_id: i64) -> Result<i64, DbError> {
+        let n: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM photo_thumb_cache WHERE user_id = ?1",
+                params![user_id],
+                |r| r.get(0),
+            )
+            .map_err(DbError::Sqlite)?;
+        Ok(n)
+    }
+
     /// 按相册 id 批量删除记录（删除相册时调用）
     ///
     /// 返回删除的行数。注意：实际文件清理（缩略图磁盘）由调用方负责，
@@ -390,5 +406,21 @@ mod tests {
         let hits = db.lookup_thumb_caches(&["PH1".into()]).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].thumb_path, warm_thumb);
+    }
+
+    /// count_thumb_caches：返回当前用户的表行数
+    #[test]
+    fn count_thumb_caches_user_isolated() {
+        let db = mem_db();
+        // user 1 有 3 条
+        db.upsert_thumb_caches(&[
+            rec("H1", "/a/1.jpg", "/t/1.webp"),
+            rec("H2", "/a/2.jpg", "/t/2.webp"),
+            rec("H3", "/a/3.jpg", "/t/3.webp"),
+        ])
+        .unwrap();
+        assert_eq!(db.count_thumb_caches(1).unwrap(), 3);
+        // user 2 看不到
+        assert_eq!(db.count_thumb_caches(2).unwrap(), 0);
     }
 }
