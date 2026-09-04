@@ -17,6 +17,24 @@ use serde::Serialize;
 
 use super::{DbError, Database};
 
+/// FTS5 虚拟表索引损坏（SQLITE_CORRUPT_VTAB = SQLITE_CORRUPT(11) | (1 << 8) = 267）
+///
+/// `photo_content_fts` 是外部内容表（`content='photo_content_scan'`），索引由触发器维护。
+/// 一旦索引与主表失步（典型场景：FTS5 为后续版本新增，旧库主表已有数据但索引为空），
+/// UPDATE/DELETE 触发器执行的 `'delete'` 命令会直接抛该错误，
+/// 使**整批入库事务回滚**——这正是「全局照片扫描入库」报
+/// `database disk image is malformed` 的根因。
+const SQLITE_CORRUPT_VTAB: i32 = 267;
+
+/// 是否为 FTS5 索引失步导致的虚拟表损坏错误（可被索引重建自愈）
+fn is_fts_corrupt(e: &DbError) -> bool {
+    matches!(
+        e,
+        DbError::Sqlite(rusqlite::Error::SqliteFailure(err, _))
+            if err.extended_code == SQLITE_CORRUPT_VTAB
+    )
+}
+
 /// 待写入的内容扫描记录（一次扫描一行，按 photo_hash upsert）
 ///
 /// `person_ids` / `top3_json` 以 JSON 文本存库（其余为标量），读取时反序列化。
@@ -229,42 +247,88 @@ impl Database {
                     VALUES ('delete', old.id, old.photo_hash, old.content);
              END;"
         );
+        // 启动自愈：索引与内容表失步时重建索引。
+        // 不修复的话，后续任何一次扫描入库都会因 'delete' 未命中索引抛
+        // SQLITE_CORRUPT_VTAB(267) 而整批失败（旧库升级后首次重扫必然触发）。
+        // 失败也不阻断启动（写入路径还有一次兜底自愈）。
+        let _ = self.repair_fts_index();
+        Ok(())
+    }
+
+    /// 校验 FTS5 索引与内容表的一致性，不一致则从主表全量重建（自愈）
+    ///
+    /// 外部内容表（`content='photo_content_scan'`）的索引只由触发器维护，以下情况会失步：
+    /// 1. FTS5 为后续版本引入：旧库主表已有数据，索引却是空的；
+    /// 2. 索引曾损坏且未修复。
+    ///
+    /// 失步后再执行一次 `'delete'` 就会抛 SQLITE_CORRUPT_VTAB(267)，
+    /// 导致所有写入（扫描入库）全部失败，因此必须在启动与写入失败时自愈。
+    ///
+    /// 主表为空时索引必然一致，直接跳过，避免每次启动的无谓开销。
+    pub fn repair_fts_index(&self) -> Result<(), DbError> {
+        let total: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM photo_content_scan", [], |r| r.get(0))
+            .unwrap_or(0);
+        if total == 0 {
+            return Ok(());
+        }
+        // 索引真实条目数：外部内容表的 `SELECT COUNT(*) FROM photo_content_fts` 会退化为
+        // 扫描内容表（实测恒等于主表行数，检测不出缺行），故查 docsize 影子表——
+        // 每篇已索引文档一行，直接反映索引条目数，且为 O(1) 的 b-tree 计数（启动开销可忽略）。
+        match self
+            .conn
+            .query_row("SELECT COUNT(*) FROM photo_content_fts_docsize", [], |r| r.get::<_, i64>(0))
+        {
+            Ok(n) if n == total => return Ok(()), // 快路径：行数一致即视为健康
+            Ok(_) => {}                           // 缺行/多出 → 落到下方重建
+            Err(_) => {
+                // 影子表不可读（未来版本改名）：退化为 FTS5 自带完整性校验，
+                // 通过则说明索引与内容表一致，可跳过重建。
+                if self
+                    .conn
+                    .execute_batch(
+                        "INSERT INTO photo_content_fts(photo_content_fts) VALUES('integrity-check');",
+                    )
+                    .is_ok()
+                {
+                    return Ok(());
+                }
+            }
+        }
+        // rebuild：以主表为准全量重建索引（幂等，数据不丢）
+        self.conn
+            .execute_batch("INSERT INTO photo_content_fts(photo_content_fts) VALUES('rebuild');")
+            .map_err(DbError::Sqlite)?;
         Ok(())
     }
 
     /// 写入/覆盖一条内容扫描记录（按 photo_hash 唯一标定）
     ///
     /// 二次扫描同哈希 → 用新结果覆盖（以二次扫描为准，需求 R2）。
+    /// 与批量写入共用同一条 UPSERT（含 FEAT-026 全部列），避免两条 SQL 行为分叉。
     pub fn upsert_photo_content(&self, rec: &PhotoContentRecord) -> Result<(), DbError> {
-        self.conn.execute(
-            "INSERT INTO photo_content_scan
-                (photo_hash, path, parent_dir, album_id, user_id, content,
-                 category, sub_category, label, confidence, top3_json, person_ids, person_count,
-                 shoot_time, location, shutter_speed, iso, aperture, focal_length, lat, lon, scanned_at)
-             VALUES (?1,?2,?3,?4,?5,?6, ?7,?8,?9,?10,?11,?12,?13, ?14,?15,?16,?17,?18,?19,?20,?21,?22)
-             ON CONFLICT(photo_hash) DO UPDATE SET
-                 path=excluded.path, parent_dir=excluded.parent_dir, album_id=excluded.album_id,
-                 content=excluded.content, category=excluded.category, sub_category=excluded.sub_category,
-                 label=excluded.label, confidence=excluded.confidence, top3_json=excluded.top3_json,
-                 person_ids=excluded.person_ids, person_count=excluded.person_count,
-                 shoot_time=excluded.shoot_time, location=excluded.location,
-                 shutter_speed=excluded.shutter_speed, iso=excluded.iso, aperture=excluded.aperture,
-                 focal_length=excluded.focal_length, lat=excluded.lat, lon=excluded.lon,
-                 scanned_at=excluded.scanned_at",
-            params![
-                rec.photo_hash, rec.path, rec.parent_dir, rec.album_id, rec.user_id, rec.content,
-                rec.category, rec.sub_category, rec.label, rec.confidence, rec.top3_json,
-                rec.person_ids, rec.person_count,
-                rec.shoot_time, rec.location, rec.shutter_speed, rec.iso, rec.aperture,
-                rec.focal_length, rec.lat, rec.lon,
-                Database::now_secs(),
-            ],
-        )?;
-        Ok(())
+        self.upsert_photo_contents(std::slice::from_ref(rec))
     }
 
     /// 批量写入内容扫描记录（同一事务，原子性）
+    ///
+    /// FTS5 索引失步自愈：外部内容表的同步触发器在索引与主表不一致时会抛
+    /// SQLITE_CORRUPT_VTAB(267)，使整批事务回滚、扫描入库整体失败。
+    /// 这里捕获该错误 → 重建索引 → 重试一次；仍失败才向上抛。
     pub fn upsert_photo_contents(&self, recs: &[PhotoContentRecord]) -> Result<(), DbError> {
+        match self.upsert_photo_contents_inner(recs) {
+            Ok(()) => Ok(()),
+            Err(e) if is_fts_corrupt(&e) => {
+                let _ = self.repair_fts_index();
+                self.upsert_photo_contents_inner(recs)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// 事务内批量写入（无自愈，供 `upsert_photo_contents` 重试复用）
+    fn upsert_photo_contents_inner(&self, recs: &[PhotoContentRecord]) -> Result<(), DbError> {
         let tx: Transaction = self.conn.unchecked_transaction()?;
         for rec in recs {
             upsert_one(&tx, rec)?;
@@ -950,5 +1014,104 @@ mod tests {
         // 其他用户看不到
         let map_u2 = db.count_scanned_by_album(2).unwrap();
         assert!(map_u2.is_empty());
+    }
+
+    /// 构造「FTS5 索引与主表失步」状态：主表保留数据，索引被替换为空表
+    ///
+    /// 还原旧库升级场景：FTS5（commit 0f1e1ff）晚于 photo_content_fts 所属主表引入，
+    /// 旧库主表已有数据而索引为空。此处不经过 `init_content_schema`，
+    /// 以免其自带的启动自愈把索引提前修好。
+    fn desync_fts_index(db: &Database) {
+        db.conn.execute_batch("DROP TABLE photo_content_fts;").unwrap();
+        db.conn
+            .execute_batch(
+                "CREATE VIRTUAL TABLE photo_content_fts USING fts5(
+                    photo_hash,
+                    content,
+                    tokenize='porter unicode61',
+                    content='photo_content_scan',
+                    content_rowid='id'
+                );",
+            )
+            .unwrap();
+    }
+
+    /// 锁定根因：索引失步后，未经自愈的写入确实抛 SQLITE_CORRUPT_VTAB(267)
+    ///
+    /// 这正是「全局照片扫描入库」报 `database disk image is malformed` 的直接来源：
+    /// 二次扫描走 `ON CONFLICT DO UPDATE` → 触发 'delete' 未命中索引 → 整批事务回滚。
+    #[test]
+    fn fts_desync_write_reports_corrupt_vtab() {
+        let db = mem_db();
+        db.upsert_photo_content(&sample_rec("H1", "/x/a.jpg")).unwrap();
+        desync_fts_index(&db);
+
+        let again = PhotoContentRecord {
+            label: Some("labrador".into()),
+            ..sample_rec("H1", "/x/a.jpg")
+        };
+        let err = db
+            .upsert_photo_contents_inner(std::slice::from_ref(&again))
+            .expect_err("索引失步时写入应失败");
+        assert!(
+            is_fts_corrupt(&err),
+            "期望 SQLITE_CORRUPT_VTAB(267)，实际: {err:?}"
+        );
+    }
+
+    /// 写入路径自愈：索引失步时重建索引并重试，入库不失败
+    #[test]
+    fn upsert_self_heals_when_fts_index_desynced() {
+        let db = mem_db();
+        db.upsert_photo_content(&sample_rec("H1", "/x/a.jpg")).unwrap();
+        desync_fts_index(&db);
+
+        // 二次扫描同一哈希 → 走 ON CONFLICT DO UPDATE → 触发 'delete' 未命中索引
+        let again = PhotoContentRecord {
+            label: Some("labrador".into()),
+            ..sample_rec("H1", "/x/a.jpg")
+        };
+        db.upsert_photo_contents(std::slice::from_ref(&again))
+            .expect("索引失步应自愈重试，不应抛 CORRUPT_VTAB");
+
+        // 自愈后索引已重建：搜索命中且为二次扫描结果
+        let hits = db.search_photo_content("狗", 1, None).unwrap();
+        assert_eq!(hits.len(), 1, "重建索引后应能搜到该照片");
+        assert_eq!(hits[0].label.as_deref(), Some("labrador"));
+    }
+
+    /// 启动自愈：`repair_fts_index` 检测失步并重建，后续写入恢复正常
+    #[test]
+    fn repair_fts_index_rebuilds_when_desynced() {
+        let db = mem_db();
+        db.upsert_photo_content(&sample_rec("H1", "/x/a.jpg")).unwrap();
+        desync_fts_index(&db);
+
+        db.repair_fts_index().expect("失步索引应重建成功");
+
+        // 重建后可直接写入（不再触发 'delete' 未命中）
+        let again = PhotoContentRecord {
+            label: Some("labrador".into()),
+            ..sample_rec("H1", "/x/a.jpg")
+        };
+        db.upsert_photo_contents_inner(std::slice::from_ref(&again))
+            .expect("重建后写入应正常");
+        // 主表幂等：仍是 1 行
+        let total: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM photo_content_scan", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 1);
+    }
+
+    /// 索引正常时 `repair_fts_index` 应为空操作（不误伤已有索引、不重建）
+    #[test]
+    fn repair_fts_index_noop_when_healthy() {
+        let db = mem_db();
+        db.upsert_photo_content(&sample_rec("H1", "/x/a.jpg")).unwrap();
+        db.repair_fts_index().unwrap();
+        // 重建会改动索引，但主表数据不变、搜索仍命中
+        let hits = db.search_photo_content("狗", 1, None).unwrap();
+        assert_eq!(hits.len(), 1);
     }
 }
