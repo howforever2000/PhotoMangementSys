@@ -194,7 +194,9 @@ function openLightbox(photoPath: string) {
  * - 年度回顾：跳到对应年份（Timeline 页会按年自动选中并定位）。
  */
 function gotoMonth(m: MonthGroup) {
-  router.push({ path: "/timeline", query: { year: String(m.year), month: String(m.month) } });
+  // month 必须传两位 "MM" 格式（如 "08"）：Timeline 分组 id 为 `y-{y}-m-{MM}`，
+  // 之前 String(Number) 丢失前导零，1~9 月 getElementById 落空 → 停在年份顶部（早期月份照片）。
+  router.push({ path: "/timeline", query: { year: String(m.year), month: m.key.slice(5, 7) } });
 }
 
 function gotoYear(y: YearGroup) {

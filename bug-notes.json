@@ -352,6 +352,52 @@
         "Tauri invoke 会做严格的类型校验，前端表单值（尤其 <select>）需在调用前转为后端期望的数字类型",
         "数值型过滤条件建议统一用 toNum 转换，避免字符串/数字混用"
       ]
+    },
+    {
+      "id": "BUG-2026-0907-001",
+      "date": "2026-09-07",
+      "status": "open",
+      "title": "thumbnail 存量测试过期：find_and_thumb / legacy_thumb_reuse 仍断言 JPEG 时代行为",
+      "module": "缩略图 / src-tauri/src/thumbnail.rs",
+      "symptom": [
+        "cargo test 全量 2 failed：thumbnail::tests::find_and_thumb（assert thumb_path.ends_with(.jpg) 失败，实际产出 .webp）",
+        "thumbnail::tests::legacy_thumb_reuse（断言 legacy JPEG 字节被逐字节复用失败：left=JPEG(FFD8) right=WebP(RIFF/WEBP)）"
+      ],
+      "root_cause": {
+        "summary": "提交 0f1e1ff 把缩略图改为 WebP 编码（FEAT-044 又改指纹缓存命名），两个旧测试未同步更新断言。",
+        "detail": [
+          "find_and_thumb 断言 .jpg 后缀，现管线产出 .webp 文件名",
+          "legacy_thumb_reuse 的前提「指纹文件逐字节复用 legacy JPEG」在 WebP 重编码管线下不成立"
+        ]
+      },
+      "solution": "待确认后修复：更新两个测试断言以适配 WebP 管线（后缀断言改 .webp、复用断言改为「不重生成/同路径幂等」语义）。注：与 FEAT-044 懒加载改动无关，HEAD 9553095 未改动状态下同样失败（存量问题）。",
+      "lessons": [
+        "切换缩略图编码格式/缓存命名时，同步更新格式相关测试断言"
+      ]
+    },
+    {
+      "id": "BUG-2026-0907-002",
+      "date": "2026-09-07",
+      "status": "resolved",
+      "title": "回忆页故事·按月卡片点击跳转错位：1~9 月定位落空停在年份顶部",
+      "module": "智慧相册-回忆 / Memories.vue + Timeline.vue",
+      "symptom": [
+        "故事·按月板块部分卡片（1~9 月）点击后未定位到对应月份照片分组，而是落在该年最早月份的照片位置",
+        "10/11/12 月卡片跳转正常 → 症状呈「部分卡片跳错」"
+      ],
+      "root_cause": {
+        "summary": "跨页 query 月份格式不一致：Memories 传 String(Number) 无前导零（month=8），Timeline 分组 id 用 shoot_time.slice(5,7) 有前导零（y-2025-m-08），getElementById('y-2025-m-8') 落空不滚动；yearFilter 已切到目标年 → 页面停在顶部（最早月份照片）。",
+        "detail": [
+          "Memories.vue gotoMonth: query { month: String(m.month) }，m.month 为 Number → 1~9 月丢前导零",
+          "Timeline.vue applyJumpQuery: highlightKey=`y-${y}-m-${m}` 直接拼 query 原值，与 DOM id 不匹配",
+          "次要：el 为 null 时 highlightKey 永不清除（高亮态残留）"
+        ]
+      },
+      "solution": "双侧修复（方案A）：① Memories gotoMonth 改传 m.key.slice(5,7)（两位 MM 格式，修源头）；② Timeline applyJumpQuery 对纯数字 month 归一化 padStart(2,'0')（兼容 8/08 旧链接），月份锚点落空回退滚到年份锚点 y-{y} 并改高亮年份，任何分支最终都清除 highlightKey。vue-tsc --noEmit 通过。",
+      "lessons": [
+        "跨页面锚点跳转协议（query → DOM id）两侧格式必须对齐，拼接 id 前先归一化",
+        "定位元素查找失败要有年份级兜底，且临时高亮状态必须在所有分支收敛清除"
+      ]
     }
   ]
 }

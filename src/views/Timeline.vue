@@ -182,25 +182,29 @@ onMounted(async () => {
  */
 function applyJumpQuery() {
   const y = String(route.query.year ?? "").trim();
-  const m = String(route.query.month ?? "").trim();
+  const mRaw = String(route.query.month ?? "").trim();
   if (!y) return;
+  // 月份归一化为两位 "MM" 格式（兼容 "8"/"08" 两种入参，与分组 id `y-{y}-m-{MM}` 对齐）
+  const m = mRaw && /^\d+$/.test(mRaw) ? mRaw.padStart(2, "0") : mRaw;
   // 1. 选中该年（保持其他年折叠效果由过滤器收敛到仅当前年）
   yearFilter.value = y;
-  if (m) {
-    // 高亮定位到月份
-    highlightKey.value = `y-${y}-m-${m}`;
-  } else {
-    highlightKey.value = `y-${y}`;
-  }
+  // 高亮定位目标：月份 → 无月份时定位年份
+  highlightKey.value = m ? `y-${y}-m-${m}` : `y-${y}`;
   // 等待 computed groups 渲染完
   nextTick(() => {
-    const el = document.getElementById(highlightKey.value!);
+    // 月份锚点落空时回退到年份锚点（保证至少定位到该年，不停在顶部早期月份）
+    const monthEl = m ? document.getElementById(`y-${y}-m-${m}`) : null;
+    const el = monthEl ?? document.getElementById(`y-${y}`);
     if (el) {
+      if (!monthEl) highlightKey.value = `y-${y}`; // 回退年份时高亮年份分组
       el.scrollIntoView({ behavior: "smooth", block: "start" });
       // 高亮动画 1.8s 后清除
       window.setTimeout(() => {
         highlightKey.value = null;
       }, 1800);
+    } else {
+      // 锚点不存在（异常 query）也要清高亮，避免状态残留
+      highlightKey.value = null;
     }
   });
 }
