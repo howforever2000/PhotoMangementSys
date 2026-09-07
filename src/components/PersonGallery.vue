@@ -17,6 +17,10 @@ import { useThemeStore } from "../stores/theme";
 const theme = useThemeStore();
 /** 用于调用 prewarmThumbs 等相册级缩略图命令 */
 const albumStore = useAlbumStore();
+
+/** FEAT-046：外部跳转定位的人物 id（回忆页近期人物 → /smart?tab=face&person={pid}）
+ *  加载完成后自动打开该人物的照片弹窗；无跳转场景不传，行为不变 */
+const props = defineProps<{ focusPid?: string | null }>();
 /** 卡片/弹窗底色：跟随主题浅深模式，保证文字始终可读 */
 const surfaceStyle = computed(() => theme.cardStyle);
 const persons = ref<PersonInfo[]>([]);
@@ -107,6 +111,11 @@ async function load() {
       } catch {
         /* 原图缺失等：回退占位 */
       }
+    }
+    // FEAT-046：携带 focusPid → 自动打开该人物的照片弹窗
+    if (props.focusPid) {
+      const target = persons.value.find((p) => p.id === props.focusPid);
+      if (target) await openPhotos(target);
     }
   } catch (e) {
     loadError.value = String(e);
