@@ -398,6 +398,52 @@
         "跨页面锚点跳转协议（query → DOM id）两侧格式必须对齐，拼接 id 前先归一化",
         "定位元素查找失败要有年份级兜底，且临时高亮状态必须在所有分支收敛清除"
       ]
+    },
+    {
+      "id": "BUG-2026-0916-001",
+      "date": "2026-09-16",
+      "status": "resolved",
+      "title": "人物照片弹窗部分缩略图永久占位：归属相册解析失败即不生成缩略图",
+      "module": "人物 / lib.rs get_person_photos + p_is_under",
+      "symptom": [
+        "人物界面点头像查看照片，滑动查看部分图片占位，tooltip「缩略图生成中或原图不可用」",
+        "原图实际存在且缩略图本可快速生成",
+        "日志实锤：get_person_photos pid=P085 → n=69 thumb_hit=0 generated=68（1 张 None）"
+      ],
+      "root_cause": {
+        "summary": "get_person_photos 先做归属相册解析（p_is_under 前缀匹配当前用户相册），解析失败直接返回 thumb=None 完全不走生成；前端 prewarm 兜底又只处理 album_id!=null 的缺失项 → 永久占位。",
+        "detail": [
+          "数据复现：P085 一张照片位于 img\\手机照片\\未知年份\\无地点\\，不在任何相册目录下（扫描过人脸后相册记录被删/路径体系变更），原图存在",
+          "次要：p_is_under 用 strip_prefix 严格区分大小写/分隔符，NTFS 下大小写差异也会误判为无归属",
+          "日志无 unresolved/gen_failed 计数，无法从日志直接定位"
+        ]
+      },
+      "solution": "①归属解析失败时以 album_id=0（无归属缓存命名空间）照常生成/复用缩略图，thumb 有值，album_id 保持 None（Lightbox 有 openOriginal 兜底）；②p_is_under Windows 归一化（分隔符统一+大小写不敏感+前缀边界），补单测；③出口日志补 unresolved/gen_failed 计数 + 无归属样例 + 生成失败逐条 log_error。fix 提交 6102002。",
+      "lessons": [
+        "「缩略图生成不应依赖业务归属解析成功」——缓存键(album_id=0)与业务归属(album_id=None)解耦",
+        "路径前缀匹配在 Windows 必须归一化大小写与分隔符"
+      ]
+    },
+    {
+      "id": "BUG-2026-0916-002",
+      "date": "2026-09-16",
+      "status": "open",
+      "title": "网格缩略图 WebP 嵌套命名与 flat JPG 命名两套并存，thumb_hit 永远为 0",
+      "module": "缩略图 / thumbnail.rs grid_thumb_cache_name vs ensure_grid_thumb",
+      "symptom": [
+        "日志 get_person_photos thumb_hit=0（69 张全部走 ensure_grid_thumb 生成/复用）",
+        "grid_thumb_cache_name 产出 album_{id}_photo_{subdir}/{fp}.webp，无任何代码写该路径"
+      ],
+      "root_cause": {
+        "summary": "0f1e1ff 引入 WebP 命名（grid_thumb_cache_name）但生成端 ensure_grid_thumb 仍是 flat album_{id}_photo_{fp}.jpg，两套命名不一致。",
+        "detail": [
+          "get_person_photos 第一步按 WebP 名查缓存永远落空，多一次无效文件 stat；缓存可能双份占用磁盘"
+        ]
+      },
+      "solution": "待定：统一为单一命名（建议生成端与查询端都走 grid_thumb_cache_name），需评估旧 flat JPG 缓存迁移/清理策略。",
+      "lessons": [
+        "缓存命名变更必须同时改生成端与查询端"
+      ]
     }
   ]
 }
