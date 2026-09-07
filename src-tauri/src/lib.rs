@@ -2126,6 +2126,43 @@ async fn get_person_avatar(
     r
 }
 
+/// FEAT-047：人物自选头像 —— 用户在人物照片弹窗指定一张照片作为头像封面
+///
+/// 中心方裁 96×96 JPEG 覆盖 `avatars/avatar_{pid}.jpg`（get_person_avatar 的
+/// is_file() 缓存命中自选结果，优先于代表脸自动裁剪）。解码在阻塞线程执行。
+#[tauri::command]
+async fn set_person_avatar_from_photo(
+    pid: String,
+    photo_path: String,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let _t = log_call!("set_person_avatar_from_photo", &format!("pid={pid}"));
+    if !std::path::Path::new(&photo_path).is_file() {
+        logger::log_call_end_with("set_person_avatar_from_photo", _t, "ERR | 原图不存在");
+        return Err("所选照片不存在".into());
+    }
+    let cache_str = avatars_dir(&app)?
+        .join(format!("avatar_{pid}.jpg"))
+        .to_string_lossy()
+        .into_owned();
+    let src = photo_path;
+    let dst = cache_str.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        persons::set_avatar_from_photo(
+            std::path::Path::new(&src),
+            std::path::Path::new(&dst),
+        )
+    })
+    .await
+    .map_err(|e| format!("头像任务线程失败: {e}"))?;
+    match &r {
+        Ok(_) => logger::log_call_end_with("set_person_avatar_from_photo", _t, "OK | custom"),
+        Err(e) => logger::log_call_end_with("set_person_avatar_from_photo", _t, &format!("ERR | {e}")),
+    }
+    r?;
+    Ok(cache_str)
+}
+
 /// 人物注册表：重命名人物（直写 persons.db）
 #[tauri::command]
 fn rename_person(pid: String, name: String) -> Result<(), String> {
@@ -2896,6 +2933,7 @@ pub fn run() {
             list_person_photos,
             get_person_photos,
             get_person_avatar,
+            set_person_avatar_from_photo,
             rename_person,
             merge_persons,
             delete_person,

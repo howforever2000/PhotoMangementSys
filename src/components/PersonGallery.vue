@@ -29,6 +29,13 @@ const loadError = ref("");
 const actionMsg = ref("");
 /** pid → 头像 URL（获取失败无键，回退首字占位） */
 const avatarMap = ref<Record<string, string>>({});
+/** FEAT-047：头像资源 URL 时间戳（自选头像覆盖同路径文件后破 webview 图片缓存） */
+const avatarTs = ref(Date.now());
+
+/** 头像 asset URL：附时间戳参数，同名覆盖后仍能刷新显示 */
+function avatarUrl(_pid: string, path: string): string {
+  return `${convertFileSrc(path)}?t=${avatarTs.value}`;
+}
 
 /* ---- 行内重命名 ---- */
 const editingId = ref<string | null>(null);
@@ -82,7 +89,7 @@ async function doMerge() {
       pid: target.id,
       forceRefresh: true,
     });
-    avatarMap.value = { ...avatarMap.value, [target.id]: convertFileSrc(fresh) };
+    avatarMap.value = { ...avatarMap.value, [target.id]: avatarUrl(target.id, fresh) };
     flash(`已将 ${displayName(source)}（${source.face_count} 张脸）并入 ${displayName(target)}`);
     await load();
   } catch (e) {
@@ -107,7 +114,7 @@ async function load() {
           pid: p.id,
           forceRefresh: false,
         });
-        avatarMap.value = { ...avatarMap.value, [p.id]: convertFileSrc(cachePath) };
+        avatarMap.value = { ...avatarMap.value, [p.id]: avatarUrl(p.id, cachePath) };
       } catch {
         /* 原图缺失等：回退占位 */
       }
@@ -193,6 +200,35 @@ function closePhotos() {
 function openPhoto(i: number) {
   lightboxIndex.value = i;
   lightboxOpen.value = true;
+}
+
+/* ---- FEAT-047：自选头像（照片弹窗内指定一张照片作为头像封面） ---- */
+/** 正在设置中的照片路径（防重复点击）；null = 空闲 */
+const settingAvatar = ref<string | null>(null);
+
+async function setAvatar(p: PersonInfo, photoPath: string) {
+  if (settingAvatar.value) return;
+  settingAvatar.value = photoPath;
+  try {
+    const cachePath = await invoke<string>("set_person_avatar_from_photo", {
+      pid: p.id,
+      photoPath,
+    });
+    avatarTs.value = Date.now();
+    avatarMap.value = { ...avatarMap.value, [p.id]: avatarUrl(p.id, cachePath) };
+    flash(`已将所选照片设为 ${displayName(p)} 的头像`);
+  } catch (e) {
+    flash(`设置头像失败：${String(e)}`);
+  } finally {
+    settingAvatar.value = null;
+  }
+}
+
+/** 模板入口：从查看弹窗安全取当前人物（v-if 作用域内必然存在） */
+function onSetAvatar(photoPath: string) {
+  const p = viewingPerson.value;
+  if (!p) return;
+  void setAvatar(p, photoPath);
 }
 
 /** 本地指令：进入重命名时自动聚焦 */
@@ -327,6 +363,15 @@ const vFocus: Directive<HTMLElement> = {
                 @click="openPhoto(i)"
               />
               <div v-else class="viewer-photo viewer-photo-missing" :title="`缩略图生成中或原图不可用：${it.path}`">🖼</div>
+              <!-- FEAT-047：自选头像入口 -->
+              <button
+                class="viewer-set-avatar"
+                title="设为该人物的头像"
+                :disabled="settingAvatar === it.path"
+                @click.stop="onSetAvatar(it.path)"
+              >
+                {{ settingAvatar === it.path ? "设置中…" : "设为头像" }}
+              </button>
             </div>
           </div>
           <!-- 原图看图器 -->
@@ -569,6 +614,31 @@ body.theme-dark .pg-action-msg {
   gap: 8px;
 }
 .viewer-cell { position: relative; }
+
+/* FEAT-047：自选头像悬浮按钮 */
+.viewer-set-avatar {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  padding: 4px 0;
+  font-size: 11px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.viewer-cell:hover .viewer-set-avatar,
+.viewer-set-avatar:focus-visible {
+  opacity: 1;
+}
+.viewer-set-avatar:disabled {
+  cursor: wait;
+  opacity: 1;
+}
 .viewer-photo {
   width: 100%;
   aspect-ratio: 1;

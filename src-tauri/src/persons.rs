@@ -318,6 +318,16 @@ pub fn crop_avatar_local(pid: &str, cache_path: &Path) -> Result<(), String> {
         .map_err(|e| format!("写头像缓存失败: {e}"))
 }
 
+/// FEAT-047：人物自选头像 —— 用户指定一张照片作为头像封面
+///
+/// 中心方裁 96×96 JPEG（与自动裁剪同尺寸）写入 cache_path；覆盖后
+/// `get_person_avatar` 的 is_file() 缓存判断自然命中自选结果，
+/// 优先于 crop_avatar_local 的代表脸自动裁剪。
+/// photo_path 的归属由调用方保证（人物照片弹窗内来源），这里只负责落盘。
+pub fn set_avatar_from_photo(photo_path: &Path, cache_path: &Path) -> Result<(), String> {
+    crate::avatar::crop_square(photo_path, cache_path, 96)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
