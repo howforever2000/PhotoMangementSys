@@ -1202,7 +1202,90 @@
       ],
       "created_at": "2026-09-07T16:01:37+08:00",
       "updated_at": "2026-09-07T16:01:37+08:00"
+    },
+    {
+      "id": "FEAT-045",
+      "name": "用户头像（基本信息弹窗添加/移除）",
+      "status": "done",
+      "description": "Home.vue 左上角用户卡与「基本信息」弹窗支持设置/移除头像：plugin-dialog 选本地图片 → 后端 avatar.rs 中心方裁 256×256 JPEG（JPEG 分级降采样快速路径防大图卡顿）落盘 app_data/avatars/user_{id}.jpg 并写 users.avatar_path，User 全链路带回 avatar 字段。",
+      "related_files": [
+        "src-tauri/src/avatar.rs",
+        "src-tauri/src/auth.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/db/mod.rs",
+        "src/types/auth.ts",
+        "src/stores/auth.ts",
+        "src/views/Home.vue"
+      ],
+      "keywords": [
+        "用户头像",
+        "avatar",
+        "基本信息",
+        "FEAT-045"
+      ],
+      "implementation": {
+        "backend": "users 表 avatar_path 列（CREATE + ALTER 容错迁移）；set_user_avatar / clear_user_avatar 命令（spawn_blocking 解码）；avatar.rs crop_square 公共方裁模块",
+        "frontend": "stores/auth.ts setAvatar/clearAvatar；Home.vue user-chip 圆形头像 + 弹窗头像区块（预览/选图/移除，时间戳参数破图片缓存）"
+      },
+      "highlights": [
+        "头像设置无需密码验证；avatar.rs 被 FEAT-047 人物自选头像复用"
+      ],
+      "created_at": "2026-09-07T16:42:59+08:00",
+      "updated_at": "2026-09-07T16:42:59+08:00"
+    },
+    {
+      "id": "FEAT-046",
+      "name": "回忆·近期人物真实头像 + 点击跳转人物页",
+      "status": "done",
+      "description": "Memories 近期人物卡显示 get_person_avatar 真实头像（失败回退首字占位，异步填充不阻塞首屏）；点击跳转 /smart?tab=face&person={pid}，SmartAlbum 读 query 深链切人物 tab 并透传 focusPid，PersonGallery 加载后自动打开该人物照片弹窗。",
+      "related_files": [
+        "src/views/Memories.vue",
+        "src/views/SmartAlbum.vue",
+        "src/components/PersonGallery.vue"
+      ],
+      "keywords": [
+        "近期人物",
+        "头像",
+        "深链",
+        "跳转",
+        "FEAT-046"
+      ],
+      "implementation": {
+        "backend": "复用现有 get_person_avatar（无新命令）",
+        "frontend": "Memories loadPersonAvatars/gotoPerson；SmartAlbum query 深链（tab 合法性校验）；PersonGallery focusPid prop 自动 openPhotos"
+      },
+      "highlights": [
+        "无深链场景行为不变；SmartAlbum 首次支持 query 参数导航"
+      ],
+      "created_at": "2026-09-07T16:42:59+08:00",
+      "updated_at": "2026-09-07T16:42:59+08:00"
+    },
+    {
+      "id": "FEAT-047",
+      "name": "人物界面自选头像作为封面",
+      "status": "done",
+      "description": "PersonGallery 照片弹窗每格悬浮「设为头像」按钮：指定照片中心方裁 96×96 JPEG 覆盖 avatars/avatar_{pid}.jpg，get_person_avatar 的 is_file() 缓存自然命中自选结果（优先于代表脸自动裁剪）；头像 URL 统一时间戳参数破 webview 图片缓存。",
+      "related_files": [
+        "src-tauri/src/persons.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/PersonGallery.vue"
+      ],
+      "keywords": [
+        "人物",
+        "自选头像",
+        "封面",
+        "FEAT-047"
+      ],
+      "implementation": {
+        "backend": "set_person_avatar_from_photo 命令（spawn_blocking 解码）；persons.rs set_avatar_from_photo 领域包装（复用 avatar.rs）",
+        "frontend": "viewer-cell 悬浮按钮 + settingAvatar 防重复点击 + avatarUrl 助手（load/合并/自选三路径统一缓存破除）"
+      },
+      "highlights": [
+        "不动 persons.db 表结构，只覆盖头像缓存文件，与自动裁剪机制天然兼容"
+      ],
+      "created_at": "2026-09-07T16:42:59+08:00",
+      "updated_at": "2026-09-07T16:42:59+08:00"
     }
   ],
-  "updated": "2026-09-07T16:01:37+08:00"
+  "updated": "2026-09-07T16:42:59+08:00"
 }
