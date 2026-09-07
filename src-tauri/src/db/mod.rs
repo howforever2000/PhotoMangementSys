@@ -222,7 +222,8 @@ impl Database {
                 email         TEXT    NOT NULL UNIQUE,
                 phone         TEXT    NOT NULL UNIQUE,
                 password_hash TEXT    NOT NULL,
-                created_at    INTEGER NOT NULL
+                created_at    INTEGER NOT NULL,
+                avatar_path   TEXT
             );",
         )?;
         self.conn.execute_batch(

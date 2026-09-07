@@ -14,6 +14,7 @@ macro_rules! log_call {
 }
 
 mod auth;
+mod avatar;
 mod content;
 mod crypto;
 mod db;
@@ -2029,6 +2030,72 @@ fn avatars_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir.join("avatars"))
 }
 
+/// FEAT-045：设置当前用户头像
+///
+/// 输入本地图片绝对路径（前端 plugin-dialog 选择）→ 中心方裁 256×256 JPEG →
+/// `app_data/avatars/user_{id}.jpg` → 写库返回更新后的用户。
+/// 图片解码在阻塞线程执行，避免大图占用异步运行时。
+#[tauri::command]
+async fn set_user_avatar(
+    source_path: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, SessionState>,
+) -> Result<auth::User, String> {
+    let _t = log_call!("set_user_avatar", &format!("source={source_path}"));
+    let user_id = require_user(&session)?;
+    if !std::path::Path::new(&source_path).is_file() {
+        logger::log_call_end_with("set_user_avatar", _t, "ERR | 图片不存在");
+        return Err("所选图片不存在".into());
+    }
+    let dir = avatars_dir(&app)?;
+    let avatar_path = dir.join(format!("user_{user_id}.jpg"));
+    let avatar_path_str = avatar_path.to_string_lossy().into_owned();
+    let src = source_path;
+    let cropped = tauri::async_runtime::spawn_blocking(move || {
+        crate::avatar::crop_square(
+            std::path::Path::new(&src),
+            std::path::Path::new(&avatar_path_str),
+            256,
+        )
+    })
+    .await
+    .map_err(|e| format!("头像任务线程失败: {e}"))?;
+    if let Err(e) = cropped {
+        logger::log_call_end_with("set_user_avatar", _t, &format!("ERR | {e}"));
+        return Err(e);
+    }
+    // 覆盖写同一路径：前端展示需带时间戳参数破 webview 图片缓存
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let r = auth::update_user_avatar(db.conn(), user_id, Some(avatar_path.to_string_lossy().into_owned()));
+    match &r {
+        Ok(u) => logger::log_call_end_with("set_user_avatar", _t, &format!("OK | id={}", u.id)),
+        Err(e) => logger::log_call_end_with("set_user_avatar", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// FEAT-045：移除当前用户头像（删文件 + 库内置空），返回更新后的用户
+#[tauri::command]
+async fn clear_user_avatar(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, SessionState>,
+) -> Result<auth::User, String> {
+    let _t = log_call!("clear_user_avatar", "");
+    let user_id = require_user(&session)?;
+    if let Ok(dir) = avatars_dir(&app) {
+        let _ = std::fs::remove_file(dir.join(format!("user_{user_id}.jpg")));
+    }
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let r = auth::update_user_avatar(db.conn(), user_id, None);
+    match &r {
+        Ok(u) => logger::log_call_end_with("clear_user_avatar", _t, &format!("OK | id={}", u.id)),
+        Err(e) => logger::log_call_end_with("clear_user_avatar", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
 /// 获取人物头像（本地优先：磁盘缓存命中直接返回，未命中则从代表脸 bbox 本地裁剪）
 ///
 /// 完全离线可用，不再依赖 Python 微服务。
@@ -2777,6 +2844,8 @@ pub fn run() {
             get_current_user,
             reset_password,
             update_profile,
+            set_user_avatar,
+            clear_user_avatar,
             // 相册管理（按用户隔离）
             create_album,
             get_albums,

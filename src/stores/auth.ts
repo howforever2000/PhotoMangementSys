@@ -66,5 +66,17 @@ export const useAuthStore = defineStore("auth", {
       this.user = await invoke<User>("update_profile", { input });
       return this.user;
     },
+
+    /** FEAT-045：设置头像（本地图片绝对路径，后端方裁落盘并写库） */
+    async setAvatar(sourcePath: string): Promise<User> {
+      this.user = await invoke<User>("set_user_avatar", { sourcePath });
+      return this.user;
+    },
+
+    /** FEAT-045：移除头像（后端删文件 + 置空） */
+    async clearAvatar(): Promise<User> {
+      this.user = await invoke<User>("clear_user_avatar");
+      return this.user;
+    },
   },
 });

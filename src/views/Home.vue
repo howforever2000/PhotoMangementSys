@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, reactive, ref, computed } from "vue";
 import { useRouter } from "vue-router";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAuthStore } from "../stores/auth";
 import { useThemeStore } from "../stores/theme";
 
@@ -103,6 +105,46 @@ const profileOpen = ref(false);
 const profileForm = reactive({ email: "", phone: "", current_password: "" });
 const profileError = ref("");
 const profileSuccess = ref("");
+/** FEAT-045：头像资源 URL 时间戳（覆盖写同路径文件后破 webview 图片缓存） */
+const avatarTs = ref(Date.now());
+
+/** 头像 asset URL：附时间戳避免同名覆盖后缓存不刷新 */
+function avatarUrl(p: string): string {
+  return `${convertFileSrc(p)}?t=${avatarTs.value}`;
+}
+
+/** FEAT-045：选本地图片设为头像（后端中心方裁 256×256 落盘并写库） */
+async function chooseAvatar() {
+  profileError.value = "";
+  try {
+    const picked = await openFileDialog({
+      multiple: false,
+      directory: false,
+      title: "选择头像图片",
+      filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif"] }],
+    });
+    if (typeof picked !== "string") return;
+    await auth.setAvatar(picked);
+    avatarTs.value = Date.now();
+    profileSuccess.value = "头像已更新";
+    setTimeout(() => (profileSuccess.value = ""), 2000);
+  } catch (e) {
+    profileError.value = String(e);
+  }
+}
+
+/** FEAT-045：移除头像（后端删文件 + 置空） */
+async function removeAvatar() {
+  profileError.value = "";
+  try {
+    await auth.clearAvatar();
+    avatarTs.value = Date.now();
+    profileSuccess.value = "已移除头像";
+    setTimeout(() => (profileSuccess.value = ""), 2000);
+  } catch (e) {
+    profileError.value = String(e);
+  }
+}
 
 function openProfile() {
   profileForm.email = auth.user?.email ?? "";
@@ -243,7 +285,13 @@ onBeforeUnmount(() => {
         </div>
         <div class="user-box" :style="cardStyle">
           <button class="user-chip" type="button" @click="openProfile" :title="'修改基本信息'">
-            <span class="avatar">👤</span>
+            <img
+              v-if="auth.user?.avatar"
+              :src="avatarUrl(auth.user.avatar)"
+              class="avatar avatar-img"
+              alt=""
+            />
+            <span v-else class="avatar">👤</span>
             <span class="user-name">{{ username() }}</span>
           </button>
           <button
@@ -290,6 +338,29 @@ onBeforeUnmount(() => {
             <div class="pm-dialog-head">
               <h3 :style="{ color: theme.textColor }">基本信息</h3>
               <span class="pm-hint">修改需输入当前密码</span>
+            </div>
+            <!-- FEAT-045：头像（选图/移除即时生效，无需密码） -->
+            <div class="pm-field">
+              <label>头像</label>
+              <div class="avatar-edit">
+                <img
+                  v-if="auth.user?.avatar"
+                  :key="auth.user.avatar + avatarTs"
+                  :src="avatarUrl(auth.user.avatar)"
+                  class="avatar-preview"
+                  alt=""
+                />
+                <span v-else class="avatar-preview avatar-ph">👤</span>
+                <button class="pm-btn" type="button" @click="chooseAvatar">选择图片</button>
+                <button
+                  v-if="auth.user?.avatar"
+                  class="pm-btn"
+                  type="button"
+                  @click="removeAvatar"
+                >
+                  移除头像
+                </button>
+              </div>
             </div>
             <div class="pm-field">
               <label>用户名</label>
@@ -487,6 +558,33 @@ onBeforeUnmount(() => {
 
 .avatar {
   font-size: 16px;
+}
+
+/* FEAT-045：用户头像（user-chip 圆形小图 + 弹窗预览） */
+.avatar-img {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+.avatar-edit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.avatar-preview {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(127, 127, 127, 0.12);
+}
+.avatar-ph {
+  font-size: 26px;
 }
 
 .user-name {
