@@ -1020,41 +1020,58 @@ fn get_person_photos(
     let thumbs_dir = thumbs_dir(&app).ok();
     let mut out = Vec::with_capacity(paths.len());
     let mut generated = 0usize;
+    let mut unresolved = 0usize;
+    let mut gen_failed = 0usize;
+    let mut unresolved_samples: Vec<String> = Vec::new();
     for path in paths {
         // 解析归属相册 → 计算缩略图缓存名 → 若存在直接复用
         let resolved: Option<i64> = albums
             .iter()
-            .filter(|(_, ap)| {
-                p_is_under(ap, &path)
-            })
+            .filter(|(_, ap)| p_is_under(ap, &path))
             .max_by_key(|(_, ap)| ap.len())
             .map(|(id, _)| *id);
-        let cached = resolved.and_then(|album_id| {
+        if resolved.is_none() {
+            unresolved += 1;
+            if unresolved_samples.len() < 3 {
+                unresolved_samples.push(path.clone());
+            }
+        }
+        // BUG-2026-0916-001 修复：归属解析失败（相册记录被删 / 路径变更 / 大小写差异）
+        // 不代表原图不可用 —— 以 album_id=0 的「无归属缓存命名空间」照常生成/复用
+        // 缩略图，避免这类照片永久占位。album_id 字段保持 None（前端 Lightbox 对
+        // 无归属照片走系统打开器兑底）。
+        let thumb_album = resolved.unwrap_or(0);
+        let cached = (|| {
             let thumbs = thumbs_dir.as_ref()?;
-            let name = thumbnail::grid_thumb_cache_name(album_id, std::path::Path::new(&path));
+            let name = thumbnail::grid_thumb_cache_name(thumb_album, std::path::Path::new(&path));
             let tp = thumbs.join("grid").join(&name);
             if tp.is_file() {
-                Some(tp.to_string_lossy().to_string())
-            } else {
-                // 缺图 → 调用 ensure_grid_thumb 补齐（256px JPEG 生成后落盘，返回缓存路径），
-                // 后续任何场景（PhotoGrid/Timeline/Memories/智能搜索）再访问都直接命中。
-                // 补齐失败（原图丢失等）静默兑底 None，前端可回退占位。
-                // 本路径（人物照片）不写表（不在主流程加锁），保持与旧版兼容。
-                match thumbnail::ensure_grid_thumb(
-                    album_id,
-                    std::path::Path::new(&path),
-                    thumbs,
-                    None,
-                    0,
-                ) {
-                    Ok(p) => {
-                        generated += 1;
-                        Some(p)
-                    }
-                    Err(_) => None,
+                return Some(tp.to_string_lossy().to_string());
+            }
+            // 缺图 → 调用 ensure_grid_thumb 补齐（256px 生成后落盘，返回缓存路径），
+            // 后续任何场景（PhotoGrid/Timeline/Memories/智能搜索）再访问都直接命中。
+            // 本路径（人物照片）不写表（不在主流程加锁），保持与旧版兼容。
+            match thumbnail::ensure_grid_thumb(
+                thumb_album,
+                std::path::Path::new(&path),
+                thumbs,
+                None,
+                0,
+            ) {
+                Ok(p) => {
+                    generated += 1;
+                    Some(p)
+                }
+                Err(e) => {
+                    gen_failed += 1;
+                    logger::log_error(
+                        "get_person_photos",
+                        &format!("缩略图补齐失败: {path} | {e:?}"),
+                    );
+                    None
                 }
             }
-        });
+        })();
         out.push(PersonPhotoItem {
             path,
             thumb: cached,
@@ -1062,11 +1079,16 @@ fn get_person_photos(
         });
     }
     let cached_count = out.iter().filter(|i| i.thumb.is_some()).count();
+    let unresolved_hint = if unresolved_samples.is_empty() {
+        String::new()
+    } else {
+        format!(" | 无归属样例: {:?}", unresolved_samples)
+    };
     logger::log_call_end_with(
         "get_person_photos",
         _t,
         &format!(
-            "OK | n={} thumb_hit={} generated={generated}",
+            "OK | n={} thumb_hit={} generated={generated} unresolved={unresolved} gen_failed={gen_failed}{unresolved_hint}",
             out.len(),
             cached_count.saturating_sub(generated),
         ),
@@ -1075,12 +1097,26 @@ fn get_person_photos(
 }
 
 /// 判断照片路径是否位于相册目录之下（目录是祖先，且照片不是目录本身）。
+///
+/// Windows 归一化比较：分隔符 `/`→`\\` 统一 + 大小写不敏感（NTFS 不区分大小写）
+/// + 前缀边界校验（避免 `D:\\a` 误匹配 `D:\\ab\\c.jpg`）。历史实现用
+/// `strip_prefix` 严格区分大小写/分隔符，相册路径与 faces 记录不一致时会把
+/// 存在的原图误判为「无归属」（BUG-2026-0916-001）。
 fn p_is_under(dir: &str, photo: &str) -> bool {
-    std::path::Path::new(photo)
-        .strip_prefix(std::path::Path::new(dir))
-        .ok()
-        .map(|rel| !rel.as_os_str().is_empty())
-        .unwrap_or(false)
+    fn norm(p: &str) -> String {
+        p.replace('/', "\\").to_lowercase()
+    }
+    let d = norm(dir);
+    let d = d.trim_end_matches('\\');
+    let ph = norm(photo);
+    if d.is_empty() || ph.len() <= d.len() {
+        return false;
+    }
+    if !ph.starts_with(d) {
+        return false;
+    }
+    // 前缀边界：目录后必须是分隔符，且照片还有非空文件部分
+    ph.len() > d.len() + 1 && ph[d.len()..].starts_with('\\')
 }
 /// 多用户隔离：仅能更新归属当前用户的相册。
 #[tauri::command]
@@ -2951,4 +2987,30 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::p_is_under;
+
+    /// BUG-2026-0916-001：归属解析归一化 —— 大小写 / 分隔符 / 前缀边界
+    #[test]
+    fn p_is_under_normalized() {
+        // 基本包含
+        assert!(p_is_under(r"D:\Pics\album", r"D:\Pics\album\a.jpg"));
+        // 大小写不敏感（NTFS）
+        assert!(p_is_under(r"D:\Pics\Album", r"d:\pics\album\a.jpg"));
+        // 分隔符混用（正斜杠记录）
+        assert!(p_is_under(r"D:\Pics\album", "D:/Pics/album/b/c.jpg"));
+        // 相册路径带尾分隔符
+        assert!(p_is_under(r"D:\Pics\album\", r"D:\Pics\album\a.jpg"));
+        // 前缀边界：D:\Pics\alb 不应匹配 D:\Pics\album\a.jpg
+        assert!(!p_is_under(r"D:\Pics\alb", r"D:\Pics\album\a.jpg"));
+        // 照片即目录本身（无剩余文件部分）
+        assert!(!p_is_under(r"D:\Pics\album", r"D:\Pics\album"));
+        assert!(!p_is_under(r"D:\Pics\album", r"D:\Pics\album\"));
+        // 目录之外 / 兄弟目录
+        assert!(!p_is_under(r"D:\Pics\album", r"D:\Other\a.jpg"));
+        assert!(!p_is_under(r"D:\Pics\album", r"D:\Pics\album2\a.jpg"));
+    }
 }
