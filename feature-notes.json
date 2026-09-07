@@ -1169,7 +1169,40 @@
       ],
       "created_at": "2026-08-27T12:00:00+08:00",
       "updated_at": "2026-08-27T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-044",
+      "name": "照片缩略图反向索引缓存（photo_thumb_cache）+ 扫描入库预热 + 懒加载写表",
+      "status": "done",
+      "description": "新建 photo_thumb_cache 表（photo_hash 主键，与 photo_content_scan 同源指纹）作 path→thumb_path 反向索引。触发点：① 扫描入库（scan_album_content / scan_album_combined）落库后 prewarm_thumbs_after_scan 同步生成本批缩略图并写表，智慧相册首屏查表 0 IO 命中；② 未入库照片在相册管理预览（AlbumDetail/PhotoGrid）走 get_photo_thumbs 懒加载：查表未命中现场生成 256px WebP 并写表，下次 0 IO 命中；③ get_photo_thumbs_count 返回 ThumbCoverage（cached/total_scanned/unthumbered），unthumbered 用 LEFT JOIN 精确统计「已入库但无缩略图行」。",
+      "related_files": [
+        "src-tauri/src/db/thumb_cache.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/thumbnail.rs",
+        "src-tauri/src/content.rs"
+      ],
+      "keywords": [
+        "thumb_cache",
+        "photo_thumb_cache",
+        "缩略图",
+        "预热",
+        "懒加载",
+        "ThumbCoverage",
+        "FEAT-044"
+      ],
+      "implementation": {
+        "backend": "db/thumb_cache.rs：upsert/lookup/delete×2/count/count_scanned_without_thumb（LEFT JOIN 精确口径）+ 9 个测试。lib.rs get_photo_thumbs 三步模式（主流程短锁查表 → spawn_blocking 纯文件系统生成 → 主流程短锁写表，避免 MutexGuard 跨线程）；get_photo_thumbs_count；prewarm_thumbs 手动预热。content.rs prewarm_thumbs_after_scan 挂在两条扫描入库主路径落库后。thumbnail.rs ensure_grid_thumbs_with_lookup 支持注入 db_lookup/on_generated 闭包。删除联动：delete_album_refs 清表 + delete_thumb_caches_by_paths。"
+      },
+      "highlights": [
+        "photo_hash 主键幂等：懒加载先/扫描入库先两个方向都不重复生成缩略图",
+        "查表/生成/写表三步拆分，锁不跨 spawn_blocking",
+        "扫描入库即预热：智慧相册首屏 0 IO 命中",
+        "懒加载写表自愈：未入库照片预览也能及时呈现缩略图",
+        "unthumbered 改 LEFT JOIN 精确口径（懒加载写表后 total_scanned-cached 旧口径失真）"
+      ],
+      "created_at": "2026-09-07T16:01:37+08:00",
+      "updated_at": "2026-09-07T16:01:37+08:00"
     }
   ],
-  "updated": "2026-08-27T12:00:00+08:00"
+  "updated": "2026-09-07T16:01:37+08:00"
 }

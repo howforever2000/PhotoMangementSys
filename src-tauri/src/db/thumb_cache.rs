@@ -36,7 +36,8 @@
 //! 1. `scan_album_content` / `scan_album_combined` 入库成功后，对 recs 列表
 //!    调 `prewarm_thumb_caches`，让入库即预热（解决"智慧相册首次进入需现场生成"）；
 //! 2. `get_photo_thumbs` 懒加载链路走同样的 `ensure_grid_thumb`，
-//!    命中表 → 即时返回（不改前端协议）。
+//!    命中表 → 0 IO 即时返回；未命中 → 现场生成并写表（不改前端协议）。
+//!    未入库照片靠该链路也能及时呈现缩略图（相册管理预览场景）。
 //!
 //! ## 写入策略
 //!
@@ -175,6 +176,27 @@ impl Database {
             .conn
             .query_row(
                 "SELECT COUNT(*) FROM photo_thumb_cache WHERE user_id = ?1",
+                params![user_id],
+                |r| r.get(0),
+            )
+            .map_err(DbError::Sqlite)?;
+        Ok(n)
+    }
+
+    /// FEAT-044（I4）：精确统计「已入库（photo_content_scan）但无缩略图缓存行」的数量
+    ///
+    /// 懒加载（`get_photo_thumbs` 未命中现场生成）也会写 `photo_thumb_cache`，
+    /// 未入库照片同样占行，`count_thumb_caches` 不再是 photo_content_scan
+    /// 已预热子集的近似。本方法用 LEFT JOIN 按 photo_hash 精确计算：
+    /// photo_content_scan 有、photo_thumb_cache 无 → 计入 unthumbered。
+    /// 多用户隔离：`WHERE s.user_id = ?1`。
+    pub fn count_scanned_without_thumb(&self, user_id: i64) -> Result<i64, DbError> {
+        let n: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM photo_content_scan s
+                 LEFT JOIN photo_thumb_cache t ON s.photo_hash = t.photo_hash
+                 WHERE s.user_id = ?1 AND t.photo_hash IS NULL",
                 params![user_id],
                 |r| r.get(0),
             )
@@ -422,5 +444,54 @@ mod tests {
         assert_eq!(db.count_thumb_caches(1).unwrap(), 3);
         // user 2 看不到
         assert_eq!(db.count_thumb_caches(2).unwrap(), 0);
+    }
+
+    /// FEAT-044（I4）：count_scanned_without_thumb —— 已入库但无缩略图行的精确统计
+    ///
+    /// 场景验证：
+    /// 1. 已入库无缩略图行（S3）→ 计入 unthumbered；
+    /// 2. 懒加载写表但未入库（H9）→ 占 thumb_cache 行，但**不**影响 unthumbered
+    ///    （旧口径 total_scanned - cached 会把这部分误算，本测试锁定新语义）；
+    /// 3. 多用户隔离。
+    #[test]
+    fn count_scanned_without_thumb_precise() {
+        let db = mem_db();
+        // 测试用最小 photo_content_scan（统计只依赖 photo_hash + user_id）
+        db.conn
+            .execute_batch(
+                "CREATE TABLE photo_content_scan (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    photo_hash TEXT NOT NULL UNIQUE,
+                    user_id    INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+        db.conn
+            .execute_batch(
+                "INSERT INTO photo_content_scan (photo_hash, user_id) VALUES
+                 ('S1', 1), ('S2', 1), ('S3', 1), ('SX', 2);",
+            )
+            .unwrap();
+        db.upsert_thumb_caches(&[
+            rec("S1", "/a/1.jpg", "/t/1.webp"),
+            rec("S2", "/a/2.jpg", "/t/2.webp"),
+            // S3 已入库但无缩略图行 → unthumbered
+            // H9 未入库但有缩略图行（懒加载写表场景）→ 不影响 unthumbered
+            rec("H9", "/a/9.jpg", "/t/9.webp"),
+        ])
+        .unwrap();
+        assert_eq!(
+            db.count_scanned_without_thumb(1).unwrap(),
+            1,
+            "user1 仅 S3 无缩略图行"
+        );
+        assert_eq!(db.count_scanned_without_thumb(2).unwrap(), 1, "user2 仅 SX");
+        // 旧口径失真验证：total_scanned(3) - cached(3) = 0，但真实未预热是 1
+        assert_eq!(db.count_thumb_caches(1).unwrap(), 3);
+        assert_ne!(
+            (3i64 - db.count_thumb_caches(1).unwrap()).max(0),
+            db.count_scanned_without_thumb(1).unwrap(),
+            "旧口径与精确口径不相等，证明 JOIN 统计必要"
+        );
     }
 }

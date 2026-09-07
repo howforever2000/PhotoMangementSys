@@ -493,33 +493,31 @@ fn list_album_photos(
 /// 批量生成/复用照片网格缩略图（供前端分批懒加载）
 ///
 /// - 输入：相册 id + 一批原图路径
-/// - 输出：`[(原图路径, 缩略图缓存路径)]`，缓存命中直接复用，未命中生成 256px JPEG
-/// - 在阻塞线程执行，避免首次生成占用异步运行时
+/// - 输出：`[(原图路径, 缩略图缓存路径)]`，表命中 0 IO 复用，未命中现场生成 256px JPEG
+/// - FEAT-044 三步模式：主流程短锁查表 → `spawn_blocking` 生成（纯文件系统）→
+///   主流程短锁写表，避免 `MutexGuard` 跨线程生命周期问题
+/// - 链路覆盖：
+///   1. 相册管理预览（AlbumDetail/PhotoGrid）：照片未入库时靠本命令懒加载 + 写表，
+///      下次同 `photo_hash` 查表直接命中，缩略图及时呈现；
+///   2. 智慧相册（时间线/回忆/智能搜索）：数据源已入库且扫描预热过，未命中仅在
+///      文件被修改 / 缓存丢失时出现，现场生成属自愈行为（幂等，不重生成已有项）。
 #[tauri::command]
 async fn get_photo_thumbs(
     album_id: i64,
     paths: Vec<String>,
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     session: tauri::State<'_, SessionState>,
 ) -> Result<Vec<(String, String)>, String> {
     let _t = log_call!("get_photo_thumbs", &format!("album_id={album_id} paths={}", paths.len()));
-    let _user_id = require_user(&session)?;
+    let user_id = require_user(&session)?;
     if paths.is_empty() {
         return Ok(Vec::new());
     }
     let requested = paths.len();
-
-    // FEAT-044（重构）：纯查表，**不再现场生成**。
-    //
-    // 产品语义：智慧相册子页面（时间线/回忆/智能搜索）只展示已扫描入库的照片，
-    // 入库在 scan_album_content / scan_album_combined 完成后已同步预热缩略图。
-    // 所以这里的 “查表未命中”不是「需要现场生成」，而是「该照片从未入库过 或
-    // 入库后表丢了 / 文件被修改」，前端收到「未命中」是正常状态 → 调子查表
-    // 统计“未预热覆盖率”提示用户扫描入库。
-    //
-    // 行为：命中的项返回 (原图路径, 缩略图路径)；未命中不返回（前端按占位展示）。
+    let thumbs_dir = thumbs_dir(&app).map_err(|e| e.to_string())?;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     // 1. 主流程加锁查表（短锁）
     let hit_map: HashMap<String, String> = {
@@ -554,39 +552,75 @@ async fn get_photo_thumbs(
         }
     };
 
-    // 2. 拼出 (source, thumb)：photo_hash → source 需反查，这里用 source_hashes 字典反向
-    let mut source_hash_pairs: Vec<(String, String)> = Vec::with_capacity(paths.len());
-    for p in &paths {
-        let path = std::path::Path::new(p);
-        if let Some((len, mtime)) = std::fs::metadata(path).ok().map(|md| {
-            (
-                md.len(),
-                md.modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0),
-            )
-        }) {
-            source_hash_pairs.push((p.clone(), crate::thumbnail::thumb_photo_hash(path, len, mtime)));
+    let hit_from_table = hit_map.len();
+
+    // 2. spawn_blocking：未命中项现场生成（纯文件系统，不持锁）。
+    //    磁盘上已有指纹命名缩略图但表未记录时，ensure_grid_thumb 只回路径不重生成。
+    #[derive(Default)]
+    struct GenBuf(std::sync::Mutex<Vec<(String, String, u64, u128)>>);
+    let gen_buf = Arc::new(GenBuf::default());
+    let gen_buf_for_cb = gen_buf.clone();
+    let hit_for_cb = hit_map;
+    let paths_for_blocking = paths.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::thumbnail::ensure_grid_thumbs_with_lookup(
+            album_id,
+            &paths_for_blocking,
+            &thumbs_dir,
+            &move |hashes| -> HashMap<String, String> {
+                let mut out = HashMap::new();
+                for h in hashes {
+                    if let Some(t) = hit_for_cb.get(h) {
+                        out.insert(h.clone(), t.clone());
+                    }
+                }
+                out
+            },
+            move |generated| {
+                if let Ok(mut g) = gen_buf_for_cb.0.lock() {
+                    g.extend(generated.iter().cloned());
+                }
+            },
+        )
+    })
+    .await
+    .map_err(|e| format!("缩略图懒加载任务失败: {e}"))?;
+
+    // 3. 主流程短锁写表：新生成项 upsert（photo_hash 主键幂等，下次 0 IO 命中）
+    {
+        let items = gen_buf.0.lock().map_err(|e| e.to_string())?;
+        if !items.is_empty() {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            let recs: Vec<db::ThumbCacheRecord> = items
+                .iter()
+                .map(|(src, thumb, len, mtime)| {
+                    let path = std::path::Path::new(src.as_str());
+                    let hash = crate::thumbnail::thumb_photo_hash(path, *len, *mtime);
+                    db::ThumbCacheRecord {
+                        photo_hash: hash,
+                        source_path: src.clone(),
+                        thumb_path: thumb.clone(),
+                        album_id: Some(album_id),
+                        user_id,
+                        size_bytes: *len,
+                        mtime_ns: *mtime,
+                    }
+                })
+                .collect();
+            if let Err(e) = db.upsert_thumb_caches(&recs) {
+                logger::log_error("thumb_cache", &format!("lazy-load upsert failed: {e:?}"));
+            }
         }
     }
 
-    let mut out: Vec<(String, String)> = Vec::with_capacity(paths.len());
-    for (source, hash) in &source_hash_pairs {
-        if let Some(thumb) = hit_map.get(hash) {
-            out.push((source.clone(), thumb.clone()));
-        }
-        // 未命中：跳过。前端能通过返回数组长度 / requested 比例推算「未预热项」，
-        // 或调 get_photo_thumbs_count 拿到精确统计。
-    }
-
+    // 统计：成功返回数 - 表命中数 = 本次新生成数
+    let generated = res.len().saturating_sub(hit_from_table);
     logger::log_call_end_with(
         "get_photo_thumbs",
         _t,
-        &format!("OK | hit={} miss={} requested={}", out.len(), requested - out.len(), requested),
+        &format!("OK | hit={hit_from_table} generated={generated} requested={requested}"),
     );
-    Ok(out)
+    Ok(res)
 }
 
 
@@ -1223,13 +1257,15 @@ async fn prewarm_thumbs(
 /// 返回当前用户的：
 /// - `cached`: `photo_thumb_cache` 中行数
 /// - `total_scanned`: `photo_content_scan` 中行数（已入库总数）
-/// - `unthumbered`: `total_scanned - cached`（已入库但未预热缩略图）
+/// - `unthumbered`: 精确统计「已入库但无缩略图缓存行」（LEFT JOIN 按 photo_hash 对齐）
 ///
 /// 前端场景：
 /// - 智慧相册首屏：拿 `unthumbered` 判断是否提示「N 张照片未扫描入库」。
 /// - 个人中心/性能面板：拿 cached / total_scanned 算覆盖率。
-/// - **`unthumbered` 只推荐作为轻量指标**（预热过程中会有中间态），不要用于
-///   限制调取流程。accuracy 需求时以 `get_photo_thumbs` 的「未命中数」为准。
+/// - **`unthumbered` 为 JOIN 精确口径**：懒加载（`get_photo_thumbs` 未命中现场生成）
+///   也会写 `photo_thumb_cache`，未入库照片同样占行，旧口径
+///   `total_scanned - cached` 已失真，不再使用。预热进行中会有中间态，
+///   不要用于限制调取流程。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ThumbCoverage {
     pub cached: i64,
@@ -1249,9 +1285,7 @@ fn get_photo_thumbs_count(
         let cached = db
             .count_thumb_caches(user_id)
             .map_err(|e| format!("{:?}", e))?;
-        // photo_content_scan 中的行数。photo_thumb_cache 不是 photo_content_scan 的子集
-        // （同一 hash 可能一个表有、一个表无），所以 “unthumbered” 的取
-        // total_scanned - cached 是粗略估计，老用户升级后这个数会大（是正常状态）。
+        // photo_content_scan 中的行数（已入库总数）。
         let total_scanned: i64 = db
             .conn()
             .query_row(
@@ -1260,7 +1294,12 @@ fn get_photo_thumbs_count(
                 |r| r.get(0),
             )
             .map_err(|e| format!("{:?}", e))?;
-        let unthumbered = (total_scanned - cached).max(0);
+        // FEAT-044（I4）：LEFT JOIN 精确统计「已入库但无缩略图缓存行」。
+        // 懒加载写表后未入库照片也占 photo_thumb_cache 行，
+        // 旧口径 total_scanned - cached 会失真，已废弃。
+        let unthumbered = db
+            .count_scanned_without_thumb(user_id)
+            .map_err(|e| format!("{:?}", e))?;
         Ok(ThumbCoverage {
             cached,
             total_scanned,
