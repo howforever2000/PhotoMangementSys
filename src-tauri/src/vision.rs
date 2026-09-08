@@ -133,8 +133,8 @@ fn kill_our_orphans() {
             .output();
     }
 }
-/// 服务启动就绪等待上限
-const READY_TIMEOUT: Duration = Duration::from_secs(15);
+/// 服务就绪等待上限（FEAT-051 后需加载 l/m 全通道模型，DML 首次初始化较慢）
+const READY_TIMEOUT: Duration = Duration::from_secs(90);
 /// FEAT-051：要求的服务 API 版本（GPU 开关 + 模型切换能力）；
 /// 探测到运行中服务版本过旧时自动 POST /shutdown 重启到新版本
 const VCR_API_VERSION: u64 = 2;
@@ -453,7 +453,8 @@ async fn ensure_service_ready(
         kill_our_orphans();
     }
 
-    // C. 冷启动：冷门段端口，spawn 后检测进程存活（bind 失败会立即退出），失败换端口重试
+    // C. 冷启动：冷门段端口；加载慢时「不杀进程」，落实例供下次收养继续等
+    let mut last_err: Option<String> = None;
     for _ in 0..3 {
         let port = pick_cold_port();
         if port == 0 {
@@ -464,6 +465,7 @@ async fn ensure_service_ready(
         // 等 800ms：bind 失败的 uvicorn 会立刻退出
         tokio::time::sleep(Duration::from_millis(800)).await;
         if !pid_alive(pid) {
+            last_err = Some("进程启动后立即退出（端口被占或运行时异常）".into());
             continue;
         }
         match poll_ready(client, &base, READY_TIMEOUT).await {
@@ -472,14 +474,18 @@ async fn ensure_service_ready(
                 save_instance(app, pid, port);
                 return Ok(());
             }
-            Err(_) => {
+            Err(timeout_err) => {
+                // 进程仍存活 = 正在加载模型 → 保留进程，落实例供收养，提示稍候
                 if pid_alive(pid) {
-                    kill_pid(pid);
+                    set_base(base.clone());
+                    save_instance(app, pid, port);
+                    return Err(timeout_err);
                 }
+                last_err = Some(timeout_err);
             }
         }
     }
-    Err("识别服务启动失败（多个候选端口均未成功）".into())
+    Err(last_err.unwrap_or_else(|| "识别服务启动失败".into()))
 }
 
 /// 轮询就绪；Loading 继续等，OldVersion 报版本错误，超时报错
@@ -498,7 +504,8 @@ async fn poll_ready(
             _ => {}
         }
         if Instant::now() > deadline {
-            return Err("识别服务就绪等待超时".into());
+            // 进程仍在加载模型：不杀（下次 ensure 会收养继续等），提示稍候
+            return Err("识别服务正在加载模型（大模型首次加载较慢），请稍候重试".into());
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
