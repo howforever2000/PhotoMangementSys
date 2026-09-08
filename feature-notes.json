@@ -1344,7 +1344,44 @@
       ],
       "created_at": "2026-09-08T09:33:05+08:00",
       "updated_at": "2026-09-08T09:33:05+08:00"
+    },
+    {
+      "id": "FEAT-050",
+      "name": "删除体系 + 预览组件评分/标签工具栏（分类/地点视图）",
+      "status": "done",
+      "description": "①删除双模式：delete_photos_to_trash（trash crate 移入系统回收站，可找回）+ delete_photo_records_by_paths（无相册版记录删除，本地文件保留），两者级联清理扫描记录与缩略图缓存（表行 + thumb_path 文件 + flat JPG/WebP 两套命名）；②预览组件（PhotoLightbox）底部工具栏：五星打星（复用既有 photo_ratings 体系，键盘 1-5，同星再点清除）、标签编辑（user_tags 列，覆盖式规范化保存 ≤20×30 字）、删除按钮（deletable prop 可选，emit 交父视图）；③分类/地点二级视图：批量管理模式（勾选/全选/删除选中）+ 右键菜单删除，删除方式选择弹窗 → ConfirmDialog 二次确认 → notify 结果提示，列表/聚合计数同步刷新。",
+      "related_files": [
+        "src-tauri/Cargo.toml",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/thumbnail.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src/components/PhotoLightbox.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/LocationGallery.vue"
+      ],
+      "keywords": [
+        "删除",
+        "回收站",
+        "trash",
+        "评分",
+        "标签",
+        "批量删除",
+        "右键删除",
+        "FEAT-050"
+      ],
+      "implementation": {
+        "backend": "trash = \"5\"；cleanup_thumb_caches_for_paths（删前清理，指纹依赖原图可读）；album_ids_by_paths / list_thumb_paths_by_sources / grid_thumb_cache_names_all；user_tags 列（CREATE + ALTER 迁移）；评分复用 photo_ratings 不重复建列",
+        "frontend": "Lightbox 状态自包含（watch path 拉 get_photo_ratings + get_photo_tags，即时保存）；既有调用方零行为变化（deletable 默认 false）；删除方式弹窗 + ConfirmDialog 两级防护"
+      },
+      "highlights": [
+        "评分复用既有 photo_ratings 表，避免重复体系",
+        "回收站删除与永久删除语义分离，误删可找回",
+        "预览器内删除自动切换下一张，聚合计数实时刷新"
+      ],
+      "created_at": "2026-09-08T10:17:06+08:00",
+      "updated_at": "2026-09-08T10:17:06+08:00"
     }
   ],
-  "updated": "2026-09-08T09:33:05+08:00"
+  "updated": "2026-09-08T10:17:06+08:00"
 }
