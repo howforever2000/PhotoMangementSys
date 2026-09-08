@@ -250,6 +250,7 @@ impl Database {
                 focal_length TEXT,
                 lat          REAL,
                 lon          REAL,
+                user_tags    TEXT,
                 scanned_at   INTEGER NOT NULL
             );",
         )?;
@@ -270,6 +271,10 @@ impl Database {
         let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN iso_num INTEGER;");
         let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN focal_num REAL;");
         let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN aperture_num REAL;");
+        // FEAT-050：用户标签（评分已有独立 photo_ratings 表，不重复建列）
+        let _ = self
+            .conn
+            .execute_batch("ALTER TABLE photo_content_scan ADD COLUMN user_tags TEXT;");
         let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN shutter_num REAL;");
         let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN tone_type TEXT;");
         let _ = self.conn.execute_batch("ALTER TABLE photo_content_scan ADD COLUMN avg_luma REAL;");
@@ -764,6 +769,54 @@ impl Database {
     /// 大图查看器在打开原图时调用：若 photo_content_scan 中已有该 path 的记录，
     /// 直接返回 AlbumContentRow；若无则返回 None（让上层调 ensure_photo_scanned 触发扫描）。
     /// 多用户隔离：限定 `user_id`。
+    /// FEAT-050：设置用户标签（整体覆盖式保存）
+    ///
+    /// 规范化：去空白、去重、过滤空值，上限 20 个、单个 30 字；存 JSON 数组。
+    pub fn set_photo_tags(
+        &self,
+        user_id: i64,
+        path: &str,
+        tags: &[String],
+    ) -> Result<Vec<String>, DbError> {
+        let mut clean: Vec<String> = Vec::new();
+        for t in tags {
+            let t = t.trim();
+            if t.is_empty() || t.chars().count() > 30 {
+                continue;
+            }
+            if !clean.iter().any(|x| x == t) {
+                clean.push(t.to_string());
+            }
+        }
+        clean.truncate(20);
+        let json = serde_json::to_string(&clean).map_err(|e| DbError::Other(format!("序列化标签失败: {e}")))?;
+        self.conn
+            .execute(
+                "UPDATE photo_content_scan SET user_tags = ?1 WHERE path = ?2 AND user_id = ?3",
+                params![json, path, user_id],
+            )
+            .map_err(DbError::Sqlite)?;
+        Ok(clean)
+    }
+
+    /// FEAT-050：读取单张照片的用户标签（预览组件自包含拉取用）
+    ///
+    /// 评分不在本方法内：已有 photo_ratings 表与 get_photo_ratings 命令，前端复用。
+    pub fn get_photo_tags(&self, user_id: i64, path: &str) -> Result<Vec<String>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT user_tags FROM photo_content_scan WHERE path = ?1 AND user_id = ?2",
+        )?;
+        let mut rows = stmt.query_map(params![path, user_id], |r| {
+            Ok(r.get::<_, Option<String>>(0)?
+                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                .unwrap_or_default())
+        })?;
+        match rows.next() {
+            Some(r) => r.map_err(DbError::Sqlite),
+            None => Ok(Vec::new()),
+        }
+    }
+
     pub fn get_photo_content_by_path(
         &self,
         path: &str,

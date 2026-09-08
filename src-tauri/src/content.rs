@@ -1066,6 +1066,51 @@ pub mod commands {
         r
     }
 
+    /// 设置照片用户标签（FEAT-050 覆盖式保存；返回规范化后的标签列表）
+    ///
+    /// 评分走既有 photo_ratings 体系（set_photo_rating / get_photo_ratings）。
+    #[tauri::command]
+    pub async fn set_photo_tags(
+        path: String,
+        tags: Vec<String>,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Vec<String>, String> {
+        let _t = log_call!("set_photo_tags", &format!("path={path} tags={}", tags.len()));
+        let user_id = require_user(&session)?;
+        let r = (|| -> Result<Vec<String>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.set_photo_tags(user_id, &path, &tags)
+                .map_err(|e| format!("{:?}", e))
+        })();
+        match &r {
+            Ok(list) => logger::log_call_end_with("set_photo_tags", _t, &format!("OK | tags={}", list.len())),
+            Err(e) => logger::log_call_end_with("set_photo_tags", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
+    /// 读取照片用户标签（FEAT-050；无记录/无标签返回空数组）
+    #[tauri::command]
+    pub async fn get_photo_tags(
+        path: String,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Vec<String>, String> {
+        let _t = log_call!("get_photo_tags", &format!("path={path}"));
+        let user_id = require_user(&session)?;
+        let r = (|| -> Result<Vec<String>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.get_photo_tags(user_id, &path)
+                .map_err(|e| format!("{:?}", e))
+        })();
+        match &r {
+            Ok(list) => logger::log_call_end_with("get_photo_tags", _t, &format!("OK | tags={}", list.len())),
+            Err(e) => logger::log_call_end_with("get_photo_tags", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
     /// 智能搜索（FEAT-034）：关键词宽匹配 + 多维筛选，跨相册
     #[allow(clippy::too_many_arguments)]
     #[tauri::command]

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { AlbumContentRow } from "../types/content";
 import type { PhotoInfo } from "../types/photo";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
+import { useNotify } from "../composables/useNotify";
 import { categoryLabel } from "../utils/categoryLabel";
 
 /**
@@ -32,9 +33,11 @@ const props = defineProps<{
   index: number;
   /** 人物编号 → 自定义命名（无扫描/未命名时回退编号） */
   persons?: Record<string, string>;
+  /** FEAT-050：是否启用删除按钮（默认 false，不影响既有调用方；删除事件交由父视图处理） */
+  deletable?: boolean;
 }>();
 
-const emit = defineEmits<{ (e: "close"): void }>();
+const emit = defineEmits<{ (e: "close"): void; (e: "delete", path: string): void }>();
 
 const current = ref(props.index);
 const imgLoading = ref(true);
@@ -114,9 +117,22 @@ function next() {
 }
 
 function onKey(e: KeyboardEvent) {
+  // 输入框获焦时（如标签输入）仅响应 Esc 退出编辑，避免数字/方向键误触
+  const tag = (e.target as HTMLElement | null)?.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA") {
+    if (e.key === "Escape") {
+      tagPanelOpen.value = false;
+      (e.target as HTMLElement).blur();
+    }
+    return;
+  }
   if (e.key === "Escape") {
     e.preventDefault(); // 避免全局 ESC 处理同时触发 router.back
     emit("close");
+  }
+  else if (e.key >= "1" && e.key <= "5") {
+    // FEAT-050：数字键 1-5 快捷打星
+    void setRating(Number(e.key));
   }
   else if (e.key === "ArrowLeft") prev();
   else if (e.key === "ArrowRight") next();
@@ -238,6 +254,7 @@ watch(
   (p) => {
     void loadPhotoInfo(p);
     void tryEnsureScanned(p);
+    void loadUserMeta(p);
   },
   { immediate: true },
 );
@@ -302,6 +319,82 @@ function personLabel(pid: string): string {
   const name = props.persons?.[pid];
   return name && name !== pid ? `${name}（${pid}）` : pid;
 }
+
+/* ---- FEAT-050：评分 / 标签 / 删除工具栏 ---- */
+const notify = useNotify();
+/** 用户评分（0 = 未打分；复用既有 photo_ratings 体系） */
+const rating = ref(0);
+/** 用户标签（photo_content_scan.user_tags） */
+const tags = ref<string[]>([]);
+const tagInput = ref("");
+const tagPanelOpen = ref(false);
+
+async function loadUserMeta(path: string) {
+  rating.value = 0;
+  tags.value = [];
+  tagInput.value = "";
+  tagPanelOpen.value = false;
+  try {
+    const rows = await albumStore.getPhotoRatings([path]);
+    rating.value = rows.find(([p]) => p === path)?.[1] ?? 0;
+  } catch {
+    /* 评分读取失败按未打分处理 */
+  }
+  try {
+    tags.value = await invoke<string[]>("get_photo_tags", { path });
+  } catch {
+    /* 标签读取失败按空处理 */
+  }
+}
+
+/** 打星：点击设分，同星再点清除（rating 0 = 清除，与既有 photo_ratings 语义一致） */
+async function setRating(n: number) {
+  const path = photo.value.path;
+  const prev = rating.value;
+  const next = n === prev ? 0 : n;
+  rating.value = next;
+  try {
+    await albumStore.setPhotoRatings([path], next);
+    notify.success(next ? `已评 ${next} 星` : "已清除评分");
+  } catch (e) {
+    rating.value = prev;
+    notify.error("保存评分失败", String(e));
+  }
+}
+
+/** 保存标签（覆盖式；后端返回规范化后的列表） */
+async function saveTags(next: string[]) {
+  const path = photo.value.path;
+  try {
+    tags.value = await invoke<string[]>("set_photo_tags", { path, tags: next });
+  } catch (e) {
+    notify.error("保存标签失败", String(e));
+  }
+}
+
+function addTag() {
+  const t = tagInput.value.trim();
+  if (!t) return;
+  if (tags.value.includes(t)) {
+    tagInput.value = "";
+    return;
+  }
+  if (tags.value.length >= 20) {
+    notify.warning("标签数量已达上限", "每张照片最多 20 个标签");
+    return;
+  }
+  void saveTags([...tags.value, t]);
+  tagInput.value = "";
+}
+
+function removeTag(t: string) {
+  void saveTags(tags.value.filter((x) => x !== t));
+}
+
+/** 删除按钮：仅向父视图发出请求，确认流程与列表更新由父视图负责 */
+function askDelete() {
+  emit("delete", photo.value.path);
+}
 </script>
 
 <template>
@@ -311,9 +404,50 @@ function personLabel(pid: string): string {
     <!-- 操作提示与当前倍率 -->
     <div class="lb-zoombar">
       <span class="lb-hint">
-        <kbd>←</kbd> <kbd>→</kbd> 切图 · <kbd>Esc</kbd> 关闭 · <kbd>Ctrl</kbd>+滚轮缩放 · 双击放大/复原
+        <kbd>←</kbd> <kbd>→</kbd> 切图 · <kbd>Esc</kbd> 关闭 · <kbd>Ctrl</kbd>+滚轮缩放 · 双击放大/复原 · <kbd>1-5</kbd> 打星
       </span>
       <span v-if="scale !== 1" class="lb-scale">{{ Math.round(scale * 100) }}%</span>
+    </div>
+
+    <!-- FEAT-050：评分 / 标签 / 删除工具栏 -->
+    <div class="lb-toolbar" @click.stop>
+      <div class="lb-stars" title="点击打星，同星再点清除（快捷键 1-5）">
+        <button
+          v-for="n in 5"
+          :key="n"
+          class="lb-star"
+          :class="{ on: n <= rating }"
+          @click="setRating(n)"
+        >★</button>
+        <span class="lb-star-val">{{ rating ? `${rating} 星` : "未评分" }}</span>
+      </div>
+      <span class="lb-tb-sep"></span>
+      <button class="lb-tb-btn" title="添加 / 编辑标签" @click="tagPanelOpen = !tagPanelOpen">
+        🏷 标签<span v-if="tags.length"> · {{ tags.length }}</span>
+      </button>
+      <button
+        v-if="deletable"
+        class="lb-tb-btn danger"
+        title="删除此照片（二次确认）"
+        @click="askDelete"
+      >🗑 删除</button>
+    </div>
+
+    <!-- 标签编辑面板 -->
+    <div v-if="tagPanelOpen" class="lb-tag-panel" @click.stop>
+      <div v-if="tags.length" class="lb-tag-list">
+        <span v-for="t in tags" :key="t" class="lb-tag">
+          {{ t }}
+          <button class="lb-tag-x" title="移除标签" @click="removeTag(t)">✕</button>
+        </span>
+      </div>
+      <input
+        v-model="tagInput"
+        class="lb-tag-input"
+        placeholder="输入标签后回车添加（最多 20 个）"
+        maxlength="30"
+        @keydown.enter.prevent="addTag"
+      />
     </div>
 
     <button v-if="photos.length > 1" class="lb-nav lb-prev" title="上一张 (←)" @click="prev">‹</button>
@@ -596,6 +730,131 @@ function personLabel(pid: string): string {
 .lb-retry-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* FEAT-050：评分 / 标签 / 删除工具栏（底部居中，避让左侧元数据面板与两侧翻页箭头） */
+.lb-toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  background: rgba(20, 22, 30, 0.74);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+}
+.lb-stars {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.lb-star {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 1px;
+  transition: color 0.12s, transform 0.1s;
+}
+.lb-star:hover {
+  transform: scale(1.15);
+}
+.lb-star.on {
+  color: #ffce3a;
+}
+.lb-star-val {
+  color: #c8cdd9;
+  font-size: 11.5px;
+  margin-left: 4px;
+  min-width: 44px;
+}
+.lb-tb-sep {
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.2);
+}
+.lb-tb-btn {
+  background: none;
+  border: none;
+  color: #e7e9ee;
+  font-size: 12.5px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+.lb-tb-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.lb-tb-btn.danger {
+  color: #ff8787;
+}
+.lb-tb-btn.danger:hover {
+  background: rgba(255, 100, 100, 0.18);
+}
+
+/* 标签编辑面板（工具栏上方） */
+.lb-tag-panel {
+  position: absolute;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(20, 22, 30, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
+  backdrop-filter: blur(6px);
+  max-width: 70vw;
+}
+.lb-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.lb-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 10px;
+  font-size: 12px;
+  color: #e7e9ee;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+}
+.lb-tag-x {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.lb-tag-x:hover {
+  color: #ff8787;
+}
+.lb-tag-input {
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 12.5px;
+  padding: 5px 10px;
+  outline: none;
+  min-width: 240px;
+}
+.lb-tag-input:focus {
+  border-color: rgba(106, 141, 240, 0.8);
 }
 
 /* 像素分布图（RGB 直方图） */
