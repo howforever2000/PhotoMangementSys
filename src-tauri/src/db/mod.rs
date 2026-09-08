@@ -9,7 +9,9 @@
 
 pub mod content;
 pub mod thumb_cache;
-pub use content::{AlbumContentRow, ContentFilters, ContentSearchHit, PhotoContentRecord, SmartHit};
+pub use content::{
+    AlbumContentRow, CategoryGroupRow, ContentFilters, ContentSearchHit, PhotoContentRecord, SmartHit,
+};
 pub use thumb_cache::ThumbCacheRecord;
 
 use crate::RecentlyExcludedItem;

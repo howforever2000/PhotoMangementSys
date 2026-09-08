@@ -165,6 +165,54 @@ pub struct ContentFilters {
     pub tone_type: Option<String>,
 }
 
+/// FEAT-048：内容分类两级聚合行（大类 → 细类，含计数与封面）
+#[derive(Debug, Clone, Serialize)]
+pub struct CategoryGroupRow {
+    pub category: String,
+    pub sub_category: Option<String>,
+    pub count: i64,
+    /// 该大类封面（置信度最高的一张原图路径；可能为 None）
+    pub cover_path: Option<String>,
+    /// 封面照片归属相册（get_photo_thumbs 复用真实相册缓存命名；可能为 None）
+    pub cover_album_id: Option<i64>,
+}
+
+/// 内容命中行统一列清单（list_timeline / list_photos_by_category 共用，
+/// 列序与 `map_content_search_hit` 严格对应）
+const CONTENT_HIT_SELECT: &str = "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
+            p.content, p.category, p.sub_category, p.label, p.confidence,
+            p.person_ids, p.shoot_time, p.location, p.iso, p.aperture,
+            p.shutter_speed, p.focal_length
+     FROM photo_content_scan p
+     LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id";
+
+/// 内容命中行统一映射（与 CONTENT_HIT_SELECT 列序严格对应）
+fn map_content_search_hit(r: &rusqlite::Row) -> rusqlite::Result<ContentSearchHit> {
+    Ok(ContentSearchHit {
+        id: r.get(0)?,
+        path: r.get(1)?,
+        parent_dir: r.get(2)?,
+        album_id: r.get(3)?,
+        album_name: r.get(4)?,
+        album_path: r.get(5)?,
+        content: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+        category: r.get(7)?,
+        sub_category: r.get(8)?,
+        label: r.get(9)?,
+        confidence: r.get(10)?,
+        person_ids: r
+            .get::<_, Option<String>>(11)?
+            .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+            .unwrap_or_default(),
+        shoot_time: r.get(12)?,
+        location: r.get(13)?,
+        iso: r.get(14)?,
+        aperture: r.get(15)?,
+        shutter_speed: r.get(16)?,
+        focal_length: r.get(17)?,
+    })
+}
+
 impl Database {
     /// 建表/迁移内容扫描表（`IF NOT EXISTS`，应用启动安全调用）
     pub fn init_content_schema(&self) -> Result<(), DbError> {
@@ -466,42 +514,91 @@ impl Database {
     /// 复用 `ContentSearchHit`（含 path / album_name / shoot_time / location / category / label），
     /// 供前端按年·月分组展示。
     pub fn list_timeline(&self, user_id: i64) -> Result<Vec<ContentSearchHit>, DbError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
-                    p.content, p.category, p.sub_category, p.label, p.confidence,
-                    p.person_ids, p.shoot_time, p.location, p.iso, p.aperture,
-                    p.shutter_speed, p.focal_length
-             FROM photo_content_scan p
-             LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
-             WHERE p.user_id = ?1
-             ORDER BY (p.shoot_time IS NULL), p.shoot_time ASC, p.id ASC",
-        )?;
-        let rows = stmt.query_map(params![user_id], |r| {
-            Ok(ContentSearchHit {
-                id: r.get(0)?,
-                path: r.get(1)?,
-                parent_dir: r.get(2)?,
-                album_id: r.get(3)?,
-                album_name: r.get(4)?,
-                album_path: r.get(5)?,
-                content: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
-                category: r.get(7)?,
-                sub_category: r.get(8)?,
-                label: r.get(9)?,
-                confidence: r.get(10)?,
-                person_ids: r
-                    .get::<_, Option<String>>(11)?
-                    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
-                    .unwrap_or_default(),
-                shoot_time: r.get(12)?,
-                location: r.get(13)?,
-                iso: r.get(14)?,
-                aperture: r.get(15)?,
-                shutter_speed: r.get(16)?,
-                focal_length: r.get(17)?,
-            })
-        })?;
+        let sql = format!(
+            "{CONTENT_HIT_SELECT} WHERE p.user_id = ?1
+             ORDER BY (p.shoot_time IS NULL), p.shoot_time ASC, p.id ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![user_id], map_content_search_hit)?;
         rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
+    }
+
+    /// FEAT-048：按大类/细类列出照片（分类浏览二级视图）
+    ///
+    /// - `sub_category = None` → 该大类全部照片（含细类为空的行）
+    /// - 复用时间线行结构（含相册名/拍摄时间等展示字段）；多用户隔离
+    pub fn list_photos_by_category(
+        &self,
+        user_id: i64,
+        category: &str,
+        sub_category: Option<&str>,
+    ) -> Result<Vec<ContentSearchHit>, DbError> {
+        let sql = format!(
+            "{CONTENT_HIT_SELECT} WHERE p.user_id = ?1 AND p.category = ?2
+                AND (?3 IS NULL OR p.sub_category = ?3)
+             ORDER BY (p.shoot_time IS NULL), p.shoot_time DESC, p.id DESC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows =
+            stmt.query_map(params![user_id, category, sub_category], map_content_search_hit)?;
+        rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
+    }
+
+    /// FEAT-048：内容分类两级聚合（大类 → 细类计数 + 各大类封面）
+    ///
+    /// - 行粒度 (category, sub_category)，前端聚合为大类卡片 + 细类 chips
+    /// - 封面取该大类置信度最高的一张（窗口函数一次取全）
+    /// - 多用户隔离
+    pub fn list_content_categories(&self, user_id: i64) -> Result<Vec<CategoryGroupRow>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT category, sub_category, COUNT(*)
+             FROM photo_content_scan
+             WHERE user_id = ?1 AND category IS NOT NULL AND category != ''
+             GROUP BY category, sub_category
+             ORDER BY COUNT(*) DESC",
+        )?;
+        let mut rows: Vec<(String, Option<String>, i64)> = stmt
+            .query_map(params![user_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+
+        let mut cover_stmt = self.conn.prepare(
+            "SELECT category, path, album_id FROM (
+                 SELECT category, path, album_id,
+                        ROW_NUMBER() OVER (PARTITION BY category ORDER BY confidence DESC) AS rn
+                 FROM photo_content_scan
+                 WHERE user_id = ?1 AND category IS NOT NULL AND category != ''
+             ) WHERE rn = 1",
+        )?;
+        let covers: HashMap<String, (String, Option<i64>)> = cover_stmt
+            .query_map(params![user_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    (r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?),
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+
+        rows.drain(..)
+            .map(|(category, sub_category, count)| {
+                let (cover_path, cover_album_id) = match covers.get(&category) {
+                    Some((p, aid)) => (Some(p.clone()), *aid),
+                    None => (None, None),
+                };
+                Ok(CategoryGroupRow {
+                    category,
+                    sub_category,
+                    count,
+                    cover_path,
+                    cover_album_id,
+                })
+            })
+            .collect()
     }
 
     /// FEAT-036：批量统计每个相册的已入库照片数。

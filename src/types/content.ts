@@ -172,3 +172,14 @@ export interface SmartHit {
   tone_type: string | null;
   person_ids: string[];
 }
+
+/** FEAT-048：内容分类两级聚合行 —— 对应 Rust `db::CategoryGroupRow` */
+export interface CategoryGroupRow {
+  category: string;
+  sub_category: string | null;
+  count: number;
+  /** 该大类封面（置信度最高的照片原图路径） */
+  cover_path: string | null;
+  /** 封面照片归属相册（get_photo_thumbs 复用真实相册缓存命名） */
+  cover_album_id: number | null;
+}

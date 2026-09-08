@@ -960,6 +960,59 @@ pub mod commands {
         r
     }
 
+    /// 内容分类两级聚合（FEAT-048）：大类 → 细类计数 + 各大类封面（置信度最高）
+    #[tauri::command]
+    pub async fn list_content_categories(
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Vec<db::CategoryGroupRow>, String> {
+        let _t = log_call!("list_content_categories", "");
+        let user_id = require_user(&session)?;
+        let r = (|| -> Result<Vec<db::CategoryGroupRow>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.list_content_categories(user_id)
+                .map_err(|e| format!("{:?}", e))
+        })();
+        match &r {
+            Ok(list) => logger::log_call_end_with(
+                "list_content_categories",
+                _t,
+                &format!("OK | groups={}", list.len()),
+            ),
+            Err(e) => logger::log_call_end_with("list_content_categories", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
+    /// 按大类/细类列出照片（FEAT-048 分类浏览二级视图）
+    #[tauri::command]
+    pub async fn list_photos_by_category(
+        category: String,
+        sub_category: Option<String>,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Vec<db::ContentSearchHit>, String> {
+        let _t = log_call!(
+            "list_photos_by_category",
+            &format!("category={category} sub={sub_category:?}")
+        );
+        let user_id = require_user(&session)?;
+        let r = (|| -> Result<Vec<db::ContentSearchHit>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.list_photos_by_category(user_id, &category, sub_category.as_deref())
+                .map_err(|e| format!("{:?}", e))
+        })();
+        match &r {
+            Ok(list) => logger::log_call_end_with(
+                "list_photos_by_category",
+                _t,
+                &format!("OK | rows={}", list.len()),
+            ),
+            Err(e) => logger::log_call_end_with("list_photos_by_category", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
     /// 智能搜索（FEAT-034）：关键词宽匹配 + 多维筛选，跨相册
     #[allow(clippy::too_many_arguments)]
     #[tauri::command]

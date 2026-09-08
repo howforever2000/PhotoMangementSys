@@ -2980,6 +2980,8 @@ pub fn run() {
             content::commands::ensure_photo_scanned,
             content::commands::search_photo_content_with_filters,
             content::commands::list_timeline,
+            content::commands::list_content_categories,
+            content::commands::list_photos_by_category,
             content::commands::smart_search,
             export_photos,
             get_vcr_gpu_status,

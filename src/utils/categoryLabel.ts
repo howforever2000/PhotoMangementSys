@@ -51,6 +51,47 @@ export function categoryLabel(key: string | null | undefined): string {
 }
 
 /**
+ * FEAT-048：细类（sub_category）中文映射。
+ *
+ * 后端细类值中英混杂（taxonomy 子类 key 如 paper/bird/dog/cat 直接透出，
+ * 部分通道已是中文如「其他动物」），已知 key 映射中文，未知值原样返回。
+ */
+const SUB_LABELS: Record<string, string> = {
+  paper: "纸张文档",
+  document: "文档",
+  bird: "鸟类",
+  dog: "狗",
+  cat: "猫",
+  insect: "昆虫",
+  fish: "鱼类",
+  flower: "花卉",
+  plant: "植物",
+  tree: "树木",
+  mountain: "山景",
+  sunset: "日落",
+  beach: "海滩",
+  building: "建筑",
+  food: "食物",
+  dish: "菜肴",
+  drink: "饮品",
+  person: "人物",
+  portrait: "人像",
+  night: "夜景",
+  indoor: "室内",
+  outdoor: "户外",
+  other: "其他",
+};
+
+/**
+ * 把细类 sub_category 翻成中文；未知值原样返回（含已是中文的值）。
+ */
+export function subCategoryLabel(key: string | null | undefined): string {
+  if (!key) return "";
+  const k = String(key).toLowerCase();
+  return SUB_LABELS[k] ?? key;
+}
+
+/**
  * 类目对应的色调（用于 chip 背景）。
  * 浅色模式：浅彩底；深色模式由调用方基于 css 变量覆盖。
  */
