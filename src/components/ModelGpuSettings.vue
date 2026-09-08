@@ -24,6 +24,8 @@ const accelBusy = ref(false);
 const modelBusy = ref(false);
 const modelsInfo = ref<VcrModelsInfo | null>(null);
 const selectedModel = ref("");
+/** 模型清单加载失败（识别服务升级中/异常）→ 提示而非无限转圈 */
+const modelsFailed = ref(false);
 /** 是否已执行过「检测 GPU」 */
 const detected = ref(false);
 
@@ -34,6 +36,7 @@ const gpuAvailable = computed(() => (gpu.value?.gpu.length ?? 0) > 0);
 const accelerating = computed(() => gpu.value?.use_gpu === true);
 
 async function refreshAll(silent = false) {
+  modelsFailed.value = false;
   const [gpuRes, modelsRes] = await Promise.allSettled([
     contentStore.fetchGpuStatus(),
     contentStore.fetchVcrModels(),
@@ -41,6 +44,8 @@ async function refreshAll(silent = false) {
   if (modelsRes.status === "fulfilled") {
     modelsInfo.value = modelsRes.value;
     selectedModel.value = modelsRes.value.current ?? "";
+  } else {
+    modelsFailed.value = true;
   }
   detected.value = gpuRes.status === "fulfilled";
   if (gpuRes.status === "rejected" && modelsRes.status === "rejected") {
@@ -148,6 +153,7 @@ async function onModelChange() {
           </option>
         </select>
         <span v-if="modelBusy" class="mgps-busy">切换中…</span>
+        <span v-else-if="modelsFailed" class="mgps-status">模型清单加载失败（识别服务可能正在升级，稍后重试）</span>
       </div>
 
       <!-- 2. 检测 GPU -->

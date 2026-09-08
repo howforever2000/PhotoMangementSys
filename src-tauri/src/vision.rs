@@ -36,8 +36,10 @@ enum HealthProbe {
     Ready,
     /// 服务存活但是旧版本（缺 GPU/模型端点）→ 需重启
     OldVersion,
-    /// 未运行 / 探测失败
-    Down,
+    /// 服务可连接但尚未就绪（正在加载模型）→ 等待，不打断
+    Loading,
+    /// 端口不可达（无进程 / 连接拒绝）→ 可安全拉起新进程
+    NotReachable,
 }
 
 async fn probe_health(client: &reqwest::Client) -> HealthProbe {
@@ -48,13 +50,14 @@ async fn probe_health(client: &reqwest::Client) -> HealthProbe {
         .await
     {
         Ok(r) => r,
-        Err(_) => return HealthProbe::Down,
+        Err(_) => return HealthProbe::NotReachable, // 连接拒绝/超时 → 端口可拉起
     };
     let v = match resp.json::<serde_json::Value>().await {
         Ok(v) => v,
-        Err(_) => return HealthProbe::Down,
+        Err(_) => return HealthProbe::Loading, // 可连接但解析失败 → 视为加载中，不打断
     };
-    if v.get("ok").and_then(|x| x.as_bool()) == Some(true) {
+    let ok = v.get("ok").and_then(|x| x.as_bool()) == Some(true);
+    if ok {
         let ver = v.get("api_version").and_then(|x| x.as_u64()).unwrap_or(1);
         if ver >= VCR_API_VERSION {
             HealthProbe::Ready
@@ -62,7 +65,8 @@ async fn probe_health(client: &reqwest::Client) -> HealthProbe {
             HealthProbe::OldVersion
         }
     } else {
-        HealthProbe::Down
+        // ok=false = 服务可达但模型未就绪（正在加载）→ 等待，不打断
+        HealthProbe::Loading
     }
 }
 
@@ -312,10 +316,14 @@ async fn ensure_service_ready(
 ) -> Result<(), String> {
     // 单飞：拿锁后重新探测（可能已被前一个等待者修复），避免并发拉起多进程报 10048
     let _guard = ENSURE_LOCK.lock().await;
-    match probe_health(client).await {
+    let initial = probe_health(client).await;
+    match initial {
         HealthProbe::Ready => return Ok(()),
+        HealthProbe::Loading => {
+            // 服务已在加载模型：不拉起、不打断，直接进轮询等就绪
+        }
         HealthProbe::OldVersion => {
-            // 旧版本：请求自退（新版本才有该端点），随后兣底强制释放端口
+            // 旧版本：请求自退（新版本才有该端点），随后兣底强杀占用者
             let _ = client
                 .post(format!("{VCR_URL}/shutdown"))
                 .timeout(Duration::from_secs(2))
@@ -323,13 +331,40 @@ async fn ensure_service_ready(
                 .await;
             tokio::time::sleep(Duration::from_millis(800)).await;
             kill_port_holder();
+            if let Err(e) = spawn_server(app) {
+                return Err(e);
+            }
         }
-        HealthProbe::Down => {
-            // 端口仍可能被无响应进程占着（连接失败但 LISTENING）→ 兕底清理
-            kill_port_holder();
+        HealthProbe::NotReachable => {
+            // 端口空闲：直接拉起
+            if let Err(e) = spawn_server(app) {
+                return Err(e);
+            }
         }
     }
 
+    // 讉询 /health 直到模型就绪且 API 版本达标
+    let deadline = std::time::Instant::now() + READY_TIMEOUT;
+    let mut saw_old_version = false;
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        match probe_health(client).await {
+            HealthProbe::Ready => return Ok(()),
+            HealthProbe::OldVersion => saw_old_version = true,
+            HealthProbe::Loading | HealthProbe::NotReachable => {}
+        }
+    }
+    if saw_old_version {
+        return Err(
+            "识别服务为旧版本（缺 GPU 开关/模型切换能力），自动重启失败：请手动结束旧的 python server.py 进程后重试".into(),
+        );
+    }
+    Err("识别服务启动超时".into())
+}
+
+/// 启动识别微服务（打包版优先内置 exe；开发版 python server.py）。
+/// 返回 Err 表示进程未能拉起（已尽力给出定位信息）。
+fn spawn_server(app: &tauri::AppHandle) -> Result<(), String> {
     // 解析资源/数据目录（打包版定位依赖这两个路径）
     let resource_dir = app
         .path()
@@ -388,24 +423,7 @@ async fn ensure_service_ready(
             "启动识别服务失败（打包版请确认安装目录 vcr/vcr-server.exe 存在；开发版请 pip install -r python/requirements.txt）: {e}"
         ));
     }
-
-    // 讉询 /health 直到模型就绪且 API 版本达标
-    let deadline = std::time::Instant::now() + READY_TIMEOUT;
-    let mut saw_old_version = false;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        match probe_health(client).await {
-            HealthProbe::Ready => return Ok(()),
-            HealthProbe::OldVersion => saw_old_version = true,
-            HealthProbe::Down => {}
-        }
-    }
-    if saw_old_version {
-        return Err(
-            "识别服务为旧版本（缺 GPU 开关/模型切换能力），自动重启失败：请手动结束旧的 python server.py 进程后重试".into(),
-        );
-    }
-    Err("识别服务启动超时".into())
+    Ok(())
 }
 
 /// （人物列表/重命名/合并/头像已迁移到 `persons` 模块直读 persons.db；此处仅保留删除代理）
