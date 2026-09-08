@@ -12,6 +12,7 @@ import type {
   ScanReport,
   UnifiedScanRow,
   VcrGpuStatus,
+  VcrModelsInfo,
 } from "../types/content";
 
 // ---- FEAT-038：全局照片扫描入库（跨相册批量，后台执行） ----
@@ -125,6 +126,8 @@ export const useContentStore = defineStore("content", {
     filterHits: [] as AlbumContentRow[],
     /** GPU 加速可行性状态 */
     gpuStatus: null as VcrGpuStatus | null,
+    /** FEAT-051：分类模型候选清单 */
+    vcrModels: null as VcrModelsInfo | null,
     /** 组合扫描后台任务（键 = albumId；脱离组件存活，支持退出相册后后台继续） */
     combinedJobs: {} as Record<number, CombinedScanJob>,
     /** FEAT-038：全局照片扫描入库任务（单例；脱离组件存活，后台执行） */
@@ -154,6 +157,24 @@ export const useContentStore = defineStore("content", {
     async fetchGpuStatus(): Promise<VcrGpuStatus> {
       this.gpuStatus = await invoke<VcrGpuStatus>("get_vcr_gpu_status");
       return this.gpuStatus;
+    },
+
+    /** FEAT-051：GPU 加速开关（开 = GPU 优先 / 关 = 强制 CPU） */
+    async setVcrGpu(enabled: boolean): Promise<VcrGpuStatus> {
+      this.gpuStatus = await invoke<VcrGpuStatus>("set_vcr_gpu", { enabled });
+      return this.gpuStatus;
+    },
+
+    /** FEAT-051：分类模型候选清单 */
+    async fetchVcrModels(): Promise<VcrModelsInfo> {
+      this.vcrModels = await invoke<VcrModelsInfo>("list_vcr_models");
+      return this.vcrModels;
+    },
+
+    /** FEAT-051：切换分类模型（未下载/未知名称会抛服务端错误信息） */
+    async setVcrModel(model: string): Promise<VcrModelsInfo> {
+      this.vcrModels = await invoke<VcrModelsInfo>("set_vcr_model", { model });
+      return this.vcrModels;
     },
 
     /**

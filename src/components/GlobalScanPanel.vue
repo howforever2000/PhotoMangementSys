@@ -13,10 +13,16 @@ import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import type { GlobalScanItemStatus } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
+import { useThemeStore } from "../stores/theme";
+import ModelGpuSettings from "./ModelGpuSettings.vue";
 
 const albumStore = useAlbumStore();
 const contentStore = useContentStore();
 const notify = useNotify();
+const theme = useThemeStore();
+
+/** FEAT-051：识别性能设置弹窗（GPU 加速 / 分类模型） */
+const perfOpen = ref(false);
 
 // ---- 全局扫描任务（来自 store，脱离组件存活） ----
 const job = computed(() => contentStore.globalScanJob);
@@ -173,6 +179,13 @@ onMounted(() => {
         扫描在<b>后台执行</b>，离开页面不中断；可随时点击「停止」，已扫描部分仍会入库。
       </p>
       <div class="gs-actions">
+        <button
+          class="btn btn-ghost"
+          title="GPU 加速 / 分类模型切换"
+          @click="perfOpen = true"
+        >
+          ⚙ 性能设置
+        </button>
         <button
           v-if="!running"
           class="btn gs-btn-primary"
@@ -354,6 +367,19 @@ onMounted(() => {
       <p>勾选相册 → 选择扫描类型 → 点击「开始扫描入库」</p>
     </div>
   </section>
+
+  <!-- FEAT-051：识别性能设置弹窗（GPU 加速 / 分类模型，点击设置按钮展开） -->
+  <Teleport to="body">
+    <div v-if="perfOpen" class="perf-mask" @click.self="perfOpen = false">
+      <div class="perf-dialog" :style="theme.cardStyle">
+        <div class="perf-head">
+          <h3>⚙ 识别性能设置</h3>
+          <button class="btn perf-close" @click="perfOpen = false">✕</button>
+        </div>
+        <ModelGpuSettings />
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -715,4 +741,40 @@ onMounted(() => {
   font-size: 13px;
 }
 .gs-empty p { margin: 0; }
+</style>
+
+<style scoped>
+/* FEAT-051：识别性能设置弹窗 */
+.perf-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.perf-dialog {
+  width: min(560px, 94vw);
+  max-height: 86vh;
+  overflow-y: auto;
+  border-radius: 14px;
+  padding: 16px 18px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+}
+.perf-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.perf-head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+.perf-close {
+  padding: 2px 10px;
+  font-size: 14px;
+}
 </style>

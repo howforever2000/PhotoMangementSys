@@ -344,6 +344,9 @@ pub struct VcrGpuStatus {
     pub available: Vec<String>,
     /// 批次安全上限
     pub batch_max: usize,
+    /// FEAT-051：是否被用户强制 CPU（前端开关初始状态）
+    #[serde(default)]
+    pub forced_cpu: bool,
 }
 
 /// 查询 GPU 加速可行性：确保服务就绪后请求 /gpu
@@ -380,6 +383,7 @@ fn gpu_status_from_value(resp: &serde_json::Value, running: bool) -> VcrGpuStatu
         gpu,
         available,
         batch_max: resp.get("batch_max").and_then(|v| v.as_u64()).unwrap_or(8) as usize,
+        forced_cpu: resp.get("forced_cpu").and_then(|v| v.as_bool()).unwrap_or(false),
     }
 }
 

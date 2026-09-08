@@ -26,6 +26,8 @@ export interface VcrGpuStatus {
   available: string[];
   /** 批次安全上限 */
   batch_max: number;
+  /** FEAT-051：是否被用户强制 CPU（开关初始状态） */
+  forced_cpu: boolean;
 }
 
 /** 内容扫描进度事件 —— 对应 Rust `content::ContentScanProgress` */
@@ -190,4 +192,25 @@ export interface LocationGroupRow {
   count: number;
   cover_path: string | null;
   cover_album_id: number | null;
+}
+
+/** FEAT-051：分类模型候选项 —— 对应 model_registry.cls_models_info().models[] */
+export interface VcrModelInfo {
+  /** 模型文件名（如 yolov8x-cls.onnx） */
+  name: string;
+  /** 中文说明（准确率档位 + 推荐场景） */
+  label: string;
+  accuracy: string;
+  speed: string;
+  /** 模型文件是否已下载到 python/models/ */
+  downloaded: boolean;
+  /** 是否为当前生效模型 */
+  active: boolean;
+}
+
+/** FEAT-051：分类模型清单 */
+export interface VcrModelsInfo {
+  models: VcrModelInfo[];
+  /** 当前生效模型文件名（候选中第一个已下载者，或用户指定项） */
+  current: string | null;
 }
