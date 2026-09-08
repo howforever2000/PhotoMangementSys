@@ -501,6 +501,25 @@
       "lessons": [
         "长生命周期子进程 + 新增端点 = 必须做版本协商/自愈，否则改动永不生效"
       ]
+    },
+    {
+      "id": "BUG-2026-0908-006",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "识别服务多进程抢占 8765 端口（winerror 10048）+ GPU 默认行为不符预期",
+      "module": "VCR / vision.rs ensure_service_ready",
+      "symptom": [
+        "日志大量 [Errno 10048] bind 失败，多个 [VCR] 模型加载片段交错",
+        "GPU 加速开关切换无效"
+      ],
+      "root_cause": {
+        "summary": "并发命令各自调 ensure_service_ready（无单飞）→ 同时拉起多个 server.py 抢端口；旧版本进程无 /shutdown 自退端点无法清场；且默认 auto-GPU 与用户期望（默认 CPU、检测后再启用）不符。"
+      },
+      "solution": "①ensure 单飞锁（tokio Mutex，拿锁后重新探测）；②kill_port_holder 兜底（netstat 找 LISTENING PID → taskkill /F，Unix lsof）；③registry 默认强制 CPU，UI 改为「先选模型 → 🔍 检测 GPU → 🚀 吿用加速」（参考单相册扫描面板），未检测到可用 GPU 时启用按钮置灰。",
+      "lessons": [
+        "固定端口子进程的启动必须单飞 + 端口占用兜底清理",
+        "GPU 类功能默认保守（CPU），检测到硬件后再启用"
+      ]
     }
   ]
 }
