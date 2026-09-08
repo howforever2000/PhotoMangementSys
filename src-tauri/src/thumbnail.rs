@@ -592,6 +592,19 @@ fn webp_subdir(fingerprint: &str) -> String {
     fingerprint.chars().take(2).collect()
 }
 
+/// FEAT-050：某照片在网格缩略图目录下的全部可能缓存文件名
+///
+/// flat JPG（ensure_grid_thumb 旧命名）与 WebP 嵌套命名两套都返回，
+/// 供删除时级联清理。指纹依赖原图可读，调用需在原图被删前进行。
+pub fn grid_thumb_cache_names_all(album_id: i64, source: &Path) -> Vec<String> {
+    let fp = file_fingerprint(source);
+    let subdir = webp_subdir(&fp);
+    vec![
+        format!("album_{album_id}_photo_{fp}.jpg"),
+        format!("album_{album_id}_photo_{subdir}/{fp}.webp"),
+    ]
+}
+
 /// P1 WebP 兼容：尝试复用旧版 .jpg 缓存（grid/album_<id>_photo_<fp>.jpg）
 fn reuse_legacy_thumb(
     album_id: i64,

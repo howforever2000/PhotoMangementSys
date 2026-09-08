@@ -817,6 +817,111 @@ fn delete_photo_files(
     Ok(outcome)
 }
 
+/// FEAT-050：按原图路径级联清理缩略图缓存（表行 + 磁盘文件）
+///
+/// 磁盘文件覆盖 flat JPG / WebP 两套命名；photo_thumb_cache 表内 thumb_path
+/// 指向的文件也一并删除。注意：文件名指纹依赖原图可读，
+/// 必须在原图被删除 / 移入回收站**之前**调用。
+fn cleanup_thumb_caches_for_paths(db: &db::Database, app: &tauri::AppHandle, paths: &[String]) {
+    // 1. photo_thumb_cache 表行 + 表内记录的缩略图文件
+    let table_thumb_files = db.list_thumb_paths_by_sources(paths).unwrap_or_default();
+    let _ = db.delete_thumb_caches_by_paths(paths);
+    // 2. 网格缩略图磁盘文件（归属未知时用 album_0 无归属命名空间）
+    let album_map = db.album_ids_by_paths(paths).unwrap_or_default();
+    let mut names: Vec<String> = Vec::new();
+    for p in paths {
+        let album_id = album_map.get(p).copied().flatten().unwrap_or(0);
+        names.extend(thumbnail::grid_thumb_cache_names_all(
+            album_id,
+            std::path::Path::new(p),
+        ));
+    }
+    if let Ok(thumbs) = thumbs_dir(app) {
+        thumbnail::remove_grid_thumb_files(&names, &thumbs);
+        for f in &table_thumb_files {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+}
+
+/// FEAT-050：批量「磁盘删除（回收站）」：移入系统回收站 + 级联清扫描记录与缩略图缓存
+///
+/// 与 delete_photo_files（永久删除不可恢复）的区别：文件可在回收站找回。
+/// 前端必须二次确认后才调用。无需相册 id（分类/地点视图照片可能无归属）。
+#[tauri::command]
+fn delete_photos_to_trash(
+    paths: Vec<String>,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+    app: tauri::AppHandle,
+) -> Result<PhotoDeleteOutcome, String> {
+    let _t = log_call!("delete_photos_to_trash", &format!("paths={}", paths.len()));
+    let _user_id = require_user(&session)?;
+    let requested = paths.len();
+    if paths.is_empty() {
+        return Ok(PhotoDeleteOutcome { requested, deleted: 0, failed: 0, failed_paths: Vec::new() });
+    }
+    // 1. 原图仍可读 → 先清理缩略图缓存（指纹依赖文件存在）
+    {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        cleanup_thumb_caches_for_paths(&db, &app, &paths);
+    }
+    // 2. 逐张移入系统回收站
+    let mut deleted = 0usize;
+    let mut failed_paths = Vec::new();
+    for p in &paths {
+        match trash::delete(std::path::Path::new(p)) {
+            Ok(_) => deleted += 1,
+            Err(e) => {
+                logger::log_info(&format!("[delete_photos_to_trash] 回收站删除失败 path={p} err={e}"));
+                failed_paths.push(p.clone());
+            }
+        }
+    }
+    // 3. 级联清扫描记录（仅成功项；失败项保留原状可重试）
+    let failed = failed_paths.len();
+    if deleted > 0 {
+        let ok_paths: Vec<String> = paths.iter().filter(|p| !failed_paths.contains(p)).cloned().collect();
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let _ = db.delete_content_by_paths(&ok_paths);
+    }
+    let outcome = PhotoDeleteOutcome { requested, deleted, failed, failed_paths };
+    logger::log_call_end_with(
+        "delete_photos_to_trash",
+        _t,
+        &format!("OK | deleted={deleted} failed={failed}"),
+    );
+    Ok(outcome)
+}
+
+/// FEAT-050：批量「本地记录删除」（无相册版）：清扫描记录 + 缩略图缓存，本地文件保留
+///
+/// 分类/地点等跨相册视图使用（delete_photo_records 需相册 id 且写排除表，
+/// 不适用无归属照片）。前端必须二次确认后才调用。
+#[tauri::command]
+fn delete_photo_records_by_paths(
+    paths: Vec<String>,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+    app: tauri::AppHandle,
+) -> Result<PhotoDeleteOutcome, String> {
+    let _t = log_call!("delete_photo_records_by_paths", &format!("paths={}", paths.len()));
+    let _user_id = require_user(&session)?;
+    let requested = paths.len();
+    if paths.is_empty() {
+        return Ok(PhotoDeleteOutcome { requested, deleted: 0, failed: 0, failed_paths: Vec::new() });
+    }
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    cleanup_thumb_caches_for_paths(&db, &app, &paths);
+    let deleted = db.delete_content_by_paths(&paths).map_err(|e| e.to_string())?;
+    logger::log_call_end_with(
+        "delete_photo_records_by_paths",
+        _t,
+        &format!("OK | scan_removed={deleted}"),
+    );
+    Ok(PhotoDeleteOutcome { requested, deleted, failed: 0, failed_paths: Vec::new() })
+}
+
 /// 恢复已「记录删除」的照片（撤销删除）：从 album_photo_excluded 移除对应条目
 #[tauri::command]
 fn restore_photo_records(
@@ -2957,6 +3062,8 @@ pub fn run() {
             scan_album_tones,
             get_photo_info,
             delete_photo_records,
+            delete_photos_to_trash,
+            delete_photo_records_by_paths,
             delete_photo_files,
             restore_photo_records,
             list_recently_deleted,

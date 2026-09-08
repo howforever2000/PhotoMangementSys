@@ -1085,6 +1085,56 @@ impl Database {
     }
 
     /// 删除某个相册的全部内容扫描记录（删除相册时级联调用）
+    /// FEAT-050：批量查询照片归属相册（path → album_id；无记录/无归属为 None）
+    pub fn album_ids_by_paths(
+        &self,
+        paths: &[String],
+    ) -> Result<HashMap<String, Option<i64>>, DbError> {
+        let mut out = HashMap::new();
+        for chunk in paths.chunks(500) {
+            let placeholders = std::iter::repeat("?")
+                .take(chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT path, album_id FROM photo_content_scan WHERE path IN ({placeholders})"
+            );
+            let params_vec: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_vec.as_slice(), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))
+            })?;
+            for r in rows {
+                let (path, album_id) = r?;
+                out.insert(path, album_id);
+            }
+        }
+        Ok(out)
+    }
+
+    /// FEAT-050：按源路径查 photo_thumb_cache 表内记录的缩略图文件路径
+    pub fn list_thumb_paths_by_sources(&self, paths: &[String]) -> Result<Vec<String>, DbError> {
+        let mut out = Vec::new();
+        for chunk in paths.chunks(500) {
+            let placeholders = std::iter::repeat("?")
+                .take(chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT thumb_path FROM photo_thumb_cache WHERE source_path IN ({placeholders})"
+            );
+            let params_vec: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_vec.as_slice(), |r| r.get::<_, String>(0))?;
+            for r in rows {
+                out.push(r?);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn delete_album_content(&self, album_id: i64) -> Result<(), DbError> {
         self.conn
             .execute("DELETE FROM photo_content_scan WHERE album_id = ?1", params![album_id])?;

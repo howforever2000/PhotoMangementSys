@@ -32,6 +32,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # JPEG DCT 降采样解码（scale 参数只解所需 DCT 块，生成缩略图比全尺寸解码快 16~64 倍）
 # 修复：image::open 全尺寸解码 6000x4000 大图需 5~14 秒，前端换封面卡顿
 jpeg-decoder = "0.3"
+# 磁盘删除进系统回收站（FEAT-050）：文件可从回收站找回，避免误删不可恢复
+trash = "5"
 # 遍历目录找图片
 walkdir = "2"
 # 读取图片 EXIF（拍摄时间）
