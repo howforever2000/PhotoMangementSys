@@ -64,6 +64,7 @@ const router = createRouter({
     },
     {
       // 扫描测试工具子页面（按时间/地点组织移动，原 TestScan 独立功能）
+      // FEAT-051：对外名称为「相册扫描分组工具」（路由 path/name 保持不变，避免破坏引用）
       path: "/scan/test",
       name: "test-scan",
       component: () => import("../views/TestScan.vue"),

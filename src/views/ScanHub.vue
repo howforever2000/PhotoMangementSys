@@ -60,7 +60,7 @@ const tabs: ScanTab[] = [
   },
   {
     key: "test",
-    label: "扫描测试工具",
+    label: "相册扫描分组工具",
     icon: "🧪",
     inline: false,
     path: "/scan/test",
@@ -138,8 +138,8 @@ const subModules: SubModule[] = [
   {
     tab: "test",
     icon: "🧪",
-    title: "扫描测试工具",
-    desc: "扫描任意文件夹，按年·地点组织移动（独立子页面）",
+    title: "相册扫描分组工具",
+    desc: "扫描任意文件夹 → 按年·地点分组预览与批量移动（独立子页面）",
     gradient: "linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%)",
   },
 ];
@@ -152,6 +152,16 @@ function openSub(m: SubModule) {
     return;
   }
   activeTab.value = m.tab;
+}
+
+/** FEAT-051：tab 栏点击 —— 独立子页面（有 path）直接跳转，修复点击后空白的问题 */
+function onTabClick(t: ScanTab) {
+  if (!t.enabled) return;
+  if (t.path) {
+    router.push(t.path);
+    return;
+  }
+  activeTab.value = t.key;
 }
 </script>
 
@@ -169,7 +179,7 @@ function openSub(m: SubModule) {
         <div class="scan-hero-eyebrow">SCAN HUB</div>
         <h1 class="scan-hero-title">🔍 图片扫描</h1>
         <p class="scan-hero-sub">
-          聚合照片扫描相关子功能：批量扫描入库、按年·地点浏览、重复清理与扫描测试
+          聚合照片扫描相关子功能：批量扫描入库、按年·地点浏览、重复清理与相册扫描分组
         </p>
         <div class="scan-stats">
           <div class="stat">
@@ -234,7 +244,7 @@ function openSub(m: SubModule) {
         :class="{ active: activeTab === t.key, disabled: !t.enabled }"
         role="tab"
         :aria-selected="activeTab === t.key"
-        @click="t.enabled && (activeTab = t.key)"
+        @click="onTabClick(t)"
       >
         <span class="tab-icon">{{ t.icon }}</span>
         {{ t.label }}

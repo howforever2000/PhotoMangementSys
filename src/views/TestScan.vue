@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 图片扫描测试页（大组件测试工具，不落库）
+ * 相册扫描分组工具页（原扫描测试工具；不落库）
  *
  * 流程：
  *   1. 选择文件夹（open dialog）→ 扫描：提取每张直接图片的时间（三级兜底）+ GPS 坐标
@@ -234,8 +234,10 @@ const stats = () => {
     <header class="page-header">
       <button class="btn" @click="router.push('/scan')">← 返回图片扫描</button>
       <div class="header-text">
-        <h1>图片扫描测试</h1>
-        <p class="page-sub">扫描文件夹内直接图片 → 按时间/地点排序 → 按「年·地点」组织移动（仅测试，不入相册）</p>
+        <h1>📁 相册扫描分组工具</h1>
+        <p class="page-sub">
+          扫描文件夹提取拍摄时间 / GPS → 按年·地点分组预览 → 一键组织移动（不落库，需确认）
+        </p>
       </div>
     </header>
 
