@@ -15,6 +15,8 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 import PhotoLightbox from "./PhotoLightbox.vue";
+import ContextMenu, { type ContextMenuEntry } from "./ContextMenu.vue";
+import ConfirmDialog from "./ConfirmDialog.vue";
 import type { CategoryGroupRow, ContentSearchHit } from "../types/content";
 import { categoryLabel, subCategoryLabel, categoryTone } from "../utils/categoryLabel";
 
@@ -183,6 +185,156 @@ function openLightbox(p: ContentSearchHit) {
   lightboxOpen.value = true;
 }
 
+/* -------------------- FEAT-050：删除（记录删除 / 回收站磁盘删除） -------------------- */
+type DeleteMode = "records" | "trash";
+
+/** 批量管理模式 */
+const selectMode = ref(false);
+const selected = ref<Set<string>>(new Set());
+/** 批量/预览删除：待选方式弹窗持有的路径清单 */
+const modeDialogPaths = ref<string[] | null>(null);
+/** 二次确认弹窗 */
+const confirmVisible = ref(false);
+const pendingDelete = ref<{ paths: string[]; mode: DeleteMode } | null>(null);
+
+/** 右键菜单 */
+const ctxVisible = ref(false);
+const ctxX = ref(0);
+const ctxY = ref(0);
+const ctxPath = ref("");
+const ctxItems = computed<ContextMenuEntry[]>(() => [
+  {
+    label: "本地记录删除（保留文件）",
+    icon: "📄",
+    danger: true,
+    onClick: () => askDelete([ctxPath.value], "records"),
+  },
+  {
+    label: "磁盘删除（移入回收站）",
+    icon: "🗑",
+    danger: true,
+    onClick: () => askDelete([ctxPath.value], "trash"),
+  },
+]);
+
+function onCellContextMenu(e: MouseEvent, path: string) {
+  if (selectMode.value) return;
+  ctxX.value = e.clientX;
+  ctxY.value = e.clientY;
+  ctxPath.value = path;
+  ctxVisible.value = true;
+}
+
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value;
+  if (!selectMode.value) selected.value = new Set();
+}
+function toggleSelect(path: string) {
+  const next = new Set(selected.value);
+  if (next.has(path)) next.delete(path);
+  else next.add(path);
+  selected.value = next;
+}
+function selectAll() {
+  selected.value = new Set(filteredPhotos.value.map((p) => p.path));
+}
+function clearSelection() {
+  selected.value = new Set();
+}
+
+/** 预览删除 / 批量删除：先选方式 */
+function openModeDialog(paths: string[]) {
+  if (!paths.length) return;
+  modeDialogPaths.value = paths;
+}
+function pickMode(mode: DeleteMode) {
+  const paths = modeDialogPaths.value ?? [];
+  modeDialogPaths.value = null;
+  askDelete(paths, mode);
+}
+
+/** 右键单张：方式已定，直接二次确认 */
+function askDelete(paths: string[], mode: DeleteMode) {
+  if (!paths.length) return;
+  pendingDelete.value = { paths, mode };
+  confirmVisible.value = true;
+}
+
+const confirmTitle = computed(() =>
+  pendingDelete.value?.mode === "records" ? "本地记录删除" : "磁盘删除（回收站）",
+);
+const confirmMessage = computed(() => {
+  const pd = pendingDelete.value;
+  if (!pd) return "";
+  const n = pd.paths.length;
+  return pd.mode === "records"
+    ? `将删除 ${n} 张照片的扫描 / AI 记录与缩略图缓存，本地文件保留（重新扫描可恢复展示）。确定继续吗？`
+    : `将把 ${n} 张照片移入系统回收站（可在回收站找回），并同步清除扫描 / AI 记录与缩略图缓存。确定继续吗？`;
+});
+
+function cancelDelete() {
+  confirmVisible.value = false;
+  pendingDelete.value = null;
+}
+
+async function executeDelete() {
+  const pd = pendingDelete.value;
+  if (!pd) return;
+  confirmVisible.value = false;
+  const cmd = pd.mode === "records" ? "delete_photo_records_by_paths" : "delete_photos_to_trash";
+  try {
+    const outcome = await invoke<{
+      requested: number;
+      deleted: number;
+      failed: number;
+      failed_paths: string[];
+    }>(cmd, { paths: pd.paths });
+    const removed = new Set(pd.paths.filter((p) => !outcome.failed_paths.includes(p)));
+    // 同步本地列表与缩略图缓存
+    photos.value = photos.value.filter((p) => !removed.has(p.path));
+    const tm = { ...thumbMap.value };
+    for (const p of removed) delete tm[p];
+    thumbMap.value = tm;
+    // 预览器内删除：切到下一张（空则关闭）
+    if (lightboxOpen.value) {
+      if (!filteredPhotos.value.length) lightboxOpen.value = false;
+      else if (lightboxIndex.value >= filteredPhotos.value.length)
+        lightboxIndex.value = filteredPhotos.value.length - 1;
+    }
+    // 刷新聚合计数（卡片视图张数同步）
+    await refreshGroups();
+    if (activeCategory.value && !topCategories.value.some((t) => t.category === activeCategory.value!.category)) {
+      backToCards();
+    }
+    if (outcome.failed > 0) {
+      notify.warning(
+        `已删除 ${outcome.deleted} / ${outcome.requested} 张`,
+        `失败：${outcome.failed_paths.slice(0, 3).join("、")}${outcome.failed_paths.length > 3 ? "…" : ""}`,
+      );
+    } else {
+      notify.success(
+        `已删除 ${outcome.deleted} 张`,
+        pd.mode === "trash" ? "文件已移入系统回收站" : "本地文件保留，仅清除记录",
+      );
+    }
+  } catch (e) {
+    notify.error("删除失败", String(e));
+  } finally {
+    pendingDelete.value = null;
+    selected.value = new Set();
+  }
+}
+
+/** 聚合计数刷新（删除后调用；失败不阻塞） */
+async function refreshGroups() {
+  try {
+    groups.value = await invoke<CategoryGroupRow[]>("list_content_categories");
+    await loadCoverThumbs();
+  } catch {
+    /* 计数刷新失败不阻塞 */
+  }
+}
+
 function fileUrl(p: string): string {
   return p ? convertFileSrc(p) : "";
 }
@@ -244,6 +396,17 @@ onMounted(load);
         <button class="btn" @click="backToCards">← 返回分类</button>
         <h2 class="cg-detail-title">{{ activeCategory.label }}</h2>
         <span class="cg-detail-count">{{ activeCategory.count }} 张</span>
+        <span class="cg-spacer"></span>
+        <button class="btn" :class="{ active: selectMode }" @click="toggleSelectMode">
+          {{ selectMode ? "退出批量" : "☑ 批量管理" }}
+        </button>
+        <template v-if="selectMode">
+          <button class="btn" @click="selectAll">全选</button>
+          <button class="btn" @click="clearSelection">取消全选</button>
+          <button class="btn btn-danger" :disabled="!selected.size" @click="openModeDialog([...selected])">
+            🗑 删除选中（{{ selected.size }}）
+          </button>
+        </template>
       </div>
 
       <!-- 细类 chips 即时过滤 -->
@@ -273,22 +436,65 @@ onMounted(load);
           v-for="p in filteredPhotos"
           :key="p.id"
           class="photo-cell"
+          :class="{ selectable: selectMode, checked: selectMode && selected.has(p.path) }"
           :title="[p.label, p.shoot_time].filter(Boolean).join(' · ')"
-          @click="openLightbox(p)"
+          @click="selectMode ? toggleSelect(p.path) : openLightbox(p)"
+          @contextmenu.prevent="onCellContextMenu($event, p.path)"
         >
           <img v-if="thumbMap[p.path]" :src="fileUrl(thumbMap[p.path])" loading="lazy" alt="" />
           <div v-else class="photo-ph">🖼</div>
           <figcaption v-if="p.label" class="photo-cap">{{ subCategoryLabel(p.label) }}</figcaption>
+          <span v-if="selectMode" class="cell-check" :class="{ on: selected.has(p.path) }">
+            {{ selected.has(p.path) ? "✓" : "" }}
+          </span>
         </figure>
       </div>
     </template>
 
-    <!-- 大图看图器（复用） -->
+    <!-- 大图看图器（复用；启用删除按钮） -->
     <PhotoLightbox
       v-if="lightboxOpen"
       :photos="lightboxPhotos"
       :index="lightboxIndex"
+      deletable
       @close="lightboxOpen = false"
+      @delete="openModeDialog([$event])"
+    />
+
+    <!-- 右键菜单（复用 FEAT-043 组件） -->
+    <ContextMenu
+      :items="ctxItems"
+      :x="ctxX"
+      :y="ctxY"
+      @close="ctxVisible = false"
+    />
+
+    <!-- 删除方式选择（批量 / 预览删除） -->
+    <Teleport to="body">
+      <div v-if="modeDialogPaths" class="del-mask" @click.self="modeDialogPaths = null">
+        <div class="del-dialog" :style="theme.cardStyle">
+          <h4>选择删除方式（{{ modeDialogPaths.length }} 张）</h4>
+          <button class="del-opt" @click="pickMode('records')">
+            <b>📄 本地记录删除</b>
+            <span>清除扫描 / AI 记录与缩略图缓存，本地文件保留</span>
+          </button>
+          <button class="del-opt" @click="pickMode('trash')">
+            <b>🗑 磁盘删除（移入回收站）</b>
+            <span>照片移入系统回收站，可找回；记录与缓存同步清除</span>
+          </button>
+          <button class="btn del-cancel" @click="modeDialogPaths = null">取消</button>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 二次确认 -->
+    <ConfirmDialog
+      :visible="confirmVisible"
+      :title="confirmTitle"
+      :message="confirmMessage"
+      confirm-text="确认删除"
+      @confirm="executeDelete"
+      @cancel="cancelDelete"
     />
   </div>
 </template>
@@ -507,5 +713,100 @@ onMounted(load);
 @media (max-width: 640px) {
   .cat-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
   .photo-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+}
+
+/* ---- FEAT-050：批量选择 / 删除 ---- */
+.cg-spacer {
+  flex: 1;
+}
+.btn.active {
+  border-color: rgba(106, 141, 240, 0.8);
+  color: #6a8df0;
+}
+.btn-danger {
+  color: #e03131;
+  border-color: rgba(224, 49, 49, 0.5);
+}
+.btn-danger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.photo-cell.selectable {
+  cursor: pointer;
+}
+.photo-cell.checked img {
+  opacity: 0.55;
+}
+.photo-cell.checked {
+  outline: 3px solid rgba(106, 141, 240, 0.85);
+  outline-offset: -3px;
+}
+.cell-check {
+  position: absolute;
+  left: 7px;
+  top: 7px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.cell-check.on {
+  background: #4c8dff;
+  border-color: #4c8dff;
+}
+.del-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.del-dialog {
+  width: min(420px, 92vw);
+  border-radius: 14px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+}
+.del-dialog h4 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+.del-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(127, 127, 127, 0.32);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+.del-opt:hover {
+  border-color: rgba(106, 141, 240, 0.75);
+  background: rgba(106, 141, 240, 0.08);
+}
+.del-opt span {
+  font-size: 12px;
+  opacity: 0.65;
+  line-height: 1.5;
+}
+.del-cancel {
+  align-self: flex-end;
 }
 </style>
