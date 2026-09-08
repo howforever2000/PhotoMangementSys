@@ -6,6 +6,7 @@ import { useThemeStore } from "../stores/theme";
 import { useAlbumStore } from "../stores/album";
 import PersonGallery from "../components/PersonGallery.vue";
 import CategoryGallery from "../components/CategoryGallery.vue";
+import LocationGallery from "../components/LocationGallery.vue";
 import type { ContentSearchHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 
@@ -36,7 +37,7 @@ interface SmartTab {
 const tabs: SmartTab[] = [
   { key: "face", label: "人物", icon: "👥", enabled: true },
   { key: "category", label: "内容分类", icon: "🏞️", enabled: true },
-  { key: "location", label: "地点", icon: "📍", enabled: false },
+  { key: "location", label: "地点", icon: "📍", enabled: true },
 ];
 
 const activeTab = ref<string>("face");
@@ -229,6 +230,7 @@ function openSub(m: SubModule) {
 
     <PersonGallery v-if="activeTab === 'face'" :focus-pid="focusPid" />
     <CategoryGallery v-else-if="activeTab === 'category'" />
+    <LocationGallery v-else-if="activeTab === 'location'" />
     <div v-else class="smart-placeholder">
       「{{ activeDef?.label }}」分类展示即将上线 —— 完成对应扫描后即可在此浏览。
     </div>

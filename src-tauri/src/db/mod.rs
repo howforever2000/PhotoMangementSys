@@ -10,7 +10,8 @@
 pub mod content;
 pub mod thumb_cache;
 pub use content::{
-    AlbumContentRow, CategoryGroupRow, ContentFilters, ContentSearchHit, PhotoContentRecord, SmartHit,
+    AlbumContentRow, CategoryGroupRow, ContentFilters, ContentSearchHit, LocationGroupRow,
+    PhotoContentRecord, SmartHit,
 };
 pub use thumb_cache::ThumbCacheRecord;
 

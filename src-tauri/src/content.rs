@@ -1013,6 +1013,59 @@ pub mod commands {
         r
     }
 
+    /// 地点聚合（FEAT-049）：geo_index 离线反查 + 回写 location 缓存
+    #[tauri::command]
+    pub async fn list_photo_locations(
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Vec<db::LocationGroupRow>, String> {
+        let _t = log_call!("list_photo_locations", "");
+        let user_id = require_user(&session)?;
+        let r = (|| -> Result<Vec<db::LocationGroupRow>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.list_photo_locations(user_id)
+                .map_err(|e| format!("{:?}", e))
+        })();
+        match &r {
+            Ok(list) => logger::log_call_end_with(
+                "list_photo_locations",
+                _t,
+                &format!(
+                    "OK | groups={} named_photos={}",
+                    list.len(),
+                    list.iter().filter(|g| g.location.is_some()).map(|g| g.count).sum::<i64>()
+                ),
+            ),
+            Err(e) => logger::log_call_end_with("list_photo_locations", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
+    /// 按地点列出照片（FEAT-049 地点浏览二级视图；None = 未记录地点组）
+    #[tauri::command]
+    pub async fn list_photos_by_location(
+        location: Option<String>,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Vec<db::ContentSearchHit>, String> {
+        let _t = log_call!("list_photos_by_location", &format!("location={location:?}"));
+        let user_id = require_user(&session)?;
+        let r = (|| -> Result<Vec<db::ContentSearchHit>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.list_photos_by_location(user_id, location.as_deref())
+                .map_err(|e| format!("{:?}", e))
+        })();
+        match &r {
+            Ok(list) => logger::log_call_end_with(
+                "list_photos_by_location",
+                _t,
+                &format!("OK | rows={}", list.len()),
+            ),
+            Err(e) => logger::log_call_end_with("list_photos_by_location", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
     /// 智能搜索（FEAT-034）：关键词宽匹配 + 多维筛选，跨相册
     #[allow(clippy::too_many_arguments)]
     #[tauri::command]

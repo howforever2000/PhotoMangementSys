@@ -183,3 +183,11 @@ export interface CategoryGroupRow {
   /** 封面照片归属相册（get_photo_thumbs 复用真实相册缓存命名） */
   cover_album_id: number | null;
 }
+
+/** FEAT-049：地点聚合行 —— 对应 Rust `db::LocationGroupRow`（location null = 未记录地点组） */
+export interface LocationGroupRow {
+  location: string | null;
+  count: number;
+  cover_path: string | null;
+  cover_album_id: number | null;
+}

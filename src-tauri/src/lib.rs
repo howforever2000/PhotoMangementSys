@@ -2982,6 +2982,8 @@ pub fn run() {
             content::commands::list_timeline,
             content::commands::list_content_categories,
             content::commands::list_photos_by_category,
+            content::commands::list_photo_locations,
+            content::commands::list_photos_by_location,
             content::commands::smart_search,
             export_photos,
             get_vcr_gpu_status,

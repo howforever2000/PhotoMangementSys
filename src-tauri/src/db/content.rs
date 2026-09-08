@@ -177,6 +177,16 @@ pub struct CategoryGroupRow {
     pub cover_album_id: Option<i64>,
 }
 
+/// FEAT-049：地点聚合行（location = None 表示「未记录地点」组）
+#[derive(Debug, Clone, Serialize)]
+pub struct LocationGroupRow {
+    /// 地名（geo_index 省/市级）；None = 无 GPS 或反查未命中（境外）
+    pub location: Option<String>,
+    pub count: i64,
+    pub cover_path: Option<String>,
+    pub cover_album_id: Option<i64>,
+}
+
 /// 内容命中行统一列清单（list_timeline / list_photos_by_category 共用，
 /// 列序与 `map_content_search_hit` 严格对应）
 const CONTENT_HIT_SELECT: &str = "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
@@ -599,6 +609,130 @@ impl Database {
                 })
             })
             .collect()
+    }
+
+    /// FEAT-049：地点聚合（geo_index 离线反查 + 回写 location 列作持久缓存）
+    ///
+    /// location 列历史上全空（内容扫描管线未做地名反查），本方法：
+    /// 1. location 已有值 → 直接计入；
+    /// 2. location 为空但 lat/lon 存在 → geo_index 离线反查省/市（万张 <1s），
+    ///    计入并**事务回写 location 列**（下次调用 0 反查成本；回写失败不阻塞展示）；
+    /// 3. 无 GPS / 反查未命中（境外）→ 归入「未记录地点」（location = None）。
+    ///
+    /// 返回按 count 降序，「未记录地点」固定排最后。多用户隔离。
+    pub fn list_photo_locations(&self, user_id: i64) -> Result<Vec<LocationGroupRow>, DbError> {
+        struct Row {
+            photo_hash: String,
+            path: String,
+            album_id: Option<i64>,
+            location: Option<String>,
+            lat: Option<f64>,
+            lon: Option<f64>,
+            confidence: Option<f64>,
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT photo_hash, path, album_id, location, lat, lon, confidence
+             FROM photo_content_scan WHERE user_id = ?1",
+        )?;
+        let rows: Vec<Row> = stmt
+            .query_map(params![user_id], |r| {
+                Ok(Row {
+                    photo_hash: r.get(0)?,
+                    path: r.get(1)?,
+                    album_id: r.get(2)?,
+                    location: r.get(3)?,
+                    lat: r.get(4)?,
+                    lon: r.get(5)?,
+                    confidence: r.get(6)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+
+        // 聚合：key = Some(地名) / None(未记录)；值 = (count, best_conf, cover, cover_album)
+        let mut agg: HashMap<Option<String>, (i64, Option<f64>, Option<String>, Option<i64>)> =
+            HashMap::new();
+        let mut to_write: Vec<(String, String)> = Vec::new();
+        for r in &rows {
+            let mut name = r.location.clone().filter(|s| !s.trim().is_empty());
+            if name.is_none() {
+                if let (Some(lat), Some(lon)) = (r.lat, r.lon) {
+                    if let Some(place) = crate::geo_index::find_region(lat, lon) {
+                        name = Some(place.clone());
+                        to_write.push((r.photo_hash.clone(), place));
+                    }
+                }
+            }
+            let e = agg.entry(name).or_insert((0, None, None, None));
+            e.0 += 1;
+            let conf = r.confidence.unwrap_or(-1.0);
+            if e.1.map(|c| conf > c).unwrap_or(true) {
+                e.1 = Some(conf);
+                e.2 = Some(r.path.clone());
+                e.3 = r.album_id;
+            }
+        }
+
+        // 回写 location（事务；单行失败忽略，下次再补）
+        if !to_write.is_empty() {
+            if let Ok(tx) = self.conn.unchecked_transaction() {
+                for (hash, place) in &to_write {
+                    let _ = tx.execute(
+                        "UPDATE photo_content_scan SET location = ?1 WHERE photo_hash = ?2",
+                        params![place, hash],
+                    );
+                }
+                let _ = tx.commit();
+            }
+        }
+
+        let mut named: Vec<LocationGroupRow> = Vec::new();
+        let mut unknown: Option<LocationGroupRow> = None;
+        for (name, (count, _conf, cover, album)) in agg {
+            let row = LocationGroupRow {
+                location: name,
+                count,
+                cover_path: cover,
+                cover_album_id: album,
+            };
+            match row.location {
+                Some(_) => named.push(row),
+                None => unknown = Some(row),
+            }
+        }
+        named.sort_by(|a, b| b.count.cmp(&a.count));
+        if let Some(u) = unknown {
+            named.push(u);
+        }
+        Ok(named)
+    }
+
+    /// FEAT-049：按地点列出照片（地点浏览二级视图）
+    ///
+    /// `location = None` → 「未记录地点」组（location 列为空的全部照片）。
+    pub fn list_photos_by_location(
+        &self,
+        user_id: i64,
+        location: Option<&str>,
+    ) -> Result<Vec<ContentSearchHit>, DbError> {
+        let sql = match location {
+            Some(_) => format!(
+                "{CONTENT_HIT_SELECT} WHERE p.user_id = ?1 AND p.location = ?2
+                 ORDER BY (p.shoot_time IS NULL), p.shoot_time DESC, p.id DESC"
+            ),
+            None => format!(
+                "{CONTENT_HIT_SELECT} WHERE p.user_id = ?1
+                    AND (p.location IS NULL OR p.location = '')
+                 ORDER BY (p.shoot_time IS NULL), p.shoot_time DESC, p.id DESC"
+            ),
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut pv: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(user_id)];
+        if let Some(loc) = location {
+            pv.push(Box::new(loc.to_string()));
+        }
+        let params_ref: Vec<&dyn rusqlite::ToSql> = pv.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(params_ref.as_slice(), map_content_search_hit)?;
+        rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
     }
 
     /// FEAT-036：批量统计每个相册的已入库照片数。
