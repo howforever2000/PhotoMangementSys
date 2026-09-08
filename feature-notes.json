@@ -1417,7 +1417,39 @@
       ],
       "created_at": "2026-09-08T11:25:57+08:00",
       "updated_at": "2026-09-08T11:25:57+08:00"
+    },
+    {
+      "id": "FEAT-052",
+      "name": "应用内模型下载（后台 + 进度 + 官方/镜像择优）",
+      "status": "done",
+      "description": "⚙ 性能设置弹窗内置「📥 模型下载」：分类 yolov8l/m/x/s-cls（官方 ultralytics release .pt + ghfast 镜像）与必需场景模型 resnet18_places365（mit.edu + 镜像）。两路并行下载先完成者赢；.pt/.pth 下载后本地 python(torch+ultralytics) 自动导出 .onnx 到 python/models/；后台执行（Pinia 存状态离开弹窗不中断）+ model-dl-progress 事件实时进度条 + 取消/重试；完成自动刷新候选清单。",
+      "related_files": [
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/Cargo.toml",
+        "src/stores/content.ts",
+        "src/types/content.ts",
+        "src/components/ModelGpuSettings.vue"
+      ],
+      "keywords": [
+        "模型下载",
+        "镜像",
+        "ghfast",
+        "后台下载",
+        "进度",
+        "FEAT-052"
+      ],
+      "implementation": {
+        "backend": "model_dl.rs：DlSpec 白名单（official/mirror/tmp_ext/required）；两路 tokio::select 先完成者赢；bytes_stream 流式 + 150ms 节流进度事件；导出走 spawn_blocking python 子进程；LazyLock 任务表 + 取消标志",
+        "frontend": "store modelDownloads + listen；ModelGpuSettings 下载区块（进度条/取消/重试/必需徽标/完成自动刷新候选）"
+      },
+      "highlights": [
+        "原地址与镜像哪一个快用哪一个（并行先完成者赢）",
+        "场景模型标必需（缺失时 AI 分类不可用，下载即修复）"
+      ],
+      "created_at": "2026-09-08T14:30:07+08:00",
+      "updated_at": "2026-09-08T14:30:07+08:00"
     }
   ],
-  "updated": "2026-09-08T11:25:57+08:00"
+  "updated": "2026-09-08T14:30:07+08:00"
 }
