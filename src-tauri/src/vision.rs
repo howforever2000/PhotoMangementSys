@@ -19,8 +19,38 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
-/// Python 微服务固定端口（与 server.py 默认一致，服务地址由 VCR_URL 引用）
-const VCR_URL: &str = "http://127.0.0.1:8765";
+/// Python 微服务基址：每次分配一个空闲端口（固定端口可能与系统中的其他程序
+/// 冲突——用户明确要求：若 8765 被非本项目进程占用则更换端口，避免影响他人）。
+/// 端口在当前应用进程内通过 OnceLock 固定，spawn 时以环境变量 VCR_PORT 传给
+/// server.py（server.py 已支持 VCR_PORT 读取）。
+static VCR_BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// 选一个空闲端口（绑定 127.0.0.1:0 取系统分配值后立即释放）
+fn pick_free_port() -> u16 {
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .unwrap_or(0)
+}
+
+/// 解析微服务基址（进程内固定）
+fn vcr_base() -> String {
+    VCR_BASE
+        .get_or_init(|| {
+            let p = pick_free_port();
+            format!("http://127.0.0.1:{}", if p == 0 { 8765 } else { p })
+        })
+        .clone()
+}
+
+/// 当前分配的端口（供 spawn 时写入 VCR_PORT 环境变量）
+fn vcr_port() -> u16 {
+    vcr_base()
+        .rsplit(':')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}
 /// 服务启动就绪等待上限
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 /// FEAT-051：要求的服务 API 版本（GPU 开关 + 模型切换能力）；
@@ -44,7 +74,7 @@ enum HealthProbe {
 
 async fn probe_health(client: &reqwest::Client) -> HealthProbe {
     let resp = match client
-        .get(format!("{VCR_URL}/health"))
+        .get(format!("{}/health", vcr_base()))
         .timeout(Duration::from_secs(2))
         .send()
         .await
@@ -67,41 +97,6 @@ async fn probe_health(client: &reqwest::Client) -> HealthProbe {
     } else {
         // ok=false = 服务可达但模型未就绪（正在加载）→ 等待，不打断
         HealthProbe::Loading
-    }
-}
-
-/// 兜底释放 VCR 端口：旧版本服务无 /shutdown 自退端点时强制结束占用进程
-fn kill_port_holder() {
-    #[cfg(target_os = "windows")]
-    {
-        let out = std::process::Command::new("netstat")
-            .args(["-ano", "-p", "tcp"])
-            .output();
-        if let Ok(out) = out {
-            let text = String::from_utf8_lossy(&out.stdout);
-            let mut pids: std::collections::HashSet<String> = Default::default();
-            for line in text.lines() {
-                if line.contains(":8765") && line.to_uppercase().contains("LISTENING") {
-                    if let Some(pid) = line.split_whitespace().last() {
-                        if pid.chars().all(|c| c.is_ascii_digit()) {
-                            pids.insert(pid.to_string());
-                        }
-                    }
-                }
-            }
-            for pid in pids {
-                eprintln!("[VCR][ensure] 强制结束占用 8765 端口的进程 PID={pid}");
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/PID", &pid])
-                    .output();
-            }
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = std::process::Command::new("sh")
-            .args(["-c", "lsof -ti :8765 | xargs -r kill -9"])
-            .output();
     }
 }
 
@@ -196,7 +191,7 @@ pub async fn classify_album(
             break;
         }
         let resp: serde_json::Value = client
-            .post(format!("{VCR_URL}/classify_batch"))
+            .post(format!("{}/classify_batch", vcr_base()))
             .json(&serde_json::json!({ "paths": chunk }))
             .send()
             .await
@@ -270,7 +265,7 @@ pub async fn classify_single(path: &str, app: &tauri::AppHandle) -> Result<Visio
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
     ensure_service_ready(&client, app).await?;
     let resp: serde_json::Value = client
-        .post(format!("{VCR_URL}/classify_batch"))
+        .post(format!("{}/classify_batch", vcr_base()))
         .json(&serde_json::json!({ "paths": [path] }))
         .send()
         .await
@@ -325,12 +320,11 @@ async fn ensure_service_ready(
         HealthProbe::OldVersion => {
             // 旧版本：请求自退（新版本才有该端点），随后兣底强杀占用者
             let _ = client
-                .post(format!("{VCR_URL}/shutdown"))
+                .post(format!("{}/shutdown", vcr_base()))
                 .timeout(Duration::from_secs(2))
                 .send()
                 .await;
             tokio::time::sleep(Duration::from_millis(800)).await;
-            kill_port_holder();
             if let Err(e) = spawn_server(app) {
                 return Err(e);
             }
@@ -417,6 +411,8 @@ fn spawn_server(app: &tauri::AppHandle) -> Result<(), String> {
         cmd.arg(&server_script);
     }
 
+    // 动态端口：把本次分配的端口写入环境变量（server.py 读取 VCR_PORT）
+    cmd.env("VCR_PORT", vcr_port().to_string());
     let child = cmd.current_dir(&workdir).spawn();
     if let Err(e) = child {
         return Err(format!(
@@ -453,7 +449,7 @@ pub async fn vcr_gpu_status(app: &tauri::AppHandle) -> Result<VcrGpuStatus, Stri
     let client = http_client().await?;
     ensure_service_ready(&client, app).await?;
     let resp: serde_json::Value = client
-        .get(format!("{VCR_URL}/gpu"))
+        .get(format!("{}/gpu", vcr_base()))
         .send()
         .await
         .map_err(|e| format!("调用识别服务失败: {e}"))?
@@ -491,7 +487,7 @@ pub async fn vcr_set_gpu(app: &tauri::AppHandle, enabled: bool) -> Result<VcrGpu
     let client = http_client().await?;
     ensure_service_ready(&client, app).await?;
     let resp = client
-        .post(format!("{VCR_URL}/gpu"))
+        .post(format!("{}/gpu", vcr_base()))
         .json(&serde_json::json!({ "enabled": enabled }))
         .send()
         .await
@@ -516,7 +512,7 @@ pub async fn vcr_list_models(app: &tauri::AppHandle) -> Result<serde_json::Value
     let client = http_client().await?;
     ensure_service_ready(&client, app).await?;
     let resp = client
-        .get(format!("{VCR_URL}/models"))
+        .get(format!("{}/models", vcr_base()))
         .send()
         .await
         .map_err(|e| format!("调用识别服务失败: {e}"))?;
@@ -539,7 +535,7 @@ pub async fn vcr_set_model(app: &tauri::AppHandle, model: &str) -> Result<serde_
     let client = http_client().await?;
     ensure_service_ready(&client, app).await?;
     let resp = client
-        .post(format!("{VCR_URL}/model"))
+        .post(format!("{}/model", vcr_base()))
         .json(&serde_json::json!({ "name": model }))
         .send()
         .await
