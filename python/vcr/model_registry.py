@@ -16,11 +16,15 @@ class ModelRegistry:
         self._sessions: dict[str, ort.InferenceSession] = {}
         self._ready: dict[str, bool] = {}
         self._load_errors: dict[str, str] = {}
-        self._providers_sel: list[str] | None = None
+        # FEAT-051：默认强制 CPU（用户在 UI「检测 GPU → 启用加速」后再切 GPU，
+        # 参考单相册扫描面板的交互）；env VCR_PROVIDER=auto 可恢复自动探测
+        self._providers_sel: list[str] | None = ["CPUExecutionProvider"]
+        self._gpu_forced_off = True
         # FEAT-051：用户指定的分类模型文件名（None = 按 CLS_MODELS 顺序回退）
         self._cls_override: str | None = None
-        # FEAT-051：用户是否强制关闭 GPU（与「无 GPU 可用」区分，前端开关初始状态用）
-        self._gpu_forced_off = False
+        if os.environ.get("VCR_PROVIDER", "").lower() == "auto":
+            self._providers_sel = None
+            self._gpu_forced_off = False
 
     # ------------------------------------------------------------------
     def _so(self) -> ort.SessionOptions:

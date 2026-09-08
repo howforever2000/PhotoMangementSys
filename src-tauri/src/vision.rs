@@ -23,6 +23,83 @@ use tauri::{Emitter, Manager};
 const VCR_URL: &str = "http://127.0.0.1:8765";
 /// 服务启动就绪等待上限
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
+/// FEAT-051：要求的服务 API 版本（GPU 开关 + 模型切换能力）；
+/// 探测到运行中服务版本过旧时自动 POST /shutdown 重启到新版本
+const VCR_API_VERSION: u64 = 2;
+/// FEAT-051：ensure 单飞锁 —— 并发命令共享一次「探测/重启/启动」流程，
+/// 邓免多进程同时拚 8765 端口（winerror 10048）
+static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 健康探测结果
+enum HealthProbe {
+    /// 新版本服务已就绪
+    Ready,
+    /// 服务存活但是旧版本（缺 GPU/模型端点）→ 需重启
+    OldVersion,
+    /// 未运行 / 探测失败
+    Down,
+}
+
+async fn probe_health(client: &reqwest::Client) -> HealthProbe {
+    let resp = match client
+        .get(format!("{VCR_URL}/health"))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return HealthProbe::Down,
+    };
+    let v = match resp.json::<serde_json::Value>().await {
+        Ok(v) => v,
+        Err(_) => return HealthProbe::Down,
+    };
+    if v.get("ok").and_then(|x| x.as_bool()) == Some(true) {
+        let ver = v.get("api_version").and_then(|x| x.as_u64()).unwrap_or(1);
+        if ver >= VCR_API_VERSION {
+            HealthProbe::Ready
+        } else {
+            HealthProbe::OldVersion
+        }
+    } else {
+        HealthProbe::Down
+    }
+}
+
+/// 兜底释放 VCR 端口：旧版本服务无 /shutdown 自退端点时强制结束占用进程
+fn kill_port_holder() {
+    #[cfg(target_os = "windows")]
+    {
+        let out = std::process::Command::new("netstat")
+            .args(["-ano", "-p", "tcp"])
+            .output();
+        if let Ok(out) = out {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let mut pids: std::collections::HashSet<String> = Default::default();
+            for line in text.lines() {
+                if line.contains(":8765") && line.to_uppercase().contains("LISTENING") {
+                    if let Some(pid) = line.split_whitespace().last() {
+                        if pid.chars().all(|c| c.is_ascii_digit()) {
+                            pids.insert(pid.to_string());
+                        }
+                    }
+                }
+            }
+            for pid in pids {
+                eprintln!("[VCR][ensure] 强制结束占用 8765 端口的进程 PID={pid}");
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/PID", &pid])
+                    .output();
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = std::process::Command::new("sh")
+            .args(["-c", "lsof -ti :8765 | xargs -r kill -9"])
+            .output();
+    }
+}
 
 /// 支持的图片扩展名（与 photo_scan/tone 一致；为解耦本地复制一份）
 const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp"];
@@ -233,17 +310,23 @@ async fn ensure_service_ready(
     client: &reqwest::Client,
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
-    // 快速探测：已在运行且模型就绪 → 直接返回
-    if let Ok(resp) = client
-        .get(format!("{VCR_URL}/health"))
-        .timeout(Duration::from_secs(2))
-        .send()
-        .await
-    {
-        if let Ok(v) = resp.json::<serde_json::Value>().await {
-            if v.get("ok").and_then(|x| x.as_bool()) == Some(true) {
-                return Ok(());
-            }
+    // 单飞：拿锁后重新探测（可能已被前一个等待者修复），避免并发拉起多进程报 10048
+    let _guard = ENSURE_LOCK.lock().await;
+    match probe_health(client).await {
+        HealthProbe::Ready => return Ok(()),
+        HealthProbe::OldVersion => {
+            // 旧版本：请求自退（新版本才有该端点），随后兣底强制释放端口
+            let _ = client
+                .post(format!("{VCR_URL}/shutdown"))
+                .timeout(Duration::from_secs(2))
+                .send()
+                .await;
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            kill_port_holder();
+        }
+        HealthProbe::Down => {
+            // 端口仍可能被无响应进程占着（连接失败但 LISTENING）→ 兕底清理
+            kill_port_holder();
         }
     }
 
@@ -306,23 +389,21 @@ async fn ensure_service_ready(
         ));
     }
 
-    // 轮询 /health 直到模型就绪
+    // 讉询 /health 直到模型就绪且 API 版本达标
     let deadline = std::time::Instant::now() + READY_TIMEOUT;
+    let mut saw_old_version = false;
     while std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(300)).await;
-        if let Ok(resp) = client.get(format!("{VCR_URL}/health")).send().await {
-            if let Ok(v) = resp.json::<serde_json::Value>().await {
-                if v.get("ok").and_then(|x| x.as_bool()) == Some(true) {
-                    return Ok(());
-                }
-                // 服务在但模型未就绪（如模型文件缺失）→ 直接报错，不再等待
-                if let Some(classes) = v.get("classes").and_then(|x| x.as_u64()) {
-                    if classes == 0 {
-                        return Err("识别模型未加载（检查模型目录下 ONNX 模型是否存在）".into());
-                    }
-                }
-            }
+        match probe_health(client).await {
+            HealthProbe::Ready => return Ok(()),
+            HealthProbe::OldVersion => saw_old_version = true,
+            HealthProbe::Down => {}
         }
+    }
+    if saw_old_version {
+        return Err(
+            "识别服务为旧版本（缺 GPU 开关/模型切换能力），自动重启失败：请手动结束旧的 python server.py 进程后重试".into(),
+        );
     }
     Err("识别服务启动超时".into())
 }
@@ -391,31 +472,48 @@ fn gpu_status_from_value(resp: &serde_json::Value, running: bool) -> VcrGpuStatu
 pub async fn vcr_set_gpu(app: &tauri::AppHandle, enabled: bool) -> Result<VcrGpuStatus, String> {
     let client = http_client().await?;
     ensure_service_ready(&client, app).await?;
-    let resp: serde_json::Value = client
+    let resp = client
         .post(format!("{VCR_URL}/gpu"))
         .json(&serde_json::json!({ "enabled": enabled }))
         .send()
         .await
-        .map_err(|e| format!("调用识别服务失败: {e}"))?
+        .map_err(|e| format!("调用识别服务失败: {e}"))?;
+    let status = resp.status();
+    let v: serde_json::Value = resp
         .json()
         .await
         .map_err(|e| format!("解析结果失败: {e}"))?;
-    Ok(gpu_status_from_value(&resp, true))
+    if !status.is_success() {
+        // 旧版本服务只有 GET /gpu → POST 会 405：提示重启
+        let detail = v.get("detail").and_then(|x| x.as_str()).unwrap_or("切换失败");
+        return Err(format!(
+            "{detail}（若为 Method Not Allowed，说明识别服务是旧版本，请重启应用自动升级）"
+        ));
+    }
+    Ok(gpu_status_from_value(&v, true))
 }
 
 /// FEAT-051：分类模型候选清单（含是否已下载 / 当前生效）
 pub async fn vcr_list_models(app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
     let client = http_client().await?;
     ensure_service_ready(&client, app).await?;
-    let resp: serde_json::Value = client
+    let resp = client
         .get(format!("{VCR_URL}/models"))
         .send()
         .await
-        .map_err(|e| format!("调用识别服务失败: {e}"))?
+        .map_err(|e| format!("调用识别服务失败: {e}"))?;
+    let status = resp.status();
+    let v: serde_json::Value = resp
         .json()
         .await
         .map_err(|e| format!("解析结果失败: {e}"))?;
-    Ok(resp)
+    if !status.is_success() {
+        return Err(format!(
+            "识别服务不含模型清单端点（服务版本过旧，请重启应用）: HTTP {}",
+            status.as_u16()
+        ));
+    }
+    Ok(v)
 }
 
 /// FEAT-051：切换分类模型（文件未下载 / 未知名称 → 提取服务端 detail 报错）
