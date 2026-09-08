@@ -1285,7 +1285,66 @@
       ],
       "created_at": "2026-09-07T16:42:59+08:00",
       "updated_at": "2026-09-07T16:42:59+08:00"
+    },
+    {
+      "id": "FEAT-048",
+      "name": "智慧相册「内容分类」tab（两级浏览 + 中文映射）",
+      "status": "done",
+      "description": "list_content_categories 两级聚合（大类→细类计数，窗口函数取置信度最高封面）+ list_photos_by_category 二级列表；CategoryGallery 两级页内视图：大类卡片（中文类名+张数徽标+细类数）→ 照片网格 + 细类 chips 内存即时过滤；PhotoLightbox 大图；骨架/空态引导/错误重试；categoryLabel + 新增 subCategoryLabel 中文映射（用户补充需求：类别标签中文显示）。",
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src/components/CategoryGallery.vue",
+        "src/views/SmartAlbum.vue",
+        "src/utils/categoryLabel.ts"
+      ],
+      "keywords": [
+        "内容分类",
+        "category",
+        "sub_category",
+        "中文映射",
+        "FEAT-048"
+      ],
+      "implementation": {
+        "backend": "CONTENT_HIT_SELECT + map_content_search_hit 与 list_timeline 共用行映射；CategoryGroupRow 含 cover_album_id 复用真实相册缩略图缓存命名",
+        "frontend": "chips 过滤为内存过滤零请求；封面/网格分批 get_photo_thumbs（FEAT-044 缓存命中 0 IO）；深链 /smart?tab=category"
+      },
+      "highlights": [
+        "细类 chips 无刷新切换；全部类别/细类/标签中文显示"
+      ],
+      "created_at": "2026-09-08T09:33:05+08:00",
+      "updated_at": "2026-09-08T09:33:05+08:00"
+    },
+    {
+      "id": "FEAT-049",
+      "name": "智慧相册「地点」tab（GPS 离线反查聚合 + location 缓存回写）",
+      "status": "done",
+      "description": "photo_content_scan.location 历史全空但 63% 照片有 GPS → list_photo_locations 读取时 geo_index 离线反查省/市（万张 <1s 零网络）并事务回写 location 列（持久缓存，下次 0 反查成本）；无 GPS/境外归「未记录地点」组弱化展示排最后；list_photos_by_location 二级列表；LocationGallery 两级页内视图与 CategoryGallery 同构。",
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src/components/LocationGallery.vue",
+        "src/views/SmartAlbum.vue",
+        "src-tauri/src/geo_index.rs"
+      ],
+      "keywords": [
+        "地点",
+        "location",
+        "GPS",
+        "geo_index",
+        "离线反查",
+        "FEAT-049"
+      ],
+      "implementation": {
+        "backend": "聚合 key=Some(地名)/None(未记录)，封面取组内置信度最高；回写失败不阻塞展示下次再补",
+        "frontend": "未记录地点弱化虚线卡片；数据来源提示文案；深链 /smart?tab=location"
+      },
+      "highlights": [
+        "无需重扫照片即可用（读取时反查+回写）；离线零网络依赖"
+      ],
+      "created_at": "2026-09-08T09:33:05+08:00",
+      "updated_at": "2026-09-08T09:33:05+08:00"
     }
   ],
-  "updated": "2026-09-07T16:42:59+08:00"
+  "updated": "2026-09-08T09:33:05+08:00"
 }
