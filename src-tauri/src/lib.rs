@@ -21,6 +21,7 @@ mod db;
 mod folder;
 mod geo_index;
 mod logger;
+mod model_dl;
 mod photo_info;
 mod photo_scan;
 mod persons;
@@ -2350,7 +2351,30 @@ fn delete_person(
     r
 }
 
-/// GPU 加速可行性（R3）：确保服务就绪后查询 /gpu，返回是否可用 GPU
+/// FEAT-052：开始下载模型（后台，官方/镜像择一快者）
+#[tauri::command]
+async fn start_model_download(name: String, app: tauri::AppHandle) -> Result<(), String> {
+    let _t = log_call!("start_model_download", &format!("name={name}"));
+    let r = model_dl::start(&app, &name).await;
+    match &r {
+        Ok(_) => logger::log_call_end_with("start_model_download", _t, "OK"),
+        Err(e) => logger::log_call_end_with("start_model_download", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// FEAT-052：模型下载状态列表
+#[tauri::command]
+fn list_model_downloads() -> Vec<model_dl::ModelDlStatus> {
+    model_dl::list()
+}
+
+/// FEAT-052：取消模型下载
+#[tauri::command]
+fn cancel_model_download(name: String) -> Result<(), String> {
+    model_dl::cancel(&name);
+    Ok(())
+}
 #[tauri::command]
 async fn get_vcr_gpu_status(app: tauri::AppHandle) -> Result<vision::VcrGpuStatus, String> {
     vision::vcr_gpu_status(&app).await
@@ -3114,6 +3138,9 @@ pub fn run() {
             content::commands::smart_search,
             export_photos,
             get_vcr_gpu_status,
+            start_model_download,
+            list_model_downloads,
+            cancel_model_download,
             set_vcr_gpu,
             list_vcr_models,
             set_vcr_model,
