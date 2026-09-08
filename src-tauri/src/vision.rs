@@ -12,44 +12,126 @@
 //! - 服务不可用 / 模型缺失 → 返回明确错误，不影响其他功能
 
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
-/// Python 微服务基址：每次分配一个空闲端口（固定端口可能与系统中的其他程序
-/// 冲突——用户明确要求：若 8765 被非本项目进程占用则更换端口，避免影响他人）。
-/// 端口在当前应用进程内通过 OnceLock 固定，spawn 时以环境变量 VCR_PORT 传给
-/// server.py（server.py 已支持 VCR_PORT 读取）。
-static VCR_BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// 识别服务基址（本进程内 ensure 成功启动/收养后设置；跨重启经 vcr-instance.json 收养）
+static VCR_BASE: Mutex<Option<String>> = Mutex::new(None);
 
-/// 选一个空闲端口（绑定 127.0.0.1:0 取系统分配值后立即释放）
-fn pick_free_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .unwrap_or(0)
+fn current_base() -> Option<String> {
+    VCR_BASE.lock().ok().and_then(|g| g.clone())
 }
-
-/// 解析微服务基址（进程内固定）
+fn set_base(base: String) {
+    if let Ok(mut g) = VCR_BASE.lock() {
+        *g = Some(base);
+    }
+}
+fn clear_base() {
+    if let Ok(mut g) = VCR_BASE.lock() {
+        *g = None;
+    }
+}
+/// 兼容既有调用：ensure 成功后必然已设置；未设置返回空串（调用方会先 ensure）
 fn vcr_base() -> String {
-    VCR_BASE
-        .get_or_init(|| {
-            let p = pick_free_port();
-            format!("http://127.0.0.1:{}", if p == 0 { 8765 } else { p })
-        })
-        .clone()
+    current_base().unwrap_or_default()
 }
 
-/// 当前分配的端口（供 spawn 时写入 VCR_PORT 环境变量）
-fn vcr_port() -> u16 {
-    vcr_base()
-        .rsplit(':')
-        .next()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0)
+/// 冷门段选端口（避开 Windows 临时端口 49152~65535——该段被系统出站连接
+/// 随机使用，是此前 bind 10048 的直接原因）；绑定测试通过才返回
+fn pick_cold_port() -> u16 {
+    for p in 18765..=18865 {
+        if let Ok(l) = std::net::TcpListener::bind(("127.0.0.1", p)) {
+            drop(l);
+            return p;
+        }
+    }
+    0
+}
+
+/// 实例落盘文件（跨应用重启收养存活服务 / 清理僵尸）：{"pid":..,"port":..}
+fn instance_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("获取应用数据目录失败: {e}"))?
+        .join("vcr-instance.json"))
+}
+fn save_instance(app: &tauri::AppHandle, pid: u32, port: u16) {
+    if let Ok(f) = instance_file(app) {
+        let _ = std::fs::write(f, format!("{{\"pid\":{},\"port\":{}}}", pid, port));
+    }
+}
+fn load_instance(app: &tauri::AppHandle) -> Option<(u32, u16)> {
+    let f = instance_file(app).ok()?;
+    let txt = std::fs::read_to_string(f).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+    Some((v.get("pid")?.as_u64()? as u32, v.get("port")?.as_u64()? as u16))
+}
+fn clear_instance(app: &tauri::AppHandle) {
+    if let Ok(f) = instance_file(app) {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+/// 进程存活检测（Windows tasklist / Unix /proc）
+fn pid_alive(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Path::new(&format!("/proc/{pid}")).exists()
+    }
+}
+
+/// 结束本项目识别服务进程（PID 明确属于我们，安全）
+fn kill_pid(pid: u32) {
+    eprintln!("[VCR][ensure] 结束本项目识别服务进程 PID={pid}");
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .output();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output();
+    }
+}
+
+/// 清理本项目遗留的识别服务孤儿（多次启动遗留的 vcr_server.exe /
+/// 命令行含 server.py 的 python 实例；不触碰其他 python 程序）
+fn kill_our_orphans() {
+    eprintln!("[VCR][ensure] 清理本项目遗留识别服务进程…");
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "vcr-server.exe"])
+            .output();
+        let script = "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
+        let _ = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .output();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = std::process::Command::new("sh")
+            .args(["-c", "pkill -f 'vcr-server' 2>/dev/null; pkill -f 'server.py' 2>/dev/null; true"])
+            .output();
+    }
 }
 /// 服务启动就绪等待上限
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -72,9 +154,9 @@ enum HealthProbe {
     NotReachable,
 }
 
-async fn probe_health(client: &reqwest::Client) -> HealthProbe {
+async fn probe_base(client: &reqwest::Client, base: &str) -> HealthProbe {
     let resp = match client
-        .get(format!("{}/health", vcr_base()))
+        .get(format!("{base}/health"))
         .timeout(Duration::from_secs(2))
         .send()
         .await
@@ -309,56 +391,122 @@ async fn ensure_service_ready(
     client: &reqwest::Client,
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
-    // 单飞：拿锁后重新探测（可能已被前一个等待者修复），避免并发拉起多进程报 10048
+    // 单飞：并发命令共享一次「探测/收养/重启/启动」，避免多进程抽数据库与端口
     let _guard = ENSURE_LOCK.lock().await;
-    let initial = probe_health(client).await;
-    match initial {
-        HealthProbe::Ready => return Ok(()),
-        HealthProbe::Loading => {
-            // 服务已在加载模型：不拉起、不打断，直接进轮询等就绪
-        }
-        HealthProbe::OldVersion => {
-            // 旧版本：请求自退（新版本才有该端点），随后兣底强杀占用者
-            let _ = client
-                .post(format!("{}/shutdown", vcr_base()))
-                .timeout(Duration::from_secs(2))
-                .send()
-                .await;
-            tokio::time::sleep(Duration::from_millis(800)).await;
-            if let Err(e) = spawn_server(app) {
-                return Err(e);
+
+    // A. 本进程已启动/收养过的实例
+    if let Some(base) = current_base() {
+        match probe_base(client, &base).await {
+            HealthProbe::Ready => return Ok(()),
+            HealthProbe::Loading => {
+                poll_ready(client, &base, READY_TIMEOUT).await?;
+                return Ok(());
             }
-        }
-        HealthProbe::NotReachable => {
-            // 端口空闲：直接拉起
-            if let Err(e) = spawn_server(app) {
-                return Err(e);
+            HealthProbe::OldVersion => {
+                let _ = client
+                    .post(format!("{base}/shutdown"))
+                    .timeout(Duration::from_secs(2))
+                    .send()
+                    .await;
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                if let Some((pid, _)) = load_instance(app) {
+                    if pid_alive(pid) {
+                        kill_pid(pid);
+                    }
+                }
+                clear_base();
+            }
+            HealthProbe::NotReachable => {
+                if let Some((pid, _)) = load_instance(app) {
+                    if pid_alive(pid) {
+                        kill_pid(pid);
+                    }
+                }
+                clear_instance(app);
+                clear_base();
             }
         }
     }
 
-    // 讉询 /health 直到模型就绪且 API 版本达标
-    let deadline = std::time::Instant::now() + READY_TIMEOUT;
-    let mut saw_old_version = false;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        match probe_health(client).await {
-            HealthProbe::Ready => return Ok(()),
-            HealthProbe::OldVersion => saw_old_version = true,
-            HealthProbe::Loading | HealthProbe::NotReachable => {}
+    // B. 上次应用运行遗留的孤儿实例（vcr-instance.json）
+    if let Some((pid, port)) = load_instance(app) {
+        let base = format!("http://127.0.0.1:{port}");
+        match probe_base(client, &base).await {
+            HealthProbe::Ready => {
+                set_base(base);
+                return Ok(());
+            }
+            HealthProbe::Loading => {
+                poll_ready(client, &base, READY_TIMEOUT).await?;
+                set_base(base);
+                return Ok(());
+            }
+            _ => {
+                if pid_alive(pid) {
+                    kill_pid(pid);
+                }
+                clear_instance(app);
+            }
+        }
+    } else {
+        // 无 PID 记录（历史遗留）：按进程名清本项目孤儿
+        kill_our_orphans();
+    }
+
+    // C. 冷启动：冷门段端口，spawn 后检测进程存活（bind 失败会立即退出），失败换端口重试
+    for _ in 0..3 {
+        let port = pick_cold_port();
+        if port == 0 {
+            continue;
+        }
+        let base = format!("http://127.0.0.1:{port}");
+        let pid = spawn_server(app, port)?;
+        // 等 800ms：bind 失败的 uvicorn 会立刻退出
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        if !pid_alive(pid) {
+            continue;
+        }
+        match poll_ready(client, &base, READY_TIMEOUT).await {
+            Ok(()) => {
+                set_base(base.clone());
+                save_instance(app, pid, port);
+                return Ok(());
+            }
+            Err(_) => {
+                if pid_alive(pid) {
+                    kill_pid(pid);
+                }
+            }
         }
     }
-    if saw_old_version {
-        return Err(
-            "识别服务为旧版本（缺 GPU 开关/模型切换能力），自动重启失败：请手动结束旧的 python server.py 进程后重试".into(),
-        );
+    Err("识别服务启动失败（多个候选端口均未成功）".into())
+}
+
+/// 轮询就绪；Loading 继续等，OldVersion 报版本错误，超时报错
+async fn poll_ready(
+    client: &reqwest::Client,
+    base: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match probe_base(client, base).await {
+            HealthProbe::Ready => return Ok(()),
+            HealthProbe::OldVersion => {
+                return Err("识别服务为旧版本（缺 GPU/模型切换端点），请结束该进程后重试".into());
+            }
+            _ => {}
+        }
+        if Instant::now() > deadline {
+            return Err("识别服务就绪等待超时".into());
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
     }
-    Err("识别服务启动超时".into())
 }
 
 /// 启动识别微服务（打包版优先内置 exe；开发版 python server.py）。
-/// 返回 Err 表示进程未能拉起（已尽力给出定位信息）。
-fn spawn_server(app: &tauri::AppHandle) -> Result<(), String> {
+/// 返回进程 PID（供实例落盘/清场）。
+fn spawn_server(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
     // 解析资源/数据目录（打包版定位依赖这两个路径）
     let resource_dir = app
         .path()
@@ -411,15 +559,15 @@ fn spawn_server(app: &tauri::AppHandle) -> Result<(), String> {
         cmd.arg(&server_script);
     }
 
-    // 动态端口：把本次分配的端口写入环境变量（server.py 读取 VCR_PORT）
-    cmd.env("VCR_PORT", vcr_port().to_string());
-    let child = cmd.current_dir(&workdir).spawn();
-    if let Err(e) = child {
-        return Err(format!(
+    // 动态端口：本次分配的端口经环境变量传给服务
+    cmd.env("VCR_PORT", port.to_string());
+    let child = cmd
+        .current_dir(&workdir)
+        .spawn()
+        .map_err(|e| format!(
             "启动识别服务失败（打包版请确认安装目录 vcr/vcr-server.exe 存在；开发版请 pip install -r python/requirements.txt）: {e}"
-        ));
-    }
-    Ok(())
+        ))?;
+    Ok(child.id())
 }
 
 /// （人物列表/重命名/合并/头像已迁移到 `persons` 模块直读 persons.db；此处仅保留删除代理）

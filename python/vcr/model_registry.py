@@ -21,10 +21,39 @@ class ModelRegistry:
         self._providers_sel: list[str] | None = ["CPUExecutionProvider"]
         self._gpu_forced_off = True
         # FEAT-051：用户指定的分类模型文件名（None = 按 CLS_MODELS 顺序回退）
-        self._cls_override: str | None = None
+        # FEAT-052：启动时读取持久化选择（models/current_cls.json），UI 选过的跨重启保持
+        self._cls_override: str | None = self._load_persisted_cls()
         if os.environ.get("VCR_PROVIDER", "").lower() == "auto":
             self._providers_sel = None
             self._gpu_forced_off = False
+
+    @staticmethod
+    def _load_persisted_cls() -> str | None:
+        """读取持久化的分类模型选择（文件缺失/非法/未下载 → None 走默认回退）。"""
+        try:
+            import json
+
+            path = config.CLS_CURRENT_PATH
+            if os.path.isfile(path):
+                with open(path, encoding="utf-8") as f:
+                    name = json.load(f).get("name")
+                if name in config.CLS_MODEL_META and os.path.isfile(
+                    os.path.join(config.MODEL_DIR, name)
+                ):
+                    return name
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    def _persist_cls(self, name: str) -> None:
+        """持久化用户选择（失败不阻断）。"""
+        try:
+            import json
+
+            with open(config.CLS_CURRENT_PATH, "w", encoding="utf-8") as f:
+                json.dump({"name": name}, f)
+        except Exception:  # noqa: BLE001
+            pass
 
     # ------------------------------------------------------------------
     def _so(self) -> ort.SessionOptions:
@@ -186,7 +215,13 @@ class ModelRegistry:
         if not self._ready.get("cls"):
             err = self._load_errors.get("cls", "加载失败")
             self._cls_override = None
+            # 持久化指向的模型加载失败 → 删除记录，下次启动走默认回退
+            try:
+                os.remove(config.CLS_CURRENT_PATH)
+            except OSError:
+                pass
             raise RuntimeError(f"模型加载失败: {err}")
+        self._persist_cls(name)
         return self.cls_models_info()
 
     def cls_models_info(self) -> dict:
