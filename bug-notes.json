@@ -465,6 +465,42 @@
       "lessons": [
         "全屏遮罩组件常驻挂载 = 全页点击被拦截；集成前先读组件模板"
       ]
+    },
+    {
+      "id": "BUG-2026-0908-004",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "dev 模式识别服务模型全量加载失败：onnxruntime 无 ThreadPoolOptions API",
+      "module": "VCR / model_registry._so",
+      "symptom": [
+        "server.py 启动后所有模型 ready=false（cls/det/face/scene 全灭）",
+        "分类扫描 503「分类模型未就绪」"
+      ],
+      "root_cause": {
+        "summary": "_so() 无条件 so.threadpool_options = ort.ThreadPoolOptions()，本机 onnxruntime 1.29.0 无该 Python API → 每个模型加载即抛错。"
+      },
+      "solution": "hasattr(ort, 'ThreadPoolOptions') 守卫，存在才启用。实测 health ok:true classes:1000。",
+      "lessons": [
+        "onnxruntime Python API 随版本差异大，新 SessionOptions 属性必须 hasattr 防御"
+      ]
+    },
+    {
+      "id": "BUG-2026-0908-005",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "运行中识别服务为旧进程时 GPU/模型切换无效（无版本协商）",
+      "module": "VCR / vision.rs ensure_service_ready",
+      "symptom": [
+        "GPU 开关点了没反应",
+        "模型下拉为空"
+      ],
+      "root_cause": {
+        "summary": "ensure_service_ready 探测到 8765 端口有存活服务就复用（跨应用重启存活），旧进程没有 POST /gpu、GET /models 新端点 → 405/404。"
+      },
+      "solution": "/health 增加 api_version=2；Rust 探测到旧版本自动 POST /shutdown（服务自退端点，仅监听 127.0.0.1）再拉起新版本；重启失败给出手动结束进程指引；list/set 端点补非 2xx 守卫。",
+      "lessons": [
+        "长生命周期子进程 + 新增端点 = 必须做版本协商/自愈，否则改动永不生效"
+      ]
     }
   ]
 }
