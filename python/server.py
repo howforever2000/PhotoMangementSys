@@ -73,6 +73,11 @@ def _health_dict() -> dict:
     }
 
 
+# FEAT-051：API 版本（GPU 开关 + 模型切换能力）。宿主检测到运行中服务版本过旧时
+# 会 POST /shutdown 自动重启到新版本。
+VCR_API_VERSION = 2
+
+
 @app.get("/health")
 def health():
     reg = get_registry()
@@ -81,6 +86,7 @@ def health():
     return {
         "ok": ready,
         "model": config.CLS_MODELS[0] if ready else "none",
+        "api_version": VCR_API_VERSION,
         "det_ready": reg.is_ready("det"),
         "face_ready": reg.is_ready("face_det") and reg.is_ready("face_rec"),
         "scene_ready": reg.is_ready("scene"),
@@ -93,6 +99,15 @@ def health():
         "gpu": reg.gpu_info(),
         "batch_max": config.BATCH_CHUNK_MAX,
     }
+
+
+@app.post("/shutdown")
+def shutdown():
+    """FEAT-051：宿主检测到服务版本过旧时调用，自退以便宿主拉起新版本。
+
+    本服务仅监听 127.0.0.1，无外部暴露风险。
+    """
+    os._exit(0)
 
 
 @app.get("/gpu")

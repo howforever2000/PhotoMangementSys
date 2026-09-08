@@ -154,6 +154,8 @@ async function onModelChange() {
         切换<b>即时生效</b>，影响后续扫描（当前批次不受影响）。更大的模型更准但更慢：
         <b>x</b> 建议 GPU 用户、<b>l</b> 适合 7840HS 级 CPU。
         新模型下载后放入 <code>python/models/</code>（如 yolov8x-cls.onnx）即可在此选择。
+        GPU 加速需安装 GPU 版运行时（如 <code>onnxruntime-directml</code>）；
+        仅 CPU 运行时时开关保持开即可（自动兼容）。
       </p>
     </template>
   </div>

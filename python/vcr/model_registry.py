@@ -19,6 +19,8 @@ class ModelRegistry:
         self._providers_sel: list[str] | None = None
         # FEAT-051：用户指定的分类模型文件名（None = 按 CLS_MODELS 顺序回退）
         self._cls_override: str | None = None
+        # FEAT-051：用户是否强制关闭 GPU（与「无 GPU 可用」区分，前端开关初始状态用）
+        self._gpu_forced_off = False
 
     # ------------------------------------------------------------------
     def _so(self) -> ort.SessionOptions:
@@ -31,7 +33,10 @@ class ModelRegistry:
         # 启用内存规划，减少推理时的内存分配开销
         so.enable_mem_pattern = True
         # 启用 CPU 线程池（配合 THREADS 参数）
-        so.threadpool_options = ort.ThreadPoolOptions()
+        # 修复：部分 onnxruntime 版本无 ThreadPoolOptions Python API（一加载即报错，
+        # 全模型瘫痪），存在才启用
+        if hasattr(ort, "ThreadPoolOptions"):
+            so.threadpool_options = ort.ThreadPoolOptions()
         return so
 
     # ------------------------------------------------------------------
@@ -69,6 +74,8 @@ class ModelRegistry:
             "gpu": gpu,
             "use_gpu": using_gpu,
             "provider": providers[0] if providers else "cpu",
+            # FEAT-051：是否被用户强制关闭 GPU（与「无 GPU 可用」区分，前端开关初始状态用）
+            "forced_cpu": self._gpu_forced_off,
         }
 
     def _load(self, key: str, paths: list[str], required: bool = False):
@@ -155,6 +162,7 @@ class ModelRegistry:
         provider 在会话创建时绑定，切换后清空全部已加载会话并惰性重建
         （下一次推理请求时生效，首个批次略有重建开销）。
         """
+        self._gpu_forced_off = not enabled
         self._providers_sel = None if enabled else ["CPUExecutionProvider"]
         self._reload_all()
         return self.gpu_info()
