@@ -17,6 +17,8 @@ class ModelRegistry:
         self._ready: dict[str, bool] = {}
         self._load_errors: dict[str, str] = {}
         self._providers_sel: list[str] | None = None
+        # FEAT-051：用户指定的分类模型文件名（None = 按 CLS_MODELS 顺序回退）
+        self._cls_override: str | None = None
 
     # ------------------------------------------------------------------
     def _so(self) -> ort.SessionOptions:
@@ -93,6 +95,13 @@ class ModelRegistry:
     # ------------------------------------------------------------------
     @property
     def cls(self) -> ort.InferenceSession | None:
+        # FEAT-051：用户指定模型优先（文件存在才生效，否则回退默认列表）
+        if self._cls_override:
+            override_path = os.path.join(config.MODEL_DIR, self._cls_override)
+            if os.path.isfile(override_path):
+                self._load("cls", [override_path], required=True)
+                return self._sessions.get("cls")
+            self._cls_override = None
         self._load("cls", [os.path.join(config.MODEL_DIR, m) for m in config.CLS_MODELS], required=True)
         return self._sessions.get("cls")
 
@@ -136,6 +145,63 @@ class ModelRegistry:
     def run(self, key: str, tensor) -> list[np.ndarray]:
         sess = self._sessions[key]
         return sess.run(None, {sess.get_inputs()[0].name: tensor})
+
+    # ------------------------------------------------------------------
+    # FEAT-051：运行时切换（GPU 加速 / 分类模型），供 UI 按硬件性能选择
+    # ------------------------------------------------------------------
+    def set_gpu_enabled(self, enabled: bool) -> dict:
+        """切换 GPU 加速：enabled=False 强制 CPU。
+
+        provider 在会话创建时绑定，切换后清空全部已加载会话并惰性重建
+        （下一次推理请求时生效，首个批次略有重建开销）。
+        """
+        self._providers_sel = None if enabled else ["CPUExecutionProvider"]
+        self._reload_all()
+        return self.gpu_info()
+
+    def set_cls_model(self, name: str) -> dict:
+        """切换分类模型到指定文件（须在候选清单中且已下载）。"""
+        if name not in config.CLS_MODEL_META:
+            raise ValueError(f"未知分类模型: {name}")
+        path = os.path.join(config.MODEL_DIR, name)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"模型文件未下载: {path}")
+        self._cls_override = name
+        self._sessions.pop("cls", None)
+        self._ready.pop("cls", None)
+        self._load_errors.pop("cls", None)
+        self._load("cls", [path], required=True)
+        if not self._ready.get("cls"):
+            err = self._load_errors.get("cls", "加载失败")
+            self._cls_override = None
+            raise RuntimeError(f"模型加载失败: {err}")
+        return self.cls_models_info()
+
+    def cls_models_info(self) -> dict:
+        """分类模型候选清单 + 当前生效模型（UI 用）。"""
+        current = self._cls_override
+        if not current:
+            for m in config.CLS_MODELS:
+                if os.path.isfile(os.path.join(config.MODEL_DIR, m)):
+                    current = m
+                    break
+        models = []
+        for m in config.CLS_MODELS:
+            meta = config.CLS_MODEL_META.get(m, {})
+            models.append({
+                "name": m,
+                "label": meta.get("label", m),
+                "accuracy": meta.get("accuracy", ""),
+                "speed": meta.get("speed", ""),
+                "downloaded": os.path.isfile(os.path.join(config.MODEL_DIR, m)),
+                "active": m == current,
+            })
+        return {"models": models, "current": current}
+
+    def _reload_all(self):
+        """清空全部会话槽位，下次访问按新 provider 惰性重建。"""
+        self._sessions.clear()
+        self._ready.clear()
 
     def is_ready(self, key: str) -> bool:
         self._ready.setdefault(key, False)

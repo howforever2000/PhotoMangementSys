@@ -2356,6 +2356,24 @@ async fn get_vcr_gpu_status(app: tauri::AppHandle) -> Result<vision::VcrGpuStatu
     vision::vcr_gpu_status(&app).await
 }
 
+/// FEAT-051：GPU 加速开关（开 = GPU 优先 / 关 = 强制 CPU），返回切换后状态
+#[tauri::command]
+async fn set_vcr_gpu(enabled: bool, app: tauri::AppHandle) -> Result<vision::VcrGpuStatus, String> {
+    vision::vcr_set_gpu(&app, enabled).await
+}
+
+/// FEAT-051：分类模型候选清单（含是否已下载 / 当前生效）
+#[tauri::command]
+async fn list_vcr_models(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    vision::vcr_list_models(&app).await
+}
+
+/// FEAT-051：切换分类模型（未下载/未知名称返回服务端错误信息）
+#[tauri::command]
+async fn set_vcr_model(model: String, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    vision::vcr_set_model(&app, &model).await
+}
+
 /// 在系统文件管理器中打开文件夹内部
 ///
 /// 使用系统原生命令，比 opener 插件的 `open_path` 在 Windows 上更可靠：
@@ -3096,6 +3114,9 @@ pub fn run() {
             content::commands::smart_search,
             export_photos,
             get_vcr_gpu_status,
+            set_vcr_gpu,
+            list_vcr_models,
+            set_vcr_model,
             cancel_scan,
         ])
         .run(tauri::generate_context!())

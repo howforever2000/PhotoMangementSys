@@ -358,6 +358,11 @@ pub async fn vcr_gpu_status(app: &tauri::AppHandle) -> Result<VcrGpuStatus, Stri
         .json()
         .await
         .map_err(|e| format!("解析结果失败: {e}"))?;
+    Ok(gpu_status_from_value(&resp, true))
+}
+
+/// /gpu 响应 → VcrGpuStatus 映射（探测与切换共用）
+fn gpu_status_from_value(resp: &serde_json::Value, running: bool) -> VcrGpuStatus {
     let gpu = resp
         .get("gpu")
         .and_then(|v| v.as_array())
@@ -368,14 +373,70 @@ pub async fn vcr_gpu_status(app: &tauri::AppHandle) -> Result<VcrGpuStatus, Stri
         .and_then(|v| v.as_array())
         .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default();
-    Ok(VcrGpuStatus {
-        running: true,
+    VcrGpuStatus {
+        running,
         use_gpu: resp.get("use_gpu").and_then(|v| v.as_bool()).unwrap_or(false),
         provider: resp.get("provider").and_then(|v| v.as_str()).unwrap_or("cpu").to_string(),
         gpu,
         available,
         batch_max: resp.get("batch_max").and_then(|v| v.as_u64()).unwrap_or(8) as usize,
-    })
+    }
+}
+
+/// FEAT-051：GPU 加速开关（开 = GPU 优先 / 关 = 强制 CPU），返回切换后状态
+pub async fn vcr_set_gpu(app: &tauri::AppHandle, enabled: bool) -> Result<VcrGpuStatus, String> {
+    let client = http_client().await?;
+    ensure_service_ready(&client, app).await?;
+    let resp: serde_json::Value = client
+        .post(format!("{VCR_URL}/gpu"))
+        .json(&serde_json::json!({ "enabled": enabled }))
+        .send()
+        .await
+        .map_err(|e| format!("调用识别服务失败: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("解析结果失败: {e}"))?;
+    Ok(gpu_status_from_value(&resp, true))
+}
+
+/// FEAT-051：分类模型候选清单（含是否已下载 / 当前生效）
+pub async fn vcr_list_models(app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let client = http_client().await?;
+    ensure_service_ready(&client, app).await?;
+    let resp: serde_json::Value = client
+        .get(format!("{VCR_URL}/models"))
+        .send()
+        .await
+        .map_err(|e| format!("调用识别服务失败: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("解析结果失败: {e}"))?;
+    Ok(resp)
+}
+
+/// FEAT-051：切换分类模型（文件未下载 / 未知名称 → 提取服务端 detail 报错）
+pub async fn vcr_set_model(app: &tauri::AppHandle, model: &str) -> Result<serde_json::Value, String> {
+    let client = http_client().await?;
+    ensure_service_ready(&client, app).await?;
+    let resp = client
+        .post(format!("{VCR_URL}/model"))
+        .json(&serde_json::json!({ "name": model }))
+        .send()
+        .await
+        .map_err(|e| format!("调用识别服务失败: {e}"))?;
+    let status = resp.status();
+    let v: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析结果失败: {e}"))?;
+    if !status.is_success() {
+        let detail = v
+            .get("detail")
+            .and_then(|x| x.as_str())
+            .unwrap_or("切换失败");
+        return Err(detail.to_string());
+    }
+    Ok(v)
 }
 
 async fn http_client() -> Result<reqwest::Client, String> {

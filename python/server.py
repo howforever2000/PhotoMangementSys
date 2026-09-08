@@ -23,6 +23,7 @@ import os
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 from vcr import config
 from vcr.model_registry import get_registry
@@ -102,6 +103,41 @@ def gpu():
     info = reg.gpu_info()
     info["batch_max"] = config.BATCH_CHUNK_MAX
     return info
+
+
+class GpuRequest(BaseModel):
+    enabled: bool
+
+
+class ModelRequest(BaseModel):
+    name: str
+
+
+@app.post("/gpu")
+def set_gpu(req: GpuRequest):
+    """FEAT-051：GPU 加速开关（开 = GPU 优先 / 关 = 强制 CPU），返回切换后状态。"""
+    try:
+        info = get_registry().set_gpu_enabled(req.enabled)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(e))
+    info["batch_max"] = config.BATCH_CHUNK_MAX
+    return {"ok": True, **info}
+
+
+@app.get("/models")
+def models():
+    """FEAT-051：分类模型候选清单（含是否已下载 / 当前生效）。"""
+    return get_registry().cls_models_info()
+
+
+@app.post("/model")
+def set_model(req: ModelRequest):
+    """FEAT-051：切换分类模型（文件未下载 / 未知名称返回 400）。"""
+    try:
+        info = get_registry().set_cls_model(req.name)
+    except (ValueError, FileNotFoundError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **info}
 
 
 @app.post("/classify")
