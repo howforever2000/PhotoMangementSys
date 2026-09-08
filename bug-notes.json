@@ -520,6 +520,25 @@
         "固定端口子进程的启动必须单飞 + 端口占用兜底清理",
         "GPU 类功能默认保守（CPU），检测到硬件后再启用"
       ]
+    },
+    {
+      "id": "BUG-2026-0908-007",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "识别服务反复强杀 8765 端口进程循环 + 模型选择转圈",
+      "module": "VCR / vision.rs ensure_service_ready + probe_health",
+      "symptom": [
+        "日志反复『强制结束占用 8765 端口的进程 PID=…』不同 PID 交替",
+        "选择模型一直转圈不能选择",
+        "被杀进程打印 ConnectionResetError 10054"
+      ],
+      "root_cause": {
+        "summary": "probe 把『服务可达但模型未就绪(ok:false)』误判为 Down，每次交互都 kill 正在加载的服务再重拉，造成反复强杀；模型清单 fetch 随之卡在转圈。"
+      },
+      "solution": "probe 四态化（Ready/OldVersion/Loading/NotReachable），仅 OldVersion 强杀，Loading 等待不打断；spawn_server 独立；前端 modelsFailed 兜底提示。",
+      "lessons": [
+        "探测启动中子进程必须区分『未就绪』与『不可达』，否则误杀导致循环重拉"
+      ]
     }
   ]
 }
