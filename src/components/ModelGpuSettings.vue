@@ -10,10 +10,10 @@
  * 自包含：挂载即拉取状态（内部自动拉起识别微服务）；切换即时保存并刷新展示。
  * 复用方：GlobalScanPanel（全局照片扫描入库）；ScanPanel 等其他扫描入口可直接内嵌。
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useContentStore } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
-import type { VcrModelsInfo } from "../types/content";
+import type { ModelDlStatus, VcrModelsInfo } from "../types/content";
 
 const contentStore = useContentStore();
 const notify = useNotify();
@@ -26,6 +26,8 @@ const modelsInfo = ref<VcrModelsInfo | null>(null);
 const selectedModel = ref("");
 /** 模型清单加载失败（识别服务升级中/异常）→ 提示而非无限转圈 */
 const modelsFailed = ref(false);
+/** FEAT-052：模型下载状态（store 由 model-dl-progress 事件实时更新） */
+const downloads = computed(() => contentStore.modelDownloads);
 /** 是否已执行过「检测 GPU」 */
 const detected = ref(false);
 
@@ -56,11 +58,50 @@ async function refreshAll(silent = false) {
 
 onMounted(async () => {
   try {
-    await refreshAll(true);
+    await Promise.allSettled([refreshAll(true), contentStore.listModelDownloads()]);
   } catch {
     initFailed.value = true;
   }
 });
+
+/** 任一模型刚完成下载 → 刷新候选清单与当前生效（新模型立即可选） */
+const prevDone = ref(new Set<string>());
+watch(
+  () => contentStore.modelDownloads,
+  (list) => {
+    for (const d of list) {
+      if (d.done && !prevDone.value.has(d.name)) {
+        prevDone.value.add(d.name);
+        contentStore
+          .fetchVcrModels()
+          .then((info) => {
+            modelsInfo.value = info;
+            selectedModel.value = info.current ?? "";
+          })
+          .catch(() => {});
+      }
+      if (!d.done) prevDone.value.delete(d.name);
+    }
+  },
+  { deep: true },
+);
+
+function progressPct(d: ModelDlStatus): number {
+  if (d.stage === "exporting") return 100;
+  if (!d.total) return 0;
+  return Math.min(100, Math.round((d.bytes / d.total) * 100));
+}
+function fmtBytes(d: ModelDlStatus): string {
+  const b = (d.bytes / 1e6).toFixed(1);
+  const t = d.total ? ` / ${(d.total / 1e6).toFixed(1)} MB` : "";
+  return `${b} MB${t}`;
+}
+function startDl(name: string) {
+  contentStore.startModelDownload(name).catch((e) => notify.error("启动下载失败", String(e)));
+}
+function cancelDl(name: string) {
+  contentStore.cancelModelDownload(name).catch((e) => notify.error("取消失败", String(e)));
+}
 
 /** 检测 GPU：刷新状态并提示可用性 */
 async function detect() {
@@ -195,6 +236,40 @@ async function onModelChange() {
         <code>onnxruntime-directml</code>）。切换<b>即时生效</b>，影响后续扫描；
         新模型下载后放入 <code>python/models/</code>（如 yolov8x-cls.onnx）即可在此选择。
       </p>
+
+      <!-- FEAT-052：模型下载（后台 + 进度 + 官方/镜像择优） -->
+      <div class="mgps-row mgps-dl-head">
+        <span class="mgps-label">📥 模型下载</span>
+        <span class="mgps-hint">官方 / 镜像并行择快；.pt 下载后自动导出 onnx</span>
+      </div>
+      <div class="mgps-dl-list">
+        <div v-for="d in downloads" :key="d.name" class="mgps-dl-row">
+          <span class="mgps-dl-name">
+            {{ d.name }}<span v-if="d.required" class="mgps-tag-req">必需</span>
+          </span>
+          <template v-if="d.done">
+            <span class="mgps-status ok">✓ 已下载</span>
+          </template>
+          <template v-else-if="d.running">
+            <div class="mgps-progress">
+              <div class="mgps-progress-fill" :style="{ width: progressPct(d) + '%' }"></div>
+            </div>
+            <span class="mgps-busy">
+              {{ d.stage === "exporting" ? "导出中…" : fmtBytes(d) }}
+            </span>
+            <button class="mgps-btn mgps-btn-sm" @click="cancelDl(d.name)">取消</button>
+          </template>
+          <template v-else-if="d.stage === 'error'">
+            <span class="mgps-status err" :title="d.error ?? ''">
+              失败：{{ (d.error ?? "").slice(0, 40) }}
+            </span>
+            <button class="mgps-btn mgps-btn-sm" @click="startDl(d.name)">重试</button>
+          </template>
+          <template v-else>
+            <button class="mgps-btn mgps-btn-sm" @click="startDl(d.name)">⬇ 下载</button>
+          </template>
+        </div>
+      </div>
     </template>
   </div>
 </template>
@@ -316,5 +391,61 @@ async function onModelChange() {
 .mgps-hint-warn {
   color: #b45309;
   opacity: 1;
+}
+
+/* FEAT-052：模型下载 */
+.mgps-dl-head {
+  margin-top: 4px;
+}
+.mgps-dl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mgps-dl-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+  border-bottom: 1px dashed rgba(127, 127, 127, 0.2);
+}
+.mgps-dl-row:last-child {
+  border-bottom: none;
+}
+.mgps-dl-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  min-width: 190px;
+}
+.mgps-tag-req {
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10.5px;
+  color: #b45309;
+  border: 1px solid rgba(180, 83, 9, 0.4);
+  border-radius: 999px;
+}
+.mgps-progress {
+  flex: 1;
+  min-width: 140px;
+  max-width: 260px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.25);
+  overflow: hidden;
+}
+.mgps-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #396cd8, #7eb6ff);
+  transition: width 0.2s;
+}
+.mgps-status.err {
+  color: #e03131;
+}
+.mgps-btn-sm {
+  padding: 3px 10px;
+  font-size: 11.5px;
 }
 </style>

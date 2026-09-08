@@ -214,3 +214,16 @@ export interface VcrModelsInfo {
   /** 当前生效模型文件名（候选中第一个已下载者，或用户指定项） */
   current: string | null;
 }
+
+/** FEAT-052：模型下载状态 —— 对应 Rust `model_dl::ModelDlStatus` */
+export interface ModelDlStatus {
+  name: string;
+  file: string;
+  required: boolean;
+  running: boolean;
+  done: boolean;
+  stage: string; // downloading | exporting | done | error | idle
+  bytes: number;
+  total: number;
+  error: string | null;
+}

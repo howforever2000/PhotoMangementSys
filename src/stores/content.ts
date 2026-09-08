@@ -8,6 +8,7 @@ import type {
   CombinedScanOutcome,
   ContentScanFilters,
   ContentSearchHit,
+  ModelDlStatus,
   ScanOutcome,
   ScanReport,
   UnifiedScanRow,
@@ -128,6 +129,8 @@ export const useContentStore = defineStore("content", {
     gpuStatus: null as VcrGpuStatus | null,
     /** FEAT-051：分类模型候选清单 */
     vcrModels: null as VcrModelsInfo | null,
+    /** FEAT-052：模型下载状态（由 model-dl-progress 事件 + list 拉取更新） */
+    modelDownloads: [] as ModelDlStatus[],
     /** 组合扫描后台任务（键 = albumId；脱离组件存活，支持退出相册后后台继续） */
     combinedJobs: {} as Record<number, CombinedScanJob>,
     /** FEAT-038：全局照片扫描入库任务（单例；脱离组件存活，后台执行） */
@@ -175,6 +178,24 @@ export const useContentStore = defineStore("content", {
     async setVcrModel(model: string): Promise<VcrModelsInfo> {
       this.vcrModels = await invoke<VcrModelsInfo>("set_vcr_model", { model });
       return this.vcrModels;
+    },
+
+    /** FEAT-052：模型下载状态列表（含未启动 idle） */
+    async listModelDownloads(): Promise<ModelDlStatus[]> {
+      this.modelDownloads = await invoke<ModelDlStatus[]>("list_model_downloads");
+      return this.modelDownloads;
+    },
+
+    /** FEAT-052：开始下载模型（后台执行） */
+    async startModelDownload(name: string): Promise<void> {
+      await invoke<void>("start_model_download", { name });
+      await this.listModelDownloads();
+    },
+
+    /** FEAT-052：取消模型下载 */
+    async cancelModelDownload(name: string): Promise<void> {
+      await invoke<void>("cancel_model_download", { name });
+      await this.listModelDownloads();
     },
 
     /**
@@ -311,6 +332,14 @@ export const useContentStore = defineStore("content", {
         }
       }).catch(() => {
         // 监听失败不阻塞；扫描仍能正常完成，仅无实时进度
+      });
+      // FEAT-052：模型下载进度实时更新（后台下载不阻塞 UI）
+      listen<ModelDlStatus>("model-dl-progress", (e) => {
+        const i = this.modelDownloads.findIndex((m) => m.name === e.payload.name);
+        if (i >= 0) this.modelDownloads.splice(i, 1, e.payload);
+        else this.modelDownloads.push(e.payload);
+      }).catch(() => {
+        /* 监听失败不阻塞 */
       });
     },
 
