@@ -444,6 +444,27 @@
       "lessons": [
         "缓存命名变更必须同时改生成端与查询端"
       ]
+    },
+    {
+      "id": "BUG-2026-0908-003",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "删除确认弹窗「取消」点不掉 —— ContextMenu 全屏透明遮罩常驻拦截点击",
+      "module": "分类/地点画廊 / ContextMenu 集成",
+      "symptom": [
+        "右键菜单弹出后点击菜单项，菜单不关闭",
+        "确认弹窗「取消」「确认删除」均无响应，页面所有点击失效"
+      ],
+      "root_cause": {
+        "summary": "ContextMenu 组件模板含全屏透明遮罩 ctx-overlay（fixed inset-0 z-9999，@click.stop），组件自身不管理显隐；画廊误常驻挂载（未加 v-if），遮罩拦截全部点击（ConfirmDialog z-1000 在其之下），且 @click.stop 阻断 document 监听导致菜单自身也无法关闭。",
+        "detail": [
+          "PhotoGrid 既有用法是 v-if 包裹用完即卸载，无此问题"
+        ]
+      },
+      "solution": "画廊中 ContextMenu 加 v-if=\"ctxVisible\" 用完即卸载。教训：复用带『全屏遮罩』的组件必须确认其显隐管理方式（v-if/visible prop）。",
+      "lessons": [
+        "全屏遮罩组件常驻挂载 = 全页点击被拦截；集成前先读组件模板"
+      ]
     }
   ]
 }
