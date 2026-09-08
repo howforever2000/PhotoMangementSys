@@ -16,7 +16,6 @@ import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 import PhotoLightbox from "./PhotoLightbox.vue";
 import ContextMenu, { type ContextMenuEntry } from "./ContextMenu.vue";
-import ConfirmDialog from "./ConfirmDialog.vue";
 import type { CategoryGroupRow, ContentSearchHit } from "../types/content";
 import { categoryLabel, subCategoryLabel, categoryTone } from "../utils/categoryLabel";
 
@@ -191,11 +190,8 @@ type DeleteMode = "records" | "trash";
 /** 批量管理模式 */
 const selectMode = ref(false);
 const selected = ref<Set<string>>(new Set());
-/** 批量/预览删除：待选方式弹窗持有的路径清单 */
+/** 删除方式选择弹窗（两种选择即最终确认，点击方式立即执行） */
 const modeDialogPaths = ref<string[] | null>(null);
-/** 二次确认弹窗 */
-const confirmVisible = ref(false);
-const pendingDelete = ref<{ paths: string[]; mode: DeleteMode } | null>(null);
 
 /** 右键菜单 */
 const ctxVisible = ref(false);
@@ -207,13 +203,13 @@ const ctxItems = computed<ContextMenuEntry[]>(() => [
     label: "本地记录删除（保留文件）",
     icon: "📄",
     danger: true,
-    onClick: () => askDelete([ctxPath.value], "records"),
+    onClick: () => executeDelete([ctxPath.value], "records"),
   },
   {
     label: "磁盘删除（移入回收站）",
     icon: "🗑",
     danger: true,
-    onClick: () => askDelete([ctxPath.value], "trash"),
+    onClick: () => executeDelete([ctxPath.value], "trash"),
   },
 ]);
 
@@ -250,46 +246,20 @@ function openModeDialog(paths: string[]) {
 function pickMode(mode: DeleteMode) {
   const paths = modeDialogPaths.value ?? [];
   modeDialogPaths.value = null;
-  askDelete(paths, mode);
+  void executeDelete(paths, mode);
 }
 
-/** 右键单张：方式已定，直接二次确认 */
-function askDelete(paths: string[], mode: DeleteMode) {
+async function executeDelete(paths: string[], mode: DeleteMode) {
   if (!paths.length) return;
-  pendingDelete.value = { paths, mode };
-  confirmVisible.value = true;
-}
-
-const confirmTitle = computed(() =>
-  pendingDelete.value?.mode === "records" ? "本地记录删除" : "磁盘删除（回收站）",
-);
-const confirmMessage = computed(() => {
-  const pd = pendingDelete.value;
-  if (!pd) return "";
-  const n = pd.paths.length;
-  return pd.mode === "records"
-    ? `将删除 ${n} 张照片的扫描 / AI 记录与缩略图缓存，本地文件保留（重新扫描可恢复展示）。确定继续吗？`
-    : `将把 ${n} 张照片移入系统回收站（可在回收站找回），并同步清除扫描 / AI 记录与缩略图缓存。确定继续吗？`;
-});
-
-function cancelDelete() {
-  confirmVisible.value = false;
-  pendingDelete.value = null;
-}
-
-async function executeDelete() {
-  const pd = pendingDelete.value;
-  if (!pd) return;
-  confirmVisible.value = false;
-  const cmd = pd.mode === "records" ? "delete_photo_records_by_paths" : "delete_photos_to_trash";
+  const cmd = mode === "records" ? "delete_photo_records_by_paths" : "delete_photos_to_trash";
   try {
     const outcome = await invoke<{
       requested: number;
       deleted: number;
       failed: number;
       failed_paths: string[];
-    }>(cmd, { paths: pd.paths });
-    const removed = new Set(pd.paths.filter((p) => !outcome.failed_paths.includes(p)));
+    }>(cmd, { paths });
+    const removed = new Set(paths.filter((p) => !outcome.failed_paths.includes(p)));
     // 同步本地列表与缩略图缓存
     photos.value = photos.value.filter((p) => !removed.has(p.path));
     const tm = { ...thumbMap.value };
@@ -314,13 +284,12 @@ async function executeDelete() {
     } else {
       notify.success(
         `已删除 ${outcome.deleted} 张`,
-        pd.mode === "trash" ? "文件已移入系统回收站" : "本地文件保留，仅清除记录",
+        mode === "trash" ? "文件已移入系统回收站" : "本地文件保留，仅清除记录",
       );
     }
   } catch (e) {
     notify.error("删除失败", String(e));
   } finally {
-    pendingDelete.value = null;
     selected.value = new Set();
   }
 }
@@ -461,8 +430,9 @@ onMounted(load);
       @delete="openModeDialog([$event])"
     />
 
-    <!-- 右键菜单（复用 FEAT-043 组件） -->
+    <!-- 右键菜单（复用 FEAT-043 组件；v-if 用完即卸载，避免全屏透明遮罩常驻拦截点击） -->
     <ContextMenu
+      v-if="ctxVisible"
       :items="ctxItems"
       :x="ctxX"
       :y="ctxY"
@@ -486,16 +456,6 @@ onMounted(load);
         </div>
       </div>
     </Teleport>
-
-    <!-- 二次确认 -->
-    <ConfirmDialog
-      :visible="confirmVisible"
-      :title="confirmTitle"
-      :message="confirmMessage"
-      confirm-text="确认删除"
-      @confirm="executeDelete"
-      @cancel="cancelDelete"
-    />
   </div>
 </template>
 
