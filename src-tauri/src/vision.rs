@@ -138,7 +138,9 @@ fn kill_our_orphans() {
 const READY_TIMEOUT: Duration = Duration::from_secs(90);
 /// FEAT-051：要求的服务 API 版本（GPU 开关 + 模型切换能力）；
 /// 探测到运行中服务版本过旧时自动 POST /shutdown 重启到新版本
-const VCR_API_VERSION: u64 = 2;
+/// FEAT-051：API 版本。宿主检测到运行中服务版本过旧时自动重启到新版。
+/// v3（FEAT-053）：/benchmark 端点 + /gpu /models /health 新增会话实测字段。
+const VCR_API_VERSION: u64 = 3;
 /// FEAT-051：ensure 单飞锁 —— 并发命令共享一次「探测/重启/启动」流程，
 /// 邓免多进程同时拚 8765 端口（winerror 10048）
 static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -665,6 +667,10 @@ pub struct VcrGpuStatus {
     /// FEAT-051：是否被用户强制 CPU（前端开关初始状态）
     #[serde(default)]
     pub forced_cpu: bool,
+    /// FEAT-053：各通道会话实测 provider（sess.get_providers()，未加载通道不出现）。
+    /// use_gpu/provider 是「请求值」，这里是「实测值」—— 两者对照才算真验证。
+    #[serde(default)]
+    pub sessions: std::collections::HashMap<String, Vec<String>>,
 }
 
 /// 查询 GPU 加速可行性：确保服务就绪后请求 /gpu
@@ -702,6 +708,25 @@ fn gpu_status_from_value(resp: &serde_json::Value, running: bool) -> VcrGpuStatu
         available,
         batch_max: resp.get("batch_max").and_then(|v| v.as_u64()).unwrap_or(8) as usize,
         forced_cpu: resp.get("forced_cpu").and_then(|v| v.as_bool()).unwrap_or(false),
+        sessions: resp
+            .get("sessions")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| {
+                        let list = v
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        (k.clone(), list)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -773,6 +798,37 @@ pub async fn vcr_set_model(app: &tauri::AppHandle, model: &str) -> Result<serde_
             .get("detail")
             .and_then(|x| x.as_str())
             .unwrap_or("切换失败");
+        return Err(detail.to_string());
+    }
+    Ok(v)
+}
+
+/// FEAT-053：cls 通道固定张量测速（CPU/GPU 真实加速比一键对比）。
+/// 可能触发模型加载与数十次推理（秒级耗时），用每请求独立长超时（共享客户端 15s 不够）。
+pub async fn vcr_benchmark(
+    app: &tauri::AppHandle,
+    runs: u32,
+    warmup: u32,
+) -> Result<serde_json::Value, String> {
+    let client = http_client().await?;
+    ensure_service_ready(&client, app).await?;
+    let resp = client
+        .post(format!("{}/benchmark", vcr_base()))
+        .timeout(Duration::from_secs(60))
+        .json(&serde_json::json!({ "runs": runs, "warmup": warmup }))
+        .send()
+        .await
+        .map_err(|e| format!("调用识别服务失败: {e}"))?;
+    let status = resp.status();
+    let v: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析结果失败: {e}"))?;
+    if !status.is_success() {
+        let detail = v
+            .get("detail")
+            .and_then(|x| x.as_str())
+            .unwrap_or("测速失败");
         return Err(detail.to_string());
     }
     Ok(v)

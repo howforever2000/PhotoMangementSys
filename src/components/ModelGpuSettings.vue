@@ -13,7 +13,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useContentStore } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
-import type { ModelDlStatus, VcrModelsInfo } from "../types/content";
+import type { ModelDlStatus, VcrBenchmarkResult, VcrModelsInfo } from "../types/content";
 
 const contentStore = useContentStore();
 const notify = useNotify();
@@ -36,6 +36,62 @@ const gpu = computed(() => contentStore.gpuStatus);
 const gpuAvailable = computed(() => (gpu.value?.gpu.length ?? 0) > 0);
 /** 当前是否已在 GPU 上推理 */
 const accelerating = computed(() => gpu.value?.use_gpu === true);
+
+// ---- FEAT-053：实测验证（登记值 vs 会话实测值对照 + 推理测速） ----
+const benchBusy = ref(false);
+const benchResult = ref<VcrBenchmarkResult | null>(null);
+/** 最近一次 CPU / GPU 测速均值（不同 provider 各记一份，两者都有时显示提速比） */
+const benchMs = ref<{ cpu: number | null; gpu: number | null }>({ cpu: null, gpu: null });
+
+/** cls 会话实测事实（切换后台加载期间为 undefined）——与 current 对照确认切换真生效 */
+const groundTruth = computed(() => modelsInfo.value?.loaded ?? null);
+const providerLabel = (p: string): string =>
+  p.startsWith("Dml")
+    ? "DirectML"
+    : p.startsWith("Cuda")
+      ? "CUDA"
+      : p.replace("ExecutionProvider", "");
+const groundTruthOnGpu = computed(() =>
+  (groundTruth.value?.providers ?? []).some((p) => !p.startsWith("CPU")),
+);
+const groundTruthText = computed(() => {
+  const f = groundTruth.value;
+  if (!f) return "会话未加载（切换模型/开关加速后自动重建，可点测速触发）";
+  const size = f.file_size ? ` · ${(f.file_size / 1e6).toFixed(0)}MB` : "";
+  const prov = f.providers.length ? f.providers.map(providerLabel).join("+") : "?";
+  const fallback = f.cpu_fallback ? " · ⚠ GPU 初始化失败已回退 CPU" : "";
+  return `实际加载 ${f.file}${size} · 实际绑定 ${prov}${fallback}`;
+});
+const benchText = computed(() => {
+  const r = benchResult.value;
+  if (!r) return "";
+  const prov = r.providers.map(providerLabel).join("+");
+  const { cpu, gpu: gpuMs } = benchMs.value;
+  const speedup = cpu && gpuMs ? ` · 比 CPU 提速 ${(cpu / gpuMs).toFixed(1)}×` : "";
+  return `平均 ${r.avg_ms}ms（最快 ${r.min_ms}ms · ${prov}）${speedup}`;
+});
+
+/** 测速：固定张量预热后计时（同时确保会话已按当前 provider 重建，顺手刷新实测展示） */
+async function runBenchmark() {
+  benchBusy.value = true;
+  try {
+    const r = await contentStore.benchmarkVcr(10, 2);
+    benchResult.value = r;
+    if (r.providers.some((p) => !p.startsWith("CPU"))) {
+      benchMs.value.gpu = r.avg_ms;
+    } else {
+      benchMs.value.cpu = r.avg_ms;
+    }
+    contentStore
+      .fetchVcrModels()
+      .then((i) => (modelsInfo.value = i))
+      .catch(() => {});
+  } catch (e) {
+    notify.error("测速失败", String(e));
+  } finally {
+    benchBusy.value = false;
+  }
+}
 
 async function refreshAll(silent = false) {
   modelsFailed.value = false;
@@ -253,10 +309,31 @@ async function onModelChange() {
         </span>
       </div>
 
+      <!-- 4. FEAT-053：实测验证 —— 会话铁证 + 推理测速（登记值之外的真相） -->
+      <div class="mgps-row">
+        <span class="mgps-label">会话实测</span>
+        <span
+          class="mgps-status"
+          :class="{ ok: groundTruthOnGpu && !groundTruth?.cpu_fallback, err: groundTruth?.cpu_fallback }"
+        >
+          {{ groundTruthText }}
+        </span>
+      </div>
+      <div class="mgps-row">
+        <span class="mgps-label">推理测速</span>
+        <button class="mgps-btn" :disabled="benchBusy" @click="runBenchmark">
+          {{ benchBusy ? "测速中…" : "📊 测速（开/关加速各测一次可对比）" }}
+        </button>
+        <span v-if="benchResult" class="mgps-status" :class="{ ok: benchResult.providers.some((p) => !p.startsWith('CPU')) }">
+          {{ benchText }}
+        </span>
+      </div>
+
       <p class="mgps-hint">
         默认使用 CPU 推理；检测到 GPU 后可开启加速（需 GPU 版运行时，如
         <code>onnxruntime-directml</code>）。切换<b>即时生效</b>，影响后续扫描；
         新模型下载后放入 <code>python/models/</code>（如 yolov8x-cls.onnx）即可在此选择。
+        「会话实测」是 ONNX Runtime 会话实际绑定的提供方与源文件，与上面的选项对照即可确认切换/加速真生效。
       </p>
 
       <!-- FEAT-052：模型下载（后台 + 进度 + 官方/镜像择优） -->

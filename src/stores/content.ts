@@ -14,6 +14,7 @@ import type {
   UnifiedScanRow,
   VcrGpuStatus,
   VcrModelsInfo,
+  VcrBenchmarkResult,
 } from "../types/content";
 
 // ---- FEAT-038：全局照片扫描入库（跨相册批量，后台执行） ----
@@ -178,6 +179,11 @@ export const useContentStore = defineStore("content", {
     async setVcrModel(model: string): Promise<VcrModelsInfo> {
       this.vcrModels = await invoke<VcrModelsInfo>("set_vcr_model", { model });
       return this.vcrModels;
+    },
+
+    /** FEAT-053：cls 通道固定张量测速（CPU/GPU 真实加速比对比，可能耗时数秒） */
+    async benchmarkVcr(runs = 10, warmup = 2): Promise<VcrBenchmarkResult> {
+      return await invoke<VcrBenchmarkResult>("benchmark_vcr", { runs, warmup });
     },
 
     /** FEAT-052：模型下载状态列表（含未启动 idle） */

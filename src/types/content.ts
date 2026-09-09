@@ -28,6 +28,8 @@ export interface VcrGpuStatus {
   batch_max: number;
   /** FEAT-051：是否被用户强制 CPU（开关初始状态） */
   forced_cpu: boolean;
+  /** FEAT-053：各通道会话实测 provider（未加载通道不出现）；与 use_gpu（请求值）对照验证 */
+  sessions?: Record<string, string[]>;
 }
 
 /** 内容扫描进度事件 —— 对应 Rust `content::ContentScanProgress` */
@@ -208,6 +210,21 @@ export interface VcrModelInfo {
   active: boolean;
 }
 
+/** FEAT-053：cls 会话实测事实 —— 「确实换了模型 / 确实在用 GPU」的铁证 */
+export interface VcrSessionFacts {
+  /** 会话实际由哪个模型文件构建 */
+  file: string;
+  /** 模型文件字节数 */
+  file_size: number | null;
+  /** ORT 会话实际绑定的 provider（非请求值） */
+  providers: string[];
+  input_name: string | null;
+  input_shape: (number | string)[];
+  input_type: string | null;
+  /** GPU 建会话失败后是否回退了 CPU */
+  cpu_fallback: boolean;
+}
+
 /** FEAT-051：分类模型清单 */
 export interface VcrModelsInfo {
   models: VcrModelInfo[];
@@ -215,6 +232,23 @@ export interface VcrModelsInfo {
   current: string | null;
   /** cls 会话是否已就绪（切换后台加载期间为 false，UI 据此提示加载中） */
   cls_ready?: boolean;
+  /** FEAT-053：cls 会话实测事实（后台加载期间为 undefined）；与 current 对照确认切换生效 */
+  loaded?: VcrSessionFacts;
+}
+
+/** FEAT-053：固定张量测速结果 */
+export interface VcrBenchmarkResult {
+  channel: string;
+  runs: number;
+  warmup: number;
+  input_shape: number[];
+  /** 本次测速会话实际绑定的 provider */
+  providers: string[];
+  avg_ms: number;
+  min_ms: number;
+  max_ms: number;
+  total_ms: number;
+  throughput_per_s: number | null;
 }
 
 /** FEAT-052：模型下载状态 —— 对应 Rust `model_dl::ModelDlStatus` */

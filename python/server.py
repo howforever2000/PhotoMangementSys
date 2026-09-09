@@ -16,6 +16,7 @@
   POST /persons/{id}/rename    → {name}
   POST /persons/merge          → {target, source}
   DELETE /persons/{id}         → 删除人物
+  POST /benchmark              → FEAT-053：cls 通道固定张量测速（CPU/GPU 加速比对比）
 
 启动: python server.py          （默认 127.0.0.1:8765）
 """
@@ -75,7 +76,8 @@ def _health_dict() -> dict:
 
 # FEAT-051：API 版本（GPU 开关 + 模型切换能力）。宿主检测到运行中服务版本过旧时
 # 会 POST /shutdown 自动重启到新版本。
-VCR_API_VERSION = 2
+# v3（FEAT-053）：/benchmark 端点 + /gpu /models /health 新增会话实测字段。
+VCR_API_VERSION = 3
 
 
 @app.get("/health")
@@ -85,9 +87,12 @@ def health():
     reg = get_registry()
     ready = reg.is_ready("cls")
     d = _health_dict()
+    # FEAT-053 修复：此前写死 config.CLS_MODELS[0]，用户切换模型后该字段
+    # 永远显示默认候选 —— 误导「模型没变」。改为登记生效的实际选择。
+    model = reg.current_cls_name()
     return {
         "ok": ready,
-        "model": config.CLS_MODELS[0] if ready else "none",
+        "model": model if model else "none",
         "api_version": VCR_API_VERSION,
         "det_ready": reg.is_ready("det"),
         "face_ready": reg.is_ready("face_det") and reg.is_ready("face_rec"),
@@ -177,6 +182,25 @@ def _finish_cls_switch(name: str) -> None:
 
     ok = get_registry().finish_cls_model_switch(name)
     print(f"[VCR] 分类模型切换 {name}: {'完成' if ok else '失败，已回退默认候选'}", file=sys.stderr)
+
+
+class BenchmarkRequest(BaseModel):
+    runs: int = 10
+    warmup: int = 2
+
+
+@app.post("/benchmark")
+def benchmark(req: BenchmarkRequest):
+    """FEAT-053：cls 通道固定张量测速 —— CPU/GPU 真实加速比一键对比。
+
+    可能触发模型加载与数十次推理（秒级耗时），宿主健康探测不经过此端点；
+    Rust 侧对该调用使用独立长超时（默认 HTTP 客户端 15s 可能不够）。
+    返回实测 provider（sess.get_providers()）+ 平均/最快/最慢毫秒。
+    """
+    try:
+        return get_registry().benchmark("cls", runs=req.runs, warmup=req.warmup)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @app.post("/classify")

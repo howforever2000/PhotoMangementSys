@@ -1449,7 +1449,45 @@
       ],
       "created_at": "2026-09-08T14:30:07+08:00",
       "updated_at": "2026-09-08T14:30:07+08:00"
+    },
+    {
+      "id": "FEAT-053",
+      "name": "模型切换/GPU 加速实测验证（会话铁证 + 推理测速 + GPU 失败 CPU 回退）",
+      "status": "done",
+      "description": "回答「怎么确定选的模型真换了、加速真在用」：会话级实测上报 + UI 对照展示。1) _load 成功后记录会话实测事实（sess.get_providers() 真实绑定 provider / 源模型文件 / 文件大小 / 输入元数据 / cpu_fallback），经 /gpu(sessions) / /models(loaded) / /health 暴露；2) /health 的 model 字段修复：此前写死 CLS_MODELS[0]，用户切换后永远显示默认候选；3) GPU 会话创建失败（驱动异常）自动回退纯 CPU 重试并如实标记，不再全通道瘫痪；4) POST /benchmark 固定张量预热后计时（avg/min/max ms + 实测 provider），UI「推理测速」按钮开/关加速各测一次显示提速比；5) VCR_API_VERSION 2→3（宿主自动重启旧服务）。",
+      "related_files": [
+        "python/vcr/model_registry.py",
+        "python/server.py",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/lib.rs",
+        "src/types/content.ts",
+        "src/stores/content.ts",
+        "src/components/ModelGpuSettings.vue"
+      ],
+      "keywords": [
+        "GPU",
+        "实测",
+        "get_providers",
+        "benchmark",
+        "测速",
+        "模型切换",
+        "验证",
+        "回退",
+        "FEAT-053"
+      ],
+      "implementation": {
+        "backend": "model_registry: _session_facts() 提取实测事实（与 _sessions 同生命周期，pop/clear 同步）；_create_session() GPU 初始化失败显式 CPU 重试；current_cls_name() 不触发加载可被 /health 高频调用；benchmark() 锁外测速（会话不可变对象，持锁计时会被并发加载阻塞失真），runs≤50 服务端钳制",
+        "rust": "VcrGpuStatus 加 sessions 字段；vcr_benchmark 每请求独立 60s 超时（共享客户端 15s 不够）；VCR_API_VERSION 3",
+        "frontend": "ModelGpuSettings 新增「会话实测」行（实际加载文件+实际绑定 provider+回退警示）与「推理测速」按钮（CPU/GPU 各测一份显示提速比）；类型 VcrSessionFacts/VcrBenchmarkResult"
+      },
+      "highlights": [
+        "上报的是 ORT 会话实际绑定值（get_providers）而非请求值——发现 ORT 对非法 provider 名会内部静默回退，实测上报能如实暴露",
+        "已知事实：/health 每 300ms 被宿主探测，current_cls_name 只做几次 isfile stat，不触发加载不加锁",
+        "冒烟 21/21 通过（experiments/smoke_feat053_verify.py，含 monkeypatch 模拟驱动故障回退）；yolov8x-cls CPU 实测 ~78ms/张"
+      ],
+      "created_at": "2026-09-09T16:11:06+08:00",
+      "updated_at": "2026-09-09T16:11:06+08:00"
     }
   ],
-  "updated": "2026-09-08T14:30:07+08:00"
+  "updated": "2026-09-09T16:11:06+08:00"
 }

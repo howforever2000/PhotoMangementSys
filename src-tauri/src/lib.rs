@@ -2398,6 +2398,12 @@ async fn set_vcr_model(model: String, app: tauri::AppHandle) -> Result<serde_jso
     vision::vcr_set_model(&app, &model).await
 }
 
+/// FEAT-053：cls 通道固定张量测速（CPU/GPU 真实加速比一键对比）
+#[tauri::command]
+async fn benchmark_vcr(runs: Option<u32>, warmup: Option<u32>, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    vision::vcr_benchmark(&app, runs.unwrap_or(10), warmup.unwrap_or(2)).await
+}
+
 /// 在系统文件管理器中打开文件夹内部
 ///
 /// 使用系统原生命令，比 opener 插件的 `open_path` 在 Windows 上更可靠：
@@ -3144,6 +3150,7 @@ pub fn run() {
             set_vcr_gpu,
             list_vcr_models,
             set_vcr_model,
+            benchmark_vcr,
             cancel_scan,
         ])
         .run(tauri::generate_context!())
