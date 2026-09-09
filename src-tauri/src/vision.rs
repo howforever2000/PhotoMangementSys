@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 use tauri::{Emitter, Manager};
@@ -100,8 +100,9 @@ fn kill_pid(pid: u32) {
     eprintln!("[VCR][ensure] 结束本项目识别服务进程 PID={pid}");
     #[cfg(target_os = "windows")]
     {
+        // /T 连子进程一起结束（PyInstaller 运行期若派生子进程不留孤儿）
         let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
+            .args(["/F", "/T", "/PID", &pid.to_string()])
             .output();
     }
     #[cfg(not(target_os = "windows"))]
@@ -141,6 +142,47 @@ const VCR_API_VERSION: u64 = 2;
 /// FEAT-051：ensure 单飞锁 —— 并发命令共享一次「探测/重启/启动」流程，
 /// 邓免多进程同时拚 8765 端口（winerror 10048）
 static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 过期组件登记（OldVersion 收敛保护）：冷启动拉起的服务探测后仍是旧版本，
+/// 说明组件文件本身过期（重拉的永远是同一份 exe，重启进程无济于事）。
+/// 记录「组件路径 + mtime」，后续 ensure 直接报错，杜绝「杀→拉→杀」资源风暴
+/// （曾致十几个 vcr-server.exe 连环生灭 + 设置面板卡死）；组件被重新打包
+/// （mtime 变化）后自动解除登记。
+static STALE_COMPONENT: Mutex<Option<(PathBuf, SystemTime)>> = Mutex::new(None);
+
+fn stale_component_record() -> Option<(PathBuf, SystemTime)> {
+    STALE_COMPONENT.lock().ok().and_then(|g| g.clone())
+}
+fn set_stale_component(path: PathBuf) {
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    if let (Some(m), Ok(mut g)) = (mtime, STALE_COMPONENT.lock()) {
+        *g = Some((path, m));
+    }
+}
+fn clear_stale_component() {
+    if let Ok(mut g) = STALE_COMPONENT.lock() {
+        *g = None;
+    }
+}
+/// 当前 spawn 目标身份（与 spawn_server 的选择一致：打包 exe 优先，否则 python/server.py）
+fn spawn_target_path(app: &tauri::AppHandle) -> PathBuf {
+    app.path()
+        .resource_dir()
+        .ok()
+        .map(|r| r.join("vcr").join("vcr-server.exe"))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| project_python_dir().join("server.py"))
+}
+fn stale_component_err(path: &Path) -> String {
+    format!(
+        "识别服务组件版本过旧（{}），重启进程无法自愈。请重新打包：\
+         powershell -ExecutionPolicy Bypass -File python/build_vcr_exe.ps1，\
+         并将 python/dist/vcr-server.exe 同步到 src-tauri/target 对应目录后重启应用；\
+         开发环境可直接删除 target/debug/vcr/ 与 target/release/vcr/ 下的 \
+         vcr-server.exe，改用 python/server.py 运行当前代码",
+        path.display()
+    )
+}
 
 /// 健康探测结果
 enum HealthProbe {
@@ -394,6 +436,16 @@ async fn ensure_service_ready(
     // 单飞：并发命令共享一次「探测/收养/重启/启动」，避免多进程抽数据库与端口
     let _guard = ENSURE_LOCK.lock().await;
 
+    // 0. 过期组件收敛保护：上次冷启动已确认组件文件过期 → 直接报错，
+    //    不再「杀→拉→杀」空转（组件重新打包后 mtime 变化自动解除）
+    if let Some((path, mtime)) = stale_component_record() {
+        let cur = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if cur == Some(mtime) {
+            return Err(stale_component_err(&path));
+        }
+        clear_stale_component();
+    }
+
     // A. 本进程已启动/收养过的实例
     if let Some(base) = current_base() {
         match probe_base(client, &base).await {
@@ -402,33 +454,13 @@ async fn ensure_service_ready(
                 poll_ready(client, &base, READY_TIMEOUT).await?;
                 return Ok(());
             }
-            HealthProbe::OldVersion => {
-                let _ = client
-                    .post(format!("{base}/shutdown"))
-                    .timeout(Duration::from_secs(2))
-                    .send()
-                    .await;
-                tokio::time::sleep(Duration::from_millis(800)).await;
-                if let Some((pid, _)) = load_instance(app) {
-                    if pid_alive(pid) {
-                        kill_pid(pid);
-                    }
-                }
-                clear_base();
-            }
-            HealthProbe::NotReachable => {
-                if let Some((pid, _)) = load_instance(app) {
-                    if pid_alive(pid) {
-                        kill_pid(pid);
-                    }
-                }
-                clear_instance(app);
-                clear_base();
-            }
+            // OldVersion / NotReachable → 统一落到 B 段按实例记录处理
+            //（旧版本重启 / 收养等待或清场），杀进程逻辑只保留一处，避免分叉
+            _ => clear_base(),
         }
     }
 
-    // B. 上次应用运行遗留的孤儿实例（vcr-instance.json）
+    // B. 实例记录（本进程或上次运行遗留）
     if let Some((pid, port)) = load_instance(app) {
         let base = format!("http://127.0.0.1:{port}");
         match probe_base(client, &base).await {
@@ -441,10 +473,36 @@ async fn ensure_service_ready(
                 set_base(base);
                 return Ok(());
             }
-            _ => {
+            HealthProbe::OldVersion => {
+                // 旧版本服务：请其自退并兜底强杀，再冷启动到新版本
+                let _ = client
+                    .post(format!("{base}/shutdown"))
+                    .timeout(Duration::from_secs(2))
+                    .send()
+                    .await;
+                tokio::time::sleep(Duration::from_millis(800)).await;
                 if pid_alive(pid) {
                     kill_pid(pid);
                 }
+                clear_instance(app);
+            }
+            HealthProbe::NotReachable => {
+                // 端口不可达 ≠ 可杀：Python 服务先起进程、加载完模型才监听端口，
+                // 「进程存活但端口未监听」是正常的启动中状态 → 保留并等待就绪
+                //（与 C 段超时策略一致）。旧版在此直接 kill 存活进程，C 段保留的
+                // 加载进程被下一轮 ensure 误杀重启 → 「杀→重拉→再杀」死循环
+                //（PID 连环变化 + ConnectionResetError 10054 刷屏）。
+                if pid_alive(pid) {
+                    match poll_ready(client, &base, READY_TIMEOUT).await {
+                        Ok(()) => {
+                            set_base(base);
+                            return Ok(());
+                        }
+                        // 进程仍在启动/加载：保留实例，下次 ensure 继续收养等待
+                        Err(err) => return Err(err),
+                    }
+                }
+                // 进程确已死亡（崩溃 / bind 失败残留）→ 清场后走 C 冷启动
                 clear_instance(app);
             }
         }
@@ -475,13 +533,23 @@ async fn ensure_service_ready(
                 return Ok(());
             }
             Err(timeout_err) => {
-                // 进程仍存活 = 正在加载模型 → 保留进程，落实例供收养，提示稍候
-                if pid_alive(pid) {
-                    set_base(base.clone());
-                    save_instance(app, pid, port);
-                    return Err(timeout_err);
+                if !pid_alive(pid) {
+                    last_err = Some(timeout_err);
+                    continue;
                 }
-                last_err = Some(timeout_err);
+                // 区分「加载中超时」（进程保留供收养继续等）与「拉起的组件仍是
+                // 旧版本」：后者重启一万次也不会变新，登记组件并终止，否则形成
+                // 「杀→拉→杀」死循环（十几个 vcr-server.exe 连环生灭的资源灾难）
+                if matches!(probe_base(client, &base).await, HealthProbe::OldVersion) {
+                    kill_pid(pid);
+                    clear_instance(app);
+                    set_stale_component(spawn_target_path(app));
+                    return Err(stale_component_err(&spawn_target_path(app)));
+                }
+                // 进程仍存活 = 正在加载模型 → 保留进程，落实例供收养，提示稍候
+                set_base(base.clone());
+                save_instance(app, pid, port);
+                return Err(timeout_err);
             }
         }
     }

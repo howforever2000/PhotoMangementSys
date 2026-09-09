@@ -20,6 +20,7 @@
 启动: python server.py          （默认 127.0.0.1:8765）
 """
 import os
+import threading
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -61,13 +62,12 @@ def _fold_result(r) -> ClassifyResult:
 
 
 def _health_dict() -> dict:
-    reg = get_registry()
-    reg.status()  # 触发惰性加载，便于 /health 反映真实状态
+    # 只读快照，严禁触发加载：模型由启动时的后台线程预加载。
+    # 此前在这里 reg.status() 强制同步加载，首个 /health 会被阻塞数分钟，
+    # 宿主健康探测（2s 超时）误判「端口不可达」→ 反复杀进程重启（10054 刷屏）。
     store = get_store()
     tax = get_taxonomy()
     return {
-        "ok": reg.is_ready("cls"),
-        "models": reg.status(),
         "categories": tax.groups(),
         "persons": len(store.list_persons()),
     }
@@ -80,8 +80,10 @@ VCR_API_VERSION = 2
 
 @app.get("/health")
 def health():
+    # 只读状态（绝不触发加载，保证探测毫秒级返回）：模型未加载完时 ok=false，
+    # 宿主据此进入 Loading 等待而非误判「不可达」而杀进程。
     reg = get_registry()
-    ready = reg.status()["cls"]["ready"]   # status() 先强制加载再判断
+    ready = reg.is_ready("cls")
     d = _health_dict()
     return {
         "ok": ready,
@@ -113,9 +115,8 @@ def shutdown():
 @app.get("/gpu")
 def gpu():
     """GPU 加速可行性探测（R3）：可用提供方 + 当前是否走 GPU + 提供方。"""
-    reg = get_registry()
-    reg.status()  # 触发模型加载（提供方在加载时选定）
-    info = reg.gpu_info()
+    # provider 选择不依赖会话，无需触发模型加载（探测请求保持毫秒级）
+    info = get_registry().gpu_info()
     info["batch_max"] = config.BATCH_CHUNK_MAX
     return info
 
@@ -130,12 +131,19 @@ class ModelRequest(BaseModel):
 
 @app.post("/gpu")
 def set_gpu(req: GpuRequest):
-    """FEAT-051：GPU 加速开关（开 = GPU 优先 / 关 = 强制 CPU），返回切换后状态。"""
+    """FEAT-051：GPU 加速开关（开 = GPU 优先 / 关 = 强制 CPU）。
+
+    会话已随切换清空，由后台线程重建（加载耗时不可预估，不能阻塞本请求，
+    否则宿主 15s HTTP 超时）；重建期间 /health 返回 ok=false，宿主会等待就绪。
+    """
     try:
         info = get_registry().set_gpu_enabled(req.enabled)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(e))
     info["batch_max"] = config.BATCH_CHUNK_MAX
+    # 会话已清空：主链路后台重建（加载耗时不可预估，不能阻塞本请求 —— 宿主 15s 超时）；
+    # 专家通道（face/ocr 等）下次使用时按新 provider 惰性重建
+    threading.Thread(target=_rebuild_main_chain, name="vcr-rebuild", daemon=True).start()
     return {"ok": True, **info}
 
 
@@ -147,12 +155,28 @@ def models():
 
 @app.post("/model")
 def set_model(req: ModelRequest):
-    """FEAT-051：切换分类模型（文件未下载 / 未知名称返回 400）。"""
+    """FEAT-051：切换分类模型（文件未下载 / 未知名称返回 400）。
+
+    校验并登记目标后立即返回（对齐 /gpu 的异步模式）：大模型 CPU 加载可达
+    数十秒，同步加载会撞宿主 15s HTTP 超时。加载期间 is_ready("cls")=False →
+    /health ok=false，宿主会等待就绪；加载失败自动回退默认候选。
+    """
     try:
-        info = get_registry().set_cls_model(req.name)
+        info = get_registry().begin_cls_model_switch(req.name)
     except (ValueError, FileNotFoundError, RuntimeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"ok": True, **info}
+    threading.Thread(
+        target=_finish_cls_switch, args=(req.name,), name="vcr-cls-switch", daemon=True
+    ).start()
+    return {"ok": True, "loading": True, **info}
+
+
+def _finish_cls_switch(name: str) -> None:
+    """后台完成分类模型会话加载（成功持久化 / 失败回退默认候选）。"""
+    import sys
+
+    ok = get_registry().finish_cls_model_switch(name)
+    print(f"[VCR] 分类模型切换 {name}: {'完成' if ok else '失败，已回退默认候选'}", file=sys.stderr)
 
 
 @app.post("/classify")
@@ -259,14 +283,50 @@ def delete_person(pid: str):
     return {"ok": True}
 
 
-if __name__ == "__main__":
+def _rebuild_main_chain() -> None:
+    """后台预热主链路模型（启动预加载与 GPU 切换后重建共用）。
+
+    仅 cls/det/scene（每张图必经）；face/ocr/flower/food 专家通道按需惰性
+    重建。全量预热会把服务就绪拖到数十秒并放大宿主等待窗口。
+    """
     import sys
 
-    port = int(os.environ.get("VCR_PORT", "8765"))
-    from vcr.model_registry import get_registry
+    try:
+        st = get_registry().preload_main()
+        print(f"[VCR] 主链路模型状态: {st}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001
+        print(f"[VCR] 主链路模型加载失败: {e}", file=sys.stderr)
 
-    print(f"[VCR] 启动模型加载…", file=sys.stderr)
-    st = get_registry().status()
-    print(f"[VCR] 模型状态: {st}", file=sys.stderr)
+
+def _quiet_proactor_noise() -> None:
+    """Windows Proactor 事件循环在客户端 abrupt 断开（宿主健康探测短超时、
+    进程被宿主收管结束）时会刷 ConnectionResetError(10054) 的 ERROR 日志。
+    这类断连属正常现象，过滤以免刷屏（保留其他 asyncio 错误）。"""
+    import logging
+
+    class _ResetFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            if record.exc_info and record.exc_info[0] is ConnectionResetError:
+                return False
+            try:
+                return "ConnectionResetError" not in record.getMessage()
+            except Exception:  # noqa: BLE001
+                return True
+
+    logging.getLogger("asyncio").addFilter(_ResetFilter())
+
+
+if __name__ == "__main__":
+    import sys
+    import threading
+
+    port = int(os.environ.get("VCR_PORT", "8765"))
+
+    # 模型后台预热（仅主链路 cls/det/scene）：uvicorn 先绑定端口（/health 立即可达，
+    # 加载中返回 ok=false，宿主进入 Loading 等待），模型在后台线程加载。此前同步
+    # 预加载阻塞在 uvicorn.run 之前，端口迟迟不监听 → 宿主误判「不可达」→ 杀进程
+    # 重启死循环；全量预热 8 通道则会把就绪窗口拖到数十秒。
+    _quiet_proactor_noise()
+    threading.Thread(target=_rebuild_main_chain, name="vcr-preload", daemon=True).start()
     print(f"[VCR] 接口层启动 http://127.0.0.1:{port}", file=sys.stderr)
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

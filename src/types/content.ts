@@ -213,6 +213,8 @@ export interface VcrModelsInfo {
   models: VcrModelInfo[];
   /** 当前生效模型文件名（候选中第一个已下载者，或用户指定项） */
   current: string | null;
+  /** cls 会话是否已就绪（切换后台加载期间为 false，UI 据此提示加载中） */
+  cls_ready?: boolean;
 }
 
 /** FEAT-052：模型下载状态 —— 对应 Rust `model_dl::ModelDlStatus` */

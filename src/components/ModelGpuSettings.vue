@@ -64,6 +64,19 @@ onMounted(async () => {
   }
 });
 
+/** 服务不可用（启动/加载模型中）→ 手动重试拉起状态；就绪后恢复面板 */
+async function retryInit() {
+  detectBusy.value = true;
+  try {
+    await refreshAll(false); // 全部失败时抛错
+    initFailed.value = false;
+  } catch {
+    initFailed.value = true;
+  } finally {
+    detectBusy.value = false;
+  }
+}
+
 /** 任一模型刚完成下载 → 刷新候选清单与当前生效（新模型立即可选） */
 const prevDone = ref(new Set<string>());
 watch(
@@ -141,7 +154,7 @@ async function toggleAccel() {
   }
 }
 
-/** 模型切换（失败自动回显原值） */
+/** 模型切换（失败自动回显原值；切换为后台加载，就绪前 /health 由宿主等待） */
 async function onModelChange() {
   const name = selectedModel.value;
   modelBusy.value = true;
@@ -149,7 +162,12 @@ async function onModelChange() {
     const info = await contentStore.setVcrModel(name);
     modelsInfo.value = info;
     selectedModel.value = info.current ?? name;
-    notify.success("分类模型已切换", `${name} · 影响后续扫描`);
+    notify.success(
+      "分类模型已切换",
+      info.cls_ready === false
+        ? `${name} · 后台加载中，就绪后自动生效`
+        : `${name} · 影响后续扫描`,
+    );
   } catch (e) {
     notify.error("切换模型失败", String(e));
     try {
@@ -169,9 +187,12 @@ async function onModelChange() {
   <div class="mgps-wrap">
     <div class="mgps-head">⚙ 识别性能设置</div>
 
-    <!-- 微服务不可用降级提示 -->
+    <!-- 微服务不可用降级提示（服务启动/加载模型期间可重试，就绪后自动恢复） -->
     <p v-if="initFailed" class="mgps-hint mgps-hint-warn">
-      识别服务暂不可用（扫描启动时会自动拉起，届时可在此调整）。
+      识别服务暂不可用（可能正在启动/加载模型，稍候重试）。
+      <button class="mgps-btn" :disabled="detectBusy" @click="retryInit">
+        {{ detectBusy ? "重试中…" : "🔄 重试" }}
+      </button>
     </p>
 
     <template v-else>
@@ -194,6 +215,7 @@ async function onModelChange() {
           </option>
         </select>
         <span v-if="modelBusy" class="mgps-busy">切换中…</span>
+        <span v-else-if="modelsInfo?.cls_ready === false" class="mgps-busy">模型加载中…</span>
         <span v-else-if="modelsFailed" class="mgps-status">模型清单加载失败（识别服务可能正在升级，稍后重试）</span>
       </div>
 
