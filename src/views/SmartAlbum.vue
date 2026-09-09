@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
 import { useAlbumStore } from "../stores/album";
 import PersonGallery from "../components/PersonGallery.vue";
+import CategoryGallery from "../components/CategoryGallery.vue";
+import LocationGallery from "../components/LocationGallery.vue";
 import type { ContentSearchHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 
@@ -18,8 +20,12 @@ import type { PersonInfo } from "../types/photo";
  * - 其他分类（内容/地点）仍是「待开发」占位
  */
 const router = useRouter();
+const route = useRoute();
 const theme = useThemeStore();
 const store = useAlbumStore();
+
+/** FEAT-046：深链定位的人物 id（/smart?tab=face&person={pid}，Memories 近期人物跳转） */
+const focusPid = ref<string | null>(null);
 
 interface SmartTab {
   key: string;
@@ -30,8 +36,8 @@ interface SmartTab {
 
 const tabs: SmartTab[] = [
   { key: "face", label: "人物", icon: "👥", enabled: true },
-  { key: "category", label: "内容分类", icon: "🏞️", enabled: false },
-  { key: "location", label: "地点", icon: "📍", enabled: false },
+  { key: "category", label: "内容分类", icon: "🏞️", enabled: true },
+  { key: "location", label: "地点", icon: "📍", enabled: true },
 ];
 
 const activeTab = ref<string>("face");
@@ -87,6 +93,13 @@ watch(
 
 onMounted(() => {
   loadStats();
+  // FEAT-046：读 query 深链 —— tab 切换 + 人物定位（回忆页近期人物跳转入口）
+  const tab = String(route.query.tab ?? "");
+  if (tab && tabs.some((t) => t.key === tab && t.enabled)) {
+    activeTab.value = tab;
+  }
+  const person = String(route.query.person ?? "").trim();
+  if (person) focusPid.value = person;
 });
 
 interface SubModule {
@@ -215,7 +228,9 @@ function openSub(m: SubModule) {
       </button>
     </nav>
 
-    <PersonGallery v-if="activeTab === 'face'" />
+    <PersonGallery v-if="activeTab === 'face'" :focus-pid="focusPid" />
+    <CategoryGallery v-else-if="activeTab === 'category'" />
+    <LocationGallery v-else-if="activeTab === 'location'" />
     <div v-else class="smart-placeholder">
       「{{ activeDef?.label }}」分类展示即将上线 —— 完成对应扫描后即可在此浏览。
     </div>

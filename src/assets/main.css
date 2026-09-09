@@ -4,9 +4,16 @@
    ========================================================================== */
 
 :root {
-  /* 字体栈：中英文混排，优先系统字体 + 微软雅黑 */
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
-    "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+  /* 字体栈：中英文混排
+     - system-ui 让浏览器选用本机系统 UI 字体（Win 上即 Segoe UI Variable）
+     - 增加 emoji / 系统图标字体回退，避免窄字距糊化
+     - "Microsoft YaHei UI" 是 Win 上专为 UI 调校的雅黑，字距更通透 */
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI Variable",
+    "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
+    "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji",
+    "Segoe UI Symbol";
+  --font-mono: ui-monospace, SFMono-Regular, "Cascadia Mono", "Consolas",
+    "JetBrains Mono", Menlo, monospace;
 
   /* 品牌色 */
   --color-primary: #396cd8;
@@ -15,14 +22,17 @@
   --color-danger: #e5484d;
   --color-danger-hover: #d13438;
 
-  /* 文字色阶 */
-  --color-text: #2c3e50;   /* 主文字（标题/正文强调） */
-  --color-text-2: #64748b; /* 次要文字（描述/辅助） */
-  --color-text-3: #6b7280; /* 弱化文字（占位/提示），白底对比≥4.9:1，避免与背景融为一体 */
+  /* 文字色阶 —— 浅色模式
+     整体加深一档，确保小字号（11–12px）在白底上也能达到 WCAG AA。
+     旧版 #6b7280 在 #f5f6f8 上对比度≈4.6:1（边界通过），
+     现改用 #4b5b6e（≈7.4:1），小字号标签更"通透"。 */
+  --color-text: #1f2733;       /* 主文字：与原 #2c3e50 接近，但更深更扎实 */
+  --color-text-2: #475569;     /* 次要文字：替代旧 #64748b，更清晰 */
+  --color-text-3: #4b5b6e;     /* 弱化文字：替代旧 #6b7280，对比度合规 */
 
   /* 背景 */
-  --color-bg: #f5f6f8;     /* 页面底色 */
-  --color-surface: #ffffff;       /* 卡片/面板 */
+  --color-bg: #f5f6f8;          /* 页面底色 */
+  --color-surface: #ffffff;     /* 卡片/面板 */
   --color-border: #e6e8ee;
 
   /* 圆角 */
@@ -36,6 +46,22 @@
 
   /* 间距 */
   --gap: 16px;
+}
+
+/* 深色模式覆盖：
+   通过 body 上加 [data-theme="dark"] / html.dark 选择器切换。
+   简化方案：在 body 上挂 .theme-dark 类（ThemeStore 启动时设置）。
+   —— 这里只声明变量覆盖，body 文本色由下方 body 块应用。 */
+body.theme-dark {
+  --color-text: #f5f7ff;
+  --color-text-2: rgba(225, 232, 255, 0.86);
+  --color-text-3: rgba(214, 221, 240, 0.66);
+  --color-bg: #1c202b;
+  --color-surface: rgba(30, 34, 46, 0.94);
+  --color-border: rgba(255, 255, 255, 0.1);
+  --color-primary-soft: rgba(57, 108, 216, 0.22);
+  --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.45);
+  --shadow-hover: 0 12px 28px rgba(0, 0, 0, 0.55);
 }
 
 /* 统一盒模型：避免组件内 width+padding 溢出 */
@@ -53,11 +79,19 @@ body {
 
 body {
   font-family: var(--font-sans);
+  /* 默认文字色与模式一致：浅色/深色两套都已通过变量定义。
+     不再写死深色，修复此前 body 永远是 #2c3e50 导致深色模式全局文字隐身的 Bug。 */
   color: var(--color-text);
   background: var(--color-bg);
   line-height: 1.55;
+  /* 字体渲染三件套：抗锯齿 + 字距/连字/标点优化 + 现代 OpenType 特性。
+     optimizeLegibility 是字体"通透感"提升最关键的一项。 */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* OpenType：等宽数字（表格对齐）+ 上下文替换（更美观的破折号/引号） */
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1, "tnum" 1;
 }
 
 #app {
@@ -70,10 +104,156 @@ input,
 select,
 textarea {
   font-family: inherit;
+  /* 输入控件单独开启 optimizeLegibility，对中英文混排特别明显 */
+  text-rendering: optimizeLegibility;
+}
+
+/* 等宽场景 */
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
 }
 
 /* 去除默认按钮边框/背景，交由组件样式控制 */
 button {
   border: none;
   background: none;
+}
+
+/* 滚动条（WebKit / Blink）—— 让深色模式下滚动条不再"发白发糊" */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 130, 150, 0.32);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 130, 150, 0.55);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+body.theme-dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+body.theme-dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+/* ==========================================================================
+   全局深色模式覆盖（属于「老页面未变量化」期间的兑底）
+   以下规则针对所有页面共通的元系： dialog、 card、 btn、 tab、 input、
+   placeholder、 section title 等。 各页面如已下发专属 --xx-* 变量，
+   下发值覆盖默认：原有页面样式保持兼容；深色模式下不“隐身”。
+   ========================================================================== */
+body.theme-dark {
+  color: var(--color-text);
+}
+
+/* 弹窗 / dialog / mask */
+body.theme-dark .dialog-mask {
+  background: rgba(0, 0, 0, 0.6);
+}
+body.theme-dark .dialog,
+body.theme-dark .pm-dialog,
+body.theme-dark .ss-dialog,
+body.theme-dark .tl-dialog,
+body.theme-dark .mem-dialog {
+  background: rgba(30, 34, 46, 0.96);
+  color: var(--color-text);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+body.theme-dark .dialog h3,
+body.theme-dark .dialog-head,
+body.theme-dark .confirm-title {
+  color: var(--color-text);
+}
+
+/* 按钮（在各页面经常被写死为白底庆边） */
+body.theme-dark .btn,
+body.theme-dark .btn-home,
+body.theme-dark .btn-default {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-text);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+body.theme-dark .btn:hover:not(.btn-primary):not(.btn-danger):not(.btn-home) {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* 输入框 / select / textarea */
+body.theme-dark .input,
+body.theme-dark .select,
+body.theme-dark .field-input,
+body.theme-dark textarea,
+body.theme-dark input[type="text"],
+body.theme-dark input[type="password"],
+body.theme-dark input[type="email"],
+body.theme-dark input[type="search"],
+body.theme-dark input[type="tel"],
+body.theme-dark input[type="number"] {
+  background: rgba(18, 20, 28, 0.7);
+  color: var(--color-text);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+body.theme-dark .input::placeholder,
+body.theme-dark input::placeholder,
+body.theme-dark textarea::placeholder {
+  color: rgba(214, 221, 240, 0.45);
+}
+
+/* 灰色提示文字（友列表/空状态） */
+body.theme-dark .muted,
+body.theme-dark .sub,
+body.theme-dark .hint,
+body.theme-dark .empty-hint,
+body.theme-dark .bc-sep {
+  color: var(--color-text-2);
+}
+
+/* “白底面板” — 多个页面使用 .glass-card / .surface / .panel 命名 */
+body.theme-dark .glass-card,
+body.theme-dark .surface,
+body.theme-dark .panel,
+body.theme-dark .card {
+  background: rgba(30, 34, 46, 0.92);
+  color: var(--color-text);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* 占位 / 骨架屏 */
+body.theme-dark .skeleton,
+body.theme-dark .tl-skeleton,
+body.theme-dark .tl-thumb-ph,
+body.theme-dark .ss-thumb-ph,
+body.theme-dark .mem-ph {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* 预警背景（如警告条）在深色下适度兑底 */
+body.theme-dark .batch-overwrite-warn {
+  background: rgba(255, 200, 80, 0.12);
+  border-color: rgba(255, 200, 80, 0.35);
+  color: #ffd699;
+}
+
+/* 跨页面通用：使 <code>/<pre> 在深色下颜色不被背景吞 */
+body.theme-dark code,
+body.theme-dark pre,
+body.theme-dark kbd {
+  background: rgba(255, 255, 255, 0.08);
+  color: #d9e1ff;
 }

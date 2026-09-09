@@ -14,12 +14,14 @@ macro_rules! log_call {
 }
 
 mod auth;
+mod avatar;
 mod content;
 mod crypto;
 mod db;
 mod folder;
 mod geo_index;
 mod logger;
+mod model_dl;
 mod photo_info;
 mod photo_scan;
 mod persons;
@@ -493,28 +495,133 @@ fn list_album_photos(
 /// 批量生成/复用照片网格缩略图（供前端分批懒加载）
 ///
 /// - 输入：相册 id + 一批原图路径
-/// - 输出：`[(原图路径, 缩略图缓存路径)]`，缓存命中直接复用，未命中生成 256px JPEG
-/// - 在阻塞线程执行，避免首次生成占用异步运行时
+/// - 输出：`[(原图路径, 缩略图缓存路径)]`，表命中 0 IO 复用，未命中现场生成 256px JPEG
+/// - FEAT-044 三步模式：主流程短锁查表 → `spawn_blocking` 生成（纯文件系统）→
+///   主流程短锁写表，避免 `MutexGuard` 跨线程生命周期问题
+/// - 链路覆盖：
+///   1. 相册管理预览（AlbumDetail/PhotoGrid）：照片未入库时靠本命令懒加载 + 写表，
+///      下次同 `photo_hash` 查表直接命中，缩略图及时呈现；
+///   2. 智慧相册（时间线/回忆/智能搜索）：数据源已入库且扫描预热过，未命中仅在
+///      文件被修改 / 缓存丢失时出现，现场生成属自愈行为（幂等，不重生成已有项）。
 #[tauri::command]
 async fn get_photo_thumbs(
     album_id: i64,
     paths: Vec<String>,
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
     session: tauri::State<'_, SessionState>,
 ) -> Result<Vec<(String, String)>, String> {
     let _t = log_call!("get_photo_thumbs", &format!("album_id={album_id} paths={}", paths.len()));
-    require_user(&session)?;
+    let user_id = require_user(&session)?;
     if paths.is_empty() {
         return Ok(Vec::new());
     }
     let requested = paths.len();
-    let thumbs = thumbs_dir(&app)?;
+    let thumbs_dir = thumbs_dir(&app).map_err(|e| e.to_string())?;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    // 1. 主流程加锁查表（短锁）
+    let hit_map: HashMap<String, String> = {
+        let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+        let hashes: Vec<String> = paths
+            .iter()
+            .filter_map(|p| {
+                let path = std::path::Path::new(p);
+                let (len, mtime) = std::fs::metadata(path).ok().map(|md| {
+                    (
+                        md.len(),
+                        md.modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_nanos())
+                            .unwrap_or(0),
+                    )
+                })?;
+                Some(crate::thumbnail::thumb_photo_hash(path, len, mtime))
+            })
+            .collect();
+        match db.lookup_thumb_caches(&hashes) {
+            Ok(hits) => hits
+                .into_iter()
+                .filter(|h| {
+                    !h.thumb_path.is_empty()
+                        && std::path::Path::new(&h.thumb_path).is_file()
+                })
+                .map(|h| (h.photo_hash, h.thumb_path))
+                .collect(),
+            Err(_) => HashMap::new(),
+        }
+    };
+
+    let hit_from_table = hit_map.len();
+
+    // 2. spawn_blocking：未命中项现场生成（纯文件系统，不持锁）。
+    //    磁盘上已有指纹命名缩略图但表未记录时，ensure_grid_thumb 只回路径不重生成。
+    #[derive(Default)]
+    struct GenBuf(std::sync::Mutex<Vec<(String, String, u64, u128)>>);
+    let gen_buf = Arc::new(GenBuf::default());
+    let gen_buf_for_cb = gen_buf.clone();
+    let hit_for_cb = hit_map;
+    let paths_for_blocking = paths.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        crate::thumbnail::ensure_grid_thumbs(album_id, &paths, &thumbs)
+        crate::thumbnail::ensure_grid_thumbs_with_lookup(
+            album_id,
+            &paths_for_blocking,
+            &thumbs_dir,
+            &move |hashes| -> HashMap<String, String> {
+                let mut out = HashMap::new();
+                for h in hashes {
+                    if let Some(t) = hit_for_cb.get(h) {
+                        out.insert(h.clone(), t.clone());
+                    }
+                }
+                out
+            },
+            move |generated| {
+                if let Ok(mut g) = gen_buf_for_cb.0.lock() {
+                    g.extend(generated.iter().cloned());
+                }
+            },
+        )
     })
     .await
-    .map_err(|e| format!("缩略图任务线程失败: {e}"))?;
-    logger::log_call_end_with("get_photo_thumbs", _t, &format!("OK | done={} requested={}", res.len(), requested));
+    .map_err(|e| format!("缩略图懒加载任务失败: {e}"))?;
+
+    // 3. 主流程短锁写表：新生成项 upsert（photo_hash 主键幂等，下次 0 IO 命中）
+    {
+        let items = gen_buf.0.lock().map_err(|e| e.to_string())?;
+        if !items.is_empty() {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            let recs: Vec<db::ThumbCacheRecord> = items
+                .iter()
+                .map(|(src, thumb, len, mtime)| {
+                    let path = std::path::Path::new(src.as_str());
+                    let hash = crate::thumbnail::thumb_photo_hash(path, *len, *mtime);
+                    db::ThumbCacheRecord {
+                        photo_hash: hash,
+                        source_path: src.clone(),
+                        thumb_path: thumb.clone(),
+                        album_id: Some(album_id),
+                        user_id,
+                        size_bytes: *len,
+                        mtime_ns: *mtime,
+                    }
+                })
+                .collect();
+            if let Err(e) = db.upsert_thumb_caches(&recs) {
+                logger::log_error("thumb_cache", &format!("lazy-load upsert failed: {e:?}"));
+            }
+        }
+    }
+
+    // 统计：成功返回数 - 表命中数 = 本次新生成数
+    let generated = res.len().saturating_sub(hit_from_table);
+    logger::log_call_end_with(
+        "get_photo_thumbs",
+        _t,
+        &format!("OK | hit={hit_from_table} generated={generated} requested={requested}"),
+    );
     Ok(res)
 }
 
@@ -618,6 +725,15 @@ pub struct PhotoDeleteOutcome {
     pub failed_paths: Vec<String>,
 }
 
+/// 最近删除记录条目
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RecentlyExcludedItem {
+    pub album_id: i64,
+    pub path: String,
+    pub excluded_at: i64,
+    pub album_name: String,
+}
+
 /// 批量「相册记录删除」：从该相册网格浏览中移除 + 清除扫描/AI 记录，本地文件保留
 ///
 /// 可通过 restore 命令撤销（排除表回滚）。
@@ -700,6 +816,153 @@ fn delete_photo_files(
     logger::log_call_end_with("delete_photo_files", _t,
         &format!("OK | deleted={deleted} failed={failed}"));
     Ok(outcome)
+}
+
+/// FEAT-050：按原图路径级联清理缩略图缓存（表行 + 磁盘文件）
+///
+/// 磁盘文件覆盖 flat JPG / WebP 两套命名；photo_thumb_cache 表内 thumb_path
+/// 指向的文件也一并删除。注意：文件名指纹依赖原图可读，
+/// 必须在原图被删除 / 移入回收站**之前**调用。
+fn cleanup_thumb_caches_for_paths(db: &db::Database, app: &tauri::AppHandle, paths: &[String]) {
+    // 1. photo_thumb_cache 表行 + 表内记录的缩略图文件
+    let table_thumb_files = db.list_thumb_paths_by_sources(paths).unwrap_or_default();
+    let _ = db.delete_thumb_caches_by_paths(paths);
+    // 2. 网格缩略图磁盘文件（归属未知时用 album_0 无归属命名空间）
+    let album_map = db.album_ids_by_paths(paths).unwrap_or_default();
+    let mut names: Vec<String> = Vec::new();
+    for p in paths {
+        let album_id = album_map.get(p).copied().flatten().unwrap_or(0);
+        names.extend(thumbnail::grid_thumb_cache_names_all(
+            album_id,
+            std::path::Path::new(p),
+        ));
+    }
+    if let Ok(thumbs) = thumbs_dir(app) {
+        thumbnail::remove_grid_thumb_files(&names, &thumbs);
+        for f in &table_thumb_files {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+}
+
+/// FEAT-050：批量「磁盘删除（回收站）」：移入系统回收站 + 级联清扫描记录与缩略图缓存
+///
+/// 与 delete_photo_files（永久删除不可恢复）的区别：文件可在回收站找回。
+/// 前端必须二次确认后才调用。无需相册 id（分类/地点视图照片可能无归属）。
+#[tauri::command]
+fn delete_photos_to_trash(
+    paths: Vec<String>,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+    app: tauri::AppHandle,
+) -> Result<PhotoDeleteOutcome, String> {
+    let _t = log_call!("delete_photos_to_trash", &format!("paths={}", paths.len()));
+    let _user_id = require_user(&session)?;
+    let requested = paths.len();
+    if paths.is_empty() {
+        return Ok(PhotoDeleteOutcome { requested, deleted: 0, failed: 0, failed_paths: Vec::new() });
+    }
+    // 1. 原图仍可读 → 先清理缩略图缓存（指纹依赖文件存在）
+    {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        cleanup_thumb_caches_for_paths(&db, &app, &paths);
+    }
+    // 2. 逐张移入系统回收站
+    let mut deleted = 0usize;
+    let mut failed_paths = Vec::new();
+    for p in &paths {
+        match trash::delete(std::path::Path::new(p)) {
+            Ok(_) => deleted += 1,
+            Err(e) => {
+                logger::log_info(&format!("[delete_photos_to_trash] 回收站删除失败 path={p} err={e}"));
+                failed_paths.push(p.clone());
+            }
+        }
+    }
+    // 3. 级联清扫描记录（仅成功项；失败项保留原状可重试）
+    let failed = failed_paths.len();
+    if deleted > 0 {
+        let ok_paths: Vec<String> = paths.iter().filter(|p| !failed_paths.contains(p)).cloned().collect();
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let _ = db.delete_content_by_paths(&ok_paths);
+    }
+    let outcome = PhotoDeleteOutcome { requested, deleted, failed, failed_paths };
+    logger::log_call_end_with(
+        "delete_photos_to_trash",
+        _t,
+        &format!("OK | deleted={deleted} failed={failed}"),
+    );
+    Ok(outcome)
+}
+
+/// FEAT-050：批量「本地记录删除」（无相册版）：清扫描记录 + 缩略图缓存，本地文件保留
+///
+/// 分类/地点等跨相册视图使用（delete_photo_records 需相册 id 且写排除表，
+/// 不适用无归属照片）。前端必须二次确认后才调用。
+#[tauri::command]
+fn delete_photo_records_by_paths(
+    paths: Vec<String>,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+    app: tauri::AppHandle,
+) -> Result<PhotoDeleteOutcome, String> {
+    let _t = log_call!("delete_photo_records_by_paths", &format!("paths={}", paths.len()));
+    let _user_id = require_user(&session)?;
+    let requested = paths.len();
+    if paths.is_empty() {
+        return Ok(PhotoDeleteOutcome { requested, deleted: 0, failed: 0, failed_paths: Vec::new() });
+    }
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    cleanup_thumb_caches_for_paths(&db, &app, &paths);
+    let deleted = db.delete_content_by_paths(&paths).map_err(|e| e.to_string())?;
+    logger::log_call_end_with(
+        "delete_photo_records_by_paths",
+        _t,
+        &format!("OK | scan_removed={deleted}"),
+    );
+    Ok(PhotoDeleteOutcome { requested, deleted, failed: 0, failed_paths: Vec::new() })
+}
+
+/// 恢复已「记录删除」的照片（撤销删除）：从 album_photo_excluded 移除对应条目
+#[tauri::command]
+fn restore_photo_records(
+    album_id: i64,
+    paths: Vec<String>,
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<usize, String> {
+    let _t = log_call!("restore_photo_records", &format!("album_id={album_id} paths={}", paths.len()));
+    let user_id = require_user(&session)?;
+    if paths.is_empty() {
+        return Ok(0);
+    }
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let restored = db.restore_excluded_photos(album_id, user_id, &paths).map_err(|e| e.to_string())?;
+    logger::log_call_end_with("restore_photo_records", _t,
+        &format!("OK | restored={restored}"));
+    Ok(restored)
+}
+
+/// 获取最近删除记录（用户可在此列表中恢复）
+#[tauri::command]
+fn list_recently_deleted(
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<Vec<RecentlyExcludedItem>, String> {
+    let user_id = require_user(&session)?;
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    db.list_recently_excluded(user_id, 200).map_err(|e| e.to_string())
+}
+
+/// 清空所有最近删除记录
+#[tauri::command]
+fn clear_recently_deleted(
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<usize, String> {
+    let user_id = require_user(&session)?;
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    db.clear_all_excluded(user_id).map_err(|e| e.to_string())
 }
 
 /// 给一批照片打分（rating 0-5，0 清除）。按 (user_id, path) upsert，无需扫描记录即可打分。
@@ -863,38 +1126,58 @@ fn get_person_photos(
     let thumbs_dir = thumbs_dir(&app).ok();
     let mut out = Vec::with_capacity(paths.len());
     let mut generated = 0usize;
+    let mut unresolved = 0usize;
+    let mut gen_failed = 0usize;
+    let mut unresolved_samples: Vec<String> = Vec::new();
     for path in paths {
         // 解析归属相册 → 计算缩略图缓存名 → 若存在直接复用
         let resolved: Option<i64> = albums
             .iter()
-            .filter(|(_, ap)| {
-                p_is_under(ap, &path)
-            })
+            .filter(|(_, ap)| p_is_under(ap, &path))
             .max_by_key(|(_, ap)| ap.len())
             .map(|(id, _)| *id);
-        let cached = resolved.and_then(|album_id| {
+        if resolved.is_none() {
+            unresolved += 1;
+            if unresolved_samples.len() < 3 {
+                unresolved_samples.push(path.clone());
+            }
+        }
+        // BUG-2026-0916-001 修复：归属解析失败（相册记录被删 / 路径变更 / 大小写差异）
+        // 不代表原图不可用 —— 以 album_id=0 的「无归属缓存命名空间」照常生成/复用
+        // 缩略图，避免这类照片永久占位。album_id 字段保持 None（前端 Lightbox 对
+        // 无归属照片走系统打开器兑底）。
+        let thumb_album = resolved.unwrap_or(0);
+        let cached = (|| {
             let thumbs = thumbs_dir.as_ref()?;
-            let name = thumbnail::grid_thumb_cache_name(album_id, std::path::Path::new(&path));
+            let name = thumbnail::grid_thumb_cache_name(thumb_album, std::path::Path::new(&path));
             let tp = thumbs.join("grid").join(&name);
             if tp.is_file() {
-                Some(tp.to_string_lossy().to_string())
-            } else {
-                // 缺图 → 调用 ensure_grid_thumb 补齐（256px JPEG 生成后落盘，返回缓存路径），
-                // 后续任何场景（PhotoGrid/Timeline/Memories/智能搜索）再访问都直接命中。
-                // 补齐失败（原图丢失等）静默兑底 None，前端可回退占位。
-                match thumbnail::ensure_grid_thumb(
-                    album_id,
-                    std::path::Path::new(&path),
-                    thumbs,
-                ) {
-                    Ok(p) => {
-                        generated += 1;
-                        Some(p)
-                    }
-                    Err(_) => None,
+                return Some(tp.to_string_lossy().to_string());
+            }
+            // 缺图 → 调用 ensure_grid_thumb 补齐（256px 生成后落盘，返回缓存路径），
+            // 后续任何场景（PhotoGrid/Timeline/Memories/智能搜索）再访问都直接命中。
+            // 本路径（人物照片）不写表（不在主流程加锁），保持与旧版兼容。
+            match thumbnail::ensure_grid_thumb(
+                thumb_album,
+                std::path::Path::new(&path),
+                thumbs,
+                None,
+                0,
+            ) {
+                Ok(p) => {
+                    generated += 1;
+                    Some(p)
+                }
+                Err(e) => {
+                    gen_failed += 1;
+                    logger::log_error(
+                        "get_person_photos",
+                        &format!("缩略图补齐失败: {path} | {e:?}"),
+                    );
+                    None
                 }
             }
-        });
+        })();
         out.push(PersonPhotoItem {
             path,
             thumb: cached,
@@ -902,11 +1185,16 @@ fn get_person_photos(
         });
     }
     let cached_count = out.iter().filter(|i| i.thumb.is_some()).count();
+    let unresolved_hint = if unresolved_samples.is_empty() {
+        String::new()
+    } else {
+        format!(" | 无归属样例: {:?}", unresolved_samples)
+    };
     logger::log_call_end_with(
         "get_person_photos",
         _t,
         &format!(
-            "OK | n={} thumb_hit={} generated={generated}",
+            "OK | n={} thumb_hit={} generated={generated} unresolved={unresolved} gen_failed={gen_failed}{unresolved_hint}",
             out.len(),
             cached_count.saturating_sub(generated),
         ),
@@ -915,12 +1203,26 @@ fn get_person_photos(
 }
 
 /// 判断照片路径是否位于相册目录之下（目录是祖先，且照片不是目录本身）。
+///
+/// Windows 归一化比较：分隔符 `/`→`\\` 统一 + 大小写不敏感（NTFS 不区分大小写）
+/// + 前缀边界校验（避免 `D:\\a` 误匹配 `D:\\ab\\c.jpg`）。历史实现用
+/// `strip_prefix` 严格区分大小写/分隔符，相册路径与 faces 记录不一致时会把
+/// 存在的原图误判为「无归属」（BUG-2026-0916-001）。
 fn p_is_under(dir: &str, photo: &str) -> bool {
-    std::path::Path::new(photo)
-        .strip_prefix(std::path::Path::new(dir))
-        .ok()
-        .map(|rel| !rel.as_os_str().is_empty())
-        .unwrap_or(false)
+    fn norm(p: &str) -> String {
+        p.replace('/', "\\").to_lowercase()
+    }
+    let d = norm(dir);
+    let d = d.trim_end_matches('\\');
+    let ph = norm(photo);
+    if d.is_empty() || ph.len() <= d.len() {
+        return false;
+    }
+    if !ph.starts_with(d) {
+        return false;
+    }
+    // 前缀边界：目录后必须是分隔符，且照片还有非空文件部分
+    ph.len() > d.len() + 1 && ph[d.len()..].starts_with('\\')
 }
 /// 多用户隔离：仅能更新归属当前用户的相册。
 #[tauri::command]
@@ -958,39 +1260,127 @@ pub struct PrewarmOutcome {
 }
 
 #[tauri::command]
-fn prewarm_thumbs(
+async fn prewarm_thumbs(
     album_id: i64,
     paths: Vec<String>,
     app: tauri::AppHandle,
-    session: tauri::State<SessionState>,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, SessionState>,
 ) -> Result<PrewarmOutcome, String> {
     let _t = log_call!("prewarm_thumbs", &format!("album_id={album_id} paths={}", paths.len()));
-    let _user = require_user(&session)?;
+    let user_id = require_user(&session)?;
+    if paths.is_empty() {
+        return Ok(PrewarmOutcome { requested: 0, hit: 0, generated: 0, failed: 0 });
+    }
     let thumbs_dir = thumbs_dir(&app).map_err(|e| e.to_string())?;
-    // 预统计已缓存数量（避免重复 IO）
-    let mut hit = 0usize;
-    let mut pending: Vec<&String> = Vec::with_capacity(paths.len());
-    for p in &paths {
-        let name = thumbnail::grid_thumb_cache_name(album_id, std::path::Path::new(p));
-        let tp = thumbs_dir.join("grid").join(&name);
-        if tp.is_file() {
-            hit += 1;
-        } else {
-            pending.push(p);
+    // FEAT-044：走表命中 → hit；未命中走文件系统生成 → generated
+    //
+    // 拆为查（短锁）→ 生成（纯文件系统）→ 写表（短锁）三步
+    // 避免 MutexGuard 跨 spawn_blocking 边界。
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let hit_map_outer: Arc<HashMap<String, String>> = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let hashes: Vec<String> = paths
+            .iter()
+            .filter_map(|p| {
+                let path = std::path::Path::new(p);
+                let (len, mtime) = std::fs::metadata(path).ok().map(|md| {
+                    (
+                        md.len(),
+                        md.modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_nanos())
+                            .unwrap_or(0),
+                    )
+                })?;
+                Some(crate::thumbnail::thumb_photo_hash(path, len, mtime))
+            })
+            .collect();
+        match db.lookup_thumb_caches(&hashes) {
+            Ok(hits) => Arc::new(
+                hits.into_iter()
+                    .filter(|h| {
+                        !h.thumb_path.is_empty()
+                            && std::path::Path::new(&h.thumb_path).is_file()
+                    })
+                    .map(|h| (h.photo_hash, h.thumb_path))
+                    .collect(),
+            ),
+            Err(_) => Arc::new(HashMap::new()),
+        }
+    };
+
+    // 表命中原图 path（避免在生成项中重复）
+    let _hit_source_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // **不依赖 source_path 标记**：表命中且文件存在 → hit；生成返回 OK → generated。
+    let hit_from_table = hit_map_outer.len();
+
+    #[derive(Default)]
+    struct GenBuf(std::sync::Mutex<Vec<(String, String, u64, u128)>>);
+    let gen_buf = Arc::new(GenBuf::default());
+    let gen_buf_for_cb = gen_buf.clone();
+    let hit_for_cb = hit_map_outer.clone();
+    let paths_for_blocking = paths.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::thumbnail::ensure_grid_thumbs_with_lookup(
+            album_id,
+            &paths_for_blocking,
+            &thumbs_dir,
+            &move |hashes| -> HashMap<String, String> {
+                let mut out = HashMap::new();
+                for h in hashes {
+                    if let Some(t) = hit_for_cb.get(h) {
+                        out.insert(h.clone(), t.clone());
+                    }
+                }
+                out
+            },
+            move |generated| {
+                if let Ok(mut g) = gen_buf_for_cb.0.lock() {
+                    g.extend(generated.iter().cloned());
+                }
+            },
+        )
+    })
+    .await
+    .map_err(|e| format!("缩略图预热任务失败: {e}"))?;
+
+    // 写表（新生成项）
+    {
+        let items = gen_buf.0.lock().map_err(|e| e.to_string())?;
+        if !items.is_empty() {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            let recs: Vec<db::ThumbCacheRecord> = items
+                .iter()
+                .map(|(src, thumb, len, mtime)| {
+                    let path = std::path::Path::new(src.as_str());
+                    let hash = crate::thumbnail::thumb_photo_hash(path, *len, *mtime);
+                    db::ThumbCacheRecord {
+                        photo_hash: hash,
+                        source_path: src.clone(),
+                        thumb_path: thumb.clone(),
+                        album_id: Some(album_id),
+                        user_id,
+                        size_bytes: *len,
+                        mtime_ns: *mtime,
+                    }
+                })
+                .collect();
+            if let Err(e) = db.upsert_thumb_caches(&recs) {
+                logger::log_error("thumb_cache", &format!("prewarm upsert failed: {e:?}"));
+            }
         }
     }
-    // 批量生成未命中的（ensure_grid_thumb 逐张内部仍逐张判断；性能足够）
-    let mut generated = 0usize;
-    let mut failed = 0usize;
-    for p in &pending {
-        match thumbnail::ensure_grid_thumb(album_id, std::path::Path::new(p), &thumbs_dir) {
-            Ok(_) => generated += 1,
-            Err(_) => failed += 1,
-        }
-    }
+
+    // 统计：成功的 (源 → 缩略图) 数 - 表命中数 = 本次生成数；未成功 = failed
+    let generated = res.len().saturating_sub(hit_from_table);
+    let failed = paths.len().saturating_sub(res.len());
     let out = PrewarmOutcome {
         requested: paths.len(),
-        hit,
+        hit: hit_from_table, // 表命中且文件存在的项数
         generated,
         failed,
     };
@@ -1003,6 +1393,72 @@ fn prewarm_thumbs(
         ),
     );
     Ok(out)
+}
+
+/// FEAT-044（补充）：缩略图缓存覆盖率统计
+///
+/// 返回当前用户的：
+/// - `cached`: `photo_thumb_cache` 中行数
+/// - `total_scanned`: `photo_content_scan` 中行数（已入库总数）
+/// - `unthumbered`: 精确统计「已入库但无缩略图缓存行」（LEFT JOIN 按 photo_hash 对齐）
+///
+/// 前端场景：
+/// - 智慧相册首屏：拿 `unthumbered` 判断是否提示「N 张照片未扫描入库」。
+/// - 个人中心/性能面板：拿 cached / total_scanned 算覆盖率。
+/// - **`unthumbered` 为 JOIN 精确口径**：懒加载（`get_photo_thumbs` 未命中现场生成）
+///   也会写 `photo_thumb_cache`，未入库照片同样占行，旧口径
+///   `total_scanned - cached` 已失真，不再使用。预热进行中会有中间态，
+///   不要用于限制调取流程。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ThumbCoverage {
+    pub cached: i64,
+    pub total_scanned: i64,
+    pub unthumbered: i64,
+}
+
+#[tauri::command]
+fn get_photo_thumbs_count(
+    state: tauri::State<AppState>,
+    session: tauri::State<SessionState>,
+) -> Result<ThumbCoverage, String> {
+    let _t = log_call!("get_photo_thumbs_count", "");
+    let user_id = require_user(&session)?;
+    let r = (|| -> Result<ThumbCoverage, String> {
+        let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+        let cached = db
+            .count_thumb_caches(user_id)
+            .map_err(|e| format!("{:?}", e))?;
+        // photo_content_scan 中的行数（已入库总数）。
+        let total_scanned: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM photo_content_scan WHERE user_id = ?1",
+                rusqlite::params![user_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("{:?}", e))?;
+        // FEAT-044（I4）：LEFT JOIN 精确统计「已入库但无缩略图缓存行」。
+        // 懒加载写表后未入库照片也占 photo_thumb_cache 行，
+        // 旧口径 total_scanned - cached 会失真，已废弃。
+        let unthumbered = db
+            .count_scanned_without_thumb(user_id)
+            .map_err(|e| format!("{:?}", e))?;
+        Ok(ThumbCoverage {
+            cached,
+            total_scanned,
+            unthumbered,
+        })
+    })();
+    if let Ok(ref c) = r {
+        logger::log_call_end_with(
+            "get_photo_thumbs_count",
+            _t,
+            &format!("OK | cached={} total={} unthumbered={}", c.cached, c.total_scanned, c.unthumbered),
+        );
+    } else if let Err(ref e) = r {
+        logger::log_call_end_with("get_photo_thumbs_count", _t, &format!("ERR | {e}"));
+    }
+    r
 }
 
 /// 地点自动识别（FEAT-004 自动化）：扫描相册照片 GPS → 反向地理编码 → 落库
@@ -1716,6 +2172,72 @@ fn avatars_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir.join("avatars"))
 }
 
+/// FEAT-045：设置当前用户头像
+///
+/// 输入本地图片绝对路径（前端 plugin-dialog 选择）→ 中心方裁 256×256 JPEG →
+/// `app_data/avatars/user_{id}.jpg` → 写库返回更新后的用户。
+/// 图片解码在阻塞线程执行，避免大图占用异步运行时。
+#[tauri::command]
+async fn set_user_avatar(
+    source_path: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, SessionState>,
+) -> Result<auth::User, String> {
+    let _t = log_call!("set_user_avatar", &format!("source={source_path}"));
+    let user_id = require_user(&session)?;
+    if !std::path::Path::new(&source_path).is_file() {
+        logger::log_call_end_with("set_user_avatar", _t, "ERR | 图片不存在");
+        return Err("所选图片不存在".into());
+    }
+    let dir = avatars_dir(&app)?;
+    let avatar_path = dir.join(format!("user_{user_id}.jpg"));
+    let avatar_path_str = avatar_path.to_string_lossy().into_owned();
+    let src = source_path;
+    let cropped = tauri::async_runtime::spawn_blocking(move || {
+        crate::avatar::crop_square(
+            std::path::Path::new(&src),
+            std::path::Path::new(&avatar_path_str),
+            256,
+        )
+    })
+    .await
+    .map_err(|e| format!("头像任务线程失败: {e}"))?;
+    if let Err(e) = cropped {
+        logger::log_call_end_with("set_user_avatar", _t, &format!("ERR | {e}"));
+        return Err(e);
+    }
+    // 覆盖写同一路径：前端展示需带时间戳参数破 webview 图片缓存
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let r = auth::update_user_avatar(db.conn(), user_id, Some(avatar_path.to_string_lossy().into_owned()));
+    match &r {
+        Ok(u) => logger::log_call_end_with("set_user_avatar", _t, &format!("OK | id={}", u.id)),
+        Err(e) => logger::log_call_end_with("set_user_avatar", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// FEAT-045：移除当前用户头像（删文件 + 库内置空），返回更新后的用户
+#[tauri::command]
+async fn clear_user_avatar(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, SessionState>,
+) -> Result<auth::User, String> {
+    let _t = log_call!("clear_user_avatar", "");
+    let user_id = require_user(&session)?;
+    if let Ok(dir) = avatars_dir(&app) {
+        let _ = std::fs::remove_file(dir.join(format!("user_{user_id}.jpg")));
+    }
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let r = auth::update_user_avatar(db.conn(), user_id, None);
+    match &r {
+        Ok(u) => logger::log_call_end_with("clear_user_avatar", _t, &format!("OK | id={}", u.id)),
+        Err(e) => logger::log_call_end_with("clear_user_avatar", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
 /// 获取人物头像（本地优先：磁盘缓存命中直接返回，未命中则从代表脸 bbox 本地裁剪）
 ///
 /// 完全离线可用，不再依赖 Python 微服务。
@@ -1744,6 +2266,43 @@ async fn get_person_avatar(
         Err(e) => logger::log_call_end_with("get_person_avatar", _t, &format!("ERR | {e}")),
     }
     r
+}
+
+/// FEAT-047：人物自选头像 —— 用户在人物照片弹窗指定一张照片作为头像封面
+///
+/// 中心方裁 96×96 JPEG 覆盖 `avatars/avatar_{pid}.jpg`（get_person_avatar 的
+/// is_file() 缓存命中自选结果，优先于代表脸自动裁剪）。解码在阻塞线程执行。
+#[tauri::command]
+async fn set_person_avatar_from_photo(
+    pid: String,
+    photo_path: String,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let _t = log_call!("set_person_avatar_from_photo", &format!("pid={pid}"));
+    if !std::path::Path::new(&photo_path).is_file() {
+        logger::log_call_end_with("set_person_avatar_from_photo", _t, "ERR | 原图不存在");
+        return Err("所选照片不存在".into());
+    }
+    let cache_str = avatars_dir(&app)?
+        .join(format!("avatar_{pid}.jpg"))
+        .to_string_lossy()
+        .into_owned();
+    let src = photo_path;
+    let dst = cache_str.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        persons::set_avatar_from_photo(
+            std::path::Path::new(&src),
+            std::path::Path::new(&dst),
+        )
+    })
+    .await
+    .map_err(|e| format!("头像任务线程失败: {e}"))?;
+    match &r {
+        Ok(_) => logger::log_call_end_with("set_person_avatar_from_photo", _t, "OK | custom"),
+        Err(e) => logger::log_call_end_with("set_person_avatar_from_photo", _t, &format!("ERR | {e}")),
+    }
+    r?;
+    Ok(cache_str)
 }
 
 /// 人物注册表：重命名人物（直写 persons.db）
@@ -1792,10 +2351,51 @@ fn delete_person(
     r
 }
 
-/// GPU 加速可行性（R3）：确保服务就绪后查询 /gpu，返回是否可用 GPU
+/// FEAT-052：开始下载模型（后台，官方/镜像择一快者）
+#[tauri::command]
+async fn start_model_download(name: String, app: tauri::AppHandle) -> Result<(), String> {
+    let _t = log_call!("start_model_download", &format!("name={name}"));
+    let r = model_dl::start(&app, &name).await;
+    match &r {
+        Ok(_) => logger::log_call_end_with("start_model_download", _t, "OK"),
+        Err(e) => logger::log_call_end_with("start_model_download", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// FEAT-052：模型下载状态列表
+#[tauri::command]
+fn list_model_downloads() -> Vec<model_dl::ModelDlStatus> {
+    model_dl::list()
+}
+
+/// FEAT-052：取消模型下载
+#[tauri::command]
+fn cancel_model_download(name: String) -> Result<(), String> {
+    model_dl::cancel(&name);
+    Ok(())
+}
 #[tauri::command]
 async fn get_vcr_gpu_status(app: tauri::AppHandle) -> Result<vision::VcrGpuStatus, String> {
     vision::vcr_gpu_status(&app).await
+}
+
+/// FEAT-051：GPU 加速开关（开 = GPU 优先 / 关 = 强制 CPU），返回切换后状态
+#[tauri::command]
+async fn set_vcr_gpu(enabled: bool, app: tauri::AppHandle) -> Result<vision::VcrGpuStatus, String> {
+    vision::vcr_set_gpu(&app, enabled).await
+}
+
+/// FEAT-051：分类模型候选清单（含是否已下载 / 当前生效）
+#[tauri::command]
+async fn list_vcr_models(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    vision::vcr_list_models(&app).await
+}
+
+/// FEAT-051：切换分类模型（未下载/未知名称返回服务端错误信息）
+#[tauri::command]
+async fn set_vcr_model(model: String, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    vision::vcr_set_model(&app, &model).await
 }
 
 /// 在系统文件管理器中打开文件夹内部
@@ -2417,8 +3017,8 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .expect("无法获取应用数据目录");
-            // 初始化日志组件（保留 60 分钟，可调节）
-            logger::init(&data_dir, 60);
+            // 初始化日志组件（保留 3 天 = 4320 分钟）
+            logger::init(&data_dir, 4320);
             // 初始化用户敏感字段加密密钥（必须早于数据库迁移，迁移需用密钥加密历史明文）
             crypto::init(&data_dir).expect("初始化应用加密密钥失败");
             let db_path = data_dir.join("photos.db");
@@ -2464,12 +3064,15 @@ pub fn run() {
             get_current_user,
             reset_password,
             update_profile,
+            set_user_avatar,
+            clear_user_avatar,
             // 相册管理（按用户隔离）
             create_album,
             get_albums,
             get_album,
             update_album,
             prewarm_thumbs,
+            get_photo_thumbs_count,
             list_album_photos,
             get_photo_thumbs,
             auto_detect_album_location,
@@ -2501,7 +3104,12 @@ pub fn run() {
             scan_album_tones,
             get_photo_info,
             delete_photo_records,
+            delete_photos_to_trash,
+            delete_photo_records_by_paths,
             delete_photo_files,
+            restore_photo_records,
+            list_recently_deleted,
+            clear_recently_deleted,
             set_photo_rating,
             get_photo_ratings,
             move_photos_to_album,
@@ -2510,6 +3118,7 @@ pub fn run() {
             list_person_photos,
             get_person_photos,
             get_person_avatar,
+            set_person_avatar_from_photo,
             rename_person,
             merge_persons,
             delete_person,
@@ -2520,11 +3129,49 @@ pub fn run() {
             content::commands::ensure_photo_scanned,
             content::commands::search_photo_content_with_filters,
             content::commands::list_timeline,
+            content::commands::list_content_categories,
+            content::commands::list_photos_by_category,
+            content::commands::list_photo_locations,
+            content::commands::list_photos_by_location,
+            content::commands::set_photo_tags,
+            content::commands::get_photo_tags,
             content::commands::smart_search,
             export_photos,
             get_vcr_gpu_status,
+            start_model_download,
+            list_model_downloads,
+            cancel_model_download,
+            set_vcr_gpu,
+            list_vcr_models,
+            set_vcr_model,
             cancel_scan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::p_is_under;
+
+    /// BUG-2026-0916-001：归属解析归一化 —— 大小写 / 分隔符 / 前缀边界
+    #[test]
+    fn p_is_under_normalized() {
+        // 基本包含
+        assert!(p_is_under(r"D:\Pics\album", r"D:\Pics\album\a.jpg"));
+        // 大小写不敏感（NTFS）
+        assert!(p_is_under(r"D:\Pics\Album", r"d:\pics\album\a.jpg"));
+        // 分隔符混用（正斜杠记录）
+        assert!(p_is_under(r"D:\Pics\album", "D:/Pics/album/b/c.jpg"));
+        // 相册路径带尾分隔符
+        assert!(p_is_under(r"D:\Pics\album\", r"D:\Pics\album\a.jpg"));
+        // 前缀边界：D:\Pics\alb 不应匹配 D:\Pics\album\a.jpg
+        assert!(!p_is_under(r"D:\Pics\alb", r"D:\Pics\album\a.jpg"));
+        // 照片即目录本身（无剩余文件部分）
+        assert!(!p_is_under(r"D:\Pics\album", r"D:\Pics\album"));
+        assert!(!p_is_under(r"D:\Pics\album", r"D:\Pics\album\"));
+        // 目录之外 / 兄弟目录
+        assert!(!p_is_under(r"D:\Pics\album", r"D:\Other\a.jpg"));
+        assert!(!p_is_under(r"D:\Pics\album", r"D:\Pics\album2\a.jpg"));
+    }
 }

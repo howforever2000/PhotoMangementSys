@@ -1025,16 +1025,22 @@
   ],
   "landscape_nature": [
    "alp",
+   "beacon",
+   "breakwater",
    "cliff",
    "coral reef",
    "geyser",
    "lakeside",
    "mountain tent",
+   "plateau",
    "promontory",
    "sandbar",
    "seashore",
    "valley",
-   "volcano"
+   "volcano",
+   "iceberg",
+   "snowmobile",
+   "dogsled"
   ],
   "plant_flower": [
    "acorn",

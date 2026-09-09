@@ -71,9 +71,10 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
   padding: 8px;
   border-radius: 8px;
   cursor: grab;
-  background: #fff;
-  border: 1px solid #f0f0f0;
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #f0f0f0);
   transition: all 0.2s;
+  color: var(--color-text);
 }
 
 .album-mini:hover {
@@ -90,7 +91,7 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
 }
 
 .mini-cover.placeholder {
-  background: #f0f0f0;
+  background: rgba(120, 130, 150, 0.15);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -99,8 +100,9 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
 
 .mini-name {
   font-size: 12px;
+  font-weight: 500;
   text-align: center;
-  color: #333;
+  color: var(--color-text);
   max-width: 80px;
   white-space: nowrap;
   overflow: hidden;
@@ -132,8 +134,8 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 1.5px solid #bbb;
-  background: #fff;
+  border: 1.5px solid var(--color-border, #bbb);
+  background: var(--color-surface, #fff);
   font-size: 11px;
   color: transparent;
   display: flex;

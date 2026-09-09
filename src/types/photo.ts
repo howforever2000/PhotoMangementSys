@@ -208,3 +208,11 @@ export interface PersonInfo {
   face_count: number;
   created_at: string;
 }
+
+/** 最近删除记录条目 —— 对应 Rust `RecentlyExcludedItem` */
+export interface RecentlyExcludedItem {
+  album_id: number;
+  path: string;
+  excluded_at: number;
+  album_name: string;
+}

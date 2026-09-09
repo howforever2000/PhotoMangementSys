@@ -8,7 +8,14 @@
 //! - `DbError`  →  自定义业务异常（配合全局异常处理）
 
 pub mod content;
-pub use content::{AlbumContentRow, ContentFilters, ContentSearchHit, PhotoContentRecord, SmartHit};
+pub mod thumb_cache;
+pub use content::{
+    AlbumContentRow, CategoryGroupRow, ContentFilters, ContentSearchHit, LocationGroupRow,
+    PhotoContentRecord, SmartHit,
+};
+pub use thumb_cache::ThumbCacheRecord;
+
+use crate::RecentlyExcludedItem;
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -189,8 +196,18 @@ impl Database {
                 .map_err(|e| DbError::Other(format!("无法创建数据库目录: {e}")))?;
         }
         let conn = Connection::open(db_path)?;
-        // 启用外键约束（为后续 photos / tags 关联表预留）
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        // P0 SQLite 并发优化四件套：
+        // 1. WAL 模式：写操作不阻塞读，读操作不阻塞写，并发性能 10~50×
+        // 2. synchronous=NORMAL：WAL 模式下安全且写入更快（默认 FULL，每写一条都 fsync）
+        // 3. busy_timeout=5000ms：遇到 SQLITE_BUSY 时等待 5 秒而非直接失败
+        // 4. cache_size=-64000：64MB 页缓存（约 -64000 × 4KB = 256MB，负数=KB 单位）
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 5000;
+             PRAGMA cache_size = -64000;
+             PRAGMA foreign_keys = ON;",
+        )?;
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)
@@ -208,7 +225,8 @@ impl Database {
                 email         TEXT    NOT NULL UNIQUE,
                 phone         TEXT    NOT NULL UNIQUE,
                 password_hash TEXT    NOT NULL,
-                created_at    INTEGER NOT NULL
+                created_at    INTEGER NOT NULL,
+                avatar_path   TEXT
             );",
         )?;
         self.conn.execute_batch(
@@ -405,6 +423,8 @@ impl Database {
         }
         // 内容扫描表（FEAT-022：AI 内容扫描入库 + 照片智能搜索）
         self.init_content_schema()?;
+        // 缩略图反向索引表（FEAT-044）：path/photo_hash → thumb_path
+        self.init_thumb_cache_schema()?;
         // 迁移：将历史以明文存储的用户邮箱/手机号/密码哈希重加密（无历史明文则为空操作）
         let _ = crate::auth::migrate_legacy_user_fields(self.conn());
         Ok(())
@@ -1011,6 +1031,80 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)
     }
 
+    /// 恢复已「记录删除」的照片（从 album_photo_excluded 中移除），撤销时调用
+    pub fn restore_excluded_photos(
+        &self,
+        album_id: i64,
+        user_id: i64,
+        paths: &[String],
+    ) -> Result<usize, DbError> {
+        // 归属校验：确保相册属于当前用户
+        let owned = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM albums WHERE id = ?1 AND user_id = ?2",
+                params![album_id, user_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(DbError::Sqlite)?;
+        if owned == 0 {
+            return Err(DbError::NotFound(album_id));
+        }
+        let mut n = 0usize;
+        for p in paths {
+            n += self
+                .conn
+                .execute(
+                    "DELETE FROM album_photo_excluded WHERE album_id = ?1 AND path = ?2",
+                    params![album_id, p],
+                )
+                .map_err(DbError::Sqlite)?;
+        }
+        Ok(n)
+    }
+
+    /// 获取最近删除记录（album_photo_excluded），用于「最近删除」列表展示
+    pub fn list_recently_excluded(
+        &self,
+        user_id: i64,
+        limit: usize,
+    ) -> Result<Vec<RecentlyExcludedItem>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT e.album_id, e.path, e.excluded_at, a.name as album_name
+                 FROM album_photo_excluded e
+                 JOIN albums a ON a.id = e.album_id AND a.user_id = e.user_id
+                 WHERE e.user_id = ?1
+                 ORDER BY e.excluded_at DESC
+                 LIMIT ?2",
+            )
+            .map_err(DbError::Sqlite)?;
+        let rows = stmt
+            .query_map(params![user_id, limit as i64], |r| {
+                Ok(RecentlyExcludedItem {
+                    album_id: r.get(0)?,
+                    path: r.get(1)?,
+                    excluded_at: r.get(2)?,
+                    album_name: r.get(3)?,
+                })
+            })
+            .map_err(DbError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)
+    }
+
+    /// 清除所有已排除记录（用户清空最近删除时调用）
+    pub fn clear_all_excluded(&self, user_id: i64) -> Result<usize, DbError> {
+        let affected = self
+            .conn
+            .execute(
+                "DELETE FROM album_photo_excluded WHERE user_id = ?1",
+                params![user_id],
+            )
+            .map_err(DbError::Sqlite)?;
+        Ok(affected)
+    }
+
     pub fn delete_album(&self, id: i64, user_id: i64) -> Result<(), DbError> {
         let tx = self.conn.unchecked_transaction()?;
         let affected =
@@ -1053,6 +1147,8 @@ impl Database {
         tx.execute("DELETE FROM album_photo_excluded WHERE album_id = ?1", params![album_id])?;
         // 合并来源：清理「作为目标相册」的来源记录 + 「作为源被合并」的来源记录
         tx.execute("DELETE FROM album_merged_sources WHERE album_id = ?1 OR source_id = ?1", params![album_id])?;
+        // FEAT-044：清理缩略图反向索引表（实际缩略图文件由调用方负责，本函数只清表）
+        tx.execute("DELETE FROM photo_thumb_cache WHERE album_id = ?1", params![album_id])?;
         Ok(())
     }
 

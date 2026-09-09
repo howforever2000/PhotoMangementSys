@@ -35,6 +35,8 @@ python/models/*.pt
 python/models/*.pth.tar
 python/models/*.zip
 python/models/categories_places365.txt
+# 运行态：用户当前选择的分类模型（/model 切换时写入，随机器不同）
+python/models/current_cls.json
 python/data/
 python/__pycache__/
 python/vcr/**/__pycache__/

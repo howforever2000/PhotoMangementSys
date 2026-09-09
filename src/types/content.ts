@@ -26,6 +26,8 @@ export interface VcrGpuStatus {
   available: string[];
   /** 批次安全上限 */
   batch_max: number;
+  /** FEAT-051：是否被用户强制 CPU（开关初始状态） */
+  forced_cpu: boolean;
 }
 
 /** 内容扫描进度事件 —— 对应 Rust `content::ContentScanProgress` */
@@ -171,4 +173,59 @@ export interface SmartHit {
   shoot_time: string | null;
   tone_type: string | null;
   person_ids: string[];
+}
+
+/** FEAT-048：内容分类两级聚合行 —— 对应 Rust `db::CategoryGroupRow` */
+export interface CategoryGroupRow {
+  category: string;
+  sub_category: string | null;
+  count: number;
+  /** 该大类封面（置信度最高的照片原图路径） */
+  cover_path: string | null;
+  /** 封面照片归属相册（get_photo_thumbs 复用真实相册缓存命名） */
+  cover_album_id: number | null;
+}
+
+/** FEAT-049：地点聚合行 —— 对应 Rust `db::LocationGroupRow`（location null = 未记录地点组） */
+export interface LocationGroupRow {
+  location: string | null;
+  count: number;
+  cover_path: string | null;
+  cover_album_id: number | null;
+}
+
+/** FEAT-051：分类模型候选项 —— 对应 model_registry.cls_models_info().models[] */
+export interface VcrModelInfo {
+  /** 模型文件名（如 yolov8x-cls.onnx） */
+  name: string;
+  /** 中文说明（准确率档位 + 推荐场景） */
+  label: string;
+  accuracy: string;
+  speed: string;
+  /** 模型文件是否已下载到 python/models/ */
+  downloaded: boolean;
+  /** 是否为当前生效模型 */
+  active: boolean;
+}
+
+/** FEAT-051：分类模型清单 */
+export interface VcrModelsInfo {
+  models: VcrModelInfo[];
+  /** 当前生效模型文件名（候选中第一个已下载者，或用户指定项） */
+  current: string | null;
+  /** cls 会话是否已就绪（切换后台加载期间为 false，UI 据此提示加载中） */
+  cls_ready?: boolean;
+}
+
+/** FEAT-052：模型下载状态 —— 对应 Rust `model_dl::ModelDlStatus` */
+export interface ModelDlStatus {
+  name: string;
+  file: string;
+  required: boolean;
+  running: boolean;
+  done: boolean;
+  stage: string; // downloading | exporting | done | error | idle
+  bytes: number;
+  total: number;
+  error: string | null;
 }

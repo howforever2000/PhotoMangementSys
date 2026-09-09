@@ -32,11 +32,35 @@ PERSONS_DB = os.path.join(DATA_DIR, "persons.db")
 ALBUM_GROUPS = os.path.join(MODEL_DIR, "album_groups.json")   # taxonomy 9 组定义
 
 # 模型文件（缺失则对应通道自动降级）
-CLS_MODELS = ["yolov8s-cls.onnx", "yolov8n-cls.onnx"]   # 依次尝试
+# 2025-09：cls 升级为 yolov8m-cls（准确率 76.0% vs n 的 66.6%，7840HS CPU 推理单张 ~30-40ms）。
+# FEAT-051：新增 l（7840HS 级 CPU 可跑的最好精度）与 x（最准，建议 GPU）两档候选，
+#           支持 UI 按硬件性能切换（POST /model）。
+# FEAT-052：应用内下载 + 默认档调整为 m 优先（用户预期）；
+#           UI 选择持久化到 models/current_cls.json，服务启动时优先采用。
+# ImageNet 仍是物体库，"风景/城市/室内"依靠 SCENE_MODEL（Places365）补齐，二者互不重叠互补。
+CLS_MODELS = [
+    "yolov8m-cls.onnx",   # 准确率 76.0% —— 默认档（CPU 平衡，单张 ~30-40ms）
+    "yolov8l-cls.onnx",   # 较准（~78-79%）—— 7840HS 级 CPU 可舒适运行（单张约 60-90ms）
+    "yolov8x-cls.onnx",   # 最准（ImageNet top1 ~81%）—— 推理最慢，建议 GPU 用户
+    "yolov8s-cls.onnx",
+    "yolov8n-cls.onnx",   # 最快（兜底，66.6%）
+]   # 候选回退顺序（自动默认 = 第一个已下载者；UI 选择持久化后以其为准）
+
+# 分类模型中文元信息（UI 展示；FEAT-051）
+CLS_MODEL_META = {
+    "yolov8m-cls.onnx": {"label": "m · 平衡（默认，CPU 推荐）", "accuracy": "76.0%", "speed": "中"},
+    "yolov8l-cls.onnx": {"label": "l · 较准（7840HS 级 CPU 推荐）", "accuracy": "~78-79%", "speed": "较慢"},
+    "yolov8x-cls.onnx": {"label": "x · 最准（推荐 GPU）", "accuracy": "~81%", "speed": "最慢"},
+    "yolov8s-cls.onnx": {"label": "s · 轻量", "accuracy": "~70%", "speed": "快"},
+    "yolov8n-cls.onnx": {"label": "n · 最快（兜底）", "accuracy": "66.6%", "speed": "最快"},
+}
+
+# 当前选择的分类模型（UI 持久化；POST /model 写入，registry 启动时读取为初始 override）
+CLS_CURRENT_PATH = os.path.join(MODEL_DIR, "current_cls.json")
 DET_MODEL = "yolov8n-det.onnx"                           # COCO 80 类
 FACE_DET_MODELS = ["det_10g.onnx", "det_500m.onnx"]     # SCRFD（buffalo_l/s → sc 兜底）
 FACE_REC_MODELS = ["w600k_mbf.onnx", "w600k_r50.onnx"]  # ArcFace 识别
-SCENE_MODEL = "resnet18_places365.onnx"                  # Places365（可选）
+SCENE_MODEL = "resnet18_places365.onnx"                  # Places365（必启用：覆盖自然/城市/室内场景）
 SCENE_CATEGORIES = "categories_places365.txt"
 OCR_MODEL = "paddleocr-det.onnx"                        # PaddleOCR ch_PP-OCRv4 det（可选）
 FLOWER_MODEL = "efficientnet-b2-flowers.onnx"       # Lumia101 B2 微调（oxford-102，31MB，实测优于 b0）

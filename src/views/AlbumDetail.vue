@@ -8,6 +8,7 @@ import ConfirmDialog from "../components/ConfirmDialog.vue";
 import AlbumMeta from "../components/AlbumMeta.vue";
 import CollapseSection from "../components/CollapseSection.vue";
 import ContentSearch from "../components/ContentSearch.vue";
+import BreadcrumbNav from "../components/BreadcrumbNav.vue";
 import ScanPanel from "../components/ScanPanel.vue";
 import PhotoGrid from "../components/PhotoGrid.vue";
 import { useNotify } from "../composables/useNotify";
@@ -81,6 +82,22 @@ function goHome() {
   router.push("/home");
 }
 
+/** 面包屑导航：根据当前相册状态构建路径 */
+const breadcrumbs = computed((): { label: string; to?: string }[] => {
+  const crumbs: { label: string; to?: string }[] = [{ label: "相册列表", to: "/albums" }];
+  if (store.currentAlbum) {
+    // 有父分组时显示父分组
+    if (store.currentAlbum.folder_path) {
+      const parts = store.currentAlbum.folder_path.split("/").filter(Boolean);
+      for (const part of parts) {
+        crumbs.push({ label: part });
+      }
+    }
+    crumbs.push({ label: store.currentAlbum.name });
+  }
+  return crumbs;
+});
+
 const deleteAlbum = trace("deleteAlbum", async () => {
   if (deleting.value) return;
   const name = store.currentAlbum?.name ?? "";
@@ -118,6 +135,8 @@ onMounted(load);
       <div class="nav-left">
         <button class="btn" @click="goBack" title="返回上一级">← 返回</button>
         <button class="btn btn-home" @click="goHome" title="回到主页">🏠 主页</button>
+        <!-- P1 面包屑导航 -->
+        <BreadcrumbNav :crumbs="breadcrumbs" />
       </div>
       <div class="nav-actions">
         <button class="btn btn-danger" :disabled="deleting" @click="deleteAlbum">

@@ -185,19 +185,22 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 .card-name {
   margin: 0 0 6px;
   font-size: 16px;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--text, var(--color-text));
 }
 
 .card-desc {
   margin: 0 0 8px;
   font-size: 13px;
-  color: var(--sub-text, #666);
+  color: var(--sub-text, var(--color-text-2));
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  line-height: 1.5;
 }
 
 .card-path {

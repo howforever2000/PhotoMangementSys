@@ -72,11 +72,12 @@ function toggle() {
 
 <style scoped>
 .collapse-section {
-  background: #fff;
-  border: 1px solid #e2e6ee;
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #e2e6ee);
   border-radius: 14px;
   box-shadow: 0 4px 18px rgba(31, 51, 102, 0.06);
   overflow: hidden;
+  color: var(--color-text);
 }
 
 .collapse-section + .collapse-section {
@@ -94,13 +95,13 @@ function toggle() {
 }
 
 .cs-head:hover {
-  background: #f6f8fc;
+  background: var(--color-primary-soft, #f6f8fc);
 }
 
 .cs-chevron {
   width: 16px;
   height: 16px;
-  color: #6a7690;
+  color: var(--color-text-2, #6a7690);
   flex-shrink: 0;
   transition: transform 0.2s ease;
 }
@@ -113,7 +114,7 @@ function toggle() {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  color: #1f2733;
+  color: var(--color-text);
 }
 
 .cs-subtitle {
@@ -123,14 +124,14 @@ function toggle() {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--color-text-2);
 }
 
 .cs-action-hint {
   margin-left: auto;
   flex-shrink: 0;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--color-text-2);
 }
 
 .cs-subtitle + .cs-action-hint,

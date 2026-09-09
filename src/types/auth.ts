@@ -14,6 +14,8 @@ export interface User {
   phone: string;
   /** 注册时间戳（Unix 秒） */
   created_at: number;
+  /** 头像文件绝对路径（FEAT-045；null = 未设置，前端回退占位图标） */
+  avatar: string | null;
 }
 
 /** 注册输入 —— 对应 Rust `auth::RegisterInput`（需求：账户名、邮箱、手机号、密码、密码确认） */

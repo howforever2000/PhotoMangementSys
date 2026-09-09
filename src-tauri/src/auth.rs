@@ -41,6 +41,9 @@ pub struct User {
     pub phone: String,
     /// 注册时间戳（Unix 秒）
     pub created_at: i64,
+    /// 头像文件绝对路径（FEAT-045；None = 未设置，前端回退占位图标）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
 }
 
 /// 带密码哈希的用户记录（仅内部使用，不出库）
@@ -52,6 +55,7 @@ pub struct UserRecord {
     pub phone: String,
     pub password_hash: String,
     pub created_at: i64,
+    pub avatar_path: Option<String>,
 }
 
 /// 注册输入（需求：账户名、邮箱、手机号、密码、密码确认）
@@ -175,7 +179,7 @@ fn now_secs() -> i64 {
 /// 字段在库中均以密文（或迁移前的历史明文）存储，这里统一解密为实际值。
 fn fetch_all_users(conn: &Connection) -> Result<Vec<UserRecord>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, username, email, phone, password_hash, created_at FROM users")
+        .prepare("SELECT id, username, email, phone, password_hash, created_at, avatar_path FROM users")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -186,12 +190,13 @@ fn fetch_all_users(conn: &Connection) -> Result<Vec<UserRecord>, String> {
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, i64>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for r in rows {
-        let (id, username, email_enc, phone_enc, hash_enc, created_at) =
+        let (id, username, email_enc, phone_enc, hash_enc, created_at, avatar_path) =
             r.map_err(|e| e.to_string())?;
         out.push(UserRecord {
             id,
@@ -200,6 +205,7 @@ fn fetch_all_users(conn: &Connection) -> Result<Vec<UserRecord>, String> {
             phone: crypto::decrypt(&phone_enc)?,
             password_hash: crypto::decrypt(&hash_enc)?,
             created_at,
+            avatar_path,
         });
     }
     Ok(out)
@@ -212,6 +218,7 @@ fn to_user(u: &UserRecord) -> User {
         email: u.email.clone(),
         phone: u.phone.clone(),
         created_at: u.created_at,
+        avatar: u.avatar_path.clone(),
     }
 }
 
@@ -257,6 +264,7 @@ pub fn register_user(conn: &Connection, input: RegisterInput) -> Result<User, St
         email,
         phone,
         created_at: now,
+        avatar: None,
     })
 }
 
@@ -282,6 +290,22 @@ pub fn find_user_by_account(conn: &Connection, account: &str) -> Result<Option<U
 pub fn find_user_by_id(conn: &Connection, id: i64) -> Result<Option<User>, String> {
     let users = fetch_all_users(conn)?;
     Ok(users.into_iter().find(|u| u.id == id).map(|u| to_user(&u)))
+}
+
+/// FEAT-045：更新用户头像路径（None = 移除头像），返回更新后的用户
+///
+/// 仅写库；文件生成/删除由调用方（lib.rs 命令）负责，保持本函数纯 DB 语义。
+pub fn update_user_avatar(
+    conn: &Connection,
+    user_id: i64,
+    avatar_path: Option<String>,
+) -> Result<User, String> {
+    conn.execute(
+        "UPDATE users SET avatar_path = ?1 WHERE id = ?2",
+        params![avatar_path, user_id],
+    )
+    .map_err(|e| e.to_string())?;
+    find_user_by_id(conn, user_id)?.ok_or_else(|| "用户不存在".to_string())
 }
 
 /// 校验登录凭据：account（账户名/邮箱/手机号）+ 密码
@@ -331,6 +355,8 @@ pub fn reset_password(conn: &Connection, input: ResetPasswordInput) -> Result<()
 /// 在 `db::init_schema` 建表后调用；无历史明文行时为空操作。
 /// 仅当加密密钥已初始化时才执行，避免测试环境（未初始化密钥）报错。
 pub fn migrate_legacy_user_fields(conn: &Connection) -> Result<(), String> {
+    // FEAT-045：用户头像路径列（新装 DB 由 CREATE TABLE 自带；老库在此补列，已存在则忽略）
+    let _ = conn.execute_batch("ALTER TABLE users ADD COLUMN avatar_path TEXT;");
     if !crypto::is_initialized() {
         return Ok(());
     }
@@ -434,6 +460,7 @@ pub fn update_profile(
         email,
         phone,
         created_at: user.created_at,
+        avatar: user.avatar_path,
     })
 }
 
@@ -452,7 +479,8 @@ mod tests {
                 email         TEXT    NOT NULL UNIQUE,
                 phone         TEXT    NOT NULL UNIQUE,
                 password_hash TEXT    NOT NULL,
-                created_at    INTEGER NOT NULL
+                created_at    INTEGER NOT NULL,
+                avatar_path   TEXT
             );",
         )
         .unwrap();

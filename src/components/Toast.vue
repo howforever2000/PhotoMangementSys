@@ -41,7 +41,7 @@ const panelStyle = computed(() => {
   };
 });
 const subStyle = computed(() => ({
-  color: theme.isDark ? "rgba(214,221,240,.72)" : "rgba(60,70,90,.75)",
+  color: theme.isDark ? "rgba(225,232,255,.86)" : "rgba(36,48,68,.88)",
 }));
 
 function close() {
@@ -128,10 +128,11 @@ function onLeave() {
 }
 .toast-message {
   font-size: 12.5px;
-  line-height: 1.5;
+  line-height: 1.55;
   margin-top: 2px;
   white-space: pre-wrap;
   word-break: break-word;
+  /* 文字颜色由 inline style 提供（theme.subTextColor） */
 }
 .toast-actions {
   display: flex;

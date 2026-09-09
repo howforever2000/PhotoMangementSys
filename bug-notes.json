@@ -352,6 +352,295 @@
         "Tauri invoke 会做严格的类型校验，前端表单值（尤其 <select>）需在调用前转为后端期望的数字类型",
         "数值型过滤条件建议统一用 toNum 转换，避免字符串/数字混用"
       ]
+    },
+    {
+      "id": "BUG-2026-0907-001",
+      "date": "2026-09-07",
+      "status": "open",
+      "title": "thumbnail 存量测试过期：find_and_thumb / legacy_thumb_reuse 仍断言 JPEG 时代行为",
+      "module": "缩略图 / src-tauri/src/thumbnail.rs",
+      "symptom": [
+        "cargo test 全量 2 failed：thumbnail::tests::find_and_thumb（assert thumb_path.ends_with(.jpg) 失败，实际产出 .webp）",
+        "thumbnail::tests::legacy_thumb_reuse（断言 legacy JPEG 字节被逐字节复用失败：left=JPEG(FFD8) right=WebP(RIFF/WEBP)）"
+      ],
+      "root_cause": {
+        "summary": "提交 0f1e1ff 把缩略图改为 WebP 编码（FEAT-044 又改指纹缓存命名），两个旧测试未同步更新断言。",
+        "detail": [
+          "find_and_thumb 断言 .jpg 后缀，现管线产出 .webp 文件名",
+          "legacy_thumb_reuse 的前提「指纹文件逐字节复用 legacy JPEG」在 WebP 重编码管线下不成立"
+        ]
+      },
+      "solution": "待确认后修复：更新两个测试断言以适配 WebP 管线（后缀断言改 .webp、复用断言改为「不重生成/同路径幂等」语义）。注：与 FEAT-044 懒加载改动无关，HEAD 9553095 未改动状态下同样失败（存量问题）。",
+      "lessons": [
+        "切换缩略图编码格式/缓存命名时，同步更新格式相关测试断言"
+      ]
+    },
+    {
+      "id": "BUG-2026-0907-002",
+      "date": "2026-09-07",
+      "status": "resolved",
+      "title": "回忆页故事·按月卡片点击跳转错位：1~9 月定位落空停在年份顶部",
+      "module": "智慧相册-回忆 / Memories.vue + Timeline.vue",
+      "symptom": [
+        "故事·按月板块部分卡片（1~9 月）点击后未定位到对应月份照片分组，而是落在该年最早月份的照片位置",
+        "10/11/12 月卡片跳转正常 → 症状呈「部分卡片跳错」"
+      ],
+      "root_cause": {
+        "summary": "跨页 query 月份格式不一致：Memories 传 String(Number) 无前导零（month=8），Timeline 分组 id 用 shoot_time.slice(5,7) 有前导零（y-2025-m-08），getElementById('y-2025-m-8') 落空不滚动；yearFilter 已切到目标年 → 页面停在顶部（最早月份照片）。",
+        "detail": [
+          "Memories.vue gotoMonth: query { month: String(m.month) }，m.month 为 Number → 1~9 月丢前导零",
+          "Timeline.vue applyJumpQuery: highlightKey=`y-${y}-m-${m}` 直接拼 query 原值，与 DOM id 不匹配",
+          "次要：el 为 null 时 highlightKey 永不清除（高亮态残留）"
+        ]
+      },
+      "solution": "双侧修复（方案A）：① Memories gotoMonth 改传 m.key.slice(5,7)（两位 MM 格式，修源头）；② Timeline applyJumpQuery 对纯数字 month 归一化 padStart(2,'0')（兼容 8/08 旧链接），月份锚点落空回退滚到年份锚点 y-{y} 并改高亮年份，任何分支最终都清除 highlightKey。vue-tsc --noEmit 通过。",
+      "lessons": [
+        "跨页面锚点跳转协议（query → DOM id）两侧格式必须对齐，拼接 id 前先归一化",
+        "定位元素查找失败要有年份级兜底，且临时高亮状态必须在所有分支收敛清除"
+      ]
+    },
+    {
+      "id": "BUG-2026-0916-001",
+      "date": "2026-09-16",
+      "status": "resolved",
+      "title": "人物照片弹窗部分缩略图永久占位：归属相册解析失败即不生成缩略图",
+      "module": "人物 / lib.rs get_person_photos + p_is_under",
+      "symptom": [
+        "人物界面点头像查看照片，滑动查看部分图片占位，tooltip「缩略图生成中或原图不可用」",
+        "原图实际存在且缩略图本可快速生成",
+        "日志实锤：get_person_photos pid=P085 → n=69 thumb_hit=0 generated=68（1 张 None）"
+      ],
+      "root_cause": {
+        "summary": "get_person_photos 先做归属相册解析（p_is_under 前缀匹配当前用户相册），解析失败直接返回 thumb=None 完全不走生成；前端 prewarm 兜底又只处理 album_id!=null 的缺失项 → 永久占位。",
+        "detail": [
+          "数据复现：P085 一张照片位于 img\\手机照片\\未知年份\\无地点\\，不在任何相册目录下（扫描过人脸后相册记录被删/路径体系变更），原图存在",
+          "次要：p_is_under 用 strip_prefix 严格区分大小写/分隔符，NTFS 下大小写差异也会误判为无归属",
+          "日志无 unresolved/gen_failed 计数，无法从日志直接定位"
+        ]
+      },
+      "solution": "①归属解析失败时以 album_id=0（无归属缓存命名空间）照常生成/复用缩略图，thumb 有值，album_id 保持 None（Lightbox 有 openOriginal 兜底）；②p_is_under Windows 归一化（分隔符统一+大小写不敏感+前缀边界），补单测；③出口日志补 unresolved/gen_failed 计数 + 无归属样例 + 生成失败逐条 log_error。fix 提交 6102002。",
+      "lessons": [
+        "「缩略图生成不应依赖业务归属解析成功」——缓存键(album_id=0)与业务归属(album_id=None)解耦",
+        "路径前缀匹配在 Windows 必须归一化大小写与分隔符"
+      ]
+    },
+    {
+      "id": "BUG-2026-0916-002",
+      "date": "2026-09-16",
+      "status": "open",
+      "title": "网格缩略图 WebP 嵌套命名与 flat JPG 命名两套并存，thumb_hit 永远为 0",
+      "module": "缩略图 / thumbnail.rs grid_thumb_cache_name vs ensure_grid_thumb",
+      "symptom": [
+        "日志 get_person_photos thumb_hit=0（69 张全部走 ensure_grid_thumb 生成/复用）",
+        "grid_thumb_cache_name 产出 album_{id}_photo_{subdir}/{fp}.webp，无任何代码写该路径"
+      ],
+      "root_cause": {
+        "summary": "0f1e1ff 引入 WebP 命名（grid_thumb_cache_name）但生成端 ensure_grid_thumb 仍是 flat album_{id}_photo_{fp}.jpg，两套命名不一致。",
+        "detail": [
+          "get_person_photos 第一步按 WebP 名查缓存永远落空，多一次无效文件 stat；缓存可能双份占用磁盘"
+        ]
+      },
+      "solution": "待定：统一为单一命名（建议生成端与查询端都走 grid_thumb_cache_name），需评估旧 flat JPG 缓存迁移/清理策略。",
+      "lessons": [
+        "缓存命名变更必须同时改生成端与查询端"
+      ]
+    },
+    {
+      "id": "BUG-2026-0908-003",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "删除确认弹窗「取消」点不掉 —— ContextMenu 全屏透明遮罩常驻拦截点击",
+      "module": "分类/地点画廊 / ContextMenu 集成",
+      "symptom": [
+        "右键菜单弹出后点击菜单项，菜单不关闭",
+        "确认弹窗「取消」「确认删除」均无响应，页面所有点击失效"
+      ],
+      "root_cause": {
+        "summary": "ContextMenu 组件模板含全屏透明遮罩 ctx-overlay（fixed inset-0 z-9999，@click.stop），组件自身不管理显隐；画廊误常驻挂载（未加 v-if），遮罩拦截全部点击（ConfirmDialog z-1000 在其之下），且 @click.stop 阻断 document 监听导致菜单自身也无法关闭。",
+        "detail": [
+          "PhotoGrid 既有用法是 v-if 包裹用完即卸载，无此问题"
+        ]
+      },
+      "solution": "画廊中 ContextMenu 加 v-if=\"ctxVisible\" 用完即卸载。教训：复用带『全屏遮罩』的组件必须确认其显隐管理方式（v-if/visible prop）。",
+      "lessons": [
+        "全屏遮罩组件常驻挂载 = 全页点击被拦截；集成前先读组件模板"
+      ]
+    },
+    {
+      "id": "BUG-2026-0908-004",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "dev 模式识别服务模型全量加载失败：onnxruntime 无 ThreadPoolOptions API",
+      "module": "VCR / model_registry._so",
+      "symptom": [
+        "server.py 启动后所有模型 ready=false（cls/det/face/scene 全灭）",
+        "分类扫描 503「分类模型未就绪」"
+      ],
+      "root_cause": {
+        "summary": "_so() 无条件 so.threadpool_options = ort.ThreadPoolOptions()，本机 onnxruntime 1.29.0 无该 Python API → 每个模型加载即抛错。"
+      },
+      "solution": "hasattr(ort, 'ThreadPoolOptions') 守卫，存在才启用。实测 health ok:true classes:1000。",
+      "lessons": [
+        "onnxruntime Python API 随版本差异大，新 SessionOptions 属性必须 hasattr 防御"
+      ]
+    },
+    {
+      "id": "BUG-2026-0908-005",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "运行中识别服务为旧进程时 GPU/模型切换无效（无版本协商）",
+      "module": "VCR / vision.rs ensure_service_ready",
+      "symptom": [
+        "GPU 开关点了没反应",
+        "模型下拉为空"
+      ],
+      "root_cause": {
+        "summary": "ensure_service_ready 探测到 8765 端口有存活服务就复用（跨应用重启存活），旧进程没有 POST /gpu、GET /models 新端点 → 405/404。"
+      },
+      "solution": "/health 增加 api_version=2；Rust 探测到旧版本自动 POST /shutdown（服务自退端点，仅监听 127.0.0.1）再拉起新版本；重启失败给出手动结束进程指引；list/set 端点补非 2xx 守卫。",
+      "lessons": [
+        "长生命周期子进程 + 新增端点 = 必须做版本协商/自愈，否则改动永不生效"
+      ]
+    },
+    {
+      "id": "BUG-2026-0908-006",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "识别服务多进程抢占 8765 端口（winerror 10048）+ GPU 默认行为不符预期",
+      "module": "VCR / vision.rs ensure_service_ready",
+      "symptom": [
+        "日志大量 [Errno 10048] bind 失败，多个 [VCR] 模型加载片段交错",
+        "GPU 加速开关切换无效"
+      ],
+      "root_cause": {
+        "summary": "并发命令各自调 ensure_service_ready（无单飞）→ 同时拉起多个 server.py 抢端口；旧版本进程无 /shutdown 自退端点无法清场；且默认 auto-GPU 与用户期望（默认 CPU、检测后再启用）不符。"
+      },
+      "solution": "①ensure 单飞锁（tokio Mutex，拿锁后重新探测）；②kill_port_holder 兜底（netstat 找 LISTENING PID → taskkill /F，Unix lsof）；③registry 默认强制 CPU，UI 改为「先选模型 → 🔍 检测 GPU → 🚀 吿用加速」（参考单相册扫描面板），未检测到可用 GPU 时启用按钮置灰。",
+      "lessons": [
+        "固定端口子进程的启动必须单飞 + 端口占用兜底清理",
+        "GPU 类功能默认保守（CPU），检测到硬件后再启用"
+      ]
+    },
+    {
+      "id": "BUG-2026-0908-007",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "识别服务反复强杀 8765 端口进程循环 + 模型选择转圈",
+      "module": "VCR / vision.rs ensure_service_ready + probe_health",
+      "symptom": [
+        "日志反复『强制结束占用 8765 端口的进程 PID=…』不同 PID 交替",
+        "选择模型一直转圈不能选择",
+        "被杀进程打印 ConnectionResetError 10054"
+      ],
+      "root_cause": {
+        "summary": "probe 把『服务可达但模型未就绪(ok:false)』误判为 Down，每次交互都 kill 正在加载的服务再重拉，造成反复强杀；模型清单 fetch 随之卡在转圈。"
+      },
+      "solution": "probe 四态化（Ready/OldVersion/Loading/NotReachable），仅 OldVersion 强杀，Loading 等待不打断；spawn_server 独立；前端 modelsFailed 兜底提示。",
+      "lessons": [
+        "探测启动中子进程必须区分『未就绪』与『不可达』，否则误杀导致循环重拉"
+      ]
+    },
+    {
+      "id": "BUG-2026-0908-008",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "识别服务固定端口 8765 被占 + 盲杀进程的循环（改用动态端口）",
+      "module": "VCR / vision.rs 端口策略",
+      "symptom": [
+        "反复『强制结束占用 8765 端口进程 PID=…』不同 PID 交错",
+        "模型选择转圈",
+        "可能误杀本机其他程序"
+      ],
+      "root_cause": {
+        "summary": "固定 8765 端口，若被其他程序占用则冲突；此前 kill_port_holder 盲目强杀 LISTENING 进程，既可能误杀第三方程序，又会因残留孤儿进程反复抢端口形成循环。"
+      },
+      "solution": "改为动态端口：进程内 OnceLock 分配空闲端口（绑 127.0.0.1:0 取系统分配），spawn 时 VCR_PORT 环境变量传给 server.py；删除 kill_port_holder 不再强杀；旧版本自愈保留 POST /shutdown。",
+      "lessons": [
+        "子进程固定端口必须评估与本机其他程序冲突，用动态端口更稳妥；切勿盲目强杀端口占用者"
+      ]
+    },
+    {
+      "id": "BUG-2026-0908-009",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "模型加载超时(15s)→杀进程→重启 死循环，前端选择模型转圈",
+      "module": "VCR / vision.rs READY_TIMEOUT + 冷启动策略",
+      "symptom": [
+        "ensure 反复『清理本项目遗留识别服务进程』，每次 3 个 PID",
+        "选择模型转圈无法完成",
+        "vcr_server/python server.py 进程反复生灭"
+      ],
+      "root_cause": {
+        "summary": "加载 l+全通道模型（DML 首次初始化）远超 15s 就绪超时；超时即杀导致每次都从头加载，永不就绪。"
+      },
+      "solution": "READY_TIMEOUT 15s→90s；超时且进程存活不杀——落实例供下次收养继续等，返回『加载中请稍候』；仅进程死亡才换端口重拉。",
+      "lessons": [
+        "模型加载时长不可预估时，就绪等待要给足且绝不杀存活中的加载进程；用收养替代重启"
+      ]
+    },
+    {
+      "id": "BUG-2026-0908-010",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "性能设置模型下拉仍不可选：ensure 采纳路径误杀加载中进程 + Python 先加载后绑端口",
+      "module": "VCR / vision.rs ensure_service_ready A/B 段 + python/server.py 启动顺序 + model_registry 并发",
+      "symptom": [
+        "性能设置面板模型下拉一直不可选（fetchVcrModels 失败）",
+        "后台循环打印 [VCR][ensure] 结束本项目识别服务进程 PID=…（PID 连环变化）",
+        "Python 侧反复刷 ConnectionResetError WinError 10054",
+        "整机卡顿（进程反复生灭、每次从零加载 8 个模型）"
+      ],
+      "root_cause": {
+        "summary": "两条残留根因叠加：(1) BUG-0908-009 只修了冷启动 C 段（超时保留进程），但 A 段（current_base 探测不可达）与 B 段（实例探测不可达）仍在 pid 存活时直接 kill —— C 段保留的加载进程被下一轮 ensure 误杀重启，死循环重现；(2) server.py 在 uvicorn.run 之前同步预加载全部 8 个模型，端口在整个加载窗口不可达，/health 的 ok=false Loading 协议永远没机会生效，宿主只能判 NotReachable。"
+      },
+      "solution": "Rust：A/B 段 NotReachable 且实例 pid 存活 → poll_ready 收养等待（与 C 段策略一致），仅 pid 真死才清场重拉；杀进程逻辑收敛到 OldVersion 一处。Python：uvicorn 先绑定端口，模型由后台 daemon 线程预加载；/health、/gpu 只读化（绝不触发加载，毫秒级返回 ok=false）；POST /gpu 切换后由后台线程重建会话（避免阻塞宿主 15s HTTP 超时）；过滤 asyncio Proactor 10054 噪音日志。model_registry：_load/status/set_cls_model/set_gpu_enabled 加 RLock，is_ready 保持无锁读保证 /health 高频探测不被加载锁阻塞。前端：initFailed 态加重试按钮。",
+      "lessons": [
+        "修死循环要审计全部触发路径，不能只修单一入口（上次只修 C 段，A/B 段残留同样的误杀）",
+        "「先起进程后绑端口」的服务必须让 /health 在加载期间也可达且快速返回，否则宿主无法区分加载中与不可达",
+        "被高频探测的只读端点绝不能顺手触发重活；is_ready 这类热路径读锁会让探测退化回阻塞"
+      ]
+    },
+    {
+      "id": "BUG-2026-0917-001",
+      "date": "2026-09-17",
+      "status": "resolved",
+      "title": "过期 vcr-server.exe 触发 OldVersion「杀→拉→杀」不收敛死循环（十几个进程连环生灭），dev 被 8-25 旧 exe 劫持致新代码永不生效",
+      "module": "VCR / vision.rs ensure_service_ready OldVersion 分支 + spawn_server 打包优先 + python/server.py /model 同步加载",
+      "symptom": [
+        "批量扫描性能设置面板卡顿，模型下拉加载失败、无法选模型",
+        "任务管理器出现多个 vcr-server.exe 反复生灭，资源占用暴涨",
+        "后台连环打印 [VCR][ensure] 结束本项目识别服务进程 PID=…（12 个不同 PID）",
+        "Python 侧 ConnectionResetError 10054 刷屏（运行中的旧 exe 无噪音过滤代码）"
+      ],
+      "root_cause": {
+        "summary": "target/{debug,release}/vcr/ 下的 vcr-server.exe 是 08-25 打包的（早于 FEAT-051 引入 api_version=2），而 spawn_server 打包版优先 → 开发模式实际运行的永远是旧 exe（server.py 上所有新修复从未执行）。旧 exe 的 /health 无 api_version 字段 → 宿主按 1 判 OldVersion → 杀掉后重拉同一份旧文件 → 仍是 OldVersion。「版本自愈」（OldVersion→杀→重拉到新版本）在唯一可用二进制本身过期时永不收敛：每次前端触发 ensure（设置面板挂载/扫描/ensure_photo_scanned）都执行一轮 kill+spawn，进程连环生灭。"
+      },
+      "solution": "Rust：新增过期组件登记 STALE_COMPONENT（组件路径+mtime 指纹）——冷启动拉起的服务探测仍为 OldVersion → 杀进程、登记组件、返回「组件过旧请重新打包」明确错误；后续 ensure 命中登记直接报错，不再杀拉；组件重新打包（mtime 变化）自动解除。taskkill 加 /T 防孤儿进程。删除 target 两处过期 exe，dev 恢复走 python/server.py。Python：启动预热收敛为主链路 cls/det/scene（face/ocr/flower/food 首次命中惰性加载，加快 /health ok 翻转）；/model 切换改异步两步（begin 校验登记立即返回 + 后台 finish 加载，失败回退默认候选并清持久化），对齐 /gpu 模式避开宿主 15s HTTP 超时；/models 增加 cls_ready 供 UI 提示「加载中」。前端：切换成功提示区分「后台加载中」。",
+      "lessons": [
+        "「重启进程自愈版本」的前提是重拉的二进制会变化；组件本身过期时杀拉循环永不收敛，必须登记组件指纹（路径+mtime）短路并给出可行动的错误",
+        "spawn 有「打包优先」回退链时，开发机残留的旧资源会静默劫持开发流程——改了脚本不生效，先确认实际运行的是哪个文件",
+        "大模型加载不能占住 HTTP 请求（宿主超时远小于加载耗时）：异步化 + /health ok 协议让宿主等待，而不是让请求挂着"
+      ],
+      "plain_explanation": "打个比方：应用不会认图，需要雇一位「识别师傅」（vcr-server.exe）在后台干活。上岗前应用会查工牌（/health 的 api_version），规定只认新版工牌（api_version=2），看到旧工牌就辞退重招，本意是「重新招来的就是新版」。但电脑上只有一份 8 月 25 日打包的旧师傅，而且应用「打包版优先」的规则导致 9 月 8 日改的新代码（python/server.py）从未被执行 —— 于是无限循环：验牌→旧版→辞退→重招→又是旧版→再辞退（日志里 PID 连环变化就是每个被辞退师傅的工号）。这位师傅每次上岗要解压 90MB、从零加载 8 个模型（相当于每次入职都重新培训全部技能），CPU 内存反复打爆 → 设置面板卡顿；模型下拉选不了是因为拿模型清单必须先等「师傅就位」，而师傅永远在刚被辞退/刚被重招的路上。根因一句话：辞退重招的自愈设计前提是重招的人会变新，当唯一候选人本身就是旧版时，死循环永不收敛。修法：开发环境删旧 exe 直接用最新 python/server.py；应用装「保险丝」—— 重招来的还是旧版就认定组件文件过期，登记后直接报「请重新打包」，不再无脑辞退重招（文件真被更新时按 mtime 自动解除）。"
+    },
+    {
+      "id": "BUG-2026-0918-001",
+      "date": "2026-09-18",
+      "status": "resolved",
+      "title": "imagenet_to_album.json 混入 # 注释致扫描 500：手写备注进了 JSON，且此前被旧 exe 的独立模型目录掩盖",
+      "module": "VCR / python/models/imagenet_to_album.json + vcr/mapping.py 加载路径",
+      "symptom": [
+        "扫描报 json.decoder.JSONDecodeError: Expecting value (line 1028 column 25)，/classify_batch 整体 500",
+        "mapping.py _load 在 json.load 处崩溃，扫描功能不可用"
+      ],
+      "root_cause": {
+        "summary": "09-02 提交 b8258d1 给映射条目加中文备注时把 Python 字典风格的 # 注释直接写进了 JSON（1028 行 beacon、1042 行 snowmobile 两处），JSON 标准不支持注释。此前未爆是因为旧版 vcr-server.exe 经 VCR_MODEL_DIR 读 target/debug/vcr/models/ 下 08-20 的有效副本；BUG-2026-0917-001 删除过期 exe 后 dev 改跑 python/server.py，模型目录回落 python/models/，坏文件第一次被真正解析。"
+      },
+      "solution": "仅删除两处 # 注释（内容全部保留，含 09-02 新增的 beacon/breakwater/plateau/iceberg/snowmobile/dogsled 映射），备注迁移到 generate_mapping.py 对应条目旁（注释在 .py 源码中才合法）。不采用旧副本覆盖：旧副本缺少这批新增映射。验证：json.load 全文件通过；直测 get_mapping() 1000 类加载正常；真实图片 /classify_batch 返回 200 且 beacon/snowmobile → landscape_nature 符合编辑意图。",
+      "lessons": [
+        "JSON 文件不能写注释；映射的备注要写在 generate_mapping.py（生成源）里，生成物保持纯净",
+        "数据文件坏半个月才爆 = 有回退路径在偷偷供数（旧 exe 的独立模型目录）；修完加载路径要立刻用真实数据冒烟，确认「第一次真正读取」发生在可控时机"
+      ]
     }
   ]
 }

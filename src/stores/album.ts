@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import type { Album, CreateAlbumInput, UpdateAlbumInput, BatchAlbumOutcome, MergeAlbumOutcome } from "../types/album";
-import type { PhotoInfo, PhotoDeleteOutcome, ExportOutcome, PhotoMoveOutcome, PhotoRating, PrewarmOutcome } from "../types/photo";
+import type { PhotoInfo, PhotoDeleteOutcome, ExportOutcome, PhotoMoveOutcome, PhotoRating, PrewarmOutcome, RecentlyExcludedItem } from "../types/photo";
 
 /** 批量导入跳过项（path 已被其他用户占用时返回，供前端友好提示） */
 export interface SkippedConflict {
@@ -82,6 +82,21 @@ export const useAlbumStore = defineStore("album", {
     /** 批量「本地文件删除」：删磁盘文件并级联清理记录与缩略图缓存（不可恢复） */
     async deletePhotoFiles(albumId: number, paths: string[]): Promise<PhotoDeleteOutcome> {
       return await invoke<PhotoDeleteOutcome>("delete_photo_files", { albumId, paths });
+    },
+
+    /** 恢复已「记录删除」的照片（撤销删除）：从 album_photo_excluded 移除，恢复网格显示 */
+    async restorePhotoRecords(albumId: number, paths: string[]): Promise<number> {
+      return await invoke<number>("restore_photo_records", { albumId, paths });
+    },
+
+    /** 获取最近删除记录（用于「最近删除」列表展示与恢复） */
+    async listRecentlyDeleted(): Promise<RecentlyExcludedItem[]> {
+      return await invoke<RecentlyExcludedItem[]>("list_recently_deleted", {});
+    },
+
+    /** 清空所有最近删除记录（物理删除记录，不影响本地文件） */
+    async clearRecentlyDeleted(): Promise<number> {
+      return await invoke<number>("clear_recently_deleted", {});
     },
 
     /** 批量导出：把选中照片原图复制到目标目录，可选生成信息清单 */

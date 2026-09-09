@@ -989,7 +989,467 @@
       "tests": "vue-tsc 0 错误；cargo test --lib 48/48（无后端改动）",
       "created_at": "2026-08-25T01:00:00+08:00",
       "updated_at": "2026-08-25T01:00:00+08:00"
+    },
+    {
+      "id": "FEAT-038",
+      "name": "图片扫描板块 Hub（模仿智慧相册模式）：全局扫描入库作为子组件 + 测试工具子页面",
+      "status": "done",
+      "description": "在 Home「图片扫描」模块下建立板块级 Hub 页（/scan），模仿「智慧相册」SmartAlbum 的模式：顶部 Hero 渐变 + 关键统计（相册数 / 总照片 / 已入库相册 / 已入库照片 / 全局扫描任务状态），中部 4 个渐变色子模块入口卡（全局扫描入库 / 按年·地点浏览 / 重复扫描清理 / 扫描测试工具），下方 tab 切换当前展示的子功能内容。FEAT-038 重点交付的「全局照片扫描入库」作为 Hub 的默认子组件，勾选要扫描入库的相册（支持全选 / 反选 / 过滤搜索 / 显示已入库数），选择扫描类型（EXIF 基础 / 影调分析 / AI 内容识别）与批次，点击「开始扫描入库」后台串行执行；支持「停止」（取消当前相册识别，已扫描部分仍会入库）；两级进度条（相册级总进度 + 当前相册照片级实时进度），逐相册状态表（等待/扫描中/完成/失败/已停止 + 入库 / 失败张数 + 错误信息）；完成汇总。复用相册管理中的组合扫描后端命令 scan_album_combined（与 ScanPanel 完全相同的扫描能力）。任务状态存于 Pinia store，脱离组件存活——切换 tab / 离开 Hub / 离开主页，扫描不中断，重新进入恢复显示。",
+      "related_files": [
+        "src/stores/content.ts",
+        "src/components/GlobalScanPanel.vue",
+        "src/views/ScanHub.vue",
+        "src/views/TestScan.vue",
+        "src/views/Home.vue",
+        "src/router/index.ts"
+      ],
+      "keywords": [
+        "globalScanJob",
+        "beginGlobalScan",
+        "runGlobalScanLoop",
+        "stopGlobalScan",
+        "GlobalScanPanel",
+        "ScanHub",
+        "图片扫描板块",
+        "Hub",
+        "子组件",
+        "子模块",
+        "全选",
+        "反选",
+        "后台执行",
+        "扫描入库",
+        "scan_album_combined"
+      ],
+      "implementation": {
+        "frontend": "①content store 新增 GlobalScanJob 单例（running / stopping / items / currentIndex / currentProgress / scanId / finishedAt）+ GlobalScanItem 五态状态机；beginGlobalScan(entries, types, batch) 同步校验 + 初始化队列后立即返回 true，void 启动 runGlobalScanLoop 后台 fire-and-forget 循环，串行逐相册 await invoke('scan_album_combined')，scanId 代次号守护，每个相册完成后 fetchAlbums 刷新已入库徽标；stopGlobalScan 调 invoke('cancel_scan') 并置 stopping，剩余 pending → stopped；扩展 ensureProgressListener 路由 classify-progress 到 globalScanJob.currentAlbum；在 startCombinedScan 加全局扫描互斥校验。②GlobalScanPanel.vue：相册勾选区（全选/反选/过滤/indeterminate/锁定运行中）+ 扫描设置（三种类型 checkbox + 批次 select）+ 主控按钮（开始/停止/清除记录）+ 进度区（总进度 + 当前相册照片级进度 + 不确定动画 fallback）+ 完成汇总 + 逐相册状态表（sticky 表头，行高亮当前行，max-height 300）。③ScanHub.vue（板块级 Hub 页）：Hero 渐变（相册数 / 总照片 / 已入库相册 / 已入库照片 / 全局扫描任务状态）+ 4 个子模块入口卡（与 SmartAlbum 风格一致：渐变背景 + 图标 + 标题 + 描述 + 箭头，点击切换 inline tab 或跳子页面）+ 下方 tab 栏（默认全局扫描入库）+ 当前子内容区（默认渲染 GlobalScanPanel；待开发 tab 显示占位；有 path 的子功能显示跳转提示）。④路由：/scan → ScanHub.vue；/scan/test → TestScan.vue（拆分子页面，'← 返回图片扫描'回 /scan）。⑤Home.vue：图片扫描卡恢复为普通导航卡，链接到 /scan；移除之前的英雄卡/折叠按钮/嵌入式布局，回归 4 模块 2 列网格。"
+      },
+      "highlights": [
+        "模仿智慧相册 Hub 模式：图片扫描板块独立成页（/scan），顶部 Hero + 中部 4 个子模块入口卡 + 下方 tab + 当前子内容，与 SmartAlbum 视觉与交互完全一致",
+        "FEAT-038 的「全局照片扫描入库」作为 Hub 的默认子组件渲染（activeTab='global'），用户进入图片扫描板块即可直接操作，零额外跳转",
+        "子模块入口卡既是导航（点击切 tab 或跳子页面）也是状态展示（active 高亮 outline 描边 + 上浮 + 缩放 transition）",
+        "Hero 内置「全局扫描任务状态」统计：运行中显示 ⏳ 后台运行中（脉冲动画）；完成后显示「X / X+Y 完成」；无任务显示 —",
+        "beginGlobalScan 同步返回 + runGlobalScanLoop 后台循环的拆分设计：避免 fire-and-forget 模式下 toast 提示在所有扫描结束后才显示的错位",
+        "任务状态存 Pinia store，脱离组件存活：切 tab / 离开 Hub / 离开主页 / 关闭浏览器都不会中断扫描；任意时刻回到 /scan 都自动恢复",
+        "scanId 代次号守护：用户连续点击「开始/停止/开始」时旧任务的收尾写不会覆盖新任务状态",
+        "与相册管理组合扫描的互斥校验：两个入口共享后端 cancel flag 与单 activeScanAlbum 进度路由，启动前互斥保护",
+        "复用后端 scan_album_combined 命令 + 与 ScanPanel 完全一致的扫描类型/批次交互，零后端改动",
+        "全选/反选/过滤搜索支持，并显示每个相册的 photo_count 与已入库 scanned_photo_count 徽标，便于选库决策"
+      ],
+      "tests": "vue-tsc --noEmit 0 错误；vite build 成功（ScanHub chunk 15.58 kB 按需懒加载，TestScan chunk 9.46 kB 独立）",
+      "created_at": "2026-08-27T10:30:00+08:00",
+      "updated_at": "2026-08-27T11:45:00+08:00"
+    },
+    {
+      "id": "FEAT-039",
+      "name": "撤销机制：Toast 撤销按钮 + 最近删除列表",
+      "status": "done",
+      "description": "PhotoGrid 删除操作后弹出带「撤销」按钮的 Toast（参考 Gmail 5 秒窗口）；相册记录删除（album_photo_excluded）可撤销；文件删除（不可逆）不显示撤销。配合后端 restore_photo_records + list_recently_deleted + clear_recently_deleted 命令，支持从「最近删除」列表恢复或清空。",
+      "related_files": [
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/db/mod.rs",
+        "src/stores/album.ts",
+        "src/types/photo.ts",
+        "src/components/PhotoGrid.vue",
+        "src/stores/toast.ts"
+      ],
+      "keywords": [
+        "撤销",
+        "undo",
+        "restore",
+        "recently_deleted",
+        "Toast撤销按钮",
+        "Gmail撤销"
+      ],
+      "implementation": {
+        "backend": "db/mod.rs 新增 restore_excluded_photos/list_recently_excluded/clear_all_excluded；lib.rs 新增 restore_photo_records/list_recently_deleted/clear_recently_deleted 命令；RecentlyExcludedItem 结构体含 album_id/path/excluded_at/album_name。",
+        "frontend": "PhotoGrid.doConfirmedDelete 记录删除成功后调 toastStore.action() 带撤销函数；store.album 新增 restorePhotoRecords/listRecentlyDeleted/clearRecentlyDeleted。"
+      },
+      "highlights": [
+        "记录删除（album_photo_excluded）有撤销窗口，文件删除（std::fs::remove_file）不可逆不显示撤销",
+        "撤销函数在 Toast 按钮点击时才执行（惰性），避免提前调用"
+      ],
+      "created_at": "2026-08-27T12:00:00+08:00",
+      "updated_at": "2026-08-27T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-040",
+      "name": "骨架屏 + 固定宽高比（消除 CLS）",
+      "status": "done",
+      "description": "PhotoGrid 加载时显示骨架屏（12 个闪烁占位格子），避免缩略图加载导致的布局抖动（CLS）；pg-thumb-wrap 固定 aspect-ratio: 1/1，骨架屏期间格子尺寸已确定。",
+      "related_files": [
+        "src/components/PhotoGrid.vue"
+      ],
+      "keywords": [
+        "骨架屏",
+        "skeleton",
+        "CLS",
+        "布局抖动",
+        "aspect-ratio",
+        "shimmer"
+      ],
+      "implementation": {
+        "frontend": "pg-skeleton 网格（12 个占位格）替代 pg-loading 文字；pg-thumb-wrap 固定 1:1 宽高比；pg-thumb-shimmer 动画闪烁过渡。"
+      },
+      "highlights": [
+        "骨架屏期间格子尺寸已确定，图片加载后无缝过渡，消除布局抖动"
+      ],
+      "created_at": "2026-08-27T12:00:00+08:00",
+      "updated_at": "2026-08-27T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-041",
+      "name": "面包屑导航",
+      "status": "done",
+      "description": "相册详情页（AlbumDetail）+ 相册列表页（AlbumList）顶部添加面包屑导航，明确当前位置与返回路径。详情页支持显示父分组路径。",
+      "related_files": [
+        "src/components/BreadcrumbNav.vue",
+        "src/views/AlbumDetail.vue",
+        "src/views/AlbumList.vue"
+      ],
+      "keywords": [
+        "面包屑",
+        "breadcrumb",
+        "导航",
+        "FEAT-041"
+      ],
+      "implementation": {
+        "frontend": "BreadcrumbNav.vue 可复用组件，接收 crumbs[{label, to?}] 数组，最后一项为当前页（不可点击）；AlbumDetail 显示「相册列表 → [父分组] → [相册名]」；AlbumList 显示「主页 → 相册列表」。"
+      },
+      "highlights": [
+        "低实施成本，高导航收益，解决深层页面用户迷失问题"
+      ],
+      "created_at": "2026-08-27T12:00:00+08:00",
+      "updated_at": "2026-08-27T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-042",
+      "name": "搜索即时反馈：debounce + 历史 + 高亮",
+      "status": "done",
+      "description": "ContentSearch 搜索框增强：已有 300ms debounce；新增搜索历史记录（localStorage 持久化，最多 8 条）+ 建议下拉；搜索结果中照片名称关键词高亮（mark 标签）。",
+      "related_files": [
+        "src/components/ContentSearch.vue"
+      ],
+      "keywords": [
+        "搜索历史",
+        "suggestions",
+        "高亮",
+        "highlight",
+        "debounce",
+        "FEAT-042"
+      ],
+      "implementation": {
+        "frontend": "searchHistory ref（localStorage）+ suggestions computed（过滤历史前缀）；showSuggestions 下拉；highlight() 函数用正则包裹匹配词为 <mark>；contentHitNameHighlighted 对结果名称应用高亮。"
+      },
+      "highlights": [
+        "已有 300ms debounce 无需改动；搜索历史 + 高亮低成本增强"
+      ],
+      "created_at": "2026-08-27T12:00:00+08:00",
+      "updated_at": "2026-08-27T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-043",
+      "name": "右键上下文菜单（照片）",
+      "status": "done",
+      "description": "PhotoGrid 照片格子支持右键上下文菜单：查看大图 / 选中此照片 / 从相册移除 / 永久删除本地文件。ContextMenu.vue 通用组件支持 items 数组 + divider 分隔线 + danger 样式。",
+      "related_files": [
+        "src/components/ContextMenu.vue",
+        "src/components/PhotoGrid.vue"
+      ],
+      "keywords": [
+        "contextmenu",
+        "右键菜单",
+        "ContextMenu",
+        "FEAT-043"
+      ],
+      "implementation": {
+        "frontend": "ContextMenu.vue：Teleport to body + 边界修正（超视口自动调整位置）+ 点击外部关闭 + 原生右键二次关闭；PhotoGrid openPhotoContextMenu 生成 entries，ctxMenu ref 驱动显示/关闭。"
+      },
+      "highlights": [
+        "通用 ContextMenu 组件可复用于其他右键场景（相册卡片、人物等）"
+      ],
+      "created_at": "2026-08-27T12:00:00+08:00",
+      "updated_at": "2026-08-27T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-044",
+      "name": "照片缩略图反向索引缓存（photo_thumb_cache）+ 扫描入库预热 + 懒加载写表",
+      "status": "done",
+      "description": "新建 photo_thumb_cache 表（photo_hash 主键，与 photo_content_scan 同源指纹）作 path→thumb_path 反向索引。触发点：① 扫描入库（scan_album_content / scan_album_combined）落库后 prewarm_thumbs_after_scan 同步生成本批缩略图并写表，智慧相册首屏查表 0 IO 命中；② 未入库照片在相册管理预览（AlbumDetail/PhotoGrid）走 get_photo_thumbs 懒加载：查表未命中现场生成 256px WebP 并写表，下次 0 IO 命中；③ get_photo_thumbs_count 返回 ThumbCoverage（cached/total_scanned/unthumbered），unthumbered 用 LEFT JOIN 精确统计「已入库但无缩略图行」。",
+      "related_files": [
+        "src-tauri/src/db/thumb_cache.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/thumbnail.rs",
+        "src-tauri/src/content.rs"
+      ],
+      "keywords": [
+        "thumb_cache",
+        "photo_thumb_cache",
+        "缩略图",
+        "预热",
+        "懒加载",
+        "ThumbCoverage",
+        "FEAT-044"
+      ],
+      "implementation": {
+        "backend": "db/thumb_cache.rs：upsert/lookup/delete×2/count/count_scanned_without_thumb（LEFT JOIN 精确口径）+ 9 个测试。lib.rs get_photo_thumbs 三步模式（主流程短锁查表 → spawn_blocking 纯文件系统生成 → 主流程短锁写表，避免 MutexGuard 跨线程）；get_photo_thumbs_count；prewarm_thumbs 手动预热。content.rs prewarm_thumbs_after_scan 挂在两条扫描入库主路径落库后。thumbnail.rs ensure_grid_thumbs_with_lookup 支持注入 db_lookup/on_generated 闭包。删除联动：delete_album_refs 清表 + delete_thumb_caches_by_paths。"
+      },
+      "highlights": [
+        "photo_hash 主键幂等：懒加载先/扫描入库先两个方向都不重复生成缩略图",
+        "查表/生成/写表三步拆分，锁不跨 spawn_blocking",
+        "扫描入库即预热：智慧相册首屏 0 IO 命中",
+        "懒加载写表自愈：未入库照片预览也能及时呈现缩略图",
+        "unthumbered 改 LEFT JOIN 精确口径（懒加载写表后 total_scanned-cached 旧口径失真）"
+      ],
+      "created_at": "2026-09-07T16:01:37+08:00",
+      "updated_at": "2026-09-07T16:01:37+08:00"
+    },
+    {
+      "id": "FEAT-045",
+      "name": "用户头像（基本信息弹窗添加/移除）",
+      "status": "done",
+      "description": "Home.vue 左上角用户卡与「基本信息」弹窗支持设置/移除头像：plugin-dialog 选本地图片 → 后端 avatar.rs 中心方裁 256×256 JPEG（JPEG 分级降采样快速路径防大图卡顿）落盘 app_data/avatars/user_{id}.jpg 并写 users.avatar_path，User 全链路带回 avatar 字段。",
+      "related_files": [
+        "src-tauri/src/avatar.rs",
+        "src-tauri/src/auth.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/db/mod.rs",
+        "src/types/auth.ts",
+        "src/stores/auth.ts",
+        "src/views/Home.vue"
+      ],
+      "keywords": [
+        "用户头像",
+        "avatar",
+        "基本信息",
+        "FEAT-045"
+      ],
+      "implementation": {
+        "backend": "users 表 avatar_path 列（CREATE + ALTER 容错迁移）；set_user_avatar / clear_user_avatar 命令（spawn_blocking 解码）；avatar.rs crop_square 公共方裁模块",
+        "frontend": "stores/auth.ts setAvatar/clearAvatar；Home.vue user-chip 圆形头像 + 弹窗头像区块（预览/选图/移除，时间戳参数破图片缓存）"
+      },
+      "highlights": [
+        "头像设置无需密码验证；avatar.rs 被 FEAT-047 人物自选头像复用"
+      ],
+      "created_at": "2026-09-07T16:42:59+08:00",
+      "updated_at": "2026-09-07T16:42:59+08:00"
+    },
+    {
+      "id": "FEAT-046",
+      "name": "回忆·近期人物真实头像 + 点击跳转人物页",
+      "status": "done",
+      "description": "Memories 近期人物卡显示 get_person_avatar 真实头像（失败回退首字占位，异步填充不阻塞首屏）；点击跳转 /smart?tab=face&person={pid}，SmartAlbum 读 query 深链切人物 tab 并透传 focusPid，PersonGallery 加载后自动打开该人物照片弹窗。",
+      "related_files": [
+        "src/views/Memories.vue",
+        "src/views/SmartAlbum.vue",
+        "src/components/PersonGallery.vue"
+      ],
+      "keywords": [
+        "近期人物",
+        "头像",
+        "深链",
+        "跳转",
+        "FEAT-046"
+      ],
+      "implementation": {
+        "backend": "复用现有 get_person_avatar（无新命令）",
+        "frontend": "Memories loadPersonAvatars/gotoPerson；SmartAlbum query 深链（tab 合法性校验）；PersonGallery focusPid prop 自动 openPhotos"
+      },
+      "highlights": [
+        "无深链场景行为不变；SmartAlbum 首次支持 query 参数导航"
+      ],
+      "created_at": "2026-09-07T16:42:59+08:00",
+      "updated_at": "2026-09-07T16:42:59+08:00"
+    },
+    {
+      "id": "FEAT-047",
+      "name": "人物界面自选头像作为封面",
+      "status": "done",
+      "description": "PersonGallery 照片弹窗每格悬浮「设为头像」按钮：指定照片中心方裁 96×96 JPEG 覆盖 avatars/avatar_{pid}.jpg，get_person_avatar 的 is_file() 缓存自然命中自选结果（优先于代表脸自动裁剪）；头像 URL 统一时间戳参数破 webview 图片缓存。",
+      "related_files": [
+        "src-tauri/src/persons.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/PersonGallery.vue"
+      ],
+      "keywords": [
+        "人物",
+        "自选头像",
+        "封面",
+        "FEAT-047"
+      ],
+      "implementation": {
+        "backend": "set_person_avatar_from_photo 命令（spawn_blocking 解码）；persons.rs set_avatar_from_photo 领域包装（复用 avatar.rs）",
+        "frontend": "viewer-cell 悬浮按钮 + settingAvatar 防重复点击 + avatarUrl 助手（load/合并/自选三路径统一缓存破除）"
+      },
+      "highlights": [
+        "不动 persons.db 表结构，只覆盖头像缓存文件，与自动裁剪机制天然兼容"
+      ],
+      "created_at": "2026-09-07T16:42:59+08:00",
+      "updated_at": "2026-09-07T16:42:59+08:00"
+    },
+    {
+      "id": "FEAT-048",
+      "name": "智慧相册「内容分类」tab（两级浏览 + 中文映射）",
+      "status": "done",
+      "description": "list_content_categories 两级聚合（大类→细类计数，窗口函数取置信度最高封面）+ list_photos_by_category 二级列表；CategoryGallery 两级页内视图：大类卡片（中文类名+张数徽标+细类数）→ 照片网格 + 细类 chips 内存即时过滤；PhotoLightbox 大图；骨架/空态引导/错误重试；categoryLabel + 新增 subCategoryLabel 中文映射（用户补充需求：类别标签中文显示）。",
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src/components/CategoryGallery.vue",
+        "src/views/SmartAlbum.vue",
+        "src/utils/categoryLabel.ts"
+      ],
+      "keywords": [
+        "内容分类",
+        "category",
+        "sub_category",
+        "中文映射",
+        "FEAT-048"
+      ],
+      "implementation": {
+        "backend": "CONTENT_HIT_SELECT + map_content_search_hit 与 list_timeline 共用行映射；CategoryGroupRow 含 cover_album_id 复用真实相册缩略图缓存命名",
+        "frontend": "chips 过滤为内存过滤零请求；封面/网格分批 get_photo_thumbs（FEAT-044 缓存命中 0 IO）；深链 /smart?tab=category"
+      },
+      "highlights": [
+        "细类 chips 无刷新切换；全部类别/细类/标签中文显示"
+      ],
+      "created_at": "2026-09-08T09:33:05+08:00",
+      "updated_at": "2026-09-08T09:33:05+08:00"
+    },
+    {
+      "id": "FEAT-049",
+      "name": "智慧相册「地点」tab（GPS 离线反查聚合 + location 缓存回写）",
+      "status": "done",
+      "description": "photo_content_scan.location 历史全空但 63% 照片有 GPS → list_photo_locations 读取时 geo_index 离线反查省/市（万张 <1s 零网络）并事务回写 location 列（持久缓存，下次 0 反查成本）；无 GPS/境外归「未记录地点」组弱化展示排最后；list_photos_by_location 二级列表；LocationGallery 两级页内视图与 CategoryGallery 同构。",
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src/components/LocationGallery.vue",
+        "src/views/SmartAlbum.vue",
+        "src-tauri/src/geo_index.rs"
+      ],
+      "keywords": [
+        "地点",
+        "location",
+        "GPS",
+        "geo_index",
+        "离线反查",
+        "FEAT-049"
+      ],
+      "implementation": {
+        "backend": "聚合 key=Some(地名)/None(未记录)，封面取组内置信度最高；回写失败不阻塞展示下次再补",
+        "frontend": "未记录地点弱化虚线卡片；数据来源提示文案；深链 /smart?tab=location"
+      },
+      "highlights": [
+        "无需重扫照片即可用（读取时反查+回写）；离线零网络依赖"
+      ],
+      "created_at": "2026-09-08T09:33:05+08:00",
+      "updated_at": "2026-09-08T09:33:05+08:00"
+    },
+    {
+      "id": "FEAT-050",
+      "name": "删除体系 + 预览组件评分/标签工具栏（分类/地点视图）",
+      "status": "done",
+      "description": "①删除双模式：delete_photos_to_trash（trash crate 移入系统回收站，可找回）+ delete_photo_records_by_paths（无相册版记录删除，本地文件保留），两者级联清理扫描记录与缩略图缓存（表行 + thumb_path 文件 + flat JPG/WebP 两套命名）；②预览组件（PhotoLightbox）底部工具栏：五星打星（复用既有 photo_ratings 体系，键盘 1-5，同星再点清除）、标签编辑（user_tags 列，覆盖式规范化保存 ≤20×30 字）、删除按钮（deletable prop 可选，emit 交父视图）；③分类/地点二级视图：批量管理模式（勾选/全选/删除选中）+ 右键菜单删除，删除方式选择弹窗 → ConfirmDialog 二次确认 → notify 结果提示，列表/聚合计数同步刷新。",
+      "related_files": [
+        "src-tauri/Cargo.toml",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/thumbnail.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src/components/PhotoLightbox.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/LocationGallery.vue"
+      ],
+      "keywords": [
+        "删除",
+        "回收站",
+        "trash",
+        "评分",
+        "标签",
+        "批量删除",
+        "右键删除",
+        "FEAT-050"
+      ],
+      "implementation": {
+        "backend": "trash = \"5\"；cleanup_thumb_caches_for_paths（删前清理，指纹依赖原图可读）；album_ids_by_paths / list_thumb_paths_by_sources / grid_thumb_cache_names_all；user_tags 列（CREATE + ALTER 迁移）；评分复用 photo_ratings 不重复建列",
+        "frontend": "Lightbox 状态自包含（watch path 拉 get_photo_ratings + get_photo_tags，即时保存）；既有调用方零行为变化（deletable 默认 false）；删除方式弹窗 + ConfirmDialog 两级防护"
+      },
+      "highlights": [
+        "评分复用既有 photo_ratings 表，避免重复体系",
+        "回收站删除与永久删除语义分离，误删可找回",
+        "预览器内删除自动切换下一张，聚合计数实时刷新"
+      ],
+      "created_at": "2026-09-08T10:17:06+08:00",
+      "updated_at": "2026-09-08T10:17:06+08:00"
+    },
+    {
+      "id": "FEAT-051",
+      "name": "扫描性能设置（GPU 加速开关 + 分类模型用户可选）+ 相册扫描分组工具改名",
+      "status": "done",
+      "description": "①全局照片扫描入库新增「⚙ 性能设置」按钮：弹窗内 GPU 加速 pill 开关（开=DirectML/CUDA 优先，关=强制 CPU，切换即重建 ONNX 会话）+ 分类模型选择器（x/l/m/s/n 五档梯度，新增 l 7840HS 级 CPU 推荐与 x 最准 GPU 推荐；缺失置灰提示下载到 python/models/）；②扫描测试工具改名「相册扫描分组工具」并优化说明与头部；修复 tab 栏点击独立子页面不跳转的空白 bug。",
+      "related_files": [
+        "python/vcr/config.py",
+        "python/vcr/model_registry.py",
+        "python/server.py",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/ModelGpuSettings.vue",
+        "src/components/GlobalScanPanel.vue",
+        "src/views/ScanHub.vue",
+        "src/views/TestScan.vue"
+      ],
+      "keywords": [
+        "GPU 加速",
+        "模型切换",
+        "yolov8x-cls",
+        "yolov8l-cls",
+        "性能设置",
+        "相册扫描分组工具",
+        "FEAT-051"
+      ],
+      "implementation": {
+        "backend": "model_registry.set_gpu_enabled/set_cls_model/cls_models_info（会话惰性重建；cls override 优先缺失回退）；server POST /gpu、GET /models、POST /model；Rust set_vcr_gpu/list_vcr_models/set_vcr_model（ensure_service_ready 自动拉起）；gpu_info 增 forced_cpu",
+        "frontend": "原子组件 ModelGpuSettings（自包含可复用）；GlobalScanPanel ⚙ 性能设置按钮弹窗承载；切换失败自动回显原值"
+      },
+      "highlights": [
+        "模型不进仓库：x/l 由用户按硬件下载放入 python/models/，UI 缺失置灰提示",
+        "tab 栏独立子页面跳转空白 bug 顺手修复"
+      ],
+      "created_at": "2026-09-08T11:25:57+08:00",
+      "updated_at": "2026-09-08T11:25:57+08:00"
+    },
+    {
+      "id": "FEAT-052",
+      "name": "应用内模型下载（后台 + 进度 + 官方/镜像择优）",
+      "status": "done",
+      "description": "⚙ 性能设置弹窗内置「📥 模型下载」：分类 yolov8l/m/x/s-cls（官方 ultralytics release .pt + ghfast 镜像）与必需场景模型 resnet18_places365（mit.edu + 镜像）。两路并行下载先完成者赢；.pt/.pth 下载后本地 python(torch+ultralytics) 自动导出 .onnx 到 python/models/；后台执行（Pinia 存状态离开弹窗不中断）+ model-dl-progress 事件实时进度条 + 取消/重试；完成自动刷新候选清单。",
+      "related_files": [
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/Cargo.toml",
+        "src/stores/content.ts",
+        "src/types/content.ts",
+        "src/components/ModelGpuSettings.vue"
+      ],
+      "keywords": [
+        "模型下载",
+        "镜像",
+        "ghfast",
+        "后台下载",
+        "进度",
+        "FEAT-052"
+      ],
+      "implementation": {
+        "backend": "model_dl.rs：DlSpec 白名单（official/mirror/tmp_ext/required）；两路 tokio::select 先完成者赢；bytes_stream 流式 + 150ms 节流进度事件；导出走 spawn_blocking python 子进程；LazyLock 任务表 + 取消标志",
+        "frontend": "store modelDownloads + listen；ModelGpuSettings 下载区块（进度条/取消/重试/必需徽标/完成自动刷新候选）"
+      },
+      "highlights": [
+        "原地址与镜像哪一个快用哪一个（并行先完成者赢）",
+        "场景模型标必需（缺失时 AI 分类不可用，下载即修复）"
+      ],
+      "created_at": "2026-09-08T14:30:07+08:00",
+      "updated_at": "2026-09-08T14:30:07+08:00"
     }
   ],
-  "updated": "2026-08-25T01:00:00+08:00"
+  "updated": "2026-09-08T14:30:07+08:00"
 }

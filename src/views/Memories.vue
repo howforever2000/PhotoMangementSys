@@ -159,6 +159,28 @@ async function loadThumbs() {
   );
 }
 
+/* -------------------- 近期人物（FEAT-046：真实头像 + 点击跳转） -------------------- */
+/** 展示前 8 位；pid → 头像 asset URL（获取失败无键，回退首字占位） */
+const topPersons = computed(() => persons.value.slice(0, 8));
+const personAvatarMap = ref<Record<string, string>>({});
+
+async function loadPersonAvatars() {
+  for (const p of topPersons.value) {
+    if (personAvatarMap.value[p.id]) continue;
+    try {
+      const cachePath = await invoke<string>("get_person_avatar", { pid: p.id });
+      personAvatarMap.value = { ...personAvatarMap.value, [p.id]: convertFileSrc(cachePath) };
+    } catch {
+      /* 无代表脸 / 原图缺失：保留首字占位 */
+    }
+  }
+}
+
+/** 点击人物 → 智慧相册人物 tab 并自动打开该人物照片（PersonGallery focusPid） */
+function gotoPerson(p: PersonInfo) {
+  router.push({ path: "/smart", query: { tab: "face", person: p.id } });
+}
+
 /* -------------------- Hero 渐变色（按月 key 分散到柔和调色板） -------------------- */
 const PALETTE = [
   "linear-gradient(135deg, #6a8df0 0%, #a764ec 100%)",
@@ -194,7 +216,9 @@ function openLightbox(photoPath: string) {
  * - 年度回顾：跳到对应年份（Timeline 页会按年自动选中并定位）。
  */
 function gotoMonth(m: MonthGroup) {
-  router.push({ path: "/timeline", query: { year: String(m.year), month: String(m.month) } });
+  // month 必须传两位 "MM" 格式（如 "08"）：Timeline 分组 id 为 `y-{y}-m-{MM}`，
+  // 之前 String(Number) 丢失前导零，1~9 月 getElementById 落空 → 停在年份顶部（早期月份照片）。
+  router.push({ path: "/timeline", query: { year: String(m.year), month: m.key.slice(5, 7) } });
 }
 
 function gotoYear(y: YearGroup) {
@@ -210,6 +234,8 @@ onMounted(async () => {
     ]);
     rows.value = tl;
     persons.value = pl;
+    // FEAT-046：近期人物头像异步填充（不阻塞首屏）
+    void loadPersonAvatars();
     // 同时确保 store 有最新相册列表（统计用）
     if (!store.albums.length) {
       store.fetchAlbums().catch(() => {});
@@ -381,9 +407,20 @@ onMounted(async () => {
         <span class="mem-section-sub">出现次数 top 8</span>
       </header>
       <div class="mem-person-row">
-        <div v-for="p in persons.slice(0, 8)" :key="p.id" class="mem-person">
+        <div
+          v-for="p in topPersons"
+          :key="p.id"
+          class="mem-person"
+          :title="`查看 ${p.name} 的照片`"
+          @click="gotoPerson(p)"
+        >
           <div class="mem-person-avatar">
-            <div class="mem-person-fb">{{ p.name.slice(0, 1) }}</div>
+            <img
+              v-if="personAvatarMap[p.id]"
+              :src="personAvatarMap[p.id]"
+              alt=""
+            />
+            <div v-else class="mem-person-fb">{{ p.name.slice(0, 1) }}</div>
           </div>
           <div class="mem-person-name">{{ p.name }}</div>
           <div class="mem-person-count">{{ p.face_count }} 次</div>

@@ -169,13 +169,15 @@ async function handleRegister() {
 .auth-title {
   margin: 0 0 8px;
   font-size: 24px;
-  color: #2c3e50;
+  font-weight: 700;
+  color: var(--color-text);
+  letter-spacing: 0.5px;
 }
 
 .auth-subtitle {
   margin: 0;
   font-size: 13px;
-  color: #5f6b7a;
+  color: var(--color-text-2);
 }
 
 .auth-form {
@@ -192,19 +194,24 @@ async function handleRegister() {
 
 .field-label {
   font-size: 13px;
-  color: #4a5568;
+  font-weight: 500;
+  color: var(--color-text-2);
 }
 
 .field-input {
   height: 42px;
   padding: 0 12px;
   font-size: 14px;
-  color: #2c3e50;
-  border: 1px solid #d8dce3;
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
-  background: #fafbfc;
+  background: var(--color-surface);
+}
+
+.field-input::placeholder {
+  color: #98a2b3;
 }
 
 .field-input:focus {
@@ -226,6 +233,8 @@ async function handleRegister() {
 .btn-primary {
   height: 44px;
   font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 1px;
   color: #fff;
   background: #396cd8;
   border: none;
@@ -257,12 +266,13 @@ async function handleRegister() {
 }
 
 .footer-text {
-  color: #5f6b7a;
+  color: var(--color-text-2);
 }
 
 .auth-link {
   color: #396cd8;
   text-decoration: none;
+  font-weight: 500;
 }
 
 .auth-link:hover {
