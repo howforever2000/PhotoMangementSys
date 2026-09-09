@@ -34,6 +34,7 @@ Unlike cloud photo services (which require uploads, depend on the network, and c
 | Batch operations | Batch set location / tags, batch move to album, batch export to folder |
 | Data security | Email / phone / password fields encrypted with AES-256-GCM; remember-login (3-day passwordless) |
 | Offline capability | Thumbnails, person avatars, and GPS→province/city reverse geocoding are all performed locally, independent of the network |
+| Model management | In-app model downloads (background execution + progress bar + cancel / retry, official / mirror sources); five-tier classification model candidates (x / l / m / s / n); GPU acceleration toggle (⚙ Performance settings) |
 
 ---
 
@@ -87,7 +88,7 @@ Layer responsibilities:
 
 The architecture defines clear module boundaries so that each module can evolve, be replaced, or be removed independently:
 
-1. **Process-level decoupling**: The Rust backend and the Python microservice communicate through a fixed REST contract (`POST /classify_batch`, `GET /health`, etc.) on a fixed port (`127.0.0.1:8765`). Both sides can be developed, tested, and packaged separately.
+1. **Process-level decoupling**: The Rust backend and the Python microservice communicate through a fixed REST contract (`POST /classify_batch`, `GET /health`, etc.). In development mode the port is fixed at `127.0.0.1:8765`; since v0.2.0 the packaged app uses a cold-range dynamic port (18765–18865, with the instance PID / port persisted so a live service can be adopted across restarts), completely avoiding port conflicts with other programs. Both sides can be developed, tested, and packaged separately.
 2. **Thin client**: `vision.rs` is a lightweight HTTP client and lifecycle manager. It does not depend on the `db` / `thumbnail` / `tone` modules (the image-extension list is duplicated locally to prevent implicit coupling); when the service is unavailable or models are missing, it returns explicit errors without affecting other features.
 3. **Thin command layer**: `#[tauri::command]` handlers in `lib.rs` only perform argument passing, logging, and state injection; business logic lives in `db` / `content` / `persons` modules. `tauri::State` serves as the dependency-injection mechanism.
 4. **Centralized configuration**: All paths, thresholds, model manifests, and GPU policies on the Python side are centralized in `python/vcr/config.py`; service layers reference configuration constants only.
@@ -159,9 +160,10 @@ Notable optimizations implemented during development:
 
 ### 6.1 Installation
 
-- **Method 1 (recommended)**: Download an installer from the Release and run it:
-  - `PhotoManagementSys_<version>_x64_en-US.msi`
-  - or `PhotoManagementSys_<version>_x64-setup.exe` (NSIS)
+- **Method 1 (recommended)**: Download an installer from the Release and run it (latest: **v0.2.0**, ~500 MB, bundles the VCR microservice and all AI models):
+  - [`PhotoManagementSys_0.2.0_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.2.0/PhotoManagementSys_0.2.0_x64-setup.exe) (NSIS, recommended)
+  - or [`PhotoManagementSys_0.2.0_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.2.0/PhotoManagementSys_0.2.0_x64_en-US.msi)
+  - Previous versions (v0.1.0 etc.) are available on the [Releases](https://github.com/howforever2000/PhotoMangementSys/releases) page
 - Installers include the AI models by default (see Section 7). If a given installer does not include the models, place the model files into the model directory (see the model-placement instructions) before starting the application.
 
 ### 6.2 First Use
@@ -214,6 +216,7 @@ Optional models (degrade automatically when missing): `resnet18_places365.onnx` 
 
 ### 7.3 Obtaining / Updating Models
 
+- **In-app download (v0.2.0+, recommended)**: via "⚙ Performance settings → 📥 Model download", download classification models (yolov8 x / l / m / s-cls) and the scene model (resnet18_places365) in the background; official / mirror sources are raced, and the ONNX export happens automatically.
 - **Face + OCR**: run `python/download_models.py` (downloads from GitHub / ModelScope).
 - **Classification + detection**: export with `ultralytics` (`python/export_model.py` for classification; similarly for detection), or copy the corresponding `.onnx` files from the `python/models/` directory of a development machine.
 - Models are not committed to git (too large); obtain them via GitHub Release attachments (model zip) or the links in this README.
@@ -293,7 +296,7 @@ PhotoMangementSys/
 ## 10. FAQ
 
 **Q: `/health` reports GPU unavailable?**
-The packaged version uses CPU inference by default. For GPU, repackage with an onnxruntime that includes the DirectML / CUDA provider; in development, `pip install onnxruntime-directml` and set `VCR_PROVIDER=auto`.
+The packaged version uses CPU inference by default. Since v0.2.0 you can enable GPU acceleration in "Album Scan & Grouping Tool → ⚙ Performance settings" (DirectML / CUDA preferred; toggling rebuilds the ONNX sessions). If it is still unavailable after enabling, the bundled onnxruntime lacks the corresponding provider — repackage the microservice with `onnxruntime-directml` / a CUDA build; in development, `pip install onnxruntime-directml` and set `VCR_PROVIDER=auto`.
 
 **Q: After changing computers, can photos in albums still be found?**
 Photos are local files bound only to folder paths. Copy the photo folder to the new machine and re-import; for tag / classification data, migrate `photos.db` as well (same version required).
@@ -303,6 +306,37 @@ Check that the corresponding `.onnx` files exist under `vcr/models/`; if not, ob
 
 ---
 
-## 11. License
+## 11. Version History
+
+### v0.2.0 (2026-09-09) — VCR process governance & model management
+
+**Fixes**
+
+- **Process governance rework**: cold-range dynamic port (18765–18865) replaces the fixed port, eliminating port 10048 multi-process contention and clashes with system ephemeral ports; the instance (PID / port) is persisted so a live service is adopted across app restarts and zombie processes are cleaned up.
+- **Eliminated the "load timeout → kill process → restart" loop**: a loading service is no longer interrupted, with loop-convergence protection added (BUG-2026-0917-001).
+- **Hot model switching**: `/model` switches asynchronously without blocking the main pipeline, with warm-up convergence; fixed ThreadPoolOptions causing full model load failures; service version negotiation and self-healing.
+- Fixed the "Cancel" button in confirmation dialogs being unclickable (a lingering transparent ContextMenu overlay), invalid comments in the ImageNet→album mapping file (BUG-2026-0918-001), and Chinese-containing PowerShell scripts failing to parse under PowerShell 5.1 (UTF-8 BOM).
+
+**New features**
+
+- **In-app model downloads** (FEAT-052): "📥 Model download" inside ⚙ Performance settings fetches classification models (yolov8 x / l / m / s-cls) and the scene model (resnet18_places365) from official / mirror sources in parallel, runs in the background (survives closing the dialog) with live progress, cancel / retry, and automatic ONNX export.
+- **Scan performance settings** (FEAT-051): GPU acceleration toggle (DirectML / CUDA preferred; off forces CPU); five-tier classification model candidates (x / l / m / s / n with accuracy/speed trade-offs, default m · balanced for CPU); selection persistence.
+- **Batch management enhancements** (FEAT-050): batch selection + right-click delete in category / location secondary views; trash deletion and orphan-record cleanup; preview toolbar (delete / tags / five-star rating).
+- Renamed "Scan Test Tool" to "Album Scan & Grouping Tool" and fixed sub-page tab navigation.
+
+### v0.1.0 (2026-08-25) — Initial release
+
+- Album management: create / edit / delete / rename / cover / tags / location / description; import local folders
+- AI classification: YOLOv8 cls/det + SCRFD faces + ArcFace recognition + PaddleOCR, auto-grouped into 9 categories
+- People overview: automatic clustering of the same person; rename / merge / delete; automatic avatars
+- Timeline / memories / smart search: cross-album timeline, combined conditional search, person / location / holiday aggregations
+- Batch operations, multi-user isolation (Argon2id + AES-GCM), DCT thumbnail and other performance optimizations
+- Original "warm-orange photo stack" app icon
+
+All releases are available on the [Releases](https://github.com/howforever2000/PhotoMangementSys/releases) page.
+
+---
+
+## 12. License
 
 Private project. Author: haoyuan.

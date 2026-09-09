@@ -36,6 +36,7 @@ PhotoManagementSys 是一款面向个人照片库的桌面应用，其核心定�
 | 批量操作 | 批量设地点 / 标签、批量移动到相册、批量导出到文件夹 |
 | 数据安全 | 邮箱 / 手机号 / 密码字段以 AES-256-GCM 加密落库；支持记住登录（3 天免密） |
 | 离线能力 | 缩略图、人物头像、GPS→省市地理反查均本地完成，不依赖网络 |
+| 模型管理 | 应用内模型下载（后台执行 + 进度条 + 取消 / 重试，官方 / 镜像源择优）；分类模型五档候选切换（x / l / m / s / n）；GPU 加速开关（⚙ 性能设置） |
 
 ---
 
@@ -88,7 +89,7 @@ PhotoManagementSys 是一款面向个人照片库的桌面应用，其核心定�
 
 系统在架构层面明确了模块边界，各模块可独立演进、替换或剥离：
 
-1. **进程级解耦**：Rust 后端与 Python 微服务通过固定 REST 契约通信（`POST /classify_batch`、`GET /health` 等），端口固定为 `127.0.0.1:8765`。两侧可独立开发、测试并单独打包。
+1. **进程级解耦**：Rust 后端与 Python 微服务通过固定 REST 契约通信（`POST /classify_batch`、`GET /health` 等）。开发模式端口固定为 `127.0.0.1:8765`；打包版自 v0.2.0 起改用冷门段动态端口（18765~18865，实例 PID / 端口落盘以便跨重启收养存活服务），彻底避免与其他程序的端口冲突。两侧可独立开发、测试并单独打包。
 2. **客户端保持薄壳**：`vision.rs` 为轻量 HTTP 客户端与生命周期管理器，不依赖 `db` / `thumbnail` / `tone` 模块（图片扩展名列表本地复制，防止隐式耦合）；服务不可用或模型缺失时返回明确错误，不影响其他功能。
 3. **命令层薄壳**：`lib.rs` 中的 `#[tauri::command]` 仅做参数透传、日志与状态注入，业务逻辑位于 `db` / `content` / `persons` 等模块；`tauri::State` 承担依赖注入职责。
 4. **配置集中管理**：Python 端的路径、阈值、模型清单与 GPU 策略集中于 `python/vcr/config.py`，服务层仅引用配置常量。
@@ -160,9 +161,10 @@ python/
 
 ### 6.1 安装
 
-- **方式一（推荐）**：下载 Release 中的安装包并双击安装：
-  - `PhotoManagementSys_<版本>_x64_en-US.msi`
-  - 或 `PhotoManagementSys_<版本>_x64-setup.exe`（NSIS）
+- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新版 **v0.2.0**，约 500MB，内含 VCR 微服务与全部 AI 模型）：
+  - [`PhotoManagementSys_0.2.0_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.2.0/PhotoManagementSys_0.2.0_x64-setup.exe)（NSIS，推荐）
+  - 或 [`PhotoManagementSys_0.2.0_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.2.0/PhotoManagementSys_0.2.0_x64_en-US.msi)
+  - 历史版本（v0.1.0 等）见 [Releases](https://github.com/howforever2000/PhotoMangementSys/releases)
 - 安装包默认内置 AI 模型（详见「七、构建与发布」）。若安装包不含模型，请按「模型放置说明」将模型文件放入模型目录后再启动。
 
 ### 6.2 首次使用
@@ -215,6 +217,7 @@ vcr/models/
 
 ### 7.3 模型获取与更新
 
+- **应用内下载（v0.2.0+，推荐）**：「⚙ 性能设置 → 📥 模型下载」可后台下载分类模型（yolov8 x / l / m / s-cls）与场景模型（resnet18_places365），官方 / 镜像源择优，自动导出 ONNX。
 - **人脸 + OCR**：执行 `python/download_models.py`（从 GitHub / ModelScope 下载）。
 - **分类 + 检测**：需以 `ultralytics` 导出（`python/export_model.py` 导出分类，检测同理），或直接复制开发机 `python/models/` 下对应 `.onnx`。
 - 模型不进入 git 仓库（体积过大），请通过 GitHub Release 附加资产（模型 zip）或 README 链接获取。
@@ -294,7 +297,7 @@ PhotoMangementSys/
 ## 十、常见问题
 
 **Q：`/health` 显示 GPU 不可用？**
-打包版默认使用 CPU 推理。如需 GPU，需使用带 DirectML / CUDA 提供方的 onnxruntime 重新打包；开发版可 `pip install onnxruntime-directml` 并设置 `VCR_PROVIDER=auto`。
+打包版默认使用 CPU 推理。v0.2.0 起可在「相册扫描分组工具 → ⚙ 性能设置」中开启 GPU 加速（DirectML / CUDA 优先，切换即重建 ONNX 会话）。若开启后仍不可用，说明内置 onnxruntime 不含对应提供方，需使用 `onnxruntime-directml` / CUDA 版重新打包微服务；开发版可 `pip install onnxruntime-directml` 并设置 `VCR_PROVIDER=auto`。
 
 **Q：更换电脑后，相册中的照片是否可找回？**
 照片为本地文件，仅与文件夹路径绑定。将照片文件夹一并拷贝至新机并重新导入即可；标签 / 分类数据建议连同 `photos.db` 一并迁移（需使用同版本）。
@@ -304,6 +307,37 @@ PhotoMangementSys/
 
 ---
 
-## 十一、许可证
+## 十一、版本历史
+
+### v0.2.0（2026-09-09）— VCR 进程治理与模型管理
+
+**修复**
+
+- **进程治理重构**：冷门段动态端口（18765~18865）替代固定端口，规避端口 10048 多进程抢占与系统临时端口冲突；实例（PID / 端口）落盘，跨应用重启收养存活服务并清理僵尸进程。
+- **消除「加载超时 → 杀进程 → 重启」死循环**：模型加载中的服务不再被打断，并增加死循环收敛保护（BUG-2026-0917-001）。
+- **模型热切换**：`/model` 异步切换不阻塞主链路，主链路预热收敛；修复 ThreadPoolOptions 导致的模型全量加载失败；服务版本协商与自愈。
+- 修复确认弹窗「取消」无法点击（ContextMenu 透明遮罩常驻）、ImageNet→相册映射文件非法注释（BUG-2026-0918-001）、含中文 PowerShell 脚本在 PowerShell 5.1 下的解析错误（UTF-8 BOM）。
+
+**新功能**
+
+- **应用内模型下载**（FEAT-052）：⚙ 性能设置内置「📥 模型下载」，分类模型（yolov8 x / l / m / s-cls）与场景模型（resnet18_places365）官方源 / 镜像源双路并行择优，后台执行（离开弹窗不中断）+ 实时进度 + 取消 / 重试，下载后自动导出 ONNX 并刷新候选。
+- **扫描性能设置**（FEAT-051）：GPU 加速开关（DirectML / CUDA 优先，关闭强制 CPU）；分类模型五档候选（x / l / m / s / n，准确率与速度梯度，默认 m 档 CPU 推荐）；选择持久化。
+- **批量管理增强**（FEAT-050）：分类 / 地点二级视图批量选择 + 右键删除；回收站删除与无归属记录清理；预览组件工具栏（删除 / 标签 / 五星评分）。
+- 「扫描测试工具」更名「相册扫描分组工具」，修复子页面 tab 不跳转。
+
+### v0.1.0（2026-08-25）— 首发
+
+- 相册管理：创建 / 编辑 / 删除 / 重命名 / 封面 / 标签 / 地点 / 说明，支持导入本地文件夹
+- AI 智能分类：YOLOv8 分类 / 检测 + SCRFD 人脸 + ArcFace 识别 + PaddleOCR，自动归入 9 大类
+- 人物总览：自动聚集同一人物，支持改名 / 合并 / 删除，自动生成人物头像
+- 时间线 / 回忆 / 智能搜索：跨相册时间线、条件组合搜索、人物 / 地点 / 节日聚合回忆
+- 批量操作、多用户隔离（Argon2id + AES-GCM 加密）、DCT 缩略图等性能优化
+- 原创「暖橙照片卡片叠放」应用图标
+
+全部版本下载见 [Releases](https://github.com/howforever2000/PhotoMangementSys/releases)。
+
+---
+
+## 十二、许可证
 
 私有项目。作者：haoyuan。
