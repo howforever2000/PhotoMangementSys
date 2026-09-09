@@ -577,6 +577,70 @@
       "lessons": [
         "模型加载时长不可预估时，就绪等待要给足且绝不杀存活中的加载进程；用收养替代重启"
       ]
+    },
+    {
+      "id": "BUG-2026-0908-010",
+      "date": "2026-09-08",
+      "status": "resolved",
+      "title": "性能设置模型下拉仍不可选：ensure 采纳路径误杀加载中进程 + Python 先加载后绑端口",
+      "module": "VCR / vision.rs ensure_service_ready A/B 段 + python/server.py 启动顺序 + model_registry 并发",
+      "symptom": [
+        "性能设置面板模型下拉一直不可选（fetchVcrModels 失败）",
+        "后台循环打印 [VCR][ensure] 结束本项目识别服务进程 PID=…（PID 连环变化）",
+        "Python 侧反复刷 ConnectionResetError WinError 10054",
+        "整机卡顿（进程反复生灭、每次从零加载 8 个模型）"
+      ],
+      "root_cause": {
+        "summary": "两条残留根因叠加：(1) BUG-0908-009 只修了冷启动 C 段（超时保留进程），但 A 段（current_base 探测不可达）与 B 段（实例探测不可达）仍在 pid 存活时直接 kill —— C 段保留的加载进程被下一轮 ensure 误杀重启，死循环重现；(2) server.py 在 uvicorn.run 之前同步预加载全部 8 个模型，端口在整个加载窗口不可达，/health 的 ok=false Loading 协议永远没机会生效，宿主只能判 NotReachable。"
+      },
+      "solution": "Rust：A/B 段 NotReachable 且实例 pid 存活 → poll_ready 收养等待（与 C 段策略一致），仅 pid 真死才清场重拉；杀进程逻辑收敛到 OldVersion 一处。Python：uvicorn 先绑定端口，模型由后台 daemon 线程预加载；/health、/gpu 只读化（绝不触发加载，毫秒级返回 ok=false）；POST /gpu 切换后由后台线程重建会话（避免阻塞宿主 15s HTTP 超时）；过滤 asyncio Proactor 10054 噪音日志。model_registry：_load/status/set_cls_model/set_gpu_enabled 加 RLock，is_ready 保持无锁读保证 /health 高频探测不被加载锁阻塞。前端：initFailed 态加重试按钮。",
+      "lessons": [
+        "修死循环要审计全部触发路径，不能只修单一入口（上次只修 C 段，A/B 段残留同样的误杀）",
+        "「先起进程后绑端口」的服务必须让 /health 在加载期间也可达且快速返回，否则宿主无法区分加载中与不可达",
+        "被高频探测的只读端点绝不能顺手触发重活；is_ready 这类热路径读锁会让探测退化回阻塞"
+      ]
+    },
+    {
+      "id": "BUG-2026-0917-001",
+      "date": "2026-09-17",
+      "status": "resolved",
+      "title": "过期 vcr-server.exe 触发 OldVersion「杀→拉→杀」不收敛死循环（十几个进程连环生灭），dev 被 8-25 旧 exe 劫持致新代码永不生效",
+      "module": "VCR / vision.rs ensure_service_ready OldVersion 分支 + spawn_server 打包优先 + python/server.py /model 同步加载",
+      "symptom": [
+        "批量扫描性能设置面板卡顿，模型下拉加载失败、无法选模型",
+        "任务管理器出现多个 vcr-server.exe 反复生灭，资源占用暴涨",
+        "后台连环打印 [VCR][ensure] 结束本项目识别服务进程 PID=…（12 个不同 PID）",
+        "Python 侧 ConnectionResetError 10054 刷屏（运行中的旧 exe 无噪音过滤代码）"
+      ],
+      "root_cause": {
+        "summary": "target/{debug,release}/vcr/ 下的 vcr-server.exe 是 08-25 打包的（早于 FEAT-051 引入 api_version=2），而 spawn_server 打包版优先 → 开发模式实际运行的永远是旧 exe（server.py 上所有新修复从未执行）。旧 exe 的 /health 无 api_version 字段 → 宿主按 1 判 OldVersion → 杀掉后重拉同一份旧文件 → 仍是 OldVersion。「版本自愈」（OldVersion→杀→重拉到新版本）在唯一可用二进制本身过期时永不收敛：每次前端触发 ensure（设置面板挂载/扫描/ensure_photo_scanned）都执行一轮 kill+spawn，进程连环生灭。"
+      },
+      "solution": "Rust：新增过期组件登记 STALE_COMPONENT（组件路径+mtime 指纹）——冷启动拉起的服务探测仍为 OldVersion → 杀进程、登记组件、返回「组件过旧请重新打包」明确错误；后续 ensure 命中登记直接报错，不再杀拉；组件重新打包（mtime 变化）自动解除。taskkill 加 /T 防孤儿进程。删除 target 两处过期 exe，dev 恢复走 python/server.py。Python：启动预热收敛为主链路 cls/det/scene（face/ocr/flower/food 首次命中惰性加载，加快 /health ok 翻转）；/model 切换改异步两步（begin 校验登记立即返回 + 后台 finish 加载，失败回退默认候选并清持久化），对齐 /gpu 模式避开宿主 15s HTTP 超时；/models 增加 cls_ready 供 UI 提示「加载中」。前端：切换成功提示区分「后台加载中」。",
+      "lessons": [
+        "「重启进程自愈版本」的前提是重拉的二进制会变化；组件本身过期时杀拉循环永不收敛，必须登记组件指纹（路径+mtime）短路并给出可行动的错误",
+        "spawn 有「打包优先」回退链时，开发机残留的旧资源会静默劫持开发流程——改了脚本不生效，先确认实际运行的是哪个文件",
+        "大模型加载不能占住 HTTP 请求（宿主超时远小于加载耗时）：异步化 + /health ok 协议让宿主等待，而不是让请求挂着"
+      ],
+      "plain_explanation": "打个比方：应用不会认图，需要雇一位「识别师傅」（vcr-server.exe）在后台干活。上岗前应用会查工牌（/health 的 api_version），规定只认新版工牌（api_version=2），看到旧工牌就辞退重招，本意是「重新招来的就是新版」。但电脑上只有一份 8 月 25 日打包的旧师傅，而且应用「打包版优先」的规则导致 9 月 8 日改的新代码（python/server.py）从未被执行 —— 于是无限循环：验牌→旧版→辞退→重招→又是旧版→再辞退（日志里 PID 连环变化就是每个被辞退师傅的工号）。这位师傅每次上岗要解压 90MB、从零加载 8 个模型（相当于每次入职都重新培训全部技能），CPU 内存反复打爆 → 设置面板卡顿；模型下拉选不了是因为拿模型清单必须先等「师傅就位」，而师傅永远在刚被辞退/刚被重招的路上。根因一句话：辞退重招的自愈设计前提是重招的人会变新，当唯一候选人本身就是旧版时，死循环永不收敛。修法：开发环境删旧 exe 直接用最新 python/server.py；应用装「保险丝」—— 重招来的还是旧版就认定组件文件过期，登记后直接报「请重新打包」，不再无脑辞退重招（文件真被更新时按 mtime 自动解除）。"
+    },
+    {
+      "id": "BUG-2026-0918-001",
+      "date": "2026-09-18",
+      "status": "resolved",
+      "title": "imagenet_to_album.json 混入 # 注释致扫描 500：手写备注进了 JSON，且此前被旧 exe 的独立模型目录掩盖",
+      "module": "VCR / python/models/imagenet_to_album.json + vcr/mapping.py 加载路径",
+      "symptom": [
+        "扫描报 json.decoder.JSONDecodeError: Expecting value (line 1028 column 25)，/classify_batch 整体 500",
+        "mapping.py _load 在 json.load 处崩溃，扫描功能不可用"
+      ],
+      "root_cause": {
+        "summary": "09-02 提交 b8258d1 给映射条目加中文备注时把 Python 字典风格的 # 注释直接写进了 JSON（1028 行 beacon、1042 行 snowmobile 两处），JSON 标准不支持注释。此前未爆是因为旧版 vcr-server.exe 经 VCR_MODEL_DIR 读 target/debug/vcr/models/ 下 08-20 的有效副本；BUG-2026-0917-001 删除过期 exe 后 dev 改跑 python/server.py，模型目录回落 python/models/，坏文件第一次被真正解析。"
+      },
+      "solution": "仅删除两处 # 注释（内容全部保留，含 09-02 新增的 beacon/breakwater/plateau/iceberg/snowmobile/dogsled 映射），备注迁移到 generate_mapping.py 对应条目旁（注释在 .py 源码中才合法）。不采用旧副本覆盖：旧副本缺少这批新增映射。验证：json.load 全文件通过；直测 get_mapping() 1000 类加载正常；真实图片 /classify_batch 返回 200 且 beacon/snowmobile → landscape_nature 符合编辑意图。",
+      "lessons": [
+        "JSON 文件不能写注释；映射的备注要写在 generate_mapping.py（生成源）里，生成物保持纯净",
+        "数据文件坏半个月才爆 = 有回退路径在偷偷供数（旧 exe 的独立模型目录）；修完加载路径要立刻用真实数据冒烟，确认「第一次真正读取」发生在可控时机"
+      ]
     }
   ]
 }
