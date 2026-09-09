@@ -41,7 +41,8 @@ OVERRIDES = {
     "trailer truck": "vehicle", "garbage truck": "vehicle",
     "pickup": "vehicle", "ambulance": "vehicle", "beach buggy": "vehicle",
     "forklift": "vehicle", "tractor": "vehicle", "harvester": "vehicle",
-    "snowplow": "vehicle", "snowmobile": "vehicle", "go-kart": "vehicle",
+    "snowplow": "vehicle", "snowmobile": "vehicle",  # snowmobile 亦是雪地场景提示
+    "go-kart": "vehicle",
     "golfcart": "vehicle", "moped": "vehicle", "motor scooter": "vehicle",
     "mountain bike": "vehicle", "tandem": "vehicle", "bicycle-built-for-two": "vehicle",
     "unicycle": "vehicle", "tricycle": "vehicle", "freight car": "vehicle",
@@ -312,7 +313,7 @@ RULES = [
         "alp", "cliff", "geyser", "lakeside", "promontory", "sandbar",
         "seashore", "valley", "volcano", "coral reef", "mountain",
         "canyon", "glacier", "iceberg", "waterfall", "rapids",
-        "beacon",
+        "beacon",  # 灯塔/山崖标识
     ])),
     ("text", _w([
         "book", "bookshelf", "bookcase", "magazine", "newspaper",

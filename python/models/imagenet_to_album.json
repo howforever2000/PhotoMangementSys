@@ -1025,7 +1025,7 @@
   ],
   "landscape_nature": [
    "alp",
-   "beacon",            # 灯塔/山崖标识
+   "beacon",
    "breakwater",
    "cliff",
    "coral reef",
@@ -1039,7 +1039,7 @@
    "valley",
    "volcano",
    "iceberg",
-   "snowmobile",        # 雪地场景提示
+   "snowmobile",
    "dogsled"
   ],
   "plant_flower": [
