@@ -326,7 +326,9 @@ export const useContentStore = defineStore("content", {
     ensureProgressListener() {
       if (this._progressReady) return;
       this._progressReady = true;
-      listen<ClassifyProgress>("classify-progress", (e) => {
+      // FEAT-SEM：语义向量扫描进度（embed-progress 与 classify-progress 同构，
+      // 路由到同一活动任务槽位，进度条/停止语义完全复用）
+      const routeProgress = (e: { payload: ClassifyProgress }) => {
         const albumId = this.activeScanAlbum;
         if (albumId == null) return;
         const job = this.combinedJobs[albumId];
@@ -336,8 +338,12 @@ export const useContentStore = defineStore("content", {
         if (g.running && g.currentIndex >= 0 && g.items[g.currentIndex]?.albumId === albumId) {
           g.currentProgress = e.payload;
         }
-      }).catch(() => {
+      };
+      listen<ClassifyProgress>("classify-progress", routeProgress).catch(() => {
         // 监听失败不阻塞；扫描仍能正常完成，仅无实时进度
+      });
+      listen<ClassifyProgress>("embed-progress", routeProgress).catch(() => {
+        /* 监听失败不阻塞 */
       });
       // FEAT-052：模型下载进度实时更新（后台下载不阻塞 UI）
       listen<ModelDlStatus>("model-dl-progress", (e) => {
@@ -355,7 +361,12 @@ export const useContentStore = defineStore("content", {
      * 任务状态存于 store（脱离组件），即使退出相册页后端仍继续扫描、
      * 重新进入时能读到进度与结果。至少勾选一项即可扫描（支持单选项）。
      */
-    async startCombinedScan(albumId: number, types: string[], batchSize = 8): Promise<void> {
+    async startCombinedScan(
+      albumId: number,
+      types: string[],
+      batchSize = 8,
+      overwrite = true,
+    ): Promise<void> {
       const job = this.jobFor(albumId);
       if (job.running) return; // 已有任务进行中，忽略重复点击
       // FEAT-038：与全局扫描互斥（后端共享取消标记 + 单活动进度路由）
@@ -378,6 +389,7 @@ export const useContentStore = defineStore("content", {
           albumId,
           scanTypes: types,
           batchSize,
+          overwrite,
         });
         // 若期间已发起新扫描，丢弃这次旧结果
         if (job.scanId !== myId) return;
@@ -428,6 +440,7 @@ export const useContentStore = defineStore("content", {
       albumIds: number[],
       types: string[],
       batchSize = 8,
+      overwrite = true,
       onProgress?: (done: number, total: number, currentAlbumId: number) => void,
     ): Promise<{ scanned: number; failed: { albumId: number; error: string }[] }> {
       const result = { scanned: 0, failed: [] as { albumId: number; error: string }[] };
@@ -442,7 +455,7 @@ export const useContentStore = defineStore("content", {
             result.failed.push({ albumId, error: "该相册已有扫描任务进行中，已跳过" });
           } else {
             // 串行等待该相册扫描完成（startCombinedScan 内部 await invoke）
-            await this.startCombinedScan(albumId, types, batchSize);
+            await this.startCombinedScan(albumId, types, batchSize, overwrite);
             if (job.error) {
               result.failed.push({ albumId, error: job.error });
             } else {
@@ -475,6 +488,7 @@ export const useContentStore = defineStore("content", {
       entries: { id: number; name: string }[],
       types: string[],
       batchSize = 8,
+      overwrite = true,
     ): boolean {
       const job = this.globalScanJob;
       if (job.running) {
@@ -516,12 +530,17 @@ export const useContentStore = defineStore("content", {
       this.ensureProgressListener();
       // 后台执行扫描循环：不 await，任务独立于组件生命周期存活
       const myId = job.scanId;
-      void this.runGlobalScanLoop(myId, [...types], batchSize);
+      void this.runGlobalScanLoop(myId, [...types], batchSize, overwrite);
       return true;
     },
 
     /** 全局扫描后台循环：串行逐相册扫描（由 beginGlobalScan 启动） */
-    async runGlobalScanLoop(myId: number, types: string[], batchSize: number): Promise<void> {
+    async runGlobalScanLoop(
+      myId: number,
+      types: string[],
+      batchSize: number,
+      overwrite = true,
+    ): Promise<void> {
       const job = this.globalScanJob;
       const albumStore = useAlbumStore();
       try {
@@ -544,6 +563,7 @@ export const useContentStore = defineStore("content", {
               albumId: item.albumId,
               scanTypes: types,
               batchSize,
+              overwrite,
             });
             if (job.scanId !== myId) return;
             item.total = outcome.report.total;

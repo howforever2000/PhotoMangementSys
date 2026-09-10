@@ -175,6 +175,8 @@ export interface SmartHit {
   shoot_time: string | null;
   tone_type: string | null;
   person_ids: string[];
+  /** FEAT-SEM：语义命中余弦相似度（0~1）；纯关键词命中为 null（显示「AI 匹配」徽标用） */
+  semantic_score: number | null;
 }
 
 /** FEAT-048：内容分类两级聚合行 —— 对应 Rust `db::CategoryGroupRow` */

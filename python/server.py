@@ -35,10 +35,13 @@ from vcr.schemas import (
     ClassifyError,
     ClassifyRequest,
     ClassifyResult,
+    EmbedBatchRequest,
+    EmbedTextRequest,
     PersonMergeRequest,
     TopItem,
 )
 from vcr.services.pipeline import classify_one
+from vcr.services.embed_service import get_embed_service
 from vcr.taxonomy import get_taxonomy
 
 app = FastAPI(title="VCR", docs_url=None, redoc_url=None)
@@ -77,7 +80,8 @@ def _health_dict() -> dict:
 # FEAT-051：API 版本（GPU 开关 + 模型切换能力）。宿主检测到运行中服务版本过旧时
 # 会 POST /shutdown 自动重启到新版本。
 # v3（FEAT-053）：/benchmark 端点 + /gpu /models /health 新增会话实测字段。
-VCR_API_VERSION = 3
+# v4：语义搜索（Chinese-CLIP fp16）—— /embed_text /embed_batch /health.clip_ready。
+VCR_API_VERSION = 4
 
 
 @app.get("/health")
@@ -100,6 +104,7 @@ def health():
         "ocr_ready": reg.is_ready("ocr"),
         "flower_ready": reg.is_ready("flower"),
         "food_ready": reg.is_ready("food"),
+        "clip_ready": get_embed_service().ready(),
         "classes": 1000 if ready else 0,
         "categories": d["categories"],
         "persons": d["persons"],
@@ -229,6 +234,39 @@ def classify_batch(req: ClassifyBatchRequest):
         else:
             results.append(_fold_result(r).model_dump())
     return {"results": results}
+
+
+# ---------------------------------------------------------------------------
+# 语义搜索（Chinese-CLIP fp16，可选通道；模型缺失时 503，宿主降级纯关键词）
+# ---------------------------------------------------------------------------
+@app.get("/embed_status")
+def embed_status():
+    """CLIP 子系统状态（含拆分件/tokenizer 就绪详情，供诊断；不触发加载）。"""
+    return get_embed_service().status()
+
+
+@app.post("/embed_text")
+def embed_text(req: EmbedTextRequest):
+    try:
+        vec = get_embed_service().embed_text(req.text)
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    return {"dim": int(vec.shape[0]), "embedding": [round(float(x), 6) for x in vec]}
+
+
+@app.post("/embed_batch")
+def embed_batch(req: EmbedBatchRequest):
+    svc = get_embed_service()
+    if not svc.ready():
+        # 未就绪时不阻塞首请求：ensure 同步拆图+加载（首次数十秒），仍失败则明确 503
+        try:
+            svc.ensure()
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(503, f"CLIP 未就绪: {e}")
+        if not svc.ready():
+            raise HTTPException(503, "CLIP 未就绪")
+    paths = req.paths[: config.BATCH_CHUNK_MAX]
+    return {"results": svc.embed_images(paths)}
 
 
 # ---------------------------------------------------------------------------

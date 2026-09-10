@@ -37,6 +37,10 @@ python/models/*.zip
 python/models/categories_places365.txt
 # 运行态：用户当前选择的分类模型（/model 切换时写入，随机器不同）
 python/models/current_cls.json
+# 语义搜索模型（Chinese-CLIP 子目录，共 >1.5GB：应用内下载 / download_models.py 获取，不入库）
+python/models/chinese-clip/
+python/models/chinese-clip-vit-b-16/
+python/models/current_clip_gpu.json
 python/data/
 python/__pycache__/
 python/vcr/**/__pycache__/
@@ -62,3 +66,7 @@ setup-env.ps1
 manual-install-rust.md
 rustup-init.exe
 nul
+
+# 语义搜索测试产物（模型向量矩阵 23MB 可随时重跑 embed_all.py 重建；下载日志无价值）
+python/bench/out/
+python/bench/*_log.txt

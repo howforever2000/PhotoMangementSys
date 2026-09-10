@@ -20,6 +20,8 @@ a = Analysis(
         'uvicorn.protocols.http.auto', 'uvicorn.protocols.http.h11_impl',
         'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan.auto',
         'onnxruntime.capi._pybind_state', 'cv2',
+        # 语义搜索（FEAT-SEM）：tokenizer.json 加载 + CLIP 双塔拆图
+        'tokenizers', 'onnx',
     ],
     hookspath=[],
     hooksconfig={},

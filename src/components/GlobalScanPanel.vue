@@ -15,6 +15,8 @@ import type { GlobalScanItemStatus } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
 import { useThemeStore } from "../stores/theme";
 import ModelGpuSettings from "./ModelGpuSettings.vue";
+import ConfirmDialog from "./ConfirmDialog.vue";
+import { SCAN_MODE_TITLE, SCAN_MODE_TIP } from "../utils/scanModeTip";
 
 const albumStore = useAlbumStore();
 const contentStore = useContentStore();
@@ -84,7 +86,8 @@ const filteredAlbums = computed(() => {
 });
 
 // ---- 扫描设置（复用相册管理组合扫描的类型 + 批次） ----
-const scanTypes = ref<string[]>(["basic", "tone", "ai"]);
+// FEAT-SEM：语义向量默认勾选
+const scanTypes = ref<string[]>(["basic", "tone", "ai", "semantic"]);
 const BATCH_OPTIONS = [8, 16, 32];
 const batch = ref(8);
 
@@ -124,6 +127,8 @@ const STATUS_META: Record<GlobalScanItemStatus, { label: string; cls: string }> 
 };
 
 // ---- 启停 ----
+// ---- FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） ----
+const modeDialogVisible = ref(false);
 function startScan() {
   if (running.value) return;
   const entries = albums.value
@@ -137,8 +142,15 @@ function startScan() {
     notify.warning("请至少勾选一项扫描类型");
     return;
   }
-  // 同步校验 + 启动后台循环（扫描循环在 store 中独立存活）
-  const ok = contentStore.beginGlobalScan(entries, [...scanTypes.value], batch.value);
+  modeDialogVisible.value = true;
+}
+/** 用户在对话框选定扫描方式后启动后台循环（扫描循环在 store 中独立存活） */
+function launchScan(overwrite: boolean) {
+  modeDialogVisible.value = false;
+  const entries = albums.value
+    .filter((a) => selectedIds.value.has(a.id))
+    .map((a) => ({ id: a.id, name: a.name }));
+  const ok = contentStore.beginGlobalScan(entries, [...scanTypes.value], batch.value, overwrite);
   if (ok) {
     notify.info(
       "全局扫描已开始",
@@ -282,6 +294,11 @@ onMounted(() => {
           <span class="gs-check-label">AI 内容识别</span>
           <span class="gs-check-desc">写入内容库 · 支持智能搜索</span>
         </label>
+        <label class="gs-check" :class="{ active: scanTypes.includes('semantic') }">
+          <input type="checkbox" value="semantic" v-model="scanTypes" :disabled="running" />
+          <span class="gs-check-label">语义向量</span>
+          <span class="gs-check-desc">自然语言搜图 · 需 CLIP 模型</span>
+        </label>
       </div>
       <label class="batch-select">批次
         <select v-model="batch" :disabled="running">
@@ -380,6 +397,20 @@ onMounted(() => {
       </div>
     </div>
   </Teleport>
+
+  <!-- FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） -->
+  <ConfirmDialog
+    :visible="modeDialogVisible"
+    :title="SCAN_MODE_TITLE"
+    :message="SCAN_MODE_TIP"
+    confirm-text="覆盖扫描"
+    neutral-text="增量扫描"
+    cancel-text="取消"
+    :danger="false"
+    @confirm="launchScan(true)"
+    @neutral="launchScan(false)"
+    @cancel="modeDialogVisible = false"
+  />
 </template>
 
 <style scoped>
@@ -557,7 +588,7 @@ onMounted(() => {
   padding: 12px 14px;
 }
 
-.gs-checks { display: flex; gap: 10px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.gs-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; flex: 1; min-width: 0; }
 .gs-check {
   display: inline-flex;
   align-items: center;

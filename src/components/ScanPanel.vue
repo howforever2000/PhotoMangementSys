@@ -8,6 +8,8 @@ import type { PersonInfo } from "../types/photo";
 import { trace } from "../utils/trace";
 import { categoryLabel } from "../utils/categoryLabel";
 import PersonPanel from "./PersonPanel.vue";
+import ConfirmDialog from "./ConfirmDialog.vue";
+import { SCAN_MODE_TITLE, SCAN_MODE_TIP } from "../utils/scanModeTip";
 import { useNotify } from "../composables/useNotify";
 
 const props = defineProps<{ albumId: number; albumPath: string }>();
@@ -20,7 +22,8 @@ const toneLabelMap: Record<string, string> = {
   LowKey: "低调", MidKey: "中间调", HighKey: "高调",
 };
 
-const comboScanTypes = ref<string[]>([]);
+// FEAT-SEM：语义向量默认勾选（其余三项保持原默认）
+const comboScanTypes = ref<string[]>(["basic", "tone", "ai", "semantic"]);
 const comboBatch = ref(8);
 const BATCH_OPTIONS = [8, 16, 32];
 // 任务状态来自全局 store（键 = albumId），脱离组件存活：
@@ -70,13 +73,20 @@ function changePage(p: number) {
   currentPage.value = Math.min(Math.max(1, p), pageCount.value);
 }
 
+// ---- FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） ----
+const modeDialogVisible = ref(false);
 function startScan() {
   if (comboScanTypes.value.length === 0) {
     job.value.error = "请至少勾选一项扫描类型（支持单选项）";
     return;
   }
-  // 至少勾选一项即可扫描（单选项亦可）；后台异步执行
-  contentStore.startCombinedScan(props.albumId, comboScanTypes.value, comboBatch.value);
+  // 至少勾选一项即可扫描（单选项亦可）；先选扫描方式再启动
+  modeDialogVisible.value = true;
+}
+function launchScan(overwrite: boolean) {
+  modeDialogVisible.value = false;
+  // 后台异步执行
+  contentStore.startCombinedScan(props.albumId, comboScanTypes.value, comboBatch.value, overwrite);
 }
 
 function stopScan() {
@@ -183,6 +193,11 @@ const openImage = trace("openImage", async (path: string) => {
             <span class="combo-check-label">AI 内容识别</span>
             <span class="combo-check-desc">写入内容库 · 支持搜索</span>
           </label>
+          <label class="combo-check" :class="{ active: comboScanTypes.includes('semantic') }">
+            <input type="checkbox" value="semantic" v-model="comboScanTypes" />
+            <span class="combo-check-label">语义向量</span>
+            <span class="combo-check-desc">自然语言搜图 · 需 CLIP 模型</span>
+          </label>
         </div>
         <div class="combo-meta">
           <label class="batch-select">批次<select v-model="comboBatch"><option v-for="b in BATCH_OPTIONS" :key="b" :value="b">{{ b }}</option></select></label>
@@ -243,6 +258,20 @@ const openImage = trace("openImage", async (path: string) => {
   <section class="scan-area">
     <PersonPanel :persons="persons" @refresh="loadPersons" />
   </section>
+
+  <!-- FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） -->
+  <ConfirmDialog
+    :visible="modeDialogVisible"
+    :title="SCAN_MODE_TITLE"
+    :message="SCAN_MODE_TIP"
+    confirm-text="覆盖扫描"
+    neutral-text="增量扫描"
+    cancel-text="取消"
+    :danger="false"
+    @confirm="launchScan(true)"
+    @neutral="launchScan(false)"
+    @cancel="modeDialogVisible = false"
+  />
 </template>
 
 <style scoped>
@@ -434,7 +463,7 @@ const openImage = trace("openImage", async (path: string) => {
 /* ---- 组合扫描 ---- */
 .combo-area { margin-bottom: 24px; }
 .combo-controls { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 14px; background: #f8f9fa; border-radius: 6px; margin-bottom: 12px; }
-.combo-checks { display: flex; gap: 10px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.combo-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; flex: 1; min-width: 0; }
 .combo-check { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid #d0d5dd; border-radius: 6px; cursor: pointer; transition: all 0.15s; }
 .combo-check:hover { border-color: #396cd8; background: #eef3fb; }
 .combo-check.active { border-color: #396cd8; background: #eef3fb; }

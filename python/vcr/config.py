@@ -70,6 +70,26 @@ CLASSES_PATH = os.path.join(MODEL_DIR, "imagenet_classes.txt")
 MAPPING_PATH = os.path.join(MODEL_DIR, "imagenet_to_album.json")
 
 # ---------------------------------------------------------------------------
+# 语义搜索（Chinese-CLIP ViT-B/16，Xenova ONNX fp16 唯一档）
+#   单文件双塔（vision: pixel_values / text: input_ids+attention_mask），
+#   首次使用前需拆分为 clip_vision.onnx / clip_text.onnx（见 embed_service.ensure_subgraphs）。
+#   512 维共享空间；模型缺失时 clip_ready=false，搜索端静默降级纯关键词。
+# ---------------------------------------------------------------------------
+CLIP_DIR = os.path.join(MODEL_DIR, "chinese-clip")
+# fp16 整图（Xenova onnx/model_fp16.onnx，377MB）：仅 CPU 推理——
+# AMD DML 对该图存在算子级数值 bug（实测输出错误），CLIP 固定 CPU，不做 GPU 加速
+CLIP_FP16_PATH = os.path.join(CLIP_DIR, "onnx", "model_fp16.onnx")
+CLIP_VISION_PATH = os.path.join(CLIP_DIR, "clip_vision.onnx")   # 拆分件（加载优先）
+CLIP_TEXT_PATH = os.path.join(CLIP_DIR, "clip_text.onnx")       # 拆分件
+CLIP_TOKENIZER_JSON = os.path.join(CLIP_DIR, "tokenizer.json")
+CLIP_VOCAB = os.path.join(CLIP_DIR, "vocab.txt")
+CLIP_DIM = 512
+CLIP_SIZE = 224
+CLIP_MAX_LEN = 52
+CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
+CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
+
+# ---------------------------------------------------------------------------
 # 推理参数
 # ---------------------------------------------------------------------------
 CLS_SIZE = 224

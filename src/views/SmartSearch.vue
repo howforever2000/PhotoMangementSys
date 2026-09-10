@@ -230,7 +230,7 @@ function showTag(r: SmartHit): string {
         v-model="keyword"
         class="ss-input"
         type="text"
-        placeholder='试试「2023年的猫」/「成都 人像」/「去年春天」/「暗调」'
+        placeholder='试试「海边日落」/「一只猫」/「2023年的聚会」/「成都 人像」'
         @keyup.enter="runSearch"
       />
       <button class="btn ss-btn-smart" title="解析自然语言并搜索" @click="parseNatural">✨ 智能解析</button>
@@ -296,6 +296,11 @@ function showTag(r: SmartHit): string {
       <div class="ss-empty-icon">🔍</div>
       <p class="ss-empty-title">没有找到匹配的照片</p>
       <p class="ss-empty-text">试试放宽条件，或先在相册中执行「组合扫描」让照片具备 AI 内容与拍摄时间。</p>
+      <p class="ss-empty-text">
+        想用「海边日落」「一只猫」这类自然语言搜图？去
+        <router-link to="/scan" class="ss-link">扫描中心</router-link>
+        勾选「语义向量」构建索引（需在模型设置中下载 CLIP 模型）。
+      </p>
     </div>
 
     <!-- 结果 -->
@@ -313,6 +318,7 @@ function showTag(r: SmartHit): string {
           <div v-else class="ss-thumb ss-thumb-ph">🖼️</div>
           <figcaption class="ss-cap">
             <span class="ss-tag">{{ showTag(r) }}</span>
+            <span v-if="r.semantic_score != null" class="ss-sem" title="语义相似度（CLIP 向量余弦）">✨ AI 匹配 {{ Math.round(r.semantic_score * 100) }}%</span>
             <span v-if="r.location" class="ss-loc">📍 {{ r.location }}</span>
             <span v-if="toneLabel(r.tone_type)" class="ss-tone">{{ toneLabel(r.tone_type) }}</span>
           </figcaption>
@@ -486,6 +492,15 @@ function showTag(r: SmartHit): string {
 }
 .ss-tag {
   font-weight: 600;
+}
+/* FEAT-SEM：语义命中徽标（与 ss-tag 同级，淡金色调区分） */
+.ss-sem {
+  font-weight: 600;
+  color: #ffd76a;
+}
+.ss-link {
+  color: #6aa6ff;
+  text-decoration: underline;
 }
 .ss-loc,
 .ss-tone {

@@ -10,7 +10,7 @@
 //! 本模块只做持久化（建表/写入/查询），扫描编排与哈希计算在 `content.rs` 服务层完成，
 //! 保持分层解耦、单文件轻量。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, Transaction};
 use serde::Serialize;
@@ -38,6 +38,7 @@ fn is_fts_corrupt(e: &DbError) -> bool {
 /// 待写入的内容扫描记录（一次扫描一行，按 photo_hash upsert）
 ///
 /// `person_ids` / `top3_json` 以 JSON 文本存库（其余为标量），读取时反序列化。
+#[derive(Clone)]
 pub struct PhotoContentRecord {
     pub photo_hash: String,
     pub path: String,
@@ -149,6 +150,8 @@ pub struct SmartHit {
     pub shoot_time: Option<String>,
     pub tone_type: Option<String>,
     pub person_ids: Vec<String>,
+    /// FEAT-SEM：语义命中余弦相似度（0~1）；纯关键词命中为 None（前端据此显示「AI 匹配」徽标）
+    pub semantic_score: Option<f64>,
 }
 
 /// 内容搜索过滤条件（FEAT-026）：未设置（None）表示不启用该维度过滤
@@ -1067,9 +1070,81 @@ impl Database {
                 shoot_time: r.get(8)?,
                 tone_type: r.get(9)?,
                 person_ids: r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
+                semantic_score: None,
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
+    }
+
+    /// FEAT-SEM：按 photo_hash 批量取展示字段（语义召回 → SmartHit）
+    ///
+    /// 数据源两路合并，扫描行优先：
+    /// - `photo_content_scan`（有 category/label/人物等完整字段）
+    /// - `photo_thumb_cache` 兑底（未跑 AI 扫描的照片也有缩略图/向量，仅 path/相册名）
+    pub fn lookup_hits_by_hashes(
+        &self,
+        user_id: i64,
+        hashes: &[String],
+    ) -> Result<Vec<SmartHit>, DbError> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut map: std::collections::HashMap<String, SmartHit> = std::collections::HashMap::new();
+        let mut query = |sel_scan: bool| -> Result<(), DbError> {
+            // 分片 ≤500 避免 SQL 变量数上限
+            for chunk in hashes.chunks(500) {
+                let placeholders = std::iter::repeat("?")
+                    .take(chunk.len())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = if sel_scan {
+                    format!(
+                        "SELECT p.photo_hash, p.id, p.path, p.album_id, a.name, p.category, p.sub_category, p.label, p.location, p.shoot_time, p.tone_type, p.person_ids \
+                         FROM photo_content_scan p LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id \
+                         WHERE p.user_id = ? AND p.photo_hash IN ({placeholders})"
+                    )
+                } else {
+                    format!(
+                        "SELECT t.photo_hash, t.rowid, t.source_path, t.album_id, a.name, NULL, NULL, NULL, NULL, NULL, NULL, NULL \
+                         FROM photo_thumb_cache t LEFT JOIN albums a ON a.id = t.album_id \
+                         WHERE t.user_id = ? AND t.photo_hash IN ({placeholders})"
+                    )
+                };
+                let mut stmt = self.conn.prepare(&sql)?;
+                let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&user_id];
+                for h in chunk {
+                    params_vec.push(h);
+                }
+                let rows = stmt.query_map(params_vec.as_slice(), |r| {
+                    let hash: String = r.get(0)?;
+                    let person_ids: Option<String> = r.get(11)?;
+                    Ok((hash, SmartHit {
+                        id: r.get(1)?,
+                        path: r.get(2)?,
+                        album_id: r.get(3)?,
+                        album_name: r.get(4)?,
+                        category: r.get(5)?,
+                        sub_category: r.get(6)?,
+                        label: r.get(7)?,
+                        location: r.get(8)?,
+                        shoot_time: r.get(9)?,
+                        tone_type: r.get(10)?,
+                        person_ids: person_ids
+                            .and_then(|s| serde_json::from_str(&s).ok())
+                            .unwrap_or_default(),
+                        semantic_score: None,
+                    }))
+                })?;
+                for row in rows {
+                    let (hash, hit) = row?;
+                    map.entry(hash).or_insert(hit);
+                }
+            }
+            Ok(())
+        };
+        query(true)?;
+        query(false)?;
+        Ok(hashes.iter().filter_map(|h| map.get(h).cloned()).collect())
     }
 
     /// 带过滤条件的单相册内容搜索（FEAT-026）
@@ -1217,6 +1292,19 @@ impl Database {
         Ok(())
     }
 
+    /// FEAT-SEM：查询相册内已入库照片的 hash 集合（增量扫描跳过用）
+    pub fn lookup_scanned_hashes_by_album(&self, album_id: i64) -> Result<HashSet<String>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT photo_hash FROM photo_content_scan WHERE album_id = ?1")?;
+        let rows = stmt.query_map(params![album_id], |r| r.get::<_, String>(0))?;
+        let mut out = HashSet::new();
+        for r in rows {
+            out.insert(r?);
+        }
+        Ok(out)
+    }
+
     /// 按绝对路径批量删除内容扫描记录（照片记录删除/文件删除后级联调用）
     /// 返回实际删除的行数。
     pub fn delete_content_by_paths(&self, paths: &[String]) -> Result<usize, DbError> {
@@ -1226,6 +1314,8 @@ impl Database {
                 .conn
                 .execute("DELETE FROM photo_content_scan WHERE path = ?1", params![p])
                 .map_err(DbError::Sqlite)?;
+            // FEAT-SEM：语义向量与扫描记录同生命周期级联清理
+            self.delete_embeddings_by_paths(&[p.clone()])?;
         }
         Ok(n)
     }
@@ -1251,7 +1341,10 @@ fn upsert_one(tx: &Transaction, rec: &PhotoContentRecord) -> Result<(), DbError>
              focal_length=excluded.focal_length, lat=excluded.lat, lon=excluded.lon,
              iso_num=excluded.iso_num, focal_num=excluded.focal_num,
              aperture_num=excluded.aperture_num, shutter_num=excluded.shutter_num,
-             tone_type=excluded.tone_type, avg_luma=excluded.avg_luma,
+             -- FEAT-SEM 顺带修复：组合扫描未勾影调时 tone 字段为 None，
+             -- 不再覆盖已有影调为 NULL（勾影调时以最新扫描为准，行为不变）
+             tone_type=COALESCE(excluded.tone_type, photo_content_scan.tone_type),
+             avg_luma=COALESCE(excluded.avg_luma, photo_content_scan.avg_luma),
              scanned_at=excluded.scanned_at",
         params![
             rec.photo_hash, rec.path, rec.parent_dir, rec.album_id, rec.user_id, rec.content,
@@ -1328,6 +1421,53 @@ mod tests {
         db.upsert_photo_content(&sample_rec("HASH2", "/x/b.jpg")).unwrap();
         let all = db.search_photo_content("狗", 1, None).unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    /// FEAT-SEM：组合扫描勾 AI 不勾影调（tone 字段 None）时，已有影调不被清 NULL；
+    /// 重新勾影调后以最新扫描值为准
+    #[test]
+    fn upsert_keeps_existing_tone_when_none() {
+        let db = mem_db();
+        let r1 = sample_rec("HASH1", "/x/a.jpg"); // tone: low-key / 72.0
+        db.upsert_photo_content(&r1).unwrap();
+        // 二次扫描：影调未勾选 → tone 字段 None；AI label 变化照常覆盖
+        let r2 = PhotoContentRecord {
+            label: Some("new-label".into()),
+            tone_type: None,
+            avg_luma: None,
+            ..r1
+        };
+        db.upsert_photo_content(&r2).unwrap();
+        let hits = db.search_photo_content("狗", 1, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].label.as_deref(), Some("new-label"), "AI 字段应照常覆盖");
+        let (tone, luma): (Option<String>, Option<f64>) = db
+            .conn
+            .query_row(
+                "SELECT tone_type, avg_luma FROM photo_content_scan WHERE photo_hash='HASH1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tone.as_deref(), Some("low-key"), "未勾影调应保留原值");
+        assert_eq!(luma, Some(72.0), "未勾影调应保留原亮度");
+        // 三次扫描：重新勾影调 → 以最新扫描值为准
+        let r3 = PhotoContentRecord {
+            tone_type: Some("high-key".into()),
+            avg_luma: Some(200.0),
+            ..r2
+        };
+        db.upsert_photo_content(&r3).unwrap();
+        let (tone, luma): (Option<String>, Option<f64>) = db
+            .conn
+            .query_row(
+                "SELECT tone_type, avg_luma FROM photo_content_scan WHERE photo_hash='HASH1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tone.as_deref(), Some("high-key"));
+        assert_eq!(luma, Some(200.0));
     }
 
     #[test]

@@ -140,7 +140,8 @@ const READY_TIMEOUT: Duration = Duration::from_secs(90);
 /// 探测到运行中服务版本过旧时自动 POST /shutdown 重启到新版本
 /// FEAT-051：API 版本。宿主检测到运行中服务版本过旧时自动重启到新版。
 /// v3（FEAT-053）：/benchmark 端点 + /gpu /models /health 新增会话实测字段。
-const VCR_API_VERSION: u64 = 3;
+/// v4（FEAT-SEM）：语义搜索 —— /embed_text /embed_batch /health.clip_ready。
+const VCR_API_VERSION: u64 = 4;
 /// FEAT-051：ensure 单飞锁 —— 并发命令共享一次「探测/重启/启动」流程，
 /// 邓免多进程同时拚 8765 端口（winerror 10048）
 static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -291,6 +292,17 @@ pub async fn classify_album(
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<Vec<VisionResult>, String> {
     let photos = collect_images(dir)?;
+    classify_paths(&photos, batch_size, app, cancel).await
+}
+
+/// 对显式路径列表批量识别（FEAT-SEM：供增量扫描跳过已入库照片后传入）
+pub async fn classify_paths(
+    paths: &[String],
+    batch_size: usize,
+    app: &tauri::AppHandle,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<Vec<VisionResult>, String> {
+    let photos = paths.to_vec();
     if photos.is_empty() {
         return Ok(Vec::new());
     }
@@ -353,7 +365,7 @@ pub async fn classify_album(
 }
 
 /// 收集目录内全部图片路径（与 photo_scan/tone 一致的遍历规则）
-fn collect_images(dir: &str) -> Result<Vec<String>, String> {
+pub fn collect_images(dir: &str) -> Result<Vec<String>, String> {
     let root = Path::new(dir);
     if !root.is_dir() {
         return Err(format!("路径不存在或不是文件夹: {dir}"));
@@ -967,4 +979,171 @@ mod tests {
         assert!(dir.ends_with("python"), "got: {}", dir.display());
         assert!(dir.join("server.py").exists(), "server.py 应存在");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 语义搜索（FEAT-SEM）：Chinese-CLIP embedding 客户端
+// 解耦原则与分类通道一致：本模块只是 HTTP 客户端，模型生命周期由微服务管理；
+// CLIP 为可选通道——服务未就绪时调用方（content.rs）静默降级，不报错。
+// ---------------------------------------------------------------------------
+
+/// 单张 embedding 结果（错误内联，与 VisionResult 同风格）
+#[derive(Debug, Clone, Serialize)]
+pub struct EmbedResult {
+    /// 图片（缩略图编码输入对应）源图路径
+    pub path: String,
+    /// 512 维已归一化向量；解码失败为 None
+    pub embedding: Option<Vec<f32>>,
+    /// 单张失败原因
+    pub error: Option<String>,
+}
+
+/// 批量 embedding 进度事件载荷（前端进度条，与 ClassifyProgress 同构）
+#[derive(Debug, Clone, Serialize)]
+pub struct EmbedProgress {
+    pub current: usize,
+    pub total: usize,
+    pub done: usize,
+    pub failed: usize,
+}
+
+/// 批量编码：图片路径 → 512 维归一化向量（Chinese-CLIP fp16，双塔 vision 侧）
+///
+/// 输入应为**缩略图**路径（256px 编码与原图向量质量差异可忽略，解码快 50~200ms/张），
+/// 由调用方（content.rs `do_semantic` 分支）负责从 `photo_thumb_cache` 取映射并补齐缺失。
+pub async fn embed_images_batch(
+    paths: &[String],
+    batch_size: usize,
+    app: &tauri::AppHandle,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<Vec<EmbedResult>, String> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    ensure_service_ready(&client, app).await?;
+
+    let batch = batch_size.max(1);
+    let mut results: Vec<EmbedResult> = Vec::with_capacity(paths.len());
+    let mut done = 0usize;
+    let mut failed = 0usize;
+
+    for chunk in paths.chunks(batch) {
+        // 收到停止请求 → 提前结束，保留已完成部分
+        if cancel
+            .as_ref()
+            .map(|c| c.load(Ordering::SeqCst))
+            .unwrap_or(false)
+        {
+            break;
+        }
+        let resp: serde_json::Value = client
+            .post(format!("{}/embed_batch", vcr_base()))
+            .json(&serde_json::json!({ "paths": chunk }))
+            .send()
+            .await
+            .map_err(|e| format!("调用 embedding 服务失败: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("解析 embedding 结果失败: {e}"))?;
+
+        if let Some(items) = resp.get("results").and_then(|v| v.as_array()) {
+            for item in items {
+                let path = item
+                    .get("path")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let embedding = item
+                    .get("embedding")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(|f| f.as_f64()).map(|f| f as f32).collect::<Vec<f32>>());
+                let error = item
+                    .get("error")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string());
+                if embedding.is_some() {
+                    done += 1;
+                } else {
+                    failed += 1;
+                }
+                results.push(EmbedResult { path, embedding, error });
+            }
+        }
+
+        let _ = app.emit(
+            "embed-progress",
+            EmbedProgress {
+                current: results.len().min(paths.len()),
+                total: paths.len(),
+                done,
+                failed,
+            },
+        );
+    }
+
+    Ok(results)
+}
+
+/// 查询文本 → 512 维归一化向量（Chinese-CLIP 双塔 text 侧，单次 ~7ms@DML）
+pub async fn embed_text_query(text: &str, app: &tauri::AppHandle) -> Result<Vec<f32>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    ensure_service_ready(&client, app).await?;
+    let resp: serde_json::Value = client
+        .post(format!("{}/embed_text", vcr_base()))
+        .json(&serde_json::json!({ "text": text }))
+        .send()
+        .await
+        .map_err(|e| format!("调用 embedding 服务失败: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("解析 embedding 结果失败: {e}"))?;
+    let emb = resp
+        .get("embedding")
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(|f| f.as_f64()).map(|f| f as f32).collect::<Vec<f32>>());
+    match emb {
+        Some(v) if !v.is_empty() => Ok(v),
+        _ => Err("embedding 响应为空".into()),
+    }
+}
+
+/// 探测 CLIP 子系统是否就绪（/health.clip_ready；服务不可达返回 false，不报错）
+pub async fn clip_ready(app: &tauri::AppHandle) -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    // 已有实例直接探测；无实例不拉起（避免搜索时冷启动数十秒服务）
+    if let Some(base) = current_base() {
+        return probe_clip(client, base).await;
+    }
+    if let Some((_, port)) = load_instance(app) {
+        return probe_clip(client, format!("http://127.0.0.1:{port}")).await;
+    }
+    false
+}
+
+async fn probe_clip(client: reqwest::Client, base: String) -> bool {
+    let ok_json = match client
+        .get(format!("{base}/health"))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+    {
+        Ok(r) => r.json::<serde_json::Value>().await.ok(),
+        Err(_) => None,
+    };
+    ok_json
+        .and_then(|v| v.get("clip_ready").and_then(|x| x.as_bool()))
+        .unwrap_or(false)
 }

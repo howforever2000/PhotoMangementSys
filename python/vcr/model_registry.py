@@ -110,16 +110,17 @@ class ModelRegistry:
             "cpu_fallback": cpu_fallback,
         }
 
-    def _create_session(self, path: str) -> tuple[ort.InferenceSession, bool]:
+    def _create_session(self, path: str, opts: ort.SessionOptions | None = None) -> tuple[ort.InferenceSession, bool]:
         """按当前 provider 候选创建会话；GPU 初始化失败回退纯 CPU 重试。
 
         返回 (session, cpu_fallback)。回退仅对本会话生效并记录到实测信息，
         不改全局 provider 选择 —— 下次重建仍先尝试用户选择的 provider。
         （此前 GPU 建会话失败会把该通道直接标为不可用，驱动异常时全通道瘫痪。）
         """
+        opts = opts or self._so()
         try:
             return ort.InferenceSession(
-                path, sess_options=self._so(), providers=self._providers()
+                path, sess_options=opts, providers=self._providers()
             ), False
         except Exception as gpu_err:  # noqa: BLE001
             prov = self._providers()
@@ -132,7 +133,7 @@ class ModelRegistry:
                 file=_sys.stderr,
             )
             sess = ort.InferenceSession(
-                path, sess_options=self._so(), providers=["CPUExecutionProvider"]
+                path, sess_options=opts, providers=["CPUExecutionProvider"]
             )
             return sess, True
 
@@ -151,6 +152,18 @@ class ModelRegistry:
         # 全模型瘫痪），存在才启用
         if hasattr(ort, "ThreadPoolOptions"):
             so.threadpool_options = ort.ThreadPoolOptions()
+        return so
+
+
+    def _so_clip(self) -> ort.SessionOptions:
+        """CLIP fp16 会话专用 SessionOptions（固定 CPU 推理）。
+
+        - 固定 CPU：AMD DML 对该 fp16 图存在算子级数值 bug（实测输出错误），
+          且全量图优化会在 vision 塔初始化时崩溃
+        - BASIC 优化在 CPU 上已实测数值正确（与 fp32 基线 cos≈1）
+        """
+        so = self._so()
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
         return so
 
     # ------------------------------------------------------------------
@@ -268,9 +281,58 @@ class ModelRegistry:
         return self._sessions.get("food")
 
     # ------------------------------------------------------------------
+    # 语义搜索双塔（Chinese-CLIP fp16，可选）：拆分件由 embed_service.ensure() 生成
+    # ------------------------------------------------------------------
+    @property
+    def clip_vision(self) -> ort.InferenceSession | None:
+        with self._lock:
+            if "clip_vision" not in self._ready:
+                try:
+                    sess, cpu_fb = self._create_session(
+                        config.CLIP_VISION_PATH, self._so_clip())
+                    self._sessions["clip_vision"] = sess
+                    self._ready["clip_vision"] = True
+                    self._session_info["clip_vision"] = self._session_facts(sess, config.CLIP_VISION_PATH, cpu_fb)
+                except Exception as e:  # noqa: BLE001
+                    self._load_errors["clip_vision"] = str(e)
+                    self._ready["clip_vision"] = False
+        return self._sessions.get("clip_vision")
+
+    @property
+    def clip_text(self) -> ort.InferenceSession | None:
+        with self._lock:
+            if "clip_text" not in self._ready:
+                try:
+                    sess, cpu_fb = self._create_session(
+                        config.CLIP_TEXT_PATH, self._so_clip())
+                    self._sessions["clip_text"] = sess
+                    self._ready["clip_text"] = True
+                    self._session_info["clip_text"] = self._session_facts(sess, config.CLIP_TEXT_PATH, cpu_fb)
+                except Exception as e:  # noqa: BLE001
+                    self._load_errors["clip_text"] = str(e)
+                    self._ready["clip_text"] = False
+        return self._sessions.get("clip_text")
+
+    def load_error(self, key: str) -> str:
+        return self._load_errors.get(key, "")
+
+    # ------------------------------------------------------------------
     def run(self, key: str, tensor) -> list[np.ndarray]:
         sess = self._sessions[key]
         return sess.run(None, {sess.get_inputs()[0].name: tensor})
+
+    def run_clip_vision(self, pixel_values: np.ndarray) -> np.ndarray:
+        """图像塔前向 → (N,512) fp32（fp16 图输出已 cast 回 fp32）。"""
+        sess = self._sessions["clip_vision"]
+        return sess.run(None, {sess.get_inputs()[0].name: pixel_values})[0].astype(np.float32)
+
+    def run_clip_text(self, input_ids: np.ndarray, attention_mask: np.ndarray) -> np.ndarray:
+        """文本塔前向 → (N,512) fp32。"""
+        sess = self._sessions["clip_text"]
+        return sess.run(None, {
+            sess.get_inputs()[0].name: input_ids,
+            sess.get_inputs()[1].name: attention_mask,
+        })[0].astype(np.float32)
 
     # ------------------------------------------------------------------
     # FEAT-053：固定张量测速 —— CPU/GPU 真实加速比一键对比

@@ -50,6 +50,18 @@ TASKS = {
         "pt": "yolov8m-cls.pt",
         "files": ["yolov8m-cls.onnx"],
     },
+    "clip": {
+        # 语义搜索双塔：Chinese-CLIP ViT-B/16（Xenova ONNX fp16，377MB，仅 CPU 推理）
+        # DML 对 fp16 版存在算子级数值 bug（实测输出错误），故固定 CPU 不做 GPU 加速
+        # hf-mirror 直链（huggingface.co 直连超时）；下载后需拆图
+        # （python extract_clip_subgraphs.py，或服务端首次使用自动拆）。
+        "url": "https://hf-mirror.com/Xenova/chinese-clip-vit-base-patch16/resolve/main/onnx/model_fp16.onnx",
+        "files": [
+            "chinese-clip/onnx/model_fp16.onnx",
+            "chinese-clip/tokenizer.json",
+            "chinese-clip/vocab.txt",
+        ],
+    },
 }
 
 
@@ -117,6 +129,13 @@ def main():
             pt_tmp = os.path.join(MODEL_DIR, spec["pt"])
             dl(spec["url"], pt_tmp, mirror)
             export_cls(pt_tmp)
+            continue
+        if task == "clip":
+            # 多文件 hf-mirror 直链（含子目录 chinese-clip/onnx/），不走 GitHub 镜像
+            base = "https://hf-mirror.com/Xenova/chinese-clip-vit-base-patch16/resolve/main/"
+            for f in spec["files"]:
+                dl(base + ("onnx/model_fp16.onnx" if f.endswith("model_fp16.onnx") else os.path.basename(f)),
+                   os.path.join(MODEL_DIR, f), None)
             continue
         # face: zip 多文件
         zip_path = os.path.join(MODEL_DIR, os.path.basename(spec["url"].split("?")[0]))

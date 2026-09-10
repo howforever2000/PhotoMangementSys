@@ -46,3 +46,12 @@ class PersonInfo(BaseModel):
 class PersonMergeRequest(BaseModel):
     target: str          # 保留的人
     source: str          # 被合并进 target 的人
+
+
+# ---- 语义搜索（Chinese-CLIP embedding）----
+class EmbedTextRequest(BaseModel):
+    text: str
+
+
+class EmbedBatchRequest(BaseModel):
+    paths: list[str]

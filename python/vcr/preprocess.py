@@ -161,3 +161,21 @@ def flower_tensor(img: Image.Image) -> np.ndarray:
 def food_tensor(img: Image.Image) -> np.ndarray:
     """食物专家（resnet50 101 类）预处理：与 flower_tensor 相同的 ImageNet 协议。"""
     return flower_tensor(img)
+
+
+def clip_tensor(img: Image.Image) -> np.ndarray:
+    """Chinese-CLIP 预处理：短边 resize 224 + 中心裁剪 + CLIP mean/std 归一，CHW。
+
+    与 Phase 0 benchmark（design/clip-model-test-report.md）完全一致的数值协议。
+    """
+    w, h = img.size
+    r = config.CLIP_SIZE / min(w, h)
+    img = img.resize((max(1, round(w * r)), max(1, round(h * r))), Image.BICUBIC)
+    w2, h2 = img.size
+    l, t = (w2 - config.CLIP_SIZE) // 2, (h2 - config.CLIP_SIZE) // 2
+    img = img.crop((l, t, l + config.CLIP_SIZE, t + config.CLIP_SIZE))
+    arr = np.asarray(img, dtype=np.float32) / 255.0
+    arr = (arr - np.array(config.CLIP_MEAN, dtype=np.float32)) / np.array(
+        config.CLIP_STD, dtype=np.float32
+    )
+    return np.expand_dims(arr.transpose(2, 0, 1), axis=0)  # (1,3,224,224)

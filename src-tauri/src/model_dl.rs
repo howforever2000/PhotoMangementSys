@@ -22,12 +22,16 @@ use tauri::{AppHandle, Emitter};
 /// GitHub 加速镜像前缀（官方地址以 github.com 开头时，镜像 = 前缀 + 原地址）
 const GITHUB_MIRROR_PREFIX: &str = "https://ghfast.top";
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum DlKind {
     /// yolov8*-cls：.pt → ultralytics 导出 onnx
     ClsPt,
     /// Places365 场景：.pth.tar + 类目表 → onnx（AI 分类必需）
     Scene,
+    /// 语义搜索双塔：Chinese-CLIP fp16 ONNX（Xenova 转换，hf-mirror 直链，
+    /// 含 tokenizer.json/vocab.txt，下载后落到 chinese-clip/ 子目录，无导出步骤；
+    /// 固定 CPU 推理——DML 对 fp16 图存在算子级数值 bug，不做 GPU 加速）
+    ClipFp16,
 }
 
 /// 模型注册表白名单
@@ -49,10 +53,17 @@ impl DlSpec {
             DlKind::Scene => {
                 "http://places2.csail.mit.edu/models_places365/resnet18_places365.pth.tar".into()
             }
+            // hf-mirror 已是国内加速镜像（huggingface.co 直连超时），不再二次套 ghfast
+            DlKind::ClipFp16 => {
+                "https://hf-mirror.com/Xenova/chinese-clip-vit-base-patch16/resolve/main/onnx/model_fp16.onnx".into()
+            }
         }
     }
     /// 镜像地址（ghfast 前缀；Scene 官方 mit.edu 也可经 ghfast 加速）
     fn mirror(&self) -> String {
+        if self.kind == DlKind::ClipFp16 {
+            return self.official(); // 单源：download_first_wins 对同 URL 自动降为单路
+        }
         format!("{GITHUB_MIRROR_PREFIX}/{}", self.official())
     }
     /// 下载临时文件的扩展名（导出环节依赖正确扩展名）
@@ -60,6 +71,7 @@ impl DlSpec {
         match self.kind {
             DlKind::ClsPt => "pt",
             DlKind::Scene => "pth.tar",
+            DlKind::ClipFp16 => "onnx",
         }
     }
 }
@@ -84,6 +96,13 @@ fn specs() -> Vec<DlSpec> {
             file: "resnet18_places365.onnx",
             kind: DlKind::Scene,
             required: true,
+        },
+        DlSpec {
+            // 语义搜索双塔（FEAT-SEM）：fp16，377MB，固定 CPU 推理
+            name: "chinese-clip",
+            file: "chinese-clip/onnx/model_fp16.onnx",
+            kind: DlKind::ClipFp16,
+            required: false,
         },
     ]
 }
@@ -235,6 +254,38 @@ async fn run(app: &AppHandle, spec: &DlSpec) -> Result<(), String> {
     let dir = models_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建模型目录失败: {e}"))?;
 
+    // FEAT-SEM：CLIP fp16（固定 CPU）—— 下载 → 落子目录 → 附带 tokenizer/vocab，无导出步骤
+    if spec.kind == DlKind::ClipFp16 {
+        let final_dir = dir.join("chinese-clip").join("onnx");
+        std::fs::create_dir_all(&final_dir).map_err(|e| format!("创建 CLIP 目录失败: {e}"))?;
+        let winner = download_first_wins(app, spec, &dir).await?;
+        let final_path = final_dir.join("model_fp16.onnx");
+        std::fs::rename(&winner, &final_path)
+            .map_err(|e| format!("落位失败: {e}"))?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(300))
+            .build()
+            .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+        let base = "https://hf-mirror.com/Xenova/chinese-clip-vit-base-patch16/resolve/main/";
+        let clip_dir = dir.join("chinese-clip");
+        for f in ["tokenizer.json", "vocab.txt"] {
+            if clip_dir.join(f).is_file() {
+                continue;
+            }
+            let app2 = app.clone();
+            let name2 = spec.name.to_string();
+            download_one(
+                app2,
+                name2,
+                format!("{base}{f}"),
+                clip_dir.join(f),
+                client.clone(),
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+
     // 1. 并行下载（官方 + 镜像），先完成者赢，返回赢家临时文件
     emit_status(app, spec, "downloading", 0, 0, false);
     let winner = download_first_wins(app, spec, &dir).await?;
@@ -250,6 +301,8 @@ async fn run(app: &AppHandle, spec: &DlSpec) -> Result<(), String> {
         match kind {
             DlKind::ClsPt => export_cls_pt(&winner, &final_path),
             DlKind::Scene => export_scene_pth(&winner, &final_path, &dir),
+            // ClipFp16 在 run() 内提前处理（无导出步骤），此处不可达
+            DlKind::ClipFp16 => Ok(()),
         }
     };
     tauri::async_runtime::spawn_blocking(move || export(winner2, final2, dir2, kind))
@@ -292,11 +345,17 @@ async fn download_first_wins(app: &AppHandle, spec: &DlSpec, dir: &Path) -> Resu
     let name = spec.name.to_string();
 
     let f0 = download_one(app2.clone(), name.clone(), official.clone(), d0.clone(), client.clone());
-    let f1 = download_one(app2, name.clone(), mirror, d1.clone(), client.clone());
-    // 先完成者赢：tokio::select 返回第一个完成的 future，对位的另一路被取消
-    let win_idx = tokio::select! {
-        _ = f0 => 0u8,
-        _ = f1 => 1u8,
+    let f1 = download_one(app2, name.clone(), mirror.clone(), d1.clone(), client.clone());
+    // 先完成者赢：tokio::select 返回第一个完成的 future，对位的另一路被取消；
+    // 单源直链（官方 == 镜像）降为单路，避免同 URL 双倍流量
+    let win_idx = if official == mirror {
+        f0.await.map(|_| 0u8)?;
+        0u8
+    } else {
+        tokio::select! {
+            _ = f0 => 0u8,
+            _ = f1 => 1u8,
+        }
     };
     let (winner_dest, loser) = if win_idx == 0 { (d0, d1) } else { (d1, d0) };
     let _ = std::fs::remove_file(&loser);

@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import { useThemeStore } from "../stores/theme";
+import { SCAN_MODE_TITLE, SCAN_MODE_TIP } from "../utils/scanModeTip";
 import type { Album, CreateAlbumInput } from "../types/album";
 import type { Folder, ManualTree } from "../types/folder";
 import type { ContentSearchHit } from "../types/content";
@@ -351,15 +352,18 @@ const batchRunning = ref(false);
 
 /* FEAT-037：批量扫描入库（勾选模式下对选中相册组合扫描 EXIF/影调/AI 并写库） */
 const scanDialogOpen = ref(false);
-const batchScanTypes = ref<string[]>(["basic", "tone", "ai"]); // 默认三种全选
+// FEAT-SEM：语义向量默认勾选
+const batchScanTypes = ref<string[]>(["basic", "tone", "ai", "semantic"]);
 const batchScanBatch = ref(8);
 const batchScanning = ref(false);
+/** FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） */
+const batchModeDialogVisible = ref(false);
 const batchScanResult = ref<{ scanned: number; failed: { albumId: number; error: string }[]; total: number } | null>(null);
 
 /** 打开批量扫描弹窗 */
 function openBatchScan() {
   // 默认三种扫描方式全选
-  batchScanTypes.value = ["basic", "tone", "ai"];
+  batchScanTypes.value = ["basic", "tone", "ai", "semantic"];
   batchScanBatch.value = 8;
   batchScanResult.value = null;
   scanDialogOpen.value = true;
@@ -368,7 +372,7 @@ function openBatchScan() {
 const batchScanProgress = ref("");
 
 /** 执行批量扫描：串行逐个相册扫描，弹窗内展示进度，完成后反馈汇总 */
-async function doBatchScan() {
+function doBatchScan() {
   const ids = [...selectedIds.value];
   if (!ids.length) return;
   if (batchScanning.value) return;
@@ -376,6 +380,14 @@ async function doBatchScan() {
     notify.warning("请选择至少一种扫描方式");
     return;
   }
+  batchModeDialogVisible.value = true;
+}
+
+/** 用户在对话框选定扫描方式后执行批量扫描 */
+async function launchBatchScan(overwrite: boolean) {
+  batchModeDialogVisible.value = false;
+  const ids = [...selectedIds.value];
+  if (!ids.length) return;
   batchScanning.value = true;
   batchScanResult.value = null;
   try {
@@ -383,6 +395,7 @@ async function doBatchScan() {
       ids,
       batchScanTypes.value,
       batchScanBatch.value,
+      overwrite,
       (done, total) => {
         batchScanProgress.value = `已完成 ${done} / ${total} 个相册`;
       },
@@ -1614,6 +1627,11 @@ function onKey(e: KeyboardEvent) {
             <span class="combo-check-label">AI 内容识别</span>
             <span class="combo-check-desc">写入内容库 · 支持搜索</span>
           </label>
+          <label class="combo-check" :class="{ active: batchScanTypes.includes('semantic') }">
+            <input type="checkbox" value="semantic" v-model="batchScanTypes" />
+            <span class="combo-check-label">语义向量</span>
+            <span class="combo-check-desc">自然语言搜图 · 需 CLIP 模型</span>
+          </label>
         </div>
         <div class="batch-scan-meta">
           <label class="batch-select">批次
@@ -1764,6 +1782,20 @@ function onKey(e: KeyboardEvent) {
       ↑
     </button>
   </div>
+
+  <!-- FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） -->
+  <ConfirmDialog
+    :visible="batchModeDialogVisible"
+    :title="SCAN_MODE_TITLE"
+    :message="SCAN_MODE_TIP"
+    confirm-text="覆盖扫描"
+    neutral-text="增量扫描"
+    cancel-text="取消"
+    :danger="false"
+    @confirm="launchBatchScan(true)"
+    @neutral="launchBatchScan(false)"
+    @cancel="batchModeDialogVisible = false"
+  />
 </template>
 
 <style scoped>
