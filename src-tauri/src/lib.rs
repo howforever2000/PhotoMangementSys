@@ -3342,6 +3342,7 @@ pub fn run() {
             content::commands::set_photo_tags,
             content::commands::get_photo_tags,
             content::commands::smart_search,
+            content::commands::warmup_semantic_service,
             export_photos,
             get_vcr_gpu_status,
             start_model_download,

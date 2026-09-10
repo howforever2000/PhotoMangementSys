@@ -312,7 +312,7 @@ pub async fn classify_paths(
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
-    ensure_service_ready(&client, app).await?;
+    ensure_service_ready(&client, app, true).await?;
 
     let batch = batch_size.max(1);
     let mut results: Vec<VisionResult> = Vec::with_capacity(photos.len());
@@ -401,7 +401,7 @@ pub async fn classify_single(path: &str, app: &tauri::AppHandle) -> Result<Visio
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-    ensure_service_ready(&client, app).await?;
+    ensure_service_ready(&client, app, true).await?;
     let resp: serde_json::Value = client
         .post(format!("{}/classify_batch", vcr_base()))
         .json(&serde_json::json!({ "paths": [path] }))
@@ -446,6 +446,7 @@ pub async fn classify_single(path: &str, app: &tauri::AppHandle) -> Result<Visio
 async fn ensure_service_ready(
     client: &reqwest::Client,
     app: &tauri::AppHandle,
+    wait_models: bool,
 ) -> Result<(), String> {
     // 单飞：并发命令共享一次「探测/收养/重启/启动」，避免多进程抽数据库与端口
     let _guard = ENSURE_LOCK.lock().await;
@@ -465,7 +466,7 @@ async fn ensure_service_ready(
         match probe_base(client, &base).await {
             HealthProbe::Ready => return Ok(()),
             HealthProbe::Loading => {
-                poll_ready(client, &base, READY_TIMEOUT).await?;
+                wait_service(client, &base, wait_models).await?;
                 return Ok(());
             }
             // OldVersion / NotReachable → 统一落到 B 段按实例记录处理
@@ -483,7 +484,7 @@ async fn ensure_service_ready(
                 return Ok(());
             }
             HealthProbe::Loading => {
-                poll_ready(client, &base, READY_TIMEOUT).await?;
+                wait_service(client, &base, wait_models).await?;
                 set_base(base);
                 return Ok(());
             }
@@ -507,7 +508,7 @@ async fn ensure_service_ready(
                 // 加载进程被下一轮 ensure 误杀重启 → 「杀→重拉→再杀」死循环
                 //（PID 连环变化 + ConnectionResetError 10054 刷屏）。
                 if pid_alive(pid) {
-                    match poll_ready(client, &base, READY_TIMEOUT).await {
+                    match wait_service(client, &base, wait_models).await {
                         Ok(()) => {
                             set_base(base);
                             return Ok(());
@@ -540,7 +541,7 @@ async fn ensure_service_ready(
             last_err = Some("进程启动后立即退出（端口被占或运行时异常）".into());
             continue;
         }
-        match poll_ready(client, &base, READY_TIMEOUT).await {
+        match wait_service(client, &base, wait_models).await {
             Ok(()) => {
                 set_base(base.clone());
                 save_instance(app, pid, port);
@@ -568,6 +569,98 @@ async fn ensure_service_ready(
         }
     }
     Err(last_err.unwrap_or_else(|| "识别服务启动失败".into()))
+}
+
+/// 语义通道宽松就绪超时：仅需服务进程可响应（CLIP 由 /embed_text 触发懒加载）
+const ALIVE_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// FEAT-SEM：语义服务最近一次不可用时刻（退避窗口）
+///
+/// 重启后首次语义搜索需拉起服务 + 触发 CLIP 懒加载（数秒），这是预期开销；
+/// 但「模型未下载 / 服务起不来」这类确定性失败若每次都重试，会让每次搜索都白等
+/// 数秒并反复拉起进程，故失败后进入退避窗口（TTL 内直接降级纯关键词）。
+static SEMANTIC_DOWN_AT: Mutex<Option<Instant>> = Mutex::new(None);
+const SEMANTIC_DOWN_TTL: Duration = Duration::from_secs(180);
+
+/// 语义服务是否处于退避窗口
+pub fn semantic_backoff_active() -> bool {
+    SEMANTIC_DOWN_AT
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .map(|t| t.elapsed() < SEMANTIC_DOWN_TTL)
+        .unwrap_or(false)
+}
+
+/// 标记语义不可用（进入退避窗口）
+pub fn mark_semantic_down() {
+    if let Ok(mut g) = SEMANTIC_DOWN_AT.lock() {
+        *g = Some(Instant::now());
+    }
+}
+
+/// 清除退避（一次成功调用后立即恢复可用）
+pub fn clear_semantic_down() {
+    if let Ok(mut g) = SEMANTIC_DOWN_AT.lock() {
+        *g = None;
+    }
+}
+
+/// CLIP 模型文件是否已下载（未下载则不预热服务，避免无谓进程与等待）
+///
+/// 目录口径与 `model_dl::models_dir` 一致：VCR_MODEL_DIR 优先，缺省 python/models。
+pub fn clip_model_present() -> bool {
+    let dir = std::env::var("VCR_MODEL_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| project_python_dir().join("models"));
+    dir.join("chinese-clip").join("onnx").join("model_fp16.onnx").is_file()
+        && dir.join("chinese-clip").join("tokenizer.json").is_file()
+}
+
+/// FEAT-SEM：语义服务预热 —— 拉起服务并触发 CLIP 懒加载（搜索页进入时后台调用）
+///
+/// 与 `clip_ready()` 的区别：后者只探测「已运行且 CLIP 已加载」（不启动、不触发），
+/// 重启后必然为 false 导致搜索静默降级；本函数走宽松就绪 + 真实编码一次，
+/// 让用户真正输入搜索词时 CLIP 已就绪（首次搜索也快）。
+pub async fn warmup_clip(app: &tauri::AppHandle) -> Result<(), String> {
+    if !clip_model_present() {
+        return Err("CLIP 模型未下载".into());
+    }
+    let _ = embed_text_query("预热", app).await?;
+    Ok(())
+}
+
+/// 轮询「服务进程可响应」（不等模型就绪）：语义链路专用
+async fn poll_alive(client: &reqwest::Client, base: &str, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match probe_base(client, base).await {
+            // Ready = 主链路模型也已就绪；Loading = 服务可达但模型仍在加载，
+            // 两者对语义链路都算可用（/embed_text 会自行触发 CLIP 加载）
+            HealthProbe::Ready | HealthProbe::Loading => return Ok(()),
+            HealthProbe::OldVersion => {
+                return Err("识别服务为旧版本（缺语义端点），请结束该进程后重试".into());
+            }
+            HealthProbe::NotReachable => {}
+        }
+        if Instant::now() > deadline {
+            return Err("识别服务启动超时（端口未响应）".into());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// 按用途等待服务：识别链路需模型就绪（classify 依赖 cls），语义链路只需进程可达
+async fn wait_service(
+    client: &reqwest::Client,
+    base: &str,
+    wait_models: bool,
+) -> Result<(), String> {
+    if wait_models {
+        poll_ready(client, base, READY_TIMEOUT).await
+    } else {
+        poll_alive(client, base, ALIVE_TIMEOUT).await
+    }
 }
 
 /// 轮询就绪；Loading 继续等，OldVersion 报版本错误，超时报错
@@ -688,7 +781,7 @@ pub struct VcrGpuStatus {
 /// 查询 GPU 加速可行性：确保服务就绪后请求 /gpu
 pub async fn vcr_gpu_status(app: &tauri::AppHandle) -> Result<VcrGpuStatus, String> {
     let client = http_client().await?;
-    ensure_service_ready(&client, app).await?;
+    ensure_service_ready(&client, app, true).await?;
     let resp: serde_json::Value = client
         .get(format!("{}/gpu", vcr_base()))
         .send()
@@ -745,7 +838,7 @@ fn gpu_status_from_value(resp: &serde_json::Value, running: bool) -> VcrGpuStatu
 /// FEAT-051：GPU 加速开关（开 = GPU 优先 / 关 = 强制 CPU），返回切换后状态
 pub async fn vcr_set_gpu(app: &tauri::AppHandle, enabled: bool) -> Result<VcrGpuStatus, String> {
     let client = http_client().await?;
-    ensure_service_ready(&client, app).await?;
+    ensure_service_ready(&client, app, true).await?;
     let resp = client
         .post(format!("{}/gpu", vcr_base()))
         .json(&serde_json::json!({ "enabled": enabled }))
@@ -770,7 +863,7 @@ pub async fn vcr_set_gpu(app: &tauri::AppHandle, enabled: bool) -> Result<VcrGpu
 /// FEAT-051：分类模型候选清单（含是否已下载 / 当前生效）
 pub async fn vcr_list_models(app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
     let client = http_client().await?;
-    ensure_service_ready(&client, app).await?;
+    ensure_service_ready(&client, app, true).await?;
     let resp = client
         .get(format!("{}/models", vcr_base()))
         .send()
@@ -793,7 +886,7 @@ pub async fn vcr_list_models(app: &tauri::AppHandle) -> Result<serde_json::Value
 /// FEAT-051：切换分类模型（文件未下载 / 未知名称 → 提取服务端 detail 报错）
 pub async fn vcr_set_model(app: &tauri::AppHandle, model: &str) -> Result<serde_json::Value, String> {
     let client = http_client().await?;
-    ensure_service_ready(&client, app).await?;
+    ensure_service_ready(&client, app, true).await?;
     let resp = client
         .post(format!("{}/model", vcr_base()))
         .json(&serde_json::json!({ "name": model }))
@@ -823,7 +916,7 @@ pub async fn vcr_benchmark(
     warmup: u32,
 ) -> Result<serde_json::Value, String> {
     let client = http_client().await?;
-    ensure_service_ready(&client, app).await?;
+    ensure_service_ready(&client, app, true).await?;
     let resp = client
         .post(format!("{}/benchmark", vcr_base()))
         .timeout(Duration::from_secs(60))
@@ -1024,7 +1117,7 @@ pub async fn embed_images_batch(
         .timeout(Duration::from_secs(120))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-    ensure_service_ready(&client, app).await?;
+    ensure_service_ready(&client, app, false).await?;
 
     let batch = batch_size.max(1);
     let mut results: Vec<EmbedResult> = Vec::with_capacity(paths.len());
@@ -1094,7 +1187,7 @@ pub async fn embed_text_query(text: &str, app: &tauri::AppHandle) -> Result<Vec<
         .timeout(Duration::from_secs(60))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-    ensure_service_ready(&client, app).await?;
+    ensure_service_ready(&client, app, false).await?;
     let resp: serde_json::Value = client
         .post(format!("{}/embed_text", vcr_base()))
         .json(&serde_json::json!({ "text": text }))

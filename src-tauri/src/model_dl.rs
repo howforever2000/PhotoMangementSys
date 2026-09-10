@@ -268,6 +268,8 @@ async fn run(app: &AppHandle, spec: &DlSpec) -> Result<(), String> {
             .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
         let base = "https://hf-mirror.com/Xenova/chinese-clip-vit-base-patch16/resolve/main/";
         let clip_dir = dir.join("chinese-clip");
+        // FEAT-SEM：模型就位后立即解除语义退避（用户下载完即可搜索，不必等 TTL）
+        crate::vision::clear_semantic_down();
         for f in ["tokenizer.json", "vocab.txt"] {
             if clip_dir.join(f).is_file() {
                 continue;

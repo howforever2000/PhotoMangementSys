@@ -110,3 +110,29 @@
 | 2 线程限制拖慢 text 编码（实测 2.5 倍差） | `model_registry` clip 槽位不设 intra_op 限制 |
 | RRF 融合后 FTS 强命中被稀释 | 语义榜只取 top-200 且 RRF k=60 偏保守；后续可按反馈调权重，参数集中在 Phase 3 常量 |
 | 缩略图缺失导致索引不全 | 扫描分支内现场补生成（复用缩略图引擎），失败照片计入 failed 并跳过 |
+
+---
+
+## 9. 修复记录（BUG-2026-0910-008：重启后语义搜索静默失效）
+
+**现象**：语义扫描后可正常搜索；关闭应用重开后，搜索只剩关键词结果（无「AI 匹配」徽标），
+必须先做一次语义扫描才恢复。无任何报错——用户一度怀疑「向量没入库」（实际库中已有 10919 条向量）。
+
+**根因**：`semantic_recall` 前置 `clip_ready()` 只探测「服务已运行且 CLIP 会话已加载」，
+不启动服务、不触发懒加载。重启后 VCR 服务未运行、CLIP 会话未加载（`/health.clip_ready=false`），
+必然探测失败 → 静默降级纯关键词；语义链路只有在被扫描 / AI 识别预热过后才可用。
+
+**修复**：
+1. `vision.rs::ensure_service_ready` 加 `wait_models: bool`：识别链路（需 cls 等）保持等 `/health ok=true`；
+   语义链路走新增 `poll_alive`（只等服务进程 HTTP 可达，上限 25s），不等主链路模型。
+2. `embed_text_query` / `embed_images_batch` 用宽松就绪；`semantic_recall` 去掉 `clip_ready` 前置，
+   直接调 `/embed_text`（服务端 `ensure()` 同步触发 CLIP 拆图检查 + 会话加载）→ 重启后首次搜索即可返回向量。
+3. 失败退避：确定性失败（模型未下载 / 服务起不来）标记 3 分钟退避，避免每次搜索都白等数秒并反复拉起进程；
+   成功后立即清除；CLIP 模型下载完成时也清除（下载完即可用）。
+4. 新增命令 `warmup_semantic_service`：搜索页 `onMounted` 后台预热（模型未下载则直接返回 false，不拉起无谓进程）。
+
+**验证**（`python/bench/verify_cold_start.py`）：服务冷启动场景下，`clip_ready=false` 时
+`/embed_text` 直接可用（本次实测 1.0s 返回 512 维，调用后 `clip_ready` 翻转为 true）。
+
+**教训**：「就绪探测」≠「触发就绪」。懒加载 + 按需进程的组合下，探测失败不代表不可用；
+用户可感知的功能不能依赖「恰好被别的流程预热过」；静默降级要留痕，否则会被误判为数据问题。

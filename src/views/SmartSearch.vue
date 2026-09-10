@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive } from "vue";
+import { onMounted, ref, reactive } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
@@ -48,6 +48,19 @@ const tones = [
 function fileUrl(p: string): string {
   return p ? convertFileSrc(p) : "";
 }
+
+/**
+ * FEAT-SEM：进入搜索页时后台预热语义服务（fire-and-forget）
+ *
+ * 重启应用后 VCR 服务未运行、CLIP 会话未加载，若不预热则首次搜索要么多等数秒、
+ * 要么（旧实现）静默降级成纯关键词。预热成功后再搜索即可直接命中语义结果。
+ * 模型未下载时后端直接返回 false，不会拉起无谓进程。
+ */
+onMounted(() => {
+  invoke<boolean>("warmup_semantic_service").catch(() => {
+    /* 预热失败不影响普通关键词搜索（搜索时会再尝试并自动降级） */
+  });
+});
 
 async function runSearch() {
   searching.value = true;

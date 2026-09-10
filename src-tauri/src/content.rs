@@ -51,11 +51,23 @@ async fn semantic_recall(
     state: &tauri::State<'_, AppState>,
     app: &tauri::AppHandle,
 ) -> Result<Vec<(crate::db::SmartHit, f64)>, String> {
-    // 查询向量（clip_ready 只探测已运行实例，不冷启动服务；未就绪 → 降级）
-    if !crate::vision::clip_ready(app).await {
-        return Err("CLIP 服务未就绪".into());
+    // 退避窗口内直接降级（避免确定性失败反复拉起服务 + 等超时）
+    if crate::vision::semantic_backoff_active() {
+        return Err("CLIP 服务暂不可用（退避中）".into());
     }
-    let q = crate::vision::embed_text_query(keyword, app).await?;
+    // 直接编码：内部走「宽松就绪」（拉起服务但不等主链路模型），
+    // /embed_text 会触发 CLIP 懒加载——重启后首次搜索也能拿到向量（不再是必须
+    // 先做一次语义扫描才能搜索）。失败才标记退避。
+    let q = match crate::vision::embed_text_query(keyword, app).await {
+        Ok(q) => {
+            crate::vision::clear_semantic_down();
+            q
+        }
+        Err(e) => {
+            crate::vision::mark_semantic_down();
+            return Err(e);
+        }
+    };
     let mut q = q;
     let qnorm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
     if qnorm > 1e-6 {
@@ -1604,6 +1616,29 @@ pub mod commands {
             }
         }
         Ok(hits)
+    }
+
+    /// FEAT-SEM：语义服务预热（搜索页进入时后台调用，fire-and-forget）
+    ///
+    /// 背景：重启应用后 VCR 服务未运行、CLIP 会话未加载，若等用户真正搜索时才做
+    /// 会多等数秒。此处提前预热。模型未下载 → 返回 false（不拉起无谓进程）；
+    /// 退避窗口内 → 跳过。
+    #[tauri::command]
+    pub async fn warmup_semantic_service(app: tauri::AppHandle) -> Result<bool, String> {
+        if !crate::vision::clip_model_present() || crate::vision::semantic_backoff_active() {
+            return Ok(false);
+        }
+        let _t = log_call!("warmup_semantic_service", "");
+        match crate::vision::warmup_clip(&app).await {
+            Ok(()) => {
+                logger::log_call_end_with("warmup_semantic_service", _t, "OK");
+                Ok(true)
+            }
+            Err(e) => {
+                logger::log_call_end_with("warmup_semantic_service", _t, &format!("ERR | {e}"));
+                Err(e)
+            }
+        }
     }
 }
 

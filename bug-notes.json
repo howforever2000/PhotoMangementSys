@@ -894,6 +894,45 @@
         "部分勾选 + UPSERT 全字段覆盖 = 未勾选字段被静默清空；凡『本次未采集』的可选字段，更新时一律用 COALESCE 保原值",
         "扫描类功能设计多选项组合时，要逐字段确认『未勾选』的落库语义（保留 / 清空 / 跳过），不能默认全字段覆盖"
       ]
+    },
+    {
+      "id": "BUG-2026-0910-008",
+      "title": "重启应用后语义搜索静默失效（必须先做一次语义扫描）：clip_ready 只探测已加载会话，不触发服务启动与 CLIP 懒加载",
+      "status": "fixed",
+      "severity": "medium",
+      "symptom": [
+        "语义扫描后可正常语义搜索（结果带「AI 匹配 N%」徽标）；关闭应用重新打开后，同样关键词只剩纯关键词结果（无语义命中），无任何报错或提示",
+        "必须先手动做一次「语义向量」扫描，语义搜索才恢复——用户据此误判为「语义扫描结果没入库」（实际 photo_embeddings 已有 10919 条向量，数据无损）"
+      ],
+      "root_cause": {
+        "summary": "搜索路径的前置就绪判断只「探测」不「触发」：clip_ready 要求服务已运行且 CLIP 会话已加载，而重启后二者都不成立（VCR 服务按需启动、CLIP 会话懒加载），于是每次搜索都在语义分支直接降级",
+        "detail": [
+          "semantic_recall 首行 `if !clip_ready(app).await { return Err(...) }`：clip_ready 只在 current_base/实例记录已存在时探测 /health.clip_ready，无实例直接返回 false（设计上为避免搜索时冷启动服务等待数十秒）",
+          "服务端 /health.clip_ready 取自 embed_service.ready()，只读 registry.is_ready（为保证 /health 毫秒级响应，故意不触发加载）→ 服务刚启动时必为 false，直到第一次 /embed_text 或 /embed_batch 调用才翻转",
+          "扫描路径会 ensure_service_ready + POST /embed_batch 触发 CLIP 加载，所以「先扫描一次」就能让后续搜索恢复——掩盖了搜索路径自身的缺陷",
+          "降级是静默的（设计为「模型缺失/服务未启动时不打扰用户」），因此问题不可见，只能表现为『搜不出语义相关照片』"
+        ]
+      },
+      "fix": "让搜索路径自己负责触发就绪：① ensure_service_ready 增加 wait_models 参数，语义链路走新增 poll_alive（只等服务进程可达，25s 上限），不等 cls/det/scene 主链路模型；② semantic_recall 去掉 clip_ready 前置，直接调 /embed_text（服务端 ensure 同步完成拆分件检查 + CLIP 会话加载）；③ 失败进入 3 分钟退避（deterministic 失败不再每次白等+反复拉起进程），成功后立即清除，CLIP 模型下载完成时也清除；④ 新增 warmup_semantic_service 命令并在搜索页 onMounted 后台预热（模型未下载则返回 false 不拉进程）。验证脚本 python/bench/verify_cold_start.py：冷启动场景 clip_ready=false 时 /embed_text 1.0s 返回 512 维，调用后 clip_ready 翻转 true",
+      "related_files": [
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/model_dl.rs",
+        "src/views/SmartSearch.vue",
+        "python/bench/verify_cold_start.py",
+        "design/semantic-search-implementation-plan.md"
+      ],
+      "log_hint": "app.log grep 'smart_search' 可见「语义降级: CLIP 服务暂不可用/未就绪」；grep 'warmup_semantic_service' 看预热是否成功。判据：photo_embeddings 行数正常但搜索无 semantic_score ⇒ 属本缺陷（就绪问题而非数据问题）",
+      "created_at": "2026-09-10T18:20:00+08:00",
+      "fixed_at": "2026-09-10T18:20:00+08:00",
+      "plain_explanation": "搜索功能的门卫只会「看一眼 AI 服务是否已经站在岗位上」，不会「去叫它上班」。平时因为别的功能（AI 扫描）已经把服务叫起来了，门卫一看在岗就放行；重启之后服务还没被叫醒，门卫看了一眼空岗就直接放弃 AI 搜索，改走普通关键词搜索——而且不吭声。用户只看到「搜不出想要的照片」，自然会怀疑是扫描结果没存进数据库，其实数据一条不少，只是没人把服务叫起来。修法：让搜索自己负责叫醒服务（只等它开门，不等它把所有模型都装好），并在进入搜索页时提前叫一次。",
+      "lessons": [
+        "「就绪探测」与「触发就绪」是两件事：进程按需启动 + 会话懒加载的组合下，只探测不触发会永远探测失败（尤其在重启后），功能表现为静默不可用",
+        "用户可感知的功能不能依赖「恰好被其他流程预热过」——搜索、导出这类入口必须自带唤醒链路",
+        "静默降级必须留痕（日志/UI 提示）：本次因降级无声，用户误判为数据未入库，排查成本被转嫁给了用户",
+        "诊断顺序：先查数据（photo_embeddings 行数）再查就绪链路——本次先确认库里 10919 条向量，一步排除『没入库』假设"
+      ]
     }
   ]
 }
