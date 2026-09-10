@@ -1532,7 +1532,87 @@
       ],
       "created_at": "2026-09-10T11:40:00+08:00",
       "updated_at": "2026-09-10T17:00:00+08:00"
+    },
+    {
+      "id": "FEAT-055",
+      "name": "语义搜索：Chinese-CLIP 双塔 512 维向量（扫描集成 + 智能搜索 RRF 融合 + 覆盖/增量扫描对话框）",
+      "status": "done",
+      "description": "自然语言搜图：Chinese-CLIP ViT-B/16（Xenova ONNX fp16 377MB，固定 CPU 推理）编码 512 维共享空间，图片向量落 photo_embeddings 表，查询文本经 text 塔编码后与全库向量做余弦召回。扫描侧作为第 4 个扫描项 semantic 并入 scan_album_combined（缩略图直编码，跳原图解码省 50~200ms/张；增量差集跳过已有向量；batch 复用现有参数默认 8；500/批事务 upsert；embed-progress 进度事件）。搜索侧融入现有 smart_search：置信度范围召回（余弦 ≥ min_similarity 默认 0.30，非固定 top-N，硬上限 2000）→ 复用同一套筛选 SQL 按 photo_hash 过滤 → 与关键词结果 RRF(k=60) 融合，语义命中附 semantic_score；CLIP 未就绪/模型缺失时静默降级纯关键词且不冷启动服务。扫描交互新增覆盖/增量二选（scan_album_combined 加 overwrite 参数；增量走新增的 classify_paths 显式路径列表，跳过已入库 hash），三个扫描入口（相册面板/全局扫描/批量管理）统一弹 ConfirmDialog 三选对话框。Phase 0 实测（本机 1.1 万张真实缩略图库）：全库索引 9.3min（DML fp32 37.9ms/张）或 CPU 91ms/张约 17min、单次查询 <15ms（文本编码 ~7ms + 检索 0.36ms）、零样本分类 81.1% 高于 yolov8m 基线 76.0%、中文查询 top-10 与 AI 分类标签高度一致（「一只猫/小狗/文件文档/雪山风景」满分命中，「海边日落」「樱花盛开」经视觉模型抽查确认命中分类盲区图）。",
+      "related_files": [
+        "python/vcr/services/embed_service.py",
+        "python/vcr/services/clip_subgraph.py",
+        "python/vcr/model_registry.py",
+        "python/server.py",
+        "python/download_models.py",
+        "python/extract_clip_subgraphs.py",
+        "src-tauri/src/db/embedding.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/db/mod.rs",
+        "src/views/SmartSearch.vue",
+        "src/views/AlbumList.vue",
+        "src/components/ScanPanel.vue",
+        "src/components/GlobalScanPanel.vue",
+        "src/components/ConfirmDialog.vue",
+        "src/stores/content.ts",
+        "src/utils/scanModeTip.ts",
+        "design/clip-model-test-report.md",
+        "design/semantic-search-implementation-plan.md"
+      ],
+      "keywords": [
+        "语义搜索",
+        "自然语言搜图",
+        "CLIP",
+        "Chinese-CLIP",
+        "embedding",
+        "向量检索",
+        "RRF",
+        "semantic",
+        "photo_embeddings",
+        "覆盖扫描",
+        "增量扫描",
+        "clip_ready"
+      ],
+      "implementation": {
+        "python": [
+          "vcr/services/clip_subgraph.py：单文件双塔拆成 clip_vision.onnx / clip_text.onnx（幂等，拆后做 onnxruntime 数值对齐 cos>0.999 校验）",
+          "vcr/services/embed_service.py：tokenizers 加载 tokenizer.json（缺失回落内置 MiniBertTok 逐字分词）；embed_text 返回已 L2 归一化 512 维；embed_images 单张错误内联",
+          "server.py：POST /embed_text /embed_batch（封顶 64）/embed_status，/health 增 clip_ready，VCR_API_VERSION 3→4（宿主自动重启旧服务）",
+          "model_registry.py：clip_vision/clip_text 懒加载槽位，固定 CPUExecutionProvider + ORT_ENABLE_BASIC",
+          "download_models.py 加 clip 任务（hf-mirror 直链 fp16 + tokenizer.json + vocab.txt）；vcr-server.spec 补 tokenizers/onnx hiddenimports"
+        ],
+        "rust": [
+          "db/embedding.rs：photo_embeddings(photo_hash PK, user_id, album_id, path, dim, model, embedding f32 LE BLOB, generated_at) + upsert/lookup 差集/version/按路径与相册删除/移动同步",
+          "content.rs do_semantic：collect_images → 缩略图映射（photo_thumb_cache 查表优先，缺失 ensure_grid_thumb 现场生成）→ lookup_embedding_hashes 增量差集 → vision::embed_images_batch 分批编码 → 500/批事务 upsert；overwrite=true 时全量重算不跳过",
+          "vision.rs：classify_album 拆出 classify_paths（增量扫描传显式路径列表）；embed_images_batch / embed_text_query / clip_ready（只探测已运行实例不冷启动）",
+          "smart_search 融合：EMBED_CACHE 内存向量缓存（user_id → Arc<(version, 向量列表)>，version = count+max(rowid) 变化才重载）；fuse_hits RRF(k=60) + 同分时 FTS 原序优先；db::lookup_hits_by_hashes 两路合并（photo_content_scan 优先，photo_thumb_cache 兜底覆盖未跑 AI 的照片）",
+          "级联三处同生命周期：delete_content_by_paths / delete_album_refs / move_photo_content_path",
+          "model_dl.rs 注册 chinese-clip（DlKind::ClipFp16，hf-mirror 单源直链，复用镜像/进度/取消/原子改名）"
+        ],
+        "frontend": [
+          "三个扫描入口扫描前弹 ConfirmDialog「覆盖扫描 / 增量扫描 / 取消」（组件向后兼容扩展可选 neutralText）",
+          "语义向量默认勾选；四个扫描项 2×2 网格布局；对话框文案抽到 utils/scanModeTip.ts 共用",
+          "SmartSearch 结果卡「✨ AI 匹配 N%」徽标（semantic_score）+ 空态引导去扫描中心建索引；搜索框 placeholder 改自然语言示例",
+          "stores/content.ts：scanTypes 透传 + overwrite 参数 + embed-progress 监听（路由到现有 combinedJobs 槽位）"
+        ],
+        "decisions": [
+          "fp16 固定 CPU：DML 对 fp16 图有算子级数值 bug，实测 GPU/CPU embedding 余弦仅 0.43（详见 BUG-2026-0910-006）",
+          "不用 int8：零样本分类掉点 3.8pp（77.4% vs 81.1%）> 2pp 决策门，向量漂移 cos 0.96",
+          "不引入 sqlite-vec/FAISS：暴力余弦实测 1.1 万张 0.36ms、10 万张约 4ms，量级不需要向量库",
+          "不耦合扫描项：只勾语义向量时其余三项完全不写库，photo_embeddings 为独立表"
+        ]
+      },
+      "highlights": [
+        "语义召回按置信度范围（≥0.30 全部纳入）而非固定 top-N，配合 RRF 可与关键词结果同列排序，前端一套结果组件零改造",
+        "缩略图直编码：编码输入 256px 缩略图，跳过数 MB 原图解码（省 50~200ms/张），索引整库 9.3 分钟",
+        "覆盖/增量统一参数覆盖 AI 与语义两条链路，增量模式按 photo_hash 差集跳过已入库照片",
+        "CLIP 与关键词搜索共用筛选 SQL：日期/地点/人物/影调筛选对语义命中同样生效",
+        "降级链完整：模型未下载/服务未启动/向量库为空 → 纯关键词结果，用户无感"
+      ],
+      "created_at": "2026-09-10T17:30:00+08:00",
+      "updated_at": "2026-09-10T17:30:00+08:00"
     }
   ],
-  "updated": "2026-09-10T17:00:00+08:00"
+  "updated": "2026-09-10T17:30:00+08:00"
 }

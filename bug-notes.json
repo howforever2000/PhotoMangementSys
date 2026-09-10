@@ -826,6 +826,74 @@
         "列表数据一次批量取（禁止 N+1 往返）；贵操作点击再触发（用到才算）。",
         "验收纪律：必须走用户真实路径（IPC/点击）。本次内部调用与后台线程路径全绿、IPC 点击必现——只测内部路径等于没测。"
       ]
+    },
+    {
+      "id": "BUG-2026-0910-006",
+      "title": "语义搜索接入 DirectML：fp16 CLIP 图在 DML 上算子级数值错误（embedding 余弦仅 0.43），全量优化则 vision 塔初始化崩溃",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": [
+        "启用 CLIP 通道 GPU 加速后，同一文本在 DML 与 CPU 上的 embedding 余弦仅 0.241，语义检索结果完全不可用（无明显报错）",
+        "clip_vision.onnx 在 DML + 默认全量图优化（ORT_ENABLE_ALL）下创建会话即崩：SimplifiedLayerNormFusion 插入的 InsertedPrecisionFreeCast_* 节点在 provider 分区时 GetIndexFromName 失败",
+        "拆图时 verify_subgraphs 用默认 SessionOptions 能跑通（cos=1.0），掩盖了问题——registry 用自定义 SessionOptions 才暴露"
+      ],
+      "root_cause": {
+        "summary": "AMD DirectML 对 Xenova Chinese-CLIP fp16 图的算子实现有数值 bug；优化级别决定表现形式（ALL 崩 / BASIC、DISABLE 结果错）",
+        "detail": [
+          "对照实验：DML 上 fp16 同一输入 CPU 基准 cos——ALL 优化 = 1.0000（但 vision 塔会话创建崩溃）、BASIC = 0.4313、DISABLE = 0.4313",
+          "BASIC/DISABLE 下输出错误 = DML 执行该 fp16 图算子本身有问题（非优化器问题）；ALL 优化下部分算子被融合重写才偶然正确",
+          "推理：fp16 attention/norm 链路上 DML 的精度/实现缺陷，无法通过调优化级别或 SessionOptions 稳定绕过",
+          "曾尝试改走 fp32 整图（Xenova onnx/model.onnx 754MB）以保留 GPU 加速，因收益不足（模型体积翻倍）按用户决策放弃"
+        ]
+      },
+      "fix": "语义通道固定 CPU 推理：model_registry 的 clip_vision/clip_text 固定 CPUExecutionProvider + ORT_ENABLE_BASIC + fp16（377MB）；撤销 CLIP 独立 GPU 加速开关（set_clip_gpu/_clip_providers//clip_gpu 端点全部移除）。实测固定 CPU 后 embedding 与 fp32 基线一致（海边日落 vs 日落图 cos=0.4277），全库索引 1.1 万张约 17min（CPU 91ms/张），可接受",
+      "related_files": [
+        "python/vcr/model_registry.py",
+        "python/server.py",
+        "python/vcr/config.py",
+        "src-tauri/src/model_dl.rs"
+      ],
+      "log_hint": "app.log grep 'embed' 无异常；该类问题的唯一可靠判据是 CPU/GPU 数值一致性对比（同一文本两路 embedding 余弦），不要以『会话创建成功』或『无报错』作为 GPU 可用结论",
+      "created_at": "2026-09-10T17:30:00+08:00",
+      "fixed_at": "2026-09-10T17:30:00+08:00",
+      "plain_explanation": "显卡驱动里的 AI 加速通道（DirectML）在处理这个半精度模型时算错了数——不是崩溃、不报错，而是安静地给出错误结果（相似度从 0.43 掉到 0.24，等于搜出来的东西完全不相关）。更隐蔽的是：只有调整优化等级才暴露不同症状（一个崩、一个静默算错），而模型刚拆分完的自检恰好用了默认参数，显示一切正常。最终决定放弃这条加速路：语义索引本来就在后台跑，CPU 17 分钟能跑完 1.1 万张，不值得为它让结果不可信。",
+      "lessons": [
+        "接入新模型的 GPU 加速前，必须先做 CPU/GPU 数值一致性对比（同一输入两路 embedding 余弦 ≥0.999），『能跑通』不等于『算得对』",
+        "ONNX fp16 图在第三方 EP（DirectML）上要单独验证：优化级别不同结果可能不同（ALL 崩 / BASIC 静默错），不能只测一个档位",
+        "自检脚本要覆盖真实加载路径（registry 的 SessionOptions），用默认参数自检会漏掉配置相关的崩溃",
+        "静默数值错误比崩溃更危险：语义检索场景下表现为『能搜但搜不准』，无法从日志发现"
+      ]
+    },
+    {
+      "id": "BUG-2026-0910-007",
+      "title": "组合扫描勾选 AI 但不勾影调时，已入库的影调字段被 upsert 覆盖为 NULL（数据静默丢失）",
+      "status": "fixed",
+      "severity": "medium",
+      "symptom": [
+        "先用「影调分析 + AI」扫过一遍的相册，之后只勾「AI 内容识别」重扫，照片的 tone_type/avg_luma 全部变成空",
+        "无任何报错，前端影调筛选/影调徽标随之失效，需重新勾选影调重扫才能恢复"
+      ],
+      "root_cause": {
+        "summary": "photo_content_scan 的 upsert 是全字段覆盖（ON CONFLICT DO UPDATE SET ... tone_type=excluded.tone_type），而未勾选的扫描项对应字段为 None，于是被写空",
+        "detail": [
+          "build_records_combined 仅按勾选项填充：影调未勾选时 tone_map 为空，tone_type/avg_luma 均为 None",
+          "EXIF 字段不受影响（无论是否勾 basic，AI 分支都会现场重读 EXIF）",
+          "分类/标签字段以最新识别为准是既有设计（『二次扫描覆盖更新』），问题仅在『本次未采集』却写成 None 的字段"
+        ]
+      },
+      "fix": "db/content.rs upsert_one 的冲突更新改为 COALESCE(excluded.tone_type, photo_content_scan.tone_type) / COALESCE(excluded.avg_luma, photo_content_scan.avg_luma)：未采集（None）时保留原值，采集到新值时照常覆盖。补单测 upsert_keeps_existing_tone_when_none（None 保留 → 新值覆盖）",
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs"
+      ],
+      "log_hint": "无日志线索（静默数据覆盖）；排查此类问题看 photo_content_scan 同一 photo_hash 行的字段随时间变化",
+      "created_at": "2026-09-10T17:30:00+08:00",
+      "fixed_at": "2026-09-10T17:30:00+08:00",
+      "plain_explanation": "数据库写入用的是『整行覆盖』：这次扫描没算影调，影调字段就是空的，一覆盖就把原来算好的影调擦掉了。就像填表时『本次没测的项目』直接写了空白，而不是保留上次填的内容。改成『本次没测就沿用旧值，测了就更新』。",
+      "lessons": [
+        "部分勾选 + UPSERT 全字段覆盖 = 未勾选字段被静默清空；凡『本次未采集』的可选字段，更新时一律用 COALESCE 保原值",
+        "扫描类功能设计多选项组合时，要逐字段确认『未勾选』的落库语义（保留 / 清空 / 跳过），不能默认全字段覆盖"
+      ]
     }
   ]
 }
