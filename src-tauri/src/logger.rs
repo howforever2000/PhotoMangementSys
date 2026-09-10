@@ -238,3 +238,195 @@ pub fn log_error(func_name: &str, err: &str) {
 pub fn log_info(desc: &str) {
     write_log(&format!("[INFO] {desc}"));
 }
+
+// ============================================================================
+// 实时日志尾读（开发者视角窗口：前端 500ms 轮询本函数做增量读取）
+// ============================================================================
+
+/// `tail_log` 的返回：一段完整日志行 + 下次读取偏移
+#[derive(Debug, serde::Serialize)]
+pub struct TailResult {
+    /// 本次新增的完整行（已按行切分，不含空行）
+    pub lines: Vec<String>,
+    /// 下次应传入的偏移（= 最后一个完整行末尾的字节位置）
+    pub next_offset: u64,
+    /// true = 传入的 offset 超过当前文件长度（文件被清理线程清空/轮转），前端应清屏
+    pub reset: bool,
+    /// true = 本次为尾部回填，文件更早内容未包含（仅首次调用可能为 true）
+    pub truncated: bool,
+    /// 当前日志文件字节数
+    pub file_len: u64,
+    /// 日志文件绝对路径（未初始化时为空串），供窗口状态栏展示
+    pub path: String,
+}
+
+/// 日志文件绝对路径（未初始化时返回 None）
+pub fn log_file_path() -> Option<PathBuf> {
+    get_dir().map(|d| d.join(LOG_FILE))
+}
+
+/// 读取 app.log 自 `offset` 起的新增内容
+///
+/// - `offset` = 上次返回的 `next_offset`；首次传 0，此时只回填尾部 `max_bytes`
+/// - 单次读取（含增量）都受 `max_bytes` 封顶，洪峰分帧追平
+/// - 末尾不完整的行不消费（`next_offset` 不越过它），等下次写入完成后一并返回
+/// - 清理线程会把 >5MB 的日志清空（`cleanup_logs`），此时 `offset > file_len`，
+///   返回 `reset=true` 让前端清屏重读
+pub fn tail_log(offset: u64, max_bytes: u64) -> TailResult {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let path_str = log_file_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let result = |lines: Vec<String>, next_offset: u64, reset: bool, truncated: bool, file_len: u64| {
+        TailResult { lines, next_offset, reset, truncated, file_len, path: path_str.clone() }
+    };
+
+    let Some(path) = log_file_path() else {
+        return result(Vec::new(), 0, true, false, 0);
+    };
+    let Ok(meta) = fs::metadata(&path) else {
+        return result(Vec::new(), 0, true, false, 0);
+    };
+    let file_len = meta.len();
+    if file_len == 0 {
+        return result(Vec::new(), 0, offset > 0, false, 0);
+    }
+    if offset > file_len {
+        return result(Vec::new(), file_len, true, false, file_len);
+    }
+
+    let mut start = offset.min(file_len);
+    let truncated = start == 0 && file_len > max_bytes;
+    if truncated {
+        start = file_len - max_bytes;
+    }
+
+    let Ok(mut f) = fs::File::open(&path) else {
+        return result(Vec::new(), offset, false, false, file_len);
+    };
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return result(Vec::new(), offset, false, false, file_len);
+    }
+    // 单次读取封顶 max_bytes：扫描等高峰期日志洪峰一次可新增数 MB，不封顶会撑大
+    // 单次响应（序列化 + IPC 传输 + 前端渲染全被拖垮）；超出部分由后续轮询按
+    // offset 逐步追平（BUG-2026-0910-001）。
+    let mut buf = Vec::new();
+    if f.take(max_bytes as u64).read_to_end(&mut buf).is_err() {
+        return result(Vec::new(), offset, false, false, file_len);
+    }
+
+    // 只消费到最后一个 '\n'（含）；末尾半行留给下次写入完成后返回
+    let consumed = buf.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    let mut lines: Vec<String> = Vec::new();
+    if consumed > 0 {
+        let text = String::from_utf8_lossy(&buf[..consumed]);
+        let body = if truncated {
+            // 起点落在半行中间：丢弃第一段不完整内容
+            match text.find('\n') {
+                Some(i) => &text[i + 1..],
+                None => "",
+            }
+        } else {
+            text.as_ref()
+        };
+        for l in body.lines() {
+            if !l.trim().is_empty() {
+                lines.push(l.to_string());
+            }
+        }
+    }
+
+    result(lines, start + consumed as u64, false, truncated, file_len)
+}
+
+// ============================================================================
+// 单元测试：BUG-2026-0910-001 回归防护（tail 协议：回填/增量/半行/轮转/封顶）
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pms_logger_test_{tag}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(LOGS_DIR)).unwrap();
+        set_global_config(dir.join(LOGS_DIR), Duration::from_secs(3600));
+        dir.join(LOGS_DIR).join(LOG_FILE)
+    }
+
+    fn write(path: &Path, s: &str) {
+        use std::io::Write;
+        let mut f = OpenOptions::new().create(true).append(true).open(path).unwrap();
+        f.write_all(s.as_bytes()).unwrap();
+        f.flush().unwrap();
+    }
+
+    #[test]
+    fn tail_small_file_full_then_incremental() {
+        let path = setup_dir("small");
+        write(&path, "[t1] a\n[t2] b\n");
+        let r1 = tail_log(0, 64 * 1024);
+        assert_eq!(r1.lines, vec!["[t1] a", "[t2] b"]);
+        assert!(!r1.truncated && !r1.reset);
+        // 半行不消费
+        write(&path, "[t3] c");
+        let r2 = tail_log(r1.next_offset, 64 * 1024);
+        assert!(r2.lines.is_empty(), "半行应留待下次");
+        write(&path, " 尾\n[t4] d\n");
+        let r3 = tail_log(r2.next_offset, 64 * 1024);
+        assert_eq!(r3.lines, vec!["[t3] c 尾", "[t4] d"]);
+    }
+
+    #[test]
+    fn tail_backfill_only_tail_max_bytes() {
+        let path = setup_dir("backfill");
+        let big = "[t] x\n".repeat(40 * 1024); // 280KB > 64KB
+        write(&path, &big);
+        let r = tail_log(0, 64 * 1024);
+        assert!(r.truncated);
+        assert_eq!(r.lines.len(), 10922, "64KB 内的完整 6 字节行数（起点半行已丢弃）");
+        assert!(r.next_offset > 0);
+    }
+
+    #[test]
+    fn tail_reset_when_file_rotated() {
+        let path = setup_dir("reset");
+        write(&path, "[t] a\n");
+        let r1 = tail_log(0, 64 * 1024);
+        // 模拟清理线程清空
+        fs::write(&path, "").unwrap();
+        let r2 = tail_log(r1.next_offset, 64 * 1024);
+        assert!(r2.reset);
+        assert_eq!(r2.next_offset, 0);
+        // 清空后重新写入，从头读
+        write(&path, "[t] new\n");
+        let r3 = tail_log(r2.next_offset, 64 * 1024);
+        assert!(!r3.reset);
+        assert_eq!(r3.lines, vec!["[t] new"]);
+    }
+
+    #[test]
+    fn tail_incremental_capped_by_max_bytes() {
+        let path = setup_dir("capped");
+        write(&path, "[t] a\n");
+        let r1 = tail_log(0, 64 * 1024);
+        // 一次性写入 128KB，超过单次 max_bytes=64KB → 分帧追平
+        let flood = "[f] line\n".repeat(128 * 1024 / 9);
+        write(&path, &flood);
+        let mut r = tail_log(r1.next_offset, 64 * 1024);
+        let first_count = r.lines.len();
+        assert!(first_count > 0 && first_count < flood.lines().count(), "单次必须封顶");
+        // 逐步追平到 EOF
+        let mut polls = 1;
+        while r.lines.last().map(|l| !l.contains("line")).unwrap_or(true) || polls < 3 {
+            r = tail_log(r.next_offset, 64 * 1024);
+            polls += 1;
+            if r.next_offset >= fs::metadata(&path).unwrap().len() && r.lines.is_empty() {
+                break;
+            }
+            if polls > 20 { panic!("未能在有限轮内追平"); }
+        }
+    }
+}

@@ -670,6 +670,162 @@
       "log_hint": "app.log grep scan_album_combined（ERR=整相册回滚）；修复后 grep '[scan] 识别失败跳过' 可定位损坏文件清单",
       "created_at": "2026-09-09T16:45:00+08:00",
       "fixed_at": "2026-09-09T16:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0910-001",
+      "title": "开发者日志副窗口拖垮全局 UI：同步命令阻塞主线程 + 洪峰读取放大（全应用卡顿/日志窗白斑不刷新）",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": [
+        "开着开发者视角日志窗口时，其他所有界面（相册浏览/缩略图/翻页）明显卡顿",
+        "日志窗口长时间一条日志都刷不出来（invoke 响应被主线程排队饿死）",
+        "日志窗口刚开始黑色，随后内部出现白色板块（渲染滞后露出 webview 默认白底）"
+      ],
+      "root_cause": {
+        "summary": "tail_dev_log 写成了非 async 命令：Tauri v2 中非 async 命令在主线程（事件循环）上执行，而所有窗口共用这一个事件循环。日志窗口每 500ms 轮询一次，每次都在主线程做文件 IO + JSON 序列化；扫描期 app.log 洪峰一次可新增数 MB（read_to_end 无上限），单次响应体积与序列化时间爆炸，形成『越卡越读、越读越卡』的死亡螺旋——扫描/缩略图线程持续写日志，越冻结累积越多。白斑：日志副窗口不初始化主题 store，html/body 保持 main.css 默认浅色底，绘制跟不上时露出白底。",
+        "detail": [
+          "规格书明确要求『spawn_blocking 调 logger::tail_log（文件 IO 不持 AppState 锁）』，实现漏掉写成同步命令 Ok(logger::tail_log(...))——bug 直接来源",
+          "tail_log 增量读取 read_to_end 一直到 EOF 无单次上限：洪峰期读放大 → 序列化放大 → IPC 放大 → 前端解析渲染放大，四重放大全落在关键路径上",
+          "前端 setInterval(500ms) 无防重入：主线程繁忙时上一轮 invoke 未返回，下一轮照发，IPC 请求积压进一步放大卡顿",
+          "main.ts 副窗口分支只装 pinia 但没人把 theme-dark 挂到 body；LogWindowApp 仅 .logwin 覆盖视口深色，HTML 文档层与原生窗口层均为默认浅色/白底"
+        ]
+      },
+      "fix": "① tail_dev_log 改 async 命令 + tauri::async_runtime::spawn_blocking，文件 IO/序列化移出主线程事件循环；② tail_log 单次读取（含增量）用 Read::take(max_bytes=64KB) 封顶，洪峰分帧追平，斩断死亡螺旋；③ LogWindowApp poll() 加 inFlight 防重入，上一轮未返回不叠加请求；④ 日志窗口三层固定纯黑不再做主题适配：原生层 WebviewWindowBuilder.background_color(Color(12,14,20,255))（连打开瞬间白闪一起消掉）+ main.ts 副窗口分支写死 html/body 深色与 colorScheme:dark + 组件自身已是硬编码深色。cargo check / vue-tsc 通过。【14:20 真机复现验证】带修复构建后临时自动开窗截图：日志窗口正常显示（纯黑+彩色级别徽标+实时滚出 get_person_avatar 日志行），尾读 15.4MB 文件回填正常；空闲态 CPU：Rust 进程 ~25%/核、WebView2 合计 ~117%/核，无卡顿。此前『一条日志都不显示』确认为修复前主线程被同步命令反复阻塞、IPC 响应饿死所致。tail_log 协议已补 4 个单元测试（回填/增量/半行/轮转/封顶）全过。【16:00 同路径实测复现】用 npm run tauri dev（用户路径）+ PMS_AUTO_OPEN_DEVLOG=1 自动开窗：窗口显示正常（回填 712 行/16.8MB 文件）、空闲 12s CPU 实测 rust 0.02s + webview2 合计 0.25s + vite 0.09s（≈0）、0 条慢查询告警、文件无新增。同轮新增诊断仪表：状态栏显示「轮询 Yms（首帧 Zms）」、tail 慢查询 >200ms 才告警（5s 限频）、副窗口挂载失败直接红字显示错误原文（不再黑屏）、洪峰单次渲染上限 800→200 行。注：用户报障实例启动于 14:33，早于 15:20/15:40 的修复，属旧包测试。",
+      "related_files": [
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/logger.rs",
+        "src/main.ts",
+        "src/dev/LogWindowApp.vue",
+        "src-tauri/capabilities/dev-logs.json"
+      ],
+      "log_hint": "app.log 无直接报错（属性能型 bug）。复现=扫描/缩略图洪峰期间开日志窗，全局掉帧；修复后验证=同场景 UI 流畅、日志秒级滚出。grep tail_dev_log 无错误输出",
+      "created_at": "2026-09-10T11:40:00+08:00",
+      "fixed_at": "2026-09-10T11:40:00+08:00",
+      "plain_explanation": "通俗说：日志窗口每半秒要「瞟一眼」日志文件的新内容。这一眼原本也被安排在主干道（主线程）上做，而且一次能读好几 MB。扫描照片时日志增长飞快，主干道每隔半秒就被占住一会儿，于是全部界面卡顿；日志窗口自己排不上队，就表现为黑屏、什么都不显示（你看到的「白斑」也是渲染跟不上时露出的底色）。修法：这一眼挪到后巷去瞟（后台线程），并且每次最多只读 64KB。"
+    },
+    {
+      "id": "BUG-2026-0910-002",
+      "title": "人物画廊头像风暴：每开一次画廊 ~330 次顺序 IPC + 330 次全画廊重渲染，日志累计 15 万行（洪峰 ~1000 行/秒）",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": [
+        "打开人物画廊/回忆页时界面顿挫",
+        "app.log 95.5% 都是 get_person_avatar（151234 行，总量 15MB+），洪峰 ~1000 行/秒",
+        "日志副窗口开发后，风暴期日志窗口被洪水冲垮、全局卡顿被放大暴露"
+      ],
+      "root_cause": {
+        "summary": "PersonGallery.load() 对 list_persons 返回的每个人物逐个 await invoke(get_person_avatar)：几百人物 = 几百次顺序 IPC 往返（每次 2 行 AOP 日志），list_persons 被调 458 次 ↔ 头像 15.1 万次。且每来一个头像就 avatarMap.value = {...spread} 触发一次全画廊重渲染，n 人物 = O(n²) patch。该问题早于日志窗口功能存在（时间戳可证），日志窗口只是第一个实时消费者，把洪水变成了可见卡顿。",
+        "detail": [
+          "list_persons 调用 458 次 ↔ get_person_avatar 151234 次 ≈ 每次 330 人物，一一对应",
+          "RET 分布：74234 次 cache 命中 / 1383 次现场裁剪——缓存本身有效，风暴来自『顺序往返 + 逐条重渲染』而非解码",
+          "每条日志 write_log 都会 eprintln + 文件 write+flush（持锁），500 次/秒时 dev 终端与文件 IO 同步放大"
+        ]
+      },
+      "fix": "PersonGallery.load() 改为并发 8 路 worker 池拉取头像 + 本地汇总 next 映射后一次性赋值 avatarMap（330 次重渲染 → 1 次）；LogWindowApp.pushLines 单次洪峰超 800 行只保留最新 800 行（终端丢最旧语义）。cargo test 4/4、cargo check、vue-tsc 通过。【15:05 根治（采纳用户思路：点击才触发）】实测用户复测会话仍刷 23962 次/峰值 3603 行每秒——8 路并发只改节奏没改次数（26 次画廊加载 × ~920 人/次）。最终方案：① 新增 get_person_avatars_bulk 批量命令——后端本地逐个 stat 缓存文件，1 次往返带回全部命中路径、只写 1 行日志；② 未命中（需现场裁剪，~2%）前端占位，点击该人物（openPhotos→ensureAvatar 内联）时才走 get_person_avatar 现场裁剪；③ get_person_avatar 缓存命中路径不再写日志（噪音源头归零）。预期每次画廊加载：1 次 IPC + 1 行日志（原 ~920 次 + 1840 行）。【15:20 补充】Memories.vue 近期人物（前 8 位）同款 N+1 一并改用批量命令；全项目扫描确认其余循环（CategoryGallery/LocationGallery）均为按相册分批调用（命令本身接受整组路径），量级健康不处理。相关文件补：src-tauri/src/lib.rs（get_person_avatars_bulk）、src/views/Memories.vue。",
+      "related_files": [
+        "src/components/PersonGallery.vue",
+        "src/dev/LogWindowApp.vue",
+        "src-tauri/src/lib.rs",
+        "src/views/Memories.vue"
+      ],
+      "log_hint": "app.log grep get_person_avatar | grep -c END 看总量；修复后单次画廊加载应只剩 ~2×N 行且集中在一个短突发内",
+      "created_at": "2026-09-10T14:20:00+08:00",
+      "fixed_at": "2026-09-10T14:20:00+08:00",
+      "plain_explanation": "通俗说：人物画廊里有近 900 个人，原实现是「一个一个去问后端要头像」——开一次画廊就喊 900 次，每喊一次还记两条日志（一次就刷 1800 行）。好比去仓库取 900 件货却跑了 900 趟，还每趟都写进台账。修法：一次把清单全带回来（1 次往返、1 行日志、1 次界面刷新）；少数没缓存头像的人，等你点开他的时候再现场做——也就是「用到才算」。"
+    },
+    {
+      "id": "BUG-2026-0910-003",
+      "title": "get_person_photos 同步命令在主线程现场生成 884 张缩略图（1.7s 全应用冻结、窗口关闭无响应）",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": [
+        "点开照片较多的人物（P041，884 张，thumb_hit=0）时全应用卡死 ~1.7 秒",
+        "期间所有窗口无响应，日志副窗口点关闭无反应",
+        "文档注释与行为不符：注释写『不重新运算缩略图』，实际 9/16 起会现场补图"
+      ],
+      "root_cause": {
+        "summary": "get_person_photos 是非 async 命令（主线程执行）。BUG-2026-0916-001 给它加了『缺图现场补齐』（ensure_grid_thumb：解码原图→256px→落盘），从此同步命令变成了重活：884 张全缺时 1.7s 全部跑在主线程事件循环上，冻结所有窗口。缩略图体系本身是『浏览时按需生成 + 永久缓存』（扫描阶段刻意不生成，thumbs 缓存 395MB 即历史浏览所攒），P041 的照片从未被浏览过故全缺。",
+        "detail": [
+          "photo_scan.rs 刻意不依赖 thumbnail 模块（文件头注释明示解耦），扫描不预生成缩略图",
+          "get_person_photos 每 path 调 ensure_grid_thumb（解码+缩放+编码），884 次 × ~2ms ≈ 1.7s",
+          "主线程 = 所有窗口共用的事件循环 → 冻结期间 WM_CLOSE 都不处理 → 关窗无反应"
+        ]
+      },
+      "fix": "按代码库既有模式（get_photo_thumbs：短锁查表 → spawn_blocking 生成）改造：get_person_photos 改 async 命令，MutexGuard 短锁取相册归属后，把逐照片循环（含 ensure_grid_thumb 补图）整体抽成 build_person_photo_items() 放 spawn_blocking 执行，统计值以元组返回。cargo check + 单测 4/4 通过。效果：首次点开 1.7s 期间 UI 流畅（转圈等待），生成结果永久缓存后续秒开。",
+      "related_files": [
+        "src-tauri/src/lib.rs"
+      ],
+      "log_hint": "app.log grep get_person_photos 看 generated 数；修复后该命令耗时不变但不再冻结 UI",
+      "created_at": "2026-09-10T15:45:00+08:00",
+      "fixed_at": "2026-09-10T15:45:00+08:00",
+      "plain_explanation": "通俗说：点开某个人物时，他的 884 张照片还没有缩略图，程序就在主干道上当场「洗照片」（解大图→缩小→存盘），884 张花了 1.7 秒，期间所有窗口都动不了（连关闭按钮都没反应）。修法：洗照片挪到后巷做，界面转个圈但全程能操作；洗完存下来，第二次打开就是秒开。"
+    },
+    {
+      "id": "BUG-2026-0910-004",
+      "title": "构建产物陈旧导致『功能没生效』误判：release exe 与 dist 前端停留在 09-09（不会自动重建）",
+      "status": "fixed",
+      "severity": "medium",
+      "symptom": [
+        "用户报『日志窗口还是旧的、打开依然卡顿』，实际跑的是修复前的构建",
+        "target/release/photo-management-sys.exe（09-09）与 dist/（09-09）均不含日志窗口功能"
+      ],
+      "root_cause": {
+        "summary": "开发期修复只在 debug 路径（vite 实时供源）生效：debug exe 走 devUrl 所以前端永远最新，但 release exe 与 dist 静态资源不会随源码自动重建——dist 停留在 09-09，release exe 同样。用户双击旧 exe/旧 dist 时看到的自然是旧行为，却被当成『修复无效』。",
+        "detail": [
+          "npm run tauri dev：cargo 自动重建 exe + vite 实时供源（唯一『永远最新』的路径）",
+          "cargo build / 直接双击 target 下 exe：Rust 是旧的；无 vite 时前端加载失败",
+          "tauri build / release.ps1：前端取 dist——不先跑 npm run build 就是旧前端"
+        ]
+      },
+      "fix": "① 新增 app_info 命令（版本/dev 标志/exe 路径与构建时间）并在日志窗口状态栏显示构建指纹『v0.2.0 dev · exe 09-10 15:10』，跑错包一眼可辨；② 重新执行 npm run build 刷新 dist（已验证含 get_person_avatars_bulk 等全部新功能）；③ 规范：开发调试统一 npm run tauri dev，发布统一走 release.ps1（内含前端构建）。",
+      "related_files": [
+        "src-tauri/src/lib.rs",
+        "src/dev/LogWindowApp.vue",
+        "dist",
+        "release.ps1"
+      ],
+      "log_hint": "日志窗口状态栏右侧构建指纹；或 app.log 中『打开日志窗口耗时』行的有无（旧包也可能无此行）",
+      "created_at": "2026-09-10T16:30:00+08:00",
+      "fixed_at": "2026-09-10T16:30:00+08:00",
+      "plain_explanation": "通俗说：你当时测的是旧货。开发和打包用的是两套货架：开发模式（tauri dev）永远现做现用、必定最新；打包/安装版用的是 dist 里提前做好的「预制件」，改了代码它不会自动更新。你打开的正是 9 月 9 日的预制件——那会儿这个功能还没写出来，所以怎么看都不对。修法：重新做了一遍预制件，并在日志窗口状态栏加了「构建指纹」，跑的是哪个包一眼可见。"
+    },
+    {
+      "id": "BUG-2026-0910-005",
+      "title": "【真凶】open_dev_log_window 同步命令在主线程内建窗：窗口停在 about:blank（空白无标题）+ 卡死事件循环（全应用卡顿、进程偶发以 0xcfffffff 退出）",
+      "status": "fixed",
+      "severity": "critical",
+      "symptom": [
+        "点击 ⚙→开发者视角：日志窗口出现但纯黑空白，无日志行、连静态状态栏都没有（标题为空=停在 about:blank）",
+        "同时所有其他页面卡顿（事件循环被占）",
+        "用户实机曾出现进程以 exit code 0xcfffffff 退出（tauri dev 报 process didn't exit successfully）",
+        "app.log 中『打开日志窗口耗时』行缺失或仅出现在诊断自开路径"
+      ],
+      "root_cause": {
+        "summary": "open_dev_log_window 是非 async 命令——Tauri v2 中非 async 命令在主线程（事件循环）上执行，而 WebviewWindowBuilder::build() 在此处同步建窗：窗口对象能建出来（所以窗口可见），但导航/首帧永远不会完成（停在 about:blank，故空白且标题为空），同时事件循环在同步建窗期间被卡住（全应用卡顿），严重时进程直接退出。对照实验证明：同一份代码从后台线程建窗（PMS_AUTO_OPEN_DEVLOG 诊断开关 / std::thread::spawn）100% 正常——之前所有『成功复现』都走的是这条路径，因此一直没暴露；用户点击走 IPC→主线程路径，必现。",
+        "detail": [
+          "实测对照：诊断自开（后台线程）→ 窗口显示 712 行日志、空闲 CPU≈0；IPC 定时 invoke（等价点击）→ 窗口 935×657 可见但标题为空、页面全黑无文字（EnumWindows 取证）",
+          "main.ts 的副窗口 showFatal 未触发 → 说明不是前端 JS 异常，而是导航从未完成",
+          "窗口纯黑来自 builder 的 background_color（原生层，不需要 JS），所以黑屏不能作为『页面已加载』的依据",
+          "该根因同时解释历史现象：早期『黑底后出现白斑』『点开后全局卡顿』『关闭无响应』"
+        ]
+      },
+      "fix": "open_dev_log_window 改 async 命令，窗口创建抽为 build_dev_log_window() 并放入 tauri::async_runtime::spawn_blocking 执行（非主线程建窗），聚焦已存在窗口的路径保持原样。验证：同一 IPC 点击路径下窗口正常渲染——状态栏显示『200 行 · 16.81 MB · 轮询 3ms』与构建指纹『v0.2.0 dev · exe ...』，日志行正常滚出；vue-tsc / cargo check 通过。",
+      "related_files": [
+        "src-tauri/src/lib.rs",
+        "src/main.ts",
+        "src/dev/LogWindowApp.vue"
+      ],
+      "log_hint": "app.log grep '打开日志窗口耗时'：修复后应出现『（后台线程建窗，不阻塞主线程）』；若缺失而窗口存在则说明走了同步建窗路径",
+      "created_at": "2026-09-10T16:45:00+08:00",
+      "fixed_at": "2026-09-10T16:45:00+08:00",
+      "plain_explanation": "打个比方：这个应用只有一条主干道（主线程/事件循环），所有窗口的点击、刷新、画界面都得排队走这条路。你点「开发者视角」时，程序要造一个新窗口——但这个活儿被安排成「站在主干道正中间造房子」（同步命令）。结果：① 造房子期间所有人被堵在路上，所有页面一起卡；② 更坑的是房子只搭了个黑壳子，「通水通电」（网页加载）那一步永远没完成，因为负责通电的人也被堵在路上了——于是窗口永远停在毛坯状态：纯黑、没标题、一条日志都不显示。堵得特别死的时候，整栋楼会被判定为僵死，程序直接退出（就是你看到的 0xcfffffff 退出码）。为什么我反复测试都正常、你一用就坏？因为我之前用的自动开窗走的是后巷（后台线程），从来不占主干道——我一直在测后巷，你一直在走主干道。修法就是把造房子的活儿挪到后巷去做，主干道全程畅通。修好后实测：窗口秒开、日志正常滚出、读取只要 3 毫秒。",
+      "lessons": [
+        "Tauri v2 默认：非 async 命令在主线程（事件循环＝唯一车道）执行。文件 IO / 图片编解码 / 大批量 DB / 批量循环 invoke / 建窗等重活必须 async + spawn_blocking；占住车道＝所有窗口一起卡，严重时进程被判定僵死退出。",
+        "建窗尤其注意：在主线程事件循环回调内同步 build() 会导致导航/首帧永不完成（about:blank 空白窗），且窗口网页加载同样依赖该线程，等于自己等自己。",
+        "日志体系分工：写入保持轻量即可；读取一律后台线程 + 单次封顶（64KB）；高频成功路径不写日志——否则台账洪水会把消费端（日志窗口）冲垮。",
+        "列表数据一次批量取（禁止 N+1 往返）；贵操作点击再触发（用到才算）。",
+        "验收纪律：必须走用户真实路径（IPC/点击）。本次内部调用与后台线程路径全绿、IPC 点击必现——只测内部路径等于没测。"
+      ]
     }
   ]
 }

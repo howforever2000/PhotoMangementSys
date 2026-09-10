@@ -1105,19 +1105,23 @@ pub struct PersonPhotoItem {
     pub album_id: Option<i64>,
 }
 
-/// 读取某人物出现的全部照片：直接查询已算好的缩略图缓存地址，**不重新运算缩略图**。
-/// 未缓存的照片返回 thumb=None，前端回退原图显示。
+/// 读取某人物出现的全部照片：直接查询已算好的缩略图缓存地址；
+/// 未缓存的照片现场补齐（BUG-2026-0916-001，原文档“不重新运算缩略图”已过时）。
+///
+/// 必须 async + spawn_blocking（BUG-2026-0910-003）：大人物全缺图时现场生成
+/// 缩略图实测 1.7s（884 张），同步命令跑在主线程会冻结全部窗口——所有界面卡死、
+/// 日志副窗口连关闭都无响应。
 #[tauri::command]
-fn get_person_photos(
+async fn get_person_photos(
     pid: String,
     app: tauri::AppHandle,
-    state: tauri::State<AppState>,
-    session: tauri::State<SessionState>,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, SessionState>,
 ) -> Result<Vec<PersonPhotoItem>, String> {
     let _t = log_call!("get_person_photos", &format!("pid={pid}"));
     let user_id = require_user(&session)?;
     let paths = crate::persons::list_person_photos(&pid)?;
-    // 一次性取出本次用户相册 (id, path) 用于归属解析
+    // 短锁取归属数据（MutexGuard 不得跨 spawn_blocking 边界，同 get_photo_thumbs 模式）
     let albums: Vec<(i64, String)> = {
         let db = state.0.lock().map_err(|e| e.to_string())?;
         db.get_albums(user_id)
@@ -1127,6 +1131,37 @@ fn get_person_photos(
             .collect()
     };
     let thumbs_dir = thumbs_dir(&app).ok();
+    // 重活（解码原图→缩放→编码→落盘）放阻塞线程执行
+    let (out, generated, unresolved, gen_failed, unresolved_samples, cached_count) =
+        tauri::async_runtime::spawn_blocking(move || {
+            build_person_photo_items(paths, albums, thumbs_dir)
+        })
+        .await
+        .map_err(|e| format!("人物照片任务线程失败: {e}"))?;
+    let unresolved_hint = if unresolved_samples.is_empty() {
+        String::new()
+    } else {
+        format!(" | 无归属样例: {:?}", unresolved_samples)
+    };
+    logger::log_call_end_with(
+        "get_person_photos",
+        _t,
+        &format!(
+            "OK | n={} thumb_hit={} generated={generated} unresolved={unresolved} gen_failed={gen_failed}{unresolved_hint}",
+            out.len(),
+            cached_count.saturating_sub(generated),
+        ),
+    );
+    Ok(out)
+}
+
+/// `get_person_photos` 的重活部分（纯文件系统 + CPU），由 spawn_blocking 调用。
+/// 返回 (items, generated, unresolved, gen_failed, 无归属样例, 缓存命中数)
+fn build_person_photo_items(
+    paths: Vec<String>,
+    albums: Vec<(i64, String)>,
+    thumbs_dir: Option<std::path::PathBuf>,
+) -> (Vec<PersonPhotoItem>, usize, usize, usize, Vec<String>, usize) {
     let mut out = Vec::with_capacity(paths.len());
     let mut generated = 0usize;
     let mut unresolved = 0usize;
@@ -1188,21 +1223,7 @@ fn get_person_photos(
         });
     }
     let cached_count = out.iter().filter(|i| i.thumb.is_some()).count();
-    let unresolved_hint = if unresolved_samples.is_empty() {
-        String::new()
-    } else {
-        format!(" | 无归属样例: {:?}", unresolved_samples)
-    };
-    logger::log_call_end_with(
-        "get_person_photos",
-        _t,
-        &format!(
-            "OK | n={} thumb_hit={} generated={generated} unresolved={unresolved} gen_failed={gen_failed}{unresolved_hint}",
-            out.len(),
-            cached_count.saturating_sub(generated),
-        ),
-    );
-    Ok(out)
+    (out, generated, unresolved, gen_failed, unresolved_samples, cached_count)
 }
 
 /// 判断照片路径是否位于相册目录之下（目录是祖先，且照片不是目录本身）。
@@ -2250,13 +2271,15 @@ async fn get_person_avatar(
     force_refresh: Option<bool>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let _t = log_call!("get_person_avatar", &format!("pid={pid} force={force_refresh:?}"));
     let dir = avatars_dir(&app)?;
     let cache_path = dir.join(format!("avatar_{pid}.jpg"));
+    // 缓存命中不写日志（BUG-2026-0910-002）：画廊一次拉几百个头像，此前每次命中都写
+    // CALL+RET 两行，累计 15 万行噪音把 app.log 刷到 15MB+，日志副窗口也被洪水冲垮；
+    // 只保留真正值得看的事件（现场裁剪/出错）。
     if !force_refresh.unwrap_or(false) && cache_path.is_file() {
-        logger::log_call_end_with("get_person_avatar", _t, "OK | cache");
         return Ok(cache_path.to_string_lossy().into_owned());
     }
+    let _t = log_call!("get_person_avatar", &format!("pid={pid} force={force_refresh:?}"));
     // 裁剪解码在阻塞线程执行，避免大图解码占用异步运行时
     let r = tauri::async_runtime::spawn_blocking(move || {
         persons::crop_avatar_local(&pid, &cache_path)?;
@@ -2269,6 +2292,43 @@ async fn get_person_avatar(
         Err(e) => logger::log_call_end_with("get_person_avatar", _t, &format!("ERR | {e}")),
     }
     r
+}
+
+/// 批量取人物头像路径（仅查本地缓存：命中返回路径，未命中返回 null）
+///
+/// BUG-2026-0910-002 根治：画廊人物已有 ~900 个，逐个 invoke = 每次 900 次 IPC
+/// 往返 + 峰值 3600 行日志/秒（日志副窗口被洪水冲垮、主窗口被风暴拖慢）。
+/// 改为单次批量：后端本地逐个 stat 缓存文件，一次往返全部带回、只写 1 行日志。
+/// 未命中（首次出现的人物，需现场裁剪）返回 null，前端占位，点击该人物时
+/// 再走 get_person_avatar 按需裁剪。
+#[tauri::command]
+async fn get_person_avatars_bulk(
+    pids: Vec<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<Option<String>>, String> {
+    let _t = log_call!("get_person_avatars_bulk", &format!("count={}", pids.len()));
+    let dir = avatars_dir(&app)?;
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        pids.iter()
+            .map(|pid| {
+                let p = dir.join(format!("avatar_{pid}.jpg"));
+                if p.is_file() {
+                    Some(p.to_string_lossy().into_owned())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|e| format!("批量头像任务线程失败: {e}"))?;
+    let hit = r.iter().filter(|x| x.is_some()).count();
+    logger::log_call_end_with(
+        "get_person_avatars_bulk",
+        _t,
+        &format!("OK | hit={hit} miss={}", r.len() - hit),
+    );
+    Ok(r)
 }
 
 /// FEAT-047：人物自选头像 —— 用户在人物照片弹窗指定一张照片作为头像封面
@@ -3011,6 +3071,132 @@ fn now() -> i64 {
 }
 
 // =====================================================================
+// 开发者视角（实时日志副窗口）
+// =====================================================================
+
+/// 运行态构建信息（诊断）：版本 / 是否 dev / 可执行文件路径与构建时间
+///
+/// 由来：调试版走 vite（前端实时最新），release/打包版走 dist——而 dist 可能是
+/// 陈旧构建（实测曾停留在 09-09，不含任何新功能）。把构建指纹显示在日志窗口
+/// 状态栏，避免再出现『我跑的是哪个包』的误判。
+#[derive(Debug, serde::Serialize)]
+struct AppInfo {
+    version: String,
+    dev: bool,
+    exe: String,
+    exe_mtime_unix: Option<u64>,
+}
+
+#[tauri::command]
+fn app_info(app: tauri::AppHandle) -> AppInfo {
+    let exe_path = std::env::current_exe().ok();
+    let exe = exe_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let exe_mtime_unix = exe_path
+        .as_ref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    AppInfo {
+        version: app.package_info().version.to_string(),
+        dev: tauri::is_dev(),
+        exe,
+        exe_mtime_unix,
+    }
+}
+
+/// 尾读 app.log 增量：返回上次偏移之后的新日志行（日志窗口 500ms 轮询一次）
+///
+/// 必须 async + spawn_blocking：Tauri 非 async 命令在主线程（事件循环）上执行，
+/// 而所有窗口共用这一个事件循环——文件 IO/序列化放主线程会把全部界面一起卡住，
+/// 日志高峰期（扫描）还会形成"越卡越读、越读越卡"的死亡螺旋。见 BUG-2026-0910-001。
+#[tauri::command]
+async fn tail_dev_log(offset: u64) -> Result<logger::TailResult, String> {
+    let t0 = std::time::Instant::now();
+    let r = tauri::async_runtime::spawn_blocking(move || logger::tail_log(offset, 64 * 1024))
+        .await
+        .map_err(|e| format!("tail_dev_log 执行失败: {e}"))?;
+    // 慢查询诊断（BUG-2026-0910-001）：>200ms 且距上次告警 >5s 才写一行，
+    // 避免告警本身在日志里形成新的反馈洪峰
+    let ms = t0.elapsed().as_millis();
+    if ms > 200 {
+        static LAST_WARN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let prev = LAST_WARN.load(std::sync::atomic::Ordering::Relaxed);
+        if now.saturating_sub(prev) >= 5
+            && LAST_WARN
+                .compare_exchange(
+                    prev,
+                    now,
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                )
+                .is_ok()
+        {
+            logger::log_info(&format!(
+                "tail_dev_log 慢查询 {ms}ms（offset={offset} file_len={}）",
+                r.file_len
+            ));
+        }
+    }
+    Ok(r)
+}
+
+/// 打开（或聚焦已存在的）开发者视角日志窗口（单例）
+///
+/// 新窗口 label 固定为 `dev-logs`，前端 main.ts 按 label 分支独立挂载日志组件，
+/// 不走 router（避开登录守卫）。权限见 capabilities/dev-logs.json。
+///
+/// 必须 async + 后台线程建窗（BUG-2026-0910-005）：不用 async 时命令跑在主线程
+/// （事件循环）内，`build()` 同步建窗会停在 about:blank（窗口空白、标题为空）、
+/// 卡住整个事件循环，甚至导致进程以 0xcfffffff 退出——实测点击（IPC）必现，
+/// 而后台线程建窗（启动自开诊断开关）完全正常。
+#[tauri::command]
+async fn open_dev_log_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("dev-logs") {
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    tauri::async_runtime::spawn_blocking(move || build_dev_log_window(app))
+        .await
+        .map_err(|e| format!("日志窗口创建任务失败: {e}"))?
+}
+
+/// 实际的建窗逻辑（在阻塞线程执行，不走主线程事件循环内同步建窗）
+fn build_dev_log_window(app: tauri::AppHandle) -> Result<(), String> {
+    let t0 = std::time::Instant::now();
+    // dev 走 vite 固定端口（vite.config.ts strictPort 1420）；打包走静态资源。
+    // 窗口组件由 main.ts 按 window label（dev-logs）识别，无需 query 参数。
+    let url = if tauri::is_dev() {
+        tauri::WebviewUrl::External("http://localhost:1420/".parse().expect("valid dev url"))
+    } else {
+        tauri::WebviewUrl::App("index.html".into())
+    };
+    tauri::WebviewWindowBuilder::new(&app, "dev-logs", url)
+        .title("开发者视角 · 实时日志")
+        .inner_size(920.0, 620.0)
+        .min_inner_size(560.0, 380.0)
+        .resizable(true)
+        .center()
+        // 原生层固定纯黑（#0c0e14）：窗口创建瞬间/页面加载前/渲染滞后时不露白底
+        .background_color(tauri::window::Color(12, 14, 20, 255))
+        .build()
+        .map_err(|e| format!("打开日志窗口失败: {e}"))?;
+    logger::log_info(&format!(
+        "打开日志窗口耗时 {}ms（后台线程建窗，不阻塞主线程）",
+        t0.elapsed().as_millis()
+    ));
+    Ok(())
+}
+
+// =====================================================================
 // 应用启动
 // =====================================================================
 
@@ -3028,6 +3214,15 @@ pub fn run() {
                 .expect("无法获取应用数据目录");
             // 初始化日志组件（保留 3 天 = 4320 分钟）
             logger::init(&data_dir, 4320);
+            // 开发诊断：PMS_AUTO_OPEN_DEVLOG=1 时启动 4 秒后自动打开日志副窗口，
+            // 免点击复现打开链路（测量窗口创建/首帧耗时），日常使用不设置即可
+            if std::env::var("PMS_AUTO_OPEN_DEVLOG").as_deref() == Ok("1") {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(4));
+                    let _ = open_dev_log_window(h);
+                });
+            }
             // 初始化用户敏感字段加密密钥（必须早于数据库迁移，迁移需用密钥加密历史明文）
             crypto::init(&data_dir).expect("初始化应用加密密钥失败");
             let db_path = data_dir.join("photos.db");
@@ -3078,6 +3273,8 @@ pub fn run() {
             // 相册管理（按用户隔离）
             create_album,
             get_albums,
+            get_person_avatars_bulk,
+            app_info,
             get_album,
             update_album,
             prewarm_thumbs,
@@ -3155,6 +3352,9 @@ pub fn run() {
             set_vcr_model,
             benchmark_vcr,
             cancel_scan,
+            // 开发者视角（实时日志副窗口）
+            tail_dev_log,
+            open_dev_log_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

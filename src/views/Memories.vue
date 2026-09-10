@@ -165,14 +165,20 @@ const topPersons = computed(() => persons.value.slice(0, 8));
 const personAvatarMap = ref<Record<string, string>>({});
 
 async function loadPersonAvatars() {
-  for (const p of topPersons.value) {
-    if (personAvatarMap.value[p.id]) continue;
-    try {
-      const cachePath = await invoke<string>("get_person_avatar", { pid: p.id });
-      personAvatarMap.value = { ...personAvatarMap.value, [p.id]: convertFileSrc(cachePath) };
-    } catch {
-      /* 无代表脸 / 原图缺失：保留首字占位 */
-    }
+  // BUG-2026-0910-002 同源（N+1 往返）：改用批量命令，1 次往返替代逐个 8 次 +
+  // 8 次逐条重渲染；未命中（需现场裁剪）保留首字占位，点击跳转后由画廊按需补
+  const pids = topPersons.value.filter((p) => !personAvatarMap.value[p.id]).map((p) => p.id);
+  if (!pids.length) return;
+  try {
+    const paths = await invoke<(string | null)[]>("get_person_avatars_bulk", { pids });
+    const next = { ...personAvatarMap.value };
+    pids.forEach((pid, i) => {
+      const path = paths[i];
+      if (path) next[pid] = convertFileSrc(path);
+    });
+    personAvatarMap.value = next;
+  } catch {
+    /* 无代表脸 / 原图缺失：保留首字占位 */
   }
 }
 

@@ -1487,7 +1487,52 @@
       ],
       "created_at": "2026-09-09T16:11:06+08:00",
       "updated_at": "2026-09-09T16:11:06+08:00"
+    },
+    {
+      "id": "FEAT-054",
+      "name": "开发者视角：设置入口 + cmd 风实时日志副窗口（只读 app.log 文件 tail，无事件流改造）",
+      "status": "done",
+      "description": "Home 右上角 ⚙ 设置菜单（锚定下拉 + Esc/遮罩关闭，后续设置项统一入此）→『开发者视角』打开独立终端风日志窗口（label=dev-logs，后端单例：已开则聚焦+还原）。数据源只读 app_data_dir/logs/app.log：Rust logger::tail_log 按行尾读（offset 增量 / 首调尾部 64KB 回填对齐 / 末尾半行不消费 / >5MB 清空或轮转返回 reset），前端 500ms 轮询增量。命令 async+spawn_blocking 不占主线程、单次读取 64KB 封顶（BUG-2026-0910-001 教训）。窗口固定纯黑终端风（原生 background_color + html/body 深色，不做主题适配），彩色级别徽标（CALL 灰 / RET 蓝+耗时 / ERR 红 / INFO 绿 / LOGGER 黄），文本过滤、暂停/恢复、自动跟随滚动、上滚暂停+『回到底部(N 条新日志)』浮标、2000 行 DOM 上限、轮转/截断提示、状态栏文件路径+行数+体积。main.ts 按 window label 分流挂载 LogWindowApp，不装 router 避开登录守卫；capabilities/dev-logs.json 仅授 core:default 与主窗口能力隔离。边界：VCR Python 子进程 stdout 不在 app.log 内不采集；不改 logger 写入与清理线程；不引入文件监听依赖。",
+      "related_files": [
+        "src-tauri/src/logger.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/capabilities/dev-logs.json",
+        "src/main.ts",
+        "src/dev/LogWindowApp.vue",
+        "src/views/Home.vue"
+      ],
+      "keywords": [
+        "开发者视角",
+        "日志窗口",
+        "dev-logs",
+        "tail",
+        "spawn_blocking",
+        "轮询",
+        "设置菜单",
+        "FEAT-054"
+      ],
+      "implementation": {
+        "rust": [
+          "logger.rs：TailResult{lines,next_offset,reset,truncated,file_len,path}；log_file_path() 复用 get_dir()；tail_log(offset,max_bytes) —— stat 文件长度 → offset>len 返回 reset → 首调 file_len>max_bytes 尾部对齐回填 truncated → Read::take(max_bytes) 封顶读取 → 只消费到最后一个 '\n'（半行留待下次）",
+          "lib.rs：tail_dev_log 为 async 命令 + spawn_blocking（非 async 命令在主线程执行会拖垮全部窗口）；open_dev_log_window 单例（get_webview_window → set_focus/unminimize），dev 走 External(vite 1420)、打包走 App(index.html)，builder 设 background_color 纯黑",
+          "capabilities/dev-logs.json：windows=[dev-logs] + core:default，与主窗口 default.json 能力隔离"
+        ],
+        "frontend": [
+          "main.ts：getCurrentWindow().label==='dev-logs' 分流挂载 LogWindowApp（不装 router 避开登录守卫），并写死 html/body 深色 + colorScheme dark",
+          "LogWindowApp.vue：500ms 轮询 + inFlight 防重入 + document.hidden 跳过；LINE_RE 解析时间戳/级别；reset 清屏提示轮转、truncated 提示仅尾部 64KB；过滤 computed、暂停、自动跟随（isNearBottom 容差 40px）、回到底部浮标、MAX_LINES=2000 头部丢弃；onUnmounted clearInterval"
+        ]
+      },
+      "highlights": [
+        "窗口 label 分流而非 URL query，dev/打包两态行为一致且天然避开登录守卫",
+        "尾读协议自带防撕裂（半行不消费）与防轮转崩溃（reset 信号），前端无状态可重连",
+        "性能三护栏：spawn_blocking 离开主线程 / take(64KB) 封顶洪峰 / inFlight 防重入——对应验收④⑤场景不卡不崩",
+        "验收清单 ①~⑥ 全过：⚙ 菜单、秒级滚出、暂停/回底/过滤、5MB 轮转不崩、重复点击聚焦不重开、cargo check + vue-tsc 通过",
+        "BUG-2026-0910-001 真机复现闭环：修复后日志窗口正常显示/回填/滚出；性能三护栏（spawn_blocking/64KB 封顶/inFlight）+ 头像风暴修复（0910-002）双管齐下",
+        "真凶修复（BUG-2026-0910-005）：open_dev_log_window 改 async + 后台线程建窗——同步命令在主线程内建窗会停在 about:blank（空白无标题）并卡死事件循环，实测对照：后巷建窗 100% 正常，IPC 点击路径必现；修复后点击路径实测 轮询 3ms、日志正常滚出"
+      ],
+      "created_at": "2026-09-10T11:40:00+08:00",
+      "updated_at": "2026-09-10T17:00:00+08:00"
     }
   ],
-  "updated": "2026-09-09T16:11:06+08:00"
+  "updated": "2026-09-10T17:00:00+08:00"
 }
