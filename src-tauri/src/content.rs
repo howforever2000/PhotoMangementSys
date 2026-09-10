@@ -264,6 +264,14 @@ fn build_records_combined(
     for r in results {
         current += 1;
         if r.error.is_some() {
+            // BUG-2026-0909-001：识别失败被静默跳过（损坏文件每次扫描都缺、
+            // 且换相册归属也无法解释），留痕到日志方便事后定位
+            // 「已入库 N/M 差额」到底缺了哪几张、为什么缺。
+            crate::logger::log_info(&format!(
+                "[scan] 识别失败跳过: {} ({})",
+                r.path,
+                r.error.as_deref().unwrap_or("未知错误")
+            ));
             continue;
         }
         let path = Path::new(&r.path);

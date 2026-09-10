@@ -397,12 +397,15 @@ fn fill_album_stats(album: &mut db::Album, thumbs_dir: &Path, state: &tauri::Sta
     }
 }
 
-/// FEAT-036：批量填充每个相册的「已入库照片数」（photo_content_scan 中该相册的行数）。
-/// 一次分组统计（count_scanned_by_album），避免逐相册 N+1 查询。
+/// FEAT-036：批量填充每个相册的「已入库照片数」。
+/// BUG-2026-0909-001：改为按相册目录子树前缀统计（原按 album_id 分组统计，
+/// 父子相册共享照片时行归属互抢，表现为「之前入库的照片变未入库」）。
+/// 一次全量路径查询 + Rust 侧前缀匹配，避免逐相册 LIKE N+1。
 /// 多用户隔离：`user_id` 由调用方传入，仅统计当前用户已入库行。
 fn fill_scanned_counts(albums: &mut [db::Album], user_id: i64, state: &tauri::State<AppState>) {
     let Ok(db) = state.0.lock() else { return };
-    let Ok(map) = db.count_scanned_by_album(user_id) else { return };
+    let pairs: Vec<(i64, String)> = albums.iter().map(|a| (a.id, a.path.clone())).collect();
+    let Ok(map) = db.count_scanned_by_prefix(user_id, &pairs) else { return };
     for a in albums.iter_mut() {
         a.scanned_photo_count = map.get(&a.id).copied().unwrap_or(0);
     }

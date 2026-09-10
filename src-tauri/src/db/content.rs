@@ -746,20 +746,43 @@ impl Database {
     /// 1. 给相册卡片标记「是否已入库」（count > 0）；
     /// 2. 智慧相册 Hero 聚合「已入库相册数」。
     /// 多用户隔离：仅统计当前用户的相册。
-    pub fn count_scanned_by_album(&self, user_id: i64) -> Result<HashMap<i64, i64>, DbError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT album_id, COUNT(*) AS cnt
-             FROM photo_content_scan
-             WHERE user_id = ?1 AND album_id IS NOT NULL
-             GROUP BY album_id",
-        )?;
-        let rows = stmt.query_map(params![user_id], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-        })?;
-        let mut map = HashMap::new();
+    /// FEAT-036：统计各相册已入库照片数（按相册目录子树前缀匹配，BUG-2026-0909-001 修复）
+    ///
+    /// 语义：照片文件位于相册目录（含子目录）下且在 photo_content_scan 有行 → 计数，
+    /// 不论该行的 album_id 归属哪个相册。
+    ///
+    /// 为什么不用 album_id 分组统计：父子相册共享同一批照片（父目录递归包含子目录），
+    /// 每张照片在表中只有一行、album_id 只有一个归属，谁最后重扫这批照片行就归谁 ——
+    /// 「先扫父相册再扫子相册」后父相册计数骤减，UI 表现为「之前入库的照片变未入库」。
+    /// 目录前缀统计与 photo_count（递归文件数）口径一致，父子相册各自都显示完整覆盖。
+    ///
+    /// 实现：单查询取当前用户全部已入库路径，Rust 侧前缀匹配（避免逐相册 LIKE N+1）。
+    pub fn count_scanned_by_prefix(
+        &self,
+        user_id: i64,
+        album_paths: &[(i64, String)],
+    ) -> Result<HashMap<i64, i64>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM photo_content_scan WHERE user_id = ?1")?;
+        let rows = stmt.query_map(params![user_id], |r| r.get::<_, String>(0))?;
+        let mut paths: Vec<String> = Vec::new();
         for r in rows {
-            let (album_id, cnt) = r?;
-            map.insert(album_id, cnt);
+            paths.push(r?);
+        }
+        // 前缀规范化：确保以分隔符结尾，避免「川西合集」误匹配「川西合集备份」
+        let prefixes: Vec<(i64, String)> = album_paths
+            .iter()
+            .map(|(id, p)| {
+                let trimmed = p.trim_end_matches(['\\', '/']);
+                let sep = if p.contains('/') { '/' } else { '\\' };
+                (*id, format!("{trimmed}{sep}"))
+            })
+            .collect();
+        let mut map = HashMap::new();
+        for (id, prefix) in &prefixes {
+            let cnt = paths.iter().filter(|p| p.starts_with(prefix.as_str())).count() as i64;
+            map.insert(*id, cnt);
         }
         Ok(map)
     }
@@ -1329,25 +1352,44 @@ mod tests {
         assert!(db.search_photo_content("狗", 1, None).unwrap().is_empty());
     }
 
-    /// FEAT-036：按相册聚合已入库照片数；count>0 表示该相册已入库。
+    /// FEAT-036 + BUG-2026-0909-001：按相册目录前缀统计已入库照片数。
+    /// 父子相册共享照片时各自都应显示完整覆盖（行归属谁不影响计数）。
     #[test]
-    fn count_scanned_by_album_groups() {
+    fn count_scanned_by_prefix_covers_shared_subtrees() {
         let db = mem_db();
-        // album 1 有两张，album 2 无（未入库），album 3 一张
+        // 父相册 1（/alb1）目录树下 3 张：2 张归属 1，1 张归属子相册 4；相册 2 无记录
         db.upsert_photo_content(&sample_rec("A", "/alb1/a.jpg")).unwrap();
-        db.upsert_photo_content(&sample_rec("B", "/alb1/b.jpg")).unwrap();
-        let mut r3 = sample_rec("C", "/alb3/c.jpg");
-        r3.album_id = Some(3);
-        db.upsert_photo_content(&r3).unwrap();
+        db.upsert_photo_content(&sample_rec("B", "/alb1/sub/b.jpg")).unwrap();
+        let mut rc = sample_rec("C", "/alb1/sub/c.jpg");
+        rc.album_id = Some(4);
+        db.upsert_photo_content(&rc).unwrap();
+        let mut rd = sample_rec("D", "/alb3/d.jpg");
+        rd.album_id = Some(3);
+        db.upsert_photo_content(&rd).unwrap();
 
-        let map = db.count_scanned_by_album(1).unwrap();
-        assert_eq!(map.get(&1), Some(&2), "album 1 应统计到 2 张已入库");
-        assert_eq!(map.get(&3), Some(&1), "album 3 应统计到 1 张已入库");
-        assert!(map.get(&2).is_none(), "album 2 无已入库记录");
+        let pairs = vec![
+            (1i64, "/alb1".to_string()),
+            (4i64, "/alb1/sub".to_string()),
+            (2i64, "/alb2".to_string()),
+            (3i64, "/alb3".to_string()),
+        ];
+        let map = db.count_scanned_by_prefix(1, &pairs).unwrap();
+        // 父相册 1：目录树下 3 行（A/B/C），无论行归属 album 1 还是子相册 4
+        assert_eq!(map.get(&1), Some(&3), "父相册应按目录子树统计到 3 张");
+        // 子相册 4：自己的子树 2 行（B/C）
+        assert_eq!(map.get(&4), Some(&2));
+        // 相册 2 无记录 → 0；相册 3 → 1
+        assert_eq!(map.get(&2), Some(&0));
+        assert_eq!(map.get(&3), Some(&1));
+
+        // 分隔符兜底：/alb11 不该被计入 /alb1（前缀必须以分隔符结尾）
+        db.upsert_photo_content(&sample_rec("E", "/alb11/e.jpg")).unwrap();
+        let map2 = db.count_scanned_by_prefix(1, &pairs).unwrap();
+        assert_eq!(map2.get(&1), Some(&3), "/alb11 不该被计入 /alb1");
 
         // 其他用户看不到
-        let map_u2 = db.count_scanned_by_album(2).unwrap();
-        assert!(map_u2.is_empty());
+        let map_u2 = db.count_scanned_by_prefix(2, &pairs).unwrap();
+        assert_eq!(map_u2.get(&1), Some(&0));
     }
 
     /// 构造「FTS5 索引与主表失步」状态：主表保留数据，索引被替换为空表

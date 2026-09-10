@@ -641,6 +641,35 @@
         "JSON 文件不能写注释；映射的备注要写在 generate_mapping.py（生成源）里，生成物保持纯净",
         "数据文件坏半个月才爆 = 有回退路径在偷偷供数（旧 exe 的独立模型目录）；修完加载路径要立刻用真实数据冒烟，确认「第一次真正读取」发生在可控时机"
       ]
+    },
+    {
+      "id": "BUG-2026-0909-001",
+      "title": "已入库变未入库：父子相册共享照片行归属互抢 + 损坏文件被静默跳过",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": [
+        "全部扫描入库后，隔一会发现有几个照片没有入库（相册徽标 已入库 N/M，M-N 有差额）",
+        "再次入库后，之前已入库的照片反而变成未入库（每次重扫缺口还换地方）",
+        "用户怀疑「数据库存不下」"
+      ],
+      "root_cause": {
+        "summary": "两个独立机制叠加。①主因：photo_content_scan 每张照片一行、album_id 单一归属，父子相册共享照片（父目录递归含子目录）时谁最后重扫行就归谁；fill_scanned_counts 按 album_id 分组统计 → 子相册扫描后父相册计数骤减（实测：川西合集 87 目录下 604 行中 252 行挂在子相册 89/90 名下，徽标只显示 353/605；家乡-亲友 86 与其 6 个子相册、川西合集与 25/26/27/31/24、大学朋友 6 与 cancan 91 同理）。②真缺的 10 张：文件损坏（9 张 UnidentifiedImageError/broken data stream——文件头是乱数据非图像；1 张截断恰 1 MiB），识别失败被静默跳过且无日志留痕，重扫永远缺同样几张。",
+        "detail": [
+          "行归属互抢：upsert 的 ON CONFLICT(photo_hash) DO UPDATE SET album_id=excluded.album_id 本身合理（相册移动场景需要），错在统计口径",
+          " scanned_at 时间线实锤：87 父相册 14:04 扫（353 行），15:57/16:00 扫子相册 89/90 后行被抢走 → 父相册徽标骤降",
+          "损坏文件无法解码，任何重扫都无法导入，只能换文件修复",
+          "次要发现：日志有 4 次 scan_album_combined 因 FTS 索引失步 SQLITE_CORRUPT_VTAB(267) 整批回滚（09-12），现行写入路径自愈已覆盖，近期扫描全部正常"
+        ]
+      },
+      "fix": "① fill_scanned_counts 改按相册目录子树前缀统计（count_scanned_by_prefix：单查询取用户全部已入库路径 + Rust 侧 starts_with 匹配，前缀强制以分隔符结尾防同名前缀误匹配）；与 photo_count（递归文件数）口径一致，父子相册各自显示完整覆盖，行归属不再影响徽标。② build_records_combined 对识别失败跳过的照片逐条写日志（路径+错误），可事后定位差额。真实 DB 模拟验证：9 个被抢行相册全部恢复完整覆盖，剩余缺口均为损坏文件或未扫描相册。",
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/content.rs"
+      ],
+      "log_hint": "app.log grep scan_album_combined（ERR=整相册回滚）；修复后 grep '[scan] 识别失败跳过' 可定位损坏文件清单",
+      "created_at": "2026-09-09T16:45:00+08:00",
+      "fixed_at": "2026-09-09T16:45:00+08:00"
     }
   ]
 }
