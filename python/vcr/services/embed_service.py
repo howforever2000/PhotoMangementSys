@@ -1,11 +1,16 @@
-"""语义 embedding 服务（Chinese-CLIP ViT-B/16 fp16，可选通道）
+"""语义 embedding 服务（Chinese-CLIP 双塔，可选通道）
 
 职责：
-  - ensure()：确保双塔拆分件就绪（首次自动拆，幂等）并经 registry 惰性加载
-  - embed_text(text) → np.float32 (512,) 已 L2 归一化
-  - embed_images(paths) → [{path, embedding}|{path, error}]（单张错误内联，仿 classify_batch）
+  - ensure()：确保当前档位拆分件就绪（首次自动拆，幂等）并经 registry 惰性加载
+  - embed_text(text) / embed_texts(texts) → np.float32 (dim,) / (N,dim) 已 L2 归一化
+    （语义分类：用户分类关键词 + 中性基线提示词，一次批量编码）
+  - embed_images(paths) → [{path, embedding}|{path, error}]（单张错误内联）
+  - current_tier() / switch_tier()：模型档位切换（B/16 ↔ L/14-336，适配不同硬件）
   - tokenizer：tokenizers 库加载 tokenizer.json；加载失败回落内置 MiniBertTok
     （BERT wordpiece，与 transformers 分词对齐，见 clip_tokenizer.py）
+
+档位（config.CLIP_MODEL_META）差异只在路径 / dim / 输入尺寸 / 最大长度，
+打分与归一化协议完全一致；切换档位必须重建语义索引（宿主侧按 model 列隔离）。
 """
 import os
 import threading
@@ -14,6 +19,8 @@ import numpy as np
 
 from .. import config
 from ..preprocess import clip_tensor, open_image
+
+TEXT_BATCH_MAX = 64          # 单次文本批量编码封顶
 
 
 class _MiniBertTok:
@@ -82,27 +89,51 @@ class _MiniBertTok:
 class EmbedService:
     def __init__(self):
         self._tok = None
-        self._tok_mode = ""  # fast | mini
+        self._tok_mode = ""   # fast | mini
+        self._tok_key = ""    # 档位相关 key（路径+max_len），变化则重建分词器
         self._lock = threading.Lock()
         self._init_error = ""
 
     # ------------------------------------------------------------------
+    def _paths(self) -> dict:
+        return config.clip_paths()
+
+    def tier(self) -> str:
+        return config.active_clip()
+
+    def tier_info(self) -> dict:
+        p = self._paths()
+        meta = config.CLIP_MODEL_META[p["name"]]
+        return {
+            "name": p["name"],
+            "id": p["id"],
+            "label": meta["label"],
+            "dim": p["dim"],
+            "size": p["size"],
+            "accuracy": meta.get("accuracy", ""),
+            "speed": meta.get("speed", ""),
+            "note": meta.get("note", ""),
+        }
+
     def _ensure_tokenizer(self):
-        if self._tok is not None:
+        p = self._paths()
+        key = f"{p['tokenizer']}|{p['vocab']}|{p['max_len']}"
+        if self._tok is not None and self._tok_key == key:
             return
         try:
             from tokenizers import Tokenizer
 
-            tok = Tokenizer.from_file(config.CLIP_TOKENIZER_JSON)
-            tok.enable_truncation(max_length=config.CLIP_MAX_LEN)
+            tok = Tokenizer.from_file(p["tokenizer"])
+            tok.enable_truncation(max_length=p["max_len"])
             pad = tok.token_to_id("[PAD]")
-            tok.enable_padding(length=config.CLIP_MAX_LEN, pad_id=pad, pad_token="[PAD]")
-            self._tok, self._tok_mode = tok, "fast"
+            tok.enable_padding(length=p["max_len"], pad_id=pad, pad_token="[PAD]")
+            self._tok, self._tok_mode, self._tok_key = tok, "fast", key
             return
         except Exception:  # noqa: BLE001
             pass
-        if os.path.isfile(config.CLIP_VOCAB):
-            self._tok, self._tok_mode = _MiniBertTok(config.CLIP_VOCAB, config.CLIP_MAX_LEN), "mini"
+        if os.path.isfile(p["vocab"]):
+            self._tok = _MiniBertTok(p["vocab"], p["max_len"])
+            self._tok_mode, self._tok_key = "mini", key
             return
         raise RuntimeError("tokenizer 不可用（tokenizer.json / vocab.txt 均缺失）")
 
@@ -130,16 +161,18 @@ class EmbedService:
         from ..model_registry import get_registry
 
         reg = get_registry()
+        info = self.tier_info()
         return {
             "clip_ready": self.ready(),
             "clip_vision_ready": reg.is_ready("clip_vision"),
             "clip_text_ready": reg.is_ready("clip_text"),
             "tokenizer": self._tok_mode,
             "error": self._init_error,
+            **info,
         }
 
     def ensure(self) -> str:
-        """确保拆分件 + 会话就绪；返回错误串（空串 = 就绪）。"""
+        """确保当前档位拆分件 + 会话就绪；返回错误串（空串 = 就绪）。"""
         with self._lock:
             if self.ready():
                 return ""
@@ -159,15 +192,27 @@ class EmbedService:
 
     # ------------------------------------------------------------------
     def embed_text(self, text: str) -> np.ndarray:
-        """中文/英文查询 → (512,) fp32 已归一化。"""
+        """中文/英文查询 → (dim,) fp32 已归一化。"""
+        return self.embed_texts([text])[0]
+
+    def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
+        """批量文本 → 逐条已归一化向量（语义分类关键词一次编码，避免 N 次往返）。"""
+        if not texts:
+            return []
         err = self.ensure()
         if err:
             raise RuntimeError(f"CLIP 未就绪: {err}")
         from ..model_registry import get_registry
 
-        ids, mask = self._encode_texts([text])
-        out = get_registry().run_clip_text(ids, mask)  # (1,512)
-        return self._l2(out[0])
+        reg = get_registry()
+        out: list[np.ndarray] = []
+        for i in range(0, len(texts), TEXT_BATCH_MAX):
+            chunk = texts[i:i + TEXT_BATCH_MAX]
+            ids, mask = self._encode_texts(chunk)
+            emb = reg.run_clip_text(ids, mask)     # (N, dim)
+            for row in self._l2(emb):
+                out.append(row)
+        return out
 
     def embed_images(self, paths: list[str]) -> list[dict]:
         """批量图像 → 共享空间向量；单张解码失败内联错误，不拖垮整批。"""
@@ -187,8 +232,8 @@ class EmbedService:
             pixels.append(clip_tensor(img))
             idxs.append(i)
         if pixels:
-            # 批内分片 ≤8，控制 fp16 峰值显存/内存
-            out = get_registry().run_clip_vision(np.vstack(pixels))  # (N,512)
+            # 批内分片 ≤8，控制 fp16 峰值内存
+            out = get_registry().run_clip_vision(np.vstack(pixels))  # (N, dim)
             for row, i in enumerate(idxs):
                 results[i] = {"path": paths[i], "embedding": self._l2(out[row]).tolist()}
         return results

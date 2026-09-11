@@ -1316,6 +1316,8 @@ impl Database {
                 .map_err(DbError::Sqlite)?;
             // FEAT-SEM：语义向量与扫描记录同生命周期级联清理
             self.delete_embeddings_by_paths(&[p.clone()])?;
+            // v5：语义分类命中同生命周期级联清理
+            self.delete_category_hits_by_paths(&[p.clone()])?;
         }
         Ok(n)
     }

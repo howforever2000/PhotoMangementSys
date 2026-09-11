@@ -198,17 +198,32 @@ export interface LocationGroupRow {
   cover_album_id: number | null;
 }
 
-/** FEAT-051：分类模型候选项 —— 对应 model_registry.cls_models_info().models[] */
+/**
+ * v5：语义模型档位候选项 —— 对应 model_registry.clip_models_info().models[]
+ *
+ * 与旧「分类模型」下拉同构（同样的下载/置灰/切换交互），只是换成了
+ * Chinese-CLIP 档位：b16（512 维，默认）与 l14-336（768 维，更强更慢）。
+ */
 export interface VcrModelInfo {
-  /** 模型文件名（如 yolov8x-cls.onnx） */
+  /** 档位标识：b16 / l14-336 */
   name: string;
-  /** 中文说明（准确率档位 + 推荐场景） */
+  /** 中文说明（精度档位 + 推荐硬件） */
   label: string;
   accuracy: string;
   speed: string;
-  /** 模型文件是否已下载到 python/models/ */
+  /** 附加说明（模型体积 / 切换后需重建索引等） */
+  note: string;
+  /** 向量维度（512 / 768） */
+  dim: number;
+  /** 输入尺寸（224 / 336） */
+  size: number;
+  /** 模型体积（字节，UI 明示下载/切换成本；0 = 未知） */
+  bytes: number;
+  /** 模型文件是否已下载（含仅整图、待自动拆分的情况） */
   downloaded: boolean;
-  /** 是否为当前生效模型 */
+  /** 拆分件是否已就绪（可直接使用） */
+  ready: boolean;
+  /** 是否为当前生效档位 */
   active: boolean;
 }
 
@@ -227,15 +242,17 @@ export interface VcrSessionFacts {
   cpu_fallback: boolean;
 }
 
-/** FEAT-051：分类模型清单 */
+/** v5：语义模型档位清单 */
 export interface VcrModelsInfo {
   models: VcrModelInfo[];
-  /** 当前生效模型文件名（候选中第一个已下载者，或用户指定项） */
+  /** 当前生效档位标识 */
   current: string | null;
-  /** cls 会话是否已就绪（切换后台加载期间为 false，UI 据此提示加载中） */
-  cls_ready?: boolean;
-  /** FEAT-053：cls 会话实测事实（后台加载期间为 undefined）；与 current 对照确认切换生效 */
+  /** CLIP 双塔会话是否已就绪（切换后台加载期间为 false，UI 据此提示加载中） */
+  clip_ready?: boolean;
+  /** FEAT-053：vision 塔会话实测事实（后台加载期间为 undefined） */
   loaded?: VcrSessionFacts;
+  /** FEAT-053：text 塔会话实测事实 */
+  loaded_text?: VcrSessionFacts;
 }
 
 /** FEAT-053：固定张量测速结果 */
@@ -264,4 +281,108 @@ export interface ModelDlStatus {
   bytes: number;
   total: number;
   error: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// v5 语义分类（Chinese-CLIP 关键词匹配）
+// 对应 Rust `src-tauri/src/db/category.rs` / `src-tauri/src/category.rs`
+// ---------------------------------------------------------------------------
+
+/** 分类定义入参（新建/更新/预览共用） */
+export interface CategoryInput {
+  name: string;
+  icon: string;
+  /** 正向关键词（自然语言短语；命中取 max） */
+  keywords: string[];
+  /** 排除词（用于压制「热狗∈狗」这类误召回） */
+  exclude_keywords: string[];
+  /** 匹配强度阈值（净增益，0.00~0.10；默认 0.03） */
+  threshold: number;
+  sort_order: number;
+  enabled: boolean;
+}
+
+/** 分类总览行（卡片） */
+export interface CategoryOverview {
+  id: number;
+  name: string;
+  icon: string;
+  /** builtin（规则分类：人物/扫街/夜景/文档）| preset（内置预设）| user（用户自建） */
+  source: string;
+  /** builtin 规则键（portrait/street/night_scene/document），其余为空 */
+  slug: string;
+  threshold: number;
+  enabled: boolean;
+  keywords: string[];
+  exclude_keywords: string[];
+  count: number;
+  cover_path: string | null;
+  cover_album_id: number | null;
+  cover_photo_hash: string | null;
+}
+
+/** 分类下的照片行（按语义强度降序） */
+export interface CategoryPhoto {
+  photo_hash: string;
+  path: string;
+  album_id: number | null;
+  album_name: string | null;
+  shoot_time: string | null;
+  location: string | null;
+  tone_type: string | null;
+  person_ids: string[];
+  category: string | null;
+  sub_category: string | null;
+  /** 语义匹配强度（净增益，越大越像） */
+  score: number;
+  matched_keyword: string;
+  category_id: number;
+  category_name: string;
+}
+
+/** 预览样张 */
+export interface CategoryPreviewSample {
+  photo_hash: string;
+  path: string;
+  /** 归属相册（预览缩略图用；可能为 null） */
+  album_id: number | null;
+  score: number;
+  matched_keyword: string;
+}
+
+/** 语义预览结果（改关键词/拖阈值实时看效果，不落库） */
+export interface CategoryPreview {
+  count: number;
+  total: number;
+  p50: number;
+  p90: number;
+  p99: number;
+  max: number;
+  samples: CategoryPreviewSample[];
+  model: string;
+}
+
+/** 分类重建报告 */
+export interface CategoryRebuildReport {
+  categories: number;
+  hits: number;
+  ms: number;
+  model: string;
+  /** 参与匹配的照片数（当前档位下的向量数） */
+  indexed: number;
+  /** 索引为空 → 需先做一次「语义向量」扫描 */
+  empty_index: boolean;
+}
+
+/** 语义索引覆盖统计（「已索引 N/M」+ 换档提醒） */
+export interface CategoryIndexStats {
+  /** 当前档位模型下的向量数（可参与匹配） */
+  indexed: number;
+  /** 其他档位留下的向量数（换档后需重建索引） */
+  stale: number;
+  /** 已入库照片总数 */
+  known: number;
+  model: string;
+  /** 语义分类数（不含 builtin 规则分类） */
+  semantic_categories: number;
 }

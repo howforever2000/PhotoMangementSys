@@ -4,7 +4,7 @@
  *
  * 跨相册批量扫描入库组件，托管在主页「图片扫描」板块下的专属页面：
  * - 勾选要扫描入库的相册（支持全选 / 反选，显示照片数与已入库数）
- * - 扫描类型复用相册管理中的组合扫描（EXIF 基础 / 影调分析 / AI 内容识别）+ 批次
+ * - 扫描类型复用相册管理中的组合扫描（EXIF 基础 / 影调分析 / 人物 · 文档识别）+ 批次
  * - 支持启动 / 停止；两级进度条（相册级总进度 + 当前相册照片级进度）
  * - 后台执行：任务状态存于 Pinia store，离开页面扫描不中断，回来恢复显示
  */
@@ -87,7 +87,7 @@ const filteredAlbums = computed(() => {
 
 // ---- 扫描设置（复用相册管理组合扫描的类型 + 批次） ----
 // FEAT-SEM：语义向量默认勾选
-const scanTypes = ref<string[]>(["basic", "tone", "ai", "semantic"]);
+const scanTypes = ref<string[]>(["basic", "tone", "person", "semantic"]);
 const BATCH_OPTIONS = [8, 16, 32];
 const batch = ref(8);
 
@@ -187,7 +187,7 @@ onMounted(() => {
     <div class="gs-toolbar">
       <p class="gs-desc">
         勾选要扫描入库的相册（支持全选 / 反选），一次批量执行
-        <b>EXIF / 影调 / AI 内容识别</b>并写入内容库（与相册详情「组合扫描」同一扫描组件）。
+        <b>EXIF / 影调 / 人物 · 文档识别</b>并写入内容库（与相册详情「组合扫描」同一扫描组件）。
         扫描在<b>后台执行</b>，离开页面不中断；可随时点击「停止」，已扫描部分仍会入库。
       </p>
       <div class="gs-actions">
@@ -289,10 +289,10 @@ onMounted(() => {
           <span class="gs-check-label">影调分析</span>
           <span class="gs-check-desc">低调 / 中间调 / 高调</span>
         </label>
-        <label class="gs-check" :class="{ active: scanTypes.includes('ai') }">
-          <input type="checkbox" value="ai" v-model="scanTypes" :disabled="running" />
-          <span class="gs-check-label">AI 内容识别</span>
-          <span class="gs-check-desc">写入内容库 · 支持智能搜索</span>
+        <label class="gs-check" :class="{ active: scanTypes.includes('person') }">
+          <input type="checkbox" value="person" v-model="scanTypes" :disabled="running" />
+          <span class="gs-check-label">人物 · 文档识别</span>
+          <span class="gs-check-desc">人脸标号 / 夜景 / 文档（分类已改语义）</span>
         </label>
         <label class="gs-check" :class="{ active: scanTypes.includes('semantic') }">
           <input type="checkbox" value="semantic" v-model="scanTypes" :disabled="running" />

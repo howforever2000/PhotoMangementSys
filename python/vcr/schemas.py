@@ -11,10 +11,11 @@ class TopItem(BaseModel):
 class ClassifyResult(BaseModel):
     path: str
     file_name: str
-    category: str
-    sub_category: str = ""        # 子类：动物→狗/猫/鸟/其他动物；自然风景→自然
+    category: str                # portrait / street / night_scene / document / other
+    sub_category: str = ""       # closeup / group / street / night / paper / screenshot / other
     label: str
     confidence: float
+    # v5：分类模型下线后不再有 ImageNet 细类候选，保留字段（单条 = 最终结论）兼容旧前端
     top3: list[TopItem] = Field(default_factory=list)
     person_ids: list[str] = Field(default_factory=list)
     person_count: int = 0
@@ -48,9 +49,13 @@ class PersonMergeRequest(BaseModel):
     source: str          # 被合并进 target 的人
 
 
-# ---- 语义搜索（Chinese-CLIP embedding）----
+# ---- 语义（Chinese-CLIP embedding）----
 class EmbedTextRequest(BaseModel):
     text: str
+
+
+class EmbedTextBatchRequest(BaseModel):
+    texts: list[str]
 
 
 class EmbedBatchRequest(BaseModel):

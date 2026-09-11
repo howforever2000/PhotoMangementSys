@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * 识别性能设置（FEAT-051）—— 原子组件
+ * 识别性能设置（FEAT-051 / v5）—— 原子组件
  *
- * 交互流程（参考单相册扫描面板「检测 GPU」模式，按用户定义）：
- *   1. 先选分类模型（默认按候选梯度回退，当前生效实时展示）
- *   2. 默认 CPU 推理；「🔍 检测 GPU」探测可用加速提供方
+ * 交互流程（与旧「分类模型」下拉同构，只是换成语义模型档位）：
+ *   1. 先选**语义模型档位**（Chinese-CLIP B/16 ↔ L/14-336；适配不同硬件，
+ *      缺档位置灰并可直接下载；切换后需重建语义索引）
+ *   2. 默认 CPU 推理；「🔍 检测 GPU」探测可用加速提供方（对人物检测/OCR 生效）
  *   3. 检测到可用 GPU → 「🚀 启用加速」；未检测到 → 提示安装 GPU 版运行时
  *
  * 自包含：挂载即拉取状态（内部自动拉起识别微服务）；切换即时保存并刷新展示。
@@ -43,8 +44,18 @@ const benchResult = ref<VcrBenchmarkResult | null>(null);
 /** 最近一次 CPU / GPU 测速均值（不同 provider 各记一份，两者都有时显示提速比） */
 const benchMs = ref<{ cpu: number | null; gpu: number | null }>({ cpu: null, gpu: null });
 
-/** cls 会话实测事实（切换后台加载期间为 undefined）——与 current 对照确认切换真生效 */
+/** vision 塔会话实测事实（切换后台加载期间为 undefined）——与 current 对照确认切换真生效 */
 const groundTruth = computed(() => modelsInfo.value?.loaded ?? null);
+/** 当前生效档位的说明（切换后需重建索引的提醒） */
+const activeModel = computed(() =>
+  (modelsInfo.value?.models ?? []).find((m) => m.active) ?? null,
+);
+/** v5：切换档位后语义索引需重建（旧档向量维度/空间不同，不能混用） */
+const clipSwitchTip = computed(() => {
+  const m = activeModel.value;
+  if (!m) return "";
+  return `${m.dim} 维 · 输入 ${m.size}×${m.size}`;
+});
 const providerLabel = (p: string): string =>
   p.startsWith("Dml")
     ? "DirectML"
@@ -219,10 +230,10 @@ async function onModelChange() {
     modelsInfo.value = info;
     selectedModel.value = info.current ?? name;
     notify.success(
-      "分类模型已切换",
-      info.cls_ready === false
+      "语义模型已切换",
+      info.clip_ready === false
         ? `${name} · 后台加载中，就绪后自动生效`
-        : `${name} · 影响后续扫描`,
+        : `${name} · 请到「内容分类」页点「🔄 重建分类」重算命中`,
     );
   } catch (e) {
     notify.error("切换模型失败", String(e));
@@ -252,9 +263,9 @@ async function onModelChange() {
     </p>
 
     <template v-else>
-      <!-- 1. 先选模型 -->
+      <!-- 1. 先选语义模型档位（适配不同硬件：B/16 轻量 → L/14-336 更强） -->
       <div class="mgps-row">
-        <span class="mgps-label">分类模型</span>
+        <span class="mgps-label">语义模型</span>
         <select
           v-model="selectedModel"
           class="mgps-select"
@@ -267,13 +278,15 @@ async function onModelChange() {
             :value="m.name"
             :disabled="!m.downloaded"
           >
-            {{ m.label }}（精度 {{ m.accuracy }} · {{ m.speed }}）{{ m.downloaded ? "" : " —— 未下载" }}{{ m.active ? " ✓当前" : "" }}
+            {{ m.label }}（{{ m.dim }} 维{{ m.bytes ? " · " + (m.bytes / 1e6).toFixed(0) + "MB" : "" }}）{{ m.downloaded ? "" : " —— 未下载" }}{{ m.active ? " ✓当前" : "" }}
           </option>
         </select>
         <span v-if="modelBusy" class="mgps-busy">切换中…</span>
-        <span v-else-if="modelsInfo?.cls_ready === false" class="mgps-busy">模型加载中…</span>
+        <span v-else-if="modelsInfo?.clip_ready === false" class="mgps-busy">模型加载中…</span>
+        <span v-else-if="clipSwitchTip" class="mgps-status">{{ clipSwitchTip }}</span>
         <span v-else-if="modelsFailed" class="mgps-status">模型清单加载失败（识别服务可能正在升级，稍后重试）</span>
       </div>
+      <p v-if="activeModel?.note" class="mgps-hint">{{ activeModel.note }}</p>
 
       <!-- 2. 检测 GPU -->
       <div class="mgps-row">
@@ -322,7 +335,7 @@ async function onModelChange() {
       <div class="mgps-row">
         <span class="mgps-label">推理测速</span>
         <button class="mgps-btn" :disabled="benchBusy" @click="runBenchmark">
-          {{ benchBusy ? "测速中…" : "📊 测速（开/关加速各测一次可对比）" }}
+          {{ benchBusy ? "测速中…" : "📊 测速（人物检测通道；开/关加速各测一次可对比）" }}
         </button>
         <span v-if="benchResult" class="mgps-status" :class="{ ok: benchResult.providers.some((p) => !p.startsWith('CPU')) }">
           {{ benchText }}
@@ -331,9 +344,14 @@ async function onModelChange() {
 
       <p class="mgps-hint">
         默认使用 CPU 推理；检测到 GPU 后可开启加速（需 GPU 版运行时，如
-        <code>onnxruntime-directml</code>）。切换<b>即时生效</b>，影响后续扫描；
-        新模型下载后放入 <code>python/models/</code>（如 yolov8x-cls.onnx）即可在此选择。
-        「会话实测」是 ONNX Runtime 会话实际绑定的提供方与源文件，与上面的选项对照即可确认切换/加速真生效。
+        <code>onnxruntime-directml</code>）。GPU 加速对<b>人物检测 / 人脸 / OCR</b> 生效；
+        语义模型默认固定 CPU —— AMD DirectML 对 fp16 图存在算子级数值
+        bug（实测输出错误），故 fp16 档不做 GPU 加速；如需用核显加速语义索引，
+        可下载 <b>B/16 fp32</b> 档（719MB，DirectML 实测 37.9ms/张，约为 fp16 CPU 的 2.4 倍快），
+        该档的 GPU 开关需先做数值一致性验证后再启用。<br />
+        语义模型档位切换后<b>必须重建语义索引</b>（不同档位维度/空间不同，旧向量不会被混用）：
+        到「内容分类」页点「🔄 重建分类」，或对相册重新执行一次含「语义向量」的扫描。
+        新档位模型可在此直接下载（<code>chinese-clip</code> / <code>chinese-clip-l14</code>）。
       </p>
 
       <!-- FEAT-052：模型下载（后台 + 进度 + 官方/镜像择优） -->

@@ -1,6 +1,8 @@
-"""图像预处理：分类 / 检测 / 人脸对齐
+"""图像预处理：检测 / 人脸 / OCR / 语义向量
 
 统一入口接收 PIL.Image（各服务只解码一次图片）。
+v5：分类模型与场景/专家通道已下线，cls_tensor / scene_tensor / flower_tensor /
+food_tensor 一并移除；clip_tensor 的尺寸与归一化改为读「当前语义模型档位」。
 """
 import cv2
 import numpy as np
@@ -29,22 +31,6 @@ def open_image(path: str) -> Image.Image | None:
         return None
 
 
-def cls_tensor(img: Image.Image) -> np.ndarray:
-    """分类预处理：等比缩放短边=224 + 中心裁剪（不拉伸）。
-
-    yolov8s-cls 导出 ONNX 已内置归一化，输入只需 [0,1] CHW。
-    """
-    w, h = img.size
-    r = config.CLS_SIZE / min(w, h)
-    img = img.resize((max(1, round(w * r)), max(1, round(h * r))), Image.BILINEAR)
-    w2, h2 = img.size
-    l = (w2 - config.CLS_SIZE) // 2
-    t = (h2 - config.CLS_SIZE) // 2
-    img = img.crop((l, t, l + config.CLS_SIZE, t + config.CLS_SIZE))
-    arr = np.asarray(img, dtype=np.float32) / 255.0
-    return np.expand_dims(arr.transpose(2, 0, 1), axis=0)
-
-
 def det_tensor(img: Image.Image) -> tuple[np.ndarray, float, int, int]:
     """检测预处理：letterbox 640 灰底填充。返回 (tensor, scale, pad_x, pad_y)。
 
@@ -63,7 +49,7 @@ def det_tensor(img: Image.Image) -> tuple[np.ndarray, float, int, int]:
 
 
 def face_det_tensor(img: Image.Image) -> tuple[np.ndarray, float, int, int]:
-    """SCRFD 预处理：letterbox 640 黑边填充，归一化 (x/128 - 127.5)。
+    """SCRFD 预处理：letterbox 640 黑边填充，归一化 (x-127.5)/128。
 
     与 YOLO 不同：SCRFD 训练使用 input_mean=127.5, input_std=128，黑边 0。
     """
@@ -105,27 +91,12 @@ def face_align(img: Image.Image, kps: np.ndarray, size: int = 112) -> np.ndarray
     return np.expand_dims(warped.transpose(2, 0, 1).astype(np.float32), axis=0)
 
 
-def scene_tensor(img: Image.Image) -> np.ndarray:
-    """Places365 预处理：resize 短边 256 + 中心裁剪 224 + ImageNet 均值方差归一。"""
-    w, h = img.size
-    r = 256 / min(w, h)
-    img = img.resize((max(1, round(w * r)), max(1, round(h * r))), Image.BILINEAR)
-    w2, h2 = img.size
-    l, t = (w2 - 224) // 2, (h2 - 224) // 2
-    img = img.crop((l, t, l + 224, t + 224))
-    arr = np.asarray(img, dtype=np.float32) / 255.0
-    arr = (arr - np.array([0.485, 0.456, 0.406], dtype=np.float32)) / np.array(
-        [0.229, 0.224, 0.225], dtype=np.float32
-    )
-    return np.expand_dims(arr.transpose(2, 0, 1), axis=0)
-
-
 def ocr_tensor(img: Image.Image) -> tuple[np.ndarray, float, int, int]:
     """PaddleOCR ch_PP-OCRv4 det 预处理：letterbox 640 灰底 114。
 
     与 det_tensor 一致（PP-OCRv4 det 训练用 DetResizeForTest(limit_side_len=640)
     + NormalizeImage(scale=1/255, mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])）。
-    返回 (tensor, scale, pad_x, pad_y)。模型后补时如需对齐实测可微调。
+    返回 (tensor, scale, pad_x, pad_y)。
     """
     w, h = img.size
     r = config.DET_SIZE / max(w, h)
@@ -142,40 +113,19 @@ def ocr_tensor(img: Image.Image) -> tuple[np.ndarray, float, int, int]:
     return np.expand_dims(arr.transpose(2, 0, 1), axis=0), r, pad_x, pad_y
 
 
-def flower_tensor(img: Image.Image) -> np.ndarray:
-    """花朵专家（efficientnet-b2 102 类）预处理：短边 256 + 中心裁剪 224
-    + ImageNet 均值方差归一（实测优于拉伸，置信度更高）。"""
-    w, h = img.size
-    r = 256 / min(w, h)
-    img = img.resize((max(1, round(w * r)), max(1, round(h * r))), Image.BILINEAR)
-    w2, h2 = img.size
-    l, t = (w2 - 224) // 2, (h2 - 224) // 2
-    img = img.crop((l, t, l + 224, t + 224))
-    arr = np.asarray(img, dtype=np.float32) / 255.0
-    arr = (arr - np.array([0.485, 0.456, 0.406], dtype=np.float32)) / np.array(
-        [0.229, 0.224, 0.225], dtype=np.float32
-    )
-    return np.expand_dims(arr.transpose(2, 0, 1), axis=0)
-
-
-def food_tensor(img: Image.Image) -> np.ndarray:
-    """食物专家（resnet50 101 类）预处理：与 flower_tensor 相同的 ImageNet 协议。"""
-    return flower_tensor(img)
-
-
 def clip_tensor(img: Image.Image) -> np.ndarray:
-    """Chinese-CLIP 预处理：短边 resize 224 + 中心裁剪 + CLIP mean/std 归一，CHW。
+    """Chinese-CLIP 预处理：短边 resize 到档位尺寸 + 中心裁剪 + CLIP mean/std 归一，CHW。
 
-    与 Phase 0 benchmark（design/clip-model-test-report.md）完全一致的数值协议。
+    尺寸随「当前语义模型档位」变化（B/16 = 224，L/14-336 = 336）。
     """
+    p = config.clip_paths()
+    size = int(p["size"])
     w, h = img.size
-    r = config.CLIP_SIZE / min(w, h)
+    r = size / min(w, h)
     img = img.resize((max(1, round(w * r)), max(1, round(h * r))), Image.BICUBIC)
     w2, h2 = img.size
-    l, t = (w2 - config.CLIP_SIZE) // 2, (h2 - config.CLIP_SIZE) // 2
-    img = img.crop((l, t, l + config.CLIP_SIZE, t + config.CLIP_SIZE))
+    l, t = (w2 - size) // 2, (h2 - size) // 2
+    img = img.crop((l, t, l + size, t + size))
     arr = np.asarray(img, dtype=np.float32) / 255.0
-    arr = (arr - np.array(config.CLIP_MEAN, dtype=np.float32)) / np.array(
-        config.CLIP_STD, dtype=np.float32
-    )
-    return np.expand_dims(arr.transpose(2, 0, 1), axis=0)  # (1,3,224,224)
+    arr = (arr - np.array(p["mean"], dtype=np.float32)) / np.array(p["std"], dtype=np.float32)
+    return np.expand_dims(arr.transpose(2, 0, 1), axis=0)  # (1,3,S,S)

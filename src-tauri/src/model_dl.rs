@@ -19,89 +19,95 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-/// GitHub 加速镜像前缀（官方地址以 github.com 开头时，镜像 = 前缀 + 原地址）
-const GITHUB_MIRROR_PREFIX: &str = "https://ghfast.top";
-
 #[derive(Clone, PartialEq)]
 enum DlKind {
-    /// yolov8*-cls：.pt → ultralytics 导出 onnx
-    ClsPt,
-    /// Places365 场景：.pth.tar + 类目表 → onnx（AI 分类必需）
-    Scene,
-    /// 语义搜索双塔：Chinese-CLIP fp16 ONNX（Xenova 转换，hf-mirror 直链，
-    /// 含 tokenizer.json/vocab.txt，下载后落到 chinese-clip/ 子目录，无导出步骤；
-    /// 固定 CPU 推理——DML 对 fp16 图存在算子级数值 bug，不做 GPU 加速）
-    ClipFp16,
+    /// Chinese-CLIP fp16 ONNX（Xenova 转换，hf-mirror 直链）：
+    /// 单文件双塔（首次使用时服务端自动拆）+ tokenizer.json/vocab.txt，无导出步骤；
+    /// 固定 CPU 推理——DML 对 fp16 图存在算子级数值 bug（BUG-2026-0910-006）
+    ClipOnnx,
 }
 
 /// 模型注册表白名单
+///
+/// 目录约定（与 python/vcr/config.py::CLIP_MODEL_META 严格一致）：
+/// ```text
+/// python/models/<root>/onnx/<onnx>     ← 双塔整图（首次使用时服务端自动拆成 clip_vision/clip_text）
+/// python/models/<root>/tokenizer.json  ← 附带文件落「模型根目录」，不是 onnx/ 子目录
+/// python/models/<root>/vocab.txt
+/// ```
+/// ⚠️ tokenizer.json / vocab.txt 必须在 `<root>` 而不是 `<root>/onnx`：
+/// CLIP_TOKENIZER_JSON/CLIP_VOCAB 都按模型根目录解析（BUG-2026-0920-002）。
 struct DlSpec {
     name: &'static str,
-    file: &'static str,
+    /// HF 仓库（hf-mirror 直链前缀）
+    repo: &'static str,
+    /// 模型根目录（相对 python/models）
+    root: &'static str,
+    /// onnx 文件名（位于 <root>/onnx/ 下）：model_fp16.onnx / model.onnx
+    onnx: &'static str,
+    /// 附带文件（落 <root>/ 下）
+    extra: &'static [&'static str],
     kind: DlKind,
     required: bool,
 }
 
 impl DlSpec {
-    /// 官方下载地址
-    fn official(&self) -> String {
+    fn base_url(&self) -> String {
+        // hf-mirror 已是国内加速镜像（huggingface.co 直连超时），不再二次套 ghfast
         match self.kind {
-            DlKind::ClsPt => format!(
-                "https://github.com/ultralytics/assets/releases/download/v8.3.0/{}.pt",
-                self.name
-            ),
-            DlKind::Scene => {
-                "http://places2.csail.mit.edu/models_places365/resnet18_places365.pth.tar".into()
-            }
-            // hf-mirror 已是国内加速镜像（huggingface.co 直连超时），不再二次套 ghfast
-            DlKind::ClipFp16 => {
-                "https://hf-mirror.com/Xenova/chinese-clip-vit-base-patch16/resolve/main/onnx/model_fp16.onnx".into()
-            }
+            DlKind::ClipOnnx => format!("https://hf-mirror.com/{}/resolve/main/", self.repo),
         }
     }
-    /// 镜像地址（ghfast 前缀；Scene 官方 mit.edu 也可经 ghfast 加速）
+    /// 整图相对路径（相对 python/models；存在即视为已下载）
+    fn rel_file(&self) -> String {
+        format!("{}/onnx/{}", self.root, self.onnx)
+    }
+    /// 官方下载地址
+    fn official(&self) -> String {
+        format!("{}{}", self.base_url(), self.rel_file())
+    }
+    /// 镜像地址（单源直链：download_first_wins 对同 URL 自动降为单路）
     fn mirror(&self) -> String {
-        if self.kind == DlKind::ClipFp16 {
-            return self.official(); // 单源：download_first_wins 对同 URL 自动降为单路
-        }
-        format!("{GITHUB_MIRROR_PREFIX}/{}", self.official())
+        self.official()
     }
     /// 下载临时文件的扩展名（导出环节依赖正确扩展名）
     fn tmp_ext(&self) -> &'static str {
-        match self.kind {
-            DlKind::ClsPt => "pt",
-            DlKind::Scene => "pth.tar",
-            DlKind::ClipFp16 => "onnx",
-        }
-    }
-}
-
-fn cls_spec(name: &'static str, required: bool) -> DlSpec {
-    DlSpec {
-        name,
-        file: Box::leak(format!("{name}.onnx").into_boxed_str()),
-        kind: DlKind::ClsPt,
-        required,
+        "onnx"
     }
 }
 
 fn specs() -> Vec<DlSpec> {
     vec![
-        cls_spec("yolov8l-cls", true),
-        cls_spec("yolov8m-cls", true),
-        cls_spec("yolov8x-cls", false),
-        cls_spec("yolov8s-cls", false),
         DlSpec {
-            name: "resnet18_places365",
-            file: "resnet18_places365.onnx",
-            kind: DlKind::Scene,
-            required: true,
+            // 语义默认档 B/16 fp16（512 维，377MB，固定 CPU 推理）
+            name: "chinese-clip",
+            repo: "Xenova/chinese-clip-vit-base-patch16",
+            root: "chinese-clip",
+            onnx: "model_fp16.onnx",
+            extra: &["tokenizer.json", "vocab.txt"],
+            kind: DlKind::ClipOnnx,
+            required: false,
         },
         DlSpec {
-            // 语义搜索双塔（FEAT-SEM）：fp16，377MB，固定 CPU 推理
-            name: "chinese-clip",
-            file: "chinese-clip/onnx/model_fp16.onnx",
-            kind: DlKind::ClipFp16,
+            // B/16 fp32（512 维，719MB）：体积换精度 + 可走 DirectML（Phase 0 实测 37.9ms/张
+            // vs CPU 91ms）；fp16 在 DML 上有算子级数值 bug，故 GPU 只能在 fp32 档追求。
+            // 独立档位 = 独立 model id（向量空间与 fp16 微差，绝不混用）。
+            name: "chinese-clip-fp32",
+            repo: "Xenova/chinese-clip-vit-base-patch16",
+            root: "chinese-clip-fp32",
+            onnx: "model.onnx",
+            extra: &["tokenizer.json", "vocab.txt"],
+            kind: DlKind::ClipOnnx,
+            required: false,
+        },
+        DlSpec {
+            // 语义加强档 L/14-336 fp16（768 维，814MB）：按需下载，切换后需重建索引
+            name: "chinese-clip-l14",
+            repo: "Xenova/chinese-clip-vit-large-patch14-336px",
+            root: "chinese-clip-l14",
+            onnx: "model_fp16.onnx",
+            extra: &["tokenizer.json", "vocab.txt"],
+            kind: DlKind::ClipOnnx,
             required: false,
         },
     ]
@@ -137,6 +143,11 @@ fn models_dir() -> PathBuf {
         .unwrap_or_else(|| manifest.join("python").join("models"))
 }
 
+/// 下载过程日志（走 stderr，与 vision 微服务日志同渠道，宿主副窗口可见）
+fn logger_info(msg: &str) {
+    eprintln!("{msg}");
+}
+
 fn set_status(app: &AppHandle, s: ModelDlStatus) {
     if let Ok(mut st) = STORE.lock() {
         st.status.insert(s.name.clone(), s.clone());
@@ -159,8 +170,9 @@ pub async fn start(app: &AppHandle, name: &str) -> Result<(), String> {
         return Err(format!("未知模型: {name}"));
     };
     let dir = models_dir();
-    if dir.join(spec.file).is_file() {
-        return Err(format!("{} 已存在", spec.file));
+    let rel = spec.rel_file();
+    if dir.join(&rel).is_file() {
+        return Err(format!("{rel} 已存在"));
     }
     {
         let mut st = STORE.lock().map_err(|e| e.to_string())?;
@@ -173,7 +185,7 @@ pub async fn start(app: &AppHandle, name: &str) -> Result<(), String> {
         app,
         ModelDlStatus {
             name: name.to_string(),
-            file: spec.file.to_string(),
+            file: spec.rel_file(),
             required: spec.required,
             running: true,
             done: false,
@@ -233,10 +245,10 @@ pub fn list() -> Vec<ModelDlStatus> {
     specs()
         .into_iter()
         .map(|s| {
-            let exists = dir.join(s.file).is_file();
+            let exists = dir.join(s.rel_file()).is_file();
             st.status.get(s.name).cloned().unwrap_or_else(|| ModelDlStatus {
                 name: s.name.to_string(),
-                file: s.file.to_string(),
+                file: s.rel_file(),
                 required: s.required,
                 running: false,
                 done: exists,
@@ -249,70 +261,63 @@ pub fn list() -> Vec<ModelDlStatus> {
         .collect()
 }
 
-/// 一次完整流程：并行下载 → 导出 → 落盘
+/// 一次完整流程：下载主文件 → 落位 → 拉附带文件（tokenizer/vocab）
 async fn run(app: &AppHandle, spec: &DlSpec) -> Result<(), String> {
     let dir = models_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建模型目录失败: {e}"))?;
 
-    // FEAT-SEM：CLIP fp16（固定 CPU）—— 下载 → 落子目录 → 附带 tokenizer/vocab，无导出步骤
-    if spec.kind == DlKind::ClipFp16 {
-        let final_dir = dir.join("chinese-clip").join("onnx");
-        std::fs::create_dir_all(&final_dir).map_err(|e| format!("创建 CLIP 目录失败: {e}"))?;
-        let winner = download_first_wins(app, spec, &dir).await?;
-        let final_path = final_dir.join("model_fp16.onnx");
-        std::fs::rename(&winner, &final_path)
-            .map_err(|e| format!("落位失败: {e}"))?;
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(300))
-            .build()
-            .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-        let base = "https://hf-mirror.com/Xenova/chinese-clip-vit-base-patch16/resolve/main/";
-        let clip_dir = dir.join("chinese-clip");
-        // FEAT-SEM：模型就位后立即解除语义退避（用户下载完即可搜索，不必等 TTL）
-        crate::vision::clear_semantic_down();
-        for f in ["tokenizer.json", "vocab.txt"] {
-            if clip_dir.join(f).is_file() {
-                continue;
-            }
-            let app2 = app.clone();
-            let name2 = spec.name.to_string();
-            download_one(
-                app2,
-                name2,
-                format!("{base}{f}"),
-                clip_dir.join(f),
-                client.clone(),
-            )
-            .await?;
-        }
-        return Ok(());
-    }
+    // 模型根目录：tokenizer.json / vocab.txt 落这里（不是 onnx/ 子目录）
+    let final_dir = dir.join(spec.root);
+    let onnx_dir = final_dir.join("onnx");
+    let final_path = onnx_dir.join(spec.onnx);
+    std::fs::create_dir_all(&onnx_dir).map_err(|e| format!("创建语义模型目录失败: {e}"))?;
 
-    // 1. 并行下载（官方 + 镜像），先完成者赢，返回赢家临时文件
+    // 1. 主文件（单源直链；download_first_wins 对同 URL 自动降为单路）
     emit_status(app, spec, "downloading", 0, 0, false);
     let winner = download_first_wins(app, spec, &dir).await?;
+    std::fs::rename(&winner, &final_path).map_err(|e| format!("落位失败: {e}"))?;
 
-    // 2. 导出 onnx（阻塞，用 spawn_blocking 避免占用异步运行时）
-    emit_status(app, spec, "exporting", 0, 0, false);
-    let final_path = dir.join(spec.file);
-    let winner2 = winner.clone();
-    let final2 = final_path.clone();
-    let dir2 = dir.clone();
-    let kind = spec.kind.clone();
-    let export = |winner: PathBuf, final_path: PathBuf, dir: PathBuf, kind: DlKind| {
-        match kind {
-            DlKind::ClsPt => export_cls_pt(&winner, &final_path),
-            DlKind::Scene => export_scene_pth(&winner, &final_path, &dir),
-            // ClipFp16 在 run() 内提前处理（无导出步骤），此处不可达
-            DlKind::ClipFp16 => Ok(()),
+    // 2. 附带文件（tokenizer.json / vocab.txt）
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(600))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    for f in spec.extra {
+        let dest = final_dir.join(f);
+        if dest.is_file() {
+            continue;
         }
-    };
-    tauri::async_runtime::spawn_blocking(move || export(winner2, final2, dir2, kind))
-        .await
-        .map_err(|e| format!("导出任务线程失败: {e}"))??;
+        // 小文件同样受 hf-mirror 瞬时 403 影响；整图已下完却因 tokenizer 失败而整体报错
+        // 代价太大（但 tokenizer 缺失会让 CLIP 直接不可用），故同样做有限重试。
+        let mut last = String::new();
+        for attempt in 0..3u32 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
+            }
+            match download_one(
+                app.clone(),
+                spec.name.to_string(),
+                format!("{}{}", spec.base_url(), f),
+                dest.clone(),
+                client.clone(),
+            )
+            .await
+            {
+                Ok(()) => {
+                    last.clear();
+                    break;
+                }
+                Err(e) => last = e,
+            }
+        }
+        if !last.is_empty() {
+            return Err(format!("{f} 下载失败: {last}"));
+        }
+    }
 
-    // 3. 清理临时文件
-    let _ = std::fs::remove_file(&winner);
+    // FEAT-SEM：模型就位后立即解除语义退避（下载完即可用，不必等 TTL）
+    crate::vision::clear_semantic_down();
+    // 首次使用前需拆双塔：服务端自动拆（幂等），此处不阻塞下载完成
     Ok(())
 }
 
@@ -321,7 +326,7 @@ fn emit_status(app: &AppHandle, spec: &DlSpec, stage: &str, bytes: u64, total: u
         app,
         ModelDlStatus {
             name: spec.name.to_string(),
-            file: spec.file.to_string(),
+            file: spec.rel_file(),
             required: spec.required,
             running: !done,
             done,
@@ -343,25 +348,60 @@ async fn download_first_wins(app: &AppHandle, spec: &DlSpec, dir: &Path) -> Resu
     let d1 = dir.join(format!(".dl_{}_1.{}", spec.name, spec.tmp_ext()));
     let official = spec.official();
     let mirror = spec.mirror();
-    let app2 = app.clone();
     let name = spec.name.to_string();
 
-    let f0 = download_one(app2.clone(), name.clone(), official.clone(), d0.clone(), client.clone());
-    let f1 = download_one(app2, name.clone(), mirror.clone(), d1.clone(), client.clone());
-    // 先完成者赢：tokio::select 返回第一个完成的 future，对位的另一路被取消；
-    // 单源直链（官方 == 镜像）降为单路，避免同 URL 双倍流量
-    let win_idx = if official == mirror {
-        f0.await.map(|_| 0u8)?;
-        0u8
-    } else {
-        tokio::select! {
-            _ = f0 => 0u8,
-            _ = f1 => 1u8,
+    // hf-mirror 对同一来源的密集请求会瞬时 403（实测：连续 HEAD/Range/GET 后 403，稍候恢复），
+    // 而这里是 400MB~800MB 的大文件 —— 失败即白下，故加有限重试（3 次，退避 2s/4s）。
+    let mut last_err = String::from("下载失败");
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
+            logger_info(&format!(
+                "[model_dl] 重试第 {attempt} 次下载 {}（上次：{last_err}）",
+                spec.name
+            ));
         }
-    };
-    let (winner_dest, loser) = if win_idx == 0 { (d0, d1) } else { (d1, d0) };
-    let _ = std::fs::remove_file(&loser);
-    Ok(winner_dest)
+        let f0 = download_one(
+            app.clone(),
+            name.clone(),
+            official.clone(),
+            d0.clone(),
+            client.clone(),
+        );
+        let f1 = download_one(
+            app.clone(),
+            name.clone(),
+            mirror.clone(),
+            d1.clone(),
+            client.clone(),
+        );
+        // 先完成者赢：tokio::select 返回第一个完成的 future，对位的另一路被取消；
+        // 单源直链（官方 == 镜像）降为单路，避免同 URL 双倍流量
+        let r = if official == mirror {
+            f0.await.map(|_| 0u8)
+        } else {
+            tokio::select! {
+                r0 = f0 => r0.map(|_| 0u8),
+                r1 = f1 => r1.map(|_| 1u8),
+            }
+        };
+        match r {
+            Ok(win_idx) => {
+                let (winner_dest, loser) = if win_idx == 0 { (d0, d1) } else { (d1, d0) };
+                let _ = std::fs::remove_file(&loser);
+                return Ok(winner_dest);
+            }
+            Err(e) => {
+                last_err = e;
+                let _ = std::fs::remove_file(&d0);
+                let _ = std::fs::remove_file(&d1);
+                if is_cancelled(&name) {
+                    return Err("已取消".into());
+                }
+            }
+        }
+    }
+    Err(last_err)
 }
 
 /// 单路流式下载（带进度 + 可取消）
@@ -415,84 +455,68 @@ async fn download_one(
     Ok(())
 }
 
-/// yolov8*-cls：.pt → .onnx（ultralytics）
-fn export_cls_pt(pt: &Path, dst: &Path) -> Result<(), String> {
-    let out = std::process::Command::new("python")
-        .args([
-            "-c",
-            &format!(
-                "from ultralytics import YOLO\n\
-                 m = YOLO(r'{}')\n\
-                 m.export(format='onnx', imgsz=224, simplify=True, opset=12)\n\
-                 import os\n\
-                 p = os.path.splitext(r'{}')[0] + '.onnx'\n\
-                 print('ONNX', p)",
-                pt.display(),
-                pt.display()
-            ),
-        ])
-        .output()
-        .map_err(|e| format!("启动导出进程失败: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "导出 onnx 失败: {}",
-            String::from_utf8_lossy(&out.stderr).lines().next_back().unwrap_or("未知错误")
-        ));
-    }
-    let onnx = pt.with_extension("onnx");
-    if !onnx.is_file() {
-        return Err("导出产物不存在（检查 ultralytics/torch 环境）".into());
-    }
-    std::fs::copy(&onnx, dst).map_err(|e| format!("移动 onnx 失败: {e}"))?;
-    let _ = std::fs::remove_file(&onnx);
-    Ok(())
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Places365：.pth.tar + 类目表 → .onnx
-fn export_scene_pth(pth: &Path, dst: &Path, dir: &Path) -> Result<(), String> {
-    let cats = dir.join("categories_places365.txt");
-    if !cats.is_file() {
-        let _ = download_simple(
-            "https://raw.githubusercontent.com/csailvision/places365/master/categories_places365.txt",
-            &cats,
-        );
+    /// 提取 python 配置里某个 key 的**字符串字面量**值（`"dir": "xxx"`）。
+    /// 非字符串值（如 `"dir": d,` 这种变量引用）不会被匹配。
+    fn quoted_values(text: &str, key: &str) -> Vec<String> {
+        let needle = format!("\"{key}\": \"");
+        text.match_indices(&needle)
+            .map(|(i, _)| {
+                let rest = &text[i + needle.len()..];
+                rest[..rest.find('"').unwrap_or(0)].to_string()
+            })
+            .collect()
     }
-    let out = std::process::Command::new("python")
-        .args([
-            "-c",
-            &format!(
-                "import torch, torchvision.models as M\n\
-                 sd = torch.load(r'{}', map_location='cpu', weights_only=False)\n\
-                 m = M.resnet18(num_classes=365)\n\
-                 m.load_state_dict(sd, strict=True)\n\
-                 m.eval()\n\
-                 torch.onnx.export(m, torch.randn(1,3,224,224), r'{}', opset_version=12, input_names=['input'], output_names=['output'])\n\
-                 print('ONNX done')",
-                pth.display(),
-                dst.display()
-            ),
-        ])
-        .output()
-        .map_err(|e| format!("启动导出进程失败: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "导出场景模型失败: {}",
-            String::from_utf8_lossy(&out.stderr).lines().next_back().unwrap_or("未知错误")
-        ));
-    }
-    Ok(())
-}
 
-fn download_simple(url: &str, dest: &Path) -> Result<(), String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut resp = client.get(url).send().map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status().as_u16()));
+    /// 下载落位必须与 python/vcr/config.py::CLIP_MODEL_META 严格一致：
+    /// 三种档位（b16 / b16-fp32 / l14）×（模型根目录 + onnx 文件名）一一对应，
+    /// 且 tokenizer.json / vocab.txt 落在**模型根目录**（不是 onnx/ 子目录，
+    /// 见 BUG-2026-0920-002）。
+    #[test]
+    fn clip_specs_match_python_tier_table() {
+        let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("python")
+            .join("vcr")
+            .join("config.py");
+        let text = std::fs::read_to_string(&config_path).expect("应能读取 python/vcr/config.py");
+
+        let py_dirs = quoted_values(&text, "dir");
+        let py_onnx = quoted_values(&text, "onnx");
+        assert_eq!(py_dirs.len(), 3, "档位表应有 3 档：{py_dirs:?}");
+        assert_eq!(py_onnx.len(), 3, "每档必须声明 onnx 文件名：{py_onnx:?}");
+
+        let specs = specs();
+        assert_eq!(specs.len(), py_dirs.len(), "Rust 下载表与 Python 档位表数量必须一致");
+        for (dir, onnx) in py_dirs.iter().zip(py_onnx.iter()) {
+            let hit = specs
+                .iter()
+                .find(|s| s.root == dir)
+                .unwrap_or_else(|| panic!("Rust 下载表缺少档位目录 {dir}"));
+            assert_eq!(&hit.onnx, onnx, "档位 {dir} 的 onnx 文件名不一致");
+            assert_eq!(hit.rel_file(), format!("{dir}/onnx/{onnx}"));
+            assert_eq!(hit.rel_file(), hit.rel_file(), "落位路径稳定");
+            // 附带文件必须落模型根目录（修复前落在 onnx/ 子目录 → tokenizer 找不到）
+            assert!(
+                hit.extra.contains(&"tokenizer.json") && hit.extra.contains(&"vocab.txt"),
+                "档位 {dir} 必须附带 tokenizer.json + vocab.txt"
+            );
+        }
     }
-    let mut f = std::fs::File::create(dest).map_err(|e| e.to_string())?;
-    std::io::copy(&mut resp, &mut f).map_err(|e| e.to_string())?;
-    Ok(())
+
+    /// 三条下载条目的命名/体积档位（防止误删条目）
+    #[test]
+    fn clip_specs_cover_all_three_tiers() {
+        let names: Vec<&str> = specs().iter().map(|s| s.name).collect();
+        for n in ["chinese-clip", "chinese-clip-fp32", "chinese-clip-l14"] {
+            assert!(names.contains(&n), "缺少下载条目 {n}；现有 {names:?}");
+        }
+        for s in specs() {
+            assert!(s.mirror() == s.official(), "hf-mirror 为单源直链，镜像应等于官方地址");
+        }
+    }
 }

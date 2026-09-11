@@ -1,18 +1,21 @@
-"""服务层：流水线编排（单张图片多路推理 → 仲裁 → 结果）
+"""服务层：流水线编排（单张图片多路规则推理 → 仲裁 → 结果）
 
 职责边界：
   - 解码图片（一次）→ 分发各通道
   - 收集元信息（格式/EXIF/尺寸）供仲裁器
-  - 条件触发专家通道（flower/food，懒加载模型，避免全量推理开销）
+  - 条件触发人脸标号（仅人物分支，省大量单人半身图开销）
   - 返回 schemas.ClassifyResult
+
+v5：分类模型（cls）/ Places365 场景 / 花朵 / 食物专家通道已全部下线；
+图像内容分类改由宿主「语义分类」（Chinese-CLIP）承担，本流水线只负责
+人物 / 夜景 / 文档 三条规则通道。单张耗时从 ~437ms 降到 ~150ms。
 """
 import os
 import time
 
 from .. import config, preprocess
 from ..schemas import ClassifyResult, TopItem
-from . import (arbitrator, classifier, detector, face_service, flower_service,
-               food_service, ocr_service, scene_service, tone_service)
+from . import arbitrator, detector, face_service, ocr_service, tone_service
 
 
 def _meta_of(img, path: str) -> dict:
@@ -28,28 +31,14 @@ def _meta_of(img, path: str) -> dict:
     return meta
 
 
-def _food_trigger(cls_out, scene_out) -> bool:
-    """食物专家触发条件：cls 是 other/food 或 scene 命中餐厅语义。"""
-    if not config.ENABLE_FOOD_EXPERT:
-        return False
-    if cls_out.ready and cls_out.category in ("food", "other"):
-        return True
-    if scene_out is not None and scene_out.ready:
-        lab = (scene_out.label or "").lower()
-        if any(k in lab for k in ("restaurant", "cafe", "bar", "dining", "food", "kitchen")):
-            return True
-    return False
-
-
 def _needs_face(det_out) -> bool:
-    """人脸标号条件触发（P2 性能优化）：仅当仲裁器会命中「需要 person_ids」的人物规则分支。
+    """人脸标号条件触发：仅当仲裁器会命中「需要 person_ids」的人物规则分支。
 
     与 arbitrator 人物规则严格对齐：
       - portrait：最大人框 ≥ PORTRAIT_AREA
       - street：n≥3 且 max_area<STREET_MAX_AREA 且非密集车流
       - 合影：n≥2 且 max_area ≥ GROUP_AREA
-    单人小框（路人，max_area 10%~30%）或 2 人小框不返回 person_ids，
-    跳过人脸标号（省 SCRFD 检测 + ArcFace 嵌入 + SQLite 匹配 ~50-100ms/张）。
+    单人小框（路人）不返回 person_ids，跳过人脸标号（省 ~50-100ms/张）。
     """
     if not det_out.ready or det_out.count <= 0:
         return False
@@ -74,25 +63,12 @@ def classify_one(path: str, registry, use_face: bool = True) -> ClassifyResult |
         return None
 
     meta = _meta_of(img, path)
-    cls_out = classifier.run(img, registry)
     det_out = detector.run(img, registry)
-    scene_out = scene_service.get_scene_service(registry).run(img)
-    # Phase 1：影调自算（几十毫秒级，与 tone.rs 算法一致）
+    # 影调自算（几十毫秒级，与 tone.rs 算法一致）→ 夜景通道
     tone_out = tone_service.compute_tone(img)
-    # Phase 4：OCR 条件触发（仅 text/other/低置信 才跑，省非文本图 ~90ms）
-    ocr_out = None
-    if cls_out.ready and (
-        cls_out.category in ("text", "other")
-        or cls_out.confidence < config.SCENE_OVERRIDE_CONF
-    ):
-        ocr_out = ocr_service.get_ocr_service(registry).run(img)
-    # Phase 3/5：专家通道条件触发
-    flower_out = None
-    if config.ENABLE_FLOWER_EXPERT and cls_out.ready and cls_out.category == "plant_flower":
-        flower_out = flower_service.get_flower_service(registry).run(img)
-    food_out = None
-    if _food_trigger(cls_out, scene_out):
-        food_out = food_service.get_food_service(registry).run(img)
+    # 文档 OCR：分类模型下线后不再有 cls 门控，模型可用即跑（~90ms/张），
+    # 换来文档/截图识别的稳定性（旧链路对 most 非强证据图本来也会跑）。
+    ocr_out = ocr_service.get_ocr_service(registry).run(img)
 
     face_hits: list[dict] = []
     if use_face and _needs_face(det_out):
@@ -102,9 +78,7 @@ def classify_one(path: str, registry, use_face: bool = True) -> ClassifyResult |
             face_hits = []
 
     result = arbitrator.arbitrate(
-        img, cls_out, det_out, scene_out, meta, face_hits,
-        tone_out=tone_out, ocr_out=ocr_out,
-        flower_out=flower_out, food_out=food_out,
+        img, det_out, meta, face_hits, tone_out=tone_out, ocr_out=ocr_out
     )
     elapsed = (time.perf_counter() - t0) * 1000.0
 
@@ -115,7 +89,8 @@ def classify_one(path: str, registry, use_face: bool = True) -> ClassifyResult |
         sub_category=result.sub_category,
         label=result.label,
         confidence=round(result.confidence, 4),
-        top3=[TopItem(**t) for t in result.top3],
+        top3=[TopItem(category=result.category, label=result.label,
+                      confidence=round(result.confidence, 4))] if result.label else [],
         person_ids=result.person_ids,
         person_count=result.person_count,
         source=result.source,

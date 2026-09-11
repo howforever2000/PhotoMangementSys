@@ -3,7 +3,7 @@
 #
 # 流程：
 #   1. 构建 VCR 视觉识别微服务单文件 exe（python/build_vcr_exe.ps1）
-#   2. 校验/补齐模型文件（python/models/，download_models.py 下载 face+ocr；
+#   2. 校验/补齐模型文件（python/models/，download_models.py 下载 face+ocr+clip；
 #      cls/det 需 ultralytics 导出，缺失则给出提示）
 #   3. 校验前端构建依赖（node_modules）
 #   4. tauri build --config release.tauri.conf.json —— 产出 MSI / NSIS 安装包，
@@ -46,10 +46,13 @@ if ($SkipModels) {
     Write-Host "[2/4] 跳过模型校验（发布包将不含模型）" -ForegroundColor Yellow
 } else {
     Write-Host "[2/4] 校验模型文件..." -ForegroundColor Green
+    # v5：分类模型（yolov8*-cls / Places365）已下线，改为要求「人物检测 + 人脸 + OCR」
+    #     以及语义模型（CLIP，缺它则语义搜索/语义分类在安装包里不可用）
     $required = @(
-        "yolov8n-cls.onnx", "yolov8n-det.onnx",
+        "yolov8n-det.onnx",
         "det_500m.onnx", "w600k_mbf.onnx",
-        "paddleocr-det.onnx"
+        "paddleocr-det.onnx",
+        "chinese-clip/tokenizer.json", "chinese-clip/vocab.txt"
     )
     $missing = @()
     foreach ($m in $required) {
@@ -72,12 +75,12 @@ if ($SkipModels) {
     if ($stillMissing.Count -gt 0) {
         throw @"
 仍缺失以下模型：$($stillMissing -join ', ')
-  - 人脸/OCR：请确认网络可访问，或手动执行 python/download_models.py
-  - 分类/检测：需 ultralytics 导出（python/export_model.py 导出 cls；det 同理用 ultralytics）
-  - 也可从已有开发机直接复制 python/models/ 下对应 .onnx 文件
+  - 人物检测/人脸/OCR/语义模型：python download_models.py --tasks face,ocr,clip
+  - 语义模型拆分件由服务首次使用时自动生成（也可先跑 python extract_clip_subgraphs.py b16）
+  - 也可从已有开发机直接复制 python/models/ 下对应文件
 "@
     }
-    Write-Host "    模型校验通过（5 个必需 ONNX 齐全）" -ForegroundColor Green
+    Write-Host "    模型校验通过（人物检测/人脸/OCR/语义模型齐全）" -ForegroundColor Green
 }
 
 # --- 3. 前端依赖 ---

@@ -141,7 +141,9 @@ const READY_TIMEOUT: Duration = Duration::from_secs(90);
 /// FEAT-051：API 版本。宿主检测到运行中服务版本过旧时自动重启到新版。
 /// v3（FEAT-053）：/benchmark 端点 + /gpu /models /health 新增会话实测字段。
 /// v4（FEAT-SEM）：语义搜索 —— /embed_text /embed_batch /health.clip_ready。
-const VCR_API_VERSION: u64 = 4;
+/// v5（语义分类）：分类模型/场景/专家通道下线；语义模型档位切换（B/16 ↔ L/14-336）；
+///                  新增 /embed_text_batch（分类关键词批量编码）。
+const VCR_API_VERSION: u64 = 5;
 /// FEAT-051：ensure 单飞锁 —— 并发命令共享一次「探测/重启/启动」流程，
 /// 邓免多进程同时拚 8765 端口（winerror 10048）
 static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -860,7 +862,7 @@ pub async fn vcr_set_gpu(app: &tauri::AppHandle, enabled: bool) -> Result<VcrGpu
     Ok(gpu_status_from_value(&v, true))
 }
 
-/// FEAT-051：分类模型候选清单（含是否已下载 / 当前生效）
+/// FEAT-051：语义模型档位候选清单（含是否已下载 / 当前生效 / 会话实测事实）
 pub async fn vcr_list_models(app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
     let client = http_client().await?;
     ensure_service_ready(&client, app, true).await?;
@@ -883,7 +885,7 @@ pub async fn vcr_list_models(app: &tauri::AppHandle) -> Result<serde_json::Value
     Ok(v)
 }
 
-/// FEAT-051：切换分类模型（文件未下载 / 未知名称 → 提取服务端 detail 报错）
+/// FEAT-051：切换语义模型档位（文件未下载 / 未知档位 → 提取服务端 detail 报错）
 pub async fn vcr_set_model(app: &tauri::AppHandle, model: &str) -> Result<serde_json::Value, String> {
     let client = http_client().await?;
     ensure_service_ready(&client, app, true).await?;
@@ -908,19 +910,20 @@ pub async fn vcr_set_model(app: &tauri::AppHandle, model: &str) -> Result<serde_
     Ok(v)
 }
 
-/// FEAT-053：cls 通道固定张量测速（CPU/GPU 真实加速比一键对比）。
+/// FEAT-053：固定张量测速（CPU/GPU 真实加速比一键对比）。
 /// 可能触发模型加载与数十次推理（秒级耗时），用每请求独立长超时（共享客户端 15s 不够）。
 pub async fn vcr_benchmark(
     app: &tauri::AppHandle,
     runs: u32,
     warmup: u32,
+    channel: &str,
 ) -> Result<serde_json::Value, String> {
     let client = http_client().await?;
     ensure_service_ready(&client, app, true).await?;
     let resp = client
         .post(format!("{}/benchmark", vcr_base()))
         .timeout(Duration::from_secs(60))
-        .json(&serde_json::json!({ "runs": runs, "warmup": warmup }))
+        .json(&serde_json::json!({ "runs": runs, "warmup": warmup, "channel": channel }))
         .send()
         .await
         .map_err(|e| format!("调用识别服务失败: {e}"))?;
@@ -1183,31 +1186,89 @@ pub async fn embed_images_batch(
 
 /// 查询文本 → 512 维归一化向量（Chinese-CLIP 双塔 text 侧，单次 ~7ms@DML）
 pub async fn embed_text_query(text: &str, app: &tauri::AppHandle) -> Result<Vec<f32>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-    ensure_service_ready(&client, app, false).await?;
-    let resp: serde_json::Value = client
-        .post(format!("{}/embed_text", vcr_base()))
-        .json(&serde_json::json!({ "text": text }))
-        .send()
-        .await
-        .map_err(|e| format!("调用 embedding 服务失败: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("解析 embedding 结果失败: {e}"))?;
-    let emb = resp
-        .get("embedding")
-        .and_then(|x| x.as_array())
-        .map(|a| a.iter().filter_map(|f| f.as_f64()).map(|f| f as f32).collect::<Vec<f32>>());
-    match emb {
-        Some(v) if !v.is_empty() => Ok(v),
+    let mut out = embed_text_batch(&[text.to_string()], app).await?;
+    match out.pop() {
+        Some((_, v)) if !v.is_empty() => Ok(v),
         _ => Err("embedding 响应为空".into()),
     }
 }
 
-/// 探测 CLIP 子系统是否就绪（/health.clip_ready；服务不可达返回 false，不报错）
+/// 批量文本 → 向量（v5 语义分类：用户分类关键词 + 中性基线提示词一次编码）
+///
+/// 返回顺序与请求一致；服务端单次封顶 64 条，此处自动分片（避免超长请求）。
+pub async fn embed_text_batch(
+    texts: &[String],
+    app: &tauri::AppHandle,
+) -> Result<Vec<(String, Vec<f32>)>, String> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    ensure_service_ready(&client, app, false).await?;
+    let mut out: Vec<(String, Vec<f32>)> = Vec::with_capacity(texts.len());
+    for chunk in texts.chunks(64) {
+        let resp: serde_json::Value = client
+            .post(format!("{}/embed_text_batch", vcr_base()))
+            .json(&serde_json::json!({ "texts": chunk }))
+            .send()
+            .await
+            .map_err(|e| format!("调用 embedding 服务失败: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("解析 embedding 结果失败: {e}"))?;
+        let items = resp
+            .get("results")
+            .and_then(|x| x.as_array())
+            .ok_or_else(|| "embedding 响应缺少 results".to_string())?;
+        for item in items {
+            let text = item
+                .get("text")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let vec: Vec<f32> = item
+                .get("embedding")
+                .and_then(|x| x.as_array())
+                .map(|a| a.iter().filter_map(|f| f.as_f64()).map(|f| f as f32).collect())
+                .unwrap_or_default();
+            if !vec.is_empty() {
+                out.push((text, vec));
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err("embedding 响应为空".into());
+    }
+    Ok(out)
+}
+
+/// 当前生效的语义模型标识（/health.model_id；服务不可达返回 Err，调用方据此提示）
+pub async fn clip_model_id(app: &tauri::AppHandle) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    ensure_service_ready(&client, app, false).await?;
+    let resp: serde_json::Value = client
+        .get(format!("{}/health", vcr_base()))
+        .send()
+        .await
+        .map_err(|e| format!("调用识别服务失败: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("解析 health 失败: {e}"))?;
+    resp.get("model_id")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "识别服务未返回语义模型标识（服务版本过旧？）".to_string())
+}
+
+/// 探测 CLIP 子系统是否就绪（/health.clip_ready；服务不可达返回 false，不报错）。
+/// 供诊断/脚本使用：主链路（扫描/搜索/分类）直接调 /embed_* 并依赖返回码降级。
+#[allow(dead_code)]
 pub async fn clip_ready(app: &tauri::AppHandle) -> bool {
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
@@ -1226,6 +1287,7 @@ pub async fn clip_ready(app: &tauri::AppHandle) -> bool {
     false
 }
 
+#[allow(dead_code)]
 async fn probe_clip(client: reqwest::Client, base: String) -> bool {
     let ok_json = match client
         .get(format!("{base}/health"))

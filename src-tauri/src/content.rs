@@ -31,7 +31,7 @@ use crate::db::PhotoContentRecord;
 /// - 版本信号 = photo_embeddings 的 (count, max_rowid)，任一变化（新扫描/删除）
 ///   时懒重载，避免每次搜索全量读库
 /// - Arc 包装：读路径零拷贝（全库 1 万张 ≈ 23MB，clone 仅引用计数）
-type EmbedCacheEntry = Arc<(crate::db::EmbeddingVersion, Vec<(String, Option<i64>, Vec<f32>)>)>;
+type EmbedCacheEntry = Arc<(crate::db::EmbeddingVersion, Vec<(String, Option<i64>, String, Vec<f32>)>)>;
 static EMBED_CACHE: Mutex<Option<HashMap<i64, EmbedCacheEntry>>> = Mutex::new(None);
 
 /// 语义召回置信度默认阈值（Phase 0 实测：相关命中集中 0.41~0.46，非相关背景值更低）
@@ -77,9 +77,11 @@ async fn semantic_recall(
     }
 
     // 全库向量（版本变化懒重载；锁内不做 IO，db 读写均在 EMBED_CACHE 锁外）
+    // v5：按当前语义档位模型过滤 —— 换档后旧向量维度/空间不同，绝不能混用
+    let model = crate::vision::clip_model_id(app).await?;
     let version = {
         let db = state.0.lock().map_err(|e| format!("{e}"))?;
-        db.embedding_version(user_id).map_err(|e| format!("{e}"))?
+        db.embedding_version(user_id, &model).map_err(|e| format!("{e}"))?
     };
     let cached: Option<EmbedCacheEntry> = {
         let cache = EMBED_CACHE.lock().map_err(|e| format!("{e}"))?;
@@ -94,7 +96,7 @@ async fn semantic_recall(
         None => {
             let list = {
                 let db = state.0.lock().map_err(|e| format!("{e}"))?;
-                db.load_all_embeddings(user_id).map_err(|e| format!("{e}"))?
+                db.load_all_embeddings(user_id, &model).map_err(|e| format!("{e}"))?
             };
             let e: EmbedCacheEntry = Arc::new((version, list));
             if let Ok(mut cache) = EMBED_CACHE.lock() {
@@ -119,7 +121,7 @@ async fn continue_recall(
     let (_version, list) = entry.as_ref();
     let mut scored: Vec<(f64, &String)> = list
         .iter()
-        .filter_map(|(hash, _album, v)| {
+        .filter_map(|(hash, _album, _path, v)| {
             if v.len() != q.len() {
                 return None;
             }
@@ -781,11 +783,12 @@ async fn scan_album_embeddings(
         return Ok((ScanReport { total: photos.len(), written: 0, failed: photos.len() }, Vec::new()));
     }
 
-    // 3. 增量差集：已有向量的照片跳过（重复扫描秒级完成）
+    // 3. 增量差集：已有向量的照片跳过（重复扫描秒级完成；按当前档位模型隔离）
+    let model = crate::vision::clip_model_id(app).await.unwrap_or_else(|_| "chinese-clip-vit-b16-fp16".to_string());
     let all_hashes: Vec<String> = meta.iter().map(|(_, h, _)| h.clone()).collect();
     let existing: std::collections::HashSet<String> = {
         let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
-        db.lookup_embedding_hashes(&all_hashes).unwrap_or_default()
+        db.lookup_embedding_hashes(&all_hashes, &model).unwrap_or_default()
     };
     let meta_len = meta.len();
     // 覆盖模式：全部重算（已有向量被 upsert 覆盖）；增量模式：跳过已有
@@ -804,7 +807,6 @@ async fn scan_album_embeddings(
     let results = crate::vision::embed_images_batch(&thumb_paths, batch_size, app, Some(cancel)).await?;
 
     // 5. 500/批事务写库（f32 小端 BLOB，服务端已归一化）
-    let model = "chinese-clip-vit-b16-fp16";
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())
@@ -829,7 +831,7 @@ async fn scan_album_embeddings(
                 album_id: Some(album_id),
                 path: src.clone(),
                 dim: vec.len() as i64,
-                model: model.to_string(),
+                model: model.clone(),
                 embedding: vec.clone(),
                 generated_at: now.clone(),
             });
@@ -1055,9 +1057,9 @@ pub mod commands {
         }
         if !scan_types
             .iter()
-            .all(|s| ["basic", "tone", "ai", "semantic"].contains(&s.as_str()))
+            .all(|s| ["basic", "tone", "person", "ai", "semantic"].contains(&s.as_str()))
         {
-            return Err("非法 scan_types，允许 basic / tone / ai / semantic".to_string());
+            return Err("非法 scan_types，允许 basic / tone / person / semantic".to_string());
         }
 
         // 重置取消标记：本次扫描全新开始；前端「停止」→ `cancel_scan` 置位后提前结束
@@ -1071,7 +1073,9 @@ pub mod commands {
 
         let do_basic = scan_types.contains(&"basic".to_string());
         let do_tone = scan_types.contains(&"tone".to_string());
-        let do_ai = scan_types.contains(&"ai".to_string());
+        // v5：「ai」更名为「person」（分类模型下线后该分支只做人物/夜景/文档规则识别）；
+        // 旧前端可能仍传 "ai"，一并兼容
+        let do_ai = scan_types.contains(&"person".to_string()) || scan_types.contains(&"ai".to_string());
         // FEAT-SEM：语义向量扫描（独立于 AI 分支，缩略图直编码，增量跳过已有向量）
         let do_semantic = scan_types.contains(&"semantic".to_string());
         let batch = batch_size.unwrap_or(8).clamp(4, 64) as usize;
@@ -1289,6 +1293,17 @@ pub mod commands {
                 .collect();
             if !prewarm_paths.is_empty() {
                 let _ = prewarm_thumbs_after_scan(&app, &state, album_id, user_id, &prewarm_paths).await;
+            }
+        }
+        // v5 语义分类：扫描完成后自动重建分类命中（关键词向量已缓存，成本毫秒~秒级）。
+        // 失败不阻塞扫描结果——用户仍可在分类页手动「重建」。
+        if outcome.is_ok() && (do_ai || do_semantic) {
+            match crate::category::rebuild_semantic_hits(&app, &state, user_id).await {
+                Ok(rep) => logger::log_info(&format!(
+                    "[scan] 分类命中已重建：分类 {} · 命中 {} · 索引 {} · {}ms",
+                    rep.categories, rep.hits, rep.indexed, rep.ms
+                )),
+                Err(e) => logger::log_info(&format!("[scan] 分类重建跳过（不影响扫描）：{e}")),
             }
         }
         outcome
@@ -1610,8 +1625,10 @@ pub mod commands {
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    // 降级是预期行为（模型未下载/服务未启动/向量库为空），不打扰用户
-                    eprintln!("[smart_search] 语义降级: {e}");
+                    // 降级是预期行为（模型未下载/服务未启动/向量库为空），不打扰用户；
+                    // 但**必须落日志**：此前只 eprintln!，用户与排查者都看不到原因，
+                    // 导致「语义检索突然失效但无任何提示」（BUG-2026-0920-006）
+                    logger::log_info(&format!("[smart_search] 语义降级（仅返回关键词结果）: {e}"));
                 }
             }
         }

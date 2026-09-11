@@ -15,6 +15,7 @@ macro_rules! log_call {
 
 mod auth;
 mod avatar;
+mod category;
 mod content;
 mod crypto;
 mod db;
@@ -2461,10 +2462,21 @@ async fn set_vcr_model(model: String, app: tauri::AppHandle) -> Result<serde_jso
     vision::vcr_set_model(&app, &model).await
 }
 
-/// FEAT-053：cls 通道固定张量测速（CPU/GPU 真实加速比一键对比）
+/// FEAT-053：固定张量测速（CPU/GPU 真实加速比一键对比；channel 默认 det）
 #[tauri::command]
-async fn benchmark_vcr(runs: Option<u32>, warmup: Option<u32>, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    vision::vcr_benchmark(&app, runs.unwrap_or(10), warmup.unwrap_or(2)).await
+async fn benchmark_vcr(
+    runs: Option<u32>,
+    warmup: Option<u32>,
+    channel: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    vision::vcr_benchmark(
+        &app,
+        runs.unwrap_or(10),
+        warmup.unwrap_or(2),
+        channel.as_deref().unwrap_or("det"),
+    )
+    .await
 }
 
 /// 在系统文件管理器中打开文件夹内部
@@ -3337,6 +3349,13 @@ pub fn run() {
             content::commands::list_timeline,
             content::commands::list_content_categories,
             content::commands::list_photos_by_category,
+            category::commands::list_categories,
+            category::commands::save_category,
+            category::commands::delete_category,
+            category::commands::preview_category,
+            category::commands::rebuild_categories,
+            category::commands::list_category_photos,
+            category::commands::category_index_stats,
             content::commands::list_photo_locations,
             content::commands::list_photos_by_location,
             content::commands::set_photo_tags,

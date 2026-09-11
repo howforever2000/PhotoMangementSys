@@ -23,7 +23,7 @@ const toneLabelMap: Record<string, string> = {
 };
 
 // FEAT-SEM：语义向量默认勾选（其余三项保持原默认）
-const comboScanTypes = ref<string[]>(["basic", "tone", "ai", "semantic"]);
+const comboScanTypes = ref<string[]>(["basic", "tone", "person", "semantic"]);
 const comboBatch = ref(8);
 const BATCH_OPTIONS = [8, 16, 32];
 // 任务状态来自全局 store（键 = albumId），脱离组件存活：
@@ -159,7 +159,7 @@ const openImage = trace("openImage", async (path: string) => {
   <section class="scan-area combo-area">
     <div class="scan-toolbar">
       <div class="combo-title-wrap">
-        <p class="scan-sub">勾选扫描类型（可多选，至少一项即可），一次完成 EXIF / 影调 / AI 内容识别；勾选「内容识别」时结果同时写入内容库，可用于智能搜索。扫描在后台执行，退出相册页不中断，可随时点击「停止」结束</p>
+        <p class="scan-sub">勾选扫描类型（可多选，至少一项即可），一次完成 EXIF / 影调 / 人物·文档识别；结果同时写入内容库，可用于智能搜索与语义分类。扫描在后台执行，退出相册页不中断，可随时点击「停止」结束</p>
       </div>
       <div class="combo-actions">
         <button class="btn btn-primary" :disabled="comboScanning" @click="startScan">
@@ -188,10 +188,10 @@ const openImage = trace("openImage", async (path: string) => {
             <span class="combo-check-label">影调分析</span>
             <span class="combo-check-desc">低调 / 中间调 / 高调</span>
           </label>
-          <label class="combo-check" :class="{ active: comboScanTypes.includes('ai') }">
-            <input type="checkbox" value="ai" v-model="comboScanTypes" />
-            <span class="combo-check-label">AI 内容识别</span>
-            <span class="combo-check-desc">写入内容库 · 支持搜索</span>
+          <label class="combo-check" :class="{ active: comboScanTypes.includes('person') }">
+            <input type="checkbox" value="person" v-model="comboScanTypes" />
+            <span class="combo-check-label">人物 · 文档识别</span>
+            <span class="combo-check-desc">人脸标号 / 夜景 / 文档（分类已改语义）</span>
           </label>
           <label class="combo-check" :class="{ active: comboScanTypes.includes('semantic') }">
             <input type="checkbox" value="semantic" v-model="comboScanTypes" />

@@ -353,7 +353,7 @@ const batchRunning = ref(false);
 /* FEAT-037：批量扫描入库（勾选模式下对选中相册组合扫描 EXIF/影调/AI 并写库） */
 const scanDialogOpen = ref(false);
 // FEAT-SEM：语义向量默认勾选
-const batchScanTypes = ref<string[]>(["basic", "tone", "ai", "semantic"]);
+const batchScanTypes = ref<string[]>(["basic", "tone", "person", "semantic"]);
 const batchScanBatch = ref(8);
 const batchScanning = ref(false);
 /** FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） */
@@ -363,7 +363,7 @@ const batchScanResult = ref<{ scanned: number; failed: { albumId: number; error:
 /** 打开批量扫描弹窗 */
 function openBatchScan() {
   // 默认三种扫描方式全选
-  batchScanTypes.value = ["basic", "tone", "ai", "semantic"];
+  batchScanTypes.value = ["basic", "tone", "person", "semantic"];
   batchScanBatch.value = 8;
   batchScanResult.value = null;
   scanDialogOpen.value = true;
@@ -1177,7 +1177,7 @@ function onKey(e: KeyboardEvent) {
             <button
               class="btn btn-scan-feature"
               :disabled="selectedIds.size === 0 || batchRunning"
-              :title="selectedIds.size === 0 ? '请先勾选至少 1 个相册' : `对选中的 ${selectedIds.size} 个相册执行 EXIF / 影调 / AI 内容识别并写库，用于智能搜索与统计`"
+              :title="selectedIds.size === 0 ? '请先勾选至少 1 个相册' : `对选中的 ${selectedIds.size} 个相册执行 EXIF / 影调 / 人物 · 文档识别并写库，用于智能搜索与统计`"
               @click="openBatchScan"
             >📥 批量扫描入库…</button>
           </div>
@@ -1622,10 +1622,10 @@ function onKey(e: KeyboardEvent) {
             <span class="combo-check-label">影调分析</span>
             <span class="combo-check-desc">低调 / 中间调 / 高调</span>
           </label>
-          <label class="combo-check" :class="{ active: batchScanTypes.includes('ai') }">
-            <input type="checkbox" value="ai" v-model="batchScanTypes" />
-            <span class="combo-check-label">AI 内容识别</span>
-            <span class="combo-check-desc">写入内容库 · 支持搜索</span>
+          <label class="combo-check" :class="{ active: batchScanTypes.includes('person') }">
+            <input type="checkbox" value="person" v-model="batchScanTypes" />
+            <span class="combo-check-label">人物 · 文档识别</span>
+            <span class="combo-check-desc">人脸标号 / 夜景 / 文档（分类已改语义）</span>
           </label>
           <label class="combo-check" :class="{ active: batchScanTypes.includes('semantic') }">
             <input type="checkbox" value="semantic" v-model="batchScanTypes" />

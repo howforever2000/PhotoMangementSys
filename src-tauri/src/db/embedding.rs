@@ -34,11 +34,13 @@ pub struct EmbeddingRecord {
     pub generated_at: String,
 }
 
-/// 向量缓存版本信号：count 与 max(rowid) 任一变化即需重载内存缓存
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+/// 向量缓存版本信号：count 与 max(rowid) 任一变化即需重载内存缓存；
+/// v5 追加 model —— 换语义档位后向量空间不同，必须整体失效重建
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct EmbeddingVersion {
     pub count: i64,
     pub max_rowid: i64,
+    pub model: String,
 }
 
 impl Database {
@@ -77,16 +79,23 @@ impl Database {
         Ok(())
     }
 
-    /// 查询已存在向量的 hash 集合（增量索引跳过用）
-    pub fn lookup_embedding_hashes(&self, hashes: &[String]) -> Result<HashSet<String>, DbError> {
+    /// 查询已存在向量的 hash 集合（增量索引跳过用）；按 model 隔离（换档需重算）
+    pub fn lookup_embedding_hashes(
+        &self,
+        hashes: &[String],
+        model: &str,
+    ) -> Result<HashSet<String>, DbError> {
         let mut out = HashSet::new();
         if hashes.is_empty() {
             return Ok(out);
         }
         let placeholders = std::iter::repeat("?").take(hashes.len()).collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT photo_hash FROM photo_embeddings WHERE photo_hash IN ({placeholders})");
+        let sql = format!(
+            "SELECT photo_hash FROM photo_embeddings WHERE model = ? AND photo_hash IN ({placeholders})"
+        );
         let mut stmt = self.conn.prepare(&sql)?;
-        let pv: Vec<&dyn rusqlite::ToSql> = hashes.iter().map(|h| h as &dyn rusqlite::ToSql).collect();
+        let mut pv: Vec<&dyn rusqlite::ToSql> = vec![&model];
+        pv.extend(hashes.iter().map(|h| h as &dyn rusqlite::ToSql));
         let rows = stmt.query_map(pv.as_slice(), |r| r.get::<_, String>(0))?;
         for r in rows {
             out.insert(r?);
@@ -94,29 +103,39 @@ impl Database {
         Ok(out)
     }
 
-    /// 该用户全量向量（内存缓存构建用，含 album_id 供相册过滤）
-    pub fn load_all_embeddings(&self, user_id: i64) -> Result<Vec<(String, Option<i64>, Vec<f32>)>, DbError> {
+    /// 该用户全量向量（内存缓存构建用，含 album_id 与 path 供相册过滤 / 分类命中级联）
+    ///
+    /// v5：按 model 过滤 —— 换语义档位后旧向量维度/空间不同，绝不能混用。
+    pub fn load_all_embeddings(
+        &self,
+        user_id: i64,
+        model: &str,
+    ) -> Result<Vec<(String, Option<i64>, String, Vec<f32>)>, DbError> {
         let mut stmt = self.conn.prepare(
-            "SELECT photo_hash, album_id, embedding FROM photo_embeddings WHERE user_id = ?1",
+            "SELECT photo_hash, album_id, path, embedding FROM photo_embeddings
+             WHERE user_id = ?1 AND model = ?2",
         )?;
-        let rows = stmt.query_map(params![user_id], |r| {
+        let rows = stmt.query_map(params![user_id, model], |r| {
             let hash: String = r.get(0)?;
             let album: Option<i64> = r.get(1)?;
-            let blob: Vec<u8> = r.get(2)?;
-            Ok((hash, album, f32_vec_from_blob(&blob)))
+            let path: String = r.get(2)?;
+            let blob: Vec<u8> = r.get(3)?;
+            Ok((hash, album, path, f32_vec_from_blob(&blob)))
         })?;
         rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
     }
 
-    /// 缓存版本信号（轻查询，/search 高频调用）
-    pub fn embedding_version(&self, user_id: i64) -> Result<EmbeddingVersion, DbError> {
+    /// 缓存版本信号（轻查询，/search 高频调用）；model 变化即视为失效
+    pub fn embedding_version(&self, user_id: i64, model: &str) -> Result<EmbeddingVersion, DbError> {
         self.conn.query_row(
-            "SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM photo_embeddings WHERE user_id = ?1",
-            params![user_id],
+            "SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM photo_embeddings
+             WHERE user_id = ?1 AND model = ?2",
+            params![user_id, model],
             |r| {
                 Ok(EmbeddingVersion {
                     count: r.get(0)?,
                     max_rowid: r.get(1)?,
+                    model: model.to_string(),
                 })
             },
         )

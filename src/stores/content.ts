@@ -5,6 +5,12 @@ import type { ClassifyProgress } from "../types/photo";
 import { useAlbumStore } from "./album";
 import type {
   AlbumContentRow,
+  CategoryIndexStats,
+  CategoryInput,
+  CategoryOverview,
+  CategoryPhoto,
+  CategoryPreview,
+  CategoryRebuildReport,
   CombinedScanOutcome,
   ContentScanFilters,
   ContentSearchHit,
@@ -140,6 +146,12 @@ export const useContentStore = defineStore("content", {
     activeScanAlbum: null as number | null,
     /** 全局进度监听是否已就绪（只注册一次） */
     _progressReady: false,
+    /** v5：语义分类总览（卡片数据，含计数与封面） */
+    categories: [] as CategoryOverview[],
+    /** v5：语义索引覆盖统计（「已索引 N/M」+ 换档提醒） */
+    categoryStats: null as CategoryIndexStats | null,
+    /** v5：最近一次分类重建报告（前端提示用） */
+    lastCategoryRebuild: null as CategoryRebuildReport | null,
   }),
 
   actions: {
@@ -181,9 +193,57 @@ export const useContentStore = defineStore("content", {
       return this.vcrModels;
     },
 
-    /** FEAT-053：cls 通道固定张量测速（CPU/GPU 真实加速比对比，可能耗时数秒） */
-    async benchmarkVcr(runs = 10, warmup = 2): Promise<VcrBenchmarkResult> {
-      return await invoke<VcrBenchmarkResult>("benchmark_vcr", { runs, warmup });
+    /** FEAT-053：固定张量测速（CPU/GPU 真实加速比对比，可能耗时数秒） */
+    async benchmarkVcr(runs = 10, warmup = 2, channel = "det"): Promise<VcrBenchmarkResult> {
+      return await invoke<VcrBenchmarkResult>("benchmark_vcr", { runs, warmup, channel });
+    },
+
+    // ------------------------------------------------------------------
+    // v5 语义分类
+    // ------------------------------------------------------------------
+    /** 分类总览（首次调用会自动补齐系统分类与内置预设） */
+    async listCategories(): Promise<CategoryOverview[]> {
+      this.categories = await invoke<CategoryOverview[]>("list_categories");
+      return this.categories;
+    },
+
+    /** 新建 / 更新分类（保存后后端会自动重建该分类命中，返回最新行） */
+    async saveCategory(id: number | null, input: CategoryInput): Promise<CategoryOverview> {
+      const row = await invoke<CategoryOverview>("save_category", { id, input });
+      const i = this.categories.findIndex((c) => c.id === row.id);
+      if (i >= 0) this.categories.splice(i, 1, row);
+      else this.categories.push(row);
+      return row;
+    },
+
+    /** 删除分类（系统规则分类不可删） */
+    async deleteCategory(id: number): Promise<boolean> {
+      const ok = await invoke<boolean>("delete_category", { id });
+      if (ok) this.categories = this.categories.filter((c) => c.id !== id);
+      return ok;
+    },
+
+    /** 语义预览（实时看命中数与样张，不落库） */
+    async previewCategory(input: CategoryInput): Promise<CategoryPreview> {
+      return await invoke<CategoryPreview>("preview_category", { input });
+    },
+
+    /** 重建分类命中（id 省略 = 全部重建） */
+    async rebuildCategories(id?: number): Promise<CategoryRebuildReport> {
+      const rep = await invoke<CategoryRebuildReport>("rebuild_categories", { id: id ?? null });
+      this.lastCategoryRebuild = rep;
+      return rep;
+    },
+
+    /** 某分类下的照片（按语义强度降序） */
+    async listCategoryPhotos(id: number, limit?: number): Promise<CategoryPhoto[]> {
+      return await invoke<CategoryPhoto[]>("list_category_photos", { id, limit: limit ?? null });
+    },
+
+    /** 语义索引覆盖统计 */
+    async categoryIndexStats(): Promise<CategoryIndexStats> {
+      this.categoryStats = await invoke<CategoryIndexStats>("category_index_stats");
+      return this.categoryStats;
     },
 
     /** FEAT-052：模型下载状态列表（含未启动 idle） */
