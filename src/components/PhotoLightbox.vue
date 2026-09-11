@@ -14,6 +14,7 @@ import { categoryLabel } from "../utils/categoryLabel";
  * - 全屏遮罩展示当前照片原图
  * - 上一张/下一张（左右方向键）、关闭（ESC）
  * - 底部元数据面板：文件名、AI 分类/人物/置信度、EXIF、影调
+ * - 工具栏：评分 / 标签 / （可选）删除 / 在相册中查看（emit openAlbum，父视图接路由）
  *
  * FEAT-D：自动扫描复用
  *   若当前照片在 photo_content_scan 中尚无记录，watch photo 变化时静默调
@@ -37,7 +38,12 @@ const props = defineProps<{
   deletable?: boolean;
 }>();
 
-const emit = defineEmits<{ (e: "close"): void; (e: "delete", path: string): void }>();
+const emit = defineEmits<{
+  (e: "close"): void;
+  (e: "delete", path: string): void;
+  /** 请求跳到当前照片所属相册（由父视图决定路由；无 albumId 时不触发） */
+  (e: "openAlbum", albumId: number): void;
+}>();
 
 const current = ref(props.index);
 const imgLoading = ref(true);
@@ -425,6 +431,12 @@ function askDelete() {
       <button class="lb-tb-btn" title="添加 / 编辑标签" @click="tagPanelOpen = !tagPanelOpen">
         🏷 标签<span v-if="tags.length"> · {{ tags.length }}</span>
       </button>
+      <button
+        v-if="photo?.albumId != null"
+        class="lb-tb-btn"
+        title="在所属相册中查看（保留当前浏览位置由父视图决定）"
+        @click="photo.albumId != null && emit('openAlbum', photo.albumId)"
+      >📁 在相册中查看</button>
       <button
         v-if="deletable"
         class="lb-tb-btn danger"

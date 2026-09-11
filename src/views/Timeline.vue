@@ -208,6 +208,12 @@ function applyJumpQuery() {
     }
   });
 }
+/** 大图工具栏「📁 在相册中查看」：关掉看图器，跳相册并带 ?focus 定位高亮该照片 */
+function goAlbumFromLightbox(albumId: number) {
+  lightboxOpen.value = false;
+  const path = lightboxPhotos.value[lightboxIndex.value]?.path;
+  router.push({ path: `/album/${albumId}`, query: path ? { focus: path } : undefined });
+}
 </script>
 
 <template>
@@ -302,6 +308,7 @@ function applyJumpQuery() {
       :photos="lightboxPhotos"
       :index="lightboxIndex"
       @close="lightboxOpen = false"
+      @open-album="goAlbumFromLightbox"
     />
   </div>
 </template>

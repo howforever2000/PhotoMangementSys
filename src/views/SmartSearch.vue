@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref, reactive } from "vue";
+import { computed, onMounted, ref, reactive } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
+import PhotoLightbox from "../components/PhotoLightbox.vue";
 import type { SmartHit } from "../types/content";
 
 /**
@@ -13,6 +14,10 @@ import type { SmartHit } from "../types/content";
  * 时间区间 / 地点 / 类别 / 标签 / 人物标号 / 影调。
  * 「智能解析」按钮会把自然语言拆成结构化筛选自动填充。
  * 结果网格复用 get_photo_thumbs（按 album_id 分组）生成缩略图。
+ *
+ * 点击行为（与人像画廊 / 时间线一致）：
+ *   - 点图片 → PhotoLightbox 大图预览（序列 = 当前全部搜索结果，可左右翻页）
+ *   - 卡片右上角「📁 相册名」→ 跳转该照片所属相册（次要入口，点击不触发预览）
  */
 const router = useRouter();
 const theme = useThemeStore();
@@ -50,16 +55,29 @@ function fileUrl(p: string): string {
 }
 
 /**
- * FEAT-SEM：进入搜索页时后台预热语义服务（fire-and-forget）
+ * FEAT-SEM：进入搜索页时后台预热语义服务（fire-and-forget），并把结果显性化。
  *
- * 重启应用后 VCR 服务未运行、CLIP 会话未加载，若不预热则首次搜索要么多等数秒、
- * 要么（旧实现）静默降级成纯关键词。预热成功后再搜索即可直接命中语义结果。
- * 模型未下载时后端直接返回 false，不会拉起无谓进程。
+ * 预热的价值：重启应用后 VCR 服务未运行、CLIP 会话未加载，若不预热则首次搜索
+ * 要么多等数秒、要么静默降级成纯关键词。模型未下载时后端直接返回 false，
+ * 不会拉起无谓进程。
+ *
+ * 为什么要把结果存下来（BUG-2026-0920-006）：语义链路失败时后端原只写 stderr，
+ * 前端无任何提示，用户看到的就是「以前能搜到、现在搜不到了」却查不出原因。
+ * 这里把可用性暴露给模板，不可用时给出显性提示与修复入口。
+ *
+ * 语义可用性：null=探测中 / true=就绪 / false=不可用（已降级为关键词检索）
  */
+const semReady = ref<boolean | null>(null);
+
 onMounted(() => {
-  invoke<boolean>("warmup_semantic_service").catch(() => {
-    /* 预热失败不影响普通关键词搜索（搜索时会再尝试并自动降级） */
-  });
+  invoke<boolean>("warmup_semantic_service")
+    .then((ok) => {
+      semReady.value = ok;
+    })
+    .catch(() => {
+      // 预热失败不影响普通关键词搜索（搜索时会再尝试并自动降级）
+      semReady.value = false;
+    });
 });
 
 async function runSearch() {
@@ -213,8 +231,40 @@ function parseNatural() {
   runSearch();
 }
 
-function openAlbum(r: SmartHit) {
-  if (r.album_id != null) router.push(`/album/${r.album_id}`);
+/**
+ * 跳转该照片所属相册（卡片小按钮 / 大图工具栏共用）
+ *
+ * 带 `?focus=<path>`：相册详情页读 route.query.focus → PhotoGrid 滚动定位 + 高亮，
+ * 与时间线「↗ 去相册」保持同一约定（FEAT-034-B），否则用户跳过去还得自己找。
+ */
+function goAlbum(albumId: number | null | undefined, path?: string) {
+  if (albumId == null) return;
+  lightboxOpen.value = false;
+  router.push({
+    path: `/album/${albumId}`,
+    query: path ? { focus: path } : undefined,
+  });
+}
+
+/** 大图工具栏「📁 在相册中查看」：只拿到 albumId，路径取当前浏览到的那张 */
+function goAlbumFromLightbox(albumId: number) {
+  goAlbum(albumId, lightboxPhotos.value[lightboxIndex.value]?.path);
+}
+
+/* ---- 大图预览（复用 PhotoLightbox：与人像/时间线同一范式）---- */
+const lightboxOpen = ref(false);
+const lightboxIndex = ref(0);
+
+/** 浏览序列 = 当前全部搜索结果（含语义命中），只渲染当前张 */
+const lightboxPhotos = computed(() =>
+  results.value.map((r) => ({ path: r.path, albumId: r.album_id })),
+);
+
+function openPhoto(r: SmartHit) {
+  const idx = results.value.findIndex((x) => x.path === r.path);
+  if (idx < 0) return;
+  lightboxIndex.value = idx;
+  lightboxOpen.value = true;
 }
 
 const toneLabel = (t: string | null) =>
@@ -297,6 +347,14 @@ function showTag(r: SmartHit): string {
       <p class="ss-empty-text">搜索失败：{{ error }}</p>
     </div>
 
+    <!-- 语义不可用提示（显性化降级，避免「悄悄搜不到」） -->
+    <p v-if="semReady === false" class="ss-warn">
+      ⚠ 语义检索未就绪：当前只做关键词匹配。
+      常见原因：CLIP 模型未下载 / 识别服务未就绪（可在
+      <router-link to="/scan" class="ss-link">扫描中心 → ⚙ 性能设置</router-link>
+      查看并下载语义模型），或语义索引尚未构建。
+    </p>
+
     <!-- 未开始搜索：引导输入 -->
     <div v-else-if="!searched" class="ss-empty">
       <div class="ss-empty-icon">🔍</div>
@@ -324,11 +382,18 @@ function showTag(r: SmartHit): string {
           v-for="r in results"
           :key="r.id"
           class="ss-card"
-          :title="[r.label, r.location, r.album_name].filter(Boolean).join(' · ')"
-          @click="openAlbum(r)"
+          :title="[r.label, r.location, r.album_name].filter(Boolean).join(' · ') + '（点击预览）'"
+          @click="openPhoto(r)"
         >
           <img v-if="thumbMap[r.path]" :src="fileUrl(thumbMap[r.path])" loading="lazy" class="ss-thumb" alt="" />
           <div v-else class="ss-thumb ss-thumb-ph">🖼️</div>
+          <!-- 相册跳转（次要入口：点它才跳，点图片是预览） -->
+          <button
+            v-if="r.album_id != null"
+            class="ss-album"
+            :title="`在相册中查看：${r.album_name ?? '未命名相册'}`"
+            @click.stop="goAlbum(r.album_id, r.path)"
+          >📁 {{ r.album_name ?? "相册" }}</button>
           <figcaption class="ss-cap">
             <span class="ss-tag">{{ showTag(r) }}</span>
             <span v-if="r.semantic_score != null" class="ss-sem" title="语义相似度（CLIP 向量余弦）">✨ AI 匹配 {{ Math.round(r.semantic_score * 100) }}%</span>
@@ -338,10 +403,51 @@ function showTag(r: SmartHit): string {
         </figure>
       </div>
     </div>
+
+    <!-- 大图预览（与人像/时间线同一组件；支持 ←/→ 翻页、Esc 关闭、打星、标签、去相册） -->
+    <PhotoLightbox
+      v-if="lightboxOpen"
+      :photos="lightboxPhotos"
+      :index="lightboxIndex"
+      @close="lightboxOpen = false"
+      @open-album="goAlbumFromLightbox"
+    />
   </div>
 </template>
 
 <style scoped>
+/* 卡片右上角「📁 相册名」：次要入口，不会被点击预览误触 */
+.ss-album {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  max-width: calc(100% - 12px);
+  padding: 2px 8px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  backdrop-filter: blur(3px);
+}
+.ss-album:hover {
+  background: rgba(57, 108, 216, 0.9);
+}
+.ss-warn {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  background: rgba(180, 83, 9, 0.1);
+  border: 1px solid rgba(180, 83, 9, 0.3);
+  color: #b45309;
+}
 .ss-page {
   padding: 20px;
   max-width: 1200px;
