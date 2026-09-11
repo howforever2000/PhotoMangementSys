@@ -865,7 +865,10 @@
         "src/views/Timeline.vue",
         "src-tauri/src/lib.rs",
         "src-tauri/src/db/mod.rs",
-        "src/stores/album.ts"
+        "src/stores/album.ts",
+        "src/views/SmartSearch.vue",
+        "src/components/PhotoLightbox.vue",
+        "src/views/Memories.vue"
       ],
       "keywords": [
         "ImportErrorsDialog",
@@ -876,7 +879,11 @@
         "pg-cell-focus",
         "find_any_album_by_path",
         "already_exists",
-        "已导入不报错"
+        "已导入不报错",
+        "点图预览",
+        "PhotoLightbox openAlbum",
+        "focus 定位跳转",
+        "点图=预览/去相册=次要按钮"
       ],
       "implementation": {
         "frontend": "①ImportErrorsDialog：解析 result.errors（后端格式 {folder}: {msg}）后按错误类型分类（路径不存在/同名已存在/权限不足/路径非法/其他）并给出解决建议；每项支持「复制」+「单条重试」；顶部「全部重试」+「重新选择根目录」；AlbumList.batchImport 失败时弹窗 + Toast「查看详情」按钮直达对话框（持久化）。②Timeline：引入 PhotoLightbox；openCard 改为设置 lightboxIndex/Open 打开内部查看器；右下角「↗」按钮 click=gotoAlbum 跳 /album/:id?focus=encode(path)；AlbumDetail 读 route.query.focus → focusPath computed 透传；PhotoGrid 新增 focusPath prop + applyFocus（querySelector [data-path] + scrollIntoView + 1.8s 橙色高亮 + 10×200ms 退避适配懒加载）。③ImportErrorsDialog 新增 skipped_conflicts 展示区（绿色「已存在」/ info 态），仅存在项时标题为「N 个相册已导入」、按钮为「知道了」；AlbumList alreadyExists 分支弹 info 而不是 error。",
@@ -892,7 +899,8 @@
       ],
       "tests": "cargo test --lib 47/47（新增 find_any_album_by_path_cross_user）; vue-tsc 0 错误",
       "created_at": "2026-08-25T00:00:00+08:00",
-      "updated_at": "2026-08-25T00:30:00+08:00"
+      "updated_at": "2026-09-20T23:10:00+08:00",
+      "enhancement": "【一致性补充 2026-09-20】智能搜索结果的点击行为修正 + 相册跳转全站统一：\n① 问题：SmartSearch 是全站唯一「点击照片直接跳相册」的入口（时间线/回忆/人像/分类画廊都是进内部 Lightbox），用户点图想看大图却被弹到相册。\n② 修复：SmartSearch 点图 → PhotoLightbox（浏览序列 = 当前全部搜索结果，可 ←/→ 翻页、Esc 关闭、1-5 打星、标签编辑）；相册跳转降为次要入口 —— 卡片右上角「📁 相册名」胶囊（@click.stop，点它才跳）+ 大图工具栏「📁 在相册中查看」。\n③ 复用而非新造：PhotoLightbox 新增可选 emit openAlbum(albumId)（按钮仅在当前照片有 albumId 时出现，向后兼容）；SmartSearch 无需传 meta —— Lightbox 内建 FEAT-D「ensure_photo_scanned」会自动补扫并展示 AI 分类/人物/EXIF。\n④ 全站约定（本次统一）：点图 = Lightbox 预览；去相册 = 次要按钮，且跳转一律带 `?focus=<path>`，由 AlbumDetail → PhotoGrid 滚动定位 + 高亮（复用 FEAT-034-B 既有能力，否则跳过去还要自己找）。Timeline / Memories 顺带接入大图工具栏的「在相册中查看」。\n⑤ 唯一保留旧行为：相册管理页（AlbumList）的搜索结果**列表**点击仍是「跳相册」，因为它本身是文字列表且 title 已标注「点击跳转到所属相册」，非照片网格预览场景。"
     },
     {
       "id": "FEAT-035",
@@ -1612,7 +1620,96 @@
       ],
       "created_at": "2026-09-10T17:30:00+08:00",
       "updated_at": "2026-09-10T17:30:00+08:00"
+    },
+    {
+      "id": "FEAT-056",
+      "name": "语义分类 v5：下线图像分类模型，改由 Chinese-CLIP 关键词语义匹配驱动用户自建分类（+ 语义模型档位可选）",
+      "status": "done",
+      "module": "语义分类 / python vcr 瘦身 + src-tauri category 服务层 + 前端分类管理",
+      "purpose": "图像分类模型（yolov8*-cls + Places365 + 花朵/食物专家）效果不理想而语义模型效果好，故整体下线分类模型，把「内容分类」改为用户可自建：建分类 → 写关键词（自然语言短语）+ 排除词 → 调匹配强度阈值 → 达标照片自动归入。同时把语义模型做成与旧「分类模型」同构的前端可选档位（B/16 默认 / L/14-336 可选），适配不同硬件，软件定位仍是核显本。",
+      "implementation": {
+        "打分公式": "score = max_kw cos(x, kw) - mean_b cos(x, b)（b = 7 条中性提示词）。P0 实测：B/16 裸余弦无关对普遍 0.33~0.39 且概念间基线不同（美食 0.363 / 文档 0.330），单一绝对阈值在 0.38 边界处精度已崩（抽查 5 张仅 1 张对）；减去中性基线后同一阈值可跨概念使用，默认 0.03（抽查：一只猫命中 30 张中 7/10 有猫、美食 297 张中 9/10 有食物），且图库不存在的概念自然 0 命中。已否决均值中心化（会把低信息量图变成 hub）。",
+        "持久层": "db/category.rs 新增三表：photo_categories（定义：name/icon/source/slug/keywords/exclude/threshold/enabled）、photo_category_hits（命中物化，多对多，冗余 path 与 photo_content_scan / photo_embeddings 三处同步级联）、clip_text_cache（关键词向量缓存，改阈值不重编码）；含 CRUD / 批量替换 / 计数+封面聚合 / 索引覆盖统计。",
+        "服务层": "category.rs：关键词去重 → clip_text_cache 命中或批量调 /embed_text_batch → 全库向量点积 → 阈值+排除词过滤 → 物化；builtin（人物/扫街/夜景/文档）不跑 CLIP，由 photo_content_scan.category SQL 直算。",
+        "接口层": "7 个命令：list_categories / save_category（保存即自动重建该分类）/ delete_category / preview_category（实时预览命中数+样张+分数分位，不落库）/ rebuild_categories / list_category_photos / category_index_stats；首访自动补齐 builtin + 17 个内置预设（可改词 / 调阈值 / 删除）。",
+        "python 瘦身": "删除 classifier / scene_service / flower_service / food_service / mapping / taxonomy；arbitrator 简化为 4 条规则（det 人物 → OCR 文档 → 截图启发式 → 影调夜景 → other）；OCR 触发去除 cls 门控改为模型可用即跑；新增 /embed_text_batch 与语义档位（/models /model）；VCR_API_VERSION 4→5；单张 437ms→~140ms。",
+        "模型档位": "config.CLIP_MODEL_META 三档（键=目录=下载条目，Rust/Python/CLI 三处由单测与派生表强制对齐）：b16（512 维/224，Xenova chinese-clip-vit-base-patch16 fp16 377MB，默认，固定 CPU）；b16-fp32（同仓库 model.onnx 719MB，独立 model id chinese-clip-vit-b16-fp32，provider 跟随「GPU 加速」开关——实测 DML 与 CPU 数值完全一致(cos=1.000000)且提速 2.0×，见图 python/bench/verify_clip_tiers.py）；l14（768 维/336，chinese-clip-vit-large-patch14-336px fp16 814MB，标注未实测）。落位约定：<root>/onnx/<onnx> 放双塔整图，tokenizer.json + vocab.txt 放模型根目录 <root>/；落库 model id 与 photo_embeddings.model 严格对应（历史值 chinese-clip-vit-b16-fp16 不变），检索/匹配/增量/缓存版本全部按 model 过滤，换档后旧向量计入 stale 并提示重建索引。",
+        "前端": "CategoryGallery 改用 list_categories / list_category_photos，关键词 chips 按实际命中关键词即时过滤，卡片角标显示命中强度；新增原子组件 CategoryManager（主从：列表 + 编辑 + 关键词/排除词 chips + 阈值滑块 + 实时预览样张 + 重建）；ModelGpuSettings 的分类模型下拉改为语义模型档位下拉（沿用同构交互：置灰未下载 / 下载 / 切换提示）；三个扫描入口的「AI 内容识别」改名「人物 · 文档识别」且值 ai→person。",
+        "下载落位": "Rust model_dl.rs 三条目 chinese-clip / chinese-clip-fp32 / chinese-clip-l14（hf-mirror 单源直链 + tokenizer/vocab），python download_models.py 同步支持 clip/clip-fp32/clip-l14；DlSpec 用 root + onnx 两个字段拼落位路径，避免 onnx 文件名（model_fp16.onnx / model.onnx）写死。",
+        "provider 策略": "新增 _clip_providers()：fp16 档（b16 / l14）固定 CPU（DML 对 fp16 图有算子级数值 bug），fp32 档跟随全局 GPU 开关（默认仍 CPU，用户显式开启才用 GPU）；顺带修掉 BUG-2026-0920-003（此前 CLIP 用全局 provider，一开加速就会把 fp16 送上 DML 静默产出错误向量）。",
+        "可观测性": "语义降级不再静默：后端 smart_search 的降级原因写入 app.log，embed 系列端点统一兜底为 503+detail（禁止裸 500 text/plain，宿主无法解析）；前端 SmartSearch 顶部在语义不可用时显性提示「当前只做关键词匹配」并给出模型/索引入口。另：开发态不要往 src-tauri/target/debug/vcr/ 放 exe —— 那会让应用切到「打包版分支」，模型目录变成缺 CLIP 的旧残留目录（BUG-2026-0920-006）。"
+      },
+      "highlights": [
+        "P0 用本机 11372 张真实缩略图向量做阈值标定，并用视觉模型对命中集抽样判读精度（脚本落在 python/bench/calib_*.py）",
+        "经验事实：关键词措辞强烈影响召回——「文字」≈0 命中而「屏幕截图」371 命中，故 UI 必须给实时预览",
+        "真实 App 库复核：美食 297 命中与 P0 完全一致，证明数据链路（model id/dim/表）与公式落地正确",
+        "cargo test --lib category 13/13（8 持久层 + 5 公式）；cargo check 0 warning；vue-tsc 0 错误；npm run build 通过",
+        "python vcr-server.exe 重打包并部署到 target/{debug,release}/vcr（api_version=5，避免旧组件版本死循环）",
+        "修复下载落位缺陷 BUG-2026-0920-002：附带文件（tokenizer.json/vocab.txt）此前落到 onnx/ 子目录，而 config 按模型根目录解析 → 全新安装会报「tokenizer 不可用」；改由 DlSpec.root 显式指定并加单测守护",
+        "下载落位修复（BUG-2026-0920-002）：附带文件改落模型根目录，并以单测锁死「Rust 下载表 == Python 档位表」；CLI 任务表改为由 config 派生（单一事实源）",
+        "语义档位验证工具 verify_clip_tiers.py 落地：可对任意两档/两 provider 做「图塔+文塔」余弦对照，是「换档/开 GPU 前必跑」的判定依据",
+        "实测发现同空间档位（fp16↔fp32）向量等价（余弦 ≥0.999998）→ 已记入待办：引入 space 概念可免去同空间换档的 17 分钟重建",
+        "排查方法论：用户报「语义搜不到」→ 先看 app.log（当时无任何记录）→ 查运行态进程路径与 /health.clip_ready → 定位到 target/debug/vcr/models 缺 chinese-clip",
+        "打包版裸 500 的根因是 hiddenimports 声明了未安装的包：spec 只写名字不够，打包 venv 必须真的装上 onnx"
+      ],
+      "related_files": [
+        "src-tauri/src/category.rs",
+        "src-tauri/src/db/category.rs",
+        "src-tauri/src/db/embedding.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/CategoryGallery.vue",
+        "src/components/CategoryManager.vue",
+        "src/components/ModelGpuSettings.vue",
+        "src/stores/content.ts",
+        "src/types/content.ts",
+        "python/vcr/config.py",
+        "python/vcr/model_registry.py",
+        "python/vcr/preprocess.py",
+        "python/vcr/schemas.py",
+        "python/vcr/services/arbitrator.py",
+        "python/vcr/services/pipeline.py",
+        "python/vcr/services/embed_service.py",
+        "python/vcr/services/clip_subgraph.py",
+        "python/server.py",
+        "python/download_models.py",
+        "python/bench/calibrate_categories.py",
+        "python/bench/calib_debias.py",
+        "design/semantic-category-implementation.md",
+        "python/vcr/services/clip_subgraph.py",
+        "python/bench/verify_clip_tiers.py"
+      ],
+      "keywords": [
+        "语义分类",
+        "Chinese-CLIP",
+        "零样本分类",
+        "关键词匹配",
+        "中性基线去偏",
+        "photo_categories",
+        "photo_category_hits",
+        "clip_text_cache",
+        "模型档位",
+        "L14-336",
+        "下线分类模型",
+        "FEAT-056"
+      ],
+      "tests": [
+        "cargo test --lib category → 13/13 通过",
+        "cargo check → 0 warning；vue-tsc --noEmit → 0 错误；npm run build → 成功",
+        "python server.py /health(api_version=5) /models /embed_text_batch /classify_batch /benchmark 全通",
+        "真实库公式复核：猫咪 49 / 美食 297 / 汽车 4 / 文字截图 371（阈值 0.03）",
+        "cargo test --lib model_dl → 2/2（下载落位与 python 档位表一致性守护）",
+        "python/bench/verify_clip_tiers.py：fp16↔fp32 CPU 余弦 ≥0.999998；fp32 DML↔CPU 余弦 =1.000000、提速 2.0×（53.3 vs 108.2ms/张）",
+        "打包版全新安装模拟：仅有整图 + tokenizer/vocab 时首次 /embed_text_batch 自动拆图并返回 200（BUG-2026-0920-005）",
+        "release.ps1 必需模型清单按 v5 更新（去 yolov8n-cls，改为人脸/OCR/语义模型）"
+      ],
+      "created_at": "2026-09-20T21:20:00+08:00",
+      "updated_at": "2026-09-20T22:35:00+08:00"
     }
   ],
-  "updated": "2026-09-10T17:30:00+08:00"
+  "updated": "2026-09-20T23:10:00+08:00"
 }

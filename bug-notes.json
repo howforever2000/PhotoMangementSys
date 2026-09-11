@@ -933,6 +933,335 @@
         "静默降级必须留痕（日志/UI 提示）：本次因降级无声，用户误判为数据未入库，排查成本被转嫁给了用户",
         "诊断顺序：先查数据（photo_embeddings 行数）再查就绪链路——本次先确认库里 10919 条向量，一步排除『没入库』假设"
       ]
+    },
+    {
+      "id": "BUG-2026-0920-001",
+      "date": "2026-09-20",
+      "status": "fixed",
+      "severity": "medium",
+      "title": "VCR exe 打包脚本在中文 Windows 上必然失败：requirements 文件含中文注释，pip 以 GBK 解码报 UnicodeDecodeError",
+      "module": "python/build_vcr_exe.ps1 / requirements-vcr-packaging.txt",
+      "symptom": [
+        "执行 powershell -File python/build_vcr_exe.ps1 在 [2/5] 安装打包期依赖阶段抛『依赖安装失败』",
+        "venv 里 pip 报 UnicodeDecodeError: 'gbk' codec can't decode byte 0xae in position 8（decoding with 'cp936' codec failed）",
+        "失败发生在清理步骤之前，重跑同样删不掉旧产物；表现为『打包完全不可用』而非偶发"
+      ],
+      "root_cause": {
+        "summary": "requirements-vcr-packaging.txt 自身的注释里写着『注释使用英文/ASCII』的规范，但文件内容仍是中文注释；pip 读取 requirements 文件时用系统 locale（zh-CN → cp936/GBK）而非 UTF-8 解码，含中文即崩",
+        "detail": [
+          "pip 的 auto_decode 先试 UTF-8、失败后回退 locale 编码；本机 pip 版本下中文注释直接抛 UnicodeDecodeError，而不是静默跳过",
+          "脚本第 2 步 pip install -r 与第 3 步 Remove-Item dist/build 之间没有容错，失败只留下『依赖安装失败』一句，用户不易定位到编码问题",
+          "本次是『语义分类』改动后按流程重打包 vcr-server.exe 时才踩到（此前打包成功过，属 pip 版本/环境漂移暴露的老问题）"
+        ]
+      },
+      "solution": {
+        "summary": "把 requirements 文件注释全部改为纯 ASCII；本次打包改用 venv 内 pyinstaller 直接出包（依赖已就绪，跳过 pip 步骤）",
+        "steps": [
+          "requirements-vcr-packaging.txt 全部注释改写为英文（保留同义说明 + 指向本缺陷编号），确保纯 ASCII",
+          "python/.venv-vcr/Scripts/pyinstaller.exe --clean --noconfirm vcr-server.spec 直接打包成功（90.3MB）",
+          "新 exe 冒烟：/health 返回 api_version=5 + model_id=chinese-clip-vit-b16-fp16；/models 返回两档语义模型",
+          "把新 exe 复制到 src-tauri/target/release/vcr/ 与 target/debug/vcr/",
+          "（旧 v4 exe 会被宿主判为 OldVersion，进而触发 BUG-2026-0917-001 的『过期组件』报错，必须同步替换）"
+        ]
+      },
+      "evidence_log": [
+        "[build] [2/5] 安装打包期依赖 ... UnicodeDecodeError: 'gbk' codec can't decode byte 0xae in position 8",
+        "[build] decoding with 'cp936' codec failed",
+        "[build] 依赖安装失败 (build_vcr_exe.ps1:48)",
+        "[after-fix] pyinstaller --clean --noconfirm vcr-server.spec → Build complete (90351116 bytes)",
+        "[smoke] GET /health → api_version=5, model_id=chinese-clip-vit-b16-fp16"
+      ],
+      "related_files": [
+        "python/requirements-vcr-packaging.txt",
+        "python/build_vcr_exe.ps1",
+        "python/vcr-server.spec"
+      ],
+      "keywords": [
+        "打包",
+        "PyInstaller",
+        "pip",
+        "GBK",
+        "cp936",
+        "requirements",
+        "vcr-server.exe",
+        "BUG-2026-0920-001"
+      ],
+      "created_at": "2026-09-20T21:20:00+08:00",
+      "fixed_at": "2026-09-20T21:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-002",
+      "date": "2026-09-20",
+      "status": "fixed",
+      "severity": "high",
+      "title": "下载落位错目录：应用内下载语义模型时 tokenizer.json/vocab.txt 被放到 onnx/ 子目录，全新安装会报「tokenizer 不可用」",
+      "module": "src-tauri/src/model_dl.rs（应用内模型下载落位）",
+      "symptom": [
+        "全新机器/清空 python/models 后，应用内下载 chinese-clip 完成，但语义搜索与语义分类全部 503/降级",
+        "python 服务报『tokenizer 不可用（tokenizer.json / vocab.txt 均缺失）』",
+        "把已存在的旧模型目录（含正确位置的 tokenizer.json）拷进去就恢复正常 —— 说明是落位问题不是模型问题"
+      ],
+      "root_cause": {
+        "summary": "重写 model_dl.rs 的 run() 时把『附带文件目录』算成了主文件所在目录（<root>/onnx/），而 config.CLIP_TOKENIZER_JSON / CLIP_VOCAB 按模型根目录（<root>/）解析",
+        "detail": [
+          "旧实现写死 clip_dir = dir.join(\"chinese-clip\") 用于附带文件，是正确的",
+          "重写为『通用』实现后改用 final_path.parent()（= <root>/onnx）承载 tokenizer/vocab，恰好本机 chinese-clip/ 目录早有正确的 tokenizer.json，所以本地测试发现不了",
+          "同时把 onnx 文件名写死为 model_fp16.onnx，无法支持 fp32 档（model.onnx）"
+        ]
+      },
+      "solution": {
+        "summary": "DlSpec 改为显式声明 root（模型根目录）+ onnx（onnx 文件名）两个字段；整图落 <root>/onnx/<onnx>，附带文件落 <root>/；并加单测守护与 Python 档位表的一致性",
+        "steps": [
+          "DlSpec { root, onnx, extra } → rel_file() = <root>/onnx/<onnx>；run() 中 final_dir = dir/<root>",
+          "start()/list()/emit_status() 的『已下载』判定统一走 rel_file()",
+          "新增 model_dl::tests::clip_specs_match_python_tier_table：从 python/vcr/config.py 抽取 dir/onnx 字符串，逐个断言与 Rust 下载表一致，且每档必须携带 tokenizer.json + vocab.txt",
+          "新增 clip_specs_cover_all_three_tiers：三条目（b16 / b16-fp32 / l14）不可缺失、镜像=官方（hf-mirror 单源）"
+        ]
+      },
+      "evidence_log": [
+        "[before] models/chinese-clip/onnx/tokenizer.json  （错误位置，config 不读这里）",
+        "[after ] models/<root>/tokenizer.json + models/<root>/onnx/<onnx>",
+        "[test] cargo test --lib model_dl → 2/2 passed"
+      ],
+      "related_files": [
+        "src-tauri/src/model_dl.rs",
+        "python/vcr/config.py",
+        "python/vcr/services/clip_subgraph.py",
+        "python/download_models.py"
+      ],
+      "keywords": [
+        "模型下载",
+        "落位",
+        "tokenizer",
+        "vocab",
+        "chinese-clip",
+        "fp32",
+        "DlSpec",
+        "BUG-2026-0920-002"
+      ],
+      "created_at": "2026-09-20T22:05:00+08:00",
+      "fixed_at": "2026-09-20T22:05:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-003",
+      "date": "2026-09-20",
+      "status": "fixed",
+      "severity": "high",
+      "title": "打开「GPU 加速」开关会把 fp16 语义双塔送上 DirectML，静默产出错误向量（潜在缺陷，语义搜索/分类结果全部失真）",
+      "module": "python/vcr/model_registry.py（CLIP 会话 provider 选择）",
+      "symptom": [
+        "已知事实：fp16 CLIP 图在 AMD DML 上有算子级数值 bug（BUG-2026-0910-006，余弦只有 0.43）",
+        "但 CLIP 双塔建会话时用的是全局 provider（self._providers()）——用户一旦点「🚀 启用加速」，fp16 双塔就会被送上 DML",
+        "表现是：语义搜索仍返回结果但排序错乱、语义分类命中莫名其妙的照片，且没有任何报错（静默失真）",
+        "此前未被发现：默认 _providers_sel = ['CPUExecutionProvider']（强制 CPU），只有显式开加速才会踩到"
+      ],
+      "root_cause": {
+        "summary": "「CLIP 固定 CPU」只写在注释与 SessionOptions 说明里，代码路径并未真正固定；provider 由全局开关决定",
+        "detail": [
+          "_create_session 内部一律用 self._providers()，无法按通道覆盖",
+          "clip_vision/clip_text 的 property 只传了 _so_clip()（只改图优化等级），没传 provider",
+          "注释宣称“固定 CPU 推理”与实际行为不一致 → 属于文档与实现脱节导致的隐性缺陷"
+        ]
+      },
+      "solution": {
+        "summary": "新增 _clip_providers()：按档位决定 provider —— fp16 档固定 CPU；fp32 档跟随 GPU 开关（实测数值一致，见 BUG-2026-0920-004 的姊妹验证）",
+        "steps": [
+          "_create_session 增加 providers 参数（省略时用全局选择，行为不变）",
+          "_clip_providers()：`\"fp16\" in p[\"onnx\"]` → ['CPUExecutionProvider']，否则 self._providers()",
+          "clip_vision / clip_text 建会话时显式传入 _clip_providers()",
+          "验证（dev python，含 DmlExecutionProvider）：开 GPU 后 fp16 档 clip_vision 实测仍绑 CPU；切 fp32 档后实测绑 DML 且 /embed_text 与 fp16@CPU 余弦 = 1.000000"
+        ]
+      },
+      "evidence_log": [
+        "[before] 开 GPU → sessions:{'clip_vision': ['DmlExecutionProvider','CPUExecutionProvider']}（fp16 档也会走 DML）",
+        "[after ] fp16 档 + GPU 开 → {'clip_vision': ['CPUExecutionProvider'], 'clip_text': ['CPUExecutionProvider']}",
+        "[after ] fp32 档 + GPU 开 → {'clip_vision': ['DmlExecutionProvider','CPUExecutionProvider']}",
+        "[verify] cos(fp32@DML_text, fp16@CPU_text) = 1.000000"
+      ],
+      "related_files": [
+        "python/vcr/model_registry.py",
+        "python/bench/verify_clip_tiers.py"
+      ],
+      "keywords": [
+        "CLIP",
+        "provider",
+        "DirectML",
+        "fp16",
+        "数值 bug",
+        "GPU 开关",
+        "BUG-2026-0920-003"
+      ],
+      "created_at": "2026-09-20T22:20:00+08:00",
+      "fixed_at": "2026-09-20T22:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-004",
+      "date": "2026-09-20",
+      "status": "open",
+      "severity": "medium",
+      "title": "发布版（PyInstaller vcr-server.exe）不含 onnxruntime-directml，UI 的「GPU 加速」开关在安装包版本上永远无效",
+      "module": "打包脚本 / requirements-vcr-packaging.txt（及 requirements.txt）",
+      "symptom": [
+        "开发环境（全局 python 装了 onnxruntime-directml）开加速后 sessions 显示 DmlExecutionProvider，实测提速",
+        "同一份代码打包成 vcr-server.exe 后 GET /health 的 gpu.available 只有 ['AzureExecutionProvider','CPUExecutionProvider']",
+        "/gpu 的 gpu 列表为空 → 前端「检测 GPU」提示未检测到可用 GPU，开关永远不可用",
+        "用户视角是「我装了 GPU 版运行时/我的是 AMD 核显，为什么软件里用不了加速」"
+      ],
+      "root_cause": {
+        "summary": "打包 venv 只安装 onnxruntime（CPU 版），DirectML 执行提供方不在包内；GPU 能力来自开发机全局环境的额外安装",
+        "detail": [
+          "requirements-vcr-packaging.txt 与 requirements.txt 都只写 onnxruntime>=1.17",
+          "onnxruntime 与 onnxruntime-directml 是互斥安装的两套 wheel（同一个 import 名），装包时只能二选一",
+          "Phase 0/FEAT-053 的 GPU 实测均在开发机（有 directml）完成，掩盖了发布版无 GPU 的事实"
+        ]
+      },
+      "solution": {
+        "summary": "待决策：① 打包时改用 onnxruntime-directml（Windows 包变大、能力与开发环境一致）；② 或明确把加速标为「需自备运行时/仅开发环境」，并在 UI 上给出置灰说明",
+        "steps": [
+          "建议 ①：requirements-vcr-packaging.txt 改为 onnxruntime-directml（仅 Windows 构建；非 Windows 回退 onnxruntime）",
+          "打包后冒烟：python/dist/vcr-server.exe 的 /health.gpu.available 应含 DmlExecutionProvider，且 /benchmark 显示实测 provider",
+          "建议 ②（若不愿增大安装包）：UI 文案改为「需安装 GPU 版运行时（开发环境/高级）」并隐藏不可用开关"
+        ]
+      },
+      "evidence_log": [
+        "[dev  ] GET /health → gpu.available = ['DmlExecutionProvider','CPUExecutionProvider']",
+        "[exe  ] GET /health → gpu.available = ['AzureExecutionProvider','CPUExecutionProvider']，gpu=[]"
+      ],
+      "related_files": [
+        "python/requirements-vcr-packaging.txt",
+        "python/requirements.txt",
+        "python/build_vcr_exe.ps1",
+        "src/components/ModelGpuSettings.vue"
+      ],
+      "keywords": [
+        "打包",
+        "DirectML",
+        "onnxruntime-directml",
+        "GPU 加速",
+        "发布版",
+        "BUG-2026-0920-004"
+      ],
+      "created_at": "2026-09-20T22:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-006",
+      "date": "2026-09-20",
+      "status": "fixed",
+      "severity": "critical",
+      "title": "语义检索突然失效（雪山/天空搜不到）：往 target/debug/vcr/ 放 exe 使开发版应用切到「打包版分支」，模型目录变成缺 CLIP 的 target/debug/vcr/models，且失败全程静默无提示",
+      "module": "src-tauri/src/vision.rs（服务启动分支）+ 语义链路可观测性",
+      "symptom": [
+        "用户反馈：以前搜「雪山」「天空」能出语义结果，现在完全搜不到（返回 0 条）",
+        "app.log 里 smart_search 每次 11~16ms 返回 hits=0，但**没有任何错误/降级记录**",
+        "语义分类同样全空；分类重建日志只有一句『解析 embedding 结果失败: error decoding response body』",
+        "关键现场：应用启动的微服务来自 target/debug/vcr/vcr-server.exe，其 /health 的 clip_ready=false，/embed_text_batch 返回 500 text/plain"
+      ],
+      "root_cause": {
+        "summary": "把 exe 放进 target/debug/vcr/ 触发了「打包版启动分支」：该分支把 VCR_MODEL_DIR 指向 <资源目录>/vcr/models，而这个目录是旧打包残留（没有 chinese-clip）→ CLIP 模型找不到 → 语义全链路失败；叠加两处可观测性缺失（后端只 eprintln、端点返回裸 500），用户侧完全看不见原因",
+        "detail": [
+          "spawn_server 的分支条件是 bundled_exe（<resource_dir>/vcr/vcr-server.exe）是否存在：存在=打包版（写死 VCR_MODEL_DIR=bundled_dir/models）；不存在=开发版（python server.py，MODEL_DIR 落在 python/models）",
+          "回归前 target/debug/vcr/ 只有 models/、没有 exe，开发版应用一直走 python 分支，用 python/models（含 chinese-clip）→ 语义正常",
+          "本次为「避免旧 exe 被判 OldVersion」把新 exe 复制进 target/debug/vcr/，分支随即翻转；而 target/debug/vcr/models 是 8/25 的旧打包残留（只有 det/face/ocr/cls），不含 chinese-clip",
+          "语义失败被静默吞掉：smart_search 只 eprintln!（不进 app.log），且 /embed_text_batch 在打包版里因缺 onnx 抛 ModuleNotFoundError → FastAPI 返回 text/plain 的裸 500，宿主 reqwest 解析失败 → 表现为「无任何提示」"
+        ]
+      },
+      "solution": {
+        "summary": "① 删除 target/debug/vcr/vcr-server.exe，恢复开发版 python 分支；② 语义降级改为写 app.log；③ 前端显性提示语义不可用；④ release.ps1 模型清单按 v5 架构更新",
+        "steps": [
+          "删除 src-tauri/target/debug/vcr/vcr-server.exe（开发态一律用 python server.py，顺带获得「改 Python 无需重新打包」的好处）",
+          "release exe 仍保留在 target/release/vcr/（否则 release 应用会命中旧组件版本检查报错）",
+          "content.rs：smart_search 语义降级从 eprintln! 改为 logger::log_info，写入 app.log 便于事后定位",
+          "SmartSearch.vue：预热结果显性化 —— 语义不可用时在搜索页顶部显示「语义检索未就绪，当前只做关键词匹配」+ 去扫描中心/模型设置的入口",
+          "release.ps1：必需模型清单去掉已下线的 yolov8n-cls，改为 yolov8n-det + 人脸 + OCR + chinese-clip/tokenizer.json + vocab.txt，并更新提示文案（不再引用已删除的 export_model.py）",
+          "验证：app.log 出现语义降级原因；无 debug exe 时应用重新走 python 分支，语义搜索恢复"
+        ]
+      },
+      "evidence_log": [
+        "[app.log] [category] 关键词向量缺失 59 条，调用 CLIP 文本塔编码（model=chinese-clip-vit-b16-fp16）",
+        "[app.log] [scan] 分类重建跳过：解析 embedding 结果失败: error decoding response body",
+        "[app.log] smart_search END | 耗时 13ms | 结果 OK | hits=0   （无降级记录 → 事后无法定位）",
+        "[运行态] vcr-server.exe 19856 path=...\\target\\debug\\vcr\\vcr-server.exe；GET /health → clip_ready:false",
+        "[复现] POST /embed_text_batch → 500 'Internal Server Error'（text/plain）",
+        "[复现dev] 同一请求在 python server.py（模型目录无 CLIP）→ 503 {\"detail\":\"CLIP 未就绪: 整图缺失: ...chinese-clip\\\\onnx\\\\model_fp16.onnx\"}"
+      ],
+      "related_files": [
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/content.rs",
+        "src/views/SmartSearch.vue",
+        "release.ps1"
+      ],
+      "keywords": [
+        "语义检索失效",
+        "回归",
+        "VCR_MODEL_DIR",
+        "启动分支",
+        "静默降级",
+        "可观测性",
+        "雪山",
+        "天空",
+        "BUG-2026-0920-006"
+      ],
+      "created_at": "2026-09-20T22:35:00+08:00",
+      "fixed_at": "2026-09-20T22:35:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-005",
+      "date": "2026-09-20",
+      "status": "fixed",
+      "severity": "critical",
+      "title": "打包版（vcr-server.exe）未包含 onnx 模块：首次拆图抛 ModuleNotFoundError → 裸 500，全新安装即使用户下载了 CLIP 模型也永远用不了语义功能",
+      "module": "python/vcr-server.spec / requirements-vcr-packaging.txt / clip_subgraph.py / server.py",
+      "symptom": [
+        "全新安装（或清空 models 后重新下载 CLIP）时，语义搜索与语义分类全部不可用",
+        "服务端 stderr：ModuleNotFoundError: No module named 'onnx'（栈：server.py → embed_service.embed_texts → ensure_subgraphs → extract_subgraphs → import onnx）",
+        "HTTP 层返回 500 text/plain 'Internal Server Error'，宿主 reqwest 报「解析 embedding 结果失败: error decoding response body」",
+        "开发环境（全局装了 onnx）完全复现不出来：同一目录条件下 dev 返回可读的 503"
+      ],
+      "root_cause": {
+        "summary": "CLIP 模型首次使用需要把双塔整图拆成 vision/text 两个子图（clip_subgraph.py 用 onnx.utils.extract_model），但打包 venv 的依赖清单里没有 onnx、spec 的 hiddenimports 也没把它列进去",
+        "detail": [
+          "requirements-vcr-packaging.txt 只有 onnxruntime（推理用），没有 onnx（拆图用）——两者是不同包",
+          "spec hiddenimports 写了 'onnx' 但打包环境的 venv 里根本没装，等于无效声明；PyInstaller 的 warn 文件明确记录 missing module named onnx",
+          "extract_subgraphs 对 import 失败没有任何容错：异常穿透到 FastAPI，成为无 detail 的裸 500（text/plain），宿主无法解析，用户侧只看到「静默失效」",
+          "只在「模型刚下载/缺拆分件」时才会走到该分支，平时（拆分件已存在）不会触发，因此长期潜伏"
+        ]
+      },
+      "solution": {
+        "summary": "① 打包依赖补 onnx；② spec hiddenimports 显式包含 onnx/onnx.utils/onnx.utils.extract_model；③ extract_subgraphs 对缺依赖返回可读错误；④ 三个 embed 端点统一兜底成 503+detail，杜绝裸 500",
+        "steps": [
+          "requirements-vcr-packaging.txt 增加 onnx>=1.16（ASCII 注释）并装入 .venv-vcr",
+          "vcr-server.spec hiddenimports 增加 'onnx.utils', 'onnx.utils.extract_model'",
+          "clip_subgraph.extract_subgraphs 把 import 包在 try 里，失败返回 {error: '缺少拆图依赖 onnx…'}（由上层转 503）",
+          "server.py 的 /embed_text、/embed_text_batch、/embed_batch 统一：except HTTPException 透传，其余 Exception → HTTPException(503, 带类型与原因)",
+          "验证（模拟全新安装）：临时模型目录只放 chinese-clip/onnx/model_fp16.onnx + tokenizer.json + vocab.txt → 新 exe 首次 /embed_text_batch 自动拆出 clip_vision.onnx(172MB)+clip_text.onnx(204MB) 并返回 200（512 维）"
+        ]
+      },
+      "evidence_log": [
+        "[before] warn-vcr-server.txt: missing module named onnx - imported by vcr.services.clip_subgraph (delayed)",
+        "[before] POST /embed_text_batch → 500 text/plain 'Internal Server Error'；stderr: ModuleNotFoundError: No module named 'onnx'",
+        "[after ] warn 文件不再出现 missing onnx；exe 体积 90.35MB → 92.71MB",
+        "[after ] 全新安装模拟下 POST /embed_text_batch → 200 {dim:512, model:chinese-clip-vit-b16-fp16}，且目录内自动生成 clip_vision.onnx / clip_text.onnx"
+      ],
+      "related_files": [
+        "python/vcr-server.spec",
+        "python/requirements-vcr-packaging.txt",
+        "python/vcr/services/clip_subgraph.py",
+        "python/server.py",
+        "python/build_vcr_exe.ps1"
+      ],
+      "keywords": [
+        "onnx",
+        "PyInstaller",
+        "hiddenimports",
+        "拆图",
+        "ModuleNotFoundError",
+        "裸 500",
+        "全新安装",
+        "语义不可用",
+        "BUG-2026-0920-005"
+      ],
+      "created_at": "2026-09-20T22:35:00+08:00",
+      "fixed_at": "2026-09-20T22:35:00+08:00"
     }
   ]
 }
