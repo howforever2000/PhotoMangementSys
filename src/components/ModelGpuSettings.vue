@@ -636,7 +636,7 @@ async function onModelChange() {
       <!-- FEAT-052：模型下载（后台 + 进度 + 官方/镜像择优） -->
       <div class="mgps-row mgps-dl-head">
         <span class="mgps-label">📥 模型下载</span>
-        <span class="mgps-hint">多镜像候选（自定义优先）逐个尝试，失败自动换源；.pt 下载后自动导出 onnx</span>
+        <span class="mgps-hint">多镜像候选（自定义优先）逐个尝试，失败自动换源、支持断点续传；.pt 下载后自动导出 onnx</span>
       </div>
 
       <!-- FEAT-061：下载源治理（URL 不可达时不再静默挂起，可自检/自定义） -->

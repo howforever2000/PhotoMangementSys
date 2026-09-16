@@ -299,9 +299,13 @@ async fn run(app: &AppHandle, spec: &DlSpec) -> Result<(), String> {
     // FEAT-061：落地前做基本校验（服务端可能返回 HTML 错误页 / 半包文件）
     if let Err(e) = validate_model_file(&winner, spec.expect_min) {
         let _ = std::fs::remove_file(&winner);
+        // 坏文件对应的分片不能留（否则下次续传会接着拼坏字节）
+        cleanup_partials(&dir, spec.name);
         return Err(e);
     }
     std::fs::rename(&winner, &final_path).map_err(|e| format!("落位失败: {e}"))?;
+    // FEAT-062：落位成功后清掉残留分片与元数据
+    cleanup_partials(&dir, spec.name);
 
     // 2. 附带文件（tokenizer.json / vocab.txt）
     let client = reqwest::Client::builder()
@@ -421,15 +425,18 @@ async fn download_first_wins(app: &AppHandle, spec: &DlSpec, dir: &Path) -> Resu
         match r {
             Ok(win_idx) => {
                 let (winner_dest, loser) = if win_idx == 0 { (d0, d1) } else { (d1, d0) };
-                let _ = std::fs::remove_file(&loser);
+                // 败者连同其续传元数据一起清掉，不留半包占空间
+                remove_part(&loser);
+                // 赢家即将改名落位，续传元数据不再需要
+                let _ = std::fs::remove_file(part_meta_path(&winner_dest));
                 return Ok(winner_dest);
             }
             Err(e) => {
                 last_err = e;
-                let _ = std::fs::remove_file(&d0);
-                let _ = std::fs::remove_file(&d1);
+                // FEAT-062：失败/中断不再删分片——本轮重试与下次点击都能续传；
+                // 真正的坏文件（错误页/半包）由 validate_model_file 落地前拦截并清理。
                 if is_cancelled(&name) {
-                    return Err("已取消".into());
+                    return Err("已取消（已保留断点，可再次点击下载续传）".into());
                 }
             }
         }
@@ -447,45 +454,72 @@ async fn download_one(
 ) -> Result<(), String> {
     // FEAT-061：连接/首字节超时。旧实现只给整单 3600s 超时，源不可达时
     //（TCP 可连、TLS 被重置或不响应）会静默挂 1 小时，UI 表现为「点了没反应」。
-    let resp = tokio::time::timeout(FIRST_BYTE_TIMEOUT, client.get(&url).send())
+    // FEAT-062：断点续传——分片存在且来源一致时用 Range 续传；换源/无元数据则重置重下。
+    let mut have = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+    let same_source = read_part_meta(&dest).map(|m| m.url == url).unwrap_or(false);
+    if have > 0 && !same_source {
+        remove_part(&dest);
+        have = 0;
+    }
+    let mut req = client.get(&url);
+    if have > 0 {
+        req = req.header("Range", format!("bytes={have}-"));
+    }
+    let resp = tokio::time::timeout(FIRST_BYTE_TIMEOUT, req.send())
         .await
         .map_err(|_| format!("连接/首字节超时（{}s）: {url}", FIRST_BYTE_TIMEOUT.as_secs()))?
         .map_err(|e| format!("请求失败: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status().as_u16()));
+    let status = resp.status().as_u16();
+    if status == 416 {
+        // 服务器拒绝该区间：通常是本地分片已等于整文件大小。
+        // 不在这里判死，交给上层 validate_model_file 校验体积/文件头后决定去留。
+        return Ok(());
     }
-    let total = resp.content_length().unwrap_or(0);
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {status}"));
+    }
+    let content_len = resp.content_length().unwrap_or(0);
+    let resumed = status == 206 && have > 0;
+    let range_total = if resumed {
+        resp.headers()
+            .get("content-range")
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_range_total)
+    } else {
+        None
+    };
     let mut stream = resp.bytes_stream();
-    let mut f = std::fs::File::create(&dest).map_err(|e| format!("创建临时文件失败: {e}"))?;
-    let mut bytes = 0u64;
+    let (mut f, mut bytes, total) = if resumed {
+        let f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&dest)
+            .map_err(|e| format!("打开分片续传失败: {e}"))?;
+        (f, have, range_total.unwrap_or(have + content_len))
+    } else {
+        let f = std::fs::File::create(&dest).map_err(|e| format!("创建临时文件失败: {e}"))?;
+        (f, 0u64, content_len)
+    };
+    write_part_meta(&dest, &url, total);
+    // 起手先报一次进度：续传时 UI 立刻能看到「从 X MB 继续」
+    emit_progress(&app, &name, bytes, total);
     let mut last_emit = Instant::now();
     while let Some(chunk) = stream.next().await {
         if is_cancelled(&name) {
-            let _ = std::fs::remove_file(&dest);
-            return Err("已取消".into());
+            // FEAT-062：取消保留已下分片（下次点击「下载」从断点续传）
+            let _ = f.sync_all();
+            return Err("已取消（已保留断点，可再次点击下载续传）".into());
         }
         let c = chunk.map_err(|e| format!("下载中断: {e}"))?;
         f.write_all(&c).map_err(|e| format!("写文件失败: {e}"))?;
         bytes += c.len() as u64;
         if last_emit.elapsed() >= Duration::from_millis(150) {
             last_emit = Instant::now();
-            let _ = app.emit(
-                "model-dl-progress",
-                &ModelDlStatus {
-                    name: name.clone(),
-                    file: String::new(),
-                    required: false,
-                    running: true,
-                    done: false,
-                    stage: "downloading".into(),
-                    bytes,
-                    total,
-                    error: None,
-                },
-            );
+            emit_progress(&app, &name, bytes, total);
         }
     }
     let _ = f.sync_all();
+    // 分片完整：清掉续传元数据，文件本体交上层校验与落位
+    let _ = std::fs::remove_file(part_meta_path(&dest));
     Ok(())
 }
 
@@ -682,6 +716,82 @@ pub async fn probe_sources(name: &str) -> Result<Vec<SourceProbe>, String> {
         }
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// 断点续传（FEAT-062）
+// ---------------------------------------------------------------------------
+
+/// 分片续传元数据：只记来源 URL 与总大小
+///
+/// 换源即重置（不同镜像的字节不保证一致，混拼会得到坏文件）；没有元数据的分片
+/// 一律视为不可信（可能是旧实现/异常中断留下的半包），直接丢弃重下。
+#[derive(Serialize, serde::Deserialize)]
+struct PartMeta {
+    url: String,
+    total: u64,
+}
+
+fn part_meta_path(dest: &Path) -> PathBuf {
+    let mut s = dest.as_os_str().to_os_string();
+    s.push(".meta");
+    PathBuf::from(s)
+}
+
+fn read_part_meta(dest: &Path) -> Option<PartMeta> {
+    let text = std::fs::read_to_string(part_meta_path(dest)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn write_part_meta(dest: &Path, url: &str, total: u64) {
+    if let Ok(text) = serde_json::to_string(&PartMeta {
+        url: url.to_string(),
+        total,
+    }) {
+        let _ = std::fs::write(part_meta_path(dest), text);
+    }
+}
+
+/// 删除分片 + 其续传元数据
+fn remove_part(dest: &Path) {
+    let _ = std::fs::remove_file(dest);
+    let _ = std::fs::remove_file(part_meta_path(dest));
+}
+
+/// 清掉某模型的所有残留分片（成功落位 / 校验失败时调用）
+fn cleanup_partials(dir: &Path, name: &str) {
+    let prefix = format!(".dl_{name}_");
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        if e.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// 解析 `Content-Range: bytes 100-999/1000` 的总大小
+fn parse_content_range_total(v: &str) -> Option<u64> {
+    v.rsplit('/').next()?.trim().parse::<u64>().ok()
+}
+
+/// 统一的下载进度上报（续传起点与流式写入共用）
+fn emit_progress(app: &AppHandle, name: &str, bytes: u64, total: u64) {
+    let _ = app.emit(
+        "model-dl-progress",
+        &ModelDlStatus {
+            name: name.to_string(),
+            file: String::new(),
+            required: false,
+            running: true,
+            done: false,
+            stage: "downloading".into(),
+            bytes,
+            total,
+            error: None,
+        },
+    );
 }
 
 #[cfg(test)]
