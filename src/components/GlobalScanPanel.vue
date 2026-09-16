@@ -447,26 +447,43 @@ onMounted(() => {
 }
 
 /* ---- 按钮（与 ScanPanel 统一） ---- */
+/* FEAT-062：用户反馈「⚙ 性能设置 / ▶ 开始扫描入库 两个按钮太透明、看不清」。
+   成因：① .btn-ghost 是「透明底 + 1px 描边」，在白底面板上等于没有底色；
+        ② 禁用态用整体 opacity:.55（按钮变虚，而非真正的禁用底色）。
+   处置：中性/幽灵按钮改实底浅色；禁用态改实心灰，不再用整体透明度。 */
 .btn {
+  min-height: 36px;
   padding: 8px 16px;
   border-radius: 8px;
-  border: 1px solid #ddd;
+  border: 1px solid #d5dbe6;
   background: #fff;
+  color: #1f2733;
   cursor: pointer;
   font-size: 14px;
-  transition: all 0.2s;
+  font-weight: 600;
+  transition: background 0.2s, border-color 0.2s, color 0.2s, box-shadow 0.12s, transform 0.1s;
 }
-.btn:hover { border-color: #396cd8; color: #396cd8; }
-.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn:hover:not(:disabled) { border-color: #396cd8; color: #396cd8; box-shadow: 0 2px 8px rgba(16, 24, 40, 0.08); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:focus-visible { outline: 2px solid rgba(57, 108, 216, 0.55); outline-offset: 2px; }
+.btn:disabled {
+  background: #eef1f6;
+  border-color: #dfe4ec;
+  color: #98a2b3;
+  cursor: not-allowed;
+}
 .gs-btn-primary { background: #396cd8; color: #fff; border-color: #396cd8; }
-.gs-btn-primary:hover { background: #2f5cc2; color: #fff; }
+.gs-btn-primary:hover:not(:disabled) { background: #2f5cc2; border-color: #2f5cc2; color: #fff; }
+.gs-btn-primary:disabled { background: #a8bde8; border-color: #a8bde8; color: #fff; cursor: not-allowed; }
 .gs-btn-danger { background: #e5484d; color: #fff; border-color: #e5484d; }
-.gs-btn-danger:hover { background: #cf3e43; color: #fff; }
-.btn-ghost { background: transparent; color: #396cd8; border-color: #396cd8; }
-.btn-ghost:hover { background: rgba(57, 108, 216, 0.08); color: #2f5cc2; }
+.gs-btn-danger:hover:not(:disabled) { background: #cf3e43; border-color: #cf3e43; color: #fff; }
+.gs-btn-danger:disabled { background: #f0b3b5; border-color: #f0b3b5; color: #fff; cursor: not-allowed; }
+.btn-ghost { background: #eef2ff; color: #2f5cc2; border-color: #b9cdf5; }
+.btn-ghost:hover:not(:disabled) { background: #e1e9ff; border-color: #396cd8; color: #2f5cc2; }
+.btn-ghost:disabled { background: #f2f4f8; border-color: #e3e7ee; color: #9aa4b4; cursor: not-allowed; }
 .btn-mini { padding: 2px 8px; font-size: 11px; border: 1px solid #d0d5dd; border-radius: 3px; background: #fff; cursor: pointer; }
 .btn-mini:hover { border-color: #396cd8; color: #396cd8; }
-.btn-mini:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-mini:disabled { background: #f0f2f6; color: #9aa4b4; cursor: not-allowed; }
 
 /* ---- 相册勾选区 ---- */
 .gs-select-block {

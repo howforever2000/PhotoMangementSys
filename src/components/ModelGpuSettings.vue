@@ -635,44 +635,52 @@ async function onModelChange() {
   font-weight: 600;
   min-width: 70px;
 }
+/* FEAT-062：原为「透明底 + rgba(127,127,127,.4) 描边」，在弹窗里几乎看不出是按钮；
+   改为实底浅色（用主题变量，浅色/深色两套模式都清晰），禁用态用实底灰。*/
 .mgps-btn {
   padding: 5px 14px;
   border-radius: 8px;
-  border: 1px solid rgba(127, 127, 127, 0.4);
-  background: transparent;
-  color: inherit;
+  border: 1px solid rgba(57, 108, 216, 0.45);
+  background: var(--color-primary-soft);
+  color: var(--color-text);
   font-size: 12.5px;
+  font-weight: 600;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
 }
 .mgps-btn:hover:not(:disabled) {
-  border-color: rgba(106, 141, 240, 0.75);
-  background: rgba(106, 141, 240, 0.08);
+  border-color: #396cd8;
+  background: rgba(57, 108, 216, 0.28);
 }
 .mgps-btn:disabled {
-  opacity: 0.55;
+  background: rgba(127, 127, 127, 0.14);
+  border-color: rgba(127, 127, 127, 0.28);
+  color: var(--color-text-3);
   cursor: wait;
 }
 
 .mgps-accel {
   padding: 5px 14px;
   border-radius: 8px;
-  border: 1px solid rgba(127, 127, 127, 0.4);
-  background: transparent;
-  color: inherit;
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--color-text);
   font-size: 12.5px;
   cursor: not-allowed;
   transition: border-color 0.15s, background 0.15s;
 }
 .mgps-accel:disabled {
-  opacity: 0.5;
+  background: rgba(127, 127, 127, 0.07);
+  border-color: rgba(127, 127, 127, 0.2);
+  color: var(--color-text-3);
 }
 .mgps-accel:not(:disabled) {
   cursor: pointer;
   border-color: rgba(106, 141, 240, 0.75);
 }
 .mgps-accel:not(:disabled):hover {
-  background: rgba(106, 141, 240, 0.1);
+  background: rgba(57, 108, 216, 0.22);
+  border-color: #396cd8;
 }
 .mgps-accel.on {
   background: #396cd8;
@@ -687,9 +695,9 @@ async function onModelChange() {
   max-width: 460px;
   padding: 6px 10px;
   border-radius: 8px;
-  border: 1px solid rgba(127, 127, 127, 0.4);
-  background: transparent;
-  color: inherit;
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  background: rgba(127, 127, 127, 0.1);
+  color: var(--color-text);
   font-size: 12.5px;
   cursor: pointer;
 }
