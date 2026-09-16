@@ -15,6 +15,8 @@ import type {
   ContentScanFilters,
   ContentSearchHit,
   ModelDlStatus,
+  ModelSourceProbe,
+  ModelSourcesInfo,
   ScanOutcome,
   ScanReport,
   UnifiedScanRow,
@@ -293,6 +295,21 @@ export const useContentStore = defineStore("content", {
     async cancelModelDownload(name: string): Promise<void> {
       await invoke<void>("cancel_model_download", { name });
       await this.listModelDownloads();
+    },
+
+    /** FEAT-061：下载源自检（逐个镜像 Range 探测，返回 HTTP 状态与耗时） */
+    async probeModelSources(name: string): Promise<ModelSourceProbe[]> {
+      return await invoke<ModelSourceProbe[]>("probe_model_sources", { name });
+    },
+
+    /** FEAT-061：读取下载源配置（内置 + 自定义） */
+    async getModelSources(): Promise<ModelSourcesInfo> {
+      return await invoke<ModelSourcesInfo>("get_model_sources");
+    },
+
+    /** FEAT-061：保存自定义下载源（空数组 = 恢复默认内置源） */
+    async setModelSources(sources: string[]): Promise<void> {
+      await invoke<void>("set_model_sources", { sources });
     },
 
     /**

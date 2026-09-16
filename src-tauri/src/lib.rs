@@ -2441,6 +2441,37 @@ fn cancel_model_download(name: String) -> Result<(), String> {
     Ok(())
 }
 
+/// FEAT-061：下载源自检（逐个候选源 Range 探测，返回 HTTP 状态与耗时）
+#[tauri::command]
+async fn probe_model_sources(name: String) -> Result<Vec<model_dl::SourceProbe>, String> {
+    let _t = log_call!("probe_model_sources", &format!("name={name}"));
+    let r = model_dl::probe_sources(&name).await;
+    match &r {
+        Ok(v) => logger::log_call_end_with(
+            "probe_model_sources",
+            _t,
+            &format!(
+                "OK | {} 个源 / 可用 {}",
+                v.len(),
+                v.iter().filter(|p| p.ok).count()
+            ),
+        ),
+        Err(e) => logger::log_call_end_with("probe_model_sources", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// FEAT-061：读取下载源配置（内置 + 自定义）
+#[tauri::command]
+fn get_model_sources() -> model_dl::SourcesInfo {
+    model_dl::sources_info()
+}
+
+/// FEAT-061：保存自定义下载源（空数组 = 恢复默认）
+#[tauri::command]
+fn set_model_sources(sources: Vec<String>) -> Result<(), String> {
+    model_dl::save_custom_sources(sources)
+}
 #[tauri::command]
 async fn get_vcr_gpu_status(app: tauri::AppHandle) -> Result<vision::VcrGpuStatus, String> {
     let _t = log_call!("get_vcr_gpu_status");
@@ -3709,6 +3740,9 @@ pub fn run() {
             start_model_download,
             list_model_downloads,
             cancel_model_download,
+            probe_model_sources,
+            get_model_sources,
+            set_model_sources,
             set_vcr_gpu,
             get_vcr_threads,
             set_vcr_threads,

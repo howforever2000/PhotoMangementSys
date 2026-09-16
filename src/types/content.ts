@@ -321,6 +321,23 @@ export interface ModelDlStatus {
   error: string | null;
 }
 
+/** FEAT-061：单源连通性自检结果（对应 Rust `model_dl::SourceProbe`） */
+export interface ModelSourceProbe {
+  url: string;
+  host: string;
+  builtin: boolean;
+  ok: boolean;
+  status: number;
+  ms: number;
+  error: string | null;
+}
+
+/** FEAT-061：下载源配置（内置模板 + 用户自定义模板） */
+export interface ModelSourcesInfo {
+  builtin: string[];
+  custom: string[];
+}
+
 // ---------------------------------------------------------------------------
 // v5 语义分类（Chinese-CLIP 关键词匹配）
 // 对应 Rust `src-tauri/src/db/category.rs` / `src-tauri/src/category.rs`

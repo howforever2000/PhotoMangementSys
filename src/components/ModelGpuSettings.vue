@@ -17,6 +17,7 @@ import { useNotify } from "../composables/useNotify";
 import { PERF_TIMEOUT, withTimeout } from "../utils/withTimeout";
 import type {
   ModelDlStatus,
+  ModelSourceProbe,
   VcrBenchmarkResult,
   VcrModelsInfo,
   VcrSweepEntry,
@@ -43,6 +44,15 @@ const gpuLoading = ref(false);
 const gpuFailed = ref(false);
 /** FEAT-052：模型下载状态（store 由 model-dl-progress 事件实时更新） */
 const downloads = computed(() => contentStore.modelDownloads);
+
+/* FEAT-061：下载源治理（镜像自检 + 自定义源） */
+const probes = ref<ModelSourceProbe[]>([]);
+const probeBusy = ref(false);
+const probeErr = ref("");
+const srcOpen = ref(false);
+const customSrc = ref("");
+const srcSaving = ref(false);
+const probeTarget = ref("");
 /** 是否已执行过「检测 GPU」 */
 const detected = ref(false);
 
@@ -263,6 +273,56 @@ function fmtBytes(d: ModelDlStatus): string {
   const t = d.total ? ` / ${(d.total / 1e6).toFixed(1)} MB` : "";
   return `${b} MB${t}`;
 }
+/** FEAT-061：对首个未下载模型逐个源做 Range 探测（只取 1 字节，不下载整文件） */
+async function runProbe() {
+  const target = downloads.value.find((d) => !d.done) ?? downloads.value[0];
+  if (!target) return;
+  probeTarget.value = target.name;
+  probeBusy.value = true;
+  probeErr.value = "";
+  try {
+    probes.value = await contentStore.probeModelSources(target.name);
+  } catch (e) {
+    probes.value = [];
+    probeErr.value = String(e);
+  } finally {
+    probeBusy.value = false;
+  }
+}
+
+/** FEAT-061：展开/收起自定义源（展开时载入当前配置） */
+async function toggleSources() {
+  srcOpen.value = !srcOpen.value;
+  if (!srcOpen.value) return;
+  try {
+    const info = await contentStore.getModelSources();
+    customSrc.value = info.custom.join("\n");
+  } catch (e) {
+    notify.error("读取下载源配置失败", String(e));
+  }
+}
+
+/** FEAT-061：保存自定义源并立即重测（自定义源优先于内置源） */
+async function saveSources() {
+  srcSaving.value = true;
+  try {
+    const list = customSrc.value
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    await contentStore.setModelSources(list);
+    notify.success(
+      "下载源已保存",
+      list.length ? `自定义 ${list.length} 个源（下载时优先尝试）` : "已恢复为内置镜像",
+    );
+    await runProbe();
+  } catch (e) {
+    notify.error("保存下载源失败", String(e));
+  } finally {
+    srcSaving.value = false;
+  }
+}
+
 function startDl(name: string) {
   contentStore.startModelDownload(name).catch((e) => notify.error("启动下载失败", String(e)));
 }
@@ -576,7 +636,52 @@ async function onModelChange() {
       <!-- FEAT-052：模型下载（后台 + 进度 + 官方/镜像择优） -->
       <div class="mgps-row mgps-dl-head">
         <span class="mgps-label">📥 模型下载</span>
-        <span class="mgps-hint">官方 / 镜像并行择快；.pt 下载后自动导出 onnx</span>
+        <span class="mgps-hint">多镜像候选（自定义优先）逐个尝试，失败自动换源；.pt 下载后自动导出 onnx</span>
+      </div>
+
+      <!-- FEAT-061：下载源治理（URL 不可达时不再静默挂起，可自检/自定义） -->
+      <div class="mgps-src">
+        <button class="mgps-btn mgps-btn-sm" :disabled="probeBusy" @click="runProbe">
+          {{ probeBusy ? "检测中…" : "🔍 镜像源自检" }}
+        </button>
+        <button class="mgps-btn mgps-btn-sm" @click="toggleSources">
+          {{ srcOpen ? "收起自定义源" : "自定义源" }}
+        </button>
+        <span v-if="probes.length" class="mgps-src-sum">
+          {{ probeTarget }} · 可用 {{ probes.filter((p) => p.ok).length }} / {{ probes.length }}
+        </span>
+      </div>
+      <p v-if="probeErr" class="mgps-status err">{{ probeErr }}</p>
+      <div v-if="probes.length" class="mgps-src-list">
+        <div v-for="p in probes" :key="p.url" class="mgps-src-row">
+          <span class="mgps-src-host" :title="p.url">{{ p.host }}</span>
+          <span class="mgps-src-tag" :class="p.ok ? 'ok' : 'bad'">
+            {{ p.ok ? `可用 ${p.status}` : p.status ? `HTTP ${p.status}` : "不可用" }}
+          </span>
+          <span class="mgps-src-ms">{{ p.ms }} ms</span>
+          <span class="mgps-src-note" :title="p.error ?? ''">
+            {{ p.error ? p.error.slice(0, 70) : p.builtin ? "内置源" : "自定义源" }}
+          </span>
+        </div>
+      </div>
+      <div v-if="srcOpen" class="mgps-src-edit">
+        <p class="mgps-hint">
+          每行一个模板，必须含 <code>{repo}</code> 与 <code>{path}</code>；自定义源优先于内置源，下载按顺序尝试。
+        </p>
+        <textarea
+          v-model="customSrc"
+          class="mgps-src-text"
+          spellcheck="false"
+          placeholder="https://your-mirror.example.com/{repo}/resolve/main/{path}"
+        ></textarea>
+        <div class="mgps-row">
+          <button class="mgps-btn mgps-btn-sm" :disabled="srcSaving" @click="saveSources">
+            {{ srcSaving ? "保存中…" : "保存并检测" }}
+          </button>
+          <button class="mgps-btn mgps-btn-sm" :disabled="srcSaving" @click="customSrc = ''">
+            清空自定义
+          </button>
+        </div>
       </div>
       <div class="mgps-dl-list">
         <div v-for="d in downloads" :key="d.name" class="mgps-dl-row">
@@ -597,7 +702,7 @@ async function onModelChange() {
           </template>
           <template v-else-if="d.stage === 'error'">
             <span class="mgps-status err" :title="d.error ?? ''">
-              失败：{{ (d.error ?? "").slice(0, 40) }}
+              失败：{{ d.error ?? "" }}
             </span>
             <button class="mgps-btn mgps-btn-sm" @click="startDl(d.name)">重试</button>
           </template>
@@ -819,5 +924,87 @@ async function onModelChange() {
 .mgps-btn-sm {
   padding: 3px 10px;
   font-size: 11.5px;
+}
+
+/* FEAT-061：下载源自检 / 自定义源 */
+.mgps-src {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mgps-src-sum {
+  font-size: 12px;
+  opacity: 0.75;
+}
+.mgps-src-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(127, 127, 127, 0.1);
+}
+.mgps-src-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.mgps-src-host {
+  min-width: 150px;
+  font-family: ui-monospace, monospace;
+}
+.mgps-src-tag {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+.mgps-src-tag.ok {
+  background: rgba(21, 128, 61, 0.18);
+  color: #15803d;
+}
+.mgps-src-tag.bad {
+  background: rgba(214, 69, 69, 0.16);
+  color: #d64545;
+}
+.mgps-src-ms {
+  min-width: 62px;
+  font-family: ui-monospace, monospace;
+  opacity: 0.8;
+}
+.mgps-src-note {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.7;
+}
+.mgps-src-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mgps-src-text {
+  width: 100%;
+  min-height: 62px;
+  resize: vertical;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  background: rgba(127, 127, 127, 0.1);
+  color: var(--color-text);
+  font: inherit;
+}
+.mgps-src-text:focus {
+  outline: none;
+  border-color: #396cd8;
+}
+/* 下载失败原因不再截 40 字：整行可读、可换行 */
+.mgps-status.err {
+  color: #d64545;
+  white-space: normal;
+  word-break: break-all;
 }
 </style>

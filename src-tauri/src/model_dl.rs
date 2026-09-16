@@ -9,7 +9,7 @@
 //! 目录与 server.py 一致：python/models（VCR_MODEL_DIR 缺省）。
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -53,13 +53,17 @@ struct DlSpec {
     extra: &'static [&'static str],
     kind: DlKind,
     required: bool,
+    /// FEAT-061：下载文件体积下限（字节）——用于识别 HTML 错误页 / 半包文件
+    expect_min: u64,
 }
 
 impl DlSpec {
     fn base_url(&self) -> String {
         // hf-mirror 已是国内加速镜像（huggingface.co 直连超时），不再二次套 ghfast
+        // FEAT-061：不再硬编码单一 hf-mirror；取候选源模板的第一个前缀
+        //（其余候选由 download_first_wins 的 official/mirror 双路竞速覆盖）
         match self.kind {
-            DlKind::ClipOnnx => format!("https://hf-mirror.com/{}/resolve/main/", self.repo),
+            DlKind::ClipOnnx => source_prefix(self.repo),
         }
     }
     /// 整图**本地**相对路径（相对 python/models；存在即视为已下载）
@@ -76,11 +80,14 @@ impl DlSpec {
     }
     /// 官方下载地址（仓库路径，不带本地目录）
     fn official(&self) -> String {
-        format!("{}{}", self.base_url(), self.repo_file())
+        let tpls = source_templates();
+        fill_source(&tpls[0], self.repo, &self.repo_file())
     }
     /// 镜像地址（单源直链：download_first_wins 对同 URL 自动降为单路）
     fn mirror(&self) -> String {
-        self.official()
+        let tpls = source_templates();
+        let idx = if tpls.len() > 1 { 1 } else { 0 };
+        fill_source(&tpls[idx], self.repo, &self.repo_file())
     }
     /// 下载临时文件的扩展名（导出环节依赖正确扩展名）
     fn tmp_ext(&self) -> &'static str {
@@ -98,6 +105,8 @@ fn specs() -> Vec<DlSpec> {
             onnx: "model_fp16.onnx",
             extra: &["tokenizer.json", "vocab.txt"],
             kind: DlKind::ClipOnnx,
+            // FEAT-061：体积下限（fp16 档实测 ~377MB；取 100MB 兜底，容忍仓库更新）
+            expect_min: 100_000_000,
             required: false,
         },
         DlSpec {
@@ -110,6 +119,8 @@ fn specs() -> Vec<DlSpec> {
             onnx: "model.onnx",
             extra: &["tokenizer.json", "vocab.txt"],
             kind: DlKind::ClipOnnx,
+            // FEAT-061：体积下限（fp32 档实测 ~754MB；取 100MB 兜底）
+            expect_min: 100_000_000,
             required: false,
         },
     ]
@@ -285,11 +296,18 @@ async fn run(app: &AppHandle, spec: &DlSpec) -> Result<(), String> {
     // 1. 主文件（单源直链；download_first_wins 对同 URL 自动降为单路）
     emit_status(app, spec, "downloading", 0, 0, false);
     let winner = download_first_wins(app, spec, &dir).await?;
+    // FEAT-061：落地前做基本校验（服务端可能返回 HTML 错误页 / 半包文件）
+    if let Err(e) = validate_model_file(&winner, spec.expect_min) {
+        let _ = std::fs::remove_file(&winner);
+        return Err(e);
+    }
     std::fs::rename(&winner, &final_path).map_err(|e| format!("落位失败: {e}"))?;
 
     // 2. 附带文件（tokenizer.json / vocab.txt）
     let client = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(600))
+        .read_timeout(READ_TIMEOUT)
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
     for f in spec.extra {
@@ -304,10 +322,13 @@ async fn run(app: &AppHandle, spec: &DlSpec) -> Result<(), String> {
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
             }
+            // FEAT-061：附带文件同样按源轮换（tokenizer.json / vocab.txt 缺失会让 CLIP 直接不可用）
+            let tpls = source_templates();
+            let tpl = tpls[(attempt as usize) % tpls.len()].clone();
             match download_one(
                 app.clone(),
                 spec.name.to_string(),
-                format!("{}{}", spec.base_url(), f),
+                fill_source(&tpl, spec.repo, f),
                 dest.clone(),
                 client.clone(),
             )
@@ -317,7 +338,7 @@ async fn run(app: &AppHandle, spec: &DlSpec) -> Result<(), String> {
                     last.clear();
                     break;
                 }
-                Err(e) => last = e,
+                Err(e) => last = format!("{e} @ {tpl}"),
             }
         }
         if !last.is_empty() {
@@ -351,7 +372,9 @@ fn emit_status(app: &AppHandle, spec: &DlSpec, stage: &str, bytes: u64, total: u
 /// 两路并行下载，先完成者赢；返回赢家临时文件路径（带正确扩展名）
 async fn download_first_wins(app: &AppHandle, spec: &DlSpec, dir: &Path) -> Result<PathBuf, String> {
     let client = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(3600))
+        .read_timeout(READ_TIMEOUT)
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
     let d0 = dir.join(format!(".dl_{}_0.{}", spec.name, spec.tmp_ext()));
@@ -422,10 +445,11 @@ async fn download_one(
     dest: PathBuf,
     client: reqwest::Client,
 ) -> Result<(), String> {
-    let resp = client
-        .get(&url)
-        .send()
+    // FEAT-061：连接/首字节超时。旧实现只给整单 3600s 超时，源不可达时
+    //（TCP 可连、TLS 被重置或不响应）会静默挂 1 小时，UI 表现为「点了没反应」。
+    let resp = tokio::time::timeout(FIRST_BYTE_TIMEOUT, client.get(&url).send())
         .await
+        .map_err(|_| format!("连接/首字节超时（{}s）: {url}", FIRST_BYTE_TIMEOUT.as_secs()))?
         .map_err(|e| format!("请求失败: {e}"))?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status().as_u16()));
@@ -463,6 +487,201 @@ async fn download_one(
     }
     let _ = f.sync_all();
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 下载源治理（FEAT-061）：多镜像候选 + 连通性自检 + 自定义源
+// ---------------------------------------------------------------------------
+
+/// 连接超时（握手阶段：覆盖「TCP 可连但 TLS 无响应」的静默挂起）
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+/// 首字节超时（发出请求 → 拿到响应头）
+const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(20);
+/// 读超时（两次数据之间的最长间隔；大文件慢速下载不会被误杀）
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// 单源自检超时
+const PROBE_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// 内置镜像源模板（FEAT-061）
+///
+/// `{repo}` = HF 仓库 id；`{path}` = 仓库内相对路径（如 `onnx/model_fp16.onnx`）。
+/// 只留国内可连的镜像；**不再保留 huggingface.co 直连**（大陆基本不可达，
+/// 旧实现里 official()/mirror() 返回同一地址的「双路竞速」实际是空转）。
+/// 两个源的路径前缀规则不同（aifasthub 多一层 `/models`），故用整模板而非域名替换。
+const BUILTIN_SOURCES: [&str; 2] = [
+    "https://hf-mirror.com/{repo}/resolve/main/{path}",
+    "https://aifasthub.com/models/{repo}/resolve/main/{path}",
+];
+
+/// 按模板拼下载地址
+fn fill_source(tpl: &str, repo: &str, path: &str) -> String {
+    tpl.replace("{repo}", repo).replace("{path}", path)
+}
+
+/// 取模板前缀（用于 base_url：去掉 {path} 尾巴，保留 resolve/main/ 前缀）
+fn source_prefix(repo: &str) -> String {
+    let tpls = source_templates();
+    fill_source(&tpls[0], repo, "")
+}
+
+fn custom_sources_file() -> PathBuf {
+    models_dir().join("download_sources.json")
+}
+
+/// 自定义源（用户在「模型下载 → 源自检」里维护；每行一个模板）
+fn load_custom_sources() -> Vec<String> {
+    let path = custom_sources_file();
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<Vec<String>>(&text) else {
+        return Vec::new();
+    };
+    v.into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| s.starts_with("http") && s.contains("{repo}") && s.contains("{path}"))
+        .collect()
+}
+
+/// 保存自定义源（空数组 = 恢复仅内置）
+pub fn save_custom_sources(list: Vec<String>) -> Result<(), String> {
+    let cleaned: Vec<String> = list
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    for s in &cleaned {
+        if !(s.starts_with("http") && s.contains("{repo}") && s.contains("{path}")) {
+            return Err(format!("源模板不合法（需以 http 开头且同时含 {{repo}} 与 {{path}}）: {s}"));
+        }
+    }
+    let dir = models_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建模型目录失败: {e}"))?;
+    let text = serde_json::to_string_pretty(&cleaned).map_err(|e| e.to_string())?;
+    std::fs::write(custom_sources_file(), text)
+        .map_err(|e| format!("写入 download_sources.json 失败: {e}"))?;
+    Ok(())
+}
+
+/// 候选源顺序：自定义优先 → 内置（去重）
+fn source_templates() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in load_custom_sources()
+        .into_iter()
+        .chain(BUILTIN_SOURCES.iter().map(|s| s.to_string()))
+    {
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    if out.is_empty() {
+        out.push(BUILTIN_SOURCES[0].to_string());
+    }
+    out
+}
+
+/// 下载结果校验：体积下限 + 首字节不是 HTML（避免把错误页/半包当成模型）
+fn validate_model_file(path: &Path, expect_min: u64) -> Result<(), String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("读取下载文件失败: {e}"))?;
+    if meta.len() < expect_min {
+        return Err(format!(
+            "下载文件仅 {} 字节，低于预期下限 {} 字节（疑似错误页或半包），已丢弃",
+            meta.len(),
+            expect_min
+        ));
+    }
+    let mut f = std::fs::File::open(path).map_err(|e| format!("打开下载文件失败: {e}"))?;
+    let mut head = [0u8; 16];
+    let n = f.read(&mut head).map_err(|e| format!("读取文件头失败: {e}"))?;
+    if n == 0 {
+        return Err("下载文件为空，已丢弃".to_string());
+    }
+    let text = String::from_utf8_lossy(&head[..n]).trim_start().to_ascii_lowercase();
+    if text.starts_with('<') {
+        return Err("下载内容不是模型文件（疑似 HTML 错误页），已丢弃".to_string());
+    }
+    Ok(())
+}
+
+/// 下载源配置（内置 + 自定义）
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourcesInfo {
+    pub builtin: Vec<String>,
+    pub custom: Vec<String>,
+}
+
+pub fn sources_info() -> SourcesInfo {
+    SourcesInfo {
+        builtin: BUILTIN_SOURCES.iter().map(|s| s.to_string()).collect(),
+        custom: load_custom_sources(),
+    }
+}
+
+/// 单个下载源的连通性自检结果
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceProbe {
+    pub url: String,
+    pub host: String,
+    pub builtin: bool,
+    pub ok: bool,
+    pub status: u16,
+    pub ms: u64,
+    pub error: Option<String>,
+}
+
+fn url_host(url: &str) -> String {
+    url.split("//")
+        .nth(1)
+        .and_then(|r| r.split('/').next())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// 对某模型的主文件逐个源做 Range 探测（只取 1 字节，不下载整文件）
+pub async fn probe_sources(name: &str) -> Result<Vec<SourceProbe>, String> {
+    let Some(spec) = specs().into_iter().find(|s| s.name == name) else {
+        return Err(format!("未知模型: {name}"));
+    };
+    let path = spec.repo_file();
+    let client = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(PROBE_TIMEOUT)
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    let custom = load_custom_sources();
+    let mut out = Vec::new();
+    for tpl in source_templates() {
+        let url = fill_source(&tpl, spec.repo, &path);
+        let host = url_host(&url);
+        let builtin = !custom.contains(&tpl);
+        let started = Instant::now();
+        match client.get(&url).header("Range", "bytes=0-1").send().await {
+            Ok(resp) => {
+                let code = resp.status().as_u16();
+                out.push(SourceProbe {
+                    url,
+                    host,
+                    builtin,
+                    ok: (200..300).contains(&code),
+                    status: code,
+                    ms: started.elapsed().as_millis() as u64,
+                    error: None,
+                });
+            }
+            Err(e) => out.push(SourceProbe {
+                url,
+                host,
+                builtin,
+                ok: false,
+                status: 0,
+                ms: started.elapsed().as_millis() as u64,
+                error: Some(e.to_string()),
+            }),
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
