@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "../stores/auth";
@@ -181,23 +181,42 @@ async function handleLogin() {
   height: 42px;
   padding: 0 12px;
   font-size: 14px;
-  /* 输入框背景由灰白改为更纯的白，避免在玻璃面板上发灰 */
-  color: #1f2733;
-  border: 1px solid rgba(255, 255, 255, 0.32);
+  /* FEAT-059：由不透明白底（#ffffff）改为「玻璃态」——
+     半透明 + 背景模糊，让 covers/cover.png 从输入框里透出来；
+     文字改浅色并加极淡阴影，保证在背景图亮部也可读。 */
+  color: #f5f7ff;
+  border: 1px solid rgba(255, 255, 255, 0.38);
   border-radius: 8px;
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.32);
 }
 
 .field-input::placeholder {
-  color: #98a2b3;
+  /* 占位符不能顺着 text-shadow 变糊：单独去掉阴影并压低不透明度 */
+  color: rgba(226, 233, 255, 0.6);
+  text-shadow: none;
 }
 
 .field-input:focus {
-  border-color: #6ea8ff;
-  box-shadow: 0 0 0 3px rgba(110, 168, 255, 0.28);
-  background: #fff;
+  border-color: #8ab4ff;
+  box-shadow: 0 0 0 3px rgba(110, 168, 255, 0.32);
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* FEAT-059：WebView2/Chromium 的自动填充会把底刷成不透明浅黄底，
+   玻璃态失效（用户看到"改了没用"）。用内阴影铺满 + 超长过渡延迟覆盖，
+   不需要 JS，也不影响手输场景。 */
+.field-input:-webkit-autofill,
+.field-input:-webkit-autofill:hover,
+.field-input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #f5f7ff;
+  caret-color: #f5f7ff;
+  box-shadow: 0 0 0 1000px rgba(28, 36, 62, 0.82) inset;
+  transition: background-color 9999s ease-out 0s;
 }
 
 .error-msg {
