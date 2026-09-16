@@ -1536,6 +1536,72 @@
       ],
       "created_at": "2026-09-16T14:10:00+08:00",
       "fixed_at": "2026-09-16T14:40:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0925-001",
+      "date": "2026-09-25",
+      "status": "fixed",
+      "title": "应用内「下载模型」点击后完全无反应：下载源连接静默挂起 + 单源 + 整单 3600s 超时",
+      "module": "模型下载 / src-tauri/src/model_dl.rs（FEAT-052）+ src/components/ModelGpuSettings.vue",
+      "symptom": [
+        "性能设置 → 模型下载 → 点「⬇ 下载」后按钮无变化、无进度、无报错，等很久也没有任何反馈",
+        "模型档位始终显示「未下载」；.../vcr/models/chinese-clip-fp32/onnx/ 是空目录"
+      ],
+      "root_cause": {
+        "summary": "下载请求卡在对 hf-mirror.com 的连接/首字节阶段（TCP 可连、TLS 无响应），旧实现只设整单 3600s 超时且只有单一源，于是既不失败也不前进，UI 全程静默。",
+        "detail": [
+          "app.log 实证：start_model_download START/END 结果 OK（耗时 0ms，异步起任务即返回），此后全日志 4469 行再无 model_dl 的任何重试/HTTP/完成记录",
+          "模型目录下没有 .dl_*.onnx 临时文件 —— 临时文件是在拿到 200 响应之后才创建，说明连响应头都没拿到",
+          "download_first_wins 的 official() 与 mirror() 返回同一 URL，「先完成者赢」实际是单路，没有真正备用源",
+          "整单超时 3600s 且无首字节/读超时 → 失败暴露时间最长 1 小时，用户侧等价于「永远没有反馈」"
+        ]
+      },
+      "solution": {
+        "summary": "改多镜像候选 + 分层超时 + 落地校验 + 源自检/自定义源（FEAT-061）：连接 8s / 首字节 20s / 读 60s，坏源快速失败并自动换源，失败原因完整回传界面。",
+        "steps": [
+          "内置源改模板列表：hf-mirror.com 与 aifasthub.com（实测可直链），自定义源存模型目录 download_sources.json 且优先",
+          "client 加 connect_timeout(8s) + read_timeout(60s)；send 外包 tokio::time::timeout(20s)",
+          "下载完成校验体积下限与首字节非 HTML，异常文件删除并换源",
+          "新增镜像源自检（Range 探测显示每源状态/耗时）与自定义源编辑；下载失败原因不再截断 40 字"
+        ]
+      },
+      "evidence_log": "修复前 app.log：`[AOP:CALL] start_model_download START | name=chinese-clip-fp32` → `[AOP:RET] ... END 耗时 0ms 结果 OK`，其后无任何 model_dl 记录；目录无临时文件。修复后：起下载即出现进度上报（model-dl-progress）或明确的「连接/首字节超时」错误，并可自动换源。",
+      "related_files": ["src-tauri/src/model_dl.rs", "src-tauri/src/lib.rs", "src/components/ModelGpuSettings.vue"],
+      "keywords": ["模型下载", "无反应", "静默挂起", "hf-mirror", "TLS", "超时", "多源", "源自检"],
+      "created_at": "2026-09-25T11:00:00+08:00",
+      "fixed_at": "2026-09-25T11:30:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0925-002",
+      "date": "2026-09-25",
+      "status": "fixed",
+      "title": "扫描入库 / 性能设置按钮「太透明看不清」：深色模式覆盖实心主色按钮 + 幽灵按钮透明底 + 禁用态整体降透明度",
+      "module": "UI 按钮样式 / src/assets/main.css + src/components/GlobalScanPanel.vue + src/components/ModelGpuSettings.vue",
+      "symptom": [
+        "扫描中心工具条的「⚙ 性能设置」「▶ 开始扫描入库」发虚、边界不清",
+        "性能设置弹窗里的按钮（下载/取消/重试/GPU 开关）几乎看不出是按钮"
+      ],
+      "root_cause": {
+        "summary": "三处叠加：① 深色模式全局规则权重高于组件内实心按钮规则，把主色按钮也刷成半透明白；② btn-ghost 本身是透明底 + 1px 描边；③ 禁用态用整体 opacity，按钮整体变虚。",
+        "detail": [
+          "main.css 的 body.theme-dark .btn（0,2,1）优先级高于组件 scoped 的 .gs-btn-primary[data-v-x]（0,2,0），把实心主色一并覆盖为 rgba(255,255,255,.06)；:not() 排除只写在 hover 规则里，基础规则漏了",
+          "GlobalScanPanel 的 .btn-ghost = background: transparent + 1px 蓝边，在白底面板上等于没有底色；.btn 在白底面板上是「白底白钮」",
+          "禁用态 .btn:disabled { opacity: .55 } 让按钮整体变虚（用户描述为「太透明」）；.btn-ghost:hover 的 0.08 级别背景几乎看不见"
+        ]
+      },
+      "solution": {
+        "summary": "深色规则用 :not() 排除实心/幽灵变体并提高中性按钮对比；幽灵按钮改浅蓝实底；禁用态统一改实心灰（不再用整体透明度）；弹窗内按钮改实底并跟随主题变量。",
+        "steps": [
+          "main.css：body.theme-dark .btn 增加 :not(.btn-primary/.btn-danger/.gs-btn-primary/.gs-btn-danger/.btn-ghost) 排除，中性按钮底/边提到 .10/.22；新增深色 .btn-ghost 可见底与统一 disabled 样式",
+          "GlobalScanPanel：.btn 加 min-height/字重/焦点环/按压反馈；.btn-ghost 改 #eef2ff 实底；gs-btn-primary 保留实心蓝、禁用态改实心浅蓝；btn-mini 同步",
+          "ModelGpuSettings：.mgps-btn/.mgps-accel/.mgps-select 由透明改实底（用 --color-primary-soft 等主题变量，深浅两套模式都清晰），禁用态实底灰"
+        ]
+      },
+      "evidence_log": "改前：按钮为透明底 + 0.4 灰边 / 白底白钮；深色模式实心蓝按钮被刷成 rgba(255,255,255,.06)。改后：幽灵按钮浅蓝实底 #eef2ff、主按钮实心蓝、禁用态实心灰、深色模式实心变体不再被覆盖（vue-tsc 通过）。",
+      "related_files": ["src/assets/main.css", "src/components/GlobalScanPanel.vue", "src/components/ModelGpuSettings.vue"],
+      "keywords": ["按钮", "太透明", "深色模式", "选择器权重", "禁用态", "opacity"],
+      "created_at": "2026-09-25T11:10:00+08:00",
+      "fixed_at": "2026-09-25T11:35:00+08:00"
     }
   ]
 }

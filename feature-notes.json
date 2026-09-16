@@ -1813,7 +1813,7 @@
         "分层": "服务层 devdata.rs（路径解析 + 只读库访问 + 打码）→ 接口层 lib.rs 四个命令壳（async + spawn_blocking + log_call 出入口日志）→ 前端 DataWindowApp.vue 只做呈现",
         "路径清单": "paths() 输出 10+ 条 PathEntry（group/label/path/exists/is_dir/bytes/files/note）：相册主库、人物库、旧口径遗留人物库（存在且与当前口径不同才显示）、thumbs、avatars、vcr-data、模型目录（复用 vision::resolve_model_dir，并对比 resource_dir 以判断是否走了只读硬链接副本）、安装包内置模型目录、app_data、logs、程序 exe（含版本/dev 指纹）；目录体量递归统计（文件数上限 20 万防拖死），DB 体积含 -wal/-shm",
         "库表浏览": "tables() 列出 photos/persons 两库的表名与行数（FTS 影子表按后缀标记 shadow 供前端弱化）；rows() 预览某表前 N 行（limit 1..200）",
-        "安全边界": "统一 open_with_flags(SQLITE_OPEN_READ_ONLY) —— 全模块没有任何写入口；库名走白名单（photos/persons），表名先经 sqlite_master 校验再按 SQLite 规则转义标识符（无双引号拼接注入面），**不提供任意 SQL 输入框**；敏感列（password/passwd/pwd/token/secret/salt/api_key/private_key）自动打码；BLOB 只报 <BLOB n bytes>；单元格截断 200 字符；路径定位走 key 白名单 + explorer raw_arg，不接受前端传任意路径",
+        "安全边界": "统一 open_with_flags(SQLITE_OPEN_READ_ONLY) —— 全模块没有任何写入口；库名走白名单（photos/persons），表名先经 sqlite_master 校验再按 SQLite 规则转义标识符（无双引号拼接注入面），**FEAT-058 期间不提供任意 SQL 输入框**（FEAT-060 起升级为只读 SQL 沙箱：单条 SELECT/WITH/EXPLAIN + 自动 LIMIT + 用户信息打码）；敏感列（password/passwd/pwd/token/secret/salt/api_key/private_key）自动打码；BLOB 只报 <BLOB n bytes>；单元格截断 200 字符；路径定位走 key 白名单 + explorer raw_arg，不接受前端传任意路径",
         "窗口模式": "完全复刻日志窗口：label=dev-data 单例、后台线程建窗（BUG-2026-0910-005）、原生深色背景避免白斑、main.ts 按 label 动态 import 挂载（不装 router，避开登录守卫）、capabilities/dev-data.json 仅 core:default 与主窗口能力隔离"
       },
       "highlights": [
@@ -1849,7 +1849,86 @@
       ],
       "created_at": "2026-09-16T14:40:00+08:00",
       "updated_at": "2026-09-16T14:40:00+08:00"
+    },
+    {
+      "id": "FEAT-059",
+      "name": "登录页输入框玻璃态：半透明 + 背景模糊，让设计封面图透出来",
+      "status": "done",
+      "module": "登录页 UI / src/views/Login.vue（scoped CSS）",
+      "purpose": "登录页固定用 covers/cover.png 作封面，但输入框写死不透明白底（#ffffff），把背景图完全挡住——玻璃卡片里只有两块死白，观感割裂。",
+      "implementation": {
+        "样式": ".field-input 由 #ffffff 改为 rgba(255,255,255,.12) + backdrop-filter: blur(6px)；文字转浅色 #f5f7ff 并加极淡 text-shadow 兜底背景亮部对比度；focus 态底 rgba(255,255,255,.18) + 蓝色焦点环；placeholder 单独去掉 text-shadow 并压到 .6 不透明度（否则跟着发糊）",
+        "自动填充兜底": "WebView2/Chromium 的 :-webkit-autofill 会把底刷成不透明浅黄底（改完看起来「没生效」），用 box-shadow: 0 0 0 1000px rgba(28,36,62,.82) inset + -webkit-text-fill-color + 超长 transition 延迟覆盖，不依赖 JS",
+        "改动范围": "只改登录页；注册/忘记密码页是无背景图的浅色页（linear-gradient 底 + 纯白卡），保持不透明白底更合适"
+      },
+      "highlights": [
+        "输入框从「死白」变成与卡片同材质，背景图从输入框里透出",
+        "顺手堵住自动填充这个高频「改了没用」的坑（不查 DevTools 很难发现）"
+      ],
+      "related_files": ["src/views/Login.vue"],
+      "keywords": ["登录页", "玻璃态", "backdrop-filter", "autofill", "封面图"],
+      "tests": [
+        "npm run build（vue-tsc --noEmit + vite build）通过",
+        "人工冒烟：登录页输入框可透视封面图；输入/聚焦/错误态文字清晰；触发浏览器自动填充后不出现白底"
+      ],
+      "created_at": "2026-09-25T10:00:00+08:00",
+      "updated_at": "2026-09-25T10:00:00+08:00"
+    },
+    {
+      "id": "FEAT-060",
+      "name": "开发者视角 · 数据与路径新增「SQL 查询」只读沙箱（表结构 DDL + 用户信息默认打码）",
+      "status": "done",
+      "module": "开发者辅助 / src-tauri/src/devdata.rs + lib.rs(dev_db_sql) + src/dev/DataWindowApp.vue",
+      "purpose": "FEAT-058 只给了表清单与整表预览，排查「这列为什么是空 / 这行是谁写的」时仍要另开 DB 工具或翻代码猜 SQL。本次在同一个「数据与路径」窗口加 SQL tab：能看表结构 DDL、能跑只读 SELECT 辅助开发，同时不把用户信息暴露成明文。",
+      "implementation": {
+        "只读沙箱": "load 层仍统一 SQLITE_OPEN_READ_ONLY；guard_sql 校验：单条语句（含分号即拒）、仅 SELECT/WITH/EXPLAIN、15 个写与元操作关键字按词边界拒绝（insert/update/delete/drop/alter/create/replace/attach/detach/pragma/vacuum/reindex/begin/commit/rollback，避免误伤 selected/created_at）、未写 LIMIT 自动补（默认 100 / 上限 200）、行数上限与单元格 200 字符截断沿用 FEAT-058 口径",
+        "打码扩展": "is_sensitive_column 从口令/令牌类扩到用户身份类（username/user_name/email/phone/mobile/id_card/real_name/avatar_path…；短词 pwd/tel/mail/cell/account 走整列名精确匹配，避免命中 title/mailbox_size）",
+        "值指纹兜底": "新增 redact_value：$argon2 / $2a$ / $2b$ / $pbkdf2 哈希、邮箱、大陆手机号、18 位身份证、≥32 位无空格长随机串（hex/base64 形态）一律打码",
+        "为何要值兜底": "列名规则能被别名绕过（SELECT username AS n）或表达式列绕过，只按列名打码等于没有边界；值层面按「看起来像身份/凭据」兜底才闭合",
+        "前端": "库浏览器加「表数据 / SQL 查询」双模式：左树点击在 SQL 模式填入 SELECT、一键插入当前表 SELECT 与建表语句(DDL)、行数上限下拉、Ctrl+Enter 执行、复制结果为 TSV、展示实际执行 SQL（含自动补的 LIMIT）与已打码列",
+        "命令": "dev_db_sql（async + spawn_blocking + log_call 出入口日志，SQL 执行留痕）"
+      },
+      "highlights": [
+        "FEAT-058 的「不提供 SQL 输入框」边界被本特性有意取代：从「不敢给」升级为「给了但限定只读 + 自动 LIMIT + 默认打码」，开发效率与安全边界同时成立",
+        "打码不再只看列名：别名/表达式列也能被值指纹拦住，且不提供任何「显示明文」开关",
+        "表结构 DDL 一键可查，排查索引/列类型不用再开外部工具"
+      ],
+      "related_files": ["src-tauri/src/devdata.rs", "src-tauri/src/lib.rs", "src/dev/DataWindowApp.vue"],
+      "keywords": ["只读 SQL", "SQL 沙箱", "打码", "用户信息", "DDL", "开发者视角"],
+      "tests": [
+        "npm run build（vue-tsc --noEmit）通过；cargo check 需在开发机执行（本机沙箱禁止执行 rustc）",
+        "人工冒烟：表数据模式仍按打码显示 users/sessions；SQL 模式 SELECT * FROM users 的 username/email/phone/password_hash 均为打码值；写入语句（UPDATE/DROP/PRAGMA/分号多语句）被拒绝并给出原因；未写 LIMIT 时可看到实际执行 SQL 与截断标记"
+      ],
+      "created_at": "2026-09-25T10:20:00+08:00",
+      "updated_at": "2026-09-25T10:20:00+08:00"
+    },
+    {
+      "id": "FEAT-061",
+      "name": "模型下载源治理：下线单一 huggingface 源，改多镜像候选 + 连通性自检 + 自定义源 + 分层超时",
+      "status": "done",
+      "module": "模型下载 / src-tauri/src/model_dl.rs + lib.rs(3 命令) + src/components/ModelGpuSettings.vue + src/stores/content.ts + src/types/content.ts",
+      "purpose": "用户反馈「性能设置里点下载模型无反应」。查安装版 app.log：start_model_download 返回 OK 后整份日志（4469 行）再无任何进度/错误，模型目录下连 .dl_*.onnx 临时文件都没有——请求挂在下载源连接阶段（TCP 可连、TLS 无响应），而旧实现只设整单 3600s 超时，UI 既不报错也无进度，等于「点了没反应」一小时。",
+      "implementation": {
+        "多源候选": "BUILTIN_SOURCES 改用整模板（含 {repo}/{path} 占位）替代硬编码域名：hf-mirror.com + aifasthub.com（后者实测 /models/{repo}/resolve/main/{path} 返回 200）；download_sources.json 支持自定义源且优先于内置；旧实现 official()/mirror() 返回同一地址的「官方/镜像双路竞速」实为空转，现分别取候选 0/1，tokenizer.json/vocab.txt 等附带文件也按源轮换",
+        "分层超时": "connect_timeout 8s + 首字节 20s（tokio::time::timeout 包 send）+ read_timeout 60s（两次数据间隔）；失败快速换源或报错，不再整单挂 1 小时",
+        "落地校验": "下载文件先校验体积下限（100MB 兜底）与首字节非 HTML，错误页/半包直接丢弃并换源",
+        "可观测与可操作": "新增 probe_model_sources（Range 探测 1 字节，返回每源 host/HTTP 状态/耗时/错误）、get_model_sources、set_model_sources；性能设置里加「🔍 镜像源自检」与「自定义源」编辑区；下载失败原因不再截 40 字，整行可读"
+      },
+      "highlights": [
+        "「点了没反应」的根因常是超时策略而非网络本身：3600s 整单超时拆成 连接/首字节/读 三层后，坏源 20s 内暴露，好源照常下载",
+        "镜像源不再写死：自检把「哪个源在你这台机器/这条线路上可用」变成界面可读事实，还能填自建镜像前缀（存模型目录，随模型目录走）",
+        "已核实 ModelScope 的 AI-ModelScope/chinese-clip-vit-base-patch16 只有 pytorch_model.bin/vocab.txt、无 onnx 与 tokenizer.json，不能直接当 onnx 源，故未纳入内置候选"
+      ],
+      "related_files": ["src-tauri/src/model_dl.rs", "src-tauri/src/lib.rs", "src/components/ModelGpuSettings.vue", "src/stores/content.ts", "src/types/content.ts"],
+      "keywords": ["模型下载", "镜像源", "hf-mirror", "aifasthub", "超时", "源自检", "download_sources.json"],
+      "tests": [
+        "npm run build（vue-tsc --noEmit）通过",
+        "人工冒烟：性能设置 → 镜像源自检显示逐源状态/耗时；自定义源保存后下载优先使用；下载失败错误整行可见；下载完成后档位可切换并生效",
+        "待开发机确认：本机沙箱禁止执行 rustc（os error 5），cargo check 未能本地跑；Rust 侧已人工复核（结构体字段、词边界校验、借用与 reqwest 0.12 read_timeout API），需在开发机跑一次 cargo check / tauri dev"
+      ],
+      "created_at": "2026-09-25T10:40:00+08:00",
+      "updated_at": "2026-09-25T10:40:00+08:00"
     }
   ],
-  "updated": "2026-09-16T14:40:00+08:00"
+  "updated": "2026-09-25T12:00:00+08:00"
 }
