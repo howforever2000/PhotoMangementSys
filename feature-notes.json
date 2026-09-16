@@ -1928,7 +1928,35 @@
       ],
       "created_at": "2026-09-25T10:40:00+08:00",
       "updated_at": "2026-09-25T10:40:00+08:00"
+    },
+    {
+      "id": "FEAT-062",
+      "name": "模型下载断点续传：分片 + 来源指纹，取消/断网/换源都不再从 0 重下",
+      "status": "done",
+      "module": "模型下载 / src-tauri/src/model_dl.rs（FEAT-061 之上）+ ModelGpuSettings.vue 文案",
+      "purpose": "fp16 档 377MB、fp32 档 754MB，弱网或代理抖动下重来一次代价极高。FEAT-061 让坏源快速失败，但失败仍是从 0 重下；本次把「失败」变成「接着下」。",
+      "implementation": {
+        "分片 + 元数据": "沿用 .dl_<name>_<i>.onnx 分片文件，新增同名 .meta 记录 {url,total}；只有「分片存在且元数据里 url == 本次 url」才续传，换源/无元数据一律删除分片重下（不同镜像字节不保证一致，混拼会得到坏文件）",
+        "Range 续传": "带 Range: bytes=N- 请求；206 视为续传（total 优先取 Content-Range 的 /total，退化用 N+Content-Length）；200 说明服务器忽略 Range 就 truncate 重下；416 说明区间非法（通常是本地已下满）直接返回 Ok，交由 validate_model_file 判定成败",
+        "进度": "bytes 从续传起点起算，并在起手先 emit 一次进度（UI 立刻显示「从 X MB 继续」而不是 0%），之后按 150ms 节流上报",
+        "取消语义": "取消/中断都保留分片与元数据，错误文案改为「已取消（已保留断点，可再次点击下载续传）」；成功落位或校验失败时统一 cleanup_partials 清残留",
+        "败者清理": "源竞速的败者连同元数据一起删（避免两个数百 MB 半包并存）；赢家改名落位前先删自己的 .meta"
+      },
+      "highlights": [
+        "把「重试」从重启下载变成续传：本轮 3 次重试、下次点击下载、甚至隔天再点都能从已有分片继续",
+        "来源指纹是安全底线：镜像 A 的字节绝不与镜像 B 拼在一起，宁可重下也不产出坏模型",
+        "取消不再等于丢弃进度（旧实现 cancel 直接删文件），弱网操作成本显著下降"
+      ],
+      "related_files": ["src-tauri/src/model_dl.rs", "src/components/ModelGpuSettings.vue"],
+      "keywords": ["断点续传", "Range", "206", "分片", "Content-Range", "取消保留断点"],
+      "tests": [
+        "npm run build（vue-tsc --noEmit）通过",
+        "人工冒烟建议：下载中取消 → 模型目录留下 .dl_*.onnx 与 .meta → 再点下载应从断点继续（进度起点 > 0）；把 .meta 里的 url 改成别的源后应看到分片被重置重下",
+        "待开发机确认：本机沙箱禁止执行 rustc（os error 5），cargo check 未能本地跑，需复核。"
+      ],
+      "created_at": "2026-09-25T13:00:00+08:00",
+      "updated_at": "2026-09-25T13:00:00+08:00"
     }
   ],
-  "updated": "2026-09-25T12:00:00+08:00"
+  "updated": "2026-09-25T13:00:00+08:00"
 }
