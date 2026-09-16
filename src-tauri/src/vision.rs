@@ -964,11 +964,17 @@ fn spawn_server(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
         .path()
         .resource_dir()
         .map_err(|e| format!("获取资源目录失败: {e}"))?;
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("获取应用数据目录失败: {e}"))?
-        .join("vcr-data");
+    // 数据目录（人物库 persons.db）：优先取 lib.rs::setup 已解析的 VCR_DATA_DIR，
+    // 使安装版与开发版统一到 app_data_dir/vcr-data（persons.rs 读写同一口径）；
+    // 仅当环境变量缺失（异常启动路径）时才现算。
+    let data_dir = match std::env::var("VCR_DATA_DIR") {
+        Ok(v) if !v.is_empty() => PathBuf::from(v),
+        _ => app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("获取应用数据目录失败: {e}"))?
+            .join("vcr-data"),
+    };
     let bundled_dir = resource_dir.join("vcr");
     let bundled_exe = bundled_dir.join("vcr-server.exe");
 
@@ -988,7 +994,7 @@ fn spawn_server(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
             cmd = std::process::Command::new(&bundled_exe);
         }
         // 模型目录由 lib.rs::setup 统一解析（内置目录只读时指向 app_data 下的可写副本）；
-        // 人物数据在 app_data_dir（可写）
+        // 人物库目录同样统一（VCR_DATA_DIR，见 setup）——二者均写盘在 app_data
         let model_dir = std::env::var("VCR_MODEL_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| bundled_dir.join("models"));

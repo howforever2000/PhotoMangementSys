@@ -19,6 +19,7 @@ mod category;
 mod content;
 mod crypto;
 mod db;
+mod devdata;
 mod folder;
 mod geo_index;
 mod logger;
@@ -3320,6 +3321,179 @@ fn build_dev_log_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 // =====================================================================
+// 开发者视角（数据与路径副窗口）
+//
+// 由来：排障时反复要回答「数据到底写哪去了」——相册主库在 %APPDATA%、
+// 人物库曾由编译期常量指向项目目录（BUG-2026-0916-005）、模型目录只在
+// 只读时才转成 app_data 下的硬链接副本（BUG-2026-0916-004）。这些口径
+// 应当能在界面上直接看到，而不是靠翻代码推断。
+// 纪律：全部只读（只读连接 + 白名单 + 敏感列打码），见 devdata.rs。
+// =====================================================================
+
+/// 运行态路径清单（只读）：DB / 缓存 / 模型 / 日志的绝对路径与体量
+///
+/// 必须 async + spawn_blocking：目录占用要递归统计（thumbs 实测数万文件），
+/// 放主线程事件循环会把全部界面一起卡住（BUG-2026-0910-001）。
+#[tauri::command]
+async fn dev_data_paths(app: tauri::AppHandle) -> Result<Vec<devdata::PathEntry>, String> {
+    let _t = log_call!("dev_data_paths");
+    let h = app.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || devdata::paths(&h))
+        .await
+        .map_err(|e| format!("dev_data_paths 执行失败: {e}"))?;
+    match &r {
+        Ok(v) => logger::log_call_end_with("dev_data_paths", _t, &format!("OK | {} 项", v.len())),
+        Err(e) => logger::log_call_end_with("dev_data_paths", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// 两个库的表清单与行数（只读）
+#[tauri::command]
+async fn dev_db_tables(app: tauri::AppHandle) -> Result<Vec<devdata::DbInfo>, String> {
+    let _t = log_call!("dev_db_tables");
+    let h = app.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || devdata::tables(&h))
+        .await
+        .map_err(|e| format!("dev_db_tables 执行失败: {e}"))?;
+    match &r {
+        Ok(v) => logger::log_call_end_with(
+            "dev_db_tables",
+            _t,
+            &format!(
+                "OK | {} 库 / {} 表",
+                v.len(),
+                v.iter().map(|d| d.tables.len()).sum::<usize>()
+            ),
+        ),
+        Err(e) => logger::log_call_end_with("dev_db_tables", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// 表数据预览（只读；敏感列打码；行数上限 200）
+#[tauri::command]
+async fn dev_db_rows(
+    app: tauri::AppHandle,
+    db: String,
+    table: String,
+    limit: i64,
+) -> Result<devdata::RowsResult, String> {
+    let _t = log_call!("dev_db_rows", &format!("db={db} table={table} limit={limit}"));
+    let h = app.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || devdata::rows(&h, &db, &table, limit))
+        .await
+        .map_err(|e| format!("dev_db_rows 执行失败: {e}"))?;
+    match &r {
+        Ok(v) => logger::log_call_end_with(
+            "dev_db_rows",
+            _t,
+            &format!("OK | {} 行 / 共 {}", v.rows.len(), v.total),
+        ),
+        Err(e) => logger::log_call_end_with("dev_db_rows", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// 在资源管理器中定位某个已知数据路径（key 白名单，不接受任意路径）
+#[tauri::command]
+async fn dev_reveal_path(app: tauri::AppHandle, key: String) -> Result<(), String> {
+    let _t = log_call!("dev_reveal_path", &format!("key={key}"));
+    let h = app.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        let entries = devdata::paths(&h)?;
+        let e = entries
+            .into_iter()
+            .find(|e| e.key == key)
+            .ok_or_else(|| format!("未知路径 key: {key}"))?;
+        reveal_in_explorer(Path::new(&e.path), e.is_dir)
+    })
+    .await
+    .map_err(|e| format!("dev_reveal_path 执行失败: {e}"))?;
+    match &r {
+        Ok(()) => logger::log_call_end_with("dev_reveal_path", _t, "OK"),
+        Err(e) => logger::log_call_end_with("dev_reveal_path", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// 在资源管理器中定位路径：文件→选中定位，目录→直接打开；
+/// 路径不存在时退到最近存在的父目录（避免只报「找不到」）。
+#[cfg(target_os = "windows")]
+fn reveal_in_explorer(path: &Path, is_dir: bool) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let mut target = path.to_path_buf();
+    let mut as_dir = is_dir;
+    while !target.exists() {
+        match target.parent() {
+            Some(p) if !p.as_os_str().is_empty() => {
+                target = p.to_path_buf();
+                as_dir = true;
+            }
+            _ => return Err(format!("路径不存在: {}", path.display())),
+        }
+    }
+    let mut cmd = std::process::Command::new("explorer");
+    // explorer 对 /select 的解析比较挑：用 raw_arg 原样传递，避免 Command 自动加引号
+    if as_dir {
+        cmd.raw_arg(format!("\"{}\"", target.display()));
+    } else {
+        cmd.raw_arg(format!("/select,\"{}\"", target.display()));
+    }
+    cmd.spawn()
+        .map_err(|e| format!("打开资源管理器失败: {e}"))?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn reveal_in_explorer(path: &Path, _is_dir: bool) -> Result<(), String> {
+    Err(format!(
+        "仅 Windows 支持在资源管理器中定位（当前：{}）",
+        path.display()
+    ))
+}
+
+/// 打开（或聚焦已存在的）「数据与路径」副窗口（单例）
+///
+/// 与日志窗口同构：label 固定 `dev-data`，前端 main.ts 按 label 分支挂载组件，
+/// 不走 router（避开登录守卫）；权限见 capabilities/dev-data.json。
+/// 同样 async + 后台线程建窗（BUG-2026-0910-005：主线程同步建窗会空白并卡死事件循环）。
+#[tauri::command]
+async fn open_dev_data_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("dev-data") {
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    tauri::async_runtime::spawn_blocking(move || build_dev_data_window(app))
+        .await
+        .map_err(|e| format!("数据窗口创建任务失败: {e}"))?
+}
+
+fn build_dev_data_window(app: tauri::AppHandle) -> Result<(), String> {
+    let t0 = std::time::Instant::now();
+    let url = if tauri::is_dev() {
+        tauri::WebviewUrl::External("http://localhost:1420/".parse().expect("valid dev url"))
+    } else {
+        tauri::WebviewUrl::App("index.html".into())
+    };
+    tauri::WebviewWindowBuilder::new(&app, "dev-data", url)
+        .title("开发者视角 · 数据与路径")
+        .inner_size(1080.0, 720.0)
+        .min_inner_size(720.0, 460.0)
+        .resizable(true)
+        .center()
+        .background_color(tauri::window::Color(12, 14, 20, 255))
+        .build()
+        .map_err(|e| format!("打开数据窗口失败: {e}"))?;
+    logger::log_info(&format!(
+        "打开数据与路径窗口耗时 {}ms（后台线程建窗）",
+        t0.elapsed().as_millis()
+    ));
+    Ok(())
+}
+
+// =====================================================================
 // 应用启动
 // =====================================================================
 
@@ -3351,6 +3525,17 @@ pub fn run() {
                 let model_dir = vision::resolve_model_dir(&h);
                 logger::log_info(&format!("模型目录: {}", model_dir.display()));
                 std::env::set_var("VCR_MODEL_DIR", &model_dir);
+            }
+            // 数据目录统一（VCR_DATA_DIR）：人物库 persons.db 落 app_data_dir/vcr-data
+            //   - 此前相册库在 %APPDATA%、人物库却由编译期常量指向项目目录 python/data，
+            //     造成「安装版人物页读到开发库、微服务另写一份」的读写分裂
+            //     （BUG-2026-0916-005）；
+            //   - persons.rs（人物页直读）与 spawn_server（注入子进程）均按该变量解析；
+            //   - 外部已显式设置则不覆盖（便于调试指向别处）。
+            if std::env::var("VCR_DATA_DIR").is_err() {
+                let vcr_data = data_dir.join("vcr-data");
+                logger::log_info(&format!("人物数据目录: {}", vcr_data.display()));
+                std::env::set_var("VCR_DATA_DIR", &vcr_data);
             }
             // 开发诊断：PMS_AUTO_OPEN_DEVLOG=1 时启动 4 秒后自动打开日志副窗口，
             // 免点击复现打开链路（测量窗口创建/首帧耗时），日常使用不设置即可
@@ -3413,6 +3598,10 @@ pub fn run() {
             get_albums,
             get_person_avatars_bulk,
             app_info,
+            dev_data_paths,
+            dev_db_tables,
+            dev_db_rows,
+            dev_reveal_path,
             get_album,
             update_album,
             prewarm_thumbs,
@@ -3504,6 +3693,7 @@ pub fn run() {
             // 开发者视角（实时日志副窗口）
             tail_dev_log,
             open_dev_log_window,
+            open_dev_data_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

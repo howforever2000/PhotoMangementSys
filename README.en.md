@@ -160,10 +160,10 @@ Notable optimizations implemented during development:
 
 ### 6.1 Installation
 
-- **Method 1 (recommended)**: Download an installer from the Release and run it (latest: **v0.3.0**, ~460 MB, bundles the VCR microservice and all runtime-required AI models):
-  - [`PhotoManagementSys_0.3.0_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.0/PhotoManagementSys_0.3.0_x64-setup.exe) (NSIS, per-user install into `%LOCALAPPDATA%`, no admin rights, recommended)
-  - or [`PhotoManagementSys_0.3.0_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.0/PhotoManagementSys_0.3.0_x64_en-US.msi) (MSI, per-machine install into `Program Files`, admin rights required)
-  - Upgrading from v0.2.0: uninstall the old version first (the two installers use different install scopes; otherwise both copies remain)
+- **Method 1 (recommended)**: Download an installer from the Release and run it (latest: **v0.3.1**, ~460 MB, bundles the VCR microservice and all runtime-required AI models):
+  - [`PhotoManagementSys_0.3.1_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64-setup.exe) (NSIS, per-user install into `%LOCALAPPDATA%`, no admin rights, recommended)
+  - or [`PhotoManagementSys_0.3.1_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64_en-US.msi) (MSI, per-machine install into `Program Files`, admin rights required)
+  - Upgrading: uninstall the old version first (the two installers use different install scopes; otherwise both copies remain)
   - Previous versions (v0.2.0 / v0.1.0) are available on the [Releases](https://github.com/howforever2000/PhotoMangementSys/releases) page
 - Installers include the AI models by default (see Section 7). If a given installer does not include the models, place the model files into the model directory (see the model-placement instructions) before starting the application.
 
@@ -315,6 +315,20 @@ Check that the corresponding `.onnx` files exist under `vcr/models/`; if not, ob
 ---
 
 ## 11. Version History
+
+### v0.3.1 (2026-09-16) — Unified face DB path + developer "Data & Paths" panel
+
+**Fixes**
+
+- **Split-brain face database** (BUG-2026-0916-005): `persons.rs` still built its path from the compile-time `CARGO_MANIFEST_DIR` (pointing at the build machine's source tree in installed builds), while the VCR microservice wrote to `VCR_DATA_DIR` — so the People page and the scanner read/wrote **two different databases** (on another machine the People page would always be empty; on the same machine it looked like the face data "was still there" while it was really the stale development copy). Now unified: the host points `VCR_DATA_DIR` at `app_data_dir/vcr-data` at startup (identical for installed and development builds), and both `persons.rs` and `spawn_server` resolve it the same way.
+- Effect: the face database now lives under `%APPDATA%\<identifier>\vcr-data\persons.db`; the legacy `python/data/persons.db` is no longer read (and is flagged as legacy in the new panel).
+
+**New features**
+
+- **Developer view · Data & Paths** (FEAT-058): new entry under ⚙ Settings, opening a dedicated child window (same pattern as the live-log window):
+  - **Runtime path inventory**: main album DB / face DB / thumbnail and avatar caches / model directory (including a "bundled directory is read-only → writable hard-link copy in app_data is in use" hint) / log directory / application exe — each with size, file count, an explanation of the convention, copy-to-clipboard and reveal-in-Explorer.
+  - **Database browsing**: table names and row counts for both databases (FTS shadow tables dimmed); click a table to preview the first N rows (20 / 50 / 200).
+  - **Safety boundary**: strictly read-only (`SQLITE_OPEN_READONLY`, no write path), table names validated against `sqlite_master`, no arbitrary SQL input, sensitive columns (`password_hash` / `token`, …) automatically masked, BLOBs shown as byte counts, cells truncated to 200 chars, row cap 200.
 
 ### v0.3.0 (2026-09-16) — Semantic search & semantic classification v5
 

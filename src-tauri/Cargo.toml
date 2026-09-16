@@ -1,6 +1,6 @@
 [package]
 name = "photo-management-sys"
-version = "0.3.0"
+version = "0.3.1"
 description = "Local photo album management app"
 authors = ["haoyuan"]
 edition = "2021"

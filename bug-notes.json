@@ -1483,6 +1483,59 @@
       ],
       "created_at": "2026-09-16T13:10:00+08:00",
       "fixed_at": "2026-09-16T13:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0916-005",
+      "date": "2026-09-16",
+      "status": "fixed",
+      "severity": "high",
+      "module": "src-tauri/src/persons.rs（人物库路径）/ 数据目录口径统一",
+      "title": "人物库读写分裂：persons.rs 用编译期常量 CARGO_MANIFEST_DIR 拼 persons.db，安装版指向构建机源码目录，而 VCR 微服务写 VCR_DATA_DIR → 人物页与扫描结果各读各写两份库",
+      "symptom": [
+        "用户现象：重装系统后「相册库没了，但人脸库还在」——人物页照常显示 1961 个人物、8099 张脸，看似数据完好",
+        "真相：那是项目目录（D 盘）里的开发态 persons.db，被安装版当成自己的库读；而该机器上 %APPDATA%/.../vcr-data 根本不存在（安装版从未写过人脸库）",
+        "换一台机器（或路径不同）安装：人物页必然空白、重命名/合并/删除报「人物注册表不存在」",
+        "一旦在安装版里跑人脸扫描，微服务会把新库写到 VCR_DATA_DIR（app_data），人物页仍只显示旧库 → 两份数据越用越分裂",
+        "与 BUG-2026-0916-003（模型目录）、BUG-2026-0920-006（打包残留模型目录）同族：都是「路径来源不统一」"
+      ],
+      "root_cause": {
+        "summary": "persons.rs::persons_db_path() 用编译期常量 env!(\"CARGO_MANIFEST_DIR\") 拼出 <构建机项目目录>/python/data/persons.db；而 Python 侧 config.py::DATA_DIR = VCR_DATA_DIR or <项目>/data，打包态由 spawn_server 注入 VCR_DATA_DIR=app_data_dir/vcr-data。Rust 侧从未设过该变量，于是同一份人脸数据在「人物页」与「微服务」之间落到两个不同文件。",
+        "detail": [
+          "编译产物里可直接搜到被固化的路径片段：`YUAN HAO\\Documents\\PersonalIdeaProject\\PhotoMangementSys\\src-tauri` + `python\\data\\persons.db`",
+          "Rust 侧 grep 显示全仓没有 std::env::set_var(\"VCR_DATA_DIR\", ...)：宿主进程自身从不设置数据目录，只有 spawn_server 给子进程显式注入",
+          "0.3.0 修复 BUG-2026-0916-003（模型目录）时只统一了 vision.rs / model_dl.rs，漏掉 persons.rs——两者是同一类缺陷，说明修复时应做「全仓 CARGO_MANIFEST_DIR 审计」",
+          "后果被同机开发掩盖：开发机上该路径恰好真实存在（还带着旧数据），于是表现为「数据都在」，换机才暴露"
+        ]
+      },
+      "solution": {
+        "summary": "把数据目录口径统一到 app_data：lib.rs::setup 启动时解析并写入进程环境变量 VCR_DATA_DIR=app_data_dir/vcr-data（安装版与开发版一致），persons.rs 与 spawn_server 一律按该变量解析；未设置时才回落项目 python/data（bench 脚本/单测等脱离宿主的场景）。",
+        "steps": [
+          "persons.rs：persons_db_path() → data_dir().join(\"persons.db\")，data_dir() 优先读 VCR_DATA_DIR",
+          "lib.rs::setup：解析并 set_var(\"VCR_DATA_DIR\", app_data_dir/vcr-data)，写 app.log（『人物数据目录: ...』便于事后定位）；外部已显式设置则不覆盖",
+          "vision.rs::spawn_server：数据目录改为优先取 VCR_DATA_DIR（缺失才现算），与宿主同口径；开发分支的子进程靠环境继承同样生效",
+          "未做旧库迁移（用户明确「可以丢现在的人脸」）：D 盘旧库保持原样不被读取，新面板把它标为「旧口径遗留」并提示可删除",
+          "同批顺手统一模型目录口径（BUG-2026-0916-003/004 已完成），并新增「数据与路径」开发面板（FEAT-058）让口径可视化，避免再次靠猜"
+        ]
+      },
+      "evidence_log": "修复前：exe 内可 grep 到构建机路径 + python\\data\\persons.db；%APPDATA%/com.haoyuan.photo-management-sys/vcr-data 不存在。修复后：app.log 新增『人物数据目录: <app_data>/vcr-data』；「数据与路径」面板显示人物库路径 = app_data/vcr-data/persons.db，并把 D 盘旧库单独列为旧口径遗留",
+      "related_files": [
+        "src-tauri/src/persons.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/vision.rs",
+        "python/vcr/config.py"
+      ],
+      "keywords": [
+        "persons.db",
+        "VCR_DATA_DIR",
+        "CARGO_MANIFEST_DIR",
+        "读写分裂",
+        "数据目录统一",
+        "人物注册表不存在",
+        "app_data",
+        "路径口径"
+      ],
+      "created_at": "2026-09-16T14:10:00+08:00",
+      "fixed_at": "2026-09-16T14:40:00+08:00"
     }
   ]
 }

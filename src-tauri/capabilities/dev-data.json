@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "dev-data",
+  "description": "开发者视角「数据与路径」副窗口：仅 core 默认能力（事件/窗口 API），与主窗口能力隔离",
+  "windows": ["dev-data"],
+  "permissions": [
+    "core:default"
+  ]
+}

@@ -161,10 +161,10 @@ python/
 
 ### 6.1 安装
 
-- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新版 **v0.3.0**，约 460MB，内含 VCR 微服务与运行必需的全部 AI 模型）：
-  - [`PhotoManagementSys_0.3.0_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.0/PhotoManagementSys_0.3.0_x64-setup.exe)（NSIS，按用户安装到 `%LOCALAPPDATA%`，无需管理员权限，推荐）
-  - 或 [`PhotoManagementSys_0.3.0_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.0/PhotoManagementSys_0.3.0_x64_en-US.msi)（MSI，按机器安装到 `Program Files`，需管理员权限）
-  - 从 v0.2.0 升级：建议先卸载旧版再安装（两种安装范围不同，否则会同时存在两份）
+- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新版 **v0.3.1**，约 460MB，内含 VCR 微服务与运行必需的全部 AI 模型）：
+  - [`PhotoManagementSys_0.3.1_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64-setup.exe)（NSIS，按用户安装到 `%LOCALAPPDATA%`，无需管理员权限，推荐）
+  - 或 [`PhotoManagementSys_0.3.1_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64_en-US.msi)（MSI，按机器安装到 `Program Files`，需管理员权限）
+  - 从旧版升级：建议先卸载旧版再安装（两种安装范围不同，否则会同时存在两份）
   - 历史版本（v0.2.0 / v0.1.0）见 [Releases](https://github.com/howforever2000/PhotoMangementSys/releases)
 - 安装包默认内置 AI 模型（详见「七、构建与发布」）。若安装包不含模型，请按「模型放置说明」将模型文件放入模型目录后再启动。
 
@@ -316,6 +316,20 @@ PhotoMangementSys/
 ---
 
 ## 十一、版本历史
+
+### v0.3.1（2026-09-16）— 人物库路径统一 + 开发者「数据与路径」面板
+
+**修复**
+
+- **人物库读写分裂**（BUG-2026-0916-005）：`persons.rs` 仍在用编译期常量 `CARGO_MANIFEST_DIR` 拼路径，安装版指向**构建机源码目录**，而 VCR 微服务写的是 `VCR_DATA_DIR` → 人物页与扫描结果读写**两份不同的库**（换一台机器安装则人物页必然空白；同机上则表现为「人物数据忽然还在」——其实读的是开发目录里的旧库）。现统一：宿主启动时把 `VCR_DATA_DIR` 指向 `app_data_dir/vcr-data`（安装版与开发版一致），`persons.rs` 与 `spawn_server` 同口径。
+- 影响：人物库统一在 C 盘 `%APPDATA%\<identifier>\vcr-data\persons.db`；项目目录 `python/data/persons.db`（旧口径）不再被读取（可在新面板里看到并被标记为旧口径遗留）。
+
+**新功能**
+
+- **开发者视角 · 数据与路径**（FEAT-058）：⚙ 设置新增入口，独立副窗口（与「实时日志」窗口同构）：
+  - **运行态路径清单**：相册主库 / 人物库 / 缩略图缓存 / 头像缓存 / 模型目录（含「安装包内置目录只读 → 已启用 app_data 可写硬链接副本」提示）/ 日志目录 / 程序 exe，均给出体量、文件数与口径说明，可复制、可在资源管理器中定位；
+  - **库表浏览**：两个库的表名与行数（FTS 影子表弱化显示），点表查看前 N 行（20 / 50 / 200 可切）；
+  - **安全边界**：全程只读（`SQLITE_OPEN_READONLY`，无任何写入口）、表名走 `sqlite_master` 校验、不提供任意 SQL 输入框、敏感列（`password_hash` / `token` 等）自动打码、BLOB 只显示字节数、单元格截断 200 字符、行数上限 200。
 
 ### v0.3.0（2026-09-16）— 语义搜索与语义分类 v5
 

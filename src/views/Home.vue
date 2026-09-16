@@ -260,6 +260,16 @@ async function openDevLog() {
   }
 }
 
+/** 打开「数据与路径」副窗口（DB/缓存/模型位置 + 只读预览；后端保证单例） */
+async function openDevData() {
+  settingsOpen.value = false;
+  try {
+    await invoke("open_dev_data_window");
+  } catch (e) {
+    console.error("打开数据与路径窗口失败:", e);
+  }
+}
+
 /* ---------------- Esc 关闭打开的弹窗（不依赖 mask focus） ---------------- */
 function onGlobalKey(e: KeyboardEvent) {
   if (e.key !== "Escape") return;
@@ -336,6 +346,13 @@ onBeforeUnmount(() => {
                   <span>
                     <b>开发者视角</b>
                     <i>打开实时日志副窗口</i>
+                  </span>
+                </button>
+                <button class="settings-item" type="button" role="menuitem" @click="openDevData">
+                  <span class="settings-item-icon">🗂️</span>
+                  <span>
+                    <b>数据与路径</b>
+                    <i>DB / 缓存 / 模型位置 · 只读预览</i>
                   </span>
                 </button>
               </div>

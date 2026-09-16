@@ -1802,7 +1802,54 @@
       ],
       "created_at": "2026-09-16T13:30:00+08:00",
       "updated_at": "2026-09-16T13:30:00+08:00"
+    },
+    {
+      "id": "FEAT-058",
+      "name": "开发者视角 · 数据与路径副窗口：运行态路径清单（体量/口径/定位）+ 只读库表浏览",
+      "status": "done",
+      "module": "开发者辅助 / src-tauri/src/devdata.rs + lib.rs(命令与建窗) + src/dev/DataWindowApp.vue + capabilities/dev-data.json",
+      "purpose": "把「数据到底写在哪、里面有什么」变成可直读界面。排障反复耗在猜测上：相册主库在 %APPDATA%、人物库曾落到项目目录（BUG-2026-0916-005）、模型目录只在只读时才转成 app_data 硬链接副本（BUG-2026-0916-004）、SQLite 未 checkpoint 时数据主要在 -wal 里（库看着是空的）。这些口径必须能直接看到，而不是翻代码推断。",
+      "implementation": {
+        "分层": "服务层 devdata.rs（路径解析 + 只读库访问 + 打码）→ 接口层 lib.rs 四个命令壳（async + spawn_blocking + log_call 出入口日志）→ 前端 DataWindowApp.vue 只做呈现",
+        "路径清单": "paths() 输出 10+ 条 PathEntry（group/label/path/exists/is_dir/bytes/files/note）：相册主库、人物库、旧口径遗留人物库（存在且与当前口径不同才显示）、thumbs、avatars、vcr-data、模型目录（复用 vision::resolve_model_dir，并对比 resource_dir 以判断是否走了只读硬链接副本）、安装包内置模型目录、app_data、logs、程序 exe（含版本/dev 指纹）；目录体量递归统计（文件数上限 20 万防拖死），DB 体积含 -wal/-shm",
+        "库表浏览": "tables() 列出 photos/persons 两库的表名与行数（FTS 影子表按后缀标记 shadow 供前端弱化）；rows() 预览某表前 N 行（limit 1..200）",
+        "安全边界": "统一 open_with_flags(SQLITE_OPEN_READ_ONLY) —— 全模块没有任何写入口；库名走白名单（photos/persons），表名先经 sqlite_master 校验再按 SQLite 规则转义标识符（无双引号拼接注入面），**不提供任意 SQL 输入框**；敏感列（password/passwd/pwd/token/secret/salt/api_key/private_key）自动打码；BLOB 只报 <BLOB n bytes>；单元格截断 200 字符；路径定位走 key 白名单 + explorer raw_arg，不接受前端传任意路径",
+        "窗口模式": "完全复刻日志窗口：label=dev-data 单例、后台线程建窗（BUG-2026-0910-005）、原生深色背景避免白斑、main.ts 按 label 动态 import 挂载（不装 router，避开登录守卫）、capabilities/dev-data.json 仅 core:default 与主窗口能力隔离"
+      },
+      "highlights": [
+        "排障从「翻代码猜路径」变成「打开面板直读」——本次 BUG-2026-0916-005 的现场（旧库被误读）在面板上会直接显示为「旧口径遗留」",
+        "只读设计无死角：只读连接 + 白名单 + 无 SQL 输入框 + 打码，开发辅助不会变成数据破坏源",
+        "async + spawn_blocking：目录递归统计（thumbs 数万文件）与 COUNT(*) 不占主线程，避免 BUG-2026-0910-001 那类全局冻结",
+        "顺带解决「库看着是空的」误判：DB 体积把 -wal/-shm 一并计入"
+      ],
+      "related_files": [
+        "src-tauri/src/devdata.rs",
+        "src-tauri/src/lib.rs",
+        "src/dev/DataWindowApp.vue",
+        "src/main.ts",
+        "src/views/Home.vue",
+        "src-tauri/capabilities/dev-data.json"
+      ],
+      "keywords": [
+        "开发者视角",
+        "数据与路径",
+        "devdata",
+        "dev-data",
+        "只读",
+        "SQLITE_OPEN_READ_ONLY",
+        "打码",
+        "路径清单",
+        "SQLite 浏览",
+        "副窗口"
+      ],
+      "tests": [
+        "cargo check --release 通过（EXIT=0）；npm run build（vue-tsc --noEmit + vite build）通过并产出 DataWindowApp chunk",
+        "tauri build 产出 0.3.1 安装包（不新增依赖；rusqlite/opener 均已在）",
+        "人工冒烟：设置 → 数据与路径 → 路径清单显示实际口径（含只读副本提示）；点表看前 50 行；users/sessions 的 password_hash/token 显示为已打码；BLOB 列显示字节数"
+      ],
+      "created_at": "2026-09-16T14:40:00+08:00",
+      "updated_at": "2026-09-16T14:40:00+08:00"
     }
   ],
-  "updated": "2026-09-16T13:30:00+08:00"
+  "updated": "2026-09-16T14:40:00+08:00"
 }
