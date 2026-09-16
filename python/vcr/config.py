@@ -87,25 +87,17 @@ CLIP_MODEL_META: dict[str, dict] = {
         "note": "体积换 GPU 加速可能（fp16 在 DirectML 上有算子级数值 bug，故只有 fp32 档能走 GPU）；"
                 "GPU 默认未开启，需先做数值一致性验证；切换后必须重建语义索引",
     },
-    "l14": {
-        "label": "L/14-336 · 更准（需更强硬件）",
-        "dim": 768,
-        "size": 336,
-        "max_len": 64,
-        "dir": "chinese-clip-l14",
-        "onnx": "model_fp16.onnx",
-        "bytes": 814388930,
-        "repo": "Xenova/chinese-clip-vit-large-patch14-336px",
-        "id": "chinese-clip-vit-l14-fp16",
-        "accuracy": "官方称优于 B/16（本机未实测）",
-        "speed": "CPU 约为 B/16 的 3~4 倍耗时（约 300ms/张）",
-        "note": "模型约 814MB；切换后必须重建语义索引（旧向量维度不同会自动跳过）",
-    },
 }
-CLIP_MODELS = ["b16", "b16-fp32", "l14"]   # 候选顺序（默认 = 第一个已下载者）
+
+# 候选顺序（默认 = 第一个已下载者）
+# 注：L/14-336（chinese-clip-vit-large-patch14-336px）已于 2026-09-21 实测否决并下架 ——
+#     官方权重自行导出（数值自校验 cos=1.000000）69.8~71.7%、Xenova 版 67.9~69.8%，
+#     均低于 B/16 的 81.1~83.0%，且慢 3.5~10×；崩点在场景类（architecture 0~1/4、night 2~3/7）。
+#     证据与复现方式见 design/clip-accuracy-comparison.md（需要时可一键重下/重导）。
+CLIP_MODELS = ["b16", "b16-fp32"]
 CLIP_DEFAULT_MODEL = "b16"
 CLIP_CURRENT_PATH = os.path.join(MODEL_DIR, "current_clip.json")
-# CLIP 标准归一化（B/16 与 L/14-336 同协议）
+# CLIP 标准归一化（b16 / b16-fp32 同协议）
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 
@@ -171,7 +163,70 @@ def set_active_clip(name: str) -> None:
 # 推理参数
 # ---------------------------------------------------------------------------
 DET_SIZE = 640
-THREADS = 4
+# ---------------------------------------------------------------------------
+# CPU 线程数（可在「⚙ 性能设置」里改 + 对比测速，落 models/current_threads.json）
+#
+# ONNX Runtime 的 intra_op 线程数直接决定推理速度。实测（7840HS，8核16线程）：
+#   4 线程 → CLIP 编码 277ms/张；8 线程 → 177ms/张（1.57×）；16 线程反而略差
+# 默认取「物理核数」并夹在 4~8：物理核才是真并行，逻辑核（超线程）会互抢执行单元。
+# 不同机器差异大（老双核本 4 线程即满、12 核本 8 线程足够），故做成用户可调 + 可实测。
+# ---------------------------------------------------------------------------
+THREADS_MIN = 1
+THREADS_MAX = 16
+THREADS_CURRENT_PATH = os.path.join(MODEL_DIR, "current_threads.json")
+
+
+def logical_cores() -> int:
+    return os.cpu_count() or 4
+
+
+def physical_cores_guess() -> int:
+    """物理核数推测：CPython 拿不到真实拓扑，按「逻辑核 = 物理核 × 2（超线程）」估计。"""
+    return max(1, logical_cores() // 2)
+
+
+def default_threads() -> int:
+    """默认线程数：物理核数，夹在 [4, 8]（低于 4 太慢、高于 8 收益递减且抢内存带宽）。"""
+    return max(4, min(8, physical_cores_guess()))
+
+
+def threads() -> int:
+    """当前生效线程数：用户持久化选择优先（非法/越界 → 回落默认）。"""
+    try:
+        if os.path.isfile(THREADS_CURRENT_PATH):
+            with open(THREADS_CURRENT_PATH, encoding="utf-8") as f:
+                n = int(json.load(f).get("threads"))
+            if THREADS_MIN <= n <= THREADS_MAX:
+                return n
+    except Exception:  # noqa: BLE001
+        pass
+    return default_threads()
+
+
+def set_threads(n: int) -> int:
+    """持久化线程数（越界则夹紧）；返回生效值。失败不阻断（下次启动回落默认）。"""
+    n = max(THREADS_MIN, min(THREADS_MAX, int(n)))
+    try:
+        with open(THREADS_CURRENT_PATH, "w", encoding="utf-8") as f:
+            json.dump({"threads": n}, f)
+    except Exception:  # noqa: BLE001
+        pass
+    return n
+
+
+def threads_info() -> dict:
+    """给 UI 的线程数现状（当前/默认/核数/可选档）。"""
+    return {
+        "threads": threads(),
+        "default": default_threads(),
+        "physical_guess": physical_cores_guess(),
+        "logical": logical_cores(),
+        "min": THREADS_MIN,
+        "max": THREADS_MAX,
+        # 常用档位：1..min(max, 逻辑核)，去重后给出
+        "options": sorted({1, 2, 4, 6, 8, 12, 16} & set(range(THREADS_MIN, THREADS_MAX + 1))
+                          | {default_threads()}),
+    }
 BATCH_CHUNK = 8          # /embed_batch 单次最大张数（客户端默认）
 BATCH_CHUNK_MAX = 64     # 单次请求安全封顶（前端批次选择上限）
 

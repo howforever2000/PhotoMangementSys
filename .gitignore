@@ -37,12 +37,15 @@ python/models/*.zip
 python/models/categories_places365.txt
 # 运行态：用户当前选择的语义模型档位（POST /model 切换时写入，随机器不同）
 python/models/current_clip.json
+# 运行态：用户选择的 CPU 线程数（⚙ 性能设置里可改，随机器不同）
+python/models/current_threads.json
 # 旧版遗留运行态（v5 已不写；保留忽略以免历史文件误入库）
 python/models/current_cls.json
 # 语义模型（Chinese-CLIP 子目录，共 >1.9GB：应用内下载 / download_models.py 获取，不入库）
 python/models/chinese-clip/
 python/models/chinese-clip-fp32/
 python/models/chinese-clip-l14/
+python/models/chinese-clip-l14-224/
 python/models/chinese-clip-vit-b-16/
 python/models/current_clip_gpu.json
 python/data/

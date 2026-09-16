@@ -10,6 +10,7 @@ import { categoryLabel } from "../utils/categoryLabel";
 import PersonPanel from "./PersonPanel.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import { SCAN_MODE_TITLE, SCAN_MODE_TIP } from "../utils/scanModeTip";
+import { PERF_TIMEOUT, withTimeout } from "../utils/withTimeout";
 import { useNotify } from "../composables/useNotify";
 
 const props = defineProps<{ albumId: number; albumPath: string }>();
@@ -99,7 +100,12 @@ const gpuLoading = ref(false);
 async function fetchGpuStatus() {
   gpuLoading.value = true;
   try {
-    gpuStatus.value = await contentStore.fetchGpuStatus();
+    // 带超时：避免后端未响应时按钮永久停在「检测中…」（BUG-2026-0921-003）
+    gpuStatus.value = await withTimeout(
+      contentStore.fetchGpuStatus(),
+      PERF_TIMEOUT.read,
+      "get_vcr_gpu_status",
+    );
   } catch {
     gpuStatus.value = null;
   } finally {

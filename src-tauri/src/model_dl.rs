@@ -30,6 +30,10 @@ enum DlKind {
 /// 模型注册表白名单
 ///
 /// 目录约定（与 python/vcr/config.py::CLIP_MODEL_META 严格一致）：
+///
+/// 档位清单 = b16（fp16，默认）+ b16-fp32（可走 DirectML）。
+/// L/14-336 已于 2026-09-21 实测否决并下架（低于 B/16 13pp 且慢 3.5~10×，
+/// 见 design/clip-accuracy-comparison.md），故不在下载表中。
 /// ```text
 /// python/models/<root>/onnx/<onnx>     ← 双塔整图（首次使用时服务端自动拆成 clip_vision/clip_text）
 /// python/models/<root>/tokenizer.json  ← 附带文件落「模型根目录」，不是 onnx/ 子目录
@@ -58,13 +62,21 @@ impl DlSpec {
             DlKind::ClipOnnx => format!("https://hf-mirror.com/{}/resolve/main/", self.repo),
         }
     }
-    /// 整图相对路径（相对 python/models；存在即视为已下载）
+    /// 整图**本地**相对路径（相对 python/models；存在即视为已下载）
     fn rel_file(&self) -> String {
         format!("{}/onnx/{}", self.root, self.onnx)
     }
-    /// 官方下载地址
+    /// 整图在**仓库内**的相对路径（用于拼下载 URL）—— 只有 `onnx/<file>`，
+    /// **绝不能带本地落位目录名**（root 是本机的目录约定，仓库里没有这一层）。
+    /// 这里曾误用 rel_file() 拼 URL，导致应用内点「下载」全部 404（BUG-2026-0921-001）：
+    ///   错：.../resolve/main/chinese-clip-l14/onnx/model_fp16.onnx → 404
+    ///   对：.../resolve/main/onnx/model_fp16.onnx                 → 200
+    fn repo_file(&self) -> String {
+        format!("onnx/{}", self.onnx)
+    }
+    /// 官方下载地址（仓库路径，不带本地目录）
     fn official(&self) -> String {
-        format!("{}{}", self.base_url(), self.rel_file())
+        format!("{}{}", self.base_url(), self.repo_file())
     }
     /// 镜像地址（单源直链：download_first_wins 对同 URL 自动降为单路）
     fn mirror(&self) -> String {
@@ -100,16 +112,6 @@ fn specs() -> Vec<DlSpec> {
             kind: DlKind::ClipOnnx,
             required: false,
         },
-        DlSpec {
-            // 语义加强档 L/14-336 fp16（768 维，814MB）：按需下载，切换后需重建索引
-            name: "chinese-clip-l14",
-            repo: "Xenova/chinese-clip-vit-large-patch14-336px",
-            root: "chinese-clip-l14",
-            onnx: "model_fp16.onnx",
-            extra: &["tokenizer.json", "vocab.txt"],
-            kind: DlKind::ClipOnnx,
-            required: false,
-        },
     ]
 }
 
@@ -136,6 +138,14 @@ struct Store {
 static STORE: std::sync::LazyLock<Mutex<Store>> = std::sync::LazyLock::new(|| Mutex::new(Store::default()));
 
 fn models_dir() -> PathBuf {
+    // VCR_MODEL_DIR 优先：打包版由 lib.rs::setup 指向 resource_dir/vcr/models，
+    // 子进程（vcr-server.exe）也按同一路径注入；未设置时回落源码目录
+    // python/models（开发态）。
+    if let Ok(v) = std::env::var("VCR_MODEL_DIR") {
+        if !v.is_empty() {
+            return PathBuf::from(v);
+        }
+    }
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     manifest
         .parent()
@@ -487,11 +497,22 @@ mod tests {
 
         let py_dirs = quoted_values(&text, "dir");
         let py_onnx = quoted_values(&text, "onnx");
-        assert_eq!(py_dirs.len(), 3, "档位表应有 3 档：{py_dirs:?}");
-        assert_eq!(py_onnx.len(), 3, "每档必须声明 onnx 文件名：{py_onnx:?}");
+        // 档位数由 Python 档位表决定（不硬编码：L/14 已实测否决下架，未来档位还会增减）
+        assert!(!py_dirs.is_empty(), "档位表不能为空");
+        assert_eq!(py_dirs.len(), py_onnx.len(), "每档必须声明 onnx 文件名：{py_onnx:?}");
 
+        let py_repos = quoted_values(&text, "repo");
         let specs = specs();
         assert_eq!(specs.len(), py_dirs.len(), "Rust 下载表与 Python 档位表数量必须一致");
+        // 仓库名也必须一致（URL 的另一半），且三个 onnx 文件名对应的 URL 均为可下载形态
+        for spec in &specs {
+            assert!(
+                py_repos.contains(&spec.repo.to_string()),
+                "Rust 下载表的仓库 {} 不在 Python 档位表中",
+                spec.repo
+            );
+            assert!(spec.official().ends_with(&format!("/onnx/{}", spec.onnx)));
+        }
         for (dir, onnx) in py_dirs.iter().zip(py_onnx.iter()) {
             let hit = specs
                 .iter()
@@ -499,7 +520,19 @@ mod tests {
                 .unwrap_or_else(|| panic!("Rust 下载表缺少档位目录 {dir}"));
             assert_eq!(&hit.onnx, onnx, "档位 {dir} 的 onnx 文件名不一致");
             assert_eq!(hit.rel_file(), format!("{dir}/onnx/{onnx}"));
-            assert_eq!(hit.rel_file(), hit.rel_file(), "落位路径稳定");
+            // 下载 URL 必须是**仓库内**路径：onnx/<file>（不带本地落位目录名）
+            // —— 回归 BUG-2026-0921-001：应用内点下载 404
+            assert_eq!(hit.repo_file(), format!("onnx/{onnx}"));
+            assert_eq!(
+                hit.official(),
+                format!("{}{}", hit.base_url(), format!("onnx/{onnx}")),
+                "下载 URL 必须按仓库路径拼接"
+            );
+            assert!(
+                !hit.official().contains(&format!("/{dir}/")),
+                "下载 URL 不得包含本地落位目录名 {dir}：{}",
+                hit.official()
+            );
             // 附带文件必须落模型根目录（修复前落在 onnx/ 子目录 → tokenizer 找不到）
             assert!(
                 hit.extra.contains(&"tokenizer.json") && hit.extra.contains(&"vocab.txt"),
@@ -508,15 +541,27 @@ mod tests {
         }
     }
 
-    /// 三条下载条目的命名/体积档位（防止误删条目）
+    /// 下载条目自洽性：命名唯一、目录唯一、镜像=官方（防止误删/重复条目）
     #[test]
-    fn clip_specs_cover_all_three_tiers() {
-        let names: Vec<&str> = specs().iter().map(|s| s.name).collect();
-        for n in ["chinese-clip", "chinese-clip-fp32", "chinese-clip-l14"] {
-            assert!(names.contains(&n), "缺少下载条目 {n}；现有 {names:?}");
+    fn clip_specs_are_self_consistent() {
+        let all = specs();
+        let names: Vec<&str> = all.iter().map(|s| s.name).collect();
+        let roots: Vec<&str> = all.iter().map(|s| s.root).collect();
+        for (label, list) in [("name", &names), ("root", &roots)] {
+            let mut uniq = list.clone();
+            uniq.sort_unstable();
+            uniq.dedup();
+            assert_eq!(uniq.len(), list.len(), "{label} 必须唯一：{list:?}");
         }
-        for s in specs() {
-            assert!(s.mirror() == s.official(), "hf-mirror 为单源直链，镜像应等于官方地址");
+        // 已知档位必须都在表里（按目录判定，避免把"名字"当契约）
+        for dir in ["chinese-clip", "chinese-clip-fp32"] {
+            assert!(roots.contains(&dir), "缺少档位目录 {dir}；现有 {roots:?}");
+        }
+        for spec in &all {
+            assert!(
+                spec.mirror() == spec.official(),
+                "hf-mirror 为单源直链，镜像应等于官方地址"
+            );
         }
     }
 }

@@ -16,12 +16,20 @@ import onnxruntime as ort
 
 from . import config
 
+# 模型加载失败后的冷却期（秒）：
+# 冷启动瞬间的加载失败（显存/磁盘/驱动瞬时抖动）不应把该通道**永久**锁死
+# （旧实现 _ready[key]=False 后 check-then-act 直接 return，通道活不过来）。
+# 冷却期内不重试（避免 classify 每张图都重试一次加载），冷却期满后下次访问自动重试。
+LOAD_RETRY_COOLDOWN = 30.0
+
 
 class ModelRegistry:
     def __init__(self):
         self._sessions: dict[str, ort.InferenceSession] = {}
         self._ready: dict[str, bool] = {}
         self._load_errors: dict[str, str] = {}
+        # 最近一次加载失败时刻（monotonic），配合 LOAD_RETRY_COOLDOWN 做有限重试
+        self._failed_at: dict[str, float] = {}
         # FEAT-053：会话实测事实（ORT 真实绑定的 provider / 源文件 / 输入元数据）。
         # 与 _sessions 同生命周期：会话被清空的场合必须同步 pop，否则上报的是旧会话。
         self._session_info: dict[str, dict] = {}
@@ -38,7 +46,8 @@ class ModelRegistry:
             self._gpu_forced_off = False
 
     @staticmethod
-    def _session_facts(sess: ort.InferenceSession, path: str, cpu_fallback: bool) -> dict:
+    def _session_facts(sess: ort.InferenceSession, path: str, cpu_fallback: bool,
+                       opts: ort.SessionOptions | None = None) -> dict:
         """提取会话实测事实 —— 「确实在用 GPU / 确实换了模型」的铁证。"""
         try:
             provs = list(sess.get_providers())
@@ -59,6 +68,7 @@ class ModelRegistry:
         return {
             "file": os.path.basename(path),
             "file_path": path,
+            "threads": int(opts.intra_op_num_threads) if opts is not None else None,
             "file_size": size,
             "providers": provs,
             "input_name": inp.name if inp is not None else None,
@@ -102,7 +112,7 @@ class ModelRegistry:
     # ------------------------------------------------------------------
     def _so(self) -> ort.SessionOptions:
         so = ort.SessionOptions()
-        so.intra_op_num_threads = config.THREADS
+        so.intra_op_num_threads = config.threads()
         so.inter_op_num_threads = 1
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         so.enable_mem_pattern = True
@@ -161,24 +171,45 @@ class ModelRegistry:
     def _load(self, key: str, paths: list[str], required: bool = False):
         with self._lock:
             if key in self._ready:
-                return
+                if self._ready[key]:
+                    return
+                # 已就绪过则直接返回；上次失败则等冷却期满再重试一次
+                if time.monotonic() - self._failed_at.get(key, 0.0) < LOAD_RETRY_COOLDOWN:
+                    return
+            attempted = False
             for p in paths:
                 if os.path.isfile(p):
+                    attempted = True
                     try:
-                        sess, cpu_fallback = self._create_session(p)
+                        # 会话选项必须显式创建并复用：既保证会话按当前线程数创建，
+                        # 也让 _session_facts 上报的 threads 与实际绑定一致
+                        opts = self._so()
+                        sess, cpu_fallback = self._create_session(p, opts)
                         self._sessions[key] = sess
                         self._ready[key] = True
-                        self._session_info[key] = self._session_facts(sess, p, cpu_fallback)
+                        self._session_info[key] = self._session_facts(
+                            sess, p, cpu_fallback, opts
+                        )
+                        self._failed_at.pop(key, None)
+                        self._load_errors.pop(key, None)
                         return
                     except Exception as e:  # noqa: BLE001
                         import sys as _sys
 
-                        print(f"[VCR] 模型加载失败 {p}: {e}", file=_sys.stderr)
-                        self._load_errors[key] = str(e)
+                        print(f"[VCR] 模型加载失败 {key} {p}: {type(e).__name__}: {e}",
+                              file=_sys.stderr)
+                        self._load_errors[key] = f"{type(e).__name__}: {e}"
                         continue
             self._ready[key] = False
-            if required:
-                self._load_errors[key] = f"必需模型缺失: {paths}"
+            self._failed_at[key] = time.monotonic()
+            if not attempted:
+                # 无任何文件命中（比加载报错更常见：模型未下载/路径口径不一致）
+                prefix = "必需模型缺失" if required else "模型文件缺失"
+                self._load_errors[key] = f"{prefix}: {paths}"
+
+    def load_errors(self) -> dict[str, str]:
+        """各通道最近一次加载失败原因（/health 暴露，供宿主日志定位「面板转圈」）。"""
+        return dict(self._load_errors)
 
     # ------------------------------------------------------------------
     # 规则通道
@@ -232,7 +263,7 @@ class ModelRegistry:
                     sess, cpu_fb = self._create_session(p["vision"], self._so_clip(), self._clip_providers())
                     self._sessions["clip_vision"] = sess
                     self._ready["clip_vision"] = True
-                    self._session_info["clip_vision"] = self._session_facts(sess, p["vision"], cpu_fb)
+                    self._session_info["clip_vision"] = self._session_facts(sess, p["vision"], cpu_fb, self._so_clip())
                 except Exception as e:  # noqa: BLE001
                     self._load_errors["clip_vision"] = str(e)
                     self._ready["clip_vision"] = False
@@ -247,7 +278,7 @@ class ModelRegistry:
                     sess, cpu_fb = self._create_session(p["text"], self._so_clip(), self._clip_providers())
                     self._sessions["clip_text"] = sess
                     self._ready["clip_text"] = True
-                    self._session_info["clip_text"] = self._session_facts(sess, p["text"], cpu_fb)
+                    self._session_info["clip_text"] = self._session_facts(sess, p["text"], cpu_fb, self._so_clip())
                 except Exception as e:  # noqa: BLE001
                     self._load_errors["clip_text"] = str(e)
                     self._ready["clip_text"] = False
@@ -299,7 +330,43 @@ class ModelRegistry:
                 shape.append(224)
         return {inp.name: np.random.randn(*shape).astype(np.float32)}
 
-    def benchmark(self, key: str = "det", runs: int = 10, warmup: int = 2) -> dict:
+    def _bench_session(self, key: str, threads: int | None):
+        """取（或临时创建）用于测速的会话；threads=None 用已加载会话。
+
+        临时会话不写入 _sessions：测速只是"试一试"，不该改变运行态（对齐"不改设置也能对比"的诉求）。
+        """
+        if threads is None:
+            with self._lock:
+                sess = self._sessions.get(key)
+                if sess is None:
+                    _ = getattr(self, key, None)
+                    sess = self._sessions.get(key)
+            return sess
+        n = max(config.THREADS_MIN, min(config.THREADS_MAX, int(threads)))
+        if key == "clip_vision":
+            p, optmaker, provs = config.clip_paths()["vision"], self._so_clip, self._clip_providers()
+        elif key == "clip_text":
+            p, optmaker, provs = config.clip_paths()["text"], self._so_clip, self._clip_providers()
+        else:
+            calls = {
+                "det": (config.DET_MODEL, None), "ocr": (config.OCR_MODEL, None),
+                "face_det": (config.FACE_DET_MODELS[0], None),
+                "face_rec": (config.FACE_REC_MODELS[0], None),
+            }
+            if key not in calls:
+                raise RuntimeError(f"未知通道: {key}")
+            p, optmaker, provs = os.path.join(config.MODEL_DIR, calls[key][0]), self._so, self._providers()
+        if not os.path.isfile(p):
+            raise RuntimeError(f"通道 {key} 模型缺失: {p}")
+        opts = optmaker()
+        opts.intra_op_num_threads = n
+        try:
+            return ort.InferenceSession(p, sess_options=opts, providers=provs)
+        except Exception:  # noqa: BLE001  临时测速失败不阻断：回落 CPU
+            return ort.InferenceSession(p, sess_options=opts, providers=["CPUExecutionProvider"])
+
+    def benchmark(self, key: str = "det", runs: int = 10, warmup: int = 2,
+                  threads: int | None = None) -> dict:
         """预热后计时 N 次推理，输出平均/最快/最慢毫秒与实测 provider。
 
         测速在锁外进行：会话是不可变对象（切换 = 整体换引用），持锁计时
@@ -307,11 +374,7 @@ class ModelRegistry:
         """
         runs = max(1, min(int(runs), 50))
         warmup = max(0, min(int(warmup), 10))
-        with self._lock:
-            sess = self._sessions.get(key)
-            if sess is None:
-                _ = getattr(self, key, None)  # 属性即会话 property，触发惰性加载
-                sess = self._sessions.get(key)
+        sess = self._bench_session(key, threads)
         if sess is None:
             raise RuntimeError(f"通道 {key} 不可用，无法测速")
         feed = self._bench_feed(key, sess)
@@ -326,6 +389,7 @@ class ModelRegistry:
         total = sum(times)
         return {
             "channel": key,
+            "threads": int(sess.get_session_options().intra_op_num_threads) if hasattr(sess, "get_session_options") else threads,
             "runs": runs,
             "warmup": warmup,
             "input_shape": [list(v.shape) for v in feed.values()],
@@ -336,6 +400,24 @@ class ModelRegistry:
             "total_ms": round(total, 2),
             "throughput_per_s": round(runs / (total / 1000.0), 1) if total > 0 else None,
         }
+
+    def benchmark_sweep(self, key: str = "clip_vision", options: list[int] | None = None,
+                        runs: int = 8, warmup: int = 2) -> list[dict]:
+        """线程数扫档：对同一通道依次用不同线程数测速，供 UI 选最优（不改变当前设置）。"""
+        opts = options or config.threads_info()["options"]
+        out: list[dict] = []
+        for n in opts:
+            try:
+                r = self.benchmark(key, runs=runs, warmup=warmup, threads=int(n))
+                out.append(r)
+            except Exception as e:  # noqa: BLE001  某档失败不影响整体
+                out.append({"channel": key, "threads": int(n), "error": f"{type(e).__name__}: {e}"})
+        ok = [r for r in out if "avg_ms" in r]
+        if ok:
+            best = min(ok, key=lambda r: r["avg_ms"])
+            for r in out:
+                r["best"] = r is best
+        return out
 
     # ------------------------------------------------------------------
     # 语义模型档位切换（适配不同硬件）
@@ -414,6 +496,19 @@ class ModelRegistry:
             return ok
 
     # ------------------------------------------------------------------
+    def set_threads(self, n: int) -> dict:
+        """设置 CPU 线程数：持久化 + 清空全部会话（下次访问按新线程重建）。
+
+        线程数是会话创建期绑定的参数，切换后必须重建；清空动作与 /gpu 切换同构，
+        重建由服务层后台线程完成（加载耗时不可预估，不能阻塞请求）。
+        """
+        with self._lock:
+            applied = config.set_threads(n)
+            self._reload_all()
+        info = config.threads_info()
+        info["applied"] = applied
+        return info
+
     def set_gpu_enabled(self, enabled: bool) -> dict:
         """切换 GPU 加速：enabled=False 强制 CPU。会话清空后由服务层后台重建。"""
         with self._lock:
@@ -428,6 +523,7 @@ class ModelRegistry:
         self._ready.clear()
         self._session_info.clear()
         self._load_errors.clear()
+        self._failed_at.clear()
 
     def is_ready(self, key: str) -> bool:
         # 无锁读（dict.get 原子）：调用方为 /health 高频探测，绝不能等加载锁

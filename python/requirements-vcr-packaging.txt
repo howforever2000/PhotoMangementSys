@@ -5,7 +5,11 @@
 # Used by python/build_vcr_exe.ps1 to build a minimal venv for the PyInstaller exe.
 fastapi>=0.110
 uvicorn>=0.29
-onnxruntime>=1.17
+# Pin the CPU runtime: onnxruntime 1.25+ is ~2.9x SLOWER for the CLIP fp16 vision
+# tower on CPU (measured: 8 threads, 8x224x224 batch -> 460ms/img on 1.29.0 vs
+# 159ms/img on 1.24.4, same machine/model). Do NOT float this without re-measuring
+# with python/bench/eval_clip_accuracy.py. See BUG-2026-0921-002.
+onnxruntime==1.24.4
 # onnx is needed at runtime for the one-time CLIP dual-tower split
 # (onnx.utils.extract_model). Missing it makes /embed_text_batch return a bare
 # 500 on a frozen build. See BUG-2026-0920-005.

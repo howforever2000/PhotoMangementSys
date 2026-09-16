@@ -21,8 +21,10 @@ v5（语义分类）：分类模型（yolov8*-cls）、Places365 场景、花朵
   POST /persons/merge             → {target, source}
   DELETE /persons/{id}            → 删除人物
   GET  /gpu  POST /gpu            → GPU 加速状态 / 开关
-  GET  /models  POST /model       → 语义模型档位清单 / 切换（B/16 ↔ L/14-336）
-  POST /benchmark                 → 固定张量测速（CPU/GPU 加速比对比）
+  GET  /models  POST /model       → 语义模型档位清单 / 切换（b16 / b16-fp32）
+  GET  /threads POST /threads     → CPU 线程数现状 / 设置（性能设置里可调）
+  POST /benchmark                 → 固定张量测速（CPU/GPU 加速比对比，可临时指定线程数）
+  POST /benchmark_sweep           → 线程数扫档（一次测多个档位，UI 选最优）
   GET  /embed_status              → CLIP 子系统诊断
   POST /embed_text                → 单条文本 → 向量
   POST /embed_text_batch          → 批量文本 → 向量（语义分类关键词一次编码）
@@ -68,7 +70,9 @@ def _health_dict() -> dict:
 # v4：语义搜索（Chinese-CLIP fp16）—— /embed_text /embed_batch /health.clip_ready。
 # v5：语义分类 —— 下线分类模型/场景/专家通道；语义模型档位选择（/models /model，
 #     B/16 ↔ L/14-336）；新增 /embed_text_batch。
-VCR_API_VERSION = 5
+# v6：CPU 线程数可调（/threads 读写 + /benchmark 支持临时线程覆盖 + /benchmark_sweep 扫档），
+#     供「⚙ 性能设置」按不同硬件实测选优。
+VCR_API_VERSION = 6
 
 
 @app.get("/health")
@@ -89,8 +93,12 @@ def health():
         "ocr_ready": reg.is_ready("ocr"),
         "clip_ready": embed.ready(),
         "persons": d["persons"],
+        "threads": config.threads(),
         "gpu": reg.gpu_info(),
         "batch_max": config.BATCH_CHUNK_MAX,
+        # 各通道最近一次加载失败原因：宿主据此在日志里直接写明「为何 ok=false」
+        # （面板转圈排查要点——BUG-2026-0921-003）
+        "load_errors": reg.load_errors(),
     }
 
 
@@ -166,10 +174,37 @@ def _finish_clip_switch(name: str) -> None:
     print(f"[VCR] 语义模型切换 {name}: {'完成' if ok else '失败，已回退默认档'}", file=sys.stderr)
 
 
+@app.get("/threads")
+def get_threads():
+    """CPU 线程数现状（当前/默认/物理核推测/可选档），供「性能设置」展示。"""
+    return config.threads_info()
+
+
+class ThreadsRequest(BaseModel):
+    threads: int
+
+
+@app.post("/threads")
+def set_threads(req: ThreadsRequest):
+    """设置 CPU 线程数（越界自动夹紧）→ 持久化 + 清空会话 → 后台重建。
+
+    线程数在会话创建时绑定，必须重建会话才生效；重建期间 /health ok=false，
+    宿主会等待就绪（与 /gpu 切换同一套异步模式）。
+    """
+    try:
+        info = get_registry().set_threads(req.threads)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(e))
+    threading.Thread(target=_rebuild_main_chain, name="vcr-threads-rebuild", daemon=True).start()
+    return {"ok": True, "loading": True, **info}
+
+
 class BenchmarkRequest(BaseModel):
     runs: int = 10
     warmup: int = 2
     channel: str = "det"
+    # 可选：临时用该线程数测速（不改变当前设置，也不写入会话槽位）
+    threads: int | None = None
 
 
 @app.post("/benchmark")
@@ -181,7 +216,28 @@ def benchmark(req: BenchmarkRequest):
     Rust 侧对该调用使用独立长超时（默认 HTTP 客户端 15s 可能不够）。
     """
     try:
-        return get_registry().benchmark(req.channel, runs=req.runs, warmup=req.warmup)
+        return get_registry().benchmark(req.channel, runs=req.runs, warmup=req.warmup,
+                                       threads=req.threads)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+class SweepRequest(BaseModel):
+    channel: str = "clip_vision"
+    options: list[int] | None = None
+    runs: int = 8
+    warmup: int = 2
+
+
+@app.post("/benchmark_sweep")
+def benchmark_sweep(req: SweepRequest):
+    """线程数扫档：一次请求把若干线程数都测一遍，返回 [{threads, avg_ms, best}]。
+
+    可能触发多次会话创建与推理（秒级到十几秒），用长超时（Rust 侧独立 180s）。
+    """
+    try:
+        return {"results": get_registry().benchmark_sweep(
+            req.channel, req.options, runs=req.runs, warmup=req.warmup)}
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 

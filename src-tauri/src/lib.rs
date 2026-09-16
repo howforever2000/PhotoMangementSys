@@ -2441,25 +2441,126 @@ fn cancel_model_download(name: String) -> Result<(), String> {
 }
 #[tauri::command]
 async fn get_vcr_gpu_status(app: tauri::AppHandle) -> Result<vision::VcrGpuStatus, String> {
-    vision::vcr_gpu_status(&app).await
+    let _t = log_call!("get_vcr_gpu_status");
+    let r = vision::vcr_gpu_status(&app).await;
+    match &r {
+        Ok(s) => logger::log_call_end_with(
+            "get_vcr_gpu_status",
+            _t,
+            &format!("OK | {}", vision::gpu_brief(s)),
+        ),
+        Err(e) => logger::log_call_end_with("get_vcr_gpu_status", _t, &format!("ERR | {e}")),
+    }
+    r
 }
 
 /// FEAT-051：GPU 加速开关（开 = GPU 优先 / 关 = 强制 CPU），返回切换后状态
 #[tauri::command]
 async fn set_vcr_gpu(enabled: bool, app: tauri::AppHandle) -> Result<vision::VcrGpuStatus, String> {
-    vision::vcr_set_gpu(&app, enabled).await
+    let _t = log_call!("set_vcr_gpu", &format!("enabled={enabled}"));
+    let r = vision::vcr_set_gpu(&app, enabled).await;
+    match &r {
+        Ok(s) => logger::log_call_end_with(
+            "set_vcr_gpu",
+            _t,
+            &format!("OK | {}", vision::gpu_brief(s)),
+        ),
+        Err(e) => logger::log_call_end_with("set_vcr_gpu", _t, &format!("ERR | {e}")),
+    }
+    r
 }
 
 /// FEAT-051：分类模型候选清单（含是否已下载 / 当前生效）
 #[tauri::command]
 async fn list_vcr_models(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    vision::vcr_list_models(&app).await
+    let _t = log_call!("list_vcr_models");
+    let r = vision::vcr_list_models(&app).await;
+    match &r {
+        Ok(v) => logger::log_call_end_with(
+            "list_vcr_models",
+            _t,
+            &format!("OK | {}", vision::models_brief(v)),
+        ),
+        Err(e) => logger::log_call_end_with("list_vcr_models", _t, &format!("ERR | {e}")),
+    }
+    r
 }
 
 /// FEAT-051：切换分类模型（未下载/未知名称返回服务端错误信息）
 #[tauri::command]
 async fn set_vcr_model(model: String, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    vision::vcr_set_model(&app, &model).await
+    let _t = log_call!("set_vcr_model", &format!("model={model}"));
+    let r = vision::vcr_set_model(&app, &model).await;
+    match &r {
+        Ok(v) => logger::log_call_end_with(
+            "set_vcr_model",
+            _t,
+            &format!("OK | {}", vision::models_brief(v)),
+        ),
+        Err(e) => logger::log_call_end_with("set_vcr_model", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// v6：CPU 线程数现状（性能设置展示）
+#[tauri::command]
+async fn get_vcr_threads(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let _t = log_call!("get_vcr_threads");
+    let r = vision::vcr_threads_status(&app).await;
+    match &r {
+        Ok(v) => logger::log_call_end_with(
+            "get_vcr_threads",
+            _t,
+            &format!("OK | {}", vision::threads_brief(v)),
+        ),
+        Err(e) => logger::log_call_end_with("get_vcr_threads", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// v6：设置 CPU 线程数（适配不同硬件；服务端会后台重建会话）
+#[tauri::command]
+async fn set_vcr_threads(threads: i64, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let _t = log_call!("set_vcr_threads", &format!("threads={threads}"));
+    let r = vision::vcr_set_threads(&app, threads).await;
+    match &r {
+        Ok(v) => logger::log_call_end_with(
+            "set_vcr_threads",
+            _t,
+            &format!("OK | {}", vision::threads_brief(v)),
+        ),
+        Err(e) => logger::log_call_end_with("set_vcr_threads", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// v6：线程数扫档（UI「对比测速」一键测得最优线程数）
+#[tauri::command]
+async fn benchmark_vcr_sweep(
+    channel: Option<String>,
+    options: Option<Vec<i64>>,
+    runs: Option<u32>,
+    warmup: Option<u32>,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    let channel = channel.unwrap_or_else(|| "clip_vision".into());
+    let options = options.unwrap_or_default();
+    let runs = runs.unwrap_or(8);
+    let warmup = warmup.unwrap_or(2);
+    let _t = log_call!(
+        "benchmark_vcr_sweep",
+        &format!("channel={channel} options={options:?} runs={runs} warmup={warmup}")
+    );
+    let r = vision::vcr_benchmark_sweep(&app, &channel, options, runs, warmup).await;
+    match &r {
+        Ok(v) => logger::log_call_end_with(
+            "benchmark_vcr_sweep",
+            _t,
+            &format!("OK | {}", vision::sweep_brief(v)),
+        ),
+        Err(e) => logger::log_call_end_with("benchmark_vcr_sweep", _t, &format!("ERR | {e}")),
+    }
+    r
 }
 
 /// FEAT-053：固定张量测速（CPU/GPU 真实加速比一键对比；channel 默认 det）
@@ -2470,13 +2571,23 @@ async fn benchmark_vcr(
     channel: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    vision::vcr_benchmark(
-        &app,
-        runs.unwrap_or(10),
-        warmup.unwrap_or(2),
-        channel.as_deref().unwrap_or("det"),
-    )
-    .await
+    let runs = runs.unwrap_or(10);
+    let warmup = warmup.unwrap_or(2);
+    let channel = channel.unwrap_or_else(|| "det".into());
+    let _t = log_call!(
+        "benchmark_vcr",
+        &format!("channel={channel} runs={runs} warmup={warmup}")
+    );
+    let r = vision::vcr_benchmark(&app, runs, warmup, &channel).await;
+    match &r {
+        Ok(v) => logger::log_call_end_with(
+            "benchmark_vcr",
+            _t,
+            &format!("OK | {}", vision::bench_brief(v)),
+        ),
+        Err(e) => logger::log_call_end_with("benchmark_vcr", _t, &format!("ERR | {e}")),
+    }
+    r
 }
 
 /// 在系统文件管理器中打开文件夹内部
@@ -3226,6 +3337,21 @@ pub fn run() {
                 .expect("无法获取应用数据目录");
             // 初始化日志组件（保留 3 天 = 4320 分钟）
             logger::init(&data_dir, 4320);
+            // 打包版：解析「模型目录」并写入进程环境变量（VCR_MODEL_DIR）
+            //   - 随 MSI/NSIS 安装的模型位于 resource_dir/vcr/models；
+            //   - MSI 默认装到 Program Files（普通权限进程不可写），而语义子图拆分 /
+            //     档位持久化 / 应用内模型下载都要写模型目录 → 该目录不可写时自动在
+            //     app_data_dir 下建立硬链接（或复制）副本并改用它，
+            //     见 vision::resolve_model_dir；
+            //   - clip_model_present()（vision.rs）与 model_dl::models_dir() 均按
+            //     VCR_MODEL_DIR 解析（此前硬编码 CARGO_MANIFEST_DIR，打包后指向构建机
+            //     源码路径，导致安装版「模型已内置却显示未下载」）。
+            {
+                let h = app.handle().clone();
+                let model_dir = vision::resolve_model_dir(&h);
+                logger::log_info(&format!("模型目录: {}", model_dir.display()));
+                std::env::set_var("VCR_MODEL_DIR", &model_dir);
+            }
             // 开发诊断：PMS_AUTO_OPEN_DEVLOG=1 时启动 4 秒后自动打开日志副窗口，
             // 免点击复现打开链路（测量窗口创建/首帧耗时），日常使用不设置即可
             if std::env::var("PMS_AUTO_OPEN_DEVLOG").as_deref() == Ok("1") {
@@ -3368,6 +3494,9 @@ pub fn run() {
             list_model_downloads,
             cancel_model_download,
             set_vcr_gpu,
+            get_vcr_threads,
+            set_vcr_threads,
+            benchmark_vcr_sweep,
             list_vcr_models,
             set_vcr_model,
             benchmark_vcr,

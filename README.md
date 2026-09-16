@@ -161,10 +161,11 @@ python/
 
 ### 6.1 安装
 
-- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新版 **v0.2.0**，约 500MB，内含 VCR 微服务与全部 AI 模型）：
-  - [`PhotoManagementSys_0.2.0_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.2.0/PhotoManagementSys_0.2.0_x64-setup.exe)（NSIS，推荐）
-  - 或 [`PhotoManagementSys_0.2.0_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.2.0/PhotoManagementSys_0.2.0_x64_en-US.msi)
-  - 历史版本（v0.1.0 等）见 [Releases](https://github.com/howforever2000/PhotoMangementSys/releases)
+- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新版 **v0.3.0**，约 460MB，内含 VCR 微服务与运行必需的全部 AI 模型）：
+  - [`PhotoManagementSys_0.3.0_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.0/PhotoManagementSys_0.3.0_x64-setup.exe)（NSIS，按用户安装到 `%LOCALAPPDATA%`，无需管理员权限，推荐）
+  - 或 [`PhotoManagementSys_0.3.0_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.0/PhotoManagementSys_0.3.0_x64_en-US.msi)（MSI，按机器安装到 `Program Files`，需管理员权限）
+  - 从 v0.2.0 升级：建议先卸载旧版再安装（两种安装范围不同，否则会同时存在两份）
+  - 历史版本（v0.2.0 / v0.1.0）见 [Releases](https://github.com/howforever2000/PhotoMangementSys/releases)
 - 安装包默认内置 AI 模型（详见「七、构建与发布」）。若安装包不含模型，请按「模型放置说明」将模型文件放入模型目录后再启动。
 
 ### 6.2 首次使用
@@ -199,27 +200,29 @@ python/
 
 ### 7.2 模型放置说明
 
-默认安装包已包含模型。若安装包不含模型，请确认模型目录下存在以下文件：
+默认安装包已包含模型。若安装包不含模型，请确认模型目录下存在以下文件（v0.3.0 架构：**图像分类模型已下线**，内容分类改由语义模型驱动）：
 
 ```
 vcr/models/
-├─ yolov8n-cls.onnx        # 分类（必选）
-├─ yolov8n-det.onnx        # COCO 检测（必选）
-├─ det_500m.onnx           # SCRFD 人脸检测（必选）
-├─ w600k_mbf.onnx          # ArcFace 人像特征（必选）
-├─ paddleocr-det.onnx      # 文档 OCR（可选）
-├─ album_groups.json       # 9 大类定义
-├─ imagenet_classes.txt    # ImageNet 类名
-└─ imagenet_to_album.json  # ImageNet → 大类映射
+├─ yolov8n-det.onnx                          # COCO 检测 / 人物（必选）
+├─ det_500m.onnx                             # SCRFD 人脸检测（必选）
+├─ w600k_mbf.onnx                            # ArcFace 人像特征（必选）
+├─ paddleocr-det.onnx                        # 文档 OCR（可选，缺失自动降级）
+└─ chinese-clip/                             # 语义模型（B/16 fp16，必选）
+   ├─ onnx/model_fp16.onnx                   #   双塔整图（首次使用自动拆成 vision/text 子图）
+   ├─ tokenizer.json                         # ⚠ 必须与 onnx/ 同级，不能放进 onnx/ 子目录
+   └─ vocab.txt
 ```
 
-可选模型（缺失时自动降级）：`resnet18_places365.onnx`（场景）、`efficientnet-b2-flowers.onnx`（花朵专家）。
+可选档位（缺失时应用内「性能设置 → 模型下载」按需获取）：`chinese-clip-fp32/`（B/16 fp32 719MB，可走 DirectML）。
+
+已下线（不再需要）：`yolov8*-cls.onnx`、`resnet18_places365.onnx`、`album_groups.json`、`imagenet_*.txt/json`。
 
 ### 7.3 模型获取与更新
 
-- **应用内下载（v0.2.0+，推荐）**：「⚙ 性能设置 → 📥 模型下载」可后台下载分类模型（yolov8 x / l / m / s-cls）与场景模型（resnet18_places365），官方 / 镜像源择优，自动导出 ONNX。
+- **应用内下载（v0.2.0+，推荐）**：「⚙ 性能设置 → 📥 模型下载」可后台下载语义模型档位（B/16 fp16 默认 / B/16 fp32 可走 GPU），官方 / 镜像源择优。
 - **人脸 + OCR**：执行 `python/download_models.py`（从 GitHub / ModelScope 下载）。
-- **分类 + 检测**：需以 `ultralytics` 导出（`python/export_model.py` 导出分类，检测同理），或直接复制开发机 `python/models/` 下对应 `.onnx`。
+- **检测 + 语义子图**：直接复制开发机 `python/models/` 下对应文件；语义双塔整图首次使用时由服务自动拆成 `clip_vision.onnx` / `clip_text.onnx`（幂等 + 与整图数值对齐校验，需模型目录**可写**，见 7.4）。
 - 模型不进入 git 仓库（体积过大），请通过 GitHub Release 附加资产（模型 zip）或 README 链接获取。
 
 ### 7.4 发布打包
@@ -231,6 +234,11 @@ powershell -ExecutionPolicy Bypass -File release.ps1
 ```
 
 脚本依次执行：① 以最小化 venv 构建 `python/dist/vcr-server.exe` → ② 校验 / 补齐模型 → ③ `npm install` → ④ `npx tauri build --config src-tauri/release.tauri.conf.json`（合并 release 配置，将微服务与模型内嵌进安装包）。
+
+两点约定（v0.3.0 起）：
+
+- **内嵌模型走显式清单**：`src-tauri/release.tauri.conf.json` 的 `bundle.resources` 逐项列出运行必需模型（不再整目录内嵌），避免把开发用 / 已下线的模型打进安装包（v0.3.0 安装包因此从 574MB 降到 457MB）。新增必需模型时记得同步该清单与 `release.ps1` 的校验列表。
+- **模型目录可写性**：语义拆图 / 档位持久化 / 应用内模型下载都要写模型目录，而 MSI 默认装到 `Program Files`（普通权限进程只读）。应用启动时由 `vision::resolve_model_dir` 统一解析模型目录，检测到只读即自动在 `%APPDATA%\<identifier>\vcr-models` 建立硬链接副本（同卷零拷贝）并改用它；NSIS 按用户安装（`%LOCALAPPDATA%`）时可写，直接用安装目录。
 
 产物位置：`src-tauri/target/release/bundle/msi/` 与 `nsis/`。
 
@@ -308,6 +316,29 @@ PhotoMangementSys/
 ---
 
 ## 十一、版本历史
+
+### v0.3.0（2026-09-16）— 语义搜索与语义分类 v5
+
+**新功能**
+
+- **语义搜索**（FEAT-055）：Chinese-CLIP ViT-B/16 双塔 512 维共享空间，自然语言搜图。图片向量落 `photo_embeddings`，文本塔编码查询后与全库向量做余弦召回（置信度 ≥ 阈值，非固定 top-N）；融入智能搜索——与关键词结果 RRF(k=60) 融合，语义命中附 `semantic_score`；扫描侧新增第 4 个扫描项 `semantic`（缩略图直编码、增量差集跳过已有向量、批量事务 upsert + 进度事件）；CLIP 未就绪时静默降级为纯关键词，且不冷启动服务。
+- **语义分类 v5**（FEAT-056）：**下线图像分类模型**（yolov8*-cls / Places365 / 花朵 / 食物专家）。内容分类改为用户自建：建分类 → 写关键词与排除词 → 调匹配强度阈值 → 达标照片自动归入；打分公式 `score = max cos(图, 关键词) − mean cos(图, 中性基线)`，减去中性基线后同一阈值可跨概念使用；持久层新增 `photo_categories` / `photo_category_hits` / `clip_text_cache` 三表；语义模型档位（B/16 默认 / B/16 fp32）取代旧分类模型选择器。
+- **模型 / 加速实测验证**（FEAT-053）：会话级实测上报（真实绑定 provider、源模型文件、输入元数据、CPU 回退标记）、`/benchmark` 推理测速（开 / 关加速对比提速比）、GPU 会话创建失败自动回退 CPU、修复 `/health` 的 model 字段写死默认档位。
+- **开发者实时日志副窗口**（FEAT-054）：⚙ 设置 → 开发者视角，cmd 风格只读 `app.log` 实时日志（增量 tail、彩色级别、过滤、暂停 / 跟随、2000 行上限）。
+- **交互增强**：智能搜索点图即预览、跳相册带 focus 定位；语义不可用时搜索页显性提示；批量导入失败详情对话框 + 一键重试；时间线点击进内部 Lightbox。
+
+**修复**
+
+- 重启后语义搜索静默失效（BUG-2026-0910-008）；语义拆图缺 `onnx` 模块导致裸 500（BUG-2026-0920-005）；误用打包残留模型目录致语义全空且全程无提示（BUG-2026-0920-006）
+- 应用内下载语义模型时 `tokenizer.json` / `vocab.txt` 落错目录（BUG-2026-0920-002）；「下载模型」全部 404（BUG-2026-0921-001）
+- 打包版语义编码比开发版慢 2.9 倍（`onnxruntime` 版本未锁定被装成最新，BUG-2026-0921-002）；fp16 双塔误上 DirectML 静默产出错误向量（BUG-2026-0920-003）
+- 组合扫描勾选 AI 但未勾影调时，已入库影调字段被 upsert 覆盖为 NULL（BUG-2026-0910-007）；已入库变未入库（父子相册行归属互抢，BUG-2026-0909-001）
+- **安装包装配治理**：模型目录改为运行时统一解析（此前 Rust 侧用编译期常量 `CARGO_MANIFEST_DIR` 拼路径，安装版指向构建机源码目录 → 「模型已内置却显示未下载」、应用内下载落到不存在的目录）；MSI 装到 `Program Files` 后模型目录对普通权限进程只读，现自动在 `%APPDATA%\<identifier>\vcr-models` 建**硬链接副本**（同卷零拷贝、不占额外空间）承接语义拆图 / 档位持久化 / 模型下载。
+
+**安装包**
+
+- 体积 574MB → **457MB**：只保留运行必需模型（人物检测 `yolov8n-det`、人脸 `det_500m` + `w600k_mbf`、OCR `paddleocr-det`、语义 `chinese-clip/onnx/model_fp16.onnx`）；已下线的分类模型与开发用模型（`chinese-clip-fp32`、`chinese-clip-vit-b-16`）不再内嵌，其余档位应用内按需下载。
+- 已知限制：打包版 `vcr-server.exe` 未含 onnxruntime-directml，安装版无法启用 DirectML 加速（BUG-2026-0920-004，待决策）；默认语义档 B/16 fp16 固定 CPU 推理。
 
 ### v0.2.0（2026-09-09）— VCR 进程治理与模型管理
 

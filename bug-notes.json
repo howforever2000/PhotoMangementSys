@@ -1262,6 +1262,227 @@
       ],
       "created_at": "2026-09-20T22:35:00+08:00",
       "fixed_at": "2026-09-20T22:35:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0921-001",
+      "date": "2026-09-21",
+      "status": "fixed",
+      "severity": "high",
+      "title": "应用内「下载模型」全部 404：把本地落位目录名拼进了下载 URL（CLI 能下、点界面下不了）",
+      "module": "src-tauri/src/model_dl.rs（DlSpec::official 的 URL 拼接）",
+      "symptom": [
+        "用户在「⚙ 性能设置 → 📥 模型下载」点「下载」（如 chinese-clip-l14），立即失败：HTTP 404",
+        "同一台机器上用 python download_models.py --tasks clip-l14 却能正常下载 → 用户质疑「为什么你能下我不能」",
+        "三档语义模型（chinese-clip / chinese-clip-fp32 / chinese-clip-l14）点下载全部 404"
+      ],
+      "root_cause": {
+        "summary": "重写 DlSpec 时把「本地落位路径」当成「仓库内路径」去拼 URL：official() = base_url + rel_file()，而 rel_file() 含本机目录名 root（如 chinese-clip-l14/onnx/model_fp16.onnx），仓库里根本没有这一层目录",
+        "detail": [
+          "正确 URL：…/resolve/main/onnx/model_fp16.onnx（HTTP 200）",
+          "实际请求：…/resolve/main/chinese-clip-l14/onnx/model_fp16.onnx（HTTP 404）",
+          "附带文件（tokenizer.json/vocab.txt）用的是 base_url + 文件名，恰好正确 —— 所以只有整图会 404",
+          "旧实现把 URL 写死在字符串里（正确），改造成「通用 spec」时引入的回归",
+          "单测只校验了本地落位（rel_file 与 python 档位表的 dir/onnx 对齐），没有对 URL 形态做断言，因此漏检"
+        ]
+      },
+      "solution": {
+        "summary": "拆出 repo_file()（仓库内相对路径 onnx/<file>）专供 URL 拼接；rel_file() 只用于本地落位；并加断言锁死 URL 形态",
+        "steps": [
+          "新增 DlSpec::repo_file() = format!(\"onnx/{}\", self.onnx)，official() 改为 base_url + repo_file()",
+          "保留 rel_file() = <root>/onnx/<onnx> 仅用于本地存在性判定/落位",
+          "单测补三条断言：official() 等于规范形态、不得包含本地目录名 /{root}/、repo 必须出现在 Python 档位表中",
+          "实测三档 URL 全部 HTTP 200（377.4MB / 753.7MB / 814.4MB）"
+        ]
+      },
+      "evidence_log": [
+        "[源码推演] official() = base_url + 'chinese-clip-l14/onnx/model_fp16.onnx'",
+        "[实测] HEAD …/resolve/main/chinese-clip-l14/onnx/model_fp16.onnx → 404",
+        "[实测] HEAD …/resolve/main/onnx/model_fp16.onnx → 200 (814.4MB)",
+        "[修复后] 三档 URL 全部 200：377.4MB / 753.7MB / 814.4MB",
+        "[测试] cargo test --lib model_dl → 2/2 passed"
+      ],
+      "related_files": [
+        "src-tauri/src/model_dl.rs",
+        "python/download_models.py",
+        "python/vcr/config.py"
+      ],
+      "keywords": [
+        "模型下载",
+        "404",
+        "URL 拼接",
+        "repo_file",
+        "rel_file",
+        "DlSpec",
+        "应用内下载",
+        "BUG-2026-0921-001"
+      ],
+      "created_at": "2026-09-21T09:45:00+08:00",
+      "fixed_at": "2026-09-21T09:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0921-002",
+      "date": "2026-09-21",
+      "status": "fixed",
+      "severity": "high",
+      "module": "python/requirements-vcr-packaging.txt（打包运行时依赖浮动）",
+      "title": "打包版语义编码比开发版慢 2.9 倍：onnxruntime 依赖写成 >=1.17 被 pip 装成最新的 1.29.0（该版本对 CLIP fp16 图塔 CPU 推理严重变慢）",
+      "symptom": [
+        "dev 环境（onnxruntime-directml 1.24.4）CLIP 编码 8 线程 ≈164 ms/张",
+        "同一台机器、同一个模型文件、同样的 8 线程，打包版 vcr-server.exe 实测 ≈460~552 ms/张（慢 2.8~2.9×）",
+        "表现到产品上：1 万张语义索引从 ~27 min 变成 ~77 min，用户以为「核显本跑不动语义」",
+        "此前无感知：GPU 加速/测速面板只测 det 通道，没有覆盖 CLIP 编码速度"
+      ],
+      "root_cause": {
+        "summary": "打包 venv 的依赖写成 `onnxruntime>=1.17`，pip 解析到最新版 1.29.0；该版本在同机同模型的 CLIP fp16 图塔 CPU 推理上比 1.24.4 慢约 2.9 倍（框架层面的性能回归，非本仓库代码问题）",
+        "detail": [
+          "用同一段脚本分别在「全局 python」与「打包 venv」里测 8×224×224 批次：1.24.4 → 158.7ms/张，1.29.0 → 460.0ms/张",
+          "排除构建差异：把打包 venv 显式降级到 1.24.4 后立刻恢复到 158.7ms，说明与 DML/CPU 构建无关，是版本差异",
+          "requirements 里其它依赖（fastapi/uvicorn/opencv）未做 pin，同类风险仍存在",
+          "PyInstaller 打包把 venv 的 onnxruntime 一起收进 exe，所以 dev 快、发布慢"
+        ]
+      },
+      "solution": {
+        "summary": "固定 onnxruntime==1.24.4，并在 requirements 注释里写明「浮动前必须用 eval_clip_accuracy.py 重测」；重打包后实测 8 线程 177.6ms/张（比坏版本快 2.6×）",
+        "steps": [
+          "requirements-vcr-packaging.txt：onnxruntime>=1.17 → onnxruntime==1.24.4（附实测数据与缺陷编号）",
+          "把 dev 全局的 1.24.4 作为基准写进注释，避免以后有人「顺手升级」再踩",
+          "重打包 exe（92.7MB → 91.4MB）并实测扫档：2线程 407ms / 4线程 297ms / 8线程 177.6ms（最快）/ 16线程 181ms",
+          "顺带交付：线程数可在「⚙ 性能设置」调整 + 一键对比测速（/threads、/benchmark_sweep，API v6）"
+        ]
+      },
+      "evidence_log": [
+        "[dev   1.24.4] ms_th4=250.8  ms_th8=164.0",
+        "[venv  1.29.0] ms_th4=543.1  ms_th8=460.0",
+        "[venv  1.24.4] ms_th4=265.7  ms_th8=158.7   ← pin 后与 dev 一致",
+        "[exe   1.24.4] sweep: 2线程 407.22 / 4线程 297.41 / 8线程 177.57(最快) / 16线程 181.18 ms/张"
+      ],
+      "related_files": [
+        "python/requirements-vcr-packaging.txt",
+        "python/vcr/config.py",
+        "python/server.py",
+        "src/components/ModelGpuSettings.vue",
+        "design/semantic-real-album-e2e.md"
+      ],
+      "keywords": [
+        "onnxruntime",
+        "版本回归",
+        "打包",
+        "性能",
+        "CLIP 编码",
+        "线程数",
+        "BUG-2026-0921-002"
+      ],
+      "created_at": "2026-09-21T11:50:00+08:00",
+      "fixed_at": "2026-09-21T11:55:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0916-003",
+      "date": "2026-09-16",
+      "status": "fixed",
+      "severity": "high",
+      "module": "src-tauri/src/vision.rs + src-tauri/src/model_dl.rs（模型目录解析）/ 发布打包",
+      "title": "安装版模型目录指向构建机源码路径：模型目录由编译期常量 CARGO_MANIFEST_DIR 拼出，MSI 安装后「模型已内置却显示未下载」、应用内下载落到不存在的目录",
+      "symptom": [
+        "MSI 安装后打开应用，内置的 chinese-clip 明明随包安装到 <install>/vcr/models，但 UI 显示语义模型「未下载」，语义搜索/语义分类预热直接判为不可用",
+        "点「模型下载」会去写一个用户机器上根本不存在的目录（构建机源码路径），必然失败",
+        "开发态一切正常（开发态该路径恰好就是真实源码目录），属典型「只在打包后出现」的缺陷",
+        "与 BUG-2026-0920-006 同族：那条是「开发态误走打包分支」，本次是「打包态永远走错目录」"
+      ],
+      "root_cause": {
+        "summary": "两处模型目录解析都用了编译期常量 env!(\"CARGO_MANIFEST_DIR\")：vision.rs::project_python_dir()（clip_model_present 的回落分支）与 model_dl.rs::models_dir()（下载落位 + list 状态）。该常量在编译期被固化为构建机源码路径，安装到其他机器后指向不存在的目录；而 spawn_server 只把 VCR_MODEL_DIR 注入给**子进程**，宿主进程自身从未设置该环境变量，于是宿主侧全部模型路径判断都落到这个坏回退分支上。",
+        "detail": [
+          "打包分支（bundled_exe 存在）确实给子进程注入了 VCR_MODEL_DIR=<resource_dir>/vcr/models，所以微服务本身能读到模型",
+          "但 clip_model_present()（宿主侧门禁：决定是否预热语义）与 model_dl::list()/download（宿主侧状态与落位）读的是 std::env::var(\"VCR_MODEL_DIR\") → 宿主进程没设 → 回落到 project_python_dir()/models_dir() → CARGO_MANIFEST_DIR 死路径",
+          "后果1：语义预热被门禁挡住，用户看到「语义不可用」，即使模型就在包内",
+          "后果2：应用内下载（FEAT-052）在安装版必然失败——该问题 v0.2.0 就已带出，本次一并修复",
+          "发现方式：为 0.3.0 打包时按「安装版到底读哪个模型目录」逐行核对路径来源，而非等用户反馈"
+        ]
+      },
+      "solution": {
+        "summary": "把模型目录解析收敛为唯一入口 vision::resolve_model_dir()，在 lib.rs::setup 启动时解析一次并写入宿主进程环境变量 VCR_MODEL_DIR；model_dl::models_dir() 与 spawn_server 统一改为优先读该环境变量。",
+        "steps": [
+          "vision.rs 新增 resolve_model_dir()：① VCR_MODEL_DIR（显式指定）→ ② resource_dir/vcr/models（打包版）→ ③ 源码目录 python/models（开发态）",
+          "lib.rs::setup 启动即解析并 std::env::set_var(\"VCR_MODEL_DIR\", ...)，同时写 app.log（出现『模型目录: ...』便于事后定位）",
+          "model_dl.rs::models_dir() 改为 VCR_MODEL_DIR 优先，缺省才回落 CARGO_MANIFEST_DIR（开发态）",
+          "spawn_server 给子进程注入的 VCR_MODEL_DIR 改为读取同一解析结果，宿主/子进程口径强制一致",
+          "验证：MSI 静默安装后启动应用，app.log 出现『模型目录: ...』且与子进程实际读取目录一致"
+        ]
+      },
+      "evidence_log": "app.log 新增启动行：管理员场景为『模型目录: <install>/vcr/models』；只读场景为『模型目录: %APPDATA%/<identifier>/vcr-models』（后者见 BUG-2026-0916-004）",
+      "related_files": [
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/lib.rs"
+      ],
+      "keywords": [
+        "CARGO_MANIFEST_DIR",
+        "VCR_MODEL_DIR",
+        "resolve_model_dir",
+        "模型目录",
+        "打包态",
+        "clip_model_present",
+        "models_dir",
+        "应用内下载"
+      ],
+      "created_at": "2026-09-16T13:10:00+08:00",
+      "fixed_at": "2026-09-16T13:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0916-004",
+      "date": "2026-09-16",
+      "status": "fixed",
+      "severity": "high",
+      "module": "src-tauri/src/vision.rs（模型目录可写性）/ 安装包安装范围",
+      "title": "MSI 按机器安装（ALLUSERS=1，装到 Program Files）后模型目录对普通权限进程只读：语义子图拆分、档位持久化、应用内模型下载全部写入失败",
+      "symptom": [
+        "MSI 安装版（非管理员运行）首次使用语义功能时，拆图写 clip_vision.onnx / clip_text.onnx 失败（PermissionError）→ 语义搜索/语义分类不可用",
+        "切换语义模型档位时 current_clip.json 写不进去，档位选择无法持久化",
+        "应用内下载语义模型档位（B/16 fp32）时报创建目录失败",
+        "同一份代码用 NSIS（按用户装到 %LOCALAPPDATA%）则一切正常——只有 MSI 复现"
+      ],
+      "root_cause": {
+        "summary": "Tauri 的 WiX(MSI) 配置**不支持** installMode（只有 NSIS 支持，且 NSIS 默认就是 currentUser），MSI 固定 ALLUSERS=1 按机器安装到 Program Files；而 v0.3.0 的语义链路需要**写模型目录**（子图拆分产物、当前档位记录、模型下载落位），Program Files 对非提权进程只读 → 写入必然失败。",
+        "detail": [
+          "实测 0.2.0/0.3.0 MSI 的 Property 表：ALLUSERS=1，安装到 C:/Program Files/PhotoManagementSys",
+          "python/vcr/services/clip_subgraph.py::ensure_subgraphs 把 clip_vision.onnx / clip_text.onnx 写在 <MODEL_DIR>/chinese-clip/ 下",
+          "config.py::CLIP_CURRENT_PATH 与 model_registry 的档位/线程记录同样写在 MODEL_DIR",
+          "model_dl 的应用内下载目标目录也是 MODEL_DIR",
+          "0.2.0 之所以没暴露：det/face/ocr 通道只读模型，唯一需要写的是 persons.db（已指向 app_data_dir）；语义链路（v0.3.0 新增）才引入「写模型目录」的需求",
+          "另：曾尝试在 release.tauri.conf.json 写 wix.installMode=currentUser，被 tauri CLI（2.11.4）以 anyOf schema 校验拒绝——该字段仅 NSIS 支持"
+        ]
+      },
+      "solution": {
+        "summary": "在 resolve_model_dir() 内加可写性判定：内置模型目录不可写时，把整棵模型树**硬链接**（同卷零拷贝；跨卷或失败自动退回复制）到 app_data_dir/vcr-models，并把该可写副本作为模型目录。开发态与 NSIS 按用户安装不受影响（目录本就可写，直接使用）。",
+        "steps": [
+          "新增 dir_writable()：在目标目录试写 .pms-write-probe 探针文件，成功即视为可写（避免依赖 ACL 解析）",
+          "新增 link_or_copy_tree()：递归遍历内置模型目录，缺失或大小不同的文件用 std::fs::hard_link 链接（失败则 std::fs::copy），可重复调用；应用后续新增的派生文件天然落在可写侧",
+          "resolve_model_dir()：可写 → 直接用内置目录；只读 → 在 app_data_dir/vcr-models 建副本并改用它（失败退回内置目录并打日志）",
+          "release.tauri.conf.json 在 NSIS 侧显式声明 installMode=currentUser（说明意图），WiX 侧不再写不支持的字段",
+          "验证：icacls /deny Administrators:(W) 模拟只读 → 启动应用，app.log 出现『模型目录: .../vcr-models』，副本内文件 link count 均为 2；随后 /remove:d 还原 ACL 并卸载 MSI 清理"
+        ]
+      },
+      "evidence_log": "验证证据：%APPDATA%/com.haoyuan.photo-management-sys/vcr-models 下 det_500m / paddleocr-det / w600k_mbf / yolov8n-det / chinese-clip/{tokenizer.json, vocab.txt, onnx/model_fp16.onnx} 全部 link count = 2（硬链接成立、未占用额外空间）；app.log 两次启动分别记录内置目录与副本目录，与可写性判定一致",
+      "related_files": [
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/release.tauri.conf.json",
+        "python/vcr/services/clip_subgraph.py",
+        "python/vcr/config.py"
+      ],
+      "keywords": [
+        "ALLUSERS",
+        "Program Files",
+        "只读",
+        "PermissionError",
+        "installMode",
+        "currentUser",
+        "硬链接",
+        "hard_link",
+        "vcr-models",
+        "InstallScope"
+      ],
+      "created_at": "2026-09-16T13:10:00+08:00",
+      "fixed_at": "2026-09-16T13:20:00+08:00"
     }
   ]
 }

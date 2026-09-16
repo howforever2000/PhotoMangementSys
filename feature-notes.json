@@ -1637,7 +1637,12 @@
         "前端": "CategoryGallery 改用 list_categories / list_category_photos，关键词 chips 按实际命中关键词即时过滤，卡片角标显示命中强度；新增原子组件 CategoryManager（主从：列表 + 编辑 + 关键词/排除词 chips + 阈值滑块 + 实时预览样张 + 重建）；ModelGpuSettings 的分类模型下拉改为语义模型档位下拉（沿用同构交互：置灰未下载 / 下载 / 切换提示）；三个扫描入口的「AI 内容识别」改名「人物 · 文档识别」且值 ai→person。",
         "下载落位": "Rust model_dl.rs 三条目 chinese-clip / chinese-clip-fp32 / chinese-clip-l14（hf-mirror 单源直链 + tokenizer/vocab），python download_models.py 同步支持 clip/clip-fp32/clip-l14；DlSpec 用 root + onnx 两个字段拼落位路径，避免 onnx 文件名（model_fp16.onnx / model.onnx）写死。",
         "provider 策略": "新增 _clip_providers()：fp16 档（b16 / l14）固定 CPU（DML 对 fp16 图有算子级数值 bug），fp32 档跟随全局 GPU 开关（默认仍 CPU，用户显式开启才用 GPU）；顺带修掉 BUG-2026-0920-003（此前 CLIP 用全局 provider，一开加速就会把 fp16 送上 DML 静默产出错误向量）。",
-        "可观测性": "语义降级不再静默：后端 smart_search 的降级原因写入 app.log，embed 系列端点统一兜底为 503+detail（禁止裸 500 text/plain，宿主无法解析）；前端 SmartSearch 顶部在语义不可用时显性提示「当前只做关键词匹配」并给出模型/索引入口。另：开发态不要往 src-tauri/target/debug/vcr/ 放 exe —— 那会让应用切到「打包版分支」，模型目录变成缺 CLIP 的旧残留目录（BUG-2026-0920-006）。"
+        "可观测性": "语义降级不再静默：后端 smart_search 的降级原因写入 app.log，embed 系列端点统一兜底为 503+detail（禁止裸 500 text/plain，宿主无法解析）；前端 SmartSearch 顶部在语义不可用时显性提示「当前只做关键词匹配」并给出模型/索引入口。另：开发态不要往 src-tauri/target/debug/vcr/ 放 exe —— 那会让应用切到「打包版分支」，模型目录变成缺 CLIP 的旧残留目录（BUG-2026-0920-006）。",
+        "模型选型实测（2026-09-21）": "同一 53 张标注集零样本准确率（工具 python/bench/eval_clip_accuracy.py）：b16 三变体（fp16 / Xenova fp32 / PyTorch 导出 fp32）完全等价 —— 原图 crop 81.1%、官方 squash 83.0%，错判集差异 0 张、图塔余弦 min 0.999999（这是数值等价结论，最硬）；L/14@224（官方 OFA-Sys 权重自行导出自校验 cos=1.000000）69.8%/71.7%、L/14@336（Xenova）67.9%/69.8% —— 两个独立变体都低 13pp，且崩在场景类（architecture 0~1/4、night 2~3/7、street 2/7），速度慢 3.5~10×，结论：排除转换因素后 L/14 家族不适配本场景（H/14 不上架、RN50 不值得）。⚖️ 统计功效边界：n=53 的标准误 ≈5.5pp，只能筛掉「明显更差」的选项；squash vs crop 的 ±1.9pp 经 McNemar 检验 p=1.000 不显著（按线上真实编码 WebP q85 复测方向还会翻转且非单调），故**撤销**「改官方 squash」的建议 —— 不值得为 1 张图的差异让 10,919 条索引失效并重扫 15 min。另实测预处理耗时占比：256px 缩略图 2.8ms（crop 2.1ms）vs 原图 171ms vs 模型前向 91ms ⇒ 「换更快的前处理」或「顺带生成 CLIP 专用缩略图」收益上限仅 ~2ms/张，不值得做；缩略图尺寸 256→320/384 的差异同样在噪声内。要解锁 recipe / 尺寸 等 ±2pp 级决策，需先把标注集扩到 200~300 张（方案见 design 文档 §1.5）。新增工具 export_clip_torch.py（官方 PyTorch 权重→双塔 ONNX + torch-vs-ORT 数值校验）。",
+        "匹配度单位（2026-09-21）": "用户界面不再直接暴露内部净增益 rel（0.00~0.10），统一展示为 **0~100 的「AI 匹配度」= round(rel×1000)**：滑块 0~100 步长 5 + 三档 pill（宽松 10 / 标准 30 / 严格 50）+ 实时预览；预览分数分布与照片徽标（✨ 43）同刻度。换算集中在 src/utils/matchScore.ts（relToMatch/matchToRel/MATCH_PRESETS/MATCH_HELP，唯一真相点）；**后端 DB/命令/预览 API 全部保持 rel ⇒ 零迁移**（用户已有分类 0.03/0.01 自动显示 30/10，已用真实库核对）。另：切换语义档位后的引导文案修正为「必须重建语义索引（扫描中心→语义向量扫描）」，而不是只点「重建分类」—— 重建分类只重算命中，不会重新编码图片。",
+        "档位下架（2026-09-21）": "L/14 档已从 CLIP_MODELS 与 model_dl.rs 下载表移除（实测低于 B/16 13pp 且慢 3.5~10×），模型目录删除回收 3.26GB；单测改为「由 Python 档位表派生档位数」不再硬编码 3 档。保留档位 = b16（fp16，默认，固定 CPU）+ b16-fp32（可走 DirectML，实测数值一致且快 2×）。",
+        "真实相册端到端实测（2026-09-21）": "测试集：D:\\YUAN HAO\\Pictures\\img\\手机照片\\2019（612 张 4000×3000 手机照片，**从未入库**，避免自评自测）；工具 python/bench/e2e_real_album_test.py。① 速度：原图解码 107.5ms/张、生成缩略图(长边256+WebP q85) 174.8ms/张、CLIP 编码 270.7ms/张（batch8/4线程）→ 612 张端到端 274s；10k 折算约 75min（比 FEAT-055 记录的 17min 慢得多）。**关键发现：config.THREADS=4 严重限制 CLIP 编码** —— 同批张量下 8 线程 167.4ms/张（1.83×）、16 线程 batch32 142.7ms/张（2.15×）；8 线程=8 物理核不触发 SMT 争抢，10k 索引可从 49min 降到 31min。② 质量：top-6 抽查 美食/日落晚霞/夜景灯光 各 6/6（合计 18/18 全中）；但**召回偏低**：随机 10 张判读约 2/10 含食物，而 612 张里「美食」只命中 14（2.3%），「车辆」0（背景小车漏召）；宠物/花卉 0 命中经判读为**一致**（该相册确无）。结论：精度已足够，瓶颈在召回 ⇒ 建议新建分类默认匹配度 30 → 20。③ D1 最终裁决（crop vs squash）：把指标升级为连续量（正确类相似度 / top1−top2 间隔）做配对 Wilcoxon，p=0.79/0.85/0.99 全部不显著；差异图方向相反互换，且 squash 把 4 张建筑中的 3 张误判成夜景 ⇒ **保持 crop，不重建索引**。④ 预处理占比结论：缩略图上的解码+缩放仅 2~3ms/张（占 CLIP 编码约 1%），故「256→224 更快」「顺带生成 CLIP 专用缩略图」收益上限 2~3ms/张（1 万张 30~50s），不值得做；而「改用原图」要多付 107ms/张（1 万张 +18min）。",
+        "CPU 线程数可调 + 对比测速（2026-09-21）": "推理速度的线程数做成用户可调（不同机器最优值不同）：config.threads() 持久化于 models/current_threads.json，默认=物理核推测夹在 [4,8]（本机 8 线程，即默认就享受提速）；POST /threads 改设置（夹紧+持久化+清空会话后台重建，与 /gpu 同构）；POST /benchmark 可临时指定线程数（建临时会话，不改运行态）；POST /benchmark_sweep 一次测多档并标记最快；API v5→v6。前端「⚙ 性能设置」新增「CPU 线程数」下拉 + 「📊 对比测速」（结果表：线程/ms/相对提速，最快档可一键采用）；「会话实测」行新增显示实际绑定线程数便于核对。实测（7840HS）：2/4/8/16 线程 = 407/297/178/181 ms/张。另修复 BUG-2026-0921-002：打包依赖 onnxruntime>=1.17 被装成 1.29.0，导致发布版比 dev 慢 2.9×（460 vs 159 ms），已 pin 1.24.4。"
       },
       "highlights": [
         "P0 用本机 11372 张真实缩略图向量做阈值标定，并用视觉模型对命中集抽样判读精度（脚本落在 python/bench/calib_*.py）",
@@ -1650,7 +1655,15 @@
         "语义档位验证工具 verify_clip_tiers.py 落地：可对任意两档/两 provider 做「图塔+文塔」余弦对照，是「换档/开 GPU 前必跑」的判定依据",
         "实测发现同空间档位（fp16↔fp32）向量等价（余弦 ≥0.999998）→ 已记入待办：引入 space 概念可免去同空间换档的 17 分钟重建",
         "排查方法论：用户报「语义搜不到」→ 先看 app.log（当时无任何记录）→ 查运行态进程路径与 /health.clip_ready → 定位到 target/debug/vcr/models 缺 chinese-clip",
-        "打包版裸 500 的根因是 hiddenimports 声明了未安装的包：spec 只写名字不够，打包 venv 必须真的装上 onnx"
+        "打包版裸 500 的根因是 hiddenimports 声明了未安装的包：spec 只写名字不够，打包 venv 必须真的装上 onnx",
+        "L/14 的否决是「排除了转换因素」的结论：官方权重自行导出（数值 cos=1.000000）与 Xenova 现成 ONNX 结果一致",
+        "选型方法论：判定必须用**线上口径**（缩略图长边 256 + 线上真实编码 WebP q85）—— 我先后用「短边=256」与「JPEG 而非 WebP」两次模拟失真，得出过两个相反的错误结论；核对 thumbnail.rs 的 image::DynamicImage::thumbnail(256,256) + WebP q85 后才正确",
+        "评测集能力边界已量化：n=53 标准误 5.5pp ⇒ 只可筛「明显更差」（L/14 的 13pp），不可判「±2pp」（recipe/尺寸）—— 避免把小差异当结论去改线上",
+        "L/14 的否决是「排除转换因素」的结论：官方权重自行导出（cos=1.000000）与 Xenova 现成 ONNX 结果一致",
+        "真实未见相册上 top 命中精度 18/18，但召回偏低（美食 14/612 vs 抽样推算约 120）⇒ 默认匹配度 30 偏严，建议 20",
+        "发现 THREADS=4 是编码速度瓶颈（8 线程 1.83×）：10k 索引 49min → 31min，属 1 行改动的白捡收益",
+        "线程数默认改为「按物理核推测夹 4~8」⇒ 所有机器开箱即得提速（本机 4→8 线程 1.57×，无需用户操作）",
+        "发现并修掉「依赖浮动导致的性能回归」：onnxruntime 1.29.0 比 1.24.4 慢 2.9×，只有端到端实测能发现"
       ],
       "related_files": [
         "src-tauri/src/category.rs",
@@ -1681,7 +1694,13 @@
         "python/bench/calib_debias.py",
         "design/semantic-category-implementation.md",
         "python/vcr/services/clip_subgraph.py",
-        "python/bench/verify_clip_tiers.py"
+        "python/bench/verify_clip_tiers.py",
+        "design/clip-accuracy-comparison.md",
+        "python/bench/eval_clip_accuracy.py",
+        "python/bench/export_clip_torch.py",
+        "src/utils/matchScore.ts",
+        "design/semantic-real-album-e2e.md",
+        "python/bench/e2e_real_album_test.py"
       ],
       "keywords": [
         "语义分类",
@@ -1695,7 +1714,14 @@
         "模型档位",
         "L14-336",
         "下线分类模型",
-        "FEAT-056"
+        "FEAT-056",
+        "AI 匹配度",
+        "matchScore.ts",
+        "零迁移",
+        "档位下架",
+        "CPU 线程数",
+        "benchmark_sweep",
+        "onnxruntime pin"
       ],
       "tests": [
         "cargo test --lib category → 13/13 通过",
@@ -1705,11 +1731,78 @@
         "cargo test --lib model_dl → 2/2（下载落位与 python 档位表一致性守护）",
         "python/bench/verify_clip_tiers.py：fp16↔fp32 CPU 余弦 ≥0.999998；fp32 DML↔CPU 余弦 =1.000000、提速 2.0×（53.3 vs 108.2ms/张）",
         "打包版全新安装模拟：仅有整图 + tokenizer/vocab 时首次 /embed_text_batch 自动拆图并返回 200（BUG-2026-0920-005）",
-        "release.ps1 必需模型清单按 v5 更新（去 yolov8n-cls，改为人脸/OCR/语义模型）"
+        "release.ps1 必需模型清单按 v5 更新（去 yolov8n-cls，改为人脸/OCR/语义模型）",
+        "eval_clip_accuracy：b16 三变体等价（81.1%/83.0%，错判集差异 0）；L/14-224 官方导出 69.8%/71.7%；L/14-336 67.9%/69.8%",
+        "线上口径（--max-side 256 --resize squash）：b16 = 77.4%（crop 口径 75.5%，官方 recipe +1.9pp）",
+        "export_clip_torch 自校验：L/14@224 torch vs ORT 余弦 vision=1.000000 text=1.000000",
+        "真实库核对换算零迁移：photo_categories.threshold 0.03/0.01 → UI 30/10",
+        "打包 exe 档位清单 = 2 档；切换已下架的 l14 返回 400「未知语义模型档位: l14」",
+        "真实相册 612 张端到端：缩略图生成 172ms/张、CLIP 编码 275ms/张（4线程）",
+        "线程对照：4线程 270.7 / 8线程 167.4 / 16线程@batch32 142.7 ms/张",
+        "真实相册 top 命中精度抽查 18/18（美食/日落晚霞/夜景灯光 各 6/6）",
+        "线程扫档：2线程 407 / 4线程 297 / 8线程 177.6(最快) / 16线程 181.2 ms/张（打包 exe）",
+        "打包 venv ORT 对照：1.29.0 → 460ms vs 1.24.4 → 158.7ms（同机同模型同线程）",
+        "POST /threads 越界夹紧：999 → 16；设置 6 → /health 与持久化文件均生效"
       ],
       "created_at": "2026-09-20T21:20:00+08:00",
-      "updated_at": "2026-09-20T22:35:00+08:00"
+      "updated_at": "2026-09-21T12:40:00+08:00"
+    },
+    {
+      "id": "FEAT-057",
+      "name": "v0.3.0 发布打包：内嵌模型显式清单（574MB→457MB）+ 运行时模型目录解析与只读副本治理",
+      "status": "done",
+      "module": "发布打包 / src-tauri/release.tauri.conf.json + src-tauri/src/vision.rs(model_dl, lib) + 文档",
+      "purpose": "让「当前功能程度」能打出可用的 0.3.0 安装包：既要瘦身（v5 已下线分类模型，不再把开发用模型塞进包），又要保证安装后语义链路真的能跑——模型目录既要找得到（宿主/子进程同一口径），又要写得进（只读目录自动转可写副本）。",
+      "implementation": {
+        "资源清单": "release.tauri.conf.json 的 bundle.resources 由「整目录内嵌 ../python/models/」改为逐项显式清单：vcr-server.exe + yolov8n-det.onnx + det_500m.onnx + w600k_mbf.onnx + paddleocr-det.onnx + chinese-clip/onnx/model_fp16.onnx + chinese-clip/tokenizer.json + chinese-clip/vocab.txt。与 release.ps1 校验清单、应用内下载落位约定三者对齐（tokenizer/vocab 必须与 onnx/ 同级，见 BUG-2026-0920-002）",
+        "模型目录解析": "vision.rs::resolve_model_dir 作为唯一口径：VCR_MODEL_DIR → resource_dir/vcr/models → 开发态 python/models；lib.rs::setup 启动时解析一次并写入进程环境变量，宿主与子进程（spawn_server）共用同一结果（见 BUG-2026-0916-003）",
+        "只读治理": "dir_writable 探针 + link_or_copy_tree：内置目录不可写时在 app_data_dir/vcr-models 建硬链接副本（同卷零拷贝，跨卷回退复制）并作为模型目录，使 MSI（Program Files）与 NSIS（%LOCALAPPDATA%）行为一致（见 BUG-2026-0916-004）",
+        "版本与文档": "package.json / tauri.conf.json / Cargo.toml(+Cargo.lock) 四处升至 0.3.0；README(.en) 安装段、模型清单、发布打包约定、版本历史同步更新；新增 release_body_v0.3.0.json 发布说明",
+        "产物": "PhotoManagementSys_0.3.0_x64_en-US.msi（457MB，ALLUSERS=1）+ PhotoManagementSys_0.3.0_x64-setup.exe（446MB，currentUser）"
+      },
+      "highlights": [
+        "安装包体积 574MB → 457MB（-117MB）：下线分类模型后不再内嵌 yolov8*-cls / Places365 / chinese-clip-fp32 / chinese-clip-vit-b-16",
+        "MSI 内容经 Property/File 表实测校验：ProductVersion=0.3.0、ALLUSERS=1、8 项资源全部在包内（含 377MB 的 model_fp16.onnx）",
+        "端到端实测：静默安装 MSI → 启动应用 → app.log 打印解析后的模型目录；用 icacls 拒绝写权限模拟普通用户，验证硬链接副本分支（link count=2，零拷贝），随后还原 ACL 并卸载清理",
+        "修掉 v0.2.0 就存在的安装版缺陷：模型目录曾由编译期 CARGO_MANIFEST_DIR 拼出，安装版「模型已内置却显示未下载」、应用内下载落错目录",
+        "打包链路上的两个外部依赖（WiX 3.14 / NSIS 3.11 / nsis_tauri_utils.dll）改为可预置到 %LOCALAPPDATA%/tauri 缓存，绕开 GitHub 下载超时（tauri: timeout: global）"
+      ],
+      "related_files": [
+        "src-tauri/release.tauri.conf.json",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/tauri.conf.json",
+        "src-tauri/Cargo.toml",
+        "package.json",
+        "release.ps1",
+        "README.md",
+        "README.en.md",
+        "release_body_v0.3.0.json"
+      ],
+      "keywords": [
+        "0.3.0",
+        "release",
+        "bundle.resources",
+        "VCR_MODEL_DIR",
+        "resolve_model_dir",
+        "硬链接",
+        "vcr-models",
+        "MSI",
+        "NSIS",
+        "installMode",
+        "体积瘦身",
+        "WiX"
+      ],
+      "tests": [
+        "cargo check --release 与 tauri build --config src-tauri/release.tauri.conf.json 均 EXIT=0",
+        "npm run build（vue-tsc --noEmit + vite build）通过",
+        "MSI：Property 表 ProductVersion=0.3.0、ALLUSERS=1；File 表含 photo-management-sys.exe / vcr-server.exe 与全部模型",
+        "MSI 静默安装 → 启动应用 35s → app.log 出现『模型目录: ...』；icacls /deny 模拟只读 → 副本分支生效（10 个文件 link count=2）→ 还原 ACL → 卸载并清理测试副本"
+      ],
+      "created_at": "2026-09-16T13:30:00+08:00",
+      "updated_at": "2026-09-16T13:30:00+08:00"
     }
   ],
-  "updated": "2026-09-20T23:10:00+08:00"
+  "updated": "2026-09-16T13:30:00+08:00"
 }

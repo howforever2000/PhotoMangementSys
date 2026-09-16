@@ -21,6 +21,9 @@ import type {
   VcrGpuStatus,
   VcrModelsInfo,
   VcrBenchmarkResult,
+  VcrSweepEntry,
+  VcrSweepResult,
+  VcrThreadsInfo,
 } from "../types/content";
 
 // ---- FEAT-038：全局照片扫描入库（跨相册批量，后台执行） ----
@@ -152,6 +155,8 @@ export const useContentStore = defineStore("content", {
     categoryStats: null as CategoryIndexStats | null,
     /** v5：最近一次分类重建报告（前端提示用） */
     lastCategoryRebuild: null as CategoryRebuildReport | null,
+    /** v6：CPU 线程数现状（性能设置展示/调整） */
+    vcrThreads: null as VcrThreadsInfo | null,
   }),
 
   actions: {
@@ -196,6 +201,32 @@ export const useContentStore = defineStore("content", {
     /** FEAT-053：固定张量测速（CPU/GPU 真实加速比对比，可能耗时数秒） */
     async benchmarkVcr(runs = 10, warmup = 2, channel = "det"): Promise<VcrBenchmarkResult> {
       return await invoke<VcrBenchmarkResult>("benchmark_vcr", { runs, warmup, channel });
+    },
+
+    // ------------------------------------------------------------------
+    // v6 CPU 线程数（适配不同硬件：可调 + 对比测速）
+    // ------------------------------------------------------------------
+    /** 线程数现状（当前/默认/物理核/可选档） */
+    async fetchVcrThreads(): Promise<VcrThreadsInfo> {
+      this.vcrThreads = await invoke<VcrThreadsInfo>("get_vcr_threads");
+      return this.vcrThreads;
+    },
+
+    /** 设置线程数（服务端会后台重建会话；越界由服务端夹紧） */
+    async setVcrThreads(threads: number): Promise<VcrThreadsInfo> {
+      this.vcrThreads = await invoke<VcrThreadsInfo>("set_vcr_threads", { threads });
+      return this.vcrThreads;
+    },
+
+    /** 线程扫档：一次测多个线程数，返回 [{threads, avg_ms, best}]（不改变当前设置） */
+    async benchmarkVcrSweep(
+      channel = "clip_vision",
+      options: number[] = [],
+      runs = 8,
+      warmup = 2,
+    ): Promise<VcrSweepEntry[]> {
+      const r = await invoke<VcrSweepResult>("benchmark_vcr_sweep", { channel, options, runs, warmup });
+      return r.results ?? [];
     },
 
     // ------------------------------------------------------------------

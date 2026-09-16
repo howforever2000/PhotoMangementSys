@@ -1,7 +1,7 @@
 """语义档位一致性 / 速度对照（Q2 验证工具）
 
 用途：
-  1. 换语义档位（b16 / b16-fp32 / l14）前，确认「图塔 + 文塔」输出是否一致
+  1. 换语义档位（b16 / b16-fp32）前，确认「图塔 + 文塔」输出是否一致
      —— 余弦 >0.999 才可认为两档在同一语义空间（可作为索引迁移依据）；
   2. 验证某档位在指定 provider（CPU / DmlExecutionProvider）上的数值正确性与速度
      —— fp16 在 DirectML 上有算子级数值 bug（BUG-2026-0910-006），
@@ -37,7 +37,7 @@ def _sess(path: str, provider: str, basic_opt: bool = True):
     import onnxruntime as ort
 
     so = ort.SessionOptions()
-    so.intra_op_num_threads = config.THREADS
+    so.intra_op_num_threads = config.threads()
     so.inter_op_num_threads = 1
     so.graph_optimization_level = (
         ort.GraphOptimizationLevel.ORT_ENABLE_BASIC if basic_opt else ort.GraphOptimizationLevel.ORT_ENABLE_ALL

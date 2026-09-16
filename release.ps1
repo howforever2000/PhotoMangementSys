@@ -52,6 +52,9 @@ if ($SkipModels) {
         "yolov8n-det.onnx",
         "det_500m.onnx", "w600k_mbf.onnx",
         "paddleocr-det.onnx",
+        # 语义模型：双塔整图 + 伴随文件（与 release.tauri.conf.json 的
+        # bundle.resources 显式清单严格对应；缺整图会让 tauri build 在打包阶段失败）
+        "chinese-clip/onnx/model_fp16.onnx",
         "chinese-clip/tokenizer.json", "chinese-clip/vocab.txt"
     )
     $missing = @()

@@ -20,6 +20,14 @@ import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 import { useContentStore } from "../stores/content";
 import type { CategoryInput, CategoryOverview, CategoryPreview } from "../types/content";
+import {
+  MATCH_DEFAULT,
+  MATCH_HELP,
+  MATCH_MAX,
+  MATCH_PRESETS,
+  matchToRel,
+  relToMatch,
+} from "../utils/matchScore";
 
 const props = defineProps<{ categories: CategoryOverview[] }>();
 const emit = defineEmits<{ (e: "close"): void; (e: "changed"): void }>();
@@ -56,18 +64,22 @@ function emptyForm(): CategoryInput {
     icon: "🏷️",
     keywords: [],
     exclude_keywords: [],
-    threshold: 0.03,
+    threshold: matchToRel(MATCH_DEFAULT),
     sort_order: 0,
     enabled: true,
   };
 }
 
-/** 阈值档位（P0 实测：0.03 标准；0.02 宽松召回更多；0.05 严格高精度） */
-const THRESHOLD_PRESETS = [
-  { label: "宽松", value: 0.02, hint: "召回更多，可能有误" },
-  { label: "标准", value: 0.03, hint: "推荐（实测精度 70~90%）" },
-  { label: "严格", value: 0.05, hint: "只留最像的" },
-];
+/** 档位与换算统一来自 utils/matchScore（唯一真相点） */
+const THRESHOLD_PRESETS = MATCH_PRESETS;
+
+/** 滑块绑定值：UI 用 0~100 的「AI 匹配度」，写回表单时换算成内部 rel（后端零迁移） */
+const matchValue = computed({
+  get: () => relToMatch(form.value.threshold),
+  set: (v: number) => {
+    form.value.threshold = matchToRel(Number(v));
+  },
+});
 
 const list = computed(() =>
   [...props.categories].sort((a, b) => {
@@ -255,7 +267,13 @@ async function rebuild() {
   }
 }
 
+/** 内部 rel → 展示用匹配度整数（0~100） */
 function fmtScore(v: number): string {
+  return String(relToMatch(v));
+}
+
+/** 高级用户对照：展示对应的原始净增益值 */
+function rawScore(v: number): string {
   return v.toFixed(3);
 }
 </script>
@@ -343,34 +361,36 @@ function fmtScore(v: number): string {
                 </div>
               </div>
 
-              <!-- 阈值 -->
+              <!-- AI 匹配度（0~100，用户视角；内部仍存 rel，零迁移） -->
               <div class="cm-row cm-row-top">
-                <label class="cm-label">匹配强度</label>
+                <label class="cm-label">AI 匹配度</label>
                 <div class="cm-slider-wrap">
                   <input
-                    v-model.number="form.threshold"
+                    v-model.number="matchValue"
                     class="cm-slider"
                     type="range"
                     min="0"
-                    max="0.1"
-                    step="0.005"
+                    :max="MATCH_MAX"
+                    step="5"
+                    :title="`等价于原始净增益 ${rawScore(form.threshold)}`"
                   />
-                  <span class="cm-thr">{{ fmtScore(form.threshold) }}</span>
+                  <span class="cm-thr">{{ matchValue }}</span>
                   <button
                     v-for="p in THRESHOLD_PRESETS"
                     :key="p.label"
                     class="cm-preset"
-                    :class="{ on: Math.abs(form.threshold - p.value) < 1e-6 }"
+                    :class="{ on: matchValue === p.value }"
                     :title="p.hint"
-                    @click="form.threshold = p.value"
+                    @click="matchValue = p.value"
                   >
-                    {{ p.label }}
+                    {{ p.label }} {{ p.value }}
                   </button>
                 </div>
               </div>
               <p class="cm-hint">
-                匹配强度 = 图片与你关键词的相似度 − 与中性描述（「一张照片」等）的相似度。
-                数值越大越像；<b>0.03 为实测推荐默认值</b>，拖到 0 会把无关照片也拉进来。
+                {{ MATCH_HELP }}<br />
+                预览里的「分布」与每张样张括号里的数字都用同一刻度，便于对照着调。
+                <span class="cm-dim">（高级：原始净增益 {{ rawScore(form.threshold) }}）</span>
               </p>
             </template>
 
@@ -387,22 +407,23 @@ function fmtScore(v: number): string {
                 <template v-else-if="preview">
                   <span class="cm-hit">命中 <b>{{ preview.count }}</b> / {{ preview.total }} 张</span>
                   <span class="cm-dim">
-                    分布 p50 {{ fmtScore(preview.p50) }} · p90 {{ fmtScore(preview.p90) }} ·
+                    命中分数分布：p50 {{ fmtScore(preview.p50) }} · p90 {{ fmtScore(preview.p90) }} ·
                     p99 {{ fmtScore(preview.p99) }} · 最高 {{ fmtScore(preview.max) }}
+                    （与左侧「AI 匹配度」同一刻度）
                   </span>
                 </template>
                 <span v-else-if="previewError" class="cm-err">{{ previewError }}</span>
                 <span v-else class="cm-dim">添加关键词后自动预览</span>
               </div>
               <div v-if="preview?.samples.length" class="cm-samples">
-                <figure v-for="s in preview.samples" :key="s.photo_hash" class="cm-sample" :title="`${s.matched_keyword} · ${fmtScore(s.score)}`">
+                <figure v-for="s in preview.samples" :key="s.photo_hash" class="cm-sample" :title="`命中「${s.matched_keyword}」· AI 匹配度 ${fmtScore(s.score)}`">
                   <img v-if="thumbMap[s.path]" :src="fileUrl(thumbMap[s.path])" loading="lazy" alt="" />
                   <span v-else class="cm-sample-ph">🖼</span>
                   <figcaption>{{ s.matched_keyword }}</figcaption>
                 </figure>
               </div>
               <p v-else-if="preview && !preview.count" class="cm-hint">
-                当前阈值下没有命中。可换更具体的关键词（如「一只猫」而不是「猫」）或把匹配强度调低。
+                当前「AI 匹配度」下没有命中。可换更具体的关键词（如「一只猫」而不是「猫」），或把匹配度调低。
               </p>
             </div>
 

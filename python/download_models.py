@@ -4,7 +4,7 @@
 本脚本用于开发环境或离线部署一次拉齐。
 
 v5：分类模型（yolov8*-cls）与 Places365 场景模型已下线，不再下载；
-    新增语义模型档位 l14-336（更强但更慢，按需下载）。
+    语义档位 = b16（fp16，默认）/ b16-fp32（可走 DirectML）；L/14 已实测否决下架。
 """
 import argparse
 import os
@@ -35,7 +35,7 @@ TASKS = {
 # 语义模型档位：**由 config.CLIP_MODEL_META 派生**（单一事实源 = 档位表，
 # 避免 CLI 与 App 内下载/Rust model_dl.rs 三处各写一份落位约定而漂移）。
 # 任务别名（CLI 习惯叫法）→ 档位 key
-_CLIP_TASK_ALIAS = {"b16": "clip", "b16-fp32": "clip-fp32", "l14": "clip-l14"}
+_CLIP_TASK_ALIAS = {"b16": "clip", "b16-fp32": "clip-fp32"}
 for _tier in config.CLIP_MODELS:
     _meta = config.CLIP_MODEL_META[_tier]
     TASKS[_CLIP_TASK_ALIAS[_tier]] = {
@@ -62,7 +62,7 @@ def main():
     parser.add_argument("--mirror", default="https://ghfast.top",
                         help="GitHub 加速镜像前缀（留空则直连）")
     parser.add_argument("--tasks", default="face,ocr,clip",
-                        help="逗号分隔：face/ocr/clip/clip-fp32/clip-l14")
+                        help="逗号分隔：face/ocr/clip/clip-fp32")
     args = parser.parse_args()
     os.makedirs(MODEL_DIR, exist_ok=True)
     mirror = args.mirror.strip() or None
@@ -99,7 +99,7 @@ def main():
                 print(f"[dl] 解压 {f}")
 
     print("[done] 模型就绪。")
-    print("[hint] 语义模型首次使用前会拆双塔；也可先跑 python extract_clip_subgraphs.py [b16|b16-fp32|l14]")
+    print("[hint] 语义模型首次使用前会拆双塔；也可先跑 python extract_clip_subgraphs.py [b16|b16-fp32]")
 
 
 if __name__ == "__main__":

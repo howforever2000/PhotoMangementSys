@@ -11,7 +11,7 @@
 | 项 | 决策 |
 |---|---|
 | 分类来源 | **下线图像分类模型**（yolov8*-cls + Places365 + 花朵/食物专家），改由 Chinese-CLIP **语义关键词匹配**产出 |
-| 用户自建分类 | 用户建分类 → 写关键词（自然语言短语）+ 排除词 + 调匹配强度阈值 → 命中照片自动归入 |
+| 用户自建分类 | 用户建分类 → 写关键词（自然语言短语）+ 排除词 + 调 **「AI 匹配度」（0~100）** → 命中照片自动归入 |
 | 多标签 | 一张照片可属于多个分类（`photo_category_hits` 多对多） |
 | 保留的规则通道 | 人物检测（YOLOv8n-det + 人脸标号）、夜景（影调自算）、文档（PaddleOCR + 截图启发式） |
 | 模型档位 | B/16（默认，512 维）↔ L/14-336（可选，768 维）；前端下拉选择，与旧"分类模型"下拉同构 |
@@ -64,7 +64,24 @@ score(x, c) = max_kw cos(x, kw) - base(x)   # 净语义增益
 | 文字 / 文档 | ≈0 | — | 库中确实没有截图类照片 |
 | 屏幕截图 | 370 | — | — |
 
-**默认阈值 0.03**（UI 滑块 0.00~0.10，预设 宽松 0.02 / 标准 0.03 / 严格 0.05）。
+**默认阈值 0.03**。
+
+### 2.6 用户界面上的单位：「AI 匹配度」0~100（2026-09-21 改）
+内部计算量是 rel（净增益 0.00~0.10），但 0.03 对用户不直观。UI 统一展示为
+**0~100 的整数「AI 匹配度」= round(rel × 1000)**：
+
+| 内部 rel | UI「AI 匹配度」 |
+|---|---|
+| 0.01 | 10 |
+| 0.03（默认） | 30 |
+| 0.05 | 50 |
+
+- 换算集中在 `src/utils/matchScore.ts`（唯一真相点：`relToMatch` / `matchToRel` / `MATCH_PRESETS`）；
+- **后端 DB / 命令 / 预览 API 全部保持 rel ⇒ 零迁移**（用户已有分类的 0.01/0.03 自动显示 10/30）；
+- 控件：滑块 0~100（步长 5）+ 三档 pill（宽松 10 / 标准 30 / 严格 50）+ 实时预览；
+- 预览里的分数分布（p50/p90/p99/max）与照片徽标（`✨ 43`）都用**同一刻度**，便于对照调参；
+- 注意与搜索页的区分：搜索页卡片上的「✨ AI 匹配 N%」是**原始余弦相似度**（FEAT-SEM），
+  与这里的相对匹配度不是同一个量，故分类侧文案统一用「匹配度」而非「匹配 N%」。
 
 ### 2.5 真实 App 库复核（P4）
 用真实 `photos.db` 的 `photo_embeddings`（10919 条，`model=chinese-clip-vit-b16-fp16`）
@@ -149,7 +166,7 @@ clip_text_cache(        -- 关键词向量缓存（改阈值不重编码文本�
 |---|---|---|---|---|---|
 | `b16`（默认） | 512 | 224 | `Xenova/chinese-clip-vit-base-patch16` → `model_fp16.onnx` | 377 MB | 任何核显本；零样本 81.1%（53 张标注集） |
 | `b16-fp32` | 512 | 224 | 同仓库 → `model.onnx` | 719 MB | 想用核显加速语义索引；**已实测可走 DirectML** |
-| `l14` | 768 | 336 | `Xenova/chinese-clip-vit-large-patch14-336px` → `model_fp16.onnx` | 814 MB | 独显/强 CPU；**本机未实测精度** |
+| ~~`l14`~~（已下架） | 768 | 336 | `Xenova/.../large-patch14-336px` | 814 MB | ❌ **2026-09-21 实测否决并下架**：官方权重自行导出 69.8%/71.7%、Xenova 版 67.9%/69.8%，均低于 B/16 的 81.1%/83.0%，且慢 3.5~10×（崩在场景类）。证据见 `design/clip-accuracy-comparison.md` |
 
 落位约定（`python/models/` 下）：
 ```text
@@ -157,7 +174,7 @@ clip_text_cache(        -- 关键词向量缓存（改阈值不重编码文本�
 <root>/tokenizer.json   ← ⚠️ 必须在模型根目录，不是 onnx/ 子目录（BUG-2026-0920-002）
 <root>/vocab.txt
 ```
-档位键与目录一一对应：`b16→chinese-clip`、`b16-fp32→chinese-clip-fp32`、`l14→chinese-clip-l14`；
+档位键与目录一一对应：`b16→chinese-clip`、`b16-fp32→chinese-clip-fp32`（L/14 已下架）；
 Rust 下载表与 Python 档位表由单测 `model_dl::tests::clip_specs_match_python_tier_table` 强制对齐，
 CLI (`download_models.py`) 的任务表由 `config.CLIP_MODEL_META` **派生**（单一事实源，三处不再各写一份）。
 
@@ -165,7 +182,7 @@ CLI (`download_models.py`) 的任务表由 `config.CLIP_MODEL_META` **派生**�
 
 | 档位 | provider | 依据 |
 |---|---|---|
-| `b16` / `l14`（fp16） | **固定 CPU** | fp16 图在 AMD DML 上有算子级数值 bug（BUG-2026-0910-006） |
+| `b16`（fp16） | **固定 CPU** | fp16 图在 AMD DML 上有算子级数值 bug（BUG-2026-0910-006） |
 | `b16-fp32` | 跟随「GPU 加速」开关（默认关） | 实测 DML 与 CPU **数值完全一致**、快约 2× |
 
 > 顺带修掉一个潜在缺陷（BUG-2026-0920-003）：此前 CLIP 直接用全局 provider，
@@ -188,8 +205,8 @@ CLI (`download_models.py`) 的任务表由 `config.CLIP_MODEL_META` **派生**�
   `chinese-clip-vit-b16-fp32` / `chinese-clip-vit-l14-fp16`）——**历史值不可改**，换档必须换 id。
 - 检索 / 匹配 / 增量差集 / 缓存版本 **全部按 model 过滤**；换档后旧向量计入 `stale`，
   分类页提示"需重建索引"。
-- 下载：应用内 `chinese-clip` / `chinese-clip-fp32` / `chinese-clip-l14`（hf-mirror 直链 + tokenizer/vocab，
-  含瞬时 403 有限重试），或 `python download_models.py --tasks clip,clip-fp32,clip-l14`。
+- 下载：应用内 `chinese-clip` / `chinese-clip-fp32`（hf-mirror 直链 + tokenizer/vocab，
+  含瞬时 403 有限重试），或 `python download_models.py --tasks clip,clip-fp32`。
 - **fp32 档的 GPU 开关默认未开启**：需先做数值一致性验证（fp32+DML vs fp32+CPU 编码同 N 张，
   余弦应 >0.999）后再放开 provider；验证通过前该档等价于「CPU 慢速＋数值略精确」，价值有限。
 
@@ -219,6 +236,7 @@ CLI (`download_models.py`) 的任务表由 `config.CLIP_MODEL_META` **派生**�
    后续可加"同义词扩展/推荐关键词"。
 3. **绝对阈值仍是近似**：去偏后尺度可比，但概念间仍有差异（美食最高 0.077 vs 汽车 0.035）。
    已用"每分类独立阈值 + 实时预览 + 分布分位展示"兜住；后续可考虑按库分布自适应。
+   （UI 已改为直观的「AI 匹配度」0~100，见 §2.6。）
 4. **L/14-336 未实测**：精度/速度门（准确率提升 ≥5pp 且 CPU ≤250ms/张）尚未跑，
    UI 标注为"未实测"。要下结论需先下载模型 + 跑 53 张标注集对照。
 5. **fp32 档 GPU 已可启用**（默认仍关）：实测 DML 数值与 CPU 完全一致、快 2×；
@@ -230,6 +248,14 @@ CLI (`download_models.py`) 的任务表由 `config.CLIP_MODEL_META` **派生**�
 7. **发布版（PyInstaller exe）无 GPU**：打包 venv 只装 `onnxruntime`，不含 `onnxruntime-directml`，
    而 UI 有「GPU 加速」开关（见 BUG-2026-0920-004）。要么把 directml 打进发布包，要么在 UI 上
    把加速标为"开发环境/需自备运行时"。
+8. **评测集分辨力不足**（2026-09-21 量化）：`ground_truth.json` 仅 53 张，单组标准误 ≈5.5pp ⇒
+   只能筛掉"明显更差"（L/14 的 13pp），**无法判定 ±2pp 级**改进（recipe、缩略图尺寸、转换管线）。
+   原计划的"改官方 squash 预处理（+1.9pp）"经 McNemar 检验 **p=1.000 不显著**（按线上 WebP 口径
+   复测方向还会翻转）⇒ **已撤销**，保持现状 crop。要解锁此类决策需先扩容到 200~300 张
+   （方案见 `design/clip-accuracy-comparison.md` §1.5）。
+9. **L/14 档已下架**（2026-09-21）：实测无论官方权重自行导出（224）还是 Xenova（336），
+   准确率都只有 67.9~71.7%（B/16 为 81.1~83.0%），且慢 3.5~10×，崩点在场景类。
+   档位已从 `CLIP_MODELS` 与 `model_dl.rs` 移除，模型目录已删除（回收 3.26GB）。
 5. **CLIP 的 GPU 加速未启用**（fp16 数值 bug）。若要提速，可研究 fp32 模型 + DML
    （Phase 0 曾测 37.9ms/张 vs CPU 91ms），但需先验证 fp32 索引 + fp16 文本塔的跨塔一致性。
 6. 旧库中 YOLO 时代写入的 `photo_content_scan.category`（landscape/animal/food/flower…）

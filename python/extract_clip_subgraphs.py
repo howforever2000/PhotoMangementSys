@@ -1,6 +1,6 @@
 """一次性拆分 CLIP 双塔（开发/部署 CLI）：python extract_clip_subgraphs.py [档位]
 
-档位默认取当前生效档（config.active_clip()），可显式指定：b16 / b16-fp32 / l14。
+档位默认取当前生效档（config.active_clip()），可显式指定：b16 / b16-fp32。
 产出 <模型目录>/clip_vision.onnx + clip_text.onnx（服务端首次使用也会自动拆，
 见 vcr/services/embed_service.ensure_subgraphs）。
 """

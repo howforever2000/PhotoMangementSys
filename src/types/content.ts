@@ -202,10 +202,11 @@ export interface LocationGroupRow {
  * v5：语义模型档位候选项 —— 对应 model_registry.clip_models_info().models[]
  *
  * 与旧「分类模型」下拉同构（同样的下载/置灰/切换交互），只是换成了
- * Chinese-CLIP 档位：b16（512 维，默认）与 l14-336（768 维，更强更慢）。
+ * Chinese-CLIP 档位：b16（fp16，512 维，默认）与 b16-fp32（可走 DirectML，快 2×）。
+ * （L/14 档已实测否决下架，见 design/clip-accuracy-comparison.md）
  */
 export interface VcrModelInfo {
-  /** 档位标识：b16 / l14-336 */
+  /** 档位标识：b16 / b16-fp32 */
   name: string;
   /** 中文说明（精度档位 + 推荐硬件） */
   label: string;
@@ -240,6 +241,43 @@ export interface VcrSessionFacts {
   input_type: string | null;
   /** GPU 建会话失败后是否回退了 CPU */
   cpu_fallback: boolean;
+  /** v6：该会话实际绑定的 CPU 线程数（intra_op） */
+  threads?: number | null;
+}
+
+/** v6：CPU 线程数现状 —— 对应 config.threads_info()（「⚙ 性能设置」展示） */
+export interface VcrThreadsInfo {
+  /** 当前生效线程数 */
+  threads: number;
+  /** 默认值（按物理核推测，夹在 4~8） */
+  default: number;
+  /** 物理核推测（逻辑核 ÷ 2） */
+  physical_guess: number;
+  /** 逻辑核数 */
+  logical: number;
+  min: number;
+  max: number;
+  /** 可选档位 */
+  options: number[];
+  /** 设置成功后服务端返回的生效值 */
+  applied?: number;
+}
+
+/** v6：线程扫档单行 —— 对应 model_registry.benchmark_sweep() 的元素 */
+export interface VcrSweepEntry {
+  channel: string;
+  threads: number;
+  /** 实测平均/最快/最慢（ms/次推理） */
+  avg_ms?: number;
+  min_ms?: number;
+  max_ms?: number;
+  providers?: string[];
+  /** 该档是否最快（服务端标记） */
+  best?: boolean;
+  /** 相对最慢档的提速倍数（前端计算，仅展示用） */
+  speedup?: number;
+  /** 该档测速失败原因 */
+  error?: string;
 }
 
 /** v5：语义模型档位清单 */
@@ -296,7 +334,10 @@ export interface CategoryInput {
   keywords: string[];
   /** 排除词（用于压制「热狗∈狗」这类误召回） */
   exclude_keywords: string[];
-  /** 匹配强度阈值（净增益，0.00~0.10；默认 0.03） */
+  /**
+   * 匹配强度阈值 —— **内部净增益 rel（0.00~0.10，默认 0.03）**，不是 UI 数值。
+   * UI 展示/编辑用 0~100 的「AI 匹配度」，换算见 `utils/matchScore`（rel × 1000，零迁移）。
+   */
   threshold: number;
   sort_order: number;
   enabled: boolean;
@@ -333,7 +374,7 @@ export interface CategoryPhoto {
   person_ids: string[];
   category: string | null;
   sub_category: string | null;
-  /** 语义匹配强度（净增益，越大越像） */
+  /** 语义匹配强度：内部净增益 rel（越大越像）；UI 用 relToMatch() 显示为 0~100 匹配度 */
   score: number;
   matched_keyword: string;
   category_id: number;
@@ -385,4 +426,9 @@ export interface CategoryIndexStats {
   model: string;
   /** 语义分类数（不含 builtin 规则分类） */
   semantic_categories: number;
+}
+
+/** v6：线程扫档结果包装 —— 对应 POST /benchmark_sweep */
+export interface VcrSweepResult {
+  results: VcrSweepEntry[];
 }

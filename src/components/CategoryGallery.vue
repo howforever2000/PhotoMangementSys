@@ -24,6 +24,7 @@ import ContextMenu, { type ContextMenuEntry } from "./ContextMenu.vue";
 import CategoryManager from "./CategoryManager.vue";
 import type { CategoryIndexStats, CategoryOverview, CategoryPhoto } from "../types/content";
 import { categoryLabel, categoryTone } from "../utils/categoryLabel";
+import { relToMatch } from "../utils/matchScore";
 
 const theme = useThemeStore();
 const notify = useNotify();
@@ -196,9 +197,9 @@ const filteredPhotos = computed(() => {
   return photos.value.filter((p) => (p.matched_keyword || "") === activeKw.value);
 });
 
-/** 命中强度展示（净增益 0~0.1 → 0~100 的直观分值） */
+/** 命中强度展示：与分类设置里的「AI 匹配度」同一刻度（换算见 utils/matchScore） */
 function strengthLabel(score: number): string {
-  return `${Math.max(0, Math.min(100, Math.round(score * 1000)))}`;
+  return String(relToMatch(score));
 }
 
 async function openCategory(t: CategoryCard) {
@@ -474,7 +475,9 @@ onMounted(load);
           </div>
           <div class="cat-body">
             <h3 class="cat-name">{{ t.icon }} {{ t.name }}</h3>
-            <span v-if="t.keywords.length" class="cat-sub-hint">{{ t.keywords.length }} 个关键词</span>
+            <span v-if="t.keywords.length" class="cat-sub-hint">
+              {{ t.keywords.length }} 词 · 匹配度 {{ relToMatch(t.threshold) }}
+            </span>
           </div>
         </article>
       </div>
@@ -544,7 +547,9 @@ onMounted(load);
         >
           <img v-if="thumbMap[p.path]" :src="fileUrl(thumbMap[p.path])" loading="lazy" alt="" />
           <div v-else class="photo-ph">🖼</div>
-          <span v-if="p.score > 0" class="photo-score">✨ {{ strengthLabel(p.score) }}</span>
+          <span v-if="p.score > 0" class="photo-score" :title="`AI 匹配度 ${strengthLabel(p.score)}（越高越像；阈值可在 ⚙ 管理分类 里调）`">
+            ✨ {{ strengthLabel(p.score) }}
+          </span>
           <figcaption v-if="p.matched_keyword" class="photo-cap">
             {{ kwLabel(activeCard, p.matched_keyword) }}
           </figcaption>
