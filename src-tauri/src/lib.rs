@@ -2440,6 +2440,7 @@ fn cancel_model_download(name: String) -> Result<(), String> {
     model_dl::cancel(&name);
     Ok(())
 }
+
 #[tauri::command]
 async fn get_vcr_gpu_status(app: tauri::AppHandle) -> Result<vision::VcrGpuStatus, String> {
     let _t = log_call!("get_vcr_gpu_status");
@@ -3395,6 +3396,31 @@ async fn dev_db_rows(
     r
 }
 
+/// 只读 SQL 沙箱（FEAT-060）：仅 SELECT/WITH/EXPLAIN，自动补 LIMIT，
+/// 敏感列 + 用户身份/凭据值一律打码（无「显示明文」开关）。
+#[tauri::command]
+async fn dev_db_sql(
+    app: tauri::AppHandle,
+    db: String,
+    sql: String,
+    limit: i64,
+) -> Result<devdata::SqlResult, String> {
+    let _t = log_call!("dev_db_sql", &format!("db={db} limit={limit} sql={sql}"));
+    let h = app.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || devdata::sql(&h, &db, &sql, limit))
+        .await
+        .map_err(|e| format!("dev_db_sql 执行失败: {e}"))?;
+    match &r {
+        Ok(v) => logger::log_call_end_with(
+            "dev_db_sql",
+            _t,
+            &format!("OK | 返回 {} 行 / {}ms", v.returned, v.elapsed_ms),
+        ),
+        Err(e) => logger::log_call_end_with("dev_db_sql", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
 /// 在资源管理器中定位某个已知数据路径（key 白名单，不接受任意路径）
 #[tauri::command]
 async fn dev_reveal_path(app: tauri::AppHandle, key: String) -> Result<(), String> {
@@ -3601,6 +3627,7 @@ pub fn run() {
             dev_data_paths,
             dev_db_tables,
             dev_db_rows,
+            dev_db_sql,
             dev_reveal_path,
             get_album,
             update_album,

@@ -57,6 +57,19 @@ interface RowsResult {
   truncated: boolean;
 }
 
+/** SQL 查询结果（对应 Rust devdata::SqlResult，FEAT-060） */
+interface SqlResult {
+  db: string;
+  sql: string;
+  columns: string[];
+  masked_columns: string[];
+  rows: string[][];
+  returned: number;
+  truncated: boolean;
+  elapsed_ms: number;
+  note: string;
+}
+
 const paths = ref<PathEntry[]>([]);
 const dbs = ref<DbInfo[]>([]);
 const loading = ref(false);
@@ -66,6 +79,13 @@ const notice = ref("");
 const activeDb = ref("photos");
 const activeTable = ref("");
 const limit = ref(50);
+/* FEAT-060：SQL 查询页状态（模式 / 语句 / 行数上限 / 结果 / 错误 / 运行中） */
+const mode = ref<"rows" | "sql">("rows");
+const sqlText = ref("");
+const sqlLimit = ref(100);
+const sqlResult = ref<SqlResult | null>(null);
+const sqlError = ref("");
+const sqlRunning = ref(false);
 const preview = ref<RowsResult | null>(null);
 const previewLoading = ref(false);
 const previewError = ref("");
@@ -153,6 +173,16 @@ async function loadDbs() {
   }
 }
 
+/** FEAT-060：左树点击按模式分流（表数据 → 预览；SQL → 填一条 SELECT 进编辑器） */
+function onTableClick(name: string) {
+  activeTable.value = name;
+  if (mode.value === "sql") {
+    sqlText.value = `SELECT * FROM "${name}" LIMIT ${sqlLimit.value};`;
+  } else {
+    void selectTable(name);
+  }
+}
+
 async function selectTable(name: string) {
   activeTable.value = name;
   previewLoading.value = true;
@@ -186,6 +216,58 @@ async function refreshAll() {
   await Promise.all([loadPaths(), loadDbs()]);
   if (activeTable.value) await selectTable(activeTable.value);
   loading.value = false;
+}
+
+/** FEAT-060：一键插入当前表的 SELECT / 建表语句（DDL） */
+function insertSql(kind: "select" | "ddl") {
+  const t = activeTable.value;
+  if (!t) {
+    errorMsg.value = "请先在左侧选择一张表";
+    return;
+  }
+  mode.value = "sql";
+  sqlText.value =
+    kind === "select"
+      ? `SELECT * FROM "${t}" LIMIT ${sqlLimit.value};`
+      : `SELECT sql FROM sqlite_master WHERE name = '${t}';`;
+}
+
+/** FEAT-060：执行只读 SQL（后端沙箱：单条 SELECT/WITH/EXPLAIN + 自动 LIMIT + 打码） */
+async function runSql() {
+  const text = sqlText.value.trim();
+  if (!text || sqlRunning.value) return;
+  sqlRunning.value = true;
+  sqlError.value = "";
+  try {
+    sqlResult.value = await invoke<SqlResult>("dev_db_sql", {
+      db: activeDb.value,
+      sql: text,
+      limit: sqlLimit.value,
+    });
+  } catch (e) {
+    sqlResult.value = null;
+    sqlError.value = String(e);
+  } finally {
+    sqlRunning.value = false;
+  }
+}
+
+/** 结果复制为 TSV（便于贴进 Excel / 日志） */
+async function copySqlResult() {
+  const r = sqlResult.value;
+  if (!r) return;
+  const lines = [r.columns.join("\t"), ...r.rows.map((row) => row.join("\t"))];
+  await copyText(lines.join("\n"), "SQL 结果(TSV)");
+}
+
+/** 模式切换：进 SQL 页时给一条默认语句，避免空白面板 */
+function setMode(m: "rows" | "sql") {
+  mode.value = m;
+  if (m === "rows") {
+    if (activeTable.value) void selectTable(activeTable.value);
+  } else if (!sqlText.value && activeTable.value) {
+    sqlText.value = `SELECT * FROM "${activeTable.value}" LIMIT ${sqlLimit.value};`;
+  }
 }
 
 onMounted(() => {
@@ -259,6 +341,26 @@ onMounted(() => {
           </button>
         </div>
 
+        <div class="dw-mode">
+          <button
+            class="dw-mode-btn"
+            :class="{ active: mode === 'rows' }"
+            type="button"
+            @click="setMode('rows')"
+          >
+            表数据
+          </button>
+          <button
+            class="dw-mode-btn"
+            :class="{ active: mode === 'sql' }"
+            type="button"
+            @click="setMode('sql')"
+          >
+            SQL 查询
+          </button>
+          <span class="dw-mode-hint">只读 · 仅 SELECT / WITH / EXPLAIN · 自动 LIMIT · 用户信息与敏感列默认打码</span>
+        </div>
+
         <p v-if="currentDb" class="dw-dbpath" :title="currentDb.path" @click="copyText(currentDb.path, '库路径')">
           {{ currentDb.path }}
         </p>
@@ -273,14 +375,14 @@ onMounted(() => {
               :class="{ active: t.name === activeTable, shadow: t.shadow }"
               type="button"
               :title="t.shadow ? 'SQLite FTS 影子表（全文索引实现细节）' : t.name"
-              @click="selectTable(t.name)"
+              @click="onTableClick(t.name)"
             >
               <span class="dw-table-name">{{ t.name }}</span>
               <span class="dw-table-rows">{{ fmtNum(t.rows) }}</span>
             </button>
           </div>
 
-          <div class="dw-preview">
+          <div v-if="mode === 'rows'" class="dw-preview">
             <div class="dw-preview-head">
               <span class="dw-preview-title">
                 {{ preview ? `${preview.db} · ${preview.table}` : "选择左侧表名查看前 N 行" }}
@@ -336,6 +438,61 @@ onMounted(() => {
                   </tr>
                 </tbody>
               </table>
+            </div>
+          </div>
+
+          <!-- FEAT-060：只读 SQL 查询（结果同样走打码） -->
+          <div v-else class="dw-sql">
+            <div class="dw-sql-bar">
+              <button class="dw-mini" type="button" @click="insertSql('select')">当前表 SELECT</button>
+              <button class="dw-mini" type="button" @click="insertSql('ddl')">当前表建表语句</button>
+              <select v-model.number="sqlLimit" class="dw-sql-limit">
+                <option :value="50">50 行</option>
+                <option :value="100">100 行</option>
+                <option :value="200">200 行</option>
+              </select>
+              <button class="dw-btn" type="button" :disabled="sqlRunning" @click="runSql">
+                {{ sqlRunning ? "执行中…" : "执行 (Ctrl+Enter)" }}
+              </button>
+              <button class="dw-mini" type="button" @click="sqlText = ''">清空</button>
+              <button class="dw-mini" type="button" :disabled="!sqlResult" @click="copySqlResult">复制结果</button>
+            </div>
+            <textarea
+              v-model="sqlText"
+              class="dw-sql-editor"
+              spellcheck="false"
+              placeholder="SELECT id, username, created_at FROM users LIMIT 20"
+              @keydown.ctrl.enter.prevent="runSql"
+              @keydown.meta.enter.prevent="runSql"
+            ></textarea>
+            <p v-if="sqlError" class="dw-err">{{ sqlError }}</p>
+            <div v-if="sqlResult" class="dw-preview-head">
+              <span class="dw-preview-title">
+                返回 {{ sqlResult.returned }} 行 · {{ sqlResult.elapsed_ms }} ms
+              </span>
+              <span class="dw-preview-meta">
+                <template v-if="sqlResult.truncated">· 已截断</template>
+                <template v-if="sqlResult.masked_columns.length">
+                  · 已打码列：{{ sqlResult.masked_columns.join(", ") }}
+                </template>
+              </span>
+            </div>
+            <p v-if="sqlResult" class="dw-sql-echo" :title="sqlResult.sql">实际执行：{{ sqlResult.sql }}</p>
+            <p v-if="sqlResult" class="dw-dim">{{ sqlResult.note }}</p>
+            <div v-if="sqlResult" class="dw-table-wrap">
+              <table class="dw-grid">
+                <thead>
+                  <tr>
+                    <th v-for="c in sqlResult.columns" :key="c">{{ c }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(row, i) in sqlResult.rows" :key="i">
+                    <td v-for="(cell, j) in row" :key="j" :title="cell">{{ cell }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-if="sqlResult.rows.length === 0" class="dw-dim">（该查询没有返回数据行）</p>
             </div>
           </div>
         </div>
@@ -663,5 +820,81 @@ onMounted(() => {
 .dw-masked-col {
   color: #6b7688;
   font-style: italic;
+}
+
+/* FEAT-060：SQL 查询页（沿用开发者视图的暗色等宽风格） */
+.dw-mode {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 0 2px;
+}
+.dw-mode-btn {
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid #2c3546;
+  background: #141926;
+  color: #cbd3e1;
+  font: inherit;
+  cursor: pointer;
+}
+.dw-mode-btn:hover {
+  border-color: #396cd8;
+  color: #9dbcff;
+}
+.dw-mode-btn.active {
+  background: #396cd8;
+  border-color: #396cd8;
+  color: #fff;
+}
+.dw-mode-hint {
+  color: #7d8798;
+  font-size: 11px;
+}
+.dw-sql {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow: auto;
+}
+.dw-sql-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.dw-sql-limit {
+  background: #141926;
+  color: #cbd3e1;
+  border: 1px solid #2c3546;
+  border-radius: 6px;
+  padding: 3px 6px;
+  font: inherit;
+}
+.dw-sql-editor {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  background: #141926;
+  color: #e6ecf7;
+  border: 1px solid #2c3546;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  line-height: 1.6;
+}
+.dw-sql-editor:focus {
+  outline: none;
+  border-color: #396cd8;
+}
+.dw-sql-echo {
+  margin: 0;
+  color: #7d8798;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

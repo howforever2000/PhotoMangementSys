@@ -414,10 +414,67 @@ pub struct RowsResult {
 /// 敏感列判定：口令 / 令牌 / 密钥 / 盐值
 fn is_sensitive_column(col: &str) -> bool {
     let c = col.to_ascii_lowercase();
-    const PAT: [&str; 8] = [
-        "password", "passwd", "pwd", "token", "secret", "salt", "api_key", "private_key",
+    // FEAT-060：口令/令牌类 + 用户身份类一并对齐打码（开发者视图不需要看到明文用户信息）
+    const CONTAINS: [&str; 16] = [
+        "password", "passwd", "token", "secret", "salt", "api_key", "private_key",
+        "email", "phone", "mobile", "username", "user_name", "id_card", "real_name",
+        "realname", "avatar_path",
     ];
-    PAT.iter().any(|p| c.contains(p))
+    // 短词只做整列名匹配，避免 "tel" 命中 "title"、"mail" 命中 "mailbox_size"
+    const EXACT: [&str; 5] = ["pwd", "tel", "mail", "cell", "account"];
+    CONTAINS.iter().any(|p| c.contains(p)) || EXACT.iter().any(|p| c == *p)
+}
+
+/// 值指纹兜底打码（FEAT-060）
+///
+/// 列名可以被打码规则骗过（`SELECT username AS n`），因此对「看起来就是身份信息或
+/// 凭据」的**值**再兜一层：口令哈希 / 邮箱 / 大陆手机号 / 身份证 / 长随机串。
+fn redact_value(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let lower = t.to_ascii_lowercase();
+    if lower.starts_with("$argon2")
+        || lower.starts_with("$2a$")
+        || lower.starts_with("$2b$")
+        || lower.starts_with("$pbkdf2")
+    {
+        return Some("<口令哈希 · 已打码>".to_string());
+    }
+    let cs: Vec<char> = t.chars().collect();
+    let n = cs.len();
+    let no_space = !t.chars().any(|c| c.is_whitespace());
+    if no_space && t.matches('@').count() == 1 {
+        if let Some((left, right)) = t.split_once('@') {
+            if !left.is_empty() && right.contains('.') {
+                let head: String = left.chars().take(1).collect();
+                return Some(format!("{head}***@{right}"));
+            }
+        }
+    }
+    if n == 11 && cs.iter().all(|c| c.is_ascii_digit()) && cs[0] == '1' {
+        let a: String = cs[..3].iter().collect();
+        let b: String = cs[7..].iter().collect();
+        return Some(format!("{a}****{b}"));
+    }
+    if n == 18
+        && cs[..17].iter().all(|c| c.is_ascii_digit())
+        && (cs[17].is_ascii_digit() || cs[17] == 'x' || cs[17] == 'X')
+    {
+        let a: String = cs[..2].iter().collect();
+        let b: String = cs[16..].iter().collect();
+        return Some(format!("{a}**********{b}"));
+    }
+    if n >= 32
+        && no_space
+        && cs
+            .iter()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '=' | '+' | '/' | '.'))
+    {
+        return Some(format!("<疑似令牌/密文 {n} 字符 · 已打码>"));
+    }
+    None
 }
 
 /// 单元格 → 字符串（BLOB 只报字节数；长文本截断）
@@ -488,7 +545,9 @@ pub fn rows(app: &AppHandle, db: &str, table: &str, limit: i64) -> Result<RowsRe
                 continue;
             }
             let v = row.get_ref(idx).map_err(|e| format!("读取列失败: {e}"))?;
-            cells.push(cell_to_string(v));
+            let s = cell_to_string(v);
+            // FEAT-060：值指纹兜底（列名可被别名绕过）
+            cells.push(redact_value(&s).unwrap_or(s));
         }
         rows_out.push(cells);
     }
@@ -506,5 +565,149 @@ pub fn rows(app: &AppHandle, db: &str, table: &str, limit: i64) -> Result<RowsRe
         truncated: total > rows_out.len() as i64,
         rows: rows_out,
         total,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// 4. 只读 SQL 沙箱（FEAT-060）
+// ---------------------------------------------------------------------------
+
+/// 单条 SQL 的只读结果（已脱敏）
+#[derive(Debug, Clone, Serialize)]
+pub struct SqlResult {
+    pub db: String,
+    /// 实际执行的 SQL（自动补 LIMIT 后，便于与输入对照）
+    pub sql: String,
+    pub columns: Vec<String>,
+    /// 已打码的列名
+    pub masked_columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    /// 返回行数
+    pub returned: usize,
+    /// 是否被行数上限截断
+    pub truncated: bool,
+    /// 执行耗时（毫秒）
+    pub elapsed_ms: u64,
+    /// 只读边界说明
+    pub note: String,
+}
+
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// 按「词边界」找关键字，避免 selected / created_at 这类误判
+fn contains_keyword(hay: &str, kw: &str) -> bool {
+    let bytes = hay.as_bytes();
+    let mut from = 0usize;
+    while let Some(pos) = hay[from..].find(kw) {
+        let i = from + pos;
+        let end = i + kw.len();
+        let ok_before = i == 0 || !is_word_byte(bytes[i - 1]);
+        let ok_after = end >= bytes.len() || !is_word_byte(bytes[end]);
+        if ok_before && ok_after {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// 只读沙箱校验 + 自动补 LIMIT
+///
+/// 纪律：单条语句；只允许 SELECT / WITH ... SELECT / EXPLAIN；禁止一切写与元操作；
+/// 未写 LIMIT 时自动追加（写了也由上层行数上限兜底）。
+fn guard_sql(raw: &str, limit: i64) -> Result<String, String> {
+    let body = raw.trim().trim_end_matches(';').trim();
+    if body.is_empty() {
+        return Err("SQL 为空".into());
+    }
+    if body.contains(';') {
+        return Err("只允许单条语句（请去掉分号分隔的多条 SQL）".into());
+    }
+    // 行注释可能被用来藏关键字：剥掉后再做检查
+    let stripped: String = body
+        .lines()
+        .map(|l| match l.find("--") {
+            Some(i) => &l[..i],
+            None => l,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let head = stripped.trim_start().to_ascii_lowercase();
+    if !(head.starts_with("select") || head.starts_with("with") || head.starts_with("explain")) {
+        return Err("只读沙箱：仅允许 SELECT / WITH ... SELECT / EXPLAIN".into());
+    }
+    const FORBID: [&str; 15] = [
+        "insert", "update", "delete", "drop", "alter", "create", "replace", "attach",
+        "detach", "pragma", "vacuum", "reindex", "begin", "commit", "rollback",
+    ];
+    for k in FORBID {
+        if contains_keyword(&head, k) {
+            return Err(format!("只读沙箱：不允许 {k}（开发者视图不提供任何写入口）"));
+        }
+    }
+    if contains_keyword(&head, "limit") {
+        Ok(body.to_string())
+    } else {
+        Ok(format!("{body} LIMIT {limit}"))
+    }
+}
+
+/// 执行只读 SQL（FEAT-060）
+pub fn sql(app: &AppHandle, db: &str, sql_text: &str, limit: i64) -> Result<SqlResult, String> {
+    let limit = limit.clamp(1, MAX_LIMIT);
+    let path = db_path_by_key(app, db)?;
+    if !path.is_file() {
+        return Err(format!("库文件不存在: {}", path.display()));
+    }
+    let started = std::time::Instant::now();
+    let conn = open_ro(&path)?;
+    let stmt_sql = guard_sql(sql_text, limit)?;
+    let mut stmt = conn.prepare(&stmt_sql).map_err(|e| format!("SQL 解析失败: {e}"))?;
+    let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let masked_columns: Vec<String> = columns
+        .iter()
+        .filter(|c| is_sensitive_column(c))
+        .cloned()
+        .collect();
+
+    let mut out: Vec<Vec<String>> = Vec::new();
+    let mut truncated = false;
+    {
+        let mut q = stmt.query([]).map_err(|e| format!("执行失败: {e}"))?;
+        while let Some(row) = q.next().map_err(|e| format!("读取行失败: {e}"))? {
+            if out.len() >= limit as usize {
+                truncated = true;
+                break;
+            }
+            let mut cells: Vec<String> = Vec::with_capacity(columns.len());
+            for (idx, col) in columns.iter().enumerate() {
+                if is_sensitive_column(col) {
+                    cells.push("••••••（已打码）".to_string());
+                    continue;
+                }
+                let v = row.get_ref(idx).map_err(|e| format!("读取列失败: {e}"))?;
+                let s = cell_to_string(v);
+                cells.push(redact_value(&s).unwrap_or(s));
+            }
+            out.push(cells);
+        }
+    }
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    logger::log_info(&format!(
+        "devdata::sql db={db} limit={limit} 返回 {} 行 耗时 {elapsed_ms}ms",
+        out.len()
+    ));
+    Ok(SqlResult {
+        db: db.into(),
+        sql: stmt_sql,
+        columns,
+        masked_columns,
+        returned: out.len(),
+        rows: out,
+        truncated,
+        elapsed_ms,
+        note: "只读连接；仅 SELECT/WITH/EXPLAIN；敏感列与疑似身份/凭据值默认打码，无开关".into(),
     })
 }
