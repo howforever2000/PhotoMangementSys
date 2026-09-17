@@ -99,6 +99,13 @@ const router = createRouter({
       name: "album-detail",
       component: () => import("../views/AlbumDetail.vue"),
     },
+    {
+      // 创意工坊（FEAT-063）：图片编辑小组件入口
+      // 首个小组件：区域直方图均衡化（框选 / 画蒙版）
+      path: "/workshop",
+      name: "workshop",
+      component: () => import("../views/Workshop.vue"),
+    },
   ],
 });
 
