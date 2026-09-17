@@ -93,13 +93,19 @@ function goBack() {
         </article>
       </main>
 
-      <!-- 区域直方图均衡化小组件挂载点（FEAT-063，实际组件随后续提交接入） -->
+      <!-- 区域直方图均衡化小组件（FEAT-063） -->
       <template v-else-if="activeWidget === 'region-eq'">
-        <div class="widget-host" :style="cardStyle">组件接入中…</div>
+        <WorkshopRegionEq />
       </template>
     </div>
   </div>
 </template>
+
+<script lang="ts">
+// 工坊小组件按需引入（放在独立 script 块，保持 setup 块聚焦布局逻辑）
+import WorkshopRegionEq from "../components/workshop/WorkshopRegionEq.vue";
+export default { components: { WorkshopRegionEq } };
+</script>
 
 <style scoped>
 .workshop-page {
