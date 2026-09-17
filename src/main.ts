@@ -28,14 +28,20 @@ const isDevWindow = isLogWindow || isDataWindow;
 function showFatal(msg: string) {
   const el = document.getElementById("app");
   if (!el) return;
-  const name = isLogWindow ? "日志窗口" : "数据与路径窗口";
+  const name = isLogWindow ? "日志窗口" : isDataWindow ? "数据与路径窗口" : "主窗口";
+  const prefix = isDevWindow ? "[开发者视角] " : "";
   el.innerHTML = "";
   const box = document.createElement("pre");
   box.style.cssText =
     "margin:0;padding:16px;color:#ff8585;background:#0c0e14;font:12px/1.6 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all;height:100vh;box-sizing:border-box;overflow:auto";
-  box.textContent = `[开发者视角] ${name}启动失败：\n\n${msg}`;
+  box.textContent = `${prefix}${name}启动失败：\n\n${msg}`;
   el.appendChild(box);
 }
+
+/** 启动期捕获到的最后一条错误（供看门狗诊断文案用） */
+let bootError = "";
+/** 根组件是否已挂载成功（挂载成功后再出错不再覆盖界面，避免误伤正常业务） */
+let mounted = false;
 
 if (isDevWindow) {
   window.addEventListener("error", (e) => showFatal(`${e.message}\n@ ${e.filename}:${e.lineno}`));
@@ -46,6 +52,40 @@ if (isDevWindow) {
   document.documentElement.style.background = dark;
   document.documentElement.style.colorScheme = "dark";
   document.body.style.background = dark;
+} else {
+  /**
+   * 主窗口启动看门狗（BUG-2026-0917-003）：
+   * 渲染引擎异常时（WebView2 渲染进程崩溃 / 前端资源加载失败 / 脚本执行出错），
+   * 窗口会照常创建但页面永远空白——此前用户只能看到一个"卡死"的白窗口，
+   * 得不到任何提示。这里在启动期捕获错误，并在超时未挂载时把诊断信息画到窗口里。
+   */
+  window.addEventListener("error", (e) => {
+    if (mounted) return;
+    bootError = `${e.message}\n@ ${e.filename}:${e.lineno}`;
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    if (mounted) return;
+    bootError = String(e.reason);
+  });
+
+  const BOOT_TIMEOUT_MS = 10000;
+  window.setTimeout(() => {
+    if (mounted) return;
+    const el = document.getElementById("app");
+    if (el && el.childElementCount > 0) return; // 已渲染出内容，不算白屏
+    const lines = [
+      `页面在 ${BOOT_TIMEOUT_MS / 1000} 秒内没有渲染出任何内容（白屏）。`,
+      "",
+      "可能原因：",
+      "1. WebView2 运行时异常（渲染进程崩溃）—— 检查系统是否安装 / 更新 WebView2 Runtime；",
+      "2. 开发模式下前端 dev server 未就绪（默认 http://localhost:1420）；",
+      "3. 页面脚本执行出错或资源加载失败。",
+      "",
+      "可尝试：完全退出应用后重新启动；若持续出现，请查看日志目录下的 app.log。",
+    ];
+    if (bootError) lines.push("", "最近捕获到的错误：", bootError);
+    showFatal(lines.join("\n"));
+  }, BOOT_TIMEOUT_MS);
 }
 
 /**
@@ -75,8 +115,11 @@ async function bootstrap() {
       app.use(router);
       app.mount("#app");
     }
+    mounted = true; // 挂载成功——此后启动看门狗不再介入
   } catch (e) {
-    if (isDevWindow) showFatal(String(e));
+    // 主窗口挂载失败（模块加载异常 / 渲染崩溃）也要把原因画到窗口里，
+    // 而不是留下一个无提示的白窗口（BUG-2026-0917-003）。
+    if (!mounted) showFatal(String(e));
     else throw e;
   }
 }

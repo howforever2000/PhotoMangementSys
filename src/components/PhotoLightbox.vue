@@ -254,7 +254,16 @@ function drawHistogram() {
 
 watch([photoInfo, histCanvas], () => nextTick(drawHistogram), { deep: false });
 
-// 切换照片时重新加载信息（immediate 覆盖首次打开）
+/**
+ * 切换照片时重新加载信息。
+ *
+ * ⚠ 这里**刻意不使用** `{ immediate: true }`：immediate 会在 setup 期间同步执行回调，
+ * 而回调读取的 `metaOverrides`（L278）与 `rating`（L332）等 ref 在其下方才声明，
+ * 触发 TDZ —— 首次打开灯箱即抛
+ * `ReferenceError: Cannot access 'metaOverrides' before initialization`
+ * （BUG-2026-0917-001，时间线 / 回忆页打开灯箱必现）。
+ * 首次加载改由文件末尾 `initForCurrentPhoto()` 在全部状态声明完成后显式触发。
+ */
 watch(
   () => photo.value.path,
   (p) => {
@@ -262,7 +271,6 @@ watch(
     void tryEnsureScanned(p);
     void loadUserMeta(p);
   },
-  { immediate: true },
 );
 
 /**
@@ -377,6 +385,20 @@ async function saveTags(next: string[]) {
     notify.error("保存标签失败", String(e));
   }
 }
+
+/**
+ * 首次打开灯箱时加载当前照片的信息 / 扫描状态 / 用户元数据 —— 取代原先的 immediate watch。
+ *
+ * 必须放在所有相关响应式状态（metaOverrides / rating / tags …）声明**之后**调用：
+ * 在 setup 期间同步读取尚未初始化的 const ref 会触发 TDZ（BUG-2026-0917-001）。
+ */
+function initForCurrentPhoto() {
+  const p = photo.value.path;
+  void loadPhotoInfo(p);
+  void tryEnsureScanned(p);
+  void loadUserMeta(p);
+}
+void initForCurrentPhoto();
 
 function addTag() {
   const t = tagInput.value.trim();
