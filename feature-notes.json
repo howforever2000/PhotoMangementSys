@@ -1956,7 +1956,51 @@
       ],
       "created_at": "2026-09-25T13:00:00+08:00",
       "updated_at": "2026-09-25T13:00:00+08:00"
+    },
+    {
+      "id": "FEAT-063",
+      "name": "创意工坊 · 区域直方图均衡化小组件",
+      "status": "done",
+      "description": "主页原「图像处理（待开发）」板块升级为「创意工坊」图片编辑小组件入口（/workshop Hub 页），并落地第一个小组件：区域直方图均衡化。用户框选（拖拽矩形）或画笔涂抹/橡皮生成蒙版，只对选中区域做均衡化（全局均衡 / CLAHE 二选一，强度与羽化可调）。处理由独立 Python 微服务承担：python-studio/server.py（FastAPI + OpenCV，端口 STUDIO_PORT 可配默认 8790），LAB 亮度通道处理避免偏色，蒙版高斯羽化后按像素线性混合，未选中区域保持原样；超大图等比降采样保护。Rust 侧新增 studio.rs 精简版 ensure（探活→实例收养→启动→就绪等待，实例文件 studio-instance.json），复刻 vision.rs 的 VCR 服务管理模式；studio_ensure 返回基址后前端 fetch 直连（multipart：原图 asset 协议原始字节 + 蒙版 PNG），保存结果经 studio_save_result 落盘（前端无 fs 写权限）。",
+      "related_files": [
+        "src/views/Home.vue",
+        "src/router/index.ts",
+        "src/views/Workshop.vue",
+        "src/components/workshop/WorkshopRegionEq.vue",
+        "python-studio/server.py",
+        "src-tauri/src/studio.rs",
+        "src-tauri/src/lib.rs"
+      ],
+      "keywords": [
+        "创意工坊",
+        "小组件",
+        "区域直方图均衡化",
+        "蒙版",
+        "框选",
+        "画笔",
+        "CLAHE",
+        "羽化",
+        "python-studio",
+        "studio_ensure"
+      ],
+      "implementation": {
+        "backend_py": "python-studio/server.py：GET /health（{ok,service,api}）；POST /api/region-equalize multipart(image+mask+mode+strength+feather) → BGR→LAB，L 通道 equalizeHist 或 createCLAHE(clipLimit=1+strength*3)，蒙版 GaussianBlur(2*feather+1) 羽化 ×strength 与原 L 线性混合，JPEG 92 返回；仅监听 127.0.0.1 + CORS 全放行（前端 WebView2 直连）。",
+        "backend_rs": "studio.rs：STUDIO_BASE 静态缓存 → probe /health → studio-instance.json 收养（pid_alive + api 版本校验，失败 kill+清实例）→ spawn（打包版 resource/studio/studio-server.exe 优先，开发版 python python-studio/server.py，CREATE_NO_WINDOW）→ 20s 就绪轮询；命令 studio_ensure / studio_save_result 注册进 lib.rs。",
+        "frontend": "Home.vue 模块卡片改创意工坊 ready:true；/workshop 路由 + Workshop.vue Hub（卡片网格，预留后续小组件位）；WorkshopRegionEq.vue：蒙版离屏 canvas（原图分辨率，白=选中）+ 红色半透明叠加预览 + 框选拖拽虚线框；原图走 convertFileSrc fetch 原始字节不经 canvas 重编码；原图/结果对比勾选，保存走 saveFileDialog + studio_save_result。"
+      },
+      "highlights": [
+        "独立 Python 微服务与 VCR 完全解耦：无模型无预热，/health 即就绪，ensure 全程 <1s",
+        "LAB 亮度通道处理 + 蒙版羽化混合：只提亮选中区域，不偏色、边缘无硬边",
+        "前端直连 127.0.0.1 传原图字节，Rust 只管生命周期与落盘，链路最短"
+      ],
+      "tests": [
+        "npm run build（vue-tsc --noEmit + vite）通过；cargo check 通过",
+        "微服务冒烟：/health 200；合成暗区图 + 半图蒙版，clahe L 49→76 / global 49→67，未选亮区 198→199 保持不变，尺寸不变",
+        "人工冒烟建议：主页进创意工坊 → 打开小组件 → 选图 → 框选暗部 → 应用 → 勾选对比 → 保存"
+      ],
+      "created_at": "2026-09-17T13:20:00+08:00",
+      "updated_at": "2026-09-17T13:20:00+08:00"
     }
   ],
-  "updated": "2026-09-25T13:00:00+08:00"
+  "updated": "2026-09-17T13:20:00+08:00"
 }
