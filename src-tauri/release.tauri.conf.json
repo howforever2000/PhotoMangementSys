@@ -4,7 +4,18 @@
     "active": true,
     "resources": {
       "../python/dist/vcr-server.exe": "vcr/vcr-server.exe",
-      "../python/models/": "vcr/models/"
+      "../python/models/yolov8n-det.onnx": "vcr/models/yolov8n-det.onnx",
+      "../python/models/det_500m.onnx": "vcr/models/det_500m.onnx",
+      "../python/models/w600k_mbf.onnx": "vcr/models/w600k_mbf.onnx",
+      "../python/models/paddleocr-det.onnx": "vcr/models/paddleocr-det.onnx",
+      "../python/models/chinese-clip/onnx/model_fp16.onnx": "vcr/models/chinese-clip/onnx/model_fp16.onnx",
+      "../python/models/chinese-clip/tokenizer.json": "vcr/models/chinese-clip/tokenizer.json",
+      "../python/models/chinese-clip/vocab.txt": "vcr/models/chinese-clip/vocab.txt"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
     }
   }
 }

@@ -160,10 +160,11 @@ Notable optimizations implemented during development:
 
 ### 6.1 Installation
 
-- **Method 1 (recommended)**: Download an installer from the Release and run it (latest: **v0.2.0**, ~500 MB, bundles the VCR microservice and all AI models):
-  - [`PhotoManagementSys_0.2.0_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.2.0/PhotoManagementSys_0.2.0_x64-setup.exe) (NSIS, recommended)
-  - or [`PhotoManagementSys_0.2.0_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.2.0/PhotoManagementSys_0.2.0_x64_en-US.msi)
-  - Previous versions (v0.1.0 etc.) are available on the [Releases](https://github.com/howforever2000/PhotoMangementSys/releases) page
+- **Method 1 (recommended)**: Download an installer from the Release and run it (latest: **v0.3.1**, ~460 MB, bundles the VCR microservice and all runtime-required AI models):
+  - [`PhotoManagementSys_0.3.1_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64-setup.exe) (NSIS, per-user install into `%LOCALAPPDATA%`, no admin rights, recommended)
+  - or [`PhotoManagementSys_0.3.1_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64_en-US.msi) (MSI, per-machine install into `Program Files`, admin rights required)
+  - Upgrading: uninstall the old version first (the two installers use different install scopes; otherwise both copies remain)
+  - Previous versions (v0.2.0 / v0.1.0) are available on the [Releases](https://github.com/howforever2000/PhotoMangementSys/releases) page
 - Installers include the AI models by default (see Section 7). If a given installer does not include the models, place the model files into the model directory (see the model-placement instructions) before starting the application.
 
 ### 6.2 First Use
@@ -198,27 +199,29 @@ Notable optimizations implemented during development:
 
 ### 7.2 Model Placement
 
-Installers include the models by default. If a given installer does not, verify that the model directory contains the following files:
+Installers include the models by default. If a given installer does not, verify that the model directory contains the following files (v0.3.0 architecture: **image-classification models were retired**; content classification is now driven by the semantic model):
 
 ```
 vcr/models/
-├─ yolov8n-cls.onnx        # classification (required)
-├─ yolov8n-det.onnx        # COCO detection (required)
-├─ det_500m.onnx           # SCRFD face detection (required)
-├─ w600k_mbf.onnx          # ArcFace face embeddings (required)
-├─ paddleocr-det.onnx      # document OCR (optional)
-├─ album_groups.json       # 9-category definitions
-├─ imagenet_classes.txt    # ImageNet class names
-└─ imagenet_to_album.json  # ImageNet → category mapping
+├─ yolov8n-det.onnx                          # COCO detection / people (required)
+├─ det_500m.onnx                             # SCRFD face detection (required)
+├─ w600k_mbf.onnx                            # ArcFace face embeddings (required)
+├─ paddleocr-det.onnx                        # document OCR (optional, degrades automatically)
+└─ chinese-clip/                             # semantic model (B/16 fp16, required)
+   ├─ onnx/model_fp16.onnx                   #   dual-tower graph (split into vision/text on first use)
+   ├─ tokenizer.json                         # ! must sit next to onnx/, not inside it
+   └─ vocab.txt
 ```
 
-Optional models (degrade automatically when missing): `resnet18_places365.onnx` (scene), `efficientnet-b2-flowers.onnx` (flower expert).
+Optional tier (fetch on demand via "Performance settings → Model download"): `chinese-clip-fp32/` (B/16 fp32, 719 MB, GPU/DirectML capable).
+
+Retired (no longer needed): `yolov8*-cls.onnx`, `resnet18_places365.onnx`, `album_groups.json`, `imagenet_*.txt/json`.
 
 ### 7.3 Obtaining / Updating Models
 
-- **In-app download (v0.2.0+, recommended)**: via "⚙ Performance settings → 📥 Model download", download classification models (yolov8 x / l / m / s-cls) and the scene model (resnet18_places365) in the background; official / mirror sources are raced, and the ONNX export happens automatically.
+- **In-app download (v0.2.0+, recommended)**: via "⚙ Performance settings → 📥 Model download", fetch semantic model tiers (B/16 fp16 default / B/16 fp32 for GPU) in the background; official / mirror sources are raced.
 - **Face + OCR**: run `python/download_models.py` (downloads from GitHub / ModelScope).
-- **Classification + detection**: export with `ultralytics` (`python/export_model.py` for classification; similarly for detection), or copy the corresponding `.onnx` files from the `python/models/` directory of a development machine.
+- **Detection + semantic subgraphs**: copy the corresponding files from the `python/models/` directory of a development machine; on first use the service splits the CLIP dual-tower graph into `clip_vision.onnx` / `clip_text.onnx` (idempotent, numerically verified against the whole graph, and it requires a **writable** model directory — see 7.4).
 - Models are not committed to git (too large); obtain them via GitHub Release attachments (model zip) or the links in this README.
 
 ### 7.4 Release Build
@@ -230,6 +233,11 @@ powershell -ExecutionPolicy Bypass -File release.ps1
 ```
 
 The script performs: ① build `python/dist/vcr-server.exe` in a minimal venv → ② verify / complete models → ③ `npm install` → ④ `npx tauri build --config src-tauri/release.tauri.conf.json` (merges the release config, embedding the microservice and models into the installers).
+
+Two conventions (since v0.3.0):
+
+- **Explicit model list**: `bundle.resources` in `src-tauri/release.tauri.conf.json` lists the runtime-required models one by one instead of embedding the whole directory, so dev-only / retired models never ship (this shrank the v0.3.0 installer from 574 MB to 457 MB). When adding a required model, update both that list and the validation list in `release.ps1`.
+- **Model directory writability**: semantic graph splitting, tier persistence and in-app model downloads all write into the model directory, while the MSI installs into `Program Files` (read-only for non-elevated processes). At startup `vision::resolve_model_dir` resolves the model directory and, when the bundled one is read-only, creates a **hard-link copy** under `%APPDATA%\<identifier>\vcr-models` (zero-copy on the same volume) and uses it; the NSIS per-user install (`%LOCALAPPDATA%`) is writable and is used directly.
 
 Output location: `src-tauri/target/release/bundle/msi/` and `nsis/`.
 
@@ -307,6 +315,43 @@ Check that the corresponding `.onnx` files exist under `vcr/models/`; if not, ob
 ---
 
 ## 11. Version History
+
+### v0.3.1 (2026-09-16) — Unified face DB path + developer "Data & Paths" panel
+
+**Fixes**
+
+- **Split-brain face database** (BUG-2026-0916-005): `persons.rs` still built its path from the compile-time `CARGO_MANIFEST_DIR` (pointing at the build machine's source tree in installed builds), while the VCR microservice wrote to `VCR_DATA_DIR` — so the People page and the scanner read/wrote **two different databases** (on another machine the People page would always be empty; on the same machine it looked like the face data "was still there" while it was really the stale development copy). Now unified: the host points `VCR_DATA_DIR` at `app_data_dir/vcr-data` at startup (identical for installed and development builds), and both `persons.rs` and `spawn_server` resolve it the same way.
+- Effect: the face database now lives under `%APPDATA%\<identifier>\vcr-data\persons.db`; the legacy `python/data/persons.db` is no longer read (and is flagged as legacy in the new panel).
+
+**New features**
+
+- **Developer view · Data & Paths** (FEAT-058): new entry under ⚙ Settings, opening a dedicated child window (same pattern as the live-log window):
+  - **Runtime path inventory**: main album DB / face DB / thumbnail and avatar caches / model directory (including a "bundled directory is read-only → writable hard-link copy in app_data is in use" hint) / log directory / application exe — each with size, file count, an explanation of the convention, copy-to-clipboard and reveal-in-Explorer.
+  - **Database browsing**: table names and row counts for both databases (FTS shadow tables dimmed); click a table to preview the first N rows (20 / 50 / 200).
+  - **Safety boundary**: strictly read-only (`SQLITE_OPEN_READONLY`, no write path), table names validated against `sqlite_master`, no arbitrary SQL input, sensitive columns (`password_hash` / `token`, …) automatically masked, BLOBs shown as byte counts, cells truncated to 200 chars, row cap 200.
+
+### v0.3.0 (2026-09-16) — Semantic search & semantic classification v5
+
+**New features**
+
+- **Semantic search** (FEAT-055): Chinese-CLIP ViT-B/16 dual tower with a 512-dim shared space enables natural-language photo search. Image vectors are stored in `photo_embeddings`; the text tower encodes the query and recalls over the whole library by cosine similarity (confidence threshold instead of a fixed top-N); it is fused into smart search via RRF (k=60) with a `semantic_score` attached to semantic hits; scanning gains a 4th item `semantic` (encode thumbnails directly, skip already-embedded photos via incremental diff, batched transactional upserts plus progress events); when CLIP is not ready it silently degrades to keyword-only search and does not cold-start the service.
+- **Semantic classification v5** (FEAT-056): **image-classification models retired** (yolov8*-cls / Places365 / flower / food experts). Content classification is now user-defined: create a category → write keywords and exclusion terms → tune the match-strength threshold → matching photos are filed automatically. Score formula `score = max cos(image, keyword) − mean cos(image, neutral baseline)` makes one threshold usable across concepts; three new tables `photo_categories` / `photo_category_hits` / `clip_text_cache`; semantic model tiers (B/16 default / B/16 fp32) replace the old classifier picker.
+- **Model / acceleration verification** (FEAT-053): session-level reporting (actual bound provider, source model file, input metadata, CPU-fallback flag), `/benchmark` inference timing (speed-up ratio with acceleration on/off), automatic CPU fallback when a GPU session cannot be created, and a fix for `/health` reporting a hard-coded default tier.
+- **Developer live-log window** (FEAT-054): ⚙ Settings → Developer view, a cmd-style read-only live tail of `app.log` (incremental tail, coloured levels, filtering, pause/follow, 2000-line cap).
+- **UX**: click-to-preview from smart search, album jump with focus highlighting, explicit notice when semantic search is unavailable, import-failure details dialog with one-click retry, timeline clicks opening the in-app Lightbox.
+
+**Fixes**
+
+- Semantic search silently failing after restart (BUG-2026-0910-008); bare 500 on the first graph split because `onnx` was missing from the packaged build (BUG-2026-0920-005); semantic pipeline completely empty and silent due to a stale packaged model directory (BUG-2026-0920-006)
+- In-app semantic download placing `tokenizer.json` / `vocab.txt` in the wrong directory (BUG-2026-0920-002); every "model download" returning 404 (BUG-2026-0921-001)
+- Packaged build 2.9x slower than development (unpinned `onnxruntime`, BUG-2026-0921-002); fp16 dual tower silently sent to DirectML producing wrong vectors (BUG-2026-0920-003)
+- Combined scan overwriting stored tone fields with NULL (BUG-2026-0910-007); scanned photos reverting to "not scanned" (BUG-2026-0909-001)
+- **Packaging hardening**: the model directory is now resolved at runtime (it used to be built from the compile-time `CARGO_MANIFEST_DIR`, so installed builds pointed at the build machine's source tree — models shipped but reported as "not downloaded", and in-app downloads targeted a nonexistent directory); and because the MSI installs into `Program Files` where the model directory is read-only for non-elevated processes, a **hard-link copy** is now created under `%APPDATA%\<identifier>\vcr-models` (zero-copy on the same volume) to host graph splitting, tier persistence and model downloads.
+
+**Installer**
+
+- Size 574 MB → **457 MB**: only runtime-required models ship (person detection `yolov8n-det`, face `det_500m` + `w600k_mbf`, OCR `paddleocr-det`, semantic `chinese-clip/onnx/model_fp16.onnx`); retired classifiers and development-only models (`chinese-clip-fp32`, `chinese-clip-vit-b-16`) are no longer embedded and other tiers are downloaded in-app on demand.
+- Known limitation: the packaged `vcr-server.exe` does not include onnxruntime-directml, so DirectML acceleration is unavailable in installed builds (BUG-2026-0920-004, decision pending); the default B/16 fp16 semantic tier runs on CPU.
 
 ### v0.2.0 (2026-09-09) — VCR process governance & model management
 

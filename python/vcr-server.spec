@@ -20,6 +20,10 @@ a = Analysis(
         'uvicorn.protocols.http.auto', 'uvicorn.protocols.http.h11_impl',
         'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan.auto',
         'onnxruntime.capi._pybind_state', 'cv2',
+        # 语义搜索（FEAT-SEM）：tokenizer.json 加载 + CLIP 双塔拆图
+        # onnx 用于「首次拆图」（onnx.utils.extract_model）；
+        # 缺失会让全新安装下载模型后 /embed_text_batch 裸 500（BUG-2026-0920-005）
+        'tokenizers', 'onnx', 'onnx.utils', 'onnx.utils.extract_model',
     ],
     hookspath=[],
     hooksconfig={},

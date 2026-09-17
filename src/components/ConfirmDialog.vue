@@ -19,6 +19,8 @@ const props = defineProps<{
   confirmText?: string;
   /** 取消按钮文字（默认「取消」） */
   cancelText?: string;
+  /** 可选中性按钮（如「增量扫描」）；不传则不渲染，现有二元用法零影响 */
+  neutralText?: string;
   /** 是否危险操作（确认按钮红色，默认 true） */
   danger?: boolean;
 }>();
@@ -26,6 +28,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "confirm"): void;
   (e: "cancel"): void;
+  (e: "neutral"): void;
 }>();
 
 const theme = useThemeStore();
@@ -88,6 +91,15 @@ watch(
               @click="emit('cancel')"
             >
               {{ cancelText || "取消" }}
+            </button>
+            <!-- 可选中性按钮（三选场景：如 覆盖扫描 / 增量扫描 / 取消） -->
+            <button
+              v-if="neutralText"
+              class="btn"
+              :class="danger !== false ? 'btn-cancel' : 'btn-neutral'"
+              @click="emit('neutral')"
+            >
+              {{ neutralText }}
             </button>
             <button
               class="btn"
@@ -176,6 +188,17 @@ watch(
   background: #396cd8;
   color: #fff;
   border-color: #396cd8;
+}
+
+/* 中性按钮（非危险场景的第三选项）：主键淡蓝描边风格 */
+.btn-neutral {
+  background: #eef3fb;
+  color: #396cd8;
+  border-color: #396cd8;
+}
+
+.btn-neutral:hover {
+  background: #dce7f9;
 }
 
 /* 过渡动画 */

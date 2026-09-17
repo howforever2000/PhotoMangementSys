@@ -641,6 +641,967 @@
         "JSON 文件不能写注释；映射的备注要写在 generate_mapping.py（生成源）里，生成物保持纯净",
         "数据文件坏半个月才爆 = 有回退路径在偷偷供数（旧 exe 的独立模型目录）；修完加载路径要立刻用真实数据冒烟，确认「第一次真正读取」发生在可控时机"
       ]
+    },
+    {
+      "id": "BUG-2026-0909-001",
+      "title": "已入库变未入库：父子相册共享照片行归属互抢 + 损坏文件被静默跳过",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": [
+        "全部扫描入库后，隔一会发现有几个照片没有入库（相册徽标 已入库 N/M，M-N 有差额）",
+        "再次入库后，之前已入库的照片反而变成未入库（每次重扫缺口还换地方）",
+        "用户怀疑「数据库存不下」"
+      ],
+      "root_cause": {
+        "summary": "两个独立机制叠加。①主因：photo_content_scan 每张照片一行、album_id 单一归属，父子相册共享照片（父目录递归含子目录）时谁最后重扫行就归谁；fill_scanned_counts 按 album_id 分组统计 → 子相册扫描后父相册计数骤减（实测：川西合集 87 目录下 604 行中 252 行挂在子相册 89/90 名下，徽标只显示 353/605；家乡-亲友 86 与其 6 个子相册、川西合集与 25/26/27/31/24、大学朋友 6 与 cancan 91 同理）。②真缺的 10 张：文件损坏（9 张 UnidentifiedImageError/broken data stream——文件头是乱数据非图像；1 张截断恰 1 MiB），识别失败被静默跳过且无日志留痕，重扫永远缺同样几张。",
+        "detail": [
+          "行归属互抢：upsert 的 ON CONFLICT(photo_hash) DO UPDATE SET album_id=excluded.album_id 本身合理（相册移动场景需要），错在统计口径",
+          " scanned_at 时间线实锤：87 父相册 14:04 扫（353 行），15:57/16:00 扫子相册 89/90 后行被抢走 → 父相册徽标骤降",
+          "损坏文件无法解码，任何重扫都无法导入，只能换文件修复",
+          "次要发现：日志有 4 次 scan_album_combined 因 FTS 索引失步 SQLITE_CORRUPT_VTAB(267) 整批回滚（09-12），现行写入路径自愈已覆盖，近期扫描全部正常"
+        ]
+      },
+      "fix": "① fill_scanned_counts 改按相册目录子树前缀统计（count_scanned_by_prefix：单查询取用户全部已入库路径 + Rust 侧 starts_with 匹配，前缀强制以分隔符结尾防同名前缀误匹配）；与 photo_count（递归文件数）口径一致，父子相册各自显示完整覆盖，行归属不再影响徽标。② build_records_combined 对识别失败跳过的照片逐条写日志（路径+错误），可事后定位差额。真实 DB 模拟验证：9 个被抢行相册全部恢复完整覆盖，剩余缺口均为损坏文件或未扫描相册。",
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/content.rs"
+      ],
+      "log_hint": "app.log grep scan_album_combined（ERR=整相册回滚）；修复后 grep '[scan] 识别失败跳过' 可定位损坏文件清单",
+      "created_at": "2026-09-09T16:45:00+08:00",
+      "fixed_at": "2026-09-09T16:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0910-001",
+      "title": "开发者日志副窗口拖垮全局 UI：同步命令阻塞主线程 + 洪峰读取放大（全应用卡顿/日志窗白斑不刷新）",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": [
+        "开着开发者视角日志窗口时，其他所有界面（相册浏览/缩略图/翻页）明显卡顿",
+        "日志窗口长时间一条日志都刷不出来（invoke 响应被主线程排队饿死）",
+        "日志窗口刚开始黑色，随后内部出现白色板块（渲染滞后露出 webview 默认白底）"
+      ],
+      "root_cause": {
+        "summary": "tail_dev_log 写成了非 async 命令：Tauri v2 中非 async 命令在主线程（事件循环）上执行，而所有窗口共用这一个事件循环。日志窗口每 500ms 轮询一次，每次都在主线程做文件 IO + JSON 序列化；扫描期 app.log 洪峰一次可新增数 MB（read_to_end 无上限），单次响应体积与序列化时间爆炸，形成『越卡越读、越读越卡』的死亡螺旋——扫描/缩略图线程持续写日志，越冻结累积越多。白斑：日志副窗口不初始化主题 store，html/body 保持 main.css 默认浅色底，绘制跟不上时露出白底。",
+        "detail": [
+          "规格书明确要求『spawn_blocking 调 logger::tail_log（文件 IO 不持 AppState 锁）』，实现漏掉写成同步命令 Ok(logger::tail_log(...))——bug 直接来源",
+          "tail_log 增量读取 read_to_end 一直到 EOF 无单次上限：洪峰期读放大 → 序列化放大 → IPC 放大 → 前端解析渲染放大，四重放大全落在关键路径上",
+          "前端 setInterval(500ms) 无防重入：主线程繁忙时上一轮 invoke 未返回，下一轮照发，IPC 请求积压进一步放大卡顿",
+          "main.ts 副窗口分支只装 pinia 但没人把 theme-dark 挂到 body；LogWindowApp 仅 .logwin 覆盖视口深色，HTML 文档层与原生窗口层均为默认浅色/白底"
+        ]
+      },
+      "fix": "① tail_dev_log 改 async 命令 + tauri::async_runtime::spawn_blocking，文件 IO/序列化移出主线程事件循环；② tail_log 单次读取（含增量）用 Read::take(max_bytes=64KB) 封顶，洪峰分帧追平，斩断死亡螺旋；③ LogWindowApp poll() 加 inFlight 防重入，上一轮未返回不叠加请求；④ 日志窗口三层固定纯黑不再做主题适配：原生层 WebviewWindowBuilder.background_color(Color(12,14,20,255))（连打开瞬间白闪一起消掉）+ main.ts 副窗口分支写死 html/body 深色与 colorScheme:dark + 组件自身已是硬编码深色。cargo check / vue-tsc 通过。【14:20 真机复现验证】带修复构建后临时自动开窗截图：日志窗口正常显示（纯黑+彩色级别徽标+实时滚出 get_person_avatar 日志行），尾读 15.4MB 文件回填正常；空闲态 CPU：Rust 进程 ~25%/核、WebView2 合计 ~117%/核，无卡顿。此前『一条日志都不显示』确认为修复前主线程被同步命令反复阻塞、IPC 响应饿死所致。tail_log 协议已补 4 个单元测试（回填/增量/半行/轮转/封顶）全过。【16:00 同路径实测复现】用 npm run tauri dev（用户路径）+ PMS_AUTO_OPEN_DEVLOG=1 自动开窗：窗口显示正常（回填 712 行/16.8MB 文件）、空闲 12s CPU 实测 rust 0.02s + webview2 合计 0.25s + vite 0.09s（≈0）、0 条慢查询告警、文件无新增。同轮新增诊断仪表：状态栏显示「轮询 Yms（首帧 Zms）」、tail 慢查询 >200ms 才告警（5s 限频）、副窗口挂载失败直接红字显示错误原文（不再黑屏）、洪峰单次渲染上限 800→200 行。注：用户报障实例启动于 14:33，早于 15:20/15:40 的修复，属旧包测试。",
+      "related_files": [
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/logger.rs",
+        "src/main.ts",
+        "src/dev/LogWindowApp.vue",
+        "src-tauri/capabilities/dev-logs.json"
+      ],
+      "log_hint": "app.log 无直接报错（属性能型 bug）。复现=扫描/缩略图洪峰期间开日志窗，全局掉帧；修复后验证=同场景 UI 流畅、日志秒级滚出。grep tail_dev_log 无错误输出",
+      "created_at": "2026-09-10T11:40:00+08:00",
+      "fixed_at": "2026-09-10T11:40:00+08:00",
+      "plain_explanation": "通俗说：日志窗口每半秒要「瞟一眼」日志文件的新内容。这一眼原本也被安排在主干道（主线程）上做，而且一次能读好几 MB。扫描照片时日志增长飞快，主干道每隔半秒就被占住一会儿，于是全部界面卡顿；日志窗口自己排不上队，就表现为黑屏、什么都不显示（你看到的「白斑」也是渲染跟不上时露出的底色）。修法：这一眼挪到后巷去瞟（后台线程），并且每次最多只读 64KB。"
+    },
+    {
+      "id": "BUG-2026-0910-002",
+      "title": "人物画廊头像风暴：每开一次画廊 ~330 次顺序 IPC + 330 次全画廊重渲染，日志累计 15 万行（洪峰 ~1000 行/秒）",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": [
+        "打开人物画廊/回忆页时界面顿挫",
+        "app.log 95.5% 都是 get_person_avatar（151234 行，总量 15MB+），洪峰 ~1000 行/秒",
+        "日志副窗口开发后，风暴期日志窗口被洪水冲垮、全局卡顿被放大暴露"
+      ],
+      "root_cause": {
+        "summary": "PersonGallery.load() 对 list_persons 返回的每个人物逐个 await invoke(get_person_avatar)：几百人物 = 几百次顺序 IPC 往返（每次 2 行 AOP 日志），list_persons 被调 458 次 ↔ 头像 15.1 万次。且每来一个头像就 avatarMap.value = {...spread} 触发一次全画廊重渲染，n 人物 = O(n²) patch。该问题早于日志窗口功能存在（时间戳可证），日志窗口只是第一个实时消费者，把洪水变成了可见卡顿。",
+        "detail": [
+          "list_persons 调用 458 次 ↔ get_person_avatar 151234 次 ≈ 每次 330 人物，一一对应",
+          "RET 分布：74234 次 cache 命中 / 1383 次现场裁剪——缓存本身有效，风暴来自『顺序往返 + 逐条重渲染』而非解码",
+          "每条日志 write_log 都会 eprintln + 文件 write+flush（持锁），500 次/秒时 dev 终端与文件 IO 同步放大"
+        ]
+      },
+      "fix": "PersonGallery.load() 改为并发 8 路 worker 池拉取头像 + 本地汇总 next 映射后一次性赋值 avatarMap（330 次重渲染 → 1 次）；LogWindowApp.pushLines 单次洪峰超 800 行只保留最新 800 行（终端丢最旧语义）。cargo test 4/4、cargo check、vue-tsc 通过。【15:05 根治（采纳用户思路：点击才触发）】实测用户复测会话仍刷 23962 次/峰值 3603 行每秒——8 路并发只改节奏没改次数（26 次画廊加载 × ~920 人/次）。最终方案：① 新增 get_person_avatars_bulk 批量命令——后端本地逐个 stat 缓存文件，1 次往返带回全部命中路径、只写 1 行日志；② 未命中（需现场裁剪，~2%）前端占位，点击该人物（openPhotos→ensureAvatar 内联）时才走 get_person_avatar 现场裁剪；③ get_person_avatar 缓存命中路径不再写日志（噪音源头归零）。预期每次画廊加载：1 次 IPC + 1 行日志（原 ~920 次 + 1840 行）。【15:20 补充】Memories.vue 近期人物（前 8 位）同款 N+1 一并改用批量命令；全项目扫描确认其余循环（CategoryGallery/LocationGallery）均为按相册分批调用（命令本身接受整组路径），量级健康不处理。相关文件补：src-tauri/src/lib.rs（get_person_avatars_bulk）、src/views/Memories.vue。",
+      "related_files": [
+        "src/components/PersonGallery.vue",
+        "src/dev/LogWindowApp.vue",
+        "src-tauri/src/lib.rs",
+        "src/views/Memories.vue"
+      ],
+      "log_hint": "app.log grep get_person_avatar | grep -c END 看总量；修复后单次画廊加载应只剩 ~2×N 行且集中在一个短突发内",
+      "created_at": "2026-09-10T14:20:00+08:00",
+      "fixed_at": "2026-09-10T14:20:00+08:00",
+      "plain_explanation": "通俗说：人物画廊里有近 900 个人，原实现是「一个一个去问后端要头像」——开一次画廊就喊 900 次，每喊一次还记两条日志（一次就刷 1800 行）。好比去仓库取 900 件货却跑了 900 趟，还每趟都写进台账。修法：一次把清单全带回来（1 次往返、1 行日志、1 次界面刷新）；少数没缓存头像的人，等你点开他的时候再现场做——也就是「用到才算」。"
+    },
+    {
+      "id": "BUG-2026-0910-003",
+      "title": "get_person_photos 同步命令在主线程现场生成 884 张缩略图（1.7s 全应用冻结、窗口关闭无响应）",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": [
+        "点开照片较多的人物（P041，884 张，thumb_hit=0）时全应用卡死 ~1.7 秒",
+        "期间所有窗口无响应，日志副窗口点关闭无反应",
+        "文档注释与行为不符：注释写『不重新运算缩略图』，实际 9/16 起会现场补图"
+      ],
+      "root_cause": {
+        "summary": "get_person_photos 是非 async 命令（主线程执行）。BUG-2026-0916-001 给它加了『缺图现场补齐』（ensure_grid_thumb：解码原图→256px→落盘），从此同步命令变成了重活：884 张全缺时 1.7s 全部跑在主线程事件循环上，冻结所有窗口。缩略图体系本身是『浏览时按需生成 + 永久缓存』（扫描阶段刻意不生成，thumbs 缓存 395MB 即历史浏览所攒），P041 的照片从未被浏览过故全缺。",
+        "detail": [
+          "photo_scan.rs 刻意不依赖 thumbnail 模块（文件头注释明示解耦），扫描不预生成缩略图",
+          "get_person_photos 每 path 调 ensure_grid_thumb（解码+缩放+编码），884 次 × ~2ms ≈ 1.7s",
+          "主线程 = 所有窗口共用的事件循环 → 冻结期间 WM_CLOSE 都不处理 → 关窗无反应"
+        ]
+      },
+      "fix": "按代码库既有模式（get_photo_thumbs：短锁查表 → spawn_blocking 生成）改造：get_person_photos 改 async 命令，MutexGuard 短锁取相册归属后，把逐照片循环（含 ensure_grid_thumb 补图）整体抽成 build_person_photo_items() 放 spawn_blocking 执行，统计值以元组返回。cargo check + 单测 4/4 通过。效果：首次点开 1.7s 期间 UI 流畅（转圈等待），生成结果永久缓存后续秒开。",
+      "related_files": [
+        "src-tauri/src/lib.rs"
+      ],
+      "log_hint": "app.log grep get_person_photos 看 generated 数；修复后该命令耗时不变但不再冻结 UI",
+      "created_at": "2026-09-10T15:45:00+08:00",
+      "fixed_at": "2026-09-10T15:45:00+08:00",
+      "plain_explanation": "通俗说：点开某个人物时，他的 884 张照片还没有缩略图，程序就在主干道上当场「洗照片」（解大图→缩小→存盘），884 张花了 1.7 秒，期间所有窗口都动不了（连关闭按钮都没反应）。修法：洗照片挪到后巷做，界面转个圈但全程能操作；洗完存下来，第二次打开就是秒开。"
+    },
+    {
+      "id": "BUG-2026-0910-004",
+      "title": "构建产物陈旧导致『功能没生效』误判：release exe 与 dist 前端停留在 09-09（不会自动重建）",
+      "status": "fixed",
+      "severity": "medium",
+      "symptom": [
+        "用户报『日志窗口还是旧的、打开依然卡顿』，实际跑的是修复前的构建",
+        "target/release/photo-management-sys.exe（09-09）与 dist/（09-09）均不含日志窗口功能"
+      ],
+      "root_cause": {
+        "summary": "开发期修复只在 debug 路径（vite 实时供源）生效：debug exe 走 devUrl 所以前端永远最新，但 release exe 与 dist 静态资源不会随源码自动重建——dist 停留在 09-09，release exe 同样。用户双击旧 exe/旧 dist 时看到的自然是旧行为，却被当成『修复无效』。",
+        "detail": [
+          "npm run tauri dev：cargo 自动重建 exe + vite 实时供源（唯一『永远最新』的路径）",
+          "cargo build / 直接双击 target 下 exe：Rust 是旧的；无 vite 时前端加载失败",
+          "tauri build / release.ps1：前端取 dist——不先跑 npm run build 就是旧前端"
+        ]
+      },
+      "fix": "① 新增 app_info 命令（版本/dev 标志/exe 路径与构建时间）并在日志窗口状态栏显示构建指纹『v0.2.0 dev · exe 09-10 15:10』，跑错包一眼可辨；② 重新执行 npm run build 刷新 dist（已验证含 get_person_avatars_bulk 等全部新功能）；③ 规范：开发调试统一 npm run tauri dev，发布统一走 release.ps1（内含前端构建）。",
+      "related_files": [
+        "src-tauri/src/lib.rs",
+        "src/dev/LogWindowApp.vue",
+        "dist",
+        "release.ps1"
+      ],
+      "log_hint": "日志窗口状态栏右侧构建指纹；或 app.log 中『打开日志窗口耗时』行的有无（旧包也可能无此行）",
+      "created_at": "2026-09-10T16:30:00+08:00",
+      "fixed_at": "2026-09-10T16:30:00+08:00",
+      "plain_explanation": "通俗说：你当时测的是旧货。开发和打包用的是两套货架：开发模式（tauri dev）永远现做现用、必定最新；打包/安装版用的是 dist 里提前做好的「预制件」，改了代码它不会自动更新。你打开的正是 9 月 9 日的预制件——那会儿这个功能还没写出来，所以怎么看都不对。修法：重新做了一遍预制件，并在日志窗口状态栏加了「构建指纹」，跑的是哪个包一眼可见。"
+    },
+    {
+      "id": "BUG-2026-0910-005",
+      "title": "【真凶】open_dev_log_window 同步命令在主线程内建窗：窗口停在 about:blank（空白无标题）+ 卡死事件循环（全应用卡顿、进程偶发以 0xcfffffff 退出）",
+      "status": "fixed",
+      "severity": "critical",
+      "symptom": [
+        "点击 ⚙→开发者视角：日志窗口出现但纯黑空白，无日志行、连静态状态栏都没有（标题为空=停在 about:blank）",
+        "同时所有其他页面卡顿（事件循环被占）",
+        "用户实机曾出现进程以 exit code 0xcfffffff 退出（tauri dev 报 process didn't exit successfully）",
+        "app.log 中『打开日志窗口耗时』行缺失或仅出现在诊断自开路径"
+      ],
+      "root_cause": {
+        "summary": "open_dev_log_window 是非 async 命令——Tauri v2 中非 async 命令在主线程（事件循环）上执行，而 WebviewWindowBuilder::build() 在此处同步建窗：窗口对象能建出来（所以窗口可见），但导航/首帧永远不会完成（停在 about:blank，故空白且标题为空），同时事件循环在同步建窗期间被卡住（全应用卡顿），严重时进程直接退出。对照实验证明：同一份代码从后台线程建窗（PMS_AUTO_OPEN_DEVLOG 诊断开关 / std::thread::spawn）100% 正常——之前所有『成功复现』都走的是这条路径，因此一直没暴露；用户点击走 IPC→主线程路径，必现。",
+        "detail": [
+          "实测对照：诊断自开（后台线程）→ 窗口显示 712 行日志、空闲 CPU≈0；IPC 定时 invoke（等价点击）→ 窗口 935×657 可见但标题为空、页面全黑无文字（EnumWindows 取证）",
+          "main.ts 的副窗口 showFatal 未触发 → 说明不是前端 JS 异常，而是导航从未完成",
+          "窗口纯黑来自 builder 的 background_color（原生层，不需要 JS），所以黑屏不能作为『页面已加载』的依据",
+          "该根因同时解释历史现象：早期『黑底后出现白斑』『点开后全局卡顿』『关闭无响应』"
+        ]
+      },
+      "fix": "open_dev_log_window 改 async 命令，窗口创建抽为 build_dev_log_window() 并放入 tauri::async_runtime::spawn_blocking 执行（非主线程建窗），聚焦已存在窗口的路径保持原样。验证：同一 IPC 点击路径下窗口正常渲染——状态栏显示『200 行 · 16.81 MB · 轮询 3ms』与构建指纹『v0.2.0 dev · exe ...』，日志行正常滚出；vue-tsc / cargo check 通过。",
+      "related_files": [
+        "src-tauri/src/lib.rs",
+        "src/main.ts",
+        "src/dev/LogWindowApp.vue"
+      ],
+      "log_hint": "app.log grep '打开日志窗口耗时'：修复后应出现『（后台线程建窗，不阻塞主线程）』；若缺失而窗口存在则说明走了同步建窗路径",
+      "created_at": "2026-09-10T16:45:00+08:00",
+      "fixed_at": "2026-09-10T16:45:00+08:00",
+      "plain_explanation": "打个比方：这个应用只有一条主干道（主线程/事件循环），所有窗口的点击、刷新、画界面都得排队走这条路。你点「开发者视角」时，程序要造一个新窗口——但这个活儿被安排成「站在主干道正中间造房子」（同步命令）。结果：① 造房子期间所有人被堵在路上，所有页面一起卡；② 更坑的是房子只搭了个黑壳子，「通水通电」（网页加载）那一步永远没完成，因为负责通电的人也被堵在路上了——于是窗口永远停在毛坯状态：纯黑、没标题、一条日志都不显示。堵得特别死的时候，整栋楼会被判定为僵死，程序直接退出（就是你看到的 0xcfffffff 退出码）。为什么我反复测试都正常、你一用就坏？因为我之前用的自动开窗走的是后巷（后台线程），从来不占主干道——我一直在测后巷，你一直在走主干道。修法就是把造房子的活儿挪到后巷去做，主干道全程畅通。修好后实测：窗口秒开、日志正常滚出、读取只要 3 毫秒。",
+      "lessons": [
+        "Tauri v2 默认：非 async 命令在主线程（事件循环＝唯一车道）执行。文件 IO / 图片编解码 / 大批量 DB / 批量循环 invoke / 建窗等重活必须 async + spawn_blocking；占住车道＝所有窗口一起卡，严重时进程被判定僵死退出。",
+        "建窗尤其注意：在主线程事件循环回调内同步 build() 会导致导航/首帧永不完成（about:blank 空白窗），且窗口网页加载同样依赖该线程，等于自己等自己。",
+        "日志体系分工：写入保持轻量即可；读取一律后台线程 + 单次封顶（64KB）；高频成功路径不写日志——否则台账洪水会把消费端（日志窗口）冲垮。",
+        "列表数据一次批量取（禁止 N+1 往返）；贵操作点击再触发（用到才算）。",
+        "验收纪律：必须走用户真实路径（IPC/点击）。本次内部调用与后台线程路径全绿、IPC 点击必现——只测内部路径等于没测。"
+      ]
+    },
+    {
+      "id": "BUG-2026-0910-006",
+      "title": "语义搜索接入 DirectML：fp16 CLIP 图在 DML 上算子级数值错误（embedding 余弦仅 0.43），全量优化则 vision 塔初始化崩溃",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": [
+        "启用 CLIP 通道 GPU 加速后，同一文本在 DML 与 CPU 上的 embedding 余弦仅 0.241，语义检索结果完全不可用（无明显报错）",
+        "clip_vision.onnx 在 DML + 默认全量图优化（ORT_ENABLE_ALL）下创建会话即崩：SimplifiedLayerNormFusion 插入的 InsertedPrecisionFreeCast_* 节点在 provider 分区时 GetIndexFromName 失败",
+        "拆图时 verify_subgraphs 用默认 SessionOptions 能跑通（cos=1.0），掩盖了问题——registry 用自定义 SessionOptions 才暴露"
+      ],
+      "root_cause": {
+        "summary": "AMD DirectML 对 Xenova Chinese-CLIP fp16 图的算子实现有数值 bug；优化级别决定表现形式（ALL 崩 / BASIC、DISABLE 结果错）",
+        "detail": [
+          "对照实验：DML 上 fp16 同一输入 CPU 基准 cos——ALL 优化 = 1.0000（但 vision 塔会话创建崩溃）、BASIC = 0.4313、DISABLE = 0.4313",
+          "BASIC/DISABLE 下输出错误 = DML 执行该 fp16 图算子本身有问题（非优化器问题）；ALL 优化下部分算子被融合重写才偶然正确",
+          "推理：fp16 attention/norm 链路上 DML 的精度/实现缺陷，无法通过调优化级别或 SessionOptions 稳定绕过",
+          "曾尝试改走 fp32 整图（Xenova onnx/model.onnx 754MB）以保留 GPU 加速，因收益不足（模型体积翻倍）按用户决策放弃"
+        ]
+      },
+      "fix": "语义通道固定 CPU 推理：model_registry 的 clip_vision/clip_text 固定 CPUExecutionProvider + ORT_ENABLE_BASIC + fp16（377MB）；撤销 CLIP 独立 GPU 加速开关（set_clip_gpu/_clip_providers//clip_gpu 端点全部移除）。实测固定 CPU 后 embedding 与 fp32 基线一致（海边日落 vs 日落图 cos=0.4277），全库索引 1.1 万张约 17min（CPU 91ms/张），可接受",
+      "related_files": [
+        "python/vcr/model_registry.py",
+        "python/server.py",
+        "python/vcr/config.py",
+        "src-tauri/src/model_dl.rs"
+      ],
+      "log_hint": "app.log grep 'embed' 无异常；该类问题的唯一可靠判据是 CPU/GPU 数值一致性对比（同一文本两路 embedding 余弦），不要以『会话创建成功』或『无报错』作为 GPU 可用结论",
+      "created_at": "2026-09-10T17:30:00+08:00",
+      "fixed_at": "2026-09-10T17:30:00+08:00",
+      "plain_explanation": "显卡驱动里的 AI 加速通道（DirectML）在处理这个半精度模型时算错了数——不是崩溃、不报错，而是安静地给出错误结果（相似度从 0.43 掉到 0.24，等于搜出来的东西完全不相关）。更隐蔽的是：只有调整优化等级才暴露不同症状（一个崩、一个静默算错），而模型刚拆分完的自检恰好用了默认参数，显示一切正常。最终决定放弃这条加速路：语义索引本来就在后台跑，CPU 17 分钟能跑完 1.1 万张，不值得为它让结果不可信。",
+      "lessons": [
+        "接入新模型的 GPU 加速前，必须先做 CPU/GPU 数值一致性对比（同一输入两路 embedding 余弦 ≥0.999），『能跑通』不等于『算得对』",
+        "ONNX fp16 图在第三方 EP（DirectML）上要单独验证：优化级别不同结果可能不同（ALL 崩 / BASIC 静默错），不能只测一个档位",
+        "自检脚本要覆盖真实加载路径（registry 的 SessionOptions），用默认参数自检会漏掉配置相关的崩溃",
+        "静默数值错误比崩溃更危险：语义检索场景下表现为『能搜但搜不准』，无法从日志发现"
+      ]
+    },
+    {
+      "id": "BUG-2026-0910-007",
+      "title": "组合扫描勾选 AI 但不勾影调时，已入库的影调字段被 upsert 覆盖为 NULL（数据静默丢失）",
+      "status": "fixed",
+      "severity": "medium",
+      "symptom": [
+        "先用「影调分析 + AI」扫过一遍的相册，之后只勾「AI 内容识别」重扫，照片的 tone_type/avg_luma 全部变成空",
+        "无任何报错，前端影调筛选/影调徽标随之失效，需重新勾选影调重扫才能恢复"
+      ],
+      "root_cause": {
+        "summary": "photo_content_scan 的 upsert 是全字段覆盖（ON CONFLICT DO UPDATE SET ... tone_type=excluded.tone_type），而未勾选的扫描项对应字段为 None，于是被写空",
+        "detail": [
+          "build_records_combined 仅按勾选项填充：影调未勾选时 tone_map 为空，tone_type/avg_luma 均为 None",
+          "EXIF 字段不受影响（无论是否勾 basic，AI 分支都会现场重读 EXIF）",
+          "分类/标签字段以最新识别为准是既有设计（『二次扫描覆盖更新』），问题仅在『本次未采集』却写成 None 的字段"
+        ]
+      },
+      "fix": "db/content.rs upsert_one 的冲突更新改为 COALESCE(excluded.tone_type, photo_content_scan.tone_type) / COALESCE(excluded.avg_luma, photo_content_scan.avg_luma)：未采集（None）时保留原值，采集到新值时照常覆盖。补单测 upsert_keeps_existing_tone_when_none（None 保留 → 新值覆盖）",
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs"
+      ],
+      "log_hint": "无日志线索（静默数据覆盖）；排查此类问题看 photo_content_scan 同一 photo_hash 行的字段随时间变化",
+      "created_at": "2026-09-10T17:30:00+08:00",
+      "fixed_at": "2026-09-10T17:30:00+08:00",
+      "plain_explanation": "数据库写入用的是『整行覆盖』：这次扫描没算影调，影调字段就是空的，一覆盖就把原来算好的影调擦掉了。就像填表时『本次没测的项目』直接写了空白，而不是保留上次填的内容。改成『本次没测就沿用旧值，测了就更新』。",
+      "lessons": [
+        "部分勾选 + UPSERT 全字段覆盖 = 未勾选字段被静默清空；凡『本次未采集』的可选字段，更新时一律用 COALESCE 保原值",
+        "扫描类功能设计多选项组合时，要逐字段确认『未勾选』的落库语义（保留 / 清空 / 跳过），不能默认全字段覆盖"
+      ]
+    },
+    {
+      "id": "BUG-2026-0910-008",
+      "title": "重启应用后语义搜索静默失效（必须先做一次语义扫描）：clip_ready 只探测已加载会话，不触发服务启动与 CLIP 懒加载",
+      "status": "fixed",
+      "severity": "medium",
+      "symptom": [
+        "语义扫描后可正常语义搜索（结果带「AI 匹配 N%」徽标）；关闭应用重新打开后，同样关键词只剩纯关键词结果（无语义命中），无任何报错或提示",
+        "必须先手动做一次「语义向量」扫描，语义搜索才恢复——用户据此误判为「语义扫描结果没入库」（实际 photo_embeddings 已有 10919 条向量，数据无损）"
+      ],
+      "root_cause": {
+        "summary": "搜索路径的前置就绪判断只「探测」不「触发」：clip_ready 要求服务已运行且 CLIP 会话已加载，而重启后二者都不成立（VCR 服务按需启动、CLIP 会话懒加载），于是每次搜索都在语义分支直接降级",
+        "detail": [
+          "semantic_recall 首行 `if !clip_ready(app).await { return Err(...) }`：clip_ready 只在 current_base/实例记录已存在时探测 /health.clip_ready，无实例直接返回 false（设计上为避免搜索时冷启动服务等待数十秒）",
+          "服务端 /health.clip_ready 取自 embed_service.ready()，只读 registry.is_ready（为保证 /health 毫秒级响应，故意不触发加载）→ 服务刚启动时必为 false，直到第一次 /embed_text 或 /embed_batch 调用才翻转",
+          "扫描路径会 ensure_service_ready + POST /embed_batch 触发 CLIP 加载，所以「先扫描一次」就能让后续搜索恢复——掩盖了搜索路径自身的缺陷",
+          "降级是静默的（设计为「模型缺失/服务未启动时不打扰用户」），因此问题不可见，只能表现为『搜不出语义相关照片』"
+        ]
+      },
+      "fix": "让搜索路径自己负责触发就绪：① ensure_service_ready 增加 wait_models 参数，语义链路走新增 poll_alive（只等服务进程可达，25s 上限），不等 cls/det/scene 主链路模型；② semantic_recall 去掉 clip_ready 前置，直接调 /embed_text（服务端 ensure 同步完成拆分件检查 + CLIP 会话加载）；③ 失败进入 3 分钟退避（deterministic 失败不再每次白等+反复拉起进程），成功后立即清除，CLIP 模型下载完成时也清除；④ 新增 warmup_semantic_service 命令并在搜索页 onMounted 后台预热（模型未下载则返回 false 不拉进程）。验证脚本 python/bench/verify_cold_start.py：冷启动场景 clip_ready=false 时 /embed_text 1.0s 返回 512 维，调用后 clip_ready 翻转 true",
+      "related_files": [
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/model_dl.rs",
+        "src/views/SmartSearch.vue",
+        "python/bench/verify_cold_start.py",
+        "design/semantic-search-implementation-plan.md"
+      ],
+      "log_hint": "app.log grep 'smart_search' 可见「语义降级: CLIP 服务暂不可用/未就绪」；grep 'warmup_semantic_service' 看预热是否成功。判据：photo_embeddings 行数正常但搜索无 semantic_score ⇒ 属本缺陷（就绪问题而非数据问题）",
+      "created_at": "2026-09-10T18:20:00+08:00",
+      "fixed_at": "2026-09-10T18:20:00+08:00",
+      "plain_explanation": "搜索功能的门卫只会「看一眼 AI 服务是否已经站在岗位上」，不会「去叫它上班」。平时因为别的功能（AI 扫描）已经把服务叫起来了，门卫一看在岗就放行；重启之后服务还没被叫醒，门卫看了一眼空岗就直接放弃 AI 搜索，改走普通关键词搜索——而且不吭声。用户只看到「搜不出想要的照片」，自然会怀疑是扫描结果没存进数据库，其实数据一条不少，只是没人把服务叫起来。修法：让搜索自己负责叫醒服务（只等它开门，不等它把所有模型都装好），并在进入搜索页时提前叫一次。",
+      "lessons": [
+        "「就绪探测」与「触发就绪」是两件事：进程按需启动 + 会话懒加载的组合下，只探测不触发会永远探测失败（尤其在重启后），功能表现为静默不可用",
+        "用户可感知的功能不能依赖「恰好被其他流程预热过」——搜索、导出这类入口必须自带唤醒链路",
+        "静默降级必须留痕（日志/UI 提示）：本次因降级无声，用户误判为数据未入库，排查成本被转嫁给了用户",
+        "诊断顺序：先查数据（photo_embeddings 行数）再查就绪链路——本次先确认库里 10919 条向量，一步排除『没入库』假设"
+      ]
+    },
+    {
+      "id": "BUG-2026-0920-001",
+      "date": "2026-09-20",
+      "status": "fixed",
+      "severity": "medium",
+      "title": "VCR exe 打包脚本在中文 Windows 上必然失败：requirements 文件含中文注释，pip 以 GBK 解码报 UnicodeDecodeError",
+      "module": "python/build_vcr_exe.ps1 / requirements-vcr-packaging.txt",
+      "symptom": [
+        "执行 powershell -File python/build_vcr_exe.ps1 在 [2/5] 安装打包期依赖阶段抛『依赖安装失败』",
+        "venv 里 pip 报 UnicodeDecodeError: 'gbk' codec can't decode byte 0xae in position 8（decoding with 'cp936' codec failed）",
+        "失败发生在清理步骤之前，重跑同样删不掉旧产物；表现为『打包完全不可用』而非偶发"
+      ],
+      "root_cause": {
+        "summary": "requirements-vcr-packaging.txt 自身的注释里写着『注释使用英文/ASCII』的规范，但文件内容仍是中文注释；pip 读取 requirements 文件时用系统 locale（zh-CN → cp936/GBK）而非 UTF-8 解码，含中文即崩",
+        "detail": [
+          "pip 的 auto_decode 先试 UTF-8、失败后回退 locale 编码；本机 pip 版本下中文注释直接抛 UnicodeDecodeError，而不是静默跳过",
+          "脚本第 2 步 pip install -r 与第 3 步 Remove-Item dist/build 之间没有容错，失败只留下『依赖安装失败』一句，用户不易定位到编码问题",
+          "本次是『语义分类』改动后按流程重打包 vcr-server.exe 时才踩到（此前打包成功过，属 pip 版本/环境漂移暴露的老问题）"
+        ]
+      },
+      "solution": {
+        "summary": "把 requirements 文件注释全部改为纯 ASCII；本次打包改用 venv 内 pyinstaller 直接出包（依赖已就绪，跳过 pip 步骤）",
+        "steps": [
+          "requirements-vcr-packaging.txt 全部注释改写为英文（保留同义说明 + 指向本缺陷编号），确保纯 ASCII",
+          "python/.venv-vcr/Scripts/pyinstaller.exe --clean --noconfirm vcr-server.spec 直接打包成功（90.3MB）",
+          "新 exe 冒烟：/health 返回 api_version=5 + model_id=chinese-clip-vit-b16-fp16；/models 返回两档语义模型",
+          "把新 exe 复制到 src-tauri/target/release/vcr/ 与 target/debug/vcr/",
+          "（旧 v4 exe 会被宿主判为 OldVersion，进而触发 BUG-2026-0917-001 的『过期组件』报错，必须同步替换）"
+        ]
+      },
+      "evidence_log": [
+        "[build] [2/5] 安装打包期依赖 ... UnicodeDecodeError: 'gbk' codec can't decode byte 0xae in position 8",
+        "[build] decoding with 'cp936' codec failed",
+        "[build] 依赖安装失败 (build_vcr_exe.ps1:48)",
+        "[after-fix] pyinstaller --clean --noconfirm vcr-server.spec → Build complete (90351116 bytes)",
+        "[smoke] GET /health → api_version=5, model_id=chinese-clip-vit-b16-fp16"
+      ],
+      "related_files": [
+        "python/requirements-vcr-packaging.txt",
+        "python/build_vcr_exe.ps1",
+        "python/vcr-server.spec"
+      ],
+      "keywords": [
+        "打包",
+        "PyInstaller",
+        "pip",
+        "GBK",
+        "cp936",
+        "requirements",
+        "vcr-server.exe",
+        "BUG-2026-0920-001"
+      ],
+      "created_at": "2026-09-20T21:20:00+08:00",
+      "fixed_at": "2026-09-20T21:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-002",
+      "date": "2026-09-20",
+      "status": "fixed",
+      "severity": "high",
+      "title": "下载落位错目录：应用内下载语义模型时 tokenizer.json/vocab.txt 被放到 onnx/ 子目录，全新安装会报「tokenizer 不可用」",
+      "module": "src-tauri/src/model_dl.rs（应用内模型下载落位）",
+      "symptom": [
+        "全新机器/清空 python/models 后，应用内下载 chinese-clip 完成，但语义搜索与语义分类全部 503/降级",
+        "python 服务报『tokenizer 不可用（tokenizer.json / vocab.txt 均缺失）』",
+        "把已存在的旧模型目录（含正确位置的 tokenizer.json）拷进去就恢复正常 —— 说明是落位问题不是模型问题"
+      ],
+      "root_cause": {
+        "summary": "重写 model_dl.rs 的 run() 时把『附带文件目录』算成了主文件所在目录（<root>/onnx/），而 config.CLIP_TOKENIZER_JSON / CLIP_VOCAB 按模型根目录（<root>/）解析",
+        "detail": [
+          "旧实现写死 clip_dir = dir.join(\"chinese-clip\") 用于附带文件，是正确的",
+          "重写为『通用』实现后改用 final_path.parent()（= <root>/onnx）承载 tokenizer/vocab，恰好本机 chinese-clip/ 目录早有正确的 tokenizer.json，所以本地测试发现不了",
+          "同时把 onnx 文件名写死为 model_fp16.onnx，无法支持 fp32 档（model.onnx）"
+        ]
+      },
+      "solution": {
+        "summary": "DlSpec 改为显式声明 root（模型根目录）+ onnx（onnx 文件名）两个字段；整图落 <root>/onnx/<onnx>，附带文件落 <root>/；并加单测守护与 Python 档位表的一致性",
+        "steps": [
+          "DlSpec { root, onnx, extra } → rel_file() = <root>/onnx/<onnx>；run() 中 final_dir = dir/<root>",
+          "start()/list()/emit_status() 的『已下载』判定统一走 rel_file()",
+          "新增 model_dl::tests::clip_specs_match_python_tier_table：从 python/vcr/config.py 抽取 dir/onnx 字符串，逐个断言与 Rust 下载表一致，且每档必须携带 tokenizer.json + vocab.txt",
+          "新增 clip_specs_cover_all_three_tiers：三条目（b16 / b16-fp32 / l14）不可缺失、镜像=官方（hf-mirror 单源）"
+        ]
+      },
+      "evidence_log": [
+        "[before] models/chinese-clip/onnx/tokenizer.json  （错误位置，config 不读这里）",
+        "[after ] models/<root>/tokenizer.json + models/<root>/onnx/<onnx>",
+        "[test] cargo test --lib model_dl → 2/2 passed"
+      ],
+      "related_files": [
+        "src-tauri/src/model_dl.rs",
+        "python/vcr/config.py",
+        "python/vcr/services/clip_subgraph.py",
+        "python/download_models.py"
+      ],
+      "keywords": [
+        "模型下载",
+        "落位",
+        "tokenizer",
+        "vocab",
+        "chinese-clip",
+        "fp32",
+        "DlSpec",
+        "BUG-2026-0920-002"
+      ],
+      "created_at": "2026-09-20T22:05:00+08:00",
+      "fixed_at": "2026-09-20T22:05:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-003",
+      "date": "2026-09-20",
+      "status": "fixed",
+      "severity": "high",
+      "title": "打开「GPU 加速」开关会把 fp16 语义双塔送上 DirectML，静默产出错误向量（潜在缺陷，语义搜索/分类结果全部失真）",
+      "module": "python/vcr/model_registry.py（CLIP 会话 provider 选择）",
+      "symptom": [
+        "已知事实：fp16 CLIP 图在 AMD DML 上有算子级数值 bug（BUG-2026-0910-006，余弦只有 0.43）",
+        "但 CLIP 双塔建会话时用的是全局 provider（self._providers()）——用户一旦点「🚀 启用加速」，fp16 双塔就会被送上 DML",
+        "表现是：语义搜索仍返回结果但排序错乱、语义分类命中莫名其妙的照片，且没有任何报错（静默失真）",
+        "此前未被发现：默认 _providers_sel = ['CPUExecutionProvider']（强制 CPU），只有显式开加速才会踩到"
+      ],
+      "root_cause": {
+        "summary": "「CLIP 固定 CPU」只写在注释与 SessionOptions 说明里，代码路径并未真正固定；provider 由全局开关决定",
+        "detail": [
+          "_create_session 内部一律用 self._providers()，无法按通道覆盖",
+          "clip_vision/clip_text 的 property 只传了 _so_clip()（只改图优化等级），没传 provider",
+          "注释宣称“固定 CPU 推理”与实际行为不一致 → 属于文档与实现脱节导致的隐性缺陷"
+        ]
+      },
+      "solution": {
+        "summary": "新增 _clip_providers()：按档位决定 provider —— fp16 档固定 CPU；fp32 档跟随 GPU 开关（实测数值一致，见 BUG-2026-0920-004 的姊妹验证）",
+        "steps": [
+          "_create_session 增加 providers 参数（省略时用全局选择，行为不变）",
+          "_clip_providers()：`\"fp16\" in p[\"onnx\"]` → ['CPUExecutionProvider']，否则 self._providers()",
+          "clip_vision / clip_text 建会话时显式传入 _clip_providers()",
+          "验证（dev python，含 DmlExecutionProvider）：开 GPU 后 fp16 档 clip_vision 实测仍绑 CPU；切 fp32 档后实测绑 DML 且 /embed_text 与 fp16@CPU 余弦 = 1.000000"
+        ]
+      },
+      "evidence_log": [
+        "[before] 开 GPU → sessions:{'clip_vision': ['DmlExecutionProvider','CPUExecutionProvider']}（fp16 档也会走 DML）",
+        "[after ] fp16 档 + GPU 开 → {'clip_vision': ['CPUExecutionProvider'], 'clip_text': ['CPUExecutionProvider']}",
+        "[after ] fp32 档 + GPU 开 → {'clip_vision': ['DmlExecutionProvider','CPUExecutionProvider']}",
+        "[verify] cos(fp32@DML_text, fp16@CPU_text) = 1.000000"
+      ],
+      "related_files": [
+        "python/vcr/model_registry.py",
+        "python/bench/verify_clip_tiers.py"
+      ],
+      "keywords": [
+        "CLIP",
+        "provider",
+        "DirectML",
+        "fp16",
+        "数值 bug",
+        "GPU 开关",
+        "BUG-2026-0920-003"
+      ],
+      "created_at": "2026-09-20T22:20:00+08:00",
+      "fixed_at": "2026-09-20T22:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-004",
+      "date": "2026-09-20",
+      "status": "open",
+      "severity": "medium",
+      "title": "发布版（PyInstaller vcr-server.exe）不含 onnxruntime-directml，UI 的「GPU 加速」开关在安装包版本上永远无效",
+      "module": "打包脚本 / requirements-vcr-packaging.txt（及 requirements.txt）",
+      "symptom": [
+        "开发环境（全局 python 装了 onnxruntime-directml）开加速后 sessions 显示 DmlExecutionProvider，实测提速",
+        "同一份代码打包成 vcr-server.exe 后 GET /health 的 gpu.available 只有 ['AzureExecutionProvider','CPUExecutionProvider']",
+        "/gpu 的 gpu 列表为空 → 前端「检测 GPU」提示未检测到可用 GPU，开关永远不可用",
+        "用户视角是「我装了 GPU 版运行时/我的是 AMD 核显，为什么软件里用不了加速」"
+      ],
+      "root_cause": {
+        "summary": "打包 venv 只安装 onnxruntime（CPU 版），DirectML 执行提供方不在包内；GPU 能力来自开发机全局环境的额外安装",
+        "detail": [
+          "requirements-vcr-packaging.txt 与 requirements.txt 都只写 onnxruntime>=1.17",
+          "onnxruntime 与 onnxruntime-directml 是互斥安装的两套 wheel（同一个 import 名），装包时只能二选一",
+          "Phase 0/FEAT-053 的 GPU 实测均在开发机（有 directml）完成，掩盖了发布版无 GPU 的事实"
+        ]
+      },
+      "solution": {
+        "summary": "待决策：① 打包时改用 onnxruntime-directml（Windows 包变大、能力与开发环境一致）；② 或明确把加速标为「需自备运行时/仅开发环境」，并在 UI 上给出置灰说明",
+        "steps": [
+          "建议 ①：requirements-vcr-packaging.txt 改为 onnxruntime-directml（仅 Windows 构建；非 Windows 回退 onnxruntime）",
+          "打包后冒烟：python/dist/vcr-server.exe 的 /health.gpu.available 应含 DmlExecutionProvider，且 /benchmark 显示实测 provider",
+          "建议 ②（若不愿增大安装包）：UI 文案改为「需安装 GPU 版运行时（开发环境/高级）」并隐藏不可用开关"
+        ]
+      },
+      "evidence_log": [
+        "[dev  ] GET /health → gpu.available = ['DmlExecutionProvider','CPUExecutionProvider']",
+        "[exe  ] GET /health → gpu.available = ['AzureExecutionProvider','CPUExecutionProvider']，gpu=[]"
+      ],
+      "related_files": [
+        "python/requirements-vcr-packaging.txt",
+        "python/requirements.txt",
+        "python/build_vcr_exe.ps1",
+        "src/components/ModelGpuSettings.vue"
+      ],
+      "keywords": [
+        "打包",
+        "DirectML",
+        "onnxruntime-directml",
+        "GPU 加速",
+        "发布版",
+        "BUG-2026-0920-004"
+      ],
+      "created_at": "2026-09-20T22:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-006",
+      "date": "2026-09-20",
+      "status": "fixed",
+      "severity": "critical",
+      "title": "语义检索突然失效（雪山/天空搜不到）：往 target/debug/vcr/ 放 exe 使开发版应用切到「打包版分支」，模型目录变成缺 CLIP 的 target/debug/vcr/models，且失败全程静默无提示",
+      "module": "src-tauri/src/vision.rs（服务启动分支）+ 语义链路可观测性",
+      "symptom": [
+        "用户反馈：以前搜「雪山」「天空」能出语义结果，现在完全搜不到（返回 0 条）",
+        "app.log 里 smart_search 每次 11~16ms 返回 hits=0，但**没有任何错误/降级记录**",
+        "语义分类同样全空；分类重建日志只有一句『解析 embedding 结果失败: error decoding response body』",
+        "关键现场：应用启动的微服务来自 target/debug/vcr/vcr-server.exe，其 /health 的 clip_ready=false，/embed_text_batch 返回 500 text/plain"
+      ],
+      "root_cause": {
+        "summary": "把 exe 放进 target/debug/vcr/ 触发了「打包版启动分支」：该分支把 VCR_MODEL_DIR 指向 <资源目录>/vcr/models，而这个目录是旧打包残留（没有 chinese-clip）→ CLIP 模型找不到 → 语义全链路失败；叠加两处可观测性缺失（后端只 eprintln、端点返回裸 500），用户侧完全看不见原因",
+        "detail": [
+          "spawn_server 的分支条件是 bundled_exe（<resource_dir>/vcr/vcr-server.exe）是否存在：存在=打包版（写死 VCR_MODEL_DIR=bundled_dir/models）；不存在=开发版（python server.py，MODEL_DIR 落在 python/models）",
+          "回归前 target/debug/vcr/ 只有 models/、没有 exe，开发版应用一直走 python 分支，用 python/models（含 chinese-clip）→ 语义正常",
+          "本次为「避免旧 exe 被判 OldVersion」把新 exe 复制进 target/debug/vcr/，分支随即翻转；而 target/debug/vcr/models 是 8/25 的旧打包残留（只有 det/face/ocr/cls），不含 chinese-clip",
+          "语义失败被静默吞掉：smart_search 只 eprintln!（不进 app.log），且 /embed_text_batch 在打包版里因缺 onnx 抛 ModuleNotFoundError → FastAPI 返回 text/plain 的裸 500，宿主 reqwest 解析失败 → 表现为「无任何提示」"
+        ]
+      },
+      "solution": {
+        "summary": "① 删除 target/debug/vcr/vcr-server.exe，恢复开发版 python 分支；② 语义降级改为写 app.log；③ 前端显性提示语义不可用；④ release.ps1 模型清单按 v5 架构更新",
+        "steps": [
+          "删除 src-tauri/target/debug/vcr/vcr-server.exe（开发态一律用 python server.py，顺带获得「改 Python 无需重新打包」的好处）",
+          "release exe 仍保留在 target/release/vcr/（否则 release 应用会命中旧组件版本检查报错）",
+          "content.rs：smart_search 语义降级从 eprintln! 改为 logger::log_info，写入 app.log 便于事后定位",
+          "SmartSearch.vue：预热结果显性化 —— 语义不可用时在搜索页顶部显示「语义检索未就绪，当前只做关键词匹配」+ 去扫描中心/模型设置的入口",
+          "release.ps1：必需模型清单去掉已下线的 yolov8n-cls，改为 yolov8n-det + 人脸 + OCR + chinese-clip/tokenizer.json + vocab.txt，并更新提示文案（不再引用已删除的 export_model.py）",
+          "验证：app.log 出现语义降级原因；无 debug exe 时应用重新走 python 分支，语义搜索恢复"
+        ]
+      },
+      "evidence_log": [
+        "[app.log] [category] 关键词向量缺失 59 条，调用 CLIP 文本塔编码（model=chinese-clip-vit-b16-fp16）",
+        "[app.log] [scan] 分类重建跳过：解析 embedding 结果失败: error decoding response body",
+        "[app.log] smart_search END | 耗时 13ms | 结果 OK | hits=0   （无降级记录 → 事后无法定位）",
+        "[运行态] vcr-server.exe 19856 path=...\\target\\debug\\vcr\\vcr-server.exe；GET /health → clip_ready:false",
+        "[复现] POST /embed_text_batch → 500 'Internal Server Error'（text/plain）",
+        "[复现dev] 同一请求在 python server.py（模型目录无 CLIP）→ 503 {\"detail\":\"CLIP 未就绪: 整图缺失: ...chinese-clip\\\\onnx\\\\model_fp16.onnx\"}"
+      ],
+      "related_files": [
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/content.rs",
+        "src/views/SmartSearch.vue",
+        "release.ps1"
+      ],
+      "keywords": [
+        "语义检索失效",
+        "回归",
+        "VCR_MODEL_DIR",
+        "启动分支",
+        "静默降级",
+        "可观测性",
+        "雪山",
+        "天空",
+        "BUG-2026-0920-006"
+      ],
+      "created_at": "2026-09-20T22:35:00+08:00",
+      "fixed_at": "2026-09-20T22:35:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-005",
+      "date": "2026-09-20",
+      "status": "fixed",
+      "severity": "critical",
+      "title": "打包版（vcr-server.exe）未包含 onnx 模块：首次拆图抛 ModuleNotFoundError → 裸 500，全新安装即使用户下载了 CLIP 模型也永远用不了语义功能",
+      "module": "python/vcr-server.spec / requirements-vcr-packaging.txt / clip_subgraph.py / server.py",
+      "symptom": [
+        "全新安装（或清空 models 后重新下载 CLIP）时，语义搜索与语义分类全部不可用",
+        "服务端 stderr：ModuleNotFoundError: No module named 'onnx'（栈：server.py → embed_service.embed_texts → ensure_subgraphs → extract_subgraphs → import onnx）",
+        "HTTP 层返回 500 text/plain 'Internal Server Error'，宿主 reqwest 报「解析 embedding 结果失败: error decoding response body」",
+        "开发环境（全局装了 onnx）完全复现不出来：同一目录条件下 dev 返回可读的 503"
+      ],
+      "root_cause": {
+        "summary": "CLIP 模型首次使用需要把双塔整图拆成 vision/text 两个子图（clip_subgraph.py 用 onnx.utils.extract_model），但打包 venv 的依赖清单里没有 onnx、spec 的 hiddenimports 也没把它列进去",
+        "detail": [
+          "requirements-vcr-packaging.txt 只有 onnxruntime（推理用），没有 onnx（拆图用）——两者是不同包",
+          "spec hiddenimports 写了 'onnx' 但打包环境的 venv 里根本没装，等于无效声明；PyInstaller 的 warn 文件明确记录 missing module named onnx",
+          "extract_subgraphs 对 import 失败没有任何容错：异常穿透到 FastAPI，成为无 detail 的裸 500（text/plain），宿主无法解析，用户侧只看到「静默失效」",
+          "只在「模型刚下载/缺拆分件」时才会走到该分支，平时（拆分件已存在）不会触发，因此长期潜伏"
+        ]
+      },
+      "solution": {
+        "summary": "① 打包依赖补 onnx；② spec hiddenimports 显式包含 onnx/onnx.utils/onnx.utils.extract_model；③ extract_subgraphs 对缺依赖返回可读错误；④ 三个 embed 端点统一兜底成 503+detail，杜绝裸 500",
+        "steps": [
+          "requirements-vcr-packaging.txt 增加 onnx>=1.16（ASCII 注释）并装入 .venv-vcr",
+          "vcr-server.spec hiddenimports 增加 'onnx.utils', 'onnx.utils.extract_model'",
+          "clip_subgraph.extract_subgraphs 把 import 包在 try 里，失败返回 {error: '缺少拆图依赖 onnx…'}（由上层转 503）",
+          "server.py 的 /embed_text、/embed_text_batch、/embed_batch 统一：except HTTPException 透传，其余 Exception → HTTPException(503, 带类型与原因)",
+          "验证（模拟全新安装）：临时模型目录只放 chinese-clip/onnx/model_fp16.onnx + tokenizer.json + vocab.txt → 新 exe 首次 /embed_text_batch 自动拆出 clip_vision.onnx(172MB)+clip_text.onnx(204MB) 并返回 200（512 维）"
+        ]
+      },
+      "evidence_log": [
+        "[before] warn-vcr-server.txt: missing module named onnx - imported by vcr.services.clip_subgraph (delayed)",
+        "[before] POST /embed_text_batch → 500 text/plain 'Internal Server Error'；stderr: ModuleNotFoundError: No module named 'onnx'",
+        "[after ] warn 文件不再出现 missing onnx；exe 体积 90.35MB → 92.71MB",
+        "[after ] 全新安装模拟下 POST /embed_text_batch → 200 {dim:512, model:chinese-clip-vit-b16-fp16}，且目录内自动生成 clip_vision.onnx / clip_text.onnx"
+      ],
+      "related_files": [
+        "python/vcr-server.spec",
+        "python/requirements-vcr-packaging.txt",
+        "python/vcr/services/clip_subgraph.py",
+        "python/server.py",
+        "python/build_vcr_exe.ps1"
+      ],
+      "keywords": [
+        "onnx",
+        "PyInstaller",
+        "hiddenimports",
+        "拆图",
+        "ModuleNotFoundError",
+        "裸 500",
+        "全新安装",
+        "语义不可用",
+        "BUG-2026-0920-005"
+      ],
+      "created_at": "2026-09-20T22:35:00+08:00",
+      "fixed_at": "2026-09-20T22:35:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0921-001",
+      "date": "2026-09-21",
+      "status": "fixed",
+      "severity": "high",
+      "title": "应用内「下载模型」全部 404：把本地落位目录名拼进了下载 URL（CLI 能下、点界面下不了）",
+      "module": "src-tauri/src/model_dl.rs（DlSpec::official 的 URL 拼接）",
+      "symptom": [
+        "用户在「⚙ 性能设置 → 📥 模型下载」点「下载」（如 chinese-clip-l14），立即失败：HTTP 404",
+        "同一台机器上用 python download_models.py --tasks clip-l14 却能正常下载 → 用户质疑「为什么你能下我不能」",
+        "三档语义模型（chinese-clip / chinese-clip-fp32 / chinese-clip-l14）点下载全部 404"
+      ],
+      "root_cause": {
+        "summary": "重写 DlSpec 时把「本地落位路径」当成「仓库内路径」去拼 URL：official() = base_url + rel_file()，而 rel_file() 含本机目录名 root（如 chinese-clip-l14/onnx/model_fp16.onnx），仓库里根本没有这一层目录",
+        "detail": [
+          "正确 URL：…/resolve/main/onnx/model_fp16.onnx（HTTP 200）",
+          "实际请求：…/resolve/main/chinese-clip-l14/onnx/model_fp16.onnx（HTTP 404）",
+          "附带文件（tokenizer.json/vocab.txt）用的是 base_url + 文件名，恰好正确 —— 所以只有整图会 404",
+          "旧实现把 URL 写死在字符串里（正确），改造成「通用 spec」时引入的回归",
+          "单测只校验了本地落位（rel_file 与 python 档位表的 dir/onnx 对齐），没有对 URL 形态做断言，因此漏检"
+        ]
+      },
+      "solution": {
+        "summary": "拆出 repo_file()（仓库内相对路径 onnx/<file>）专供 URL 拼接；rel_file() 只用于本地落位；并加断言锁死 URL 形态",
+        "steps": [
+          "新增 DlSpec::repo_file() = format!(\"onnx/{}\", self.onnx)，official() 改为 base_url + repo_file()",
+          "保留 rel_file() = <root>/onnx/<onnx> 仅用于本地存在性判定/落位",
+          "单测补三条断言：official() 等于规范形态、不得包含本地目录名 /{root}/、repo 必须出现在 Python 档位表中",
+          "实测三档 URL 全部 HTTP 200（377.4MB / 753.7MB / 814.4MB）"
+        ]
+      },
+      "evidence_log": [
+        "[源码推演] official() = base_url + 'chinese-clip-l14/onnx/model_fp16.onnx'",
+        "[实测] HEAD …/resolve/main/chinese-clip-l14/onnx/model_fp16.onnx → 404",
+        "[实测] HEAD …/resolve/main/onnx/model_fp16.onnx → 200 (814.4MB)",
+        "[修复后] 三档 URL 全部 200：377.4MB / 753.7MB / 814.4MB",
+        "[测试] cargo test --lib model_dl → 2/2 passed"
+      ],
+      "related_files": [
+        "src-tauri/src/model_dl.rs",
+        "python/download_models.py",
+        "python/vcr/config.py"
+      ],
+      "keywords": [
+        "模型下载",
+        "404",
+        "URL 拼接",
+        "repo_file",
+        "rel_file",
+        "DlSpec",
+        "应用内下载",
+        "BUG-2026-0921-001"
+      ],
+      "created_at": "2026-09-21T09:45:00+08:00",
+      "fixed_at": "2026-09-21T09:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0921-002",
+      "date": "2026-09-21",
+      "status": "fixed",
+      "severity": "high",
+      "module": "python/requirements-vcr-packaging.txt（打包运行时依赖浮动）",
+      "title": "打包版语义编码比开发版慢 2.9 倍：onnxruntime 依赖写成 >=1.17 被 pip 装成最新的 1.29.0（该版本对 CLIP fp16 图塔 CPU 推理严重变慢）",
+      "symptom": [
+        "dev 环境（onnxruntime-directml 1.24.4）CLIP 编码 8 线程 ≈164 ms/张",
+        "同一台机器、同一个模型文件、同样的 8 线程，打包版 vcr-server.exe 实测 ≈460~552 ms/张（慢 2.8~2.9×）",
+        "表现到产品上：1 万张语义索引从 ~27 min 变成 ~77 min，用户以为「核显本跑不动语义」",
+        "此前无感知：GPU 加速/测速面板只测 det 通道，没有覆盖 CLIP 编码速度"
+      ],
+      "root_cause": {
+        "summary": "打包 venv 的依赖写成 `onnxruntime>=1.17`，pip 解析到最新版 1.29.0；该版本在同机同模型的 CLIP fp16 图塔 CPU 推理上比 1.24.4 慢约 2.9 倍（框架层面的性能回归，非本仓库代码问题）",
+        "detail": [
+          "用同一段脚本分别在「全局 python」与「打包 venv」里测 8×224×224 批次：1.24.4 → 158.7ms/张，1.29.0 → 460.0ms/张",
+          "排除构建差异：把打包 venv 显式降级到 1.24.4 后立刻恢复到 158.7ms，说明与 DML/CPU 构建无关，是版本差异",
+          "requirements 里其它依赖（fastapi/uvicorn/opencv）未做 pin，同类风险仍存在",
+          "PyInstaller 打包把 venv 的 onnxruntime 一起收进 exe，所以 dev 快、发布慢"
+        ]
+      },
+      "solution": {
+        "summary": "固定 onnxruntime==1.24.4，并在 requirements 注释里写明「浮动前必须用 eval_clip_accuracy.py 重测」；重打包后实测 8 线程 177.6ms/张（比坏版本快 2.6×）",
+        "steps": [
+          "requirements-vcr-packaging.txt：onnxruntime>=1.17 → onnxruntime==1.24.4（附实测数据与缺陷编号）",
+          "把 dev 全局的 1.24.4 作为基准写进注释，避免以后有人「顺手升级」再踩",
+          "重打包 exe（92.7MB → 91.4MB）并实测扫档：2线程 407ms / 4线程 297ms / 8线程 177.6ms（最快）/ 16线程 181ms",
+          "顺带交付：线程数可在「⚙ 性能设置」调整 + 一键对比测速（/threads、/benchmark_sweep，API v6）"
+        ]
+      },
+      "evidence_log": [
+        "[dev   1.24.4] ms_th4=250.8  ms_th8=164.0",
+        "[venv  1.29.0] ms_th4=543.1  ms_th8=460.0",
+        "[venv  1.24.4] ms_th4=265.7  ms_th8=158.7   ← pin 后与 dev 一致",
+        "[exe   1.24.4] sweep: 2线程 407.22 / 4线程 297.41 / 8线程 177.57(最快) / 16线程 181.18 ms/张"
+      ],
+      "related_files": [
+        "python/requirements-vcr-packaging.txt",
+        "python/vcr/config.py",
+        "python/server.py",
+        "src/components/ModelGpuSettings.vue",
+        "design/semantic-real-album-e2e.md"
+      ],
+      "keywords": [
+        "onnxruntime",
+        "版本回归",
+        "打包",
+        "性能",
+        "CLIP 编码",
+        "线程数",
+        "BUG-2026-0921-002"
+      ],
+      "created_at": "2026-09-21T11:50:00+08:00",
+      "fixed_at": "2026-09-21T11:55:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0916-003",
+      "date": "2026-09-16",
+      "status": "fixed",
+      "severity": "high",
+      "module": "src-tauri/src/vision.rs + src-tauri/src/model_dl.rs（模型目录解析）/ 发布打包",
+      "title": "安装版模型目录指向构建机源码路径：模型目录由编译期常量 CARGO_MANIFEST_DIR 拼出，MSI 安装后「模型已内置却显示未下载」、应用内下载落到不存在的目录",
+      "symptom": [
+        "MSI 安装后打开应用，内置的 chinese-clip 明明随包安装到 <install>/vcr/models，但 UI 显示语义模型「未下载」，语义搜索/语义分类预热直接判为不可用",
+        "点「模型下载」会去写一个用户机器上根本不存在的目录（构建机源码路径），必然失败",
+        "开发态一切正常（开发态该路径恰好就是真实源码目录），属典型「只在打包后出现」的缺陷",
+        "与 BUG-2026-0920-006 同族：那条是「开发态误走打包分支」，本次是「打包态永远走错目录」"
+      ],
+      "root_cause": {
+        "summary": "两处模型目录解析都用了编译期常量 env!(\"CARGO_MANIFEST_DIR\")：vision.rs::project_python_dir()（clip_model_present 的回落分支）与 model_dl.rs::models_dir()（下载落位 + list 状态）。该常量在编译期被固化为构建机源码路径，安装到其他机器后指向不存在的目录；而 spawn_server 只把 VCR_MODEL_DIR 注入给**子进程**，宿主进程自身从未设置该环境变量，于是宿主侧全部模型路径判断都落到这个坏回退分支上。",
+        "detail": [
+          "打包分支（bundled_exe 存在）确实给子进程注入了 VCR_MODEL_DIR=<resource_dir>/vcr/models，所以微服务本身能读到模型",
+          "但 clip_model_present()（宿主侧门禁：决定是否预热语义）与 model_dl::list()/download（宿主侧状态与落位）读的是 std::env::var(\"VCR_MODEL_DIR\") → 宿主进程没设 → 回落到 project_python_dir()/models_dir() → CARGO_MANIFEST_DIR 死路径",
+          "后果1：语义预热被门禁挡住，用户看到「语义不可用」，即使模型就在包内",
+          "后果2：应用内下载（FEAT-052）在安装版必然失败——该问题 v0.2.0 就已带出，本次一并修复",
+          "发现方式：为 0.3.0 打包时按「安装版到底读哪个模型目录」逐行核对路径来源，而非等用户反馈"
+        ]
+      },
+      "solution": {
+        "summary": "把模型目录解析收敛为唯一入口 vision::resolve_model_dir()，在 lib.rs::setup 启动时解析一次并写入宿主进程环境变量 VCR_MODEL_DIR；model_dl::models_dir() 与 spawn_server 统一改为优先读该环境变量。",
+        "steps": [
+          "vision.rs 新增 resolve_model_dir()：① VCR_MODEL_DIR（显式指定）→ ② resource_dir/vcr/models（打包版）→ ③ 源码目录 python/models（开发态）",
+          "lib.rs::setup 启动即解析并 std::env::set_var(\"VCR_MODEL_DIR\", ...)，同时写 app.log（出现『模型目录: ...』便于事后定位）",
+          "model_dl.rs::models_dir() 改为 VCR_MODEL_DIR 优先，缺省才回落 CARGO_MANIFEST_DIR（开发态）",
+          "spawn_server 给子进程注入的 VCR_MODEL_DIR 改为读取同一解析结果，宿主/子进程口径强制一致",
+          "验证：MSI 静默安装后启动应用，app.log 出现『模型目录: ...』且与子进程实际读取目录一致"
+        ]
+      },
+      "evidence_log": "app.log 新增启动行：管理员场景为『模型目录: <install>/vcr/models』；只读场景为『模型目录: %APPDATA%/<identifier>/vcr-models』（后者见 BUG-2026-0916-004）",
+      "related_files": [
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/lib.rs"
+      ],
+      "keywords": [
+        "CARGO_MANIFEST_DIR",
+        "VCR_MODEL_DIR",
+        "resolve_model_dir",
+        "模型目录",
+        "打包态",
+        "clip_model_present",
+        "models_dir",
+        "应用内下载"
+      ],
+      "created_at": "2026-09-16T13:10:00+08:00",
+      "fixed_at": "2026-09-16T13:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0916-004",
+      "date": "2026-09-16",
+      "status": "fixed",
+      "severity": "high",
+      "module": "src-tauri/src/vision.rs（模型目录可写性）/ 安装包安装范围",
+      "title": "MSI 按机器安装（ALLUSERS=1，装到 Program Files）后模型目录对普通权限进程只读：语义子图拆分、档位持久化、应用内模型下载全部写入失败",
+      "symptom": [
+        "MSI 安装版（非管理员运行）首次使用语义功能时，拆图写 clip_vision.onnx / clip_text.onnx 失败（PermissionError）→ 语义搜索/语义分类不可用",
+        "切换语义模型档位时 current_clip.json 写不进去，档位选择无法持久化",
+        "应用内下载语义模型档位（B/16 fp32）时报创建目录失败",
+        "同一份代码用 NSIS（按用户装到 %LOCALAPPDATA%）则一切正常——只有 MSI 复现"
+      ],
+      "root_cause": {
+        "summary": "Tauri 的 WiX(MSI) 配置**不支持** installMode（只有 NSIS 支持，且 NSIS 默认就是 currentUser），MSI 固定 ALLUSERS=1 按机器安装到 Program Files；而 v0.3.0 的语义链路需要**写模型目录**（子图拆分产物、当前档位记录、模型下载落位），Program Files 对非提权进程只读 → 写入必然失败。",
+        "detail": [
+          "实测 0.2.0/0.3.0 MSI 的 Property 表：ALLUSERS=1，安装到 C:/Program Files/PhotoManagementSys",
+          "python/vcr/services/clip_subgraph.py::ensure_subgraphs 把 clip_vision.onnx / clip_text.onnx 写在 <MODEL_DIR>/chinese-clip/ 下",
+          "config.py::CLIP_CURRENT_PATH 与 model_registry 的档位/线程记录同样写在 MODEL_DIR",
+          "model_dl 的应用内下载目标目录也是 MODEL_DIR",
+          "0.2.0 之所以没暴露：det/face/ocr 通道只读模型，唯一需要写的是 persons.db（已指向 app_data_dir）；语义链路（v0.3.0 新增）才引入「写模型目录」的需求",
+          "另：曾尝试在 release.tauri.conf.json 写 wix.installMode=currentUser，被 tauri CLI（2.11.4）以 anyOf schema 校验拒绝——该字段仅 NSIS 支持"
+        ]
+      },
+      "solution": {
+        "summary": "在 resolve_model_dir() 内加可写性判定：内置模型目录不可写时，把整棵模型树**硬链接**（同卷零拷贝；跨卷或失败自动退回复制）到 app_data_dir/vcr-models，并把该可写副本作为模型目录。开发态与 NSIS 按用户安装不受影响（目录本就可写，直接使用）。",
+        "steps": [
+          "新增 dir_writable()：在目标目录试写 .pms-write-probe 探针文件，成功即视为可写（避免依赖 ACL 解析）",
+          "新增 link_or_copy_tree()：递归遍历内置模型目录，缺失或大小不同的文件用 std::fs::hard_link 链接（失败则 std::fs::copy），可重复调用；应用后续新增的派生文件天然落在可写侧",
+          "resolve_model_dir()：可写 → 直接用内置目录；只读 → 在 app_data_dir/vcr-models 建副本并改用它（失败退回内置目录并打日志）",
+          "release.tauri.conf.json 在 NSIS 侧显式声明 installMode=currentUser（说明意图），WiX 侧不再写不支持的字段",
+          "验证：icacls /deny Administrators:(W) 模拟只读 → 启动应用，app.log 出现『模型目录: .../vcr-models』，副本内文件 link count 均为 2；随后 /remove:d 还原 ACL 并卸载 MSI 清理"
+        ]
+      },
+      "evidence_log": "验证证据：%APPDATA%/com.haoyuan.photo-management-sys/vcr-models 下 det_500m / paddleocr-det / w600k_mbf / yolov8n-det / chinese-clip/{tokenizer.json, vocab.txt, onnx/model_fp16.onnx} 全部 link count = 2（硬链接成立、未占用额外空间）；app.log 两次启动分别记录内置目录与副本目录，与可写性判定一致",
+      "related_files": [
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/release.tauri.conf.json",
+        "python/vcr/services/clip_subgraph.py",
+        "python/vcr/config.py"
+      ],
+      "keywords": [
+        "ALLUSERS",
+        "Program Files",
+        "只读",
+        "PermissionError",
+        "installMode",
+        "currentUser",
+        "硬链接",
+        "hard_link",
+        "vcr-models",
+        "InstallScope"
+      ],
+      "created_at": "2026-09-16T13:10:00+08:00",
+      "fixed_at": "2026-09-16T13:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0916-005",
+      "date": "2026-09-16",
+      "status": "fixed",
+      "severity": "high",
+      "module": "src-tauri/src/persons.rs（人物库路径）/ 数据目录口径统一",
+      "title": "人物库读写分裂：persons.rs 用编译期常量 CARGO_MANIFEST_DIR 拼 persons.db，安装版指向构建机源码目录，而 VCR 微服务写 VCR_DATA_DIR → 人物页与扫描结果各读各写两份库",
+      "symptom": [
+        "用户现象：重装系统后「相册库没了，但人脸库还在」——人物页照常显示 1961 个人物、8099 张脸，看似数据完好",
+        "真相：那是项目目录（D 盘）里的开发态 persons.db，被安装版当成自己的库读；而该机器上 %APPDATA%/.../vcr-data 根本不存在（安装版从未写过人脸库）",
+        "换一台机器（或路径不同）安装：人物页必然空白、重命名/合并/删除报「人物注册表不存在」",
+        "一旦在安装版里跑人脸扫描，微服务会把新库写到 VCR_DATA_DIR（app_data），人物页仍只显示旧库 → 两份数据越用越分裂",
+        "与 BUG-2026-0916-003（模型目录）、BUG-2026-0920-006（打包残留模型目录）同族：都是「路径来源不统一」"
+      ],
+      "root_cause": {
+        "summary": "persons.rs::persons_db_path() 用编译期常量 env!(\"CARGO_MANIFEST_DIR\") 拼出 <构建机项目目录>/python/data/persons.db；而 Python 侧 config.py::DATA_DIR = VCR_DATA_DIR or <项目>/data，打包态由 spawn_server 注入 VCR_DATA_DIR=app_data_dir/vcr-data。Rust 侧从未设过该变量，于是同一份人脸数据在「人物页」与「微服务」之间落到两个不同文件。",
+        "detail": [
+          "编译产物里可直接搜到被固化的路径片段：`YUAN HAO\\Documents\\PersonalIdeaProject\\PhotoMangementSys\\src-tauri` + `python\\data\\persons.db`",
+          "Rust 侧 grep 显示全仓没有 std::env::set_var(\"VCR_DATA_DIR\", ...)：宿主进程自身从不设置数据目录，只有 spawn_server 给子进程显式注入",
+          "0.3.0 修复 BUG-2026-0916-003（模型目录）时只统一了 vision.rs / model_dl.rs，漏掉 persons.rs——两者是同一类缺陷，说明修复时应做「全仓 CARGO_MANIFEST_DIR 审计」",
+          "后果被同机开发掩盖：开发机上该路径恰好真实存在（还带着旧数据），于是表现为「数据都在」，换机才暴露"
+        ]
+      },
+      "solution": {
+        "summary": "把数据目录口径统一到 app_data：lib.rs::setup 启动时解析并写入进程环境变量 VCR_DATA_DIR=app_data_dir/vcr-data（安装版与开发版一致），persons.rs 与 spawn_server 一律按该变量解析；未设置时才回落项目 python/data（bench 脚本/单测等脱离宿主的场景）。",
+        "steps": [
+          "persons.rs：persons_db_path() → data_dir().join(\"persons.db\")，data_dir() 优先读 VCR_DATA_DIR",
+          "lib.rs::setup：解析并 set_var(\"VCR_DATA_DIR\", app_data_dir/vcr-data)，写 app.log（『人物数据目录: ...』便于事后定位）；外部已显式设置则不覆盖",
+          "vision.rs::spawn_server：数据目录改为优先取 VCR_DATA_DIR（缺失才现算），与宿主同口径；开发分支的子进程靠环境继承同样生效",
+          "未做旧库迁移（用户明确「可以丢现在的人脸」）：D 盘旧库保持原样不被读取，新面板把它标为「旧口径遗留」并提示可删除",
+          "同批顺手统一模型目录口径（BUG-2026-0916-003/004 已完成），并新增「数据与路径」开发面板（FEAT-058）让口径可视化，避免再次靠猜"
+        ]
+      },
+      "evidence_log": "修复前：exe 内可 grep 到构建机路径 + python\\data\\persons.db；%APPDATA%/com.haoyuan.photo-management-sys/vcr-data 不存在。修复后：app.log 新增『人物数据目录: <app_data>/vcr-data』；「数据与路径」面板显示人物库路径 = app_data/vcr-data/persons.db，并把 D 盘旧库单独列为旧口径遗留",
+      "related_files": [
+        "src-tauri/src/persons.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/vision.rs",
+        "python/vcr/config.py"
+      ],
+      "keywords": [
+        "persons.db",
+        "VCR_DATA_DIR",
+        "CARGO_MANIFEST_DIR",
+        "读写分裂",
+        "数据目录统一",
+        "人物注册表不存在",
+        "app_data",
+        "路径口径"
+      ],
+      "created_at": "2026-09-16T14:10:00+08:00",
+      "fixed_at": "2026-09-16T14:40:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0925-001",
+      "date": "2026-09-25",
+      "status": "fixed",
+      "title": "应用内「下载模型」点击后完全无反应：下载源连接静默挂起 + 单源 + 整单 3600s 超时",
+      "module": "模型下载 / src-tauri/src/model_dl.rs（FEAT-052）+ src/components/ModelGpuSettings.vue",
+      "symptom": [
+        "性能设置 → 模型下载 → 点「⬇ 下载」后按钮无变化、无进度、无报错，等很久也没有任何反馈",
+        "模型档位始终显示「未下载」；.../vcr/models/chinese-clip-fp32/onnx/ 是空目录"
+      ],
+      "root_cause": {
+        "summary": "下载请求卡在对 hf-mirror.com 的连接/首字节阶段（TCP 可连、TLS 无响应），旧实现只设整单 3600s 超时且只有单一源，于是既不失败也不前进，UI 全程静默。",
+        "detail": [
+          "app.log 实证：start_model_download START/END 结果 OK（耗时 0ms，异步起任务即返回），此后全日志 4469 行再无 model_dl 的任何重试/HTTP/完成记录",
+          "模型目录下没有 .dl_*.onnx 临时文件 —— 临时文件是在拿到 200 响应之后才创建，说明连响应头都没拿到",
+          "download_first_wins 的 official() 与 mirror() 返回同一 URL，「先完成者赢」实际是单路，没有真正备用源",
+          "整单超时 3600s 且无首字节/读超时 → 失败暴露时间最长 1 小时，用户侧等价于「永远没有反馈」"
+        ]
+      },
+      "solution": {
+        "summary": "改多镜像候选 + 分层超时 + 落地校验 + 源自检/自定义源（FEAT-061）：连接 8s / 首字节 20s / 读 60s，坏源快速失败并自动换源，失败原因完整回传界面。",
+        "steps": [
+          "内置源改模板列表：hf-mirror.com 与 aifasthub.com（实测可直链），自定义源存模型目录 download_sources.json 且优先",
+          "client 加 connect_timeout(8s) + read_timeout(60s)；send 外包 tokio::time::timeout(20s)",
+          "下载完成校验体积下限与首字节非 HTML，异常文件删除并换源",
+          "新增镜像源自检（Range 探测显示每源状态/耗时）与自定义源编辑；下载失败原因不再截断 40 字"
+        ]
+      },
+      "evidence_log": "修复前 app.log：`[AOP:CALL] start_model_download START | name=chinese-clip-fp32` → `[AOP:RET] ... END 耗时 0ms 结果 OK`，其后无任何 model_dl 记录；目录无临时文件。修复后：起下载即出现进度上报（model-dl-progress）或明确的「连接/首字节超时」错误，并可自动换源。",
+      "related_files": ["src-tauri/src/model_dl.rs", "src-tauri/src/lib.rs", "src/components/ModelGpuSettings.vue"],
+      "keywords": ["模型下载", "无反应", "静默挂起", "hf-mirror", "TLS", "超时", "多源", "源自检"],
+      "created_at": "2026-09-25T11:00:00+08:00",
+      "fixed_at": "2026-09-25T11:30:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0925-002",
+      "date": "2026-09-25",
+      "status": "fixed",
+      "title": "扫描入库 / 性能设置按钮「太透明看不清」：深色模式覆盖实心主色按钮 + 幽灵按钮透明底 + 禁用态整体降透明度",
+      "module": "UI 按钮样式 / src/assets/main.css + src/components/GlobalScanPanel.vue + src/components/ModelGpuSettings.vue",
+      "symptom": [
+        "扫描中心工具条的「⚙ 性能设置」「▶ 开始扫描入库」发虚、边界不清",
+        "性能设置弹窗里的按钮（下载/取消/重试/GPU 开关）几乎看不出是按钮"
+      ],
+      "root_cause": {
+        "summary": "三处叠加：① 深色模式全局规则权重高于组件内实心按钮规则，把主色按钮也刷成半透明白；② btn-ghost 本身是透明底 + 1px 描边；③ 禁用态用整体 opacity，按钮整体变虚。",
+        "detail": [
+          "main.css 的 body.theme-dark .btn（0,2,1）优先级高于组件 scoped 的 .gs-btn-primary[data-v-x]（0,2,0），把实心主色一并覆盖为 rgba(255,255,255,.06)；:not() 排除只写在 hover 规则里，基础规则漏了",
+          "GlobalScanPanel 的 .btn-ghost = background: transparent + 1px 蓝边，在白底面板上等于没有底色；.btn 在白底面板上是「白底白钮」",
+          "禁用态 .btn:disabled { opacity: .55 } 让按钮整体变虚（用户描述为「太透明」）；.btn-ghost:hover 的 0.08 级别背景几乎看不见"
+        ]
+      },
+      "solution": {
+        "summary": "深色规则用 :not() 排除实心/幽灵变体并提高中性按钮对比；幽灵按钮改浅蓝实底；禁用态统一改实心灰（不再用整体透明度）；弹窗内按钮改实底并跟随主题变量。",
+        "steps": [
+          "main.css：body.theme-dark .btn 增加 :not(.btn-primary/.btn-danger/.gs-btn-primary/.gs-btn-danger/.btn-ghost) 排除，中性按钮底/边提到 .10/.22；新增深色 .btn-ghost 可见底与统一 disabled 样式",
+          "GlobalScanPanel：.btn 加 min-height/字重/焦点环/按压反馈；.btn-ghost 改 #eef2ff 实底；gs-btn-primary 保留实心蓝、禁用态改实心浅蓝；btn-mini 同步",
+          "ModelGpuSettings：.mgps-btn/.mgps-accel/.mgps-select 由透明改实底（用 --color-primary-soft 等主题变量，深浅两套模式都清晰），禁用态实底灰"
+        ]
+      },
+      "evidence_log": "改前：按钮为透明底 + 0.4 灰边 / 白底白钮；深色模式实心蓝按钮被刷成 rgba(255,255,255,.06)。改后：幽灵按钮浅蓝实底 #eef2ff、主按钮实心蓝、禁用态实心灰、深色模式实心变体不再被覆盖（vue-tsc 通过）。",
+      "related_files": ["src/assets/main.css", "src/components/GlobalScanPanel.vue", "src/components/ModelGpuSettings.vue"],
+      "keywords": ["按钮", "太透明", "深色模式", "选择器权重", "禁用态", "opacity"],
+      "created_at": "2026-09-25T11:10:00+08:00",
+      "fixed_at": "2026-09-25T11:35:00+08:00"
     }
   ]
 }

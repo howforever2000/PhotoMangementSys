@@ -5,15 +5,27 @@ import type { ClassifyProgress } from "../types/photo";
 import { useAlbumStore } from "./album";
 import type {
   AlbumContentRow,
+  CategoryIndexStats,
+  CategoryInput,
+  CategoryOverview,
+  CategoryPhoto,
+  CategoryPreview,
+  CategoryRebuildReport,
   CombinedScanOutcome,
   ContentScanFilters,
   ContentSearchHit,
   ModelDlStatus,
+  ModelSourceProbe,
+  ModelSourcesInfo,
   ScanOutcome,
   ScanReport,
   UnifiedScanRow,
   VcrGpuStatus,
   VcrModelsInfo,
+  VcrBenchmarkResult,
+  VcrSweepEntry,
+  VcrSweepResult,
+  VcrThreadsInfo,
 } from "../types/content";
 
 // ---- FEAT-038：全局照片扫描入库（跨相册批量，后台执行） ----
@@ -139,6 +151,14 @@ export const useContentStore = defineStore("content", {
     activeScanAlbum: null as number | null,
     /** 全局进度监听是否已就绪（只注册一次） */
     _progressReady: false,
+    /** v5：语义分类总览（卡片数据，含计数与封面） */
+    categories: [] as CategoryOverview[],
+    /** v5：语义索引覆盖统计（「已索引 N/M」+ 换档提醒） */
+    categoryStats: null as CategoryIndexStats | null,
+    /** v5：最近一次分类重建报告（前端提示用） */
+    lastCategoryRebuild: null as CategoryRebuildReport | null,
+    /** v6：CPU 线程数现状（性能设置展示/调整） */
+    vcrThreads: null as VcrThreadsInfo | null,
   }),
 
   actions: {
@@ -180,6 +200,85 @@ export const useContentStore = defineStore("content", {
       return this.vcrModels;
     },
 
+    /** FEAT-053：固定张量测速（CPU/GPU 真实加速比对比，可能耗时数秒） */
+    async benchmarkVcr(runs = 10, warmup = 2, channel = "det"): Promise<VcrBenchmarkResult> {
+      return await invoke<VcrBenchmarkResult>("benchmark_vcr", { runs, warmup, channel });
+    },
+
+    // ------------------------------------------------------------------
+    // v6 CPU 线程数（适配不同硬件：可调 + 对比测速）
+    // ------------------------------------------------------------------
+    /** 线程数现状（当前/默认/物理核/可选档） */
+    async fetchVcrThreads(): Promise<VcrThreadsInfo> {
+      this.vcrThreads = await invoke<VcrThreadsInfo>("get_vcr_threads");
+      return this.vcrThreads;
+    },
+
+    /** 设置线程数（服务端会后台重建会话；越界由服务端夹紧） */
+    async setVcrThreads(threads: number): Promise<VcrThreadsInfo> {
+      this.vcrThreads = await invoke<VcrThreadsInfo>("set_vcr_threads", { threads });
+      return this.vcrThreads;
+    },
+
+    /** 线程扫档：一次测多个线程数，返回 [{threads, avg_ms, best}]（不改变当前设置） */
+    async benchmarkVcrSweep(
+      channel = "clip_vision",
+      options: number[] = [],
+      runs = 8,
+      warmup = 2,
+    ): Promise<VcrSweepEntry[]> {
+      const r = await invoke<VcrSweepResult>("benchmark_vcr_sweep", { channel, options, runs, warmup });
+      return r.results ?? [];
+    },
+
+    // ------------------------------------------------------------------
+    // v5 语义分类
+    // ------------------------------------------------------------------
+    /** 分类总览（首次调用会自动补齐系统分类与内置预设） */
+    async listCategories(): Promise<CategoryOverview[]> {
+      this.categories = await invoke<CategoryOverview[]>("list_categories");
+      return this.categories;
+    },
+
+    /** 新建 / 更新分类（保存后后端会自动重建该分类命中，返回最新行） */
+    async saveCategory(id: number | null, input: CategoryInput): Promise<CategoryOverview> {
+      const row = await invoke<CategoryOverview>("save_category", { id, input });
+      const i = this.categories.findIndex((c) => c.id === row.id);
+      if (i >= 0) this.categories.splice(i, 1, row);
+      else this.categories.push(row);
+      return row;
+    },
+
+    /** 删除分类（系统规则分类不可删） */
+    async deleteCategory(id: number): Promise<boolean> {
+      const ok = await invoke<boolean>("delete_category", { id });
+      if (ok) this.categories = this.categories.filter((c) => c.id !== id);
+      return ok;
+    },
+
+    /** 语义预览（实时看命中数与样张，不落库） */
+    async previewCategory(input: CategoryInput): Promise<CategoryPreview> {
+      return await invoke<CategoryPreview>("preview_category", { input });
+    },
+
+    /** 重建分类命中（id 省略 = 全部重建） */
+    async rebuildCategories(id?: number): Promise<CategoryRebuildReport> {
+      const rep = await invoke<CategoryRebuildReport>("rebuild_categories", { id: id ?? null });
+      this.lastCategoryRebuild = rep;
+      return rep;
+    },
+
+    /** 某分类下的照片（按语义强度降序） */
+    async listCategoryPhotos(id: number, limit?: number): Promise<CategoryPhoto[]> {
+      return await invoke<CategoryPhoto[]>("list_category_photos", { id, limit: limit ?? null });
+    },
+
+    /** 语义索引覆盖统计 */
+    async categoryIndexStats(): Promise<CategoryIndexStats> {
+      this.categoryStats = await invoke<CategoryIndexStats>("category_index_stats");
+      return this.categoryStats;
+    },
+
     /** FEAT-052：模型下载状态列表（含未启动 idle） */
     async listModelDownloads(): Promise<ModelDlStatus[]> {
       this.modelDownloads = await invoke<ModelDlStatus[]>("list_model_downloads");
@@ -196,6 +295,21 @@ export const useContentStore = defineStore("content", {
     async cancelModelDownload(name: string): Promise<void> {
       await invoke<void>("cancel_model_download", { name });
       await this.listModelDownloads();
+    },
+
+    /** FEAT-061：下载源自检（逐个镜像 Range 探测，返回 HTTP 状态与耗时） */
+    async probeModelSources(name: string): Promise<ModelSourceProbe[]> {
+      return await invoke<ModelSourceProbe[]>("probe_model_sources", { name });
+    },
+
+    /** FEAT-061：读取下载源配置（内置 + 自定义） */
+    async getModelSources(): Promise<ModelSourcesInfo> {
+      return await invoke<ModelSourcesInfo>("get_model_sources");
+    },
+
+    /** FEAT-061：保存自定义下载源（空数组 = 恢复默认内置源） */
+    async setModelSources(sources: string[]): Promise<void> {
+      await invoke<void>("set_model_sources", { sources });
     },
 
     /**
@@ -320,7 +434,9 @@ export const useContentStore = defineStore("content", {
     ensureProgressListener() {
       if (this._progressReady) return;
       this._progressReady = true;
-      listen<ClassifyProgress>("classify-progress", (e) => {
+      // FEAT-SEM：语义向量扫描进度（embed-progress 与 classify-progress 同构，
+      // 路由到同一活动任务槽位，进度条/停止语义完全复用）
+      const routeProgress = (e: { payload: ClassifyProgress }) => {
         const albumId = this.activeScanAlbum;
         if (albumId == null) return;
         const job = this.combinedJobs[albumId];
@@ -330,8 +446,12 @@ export const useContentStore = defineStore("content", {
         if (g.running && g.currentIndex >= 0 && g.items[g.currentIndex]?.albumId === albumId) {
           g.currentProgress = e.payload;
         }
-      }).catch(() => {
+      };
+      listen<ClassifyProgress>("classify-progress", routeProgress).catch(() => {
         // 监听失败不阻塞；扫描仍能正常完成，仅无实时进度
+      });
+      listen<ClassifyProgress>("embed-progress", routeProgress).catch(() => {
+        /* 监听失败不阻塞 */
       });
       // FEAT-052：模型下载进度实时更新（后台下载不阻塞 UI）
       listen<ModelDlStatus>("model-dl-progress", (e) => {
@@ -349,7 +469,12 @@ export const useContentStore = defineStore("content", {
      * 任务状态存于 store（脱离组件），即使退出相册页后端仍继续扫描、
      * 重新进入时能读到进度与结果。至少勾选一项即可扫描（支持单选项）。
      */
-    async startCombinedScan(albumId: number, types: string[], batchSize = 8): Promise<void> {
+    async startCombinedScan(
+      albumId: number,
+      types: string[],
+      batchSize = 8,
+      overwrite = true,
+    ): Promise<void> {
       const job = this.jobFor(albumId);
       if (job.running) return; // 已有任务进行中，忽略重复点击
       // FEAT-038：与全局扫描互斥（后端共享取消标记 + 单活动进度路由）
@@ -372,6 +497,7 @@ export const useContentStore = defineStore("content", {
           albumId,
           scanTypes: types,
           batchSize,
+          overwrite,
         });
         // 若期间已发起新扫描，丢弃这次旧结果
         if (job.scanId !== myId) return;
@@ -422,6 +548,7 @@ export const useContentStore = defineStore("content", {
       albumIds: number[],
       types: string[],
       batchSize = 8,
+      overwrite = true,
       onProgress?: (done: number, total: number, currentAlbumId: number) => void,
     ): Promise<{ scanned: number; failed: { albumId: number; error: string }[] }> {
       const result = { scanned: 0, failed: [] as { albumId: number; error: string }[] };
@@ -436,7 +563,7 @@ export const useContentStore = defineStore("content", {
             result.failed.push({ albumId, error: "该相册已有扫描任务进行中，已跳过" });
           } else {
             // 串行等待该相册扫描完成（startCombinedScan 内部 await invoke）
-            await this.startCombinedScan(albumId, types, batchSize);
+            await this.startCombinedScan(albumId, types, batchSize, overwrite);
             if (job.error) {
               result.failed.push({ albumId, error: job.error });
             } else {
@@ -469,6 +596,7 @@ export const useContentStore = defineStore("content", {
       entries: { id: number; name: string }[],
       types: string[],
       batchSize = 8,
+      overwrite = true,
     ): boolean {
       const job = this.globalScanJob;
       if (job.running) {
@@ -510,12 +638,17 @@ export const useContentStore = defineStore("content", {
       this.ensureProgressListener();
       // 后台执行扫描循环：不 await，任务独立于组件生命周期存活
       const myId = job.scanId;
-      void this.runGlobalScanLoop(myId, [...types], batchSize);
+      void this.runGlobalScanLoop(myId, [...types], batchSize, overwrite);
       return true;
     },
 
     /** 全局扫描后台循环：串行逐相册扫描（由 beginGlobalScan 启动） */
-    async runGlobalScanLoop(myId: number, types: string[], batchSize: number): Promise<void> {
+    async runGlobalScanLoop(
+      myId: number,
+      types: string[],
+      batchSize: number,
+      overwrite = true,
+    ): Promise<void> {
       const job = this.globalScanJob;
       const albumStore = useAlbumStore();
       try {
@@ -538,6 +671,7 @@ export const useContentStore = defineStore("content", {
               albumId: item.albumId,
               scanTypes: types,
               batchSize,
+              overwrite,
             });
             if (job.scanId !== myId) return;
             item.total = outcome.report.total;

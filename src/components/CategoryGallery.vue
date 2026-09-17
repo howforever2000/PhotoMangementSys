@@ -1,87 +1,148 @@
 <script setup lang="ts">
 /**
- * 内容分类画廊（FEAT-048）—— 智慧相册「内容分类」tab
+ * 语义分类画廊（v5）—— 智慧相册「内容分类」tab
  *
- * 两级视图（页内切换，不弹窗，层级清晰）：
- *  1. 大类卡片网格：中文类名（categoryLabel 映射）+ 张数徽标 + 细类数提示，
- *     封面取该类置信度最高的照片（get_photo_thumbs 缓存管线，FEAT-044 命中 0 IO）
- *  2. 点击大类 → 照片网格 + 细类 chips 即时过滤（含计数，中文映射 subCategoryLabel）
+ * 数据源：`photo_categories` + `photo_category_hits`（分类命中已物化，浏览走 SQL 秒开）
+ *   1. 分类 = 系统规则分类（人物/扫街/夜景/文档，由 YOLO 检测 / 影调 / OCR 产出）
+ *            + 内置预设 + 用户自建（后两者由 Chinese-CLIP 关键词语义匹配产出）
+ *   2. 卡片网格 → 点击进入照片网格；关键词 chips 按「命中的关键词」即时过滤（内存过滤零请求）
+ *   3. 顶栏「⚙ 管理分类」→ CategoryManager（新建/改词/调阈值/实时预览/重建）
  *
- * 复用底层：list_content_categories / list_photos_by_category 命令、
- * PhotoLightbox 大图（左右切换）、theme 暗色适配、骨架/空/错误三态。
+ * 覆盖度提示：语义分类只能覆盖「已建向量索引」的照片，顶部常驻「已索引 N/M」，
+ * 未建索引时给出去扫描中心建索引的入口，避免用户误以为功能坏了。
+ *
+ * 复用底层：list_categories / list_category_photos / rebuild_categories 命令、
+ * PhotoLightbox 大图、ContextMenu、theme 暗色适配、骨架/空/错误三态。
  */
 import { computed, onMounted, ref } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
+import { useContentStore } from "../stores/content";
 import PhotoLightbox from "./PhotoLightbox.vue";
 import ContextMenu, { type ContextMenuEntry } from "./ContextMenu.vue";
-import type { CategoryGroupRow, ContentSearchHit } from "../types/content";
-import { categoryLabel, subCategoryLabel, categoryTone } from "../utils/categoryLabel";
+import CategoryManager from "./CategoryManager.vue";
+import type { CategoryIndexStats, CategoryOverview, CategoryPhoto } from "../types/content";
+import { categoryLabel, categoryTone } from "../utils/categoryLabel";
+import { relToMatch } from "../utils/matchScore";
 
 const theme = useThemeStore();
 const notify = useNotify();
+const contentStore = useContentStore();
 
 /* -------------------- 数据 -------------------- */
 const loading = ref(true);
 const error = ref("");
-/** (category, sub_category) 分组行（后端一次聚合返回） */
-const groups = ref<CategoryGroupRow[]>([]);
+/** 分类总览（含计数与封面） */
+const cats = ref<CategoryOverview[]>([]);
+/** 索引覆盖统计 */
+const stats = ref<CategoryIndexStats | null>(null);
 /** path → 缩略图缓存路径（卡片封面与照片网格共用） */
 const thumbMap = ref<Record<string, string>>({});
+/** 分类管理对话框 */
+const managerOpen = ref(false);
+const rebuilding = ref(false);
+/** 首次进入自动匹配过一次（避免反复触发） */
+let autoBuilt = false;
+/** 自动匹配进行中（工具栏提示） */
+const building = ref(false);
 
-/* -------------------- 视图 1：大类卡片 -------------------- */
-interface TopCategory {
-  category: string;
-  label: string;
+/* -------------------- 视图 1：分类卡片 -------------------- */
+interface CategoryCard {
+  id: number;
+  name: string;
+  icon: string;
+  source: string;
+  slug: string;
+  keywords: string[];
+  threshold: number;
   count: number;
   cover: string | null;
   coverAlbumId: number | null;
-  subCount: number;
 }
-const topCategories = computed<TopCategory[]>(() => {
-  const map = new Map<string, TopCategory>();
-  for (const g of groups.value) {
-    let t = map.get(g.category);
-    if (!t) {
-      t = {
-        category: g.category,
-        label: categoryLabel(g.category),
-        count: 0,
-        cover: g.cover_path,
-        coverAlbumId: g.cover_album_id,
-        subCount: 0,
-      };
-      map.set(g.category, t);
-    }
-    t.count += g.count;
-    if (g.sub_category && g.sub_category !== g.category) t.subCount += 1;
-  }
-  return [...map.values()].sort((a, b) => b.count - a.count);
-});
+
+/** 卡片排序：系统规则分类固定在前，其余按命中数降序 */
+const cards = computed<CategoryCard[]>(() =>
+  cats.value
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      icon: c.icon,
+      source: c.source,
+      slug: c.slug,
+      keywords: c.keywords,
+      threshold: c.threshold,
+      count: c.count,
+      cover: c.cover_path,
+      coverAlbumId: c.cover_album_id,
+    }))
+    .sort((a, b) => {
+      const ab = a.source === "builtin" ? 0 : 1;
+      const bb = b.source === "builtin" ? 0 : 1;
+      if (ab !== bb) return ab - bb;
+      return b.count - a.count;
+    }),
+);
+
+const totalHits = computed(() => cards.value.reduce((n, c) => n + c.count, 0));
 
 /** 卡片无封面时的类目色底（复用 categoryTone 色卡） */
-function toneBg(category: string): string {
-  return categoryTone(category).bg;
+function toneBg(c: CategoryCard): string {
+  return categoryTone(c.slug || "other").bg;
 }
+
+/** 语义索引是否为空（分类极可能空 → 优先提示建索引） */
+const indexEmpty = computed(() => (stats.value?.indexed ?? 0) === 0);
+/** 换过语义档位（旧档向量还在 → 提示重建索引） */
+const indexStale = computed(() => (stats.value?.stale ?? 0) > 0);
+/** 覆盖度文案 */
+const indexText = computed(() => {
+  const s = stats.value;
+  if (!s) return "";
+  return `语义索引 ${s.indexed} / 已入库 ${s.known} 张`;
+});
 
 async function load() {
   loading.value = true;
   error.value = "";
   try {
-    groups.value = await invoke<CategoryGroupRow[]>("list_content_categories");
+    const [list, st] = await Promise.allSettled([
+      contentStore.listCategories(),
+      contentStore.categoryIndexStats(),
+    ]);
+    if (list.status === "fulfilled") cats.value = list.value;
+    else error.value = String(list.reason);
+    stats.value = st.status === "fulfilled" ? st.value : null;
+    // 首次进入（有索引但尚未算过任何语义命中）→ 自动重建一次，开箱即用
+    if (!autoBuilt && stats.value && stats.value.indexed > 0 && needFirstBuild()) {
+      autoBuilt = true;
+      building.value = true;
+      try {
+        await contentStore.rebuildCategories();
+        const fresh = await contentStore.listCategories();
+        cats.value = fresh;
+      } catch (e) {
+        notify.warning("分类自动匹配未完成", `${e}（可点「🔄 重建分类」重试）`);
+      } finally {
+        building.value = false;
+      }
+    }
     await loadCoverThumbs();
-  } catch (e) {
-    error.value = String(e);
   } finally {
     loading.value = false;
   }
 }
 
+/** 语义分类全部为 0 命中 → 视为尚未算过（builtin 规则分类不计入） */
+function needFirstBuild(): boolean {
+  const sem = cats.value.filter((c) => c.source !== "builtin");
+  return sem.length > 0 && sem.every((c) => c.count === 0);
+}
+
 /** 封面缩略图批量懒加载（按相册分组，复用真实相册缓存命名） */
 async function loadCoverThumbs() {
   const byAlbum = new Map<number, string[]>();
-  for (const t of topCategories.value) {
+  for (const t of cards.value) {
     if (!t.cover || thumbMap.value[t.cover]) continue;
     const aid = t.coverAlbumId ?? 0;
     if (!byAlbum.has(aid)) byAlbum.set(aid, []);
@@ -99,39 +160,54 @@ async function loadCoverThumbs() {
   );
 }
 
-/* -------------------- 视图 2：大类照片网格 + 细类 chips -------------------- */
-const activeCategory = ref<TopCategory | null>(null);
-const activeSub = ref<string | null>(null); // null / "" = 全部
-const photos = ref<ContentSearchHit[]>([]);
+/* -------------------- 视图 2：分类照片网格 + 关键词 chips -------------------- */
+const activeCard = ref<CategoryCard | null>(null);
+const activeKw = ref<string | null>(null);
+const photos = ref<CategoryPhoto[]>([]);
 const photosLoading = ref(false);
 
-/** 细类 chips（含「全部」）；该大类无细类时为空 → 不渲染过滤条 */
-const subChips = computed(() => {
-  if (!activeCategory.value) return [];
-  const rows = groups.value.filter((g) => g.category === activeCategory.value!.category);
-  const chips = rows
-    .filter((r) => r.sub_category && r.sub_category !== r.category)
-    .map((r) => ({ key: r.sub_category as string, label: subCategoryLabel(r.sub_category), count: r.count }));
-  if (!chips.length) return [];
+/** 关键词 chips（按「实际命中的关键词」统计，即时过滤零请求） */
+const kwChips = computed(() => {
+  if (!activeCard.value) return [];
+  const map = new Map<string, number>();
+  for (const p of photos.value) {
+    const k = p.matched_keyword || "";
+    if (!k) continue;
+    map.set(k, (map.get(k) ?? 0) + 1);
+  }
+  if (map.size <= 1) return [];
+  const chips = [...map.entries()].map(([key, count]) => ({
+    key,
+    label: kwLabel(activeCard.value!, key),
+    count,
+  }));
   chips.sort((a, b) => b.count - a.count);
-  const total = rows.reduce((n, r) => n + r.count, 0);
-  return [{ key: "", label: "全部", count: total }, ...chips];
+  return [{ key: "", label: "全部", count: photos.value.length }, ...chips];
 });
 
-/** chips 过滤纯前端内存过滤：点击即时切换，无请求等待 */
+/** 关键词中文展示：规则分类的 matched_keyword 是类别 key，需要映射 */
+function kwLabel(card: CategoryCard, key: string): string {
+  if (card.source === "builtin") return categoryLabel(key);
+  return key;
+}
+
+/** chips 过滤纯前端内存过滤 */
 const filteredPhotos = computed(() => {
-  if (!activeSub.value) return photos.value;
-  return photos.value.filter((p) => p.sub_category === activeSub.value);
+  if (!activeKw.value) return photos.value;
+  return photos.value.filter((p) => (p.matched_keyword || "") === activeKw.value);
 });
 
-async function openCategory(t: TopCategory) {
-  activeCategory.value = t;
-  activeSub.value = null;
+/** 命中强度展示：与分类设置里的「AI 匹配度」同一刻度（换算见 utils/matchScore） */
+function strengthLabel(score: number): string {
+  return String(relToMatch(score));
+}
+
+async function openCategory(t: CategoryCard) {
+  activeCard.value = t;
+  activeKw.value = null;
   photosLoading.value = true;
   try {
-    photos.value = await invoke<ContentSearchHit[]>("list_photos_by_category", {
-      category: t.category,
-    });
+    photos.value = await invoke<CategoryPhoto[]>("list_category_photos", { id: t.id, limit: null });
     await loadGridThumbs();
   } catch (e) {
     notify.error("加载分类照片失败", String(e));
@@ -162,13 +238,42 @@ async function loadGridThumbs() {
 }
 
 function backToCards() {
-  activeCategory.value = null;
-  activeSub.value = null;
+  activeCard.value = null;
+  activeKw.value = null;
   photos.value = [];
 }
 
-function selectSub(key: string) {
-  activeSub.value = key || null;
+function selectKw(key: string) {
+  activeKw.value = key || null;
+}
+
+/* -------------------- 重建 / 管理 -------------------- */
+async function rebuildAll() {
+  rebuilding.value = true;
+  try {
+    const rep = await contentStore.rebuildCategories();
+    if (rep.empty_index) {
+      notify.warning(
+        "还没有语义索引",
+        "请先到「扫描中心」对相册执行一次含「语义向量」的扫描，分类才能匹配出照片",
+      );
+    } else {
+      notify.success(
+        "分类已重建",
+        `${rep.categories} 个分类 · 命中 ${rep.hits} 张 · 耗时 ${rep.ms} ms`,
+      );
+    }
+    await load();
+  } catch (e) {
+    notify.error("重建失败", String(e));
+  } finally {
+    rebuilding.value = false;
+  }
+}
+
+/** 分类管理对话框保存/删除后回调：刷新卡片与统计 */
+async function onManagerChanged() {
+  await load();
 }
 
 /* -------------------- 大图看图器 -------------------- */
@@ -177,8 +282,8 @@ const lightboxIndex = ref(0);
 const lightboxPhotos = computed(() =>
   filteredPhotos.value.map((p) => ({ path: p.path, albumId: p.album_id })),
 );
-function openLightbox(p: ContentSearchHit) {
-  const idx = filteredPhotos.value.findIndex((x) => x.path === p.path);
+function openLightbox(p: CategoryPhoto) {
+  const idx = filteredPhotos.value.findIndex((x) => x.photo_hash === p.photo_hash);
   if (idx < 0) return;
   lightboxIndex.value = idx;
   lightboxOpen.value = true;
@@ -272,8 +377,8 @@ async function executeDelete(paths: string[], mode: DeleteMode) {
         lightboxIndex.value = filteredPhotos.value.length - 1;
     }
     // 刷新聚合计数（卡片视图张数同步）
-    await refreshGroups();
-    if (activeCategory.value && !topCategories.value.some((t) => t.category === activeCategory.value!.category)) {
+    await refreshCards();
+    if (activeCard.value && !cards.value.some((t) => t.id === activeCard.value!.id)) {
       backToCards();
     }
     if (outcome.failed > 0) {
@@ -295,9 +400,9 @@ async function executeDelete(paths: string[], mode: DeleteMode) {
 }
 
 /** 聚合计数刷新（删除后调用；失败不阻塞） */
-async function refreshGroups() {
+async function refreshCards() {
   try {
-    groups.value = await invoke<CategoryGroupRow[]>("list_content_categories");
+    cats.value = await contentStore.listCategories();
     await loadCoverThumbs();
   } catch {
     /* 计数刷新失败不阻塞 */
@@ -313,8 +418,31 @@ onMounted(load);
 
 <template>
   <div class="cg-wrap" :style="{ color: theme.textColor }">
-    <!-- ============ 视图 1：大类卡片 ============ -->
-    <template v-if="!activeCategory">
+    <!-- ============ 视图 1：分类卡片 ============ -->
+    <template v-if="!activeCard">
+      <!-- 工具条：索引覆盖 + 重建 + 管理 -->
+      <div class="cg-toolbar">
+        <span class="cg-index" :class="{ warn: indexEmpty }">
+          {{ indexEmpty ? "尚未建立语义索引（语义分类暂无法匹配）" : indexText }}
+        </span>
+        <span v-if="indexStale" class="cg-index warn">
+          · 有 {{ stats?.stale }} 张向量属于其他模型档位，需重建索引
+        </span>
+        <span class="cg-spacer"></span>
+        <span v-if="building" class="cg-index">首次匹配中…（正在用关键词检索全库）</span>
+        <span class="cg-total">共 {{ totalHits }} 张次</span>
+        <button class="btn" :disabled="rebuilding" @click="rebuildAll">
+          {{ rebuilding ? "重建中…" : "🔄 重建分类" }}
+        </button>
+        <button class="btn" @click="managerOpen = true">⚙ 管理分类</button>
+      </div>
+
+      <!-- 换档 / 建索引的入口指引（语义分类的两个前置：模型档位 + 向量索引） -->
+      <p v-if="indexEmpty" class="cg-tip">
+        语义分类需要先建立「语义向量索引」：进入 <b>扫描中心 → 相册扫描</b>，勾选「语义向量」执行一次；
+        模型档位（B/16 ↔ L/14-336）在 <b>扫描中心 → ⚙ 性能设置 → 语义模型</b> 里切换，换档后需重建索引。
+      </p>
+
       <!-- 加载骨架 -->
       <div v-if="loading" class="cg-state">
         <div class="sk-grid">
@@ -329,42 +457,46 @@ onMounted(load);
         <button class="btn" @click="load">重试</button>
       </div>
 
-      <!-- 空态引导 -->
-      <div v-else-if="!topCategories.length" class="cg-state">
-        <div class="cg-state-icon">🏞️</div>
-        <p class="cg-state-title">还没有内容分类数据</p>
-        <p class="cg-state-text">请先在相册详情页执行「内容扫描 / 综合扫描」，AI 识别的分类会聚合展示在这里。</p>
-      </div>
-
-      <!-- 大类卡片网格 -->
+      <!-- 分类卡片网格 -->
       <div v-else class="cat-grid">
         <article
-          v-for="t in topCategories"
-          :key="t.category"
+          v-for="t in cards"
+          :key="t.id"
           class="cat-card"
           :style="theme.cardStyle"
-          :title="`${t.label} · ${t.count} 张`"
+          :title="`${t.name} · ${t.count} 张`"
           @click="openCategory(t)"
         >
-          <div class="cat-cover" :style="{ background: toneBg(t.category) }">
+          <div class="cat-cover" :style="{ background: toneBg(t) }">
             <img v-if="t.cover && thumbMap[t.cover]" :src="fileUrl(thumbMap[t.cover])" loading="lazy" alt="" />
-            <span v-else class="cat-cover-ph">{{ t.label.slice(0, 1) }}</span>
+            <span v-else class="cat-cover-ph">{{ t.icon || t.name.slice(0, 1) }}</span>
             <span class="cat-count">{{ t.count }} 张</span>
+            <span v-if="t.source === 'builtin'" class="cat-tag">规则</span>
           </div>
           <div class="cat-body">
-            <h3 class="cat-name">{{ t.label }}</h3>
-            <span v-if="t.subCount" class="cat-sub-hint">{{ t.subCount }} 个细类</span>
+            <h3 class="cat-name">{{ t.icon }} {{ t.name }}</h3>
+            <span v-if="t.keywords.length" class="cat-sub-hint">
+              {{ t.keywords.length }} 词 · 匹配度 {{ relToMatch(t.threshold) }}
+            </span>
           </div>
         </article>
       </div>
+
+      <!-- 空态：仍展示管理入口（用户可先建分类） -->
+      <div v-if="!loading && !error && !cards.length" class="cg-state">
+        <div class="cg-state-icon">🏷️</div>
+        <p class="cg-state-title">还没有分类</p>
+        <p class="cg-state-text">点击「⚙ 管理分类」新建分类并写好关键词，匹配到的照片会自动归入。</p>
+      </div>
     </template>
 
-    <!-- ============ 视图 2：大类照片网格 ============ -->
+    <!-- ============ 视图 2：分类照片网格 ============ -->
     <template v-else>
       <div class="cg-detail-head">
         <button class="btn" @click="backToCards">← 返回分类</button>
-        <h2 class="cg-detail-title">{{ activeCategory.label }}</h2>
-        <span class="cg-detail-count">{{ activeCategory.count }} 张</span>
+        <h2 class="cg-detail-title">{{ activeCard.icon }} {{ activeCard.name }}</h2>
+        <span class="cg-detail-count">{{ activeCard.count }} 张</span>
+        <span v-if="activeCard.source === 'builtin'" class="cg-detail-count">· 规则分类（无需语义索引）</span>
         <span class="cg-spacer"></span>
         <button class="btn" :class="{ active: selectMode }" @click="toggleSelectMode">
           {{ selectMode ? "退出批量" : "☑ 批量管理" }}
@@ -378,14 +510,14 @@ onMounted(load);
         </template>
       </div>
 
-      <!-- 细类 chips 即时过滤 -->
-      <div v-if="subChips.length" class="chip-row">
+      <!-- 关键词 chips 即时过滤 -->
+      <div v-if="kwChips.length" class="chip-row">
         <button
-          v-for="c in subChips"
+          v-for="c in kwChips"
           :key="c.key"
           class="chip"
-          :class="{ on: (activeSub ?? '') === c.key }"
-          @click="selectSub(c.key)"
+          :class="{ on: (activeKw ?? '') === c.key }"
+          @click="selectKw(c.key)"
         >
           {{ c.label }} <span class="chip-n">{{ c.count }}</span>
         </button>
@@ -398,21 +530,29 @@ onMounted(load);
       </div>
       <div v-else-if="!filteredPhotos.length" class="cg-state">
         <div class="cg-state-icon">🗂</div>
-        <p>该细类下暂无照片</p>
+        <p>该分类下暂无照片</p>
+        <p class="cg-state-text">
+          语义分类只覆盖已建向量索引的照片；可在「扫描中心」执行含「语义向量」的扫描后点「🔄 重建分类」。
+        </p>
       </div>
       <div v-else class="photo-grid">
         <figure
           v-for="p in filteredPhotos"
-          :key="p.id"
+          :key="p.photo_hash"
           class="photo-cell"
           :class="{ selectable: selectMode, checked: selectMode && selected.has(p.path) }"
-          :title="[p.label, p.shoot_time].filter(Boolean).join(' · ')"
+          :title="[p.matched_keyword, p.shoot_time, p.location].filter(Boolean).join(' · ')"
           @click="selectMode ? toggleSelect(p.path) : openLightbox(p)"
           @contextmenu.prevent="onCellContextMenu($event, p.path)"
         >
           <img v-if="thumbMap[p.path]" :src="fileUrl(thumbMap[p.path])" loading="lazy" alt="" />
           <div v-else class="photo-ph">🖼</div>
-          <figcaption v-if="p.label" class="photo-cap">{{ subCategoryLabel(p.label) }}</figcaption>
+          <span v-if="p.score > 0" class="photo-score" :title="`AI 匹配度 ${strengthLabel(p.score)}（越高越像；阈值可在 ⚙ 管理分类 里调）`">
+            ✨ {{ strengthLabel(p.score) }}
+          </span>
+          <figcaption v-if="p.matched_keyword" class="photo-cap">
+            {{ kwLabel(activeCard, p.matched_keyword) }}
+          </figcaption>
           <span v-if="selectMode" class="cell-check" :class="{ on: selected.has(p.path) }">
             {{ selected.has(p.path) ? "✓" : "" }}
           </span>
@@ -439,6 +579,14 @@ onMounted(load);
       @close="ctxVisible = false"
     />
 
+    <!-- 分类管理（原子组件：列表 + 编辑 + 实时预览 + 重建） -->
+    <CategoryManager
+      v-if="managerOpen"
+      :categories="cats"
+      @close="managerOpen = false"
+      @changed="onManagerChanged"
+    />
+
     <!-- 删除方式选择（批量 / 预览删除） -->
     <Teleport to="body">
       <div v-if="modeDialogPaths" class="del-mask" @click.self="modeDialogPaths = null">
@@ -462,6 +610,57 @@ onMounted(load);
 <style scoped>
 .cg-wrap {
   min-width: 0;
+}
+
+/* ---- 工具条 ---- */
+.cg-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.cg-index {
+  font-size: 12.5px;
+  opacity: 0.7;
+}
+.cg-index.warn {
+  color: #b45309;
+  opacity: 1;
+}
+.cg-total {
+  font-size: 12.5px;
+  opacity: 0.65;
+}
+.cg-tip {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.7;
+  background: rgba(180, 83, 9, 0.1);
+  border: 1px solid rgba(180, 83, 9, 0.28);
+}
+.cat-tag {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  color: #fff;
+  background: rgba(60, 90, 200, 0.75);
+  border-radius: 999px;
+}
+.photo-score {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 999px;
+  backdrop-filter: blur(3px);
 }
 
 /* ---- 三态 ---- */
@@ -509,7 +708,7 @@ onMounted(load);
   50% { opacity: 0.4; }
 }
 
-/* ---- 大类卡片网格 ---- */
+/* ---- 分类卡片网格 ---- */
 .cat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));

@@ -865,7 +865,10 @@
         "src/views/Timeline.vue",
         "src-tauri/src/lib.rs",
         "src-tauri/src/db/mod.rs",
-        "src/stores/album.ts"
+        "src/stores/album.ts",
+        "src/views/SmartSearch.vue",
+        "src/components/PhotoLightbox.vue",
+        "src/views/Memories.vue"
       ],
       "keywords": [
         "ImportErrorsDialog",
@@ -876,7 +879,11 @@
         "pg-cell-focus",
         "find_any_album_by_path",
         "already_exists",
-        "已导入不报错"
+        "已导入不报错",
+        "点图预览",
+        "PhotoLightbox openAlbum",
+        "focus 定位跳转",
+        "点图=预览/去相册=次要按钮"
       ],
       "implementation": {
         "frontend": "①ImportErrorsDialog：解析 result.errors（后端格式 {folder}: {msg}）后按错误类型分类（路径不存在/同名已存在/权限不足/路径非法/其他）并给出解决建议；每项支持「复制」+「单条重试」；顶部「全部重试」+「重新选择根目录」；AlbumList.batchImport 失败时弹窗 + Toast「查看详情」按钮直达对话框（持久化）。②Timeline：引入 PhotoLightbox；openCard 改为设置 lightboxIndex/Open 打开内部查看器；右下角「↗」按钮 click=gotoAlbum 跳 /album/:id?focus=encode(path)；AlbumDetail 读 route.query.focus → focusPath computed 透传；PhotoGrid 新增 focusPath prop + applyFocus（querySelector [data-path] + scrollIntoView + 1.8s 橙色高亮 + 10×200ms 退避适配懒加载）。③ImportErrorsDialog 新增 skipped_conflicts 展示区（绿色「已存在」/ info 态），仅存在项时标题为「N 个相册已导入」、按钮为「知道了」；AlbumList alreadyExists 分支弹 info 而不是 error。",
@@ -892,7 +899,8 @@
       ],
       "tests": "cargo test --lib 47/47（新增 find_any_album_by_path_cross_user）; vue-tsc 0 错误",
       "created_at": "2026-08-25T00:00:00+08:00",
-      "updated_at": "2026-08-25T00:30:00+08:00"
+      "updated_at": "2026-09-20T23:10:00+08:00",
+      "enhancement": "【一致性补充 2026-09-20】智能搜索结果的点击行为修正 + 相册跳转全站统一：\n① 问题：SmartSearch 是全站唯一「点击照片直接跳相册」的入口（时间线/回忆/人像/分类画廊都是进内部 Lightbox），用户点图想看大图却被弹到相册。\n② 修复：SmartSearch 点图 → PhotoLightbox（浏览序列 = 当前全部搜索结果，可 ←/→ 翻页、Esc 关闭、1-5 打星、标签编辑）；相册跳转降为次要入口 —— 卡片右上角「📁 相册名」胶囊（@click.stop，点它才跳）+ 大图工具栏「📁 在相册中查看」。\n③ 复用而非新造：PhotoLightbox 新增可选 emit openAlbum(albumId)（按钮仅在当前照片有 albumId 时出现，向后兼容）；SmartSearch 无需传 meta —— Lightbox 内建 FEAT-D「ensure_photo_scanned」会自动补扫并展示 AI 分类/人物/EXIF。\n④ 全站约定（本次统一）：点图 = Lightbox 预览；去相册 = 次要按钮，且跳转一律带 `?focus=<path>`，由 AlbumDetail → PhotoGrid 滚动定位 + 高亮（复用 FEAT-034-B 既有能力，否则跳过去还要自己找）。Timeline / Memories 顺带接入大图工具栏的「在相册中查看」。\n⑤ 唯一保留旧行为：相册管理页（AlbumList）的搜索结果**列表**点击仍是「跳相册」，因为它本身是文字列表且 title 已标注「点击跳转到所属相册」，非照片网格预览场景。"
     },
     {
       "id": "FEAT-035",
@@ -1449,7 +1457,506 @@
       ],
       "created_at": "2026-09-08T14:30:07+08:00",
       "updated_at": "2026-09-08T14:30:07+08:00"
+    },
+    {
+      "id": "FEAT-053",
+      "name": "模型切换/GPU 加速实测验证（会话铁证 + 推理测速 + GPU 失败 CPU 回退）",
+      "status": "done",
+      "description": "回答「怎么确定选的模型真换了、加速真在用」：会话级实测上报 + UI 对照展示。1) _load 成功后记录会话实测事实（sess.get_providers() 真实绑定 provider / 源模型文件 / 文件大小 / 输入元数据 / cpu_fallback），经 /gpu(sessions) / /models(loaded) / /health 暴露；2) /health 的 model 字段修复：此前写死 CLS_MODELS[0]，用户切换后永远显示默认候选；3) GPU 会话创建失败（驱动异常）自动回退纯 CPU 重试并如实标记，不再全通道瘫痪；4) POST /benchmark 固定张量预热后计时（avg/min/max ms + 实测 provider），UI「推理测速」按钮开/关加速各测一次显示提速比；5) VCR_API_VERSION 2→3（宿主自动重启旧服务）。",
+      "related_files": [
+        "python/vcr/model_registry.py",
+        "python/server.py",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/lib.rs",
+        "src/types/content.ts",
+        "src/stores/content.ts",
+        "src/components/ModelGpuSettings.vue"
+      ],
+      "keywords": [
+        "GPU",
+        "实测",
+        "get_providers",
+        "benchmark",
+        "测速",
+        "模型切换",
+        "验证",
+        "回退",
+        "FEAT-053"
+      ],
+      "implementation": {
+        "backend": "model_registry: _session_facts() 提取实测事实（与 _sessions 同生命周期，pop/clear 同步）；_create_session() GPU 初始化失败显式 CPU 重试；current_cls_name() 不触发加载可被 /health 高频调用；benchmark() 锁外测速（会话不可变对象，持锁计时会被并发加载阻塞失真），runs≤50 服务端钳制",
+        "rust": "VcrGpuStatus 加 sessions 字段；vcr_benchmark 每请求独立 60s 超时（共享客户端 15s 不够）；VCR_API_VERSION 3",
+        "frontend": "ModelGpuSettings 新增「会话实测」行（实际加载文件+实际绑定 provider+回退警示）与「推理测速」按钮（CPU/GPU 各测一份显示提速比）；类型 VcrSessionFacts/VcrBenchmarkResult"
+      },
+      "highlights": [
+        "上报的是 ORT 会话实际绑定值（get_providers）而非请求值——发现 ORT 对非法 provider 名会内部静默回退，实测上报能如实暴露",
+        "已知事实：/health 每 300ms 被宿主探测，current_cls_name 只做几次 isfile stat，不触发加载不加锁",
+        "冒烟 21/21 通过（experiments/smoke_feat053_verify.py，含 monkeypatch 模拟驱动故障回退）；yolov8x-cls CPU 实测 ~78ms/张"
+      ],
+      "created_at": "2026-09-09T16:11:06+08:00",
+      "updated_at": "2026-09-09T16:11:06+08:00"
+    },
+    {
+      "id": "FEAT-054",
+      "name": "开发者视角：设置入口 + cmd 风实时日志副窗口（只读 app.log 文件 tail，无事件流改造）",
+      "status": "done",
+      "description": "Home 右上角 ⚙ 设置菜单（锚定下拉 + Esc/遮罩关闭，后续设置项统一入此）→『开发者视角』打开独立终端风日志窗口（label=dev-logs，后端单例：已开则聚焦+还原）。数据源只读 app_data_dir/logs/app.log：Rust logger::tail_log 按行尾读（offset 增量 / 首调尾部 64KB 回填对齐 / 末尾半行不消费 / >5MB 清空或轮转返回 reset），前端 500ms 轮询增量。命令 async+spawn_blocking 不占主线程、单次读取 64KB 封顶（BUG-2026-0910-001 教训）。窗口固定纯黑终端风（原生 background_color + html/body 深色，不做主题适配），彩色级别徽标（CALL 灰 / RET 蓝+耗时 / ERR 红 / INFO 绿 / LOGGER 黄），文本过滤、暂停/恢复、自动跟随滚动、上滚暂停+『回到底部(N 条新日志)』浮标、2000 行 DOM 上限、轮转/截断提示、状态栏文件路径+行数+体积。main.ts 按 window label 分流挂载 LogWindowApp，不装 router 避开登录守卫；capabilities/dev-logs.json 仅授 core:default 与主窗口能力隔离。边界：VCR Python 子进程 stdout 不在 app.log 内不采集；不改 logger 写入与清理线程；不引入文件监听依赖。",
+      "related_files": [
+        "src-tauri/src/logger.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/capabilities/dev-logs.json",
+        "src/main.ts",
+        "src/dev/LogWindowApp.vue",
+        "src/views/Home.vue"
+      ],
+      "keywords": [
+        "开发者视角",
+        "日志窗口",
+        "dev-logs",
+        "tail",
+        "spawn_blocking",
+        "轮询",
+        "设置菜单",
+        "FEAT-054"
+      ],
+      "implementation": {
+        "rust": [
+          "logger.rs：TailResult{lines,next_offset,reset,truncated,file_len,path}；log_file_path() 复用 get_dir()；tail_log(offset,max_bytes) —— stat 文件长度 → offset>len 返回 reset → 首调 file_len>max_bytes 尾部对齐回填 truncated → Read::take(max_bytes) 封顶读取 → 只消费到最后一个 '\n'（半行留待下次）",
+          "lib.rs：tail_dev_log 为 async 命令 + spawn_blocking（非 async 命令在主线程执行会拖垮全部窗口）；open_dev_log_window 单例（get_webview_window → set_focus/unminimize），dev 走 External(vite 1420)、打包走 App(index.html)，builder 设 background_color 纯黑",
+          "capabilities/dev-logs.json：windows=[dev-logs] + core:default，与主窗口 default.json 能力隔离"
+        ],
+        "frontend": [
+          "main.ts：getCurrentWindow().label==='dev-logs' 分流挂载 LogWindowApp（不装 router 避开登录守卫），并写死 html/body 深色 + colorScheme dark",
+          "LogWindowApp.vue：500ms 轮询 + inFlight 防重入 + document.hidden 跳过；LINE_RE 解析时间戳/级别；reset 清屏提示轮转、truncated 提示仅尾部 64KB；过滤 computed、暂停、自动跟随（isNearBottom 容差 40px）、回到底部浮标、MAX_LINES=2000 头部丢弃；onUnmounted clearInterval"
+        ]
+      },
+      "highlights": [
+        "窗口 label 分流而非 URL query，dev/打包两态行为一致且天然避开登录守卫",
+        "尾读协议自带防撕裂（半行不消费）与防轮转崩溃（reset 信号），前端无状态可重连",
+        "性能三护栏：spawn_blocking 离开主线程 / take(64KB) 封顶洪峰 / inFlight 防重入——对应验收④⑤场景不卡不崩",
+        "验收清单 ①~⑥ 全过：⚙ 菜单、秒级滚出、暂停/回底/过滤、5MB 轮转不崩、重复点击聚焦不重开、cargo check + vue-tsc 通过",
+        "BUG-2026-0910-001 真机复现闭环：修复后日志窗口正常显示/回填/滚出；性能三护栏（spawn_blocking/64KB 封顶/inFlight）+ 头像风暴修复（0910-002）双管齐下",
+        "真凶修复（BUG-2026-0910-005）：open_dev_log_window 改 async + 后台线程建窗——同步命令在主线程内建窗会停在 about:blank（空白无标题）并卡死事件循环，实测对照：后巷建窗 100% 正常，IPC 点击路径必现；修复后点击路径实测 轮询 3ms、日志正常滚出"
+      ],
+      "created_at": "2026-09-10T11:40:00+08:00",
+      "updated_at": "2026-09-10T17:00:00+08:00"
+    },
+    {
+      "id": "FEAT-055",
+      "name": "语义搜索：Chinese-CLIP 双塔 512 维向量（扫描集成 + 智能搜索 RRF 融合 + 覆盖/增量扫描对话框）",
+      "status": "done",
+      "description": "自然语言搜图：Chinese-CLIP ViT-B/16（Xenova ONNX fp16 377MB，固定 CPU 推理）编码 512 维共享空间，图片向量落 photo_embeddings 表，查询文本经 text 塔编码后与全库向量做余弦召回。扫描侧作为第 4 个扫描项 semantic 并入 scan_album_combined（缩略图直编码，跳原图解码省 50~200ms/张；增量差集跳过已有向量；batch 复用现有参数默认 8；500/批事务 upsert；embed-progress 进度事件）。搜索侧融入现有 smart_search：置信度范围召回（余弦 ≥ min_similarity 默认 0.30，非固定 top-N，硬上限 2000）→ 复用同一套筛选 SQL 按 photo_hash 过滤 → 与关键词结果 RRF(k=60) 融合，语义命中附 semantic_score；CLIP 未就绪/模型缺失时静默降级纯关键词且不冷启动服务。扫描交互新增覆盖/增量二选（scan_album_combined 加 overwrite 参数；增量走新增的 classify_paths 显式路径列表，跳过已入库 hash），三个扫描入口（相册面板/全局扫描/批量管理）统一弹 ConfirmDialog 三选对话框。Phase 0 实测（本机 1.1 万张真实缩略图库）：全库索引 9.3min（DML fp32 37.9ms/张）或 CPU 91ms/张约 17min、单次查询 <15ms（文本编码 ~7ms + 检索 0.36ms）、零样本分类 81.1% 高于 yolov8m 基线 76.0%、中文查询 top-10 与 AI 分类标签高度一致（「一只猫/小狗/文件文档/雪山风景」满分命中，「海边日落」「樱花盛开」经视觉模型抽查确认命中分类盲区图）。",
+      "related_files": [
+        "python/vcr/services/embed_service.py",
+        "python/vcr/services/clip_subgraph.py",
+        "python/vcr/model_registry.py",
+        "python/server.py",
+        "python/download_models.py",
+        "python/extract_clip_subgraphs.py",
+        "src-tauri/src/db/embedding.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/db/mod.rs",
+        "src/views/SmartSearch.vue",
+        "src/views/AlbumList.vue",
+        "src/components/ScanPanel.vue",
+        "src/components/GlobalScanPanel.vue",
+        "src/components/ConfirmDialog.vue",
+        "src/stores/content.ts",
+        "src/utils/scanModeTip.ts",
+        "design/clip-model-test-report.md",
+        "design/semantic-search-implementation-plan.md"
+      ],
+      "keywords": [
+        "语义搜索",
+        "自然语言搜图",
+        "CLIP",
+        "Chinese-CLIP",
+        "embedding",
+        "向量检索",
+        "RRF",
+        "semantic",
+        "photo_embeddings",
+        "覆盖扫描",
+        "增量扫描",
+        "clip_ready"
+      ],
+      "implementation": {
+        "python": [
+          "vcr/services/clip_subgraph.py：单文件双塔拆成 clip_vision.onnx / clip_text.onnx（幂等，拆后做 onnxruntime 数值对齐 cos>0.999 校验）",
+          "vcr/services/embed_service.py：tokenizers 加载 tokenizer.json（缺失回落内置 MiniBertTok 逐字分词）；embed_text 返回已 L2 归一化 512 维；embed_images 单张错误内联",
+          "server.py：POST /embed_text /embed_batch（封顶 64）/embed_status，/health 增 clip_ready，VCR_API_VERSION 3→4（宿主自动重启旧服务）",
+          "model_registry.py：clip_vision/clip_text 懒加载槽位，固定 CPUExecutionProvider + ORT_ENABLE_BASIC",
+          "download_models.py 加 clip 任务（hf-mirror 直链 fp16 + tokenizer.json + vocab.txt）；vcr-server.spec 补 tokenizers/onnx hiddenimports"
+        ],
+        "rust": [
+          "db/embedding.rs：photo_embeddings(photo_hash PK, user_id, album_id, path, dim, model, embedding f32 LE BLOB, generated_at) + upsert/lookup 差集/version/按路径与相册删除/移动同步",
+          "content.rs do_semantic：collect_images → 缩略图映射（photo_thumb_cache 查表优先，缺失 ensure_grid_thumb 现场生成）→ lookup_embedding_hashes 增量差集 → vision::embed_images_batch 分批编码 → 500/批事务 upsert；overwrite=true 时全量重算不跳过",
+          "vision.rs：classify_album 拆出 classify_paths（增量扫描传显式路径列表）；embed_images_batch / embed_text_query / clip_ready（只探测已运行实例不冷启动）",
+          "smart_search 融合：EMBED_CACHE 内存向量缓存（user_id → Arc<(version, 向量列表)>，version = count+max(rowid) 变化才重载）；fuse_hits RRF(k=60) + 同分时 FTS 原序优先；db::lookup_hits_by_hashes 两路合并（photo_content_scan 优先，photo_thumb_cache 兜底覆盖未跑 AI 的照片）",
+          "级联三处同生命周期：delete_content_by_paths / delete_album_refs / move_photo_content_path",
+          "model_dl.rs 注册 chinese-clip（DlKind::ClipFp16，hf-mirror 单源直链，复用镜像/进度/取消/原子改名）"
+        ],
+        "frontend": [
+          "三个扫描入口扫描前弹 ConfirmDialog「覆盖扫描 / 增量扫描 / 取消」（组件向后兼容扩展可选 neutralText）",
+          "语义向量默认勾选；四个扫描项 2×2 网格布局；对话框文案抽到 utils/scanModeTip.ts 共用",
+          "SmartSearch 结果卡「✨ AI 匹配 N%」徽标（semantic_score）+ 空态引导去扫描中心建索引；搜索框 placeholder 改自然语言示例",
+          "stores/content.ts：scanTypes 透传 + overwrite 参数 + embed-progress 监听（路由到现有 combinedJobs 槽位）"
+        ],
+        "decisions": [
+          "fp16 固定 CPU：DML 对 fp16 图有算子级数值 bug，实测 GPU/CPU embedding 余弦仅 0.43（详见 BUG-2026-0910-006）",
+          "不用 int8：零样本分类掉点 3.8pp（77.4% vs 81.1%）> 2pp 决策门，向量漂移 cos 0.96",
+          "不引入 sqlite-vec/FAISS：暴力余弦实测 1.1 万张 0.36ms、10 万张约 4ms，量级不需要向量库",
+          "不耦合扫描项：只勾语义向量时其余三项完全不写库，photo_embeddings 为独立表"
+        ]
+      },
+      "highlights": [
+        "语义召回按置信度范围（≥0.30 全部纳入）而非固定 top-N，配合 RRF 可与关键词结果同列排序，前端一套结果组件零改造",
+        "缩略图直编码：编码输入 256px 缩略图，跳过数 MB 原图解码（省 50~200ms/张），索引整库 9.3 分钟",
+        "覆盖/增量统一参数覆盖 AI 与语义两条链路，增量模式按 photo_hash 差集跳过已入库照片",
+        "CLIP 与关键词搜索共用筛选 SQL：日期/地点/人物/影调筛选对语义命中同样生效",
+        "降级链完整：模型未下载/服务未启动/向量库为空 → 纯关键词结果，用户无感"
+      ],
+      "created_at": "2026-09-10T17:30:00+08:00",
+      "updated_at": "2026-09-10T17:30:00+08:00"
+    },
+    {
+      "id": "FEAT-056",
+      "name": "语义分类 v5：下线图像分类模型，改由 Chinese-CLIP 关键词语义匹配驱动用户自建分类（+ 语义模型档位可选）",
+      "status": "done",
+      "module": "语义分类 / python vcr 瘦身 + src-tauri category 服务层 + 前端分类管理",
+      "purpose": "图像分类模型（yolov8*-cls + Places365 + 花朵/食物专家）效果不理想而语义模型效果好，故整体下线分类模型，把「内容分类」改为用户可自建：建分类 → 写关键词（自然语言短语）+ 排除词 → 调匹配强度阈值 → 达标照片自动归入。同时把语义模型做成与旧「分类模型」同构的前端可选档位（B/16 默认 / L/14-336 可选），适配不同硬件，软件定位仍是核显本。",
+      "implementation": {
+        "打分公式": "score = max_kw cos(x, kw) - mean_b cos(x, b)（b = 7 条中性提示词）。P0 实测：B/16 裸余弦无关对普遍 0.33~0.39 且概念间基线不同（美食 0.363 / 文档 0.330），单一绝对阈值在 0.38 边界处精度已崩（抽查 5 张仅 1 张对）；减去中性基线后同一阈值可跨概念使用，默认 0.03（抽查：一只猫命中 30 张中 7/10 有猫、美食 297 张中 9/10 有食物），且图库不存在的概念自然 0 命中。已否决均值中心化（会把低信息量图变成 hub）。",
+        "持久层": "db/category.rs 新增三表：photo_categories（定义：name/icon/source/slug/keywords/exclude/threshold/enabled）、photo_category_hits（命中物化，多对多，冗余 path 与 photo_content_scan / photo_embeddings 三处同步级联）、clip_text_cache（关键词向量缓存，改阈值不重编码）；含 CRUD / 批量替换 / 计数+封面聚合 / 索引覆盖统计。",
+        "服务层": "category.rs：关键词去重 → clip_text_cache 命中或批量调 /embed_text_batch → 全库向量点积 → 阈值+排除词过滤 → 物化；builtin（人物/扫街/夜景/文档）不跑 CLIP，由 photo_content_scan.category SQL 直算。",
+        "接口层": "7 个命令：list_categories / save_category（保存即自动重建该分类）/ delete_category / preview_category（实时预览命中数+样张+分数分位，不落库）/ rebuild_categories / list_category_photos / category_index_stats；首访自动补齐 builtin + 17 个内置预设（可改词 / 调阈值 / 删除）。",
+        "python 瘦身": "删除 classifier / scene_service / flower_service / food_service / mapping / taxonomy；arbitrator 简化为 4 条规则（det 人物 → OCR 文档 → 截图启发式 → 影调夜景 → other）；OCR 触发去除 cls 门控改为模型可用即跑；新增 /embed_text_batch 与语义档位（/models /model）；VCR_API_VERSION 4→5；单张 437ms→~140ms。",
+        "模型档位": "config.CLIP_MODEL_META 三档（键=目录=下载条目，Rust/Python/CLI 三处由单测与派生表强制对齐）：b16（512 维/224，Xenova chinese-clip-vit-base-patch16 fp16 377MB，默认，固定 CPU）；b16-fp32（同仓库 model.onnx 719MB，独立 model id chinese-clip-vit-b16-fp32，provider 跟随「GPU 加速」开关——实测 DML 与 CPU 数值完全一致(cos=1.000000)且提速 2.0×，见图 python/bench/verify_clip_tiers.py）；l14（768 维/336，chinese-clip-vit-large-patch14-336px fp16 814MB，标注未实测）。落位约定：<root>/onnx/<onnx> 放双塔整图，tokenizer.json + vocab.txt 放模型根目录 <root>/；落库 model id 与 photo_embeddings.model 严格对应（历史值 chinese-clip-vit-b16-fp16 不变），检索/匹配/增量/缓存版本全部按 model 过滤，换档后旧向量计入 stale 并提示重建索引。",
+        "前端": "CategoryGallery 改用 list_categories / list_category_photos，关键词 chips 按实际命中关键词即时过滤，卡片角标显示命中强度；新增原子组件 CategoryManager（主从：列表 + 编辑 + 关键词/排除词 chips + 阈值滑块 + 实时预览样张 + 重建）；ModelGpuSettings 的分类模型下拉改为语义模型档位下拉（沿用同构交互：置灰未下载 / 下载 / 切换提示）；三个扫描入口的「AI 内容识别」改名「人物 · 文档识别」且值 ai→person。",
+        "下载落位": "Rust model_dl.rs 三条目 chinese-clip / chinese-clip-fp32 / chinese-clip-l14（hf-mirror 单源直链 + tokenizer/vocab），python download_models.py 同步支持 clip/clip-fp32/clip-l14；DlSpec 用 root + onnx 两个字段拼落位路径，避免 onnx 文件名（model_fp16.onnx / model.onnx）写死。",
+        "provider 策略": "新增 _clip_providers()：fp16 档（b16 / l14）固定 CPU（DML 对 fp16 图有算子级数值 bug），fp32 档跟随全局 GPU 开关（默认仍 CPU，用户显式开启才用 GPU）；顺带修掉 BUG-2026-0920-003（此前 CLIP 用全局 provider，一开加速就会把 fp16 送上 DML 静默产出错误向量）。",
+        "可观测性": "语义降级不再静默：后端 smart_search 的降级原因写入 app.log，embed 系列端点统一兜底为 503+detail（禁止裸 500 text/plain，宿主无法解析）；前端 SmartSearch 顶部在语义不可用时显性提示「当前只做关键词匹配」并给出模型/索引入口。另：开发态不要往 src-tauri/target/debug/vcr/ 放 exe —— 那会让应用切到「打包版分支」，模型目录变成缺 CLIP 的旧残留目录（BUG-2026-0920-006）。",
+        "模型选型实测（2026-09-21）": "同一 53 张标注集零样本准确率（工具 python/bench/eval_clip_accuracy.py）：b16 三变体（fp16 / Xenova fp32 / PyTorch 导出 fp32）完全等价 —— 原图 crop 81.1%、官方 squash 83.0%，错判集差异 0 张、图塔余弦 min 0.999999（这是数值等价结论，最硬）；L/14@224（官方 OFA-Sys 权重自行导出自校验 cos=1.000000）69.8%/71.7%、L/14@336（Xenova）67.9%/69.8% —— 两个独立变体都低 13pp，且崩在场景类（architecture 0~1/4、night 2~3/7、street 2/7），速度慢 3.5~10×，结论：排除转换因素后 L/14 家族不适配本场景（H/14 不上架、RN50 不值得）。⚖️ 统计功效边界：n=53 的标准误 ≈5.5pp，只能筛掉「明显更差」的选项；squash vs crop 的 ±1.9pp 经 McNemar 检验 p=1.000 不显著（按线上真实编码 WebP q85 复测方向还会翻转且非单调），故**撤销**「改官方 squash」的建议 —— 不值得为 1 张图的差异让 10,919 条索引失效并重扫 15 min。另实测预处理耗时占比：256px 缩略图 2.8ms（crop 2.1ms）vs 原图 171ms vs 模型前向 91ms ⇒ 「换更快的前处理」或「顺带生成 CLIP 专用缩略图」收益上限仅 ~2ms/张，不值得做；缩略图尺寸 256→320/384 的差异同样在噪声内。要解锁 recipe / 尺寸 等 ±2pp 级决策，需先把标注集扩到 200~300 张（方案见 design 文档 §1.5）。新增工具 export_clip_torch.py（官方 PyTorch 权重→双塔 ONNX + torch-vs-ORT 数值校验）。",
+        "匹配度单位（2026-09-21）": "用户界面不再直接暴露内部净增益 rel（0.00~0.10），统一展示为 **0~100 的「AI 匹配度」= round(rel×1000)**：滑块 0~100 步长 5 + 三档 pill（宽松 10 / 标准 30 / 严格 50）+ 实时预览；预览分数分布与照片徽标（✨ 43）同刻度。换算集中在 src/utils/matchScore.ts（relToMatch/matchToRel/MATCH_PRESETS/MATCH_HELP，唯一真相点）；**后端 DB/命令/预览 API 全部保持 rel ⇒ 零迁移**（用户已有分类 0.03/0.01 自动显示 30/10，已用真实库核对）。另：切换语义档位后的引导文案修正为「必须重建语义索引（扫描中心→语义向量扫描）」，而不是只点「重建分类」—— 重建分类只重算命中，不会重新编码图片。",
+        "档位下架（2026-09-21）": "L/14 档已从 CLIP_MODELS 与 model_dl.rs 下载表移除（实测低于 B/16 13pp 且慢 3.5~10×），模型目录删除回收 3.26GB；单测改为「由 Python 档位表派生档位数」不再硬编码 3 档。保留档位 = b16（fp16，默认，固定 CPU）+ b16-fp32（可走 DirectML，实测数值一致且快 2×）。",
+        "真实相册端到端实测（2026-09-21）": "测试集：D:\\YUAN HAO\\Pictures\\img\\手机照片\\2019（612 张 4000×3000 手机照片，**从未入库**，避免自评自测）；工具 python/bench/e2e_real_album_test.py。① 速度：原图解码 107.5ms/张、生成缩略图(长边256+WebP q85) 174.8ms/张、CLIP 编码 270.7ms/张（batch8/4线程）→ 612 张端到端 274s；10k 折算约 75min（比 FEAT-055 记录的 17min 慢得多）。**关键发现：config.THREADS=4 严重限制 CLIP 编码** —— 同批张量下 8 线程 167.4ms/张（1.83×）、16 线程 batch32 142.7ms/张（2.15×）；8 线程=8 物理核不触发 SMT 争抢，10k 索引可从 49min 降到 31min。② 质量：top-6 抽查 美食/日落晚霞/夜景灯光 各 6/6（合计 18/18 全中）；但**召回偏低**：随机 10 张判读约 2/10 含食物，而 612 张里「美食」只命中 14（2.3%），「车辆」0（背景小车漏召）；宠物/花卉 0 命中经判读为**一致**（该相册确无）。结论：精度已足够，瓶颈在召回 ⇒ 建议新建分类默认匹配度 30 → 20。③ D1 最终裁决（crop vs squash）：把指标升级为连续量（正确类相似度 / top1−top2 间隔）做配对 Wilcoxon，p=0.79/0.85/0.99 全部不显著；差异图方向相反互换，且 squash 把 4 张建筑中的 3 张误判成夜景 ⇒ **保持 crop，不重建索引**。④ 预处理占比结论：缩略图上的解码+缩放仅 2~3ms/张（占 CLIP 编码约 1%），故「256→224 更快」「顺带生成 CLIP 专用缩略图」收益上限 2~3ms/张（1 万张 30~50s），不值得做；而「改用原图」要多付 107ms/张（1 万张 +18min）。",
+        "CPU 线程数可调 + 对比测速（2026-09-21）": "推理速度的线程数做成用户可调（不同机器最优值不同）：config.threads() 持久化于 models/current_threads.json，默认=物理核推测夹在 [4,8]（本机 8 线程，即默认就享受提速）；POST /threads 改设置（夹紧+持久化+清空会话后台重建，与 /gpu 同构）；POST /benchmark 可临时指定线程数（建临时会话，不改运行态）；POST /benchmark_sweep 一次测多档并标记最快；API v5→v6。前端「⚙ 性能设置」新增「CPU 线程数」下拉 + 「📊 对比测速」（结果表：线程/ms/相对提速，最快档可一键采用）；「会话实测」行新增显示实际绑定线程数便于核对。实测（7840HS）：2/4/8/16 线程 = 407/297/178/181 ms/张。另修复 BUG-2026-0921-002：打包依赖 onnxruntime>=1.17 被装成 1.29.0，导致发布版比 dev 慢 2.9×（460 vs 159 ms），已 pin 1.24.4。"
+      },
+      "highlights": [
+        "P0 用本机 11372 张真实缩略图向量做阈值标定，并用视觉模型对命中集抽样判读精度（脚本落在 python/bench/calib_*.py）",
+        "经验事实：关键词措辞强烈影响召回——「文字」≈0 命中而「屏幕截图」371 命中，故 UI 必须给实时预览",
+        "真实 App 库复核：美食 297 命中与 P0 完全一致，证明数据链路（model id/dim/表）与公式落地正确",
+        "cargo test --lib category 13/13（8 持久层 + 5 公式）；cargo check 0 warning；vue-tsc 0 错误；npm run build 通过",
+        "python vcr-server.exe 重打包并部署到 target/{debug,release}/vcr（api_version=5，避免旧组件版本死循环）",
+        "修复下载落位缺陷 BUG-2026-0920-002：附带文件（tokenizer.json/vocab.txt）此前落到 onnx/ 子目录，而 config 按模型根目录解析 → 全新安装会报「tokenizer 不可用」；改由 DlSpec.root 显式指定并加单测守护",
+        "下载落位修复（BUG-2026-0920-002）：附带文件改落模型根目录，并以单测锁死「Rust 下载表 == Python 档位表」；CLI 任务表改为由 config 派生（单一事实源）",
+        "语义档位验证工具 verify_clip_tiers.py 落地：可对任意两档/两 provider 做「图塔+文塔」余弦对照，是「换档/开 GPU 前必跑」的判定依据",
+        "实测发现同空间档位（fp16↔fp32）向量等价（余弦 ≥0.999998）→ 已记入待办：引入 space 概念可免去同空间换档的 17 分钟重建",
+        "排查方法论：用户报「语义搜不到」→ 先看 app.log（当时无任何记录）→ 查运行态进程路径与 /health.clip_ready → 定位到 target/debug/vcr/models 缺 chinese-clip",
+        "打包版裸 500 的根因是 hiddenimports 声明了未安装的包：spec 只写名字不够，打包 venv 必须真的装上 onnx",
+        "L/14 的否决是「排除了转换因素」的结论：官方权重自行导出（数值 cos=1.000000）与 Xenova 现成 ONNX 结果一致",
+        "选型方法论：判定必须用**线上口径**（缩略图长边 256 + 线上真实编码 WebP q85）—— 我先后用「短边=256」与「JPEG 而非 WebP」两次模拟失真，得出过两个相反的错误结论；核对 thumbnail.rs 的 image::DynamicImage::thumbnail(256,256) + WebP q85 后才正确",
+        "评测集能力边界已量化：n=53 标准误 5.5pp ⇒ 只可筛「明显更差」（L/14 的 13pp），不可判「±2pp」（recipe/尺寸）—— 避免把小差异当结论去改线上",
+        "L/14 的否决是「排除转换因素」的结论：官方权重自行导出（cos=1.000000）与 Xenova 现成 ONNX 结果一致",
+        "真实未见相册上 top 命中精度 18/18，但召回偏低（美食 14/612 vs 抽样推算约 120）⇒ 默认匹配度 30 偏严，建议 20",
+        "发现 THREADS=4 是编码速度瓶颈（8 线程 1.83×）：10k 索引 49min → 31min，属 1 行改动的白捡收益",
+        "线程数默认改为「按物理核推测夹 4~8」⇒ 所有机器开箱即得提速（本机 4→8 线程 1.57×，无需用户操作）",
+        "发现并修掉「依赖浮动导致的性能回归」：onnxruntime 1.29.0 比 1.24.4 慢 2.9×，只有端到端实测能发现"
+      ],
+      "related_files": [
+        "src-tauri/src/category.rs",
+        "src-tauri/src/db/category.rs",
+        "src-tauri/src/db/embedding.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/CategoryGallery.vue",
+        "src/components/CategoryManager.vue",
+        "src/components/ModelGpuSettings.vue",
+        "src/stores/content.ts",
+        "src/types/content.ts",
+        "python/vcr/config.py",
+        "python/vcr/model_registry.py",
+        "python/vcr/preprocess.py",
+        "python/vcr/schemas.py",
+        "python/vcr/services/arbitrator.py",
+        "python/vcr/services/pipeline.py",
+        "python/vcr/services/embed_service.py",
+        "python/vcr/services/clip_subgraph.py",
+        "python/server.py",
+        "python/download_models.py",
+        "python/bench/calibrate_categories.py",
+        "python/bench/calib_debias.py",
+        "design/semantic-category-implementation.md",
+        "python/vcr/services/clip_subgraph.py",
+        "python/bench/verify_clip_tiers.py",
+        "design/clip-accuracy-comparison.md",
+        "python/bench/eval_clip_accuracy.py",
+        "python/bench/export_clip_torch.py",
+        "src/utils/matchScore.ts",
+        "design/semantic-real-album-e2e.md",
+        "python/bench/e2e_real_album_test.py"
+      ],
+      "keywords": [
+        "语义分类",
+        "Chinese-CLIP",
+        "零样本分类",
+        "关键词匹配",
+        "中性基线去偏",
+        "photo_categories",
+        "photo_category_hits",
+        "clip_text_cache",
+        "模型档位",
+        "L14-336",
+        "下线分类模型",
+        "FEAT-056",
+        "AI 匹配度",
+        "matchScore.ts",
+        "零迁移",
+        "档位下架",
+        "CPU 线程数",
+        "benchmark_sweep",
+        "onnxruntime pin"
+      ],
+      "tests": [
+        "cargo test --lib category → 13/13 通过",
+        "cargo check → 0 warning；vue-tsc --noEmit → 0 错误；npm run build → 成功",
+        "python server.py /health(api_version=5) /models /embed_text_batch /classify_batch /benchmark 全通",
+        "真实库公式复核：猫咪 49 / 美食 297 / 汽车 4 / 文字截图 371（阈值 0.03）",
+        "cargo test --lib model_dl → 2/2（下载落位与 python 档位表一致性守护）",
+        "python/bench/verify_clip_tiers.py：fp16↔fp32 CPU 余弦 ≥0.999998；fp32 DML↔CPU 余弦 =1.000000、提速 2.0×（53.3 vs 108.2ms/张）",
+        "打包版全新安装模拟：仅有整图 + tokenizer/vocab 时首次 /embed_text_batch 自动拆图并返回 200（BUG-2026-0920-005）",
+        "release.ps1 必需模型清单按 v5 更新（去 yolov8n-cls，改为人脸/OCR/语义模型）",
+        "eval_clip_accuracy：b16 三变体等价（81.1%/83.0%，错判集差异 0）；L/14-224 官方导出 69.8%/71.7%；L/14-336 67.9%/69.8%",
+        "线上口径（--max-side 256 --resize squash）：b16 = 77.4%（crop 口径 75.5%，官方 recipe +1.9pp）",
+        "export_clip_torch 自校验：L/14@224 torch vs ORT 余弦 vision=1.000000 text=1.000000",
+        "真实库核对换算零迁移：photo_categories.threshold 0.03/0.01 → UI 30/10",
+        "打包 exe 档位清单 = 2 档；切换已下架的 l14 返回 400「未知语义模型档位: l14」",
+        "真实相册 612 张端到端：缩略图生成 172ms/张、CLIP 编码 275ms/张（4线程）",
+        "线程对照：4线程 270.7 / 8线程 167.4 / 16线程@batch32 142.7 ms/张",
+        "真实相册 top 命中精度抽查 18/18（美食/日落晚霞/夜景灯光 各 6/6）",
+        "线程扫档：2线程 407 / 4线程 297 / 8线程 177.6(最快) / 16线程 181.2 ms/张（打包 exe）",
+        "打包 venv ORT 对照：1.29.0 → 460ms vs 1.24.4 → 158.7ms（同机同模型同线程）",
+        "POST /threads 越界夹紧：999 → 16；设置 6 → /health 与持久化文件均生效"
+      ],
+      "created_at": "2026-09-20T21:20:00+08:00",
+      "updated_at": "2026-09-21T12:40:00+08:00"
+    },
+    {
+      "id": "FEAT-057",
+      "name": "v0.3.0 发布打包：内嵌模型显式清单（574MB→457MB）+ 运行时模型目录解析与只读副本治理",
+      "status": "done",
+      "module": "发布打包 / src-tauri/release.tauri.conf.json + src-tauri/src/vision.rs(model_dl, lib) + 文档",
+      "purpose": "让「当前功能程度」能打出可用的 0.3.0 安装包：既要瘦身（v5 已下线分类模型，不再把开发用模型塞进包），又要保证安装后语义链路真的能跑——模型目录既要找得到（宿主/子进程同一口径），又要写得进（只读目录自动转可写副本）。",
+      "implementation": {
+        "资源清单": "release.tauri.conf.json 的 bundle.resources 由「整目录内嵌 ../python/models/」改为逐项显式清单：vcr-server.exe + yolov8n-det.onnx + det_500m.onnx + w600k_mbf.onnx + paddleocr-det.onnx + chinese-clip/onnx/model_fp16.onnx + chinese-clip/tokenizer.json + chinese-clip/vocab.txt。与 release.ps1 校验清单、应用内下载落位约定三者对齐（tokenizer/vocab 必须与 onnx/ 同级，见 BUG-2026-0920-002）",
+        "模型目录解析": "vision.rs::resolve_model_dir 作为唯一口径：VCR_MODEL_DIR → resource_dir/vcr/models → 开发态 python/models；lib.rs::setup 启动时解析一次并写入进程环境变量，宿主与子进程（spawn_server）共用同一结果（见 BUG-2026-0916-003）",
+        "只读治理": "dir_writable 探针 + link_or_copy_tree：内置目录不可写时在 app_data_dir/vcr-models 建硬链接副本（同卷零拷贝，跨卷回退复制）并作为模型目录，使 MSI（Program Files）与 NSIS（%LOCALAPPDATA%）行为一致（见 BUG-2026-0916-004）",
+        "版本与文档": "package.json / tauri.conf.json / Cargo.toml(+Cargo.lock) 四处升至 0.3.0；README(.en) 安装段、模型清单、发布打包约定、版本历史同步更新；新增 release_body_v0.3.0.json 发布说明",
+        "产物": "PhotoManagementSys_0.3.0_x64_en-US.msi（457MB，ALLUSERS=1）+ PhotoManagementSys_0.3.0_x64-setup.exe（446MB，currentUser）"
+      },
+      "highlights": [
+        "安装包体积 574MB → 457MB（-117MB）：下线分类模型后不再内嵌 yolov8*-cls / Places365 / chinese-clip-fp32 / chinese-clip-vit-b-16",
+        "MSI 内容经 Property/File 表实测校验：ProductVersion=0.3.0、ALLUSERS=1、8 项资源全部在包内（含 377MB 的 model_fp16.onnx）",
+        "端到端实测：静默安装 MSI → 启动应用 → app.log 打印解析后的模型目录；用 icacls 拒绝写权限模拟普通用户，验证硬链接副本分支（link count=2，零拷贝），随后还原 ACL 并卸载清理",
+        "修掉 v0.2.0 就存在的安装版缺陷：模型目录曾由编译期 CARGO_MANIFEST_DIR 拼出，安装版「模型已内置却显示未下载」、应用内下载落错目录",
+        "打包链路上的两个外部依赖（WiX 3.14 / NSIS 3.11 / nsis_tauri_utils.dll）改为可预置到 %LOCALAPPDATA%/tauri 缓存，绕开 GitHub 下载超时（tauri: timeout: global）"
+      ],
+      "related_files": [
+        "src-tauri/release.tauri.conf.json",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/tauri.conf.json",
+        "src-tauri/Cargo.toml",
+        "package.json",
+        "release.ps1",
+        "README.md",
+        "README.en.md",
+        "release_body_v0.3.0.json"
+      ],
+      "keywords": [
+        "0.3.0",
+        "release",
+        "bundle.resources",
+        "VCR_MODEL_DIR",
+        "resolve_model_dir",
+        "硬链接",
+        "vcr-models",
+        "MSI",
+        "NSIS",
+        "installMode",
+        "体积瘦身",
+        "WiX"
+      ],
+      "tests": [
+        "cargo check --release 与 tauri build --config src-tauri/release.tauri.conf.json 均 EXIT=0",
+        "npm run build（vue-tsc --noEmit + vite build）通过",
+        "MSI：Property 表 ProductVersion=0.3.0、ALLUSERS=1；File 表含 photo-management-sys.exe / vcr-server.exe 与全部模型",
+        "MSI 静默安装 → 启动应用 35s → app.log 出现『模型目录: ...』；icacls /deny 模拟只读 → 副本分支生效（10 个文件 link count=2）→ 还原 ACL → 卸载并清理测试副本"
+      ],
+      "created_at": "2026-09-16T13:30:00+08:00",
+      "updated_at": "2026-09-16T13:30:00+08:00"
+    },
+    {
+      "id": "FEAT-058",
+      "name": "开发者视角 · 数据与路径副窗口：运行态路径清单（体量/口径/定位）+ 只读库表浏览",
+      "status": "done",
+      "module": "开发者辅助 / src-tauri/src/devdata.rs + lib.rs(命令与建窗) + src/dev/DataWindowApp.vue + capabilities/dev-data.json",
+      "purpose": "把「数据到底写在哪、里面有什么」变成可直读界面。排障反复耗在猜测上：相册主库在 %APPDATA%、人物库曾落到项目目录（BUG-2026-0916-005）、模型目录只在只读时才转成 app_data 硬链接副本（BUG-2026-0916-004）、SQLite 未 checkpoint 时数据主要在 -wal 里（库看着是空的）。这些口径必须能直接看到，而不是翻代码推断。",
+      "implementation": {
+        "分层": "服务层 devdata.rs（路径解析 + 只读库访问 + 打码）→ 接口层 lib.rs 四个命令壳（async + spawn_blocking + log_call 出入口日志）→ 前端 DataWindowApp.vue 只做呈现",
+        "路径清单": "paths() 输出 10+ 条 PathEntry（group/label/path/exists/is_dir/bytes/files/note）：相册主库、人物库、旧口径遗留人物库（存在且与当前口径不同才显示）、thumbs、avatars、vcr-data、模型目录（复用 vision::resolve_model_dir，并对比 resource_dir 以判断是否走了只读硬链接副本）、安装包内置模型目录、app_data、logs、程序 exe（含版本/dev 指纹）；目录体量递归统计（文件数上限 20 万防拖死），DB 体积含 -wal/-shm",
+        "库表浏览": "tables() 列出 photos/persons 两库的表名与行数（FTS 影子表按后缀标记 shadow 供前端弱化）；rows() 预览某表前 N 行（limit 1..200）",
+        "安全边界": "统一 open_with_flags(SQLITE_OPEN_READ_ONLY) —— 全模块没有任何写入口；库名走白名单（photos/persons），表名先经 sqlite_master 校验再按 SQLite 规则转义标识符（无双引号拼接注入面），**FEAT-058 期间不提供任意 SQL 输入框**（FEAT-060 起升级为只读 SQL 沙箱：单条 SELECT/WITH/EXPLAIN + 自动 LIMIT + 用户信息打码）；敏感列（password/passwd/pwd/token/secret/salt/api_key/private_key）自动打码；BLOB 只报 <BLOB n bytes>；单元格截断 200 字符；路径定位走 key 白名单 + explorer raw_arg，不接受前端传任意路径",
+        "窗口模式": "完全复刻日志窗口：label=dev-data 单例、后台线程建窗（BUG-2026-0910-005）、原生深色背景避免白斑、main.ts 按 label 动态 import 挂载（不装 router，避开登录守卫）、capabilities/dev-data.json 仅 core:default 与主窗口能力隔离"
+      },
+      "highlights": [
+        "排障从「翻代码猜路径」变成「打开面板直读」——本次 BUG-2026-0916-005 的现场（旧库被误读）在面板上会直接显示为「旧口径遗留」",
+        "只读设计无死角：只读连接 + 白名单 + 无 SQL 输入框 + 打码，开发辅助不会变成数据破坏源",
+        "async + spawn_blocking：目录递归统计（thumbs 数万文件）与 COUNT(*) 不占主线程，避免 BUG-2026-0910-001 那类全局冻结",
+        "顺带解决「库看着是空的」误判：DB 体积把 -wal/-shm 一并计入"
+      ],
+      "related_files": [
+        "src-tauri/src/devdata.rs",
+        "src-tauri/src/lib.rs",
+        "src/dev/DataWindowApp.vue",
+        "src/main.ts",
+        "src/views/Home.vue",
+        "src-tauri/capabilities/dev-data.json"
+      ],
+      "keywords": [
+        "开发者视角",
+        "数据与路径",
+        "devdata",
+        "dev-data",
+        "只读",
+        "SQLITE_OPEN_READ_ONLY",
+        "打码",
+        "路径清单",
+        "SQLite 浏览",
+        "副窗口"
+      ],
+      "tests": [
+        "cargo check --release 通过（EXIT=0）；npm run build（vue-tsc --noEmit + vite build）通过并产出 DataWindowApp chunk",
+        "tauri build 产出 0.3.1 安装包（不新增依赖；rusqlite/opener 均已在）",
+        "人工冒烟：设置 → 数据与路径 → 路径清单显示实际口径（含只读副本提示）；点表看前 50 行；users/sessions 的 password_hash/token 显示为已打码；BLOB 列显示字节数"
+      ],
+      "created_at": "2026-09-16T14:40:00+08:00",
+      "updated_at": "2026-09-16T14:40:00+08:00"
+    },
+    {
+      "id": "FEAT-059",
+      "name": "登录页输入框玻璃态：半透明 + 背景模糊，让设计封面图透出来",
+      "status": "done",
+      "module": "登录页 UI / src/views/Login.vue（scoped CSS）",
+      "purpose": "登录页固定用 covers/cover.png 作封面，但输入框写死不透明白底（#ffffff），把背景图完全挡住——玻璃卡片里只有两块死白，观感割裂。",
+      "implementation": {
+        "样式": ".field-input 由 #ffffff 改为 rgba(255,255,255,.12) + backdrop-filter: blur(6px)；文字转浅色 #f5f7ff 并加极淡 text-shadow 兜底背景亮部对比度；focus 态底 rgba(255,255,255,.18) + 蓝色焦点环；placeholder 单独去掉 text-shadow 并压到 .6 不透明度（否则跟着发糊）",
+        "自动填充兜底": "WebView2/Chromium 的 :-webkit-autofill 会把底刷成不透明浅黄底（改完看起来「没生效」），用 box-shadow: 0 0 0 1000px rgba(28,36,62,.82) inset + -webkit-text-fill-color + 超长 transition 延迟覆盖，不依赖 JS",
+        "改动范围": "只改登录页；注册/忘记密码页是无背景图的浅色页（linear-gradient 底 + 纯白卡），保持不透明白底更合适"
+      },
+      "highlights": [
+        "输入框从「死白」变成与卡片同材质，背景图从输入框里透出",
+        "顺手堵住自动填充这个高频「改了没用」的坑（不查 DevTools 很难发现）"
+      ],
+      "related_files": ["src/views/Login.vue"],
+      "keywords": ["登录页", "玻璃态", "backdrop-filter", "autofill", "封面图"],
+      "tests": [
+        "npm run build（vue-tsc --noEmit + vite build）通过",
+        "人工冒烟：登录页输入框可透视封面图；输入/聚焦/错误态文字清晰；触发浏览器自动填充后不出现白底"
+      ],
+      "created_at": "2026-09-25T10:00:00+08:00",
+      "updated_at": "2026-09-25T10:00:00+08:00"
+    },
+    {
+      "id": "FEAT-060",
+      "name": "开发者视角 · 数据与路径新增「SQL 查询」只读沙箱（表结构 DDL + 用户信息默认打码）",
+      "status": "done",
+      "module": "开发者辅助 / src-tauri/src/devdata.rs + lib.rs(dev_db_sql) + src/dev/DataWindowApp.vue",
+      "purpose": "FEAT-058 只给了表清单与整表预览，排查「这列为什么是空 / 这行是谁写的」时仍要另开 DB 工具或翻代码猜 SQL。本次在同一个「数据与路径」窗口加 SQL tab：能看表结构 DDL、能跑只读 SELECT 辅助开发，同时不把用户信息暴露成明文。",
+      "implementation": {
+        "只读沙箱": "load 层仍统一 SQLITE_OPEN_READ_ONLY；guard_sql 校验：单条语句（含分号即拒）、仅 SELECT/WITH/EXPLAIN、15 个写与元操作关键字按词边界拒绝（insert/update/delete/drop/alter/create/replace/attach/detach/pragma/vacuum/reindex/begin/commit/rollback，避免误伤 selected/created_at）、未写 LIMIT 自动补（默认 100 / 上限 200）、行数上限与单元格 200 字符截断沿用 FEAT-058 口径",
+        "打码扩展": "is_sensitive_column 从口令/令牌类扩到用户身份类（username/user_name/email/phone/mobile/id_card/real_name/avatar_path…；短词 pwd/tel/mail/cell/account 走整列名精确匹配，避免命中 title/mailbox_size）",
+        "值指纹兜底": "新增 redact_value：$argon2 / $2a$ / $2b$ / $pbkdf2 哈希、邮箱、大陆手机号、18 位身份证、≥32 位无空格长随机串（hex/base64 形态）一律打码",
+        "为何要值兜底": "列名规则能被别名绕过（SELECT username AS n）或表达式列绕过，只按列名打码等于没有边界；值层面按「看起来像身份/凭据」兜底才闭合",
+        "前端": "库浏览器加「表数据 / SQL 查询」双模式：左树点击在 SQL 模式填入 SELECT、一键插入当前表 SELECT 与建表语句(DDL)、行数上限下拉、Ctrl+Enter 执行、复制结果为 TSV、展示实际执行 SQL（含自动补的 LIMIT）与已打码列",
+        "命令": "dev_db_sql（async + spawn_blocking + log_call 出入口日志，SQL 执行留痕）"
+      },
+      "highlights": [
+        "FEAT-058 的「不提供 SQL 输入框」边界被本特性有意取代：从「不敢给」升级为「给了但限定只读 + 自动 LIMIT + 默认打码」，开发效率与安全边界同时成立",
+        "打码不再只看列名：别名/表达式列也能被值指纹拦住，且不提供任何「显示明文」开关",
+        "表结构 DDL 一键可查，排查索引/列类型不用再开外部工具"
+      ],
+      "related_files": ["src-tauri/src/devdata.rs", "src-tauri/src/lib.rs", "src/dev/DataWindowApp.vue"],
+      "keywords": ["只读 SQL", "SQL 沙箱", "打码", "用户信息", "DDL", "开发者视角"],
+      "tests": [
+        "npm run build（vue-tsc --noEmit）通过；cargo check 需在开发机执行（本机沙箱禁止执行 rustc）",
+        "人工冒烟：表数据模式仍按打码显示 users/sessions；SQL 模式 SELECT * FROM users 的 username/email/phone/password_hash 均为打码值；写入语句（UPDATE/DROP/PRAGMA/分号多语句）被拒绝并给出原因；未写 LIMIT 时可看到实际执行 SQL 与截断标记"
+      ],
+      "created_at": "2026-09-25T10:20:00+08:00",
+      "updated_at": "2026-09-25T10:20:00+08:00"
+    },
+    {
+      "id": "FEAT-061",
+      "name": "模型下载源治理：下线单一 huggingface 源，改多镜像候选 + 连通性自检 + 自定义源 + 分层超时",
+      "status": "done",
+      "module": "模型下载 / src-tauri/src/model_dl.rs + lib.rs(3 命令) + src/components/ModelGpuSettings.vue + src/stores/content.ts + src/types/content.ts",
+      "purpose": "用户反馈「性能设置里点下载模型无反应」。查安装版 app.log：start_model_download 返回 OK 后整份日志（4469 行）再无任何进度/错误，模型目录下连 .dl_*.onnx 临时文件都没有——请求挂在下载源连接阶段（TCP 可连、TLS 无响应），而旧实现只设整单 3600s 超时，UI 既不报错也无进度，等于「点了没反应」一小时。",
+      "implementation": {
+        "多源候选": "BUILTIN_SOURCES 改用整模板（含 {repo}/{path} 占位）替代硬编码域名：hf-mirror.com + aifasthub.com（后者实测 /models/{repo}/resolve/main/{path} 返回 200）；download_sources.json 支持自定义源且优先于内置；旧实现 official()/mirror() 返回同一地址的「官方/镜像双路竞速」实为空转，现分别取候选 0/1，tokenizer.json/vocab.txt 等附带文件也按源轮换",
+        "分层超时": "connect_timeout 8s + 首字节 20s（tokio::time::timeout 包 send）+ read_timeout 60s（两次数据间隔）；失败快速换源或报错，不再整单挂 1 小时",
+        "落地校验": "下载文件先校验体积下限（100MB 兜底）与首字节非 HTML，错误页/半包直接丢弃并换源",
+        "可观测与可操作": "新增 probe_model_sources（Range 探测 1 字节，返回每源 host/HTTP 状态/耗时/错误）、get_model_sources、set_model_sources；性能设置里加「🔍 镜像源自检」与「自定义源」编辑区；下载失败原因不再截 40 字，整行可读"
+      },
+      "highlights": [
+        "「点了没反应」的根因常是超时策略而非网络本身：3600s 整单超时拆成 连接/首字节/读 三层后，坏源 20s 内暴露，好源照常下载",
+        "镜像源不再写死：自检把「哪个源在你这台机器/这条线路上可用」变成界面可读事实，还能填自建镜像前缀（存模型目录，随模型目录走）",
+        "已核实 ModelScope 的 AI-ModelScope/chinese-clip-vit-base-patch16 只有 pytorch_model.bin/vocab.txt、无 onnx 与 tokenizer.json，不能直接当 onnx 源，故未纳入内置候选"
+      ],
+      "related_files": ["src-tauri/src/model_dl.rs", "src-tauri/src/lib.rs", "src/components/ModelGpuSettings.vue", "src/stores/content.ts", "src/types/content.ts"],
+      "keywords": ["模型下载", "镜像源", "hf-mirror", "aifasthub", "超时", "源自检", "download_sources.json"],
+      "tests": [
+        "npm run build（vue-tsc --noEmit）通过",
+        "人工冒烟：性能设置 → 镜像源自检显示逐源状态/耗时；自定义源保存后下载优先使用；下载失败错误整行可见；下载完成后档位可切换并生效",
+        "待开发机确认：本机沙箱禁止执行 rustc（os error 5），cargo check 未能本地跑；Rust 侧已人工复核（结构体字段、词边界校验、借用与 reqwest 0.12 read_timeout API），需在开发机跑一次 cargo check / tauri dev"
+      ],
+      "created_at": "2026-09-25T10:40:00+08:00",
+      "updated_at": "2026-09-25T10:40:00+08:00"
+    },
+    {
+      "id": "FEAT-062",
+      "name": "模型下载断点续传：分片 + 来源指纹，取消/断网/换源都不再从 0 重下",
+      "status": "done",
+      "module": "模型下载 / src-tauri/src/model_dl.rs（FEAT-061 之上）+ ModelGpuSettings.vue 文案",
+      "purpose": "fp16 档 377MB、fp32 档 754MB，弱网或代理抖动下重来一次代价极高。FEAT-061 让坏源快速失败，但失败仍是从 0 重下；本次把「失败」变成「接着下」。",
+      "implementation": {
+        "分片 + 元数据": "沿用 .dl_<name>_<i>.onnx 分片文件，新增同名 .meta 记录 {url,total}；只有「分片存在且元数据里 url == 本次 url」才续传，换源/无元数据一律删除分片重下（不同镜像字节不保证一致，混拼会得到坏文件）",
+        "Range 续传": "带 Range: bytes=N- 请求；206 视为续传（total 优先取 Content-Range 的 /total，退化用 N+Content-Length）；200 说明服务器忽略 Range 就 truncate 重下；416 说明区间非法（通常是本地已下满）直接返回 Ok，交由 validate_model_file 判定成败",
+        "进度": "bytes 从续传起点起算，并在起手先 emit 一次进度（UI 立刻显示「从 X MB 继续」而不是 0%），之后按 150ms 节流上报",
+        "取消语义": "取消/中断都保留分片与元数据，错误文案改为「已取消（已保留断点，可再次点击下载续传）」；成功落位或校验失败时统一 cleanup_partials 清残留",
+        "败者清理": "源竞速的败者连同元数据一起删（避免两个数百 MB 半包并存）；赢家改名落位前先删自己的 .meta"
+      },
+      "highlights": [
+        "把「重试」从重启下载变成续传：本轮 3 次重试、下次点击下载、甚至隔天再点都能从已有分片继续",
+        "来源指纹是安全底线：镜像 A 的字节绝不与镜像 B 拼在一起，宁可重下也不产出坏模型",
+        "取消不再等于丢弃进度（旧实现 cancel 直接删文件），弱网操作成本显著下降"
+      ],
+      "related_files": ["src-tauri/src/model_dl.rs", "src/components/ModelGpuSettings.vue"],
+      "keywords": ["断点续传", "Range", "206", "分片", "Content-Range", "取消保留断点"],
+      "tests": [
+        "npm run build（vue-tsc --noEmit）通过",
+        "人工冒烟建议：下载中取消 → 模型目录留下 .dl_*.onnx 与 .meta → 再点下载应从断点继续（进度起点 > 0）；把 .meta 里的 url 改成别的源后应看到分片被重置重下",
+        "待开发机确认：本机沙箱禁止执行 rustc（os error 5），cargo check 未能本地跑，需复核。"
+      ],
+      "created_at": "2026-09-25T13:00:00+08:00",
+      "updated_at": "2026-09-25T13:00:00+08:00"
     }
   ],
-  "updated": "2026-09-08T14:30:07+08:00"
+  "updated": "2026-09-25T13:00:00+08:00"
 }

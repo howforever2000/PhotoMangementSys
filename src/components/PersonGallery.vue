@@ -107,18 +107,18 @@ async function load() {
   loadError.value = "";
   try {
     persons.value = await invoke<PersonInfo[]>("list_persons");
-    for (const p of persons.value) {
-      if (avatarMap.value[p.id]) continue;
-      try {
-        const cachePath = await invoke<string>("get_person_avatar", {
-          pid: p.id,
-          forceRefresh: false,
-        });
-        avatarMap.value = { ...avatarMap.value, [p.id]: avatarUrl(p.id, cachePath) };
-      } catch {
-        /* 原图缺失等：回退占位 */
-      }
-    }
+    // BUG-2026-0910-002 根治（原实现逐个 await → 900 次 IPC/每次画廊，峰值 3600 行日志/秒）：
+    // ① 缓存命中（~98%）单次批量带回（1 次往返替代 N 次，后端只写 1 行日志）；
+    // ② 未命中（需现场裁剪的少数）仅占位，点击该人物时再按需裁剪（ensureAvatar）。
+    const paths = await invoke<(string | null)[]>("get_person_avatars_bulk", {
+      pids: persons.value.map((p) => p.id),
+    });
+    const next: Record<string, string> = { ...avatarMap.value };
+    persons.value.forEach((p, i) => {
+      const path = paths[i];
+      if (path) next[p.id] = avatarUrl(p.id, path);
+    });
+    avatarMap.value = next;
     // FEAT-046：携带 focusPid → 自动打开该人物的照片弹窗
     if (props.focusPid) {
       const target = persons.value.find((p) => p.id === props.focusPid);
@@ -162,6 +162,17 @@ async function openPhotos(p: PersonInfo) {
   viewingError.value = "";
   viewingLoading.value = true;
   exitSelectMode();
+  // BUG-2026-0910-002：未缓存头像按需裁剪——画廊加载不再为缺缓存的少数人物现场解码，
+  // 用户点开该人物时才裁剪并补上（代价转移到真正看它的那一刻）
+  if (!avatarMap.value[p.id]) {
+    invoke<string>("get_person_avatar", { pid: p.id, forceRefresh: false })
+      .then((cachePath) => {
+        avatarMap.value = { ...avatarMap.value, [p.id]: avatarUrl(p.id, cachePath) };
+      })
+      .catch(() => {
+        /* 原图缺失等：保持占位 */
+      });
+  }
   try {
     // 第一次拉取：后端已自动补齐缩略图（缺图则 ensure_grid_thumb 生成后落盘）
     let items = await invoke<PersonPhotoItem[]>("get_person_photos", { pid: p.id });

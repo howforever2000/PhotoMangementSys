@@ -25,11 +25,30 @@ pub struct PersonEntry {
     pub created_at: String,
 }
 
-/// persons.db 路径：与 python/vcr/config.py 的 DATA_DIR/persons.db 同源
-fn persons_db_path() -> PathBuf {
+/// 人物库目录：与 `python/vcr/config.py::DATA_DIR` 同源（VCR_DATA_DIR 优先）
+///
+/// 统一口径：宿主 `lib.rs::setup` 启动时把 VCR_DATA_DIR 指向
+/// `app_data_dir/vcr-data`（安装版与开发版一致），于是 Python 微服务与 Rust
+/// 人物页读写的是**同一份** persons.db。
+/// 未设置该变量时（例如直接跑 bench 脚本 / 单测）回落到项目 `python/data`。
+///
+/// 历史包袱：此处曾用编译期常量 `CARGO_MANIFEST_DIR` 拼路径，安装到其他机器后
+/// 指向构建机源码目录，而微服务写的是 VCR_DATA_DIR → 人物页与扫描结果读写分裂
+/// （见 BUG-2026-0916-005）。
+fn data_dir() -> PathBuf {
+    if let Ok(v) = std::env::var("VCR_DATA_DIR") {
+        if !v.is_empty() {
+            return PathBuf::from(v);
+        }
+    }
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let project = manifest.parent().unwrap_or(manifest);
-    project.join("python").join("data").join("persons.db")
+    project.join("python").join("data")
+}
+
+/// persons.db 路径（data_dir 下的 persons.db）
+fn persons_db_path() -> PathBuf {
+    data_dir().join("persons.db")
 }
 
 /// 打开 persons.db；文件不存在 → None（从未跑过人脸扫描属正常情况）

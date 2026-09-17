@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * 识别性能设置（FEAT-051）—— 原子组件
+ * 识别性能设置（FEAT-051 / v5）—— 原子组件
  *
- * 交互流程（参考单相册扫描面板「检测 GPU」模式，按用户定义）：
- *   1. 先选分类模型（默认按候选梯度回退，当前生效实时展示）
- *   2. 默认 CPU 推理；「🔍 检测 GPU」探测可用加速提供方
+ * 交互流程（与旧「分类模型」下拉同构，只是换成语义模型档位）：
+ *   1. 先选**语义模型档位**（Chinese-CLIP B/16 ↔ L/14-336；适配不同硬件，
+ *      缺档位置灰并可直接下载；切换后需重建语义索引）
+ *   2. 默认 CPU 推理；「🔍 检测 GPU」探测可用加速提供方（对人物检测/OCR 生效）
  *   3. 检测到可用 GPU → 「🚀 启用加速」；未检测到 → 提示安装 GPU 版运行时
  *
  * 自包含：挂载即拉取状态（内部自动拉起识别微服务）；切换即时保存并刷新展示。
@@ -13,7 +14,15 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useContentStore } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
-import type { ModelDlStatus, VcrModelsInfo } from "../types/content";
+import { PERF_TIMEOUT, withTimeout } from "../utils/withTimeout";
+import type {
+  ModelDlStatus,
+  ModelSourceProbe,
+  VcrBenchmarkResult,
+  VcrModelsInfo,
+  VcrSweepEntry,
+  VcrThreadsInfo,
+} from "../types/content";
 
 const contentStore = useContentStore();
 const notify = useNotify();
@@ -26,10 +35,34 @@ const modelsInfo = ref<VcrModelsInfo | null>(null);
 const selectedModel = ref("");
 /** 模型清单加载失败（识别服务升级中/异常）→ 提示而非无限转圈 */
 const modelsFailed = ref(false);
+// 三个数据源各自独立：任一慢/错都不拖垮其余下拉与按钮（BUG-2026-0921-003）
+const modelsLoading = ref(false);
+const threadsLoading = ref(false);
+const threadsFailed = ref(false);
+const gpuLoading = ref(false);
+/** GPU 状态获取失败（区别于「尚未检测」，避免误当作「默认 CPU」） */
+const gpuFailed = ref(false);
 /** FEAT-052：模型下载状态（store 由 model-dl-progress 事件实时更新） */
 const downloads = computed(() => contentStore.modelDownloads);
+
+/* FEAT-061：下载源治理（镜像自检 + 自定义源） */
+const probes = ref<ModelSourceProbe[]>([]);
+const probeBusy = ref(false);
+const probeErr = ref("");
+const srcOpen = ref(false);
+const customSrc = ref("");
+const srcSaving = ref(false);
+const probeTarget = ref("");
 /** 是否已执行过「检测 GPU」 */
 const detected = ref(false);
+
+// ---- v6：CPU 线程数（适配不同硬件：可调 + 对比测速）----
+const threadsInfo = ref<VcrThreadsInfo | null>(null);
+const threadsSel = ref<number>(0);
+const threadsBusy = ref(false);
+const sweepBusy = ref(false);
+/** 扫档结果（threads → 实测），用于展示与「采用」 */
+const sweepResults = ref<VcrSweepEntry[]>([]);
 
 const gpu = computed(() => contentStore.gpuStatus);
 /** 检测到真正可用的本地 GPU 提供方（DirectML/CUDA 等，排除 Azure 云端） */
@@ -37,27 +70,164 @@ const gpuAvailable = computed(() => (gpu.value?.gpu.length ?? 0) > 0);
 /** 当前是否已在 GPU 上推理 */
 const accelerating = computed(() => gpu.value?.use_gpu === true);
 
-async function refreshAll(silent = false) {
-  modelsFailed.value = false;
-  const [gpuRes, modelsRes] = await Promise.allSettled([
-    contentStore.fetchGpuStatus(),
-    contentStore.fetchVcrModels(),
-  ]);
-  if (modelsRes.status === "fulfilled") {
-    modelsInfo.value = modelsRes.value;
-    selectedModel.value = modelsRes.value.current ?? "";
-  } else {
-    modelsFailed.value = true;
+// ---- FEAT-053：实测验证（登记值 vs 会话实测值对照 + 推理测速） ----
+const benchBusy = ref(false);
+const benchResult = ref<VcrBenchmarkResult | null>(null);
+/** 最近一次 CPU / GPU 测速均值（不同 provider 各记一份，两者都有时显示提速比） */
+const benchMs = ref<{ cpu: number | null; gpu: number | null }>({ cpu: null, gpu: null });
+
+/** vision 塔会话实测事实（切换后台加载期间为 undefined）——与 current 对照确认切换真生效 */
+const groundTruth = computed(() => modelsInfo.value?.loaded ?? null);
+/** 当前生效档位的说明（切换后需重建索引的提醒） */
+const activeModel = computed(() =>
+  (modelsInfo.value?.models ?? []).find((m) => m.active) ?? null,
+);
+/** v5：切换档位后语义索引需重建（旧档向量维度/空间不同，不能混用） */
+const clipSwitchTip = computed(() => {
+  const m = activeModel.value;
+  if (!m) return "";
+  return `${m.dim} 维 · 输入 ${m.size}×${m.size}`;
+});
+const providerLabel = (p: string): string =>
+  p.startsWith("Dml")
+    ? "DirectML"
+    : p.startsWith("Cuda")
+      ? "CUDA"
+      : p.replace("ExecutionProvider", "");
+const groundTruthOnGpu = computed(() =>
+  (groundTruth.value?.providers ?? []).some((p) => !p.startsWith("CPU")),
+);
+const groundTruthText = computed(() => {
+  const f = groundTruth.value;
+  if (!f) return "会话未加载（切换模型/开关加速后自动重建，可点测速触发）";
+  const size = f.file_size ? ` · ${(f.file_size / 1e6).toFixed(0)}MB` : "";
+  const prov = f.providers.length ? f.providers.map(providerLabel).join("+") : "?";
+  const fallback = f.cpu_fallback ? " · ⚠ GPU 初始化失败已回退 CPU" : "";
+  const th = f.threads ? ` · ${f.threads} 线程` : "";
+  return `实际加载 ${f.file}${size} · 实际绑定 ${prov}${th}${fallback}`;
+});
+const benchText = computed(() => {
+  const r = benchResult.value;
+  if (!r) return "";
+  const prov = r.providers.map(providerLabel).join("+");
+  const { cpu, gpu: gpuMs } = benchMs.value;
+  const speedup = cpu && gpuMs ? ` · 比 CPU 提速 ${(cpu / gpuMs).toFixed(1)}×` : "";
+  return `平均 ${r.avg_ms}ms（最快 ${r.min_ms}ms · ${prov}）${speedup}`;
+});
+
+/** 测速：固定张量预热后计时（同时确保会话已按当前 provider 重建，顺手刷新实测展示） */
+async function runBenchmark() {
+  benchBusy.value = true;
+  try {
+    const r = await withTimeout(
+      contentStore.benchmarkVcr(10, 2),
+      PERF_TIMEOUT.benchmark,
+      "benchmark_vcr",
+    );
+    benchResult.value = r;
+    if (r.providers.some((p) => !p.startsWith("CPU"))) {
+      benchMs.value.gpu = r.avg_ms;
+    } else {
+      benchMs.value.cpu = r.avg_ms;
+    }
+    void loadModels(); // 顺手刷新会话实测（不再单独发一次无人接管的请求）
+  } catch (e) {
+    notify.error("测速失败", String(e));
+  } finally {
+    benchBusy.value = false;
   }
-  detected.value = gpuRes.status === "fulfilled";
-  if (gpuRes.status === "rejected" && modelsRes.status === "rejected") {
-    if (!silent) throw gpuRes.reason;
+}
+
+/**
+ * 三个数据源**各自独立**加载（BUG-2026-0921-003 回归修复）。
+ *
+ * 旧实现用 Promise.allSettled 等三者全部 settle 后才赋值 —— 只要「检测 GPU」慢
+ * （历史上会等模型就绪 90s）或挂住，语义模型/线程数下拉即使早已拿到数据也一直是
+ * 空 + disabled，用户看到的就是「不能选择模型和线程，一直转圈」。
+ * 现在各自到位即渲染，并各自带超时与失败态（可单独重试）。
+ */
+async function loadModels(): Promise<boolean> {
+  modelsLoading.value = true;
+  modelsFailed.value = false;
+  try {
+    modelsInfo.value = await withTimeout(
+      contentStore.fetchVcrModels(),
+      PERF_TIMEOUT.read,
+      "list_vcr_models",
+    );
+    selectedModel.value = modelsInfo.value.current ?? "";
+    return true;
+  } catch (e) {
+    modelsFailed.value = true;
+    console.warn("[perf-settings] list_vcr_models 失败:", e);
+    return false;
+  } finally {
+    modelsLoading.value = false;
+  }
+}
+
+async function loadThreads(): Promise<boolean> {
+  threadsLoading.value = true;
+  threadsFailed.value = false;
+  try {
+    const info = await withTimeout(
+      contentStore.fetchVcrThreads(),
+      PERF_TIMEOUT.read,
+      "get_vcr_threads",
+    );
+    threadsInfo.value = info;
+    if (!threadsSel.value) threadsSel.value = info.threads;
+    return true;
+  } catch (e) {
+    threadsFailed.value = true;
+    console.warn("[perf-settings] get_vcr_threads 失败:", e);
+    return false;
+  } finally {
+    threadsLoading.value = false;
+  }
+}
+
+/** 刷新 GPU 状态；silent=false 时把失败抛给调用方（「检测 GPU」按钮要提示） */
+async function loadGpu(silent = true): Promise<boolean> {
+  gpuLoading.value = true;
+  gpuFailed.value = false;
+  try {
+    await withTimeout(contentStore.fetchGpuStatus(), PERF_TIMEOUT.read, "get_vcr_gpu_status");
+    detected.value = true;
+    return true;
+  } catch (e) {
+    gpuFailed.value = true;
+    console.warn("[perf-settings] get_vcr_gpu_status 失败:", e);
+    if (!silent) throw e;
+    return false;
+  } finally {
+    gpuLoading.value = false;
+  }
+}
+
+/** 并行拉取三者（互不阻塞）；非 silent 且 GPU/模型均失败 → 抛错（整体不可用） */
+async function refreshAll(silent = false) {
+  const [modelsOk, , gpuOk] = await Promise.all([loadModels(), loadThreads(), loadGpu(true)]);
+  if (!modelsOk && !gpuOk) {
+    if (!silent) throw new Error("识别服务不可用（模型清单与 GPU 状态均获取失败）");
     initFailed.value = true;
   }
 }
 
+// 行内重试：只重拉对应数据源，不牵连其他行
+function retryModels() {
+  void loadModels();
+}
+function retryThreads() {
+  void loadThreads();
+}
+function retryGpu() {
+  void loadGpu(true);
+}
+
 onMounted(async () => {
   try {
+    // 三源并行、各自独立渲染；下载状态另有事件通道
     await Promise.allSettled([refreshAll(true), contentStore.listModelDownloads()]);
   } catch {
     initFailed.value = true;
@@ -85,13 +255,7 @@ watch(
     for (const d of list) {
       if (d.done && !prevDone.value.has(d.name)) {
         prevDone.value.add(d.name);
-        contentStore
-          .fetchVcrModels()
-          .then((info) => {
-            modelsInfo.value = info;
-            selectedModel.value = info.current ?? "";
-          })
-          .catch(() => {});
+        void loadModels();
       }
       if (!d.done) prevDone.value.delete(d.name);
     }
@@ -109,6 +273,56 @@ function fmtBytes(d: ModelDlStatus): string {
   const t = d.total ? ` / ${(d.total / 1e6).toFixed(1)} MB` : "";
   return `${b} MB${t}`;
 }
+/** FEAT-061：对首个未下载模型逐个源做 Range 探测（只取 1 字节，不下载整文件） */
+async function runProbe() {
+  const target = downloads.value.find((d) => !d.done) ?? downloads.value[0];
+  if (!target) return;
+  probeTarget.value = target.name;
+  probeBusy.value = true;
+  probeErr.value = "";
+  try {
+    probes.value = await contentStore.probeModelSources(target.name);
+  } catch (e) {
+    probes.value = [];
+    probeErr.value = String(e);
+  } finally {
+    probeBusy.value = false;
+  }
+}
+
+/** FEAT-061：展开/收起自定义源（展开时载入当前配置） */
+async function toggleSources() {
+  srcOpen.value = !srcOpen.value;
+  if (!srcOpen.value) return;
+  try {
+    const info = await contentStore.getModelSources();
+    customSrc.value = info.custom.join("\n");
+  } catch (e) {
+    notify.error("读取下载源配置失败", String(e));
+  }
+}
+
+/** FEAT-061：保存自定义源并立即重测（自定义源优先于内置源） */
+async function saveSources() {
+  srcSaving.value = true;
+  try {
+    const list = customSrc.value
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    await contentStore.setModelSources(list);
+    notify.success(
+      "下载源已保存",
+      list.length ? `自定义 ${list.length} 个源（下载时优先尝试）` : "已恢复为内置镜像",
+    );
+    await runProbe();
+  } catch (e) {
+    notify.error("保存下载源失败", String(e));
+  } finally {
+    srcSaving.value = false;
+  }
+}
+
 function startDl(name: string) {
   contentStore.startModelDownload(name).catch((e) => notify.error("启动下载失败", String(e)));
 }
@@ -116,12 +330,81 @@ function cancelDl(name: string) {
   contentStore.cancelModelDownload(name).catch((e) => notify.error("取消失败", String(e)));
 }
 
-/** 检测 GPU：刷新状态并提示可用性 */
+/** v6：切换线程数（服务端持久化 + 后台重建会话；扫描/搜索立即受益） */
+async function onThreadsChange() {
+  threadsBusy.value = true;
+  try {
+    const info = await withTimeout(
+      contentStore.setVcrThreads(threadsSel.value),
+      PERF_TIMEOUT.write,
+      "set_vcr_threads",
+    );
+    threadsInfo.value = info;
+    threadsSel.value = info.threads;
+    notify.success(
+      `CPU 线程数已设为 ${info.threads}`,
+      `默认按物理核推测为 ${info.default}（本机逻辑核 ${info.logical}）；` +
+        `新设置对后续推理生效（会话已后台重建）`,
+    );
+  } catch (e) {
+    notify.error("设置线程数失败", String(e));
+    try {
+      const info = await withTimeout(
+        contentStore.fetchVcrThreads(),
+        PERF_TIMEOUT.read,
+        "get_vcr_threads",
+      );
+      threadsInfo.value = info;
+      threadsSel.value = info.threads;
+    } catch {
+      /* 回显失败忽略 */
+    }
+  } finally {
+    threadsBusy.value = false;
+  }
+}
+
+/** v6：对比测速 —— 对语义图塔依次用各线程数实测（不改变当前设置） */
+async function runSweep() {
+  sweepBusy.value = true;
+  try {
+    const opts = threadsInfo.value?.options ?? [];
+    const list = await withTimeout(
+      contentStore.benchmarkVcrSweep("clip_vision", opts, 8, 2),
+      PERF_TIMEOUT.sweep,
+      "benchmark_vcr_sweep",
+    );
+    const ok = list.filter((r) => typeof r.avg_ms === "number");
+    const base = ok.length ? Math.max(...ok.map((r) => r.avg_ms as number)) : 0;
+    sweepResults.value = list
+      .slice()
+      .sort((a, b) => (a.avg_ms ?? 1e9) - (b.avg_ms ?? 1e9))
+      .map((r) => ({ ...r, speedup: r.avg_ms && base ? +(base / r.avg_ms).toFixed(2) : undefined }));
+    const best = sweepResults.value.find((r) => r.best);
+    if (best?.avg_ms) {
+      notify.info(
+        `实测最快：${best.threads} 线程（${best.avg_ms} ms/张）`,
+        "测速有 ±10% 波动，可点「采用」后跑一次扫描看实际感受",
+      );
+    }
+  } catch (e) {
+    notify.error("对比测速失败", String(e));
+  } finally {
+    sweepBusy.value = false;
+  }
+}
+
+/** 采用扫档最优线程数 */
+async function applyThreads(n: number) {
+  threadsSel.value = n;
+  await onThreadsChange();
+}
+
+/** 检测 GPU：只刷新 GPU 状态（模型/线程清单不随检测变化），失败明确提示 */
 async function detect() {
   detectBusy.value = true;
   try {
-    await refreshAll(true);
-    detected.value = true;
+    await loadGpu(false);
     if (gpuAvailable.value) {
       notify.success("检测到可用 GPU 加速", gpu.value!.gpu.join("、"));
     } else {
@@ -142,7 +425,11 @@ async function toggleAccel() {
   accelBusy.value = true;
   const target = !accelerating.value;
   try {
-    const s = await contentStore.setVcrGpu(target);
+    const s = await withTimeout(
+      contentStore.setVcrGpu(target),
+      PERF_TIMEOUT.write,
+      "set_vcr_gpu",
+    );
     notify.success(
       target ? "已启用 GPU 加速" : "已关闭加速，使用 CPU 推理",
       s.provider,
@@ -159,21 +446,24 @@ async function onModelChange() {
   const name = selectedModel.value;
   modelBusy.value = true;
   try {
-    const info = await contentStore.setVcrModel(name);
+    const info = await withTimeout(
+      contentStore.setVcrModel(name),
+      PERF_TIMEOUT.write,
+      "set_vcr_model",
+    );
     modelsInfo.value = info;
     selectedModel.value = info.current ?? name;
     notify.success(
-      "分类模型已切换",
-      info.cls_ready === false
+      "语义模型已切换",
+      info.clip_ready === false
         ? `${name} · 后台加载中，就绪后自动生效`
-        : `${name} · 影响后续扫描`,
+        : `${name} · ⚠ 换档后必须**重建语义索引**：到「扫描中心」对相册执行一次含「语义向量」的扫描` +
+          `（旧档位向量不会被混用，未重建前语义搜索/分类会提示"尚未建立索引"）`,
     );
   } catch (e) {
     notify.error("切换模型失败", String(e));
     try {
-      const info = await contentStore.fetchVcrModels();
-      modelsInfo.value = info;
-      selectedModel.value = info.current ?? "";
+      await loadModels();
     } catch {
       /* 回显失败忽略 */
     }
@@ -196,9 +486,9 @@ async function onModelChange() {
     </p>
 
     <template v-else>
-      <!-- 1. 先选模型 -->
+      <!-- 1. 先选语义模型档位（适配不同硬件：B/16 轻量 → L/14-336 更强） -->
       <div class="mgps-row">
-        <span class="mgps-label">分类模型</span>
+        <span class="mgps-label">语义模型</span>
         <select
           v-model="selectedModel"
           class="mgps-select"
@@ -211,21 +501,33 @@ async function onModelChange() {
             :value="m.name"
             :disabled="!m.downloaded"
           >
-            {{ m.label }}（精度 {{ m.accuracy }} · {{ m.speed }}）{{ m.downloaded ? "" : " —— 未下载" }}{{ m.active ? " ✓当前" : "" }}
+            {{ m.label }}（{{ m.dim }} 维{{ m.bytes ? " · " + (m.bytes / 1e6).toFixed(0) + "MB" : "" }}）{{ m.downloaded ? "" : " —— 未下载" }}{{ m.active ? " ✓当前" : "" }}
           </option>
         </select>
         <span v-if="modelBusy" class="mgps-busy">切换中…</span>
-        <span v-else-if="modelsInfo?.cls_ready === false" class="mgps-busy">模型加载中…</span>
-        <span v-else-if="modelsFailed" class="mgps-status">模型清单加载失败（识别服务可能正在升级，稍后重试）</span>
+        <span v-else-if="modelsLoading && !modelsInfo" class="mgps-busy">加载中…</span>
+        <span v-else-if="modelsFailed" class="mgps-status err">
+          模型清单加载失败（识别服务可能正在启动/升级）
+          <button class="mgps-btn mgps-btn-sm" @click="retryModels">重试</button>
+        </span>
+        <span v-else-if="modelsInfo?.clip_ready === false" class="mgps-busy">模型加载中…</span>
+        <span v-else-if="clipSwitchTip" class="mgps-status">{{ clipSwitchTip }}</span>
       </div>
+      <p v-if="activeModel?.note" class="mgps-hint">{{ activeModel.note }}</p>
 
       <!-- 2. 检测 GPU -->
       <div class="mgps-row">
         <span class="mgps-label">运行硬件</span>
-        <button class="mgps-btn" :disabled="detectBusy" @click="detect">
-          {{ detectBusy ? "检测中…" : "🔍 检测 GPU" }}
+        <button class="mgps-btn" :disabled="detectBusy || gpuLoading" @click="detect">
+          {{ detectBusy || gpuLoading ? "检测中…" : "🔍 检测 GPU" }}
         </button>
-        <template v-if="detected && gpu">
+        <template v-if="gpuFailed && !gpu">
+          <span class="mgps-status err">
+            GPU 状态获取失败
+            <button class="mgps-btn mgps-btn-sm" @click="retryGpu">重试</button>
+          </span>
+        </template>
+        <template v-else-if="detected && gpu">
           <span v-if="gpuAvailable" class="mgps-status ok">
             可用加速：{{ gpu.gpu.join("、") }}
           </span>
@@ -253,16 +555,133 @@ async function onModelChange() {
         </span>
       </div>
 
+      <!-- 4. FEAT-053：实测验证 —— 会话铁证 + 推理测速（登记值之外的真相） -->
+      <div class="mgps-row">
+        <span class="mgps-label">会话实测</span>
+        <span
+          class="mgps-status"
+          :class="{ ok: groundTruthOnGpu && !groundTruth?.cpu_fallback, err: groundTruth?.cpu_fallback }"
+        >
+          {{ groundTruthText }}
+        </span>
+      </div>
+      <!-- v6：CPU 线程数（不同机器最优值不同 → 可调 + 一键对比测速） -->
+      <div class="mgps-row">
+        <span class="mgps-label">CPU 线程数</span>
+        <select
+          v-model.number="threadsSel"
+          class="mgps-select mgps-select-sm"
+          :disabled="threadsBusy || !threadsInfo"
+          @change="onThreadsChange"
+        >
+          <option v-for="n in threadsInfo?.options ?? []" :key="n" :value="n">
+            {{ n }} 线程{{ n === threadsInfo?.default ? "（推荐默认）" : "" }}
+          </option>
+        </select>
+        <button class="mgps-btn" :disabled="sweepBusy" @click="runSweep">
+          {{ sweepBusy ? "测速中…" : "📊 对比测速" }}
+        </button>
+        <span v-if="threadsBusy" class="mgps-busy">切换中…</span>
+        <span v-else-if="threadsLoading && !threadsInfo" class="mgps-busy">加载中…</span>
+        <span v-else-if="threadsFailed" class="mgps-status err">
+          线程数加载失败
+          <button class="mgps-btn mgps-btn-sm" @click="retryThreads">重试</button>
+        </span>
+        <span v-else-if="threadsInfo" class="mgps-status">
+          生效 {{ threadsInfo.threads }} 线程 · 物理核约 {{ threadsInfo.physical_guess }}（逻辑 {{ threadsInfo.logical }}）
+        </span>
+      </div>
+      <div v-if="sweepResults.length" class="mgps-sweep">
+        <div
+          v-for="r in sweepResults"
+          :key="r.threads"
+          class="mgps-sweep-row"
+          :class="{ best: r.best, cur: r.threads === threadsInfo?.threads }"
+        >
+          <span class="mgps-sweep-th">{{ r.threads }} 线程<template v-if="r.threads === threadsInfo?.threads"> · 当前</template></span>
+          <span class="mgps-sweep-ms">{{ r.avg_ms != null ? `${r.avg_ms} ms/张` : r.error ?? "失败" }}</span>
+          <span class="mgps-sweep-sp">{{ r.speedup ? `相对最慢 ${r.speedup}×` : "" }}</span>
+          <button v-if="r.best && r.threads !== threadsInfo?.threads" class="mgps-btn mgps-btn-sm" @click="applyThreads(r.threads)">
+            采用最快
+          </button>
+        </div>
+      </div>
+
+      <div class="mgps-row">
+        <span class="mgps-label">推理测速</span>
+        <button class="mgps-btn" :disabled="benchBusy" @click="runBenchmark">
+          {{ benchBusy ? "测速中…" : "📊 测速（人物检测通道；开/关加速各测一次可对比）" }}
+        </button>
+        <span v-if="benchResult" class="mgps-status" :class="{ ok: benchResult.providers.some((p) => !p.startsWith('CPU')) }">
+          {{ benchText }}
+        </span>
+      </div>
+
       <p class="mgps-hint">
+        <b>CPU 线程数</b>决定推理速度，且不同机器最优值不同：默认取「物理核数」（超线程的逻辑核收益低，
+        实测本机 4→8 线程 CLIP 编码快约 1.6×）。点「📊 对比测速」会用各档线程数实测语义图塔并标出最快档，
+        可一键「采用」；测速有 ±10% 波动，建议采用后再跑一次扫描感受实际耗时。
+        （线程数不需要重建语义索引，改完下次扫描/搜索立即生效。）<br />
         默认使用 CPU 推理；检测到 GPU 后可开启加速（需 GPU 版运行时，如
-        <code>onnxruntime-directml</code>）。切换<b>即时生效</b>，影响后续扫描；
-        新模型下载后放入 <code>python/models/</code>（如 yolov8x-cls.onnx）即可在此选择。
+        <code>onnxruntime-directml</code>）。GPU 加速对<b>人物检测 / 人脸 / OCR</b> 生效；
+        语义模型默认固定 CPU —— AMD DirectML 对 fp16 图存在算子级数值
+        bug（实测输出错误），故 fp16 档不做 GPU 加速；如需用核显加速语义索引，
+        可下载 <b>B/16 fp32</b> 档（719MB，DirectML 实测 37.9ms/张，约为 fp16 CPU 的 2.4 倍快），
+        该档的 GPU 开关需先做数值一致性验证后再启用。<br />
+        语义模型档位切换后<b>必须重建语义索引</b>（不同档位维度/空间不同，旧向量不会被混用）：
+        到「内容分类」页点「🔄 重建分类」，或对相册重新执行一次含「语义向量」的扫描。
+        语义模型可在此直接下载（<code>chinese-clip</code> / <code>chinese-clip-fp32</code>）。
       </p>
 
       <!-- FEAT-052：模型下载（后台 + 进度 + 官方/镜像择优） -->
       <div class="mgps-row mgps-dl-head">
         <span class="mgps-label">📥 模型下载</span>
-        <span class="mgps-hint">官方 / 镜像并行择快；.pt 下载后自动导出 onnx</span>
+        <span class="mgps-hint">多镜像候选（自定义优先）逐个尝试，失败自动换源、支持断点续传；.pt 下载后自动导出 onnx</span>
+      </div>
+
+      <!-- FEAT-061：下载源治理（URL 不可达时不再静默挂起，可自检/自定义） -->
+      <div class="mgps-src">
+        <button class="mgps-btn mgps-btn-sm" :disabled="probeBusy" @click="runProbe">
+          {{ probeBusy ? "检测中…" : "🔍 镜像源自检" }}
+        </button>
+        <button class="mgps-btn mgps-btn-sm" @click="toggleSources">
+          {{ srcOpen ? "收起自定义源" : "自定义源" }}
+        </button>
+        <span v-if="probes.length" class="mgps-src-sum">
+          {{ probeTarget }} · 可用 {{ probes.filter((p) => p.ok).length }} / {{ probes.length }}
+        </span>
+      </div>
+      <p v-if="probeErr" class="mgps-status err">{{ probeErr }}</p>
+      <div v-if="probes.length" class="mgps-src-list">
+        <div v-for="p in probes" :key="p.url" class="mgps-src-row">
+          <span class="mgps-src-host" :title="p.url">{{ p.host }}</span>
+          <span class="mgps-src-tag" :class="p.ok ? 'ok' : 'bad'">
+            {{ p.ok ? `可用 ${p.status}` : p.status ? `HTTP ${p.status}` : "不可用" }}
+          </span>
+          <span class="mgps-src-ms">{{ p.ms }} ms</span>
+          <span class="mgps-src-note" :title="p.error ?? ''">
+            {{ p.error ? p.error.slice(0, 70) : p.builtin ? "内置源" : "自定义源" }}
+          </span>
+        </div>
+      </div>
+      <div v-if="srcOpen" class="mgps-src-edit">
+        <p class="mgps-hint">
+          每行一个模板，必须含 <code>{repo}</code> 与 <code>{path}</code>；自定义源优先于内置源，下载按顺序尝试。
+        </p>
+        <textarea
+          v-model="customSrc"
+          class="mgps-src-text"
+          spellcheck="false"
+          placeholder="https://your-mirror.example.com/{repo}/resolve/main/{path}"
+        ></textarea>
+        <div class="mgps-row">
+          <button class="mgps-btn mgps-btn-sm" :disabled="srcSaving" @click="saveSources">
+            {{ srcSaving ? "保存中…" : "保存并检测" }}
+          </button>
+          <button class="mgps-btn mgps-btn-sm" :disabled="srcSaving" @click="customSrc = ''">
+            清空自定义
+          </button>
+        </div>
       </div>
       <div class="mgps-dl-list">
         <div v-for="d in downloads" :key="d.name" class="mgps-dl-row">
@@ -283,7 +702,7 @@ async function onModelChange() {
           </template>
           <template v-else-if="d.stage === 'error'">
             <span class="mgps-status err" :title="d.error ?? ''">
-              失败：{{ (d.error ?? "").slice(0, 40) }}
+              失败：{{ d.error ?? "" }}
             </span>
             <button class="mgps-btn mgps-btn-sm" @click="startDl(d.name)">重试</button>
           </template>
@@ -321,44 +740,52 @@ async function onModelChange() {
   font-weight: 600;
   min-width: 70px;
 }
+/* FEAT-062：原为「透明底 + rgba(127,127,127,.4) 描边」，在弹窗里几乎看不出是按钮；
+   改为实底浅色（用主题变量，浅色/深色两套模式都清晰），禁用态用实底灰。*/
 .mgps-btn {
   padding: 5px 14px;
   border-radius: 8px;
-  border: 1px solid rgba(127, 127, 127, 0.4);
-  background: transparent;
-  color: inherit;
+  border: 1px solid rgba(57, 108, 216, 0.45);
+  background: var(--color-primary-soft);
+  color: var(--color-text);
   font-size: 12.5px;
+  font-weight: 600;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
 }
 .mgps-btn:hover:not(:disabled) {
-  border-color: rgba(106, 141, 240, 0.75);
-  background: rgba(106, 141, 240, 0.08);
+  border-color: #396cd8;
+  background: rgba(57, 108, 216, 0.28);
 }
 .mgps-btn:disabled {
-  opacity: 0.55;
+  background: rgba(127, 127, 127, 0.14);
+  border-color: rgba(127, 127, 127, 0.28);
+  color: var(--color-text-3);
   cursor: wait;
 }
 
 .mgps-accel {
   padding: 5px 14px;
   border-radius: 8px;
-  border: 1px solid rgba(127, 127, 127, 0.4);
-  background: transparent;
-  color: inherit;
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--color-text);
   font-size: 12.5px;
   cursor: not-allowed;
   transition: border-color 0.15s, background 0.15s;
 }
 .mgps-accel:disabled {
-  opacity: 0.5;
+  background: rgba(127, 127, 127, 0.07);
+  border-color: rgba(127, 127, 127, 0.2);
+  color: var(--color-text-3);
 }
 .mgps-accel:not(:disabled) {
   cursor: pointer;
   border-color: rgba(106, 141, 240, 0.75);
 }
 .mgps-accel:not(:disabled):hover {
-  background: rgba(106, 141, 240, 0.1);
+  background: rgba(57, 108, 216, 0.22);
+  border-color: #396cd8;
 }
 .mgps-accel.on {
   background: #396cd8;
@@ -373,9 +800,9 @@ async function onModelChange() {
   max-width: 460px;
   padding: 6px 10px;
   border-radius: 8px;
-  border: 1px solid rgba(127, 127, 127, 0.4);
-  background: transparent;
-  color: inherit;
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  background: rgba(127, 127, 127, 0.1);
+  color: var(--color-text);
   font-size: 12.5px;
   cursor: pointer;
 }
@@ -387,6 +814,34 @@ async function onModelChange() {
   font-size: 12px;
   opacity: 0.65;
 }
+.mgps-select-sm {
+  flex: 0 0 170px;
+  min-width: 0;
+}
+.mgps-sweep {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(127, 127, 127, 0.1);
+}
+.mgps-sweep-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12.5px;
+}
+.mgps-sweep-row.best .mgps-sweep-th {
+  font-weight: 700;
+  color: #15803d;
+}
+.mgps-sweep-row.cur .mgps-sweep-th {
+  text-decoration: underline;
+}
+.mgps-sweep-th { min-width: 110px; }
+.mgps-sweep-ms { min-width: 110px; font-family: ui-monospace, monospace; }
+.mgps-sweep-sp { opacity: 0.7; }
 .mgps-status {
   font-size: 12.5px;
   color: #a1642a;
@@ -469,5 +924,87 @@ async function onModelChange() {
 .mgps-btn-sm {
   padding: 3px 10px;
   font-size: 11.5px;
+}
+
+/* FEAT-061：下载源自检 / 自定义源 */
+.mgps-src {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mgps-src-sum {
+  font-size: 12px;
+  opacity: 0.75;
+}
+.mgps-src-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(127, 127, 127, 0.1);
+}
+.mgps-src-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.mgps-src-host {
+  min-width: 150px;
+  font-family: ui-monospace, monospace;
+}
+.mgps-src-tag {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+.mgps-src-tag.ok {
+  background: rgba(21, 128, 61, 0.18);
+  color: #15803d;
+}
+.mgps-src-tag.bad {
+  background: rgba(214, 69, 69, 0.16);
+  color: #d64545;
+}
+.mgps-src-ms {
+  min-width: 62px;
+  font-family: ui-monospace, monospace;
+  opacity: 0.8;
+}
+.mgps-src-note {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.7;
+}
+.mgps-src-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mgps-src-text {
+  width: 100%;
+  min-height: 62px;
+  resize: vertical;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  background: rgba(127, 127, 127, 0.1);
+  color: var(--color-text);
+  font: inherit;
+}
+.mgps-src-text:focus {
+  outline: none;
+  border-color: #396cd8;
+}
+/* 下载失败原因不再截 40 字：整行可读、可换行 */
+.mgps-status.err {
+  color: #d64545;
+  white-space: normal;
+  word-break: break-all;
 }
 </style>

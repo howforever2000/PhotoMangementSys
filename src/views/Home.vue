@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, reactive, ref, computed } from "vue";
 import { useRouter } from "vue-router";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAuthStore } from "../stores/auth";
 import { useThemeStore } from "../stores/theme";
@@ -247,6 +247,29 @@ function setBgStyle(v: string) {
   theme.persist();
 }
 
+/* ---------------- 设置菜单（⚙） ---------------- */
+const settingsOpen = ref(false);
+
+/** 打开开发者视角日志窗口（后端保证单例：已开则聚焦） */
+async function openDevLog() {
+  settingsOpen.value = false;
+  try {
+    await invoke("open_dev_log_window");
+  } catch (e) {
+    console.error("打开开发者视角窗口失败:", e);
+  }
+}
+
+/** 打开「数据与路径」副窗口（DB/缓存/模型位置 + 只读预览；后端保证单例） */
+async function openDevData() {
+  settingsOpen.value = false;
+  try {
+    await invoke("open_dev_data_window");
+  } catch (e) {
+    console.error("打开数据与路径窗口失败:", e);
+  }
+}
+
 /* ---------------- Esc 关闭打开的弹窗（不依赖 mask focus） ---------------- */
 function onGlobalKey(e: KeyboardEvent) {
   if (e.key !== "Escape") return;
@@ -258,6 +281,10 @@ function onGlobalKey(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
     themeOpen.value = false;
+  } else if (settingsOpen.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    settingsOpen.value = false;
   }
 }
 onMounted(() => {
@@ -302,6 +329,35 @@ onBeforeUnmount(() => {
           >
             🎨
           </button>
+          <div class="settings-wrap">
+            <button
+              class="icon-btn"
+              type="button"
+              title="设置"
+              @click="settingsOpen = !settingsOpen"
+            >
+              ⚙️
+            </button>
+            <template v-if="settingsOpen">
+              <div class="settings-mask" @click="settingsOpen = false"></div>
+              <div class="settings-menu" :style="pmStyle" role="menu">
+                <button class="settings-item" type="button" role="menuitem" @click="openDevLog">
+                  <span class="settings-item-icon">🧪</span>
+                  <span>
+                    <b>开发者视角</b>
+                    <i>打开实时日志副窗口</i>
+                  </span>
+                </button>
+                <button class="settings-item" type="button" role="menuitem" @click="openDevData">
+                  <span class="settings-item-icon">🗂️</span>
+                  <span>
+                    <b>数据与路径</b>
+                    <i>DB / 缓存 / 模型位置 · 只读预览</i>
+                  </span>
+                </button>
+              </div>
+            </template>
+          </div>
           <button class="logout-btn" type="button" @click="handleLogout">退出登录</button>
         </div>
       </header>
@@ -610,6 +666,66 @@ onBeforeUnmount(() => {
 
 .icon-btn:hover {
   background: rgba(120, 120, 130, 0.18);
+}
+
+/* 设置下拉菜单（⚙）：锚定 user-box，透明遮罩负责点击外部关闭 */
+.settings-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.settings-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+}
+
+.settings-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 901;
+  min-width: 220px;
+  padding: 6px;
+  border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.28);
+}
+
+.settings-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.settings-item:hover {
+  background: var(--pm-btn-hover);
+}
+
+.settings-item-icon {
+  font-size: 17px;
+}
+
+.settings-item b {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--pm-text);
+}
+
+.settings-item i {
+  display: block;
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--pm-hint);
+  margin-top: 1px;
 }
 
 .logout-btn {

@@ -183,15 +183,25 @@ body.theme-dark .confirm-title {
 }
 
 /* 按钮（在各页面经常被写死为白底庆边） */
-body.theme-dark .btn,
+body.theme-dark .btn:not(.btn-primary):not(.btn-danger):not(.btn-home):not(.gs-btn-primary):not(.gs-btn-danger):not(.btn-ghost),
 body.theme-dark .btn-home,
 body.theme-dark .btn-default {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.1);
   color: var(--color-text);
-  border-color: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.22);
 }
-body.theme-dark .btn:hover:not(.btn-primary):not(.btn-danger):not(.btn-home) {
-  background: rgba(255, 255, 255, 0.12);
+body.theme-dark .btn:hover:not(.btn-primary):not(.btn-danger):not(.btn-home):not(.gs-btn-primary):not(.gs-btn-danger):not(.btn-ghost) {
+  background: rgba(255, 255, 255, 0.16);
+}
+body.theme-dark .btn-ghost {
+  background: rgba(57, 108, 216, 0.28);
+  color: #cfe0ff;
+  border-color: rgba(140, 175, 255, 0.6);
+}
+body.theme-dark .btn:disabled {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: rgba(214, 221, 240, 0.45);
 }
 
 /* 输入框 / select / textarea */

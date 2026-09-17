@@ -4,7 +4,7 @@
  *
  * 跨相册批量扫描入库组件，托管在主页「图片扫描」板块下的专属页面：
  * - 勾选要扫描入库的相册（支持全选 / 反选，显示照片数与已入库数）
- * - 扫描类型复用相册管理中的组合扫描（EXIF 基础 / 影调分析 / AI 内容识别）+ 批次
+ * - 扫描类型复用相册管理中的组合扫描（EXIF 基础 / 影调分析 / 人物 · 文档识别）+ 批次
  * - 支持启动 / 停止；两级进度条（相册级总进度 + 当前相册照片级进度）
  * - 后台执行：任务状态存于 Pinia store，离开页面扫描不中断，回来恢复显示
  */
@@ -15,6 +15,8 @@ import type { GlobalScanItemStatus } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
 import { useThemeStore } from "../stores/theme";
 import ModelGpuSettings from "./ModelGpuSettings.vue";
+import ConfirmDialog from "./ConfirmDialog.vue";
+import { SCAN_MODE_TITLE, SCAN_MODE_TIP } from "../utils/scanModeTip";
 
 const albumStore = useAlbumStore();
 const contentStore = useContentStore();
@@ -84,7 +86,8 @@ const filteredAlbums = computed(() => {
 });
 
 // ---- 扫描设置（复用相册管理组合扫描的类型 + 批次） ----
-const scanTypes = ref<string[]>(["basic", "tone", "ai"]);
+// FEAT-SEM：语义向量默认勾选
+const scanTypes = ref<string[]>(["basic", "tone", "person", "semantic"]);
 const BATCH_OPTIONS = [8, 16, 32];
 const batch = ref(8);
 
@@ -124,6 +127,8 @@ const STATUS_META: Record<GlobalScanItemStatus, { label: string; cls: string }> 
 };
 
 // ---- 启停 ----
+// ---- FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） ----
+const modeDialogVisible = ref(false);
 function startScan() {
   if (running.value) return;
   const entries = albums.value
@@ -137,8 +142,15 @@ function startScan() {
     notify.warning("请至少勾选一项扫描类型");
     return;
   }
-  // 同步校验 + 启动后台循环（扫描循环在 store 中独立存活）
-  const ok = contentStore.beginGlobalScan(entries, [...scanTypes.value], batch.value);
+  modeDialogVisible.value = true;
+}
+/** 用户在对话框选定扫描方式后启动后台循环（扫描循环在 store 中独立存活） */
+function launchScan(overwrite: boolean) {
+  modeDialogVisible.value = false;
+  const entries = albums.value
+    .filter((a) => selectedIds.value.has(a.id))
+    .map((a) => ({ id: a.id, name: a.name }));
+  const ok = contentStore.beginGlobalScan(entries, [...scanTypes.value], batch.value, overwrite);
   if (ok) {
     notify.info(
       "全局扫描已开始",
@@ -175,7 +187,7 @@ onMounted(() => {
     <div class="gs-toolbar">
       <p class="gs-desc">
         勾选要扫描入库的相册（支持全选 / 反选），一次批量执行
-        <b>EXIF / 影调 / AI 内容识别</b>并写入内容库（与相册详情「组合扫描」同一扫描组件）。
+        <b>EXIF / 影调 / 人物 · 文档识别</b>并写入内容库（与相册详情「组合扫描」同一扫描组件）。
         扫描在<b>后台执行</b>，离开页面不中断；可随时点击「停止」，已扫描部分仍会入库。
       </p>
       <div class="gs-actions">
@@ -277,10 +289,15 @@ onMounted(() => {
           <span class="gs-check-label">影调分析</span>
           <span class="gs-check-desc">低调 / 中间调 / 高调</span>
         </label>
-        <label class="gs-check" :class="{ active: scanTypes.includes('ai') }">
-          <input type="checkbox" value="ai" v-model="scanTypes" :disabled="running" />
-          <span class="gs-check-label">AI 内容识别</span>
-          <span class="gs-check-desc">写入内容库 · 支持智能搜索</span>
+        <label class="gs-check" :class="{ active: scanTypes.includes('person') }">
+          <input type="checkbox" value="person" v-model="scanTypes" :disabled="running" />
+          <span class="gs-check-label">人物 · 文档识别</span>
+          <span class="gs-check-desc">人脸标号 / 夜景 / 文档（分类已改语义）</span>
+        </label>
+        <label class="gs-check" :class="{ active: scanTypes.includes('semantic') }">
+          <input type="checkbox" value="semantic" v-model="scanTypes" :disabled="running" />
+          <span class="gs-check-label">语义向量</span>
+          <span class="gs-check-desc">自然语言搜图 · 需 CLIP 模型</span>
         </label>
       </div>
       <label class="batch-select">批次
@@ -380,6 +397,20 @@ onMounted(() => {
       </div>
     </div>
   </Teleport>
+
+  <!-- FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） -->
+  <ConfirmDialog
+    :visible="modeDialogVisible"
+    :title="SCAN_MODE_TITLE"
+    :message="SCAN_MODE_TIP"
+    confirm-text="覆盖扫描"
+    neutral-text="增量扫描"
+    cancel-text="取消"
+    :danger="false"
+    @confirm="launchScan(true)"
+    @neutral="launchScan(false)"
+    @cancel="modeDialogVisible = false"
+  />
 </template>
 
 <style scoped>
@@ -416,26 +447,43 @@ onMounted(() => {
 }
 
 /* ---- 按钮（与 ScanPanel 统一） ---- */
+/* FEAT-062：用户反馈「⚙ 性能设置 / ▶ 开始扫描入库 两个按钮太透明、看不清」。
+   成因：① .btn-ghost 是「透明底 + 1px 描边」，在白底面板上等于没有底色；
+        ② 禁用态用整体 opacity:.55（按钮变虚，而非真正的禁用底色）。
+   处置：中性/幽灵按钮改实底浅色；禁用态改实心灰，不再用整体透明度。 */
 .btn {
+  min-height: 36px;
   padding: 8px 16px;
   border-radius: 8px;
-  border: 1px solid #ddd;
+  border: 1px solid #d5dbe6;
   background: #fff;
+  color: #1f2733;
   cursor: pointer;
   font-size: 14px;
-  transition: all 0.2s;
+  font-weight: 600;
+  transition: background 0.2s, border-color 0.2s, color 0.2s, box-shadow 0.12s, transform 0.1s;
 }
-.btn:hover { border-color: #396cd8; color: #396cd8; }
-.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn:hover:not(:disabled) { border-color: #396cd8; color: #396cd8; box-shadow: 0 2px 8px rgba(16, 24, 40, 0.08); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:focus-visible { outline: 2px solid rgba(57, 108, 216, 0.55); outline-offset: 2px; }
+.btn:disabled {
+  background: #eef1f6;
+  border-color: #dfe4ec;
+  color: #98a2b3;
+  cursor: not-allowed;
+}
 .gs-btn-primary { background: #396cd8; color: #fff; border-color: #396cd8; }
-.gs-btn-primary:hover { background: #2f5cc2; color: #fff; }
+.gs-btn-primary:hover:not(:disabled) { background: #2f5cc2; border-color: #2f5cc2; color: #fff; }
+.gs-btn-primary:disabled { background: #a8bde8; border-color: #a8bde8; color: #fff; cursor: not-allowed; }
 .gs-btn-danger { background: #e5484d; color: #fff; border-color: #e5484d; }
-.gs-btn-danger:hover { background: #cf3e43; color: #fff; }
-.btn-ghost { background: transparent; color: #396cd8; border-color: #396cd8; }
-.btn-ghost:hover { background: rgba(57, 108, 216, 0.08); color: #2f5cc2; }
+.gs-btn-danger:hover:not(:disabled) { background: #cf3e43; border-color: #cf3e43; color: #fff; }
+.gs-btn-danger:disabled { background: #f0b3b5; border-color: #f0b3b5; color: #fff; cursor: not-allowed; }
+.btn-ghost { background: #eef2ff; color: #2f5cc2; border-color: #b9cdf5; }
+.btn-ghost:hover:not(:disabled) { background: #e1e9ff; border-color: #396cd8; color: #2f5cc2; }
+.btn-ghost:disabled { background: #f2f4f8; border-color: #e3e7ee; color: #9aa4b4; cursor: not-allowed; }
 .btn-mini { padding: 2px 8px; font-size: 11px; border: 1px solid #d0d5dd; border-radius: 3px; background: #fff; cursor: pointer; }
 .btn-mini:hover { border-color: #396cd8; color: #396cd8; }
-.btn-mini:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-mini:disabled { background: #f0f2f6; color: #9aa4b4; cursor: not-allowed; }
 
 /* ---- 相册勾选区 ---- */
 .gs-select-block {
@@ -557,7 +605,7 @@ onMounted(() => {
   padding: 12px 14px;
 }
 
-.gs-checks { display: flex; gap: 10px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.gs-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; flex: 1; min-width: 0; }
 .gs-check {
   display: inline-flex;
   align-items: center;

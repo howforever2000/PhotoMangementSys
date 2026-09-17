@@ -7,3 +7,6 @@ Pillow>=10.0
 numpy>=1.26
 # 人脸检测/对齐（SCRFD + ArcFace 推理期必需）
 opencv-python>=4.8
+# 语义搜索：tokenizer.json 加载 + CLIP 双塔拆图（一次性，无 heavy 依赖）
+tokenizers>=0.19
+onnx>=1.15

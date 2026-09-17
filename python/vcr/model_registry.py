@@ -1,15 +1,26 @@
 """ONNX 模型注册表：集中加载/持有会话，按需惰性初始化。
 
 每个模型一个 session 槽位，缺失时该通道自动降级（is_ready=False），
-主流程（分类）不依赖任何可选模型。
+主流程（人物检测）不依赖任何可选模型。
+
+v5（语义分类）：分类模型（yolov8*-cls）、Places365 场景、花朵/食物专家槽位已删除；
+新增「语义模型档位」切换（config.CLIP_MODEL_META：B/16 ↔ L/14-336），
+供 UI 按硬件性能选择，与旧分类模型切换同一套异步交互（begin/finish）。
 """
 import os
 import threading
+import time
 
 import numpy as np
 import onnxruntime as ort
 
 from . import config
+
+# 模型加载失败后的冷却期（秒）：
+# 冷启动瞬间的加载失败（显存/磁盘/驱动瞬时抖动）不应把该通道**永久**锁死
+# （旧实现 _ready[key]=False 后 check-then-act 直接 return，通道活不过来）。
+# 冷却期内不重试（避免 classify 每张图都重试一次加载），冷却期满后下次访问自动重试。
+LOAD_RETRY_COOLDOWN = 30.0
 
 
 class ModelRegistry:
@@ -17,69 +28,111 @@ class ModelRegistry:
         self._sessions: dict[str, ort.InferenceSession] = {}
         self._ready: dict[str, bool] = {}
         self._load_errors: dict[str, str] = {}
-        # FEAT-051：默认强制 CPU（用户在 UI「检测 GPU → 启用加速」后再切 GPU，
-        # 参考单相册扫描面板的交互）；env VCR_PROVIDER=auto 可恢复自动探测
+        # 最近一次加载失败时刻（monotonic），配合 LOAD_RETRY_COOLDOWN 做有限重试
+        self._failed_at: dict[str, float] = {}
+        # FEAT-053：会话实测事实（ORT 真实绑定的 provider / 源文件 / 输入元数据）。
+        # 与 _sessions 同生命周期：会话被清空的场合必须同步 pop，否则上报的是旧会话。
+        self._session_info: dict[str, dict] = {}
+        # FEAT-051：默认强制 CPU（用户在 UI「检测 GPU → 启用加速」后再切 GPU）。
+        # env VCR_PROVIDER=auto 可恢复自动探测。
         self._providers_sel: list[str] | None = ["CPUExecutionProvider"]
         self._gpu_forced_off = True
-        # FEAT-051：用户指定的分类模型文件名（None = 按 CLS_MODELS 顺序回退）
-        # FEAT-052：启动时读取持久化选择（models/current_cls.json），UI 选过的跨重启保持
-        self._cls_override: str | None = self._load_persisted_cls()
         # 会话加载/切换锁：后台预加载线程与 FastAPI 线程池并发访问会话槽位，
-        # _load 的 check-then-act 必须串行。RLock 允许 status() 内部重入。
-        # 注意：is_ready / gpu_info 故意不加锁（/health 每 300ms 被宿主探测，
-        # 若等加载锁会被阻塞数分钟 → 宿主误判不可达），仅依赖 dict 读的原子性。
+        # _load 的 check-then-act 必须串行。注意：is_ready / gpu_info 故意不加锁
+        # （/health 每 300ms 被宿主探测，等加载锁会被阻塞数分钟 → 宿主误判不可达）。
         self._lock = threading.RLock()
         if os.environ.get("VCR_PROVIDER", "").lower() == "auto":
             self._providers_sel = None
             self._gpu_forced_off = False
 
     @staticmethod
-    def _load_persisted_cls() -> str | None:
-        """读取持久化的分类模型选择（文件缺失/非法/未下载 → None 走默认回退）。"""
+    def _session_facts(sess: ort.InferenceSession, path: str, cpu_fallback: bool,
+                       opts: ort.SessionOptions | None = None) -> dict:
+        """提取会话实测事实 —— 「确实在用 GPU / 确实换了模型」的铁证。"""
         try:
-            import json
-
-            path = config.CLS_CURRENT_PATH
-            if os.path.isfile(path):
-                with open(path, encoding="utf-8") as f:
-                    name = json.load(f).get("name")
-                if name in config.CLS_MODEL_META and os.path.isfile(
-                    os.path.join(config.MODEL_DIR, name)
-                ):
-                    return name
+            provs = list(sess.get_providers())
         except Exception:  # noqa: BLE001
-            pass
-        return None
-
-    def _persist_cls(self, name: str) -> None:
-        """持久化用户选择（失败不阻断）。"""
+            provs = []
         try:
-            import json
-
-            with open(config.CLS_CURRENT_PATH, "w", encoding="utf-8") as f:
-                json.dump({"name": name}, f)
+            inputs = sess.get_inputs()
+            inp = inputs[0] if inputs else None
         except Exception:  # noqa: BLE001
-            pass
+            inp = None
+        shape: list = []
+        if inp is not None:
+            shape = [d if isinstance(d, int) else str(d) for d in inp.shape]
+        try:
+            size: int | None = os.path.getsize(path)
+        except OSError:
+            size = None
+        return {
+            "file": os.path.basename(path),
+            "file_path": path,
+            "threads": int(opts.intra_op_num_threads) if opts is not None else None,
+            "file_size": size,
+            "providers": provs,
+            "input_name": inp.name if inp is not None else None,
+            "input_shape": shape,
+            "input_type": inp.type if inp is not None else None,
+            "cpu_fallback": cpu_fallback,
+        }
+
+    def _create_session(
+        self,
+        path: str,
+        opts: ort.SessionOptions | None = None,
+        providers: list[str] | None = None,
+    ) -> tuple[ort.InferenceSession, bool]:
+        """按 provider 候选创建会话；GPU 初始化失败回退纯 CPU 重试。
+
+        providers 省略时用全局选择（GPU 开关）；CLIP 需要按档位覆盖
+        （fp16 档固定 CPU，见 _clip_providers）。
+
+        返回 (session, cpu_fallback)。回退仅对本会话生效并记录到实测信息，
+        不改全局 provider 选择 —— 下次重建仍先尝试用户选择的 provider。
+        """
+        opts = opts or self._so()
+        prov = providers if providers is not None else self._providers()
+        try:
+            return ort.InferenceSession(path, sess_options=opts, providers=prov), False
+        except Exception as gpu_err:  # noqa: BLE001
+            if not prov or prov[0] == "CPUExecutionProvider":
+                raise
+            import sys as _sys
+
+            print(
+                f"[VCR] GPU 会话创建失败（{prov[0]}），回退 CPU 重试: {gpu_err}",
+                file=_sys.stderr,
+            )
+            sess = ort.InferenceSession(
+                path, sess_options=opts, providers=["CPUExecutionProvider"]
+            )
+            return sess, True
 
     # ------------------------------------------------------------------
     def _so(self) -> ort.SessionOptions:
         so = ort.SessionOptions()
-        so.intra_op_num_threads = config.THREADS
+        so.intra_op_num_threads = config.threads()
         so.inter_op_num_threads = 1
-        # P1 ONNX 优化：启用所有优化（常量折叠/算子融合/layernorm 等），加速推理 30~60%
-        # 依赖图完全静态化，dynamic axes 模型会自动跳过不适用的优化
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        # 启用内存规划，减少推理时的内存分配开销
         so.enable_mem_pattern = True
-        # 启用 CPU 线程池（配合 THREADS 参数）
-        # 修复：部分 onnxruntime 版本无 ThreadPoolOptions Python API（一加载即报错，
-        # 全模型瘫痪），存在才启用
         if hasattr(ort, "ThreadPoolOptions"):
             so.threadpool_options = ort.ThreadPoolOptions()
         return so
 
+    def _so_clip(self) -> ort.SessionOptions:
+        """CLIP 会话专用 SessionOptions。
+
+        - provider 由 _clip_providers() 按档位决定（fp16 固定 CPU / fp32 跟随开关）
+        - fp16 图在 DML 上有算子级数值 bug，且全量图优化会在 vision 塔初始化时崩溃
+          （BUG-2026-0910-006）→ 统一用 BASIC 优化：CPU 与 DML(fp32) 均已实测数值正确
+        """
+        so = self._so()
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+        return so
+
     # ------------------------------------------------------------------
-    # GPU 提供方选择（R3）：自动探测 + 可选 env 开关，CPU 兜底
+    # GPU 提供方选择（R3）
     # ------------------------------------------------------------------
     def _providers(self) -> list[str]:
         """返回优先提供方列表（GPU 优先，CPU 兜底）。"""
@@ -88,7 +141,6 @@ class ModelRegistry:
         available = ort.get_available_providers()
         pref: list[str] = []
         if config.VCR_PROVIDER != "cpu":
-            # DirectML（通用 GPU，免 CUDA）优先，其次 CUDA（NVIDIA）
             for g in ("DmlExecutionProvider", "CUDAExecutionProvider"):
                 if g in available:
                     pref.append(g)
@@ -100,7 +152,6 @@ class ModelRegistry:
     def gpu_info(self) -> dict:
         """GPU 可行性探测：可用提供方、当前是否走 GPU、选中提供方。"""
         available = ort.get_available_providers()
-        # 仅统计真正的本地 GPU 加速器（排除 Azure 等云端提供方）
         known_gpu = {
             "DmlExecutionProvider", "CUDAExecutionProvider", "ROCmExecutionProvider",
             "TensorrtExecutionProvider", "OpenVINOExecutionProvider",
@@ -113,45 +164,56 @@ class ModelRegistry:
             "gpu": gpu,
             "use_gpu": using_gpu,
             "provider": providers[0] if providers else "cpu",
-            # FEAT-051：是否被用户强制关闭 GPU（与「无 GPU 可用」区分，前端开关初始状态用）
             "forced_cpu": self._gpu_forced_off,
+            "sessions": {k: v.get("providers", []) for k, v in self._session_info.items()},
         }
 
     def _load(self, key: str, paths: list[str], required: bool = False):
         with self._lock:
             if key in self._ready:
-                return
+                if self._ready[key]:
+                    return
+                # 已就绪过则直接返回；上次失败则等冷却期满再重试一次
+                if time.monotonic() - self._failed_at.get(key, 0.0) < LOAD_RETRY_COOLDOWN:
+                    return
+            attempted = False
             for p in paths:
                 if os.path.isfile(p):
+                    attempted = True
                     try:
-                        self._sessions[key] = ort.InferenceSession(
-                            p, sess_options=self._so(), providers=self._providers()
-                        )
+                        # 会话选项必须显式创建并复用：既保证会话按当前线程数创建，
+                        # 也让 _session_facts 上报的 threads 与实际绑定一致
+                        opts = self._so()
+                        sess, cpu_fallback = self._create_session(p, opts)
+                        self._sessions[key] = sess
                         self._ready[key] = True
+                        self._session_info[key] = self._session_facts(
+                            sess, p, cpu_fallback, opts
+                        )
+                        self._failed_at.pop(key, None)
+                        self._load_errors.pop(key, None)
                         return
                     except Exception as e:  # noqa: BLE001
                         import sys as _sys
 
-                        print(f"[VCR] 模型加载失败 {p}: {e}", file=_sys.stderr)
-                        self._load_errors[key] = str(e)
+                        print(f"[VCR] 模型加载失败 {key} {p}: {type(e).__name__}: {e}",
+                              file=_sys.stderr)
+                        self._load_errors[key] = f"{type(e).__name__}: {e}"
                         continue
             self._ready[key] = False
-            if required:
-                self._load_errors[key] = f"必需模型缺失: {paths}"
+            self._failed_at[key] = time.monotonic()
+            if not attempted:
+                # 无任何文件命中（比加载报错更常见：模型未下载/路径口径不一致）
+                prefix = "必需模型缺失" if required else "模型文件缺失"
+                self._load_errors[key] = f"{prefix}: {paths}"
+
+    def load_errors(self) -> dict[str, str]:
+        """各通道最近一次加载失败原因（/health 暴露，供宿主日志定位「面板转圈」）。"""
+        return dict(self._load_errors)
 
     # ------------------------------------------------------------------
-    @property
-    def cls(self) -> ort.InferenceSession | None:
-        # FEAT-051：用户指定模型优先（文件存在才生效，否则回退默认列表）
-        if self._cls_override:
-            override_path = os.path.join(config.MODEL_DIR, self._cls_override)
-            if os.path.isfile(override_path):
-                self._load("cls", [override_path], required=True)
-                return self._sessions.get("cls")
-            self._cls_override = None
-        self._load("cls", [os.path.join(config.MODEL_DIR, m) for m in config.CLS_MODELS], required=True)
-        return self._sessions.get("cls")
-
+    # 规则通道
+    # ------------------------------------------------------------------
     @property
     def det(self) -> ort.InferenceSession | None:
         self._load("det", [os.path.join(config.MODEL_DIR, config.DET_MODEL)])
@@ -168,155 +230,327 @@ class ModelRegistry:
         return self._sessions.get("face_rec")
 
     @property
-    def scene(self) -> ort.InferenceSession | None:
-        # Places365 是场景分类主通道，依赖性强：标记为 required=True，缺失时服务启动会显式提醒。
-        self._load("scene", [os.path.join(config.MODEL_DIR, config.SCENE_MODEL)], required=True)
-        return self._sessions.get("scene")
-
-    @property
     def ocr(self) -> ort.InferenceSession | None:
         self._load("ocr", [os.path.join(config.MODEL_DIR, config.OCR_MODEL)])
         return self._sessions.get("ocr")
 
+    def _clip_providers(self) -> list[str]:
+        """CLIP 双塔的 provider：按档位决定（fp16 固定 CPU / fp32 跟随 GPU 开关）。
+
+        为什么必须分开：
+          - fp16 档（model_fp16.onnx）在 AMD DirectML 上有**算子级数值 bug**
+            （实测输出错误，见 BUG-2026-0910-006）→ 无论 GPU 开关如何都固定 CPU；
+            此前这里直接用全局 provider，一旦用户打开 GPU 开关就会把 fp16 送到 DML
+            上进而静默产出错误向量（潜在缺陷，本次一并修掉）。
+          - fp32 档（model.onnx）实测 DML 与 CPU 数值完全一致（余弦 1.000000）
+            且快约 2 倍（53.3ms vs 108.2ms/张，见 python/bench/verify_clip_tiers.py），
+            故跟随用户的 GPU 开关（默认仍为 CPU，用户显式开启才用 GPU）。
+        """
+        p = config.clip_paths()
+        if "fp16" in p["onnx"]:
+            return ["CPUExecutionProvider"]
+        return self._providers()
+
+    # ------------------------------------------------------------------
+    # 语义双塔（当前档位）：拆分件由 embed_service.ensure() 生成
+    # ------------------------------------------------------------------
     @property
-    def flower(self) -> ort.InferenceSession | None:
-        self._load("flower", [os.path.join(config.MODEL_DIR, config.FLOWER_MODEL)])
-        return self._sessions.get("flower")
+    def clip_vision(self) -> ort.InferenceSession | None:
+        p = config.clip_paths()
+        with self._lock:
+            if "clip_vision" not in self._ready:
+                try:
+                    sess, cpu_fb = self._create_session(p["vision"], self._so_clip(), self._clip_providers())
+                    self._sessions["clip_vision"] = sess
+                    self._ready["clip_vision"] = True
+                    self._session_info["clip_vision"] = self._session_facts(sess, p["vision"], cpu_fb, self._so_clip())
+                except Exception as e:  # noqa: BLE001
+                    self._load_errors["clip_vision"] = str(e)
+                    self._ready["clip_vision"] = False
+        return self._sessions.get("clip_vision")
 
     @property
-    def food(self) -> ort.InferenceSession | None:
-        self._load("food", [os.path.join(config.MODEL_DIR, config.FOOD_MODEL)])
-        return self._sessions.get("food")
+    def clip_text(self) -> ort.InferenceSession | None:
+        p = config.clip_paths()
+        with self._lock:
+            if "clip_text" not in self._ready:
+                try:
+                    sess, cpu_fb = self._create_session(p["text"], self._so_clip(), self._clip_providers())
+                    self._sessions["clip_text"] = sess
+                    self._ready["clip_text"] = True
+                    self._session_info["clip_text"] = self._session_facts(sess, p["text"], cpu_fb, self._so_clip())
+                except Exception as e:  # noqa: BLE001
+                    self._load_errors["clip_text"] = str(e)
+                    self._ready["clip_text"] = False
+        return self._sessions.get("clip_text")
+
+    def load_error(self, key: str) -> str:
+        return self._load_errors.get(key, "")
 
     # ------------------------------------------------------------------
     def run(self, key: str, tensor) -> list[np.ndarray]:
         sess = self._sessions[key]
         return sess.run(None, {sess.get_inputs()[0].name: tensor})
 
-    # ------------------------------------------------------------------
-    # FEAT-051：运行时切换（GPU 加速 / 分类模型），供 UI 按硬件性能选择
-    # ------------------------------------------------------------------
-    def set_gpu_enabled(self, enabled: bool) -> dict:
-        """切换 GPU 加速：enabled=False 强制 CPU。
+    def run_clip_vision(self, pixel_values: np.ndarray) -> np.ndarray:
+        """图像塔前向 → (N,dim) fp32（fp16 图输出已 cast 回 fp32）。"""
+        sess = self._sessions["clip_vision"]
+        return sess.run(None, {sess.get_inputs()[0].name: pixel_values})[0].astype(np.float32)
 
-        provider 在会话创建时绑定，切换后清空全部已加载会话；重建由服务层
-        （POST /gpu 处理器）的后台线程完成 —— 加载耗时不可预估，不能阻塞请求，
-        重建期间 /health 返回 ok=false，宿主会等待就绪。
+    def run_clip_text(self, input_ids: np.ndarray, attention_mask: np.ndarray) -> np.ndarray:
+        """文本塔前向 → (N,dim) fp32。"""
+        sess = self._sessions["clip_text"]
+        return sess.run(None, {
+            sess.get_inputs()[0].name: input_ids,
+            sess.get_inputs()[1].name: attention_mask,
+        })[0].astype(np.float32)
+
+    # ------------------------------------------------------------------
+    # FEAT-053：固定张量测速 —— CPU/GPU 真实加速比一键对比
+    # ------------------------------------------------------------------
+    def _bench_feed(self, key: str, sess: ort.InferenceSession) -> dict:
+        """按通道构造固定输入（CLIP 双塔输入不同，其余图像模型一律 1x3xSxS）。"""
+        if key.startswith("clip_"):
+            p = config.clip_paths()
+            if key == "clip_vision":
+                return {sess.get_inputs()[0].name:
+                        np.random.randn(1, 3, int(p["size"]), int(p["size"])).astype(np.float32)}
+            ids = np.ones((1, int(p["max_len"])), dtype=np.int64)
+            return {sess.get_inputs()[0].name: ids, sess.get_inputs()[1].name: np.ones_like(ids)}
+        inp = sess.get_inputs()[0]
+        shape: list[int] = []
+        for i, d in enumerate(inp.shape):
+            if isinstance(d, int) and d > 0:
+                shape.append(d)
+            elif i == 0:
+                shape.append(1)
+            elif i == 1:
+                shape.append(3)
+            else:
+                shape.append(224)
+        return {inp.name: np.random.randn(*shape).astype(np.float32)}
+
+    def _bench_session(self, key: str, threads: int | None):
+        """取（或临时创建）用于测速的会话；threads=None 用已加载会话。
+
+        临时会话不写入 _sessions：测速只是"试一试"，不该改变运行态（对齐"不改设置也能对比"的诉求）。
         """
+        if threads is None:
+            with self._lock:
+                sess = self._sessions.get(key)
+                if sess is None:
+                    _ = getattr(self, key, None)
+                    sess = self._sessions.get(key)
+            return sess
+        n = max(config.THREADS_MIN, min(config.THREADS_MAX, int(threads)))
+        if key == "clip_vision":
+            p, optmaker, provs = config.clip_paths()["vision"], self._so_clip, self._clip_providers()
+        elif key == "clip_text":
+            p, optmaker, provs = config.clip_paths()["text"], self._so_clip, self._clip_providers()
+        else:
+            calls = {
+                "det": (config.DET_MODEL, None), "ocr": (config.OCR_MODEL, None),
+                "face_det": (config.FACE_DET_MODELS[0], None),
+                "face_rec": (config.FACE_REC_MODELS[0], None),
+            }
+            if key not in calls:
+                raise RuntimeError(f"未知通道: {key}")
+            p, optmaker, provs = os.path.join(config.MODEL_DIR, calls[key][0]), self._so, self._providers()
+        if not os.path.isfile(p):
+            raise RuntimeError(f"通道 {key} 模型缺失: {p}")
+        opts = optmaker()
+        opts.intra_op_num_threads = n
+        try:
+            return ort.InferenceSession(p, sess_options=opts, providers=provs)
+        except Exception:  # noqa: BLE001  临时测速失败不阻断：回落 CPU
+            return ort.InferenceSession(p, sess_options=opts, providers=["CPUExecutionProvider"])
+
+    def benchmark(self, key: str = "det", runs: int = 10, warmup: int = 2,
+                  threads: int | None = None) -> dict:
+        """预热后计时 N 次推理，输出平均/最快/最慢毫秒与实测 provider。
+
+        测速在锁外进行：会话是不可变对象（切换 = 整体换引用），持锁计时
+        反而会被并发模型加载阻塞导致读数失真。
+        """
+        runs = max(1, min(int(runs), 50))
+        warmup = max(0, min(int(warmup), 10))
+        sess = self._bench_session(key, threads)
+        if sess is None:
+            raise RuntimeError(f"通道 {key} 不可用，无法测速")
+        feed = self._bench_feed(key, sess)
+        for _ in range(warmup):
+            sess.run(None, feed)
+        times: list[float] = []
+        for _ in range(runs):
+            t0 = time.perf_counter()
+            sess.run(None, feed)
+            times.append((time.perf_counter() - t0) * 1000.0)
+        times.sort()
+        total = sum(times)
+        return {
+            "channel": key,
+            "threads": int(sess.get_session_options().intra_op_num_threads) if hasattr(sess, "get_session_options") else threads,
+            "runs": runs,
+            "warmup": warmup,
+            "input_shape": [list(v.shape) for v in feed.values()],
+            "providers": list(sess.get_providers()),
+            "avg_ms": round(total / runs, 2),
+            "min_ms": round(times[0], 2),
+            "max_ms": round(times[-1], 2),
+            "total_ms": round(total, 2),
+            "throughput_per_s": round(runs / (total / 1000.0), 1) if total > 0 else None,
+        }
+
+    def benchmark_sweep(self, key: str = "clip_vision", options: list[int] | None = None,
+                        runs: int = 8, warmup: int = 2) -> list[dict]:
+        """线程数扫档：对同一通道依次用不同线程数测速，供 UI 选最优（不改变当前设置）。"""
+        opts = options or config.threads_info()["options"]
+        out: list[dict] = []
+        for n in opts:
+            try:
+                r = self.benchmark(key, runs=runs, warmup=warmup, threads=int(n))
+                out.append(r)
+            except Exception as e:  # noqa: BLE001  某档失败不影响整体
+                out.append({"channel": key, "threads": int(n), "error": f"{type(e).__name__}: {e}"})
+        ok = [r for r in out if "avg_ms" in r]
+        if ok:
+            best = min(ok, key=lambda r: r["avg_ms"])
+            for r in out:
+                r["best"] = r is best
+        return out
+
+    # ------------------------------------------------------------------
+    # 语义模型档位切换（适配不同硬件）
+    # ------------------------------------------------------------------
+    def current_clip_tier(self) -> str:
+        """当前登记生效的语义模型档位（不触发加载，可被 /health 高频调用）。"""
+        return config.active_clip()
+
+    def clip_models_info(self) -> dict:
+        """语义模型档位清单 + 当前生效 + 会话实测事实（UI 用）。"""
+        current = self.current_clip_tier()
+        models = []
+        for name in config.CLIP_MODELS:
+            meta = config.CLIP_MODEL_META[name]
+            p = config.clip_paths(name)
+            vision_ok = os.path.isfile(p["vision"])
+            whole_ok = os.path.isfile(p["whole"])
+            models.append({
+                "name": name,
+                "label": meta["label"],
+                "accuracy": meta.get("accuracy", ""),
+                "speed": meta.get("speed", ""),
+                "note": meta.get("note", ""),
+                "dim": meta["dim"],
+                "size": meta["size"],
+                # 模型体积（UI 在下载/切换前明示成本）
+                "bytes": meta.get("bytes", 0),
+                # 已就绪 = 拆分件在；仅整图在 → 首次使用时自动拆（仍可选）
+                "downloaded": vision_ok or whole_ok,
+                "ready": vision_ok,
+                "active": name == current,
+            })
+        return {
+            "models": models,
+            "current": current,
+            "clip_ready": self.is_ready("clip_vision") and self.is_ready("clip_text"),
+            "loaded": self._session_info.get("clip_vision"),
+            "loaded_text": self._session_info.get("clip_text"),
+        }
+
+    def begin_clip_switch(self, name: str) -> dict:
+        """校验并登记档位切换目标，清空 CLIP 会话槽位后立即返回。
+
+        实际加载由后台线程 finish_clip_switch 完成（加载可达数十秒，
+        不能占住 HTTP 请求 —— 宿主 15s 超时）。
+        """
+        with self._lock:
+            if name not in config.CLIP_MODEL_META:
+                raise ValueError(f"未知语义模型档位: {name}")
+            p = config.clip_paths(name)
+            if not (os.path.isfile(p["vision"]) or os.path.isfile(p["whole"])):
+                raise FileNotFoundError(f"语义模型未下载: {p['whole']}")
+            config.set_active_clip(name)
+            for k in ("clip_vision", "clip_text"):
+                self._sessions.pop(k, None)
+                self._ready.pop(k, None)
+                self._load_errors.pop(k, None)
+                self._session_info.pop(k, None)
+            return self.clip_models_info()
+
+    def finish_clip_switch(self, name: str) -> bool:
+        """后台完成档位切换：确保拆分件 + 加载双塔；失败回退默认档。"""
+        with self._lock:
+            from .services.clip_subgraph import ensure_subgraphs
+
+            err = ensure_subgraphs(name)
+            if err:
+                self._load_errors["clip_vision"] = err
+                config.set_active_clip(config.CLIP_DEFAULT_MODEL)
+                return False
+            _ = self.clip_vision
+            _ = self.clip_text
+            ok = self.is_ready("clip_vision") and self.is_ready("clip_text")
+            if not ok:
+                config.set_active_clip(config.CLIP_DEFAULT_MODEL)
+            return ok
+
+    # ------------------------------------------------------------------
+    def set_threads(self, n: int) -> dict:
+        """设置 CPU 线程数：持久化 + 清空全部会话（下次访问按新线程重建）。
+
+        线程数是会话创建期绑定的参数，切换后必须重建；清空动作与 /gpu 切换同构，
+        重建由服务层后台线程完成（加载耗时不可预估，不能阻塞请求）。
+        """
+        with self._lock:
+            applied = config.set_threads(n)
+            self._reload_all()
+        info = config.threads_info()
+        info["applied"] = applied
+        return info
+
+    def set_gpu_enabled(self, enabled: bool) -> dict:
+        """切换 GPU 加速：enabled=False 强制 CPU。会话清空后由服务层后台重建。"""
         with self._lock:
             self._gpu_forced_off = not enabled
             self._providers_sel = None if enabled else ["CPUExecutionProvider"]
             self._reload_all()
         return self.gpu_info()
 
-    def set_cls_model(self, name: str) -> dict:
-        """同步切换分类模型到指定文件（须在候选清单中且已下载）。
-
-        仅测试/脚本用；HTTP /model 走 begin/finish 两步后台加载（见 server.py），
-        大模型加载可达数十秒，不能占住 HTTP 请求（宿主 15s 超时）。
-        """
-        with self._lock:
-            info = self.begin_cls_model_switch(name)
-            ok = self.finish_cls_model_switch(name)
-            if not ok:
-                raise RuntimeError(f"模型加载失败: {self._load_errors.get('cls', '加载失败')}")
-            return info
-
-    def begin_cls_model_switch(self, name: str) -> dict:
-        """FEAT-051：校验并登记切换目标，清空 cls 会话槽位后立即返回。
-
-        实际加载由后台线程 finish_cls_model_switch 完成（对齐 /gpu 的异步模式）；
-        加载期间 is_ready("cls")=False → /health ok=false，宿主进入等待而非报错。
-        """
-        with self._lock:
-            if name not in config.CLS_MODEL_META:
-                raise ValueError(f"未知分类模型: {name}")
-            path = os.path.join(config.MODEL_DIR, name)
-            if not os.path.isfile(path):
-                raise FileNotFoundError(f"模型文件未下载: {path}")
-            self._cls_override = name
-            self._sessions.pop("cls", None)
-            self._ready.pop("cls", None)
-            self._load_errors.pop("cls", None)
-            return self.cls_models_info()
-
-    def finish_cls_model_switch(self, name: str) -> bool:
-        """后台加载切换目标；成功持久化选择，失败回退默认候选并清除持久化记录。"""
-        with self._lock:
-            path = os.path.join(config.MODEL_DIR, name)
-            self._load("cls", [path], required=True)
-            if self._ready.get("cls"):
-                self._persist_cls(name)
-                return True
-            self._cls_override = None
-            self._sessions.pop("cls", None)
-            self._ready.pop("cls", None)
-            # 持久化指向的模型加载失败 → 删除记录，下次启动走默认回退
-            try:
-                os.remove(config.CLS_CURRENT_PATH)
-            except OSError:
-                pass
-            return False
-
-    def cls_models_info(self) -> dict:
-        """分类模型候选清单 + 当前生效模型（UI 用）。"""
-        current = self._cls_override
-        if not current:
-            for m in config.CLS_MODELS:
-                if os.path.isfile(os.path.join(config.MODEL_DIR, m)):
-                    current = m
-                    break
-        models = []
-        for m in config.CLS_MODELS:
-            meta = config.CLS_MODEL_META.get(m, {})
-            models.append({
-                "name": m,
-                "label": meta.get("label", m),
-                "accuracy": meta.get("accuracy", ""),
-                "speed": meta.get("speed", ""),
-                "downloaded": os.path.isfile(os.path.join(config.MODEL_DIR, m)),
-                "active": m == current,
-            })
-        # cls 会话是否已就绪（切换后台加载期间为 False，UI 据此提示「加载中」）
-        return {"models": models, "current": current, "cls_ready": self.is_ready("cls")}
-
     def _reload_all(self):
         """清空全部会话槽位，下次访问按新 provider 惰性重建。"""
         self._sessions.clear()
         self._ready.clear()
+        self._session_info.clear()
+        self._load_errors.clear()
+        self._failed_at.clear()
 
     def is_ready(self, key: str) -> bool:
         # 无锁读（dict.get 原子）：调用方为 /health 高频探测，绝不能等加载锁
         return self._ready.get(key, False)
 
     def preload_main(self) -> dict:
-        """启动预热：仅主链路（cls + det + scene）。
+        """启动预热：仅人物检测主链路（每张图必经）。
 
-        这三个通道每张图必经，提前加载让 /health ok 尽快翻转、首批扫描零等待；
-        face/ocr/flower/food 为条件触发的专家通道，首次命中时经属性访问惰性
-        加载（services 各 has_* 已按 is_ready 优雅降级）。此前全量预热 8 通道
-        会把服务就绪拖到数十秒，放大宿主等待窗口。
+        CLIP 双塔由首次语义请求触发惰性加载（首次数十秒），避免把服务就绪
+        窗口拖长导致宿主等待/误判；face/ocr 为条件触发的专家通道，同样惰性。
         """
         with self._lock:
-            self.cls
             self.det
-            self.scene
-            keys = ["cls", "det", "scene"]
+            keys = ["det"]
             return {k: {"ready": self.is_ready(k), "error": self._load_errors.get(k, "")} for k in keys}
 
     def status(self) -> dict:
-        # 强制加载全部通道（启动预加载线程 / 测试用）；持锁整个加载过程
+        """强制加载全部通道（启动预加载线程 / 测试用）；持锁整个加载过程。"""
         with self._lock:
-            self.cls
             self.det
             self.face_det
             self.face_rec
-            self.scene
             self.ocr
-            self.flower
-            self.food
-            keys = ["cls", "det", "face_det", "face_rec", "scene", "ocr", "flower", "food"]
-            return {k: {"ready": self.is_ready(k), "error": self._load_errors.get(k, "")} for k in keys}
+            keys = ["det", "face_det", "face_rec", "ocr"]
+            out = {k: {"ready": self.is_ready(k), "error": self._load_errors.get(k, "")} for k in keys}
+            out["clip"] = self.clip_models_info()
+            return out
 
 
 _registry: ModelRegistry | None = None

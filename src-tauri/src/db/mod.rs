@@ -7,12 +7,16 @@
 //! - `init_schema`  →  `schema.sql` 建表脚本
 //! - `DbError`  →  自定义业务异常（配合全局异常处理）
 
+pub mod category;
 pub mod content;
+pub mod embedding;
 pub mod thumb_cache;
+pub use category::{CategoryIndexStats, CategoryOverviewRow, CategoryPhotoRow};
 pub use content::{
     AlbumContentRow, CategoryGroupRow, ContentFilters, ContentSearchHit, LocationGroupRow,
     PhotoContentRecord, SmartHit,
 };
+pub use embedding::EmbeddingVersion;
 pub use thumb_cache::ThumbCacheRecord;
 
 use crate::RecentlyExcludedItem;
@@ -425,6 +429,10 @@ impl Database {
         self.init_content_schema()?;
         // 缩略图反向索引表（FEAT-044）：path/photo_hash → thumb_path
         self.init_thumb_cache_schema()?;
+        // 语义向量表（FEAT-SEM：语义搜索）
+        self.init_embedding_schema()?;
+        // 语义分类表（v5：用户自定义分类 + 命中物化 + 关键词向量缓存）
+        self.init_category_schema()?;
         // 迁移：将历史以明文存储的用户邮箱/手机号/密码哈希重加密（无历史明文则为空操作）
         let _ = crate::auth::migrate_legacy_user_fields(self.conn());
         Ok(())
@@ -1149,6 +1157,10 @@ impl Database {
         tx.execute("DELETE FROM album_merged_sources WHERE album_id = ?1 OR source_id = ?1", params![album_id])?;
         // FEAT-044：清理缩略图反向索引表（实际缩略图文件由调用方负责，本函数只清表）
         tx.execute("DELETE FROM photo_thumb_cache WHERE album_id = ?1", params![album_id])?;
+        // FEAT-SEM：语义向量与内容扫描同生命周期，随相册删除级联清理
+        crate::db::embedding::delete_embeddings_by_album_in_tx(tx, album_id)?;
+        // v5：语义分类命中同生命周期级联清理
+        crate::db::Database::delete_category_hits_in_tx(tx, album_id)?;
         Ok(())
     }
 
@@ -1269,6 +1281,10 @@ impl Database {
              WHERE user_id = ?4 AND path = ?5",
             params![new_path, parent, album_id, user_id, old_path],
         )?;
+        // FEAT-SEM：语义向量同步跟随移动（path/album_id 冗余列与扫描表同构维护）
+        self.move_photo_embedding_path(user_id, old_path, new_path, album_id)?;
+        // v5：语义分类命中同步跟随移动（path 冗余列）
+        self.move_category_hit_path(user_id, old_path, new_path)?;
         Ok(())
     }
 
