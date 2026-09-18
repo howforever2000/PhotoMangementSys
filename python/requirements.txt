@@ -2,6 +2,9 @@
 #   pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 fastapi>=0.110
 uvicorn>=0.29
+# 创意工坊微服务 python-studio/server.py 的 multipart 上传（图片 + 蒙版）依赖；
+# 缺了它在路由注册阶段就报 RuntimeError，服务起不来（连 /health 都不可达）
+python-multipart>=0.0.9
 onnxruntime>=1.17
 Pillow>=10.0
 numpy>=1.26
