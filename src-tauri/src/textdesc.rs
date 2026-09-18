@@ -53,6 +53,52 @@ pub struct DescInput {
     pub person_names: Vec<String>,
 }
 
+/// 配置键：描述里是否嵌入人物真名（**默认开**；关掉则描述完全不含人物）
+pub const CFG_PERSON_NAME_IN_DESC: &str = "search.person_name_in_desc";
+
+/// 开关读取（未落库 = 默认开；`"0"` = 关）
+pub fn person_name_in_desc(db: &crate::db::Database) -> bool {
+    db.get_setting(CFG_PERSON_NAME_IN_DESC)
+        .unwrap_or(None)
+        .map(|v| v != "0")
+        .unwrap_or(true)
+}
+
+/// 真名判定：`persons.name` 等于编号本身 = 用户没命名，不算真名
+///
+/// 这一步是「描述里不写 P 编号」的守门员：未命名人物的名字就是 `P001`，
+/// 直接嵌入等于绕开定稿决策①。
+pub fn real_name(id: &str, name: &str) -> Option<String> {
+    let n = name.trim();
+    if n.is_empty() || n == id.trim() {
+        None
+    } else {
+        Some(n.to_string())
+    }
+}
+
+/// 人物 id → 真名映射（只含有真名的人物；人物库缺失 → 空表，不影响主流程）
+fn person_name_map() -> HashMap<String, String> {
+    crate::persons::list_persons()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|p| real_name(&p.id, &p.name).map(|n| (p.id, n)))
+        .collect()
+}
+
+/// 某照片的人物真名列表（按 person_ids 顺序，去重保序；无真名的人物直接不出现）
+pub fn person_names_of(ids: &[String], map: &HashMap<String, String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for id in ids {
+        if let Some(n) = map.get(id) {
+            if !out.iter().any(|x| x == n) {
+                out.push(n.clone());
+            }
+        }
+    }
+    out
+}
+
 /// JSON 数组文本 → 字符串列表（空/异常 → 空列表）
 pub fn parse_json_list(raw: Option<&str>) -> Vec<String> {
     raw.and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
@@ -349,7 +395,18 @@ pub async fn rebuild_text_index(
         )
     };
 
-    // 2. 逐张算描述与指纹，挑出需要重算的
+    // 2. 真名开关（默认开）+ 人物真名映射（关掉 → 描述完全不含人物）
+    let include_names = {
+        let db = state.0.lock().map_err(|e| format!("{e}"))?;
+        person_name_in_desc(&db)
+    };
+    let name_map: HashMap<String, String> = if include_names {
+        person_name_map()
+    } else {
+        HashMap::new()
+    };
+
+    // 3. 逐张算描述与指纹，挑出需要重算的
     let mut pending: Vec<(String, String, String)> = Vec::new(); // (photo_hash, text, source_hash)
     let mut unchanged = 0usize;
     let mut empty = 0usize;
@@ -359,7 +416,11 @@ pub async fn rebuild_text_index(
             location: r.location.clone(),
             scene: clean_scene(r.content.as_deref().unwrap_or("")),
             user_tags: parse_json_list(r.user_tags.as_deref()),
-            person_names: Vec::new(),
+            person_names: if include_names {
+                person_names_of(&parse_json_list(r.person_ids.as_deref()), &name_map)
+            } else {
+                Vec::new()
+            },
         };
         let text = build_desc(&input);
         if text.is_empty() {
@@ -388,7 +449,7 @@ pub async fn rebuild_text_index(
         return Ok(report(0, 0));
     }
 
-    // 3. 描述去重后批量编码（同一段描述只编码一次，653 张通常只有几十种）
+    // 4. 描述去重后批量编码（同一段描述只编码一次，653 张通常只有几十种）
     let mut texts: Vec<String> = Vec::new();
     for (_, t, _) in &pending {
         if !texts.iter().any(|x| x == t) {
@@ -399,7 +460,7 @@ pub async fn rebuild_text_index(
     let encoded = crate::vision::embed_text_batch(&texts, app).await?;
     let by_text: HashMap<String, Vec<f32>> = encoded.into_iter().collect();
 
-    // 4. 落库（只写真正重算的那些行）
+    // 5. 落库（只写真正重算的那些行）
     let stamp = now_ms();
     let mut recs: Vec<TextEmbeddingRecord> = Vec::with_capacity(pending.len());
     for (hash, text, sh) in &pending {
@@ -456,6 +517,39 @@ pub mod commands {
                 &format!("OK | hits={}", list.len()),
             ),
             Err(e) => logger::log_call_end_with("smart_search_by_image", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
+    /// FEAT-067 步骤 4：读「描述是否嵌入人物真名」开关（默认开）
+    #[tauri::command]
+    pub async fn get_desc_person_name(
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<bool, String> {
+        let _ = require_user(&session)?;
+        let db = state.0.lock().map_err(|e| format!("{e}"))?;
+        Ok(person_name_in_desc(&db))
+    }
+
+    /// FEAT-067 步骤 4：切换「描述是否嵌入人物真名」（关掉 → 描述完全不含人物）
+    #[tauri::command]
+    pub async fn set_desc_person_name(
+        enabled: bool,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<bool, String> {
+        let _t = log_call!("set_desc_person_name", &format!("enabled={enabled}"));
+        let _ = require_user(&session)?;
+        let r = {
+            let db = state.0.lock().map_err(|e| format!("{e}"))?;
+            db.set_setting(CFG_PERSON_NAME_IN_DESC, if enabled { "1" } else { "0" })
+                .map(|_| enabled)
+                .map_err(|e| format!("{e}"))
+        };
+        match &r {
+            Ok(v) => logger::log_call_end_with("set_desc_person_name", _t, &format!("OK | enabled={v}")),
+            Err(e) => logger::log_call_end_with("set_desc_person_name", _t, &format!("ERR | {e}")),
         }
         r
     }
@@ -620,6 +714,28 @@ mod tests {
         assert_eq!(parse_json_list(Some(r#"["a","b"]"#)), vec!["a", "b"]);
         assert!(parse_json_list(None).is_empty());
         assert!(parse_json_list(Some("not json")).is_empty());
+    }
+
+    /// 真名判定（验收第 7 条的前提）：名字等于编号 = 没命名，不进描述
+    #[test]
+    fn real_name_rejects_unnamed_persons() {
+        assert_eq!(real_name("P001", "P001"), None, "未命名人物不能把编号写进描述");
+        assert_eq!(real_name("P001", "  "), None);
+        assert_eq!(real_name("P001", "小明"), Some("小明".into()));
+        assert_eq!(real_name("P001", " 小明 "), Some("小明".into()));
+    }
+
+    /// 真名列表：只含有真名的人物，去重保序；关掉开关 → 完全不含人物
+    #[test]
+    fn person_names_of_only_named_and_dedup() {
+        let mut map = HashMap::new();
+        map.insert("P001".to_string(), "小明".to_string());
+        map.insert("P002".to_string(), "小红".to_string());
+        // P003 未命名 → 不出现
+        let ids = vec!["P001".to_string(), "P003".to_string(), "P001".to_string(), "P002".to_string()];
+        assert_eq!(person_names_of(&ids, &map), vec!["小明", "小红"]);
+        // 空映射（开关关闭 / 无人命名）→ 空
+        assert!(person_names_of(&ids, &HashMap::new()).is_empty());
     }
 
     /// 归一化：非单位向量先归一化再用（否则阈值失真）

@@ -2372,11 +2372,40 @@ async fn set_person_avatar_from_photo(
     Ok(cache_str)
 }
 
+/// FEAT-067 步骤 4：人物改名/合并后，**后台**增量重算受影响的描述向量
+///
+/// 不做在命令主线程里：改名本身是毫秒级写库，重算要走文本塔（首次含模型懒加载），
+/// 卡住 UI 不可接受。重建按 `source_hash` 判定增量，只有真名变化的那批照片会被重算。
+fn spawn_desc_rebuild(app: &tauri::AppHandle, user_id: i64, reason: String) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        match crate::textdesc::rebuild_text_index(&app, &state, user_id).await {
+            Ok(rep) => logger::log_info(&format!(
+                "[textdesc] {} 触发重建：built={} unchanged={} empty={} {}ms",
+                reason, rep.built, rep.unchanged, rep.empty, rep.ms
+            )),
+            Err(e) => logger::log_info(&format!("[textdesc] {reason} 触发重建跳过（{e}）")),
+        }
+    });
+}
+
 /// 人物注册表：重命名人物（直写 persons.db）
+///
+/// FEAT-067：改名会改变「描述里的真名」→ 改完后台增量重算该人物名下照片的描述向量
 #[tauri::command]
-fn rename_person(pid: String, name: String) -> Result<(), String> {
+fn rename_person(
+    pid: String,
+    name: String,
+    app: tauri::AppHandle,
+    session: tauri::State<SessionState>,
+) -> Result<(), String> {
     let _t = log_call!("rename_person", &format!("pid={pid}"));
+    let user_id = require_user(&session)?;
     let r = persons::rename_person(&pid, &name);
+    if r.is_ok() {
+        spawn_desc_rebuild(&app, user_id, format!("rename {pid}"));
+    }
     match &r {
         Ok(_) => logger::log_call_end_with("rename_person", _t, "OK"),
         Err(e) => logger::log_call_end_with("rename_person", _t, &format!("ERR | {e}")),
@@ -2385,10 +2414,21 @@ fn rename_person(pid: String, name: String) -> Result<(), String> {
 }
 
 /// 人物注册表：合并人物（source 并入 target；直写 persons.db，质心加权平均与 Python 逻辑一致）
+///
+/// FEAT-067：合并同样改变人物真名归属 → 后台增量重算
 #[tauri::command]
-fn merge_persons(target: String, source: String) -> Result<(), String> {
+fn merge_persons(
+    target: String,
+    source: String,
+    app: tauri::AppHandle,
+    session: tauri::State<SessionState>,
+) -> Result<(), String> {
     let _t = log_call!("merge_persons", &format!("target={target} source={source}"));
+    let user_id = require_user(&session)?;
     let r = persons::merge_persons(&target, &source);
+    if r.is_ok() {
+        spawn_desc_rebuild(&app, user_id, format!("merge {source}->{target}"));
+    }
     match &r {
         Ok(_) => logger::log_call_end_with("merge_persons", _t, "OK"),
         Err(e) => logger::log_call_end_with("merge_persons", _t, &format!("ERR | {e}")),
@@ -3744,6 +3784,8 @@ pub fn run() {
             // FEAT-067：以图搜图 + 描述向量（人物编号不入向量，人物走 faces 精确过滤）
             textdesc::commands::smart_search_by_image,
             textdesc::commands::rebuild_desc_index,
+            textdesc::commands::get_desc_person_name,
+            textdesc::commands::set_desc_person_name,
             export_photos,
             get_vcr_gpu_status,
             start_model_download,

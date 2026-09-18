@@ -435,8 +435,45 @@ impl Database {
         self.init_category_schema()?;
         // FEAT-067：描述向量表（文本塔；与图像塔 photo_embeddings 分开存）
         self.init_text_embedding_schema()?;
+        // FEAT-067：应用级配置项（KV；如「描述是否嵌入人物真名」，默认开）
+        self.init_settings_schema()?;
         // 迁移：将历史以明文存储的用户邮箱/手机号/密码哈希重加密（无历史明文则为空操作）
         let _ = crate::auth::migrate_legacy_user_fields(self.conn());
+        Ok(())
+    }
+
+    /// FEAT-067：应用级 KV 配置（开关类设置的落点，避免为每个开关单建一列/一表）
+    pub fn init_settings_schema(&self) -> Result<(), DbError> {
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS app_settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
+        )?;
+        Ok(())
+    }
+
+    /// 读取配置项（未设置 → None，由调用方决定默认值）
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, DbError> {
+        let r = self
+            .conn
+            .query_row("SELECT value FROM app_settings WHERE key = ?1", params![key], |r| {
+                r.get::<_, String>(0)
+            });
+        match r {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(DbError::Sqlite(e)),
+        }
+    }
+
+    /// 写入配置项（upsert）
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
+        self.conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
         Ok(())
     }
 
