@@ -605,7 +605,16 @@ pub fn grid_thumb_cache_names_all(album_id: i64, source: &Path) -> Vec<String> {
     ]
 }
 
-/// P1 WebP 兼容：尝试复用旧版 .jpg 缓存（grid/album_<id>_photo_<fp>.jpg）
+/// P1 WebP 兼容：尝试复用旧版 .jpg 缓存（命中即整字节复制，**不做转码** ——
+/// 复用的目的就是为了避免重新解码大图）。
+///
+/// 覆盖三代旧命名：
+/// 1. `grid/album_<id>_photo_<fp>.jpg` —— 上一代（网格缩略图 + 指纹命名）
+/// 2. `album_<id>_auto_<fp>.jpg` —— 上一代（封面 + 指纹命名）
+/// 3. `album_<id>_<safe_stem>.jpg` —— 最早一代（按源图**文件名**）：
+///    `ensure_thumbnail_from_source` 的文档承诺的就是这一代。WebP 改造时
+///    只保留了指纹命名的两代、漏掉了它，导致从更老版本直升的用户旧缩略图
+///    不再复用、首次打开相册全量重新解码生成。
 fn reuse_legacy_thumb(
     album_id: i64,
     source: &Path,
@@ -613,25 +622,41 @@ fn reuse_legacy_thumb(
     thumb_path: &Path,
 ) -> bool {
     let fp = file_fingerprint(source);
-    // 旧格式：grid/album_<id>_photo_<fp>.jpg → 转为新格式 webp
-    let legacy_jpg = thumbs_dir
-        .join(GRID_THUMBS_SUBDIR)
-        .join(format!("album_{album_id}_photo_{fp}.jpg"));
-    if legacy_jpg.is_file() {
-        if let Some(parent) = thumb_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        return std::fs::copy(&legacy_jpg, thumb_path).is_ok();
+    let mut candidates: Vec<PathBuf> = vec![
+        // 上一代：网格缩略图 grid/album_<id>_photo_<fp>.jpg
+        thumbs_dir
+            .join(GRID_THUMBS_SUBDIR)
+            .join(format!("album_{album_id}_photo_{fp}.jpg")),
+        // 上一代：封面 album_<id>_auto_<fp>.jpg
+        thumbs_dir.join(format!("album_{album_id}_auto_{fp}.jpg")),
+    ];
+    // 最早一代：album_<id>_<safe_stem>.jpg（按源图文件名）
+    let safe_stem = safe_stem_of(source);
+    if !safe_stem.is_empty() {
+        candidates.push(thumbs_dir.join(format!("album_{album_id}_{safe_stem}.jpg")));
     }
-    // 封面旧格式
-    let legacy_cover = thumbs_dir.join(format!("album_{album_id}_auto_{fp}.jpg"));
-    if legacy_cover.is_file() {
-        if let Some(parent) = thumb_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+    for legacy in candidates {
+        if legacy.is_file() {
+            if let Some(parent) = thumb_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            return std::fs::copy(&legacy, thumb_path).is_ok();
         }
-        return std::fs::copy(&legacy_cover, thumb_path).is_ok();
     }
     false
+}
+
+/// 源图文件名的安全化形式（最早一代缩略图命名 `album_<id>_<safe_stem>.jpg` 用）：
+/// 只保留字母数字与 `-` `_`，最长 40 字符（与基线时代实现逐字一致，否则旧缓存名字对不上）
+fn safe_stem_of(source: &Path) -> String {
+    source
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .take(40)
+        .collect()
 }
 
 pub fn cleanup_album_auto_thumbs(album_id: i64, thumbs_dir: &Path) {
@@ -885,34 +910,94 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
-    /// 旧命名缩略图复用：album_{id}_{safe_stem}.jpg（基线产物）应被复制为指纹文件，
-    /// 老用户升级后无需重新解码大图生成缩略图
+    /// 旧命名缩略图复用：三代旧缓存都应被整字节复制为新的指纹文件，
+    /// 老用户升级后无需重新解码大图（否则首次打开相册会全量重生成）。
     #[test]
     fn legacy_thumb_reuse() {
         let tmp = std::env::temp_dir().join(format!("legacy_reuse_test_{}", std::process::id()));
-        let thumbs = tmp.join("thumbs");
-        let img_dir = tmp.join("album_dir");
-        std::fs::create_dir_all(&thumbs).unwrap();
-        std::fs::create_dir_all(&img_dir).unwrap();
-        let img_path = img_dir.join("DSC_0001.jpg");
-        let img = image::RgbImage::new(80, 60);
-        img.save(&img_path).unwrap();
-        // 构造基线时代的旧命名缩略图
-        let legacy = thumbs.join("album_99_DSC_0001.jpg");
-        let legacy_img = image::RgbImage::new(80, 60);
-        legacy_img.save(&legacy).unwrap();
-        let res = ensure_thumbnail_from_source(99, &img_path, &thumbs).unwrap();
-        assert!(Path::new(&res.thumb_path).exists());
-        // 指纹文件内容应与 legacy 完全一致（证明是复用而非重新生成）
-        assert_eq!(
-            std::fs::read(&legacy).unwrap(),
-            std::fs::read(&res.thumb_path).unwrap(),
-            "指纹文件应复用 legacy 缩略图内容"
-        );
-        // 再次调用应命中指纹缓存（幂等）
-        let res2 = ensure_thumbnail_from_source(99, &img_path, &thumbs).unwrap();
-        assert_eq!(res.thumb_path, res2.thumb_path);
-        std::fs::remove_dir_all(&tmp).ok();
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        // 每代旧缓存用独立的 thumbs 目录 + 相册 id，避免上一轮生成的 .webp 命中缓存
+        // 而直接 return（那就测不到复用分支了）
+        let make_source = |dir: &Path| -> PathBuf {
+            let img_dir = dir.join("album_dir");
+            std::fs::create_dir_all(&img_dir).unwrap();
+            let p = img_dir.join("DSC_0001.jpg");
+            image::RgbImage::new(80, 60).save(&p).unwrap();
+            p
+        };
+        let make_legacy = |path: &Path| {
+            image::RgbImage::new(80, 60).save(path).unwrap();
+        };
+
+        // ① 最早一代：thumbs/album_<id>_<safe_stem>.jpg（按源图文件名）
+        {
+            let dir = tmp.join("gen1");
+            let img = make_source(&dir);
+            let thumbs = dir.join("thumbs");
+            std::fs::create_dir_all(&thumbs).unwrap();
+            let legacy = thumbs.join("album_99_DSC_0001.jpg");
+            make_legacy(&legacy);
+            let res = ensure_thumbnail_from_source(99, &img, &thumbs).unwrap();
+            assert!(Path::new(&res.thumb_path).exists());
+            assert!(res.thumb_path.ends_with(".webp"), "新缓存应为 .webp：{}", res.thumb_path);
+            assert_eq!(
+                std::fs::read(&legacy).unwrap(),
+                std::fs::read(&res.thumb_path).unwrap(),
+                "按文件名命名的基线旧缩略图应被复用"
+            );
+            // 再次调用应命中新缓存（幂等）
+            let res2 = ensure_thumbnail_from_source(99, &img, &thumbs).unwrap();
+            assert_eq!(res.thumb_path, res2.thumb_path);
+        }
+
+        // ② 上一代：thumbs/grid/album_<id>_photo_<指纹>.jpg
+        {
+            let dir = tmp.join("gen2");
+            let img = make_source(&dir);
+            let thumbs = dir.join("thumbs");
+            let grid = thumbs.join(GRID_THUMBS_SUBDIR);
+            std::fs::create_dir_all(&grid).unwrap();
+            let fp = file_fingerprint(&img);
+            let legacy = grid.join(format!("album_98_photo_{fp}.jpg"));
+            make_legacy(&legacy);
+            let res = ensure_thumbnail_from_source(98, &img, &thumbs).unwrap();
+            assert_eq!(
+                std::fs::read(&legacy).unwrap(),
+                std::fs::read(&res.thumb_path).unwrap(),
+                "上一代指纹命名的 grid 旧缩略图应被复用"
+            );
+        }
+
+        // ③ 上一代封面：thumbs/album_<id>_auto_<指纹>.jpg
+        {
+            let dir = tmp.join("gen3");
+            let img = make_source(&dir);
+            let thumbs = dir.join("thumbs");
+            std::fs::create_dir_all(&thumbs).unwrap();
+            let fp = file_fingerprint(&img);
+            let legacy = thumbs.join(format!("album_97_auto_{fp}.jpg"));
+            make_legacy(&legacy);
+            let res = ensure_thumbnail_from_source(97, &img, &thumbs).unwrap();
+            assert_eq!(
+                std::fs::read(&legacy).unwrap(),
+                std::fs::read(&res.thumb_path).unwrap(),
+                "上一代指纹命名的封面旧缩略图应被复用"
+            );
+        }
+
+        // ④ 无旧缓存时正常生成（不能因为“加了复用”就把生成路径弄坏）
+        {
+            let dir = tmp.join("gen4");
+            let img = make_source(&dir);
+            let thumbs = dir.join("thumbs");
+            std::fs::create_dir_all(&thumbs).unwrap();
+            let res = ensure_thumbnail_from_source(96, &img, &thumbs).unwrap();
+            assert!(Path::new(&res.thumb_path).exists());
+            assert!(res.thumb_path.ends_with(".webp"));
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// 递归文件计数：含子目录、跳过隐藏目录、不读内容
@@ -978,8 +1063,9 @@ mod tests {
     fn find_and_thumb() {
         use image::{Rgb, RgbImage};
 
-        // 构造临时相册目录
+        // 构造临时相册目录（先清理，避免上轮残留影响断言）
         let tmp = std::env::temp_dir().join("pm_thumb_test");
+        let _ = std::fs::remove_dir_all(&tmp);
         let img_dir = tmp.join("photos");
         std::fs::create_dir_all(&img_dir).unwrap();
 
@@ -1002,7 +1088,7 @@ mod tests {
         let thumbs = tmp.join("thumbs");
         let res = ensure_thumbnail_from_source(1, &first, &thumbs).unwrap();
         assert!(Path::new(&res.thumb_path).exists());
-        assert!(res.thumb_path.ends_with(".jpg"));
+        assert!(res.thumb_path.ends_with(".webp"), "缩略图已改 WebP：{}", res.thumb_path);
 
         // 二次调用应命中缓存
         let res2 = ensure_thumbnail_from_source(1, &first, &thumbs).unwrap();

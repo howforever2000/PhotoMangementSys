@@ -870,7 +870,11 @@ mod tests {
         }
     }
 
-    /// 下载条目自洽性：命名唯一、目录唯一、镜像=官方（防止误删/重复条目）
+    /// 下载条目自洽性：命名唯一、目录唯一、URL 指向同一仓库内路径、内置源为多镜像。
+    ///
+    /// 注意：FEAT-061 起内置源从一个（hf-mirror）扩为多个，`official()` / `mirror()`
+    /// 分别取候选列表的第 1 / 第 2 个 —— 因此**不再断言两者相等**
+    /// （旧断言「hf-mirror 为单源直链，镜像应等于官方地址」已随单源下线而过期）。
     #[test]
     fn clip_specs_are_self_consistent() {
         let all = specs();
@@ -886,10 +890,42 @@ mod tests {
         for dir in ["chinese-clip", "chinese-clip-fp32"] {
             assert!(roots.contains(&dir), "缺少档位目录 {dir}；现有 {roots:?}");
         }
+        // 内置源：至少两个且互不重复（FEAT-061 明确下线了单源方案）
+        assert!(
+            BUILTIN_SOURCES.len() >= 2,
+            "内置源应至少两个，实际 {}",
+            BUILTIN_SOURCES.len()
+        );
+        let mut uniq_src: Vec<&str> = BUILTIN_SOURCES.to_vec();
+        uniq_src.sort_unstable();
+        uniq_src.dedup();
+        assert_eq!(
+            uniq_src.len(),
+            BUILTIN_SOURCES.len(),
+            "内置源模板不得重复：{:?}",
+            BUILTIN_SOURCES
+        );
         for spec in &all {
-            assert!(
-                spec.mirror() == spec.official(),
-                "hf-mirror 为单源直链，镜像应等于官方地址"
+            // 无论走哪个源，都必须指向同一仓库内路径（否则下错文件）
+            for (label, url) in [("official", spec.official()), ("mirror", spec.mirror())] {
+                assert!(url.starts_with("http"), "{label} 应为 http 地址：{url}");
+                assert!(
+                    url.contains(&spec.repo_file()),
+                    "{label} 应包含仓库内相对路径 {}：{url}",
+                    spec.repo_file()
+                );
+                assert!(
+                    !url.contains(&format!("/{}/", spec.root)),
+                    "{label} 不得包含本地落位目录名 {}：{url}",
+                    spec.root
+                );
+            }
+            // 多源候选下 official / mirror 不应相同
+            assert_ne!(
+                spec.official(),
+                spec.mirror(),
+                "多源下 official 与 mirror 不应相同（{}）",
+                spec.name
             );
         }
     }

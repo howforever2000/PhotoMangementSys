@@ -1664,6 +1664,106 @@
       ],
       "created_at": "2026-09-18T11:35:00+08:00",
       "fixed_at": "2026-09-18T12:05:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0918-003",
+      "date": "2026-09-18",
+      "status": "fixed",
+      "title": "缩略图 WebP 改造漏掉最早一代旧缓存复用：老用户升级后首次打开相册全量重新解码生成",
+      "module": "缩略图缓存 / src-tauri/src/thumbnail.rs",
+      "symptom": [
+        "从更早版本升上来的用户，首次打开相册时缩略图全部重新解码大图生成，列表加载明显变慢",
+        "thumbs/ 根目录下形如 album_<id>_<safe_stem>.jpg 的基线旧缓存被无视（既不使用也不清理）",
+        "单测 thumbnail::tests::legacy_thumb_reuse 长期失败，但被当成「测试过期」忽略"
+      ],
+      "root_cause": {
+        "summary": "0f1e1ff（缩略图 WebP 改造）重写 reuse_legacy_thumb 时只保留了指纹命名的两代旧缓存（grid/album_<id>_photo_<fp>.jpg 与 album_<id>_auto_<fp>.jpg），漏掉最早一代按源图文件名的 album_<id>_<safe_stem>.jpg；而 ensure_thumbnail_from_source 的文档注释至今仍承诺复用这一代，实现与承诺脱节。",
+        "detail": [
+          "122282b（BUG-2026-0815-001 指纹随机种子）引入 reuse_legacy_thumb 时，逻辑正是匹配 album_<id>_<safe_stem>.jpg，同一提交里的 legacy_thumb_reuse 用例构造的也是这个文件名 —— 当时是通过的",
+          "0f1e1ff 改 WebP 时把该函数换成读 grid/ 子目录的指纹命名，测试未同步更新 → 用例长期红，回归被掩盖",
+          "本机现状（2026-09-18 实查）：thumbs/ 只剩新版 WebP 分片目录 album_<id>_auto_<2hex>/ 与 grid/（grid 内仍是旧 .jpg，说明该代复用分支有效），最早一代 album_<id>_<stem>.jpg 已不存在 —— 本机早已走过全量重生成；真正受影响的是从更老版本直升的其他用户"
+        ]
+      },
+      "solution": {
+        "summary": "reuse_legacy_thumb 恢复最早一代命名匹配（改为三代候选列表遍历），并按三代重写单测。",
+        "steps": [
+          "新增 safe_stem_of()：与 122282b 逐字一致（只保留字母数字与 - _，截断 40 字符），否则旧缓存文件名对不上",
+          "reuse_legacy_thumb 改为候选列表：grid 指纹命名 → 封面指纹命名 → 最早一代按文件名，命中即整字节复制（不转码，复用本身就是为了避免重新解码大图）",
+          "legacy_thumb_reuse 用例改为覆盖三代 + 『无旧缓存时仍能正常生成』，并给每代独立目录，消除『上一轮产物命中缓存导致测不到复用分支』的假绿"
+        ]
+      },
+      "lessons": [
+        "『复用旧缓存』这类兼容代码在重构时最容易漏代次；函数文档写着的承诺要和实现一起评审",
+        "测试红着没人管，会把真实回归一起埋掉 —— 这次正是单测先红、被归为『测试过期』之后才顺出来的"
+      ],
+      "evidence_log": "修复前：cargo test --lib → thumbnail::tests::legacy_thumb_reuse FAILED（left 为 legacy JPEG 字节 255,216,...，right 为 WebP 字节 82,73,70,70=RIFF，证明未复用而是重新生成）；修复后：cargo test --lib → 90 passed / 0 failed / 2 ignored。",
+      "related_files": [
+        "src-tauri/src/thumbnail.rs"
+      ],
+      "keywords": [
+        "缩略图",
+        "缩略图缓存",
+        "WebP",
+        "legacy",
+        "旧缓存复用",
+        "升级",
+        "safe_stem",
+        "兼容"
+      ],
+      "created_at": "2026-09-18T12:20:00+08:00",
+      "fixed_at": "2026-09-18T12:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0918-004",
+      "date": "2026-09-18",
+      "status": "fixed",
+      "title": "cargo test 长期 6 条红：logger 用例共享进程级全局却并行执行 + 三处断言随实现演进过期",
+      "module": "单元测试 / src-tauri/src/logger.rs + model_dl.rs + thumbnail.rs",
+      "symptom": [
+        "cargo test --lib 长期 6 条失败：logger 3 条、model_dl 1 条、thumbnail 2 条",
+        "logger 用例症状随机：期望 [\"[t1] a\",\"[t2] b\"] 却拿到 [\"[t] a\"]（另一个用例写进去的行）；tail_backfill 的 truncated 期望 true 实为 false（读到了别人的小文件）",
+        "因长期无人全量跑测试，这些红一直留到 2026-09-18，并掩盖了真实回归 BUG-2026-0918-003"
+      ],
+      "root_cause": {
+        "summary": "三类叠加：① logger 的 tail 用例都通过 setup_dir → set_global_config 改『进程级全局』日志目录，而 tail_log 只认这个全局；cargo 默认多线程并行跑测试，用例互相踩目录 → 随机失败。② model_dl 的断言『镜像 == 官方』写在单源时代，FEAT-061 把内置源扩为多源后必然不等。③ thumbnail 两处断言写在 JPG 时代，0f1e1ff 改 WebP 后过期。",
+        "detail": [
+          "决定性验证：给 tail 用例加 --test-threads=1 串行跑，4 条全绿 → 确认是测试共享全局状态，而非生产代码问题",
+          "项目没有 CI，也没有『提交前跑测试』的约定；0f1e1ff（WebP）之后没人再全量跑过 cargo test",
+          "成本体现：2026-09-18 排查『性能设置服务出错』时看到 6 条红，第一反应只能是先花时间自证『不是这次改坏的』"
+        ]
+      },
+      "solution": {
+        "summary": "logger 用例加进程内串行锁；model_dl / thumbnail 断言按新契约更新。",
+        "steps": [
+          "logger::tests 新增 static SERIAL: Mutex<()> 与 serial()（中毒时 unwrap_or_else(into_inner)，避免一条失败连带其余用例报 PoisonError），4 个 tail 用例开头加锁",
+          "clip_specs_are_self_consistent：不再断言 official == mirror，改为校验多源契约 —— 内置源 ≥2 且模板不重复；每个源的 URL 都是 http、都包含 repo_file()、都不含本地落位目录名；official ≠ mirror；并保留命名/目录唯一性与必备档位检查",
+          "find_and_thumb：断言改为 .webp，并在用例开头清理临时目录避免上轮残留",
+          "legacy_thumb_reuse：按三代旧缓存重写（详见 BUG-2026-0918-003）"
+        ]
+      },
+      "lessons": [
+        "共享进程级全局状态的单元测试不能依赖默认并行执行：要么测试内串行，要么把全局改成可注入参数",
+        "测试红着不管会持续腐蚀：后来人看到红的第一反应只能是『先自证不是我改坏的』，时间成本很高",
+        "建议在 README / 脚本里写明『改动 Rust 或缩略图相关代码后跑 cargo test --lib』，让全绿成为常态"
+      ],
+      "evidence_log": "修复前：cargo test --lib → 84 passed / 6 failed；单线程跑 logger tail 4 条全绿（证明是并行互相踩）。修复后：cargo test --lib → 90 passed / 0 failed / 2 ignored；cargo check 仅剩 3 条既有 warning。",
+      "related_files": [
+        "src-tauri/src/logger.rs",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/thumbnail.rs"
+      ],
+      "keywords": [
+        "单元测试",
+        "cargo test",
+        "并行测试",
+        "全局状态",
+        "断言过期",
+        "WebP",
+        "多源下载",
+        "测试腐烂"
+      ],
+      "created_at": "2026-09-18T12:25:00+08:00",
+      "fixed_at": "2026-09-18T12:45:00+08:00"
     }
   ]
 }

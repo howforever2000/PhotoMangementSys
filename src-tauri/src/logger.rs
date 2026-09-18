@@ -348,6 +348,20 @@ pub fn tail_log(offset: u64, max_bytes: u64) -> TailResult {
 mod tests {
     use super::*;
 
+    /// 串行锁。
+    ///
+    /// 这些用例都会通过 `setup_dir` 改写**进程级全局**日志目录（`set_global_config`），
+    /// 而 `tail_log()` 只认这个全局（`get_dir()`）。cargo 默认多线程并行跑测试，
+    /// 于是 A 用例会读到 B 用例刚写进自己文件的内容。
+    /// 历史故障：期望 `["[t1] a","[t2] b"]` 却拿到 `["[t] a"]`（另一个用例写的行）；
+    /// `truncated` 期望 true 却 false（读到了别人的小文件）。加锁串行后全绿。
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        // 某个用例 assert 失败时会毒化锁：解包内部值继续，让其余用例还能正常报错
+        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn setup_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("pms_logger_test_{tag}_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -365,6 +379,7 @@ mod tests {
 
     #[test]
     fn tail_small_file_full_then_incremental() {
+        let _serial = serial();
         let path = setup_dir("small");
         write(&path, "[t1] a\n[t2] b\n");
         let r1 = tail_log(0, 64 * 1024);
@@ -381,6 +396,7 @@ mod tests {
 
     #[test]
     fn tail_backfill_only_tail_max_bytes() {
+        let _serial = serial();
         let path = setup_dir("backfill");
         let big = "[t] x\n".repeat(40 * 1024); // 280KB > 64KB
         write(&path, &big);
@@ -392,6 +408,7 @@ mod tests {
 
     #[test]
     fn tail_reset_when_file_rotated() {
+        let _serial = serial();
         let path = setup_dir("reset");
         write(&path, "[t] a\n");
         let r1 = tail_log(0, 64 * 1024);
@@ -409,6 +426,7 @@ mod tests {
 
     #[test]
     fn tail_incremental_capped_by_max_bytes() {
+        let _serial = serial();
         let path = setup_dir("capped");
         write(&path, "[t] a\n");
         let r1 = tail_log(0, 64 * 1024);
