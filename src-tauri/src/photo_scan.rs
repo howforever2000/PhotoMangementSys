@@ -511,6 +511,76 @@ fn format_shoot_time(s: &str) -> String {
     }
 }
 
+
+pub mod commands {
+
+// =====================================================================
+// 以下命令自 lib.rs 迁入（lib.rs 瘦身）：扫描命令层（薄包装）
+// =====================================================================
+
+
+/// 扫描相册目录内所有图片的 EXIF 拍摄参数（测试功能，不落库）
+///
+/// 信息提取逻辑全部在独立模块 `photo_scan` 中，此处仅保留薄命令壳
+/// （功能解耦：photo_scan 不依赖数据库，可独立测试）。
+#[tauri::command]
+pub fn scan_album_photos(path: String) -> Result<Vec<crate::photo_scan::PhotoExif>, String> {
+    let _t = log_call!("scan_album_photos", &format!("path={path}"));
+    let r = crate::photo_scan::scan_album_photos(&path);
+    match &r {
+        Ok(list) => crate::logger::log_call_end_with(
+            "scan_album_photos",
+            _t,
+            &format!("OK | photos={}", list.len()),
+        ),
+        Err(e) => crate::logger::log_call_end_with("scan_album_photos", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// 扫描 EXIF + 本地行政区划反查（离线 · 省/市，无网络请求）
+///
+/// 内嵌民政部口径边界数据（resources/china_geo.json），bbox 预筛 + 射线法点面判断，
+/// 万张照片 <1s；未命中（国外/公海）时 place 为 None，由前端显示坐标链接。
+/// async：保持与 with_place 同构（内部实际为纯 CPU 计算，spawn_blocking 由命令层承担）。
+#[tauri::command]
+pub async fn scan_album_photos_local_place(path: String) -> Result<Vec<crate::photo_scan::PhotoExif>, String> {
+    let _t = log_call!("scan_album_photos_local_place", &format!("path={path}"));
+    let r = crate::photo_scan::scan_album_photos_with_place_local(&path);
+    match &r {
+        Ok(list) => crate::logger::log_call_end_with(
+            "scan_album_photos_local_place",
+            _t,
+            &format!("OK | photos={} place={}", list.len(), list.iter().filter(|p| p.place.is_some()).count()),
+        ),
+        Err(e) => crate::logger::log_call_end_with("scan_album_photos_local_place", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// 扫描 EXIF + 反向地理编码（联网，BigDataCloud 中文地名）
+///
+/// 仅对有 GPS 坐标的照片发起请求；扫描速度受网络影响（~200ms/张）。
+/// async：含网络请求，同步命令会阻塞主线程。
+#[tauri::command]
+pub async fn scan_album_photos_with_place(path: String) -> Result<Vec<crate::photo_scan::PhotoExif>, String> {
+    let _t = log_call!("scan_album_photos_with_place", &format!("path={path}"));
+    let r = crate::photo_scan::scan_album_photos_with_place(&path);
+    match &r {
+        Ok(list) => crate::logger::log_call_end_with(
+            "scan_album_photos_with_place",
+            _t,
+            &format!("OK | photos={} place={}", list.len(), list.iter().filter(|p| p.place.is_some()).count()),
+        ),
+        Err(e) => crate::logger::log_call_end_with("scan_album_photos_with_place", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

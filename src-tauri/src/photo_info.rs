@@ -116,6 +116,36 @@ fn count_histograms(img: &image::RgbImage) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     (hr.to_vec(), hg.to_vec(), hb.to_vec())
 }
 
+
+pub mod commands {
+
+// =====================================================================
+// 以下命令自 lib.rs 迁入（lib.rs 瘦身）：照片详情命令层（薄包装）
+// =====================================================================
+
+
+/// 读取单张照片信息（分辨率/文件大小/RGB 像素分布直方图，按需实时读，不落库）
+///
+/// 大图查看器「详细信息」面板专用；解码在阻塞线程执行避免卡异步运行时。
+#[tauri::command]
+pub async fn get_photo_info(path: String) -> Result<crate::photo_info::PhotoInfo, String> {
+    let _t = log_call!("get_photo_info", &format!("path={path}"));
+    let r = tauri::async_runtime::spawn_blocking(move || crate::photo_info::read_photo_info(&path))
+        .await
+        .map_err(|e| format!("照片信息任务线程失败: {e}"))?;
+    match &r {
+        Ok(info) => crate::logger::log_call_end_with(
+            "get_photo_info",
+            _t,
+            &format!("OK | {}x{} size={}", info.width, info.height, info.file_size),
+        ),
+        Err(e) => crate::logger::log_call_end_with("get_photo_info", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -19,7 +19,7 @@ pub use content::{
 pub use embedding::EmbeddingVersion;
 pub use thumb_cache::ThumbCacheRecord;
 
-use crate::RecentlyExcludedItem;
+use crate::photos::RecentlyExcludedItem;
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};

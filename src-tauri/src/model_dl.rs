@@ -794,6 +794,78 @@ fn emit_progress(app: &AppHandle, name: &str, bytes: u64, total: u64) {
     );
 }
 
+
+pub mod commands {
+
+// =====================================================================
+// 以下命令自 lib.rs 迁入（lib.rs 瘦身）：模型下载命令层
+// =====================================================================
+
+
+/// FEAT-052：开始下载模型（后台，官方/镜像择一快者）
+#[tauri::command]
+pub async fn start_model_download(name: String, app: tauri::AppHandle) -> Result<(), String> {
+    let _t = log_call!("start_model_download", &format!("name={name}"));
+    let r = crate::model_dl::start(&app, &name).await;
+    match &r {
+        Ok(_) => crate::logger::log_call_end_with("start_model_download", _t, "OK"),
+        Err(e) => crate::logger::log_call_end_with("start_model_download", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// FEAT-052：模型下载状态列表
+#[tauri::command]
+pub fn list_model_downloads() -> Vec<crate::model_dl::ModelDlStatus> {
+    crate::model_dl::list()
+}
+
+
+/// FEAT-052：取消模型下载
+#[tauri::command]
+pub fn cancel_model_download(name: String) -> Result<(), String> {
+    crate::model_dl::cancel(&name);
+    Ok(())
+}
+
+
+/// FEAT-061：下载源自检（逐个候选源 Range 探测，返回 HTTP 状态与耗时）
+#[tauri::command]
+pub async fn probe_model_sources(name: String) -> Result<Vec<crate::model_dl::SourceProbe>, String> {
+    let _t = log_call!("probe_model_sources", &format!("name={name}"));
+    let r = crate::model_dl::probe_sources(&name).await;
+    match &r {
+        Ok(v) => crate::logger::log_call_end_with(
+            "probe_model_sources",
+            _t,
+            &format!(
+                "OK | {} 个源 / 可用 {}",
+                v.len(),
+                v.iter().filter(|p| p.ok).count()
+            ),
+        ),
+        Err(e) => crate::logger::log_call_end_with("probe_model_sources", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// FEAT-061：读取下载源配置（内置 + 自定义）
+#[tauri::command]
+pub fn get_model_sources() -> crate::model_dl::SourcesInfo {
+    crate::model_dl::sources_info()
+}
+
+
+/// FEAT-061：保存自定义下载源（空数组 = 恢复默认）
+#[tauri::command]
+pub fn set_model_sources(sources: Vec<String>) -> Result<(), String> {
+    crate::model_dl::save_custom_sources(sources)
+}
+
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -347,6 +347,293 @@ pub fn set_avatar_from_photo(photo_path: &Path, cache_path: &Path) -> Result<(),
     crate::avatar::crop_square(photo_path, cache_path, 96)
 }
 
+
+pub mod commands {
+use tauri::Manager;
+
+// =====================================================================
+// 以下命令自 lib.rs 迁入（lib.rs 瘦身）：人物页命令层
+// =====================================================================
+
+
+/// 人物照片条目 —— 对应前端 `PersonPhotoItem`：
+///  - path: 原图绝对路径
+///  - thumb: 已算好的网格缩略图缓存路径（生成失败/未识别相册时为 None）
+///  - album_id: 照片归属相册（解析失败为 None）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PersonPhotoItem {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumb: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album_id: Option<i64>,
+}
+
+
+/// 读取某人物出现的全部照片：直接查询已算好的缩略图缓存地址；
+/// 未缓存的照片现场补齐（BUG-2026-0916-001，原文档“不重新运算缩略图”已过时）。
+///
+/// 必须 async + spawn_blocking（BUG-2026-0910-003）：大人物全缺图时现场生成
+/// 缩略图实测 1.7s（884 张），同步命令跑在主线程会冻结全部窗口——所有界面卡死、
+/// 日志副窗口连关闭都无响应。
+#[tauri::command]
+pub async fn get_person_photos(
+    pid: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+    session: tauri::State<'_, crate::SessionState>,
+) -> Result<Vec<PersonPhotoItem>, String> {
+    let _t = log_call!("get_person_photos", &format!("pid={pid}"));
+    let user_id = crate::require_user(&session)?;
+    let paths = crate::persons::list_person_photos(&pid)?;
+    // 短锁取归属数据（MutexGuard 不得跨 spawn_blocking 边界，同 get_photo_thumbs 模式）
+    let albums: Vec<(i64, String)> = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        db.get_albums(user_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|a| (a.id, a.path))
+            .collect()
+    };
+    let thumbs_dir = crate::thumbs_dir(&app).ok();
+    // 重活（解码原图→缩放→编码→落盘）放阻塞线程执行
+    let (out, generated, unresolved, gen_failed, unresolved_samples, cached_count) =
+        tauri::async_runtime::spawn_blocking(move || {
+            build_person_photo_items(paths, albums, thumbs_dir)
+        })
+        .await
+        .map_err(|e| format!("人物照片任务线程失败: {e}"))?;
+    let unresolved_hint = if unresolved_samples.is_empty() {
+        String::new()
+    } else {
+        format!(" | 无归属样例: {:?}", unresolved_samples)
+    };
+    crate::logger::log_call_end_with(
+        "get_person_photos",
+        _t,
+        &format!(
+            "OK | n={} thumb_hit={} generated={generated} unresolved={unresolved} gen_failed={gen_failed}{unresolved_hint}",
+            out.len(),
+            cached_count.saturating_sub(generated),
+        ),
+    );
+    Ok(out)
+}
+
+
+/// `get_person_photos` 的重活部分（纯文件系统 + CPU），由 spawn_blocking 调用。
+/// 返回 (items, generated, unresolved, gen_failed, 无归属样例, 缓存命中数)
+pub fn build_person_photo_items(
+    paths: Vec<String>,
+    albums: Vec<(i64, String)>,
+    thumbs_dir: Option<std::path::PathBuf>,
+) -> (Vec<PersonPhotoItem>, usize, usize, usize, Vec<String>, usize) {
+    let mut out = Vec::with_capacity(paths.len());
+    let mut generated = 0usize;
+    let mut unresolved = 0usize;
+    let mut gen_failed = 0usize;
+    let mut unresolved_samples: Vec<String> = Vec::new();
+    for path in paths {
+        // 解析归属相册 → 计算缩略图缓存名 → 若存在直接复用
+        let resolved: Option<i64> = albums
+            .iter()
+            .filter(|(_, ap)| crate::persons::commands::p_is_under(ap, &path))
+            .max_by_key(|(_, ap)| ap.len())
+            .map(|(id, _)| *id);
+        if resolved.is_none() {
+            unresolved += 1;
+            if unresolved_samples.len() < 3 {
+                unresolved_samples.push(path.clone());
+            }
+        }
+        // BUG-2026-0916-001 修复：归属解析失败（相册记录被删 / 路径变更 / 大小写差异）
+        // 不代表原图不可用 —— 以 album_id=0 的「无归属缓存命名空间」照常生成/复用
+        // 缩略图，避免这类照片永久占位。album_id 字段保持 None（前端 Lightbox 对
+        // 无归属照片走系统打开器兑底）。
+        let thumb_album = resolved.unwrap_or(0);
+        let cached = (|| {
+            let thumbs = thumbs_dir.as_ref()?;
+            let name = crate::thumbnail::grid_thumb_cache_name(thumb_album, std::path::Path::new(&path));
+            let tp = thumbs.join("grid").join(&name);
+            if tp.is_file() {
+                return Some(tp.to_string_lossy().to_string());
+            }
+            // 缺图 → 调用 ensure_grid_thumb 补齐（256px 生成后落盘，返回缓存路径），
+            // 后续任何场景（PhotoGrid/Timeline/Memories/智能搜索）再访问都直接命中。
+            // 本路径（人物照片）不写表（不在主流程加锁），保持与旧版兼容。
+            match crate::thumbnail::ensure_grid_thumb(
+                thumb_album,
+                std::path::Path::new(&path),
+                thumbs,
+                None,
+                0,
+            ) {
+                Ok(p) => {
+                    generated += 1;
+                    Some(p)
+                }
+                Err(e) => {
+                    gen_failed += 1;
+                    crate::logger::log_error(
+                        "get_person_photos",
+                        &format!("缩略图补齐失败: {path} | {e:?}"),
+                    );
+                    None
+                }
+            }
+        })();
+        out.push(PersonPhotoItem {
+            path,
+            thumb: cached,
+            album_id: resolved,
+        });
+    }
+    let cached_count = out.iter().filter(|i| i.thumb.is_some()).count();
+    (out, generated, unresolved, gen_failed, unresolved_samples, cached_count)
+}
+
+
+/// 判断照片路径是否位于相册目录之下（目录是祖先，且照片不是目录本身）。
+///
+/// Windows 归一化比较：分隔符 `/`→`\\` 统一 + 大小写不敏感（NTFS 不区分大小写）
+/// + 前缀边界校验（避免 `D:\\a` 误匹配 `D:\\ab\\c.jpg`）。历史实现用
+/// `strip_prefix` 严格区分大小写/分隔符，相册路径与 faces 记录不一致时会把
+/// 存在的原图误判为「无归属」（BUG-2026-0916-001）。
+pub fn p_is_under(dir: &str, photo: &str) -> bool {
+    fn norm(p: &str) -> String {
+        p.replace('/', "\\").to_lowercase()
+    }
+    let d = norm(dir);
+    let d = d.trim_end_matches('\\');
+    let ph = norm(photo);
+    if d.is_empty() || ph.len() <= d.len() {
+        return false;
+    }
+    if !ph.starts_with(d) {
+        return false;
+    }
+    // 前缀边界：目录后必须是分隔符，且照片还有非空文件部分
+    ph.len() > d.len() + 1 && ph[d.len()..].starts_with('\\')
+}
+
+
+/// 人物注册表：列出全部已标号人物（直读 persons.db，按脸数降序；不依赖微服务）
+#[tauri::command]
+pub fn list_persons() -> Result<Vec<crate::persons::PersonEntry>, String> {
+    let _t = log_call!("list_persons", "db-direct");
+    let r = crate::persons::list_persons();
+    match &r {
+        Ok(list) => crate::logger::log_call_end_with("list_persons", _t, &format!("OK | n={}", list.len())),
+        Err(e) => crate::logger::log_call_end_with("list_persons", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// 人物注册表：列出某人物出现的全部照片路径（直读 persons.db；供前端展示缩略图）
+#[tauri::command]
+pub fn list_person_photos(pid: String) -> Result<Vec<String>, String> {
+    let _t = log_call!("list_person_photos", &format!("pid={pid}"));
+    let r = crate::persons::list_person_photos(&pid);
+    match &r {
+        Ok(list) => crate::logger::log_call_end_with("list_person_photos", _t, &format!("OK | n={}", list.len())),
+        Err(e) => crate::logger::log_call_end_with("list_person_photos", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// FEAT-067 步骤 4：人物改名/合并后，**后台**增量重算受影响的描述向量
+///
+/// 不做在命令主线程里：改名本身是毫秒级写库，重算要走文本塔（首次含模型懒加载），
+/// 卡住 UI 不可接受。重建按 `source_hash` 判定增量，只有真名变化的那批照片会被重算。
+pub fn spawn_desc_rebuild(app: &tauri::AppHandle, user_id: i64, reason: String) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<crate::AppState>();
+        match crate::textdesc::rebuild_text_index(&app, &state, user_id).await {
+            Ok(rep) => crate::logger::log_info(&format!(
+                "[textdesc] {} 触发重建：built={} unchanged={} empty={} {}ms",
+                reason, rep.built, rep.unchanged, rep.empty, rep.ms
+            )),
+            Err(e) => crate::logger::log_info(&format!("[textdesc] {reason} 触发重建跳过（{e}）")),
+        }
+    });
+}
+
+
+/// 人物注册表：重命名人物（直写 persons.db）
+///
+/// FEAT-067：改名会改变「描述里的真名」→ 改完后台增量重算该人物名下照片的描述向量
+#[tauri::command]
+pub fn rename_person(
+    pid: String,
+    name: String,
+    app: tauri::AppHandle,
+    session: tauri::State<crate::SessionState>,
+) -> Result<(), String> {
+    let _t = log_call!("rename_person", &format!("pid={pid}"));
+    let user_id = crate::require_user(&session)?;
+    let r = crate::persons::rename_person(&pid, &name);
+    if r.is_ok() {
+        spawn_desc_rebuild(&app, user_id, format!("rename {pid}"));
+    }
+    match &r {
+        Ok(_) => crate::logger::log_call_end_with("rename_person", _t, "OK"),
+        Err(e) => crate::logger::log_call_end_with("rename_person", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// 人物注册表：合并人物（source 并入 target；直写 persons.db，质心加权平均与 Python 逻辑一致）
+///
+/// FEAT-067：合并同样改变人物真名归属 → 后台增量重算
+#[tauri::command]
+pub fn merge_persons(
+    target: String,
+    source: String,
+    app: tauri::AppHandle,
+    session: tauri::State<crate::SessionState>,
+) -> Result<(), String> {
+    let _t = log_call!("merge_persons", &format!("target={target} source={source}"));
+    let user_id = crate::require_user(&session)?;
+    let r = crate::persons::merge_persons(&target, &source);
+    if r.is_ok() {
+        spawn_desc_rebuild(&app, user_id, format!("merge {source}->{target}"));
+    }
+    match &r {
+        Ok(_) => crate::logger::log_call_end_with("merge_persons", _t, "OK"),
+        Err(e) => crate::logger::log_call_end_with("merge_persons", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// 人物注册表：删除人物（直写 persons.db，离线可用；同步清理头像缓存）
+#[tauri::command]
+pub fn delete_person(
+    pid: String,
+    app: tauri::AppHandle,
+    session: tauri::State<crate::SessionState>,
+) -> Result<(), String> {
+    let _t = log_call!("delete_person", &format!("pid={pid}"));
+    crate::require_user(&session)?;
+    let r = crate::persons::delete_person(&pid);
+    if r.is_ok() {
+        // 头像缓存文件已无意义，一并清理
+        if let Ok(dir) = crate::avatar::commands::avatars_dir(&app) {
+            let _ = std::fs::remove_file(dir.join(format!("avatar_{pid}.jpg")));
+        }
+        crate::logger::log_call_end_with("delete_person", _t, "OK");
+    } else if let Err(e) = &r {
+        crate::logger::log_call_end_with("delete_person", _t, &format!("ERR | {e}"));
+    }
+    r
+}
+
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

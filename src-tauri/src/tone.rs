@@ -157,6 +157,32 @@ fn is_image_file(name: &str) -> bool {
     IMAGE_EXTS.iter().any(|ext| lower.ends_with(&format!(".{ext}")))
 }
 
+
+pub mod commands {
+
+// =====================================================================
+// 以下命令自 lib.rs 迁入（lib.rs 瘦身）：色调扫描命令层（薄包装）
+// =====================================================================
+
+/// 扫描相册目录内所有图片的影调分析（灰度直方图 + 影调类型，测试功能，不落库）
+/// 影调提取逻辑全部在独立模块 `tone` 中，此处仅保留薄命令壳（功能解耦）。
+#[tauri::command]
+pub fn scan_album_tones(path: String) -> Result<Vec<crate::tone::PhotoTone>, String> {
+    let _t = log_call!("scan_album_tones", &format!("path={path}"));
+    let r = crate::tone::scan_album_tones(&path);
+    match &r {
+        Ok(list) => crate::logger::log_call_end_with(
+            "scan_album_tones",
+            _t,
+            &format!("OK | photos={}", list.len()),
+        ),
+        Err(e) => crate::logger::log_call_end_with("scan_album_tones", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

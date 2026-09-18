@@ -396,3 +396,135 @@ pub fn get_manual_tree(conn: &Connection, user_id: i64) -> Result<ManualTree, Fo
 
     Ok(ManualTree { folders, folder_albums, root_albums })
 }
+
+pub mod commands {
+
+// =====================================================================
+// 以下命令自 lib.rs 迁入（lib.rs 瘦身）：手动分组命令层
+// =====================================================================
+
+/// 创建分组（文件夹）
+///
+/// 多用户隔离：分组归属当前登录用户。
+#[tauri::command]
+pub fn create_folder(
+    name: String,
+    parent_id: Option<i64>,
+    state: tauri::State<crate::AppState>,
+    session: tauri::State<crate::SessionState>,
+) -> Result<crate::folder::Folder, String> {
+    let user_id = crate::require_user(&session)?;
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("分组名称不能为空".into());
+    }
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    crate::folder::create_folder(db.conn(), user_id, &name, parent_id).map_err(|e| e.to_string())
+}
+
+
+/// 更新分组（名称/说明/标签，标签最多 5 个）
+///
+/// 多用户隔离：仅能操作归属当前登录用户的分组。
+#[tauri::command]
+pub fn update_folder(
+    id: i64,
+    name: Option<String>,
+    description: Option<String>,
+    tags: Option<Vec<String>>,
+    state: tauri::State<crate::AppState>,
+    session: tauri::State<crate::SessionState>,
+) -> Result<crate::folder::Folder, String> {
+    let user_id = crate::require_user(&session)?;
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    crate::folder::update_folder(
+        db.conn(),
+        user_id,
+        id,
+        name.as_deref(),
+        description.as_deref(),
+        tags,
+    )
+    .map_err(|e| e.to_string())
+}
+
+
+/// 删除分组
+///
+/// 多用户隔离：仅能删除归属当前登录用户的分组。
+#[tauri::command]
+pub fn delete_folder(
+    id: i64,
+    state: tauri::State<crate::AppState>,
+    session: tauri::State<crate::SessionState>,
+) -> Result<(), String> {
+    let user_id = crate::require_user(&session)?;
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    crate::folder::delete_folder(db.conn(), user_id, id).map_err(|e| e.to_string())
+}
+
+
+/// 获取手动排序结构
+///
+/// 多用户隔离：仅返回当前登录用户的分组与相册。
+#[tauri::command]
+pub fn get_manual_tree(
+    state: tauri::State<crate::AppState>,
+    session: tauri::State<crate::SessionState>,
+) -> Result<crate::folder::ManualTree, String> {
+    let _t = log_call!("get_manual_tree");
+    let user_id = crate::require_user(&session)?;
+    let r = (|| -> Result<crate::folder::ManualTree, String> {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        crate::folder::get_manual_tree(db.conn(), user_id).map_err(|e| e.to_string())
+    })();
+    match &r {
+        Ok(t) => crate::logger::log_call_end_with("get_manual_tree", _t, &format!("OK | folders={}", t.folders.len())),
+        Err(e) => crate::logger::log_call_end_with("get_manual_tree", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// 调整分组在兄弟中的顺序
+///
+/// 多用户隔离：仅能调整归属当前登录用户的分组顺序。
+#[tauri::command]
+pub fn reorder_folder(
+    folder_id: i64,
+    new_index: i64,
+    state: tauri::State<crate::AppState>,
+    session: tauri::State<crate::SessionState>,
+) -> Result<(), String> {
+    let user_id = crate::require_user(&session)?;
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let conn = db.conn();
+    let folder = crate::folder::get_folder(conn, user_id, folder_id).map_err(|e| e.to_string())?;
+    // 兄弟分组排序（仅当前用户的分组）
+    let mut siblings: Vec<(i64, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, sort_order FROM folders WHERE parent_id IS ?1 AND user_id = ?2 ORDER BY sort_order")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![folder.parent_id, user_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    };
+    // 找到该文件夹位置并移除
+    if let Some(idx) = siblings.iter().position(|(id, _)| *id == folder_id) {
+        siblings.remove(idx);
+    }
+    let new_index = new_index.max(0).min(siblings.len() as i64);
+    siblings.insert(new_index as usize, (folder_id, 0));
+    for (i, (id, _)) in siblings.iter().enumerate() {
+        conn.execute(
+            "UPDATE folders SET sort_order = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![i as i64, crate::now(), id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+}
+

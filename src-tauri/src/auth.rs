@@ -404,6 +404,174 @@ pub fn migrate_legacy_user_fields(conn: &Connection) -> Result<(), String> {
 #[cfg(not(test))]
 fn log_info_migrated(_u: &str) {}
 
+
+pub mod commands {
+
+// =====================================================================
+// 以下命令自 lib.rs 迁入（lib.rs 瘦身）：认证命令层
+// =====================================================================
+
+/// 注册新用户（需求：账户名、邮箱、手机号、密码、密码确认）
+///
+/// 校验通过后写入 users 表（密码存 Argon2id 哈希），并自动登录。
+#[tauri::command]
+pub fn register(
+    input: crate::auth::RegisterInput,
+    app: tauri::AppHandle,
+    state: tauri::State<crate::AppState>,
+    session: tauri::State<crate::SessionState>,
+) -> Result<crate::auth::User, String> {
+    let _t = log_call!(
+        "register",
+        &format!("username={}", input.username)
+    );
+    let r = (|| -> Result<crate::auth::User, String> {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let user = crate::auth::register_user(db.conn(), input)?;
+        // 注册成功自动登录 + 写入记住登录 token（默认 3 天免密复用）
+        remember_login(&db, &app, user.id);
+        let mut guard = session.0.lock().map_err(|e| e.to_string())?;
+        *guard = Some(user.id);
+        Ok(user)
+    })();
+    match &r {
+        Ok(u) => crate::logger::log_call_end_with("register", _t, &format!("OK | id={}", u.id)),
+        Err(e) => crate::logger::log_call_end_with("register", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// 登录（需求：同一 app 多用户登录）
+///
+/// `account` 支持账户名 / 邮箱 / 手机号 任一 + 密码。
+/// 成功后写入会话，后续相册/分组命令均以该用户空间为准。
+#[tauri::command]
+pub fn login(
+    input: crate::auth::LoginInput,
+    app: tauri::AppHandle,
+    state: tauri::State<crate::AppState>,
+    session: tauri::State<crate::SessionState>,
+) -> Result<crate::auth::User, String> {
+    let _t = log_call!("login", "account=***");
+    let r = (|| -> Result<crate::auth::User, String> {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let user = crate::auth::verify_login(db.conn(), &input.account, &input.password)?;
+        // 记住登录（默认 3 天免密复用上次用户）
+        remember_login(&db, &app, user.id);
+        let mut guard = session.0.lock().map_err(|e| e.to_string())?;
+        *guard = Some(user.id);
+        Ok(user)
+    })();
+    match &r {
+        Ok(u) => crate::logger::log_call_end_with("login", _t, &format!("OK | id={}", u.id)),
+        Err(e) => crate::logger::log_call_end_with("login", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// 退出登录（清空会话）
+#[tauri::command]
+pub fn logout(
+    app: tauri::AppHandle,
+    state: tauri::State<crate::AppState>,
+    session: tauri::State<crate::SessionState>,
+) -> Result<(), String> {
+    let _t = log_call!("logout");
+    // 清除记住登录 token（DB + 磁盘文件），下次启动需重新登录
+    if let Ok(dir) = crate::app_data_dir(&app) {
+        if let Some(token) = crate::session::read_token_file(&dir) {
+            if let Ok(db) = state.0.lock() {
+                let _ = crate::session::clear_remember_session(db.conn(), &token);
+            }
+        }
+        crate::session::clear_token_file(&dir);
+    }
+    let mut guard = session.0.lock().map_err(|e| e.to_string())?;
+    *guard = None;
+    crate::logger::log_call_end_with("logout", _t, "OK");
+    Ok(())
+}
+
+
+/// 获取当前登录用户（应用启动时恢复会话用），未登录返回 None
+#[tauri::command]
+pub fn get_current_user(
+    state: tauri::State<crate::AppState>,
+    session: tauri::State<crate::SessionState>,
+) -> Result<Option<crate::auth::User>, String> {
+    let user_id = {
+        let guard = session.0.lock().map_err(|e| e.to_string())?;
+        *guard
+    };
+    match user_id {
+        None => Ok(None),
+        Some(id) => {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            crate::auth::find_user_by_id(db.conn(), id).map_err(|e| e.to_string())
+        }
+    }
+}
+
+
+/// 忘记密码重置（需求：填手机号、账户名、邮箱校验通过后重设密码）
+///
+/// 无需登录即可调用；三者必须匹配同一用户。
+#[tauri::command]
+pub fn reset_password(
+    input: crate::auth::ResetPasswordInput,
+    state: tauri::State<crate::AppState>,
+) -> Result<(), String> {
+    let _t = log_call!("reset_password", "username=***");
+    let r = (|| -> Result<(), String> {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        crate::auth::reset_password(db.conn(), input)
+    })();
+    match &r {
+        Ok(_) => crate::logger::log_call_end_with("reset_password", _t, "OK"),
+        Err(e) => crate::logger::log_call_end_with("reset_password", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// 修改当前用户基本信息（邮箱/手机号），需先验证当前密码
+#[tauri::command]
+pub fn update_profile(
+    input: crate::auth::UpdateProfileInput,
+    state: tauri::State<crate::AppState>,
+    session: tauri::State<crate::SessionState>,
+) -> Result<crate::auth::User, String> {
+    let _t = log_call!("update_profile", "id=***");
+    let r = (|| -> Result<crate::auth::User, String> {
+        let user_id = crate::require_user(&session)?;
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        crate::auth::update_profile(db.conn(), user_id, input)
+    })();
+    match &r {
+        Ok(u) => crate::logger::log_call_end_with("update_profile", _t, &format!("OK | id={}", u.id)),
+        Err(e) => crate::logger::log_call_end_with("update_profile", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// 登录/注册成功后写入记住登录 token（默认 3 天免密复用上次用户）
+///
+/// 失败不阻断登录（仅记日志）：记住登录是体验增强，不影响本次会话。
+pub fn remember_login(db: &crate::db::Database, app: &tauri::AppHandle, user_id: i64) {
+    if let Ok(dir) = crate::app_data_dir(app) {
+        if let Ok(token) = crate::session::create_remember_session(db.conn(), user_id) {
+            if let Err(e) = crate::session::write_token_file(&dir, &token) {
+                crate::logger::log_error("session", &format!("写入记住登录 token 失败: {e}"));
+            }
+        }
+    }
+}
+
+}
+
 #[cfg(test)]
 fn log_info_migrated(u: &str) {
     eprintln!("[auth] migrated legacy user: {u}");

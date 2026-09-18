@@ -898,6 +898,8 @@ async fn scan_album_embeddings(
 }
 
 /// 命令层（薄壳，逻辑见上；`lib.rs` 仅注册）
+use std::sync::atomic::Ordering;
+
 pub mod commands {
     use super::*;
     use crate::{db, logger, require_user, AppState, SessionState};
@@ -1716,6 +1718,45 @@ pub mod commands {
         }
     }
 }
+
+
+// =====================================================================
+// 以下命令自 lib.rs 迁入（lib.rs 瘦身）：智能分类命令层（薄包装）
+// =====================================================================
+
+
+/// 视觉内容识别（YOLOv8n-cls，测试功能，不落库）
+///
+/// 启动/复用独立 Python 微服务，批量识别相册目录内图片的内容，
+/// 通过 `classify-progress` 事件实时上报进度。识别逻辑全部在
+/// 独立模块 `vision` 中，此处仅保留薄命令壳（功能解耦）。
+#[tauri::command]
+pub async fn classify_album(
+    path: String,
+    batch_size: Option<i64>,
+    app: tauri::AppHandle,
+    scan: tauri::State<'_, crate::ScanState>,
+) -> Result<Vec<crate::vision::VisionResult>, String> {
+    let _t = log_call!("classify_album", &format!("path={path}"));
+    scan.0.store(false, Ordering::SeqCst);
+    let r = crate::vision::classify_album(
+        &path,
+        batch_size.unwrap_or(8).max(1) as usize,
+        &app,
+        Some(scan.0.clone()),
+    )
+    .await;
+    match &r {
+        Ok(list) => crate::logger::log_call_end_with(
+            "classify_album",
+            _t,
+            &format!("OK | photos={}", list.len()),
+        ),
+        Err(e) => crate::logger::log_call_end_with("classify_album", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
 
 #[cfg(test)]
 mod semantic_tests {
