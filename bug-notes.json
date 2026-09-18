@@ -1602,6 +1602,68 @@
       "keywords": ["按钮", "太透明", "深色模式", "选择器权重", "禁用态", "opacity"],
       "created_at": "2026-09-25T11:10:00+08:00",
       "fixed_at": "2026-09-25T11:35:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0918-002",
+      "date": "2026-09-18",
+      "status": "fixed",
+      "title": "性能设置「服务出错、面板展不开」：开发模式用 PATH 上的 python 启动识别服务，命中 Microsoft Store 应用执行别名占位符（进程秒退）",
+      "module": "VCR 服务启动 / src-tauri/src/vision.rs + src/components/ModelGpuSettings.vue + python/build_vcr_exe.ps1",
+      "symptom": [
+        "扫描枢纽 → ⚙ 性能设置 → 点「下载模型」，隔一会提示识别服务不可用；此后性能设置面板只剩一行降级提示，模型/线程/GPU 全部展不开、无法操作",
+        "app.log 里 ensure C 段每轮冷启动 3 次全部『进程启动后立即退出（端口被占或运行时异常）』；3 个探测命令排队等单飞锁，累加到 10.9s 才返回失败",
+        "任务管理器里 python 进程一闪即逝，看不出任何原因（子进程输出被丢弃）"
+      ],
+      "root_cause": {
+        "summary": "开发模式 spawn_server 用 Command::new(\"python\") 依赖 PATH 解析解释器，而本机 PATH 第一位是 C:\\Users\\Administrator\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe —— Microsoft Store「应用执行别名」占位符：spawn 能成功但进程立刻退出（只打印 'Python was not found; run without arguments to install from the Microsoft Store...'）。第二、三位 anaconda3 与 C:\\Python312 都没有 fastapi/uvicorn，同样秒退。唯一装了依赖的项目自带 venv python\\.venv-vcr\\Scripts\\python.exe 从未被用到。",
+        "detail": [
+          "触发链：BUG-2026-0917-001 删掉 target/debug/vcr/vcr-server.exe（08-25 过期包）后，开发模式第一次真正走 `python server.py`，于是第一次踩到 Store 占位符 —— 属于上一轮修复暴露出来的下一段隐患",
+          "实测对照（同一命令两种解释器）：`python server.py` → 打印 'Python was not found...' 立即退出；`python\\.venv-vcr\\Scripts\\python.exe server.py` → `[VCR] 接口启动于 http://127.0.0.1:PORT` 正常绑定端口并加载模型",
+          "四个候选逐个验真：WindowsApps 占位符（非零退出）/ anaconda3（ModuleNotFoundError: fastapi）/ C:\\Python312（同）/ .venv-vcr（fastapi + uvicorn + onnxruntime 1.24.4 齐全）",
+          "放大因素一（可诊断性）：spawn 未接管子进程 stdout/stderr，真正原因被丢弃，只剩『端口被占或运行时异常』这句误导性文案，排查只能靠手动复现",
+          "放大因素二（面板）：ModelGpuSettings 的 initFailed 分支用 v-else 把整块设置（含根本不依赖服务的「模型下载」）全部隐藏，用户看到的就是『面板展不开』",
+          "已排除：模型下载本身无罪 —— 下载走 Rust 后台 HTTP（FEAT-062 分片续传），不经过 Python 服务；排查时 chinese-clip-fp32 分片仍在正常增长（389MB + 103MB）"
+        ]
+      },
+      "solution": {
+        "summary": "开发模式改为『先解析出真正可用的解释器再 spawn』，并把子进程输出接进日志；面板降级时锁定服务依赖区而不是整块隐藏。",
+        "steps": [
+          "vision.rs 新增 python_candidates()：优先级为项目 venv（.venv-vcr / .venv）→ PATH 上的 python / python3",
+          "新增 probe_interpreter()：用 `候选 -c \"import sys, fastapi, uvicorn; print(sys.executable)\"` 真跑一次验真（20s 超时），可同时识破 Store 占位符（非零退出）与没有依赖的系统 python（ModuleNotFoundError）",
+          "新增 resolve_python_interpreter()：逐候选探测 + 结果缓存（成功永久有效、失败 30s TTL，避免面板反复探测拖成假死）。失败时返回『试过哪些候选、各自为什么不行』的完整说明，并提示关闭应用执行别名",
+          "spawn_server 开发分支改用解析出的绝对路径解释器；同时 stdin=null、stdout/stderr 改为管道",
+          "新增 attach_child_output()：子进程输出逐行写日志（[VCR:py] 前缀）+ 保留末 40 行环形快照；ensure 的『启动后立即退出』分支把快照带进错误信息与 UI",
+          "ModelGpuSettings.vue：把 <template v-else> 改成常驻的 .mgps-service 容器，initFailed 时加 .is-locked（置灰 + pointer-events:none）而非隐藏；「模型下载」区放在容器之外始终可用；新增 initError 展示后端具体原因；模型下载完成后自动探测，服务恢复即自动解除降级",
+          "build_vcr_exe.ps1：venv 不存在时的 `& python -m venv` 会撞同一个 Store 占位符 → 改为候选（py -3 → python → python3）逐个 --version 验真，全不可用时给出『关闭应用执行别名』的明确指引（编辑保留 UTF-8 BOM / CRLF）"
+        ]
+      },
+      "evidence_log": "修复前：`python server.py` → 'Python was not found...' 非零退出；app.log 三轮冷启动各 3 次全『立即退出』，list_vcr_models 10.9s 后返回 ERR。修复后：cargo test --lib vision::tests → 5 passed（含 test_resolve_prefers_venv_when_present，实跑探针确认解析到 python\\.venv-vcr\\Scripts\\python.exe）；cargo check 通过（仅既有 3 条 warning）；npm run build（vue-tsc --noEmit + vite build）通过。",
+      "lessons": [
+        "『进程启动后立即退出』这类错误必须先接管子进程输出 —— 不接管的 spawn 等于把答案扔掉，只剩误导性文案",
+        "不要用 PATH 上的裸 python：Windows 的应用执行别名会把它指向商店占位符；项目自带 venv 才是可复现的环境",
+        "降级态要『锁定』而不是『隐藏』：隐藏会连不依赖该服务的功能一起废掉，还让用户以为界面坏了",
+        "上一轮修复（删过期 exe）会暴露下一段链路的隐患，修完要顺着链路再走一遍"
+      ],
+      "related_files": [
+        "src-tauri/src/vision.rs",
+        "src/components/ModelGpuSettings.vue",
+        "python/build_vcr_exe.ps1"
+      ],
+      "keywords": [
+        "性能设置",
+        "模型下载",
+        "识别服务不可用",
+        "Python",
+        "Microsoft Store",
+        "应用执行别名",
+        "WindowsApps",
+        "venv",
+        "spawn",
+        "子进程输出",
+        "降级态"
+      ],
+      "created_at": "2026-09-18T11:35:00+08:00",
+      "fixed_at": "2026-09-18T12:05:00+08:00"
     }
   ]
 }

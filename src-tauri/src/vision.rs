@@ -11,10 +11,13 @@
 //! - `lib.rs` 仅保留薄命令壳 `classify_album` / `open_image`
 //! - 服务不可用 / 模型缺失 → 返回明确错误，不影响其他功能
 
+use std::collections::VecDeque;
+use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 use std::time::{Duration, SystemTime};
 
@@ -639,10 +642,16 @@ async fn ensure_service_ready(
         // 等 800ms：bind 失败的 uvicorn 会立刻退出
         tokio::time::sleep(Duration::from_millis(800)).await;
         if !pid_alive(pid) {
-            last_err = Some("进程启动后立即退出（端口被占或运行时异常）".into());
-            perf_log(&format!(
-                "ensure C段 第{attempt}轮 pid={pid} 启动后立即退出（端口被占或运行时异常）"
-            ));
+            // 带上子进程输出尾部：Store 占位符会打印 "Python was not found…"，
+            // 没有这一行就只能靠手动复现（本次排查的真实教训）
+            let tail = child_output_tail();
+            let err = if tail.is_empty() {
+                "进程启动后立即退出（端口被占或运行时异常，且子进程无输出）".to_string()
+            } else {
+                format!("进程启动后立即退出（端口被占或运行时异常）。子进程输出：\n{tail}")
+            };
+            last_err = Some(err.clone());
+            perf_log(&format!("ensure C段 第{attempt}轮 pid={pid} 启动后立即退出 | {err}"));
             continue;
         }
         match wait_service(client, &base, wait_models).await {
@@ -956,6 +965,217 @@ async fn poll_ready(
     }
 }
 
+/* ─────────────── 开发模式：解释器解析 + 子进程输出捕获 ─────────────── */
+
+/// 开发模式识别服务子进程的最近输出（stdout+stderr 合并，保留末 N 行）。
+///
+/// 为什么需要：spawn 时子进程输出默认丢弃，服务「启动后立即退出」时只剩一句
+/// 「端口被占或运行时异常」，看不到真正原因。实测踩过：PATH 上第一个 `python`
+/// 是 Microsoft Store「应用执行别名」占位符，spawn 成功但立刻退出并打印
+/// `Python was not found…`，日志里却只有「立即退出」，排查全靠手动复现。
+/// 现在子进程输出同时写日志并留一份尾部快照，出错时直接带回错误信息。
+static CHILD_OUTPUT: LazyLock<Mutex<VecDeque<String>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::new()));
+const CHILD_OUTPUT_KEEP: usize = 40;
+
+fn clear_child_output() {
+    if let Ok(mut g) = CHILD_OUTPUT.lock() {
+        g.clear();
+    }
+}
+
+fn push_child_output(line: &str) {
+    if let Ok(mut g) = CHILD_OUTPUT.lock() {
+        g.push_back(line.to_string());
+        while g.len() > CHILD_OUTPUT_KEEP {
+            g.pop_front();
+        }
+    }
+}
+
+/// 最近一次冷启动的输出尾部（无输出返回空串）
+fn child_output_tail() -> String {
+    CHILD_OUTPUT
+        .lock()
+        .map(|g| g.iter().cloned().collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default()
+}
+
+/// 把子进程 stdout/stderr 逐行写进日志与环形缓冲
+fn attach_child_output(stdout: Option<std::process::ChildStdout>, stderr: Option<std::process::ChildStderr>) {
+    let streams = [
+        stdout.map(|s| Box::new(s) as Box<dyn Read + Send>),
+        stderr.map(|s| Box::new(s) as Box<dyn Read + Send>),
+    ];
+    for stream in streams.into_iter().flatten() {
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            let mut stream = stream;
+            let reader = BufReader::new(&mut stream);
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                let line = line.trim_end();
+                if line.is_empty() {
+                    continue;
+                }
+                push_child_output(line);
+                crate::logger::log_info(&format!("[VCR:py] {line}"));
+            }
+        });
+    }
+}
+
+/// 探针：一次性确认候选**既是真解释器、又带识别服务依赖**。
+/// - Microsoft Store 占位符 → 非零退出（"Python was not found…"）
+/// - 系统 python / anaconda / C:\Python312 → `ModuleNotFoundError: fastapi`
+/// - 项目 venv → 打印 sys.executable 且 0 退出
+const INTERP_PROBE: &str = "import sys, fastapi, uvicorn; print(sys.executable)";
+const INTERP_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// 解释器解析结果缓存：成功永久有效；失败保留 30s。
+/// 失败缓存的意义：服务起不来时性能面板会反复探测，不缓存就会每次都把
+/// 候选解释器挨个探一遍（实测每次数秒），面板看起来像卡死。30s 后允许重试，
+/// 用户修好环境不必重启应用。
+static INTERP_CACHE: LazyLock<Mutex<Option<(Instant, Result<PathBuf, String>)>>> =
+    LazyLock::new(|| Mutex::new(None));
+const INTERP_FAIL_TTL: Duration = Duration::from_secs(30);
+
+/// 开发模式候选解释器（按优先级）：项目自带 venv → PATH 上的 python / python3
+fn python_candidates() -> Vec<PathBuf> {
+    let py = project_python_dir();
+    let mut v = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        v.push(py.join(".venv-vcr").join("Scripts").join("python.exe"));
+        v.push(py.join(".venv").join("Scripts").join("python.exe"));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        v.push(py.join(".venv-vcr").join("bin").join("python3"));
+        v.push(py.join(".venv").join("bin").join("python3"));
+    }
+    v.push(PathBuf::from("python"));
+    v.push(PathBuf::from("python3"));
+    v
+}
+
+/// 跑一次探针；成功返回子进程 stdout（内含 sys.executable）
+fn probe_interpreter(cand: &Path) -> Result<String, String> {
+    if cand.is_absolute() && !cand.is_file() {
+        return Err("文件不存在".into());
+    }
+    let mut cmd = std::process::Command::new(cand);
+    cmd.arg("-c")
+        .arg(INTERP_PROBE)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("无法执行: {e}"))?;
+    let buf = Arc::new(Mutex::new(String::new()));
+    let mut readers = Vec::new();
+    let streams = [
+        child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>),
+        child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>),
+    ];
+    for stream in streams.into_iter().flatten() {
+        let buf = buf.clone();
+        readers.push(std::thread::spawn(move || {
+            let mut stream = stream;
+            let mut s = String::new();
+            let _ = stream.read_to_string(&mut s);
+            if let Ok(mut g) = buf.lock() {
+                g.push_str(&s);
+            }
+        }));
+    }
+    let deadline = Instant::now() + INTERP_PROBE_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break Some(st),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            Err(e) => return Err(format!("等待探针进程失败: {e}")),
+        }
+    };
+    for r in readers {
+        let _ = r.join();
+    }
+    let text = buf.lock().map(|g| g.trim().to_string()).unwrap_or_default();
+    match status {
+        Some(st) if st.success() => Ok(text),
+        Some(st) => Err(if text.is_empty() {
+            format!("探针非零退出（code={:?}，无输出）", st.code())
+        } else {
+            first_nonempty_line(&text)
+        }),
+        None => Err(format!("探针超时（{}s）", INTERP_PROBE_TIMEOUT.as_secs())),
+    }
+}
+
+fn first_nonempty_line(s: &str) -> String {
+    s.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// 解析开发模式解释器。**不能直接用 PATH 上的 `python`**：
+/// Windows「应用执行别名」会把它指向 Microsoft Store 占位符（spawn 成功、
+/// 运行即退出），这台机器上 PATH 顺序恰好是 占位符 → anaconda → Python312，
+/// 三者要么秒退要么没有 fastapi，只有项目 venv 可用。
+/// 失败时返回「试过哪些候选、各自为什么不行」的完整说明。
+fn resolve_python_interpreter() -> Result<PathBuf, String> {
+    if let Ok(g) = INTERP_CACHE.lock() {
+        if let Some((at, res)) = g.as_ref() {
+            if res.is_ok() || at.elapsed() < INTERP_FAIL_TTL {
+                return res.clone();
+            }
+        }
+    }
+    let mut reasons: Vec<String> = Vec::new();
+    let mut chosen: Option<PathBuf> = None;
+    for cand in python_candidates() {
+        match probe_interpreter(&cand) {
+            Ok(exe) => {
+                perf_log(&format!(
+                    "解释器解析成功 | 候选={} | sys.executable={exe}",
+                    cand.display()
+                ));
+                chosen = Some(cand);
+                break;
+            }
+            Err(e) => reasons.push(format!("{}：{e}", cand.display())),
+        }
+    }
+    let result = match chosen {
+        Some(p) => Ok(p),
+        None => Err(format!(
+            "找不到可用的 Python 解释器（识别服务依赖 fastapi/uvicorn）。已尝试：\n  - {}\n\
+             提示：开发模式请使用项目自带虚拟环境 python\\.venv-vcr（由 setup-env.ps1 / \
+             build_vcr_exe.ps1 创建）。若系统 `python` 指向 Microsoft Store 占位符，\
+             请在「设置 → 应用 → 高级应用设置 → 应用执行别名」里关闭 python.exe / python3.exe。",
+            reasons.join("\n  - ")
+        )),
+    };
+    if let Ok(mut g) = INTERP_CACHE.lock() {
+        *g = Some((Instant::now(), result.clone()));
+    }
+    result
+}
+
 /// 启动识别微服务（打包版优先内置 exe；开发版 python server.py）。
 /// 返回进程 PID（供实例落盘/清场）。
 fn spawn_server(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
@@ -1008,27 +1228,35 @@ fn spawn_server(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
         }
         let py_dir = project_python_dir();
         workdir = py_dir.clone();
+        // 不能用裸 `python`（PATH 上常被 Store 占位符/无依赖解释器占据）
+        let interp = resolve_python_interpreter()?;
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
-            cmd = std::process::Command::new("python");
+            cmd = std::process::Command::new(&interp);
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
         #[cfg(not(target_os = "windows"))]
         {
-            cmd = std::process::Command::new("python");
+            cmd = std::process::Command::new(&interp);
         }
         cmd.arg(&server_script);
     }
 
     // 动态端口：本次分配的端口经环境变量传给服务
     cmd.env("VCR_PORT", port.to_string());
-    let child = cmd
+    // 捕获子进程输出：否则「启动后立即退出」查无实据（见 CHILD_OUTPUT 注释）
+    clear_child_output();
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd
         .current_dir(&workdir)
         .spawn()
         .map_err(|e| format!(
             "启动识别服务失败（打包版请确认安装目录 vcr/vcr-server.exe 存在；开发版请 pip install -r python/requirements.txt）: {e}"
         ))?;
+    attach_child_output(child.stdout.take(), child.stderr.take());
     Ok(child.id())
 }
 
@@ -1604,6 +1832,42 @@ mod tests {
         let dir = project_python_dir();
         assert!(dir.ends_with("python"), "got: {}", dir.display());
         assert!(dir.join("server.py").exists(), "server.py 应存在");
+    }
+
+    /// BUG-2026-0918-002：候选解释器必须首选项目自带 venv。
+    /// 直接用 PATH 上的 `python` 会踩 Microsoft Store 应用执行别名占位符。
+    #[test]
+    fn test_python_candidates_prefers_project_venv() {
+        let c = python_candidates();
+        let first = c[0].to_string_lossy().to_lowercase();
+        assert!(
+            first.contains(".venv-vcr"),
+            "首个候选应为项目 venv，实际 {}",
+            c[0].display()
+        );
+        assert!(c.iter().any(|p| p.to_string_lossy() == "python"));
+    }
+
+    /// 不存在的路径不能蒙混过关（否则会拿个不存在的 exe 去 spawn）
+    #[test]
+    fn test_probe_interpreter_rejects_missing_path() {
+        let missing = project_python_dir()
+            .join(".venv-vcr")
+            .join("Scripts")
+            .join("__definitely_not_here__.exe");
+        assert!(probe_interpreter(&missing).is_err());
+    }
+
+    /// venv 存在时，解析结果必须就是它（本机验证；无 venv 的机器跳过）
+    #[test]
+    fn test_resolve_prefers_venv_when_present() {
+        let venv = python_candidates()[0].clone();
+        if !venv.is_file() {
+            eprintln!("跳过：本机未创建 {}", venv.display());
+            return;
+        }
+        let got = resolve_python_interpreter().expect("venv 存在时应能解析出解释器");
+        assert_eq!(got, venv, "应优先选择项目自带 venv");
     }
 }
 

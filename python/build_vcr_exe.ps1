@@ -33,7 +33,32 @@ Write-Host "    venv 目录   : $VenvDir"
 # 1. 创建最小化 venv（若不存在）
 if (-not (Test-Path $VenvDir)) {
     Write-Host "[1/5] 创建最小化 venv..." -ForegroundColor Green
-    & python -m venv $VenvDir
+    # 不能用裸 `python`：Windows「应用执行别名」会把 PATH 上的 python.exe 指向
+    # Microsoft Store 占位符（能执行但立即退出，只打印 'Python was not found'），
+    # 于是 venv 创建失败且报错含糊。逐候选试并用 --version 验真；
+    # py 启动器不受别名影响，故排第一。
+    $BasePython = $null
+    $Candidates = @(
+        @{ exe = "py";      pre = @("-3") },
+        @{ exe = "python";  pre = @() },
+        @{ exe = "python3"; pre = @() }
+    )
+    foreach ($c in $Candidates) {
+        if (-not (Get-Command $c.exe -ErrorAction SilentlyContinue)) { continue }
+        $ver = & $c.exe @($c.pre) --version 2>&1
+        if ($LASTEXITCODE -eq 0 -and ("$ver" -match "^Python \d")) {
+            $BasePython = $c
+            break
+        }
+        $msg = ("$ver" | Out-String).Trim() -replace "\r?\n", " "
+        if ($msg.Length -gt 160) { $msg = $msg.Substring(0, 160) + "..." }
+        Write-Host ("      候选 {0} 不可用：{1}" -f $c.exe, $msg) -ForegroundColor DarkYellow
+    }
+    if (-not $BasePython) {
+        throw "找不到可用的 Python（用于创建 venv）。最常见原因：系统 python.exe 被 Microsoft Store 的「应用执行别名」劫持（运行只打印 'Python was not found'）。请在「设置 → 应用 → 高级应用设置 → 应用执行别名」关闭 python.exe / python3.exe，或安装 python.org 版本后重跑本脚本。"
+    }
+    Write-Host "      使用解释器：$($BasePython.exe) $($BasePython.pre -join ' ')" -ForegroundColor DarkGray
+    & $BasePython.exe @($BasePython.pre) -m venv $VenvDir
     if ($LASTEXITCODE -ne 0) { throw "venv 创建失败" }
 } else {
     Write-Host "[1/5] venv 已存在，跳过创建" -ForegroundColor Green

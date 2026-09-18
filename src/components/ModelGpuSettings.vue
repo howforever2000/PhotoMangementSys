@@ -28,6 +28,8 @@ const contentStore = useContentStore();
 const notify = useNotify();
 
 const initFailed = ref(false);
+/** 服务不可用的具体原因（来自后端错误信息，直接展示，不再只给“稍候重试”） */
+const initError = ref("");
 const detectBusy = ref(false);
 const accelBusy = ref(false);
 const modelBusy = ref(false);
@@ -159,6 +161,7 @@ async function loadModels(): Promise<boolean> {
     return true;
   } catch (e) {
     modelsFailed.value = true;
+    initError.value = String(e);
     console.warn("[perf-settings] list_vcr_models 失败:", e);
     return false;
   } finally {
@@ -197,6 +200,7 @@ async function loadGpu(silent = true): Promise<boolean> {
     return true;
   } catch (e) {
     gpuFailed.value = true;
+    initError.value = String(e);
     console.warn("[perf-settings] get_vcr_gpu_status 失败:", e);
     if (!silent) throw e;
     return false;
@@ -240,6 +244,7 @@ async function retryInit() {
   try {
     await refreshAll(false); // 全部失败时抛错
     initFailed.value = false;
+    initError.value = "";
   } catch {
     initFailed.value = true;
   } finally {
@@ -255,7 +260,13 @@ watch(
     for (const d of list) {
       if (d.done && !prevDone.value.has(d.name)) {
         prevDone.value.add(d.name);
-        void loadModels();
+        // 模型下完后顺便探一次服务：服务已恢复则自动解除降级态
+        void loadModels().then((ok) => {
+          if (ok) {
+            initFailed.value = false;
+            initError.value = "";
+          }
+        });
       }
       if (!d.done) prevDone.value.delete(d.name);
     }
@@ -479,13 +490,20 @@ async function onModelChange() {
 
     <!-- 微服务不可用降级提示（服务启动/加载模型期间可重试，就绪后自动恢复） -->
     <p v-if="initFailed" class="mgps-hint mgps-hint-warn">
-      识别服务暂不可用（可能正在启动/加载模型，稍候重试）。
+      <b>识别服务暂不可用。</b>
+      <span v-if="initError" class="mgps-hint-err">{{ initError }}</span>
+      <span v-else>可能正在启动/加载模型，稍候重试。</span>
       <button class="mgps-btn" :disabled="detectBusy" @click="retryInit">
         {{ detectBusy ? "重试中…" : "🔄 重试" }}
       </button>
+      <br />
+      <span class="mgps-hint-sub">
+        下面的设置项依赖识别服务，已暂时锁定（不会消失）；<b>「模型下载」不依赖识别服务，仍可正常使用</b>。
+      </span>
     </p>
 
-    <template v-else>
+    <!-- 服务依赖区：不可用时锁定而非整块隐藏（BUG-2026-0918-002） -->
+    <div class="mgps-service" :class="{ 'is-locked': initFailed }">
       <!-- 1. 先选语义模型档位（适配不同硬件：B/16 轻量 → L/14-336 更强） -->
       <div class="mgps-row">
         <span class="mgps-label">语义模型</span>
@@ -632,6 +650,7 @@ async function onModelChange() {
         到「内容分类」页点「🔄 重建分类」，或对相册重新执行一次含「语义向量」的扫描。
         语义模型可在此直接下载（<code>chinese-clip</code> / <code>chinese-clip-fp32</code>）。
       </p>
+    </div>
 
       <!-- FEAT-052：模型下载（后台 + 进度 + 官方/镜像择优） -->
       <div class="mgps-row mgps-dl-head">
@@ -711,7 +730,6 @@ async function onModelChange() {
           </template>
         </div>
       </div>
-    </template>
   </div>
 </template>
 
@@ -868,6 +886,28 @@ async function onModelChange() {
 .mgps-hint-warn {
   color: #b45309;
   opacity: 1;
+}
+
+/* 服务不可用的具体原因：等宽显示、可换行，直接展示后端错误（含子进程输出） */
+.mgps-hint-err {
+  display: inline-block;
+  max-width: 100%;
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #dc2626;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.mgps-hint-sub {
+  opacity: 0.85;
+}
+
+/* 识别服务不可用：服务依赖区置灰锁定（可见但不可操作），下载区不受影响 */
+.mgps-service.is-locked {
+  opacity: 0.5;
+  pointer-events: none;
+  user-select: none;
 }
 
 /* FEAT-052：模型下载 */
