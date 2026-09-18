@@ -80,3 +80,6 @@ python/bench/*_log.txt
 
 # Git 损坏现场备份（2026-09-17 保留用于对账排查，内含残缺 .git，禁止入库）
 .git.broken-*/
+
+# WorkBuddy 智能体本地记忆/会话目录（纯本地工具产物，不入库）
+.workbuddy/
