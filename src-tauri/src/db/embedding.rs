@@ -12,7 +12,7 @@
 //! 本模块只做持久化（建表/批量 upsert/查询/级联删除），扫描编排与服务调用在
 //! `content.rs` / `vision.rs` 完成，保持分层解耦。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, Transaction};
 use serde::Serialize;
@@ -31,6 +31,23 @@ pub struct EmbeddingRecord {
     /// 512 个 f32（服务端已归一化）
     pub embedding: Vec<f32>,
     /// ISO8601 字符串（写入时间）
+    pub generated_at: String,
+}
+
+/// FEAT-067：待写入的描述向量（文本塔编码，按 (photo_hash, kind, model) upsert）
+#[derive(Debug, Clone)]
+pub struct TextEmbeddingRecord {
+    pub photo_hash: String,
+    /// 文本种类，目前固定 `'desc'`（多模态描述）
+    pub kind: String,
+    /// 被编码的原文（留痕，便于排查与重建）
+    pub text: String,
+    pub model: String,
+    pub dim: i64,
+    pub embedding: Vec<f32>,
+    /// 参与拼接字段的指纹（变化才重算）
+    pub source_hash: String,
+    /// 生成时刻（Unix 毫秒字符串：秒级精度无法区分同一秒内的重算）
     pub generated_at: String,
 }
 
@@ -140,6 +157,97 @@ impl Database {
             },
         )
         .map_err(DbError::Sqlite)
+    }
+
+    /// FEAT-067 步骤 2：描述向量表（`photo_text_embeddings`）
+    ///
+    /// 与图像塔向量分开存：图像塔 1 图 1 向量（`photo_embeddings`），文本塔按
+    /// `(photo_hash, kind, model)` 主键，目前只有 `kind='desc'` 一路。
+    /// `source_hash` 是「参与描述的字段指纹」，用来判断要不要重算（增量重建的关键）。
+    pub fn init_text_embedding_schema(&self) -> Result<(), DbError> {
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS photo_text_embeddings (
+                photo_hash   TEXT NOT NULL,
+                kind         TEXT NOT NULL,
+                text         TEXT NOT NULL,
+                model        TEXT NOT NULL,
+                dim          INTEGER NOT NULL,
+                embedding    BLOB NOT NULL,
+                source_hash  TEXT NOT NULL,
+                generated_at TEXT NOT NULL,
+                PRIMARY KEY (photo_hash, kind, model)
+            );",
+        )?;
+        let _ = self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_pte_model ON photo_text_embeddings(kind, model);",
+        );
+        Ok(())
+    }
+
+    /// 批量 upsert 描述向量（主键 (photo_hash, kind, model)）
+    pub fn upsert_text_embeddings(&self, recs: &[TextEmbeddingRecord]) -> Result<(), DbError> {
+        if recs.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for rec in recs {
+            tx.execute(
+                "INSERT INTO photo_text_embeddings
+                    (photo_hash, kind, text, model, dim, embedding, source_hash, generated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+                 ON CONFLICT(photo_hash, kind, model) DO UPDATE SET
+                     text=excluded.text, dim=excluded.dim, embedding=excluded.embedding,
+                     source_hash=excluded.source_hash, generated_at=excluded.generated_at",
+                params![
+                    rec.photo_hash,
+                    rec.kind,
+                    rec.text,
+                    rec.model,
+                    rec.dim,
+                    f32_blob(&rec.embedding),
+                    rec.source_hash,
+                    rec.generated_at,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 已有描述向量的 `photo_hash → source_hash`（增量判定；按 kind+model 隔离）
+    pub fn text_embedding_source_hashes(
+        &self,
+        kind: &str,
+        model: &str,
+    ) -> Result<HashMap<String, String>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT photo_hash, source_hash FROM photo_text_embeddings WHERE kind = ?1 AND model = ?2",
+        )?;
+        let rows = stmt.query_map(params![kind, model], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
+    }
+
+    /// 当前用户可用的描述向量（检索用）
+    ///
+    /// 表本身不带 user_id（与 `photo_content_scan` 同口径即可），这里 join 主表做
+    /// 用户隔离，避免多用户互相看到对方的描述命中。
+    pub fn load_text_embeddings(
+        &self,
+        user_id: i64,
+        kind: &str,
+        model: &str,
+    ) -> Result<Vec<(String, Vec<f32>)>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.photo_hash, t.embedding FROM photo_text_embeddings t
+             JOIN photo_content_scan p ON p.photo_hash = t.photo_hash
+             WHERE p.user_id = ?1 AND t.kind = ?2 AND t.model = ?3",
+        )?;
+        let rows = stmt.query_map(params![user_id, kind, model], |r| {
+            Ok((r.get::<_, String>(0)?, f32_vec_from_blob(&r.get::<_, Vec<u8>>(1)?)))
+        })?;
+        rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
     }
 
     /// 按绝对路径批量删除（照片删除级联，对齐 delete_content_by_paths）

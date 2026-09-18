@@ -11,8 +11,13 @@
 //! - 持久化：`db::embedding` 的 `photo_text_embeddings`
 //! - 向量：一律走项目自己的文本塔/图像塔（`vision` → VCR 服务），不另下模型
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::time::Instant;
 
+use serde::Serialize;
+
+use crate::db::embedding::TextEmbeddingRecord;
 use crate::db::SmartHit;
 use crate::{AppState, SessionState};
 
@@ -20,6 +25,143 @@ use crate::{AppState, SessionState};
 pub const MIN_SIM_DEFAULT: f64 = 0.30;
 /// 以图搜图默认返回条数
 const IMAGE_TOPK_DEFAULT: usize = 60;
+
+// ---------------------------------------------------------------------------
+// 描述（文本塔输入）
+// ---------------------------------------------------------------------------
+
+/// 描述分段分隔符（固定顺序 + 固定分隔符；空字段整体跳过，不留空分隔符）
+const DESC_SEP: &str = " · ";
+/// `source_hash` 的内部拼接分隔符（控制字符，正常字段里不可能出现）
+const HASH_SEP: char = '\u{1f}';
+/// 文本种类：目前只有「多模态描述」一路
+pub const DESC_KIND: &str = "desc";
+/// 无意义场景词：`content` 里大量冗余（"other other 其他 其他"），进向量只会稀释语义
+const SCENE_STOPWORDS: &[&str] = &[
+    "其他", "other", "未知", "unknown", "none", "null", "无", "未识别", "n/a",
+];
+
+/// 描述输入：参与拼接的全部字段（**不含人物编号**，人物靠 faces 精确 join）
+#[derive(Debug, Clone, Default)]
+pub struct DescInput {
+    pub shoot_time: Option<String>,
+    pub location: Option<String>,
+    /// 清洗后的场景（`content` 去停用词 / 去人物编号 / 去重）
+    pub scene: String,
+    pub user_tags: Vec<String>,
+    /// 该照片人物的**真名**列表（有真名才填；编号一律不进描述）
+    pub person_names: Vec<String>,
+}
+
+/// JSON 数组文本 → 字符串列表（空/异常 → 空列表）
+pub fn parse_json_list(raw: Option<&str>) -> Vec<String> {
+    raw.and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .unwrap_or_default()
+}
+
+/// 人物编号判定（`P001` / `p001`）—— 定稿决策①：编号不进向量
+fn is_person_code(t: &str) -> bool {
+    let b = t.as_bytes();
+    b.len() >= 2 && (b[0] == b'p' || b[0] == b'P') && b[1..].iter().all(|c| c.is_ascii_digit())
+}
+
+/// 场景清洗：按空白与「·」切分 → 去停用词 / 去人物编号 → 去重保序 → 空格连接
+///
+/// `other other 其他 其他` → `""`（整段被判无意义，描述里该段整体跳过）
+pub fn clean_scene(content: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for raw in content.split(|c: char| c.is_whitespace() || c == '·') {
+        let t = raw.trim().to_lowercase();
+        if t.is_empty() || SCENE_STOPWORDS.contains(&t.as_str()) || is_person_code(&t) {
+            continue;
+        }
+        if !out.iter().any(|x| *x == t) {
+            out.push(t);
+        }
+    }
+    out.join(" ")
+}
+
+/// 时间分段：`YYYY-MM-DD HH:MM:SS` → `YYYY年M月`；无年份只有月份 → 季节
+pub fn time_segment(shoot_time: Option<&str>) -> String {
+    let Some(s) = shoot_time.map(|x| x.trim()).filter(|x| !x.is_empty()) else {
+        return String::new();
+    };
+    let date = s.split(' ').next().unwrap_or("");
+    let parts: Vec<&str> = date.split('-').collect();
+    let year: Option<i32> = parts.first().and_then(|x| x.parse().ok()).filter(|y| *y > 1900);
+    let month: Option<u32> = parts
+        .get(1)
+        .and_then(|x| x.parse().ok())
+        .filter(|m| (1..=12).contains(m));
+    match (year, month) {
+        (Some(y), Some(m)) => format!("{y}年{m}月"),
+        (None, Some(m)) => season_of(m).to_string(),
+        _ => String::new(),
+    }
+}
+
+fn season_of(month: u32) -> &'static str {
+    match month {
+        3..=5 => "春",
+        6..=8 => "夏",
+        9..=11 => "秋",
+        _ => "冬",
+    }
+}
+
+/// 描述分段（固定顺序，空段不出现）：时间 / 地点 / 场景 / 用户标签 / 人物真名
+fn desc_segments(input: &DescInput) -> Vec<String> {
+    let mut segs: Vec<String> = Vec::new();
+    let time = time_segment(input.shoot_time.as_deref());
+    if !time.is_empty() {
+        segs.push(time);
+    }
+    if let Some(loc) = input.location.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        segs.push(loc.to_string());
+    }
+    if !input.scene.trim().is_empty() {
+        segs.push(input.scene.trim().to_string());
+    }
+    let tags: Vec<&str> = input
+        .user_tags
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if !tags.is_empty() {
+        segs.push(tags.join("、"));
+    }
+    let names: Vec<&str> = input
+        .person_names
+        .iter()
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty())
+        .collect();
+    if !names.is_empty() {
+        segs.push(names.join("、"));
+    }
+    segs
+}
+
+/// 描述文本（进文本塔的原文）：`2025年11月 · 杭州西湖 · 夜景 · 小明、小红`
+pub fn build_desc(input: &DescInput) -> String {
+    desc_segments(input).join(DESC_SEP)
+}
+
+/// 参与拼接字段的指纹（FNV-1a 64 位）
+///
+/// 指纹基于**描述分段本身**（而非原始字段）计算：`shoot_time` 从 11:12:34 变成
+/// 11:12:35 时描述仍是「2024年2月」，不该触发重算。字段没变 → 跳过，不重算。
+pub fn source_hash(input: &DescInput) -> String {
+    let joined = desc_segments(input).join(&HASH_SEP.to_string());
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in joined.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
 
 /// 余弦 topK（纯函数，便于单测）
 ///
@@ -154,6 +296,136 @@ pub async fn recall_by_image(
     Ok(hits)
 }
 
+/// 描述索引重建报告
+#[derive(Debug, Clone, Serialize)]
+pub struct DescBuildReport {
+    /// 参与的照片数（= 该用户 photo_content_scan 行数）
+    pub total: usize,
+    /// 本次实际编码写入的条数
+    pub built: usize,
+    /// `source_hash` 未变、跳过不重算的条数
+    pub unchanged: usize,
+    /// 描述为空（无任何可写字段）未纳入的条数
+    pub empty: usize,
+    /// 本次去重后送去编码的不同描述数
+    pub unique_texts: usize,
+    pub ms: u64,
+    pub model: String,
+}
+
+/// 当前时刻（Unix 毫秒字符串）
+///
+/// 秒级精度无法区分「同一秒内的重算」，验收第 6 条要看 `generated_at` 是否变化，
+/// 故这里用毫秒。
+fn now_ms() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().to_string())
+        .unwrap_or_default()
+}
+
+/// 重建描述向量索引（**真正的增量**：只算 `source_hash` 变了的那些）
+///
+/// 流程：读全部已扫描照片 → 逐张拼描述 + 算指纹 → 与库内 `source_hash` 比对
+/// （相同则跳过）→ 去重后的描述批量走文本塔 → upsert。
+///
+/// 因此改名 / 改地点 / 改标签后重跑，只有受影响的那批照片会被重算，
+/// 其余照片的向量**一动不动**（字节级不变）。
+pub async fn rebuild_text_index(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    user_id: i64,
+) -> Result<DescBuildReport, String> {
+    let t0 = Instant::now();
+    let model = crate::vision::clip_model_id(app).await?;
+
+    // 1. 短锁：素材 + 已有指纹
+    let (rows, existing) = {
+        let db = state.0.lock().map_err(|e| format!("{e}"))?;
+        (
+            db.load_desc_sources(user_id).map_err(|e| format!("读取描述素材失败: {e}"))?,
+            db.text_embedding_source_hashes(DESC_KIND, &model)
+                .map_err(|e| format!("读取描述向量指纹失败: {e}"))?,
+        )
+    };
+
+    // 2. 逐张算描述与指纹，挑出需要重算的
+    let mut pending: Vec<(String, String, String)> = Vec::new(); // (photo_hash, text, source_hash)
+    let mut unchanged = 0usize;
+    let mut empty = 0usize;
+    for r in &rows {
+        let input = DescInput {
+            shoot_time: r.shoot_time.clone(),
+            location: r.location.clone(),
+            scene: clean_scene(r.content.as_deref().unwrap_or("")),
+            user_tags: parse_json_list(r.user_tags.as_deref()),
+            person_names: Vec::new(),
+        };
+        let text = build_desc(&input);
+        if text.is_empty() {
+            empty += 1;
+            continue;
+        }
+        let sh = source_hash(&input);
+        if existing.get(&r.photo_hash).map(|old| old == &sh).unwrap_or(false) {
+            unchanged += 1;
+            continue;
+        }
+        pending.push((r.photo_hash.clone(), text, sh));
+    }
+
+    let report = |built: usize, unique_texts: usize| DescBuildReport {
+        total: rows.len(),
+        built,
+        unchanged,
+        empty,
+        unique_texts,
+        ms: t0.elapsed().as_millis() as u64,
+        model: model.clone(),
+    };
+
+    if pending.is_empty() {
+        return Ok(report(0, 0));
+    }
+
+    // 3. 描述去重后批量编码（同一段描述只编码一次，653 张通常只有几十种）
+    let mut texts: Vec<String> = Vec::new();
+    for (_, t, _) in &pending {
+        if !texts.iter().any(|x| x == t) {
+            texts.push(t.clone());
+        }
+    }
+    let unique_texts = texts.len();
+    let encoded = crate::vision::embed_text_batch(&texts, app).await?;
+    let by_text: HashMap<String, Vec<f32>> = encoded.into_iter().collect();
+
+    // 4. 落库（只写真正重算的那些行）
+    let stamp = now_ms();
+    let mut recs: Vec<TextEmbeddingRecord> = Vec::with_capacity(pending.len());
+    for (hash, text, sh) in &pending {
+        let Some(vec) = by_text.get(text) else {
+            continue; // 该条编码失败 → 不写库，下次再补（指纹未落库 = 未算）
+        };
+        recs.push(TextEmbeddingRecord {
+            photo_hash: hash.clone(),
+            kind: DESC_KIND.to_string(),
+            text: text.clone(),
+            model: model.clone(),
+            dim: vec.len() as i64,
+            embedding: vec.clone(),
+            source_hash: sh.clone(),
+            generated_at: stamp.clone(),
+        });
+    }
+    let built = recs.len();
+    {
+        let db = state.0.lock().map_err(|e| format!("{e}"))?;
+        db.upsert_text_embeddings(&recs)
+            .map_err(|e| format!("描述向量写入失败: {e}"))?;
+    }
+    Ok(report(built, unique_texts))
+}
+
 /// 命令层（薄壳）
 pub mod commands {
     use super::*;
@@ -184,6 +456,30 @@ pub mod commands {
                 &format!("OK | hits={}", list.len()),
             ),
             Err(e) => logger::log_call_end_with("smart_search_by_image", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
+    /// FEAT-067 步骤 2：重建描述向量索引（增量，`source_hash` 未变的照片不重算）
+    #[tauri::command]
+    pub async fn rebuild_desc_index(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<DescBuildReport, String> {
+        let _t = log_call!("rebuild_desc_index", "");
+        let user_id = require_user(&session)?;
+        let r = rebuild_text_index(&app, &state, user_id).await;
+        match &r {
+            Ok(rep) => logger::log_call_end_with(
+                "rebuild_desc_index",
+                _t,
+                &format!(
+                    "OK | total={} built={} unchanged={} empty={} texts={} {}ms",
+                    rep.total, rep.built, rep.unchanged, rep.empty, rep.unique_texts, rep.ms
+                ),
+            ),
+            Err(e) => logger::log_call_end_with("rebuild_desc_index", _t, &format!("ERR | {e}")),
         }
         r
     }
@@ -234,6 +530,96 @@ mod tests {
         // 维度不一致 / 空向量直接跳过
         let bad = vec![("x".to_string(), vec![1.0]), ("y".to_string(), Vec::new())];
         assert!(rank_by_cosine(&bad, &q, 10, MIN_SIM_DEFAULT).is_empty());
+    }
+
+    /// 描述模板（验收第 4 条）：固定顺序 + 固定分隔符，空字段整体跳过
+    #[test]
+    fn desc_skips_empty_fields_and_keeps_order() {
+        let full = DescInput {
+            shoot_time: Some("2025-11-03 08:00:00".into()),
+            location: Some("杭州西湖".into()),
+            scene: "夜景".into(),
+            user_tags: vec!["旅行".into()],
+            person_names: vec!["小明".into(), "小红".into()],
+        };
+        assert_eq!(build_desc(&full), "2025年11月 · 杭州西湖 · 夜景 · 旅行 · 小明、小红");
+        // 只有时间：不出现行首/行尾多余分隔符
+        let only_time = DescInput { shoot_time: Some("2024-02-20 11:12:34".into()), ..Default::default() };
+        assert_eq!(build_desc(&only_time), "2024年2月");
+        // 中间字段为空：不出现 "· ·"
+        let gap = DescInput {
+            shoot_time: Some("2024-02-20 11:12:34".into()),
+            location: None,
+            scene: String::new(),
+            user_tags: vec!["  ".into()],
+            person_names: vec!["小明".into()],
+        };
+        let d = build_desc(&gap);
+        assert_eq!(d, "2024年2月 · 小明");
+        assert!(!d.contains("· ·"));
+        assert!(!d.starts_with("·") && !d.ends_with("·"));
+        // 全空 → 空描述（不入索引，避免出现无意义向量）
+        assert_eq!(build_desc(&DescInput::default()), "");
+    }
+
+    /// `content` 清洗（验收第 5 条）：无意义值与人物编号都不进描述
+    #[test]
+    fn clean_scene_drops_stopwords_and_person_codes() {
+        assert_eq!(clean_scene("other other 其他 其他"), "");
+        assert_eq!(clean_scene("未知 unknown 未识别"), "");
+        // 人物编号不进向量（定稿决策①）
+        assert_eq!(clean_scene("portrait closeup 人物特写·1人 人物特写·1人 p001"), "portrait closeup 人物特写 1人");
+        // 去重保序
+        assert_eq!(clean_scene("street street 扫街·3人 扫街·3人"), "street 扫街 3人");
+        assert_eq!(clean_scene(""), "");
+    }
+
+    /// 时间分段：有年月 →「YYYY年M月」，只有月 → 季节，无时间 → 空
+    #[test]
+    fn time_segment_year_month_or_season() {
+        assert_eq!(time_segment(Some("2024-02-20 11:12:34")), "2024年2月");
+        assert_eq!(time_segment(Some("2025-11-03")), "2025年11月");
+        // 年份不可信（0000）只有月份 → 退回季节
+        assert_eq!(time_segment(Some("0000-07-20 10:00:00")), "夏");
+        assert_eq!(time_segment(None), "");
+        assert_eq!(time_segment(Some("not-a-date")), "");
+    }
+
+    /// `source_hash` 增量语义（验收第 6 条的核心）：
+    /// 只有参与描述的字段变了，指纹才变
+    #[test]
+    fn source_hash_changes_only_with_desc_fields() {
+        let base = DescInput {
+            shoot_time: Some("2024-02-20 11:12:34".into()),
+            location: Some("成都".into()),
+            scene: "夜景".into(),
+            ..Default::default()
+        };
+        let h0 = source_hash(&base);
+        // 秒级时间变化不影响「2024年2月」→ 不该触发重算
+        let mut same = base.clone();
+        same.shoot_time = Some("2024-02-20 11:12:35".into());
+        assert_eq!(h0, source_hash(&same), "描述未变就不该重算");
+        // 地点变了 → 必须重算
+        let mut moved = base.clone();
+        moved.location = Some("杭州西湖".into());
+        assert_ne!(h0, source_hash(&moved));
+        // 场景变了 → 必须重算
+        let mut scene2 = base.clone();
+        scene2.scene = "人像".into();
+        assert_ne!(h0, source_hash(&scene2));
+        // 加了真名 → 必须重算（步骤 4 改名重算的基础）
+        let mut named = base.clone();
+        named.person_names = vec!["小明".into()];
+        assert_ne!(h0, source_hash(&named));
+    }
+
+    /// JSON 列表解析：异常/空值兜底为空列表
+    #[test]
+    fn parse_json_list_is_defensive() {
+        assert_eq!(parse_json_list(Some(r#"["a","b"]"#)), vec!["a", "b"]);
+        assert!(parse_json_list(None).is_empty());
+        assert!(parse_json_list(Some("not json")).is_empty());
     }
 
     /// 归一化：非单位向量先归一化再用（否则阈值失真）

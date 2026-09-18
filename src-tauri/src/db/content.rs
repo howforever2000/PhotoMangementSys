@@ -136,6 +136,19 @@ pub struct AlbumContentRow {
     pub person_count: i64,
 }
 
+/// FEAT-067：描述向量的原始素材（一次读出全部参与拼接的字段）
+///
+/// `user_tags` / `person_ids` 为库中 JSON 数组文本，交由服务层解析（避免持久层依赖语义）。
+#[derive(Debug, Clone)]
+pub struct DescSourceRow {
+    pub photo_hash: String,
+    pub shoot_time: Option<String>,
+    pub location: Option<String>,
+    pub content: Option<String>,
+    pub user_tags: Option<String>,
+    pub person_ids: Option<String>,
+}
+
 /// 智能搜索结果行（FEAT-034）：检索命中照片 + 展示所需字段（含 location）
 #[derive(Debug, Clone, Serialize)]
 pub struct SmartHit {
@@ -823,6 +836,27 @@ impl Database {
             )
             .map_err(DbError::Sqlite)?;
         Ok(clean)
+    }
+
+    /// FEAT-067：读出全部已扫描照片的描述素材（按 user_id 隔离）
+    ///
+    /// 只取描述需要的 6 列，避免把整表 JSON/BLOB 拉进内存。
+    pub fn load_desc_sources(&self, user_id: i64) -> Result<Vec<DescSourceRow>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT photo_hash, shoot_time, location, content, user_tags, person_ids
+             FROM photo_content_scan WHERE user_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![user_id], |r| {
+            Ok(DescSourceRow {
+                photo_hash: r.get(0)?,
+                shoot_time: r.get(1)?,
+                location: r.get(2)?,
+                content: r.get(3)?,
+                user_tags: r.get(4)?,
+                person_ids: r.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
     }
 
     /// FEAT-050：读取单张照片的用户标签（预览组件自包含拉取用）

@@ -433,6 +433,8 @@ impl Database {
         self.init_embedding_schema()?;
         // 语义分类表（v5：用户自定义分类 + 命中物化 + 关键词向量缓存）
         self.init_category_schema()?;
+        // FEAT-067：描述向量表（文本塔；与图像塔 photo_embeddings 分开存）
+        self.init_text_embedding_schema()?;
         // 迁移：将历史以明文存储的用户邮箱/手机号/密码哈希重加密（无历史明文则为空操作）
         let _ = crate::auth::migrate_legacy_user_fields(self.conn());
         Ok(())
