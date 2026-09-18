@@ -1764,6 +1764,57 @@
       ],
       "created_at": "2026-09-18T12:25:00+08:00",
       "fixed_at": "2026-09-18T12:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0918-005",
+      "date": "2026-09-18",
+      "status": "fixed",
+      "title": "主页设置菜单（⚙）被下方模块卡片遮挡、且点击外部关不掉：header 未抬层 + 遮罩落在 backdrop-filter 祖先里",
+      "module": "主页 UI 层叠 / src/views/Home.vue",
+      "symptom": [
+        "点主页右上角 ⚙ 能弹出下拉菜单，但菜单下半部分被下面的模块卡片压住，文字看不清也点不到",
+        "用户据此以为「设置里只有开发者视角一个功能」—— 实际「数据与路径」被卡片挡住了看不见（FEAT-064 也因此才被要求「新增」数据库查看）",
+        "点页面其他地方菜单不会关闭，只能再点一次 ⚙ 或按 Esc"
+      ],
+      "root_cause": {
+        "summary": "两个层叠问题叠加。① user-box 有 backdrop-filter: blur(6px)，这使它成为层叠上下文；而 .home-header 是静态定位、无 z-index，与 .module-card（同样带 backdrop-filter、自成层叠上下文）同处 .home-content（position: relative + z-index: 2）这一个层叠上下文中、同为 0 层 —— module-card 在 DOM 中靠后，于是后绘制、把 header 里的菜单盖住；菜单自身的 z-index: 901 只在 user-box 内部有效，逃不出这一层。② 遮罩用 position: fixed，但它渲染在 user-box 内部，而 backdrop-filter（与 filter / transform 同类）会把 fixed 的包含块从视口改成该元素自身 → 遮罩只覆盖头像那一小块，点页面其余位置关不掉菜单。",
+        "detail": [
+          "对照验证：用同样的 CSS 机制做最小复现（header 无 z-index + 卡片带 backdrop-filter），headless 渲染后菜单确实被卡片压住只剩上半截；给 header 加 position: relative + z-index: 20 后菜单完整浮在卡片之上",
+          "反证：同页的主题 / 资料弹窗没有这个问题 —— 它们 <teleport to=\"body\"> 到 body，脱离了 user-box 的层叠上下文与包含块，z-index: 1000 才真正生效",
+          "放大因素：模块卡片是半透明 + backdrop-filter，被盖住的菜单看起来像「糊了一片」，更像功能不存在而不是渲染错位"
+        ]
+      },
+      "solution": {
+        "summary": "把 header 抬到主内容之上；把遮罩移出 user-box，让它真正按视口铺满。",
+        "steps": [
+          ".home-header 增加 position: relative; z-index: 20 —— 让 header（含 user-box 及其中的下拉菜单）整体绘制在 module-card 之上",
+          "遮罩从 .settings-wrap（位于 user-box 内）移到 </header> 之后、.home-content 之下渲染：那里没有 backdrop-filter 祖先，position: fixed 恢复按视口铺满，点击页面任意处都能关闭菜单",
+          "遮罩 z-index 从 900 改为 8：必须是「卡片(0) 之上、header(20) 之下」，否则要么遮罩盖住菜单导致菜单点不了、要么卡片盖住菜单导致遮罩没用",
+          "同步去掉 <template v-if=\"settingsOpen\"> 包装（菜单直接 v-if），避免遮罩与菜单被同一层模板绑在一起、无法分开摆放"
+        ]
+      },
+      "lessons": [
+        "backdrop-filter / filter / transform 会同时产生两件事：新的层叠上下文 + 新的 position:fixed 包含块。做玻璃态 UI 时必须同时考虑这两条，否则浮动层既会被别的层盖住、遮罩又会只盖住自己那一小块",
+        "被自己写的层叠上下文困住时，最省事的参照是同页已经写对的地方（本页弹窗都 teleport 到 body）",
+        "「某个功能好像不存在」也可能只是被遮住了：用户报「只有一个开发日志」，实际是下面两项被卡片压住 —— 遇到这类反馈要先怀疑层叠/可见性，而不是先加功能"
+      ],
+      "evidence_log": "最小复现 HTML（同机制、同属性）：修复前菜单被卡片压住只剩上半截，修复后三行完整可见（headless 截图 + 视觉核对各自确认）；npm run build（vue-tsc --noEmit + vite build）通过。",
+      "related_files": [
+        "src/views/Home.vue"
+      ],
+      "keywords": [
+        "主页",
+        "设置菜单",
+        "下拉菜单",
+        "z-index",
+        "层叠上下文",
+        "backdrop-filter",
+        "position fixed 包含块",
+        "遮罩",
+        "点击外部关闭"
+      ],
+      "created_at": "2026-09-18T13:20:00+08:00",
+      "fixed_at": "2026-09-18T13:35:00+08:00"
     }
   ]
 }

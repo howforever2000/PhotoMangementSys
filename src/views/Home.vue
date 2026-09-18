@@ -354,9 +354,7 @@ onBeforeUnmount(() => {
             >
               ⚙️
             </button>
-            <template v-if="settingsOpen">
-              <div class="settings-mask" @click="settingsOpen = false"></div>
-              <div class="settings-menu" :style="pmStyle" role="menu">
+              <div v-if="settingsOpen" class="settings-menu" :style="pmStyle" role="menu">
                 <button class="settings-item" type="button" role="menuitem" @click="openDevLog">
                   <span class="settings-item-icon">🧪</span>
                   <span>
@@ -379,11 +377,20 @@ onBeforeUnmount(() => {
                   </span>
                 </button>
               </div>
-            </template>
           </div>
           <button class="logout-btn" type="button" @click="handleLogout">退出登录</button>
         </div>
       </header>
+
+      <!--
+        设置菜单的「点外部关闭」遮罩（BUG-2026-0918-005）。
+        必须渲染在 user-box 之外：user-box 带 backdrop-filter（玻璃态），
+        会把 position:fixed 的包含块变成它自己 —— 遮罩就只盖住头像那一小块，
+        点页面其他地方关不掉菜单。
+        层级：module-card(0) < 遮罩(8) < home-header(20)：既挡住下面的卡片，
+        又不会盖住 header 里的菜单本身。
+      -->
+      <div v-if="settingsOpen" class="settings-mask" @click="settingsOpen = false"></div>
 
       <main class="module-grid">
         <article
@@ -590,6 +597,11 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 48px;
+  /* 抬到主内容之上（BUG-2026-0918-005）：user-box 带 backdrop-filter，
+     自成层叠上下文；若 header 不抬层，⚙ 下拉菜单会被后面的 module-card
+     （同样带 backdrop-filter、且 DOM 在后）盖住，看不见也点不到 */
+  position: relative;
+  z-index: 20;
 }
 
 .header-text {
@@ -691,16 +703,18 @@ onBeforeUnmount(() => {
   background: rgba(120, 120, 130, 0.18);
 }
 
-/* 设置下拉菜单（⚙）：锚定 user-box，透明遮罩负责点击外部关闭 */
+/* 设置下拉菜单（⚙）：菜单锚定 user-box，遮罩负责点击外部关闭 */
 .settings-wrap {
   position: relative;
   display: inline-flex;
 }
 
+/* 遮罩在模板里渲染于 header 之外（那里没有 backdrop-filter 祖先，
+   position:fixed 才真正按视口铺满）；z-index 8 = 卡片(0) 之上、header(20) 之下 */
 .settings-mask {
   position: fixed;
   inset: 0;
-  z-index: 900;
+  z-index: 8;
 }
 
 .settings-menu {
