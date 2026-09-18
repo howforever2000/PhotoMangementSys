@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { invoke } from "@tauri-apps/api/core";
 import { useThemeStore } from "../stores/theme";
 
 /**
@@ -69,6 +70,16 @@ function goBack() {
   }
   router.back();
 }
+
+/**
+ * 预热本机处理服务（FEAT-066 体验优化）：算子注册表本身只要 3ms，慢的只有
+ * Python 服务冷启动（python + cv2 约 1~2s）。进工坊页即后台 ensure 一次，
+ * 用户看完卡片再点开小组件时服务通常已就绪；失败静默忽略（点开组件时会重新 ensure 并给出错误态）。
+ * 并发安全由 Rust 侧 ensure 单飞锁保证，这里不需要防抖。
+ */
+onMounted(() => {
+  invoke("studio_ensure").catch(() => {});
+});
 </script>
 
 <template>

@@ -2086,12 +2086,15 @@
         "backend_py": "python-studio/server.py：OPS 注册表现有 5 项，每项含 id / label / supportsMask / params(schema: name,label,type,min,max,step,default,choices) / fn；算子是纯函数 fn(img, **params) -> img（region-equalize 仍在 LAB 的 L 通道做 equalizeHist 或 createCLAHE(clipLimit=1+strength*3)，a/b 原样保留）。_apply_masked(img, mask, strength, feather, fn_result) 一处实现蒙版语义：尺寸对齐(INTER_NEAREST) → GaussianBlur(2*feather+1) 羽化 → ×strength → 与原图逐像素线性混合；mask 为 None 时按整图处理（m 恒为 strength）。对外两个接口：GET /api/ops（返回注册表可序列化部分，不记日志）与 POST /api/apply（op + params JSON 字符串 + image + 可选 mask，未知 op 返回 400 并列出支持的算子，耗时/尺寸/关键参数/输出大小照旧记日志）；/api/region-equalize 已删除，不留兼容层。中值模糊核强制奇数（_odd 钳制到 3~31），radius 超范围按 schema 钳制。",
         "frontend": "WorkshopImageProcess.vue：onMounted 先 studio_ensure 拿基址再拉 /api/ops，参数按 schema 渲染（number → range，0~1 的按百分比显示；enum → 分段按钮；bool → 勾选），切算子即按默认值重置；顶层标签为「区域直方图均衡化 / 模糊」，选中模糊再出四种方式的子标签。蒙版只在 hasMask 时导出（不画 = 整图处理，不再禁用「应用」），提交 POST /api/apply。Workshop.vue：卡片 id 改 image-process、标题「传统图像处理」、描述同步，带 ?photo= 直达落到新组件；PhotoLightbox.vue 的 ✏️ 跳转逻辑不动，仅同步提示文案。",
         "依赖": "python/requirements.txt 补 python-multipart：缺它时 FastAPI 在路由注册阶段就抛 RuntimeError，服务连 /health 都起不来（multipart 上传的硬依赖，此前遗漏）。",
-        "layout": "画布区结构（BUG-2026-0918-008 修）：.ip-stage > .ip-frame > （canvas.ip-canvas 在文档流内撑开高度 + canvas.ip-overlay 绝对定位贴合左上角）。.ip-stage 必须带 align-items:center，min-height 只服务无图空态；fitDisplay 量宽用 .ip-stage 的 clientWidth，禁止用画布的父元素（会形成「画布多宽容器就多宽」的闭环）。"
+        "layout": "画布区结构（BUG-2026-0918-008 修）：.ip-stage > .ip-frame > （canvas.ip-canvas 在文档流内撑开高度 + canvas.ip-overlay 绝对定位贴合左上角）。.ip-stage 必须带 align-items:center，min-height 只服务无图空态；fitDisplay 量宽用 .ip-stage 的 clientWidth，禁止用画布的父元素（会形成「画布多宽容器就多宽」的闭环）。",
+        "lifecycle": "服务生命周期（BUG-2026-0918-009 修）：studio_ensure 加 ENSURE_LOCK 单飞（并发调用串行化）；就绪路径先写实例文件 + 设缓存再 drop 输出句柄，禁止 join 子进程输出线程；kill 用 taskkill /F /T 杀整棵进程树（venv 的 Scripts\\python.exe 只是启动器）。前端：loadOps 三态（loading/ready/error）+ 12s 超时 + 「🔄 重试」；Workshop.vue onMounted 预热 studio_ensure（注册表 3ms，慢的只是 1.1s 冷启动）。",
+        "perf_baseline": "工坊服务冷启动 spawn→/health 200 = 1118ms（python + cv2 导入）；就绪后 GET /api/ops = 2~26ms（2136B）。首屏体验靠预热抹平，不靠前端复制 schema。"
       },
       "bugfixes": [
         "BUG-2026-0918-006：蒙版画布改「透明=未选、白=选中」，导出时铺黑合成灰度 PNG",
         "BUG-2026-0918-007：studio.rs 复用 resolve_python_interpreter + 秒退即时报错 + 服务日志落盘",
-        "BUG-2026-0918-008：画布回归文档流撑高舞台，修复图片溢出遮挡参数行与底栏按钮"
+        "BUG-2026-0918-008：画布回归文档流撑高舞台，修复图片溢出遮挡参数行与底栏按钮",
+        "BUG-2026-0918-009：ensure 就绪后不再 join 子进程输出线程（+ 单飞锁 + 树杀 + 前端超时重试 + 页面预热），修复算子列表永远「加载中」与 python 实例堆积"
       ],
       "highlights": [
         "注册表 + 单入口：新增算子只改后端一项、前端零改动，杜绝「写死第二个路由」",

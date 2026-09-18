@@ -14,6 +14,13 @@
 //! `http://127.0.0.1:{port}/api/*`（本服务只监听回环地址 + 全放行 CORS）。
 //! 图片/蒙版走 multipart，无需经 Rust 中转；「保存结果」因前端无 fs
 //! 写权限，由本模块 `studio_save_result` 命令落盘。
+//!
+//! ⚠️ 进程模型（Windows + venv，BUG-2026-0918-009）：`python\.venv-vcr\Scripts\python.exe`
+//!    只是个**启动器**，真实解释器是它拉起的 `C:\Python312\python.exe` 子进程，
+//!    两者成对出现在任务管理器里。由此两条硬约束：
+//!    1. kill 必须带 `/T`，否则只杀启动器 → 真实服务变孤儿继续占端口；
+//!    2. 子进程 stdout/stderr 的读线程**绝不能 join**（服务活着就永远没有 EOF），
+//!       否则 ensure 永不返回 → 前端卡「算子列表加载中…」且每次重试泄漏一个服务。
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -91,8 +98,11 @@ fn kill_pid(pid: u32) {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
+        // /T 连子进程一起结束（必须！Windows 上 venv 的 Scripts\python.exe 只是启动器，
+        // 真正的解释器是它拉起的子进程：只杀启动器会留下孤儿服务继续占着端口）。
+        // 与 vision.rs 的 kill_pid 保持一致（BUG-2026-0918-009）。
         let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
+            .args(["/F", "/T", "/PID", &pid.to_string()])
             .creation_flags(0x0800_0000)
             .output();
     }
@@ -132,8 +142,38 @@ fn output_tail(buf: &Arc<Mutex<String>>) -> String {
     s.chars().skip(s.chars().count() - OUTPUT_TAIL_CHARS).collect()
 }
 
+/// 取（已退出/已强杀的）子进程输出尾部：给 reader 线程一小段排空时间，**不做 join**。
+///
+/// 为什么不能 join：即使进程已经死了，管道也可能被孙进程继续持有 —— Windows 上
+/// venv 的 `Scripts\python.exe` 是启动器，真实解释器是它拉起的子进程且继承同一组管道句柄；
+/// 若只杀了启动器（旧 kill_pid 就没有 /T），EOF 永远不来，join 依旧挂死。
+/// 排空 200ms 上限足够拿到启动失败的日志尾部，且保证本函数一定返回。
+async fn output_tail_settled(
+    buf: &Arc<Mutex<String>>,
+    readers: Vec<std::thread::JoinHandle<()>>,
+) -> String {
+    drop(readers); // 只丢句柄：线程活着继续读，进程退出后自然结束
+    let mut last = usize::MAX;
+    for _ in 0..8 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let now = buf.lock().map(|g| g.len()).unwrap_or(0);
+        if now == last {
+            break;
+        }
+        last = now;
+    }
+    output_tail(buf)
+}
+
 /// 起线程收集子进程 stdout/stderr（供启动失败时附在错误信息里）。
-/// 返回 (缓冲, 读线程句柄)；探活成功后应 join 句柄并丢弃缓冲。
+/// 返回 (缓冲, 读线程句柄)。
+///
+/// ⚠️ 严禁在子进程存活时 `join` 这些句柄（BUG-2026-0918-009）：线程体是
+/// `read_to_string`，只有读到 EOF 才返回，而服务活着就一直不 EOF —— join 会把
+/// `studio_ensure` 永久挂住，前端 `invoke` 永不 resolve（表现为算子列表永远「加载中」），
+/// 且 `save_instance`/`set_base` 都执行不到，于是每次重试又新起一个 python 服务。
+/// 成功路径 `drop` 掉句柄即可（线程继续在后台排空管道，退役于进程退出）；
+/// 失败路径用 `output_tail_settled` 取尾部。
 fn collect_output(child: &mut Child) -> (Arc<Mutex<String>>, Vec<std::thread::JoinHandle<()>>) {
     let buf = Arc::new(Mutex::new(String::new()));
     let mut readers = Vec::new();
@@ -265,10 +305,7 @@ async fn ensure_base(app: &tauri::AppHandle) -> Result<String, String> {
     loop {
         if let Ok(Some(status)) = child.try_wait() {
             clear_instance(app);
-            for r in readers.drain(..) {
-                let _ = r.join();
-            }
-            let tail = output_tail(&out_buf);
+            let tail = output_tail_settled(&out_buf, std::mem::take(&mut readers)).await;
             return Err(if tail.is_empty() {
                 format!("创意工坊服务进程提前退出（code={:?}，无输出）", status.code())
             } else {
@@ -278,10 +315,7 @@ async fn ensure_base(app: &tauri::AppHandle) -> Result<String, String> {
         if tokio::time::Instant::now() >= deadline {
             kill_pid(pid);
             clear_instance(app);
-            for r in readers.drain(..) {
-                let _ = r.join();
-            }
-            let tail = output_tail(&out_buf);
+            let tail = output_tail_settled(&out_buf, std::mem::take(&mut readers)).await;
             return Err(format!(
                 "创意工坊服务启动超时（{}s 内 /health 不可达）{}",
                 START_TIMEOUT.as_secs(),
@@ -293,20 +327,28 @@ async fn ensure_base(app: &tauri::AppHandle) -> Result<String, String> {
             ));
         }
         if probe(&client, &base).await.is_some() {
-            for r in readers.drain(..) {
-                let _ = r.join();
-            }
+            // 就绪：先落实例文件与进程内缓存，再丢弃输出句柄。
+            // 顺序很关键——旧实现在这之前 join 输出线程，永远走不到这一步，
+            // 结果「服务明明起来了，却既不写实例文件也不设缓存」。
             save_instance(app, pid, port);
             set_base(base.clone());
+            drop(readers);
             return Ok(base);
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 
-/// 前端命令：确保工坊服务就绪并返回基址
+/// ensure 单飞锁：并发调用（工坊页预热 + 小组件挂载几乎同时）会都看到「缓存空 + 无实例文件」，
+/// 于是各自 spawn 一个服务——这正是「后台一堆 python」的另一半来源。串行化后第二个调用
+/// 直接复用第一个的结果（BUG-2026-0918-009）。
+static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 前端命令：确保工坊服务就绪并返回基址。
+/// 预热直接复用本命令（前端 fire-and-forget 调一次并忽略失败），不额外开命令。
 #[tauri::command]
 pub async fn studio_ensure(app: tauri::AppHandle) -> Result<String, String> {
+    let _guard = ENSURE_LOCK.lock().await;
     ensure_base(&app).await
 }
 
@@ -334,5 +376,44 @@ mod tests {
         let client = reqwest::Client::new();
         // 回环上几乎不可能有服务监听的端口
         assert!(probe(&client, "http://127.0.0.1:1").await.is_none());
+    }
+
+    /// BUG-2026-0918-009 回归：子进程**还活着**时取输出必须立即返回。
+    /// 旧实现 `for r in readers { r.join() }` 会在这里挂满子进程的整个生命周期
+    /// （read_to_string 要等 EOF），进而把 studio_ensure 永久挂住。
+    #[tokio::test]
+    async fn output_tail_settled_returns_while_child_alive() {
+        use std::process::{Command, Stdio};
+
+        // 起一个「活着且不输出」的子进程：长 ping / sleep
+        #[cfg(target_os = "windows")]
+        let mut child = Command::new("cmd")
+            .args(["/c", "ping", "-n", "15", "127.0.0.1"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("起测试子进程失败");
+        #[cfg(not(target_os = "windows"))]
+        let mut child = Command::new("sleep")
+            .arg("15")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("起测试子进程失败");
+
+        let (buf, readers) = collect_output(&mut child);
+        let t0 = std::time::Instant::now();
+        let tail = output_tail_settled(&buf, readers).await;
+        let elapsed = t0.elapsed();
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "子进程存活时取输出不得阻塞，实测 {elapsed:?}（超出即说明又去 join 了）"
+        );
+        // 存活进程没有输出 → 尾部为空（不应 panic、不应吞掉进程）
+        assert!(tail.is_empty(), "存活进程不应有输出尾部，实得 {tail:?}");
     }
 }

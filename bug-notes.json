@@ -1963,6 +1963,55 @@
       ],
       "created_at": "2026-09-18T18:00:00+08:00",
       "fixed_at": "2026-09-18T18:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0918-009",
+      "date": "2026-09-18",
+      "status": "fixed",
+      "title": "创意工坊算子列表永远「加载中」且后台堆一堆 python：ensure 就绪后 join 子进程输出线程（服务活着就永远没有 EOF）",
+      "module": "创意工坊微服务生命周期 / src-tauri/src/studio.rs（前端 src/components/workshop/WorkshopImageProcess.vue、src/views/Workshop.vue 兜底）",
+      "symptom": [
+        "打开「传统图像处理」小组件，参数区永远停在「算子列表加载中…」，「✨ 应用」按钮一直禁用（用户截图）",
+        "任务管理器出现 6 组「Python (2)」进程（其中 747MB 那组是 VCR 识别服务，其余是工坊服务端口进程）",
+        "没有任何错误提示，既不报错也没有重试入口，用户只能干等——分不清是慢还是坏"
+      ],
+      "root_cause": {
+        "summary": "ensure_base 探活成功后第一件事是 join 子进程 stdout/stderr 的读线程，而线程体是 read_to_string——必须读到 EOF 才返回，服务活着就永远没有 EOF，join 永久阻塞 → studio_ensure 永不返回 → 前端 invoke 永不 resolve（表现为永远「加载中」）。同时 save_instance / set_base 排在 join 之后，永远执行不到：实例文件不写、进程内缓存不设，于是每次重试又新起一个 python 服务",
+        "detail": [
+          "实测 6 个残留实例全部健康：/health 200、/api/ops 200（2136B，2~27ms）——服务没问题，问题在 Rust 侧命令不回",
+          "泄漏实例都落在随机端口（50057/51240/51433/51440/49942/53485），因为 pick_free_port() 每次向端口 0 要一个空闲口，所以堆积的实例互不冲突、可以无限涨",
+          "app 数据目录里始终没有 studio-instance.json（save_instance 在 join 之后），而 vcr-instance.json 正常 → 收养路径形同虚设",
+          "泄漏第二个来源：kill_pid 少了 /T。Windows + venv 的 Scripts\\python.exe 只是启动器，真实解释器是它拉起的子进程（两者是任务管理器里成对的「Python (2)」），只杀启动器 → 真实服务变孤儿继续监听",
+          "泄漏第三个来源：ensure 没有单飞。并发调用（页面预热 + 小组件挂载）会各自看到「缓存空 + 无实例文件」，各起一个服务"
+        ]
+      },
+      "solution": {
+        "summary": "三管齐下：就绪路径去掉 join 并先落实例/缓存、kill 补 /T 杀进程树、ensure 加单飞锁；前端补超时与失败重试，工坊页进入即预热。",
+        "steps": [
+          "成功路径：save_instance + set_base 提前，然后 drop(readers) 丢弃句柄（线程继续后台排空管道，进程退出后自然结束），绝不 join",
+          "失败/超时路径：新增 output_tail_settled() —— 不 join，只轮询缓冲 8×25ms 排空后取尾部；即使管道被孙进程持有也能保证返回",
+          "kill_pid 补 /T（与 vision.rs 一致）：/F /T /PID，连启动器拉起的真实解释器一起结束",
+          "studio_ensure 加 ENSURE_LOCK 单飞锁（tokio::sync::Mutex::const_new）：并发调用串行化，第二个调用直接复用第一个的结果",
+          "前端 loadOps 三态化：loading / ready / error，把 ensureBase 与 fetch 都套 12s 超时（invoke 无法取消 → Promise.race 兜底；fetch 用 AbortController 真取消），失败给出友好文案 + 「🔄 重试」，并清掉缓存基址让重试重新 ensure",
+          "Workshop.vue onMounted 预热：invoke(studio_ensure).catch(()=>{})——算子注册表只要 3ms，慢的只是 1.1s 服务冷启动，页面停留期间后台起好，点开小组件即用"
+        ]
+      },
+      "lessons": [
+        "子进程输出读线程的 join 语义是「等 EOF」，对常驻服务等于「等它死」。想取日志就用「带排空上限的读取」，永远不要在服务存活时 join",
+        "进程生命周期相关的副作用（写实例文件、设缓存）必须排在任何可能阻塞的语句之前——顺序错了，服务明明活着却像是没起来",
+        "Windows + venv 的 python 是「启动器 + 真实解释器」双层进程，kill 必须 /T；跨模块共用同一套进程管理代码（vision.rs 早有 /T，studio.rs 没同步，与 BUG-007 同类型的漏同步）",
+        "随机端口 + 无单飞 + 会泄漏 = 无上限堆积；凡「按需拉起外部进程」的 ensure 都必须有单飞与树杀",
+        "「列表/元数据接口要等重服务就绪」本身就是体验债：先量一下到底谁慢（本例注册表 3ms、冷启动 1.1s），再决定预热还是静态化。这里选预热 + 超时重试，而不是在前端复制一份算子 schema（避免两份真相漂移）",
+        "任何异步入口都必须有超时：invoke/命令无法取消时用 Promise.race 兜底，否则后端一挂，前端就只能永远「加载中」"
+      ],
+      "evidence_log": "实测旧态：6 组 python 进程 + 7 条启动日志 + studio-instance.json 缺失；逐个探活 6 个实例 /health 与 /api/ops 全 200（2~27ms，body 2136B）→ 证明服务健康、卡点在 Rust 命令。修复后：cargo test --lib studio 3 passed（新增回归测试 output_tail_settled_returns_while_child_alive：子进程存活时取输出必须在 2s 内返回，旧实现会阻塞满 15s）；两个改动 SFC 经 @vue/compiler-sfc 编译 parse/script/template/style 零错误。性能基线（新建实例 spawn→/health 200）：1118ms，之后 /api/ops 稳定 2~26ms。清理：6 个泄漏实例 taskkill /F /T 全部结束，VCR 识别服务（803MB）未受影响",
+      "related_files": [
+        "src-tauri/src/studio.rs",
+        "src/components/workshop/WorkshopImageProcess.vue",
+        "src/views/Workshop.vue"
+      ],
+      "created_at": "2026-09-18T18:30:00+08:00",
+      "fixed_at": "2026-09-18T18:55:00+08:00"
     }
   ]
 }

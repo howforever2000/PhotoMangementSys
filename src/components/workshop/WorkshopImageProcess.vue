@@ -48,6 +48,15 @@ const DEFAULT_OP = "region-equalize";
 
 const ops = ref<OpDef[]>([]);
 const opId = ref(DEFAULT_OP);
+/**
+ * 算子列表三态（BUG-2026-0918-009）：显式的 loading / ready / error，失败必须给可点的重试。
+ * 绝不允许「加载中…」永久停留——旧实现因为后端 ensure 永不返回，用户看到的就是
+ * 永远加载中，既没错误也没重试入口，无从判断是慢还是坏。
+ */
+const opsState = ref<"loading" | "ready" | "error">("loading");
+const opsError = ref("");
+/** 算子列表超时：服务冷启动约 1~2s（python + cv2），留足余量后必须回到失败态 */
+const OPS_TIMEOUT_MS = 12_000;
 /** 当前算子的参数值（切换算子时按 schema 重置为默认值） */
 const values = ref<Record<string, number | string | boolean>>({});
 
@@ -101,15 +110,49 @@ async function ensureBase(): Promise<string> {
   return base;
 }
 
+/** 给 promise 套超时：后端命令无法取消，卡住时也必须回到失败态而不是永远「加载中」 */
+function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
+  let timer = 0;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = window.setTimeout(() => reject(new Error(msg)), ms);
+  });
+  return Promise.race([p.finally(() => window.clearTimeout(timer)), timeout]);
+}
+
+/** 把异常翻译成用户能看懂的话（不把堆栈/英文错误原样抛出） */
+function describeOpsError(e: unknown): string {
+  const secs = OPS_TIMEOUT_MS / 1000;
+  if (e instanceof DOMException && e.name === "AbortError") return `本机处理服务 ${secs}s 内无响应`;
+  const m = String((e as Error)?.message ?? e);
+  if (m.includes("超时")) return `本机处理服务 ${secs}s 内未就绪（首次启动较慢，或服务异常）`;
+  if (/fetch|network|load failed|ECONNREFUSED|Failed/i.test(m)) return "无法连接本机处理服务";
+  return m;
+}
+
 /** 拉取算子注册表（schema 驱动参数表单） */
 async function loadOps() {
+  opsState.value = "loading";
+  opsError.value = "";
+  const ac = new AbortController();
+  const abortTimer = window.setTimeout(() => ac.abort(), OPS_TIMEOUT_MS);
   try {
-    const resp = await fetch(`${await ensureBase()}/api/ops`);
+    // 服务冷启动 + 注册表请求都套超时；超时/失败一律落到 error 态给重试
+    const svc = await withTimeout(ensureBase(), OPS_TIMEOUT_MS, "服务启动超时");
+    const resp = await fetch(`${svc}/api/ops`, { signal: ac.signal });
     if (!resp.ok) throw new Error(`服务返回 ${resp.status}`);
-    ops.value = ((await resp.json()) as { ops?: OpDef[] }).ops ?? [];
+    const list = ((await resp.json()) as { ops?: OpDef[] }).ops ?? [];
+    if (!list.length) throw new Error("服务未返回任何算子");
+    ops.value = list;
     applyDefaults();
+    opsState.value = "ready";
   } catch (e) {
-    statusMsg.value = `算子列表加载失败：${String(e)}`;
+    // 失败即丢弃缓存基址：重试时重新 ensure（服务可能已被回收或换了端口）
+    base = "";
+    opsError.value = describeOpsError(e);
+    opsState.value = "error";
+    statusMsg.value = "算子列表加载失败，可点「🔄 重试」";
+  } finally {
+    window.clearTimeout(abortTimer);
   }
 }
 
@@ -492,8 +535,8 @@ onBeforeUnmount(() => {
       <div v-if="!srcPath" class="ip-empty">📂 先选择一张图片开始编辑</div>
     </div>
 
-    <!-- 参数面板：由 /api/ops 的 schema 自动渲染 -->
-    <div v-if="currentOp" class="ip-params">
+    <!-- 参数面板：由 /api/ops 的 schema 自动渲染；三态显式（加载中 / 失败可重试 / 就绪） -->
+    <div v-if="opsState === 'ready' && currentOp" class="ip-params">
       <template v-for="p in currentOp.params" :key="p.name">
         <div v-if="p.type === 'enum'" class="ip-field">
           <span class="ip-field-label">{{ p.label }}</span>
@@ -521,7 +564,11 @@ onBeforeUnmount(() => {
       </template>
       <span v-if="!hasMask" class="ip-hint">未画蒙版 → 按整图处理</span>
     </div>
-    <div v-else class="ip-hint">算子列表加载中…</div>
+    <div v-else-if="opsState === 'error'" class="ip-ops-error">
+      <span class="ip-status err">算子列表加载失败：{{ opsError }}</span>
+      <button class="ip-btn" type="button" @click="loadOps">🔄 重试</button>
+    </div>
+    <div v-else class="ip-hint">算子列表加载中…（首次需启动本机处理服务，约 1~2 秒）</div>
 
     <footer class="ip-foot">
       <span class="ip-status" :class="{ err: statusMsg.startsWith('处理失败') || statusMsg.includes('失败') }">{{
@@ -761,6 +808,19 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--color-text-2);
   opacity: 0.8;
+}
+
+/* 算子列表加载失败：明确报错 + 重试入口（不许静默停留在「加载中」） */
+.ip-ops-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid rgba(229, 72, 77, 0.35);
+  border-radius: 10px;
+  background: rgba(229, 72, 77, 0.08);
 }
 
 .ip-status {
