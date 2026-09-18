@@ -2057,7 +2057,52 @@
       },
       "created_at": "2026-09-18T13:00:00+08:00",
       "updated_at": "2026-09-18T13:00:00+08:00"
+    },
+    {
+      "id": "FEAT-066",
+      "name": "创意工坊「传统图像处理」组件（算子注册表 + 5 个算子）",
+      "status": "done",
+      "description": "原「区域直方图均衡化」卡片升级为「传统图像处理」。后端把写死的 /api/region-equalize 换成「算子注册表 + 单入口 API」：一张 OPS 注册表描述 5 个算子（区域直方图均衡化 + 高斯/方框/中值/双边四种模糊），蒙版羽化与强度混合抽成公共函数 _apply_masked，新增算子只需往注册表加一项、不再新增路由。前端拆出宿主组件 WorkshopImageProcess.vue（图片载入 / 画布缩放 / 蒙版编辑 / 结果对比 / 保存），算子切换与参数表单全部由 GET /api/ops 返回的 schema 自动渲染。蒙版沿用同一套编辑器（不复制第二套），整图为默认、蒙版为可选；灯箱 ✏️ 直达的默认算子仍是区域直方图均衡化，FEAT-065 行为不变。",
+      "related_files": [
+        "python-studio/server.py",
+        "src/components/workshop/WorkshopImageProcess.vue",
+        "src/views/Workshop.vue",
+        "src/components/PhotoLightbox.vue",
+        "python/requirements.txt"
+      ],
+      "keywords": [
+        "创意工坊",
+        "传统图像处理",
+        "算子注册表",
+        "高斯模糊",
+        "方框模糊",
+        "中值模糊",
+        "双边滤波",
+        "蒙版羽化",
+        "schema 驱动表单",
+        "组件拆分"
+      ],
+      "implementation": {
+        "backend_py": "python-studio/server.py：OPS 注册表现有 5 项，每项含 id / label / supportsMask / params(schema: name,label,type,min,max,step,default,choices) / fn；算子是纯函数 fn(img, **params) -> img（region-equalize 仍在 LAB 的 L 通道做 equalizeHist 或 createCLAHE(clipLimit=1+strength*3)，a/b 原样保留）。_apply_masked(img, mask, strength, feather, fn_result) 一处实现蒙版语义：尺寸对齐(INTER_NEAREST) → GaussianBlur(2*feather+1) 羽化 → ×strength → 与原图逐像素线性混合；mask 为 None 时按整图处理（m 恒为 strength）。对外两个接口：GET /api/ops（返回注册表可序列化部分，不记日志）与 POST /api/apply（op + params JSON 字符串 + image + 可选 mask，未知 op 返回 400 并列出支持的算子，耗时/尺寸/关键参数/输出大小照旧记日志）；/api/region-equalize 已删除，不留兼容层。中值模糊核强制奇数（_odd 钳制到 3~31），radius 超范围按 schema 钳制。",
+        "frontend": "WorkshopImageProcess.vue：onMounted 先 studio_ensure 拿基址再拉 /api/ops，参数按 schema 渲染（number → range，0~1 的按百分比显示；enum → 分段按钮；bool → 勾选），切算子即按默认值重置；顶层标签为「区域直方图均衡化 / 模糊」，选中模糊再出四种方式的子标签。蒙版只在 hasMask 时导出（不画 = 整图处理，不再禁用「应用」），提交 POST /api/apply。Workshop.vue：卡片 id 改 image-process、标题「传统图像处理」、描述同步，带 ?photo= 直达落到新组件；PhotoLightbox.vue 的 ✏️ 跳转逻辑不动，仅同步提示文案。",
+        "依赖": "python/requirements.txt 补 python-multipart：缺它时 FastAPI 在路由注册阶段就抛 RuntimeError，服务连 /health 都起不来（multipart 上传的硬依赖，此前遗漏）。"
+      },
+      "highlights": [
+        "注册表 + 单入口：新增算子只改后端一项、前端零改动，杜绝「写死第二个路由」",
+        "蒙版语义只有一份实现：均衡化与四种模糊共用同一套羽化与强度混合，也共用同一套蒙版编辑器",
+        "蒙版从「必填」降级为「可选」：不画就是整图处理，模糊类开箱即用",
+        "region-equalize 语义保持不变（LAB 亮度通道 + 羽化混合 + 强度权重）；差异仅在混合发生的色彩空间（原在 L 通道插值，现统一在 BGR 插值），实测与改动前逐像素平均差 0.2%~0.5%、未选区差异 0（原实现还多一次 LAB 往返误差，最大 6 级）"
+      ],
+      "tests": [
+        "cargo test --lib：90 passed / 0 failed / 2 ignored（基线一致，未倒退）",
+        "npm run build（vue-tsc --noEmit + vite build）：零错误通过",
+        "python -m py_compile python-studio/server.py：通过",
+        "STUDIO_PORT=8797 启动：GET /health → {\"ok\":true,\"service\":\"pm-studio\",\"api\":1}；GET /api/ops → 5 个算子（region-equalize + blur-gaussian/blur-box/blur-median/blur-bilateral），schema 字段完整",
+        "端到端（night_city.jpg 800×492，左半蒙版）：region-equalize L 均值 121.2 → 126.8（改动前实现 126.7）；4 个模糊算子带蒙版/不带蒙版各返回合法 JPEG（魔数 FFD8、尺寸 800×492）；未知算子 blur-magic → 400 并列出支持的算子；中值模糊传偶数核 8 不报错"
+      ],
+      "created_at": "2026-09-18T15:20:00+08:00",
+      "updated_at": "2026-09-18T15:20:00+08:00"
     }
   ],
-  "updated": "2026-09-18T13:55:00+08:00"
+  "updated": "2026-09-18T15:20:00+08:00"
 }
