@@ -15,8 +15,8 @@ const route = useRoute();
 const theme = useThemeStore();
 
 /**
- * FEAT-064：从灯箱「✏️ 编辑」跳进来时带 ?photo=<原图绝对路径>，
- * 直接打开区域均衡化小组件并载入该图 —— 打开即用，不必再选一次图。
+ * FEAT-065：从灯箱「✏️ 编辑」跳进来时带 ?photo=<原图绝对路径>，
+ * 直接打开传统图像处理小组件（默认算子：区域直方图均衡化）并载入该图 —— 打开即用。
  * 读一次即可（工坊页不会在停留期间改变 query）。
  */
 const initialPhoto = (() => {
@@ -35,9 +35,9 @@ const badgeStyle = computed(() =>
 /** 工坊小组件清单 */
 const widgets = [
   {
-    id: "region-eq",
-    title: "区域直方图均衡化",
-    desc: "框选或画蒙版圈定范围，只对选中区域做均衡化（全局均衡 / CLAHE），支持羽化与强度调节，亮度通道处理不偏色",
+    id: "image-process",
+    title: "传统图像处理",
+    desc: "区域直方图均衡化（全局均衡 / CLAHE）与高斯·方框·中值·双边四种模糊；可框选或画蒙版只处理局部，支持羽化与强度调节，亮度通道处理不偏色",
     icon: "🌗",
     ready: true,
   },
@@ -50,8 +50,8 @@ const widgets = [
   },
 ] as const;
 
-/** 当前打开的小组件 id（null = 仅卡片列表；带照片进来时直接进区域均衡化） */
-const activeWidget = ref<string | null>(initialPhoto ? "region-eq" : null);
+/** 当前打开的小组件 id（null = 仅卡片列表；带照片进来时直接进图像处理） */
+const activeWidget = ref<string | null>(initialPhoto ? "image-process" : null);
 
 function openWidget(w: (typeof widgets)[number]) {
   if (!w.ready) return;
@@ -104,9 +104,9 @@ function goBack() {
         </article>
       </main>
 
-      <!-- 区域直方图均衡化小组件（FEAT-063）；FEAT-064：支持带图直达 -->
-      <template v-else-if="activeWidget === 'region-eq'">
-        <WorkshopRegionEq :initial-path="initialPhoto" />
+      <!-- 传统图像处理小组件（FEAT-066）；FEAT-065：支持带图直达 -->
+      <template v-else-if="activeWidget === 'image-process'">
+        <WorkshopImageProcess :initial-path="initialPhoto" />
       </template>
     </div>
   </div>
@@ -114,8 +114,8 @@ function goBack() {
 
 <script lang="ts">
 // 工坊小组件按需引入（放在独立 script 块，保持 setup 块聚焦布局逻辑）
-import WorkshopRegionEq from "../components/workshop/WorkshopRegionEq.vue";
-export default { components: { WorkshopRegionEq } };
+import WorkshopImageProcess from "../components/workshop/WorkshopImageProcess.vue";
+export default { components: { WorkshopImageProcess } };
 </script>
 
 <style scoped>

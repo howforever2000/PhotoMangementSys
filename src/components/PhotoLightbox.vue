@@ -429,7 +429,7 @@ function askDelete() {
 
 /**
  * 编辑当前照片（FEAT-064）：跳创意工坊并带上原图路径，工坊首页直接在
- * 「区域直方图均衡化」小组件里载入它，无需再手动选图。
+ * 「传统图像处理」小组件里载入它（默认算子：区域直方图均衡化），无需再手动选图。
  *
  * 导航放在组件内部而非 emit 给父视图：PhotoLightbox 被相册详情 / 时间线 /
  * 智慧相册 / 回忆 / 搜索等多处复用，逐个改父视图既啰嗦又容易漏；
@@ -473,7 +473,7 @@ function openInWorkshop() {
       </button>
       <button
         class="lb-tb-btn"
-        title="在创意工坊里编辑这张照片（当前支持区域直方图均衡化）"
+        title="在创意工坊里编辑这张照片（传统图像处理：均衡化 / 模糊）"
         @click="openInWorkshop"
       >✏️ 编辑</button>
       <button
