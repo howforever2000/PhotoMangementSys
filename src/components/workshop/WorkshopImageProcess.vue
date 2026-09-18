@@ -239,26 +239,43 @@ function redraw() {
   const overlay = overlayCanvas.value;
   if (!disp || !overlay || !imgEl.naturalWidth) return;
   const ctx = disp.getContext("2d")!;
-  const b = showResult.value && hasResult.value ? resultEl : imgEl;
+  const showing = showResult.value && hasResult.value;
+  const b = showing ? resultEl : imgEl;
   ctx.clearRect(0, 0, disp.width, disp.height);
   ctx.drawImage(b, 0, 0, disp.width, disp.height);
 
   // 蒙版红色半透明叠加
+  // BUG-2026-0918-010：展示结果时不画叠加（结果图上盖红色会让人以为处理失败）。
+  // 关键：clearRect 必须在 if 之外无条件执行 —— 只加 if 不 clear，画布上会残留
+  // 上一次画的红色像素，看起来就像没修好。
   const octx = overlay.getContext("2d")!;
   octx.clearRect(0, 0, overlay.width, overlay.height);
-  octx.save();
-  octx.drawImage(maskCanvas, 0, 0, overlay.width, overlay.height);
-  octx.globalCompositeOperation = "source-in";
-  octx.fillStyle = "rgba(255,64,64,.5)";
-  octx.fillRect(0, 0, overlay.width, overlay.height);
-  octx.restore();
-  // 框选拖拽预览
-  if (dragRect.value) {
-    const { x, y, w, h } = dragRect.value;
-    octx.strokeStyle = "#ffd54a";
-    octx.lineWidth = 1.5;
-    octx.setLineDash([5, 4]);
-    octx.strokeRect(x, y, w, h);
+  if (!showing) {
+    octx.save();
+    octx.drawImage(maskCanvas, 0, 0, overlay.width, overlay.height);
+    octx.globalCompositeOperation = "source-in";
+    octx.fillStyle = "rgba(255,64,64,.5)";
+    octx.fillRect(0, 0, overlay.width, overlay.height);
+    octx.restore();
+    // 框选拖拽预览（同样只在非结果态画）
+    if (dragRect.value) {
+      const { x, y, w, h } = dragRect.value;
+      octx.strokeStyle = "#ffd54a";
+      octx.lineWidth = 1.5;
+      octx.setLineDash([5, 4]);
+      octx.strokeRect(x, y, w, h);
+    }
+  }
+}
+
+/**
+ * 开始编辑蒙版前调用（BUG-2026-0918-010）：结果态下叠加不可见，此时若直接改蒙版，
+ * 用户会「静默改掉而看不见」。故一律先切回原图态，让他看得见自己在改什么。
+ */
+function beginEdit() {
+  if (showResult.value) {
+    showResult.value = false;
+    redraw();
   }
 }
 
@@ -281,6 +298,8 @@ function onPointerDown(e: PointerEvent) {
   if (!srcPath.value) return;
   const overlay = overlayCanvas.value!;
   overlay.setPointerCapture(e.pointerId);
+  // 结果态下叠加不可见，动手前先切回原图态（BUG-2026-0918-010）
+  beginEdit();
   const p = posOf(e);
   painting = true;
   if (tool.value === "rect") {
@@ -344,6 +363,7 @@ function stroke(nx: number, ny: number) {
 }
 
 function clearMask() {
+  beginEdit();
   maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
   hasMask.value = false;
   redraw();
@@ -351,6 +371,7 @@ function clearMask() {
 }
 
 function selectAll() {
+  beginEdit();
   maskCtx.fillStyle = "#fff";
   maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
   hasMask.value = true;

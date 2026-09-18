@@ -2012,6 +2012,56 @@
       ],
       "created_at": "2026-09-18T18:30:00+08:00",
       "fixed_at": "2026-09-18T18:55:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0918-010",
+      "date": "2026-09-18",
+      "status": "fixed",
+      "title": "创意工坊处理完成后蒙版红色叠加盖在结果图上不消失（结果态仍无条件绘制蒙版叠加）",
+      "module": "创意工坊 · 传统图像处理 / src/components/workshop/WorkshopImageProcess.vue（redraw）",
+      "symptom": [
+        "框选/涂抹蒙版 → 点「应用」→ 展示处理结果时，结果图上仍盖着半透明红色蒙版，看起来像处理失败或没处理",
+        "取消勾选「对比结果」红色又出现——用户分不清此时看到的是结果还是原图+蒙版"
+      ],
+      "root_cause": {
+        "summary": "FEAT-063 起就存在的问题（不是 FEAT-066 的回归）：redraw() 里底图按 showResult 切换，但蒙版红色叠加与框选预览矩形是无条件绘制的——处理成功后 showResult=true 底图换成了结果图，红色叠加照样画上去",
+        "detail": [
+          "redraw() 中 octx.clearRect 之后紧跟 drawImage(maskCanvas)+source-in 红色填充，没有任何状态条件；FEAT-063 的 WorkshopRegionEq.vue 即如此，FEAT-066 重构只是原样搬运（与 a2aaecb 版本逐行比对过）",
+          "隐藏的第二面：加了条件后，结果态下叠加不可见，若用户此时在画布上拖鼠标改蒙版，改动将「静默发生且看不见」——必须配套「动手编辑即切回原图态」"
+        ]
+      },
+      "solution": {
+        "summary": "叠加绘制与框选预览收进「非结果态」条件；clearRect 提到条件之外无条件执行（否则红色残留在画布上，看起来像没修）；结果态下开始编辑（onPointerDown / 清空蒙版 / 全选）先自动 showResult=false 并 redraw。蒙版数据不清空（换算子/参数对同一区域重跑的场景要保留）。",
+        "steps": [
+          "redraw()：const showing = showResult && hasResult；octx.clearRect 无条件执行；红色叠加与 dragRect 预览移入 if (!showing)",
+          "新增 beginEdit()：showResult 为 true 时置 false 并 redraw；onPointerDown / clearMask / selectAll 三个会改蒙版的入口先调用",
+          "apply() 成功路径不动：不清蒙版、不改 /api/apply 契约、不改蒙版数据结构"
+        ]
+      },
+      "lessons": [
+        "双层画布的「叠加层」最容易被当成和底图同步切换，实际每层要独立想清楚「什么状态下画什么」",
+        "把绘制收进 if 时必须同步想清楚 clear 语义：clear 留在 if 里 = 上一次的像素永久残留，故障表现和没修一样",
+        "「展示态隐藏编辑反馈」必须配「动手即退出展示态」，否则编辑变成静默操作，比原 bug 更隐蔽",
+        "修完最忌只验「顺路径」：撤销/重进/再编辑这些反向路径（取消勾选、结果态拖拽）才是残留类 bug 的藏身处"
+      ],
+      "evidence_log": "验证方式（项目无前端单测框架，用 Playwright + 临时 vite 打包真实组件：@tauri-apps/* 换 stub、python-studio 换同源 stub 服务，/api/apply 固定回纯品红 JPEG 以区分原图/结果；判定全读 canvas 像素，人工实操选图→框选→应用→勾/取消勾对比→结果态拖拽，脚本用完已删，产物在 C:/Users/Administrator/AppData/Local/Temp/cbc-bug-010/）：修复前（对照，同一脚本跑 HEAD 版本）结果态叠加层红色像素=48440（全画布非透明像素 48440，即整个蒙版区域全红），结果态拖拽不会切回原图态；修复后结果态红色像素=0、非透明像素=0（clearRect 无条件生效，无残留），取消勾选「对比结果」红色回到 48440（蒙版数据确实还在），结果态拖拽自动取消勾选、底图回原图、红色可见。7 条判定全 PASS（对照修复前 4/7，FAIL 的正是 bug 本体三条）；截图 shot-step3-result.png（结果图无红）/shot-final.png（原图+红蒙版）人工目视复核一致。cargo test --lib：104 passed; 0 failed; 2 ignored（基线一致）。npm run build（vue-tsc --noEmit && vite build）：零错误。页面加载无 404、无 pageerror。",
+      "related_files": [
+        "src/components/workshop/WorkshopImageProcess.vue"
+      ],
+      "keywords": [
+        "创意工坊",
+        "蒙版",
+        "红色叠加",
+        "结果态",
+        "overlay",
+        "redraw",
+        "clearRect",
+        "canvas",
+        "showResult",
+        "自动切回原图"
+      ],
+      "created_at": "2026-09-18T19:15:00+08:00",
+      "fixed_at": "2026-09-18T19:15:00+08:00"
     }
   ]
 }
