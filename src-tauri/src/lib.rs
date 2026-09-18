@@ -3516,27 +3516,53 @@ fn reveal_in_explorer(path: &Path, _is_dir: bool) -> Result<(), String> {
 /// 与日志窗口同构：label 固定 `dev-data`，前端 main.ts 按 label 分支挂载组件，
 /// 不走 router（避开登录守卫）；权限见 capabilities/dev-data.json。
 /// 同样 async + 后台线程建窗（BUG-2026-0910-005：主线程同步建窗会空白并卡死事件循环）。
+///
+/// FEAT-064：`view` 区分两个入口实现同一个窗口（不重建、不重复代码）：
+/// - `"all"`（默认）→ 主页「数据与路径」：左路径清单 + 右库浏览
+/// - `"db"`        → 主页「数据库查看」：隐藏路径清单、库浏览占满、标题同步
+/// 窗口已存在时用事件通知前端切换视角，而不是销毁重建。
 #[tauri::command]
-async fn open_dev_data_window(app: tauri::AppHandle) -> Result<(), String> {
+async fn open_dev_data_window(app: tauri::AppHandle, view: Option<String>) -> Result<(), String> {
+    let view = if view.as_deref() == Some("db") { "db" } else { "all" };
     if let Some(win) = app.get_webview_window("dev-data") {
         let _ = win.unminimize();
         let _ = win.set_focus();
+        let _ = win.emit(DEV_DATA_VIEW_EVENT, view);
+        let _ = win.set_title(dev_data_title(view));
         return Ok(());
     }
-    tauri::async_runtime::spawn_blocking(move || build_dev_data_window(app))
+    let owned = view.to_string();
+    tauri::async_runtime::spawn_blocking(move || build_dev_data_window(app, &owned))
         .await
         .map_err(|e| format!("数据窗口创建任务失败: {e}"))?
 }
 
-fn build_dev_data_window(app: tauri::AppHandle) -> Result<(), String> {
-    let t0 = std::time::Instant::now();
-    let url = if tauri::is_dev() {
-        tauri::WebviewUrl::External("http://localhost:1420/".parse().expect("valid dev url"))
+/// 窗口标题随入口变化，避免用「数据库查看」打开却显示「数据与路径」
+fn dev_data_title(view: &str) -> &'static str {
+    if view == "db" {
+        "数据库查看 · 只读"
     } else {
-        tauri::WebviewUrl::App("index.html".into())
+        "开发者视角 · 数据与路径"
+    }
+}
+
+/// 切换视角用的窗口事件名（前端 DataWindowApp 监听）
+const DEV_DATA_VIEW_EVENT: &str = "dev-data-view";
+
+fn build_dev_data_window(app: tauri::AppHandle, view: &str) -> Result<(), String> {
+    let t0 = std::time::Instant::now();
+    // 建窗时把初始视角经 query 带给前端（避免"先渲染 all 再切 db"的闪动）
+    let url = if tauri::is_dev() {
+        tauri::WebviewUrl::External(
+            format!("http://localhost:1420/?view={view}")
+                .parse()
+                .expect("valid dev url"),
+        )
+    } else {
+        tauri::WebviewUrl::App(format!("index.html?view={view}").into())
     };
     tauri::WebviewWindowBuilder::new(&app, "dev-data", url)
-        .title("开发者视角 · 数据与路径")
+        .title(dev_data_title(view))
         .inner_size(1080.0, 720.0)
         .min_inner_size(720.0, 460.0)
         .resizable(true)
@@ -3545,7 +3571,7 @@ fn build_dev_data_window(app: tauri::AppHandle) -> Result<(), String> {
         .build()
         .map_err(|e| format!("打开数据窗口失败: {e}"))?;
     logger::log_info(&format!(
-        "打开数据与路径窗口耗时 {}ms（后台线程建窗）",
+        "打开数据窗口耗时 {}ms（view={view}，后台线程建窗）",
         t0.elapsed().as_millis()
     ));
     Ok(())

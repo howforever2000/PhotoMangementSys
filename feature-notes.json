@@ -2000,7 +2000,63 @@
       ],
       "created_at": "2026-09-17T13:20:00+08:00",
       "updated_at": "2026-09-17T13:20:00+08:00"
+    },
+    {
+      "id": "FEAT-064",
+      "name": "主页「数据库查看」入口（复用 dev-data 窗口的库浏览视角）",
+      "status": "done",
+      "description": "主页设置菜单（⚙）在「开发者视角」「数据与路径」之后新增「数据库查看」。为守住原子性与组件轻量，不新建窗口、不复制只读浏览实现：仍复用同一个 dev-data 副窗口，只带上视角参数 view=\"db\" —— 隐藏左侧「运行态路径清单」，让右侧库浏览（photos.db / persons.db 的表清单 + 表数据预览 + 只读 SQL）占满整窗，窗口标题同步为「数据库查看 · 只读」。窗口已存在时由 Rust 发 dev-data-view 事件通知前端切换视角（不销毁重建、不丢当前滚动/查询状态）；首次创建则经 WebviewUrl 的 query 带入初始视角，避免「先渲染 all 再切 db」的闪动。安全边界完全沿用 devdata 模块：SQLITE_OPEN_READONLY、表名走 sqlite_master 校验、行数上限 200、敏感列（password_hash/token 等）后端打码。",
+      "related_files": [
+        "src/views/Home.vue",
+        "src/dev/DataWindowApp.vue",
+        "src-tauri/src/lib.rs"
+      ],
+      "keywords": [
+        "数据库查看",
+        "只读",
+        "dev-data",
+        "DataWindowApp",
+        "表浏览",
+        "只读 SQL",
+        "视角切换",
+        "单例窗口"
+      ],
+      "implementation": {
+        "backend_rs": "lib.rs：open_dev_data_window(app, view: Option<String>) —— view 仅认 \"db\"/其余归 \"all\"；窗口已存在则 unminimize + set_focus + emit(dev-data-view, view) + set_title；不存在则 spawn_blocking 建窗，URL 带 ?view={view}（dev 用 http://localhost:1420/?view=…，生产用 index.html?view=…），标题由 dev_data_title(view) 统一给出。",
+        "frontend": "Home.vue：新增 openDbViewer()（invoke 时带 { view: \"db\" }），openDevData() 显式带 { view: \"all\" }；菜单项文案「数据库查看 / 表结构与数据 · 只读 SQL」。DataWindowApp.vue：view = ref(initialView())，initialView() 读 location.search；onMounted 里 listen<string>(\"dev-data-view\") 切换 view（onBeforeUnmount 注销）；左栏 <section class=\"dw-paths\"> 加 v-if=\"view === 'all'\"，标题随 view 变化。",
+        "权限": "无需新增 capability：dev-data 窗口已声明 core:default（含 core:event:default，覆盖 listen）。"
+      },
+      "created_at": "2026-09-18T13:00:00+08:00",
+      "updated_at": "2026-09-18T13:00:00+08:00"
+    },
+    {
+      "id": "FEAT-065",
+      "name": "灯箱「编辑」直达创意工坊（带图打开即用）",
+      "status": "done",
+      "description": "照片原图查看（PhotoLightbox）工具栏在「🏷 标签」之后新增「✏️ 编辑」：点击后先收起灯箱，再路由到 /workshop?photo=<原图绝对路径>；创意工坊页读到 query 即直接打开「区域直方图均衡化」小组件，并把路径经 initialPath 传给小组件自动载入 —— 打开即用，不必再手动选一次图。导航放在灯箱组件内部而非 emit 给父视图：PhotoLightbox 被相册详情 / 时间线 / 智慧相册 / 回忆 / 智能搜索等多处复用，逐个改父视图既啰嗦又容易漏，而「去工坊编辑这张图」与父视图上下文无关，自带路由最原子。",
+      "related_files": [
+        "src/components/PhotoLightbox.vue",
+        "src/views/Workshop.vue",
+        "src/components/workshop/WorkshopRegionEq.vue"
+      ],
+      "keywords": [
+        "灯箱",
+        "大图查看",
+        "编辑",
+        "创意工坊",
+        "跳转",
+        "带图打开",
+        "initialPath",
+        "打开即用"
+      ],
+      "implementation": {
+        "lightbox": "PhotoLightbox.vue：新增 useRouter 与 openInWorkshop()（emit(\"close\") 后 router.push({ name: \"workshop\", query: { photo } })）；工具栏新增「✏️ 编辑」按钮，title 注明当前可用工具（区域直方图均衡化）。",
+        "workshop": "Workshop.vue：initialPhoto 从 route.query.photo 读取（只在进入时读一次）；activeWidget 初值改为 initialPhoto ? \"region-eq\" : null，实现带图直达；模板把 :initial-path=\"initialPhoto\" 传给小组件。",
+        "widget": "WorkshopRegionEq.vue：新增可选 prop initialPath；onMounted 时若有值则 await nextTick() 后 loadImage(initialPath)。顺带给 fitDisplay 加兜底：父容器 clientWidth 为 0（帧未稳定/被隐藏）时按 800px 计算，避免自动载入算出 1×1 画布（原有 resize 监听仍会自我纠正）。"
+      },
+      "created_at": "2026-09-18T13:00:00+08:00",
+      "updated_at": "2026-09-18T13:00:00+08:00"
     }
   ],
-  "updated": "2026-09-17T13:20:00+08:00"
+  "updated": "2026-09-18T13:00:00+08:00"
 }

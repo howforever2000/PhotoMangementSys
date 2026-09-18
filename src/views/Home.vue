@@ -265,9 +265,24 @@ async function openDevLog() {
 async function openDevData() {
   settingsOpen.value = false;
   try {
-    await invoke("open_dev_data_window");
+    await invoke("open_dev_data_window", { view: "all" });
   } catch (e) {
     console.error("打开数据与路径窗口失败:", e);
+  }
+}
+
+/**
+ * 打开「数据库查看」（FEAT-064）：与「数据与路径」同一个副窗口，
+ * 只是带上 view="db" 隐藏路径清单、让库浏览占满，并同步窗口标题。
+ * 复用而非新建 —— 只读浏览与安全边界（SQLITE_OPEN_READONLY / 敏感列打码）
+ * 全部沿用 devdata 模块那一套，不重复实现。
+ */
+async function openDbViewer() {
+  settingsOpen.value = false;
+  try {
+    await invoke("open_dev_data_window", { view: "db" });
+  } catch (e) {
+    console.error("打开数据库查看窗口失败:", e);
   }
 }
 
@@ -354,6 +369,13 @@ onBeforeUnmount(() => {
                   <span>
                     <b>数据与路径</b>
                     <i>DB / 缓存 / 模型位置 · 只读预览</i>
+                  </span>
+                </button>
+                <button class="settings-item" type="button" role="menuitem" @click="openDbViewer">
+                  <span class="settings-item-icon">🗃️</span>
+                  <span>
+                    <b>数据库查看</b>
+                    <i>表结构与数据 · 只读 SQL</i>
                   </span>
                 </button>
               </div>

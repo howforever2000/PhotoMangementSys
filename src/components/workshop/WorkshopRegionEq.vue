@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import { useThemeStore } from "../../stores/theme";
@@ -13,6 +13,12 @@ import { useThemeStore } from "../../stores/theme";
  * 蒙版约定：独立离屏 canvas，与原图同分辨率，白=选中，黑=未选。
  */
 const theme = useThemeStore();
+
+/**
+ * FEAT-064：可选的初始图片（由灯箱「✏️ 编辑」经 /workshop?photo=<path> 带入）。
+ * 传了就自动载入，不传则保持原有「先选择一张图片」流程。
+ */
+const props = defineProps<{ initialPath?: string }>();
 
 /* ---------------- 状态 ---------------- */
 type Tool = "rect" | "brush" | "eraser";
@@ -90,7 +96,9 @@ function fitDisplay() {
   const disp = displayCanvas.value;
   const overlay = overlayCanvas.value;
   if (!disp || !overlay) return;
-  const maxW = disp.parentElement?.clientWidth ?? 800;
+  const cw = disp.parentElement?.clientWidth ?? 0;
+  // 帧未稳定/容器被隐藏时宽度可能为 0，兜底避免算出 1×1 画布
+  const maxW = cw > 0 ? cw : 800;
   const maxH = Math.max(320, window.innerHeight * 0.58);
   const s = Math.min(1, maxW / imgEl.naturalWidth, maxH / imgEl.naturalHeight);
   scale.value = s;
@@ -293,6 +301,18 @@ function onResize() {
   }
 }
 window.addEventListener("resize", onResize);
+
+/**
+ * FEAT-064：从灯箱带图进来时自动载入（打开即用）。
+ * nextTick 等画布真正挂载 —— loadImage 的 onload 里会调 fitDisplay()，
+ * 它依赖画布父容器的宽度。
+ */
+onMounted(async () => {
+  if (!props.initialPath) return;
+  await nextTick();
+  await loadImage(props.initialPath);
+});
+
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
   objectUrls.forEach((u) => URL.revokeObjectURL(u));

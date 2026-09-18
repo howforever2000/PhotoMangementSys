@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { AlbumContentRow } from "../types/content";
 import type { PhotoInfo } from "../types/photo";
@@ -14,7 +15,7 @@ import { categoryLabel } from "../utils/categoryLabel";
  * - 全屏遮罩展示当前照片原图
  * - 上一张/下一张（左右方向键）、关闭（ESC）
  * - 底部元数据面板：文件名、AI 分类/人物/置信度、EXIF、影调
- * - 工具栏：评分 / 标签 / （可选）删除 / 在相册中查看（emit openAlbum，父视图接路由）
+ * - 工具栏：评分 / 标签 / 编辑（跳创意工坊）/ （可选）删除 / 在相册中查看（emit openAlbum，父视图接路由）
  *
  * FEAT-D：自动扫描复用
  *   若当前照片在 photo_content_scan 中尚无记录，watch photo 变化时静默调
@@ -47,6 +48,8 @@ const emit = defineEmits<{
 
 const current = ref(props.index);
 const imgLoading = ref(true);
+/** FEAT-064：编辑按钮跳到创意工坊（不需要父视图参与，见 openInWorkshop 注释） */
+const router = useRouter();
 
 /* ---- 缩放/平移（原图查看）---- */
 const scale = ref(1);
@@ -423,6 +426,21 @@ function removeTag(t: string) {
 function askDelete() {
   emit("delete", photo.value.path);
 }
+
+/**
+ * 编辑当前照片（FEAT-064）：跳创意工坊并带上原图路径，工坊首页直接在
+ * 「区域直方图均衡化」小组件里载入它，无需再手动选图。
+ *
+ * 导航放在组件内部而非 emit 给父视图：PhotoLightbox 被相册详情 / 时间线 /
+ * 智慧相册 / 回忆 / 搜索等多处复用，逐个改父视图既啰嗦又容易漏；
+ * 而「去工坊编辑这张图」与父视图上下文无关，自带路由最原子。
+ */
+function openInWorkshop() {
+  const path = photo.value?.path;
+  if (!path) return;
+  emit("close"); // 先收起灯箱，避免返回时残留遮罩状态
+  void router.push({ name: "workshop", query: { photo: path } });
+}
 </script>
 
 <template>
@@ -453,6 +471,11 @@ function askDelete() {
       <button class="lb-tb-btn" title="添加 / 编辑标签" @click="tagPanelOpen = !tagPanelOpen">
         🏷 标签<span v-if="tags.length"> · {{ tags.length }}</span>
       </button>
+      <button
+        class="lb-tb-btn"
+        title="在创意工坊里编辑这张照片（当前支持区域直方图均衡化）"
+        @click="openInWorkshop"
+      >✏️ 编辑</button>
       <button
         v-if="photo?.albumId != null"
         class="lb-tb-btn"

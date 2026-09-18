@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
 
 /**
@@ -11,7 +11,18 @@ import { useThemeStore } from "../stores/theme";
  * 每个组件保持「单一职责 + 打开即用」，不共享复杂状态。
  */
 const router = useRouter();
+const route = useRoute();
 const theme = useThemeStore();
+
+/**
+ * FEAT-064：从灯箱「✏️ 编辑」跳进来时带 ?photo=<原图绝对路径>，
+ * 直接打开区域均衡化小组件并载入该图 —— 打开即用，不必再选一次图。
+ * 读一次即可（工坊页不会在停留期间改变 query）。
+ */
+const initialPhoto = (() => {
+  const p = route.query.photo;
+  return typeof p === "string" ? p : "";
+})();
 
 const cardStyle = computed(() => theme.cardStyle);
 
@@ -39,8 +50,8 @@ const widgets = [
   },
 ] as const;
 
-/** 当前打开的小组件 id（null = 仅卡片列表） */
-const activeWidget = ref<string | null>(null);
+/** 当前打开的小组件 id（null = 仅卡片列表；带照片进来时直接进区域均衡化） */
+const activeWidget = ref<string | null>(initialPhoto ? "region-eq" : null);
 
 function openWidget(w: (typeof widgets)[number]) {
   if (!w.ready) return;
@@ -93,9 +104,9 @@ function goBack() {
         </article>
       </main>
 
-      <!-- 区域直方图均衡化小组件（FEAT-063） -->
+      <!-- 区域直方图均衡化小组件（FEAT-063）；FEAT-064：支持带图直达 -->
       <template v-else-if="activeWidget === 'region-eq'">
-        <WorkshopRegionEq />
+        <WorkshopRegionEq :initial-path="initialPhoto" />
       </template>
     </div>
   </div>
