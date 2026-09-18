@@ -91,6 +91,9 @@ watch(
     totalPhotos.value = list.reduce((n, a) => n + (a.photo_count || 0), 0);
     totalAlbums.value = list.length;
     scannedAlbums.value = list.filter((a) => (a.scanned_photo_count || 0) > 0).length;
+    // BUG-2026-0917-002：此前 scannedIn 声明后从未赋值，Hero 第四格「已入库照片」永远显示 0，
+    // 与智慧相册页「653 已扫描入库照片」自相矛盾。这里按相册累加已入库照片数。
+    scannedIn.value = list.reduce((n, a) => n + (a.scanned_photo_count || 0), 0);
   },
   { immediate: true },
 );

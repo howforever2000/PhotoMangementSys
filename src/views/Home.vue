@@ -78,11 +78,12 @@ const modules = [
     ready: true,
   },
   {
-    id: "process",
-    title: "图像处理",
-    desc: "直方图均衡化、CLAHE 等算法（待开发）",
+    id: "workshop",
+    title: "创意工坊",
+    desc: "图片编辑小组件：区域直方图均衡化（框选 / 画蒙版）等",
     icon: "🎨",
-    ready: false,
+    path: "/workshop",
+    ready: true,
   },
   {
     id: "smart",

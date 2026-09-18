@@ -28,6 +28,7 @@ mod photo_info;
 mod photo_scan;
 mod persons;
 mod session;
+mod studio;
 mod test_scan;
 mod thumbnail;
 mod tone;
@@ -3755,6 +3756,9 @@ pub fn run() {
             tail_dev_log,
             open_dev_log_window,
             open_dev_data_window,
+            // 创意工坊（FEAT-063）：Python 微服务生命周期 + 结果落盘
+            studio::studio_ensure,
+            studio::studio_save_result,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

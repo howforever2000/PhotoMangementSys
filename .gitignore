@@ -77,3 +77,6 @@ nul
 # 语义搜索测试产物（模型向量矩阵 23MB 可随时重跑 embed_all.py 重建；下载日志无价值）
 python/bench/out/
 python/bench/*_log.txt
+
+# Git 损坏现场备份（2026-09-17 保留用于对账排查，内含残缺 .git，禁止入库）
+.git.broken-*/
