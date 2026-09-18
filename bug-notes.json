@@ -1918,6 +1918,51 @@
         "src-tauri/src/vision.rs",
         "python-studio/server.py"
       ]
+    },
+    {
+      "id": "BUG-2026-0918-008",
+      "date": "2026-09-18",
+      "status": "fixed",
+      "title": "创意工坊载入图片后画布溢出舞台、压住参数行与「应用」按钮（还伸出白卡片之外遮挡其他组件）",
+      "module": "创意工坊 · 传统图像处理 / src/components/workshop/WorkshopImageProcess.vue",
+      "symptom": [
+        "载入图片后照片向下溢出「舞台」，压在参数行和底部「✨ 应用」按钮上，按钮只露出右半截（用户截图）",
+        "溢出还跑出白卡片之外，遮挡下方相邻组件——用户报「图片没有置于工作区，遮挡其他组件」",
+        "被压住的参数行文字（算子/已加入框选区域提示）读不到，用户看不清当前参数状态"
+      ],
+      "root_cause": {
+        "summary": "两张 canvas 都是 position:absolute（脱离文档流），不参与父容器高度计算 —— .ip-stage 高度被锁死在 min-height:320px；画布实际 522px 高，多出的 202px 直接向下溢出。 .ip 卡片刻意没有 overflow:hidden，于是溢出进一步跑到卡片之外盖住相邻组件",
+        "detail": [
+          "原 CSS：.ip-stage { position:relative; display:flex; justify-content:center; min-height:320px } 与 .ip-canvas, .ip-overlay { position:absolute } 组合",
+          "绝对定位子元素不参与父容器高度计算 → 舞台高度与画布尺寸完全脱钩，恒定 320px",
+          "绝对定位元素绘制在普通流内容之上（层叠顺序第 8 步），所以 DOM 里更靠后的参数行/底栏反而被压在下面",
+          "叠加层（overlay）与底图（canvas）两层都脱离文档流，不存在「谁撑开高度」的角色",
+          "fitDisplay() 用 disp.parentElement.clientWidth 量容器宽度 —— 一旦给画布加包裹层，父元素尺寸就由画布自己决定，会形成「画布多宽容器就多宽」的闭环，窗口放大后画布缩不回去"
+        ]
+      },
+      "solution": {
+        "summary": "画布加一层 .ip-frame（position:relative）：display 画布回归文档流负责撑开高度，overlay 绝对定位贴合它；舞台补 align-items:center 防 flex 拉伸；fitDisplay 改为量舞台元素。",
+        "steps": [
+          "模板：两张 canvas 包进 <div class=\"ip-frame\">，.ip-stage 加 ref=\"stageEl\"",
+          "CSS：.ip-frame { position:relative; flex:0 0 auto }；.ip-canvas { display:block }（在流内撑高）；.ip-overlay { position:absolute; top:0; left:0 }（宽高仍由 JS 写入的 canvas 属性决定，不能写 inset:0，否则被拉伸到 frame 尺寸）",
+          ".ip-stage 增加 align-items:center —— 默认 stretch 会把 .ip-frame 拉伸到 min-height，画布依旧溢出（同一 bug 的第二成因）",
+          "fitDisplay 量宽来源由 disp.parentElement 改为 stageEl.clientWidth",
+          "组件头部注释补一条「布局约定」，说明画布必须由文档流撑开高度，防止后续回归"
+        ]
+      },
+      "lessons": [
+        "容器同时有 min-height 和「主要内容绝对定位」= 高度脱钩，内容必然溢出；要么让主要内容回到文档流撑高容器，要么显式同步容器尺寸",
+        "canvas 双层（底图 + 交互层）的标准姿势：外层 relative 包裹 + 底图在流内撑开 + 交互层 absolute 贴左上角，不要让两层都脱离文档流",
+        "绝对定位元素会盖住后面的普通流内容，并且能溢出到父卡片之外 —— 用户报「遮挡其他组件」时优先查这一条",
+        "量容器尺寸时不要用「待测元素的父元素」：父元素尺寸常常由被测元素决定，会形成闭环。要显式拿布局容器的 ref",
+        "flex 容器里放固定尺寸的绝对/自适应内容时，记得检查 align-items（默认 stretch 会改写子项高度）"
+      ],
+      "evidence_log": "Playwright 复刻实测对比（视口 1280×900、原图 4000×3000）：修复前 画布 696×522 / 舞台高 320 / 溢出舞台 202px / 盖住参数行 32px（整行）/ 盖住底栏 34px（整行）/ 溢出卡片 96px；修复后 舞台高 522 = 画布高、溢出 0px、覆盖参数行 0px、覆盖底栏 0px、画布完整落在卡片内。两种情况下叠加层与底图对齐均为 dx=dy=0 且尺寸一致 → 蒙版对位未受影响。vue-tsc --noEmit 零错误；@vue/compiler-sfc 编译 SFC（parse/script/template/style）零错误 + 结构断言通过。（全量 vite build 在本机沙箱打包阶段长时间停滞未走完，未作为本次证据）",
+      "related_files": [
+        "src/components/workshop/WorkshopImageProcess.vue"
+      ],
+      "created_at": "2026-09-18T18:00:00+08:00",
+      "fixed_at": "2026-09-18T18:20:00+08:00"
     }
   ]
 }

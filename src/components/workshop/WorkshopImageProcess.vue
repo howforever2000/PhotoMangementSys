@@ -17,6 +17,10 @@ import { useThemeStore } from "../../stores/theme";
  *       （BUG-2026-0918-006：不透明黑底会让 overlay 的 source-in 红色叠加
  *       铺满全图——黑也是 alpha=255）。导出给后端时铺黑合成灰度 PNG。
  * 蒙版是可选的：不画蒙版 = 整图处理（模糊类默认整图）。
+ *
+ * 布局约定（BUG-2026-0918-008）：两张画布包在 `.ip-frame` 内，由文档流中的 display
+ *       画布撑开高度。canvas 若直接绝对定位在 `.ip-stage` 上（脱离文档流），舞台高度
+ *       只剩 min-height，高图会向下溢出、盖住参数行与底栏按钮。
  */
 const theme = useThemeStore();
 
@@ -80,6 +84,8 @@ const maskCtx = maskCanvas.getContext("2d")!;
 
 const displayCanvas = ref<HTMLCanvasElement | null>(null);
 const overlayCanvas = ref<HTMLCanvasElement | null>(null);
+/** 舞台容器（fitDisplay 量可用宽度用：画布被 .ip-frame 包着，不能拿画布父元素量） */
+const stageEl = ref<HTMLElement | null>(null);
 
 /** 显示缩放：画布尺寸 / 原图尺寸 */
 const scale = ref(1);
@@ -169,7 +175,9 @@ function fitDisplay() {
   const disp = displayCanvas.value;
   const overlay = overlayCanvas.value;
   if (!disp || !overlay) return;
-  const cw = disp.parentElement?.clientWidth ?? 0;
+  // 量舞台而不是画布父元素：画布父元素是 .ip-frame（尺寸由画布自己撑开），
+  // 拿它当容器会形成「画布多宽容器就多宽」的闭环，窗口放大时画布缩不回去。
+  const cw = stageEl.value?.clientWidth ?? 0;
   // 帧未稳定/容器被隐藏时宽度可能为 0，兜底避免算出 1×1 画布
   const maxW = cw > 0 ? cw : 800;
   const maxH = Math.max(320, window.innerHeight * 0.58);
@@ -465,17 +473,22 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="ip-stage">
-      <canvas ref="displayCanvas" class="ip-canvas"></canvas>
-      <canvas
-        ref="overlayCanvas"
-        class="ip-overlay"
-        :class="{ 'ip-crosshair': tool === 'rect', 'ip-brush-cursor': tool !== 'rect' }"
-        @pointerdown="onPointerDown"
-        @pointermove="onPointerMove"
-        @pointerup="onPointerUp"
-        @pointercancel="onPointerUp"
-      ></canvas>
+    <div ref="stageEl" class="ip-stage">
+      <!-- BUG-2026-0918-008：画布必须包在 .ip-frame 里、由 display 画布在文档流中撑开高度。
+           画布直接当 .ip-stage 的绝对定位子元素时不参与父容器高度计算，舞台高度只剩
+           min-height，图比它高就向下溢出、盖住参数行与底栏。 -->
+      <div class="ip-frame">
+        <canvas ref="displayCanvas" class="ip-canvas"></canvas>
+        <canvas
+          ref="overlayCanvas"
+          class="ip-overlay"
+          :class="{ 'ip-crosshair': tool === 'rect', 'ip-brush-cursor': tool !== 'rect' }"
+          @pointerdown="onPointerDown"
+          @pointermove="onPointerMove"
+          @pointerup="onPointerUp"
+          @pointercancel="onPointerUp"
+        ></canvas>
+      </div>
       <div v-if="!srcPath" class="ip-empty">📂 先选择一张图片开始编辑</div>
     </div>
 
@@ -625,16 +638,36 @@ onBeforeUnmount(() => {
   position: relative;
   display: flex;
   justify-content: center;
+  /* 必须 center/flex-start：默认 stretch 会把 .ip-frame 拉伸到 min-height，
+     里面的画布依旧溢出（BUG-2026-0918-008 的成因之一） */
+  align-items: center;
+  /* min-height 只在空态（无图）时起作用；有图时舞台高度由 .ip-frame 撑开 */
   min-height: 320px;
   border-radius: 12px;
   background:
     repeating-conic-gradient(rgba(128, 128, 128, 0.12) 0% 25%, transparent 0% 50%) 50% / 22px 22px;
 }
 
+/* 画布框：尺寸由文档流中的 display 画布撑开 → 舞台高度随图变化，不再压缩/溢出 */
+.ip-frame {
+  position: relative;
+  flex: 0 0 auto;
+}
+
 .ip-canvas,
 .ip-overlay {
-  position: absolute;
   border-radius: 8px;
+}
+
+.ip-canvas {
+  display: block;
+}
+
+/* 叠加层贴合 display 画布：宽高由 JS 同步写入的 canvas 属性决定，故只钉左上角，不写 inset:0 */
+.ip-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
 }
 
 .ip-overlay.ip-crosshair {
