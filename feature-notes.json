@@ -2003,9 +2003,9 @@
     },
     {
       "id": "FEAT-064",
-      "name": "主页「数据库查看」入口（复用 dev-data 窗口的库浏览视角）",
-      "status": "done",
-      "description": "主页设置菜单（⚙）在「开发者视角」「数据与路径」之后新增「数据库查看」。为守住原子性与组件轻量，不新建窗口、不复制只读浏览实现：仍复用同一个 dev-data 副窗口，只带上视角参数 view=\"db\" —— 隐藏左侧「运行态路径清单」，让右侧库浏览（photos.db / persons.db 的表清单 + 表数据预览 + 只读 SQL）占满整窗，窗口标题同步为「数据库查看 · 只读」。窗口已存在时由 Rust 发 dev-data-view 事件通知前端切换视角（不销毁重建、不丢当前滚动/查询状态）；首次创建则经 WebviewUrl 的 query 带入初始视角，避免「先渲染 all 再切 db」的闪动。安全边界完全沿用 devdata 模块：SQLITE_OPEN_READONLY、表名走 sqlite_master 校验、行数上限 200、敏感列（password_hash/token 等）后端打码。",
+      "name": "（已废弃）主页「数据库查看」独立入口 —— 并入「数据与路径」",
+      "status": "deprecated",
+      "description": "原需求：主页设置菜单为「数据库查看」单开一个入口。实现方式是与「数据与路径」共用同一个 dev-data 副窗口，只带 view=\"db\" 隐藏左侧路径清单、让库浏览占满整窗，并同步窗口标题。实现完成后确认：「数据与路径」本身就已经包含库浏览（photos.db / persons.db 表清单 + 表数据预览 + 只读 SQL），两个入口等于同一扇门的两个把手 —— 用户决定只保留「数据与路径」。",
       "related_files": [
         "src/views/Home.vue",
         "src/dev/DataWindowApp.vue",
@@ -2027,7 +2027,8 @@
         "权限": "无需新增 capability：dev-data 窗口已声明 core:default（含 core:event:default，覆盖 listen）。"
       },
       "created_at": "2026-09-18T13:00:00+08:00",
-      "updated_at": "2026-09-18T13:00:00+08:00"
+      "updated_at": "2026-09-18T13:55:00+08:00",
+      "deprecated_reason": "功能重复：dev-data 窗口默认视图已含库浏览与只读 SQL，独立入口没有新增能力。回退范围：Rust 侧的 view 参数 / 窗口标题切换 / dev-data-view 事件，前端 DataWindowApp 的 view 状态与事件监听，Home.vue 的「数据库查看」菜单项与 openDbViewer() —— 全部删除，不留死代码。真正让用户「看不到菜单」的是层叠问题（BUG-2026-0918-005），该修复保留。"
     },
     {
       "id": "FEAT-065",
@@ -2058,5 +2059,5 @@
       "updated_at": "2026-09-18T13:00:00+08:00"
     }
   ],
-  "updated": "2026-09-18T13:00:00+08:00"
+  "updated": "2026-09-18T13:55:00+08:00"
 }

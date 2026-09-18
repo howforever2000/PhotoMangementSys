@@ -12,9 +12,8 @@
  *   - 表名走 sqlite_master 校验；行数上限 200；单元格截断；BLOB 只报字节数
  *   - 敏感列（password_hash / token 等）已由后端打码
  */
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 
 /** 一条运行态路径（对应 Rust devdata::PathEntry） */
 interface PathEntry {
@@ -271,32 +270,8 @@ function setMode(m: "rows" | "sql") {
   }
 }
 
-/* FEAT-064：窗口视角（all = 路径清单 + 库浏览；db = 仅库浏览）。
-   主页「数据与路径」/「数据库查看」两个入口共用同一个窗口：
-   建窗时经 query 带入初始视角，窗口已存在时由 Rust 发 dev-data-view 事件切换。 */
-const view = ref<"all" | "db">(initialView());
-let unlistenView: (() => void) | null = null;
-
-function initialView(): "all" | "db" {
-  try {
-    return new URLSearchParams(window.location.search).get("view") === "db" ? "db" : "all";
-  } catch {
-    return "all";
-  }
-}
-
 onMounted(() => {
   void refreshAll();
-  // 窗口已存在时 Rust 侧不重建，改发事件通知切视角（FEAT-064）
-  void listen<string>("dev-data-view", (e) => {
-    view.value = e.payload === "db" ? "db" : "all";
-  }).then((un) => {
-    unlistenView = un;
-  });
-});
-
-onBeforeUnmount(() => {
-  unlistenView?.();
 });
 </script>
 
@@ -305,7 +280,7 @@ onBeforeUnmount(() => {
     <header class="dw-head">
       <div class="dw-title">
         <span class="dw-dot"></span>
-        {{ view === "db" ? "数据库查看" : "开发者视角 · 数据与路径" }}
+        开发者视角 · 数据与路径
         <span class="dw-ro">只读</span>
       </div>
       <div class="dw-actions">
@@ -319,8 +294,8 @@ onBeforeUnmount(() => {
     <p v-if="errorMsg" class="dw-err">{{ errorMsg }}</p>
 
     <div class="dw-body">
-      <!-- 左：路径清单（仅「数据与路径」视角；「数据库查看」视角隐藏，让库浏览占满） -->
-      <section v-if="view === 'all'" class="dw-paths">
+      <!-- 左：路径清单 -->
+      <section class="dw-paths">
         <div v-for="g in grouped" :key="g.group" class="dw-group">
           <h3 class="dw-group-title">{{ g.group }}</h3>
           <article
