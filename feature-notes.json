@@ -2111,7 +2111,26 @@
       ],
       "created_at": "2026-09-18T15:20:00+08:00",
       "updated_at": "2026-09-18T18:20:00+08:00"
+    },
+    {
+      "id": "FEAT-067",
+      "name": "多模态检索 · 以图搜图 + 描述向量（三路 RRF）+ 人物真名嵌入 + 扫描补齐地点",
+      "status": "done",
+      "description": "在现有 CLIP 图像向量检索之上补齐文本侧：①以图搜图 smart_search_by_image（复用现有图像向量库，查询向量来自图片编码）；②新表 photo_text_embeddings 存照片描述的文本向量，带 source_hash 增量重建（描述没变不重算）；③扫描入库时补齐地点（EXIF GPS → geo_index 离线反查，无网可用）；④人物真名作为描述嵌入前缀（开关默认开，走路线 B：P 编号 token 不参与编码，人物过滤靠 faces.person_id 精确过滤），改名/合并时增量重算受影响照片的描述向量；⑤描述向量接入检索：图像向量 / 关键词 / 描述向量三路 RRF 融合，前端 SmartSearch 增加以图搜图入口与人物精确过滤。注：本条为补登——实现于 2026-09-18（提交 6f63419 / 7528d1c / 0668d84 / 3fd4535 / f5a20f9），当时报告输出被截断未登记，2026-09-18 补记。",
+      "related_files": ["src-tauri/src/textdesc.rs", "src-tauri/src/db/embedding.rs", "src-tauri/src/content.rs", "src-tauri/src/lib.rs", "src-tauri/src/db/mod.rs", "src-tauri/src/db/content.rs", "src/views/SmartSearch.vue"],
+      "keywords": ["以图搜图", "smart_search_by_image", "描述向量", "photo_text_embeddings", "source_hash", "增量重建", "geo_index", "GPS 反查地点", "人物真名嵌入", "改名/合并增量重算", "三路 RRF", "SmartSearch"],
+      "implementation": {
+        "以图搜图": "textdesc.rs：smart_search_by_image —— 输入图片 → CLIP 图像编码 → 在现有图像向量库做近邻检索（复用既有图像向量链路，不复制第二套库）",
+        "描述向量表": "db/embedding.rs + db/content.rs：photo_text_embeddings（photo_id ↔ 文本向量 + 模型标识）；重建以 source_hash 为门槛——描述文本/人物名等参与编码的内容 hash 没变就跳过，避免全量重编码",
+        "扫描补地点": "content.rs：扫描入库时读 EXIF GPS，经 geo_index 离线反查城市/地区写回照片地点字段（不依赖在线逆地理服务）",
+        "人物真名嵌入": "textdesc.rs：描述编码文本前可拼接人物真名（设置开关，默认开）；改名/合并人物时按 faces.person_id 找到受影响照片，增量重算其描述向量（实测 170 人全部改名 ≈ 28s，不是瓶颈）。设计依据：三轮实测证明 P 编号类 token（P001 / 十二号人 / 12号人 / 真实姓名）无法稳定参与向量编码，走路线 B——人物约束不入向量，检索时用 faces.person_id 精确过滤",
+        "三路 RRF": "content.rs：检索融合图像向量、关键词、描述向量三路结果（RRF），任一路命中均可召回；SmartSearch.vue 增加以图搜图入口（选本地图片发起检索）与人物精确过滤控件"
+      },
+      "highlights": ["描述向量重建走 source_hash 增量，改一个人名不会触发全库重编码", "人物匹配坚持路线 B（精确过滤），不以低区分度 token 污染向量空间——有三轮实测数据背书（P 编号 acc 5%、编号人 60~70%、真实姓名 52.4%，disc 均远低于 0.05 门槛）", "地点补齐全离线（GPS → geo_index），扫描不再依赖外网", "三路 RRF 只做融合不改各路实现，单路可独立降级"],
+      "tests": ["cargo test --lib：104 passed / 0 failed / 2 ignored（2026-09-18 补登时复跑，基线一致）", "npm run build（vue-tsc --noEmit && vite build）：零错误（同上复跑）", "人物标签入向量三轮实测（chinese-clip-vit-b16-fp16，CPU，经项目 POST /embed_text_batch）：disc 中位数最高 0.0228（真实姓名，门槛 0.05）；裸标签查描述库 acc 最高 70%（12号人，门槛 90%）→ 全部不达标，定路线 B。原始数据在系统 temp（cbc-feat067-* 目录，会随清理丢失）", "改名成本实测：编码吞吐 33.93 条/秒（CPU b16）；170 人全部改名 28.2s（含合并重算 10.4s）→ 增量重算可用"],
+      "created_at": "2026-09-18T19:20:00+08:00",
+      "updated_at": "2026-09-18T19:20:00+08:00"
     }
   ],
-  "updated": "2026-09-18T18:20:00+08:00"
+  "updated": "2026-09-18T19:20:00+08:00"
 }
