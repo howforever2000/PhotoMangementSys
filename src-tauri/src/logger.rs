@@ -8,7 +8,8 @@
 //! - 定时清理（默认保留 1 小时，可调节），定时删除并刷新日志文件
 //!
 //! 使用方式：
-//! ```rust
+//! ```ignore
+//! // crate 内函数，doctest（独立 crate）无法直接编译，标为 ignore 仅作展示
 //! let t = log_call_start("move_album", "album_id=1, folder_id=Some(2)");
 //! // ... 业务逻辑 ...
 //! log_call_end("move_album", t);
