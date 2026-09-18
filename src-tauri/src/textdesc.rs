@@ -342,6 +342,52 @@ pub async fn recall_by_image(
     Ok(hits)
 }
 
+/// 描述语义召回的硬上限（与图像塔同口径：极端大库保护）
+const DESC_MAX_CANDIDATES: usize = 2000;
+
+/// 描述向量召回：查询词 → 文本塔编码 → 与 `photo_text_embeddings` 余弦 → 命中
+///
+/// 这是 FEAT-067 加进 RRF 的**第二路语义**（第一路是图像塔）。
+/// 描述里含时间/地点/场景/标签/人物真名，因此「2024年2月 成都」「夜景 小明」这类
+/// 结构化组合词能命中纯图像向量搜不到的照片。失败返回 Err，调用方静默降级。
+pub async fn recall_by_text(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    user_id: i64,
+    keyword: &str,
+    min_similarity: f64,
+) -> Result<Vec<(SmartHit, f64)>, String> {
+    if crate::vision::semantic_backoff_active() {
+        return Err("CLIP 服务暂不可用（退避中）".into());
+    }
+    let model = crate::vision::clip_model_id(app).await?;
+    let mut q = crate::vision::embed_text_query(keyword, app).await?;
+    l2_normalize(&mut q);
+    crate::vision::clear_semantic_down();
+
+    let rows = {
+        let db = state.0.lock().map_err(|e| format!("{e}"))?;
+        db.load_text_embeddings(user_id, DESC_KIND, &model)
+            .map_err(|e| format!("读取描述向量失败: {e}"))?
+    };
+    if rows.is_empty() {
+        return Err("描述向量索引为空（请先重建描述索引）".into());
+    }
+    let ranked = rank_by_cosine(&rows, &q, DESC_MAX_CANDIDATES, min_similarity);
+    let hashes: Vec<String> = ranked.iter().map(|(h, _)| h.clone()).collect();
+    let mut hits = {
+        let db = state.0.lock().map_err(|e| format!("{e}"))?;
+        db.lookup_hits_by_hashes(user_id, &hashes)
+            .map_err(|e| format!("{e}"))?
+    };
+    let mut out = Vec::with_capacity(hits.len());
+    for (hit, (_h, score)) in hits.iter_mut().zip(ranked.iter()) {
+        hit.semantic_score = Some(*score);
+        out.push((hit.clone(), *score));
+    }
+    Ok(out)
+}
+
 /// 描述索引重建报告
 #[derive(Debug, Clone, Serialize)]
 pub struct DescBuildReport {

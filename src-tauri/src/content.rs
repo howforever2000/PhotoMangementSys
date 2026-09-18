@@ -159,6 +159,18 @@ async fn continue_recall(
 
 /// RRF 融合：FTS 榜 + 语义榜（K=60），语义命中附加 semantic_score
 fn fuse_hits(fts: Vec<crate::db::SmartHit>, sem: Vec<(crate::db::SmartHit, f64)>) -> Vec<crate::db::SmartHit> {
+    fuse_hits3(fts, sem, Vec::new())
+}
+
+/// FEAT-067 步骤 5：三路 RRF（FTS + 图像向量语义 + 描述向量语义）
+///
+/// 只是在既有两路融合上**加一路**，融合公式与权重完全复用（同 K、同 tie-break）。
+/// `desc` 传空列表时与 `fuse_hits` 行为完全一致（既有语义未回退）。
+fn fuse_hits3(
+    fts: Vec<crate::db::SmartHit>,
+    img: Vec<(crate::db::SmartHit, f64)>,
+    desc: Vec<(crate::db::SmartHit, f64)>,
+) -> Vec<crate::db::SmartHit> {
     let mut score: HashMap<String, f64> = HashMap::new();
     let mut rank: HashMap<String, usize> = HashMap::new();
     let mut by_path: HashMap<String, (crate::db::SmartHit, Option<f64>)> = HashMap::new();
@@ -167,14 +179,16 @@ fn fuse_hits(fts: Vec<crate::db::SmartHit>, sem: Vec<(crate::db::SmartHit, f64)>
         rank.insert(h.path.clone(), i);
         by_path.insert(h.path.clone(), (h, None));
     }
-    for (i, (h, cos)) in sem.into_iter().enumerate() {
-        *score.entry(h.path.clone()).or_default() += 1.0 / (RRF_K + i as f64 + 1.0);
-        rank.entry(h.path.clone()).or_insert(usize::MAX);
-        let e = by_path
-            .entry(h.path.clone())
-            .or_insert((h, None));
-        if e.1.is_none() {
-            e.1 = Some(cos);
+    for lane in [img, desc] {
+        for (i, (h, cos)) in lane.into_iter().enumerate() {
+            *score.entry(h.path.clone()).or_default() += 1.0 / (RRF_K + i as f64 + 1.0);
+            rank.entry(h.path.clone()).or_insert(usize::MAX);
+            let e = by_path.entry(h.path.clone()).or_insert((h, None));
+            // 两路语义都命中时取较高者（前端只展示一个「AI 匹配」徽标）
+            e.1 = Some(match e.1 {
+                Some(c) => c.max(cos),
+                None => cos,
+            });
         }
     }
     let mut merged: Vec<(f64, usize, crate::db::SmartHit)> = score
@@ -1634,23 +1648,46 @@ pub mod commands {
             let min_sim = min_similarity
                 .unwrap_or(SEMANTIC_MIN_SIM_DEFAULT)
                 .clamp(0.05, 0.95);
+            // 第一路：图像向量语义（既有逻辑，一字不改）
+            let mut img_lane: Vec<(db::SmartHit, f64)> = Vec::new();
             match semantic_recall(&kw, min_sim, user_id, &state, &app).await {
                 Ok(sem) if !sem.is_empty() => {
-                    let n_sem = sem.len();
-                    hits = fuse_hits(hits, sem);
-                    logger::log_call_end_with(
-                        "smart_search.semantic",
-                        _t,
-                        &format!("OK | 语义命中 {n_sem}，融合后 {}", hits.len()),
-                    );
+                    img_lane = sem;
                 }
                 Ok(_) => {}
                 Err(e) => {
                     // 降级是预期行为（模型未下载/服务未启动/向量库为空），不打扰用户；
                     // 但**必须落日志**：此前只 eprintln!，用户与排查者都看不到原因，
                     // 导致「语义检索突然失效但无任何提示」（BUG-2026-0920-006）
-                    logger::log_info(&format!("[smart_search] 语义降级（仅返回关键词结果）: {e}"));
+                    logger::log_info(&format!("[smart_search] 图像语义降级: {e}"));
                 }
+            }
+            // FEAT-067 第二路：描述向量语义（时间/地点/场景/标签/人物真名）
+            // 只加一路，融合公式与权重沿用既有 RRF。
+            let mut desc_lane: Vec<(db::SmartHit, f64)> = Vec::new();
+            match crate::textdesc::recall_by_text(&app, &state, user_id, &kw, min_sim).await {
+                Ok(list) if !list.is_empty() => {
+                    desc_lane = list;
+                }
+                Ok(_) => {}
+                Err(e) => logger::log_info(&format!("[smart_search] 描述语义降级: {e}")),
+            }
+            if !img_lane.is_empty() || !desc_lane.is_empty() {
+                let n_img = img_lane.len();
+                let n_desc = desc_lane.len();
+                let before = hits.len();
+                hits = fuse_hits3(hits, img_lane, desc_lane);
+                logger::log_call_end_with(
+                    "smart_search.semantic",
+                    _t,
+                    &format!(
+                        "OK | 图像语义 {} · 描述语义 {} · 融合 {} → {}",
+                        n_img,
+                        n_desc,
+                        before,
+                        hits.len()
+                    ),
+                );
             }
         }
         Ok(hits)
@@ -1682,7 +1719,7 @@ pub mod commands {
 
 #[cfg(test)]
 mod semantic_tests {
-    use super::fuse_hits;
+    use super::{fuse_hits, fuse_hits3};
     use crate::db::SmartHit;
 
     fn hit(path: &str) -> SmartHit {
@@ -1717,6 +1754,38 @@ mod semantic_tests {
         assert!((a.semantic_score.unwrap() - 0.44).abs() < 1e-9);
         let c = out.iter().find(|h| h.path == "c.jpg").unwrap();
         assert!(c.semantic_score.is_none());
+    }
+
+    /// FEAT-067 步骤 5：加一路描述语义后，既有两路融合结果不变（回归第 8 条）
+    #[test]
+    fn three_lane_fuse_keeps_two_lane_result_when_desc_empty() {
+        let fts = vec![hit("c.jpg"), hit("a.jpg")];
+        let sem = vec![(hit("b.jpg"), 0.46), (hit("a.jpg"), 0.44)];
+        let two = fuse_hits(fts.clone(), sem.clone());
+        let three = fuse_hits3(fts, sem, Vec::new());
+        let p2: Vec<&str> = two.iter().map(|h| h.path.as_str()).collect();
+        let p3: Vec<&str> = three.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(p2, p3, "描述路为空时三路融合必须等价于既有两路");
+    }
+
+    /// 描述路带来的命中是**追加**而非替换：原命中集合不缩水
+    #[test]
+    fn three_lane_fuse_only_adds_hits() {
+        let fts = vec![hit("c.jpg"), hit("a.jpg")];
+        let img = vec![(hit("b.jpg"), 0.46)];
+        let desc = vec![(hit("d.jpg"), 0.52)];
+        let out = fuse_hits3(fts, img, desc);
+        let paths: Vec<&str> = out.iter().map(|h| h.path.as_str()).collect();
+        for p in ["a.jpg", "b.jpg", "c.jpg", "d.jpg"] {
+            assert!(paths.contains(&p), "融合后不应丢失任何一路的命中: {p}");
+        }
+        // 两路都命中时取较高余弦
+        let both = fuse_hits3(
+            vec![hit("x.jpg")],
+            vec![(hit("x.jpg"), 0.40)],
+            vec![(hit("x.jpg"), 0.61)],
+        );
+        assert!((both[0].semantic_score.unwrap() - 0.61).abs() < 1e-9);
     }
 }
 

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, reactive } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
 import type { SmartHit } from "../types/content";
+import type { PersonInfo } from "../types/photo";
 
 /**
  * 智能搜索（FEAT-034）—— 半自然语言 + 多维筛选
@@ -14,6 +16,12 @@ import type { SmartHit } from "../types/content";
  * 时间区间 / 地点 / 类别 / 标签 / 人物标号 / 影调。
  * 「智能解析」按钮会把自然语言拆成结构化筛选自动填充。
  * 结果网格复用 get_photo_thumbs（按 album_id 分组）生成缩略图。
+ *
+ * FEAT-067 新增两条通道：
+ *   - 🖼 以图搜图：选一张照片 → 图像塔编码 → 与已索引向量比余弦（复用现有索引）
+ *   - 描述语义：后端把「描述向量」作为第二路语义接进 RRF，前端无感
+ *   人物一律走 faces.person_id 精确过滤（人物编号不进向量），下拉里已命名的
+ *   人物显示真名，未命名显示编号。
  *
  * 点击行为（与人像画廊 / 时间线一致）：
  *   - 点图片 → PhotoLightbox 大图预览（序列 = 当前全部搜索结果，可左右翻页）
@@ -29,6 +37,15 @@ const searched = ref(false);
 const error = ref("");
 const results = ref<SmartHit[]>([]);
 const thumbMap = ref<Record<string, string>>({});
+
+/** FEAT-067：以图搜图 —— 当前查询图（空 = 关键词模式） */
+const queryImagePath = ref("");
+/** 人物注册表（精确过滤下拉：已命名显示真名，未命名显示编号） */
+const persons = ref<PersonInfo[]>([]);
+
+function personLabel(p: PersonInfo): string {
+  return p.name && p.name !== p.id ? `${p.name}（${p.id}）` : p.id;
+}
 
 /** 结构化筛选 */
 const filters = reactive({
@@ -78,7 +95,49 @@ onMounted(() => {
       // 预热失败不影响普通关键词搜索（搜索时会再尝试并自动降级）
       semReady.value = false;
     });
+  // 人物下拉（精确过滤用）；失败不阻塞搜索
+  invoke<PersonInfo[]>("list_persons")
+    .then((list) => {
+      persons.value = list;
+    })
+    .catch(() => {
+      persons.value = [];
+    });
 });
+
+/**
+ * FEAT-067：以图搜图（选一张照片找相似）
+ *
+ * 查询图会先复用其缩略图做编码（与建索引时同一输入），保证「拿已索引的图查自己」
+ * 余弦 = 1.0；结果复用同一套结果网格与缩略图加载。
+ */
+async function runImageSearch() {
+  const picked = await openFileDialog({
+    multiple: false,
+    directory: false,
+    title: "选择一张照片作为搜索样例",
+    filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif"] }],
+  });
+  if (typeof picked !== "string") return;
+  searching.value = true;
+  error.value = "";
+  thumbMap.value = {};
+  try {
+    results.value = await invoke<SmartHit[]>("smart_search_by_image", {
+      path: picked,
+      limit: 60,
+      minSimilarity: null,
+    });
+    queryImagePath.value = picked;
+    searched.value = true;
+    await loadThumbs();
+  } catch (e) {
+    error.value = String(e);
+    notify.error("以图搜图失败", String(e));
+  } finally {
+    searching.value = false;
+  }
+}
 
 async function runSearch() {
   searching.value = true;
@@ -95,6 +154,7 @@ async function runSearch() {
       personId: filters.person || null,
       toneType: filters.toneType || null,
     });
+    queryImagePath.value = ""; // 回到关键词模式
     searched.value = true;
     await loadThumbs();
   } catch (e) {
@@ -138,6 +198,7 @@ function resetFilters() {
   results.value = [];
   searched.value = false;
   thumbMap.value = {};
+  queryImagePath.value = "";
 }
 
 /** 智能解析自然语言 → 填充结构化筛选 + 关键词 */
@@ -300,7 +361,17 @@ function showTag(r: SmartHit): string {
       <button class="btn ss-btn-go" :disabled="searching" @click="runSearch">
         {{ searching ? "搜索中…" : "搜索" }}
       </button>
+      <!-- FEAT-067：以图搜图（复用现有图像向量索引，不需要重建） -->
+      <button class="btn ss-btn-img" :disabled="searching" title="选一张照片，找相似照片" @click="runImageSearch">
+        🖼 以图搜图
+      </button>
     </div>
+
+    <!-- 以图搜图：查询图回显 + 退出 -->
+    <p v-if="queryImagePath" class="ss-imgq">
+      🖼 以图搜图：{{ queryImagePath.split(/[\\/]/).pop() }}
+      <button class="btn ss-btn-x" title="退出以图搜图" @click="queryImagePath = ''; results = []; searched = false">✕</button>
+    </p>
 
     <!-- 结构化筛选芯片 -->
     <div class="ss-filters">
@@ -326,8 +397,12 @@ function showTag(r: SmartHit): string {
         <input v-model="filters.label" type="text" class="f-text" placeholder="如 猫 / golden retriever" />
       </div>
       <div class="f-item">
+        <!-- FEAT-067：人物走 faces.person_id 精确过滤（不进向量，靠人脸识别） -->
         <label>人物</label>
-        <input v-model="filters.person" type="text" class="f-text" placeholder="如 P001" />
+        <select v-model="filters.person" class="f-select">
+          <option value="">人物不限</option>
+          <option v-for="p in persons" :key="p.id" :value="p.id">{{ personLabel(p) }}</option>
+        </select>
       </div>
       <div class="f-item">
         <label>影调</label>
@@ -376,7 +451,9 @@ function showTag(r: SmartHit): string {
 
     <!-- 结果 -->
     <div v-else class="ss-results">
-      <p class="ss-count">找到 {{ results.length }} 张照片</p>
+      <p class="ss-count">
+        找到 {{ results.length }} 张照片{{ queryImagePath ? "（以图搜图，按相似度排序）" : "" }}
+      </p>
       <div class="ss-grid">
         <figure
           v-for="r in results"
@@ -488,6 +565,29 @@ function showTag(r: SmartHit): string {
 }
 .ss-btn-smart {
   white-space: nowrap;
+}
+/* FEAT-067：以图搜图按钮（与「智能解析」同排，绿色区分） */
+.ss-btn-img {
+  white-space: nowrap;
+  background: rgba(22, 163, 74, 0.12);
+  border-color: rgba(22, 163, 74, 0.45);
+}
+.ss-imgq {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  background: rgba(22, 163, 74, 0.1);
+  border: 1px solid rgba(22, 163, 74, 0.3);
+  word-break: break-all;
+}
+.ss-btn-x {
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.6;
 }
 .ss-btn-go {
   white-space: nowrap;
