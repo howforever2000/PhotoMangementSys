@@ -332,6 +332,8 @@ fn build_records(
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         let ex = crate::photo_scan::read_photo_exif(path, &name);
+        // FEAT-067：地点补齐（GPS → 离线行政区划反查）
+        let place = resolve_location(&ex);
 
         // 聚合可搜索文本（大类+细类+label+Top3 细类+人物标号）
         let mut parts: Vec<String> = Vec::new();
@@ -377,7 +379,7 @@ fn build_records(
             person_ids: person_ids_json,
             person_count: r.person_count as i64,
             shoot_time: ex.shoot_time,
-            location: ex.place,
+            location: place,
             shutter_speed: ex.shutter_speed,
             iso: ex.iso,
             aperture: ex.aperture,
@@ -467,6 +469,8 @@ fn build_records_combined(
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         let ex = crate::photo_scan::read_photo_exif(path, &name);
+        // FEAT-067：地点补齐（GPS → 离线行政区划反查）
+        let place = resolve_location(&ex);
 
         // 影调匹配（按路径；未命中留 None）
         let tone = tone_map.get(&r.path);
@@ -519,7 +523,7 @@ fn build_records_combined(
             person_ids: person_ids_json,
             person_count: r.person_count as i64,
             shoot_time: ex.shoot_time.clone(),
-            location: ex.place.clone(),
+            location: place,
             shutter_speed: ex.shutter_speed.clone(),
             iso: ex.iso.clone(),
             aperture: ex.aperture.clone(),
@@ -569,6 +573,23 @@ fn build_records_combined(
         );
     }
     Ok((recs, rows))
+}
+
+/// FEAT-067 步骤 3：扫描期地点补齐
+///
+/// `photo_scan::read_photo_exif` 走的是快路径（不反查地名），`place` 恒为 None；
+/// 这里补一步**离线**反查（GPS → 省/市，见 `geo_index`），让 `location` 不再只有
+/// 个位数百分比的填充率。无网络依赖，未命中（国外/无 GPS）留 None。
+///
+/// 只负责「把数据搞到」，不做嵌入 —— 符合「扫描与嵌入分两步」的定稿（决策⑥）。
+fn resolve_location(ex: &crate::photo_scan::PhotoExif) -> Option<String> {
+    if let Some(p) = ex.place.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(p.to_string());
+    }
+    match (ex.lat, ex.lon) {
+        (Some(lat), Some(lon)) => crate::geo_index::find_region(lat, lon),
+        _ => None,
+    }
 }
 
 /// 空字符串 → None（落库为 NULL），否则保留
@@ -1702,6 +1723,20 @@ mod semantic_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FEAT-067 步骤 3：地点补齐 —— EXIF 地名优先，其次 GPS 离线反查，都没有则 None
+    #[test]
+    fn resolve_location_prefers_exif_place_then_geo() {
+        // 不存在的文件 → read_photo_exif 返回全 None（快路径本身不做反查）
+        let mut base = crate::photo_scan::read_photo_exif(Path::new("/nonexistent/x.jpg"), "x.jpg");
+        assert_eq!(resolve_location(&base), None, "无 GPS 无地名 → None");
+        base.lat = Some(30.6593);
+        base.lon = Some(104.0657);
+        assert_eq!(resolve_location(&base).as_deref(), Some("四川省 · 成都市"));
+        // EXIF 已带地名 → 直接用，不被覆盖
+        base.place = Some("杭州西湖".into());
+        assert_eq!(resolve_location(&base).as_deref(), Some("杭州西湖"));
+    }
 
     #[test]
     fn hash_is_stable_and_distinct() {
