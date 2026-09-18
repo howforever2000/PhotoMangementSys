@@ -1566,8 +1566,21 @@
         ]
       },
       "evidence_log": "修复前 app.log：`[AOP:CALL] start_model_download START | name=chinese-clip-fp32` → `[AOP:RET] ... END 耗时 0ms 结果 OK`，其后无任何 model_dl 记录；目录无临时文件。修复后：起下载即出现进度上报（model-dl-progress）或明确的「连接/首字节超时」错误，并可自动换源。",
-      "related_files": ["src-tauri/src/model_dl.rs", "src-tauri/src/lib.rs", "src/components/ModelGpuSettings.vue"],
-      "keywords": ["模型下载", "无反应", "静默挂起", "hf-mirror", "TLS", "超时", "多源", "源自检"],
+      "related_files": [
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/ModelGpuSettings.vue"
+      ],
+      "keywords": [
+        "模型下载",
+        "无反应",
+        "静默挂起",
+        "hf-mirror",
+        "TLS",
+        "超时",
+        "多源",
+        "源自检"
+      ],
       "created_at": "2026-09-25T11:00:00+08:00",
       "fixed_at": "2026-09-25T11:30:00+08:00"
     },
@@ -1598,11 +1611,22 @@
         ]
       },
       "evidence_log": "改前：按钮为透明底 + 0.4 灰边 / 白底白钮；深色模式实心蓝按钮被刷成 rgba(255,255,255,.06)。改后：幽灵按钮浅蓝实底 #eef2ff、主按钮实心蓝、禁用态实心灰、深色模式实心变体不再被覆盖（vue-tsc 通过）。",
-      "related_files": ["src/assets/main.css", "src/components/GlobalScanPanel.vue", "src/components/ModelGpuSettings.vue"],
-      "keywords": ["按钮", "太透明", "深色模式", "选择器权重", "禁用态", "opacity"],
+      "related_files": [
+        "src/assets/main.css",
+        "src/components/GlobalScanPanel.vue",
+        "src/components/ModelGpuSettings.vue"
+      ],
+      "keywords": [
+        "按钮",
+        "太透明",
+        "深色模式",
+        "选择器权重",
+        "禁用态",
+        "opacity"
+      ],
       "created_at": "2026-09-25T11:10:00+08:00",
       "fixed_at": "2026-09-25T11:35:00+08:00"
-    },
+    },
     {
       "id": "BUG-2026-0918-002",
       "date": "2026-09-18",
@@ -1815,6 +1839,85 @@
       ],
       "created_at": "2026-09-18T13:20:00+08:00",
       "fixed_at": "2026-09-18T13:35:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0918-006",
+      "date": "2026-09-18",
+      "status": "fixed",
+      "title": "创意工坊载入图片后整张照片被红色蒙版铺满：蒙版画布不透明黑底撞上 source-in 叠加",
+      "module": "创意工坊 · 区域直方图均衡化 / src/components/workshop/WorkshopRegionEq.vue",
+      "symptom": [
+        "载入图片后不做任何框选/涂抹，照片整体被半透明红色盖住（截图确认）",
+        "视觉上像「照片坏了/滤镜坏了」，用户无法判断蒙版到底选了哪里"
+      ],
+      "root_cause": {
+        "summary": "蒙版画布约定「黑=未选、白=选中」，但叠加层用 globalCompositeOperation=source-in 填红色，合成按 alpha 通道而非亮度判断——黑色也是 alpha=255，于是整张蒙版都被染成红色",
+        "detail": [
+          "loadImage 初始化时 maskCtx.fillStyle='#000' 铺满黑底，clearMask 同样铺黑",
+          "redraw 里叠加层的顺序是 drawImage(maskCanvas) → source-in → fillRect(红色半透明)",
+          "source-in 的语义是「源(红色)只保留在目标不透明处」，判断依据是 alpha 而不是颜色亮度",
+          "不透明黑底的 alpha=255 → 整个画布区域都保留红色 → 全图变红；设计意图里只有白色笔迹该变红"
+        ]
+      },
+      "solution": {
+        "summary": "蒙版画布改为「透明=未选、白=选中」，导出时再铺黑合成后端约定的灰度蒙版 PNG。",
+        "steps": [
+          "loadImage 只赋 width/height（自动重置为全透明），删掉铺黑；clearMask 改 clearRect",
+          "橡皮从「画黑」改为 globalCompositeOperation=destination-out（擦回透明）",
+          "apply 导出蒙版时新建画布：先铺 #000 再 drawImage 蒙版画布 → 合成「白=选中、黑=未选」的灰度 PNG，后端约定不变",
+          "顺带补交互：新增 hasMask 状态，「应用均衡化」在无选中区域时禁用 + 提示，避免发起返回原图的无意义请求"
+        ]
+      },
+      "lessons": [
+        "canvas 的 source-in / destination-in 系列合成看的是 alpha 通道，蒙版类画布应该用「透明/不透明」而非「黑/白」表达选区",
+        "同一份数据要同时服务「屏幕叠加」和「协议导出」时，内部表示选一种对渲染正确的形式，导出时再做一次显式转换",
+        "canvas 赋值 width/height 会清空画布，这是「重置」的免费副作用，不需要再 fillRect 铺底"
+      ],
+      "evidence_log": "用户截图：未做任何框选时整图红色蒙版；vue-tsc --noEmit 零错误 + vite build 通过",
+      "related_files": [
+        "src/components/workshop/WorkshopRegionEq.vue"
+      ]
+    },
+    {
+      "id": "BUG-2026-0918-007",
+      "date": "2026-09-18",
+      "status": "fixed",
+      "title": "创意工坊点「应用均衡化」报「服务启动超时（20s 内 /health 不可达）」且后端无任何执行日志：裸 python 命中 Store 占位符（BUG-2026-0918-002 同坑未同步）",
+      "module": "创意工坊微服务生命周期 / src-tauri/src/studio.rs + python-studio/server.py",
+      "symptom": [
+        "工坊页面点「应用均衡化」，等待后报「处理失败：创意工坊服务启动超时（20s 内 /health 不可达）」",
+        "报错只有一个笼统超时，不知道服务进程是没起来还是起来又秒退",
+        "python-studio 服务没有任何执行日志，排错无从下手"
+      ],
+      "root_cause": {
+        "summary": "studio.rs 开发版用裸 `python` 启动微服务，而这台机器 PATH 上第一个 python 是 Microsoft Store「应用执行别名」占位符——spawn 成功但立刻退出，探活循环干等 20s 才报超时。这正是 BUG-2026-0918-002 在 vision.rs 修过的问题，写 studio.rs 时没有同步同样的修复",
+        "detail": [
+          "vision.rs 已有 resolve_python_interpreter()：候选解释器逐个跑「import fastapi, uvicorn」探针，优先项目 venv python\\.venv-vcr，失败时给出完整原因清单——但它是 vision 私有函数，studio.rs 没复用",
+          "studio.rs 的探活循环只轮询 /health，从不 child.try_wait()，子进程秒退也傻等满 20s",
+          "子进程 stdout/stderr 未收集，超时错误里没有「Python was not found」这类关键证据",
+          "server.py 只有启动时一行 print 到 stderr，而进程是 CREATE_NO_WINDOW 启动的，stderr 无人接、无处可看"
+        ]
+      },
+      "solution": {
+        "summary": "三管齐下：复用解释器解析、秒退即时报错、服务执行日志落盘。",
+        "steps": [
+          "vision.rs 的 resolve_python_interpreter() 改 pub(crate)，studio.rs 开发版启动改用它（优先项目 venv，Store 占位符/无依赖解释器自动跳过）",
+          "spawn_studio 改为返回 (PID, Child)，stdout/stderr 置 piped 并起线程收集；探活循环里 try_wait 检测子进程提前退出→立即报错并附输出尾部，不再干等 20s；真超时也在错误里附输出尾部",
+          "server.py 增加 logging 文件日志（路径由 Rust 经 STUDIO_LOG 注入 app 数据目录/studio-server.log，手动运行缺省落脚本旁）：记录启动（含 sys.executable）、每次 region-equalize 的参数/尺寸/选中占比/耗时/输出大小/异常堆栈；/health 不记（探活 250ms 一次，记了全是噪音）",
+          "studio.rs 启动子进程时注入 STUDIO_LOG 环境变量"
+        ]
+      },
+      "lessons": [
+        "同机多个 Python 微服务的启动代码要共用同一套解释器解析——「Store 占位符 python」这类环境坑修一处必须同步所有 spawn 点",
+        "探活循环应同时盯子进程退出状态（try_wait）：秒退立即报错 + 附输出，比「固定超时后报笼统错误」的排错效率高一个量级",
+        "后台常驻服务（尤其 CREATE_NO_WINDOW）的 stderr 无人可见，文件日志必须是标配；高频探活端点不要记日志，否则日志自己把自己刷爆"
+      ],
+      "evidence_log": "cargo check 通过（仅 model_dl.rs 既有 dead_code 警告）；cargo test --lib studio 2 通过；vue-tsc 零错误 + vite build 通过；py_compile server.py 通过",
+      "related_files": [
+        "src-tauri/src/studio.rs",
+        "src-tauri/src/vision.rs",
+        "python-studio/server.py"
+      ]
     }
   ]
 }

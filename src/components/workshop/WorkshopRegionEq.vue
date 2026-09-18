@@ -10,7 +10,9 @@ import { useThemeStore } from "../../stores/theme";
  * 交互：载入图片 → 框选（拖拽矩形）或画笔涂抹/橡皮 生成蒙版 → 调参数 → 应用。
  * 处理：独立 Python 微服务（python-studio，Rust studio_ensure 负责拉起），
  *       前端 fetch 直连 127.0.0.1，multipart 上传原图 + 灰度蒙版。
- * 蒙版约定：独立离屏 canvas，与原图同分辨率，白=选中，黑=未选。
+ * 蒙版约定：独立离屏 canvas，与原图同分辨率；**画布内透明=未选、白=选中**
+ *       （BUG-2026-0918-006：不透明黑底会让 overlay 的 source-in 红色叠加
+ *       铺满全图——黑也是 alpha=255）。导出给后端时铺黑合成灰度 PNG。
  */
 const theme = useThemeStore();
 
@@ -33,6 +35,8 @@ const statusMsg = ref("先选择一张图片");
 const processing = ref(false);
 const hasResult = ref(false);
 const showResult = ref(false);
+/** 蒙版上是否有选中区域（无选中时禁用「应用」，避免发起无意义请求） */
+const hasMask = ref(false);
 
 const imgEl = new Image();
 const resultEl = new Image();
@@ -51,7 +55,7 @@ const scale = ref(1);
 /** 拖拽框选的实时预览（显示坐标） */
 const dragRect = ref<{ x: number; y: number; w: number; h: number } | null>(null);
 
-const canApply = computed(() => !!srcPath.value && !processing.value);
+const canApply = computed(() => !!srcPath.value && !processing.value && hasMask.value);
 const panelStyle = computed(() => theme.cardStyle);
 
 /* ---------------- 载入图片 ---------------- */
@@ -73,8 +77,8 @@ function loadImage(path: string): Promise<void> {
       srcPath.value = path;
       maskCanvas.width = imgEl.naturalWidth;
       maskCanvas.height = imgEl.naturalHeight;
-      maskCtx.fillStyle = "#000";
-      maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+      // 赋值 width/height 已把画布重置为全透明（= 未选中），无需再铺底色
+      hasMask.value = false;
       hasResult.value = false;
       showResult.value = false;
       resultBlob = null;
@@ -207,18 +211,19 @@ function onPointerUp(e: PointerEvent) {
   redraw();
 }
 
-/** 画笔/橡皮落墨（原图坐标，半径随缩放换算） */
+/** 画笔/橡皮落墨（原图坐标，半径随缩放换算）。橡皮 = 擦回透明（未选中） */
 function stroke(nx: number, ny: number) {
   const r = (brushSize.value / 2) / scale.value;
-  maskCtx.fillStyle = tool.value === "eraser" ? "#000" : "#fff";
+  maskCtx.globalCompositeOperation = tool.value === "eraser" ? "destination-out" : "source-over";
+  maskCtx.fillStyle = "#fff";
   maskCtx.beginPath();
   maskCtx.arc(nx, ny, Math.max(1, r), 0, Math.PI * 2);
   maskCtx.fill();
 }
 
 function clearMask() {
-  maskCtx.fillStyle = "#000";
-  maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+  maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  hasMask.value = false;
   redraw();
   statusMsg.value = "已清空蒙版";
 }
@@ -226,6 +231,7 @@ function clearMask() {
 function selectAll() {
   maskCtx.fillStyle = "#fff";
   maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+  hasMask.value = true;
   redraw();
   statusMsg.value = "已全选（整图均衡）";
 }
@@ -239,6 +245,10 @@ function canvasBlob(canvas: HTMLCanvasElement, type: string): Promise<Blob> {
 
 async function apply() {
   if (!srcPath.value || processing.value) return;
+  if (!hasMask.value) {
+    statusMsg.value = "先框选或涂抹要均衡的区域（或点「全选」处理整图）";
+    return;
+  }
   processing.value = true;
   statusMsg.value = "正在处理…";
   try {
@@ -247,7 +257,17 @@ async function apply() {
 
     // 2) 原图字节（asset 协议 fetch，拿原始文件，不经 canvas 重编码）
     const imgBlob = await (await fetch(convertFileSrc(srcPath.value))).blob();
-    const maskBlob = await canvasBlob(maskCanvas, "image/png");
+
+    // 3) 蒙版导出：画布内是「透明=未选、白=选中」，铺黑合成后端约定的
+    //    灰度蒙版 PNG（白=选中、黑=未选）
+    const exportCanvas = document.createElement("canvas");
+    exportCanvas.width = maskCanvas.width;
+    exportCanvas.height = maskCanvas.height;
+    const ectx = exportCanvas.getContext("2d")!;
+    ectx.fillStyle = "#000";
+    ectx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+    ectx.drawImage(maskCanvas, 0, 0);
+    const maskBlob = await canvasBlob(exportCanvas, "image/png");
 
     // 3) multipart 提交
     const form = new FormData();
@@ -388,7 +408,9 @@ onBeforeUnmount(() => {
           对比结果
         </label>
         <button class="re-btn" type="button" :disabled="!hasResult" @click="saveResult">💾 保存结果</button>
-        <button class="re-btn re-primary" type="button" :disabled="!canApply" @click="apply">
+        <button class="re-btn re-primary" type="button" :disabled="!canApply"
+          :title="canApply ? '' : '先框选或涂抹要均衡的区域'"
+          @click="apply">
           {{ processing ? "处理中…" : "✨ 应用均衡化" }}
         </button>
       </div>

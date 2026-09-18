@@ -1137,7 +1137,8 @@ fn first_nonempty_line(s: &str) -> String {
 /// 运行即退出），这台机器上 PATH 顺序恰好是 占位符 → anaconda → Python312，
 /// 三者要么秒退要么没有 fastapi，只有项目 venv 可用。
 /// 失败时返回「试过哪些候选、各自为什么不行」的完整说明。
-fn resolve_python_interpreter() -> Result<PathBuf, String> {
+/// （studio.rs 的工坊微服务同机同坑，复用本函数：BUG-2026-0918-007）
+pub(crate) fn resolve_python_interpreter() -> Result<PathBuf, String> {
     if let Ok(g) = INTERP_CACHE.lock() {
         if let Some((at, res)) = g.as_ref() {
             if res.is_ok() || at.elapsed() < INTERP_FAIL_TTL {

@@ -15,8 +15,10 @@
 //! 图片/蒙版走 multipart，无需经 Rust 中转；「保存结果」因前端无 fs
 //! 写权限，由本模块 `studio_save_result` 命令落盘。
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::process::{Child, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::Manager;
@@ -119,8 +121,45 @@ async fn probe(client: &reqwest::Client, base: &str) -> Option<u64> {
     }
 }
 
-/// 启动服务（打包版优先内置 exe；开发版 python-studio/server.py）。返回 PID。
-fn spawn_studio(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
+/// 子进程输出缓冲上限：报错时只取尾部，防止占位符/异常输出刷屏
+const OUTPUT_TAIL_CHARS: usize = 600;
+
+fn output_tail(buf: &Arc<Mutex<String>>) -> String {
+    let s = buf.lock().map(|g| g.trim().to_string()).unwrap_or_default();
+    if s.chars().count() <= OUTPUT_TAIL_CHARS {
+        return s;
+    }
+    s.chars().skip(s.chars().count() - OUTPUT_TAIL_CHARS).collect()
+}
+
+/// 起线程收集子进程 stdout/stderr（供启动失败时附在错误信息里）。
+/// 返回 (缓冲, 读线程句柄)；探活成功后应 join 句柄并丢弃缓冲。
+fn collect_output(child: &mut Child) -> (Arc<Mutex<String>>, Vec<std::thread::JoinHandle<()>>) {
+    let buf = Arc::new(Mutex::new(String::new()));
+    let mut readers = Vec::new();
+    let streams = [
+        child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>),
+        child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>),
+    ];
+    for stream in streams.into_iter().flatten() {
+        let buf = buf.clone();
+        readers.push(std::thread::spawn(move || {
+            let mut stream = stream;
+            let mut s = String::new();
+            let _ = stream.read_to_string(&mut s);
+            if let Ok(mut g) = buf.lock() {
+                g.push_str(&s);
+            }
+        }));
+    }
+    (buf, readers)
+}
+
+/// 启动服务（打包版优先内置 exe；开发版 python-studio/server.py）。
+/// 返回 (PID, 子进程)——子进程句柄由调用方持有，用于秒退检测。
+/// 开发版解释器经 `vision::resolve_python_interpreter` 解析（BUG-2026-0918-007：
+/// 裸 `python` 命中 Store 占位符，spawn 成功但立刻退出，20s 探活超时）。
+fn spawn_studio(app: &tauri::AppHandle, port: u16) -> Result<(u32, Child), String> {
     let resource_dir = app
         .path()
         .resource_dir()
@@ -144,7 +183,7 @@ fn spawn_studio(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
             cmd = std::process::Command::new(&bundled_exe);
         }
     } else {
-        // 开发版：python python-studio/server.py
+        // 开发版：<解析出的解释器> python-studio/server.py
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
         let py_dir = manifest
             .parent()
@@ -155,25 +194,30 @@ fn spawn_studio(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
             return Err(format!("创意工坊服务脚本不存在: {}", script.display()));
         }
         workdir = py_dir;
+        let interp = crate::vision::resolve_python_interpreter()?;
+        cmd = std::process::Command::new(&interp);
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
-            cmd = std::process::Command::new("python");
-            cmd.creation_flags(0x0800_0000);
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            cmd = std::process::Command::new("python");
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
         cmd.arg(&script);
     }
 
     cmd.env("STUDIO_PORT", port.to_string());
-    let child = cmd
-        .current_dir(&workdir)
-        .spawn()
-        .map_err(|e| format!("启动创意工坊服务失败（开发版请先 pip install fastapi uvicorn opencv-python numpy）: {e}"))?;
-    Ok(child.id())
+    // 执行日志落盘（后端排错的事实依据；打包版同样生效）
+    if let Ok(dir) = app.path().app_data_dir() {
+        if std::fs::create_dir_all(&dir).is_ok() {
+            cmd.env("STUDIO_LOG", dir.join("studio-server.log"));
+        }
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = cmd.current_dir(&workdir).spawn().map_err(|e| {
+        format!("启动创意工坊服务失败（开发版请先 pip install fastapi uvicorn opencv-python numpy）: {e}")
+    })?;
+    Ok((child.id(), child))
 }
 
 /// ensure：返回服务基址（http://127.0.0.1:{port}）。
@@ -210,20 +254,48 @@ async fn ensure_base(app: &tauri::AppHandle) -> Result<String, String> {
         }
     }
 
-    // 3) 新启动
+    // 3) 新启动（探活期间监控子进程：秒退立即报错并附输出尾部，不干等满超时）
     let port = pick_free_port();
-    let pid = spawn_studio(app, port)?;
+    let (pid, mut child) = spawn_studio(app, port)?;
+    let (out_buf, mut readers) = collect_output(&mut child);
     let base = format!("http://127.0.0.1:{port}");
 
     let client = reqwest::Client::new();
     let deadline = tokio::time::Instant::now() + START_TIMEOUT;
     loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            clear_instance(app);
+            for r in readers.drain(..) {
+                let _ = r.join();
+            }
+            let tail = output_tail(&out_buf);
+            return Err(if tail.is_empty() {
+                format!("创意工坊服务进程提前退出（code={:?}，无输出）", status.code())
+            } else {
+                format!("创意工坊服务进程提前退出（code={:?}）：{tail}", status.code())
+            });
+        }
         if tokio::time::Instant::now() >= deadline {
             kill_pid(pid);
             clear_instance(app);
-            return Err("创意工坊服务启动超时（20s 内 /health 不可达）".into());
+            for r in readers.drain(..) {
+                let _ = r.join();
+            }
+            let tail = output_tail(&out_buf);
+            return Err(format!(
+                "创意工坊服务启动超时（{}s 内 /health 不可达）{}",
+                START_TIMEOUT.as_secs(),
+                if tail.is_empty() {
+                    String::new()
+                } else {
+                    format!("；服务输出尾部：{tail}")
+                }
+            ));
         }
         if probe(&client, &base).await.is_some() {
+            for r in readers.drain(..) {
+                let _ = r.join();
+            }
             save_instance(app, pid, port);
             set_base(base.clone());
             return Ok(base);
