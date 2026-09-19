@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PhotoManagementSys",
-  "version": "0.3.1",
+  "version": "0.4.0-beta",
   "identifier": "com.haoyuan.photo-management-sys",
   "build": {
     "beforeDevCommand": "npm run dev",

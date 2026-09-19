@@ -160,7 +160,7 @@ Notable optimizations implemented during development:
 
 ### 6.1 Installation
 
-- **Method 1 (recommended)**: Download an installer from the Release and run it (latest: **v0.3.1**, ~460 MB, bundles the VCR microservice and all runtime-required AI models):
+- **Method 1 (recommended)**: Download an installer from the Release and run it (latest stable: **v0.3.1**, ~460 MB, bundles the VCR microservice and all runtime-required AI models; **v0.4.0-beta** is a pre-release — tag published, installers pending build, see the release notes):
   - [`PhotoManagementSys_0.3.1_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64-setup.exe) (NSIS, per-user install into `%LOCALAPPDATA%`, no admin rights, recommended)
   - or [`PhotoManagementSys_0.3.1_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64_en-US.msi) (MSI, per-machine install into `Program Files`, admin rights required)
   - Upgrading: uninstall the old version first (the two installers use different install scopes; otherwise both copies remain)
