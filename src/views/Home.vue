@@ -592,13 +592,14 @@ onBeforeUnmount(() => {
   margin: 0 0 8px;
   letter-spacing: 0.5px;
   /* 不靠模糊/阴影"假装通透"，靠字重 + 字距 + 颜色对比 */
-  color: var(--color-text);
+  /* BUG-2026-0919-004：标题直接落在页面背景上，用 on-bg 对比色（深色模式+浅背景也可读） */
+  color: var(--color-on-bg, var(--color-text));
 }
 
 .app-subtitle {
   margin: 0;
   font-size: 15px;
-  color: var(--color-text-2);
+  color: var(--color-on-bg-2, var(--color-text-2));
 }
 
 .user-box {

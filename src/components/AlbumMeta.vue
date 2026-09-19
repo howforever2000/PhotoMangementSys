@@ -418,7 +418,8 @@ const saveTags = trace("saveTags", async () => {
   font-size: 24px;
   font-weight: 700;
   margin: 0;
-  color: var(--color-text);
+  /* 相册信息头直接落在页面背景上：on-bg 对比色（BUG-2026-0919-004） */
+  color: var(--color-on-bg, var(--color-text));
 }
 
 .name-edit-hint {
@@ -453,7 +454,7 @@ const saveTags = trace("saveTags", async () => {
 
 .detail-path {
   font-size: 12px;
-  color: var(--color-text-2);
+  color: var(--color-on-bg-2, var(--color-text-2));
   margin: 0;
 }
 
@@ -474,7 +475,7 @@ const saveTags = trace("saveTags", async () => {
 .detail-desc {
   margin: 0;
   font-size: 13px;
-  color: var(--color-text-2);
+  color: var(--color-on-bg-2, var(--color-text-2));
   line-height: 1.5;
 }
 
@@ -512,12 +513,12 @@ const saveTags = trace("saveTags", async () => {
 
 .detail-parent {
   font-size: 12px;
-  color: var(--color-text-2);
+  color: var(--color-on-bg-2, var(--color-text-2));
   margin: 0;
 }
 
 .parent-label {
-  color: var(--color-text-2);
+  color: var(--color-on-bg-2, var(--color-text-2));
 }
 
 .parent-path {
@@ -546,12 +547,12 @@ const saveTags = trace("saveTags", async () => {
 }
 
 .stat-label {
-  color: var(--color-text-2);
+  color: var(--color-on-bg-2, var(--color-text-2));
   font-weight: 500;
 }
 
 .stat-value {
-  color: var(--color-text);
+  color: var(--color-on-bg, var(--color-text));
   font-weight: 600;
 }
 
@@ -612,7 +613,7 @@ const saveTags = trace("saveTags", async () => {
 .album-tags-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--color-text-2);
+  color: var(--color-on-bg-2, var(--color-text-2));
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -655,7 +656,7 @@ const saveTags = trace("saveTags", async () => {
 
 .tag-empty {
   font-size: 12px;
-  color: var(--color-text-2);
+  color: var(--color-on-bg-2, var(--color-text-2));
 }
 
 .album-tags-edit {

@@ -2139,6 +2139,8 @@ function onKey(e: KeyboardEvent) {
 .page-title {
   font-size: 24px;
   margin: 0;
+  /* 页面背景上的标题：on-bg 对比色（BUG-2026-0919-004） */
+  color: var(--color-on-bg, var(--text));
 }
 
 /* 时间分组视图 */
@@ -2205,7 +2207,8 @@ function onKey(e: KeyboardEvent) {
 .group-title {
   font-weight: 600;
   font-size: 15px;
-  color: var(--text);
+  /* 分组标题直接落在页面背景上：on-bg 对比色（BUG-2026-0919-004） */
+  color: var(--color-on-bg, var(--text));
 }
 
 .group-count {
