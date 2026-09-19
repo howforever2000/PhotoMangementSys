@@ -6,7 +6,7 @@
  *   1. 先选**语义模型档位**（Chinese-CLIP B/16 ↔ L/14-336；适配不同硬件，
  *      缺档位置灰并可直接下载；切换后需重建语义索引）
  *   2. 默认 CPU 推理；「🔍 检测 GPU」探测可用加速提供方（对人物检测/OCR 生效）
- *   3. 检测到可用 GPU → 「🚀 启用加速」；未检测到 → 提示安装 GPU 版运行时
+ *   3. 检测到可用 GPU → 「🚀 启用加速」；未检测到 → 提示驱动/DX12（运行时已内置，见方案 A）
  *
  * 自包含：挂载即拉取状态（内部自动拉起识别微服务）；切换即时保存并刷新展示。
  * 复用方：GlobalScanPanel（全局照片扫描入库）；ScanPanel 等其他扫描入口可直接内嵌。
@@ -419,9 +419,11 @@ async function detect() {
     if (gpuAvailable.value) {
       notify.success("检测到可用 GPU 加速", gpu.value!.gpu.join("、"));
     } else {
+      // 方案 A：发布版已在构建期内置 DirectML 运行时，用户无需自行 pip 安装
+      // （见 python/requirements-vcr-packaging.txt）。检测不到只剩硬件/驱动原因。
       notify.info(
         "未检测到可用 GPU",
-        "当前使用 CPU 推理；可安装 onnxruntime-directml（或 CUDA 版）后重新检测",
+        "当前使用 CPU 推理。发布版已内置 DirectML 运行时，检测不到通常是：显卡驱动过旧 / 不支持 DirectX 12 / 虚拟机环境。更新显卡驱动后重新检测即可。",
       );
     }
   } catch (e) {
@@ -549,8 +551,9 @@ async function onModelChange() {
           <span v-if="gpuAvailable" class="mgps-status ok">
             可用加速：{{ gpu.gpu.join("、") }}
           </span>
+          <!-- 方案 A：DirectML 运行时已内置，检测不到即硬件/驱动原因，不再让用户自己装包 -->
           <span v-else class="mgps-status">
-            未检测到可用 GPU（可安装 onnxruntime-directml 后重新检测）
+            未检测到可用 GPU（已内置 DirectML；多为驱动过旧或不支持 DirectX 12）
           </span>
         </template>
         <span v-else class="mgps-status dim">默认使用 CPU 推理</span>
@@ -640,8 +643,9 @@ async function onModelChange() {
         实测本机 4→8 线程 CLIP 编码快约 1.6×）。点「📊 对比测速」会用各档线程数实测语义图塔并标出最快档，
         可一键「采用」；测速有 ±10% 波动，建议采用后再跑一次扫描感受实际耗时。
         （线程数不需要重建语义索引，改完下次扫描/搜索立即生效。）<br />
-        默认使用 CPU 推理；检测到 GPU 后可开启加速（需 GPU 版运行时，如
-        <code>onnxruntime-directml</code>）。GPU 加速对<b>人物检测 / 人脸 / OCR</b> 生效；
+        默认使用 CPU 推理；检测到 GPU 后可开启加速（<b>发布版已内置 DirectML 运行时</b>，
+        无需自行安装 <code>onnxruntime-directml</code>；开发版见
+        <code>python/requirements-vcr-packaging.txt</code>）。GPU 加速对<b>人物检测 / 人脸 / OCR</b> 生效；
         语义模型默认固定 CPU —— AMD DirectML 对 fp16 图存在算子级数值
         bug（实测输出错误），故 fp16 档不做 GPU 加速；如需用核显加速语义索引，
         可下载 <b>B/16 fp32</b> 档（719MB，DirectML 实测 37.9ms/张，约为 fp16 CPU 的 2.4 倍快），
