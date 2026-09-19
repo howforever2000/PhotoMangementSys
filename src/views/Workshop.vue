@@ -174,13 +174,14 @@ export default { components: { WorkshopImageProcess } };
   margin: 0 0 6px;
   font-size: 28px;
   font-weight: 700;
-  color: var(--color-text);
+  /* 页面背景上的标题：用 on-bg 对比色（BUG-2026-0919-004） */
+  color: var(--color-on-bg, var(--color-text));
 }
 
 .page-subtitle {
   margin: 0;
   font-size: 14px;
-  color: var(--color-text-2);
+  color: var(--color-on-bg-2, var(--color-text-2));
 }
 
 .widget-grid {

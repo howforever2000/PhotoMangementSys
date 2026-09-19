@@ -332,11 +332,14 @@ function goAlbumFromLightbox(albumId: number) {
   font-size: 22px;
   margin: 0;
   font-weight: 700;
+  /* 页面背景上的标题：on-bg 对比色（BUG-2026-0919-004） */
+  color: var(--color-on-bg, inherit);
 }
 .tl-subtitle {
   margin: 0;
   opacity: 0.7;
   font-size: 13px;
+  color: var(--color-on-bg-2, inherit);
 }
 .tl-toolbar {
   display: flex;

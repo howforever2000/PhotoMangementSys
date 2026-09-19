@@ -64,6 +64,14 @@ body.theme-dark {
   --shadow-hover: 0 12px 28px rgba(0, 0, 0, 0.55);
 }
 
+/* 背景图模式（BUG-2026-0919-002）：
+   文字直接落在照片上，亮斑区域（星空亮部、天空）会吃掉对比度。
+   theme store 已按图片平均色算好 --color-text 与阴影方向，
+   这里只负责应用一层 1px 级的细阴影，把文字从亮斑里"托"出来。 */
+body.theme-on-image {
+  text-shadow: var(--pm-text-shadow, 0 1px 3px rgba(0, 0, 0, 0.35));
+}
+
 /* 统一盒模型：避免组件内 width+padding 溢出 */
 *,
 *::before,

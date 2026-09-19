@@ -281,6 +281,8 @@ function openSub(m: SubModule) {
   font-weight: 800;
   letter-spacing: 2px;
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+  /* 页面背景上的标题：on-bg 对比色（BUG-2026-0919-004） */
+  color: var(--color-on-bg, inherit);
 }
 .smart-hero-sub {
   margin: 0 0 16px;

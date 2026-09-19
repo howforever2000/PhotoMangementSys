@@ -72,6 +72,47 @@ function loadImage(): string {
   }
 }
 
+/* ---------- 背景亮度/对比度计算工具（BUG-2026-0919-002） ---------- */
+
+function hexToRgb(hex: string): [number, number, number] {
+  let h = hex.replace("#", "").trim();
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = Number.parseInt(h.slice(0, 6) || "000000", 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/** WCAG 相对亮度（sRGB 线性化） */
+function relLum(rgb: [number, number, number]): number {
+  const f = (v: number) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * f(rgb[0]) + 0.7152 * f(rgb[1]) + 0.0722 * f(rgb[2]);
+}
+
+function contrastRatio(a: number, b: number): number {
+  const hi = Math.max(a, b);
+  const lo = Math.min(a, b);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function mixRgb(a: [number, number, number], b: [number, number, number], t: number): [number, number, number] {
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * t),
+    Math.round(a[1] + (b[1] - a[1]) * t),
+    Math.round(a[2] + (b[2] - a[2]) * t),
+  ];
+}
+
+const TEXT_DARK: [number, number, number] = [0x1f, 0x27, 0x33]; // 浅色模式主文字
+const TEXT_LIGHT: [number, number, number] = [0xf5, 0xf7, 0xff]; // 深色模式主文字
+
+/** 文字色是否属于「深色文字」（决定阴影方向） */
+function isDarkText(color: string): boolean {
+  const [r, g, b] = hexToRgb(color);
+  return r + g + b < 384;
+}
+
 /**
  * 全局主题/皮肤状态。
  * 登录页固定使用设计封面；主页与其余页面共用这里的背景（纯色 / 渐变 / 背景图+透明度），
@@ -160,15 +201,108 @@ export const useThemeStore = defineStore("theme", () => {
     };
   });
 
-  /* ---------- 文字/卡片配色（跟随浅色/深色模式） ---------- */
+  /* ---------- 文字配色：两层模型（BUG-2026-0919-002 / BUG-2026-0919-004） ----------
+   * 教训：v1 曾把 --color-text 整体改成「与页面背景对比」，但绝大多数文字实际
+   * 落在卡片上（卡片底色由模式决定）——深色模式 + 浅色页面背景时卡片文字被
+   * 翻成深色，反而看不清（用户截图回归）。
+   * 正确模型：
+   *   - textColor / subTextColor：跟随浅/深模式 → 用于卡片/面板等**自有底色**区域；
+   *   - onBgColor / onBgSubColor：与**实际页面背景**（纯色/渐变/背景图均色×透明度）
+   *     做对比度计算 → 仅用于直接落在页面背景上的标题/说明文字。
+   * onBg 规则（按用户要求）：a.与所选模式的文字色尽量一致（对比 ≥4.5:1 原样用）；
+   * b.不足 4.5:1 时在黑/白两端取对比更高的一端。 */
 
   const isDark = computed(() => mode.value === "dark");
+
+  /** 背景图平均色（异步采样；null=尚未算出，先按底层纯色处理） */
+  const bgImageAvg = ref<[number, number, number] | null>(null);
+
+  function sampleBgImage(dataUrl: string) {
+    if (!dataUrl || typeof document === "undefined") {
+      bgImageAvg.value = null;
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const N = 32;
+        const cv = document.createElement("canvas");
+        cv.width = N;
+        cv.height = N;
+        const ctx = cv.getContext("2d", { willReadFrequently: true })!;
+        ctx.drawImage(img, 0, 0, N, N);
+        const d = ctx.getImageData(0, 0, N, N).data;
+        let r = 0, g = 0, b = 0;
+        const px = d.length / 4;
+        for (let i = 0; i < d.length; i += 4) {
+          r += d[i];
+          g += d[i + 1];
+          b += d[i + 2];
+        }
+        bgImageAvg.value = [Math.round(r / px), Math.round(g / px), Math.round(b / px)];
+      } catch {
+        bgImageAvg.value = null;
+      }
+    };
+    img.onerror = () => (bgImageAvg.value = null);
+    img.src = dataUrl;
+  }
+  watch(bgImage, sampleBgImage, { immediate: true });
+
+  /** 实际背景的 RGB（图层叠加后的等效色） */
+  const effectiveBg = computed<[number, number, number]>(() => {
+    const base = hexToRgb(bgColor.value);
+    if (bgStyle.value === "gradient") {
+      return mixRgb(hexToRgb(gradFrom.value), hexToRgb(gradTo.value), 0.5);
+    }
+    if (bgStyle.value === "image") {
+      // 图片层以 bgOpacity 叠在底层纯色之上：等效色 = 图片均色*α + 底色*(1-α)
+      const avg = bgImageAvg.value;
+      if (!avg) return base;
+      return mixRgb(avg, base, 1 - bgOpacity.value);
+    }
+    return base;
+  });
+
+  /** 卡片/面板内文字：跟随模式（卡片底色也由模式决定，永远对比充足） */
   const textColor = computed(() => (isDark.value ? "#f5f7ff" : "#1f2733"));
-  /** 次要文字：对比度从原 0.72 → 0.86（深色）/ 75 → 88（浅色），
-     小字号下不再发糊。 */
   const subTextColor = computed(() =>
     isDark.value ? "rgba(225,232,255,.86)" : "rgba(36,48,68,.88)",
   );
+
+  /** 页面背景上的文字：与实际背景做对比度计算（a 尽量一致 / b 对比明显） */
+  const onBgColor = computed(() => {
+    const bgLum = relLum(effectiveBg.value);
+    const preferred = isDark.value ? TEXT_LIGHT : TEXT_DARK;
+    if (contrastRatio(relLum(preferred), bgLum) >= 4.5) {
+      return isDark.value ? "#f5f7ff" : "#1f2733";
+    }
+    const pickLight = contrastRatio(relLum(TEXT_LIGHT), bgLum) >= contrastRatio(relLum(TEXT_DARK), bgLum);
+    return pickLight ? "#f5f7ff" : "#1f2733";
+  });
+  const onBgSubColor = computed(() => {
+    const [r, g, b] = hexToRgb(onBgColor.value);
+    return `rgba(${r},${g},${b},.8)`;
+  });
+
+  /* 把「页面背景文字色」写到 body 内联 CSS 变量，供各页头部 title/subtitle 消费；
+     --color-text* 不再内联覆盖——恢复由 main.css 的模式类控制（卡片语境）。 */
+  function applyTextVars() {
+    if (typeof document === "undefined") return;
+    const body = document.body;
+    body.style.setProperty("--color-on-bg", onBgColor.value);
+    body.style.setProperty("--color-on-bg-2", onBgSubColor.value);
+    // 背景图模式加一层与文字同向的细描边阴影，抵抗图片亮斑（星空亮部等）
+    const onImage = bgStyle.value === "image" && !!bgImage.value;
+    body.classList.toggle("theme-on-image", onImage);
+    body.style.setProperty(
+      "--pm-text-shadow",
+      isDarkText(onBgColor.value)
+        ? "0 1px 3px rgba(255,255,255,.28)"
+        : "0 1px 3px rgba(0,0,0,.38)",
+    );
+  }
+  watch([onBgColor, bgStyle, bgImage], applyTextVars, { immediate: true });
 
   /* ---------- 把深/浅色模式同步到 body ----------
      这样 main.css 中的 `body.theme-dark { --color-text: ... }` 才能覆盖全局，
@@ -207,6 +341,8 @@ export const useThemeStore = defineStore("theme", () => {
     isDark,
     textColor,
     subTextColor,
+    onBgColor,
+    onBgSubColor,
     cardStyle,
     persist,
     saveImage,

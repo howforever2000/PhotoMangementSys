@@ -102,6 +102,73 @@ pub fn list_person_photos(pid: &str) -> Result<Vec<String>, String> {
         .map_err(|e| format!("读取人物照片行失败: {e}"))
 }
 
+/// 列出在指定相册目录下出现过的人物（BUG-2026-0919-003）。
+///
+/// 问题：扫描面板的人物注册表此前读全局 `list_persons`，相册 A 的详情页里
+/// 会看到其他相册的人物与全局脸数，与"当前相册"语境不符。
+/// 做法：读 faces 全表 (person_id, photo_path)，用与照片归属解析同一套
+/// `p_is_under`（Windows 大小写不敏感 + 前缀边界）过滤出落在 album_path
+/// 之下的记录，按人物聚合**去重后的照片数**（一张脸多次/一图多脸都只算一图）。
+/// 只返回在当前相册中出现（计数>0）的人物，按相册内照片数降序。
+pub fn list_persons_in_album(album_path: &str) -> Result<Vec<PersonEntry>, String> {
+    if album_path.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(conn) = open_db()? else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = conn
+        .prepare("SELECT person_id, photo_path FROM faces")
+        .map_err(|e| format!("查询人脸失败: {e}"))?;
+    let pairs: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| format!("查询人脸失败: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("读取人脸行失败: {e}"))?;
+    drop(stmt);
+
+    let mut per_person: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    for (pid, photo) in pairs {
+        if crate::persons::commands::p_is_under(album_path, &photo) {
+            per_person.entry(pid).or_default().insert(photo);
+        }
+    }
+    if per_person.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 补充人物显示名（persons 表）；只在当前相册出现过的人物才返回
+    let mut stmt2 = conn
+        .prepare("SELECT id, name, created_at FROM persons")
+        .map_err(|e| format!("查询人物失败: {e}"))?;
+    let rows = stmt2
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| format!("查询人物失败: {e}"))?;
+    let mut out: Vec<PersonEntry> = Vec::new();
+    for row in rows {
+        let (id, name, created_at) = row.map_err(|e| format!("读取人物行失败: {e}"))?;
+        if let Some(paths) = per_person.get(&id) {
+            if !paths.is_empty() {
+                out.push(PersonEntry {
+                    id,
+                    name,
+                    face_count: paths.len() as i64,
+                    created_at,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| b.face_count.cmp(&a.face_count).then_with(|| a.id.cmp(&b.id)));
+    Ok(out)
+}
+
 /// 重命名人物（自定义命名；空名回退为编号本身）
 pub fn rename_person(pid: &str, name: &str) -> Result<(), String> {
     let trimmed = name.trim();
@@ -525,6 +592,22 @@ pub fn list_persons() -> Result<Vec<crate::persons::PersonEntry>, String> {
     match &r {
         Ok(list) => crate::logger::log_call_end_with("list_persons", _t, &format!("OK | n={}", list.len())),
         Err(e) => crate::logger::log_call_end_with("list_persons", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// 人物注册表：列出在指定相册目录下出现过的人物（BUG-2026-0919-003）。
+///
+/// 相册详情页的扫描面板用本命令替代全局 list_persons：人物卡片计数为
+/// 「该人物在当前相册中出现的照片数」，其他相册的人物不再混入。
+#[tauri::command]
+pub fn list_persons_in_album(album_path: String) -> Result<Vec<crate::persons::PersonEntry>, String> {
+    let _t = log_call!("list_persons_in_album", &format!("album={album_path}"));
+    let r = crate::persons::list_persons_in_album(&album_path);
+    match &r {
+        Ok(list) => crate::logger::log_call_end_with("list_persons_in_album", _t, &format!("OK | n={}", list.len())),
+        Err(e) => crate::logger::log_call_end_with("list_persons_in_album", _t, &format!("ERR | {e}")),
     }
     r
 }

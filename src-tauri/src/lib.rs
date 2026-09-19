@@ -110,6 +110,7 @@ use persons::commands::{
     get_person_photos,
     list_person_photos,
     list_persons,
+    list_persons_in_album,
     merge_persons,
     rename_person,
 };
@@ -382,6 +383,7 @@ pub fn run() {
             move_photos_to_album,
             classify_album,
             list_persons,
+            list_persons_in_album,
             list_person_photos,
             get_person_photos,
             get_person_avatar,

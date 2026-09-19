@@ -5,11 +5,21 @@
 # Used by python/build_vcr_exe.ps1 to build a minimal venv for the PyInstaller exe.
 fastapi>=0.110
 uvicorn>=0.29
-# Pin the CPU runtime: onnxruntime 1.25+ is ~2.9x SLOWER for the CLIP fp16 vision
-# tower on CPU (measured: 8 threads, 8x224x224 batch -> 460ms/img on 1.29.0 vs
-# 159ms/img on 1.24.4, same machine/model). Do NOT float this without re-measuring
-# with python/bench/eval_clip_accuracy.py. See BUG-2026-0921-002.
-onnxruntime==1.24.4
+# GPU 加速方案 A（单包 DirectML，BUG-2026-0919-005）：
+#   onnxruntime-directml 是 onnxruntime 的**同名平替**（import 名仍是 onnxruntime），
+#   在 Windows 上多带一个 DmlExecutionProvider（走 DirectX 12），NVIDIA/AMD/Intel
+#   全系显卡通用、用户无需装 CUDA/cuDNN —— 发布版要做到「下载即用」只能构建期内置。
+#   - 为什么不是 onnxruntime-gpu（CUDA）：只认 NVIDIA，AMD/核显机器装了也用不上；
+#     且需匹配 CUDA/cuDNN 版本，普通用户无法自助安装。
+#   - 三个包同名互斥（onnxruntime / onnxruntime-gpu / onnxruntime-directml），
+#     切换时必须先卸载原包，不能并存。
+#   - 显式 CPU 回退仍在：DML 会话创建失败会自动回退 CPUExecutionProvider
+#     （model_registry._create_session），无 DX12 的机器不会崩。
+#   - 版本仍 pin 1.24.4：与 CPU 版口径一致，规避 1.25+ 对 CLIP fp16 vision 塔
+#     CPU 慢 2.9x 的坑（BUG-2026-0921-002）。升版前必须用
+#     python/bench/eval_clip_accuracy.py 实测。
+#   - 需要纯 CPU 构建（体积优先）时改回：onnxruntime==1.24.4
+onnxruntime-directml==1.24.4
 # onnx is needed at runtime for the one-time CLIP dual-tower split
 # (onnx.utils.extract_model). Missing it makes /embed_text_batch return a bare
 # 500 on a frozen build. See BUG-2026-0920-005.

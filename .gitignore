@@ -83,3 +83,15 @@ python/bench/*_log.txt
 
 # WorkBuddy 智能体本地记忆/会话目录（纯本地工具产物，不入库）
 .workbuddy/
+
+# 智能体会话的构建/验证临时输出（cargo check、tsc、环境探测、DML 验证等，纯本地产物不入库）
+/bug_tail.txt
+/build_dml_out.txt
+/cargo_check_*.txt
+/cargo_tail.txt
+/dml_install.txt
+/dml_verify.txt
+/env_probe*.txt
+/gpu_verify_out.txt
+/sfc*_out.txt
+/tsc*.txt

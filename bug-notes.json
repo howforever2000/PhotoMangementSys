@@ -2062,6 +2062,231 @@
       ],
       "created_at": "2026-09-18T19:15:00+08:00",
       "fixed_at": "2026-09-18T19:15:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0919-001",
+      "date": "2026-09-19",
+      "status": "resolved",
+      "title": "登录页背景图被遮罩盖得太死、登录卡片不透明，看不出相册氛围",
+      "module": "登录页 / Login.vue",
+      "symptom": [
+        "登录页只能隐约看到封面图（covers/cover.png）轮廓",
+        "登录卡片呈灰白实底，几乎不透出背景"
+      ],
+      "root_cause": {
+        "summary": "auth-overlay 两层渐变 alpha 高达 0.55~0.9，把封面整体压暗；卡片底色叠加模糊后呈实底观感",
+        "detail": [
+          "radial-gradient 0.55→0.86 + linear-gradient 0.78→0.9，封面有效可见度不足 20%",
+          "卡片 background rgba(255,255,255,0.1) 叠在深色遮罩上，视觉上是灰色实底"
+        ]
+      },
+      "evidence_log": [
+        "用户截图：登录页背景近乎纯深蓝、卡片灰实",
+        "修复后遮罩 alpha 降至 0.10~0.52，卡片改 rgba(12,18,38,.42) + blur(14px) saturate(1.15) 玻璃态"
+      ],
+      "solution": {
+        "summary": "减轻遮罩浓度 + 卡片改半透明深底玻璃态，文字对比靠卡片自身压暗底色与文字阴影保证",
+        "steps": [
+          "auth-overlay：radial 0.10→0.42（中心透亮）、linear 0.16→0.52",
+          "auth-card：background rgba(12,18,38,.42)，blur 14px + saturate(1.15)，保留边框与投影",
+          "文字保持浅色 + text-shadow，输入框玻璃态逻辑不变"
+        ]
+      },
+      "lessons": [
+        "「背景图太透明」的用户表述通常指遮罩过重，应优先调遮罩 alpha 而不是改图片",
+        "玻璃卡片要在深色场景保持通透感：深色半透明底 + 高斯模糊 + 饱和度补偿"
+      ],
+      "keywords": [
+        "登录页",
+        "遮罩",
+        "透明度",
+        "玻璃态",
+        "auth-overlay"
+      ],
+      "created_at": "2026-09-19T22:40:00+08:00",
+      "fixed_at": "2026-09-19T22:40:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0919-002",
+      "date": "2026-09-19",
+      "status": "resolved",
+      "title": "文字颜色只跟随浅色/深色模式，与实际背景对比不足时与背景融为一体",
+      "module": "主题系统 / theme store + main.css",
+      "symptom": [
+        "深色模式（白字）+ 用户自选浅色背景/浅色背景图时，主页标题、相册列表头部、智能搜索等页面文字几乎不可见",
+        "背景图为星空等明暗分布不均的图片时，亮部区域文字发糊"
+      ],
+      "root_cause": {
+        "summary": "textColor/subTextColor 仅由 mode 推导，未感知实际背景（纯色/渐变/背景图）的亮度",
+        "detail": [
+          "isDark ? '#f5f7ff' : '#1f2733'，与 bgStyle/bgColor/bgImage 完全无关",
+          "背景图透明度只淡化图片，文字色不参与合成运算"
+        ]
+      },
+      "evidence_log": [
+        "用户截图 4 张：浅背景 + 浅文字页面（主页/相册列表/智能搜索/相册详情）",
+        "修复后：vue-tsc 0 错误；计算规则——所选模式文字色与背景对比度≥4.5:1 原样保留，否则取黑/白中对比更高端"
+      ],
+      "solution": {
+        "summary": "按用户要求实现『a.和设置的颜色尽量一致 b.和背景对比明显』：计算实际背景等效色的 WCAG 亮度，对比度不足 4.5:1 时自动翻转文字深浅，并把最终色写入 body 内联 CSS 变量全局生效",
+        "steps": [
+          "theme.ts 新增 hexToRgb/relLum/contrastRatio/mixRgb 工具（模块层）",
+          "effectiveBg：纯色=自身；渐变=两端均值；背景图=32×32 缩略图平均色再按 bgOpacity 与底色混合",
+          "textColor：偏好色对比度≥4.5:1 直接用；否则黑/白两端取对比更高者",
+          "subTextColor 跟随主文字色 rgba(.86)；applyTextVars 把 --color-text/-2/-3 写到 body 内联样式，覆盖 main.css 的 :root 定义",
+          "bgStyle==='image' 时 body 加 .theme-on-image 类，main.css 应用 --pm-text-shadow 细阴影把文字从亮斑里托出来（阴影方向随文字深浅自动反转）"
+        ]
+      },
+      "lessons": [
+        "主题系统的文字色不能只跟模式走，必须感知『实际合成的背景色』",
+        "背景图平均色采样用离屏 canvas 32×32 足够，异步计算不阻塞启动",
+        "CSS 变量写在 body 内联样式可覆盖 :root 与 body.theme-dark 的类选择器定义"
+      ],
+      "keywords": [
+        "主题",
+        "文字颜色",
+        "对比度",
+        "WCAG",
+        "背景图",
+        "CSS变量"
+      ],
+      "created_at": "2026-09-19T22:45:00+08:00",
+      "fixed_at": "2026-09-19T22:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0919-003",
+      "date": "2026-09-19",
+      "status": "resolved",
+      "title": "扫描面板人物注册表显示全部相册的人物，未按当前相册过滤",
+      "module": "组合扫描 / ScanPanel + persons 模块",
+      "symptom": [
+        "在相册详情页点「读表/重新扫描」后，人物注脚表显示 P014 103 张等全局数据",
+        "当前相册只有 6 张照片，却出现大量其他相册的人物卡片"
+      ],
+      "root_cause": {
+        "summary": "loadPersons 调用全局 list_persons（直读 persons.db 全表），与当前相册语境无关",
+        "detail": [
+          "persons 表的 face_count 是全局脸数，跨相册混入",
+          "ScanPanel 挂载时也不加载人物列表，只有扫描结束才刷新"
+        ]
+      },
+      "evidence_log": [
+        "用户截图：6/6 张的相册下方人物表出现 P014 103 张脸等全局条目",
+        "修复后：新命令 list_persons_in_album 按 p_is_under 过滤 faces.photo_path，计数=当前相册内出现该人物的去重照片数"
+      ],
+      "solution": {
+        "summary": "Rust 新增 list_persons_in_album(album_path) 命令（faces 全表 → p_is_under 过滤 → 按人物聚合去重照片数 → 按计数降序），ScanPanel 改用之并在挂载时加载",
+        "steps": [
+          "persons.rs：list_persons_in_album 复用与照片归属解析同一套 p_is_under（Windows 大小写不敏感+前缀边界），避免 BUG-2026-0916-001 同类误判",
+          "commands 模块加命令包装 + lib.rs 注册（use 导入 + invoke_handler）",
+          "ScanPanel.loadPersons 传 props.albumPath 调新命令；onMounted 即加载；PersonPanel 计数单位改传「张照片」"
+        ]
+      },
+      "lessons": [
+        "嵌入式『子面板』展示全局数据时必须显式声明数据域（相册/用户），否则跨语境数据混入",
+        "路径归属过滤必须复用统一的 p_is_under，不要在 SQL LIKE 里另写一套前缀匹配"
+      ],
+      "keywords": [
+        "人物注册表",
+        "相册过滤",
+        "list_persons_in_album",
+        "faces",
+        "p_is_under"
+      ],
+      "created_at": "2026-09-19T22:50:00+08:00",
+      "fixed_at": "2026-09-19T22:50:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0919-004",
+      "date": "2026-09-19",
+      "status": "resolved",
+      "title": "文字对比度自适应 v1 回归：卡片内文字被错误翻成深色，深色模式卡片不可读",
+      "module": "主题系统 / theme store + 各页头部",
+      "symptom": [
+        "深色模式 + 浅色页面背景时，主页模块卡标题/描述、用户盒「退出登录」、内容分类卡片名、地点卡片名全部深字配深底，几乎不可见",
+        "页面大标题反而正常（深字配浅背景）"
+      ],
+      "root_cause": {
+        "summary": "v1 把 --color-text 整体改为「与页面背景对比」，但该变量绝大多数消费场景在卡片内（卡片底色由模式决定）——页面背景亮 → 文字翻深 → 深色卡片上的文字失去对比",
+        "detail": [
+          "卡片背景 cardStyle 由 isDark 决定（深色模式=深底），文字却跟随页面背景翻转，两个语境被混为一谈",
+          "CategoryGallery/LocationGallery/PersonGallery 等容器 color: theme.textColor 会被卡片继承，放大了错误"
+        ]
+      },
+      "evidence_log": [
+        "用户回归截图 3 张（主页/内容分类/地点页）",
+        "修复后 vue-tsc 0 错误 + 13 个 SFC 编译通过"
+      ],
+      "solution": {
+        "summary": "改为两层文字模型：textColor 恢复跟随模式（卡片语境）；新增 onBgColor/onBgSubColor 仅对实际页面背景做对比度计算，经 body 变量 --color-on-bg(-2) 下发，各页直接落在背景上的标题逐个切换",
+        "steps": [
+          "theme.ts：textColor/subTextColor 恢复模式跟随；新增 onBgColor（a≥4.5:1 用偏好色 / b 黑白取对比更高端）与 onBgSubColor；applyTextVars 只写 --color-on-bg/-2，不再内联覆盖 --color-text*",
+          "页面背景标题切换 var(--color-on-bg)：Home app-title/subtitle、AlbumList page-title/group-title、Workshop page-title/subtitle、SmartSearch ss-title/subtitle、Timeline tl-title/subtitle、ScanHub/SmartAlbum/Memories hero-title",
+          "AlbumMeta 相册信息头（名称/路径/说明/统计/标签）全部切 on-bg 变量",
+          "CategoryGallery/LocationGallery 卡片文字随 textColor 恢复自动修复（cardStyle+继承色）"
+        ]
+      },
+      "lessons": [
+        "一个 CSS 变量服务两个对比语境（页面背景 vs 卡片底色）是这次回归的根源——语境不同必须拆变量",
+        "改全局主题变量前先统计其全部消费点并按语境分类，不能只看最高频用法",
+        "主题类改动的回归验证必须覆盖「非默认背景」组合（深色模式×浅背景、浅色模式×深背景）"
+      ],
+      "keywords": [
+        "主题",
+        "回归",
+        "两层文字模型",
+        "--color-on-bg",
+        "深色模式",
+        "对比度"
+      ],
+      "created_at": "2026-09-19T23:05:00+08:00",
+      "fixed_at": "2026-09-19T23:05:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0919-005",
+      "date": "2026-09-19",
+      "status": "resolved",
+      "title": "发布版 GPU 加速要求用户自行 pip 安装 onnxruntime-directml，普通用户无法自助完成",
+      "module": "VCR 微服务 / GPU 运行时（requirements ×2 + ModelGpuSettings.vue）",
+      "symptom": [
+        "检测到 GPU 的机器上，「检测 GPU」后提示『可安装 onnxruntime-directml（或 CUDA 版）后重新检测』",
+        "发布版用户没有开发环境 / 不会 pip 装包，GPU 加速形同虚设；CUDA 版又只认 NVIDIA 且要匹配 CUDA/cuDNN"
+      ],
+      "root_cause": {
+        "summary": "GPU 运行时依赖用户侧 venv 安装，发布包只带 CPU 版 onnxruntime——「下载即用」的加速必须在构建期内置，不能靠文档指导安装",
+        "detail": [
+          "onnxruntime / onnxruntime-gpu / onnxruntime-directml 三包同名互斥，切换必须先卸载原包",
+          "DirectML 单包即可覆盖 NVIDIA / AMD / Intel 全系 DX12 显卡，import 名仍是 onnxruntime，是发布版唯一可行解"
+        ]
+      },
+      "evidence_log": [
+        "dml_verify.txt：onnxruntime-directml 1.24.4 安装后 providers = ['DmlExecutionProvider', 'CPUExecutionProvider']",
+        "gpu_verify_out.txt：/health 与 POST /gpu enabled=true 均 report DmlExecutionProvider active，SCRFD 检测会话走 DML，无 DX12 环境自动回退 CPU",
+        "ModelGpuSettings.vue 文案同步改为「已内置 DirectML；检测不到多为驱动过旧或不支持 DirectX 12」"
+      ],
+      "solution": {
+        "summary": "方案 A（单包 DirectML）：requirements.txt 与 requirements-vcr-packaging.txt 统一切到 onnxruntime-directml，版本仍 pin 1.24.4 规避 1.25+ CLIP fp16 CPU 慢 2.9x 的坑（BUG-2026-0921-002）",
+        "steps": [
+          "requirements-vcr-packaging.txt（打包口径）：onnxruntime==1.24.4 → onnxruntime-directml==1.24.4，注明纯 CPU 构建的回改方法",
+          "requirements.txt（开发口径）：onnxruntime>=1.17 → onnxruntime-directml>=1.17",
+          "显式 CPU 回退保留：DML 会话创建失败自动回退 CPUExecutionProvider（model_registry._create_session），无 DX12 机器不崩",
+          "ModelGpuSettings.vue：未检测到 GPU 的提示从『请自行安装』改为『发布版已内置，多为驱动/DX12 原因』"
+        ]
+      },
+      "lessons": [
+        "发布版「下载即用」的依赖必须在构建期内置，凡是要用户手动 pip 的能力对普通用户等于不存在",
+        "同名互斥三包切换时必须先卸载，否则 import 解析到旧包静默失效"
+      ],
+      "keywords": [
+        "onnxruntime-directml",
+        "DirectML",
+        "DmlExecutionProvider",
+        "GPU 加速",
+        "方案A",
+        "构建期内置"
+      ],
+      "created_at": "2026-09-19T23:40:00+08:00",
+      "fixed_at": "2026-09-19T23:40:00+08:00"
     }
   ]
 }

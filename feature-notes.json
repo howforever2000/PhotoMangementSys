@@ -2130,7 +2130,26 @@
       "tests": ["cargo test --lib：104 passed / 0 failed / 2 ignored（2026-09-18 补登时复跑，基线一致）", "npm run build（vue-tsc --noEmit && vite build）：零错误（同上复跑）", "人物标签入向量三轮实测（chinese-clip-vit-b16-fp16，CPU，经项目 POST /embed_text_batch）：disc 中位数最高 0.0228（真实姓名，门槛 0.05）；裸标签查描述库 acc 最高 70%（12号人，门槛 90%）→ 全部不达标，定路线 B。原始数据在系统 temp（cbc-feat067-* 目录，会随清理丢失）", "改名成本实测：编码吞吐 33.93 条/秒（CPU b16）；170 人全部改名 28.2s（含合并重算 10.4s）→ 增量重算可用"],
       "created_at": "2026-09-18T19:20:00+08:00",
       "updated_at": "2026-09-18T19:20:00+08:00"
+    },
+    {
+      "id": "FEAT-068",
+      "name": "创意工坊 · 修图前后对比（Lightroom 式并排 / 分割线拖动）",
+      "status": "done",
+      "module": "创意工坊 / WorkshopImageProcess.vue",
+      "description": "WorkshopImageProcess 新增三种视图模式：edit（编辑态，蒙版可画）/ side（左右并排，Lightroom Y/Y 快捷键再按回编辑态）/ split（单画布分割对比，分割线可拖动，左原图右结果）。『原图』指叠加链下当前底图 baseEl（最近基底），『结果』为最近一次应用输出；无结果时对比入口禁用，输入控件聚焦时不劫持 Y 键。",
+      "related_files": ["src/components/workshop/WorkshopImageProcess.vue"],
+      "keywords": ["修图对比", "前后对比", "Lightroom", "Y/Y", "分割线", "split", "并排对比", "WorkshopImageProcess", "创意工坊"],
+      "implementation": {
+        "视图模式": "viewMode: edit | side | split 三态；watch 视图切换后 nextTick 重算画布尺寸并重绘（side 模式画布分支重挂载）",
+        "并排对比": "side 模式两画布平分舞台宽度（中间 16px 间隙），左=当前底图 displayCanvas，右=最近结果 sideResultCanvas",
+        "分割对比": "split 模式单画布按 splitX 裁切绘制：左半原图右半结果，分割线 PointerCapture 拖动（钳制 0.02~0.98），拖动即时重绘",
+        "快捷键": "window keydown 监听 Y 键切换 side ↔ edit；INPUT/TEXTAREA/contentEditable 聚焦时不劫持"
+      },
+      "highlights": ["「原图」语义跟随叠加链（baseEl 最近基底），叠加处理多次应用后对比仍是『上一基底 vs 最新结果』", "开始新编辑自动从对比态切回 edit 态，蒙版绘制与对比视图互不干扰"],
+      "tests": ["npx vue-tsc --noEmit：0 错误（2026-09-19 复跑）", "cargo test --lib：108 passed / 0 failed / 2 ignored（同上复跑）"],
+      "created_at": "2026-09-19T23:40:00+08:00",
+      "updated_at": "2026-09-19T23:40:00+08:00"
     }
   ],
-  "updated": "2026-09-18T19:20:00+08:00"
+  "updated": "2026-09-19T23:40:00+08:00"
 }

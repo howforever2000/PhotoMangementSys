@@ -5,7 +5,10 @@ uvicorn>=0.29
 # 创意工坊微服务 python-studio/server.py 的 multipart 上传（图片 + 蒙版）依赖；
 # 缺了它在路由注册阶段就报 RuntimeError，服务起不来（连 /health 都不可达）
 python-multipart>=0.0.9
-onnxruntime>=1.17
+# 方案 A：默认用 DirectML 版（与打包口径一致，见 requirements-vcr-packaging.txt）。
+# 它 import 名仍是 onnxruntime，多出 DmlExecutionProvider（DX12，N/A/I 显卡通用）。
+# 只需纯 CPU 环境（无显卡/低配机器调试）时改回：onnxruntime>=1.17
+onnxruntime-directml>=1.17
 Pillow>=10.0
 numpy>=1.26
 # 人脸检测/对齐（SCRFD + ArcFace 推理期必需）
