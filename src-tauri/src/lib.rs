@@ -230,6 +230,14 @@ pub fn run() {
                 .expect("无法获取应用数据目录");
             // 初始化日志组件（保留 3 天 = 4320 分钟）
             logger::init(&data_dir, 4320);
+            // panic 落盘：任何线程崩溃（含白屏类 WebView 异常之外的原生崩溃）都可在日志追溯
+            logger::install_panic_hook();
+            logger::log_info(&format!(
+                "==== APP START v{} pid={} data_dir={} ====",
+                env!("CARGO_PKG_VERSION"),
+                std::process::id(),
+                data_dir.display()
+            ));
             // 打包版：解析「模型目录」并写入进程环境变量（VCR_MODEL_DIR）
             //   - 随 MSI/NSIS 安装的模型位于 resource_dir/vcr/models；
             //   - MSI 默认装到 Program Files（普通权限进程不可写），而语义子图拆分 /
@@ -276,15 +284,15 @@ pub fn run() {
                 logger::log_error("session", &format!("记住登录表初始化失败: {e}"));
             }
             // 恢复上次登录（默认 3 天免密复用上次用户）；失败则清 token
-            let restored_user = session::read_token_file(&data_dir)
-                .and_then(|token| {
-                    session::validate_remember_session(database.conn(), &token)
-                        .map_err(|e| {
-                            logger::log_error("session", &format!("记住登录校验失败: {e}"));
-                        })
-                        .ok()
-                        .flatten()
-                });
+            let token = session::read_token_file(&data_dir);
+            let restored_user = token.as_ref().and_then(|token| {
+                session::validate_remember_session(database.conn(), token)
+                    .map_err(|e| {
+                        logger::log_error("session", &format!("记住登录校验失败: {e}"));
+                    })
+                    .ok()
+                    .flatten()
+            });
             match restored_user {
                 Some(uid) => {
                     logger::log_info(&format!("已恢复上次登录用户 id={uid}（记住登录 3 天）"));
@@ -294,6 +302,12 @@ pub fn run() {
                 }
                 None => {
                     // token 缺失/失效 → 清理磁盘文件，按未登录启动
+                    // （本地有 token 但没恢复成功 = 会话过期/失效，属正常但值得留痕）
+                    if token.is_some() {
+                        logger::log_warn(
+                            "记住登录未生效（token 过期或会话失效），本次按未登录启动，已清理本地 token",
+                        );
+                    }
                     session::clear_token_file(&data_dir);
                     app.manage(AppState(Mutex::new(database)));
                     app.manage(SessionState(Mutex::new(None)));
@@ -428,6 +442,8 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+    // 事件循环正常退出（异常退出走 panic 钩子落盘）
+    logger::log_info("==== APP EXIT ====");
 }
 
 #[cfg(test)]

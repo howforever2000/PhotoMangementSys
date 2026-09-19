@@ -316,7 +316,7 @@ pub fn delete_photo_files(
         match std::fs::remove_file(p) {
             Ok(_) => deleted += 1,
             Err(e) => {
-                crate::logger::log_info(&format!("[delete_photo_files] 删除失败 path={p} err={e}"));
+                crate::logger::log_warn(&format!("[delete_photo_files] 删除失败 path={p} err={e}"));
                 failed_paths.push(p.clone());
             }
         }
@@ -396,7 +396,7 @@ pub fn delete_photos_to_trash(
         match trash::delete(std::path::Path::new(p)) {
             Ok(_) => deleted += 1,
             Err(e) => {
-                crate::logger::log_info(&format!("[delete_photos_to_trash] 回收站删除失败 path={p} err={e}"));
+                crate::logger::log_warn(&format!("[delete_photos_to_trash] 回收站删除失败 path={p} err={e}"));
                 failed_paths.push(p.clone());
             }
         }

@@ -589,7 +589,7 @@ pub mod commands {
                         "[category] 保存后重建 {}：命中 {} · {}ms",
                         cat.name, rep.hits, rep.ms
                     )),
-                    Err(e) => logger::log_info(&format!("[category] 保存后重建失败（不影响保存）：{e}")),
+                    Err(e) => logger::log_warn(&format!("[category] 保存后重建失败（不影响保存）：{e}")),
                 }
             }
             let db = state.0.lock().map_err(|e| format!("{e}"))?;
