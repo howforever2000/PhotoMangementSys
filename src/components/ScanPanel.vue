@@ -39,6 +39,8 @@ const comboProgress = computed(() => job.value.progress);
 onMounted(() => {
   // 重新进入时恢复之前勾选的类型（若仍在扫描则不中断）
   if (job.value.types.length) comboScanTypes.value = [...job.value.types];
+  // 进入页面即加载当前相册的人物列表（此前只有扫描结束后才会加载）
+  loadPersons();
 });
 
 // 扫描结束后刷新人物列表与 GPU 状态（同人标号可能因本次识别变化）
@@ -141,11 +143,20 @@ const readAlbumContent = trace("readAlbumContent", async () => {
   }
 });
 
-// ---- 人物管理 ----
+// ---- 人物管理（BUG-2026-0919-003：只显示当前相册的人物） ----
+// 此前用全局 list_persons，相册详情页会混入其他相册的人物与全局计数。
+// 改用 list_persons_in_album：后端按相册路径过滤 faces，计数=该人物在
+// 当前相册中出现的照片数（去重）。
 const persons = ref<PersonInfo[]>([]);
 const loadPersons = trace("loadPersons", async () => {
   try {
-    persons.value = await invoke<PersonInfo[]>("list_persons");
+    if (!props.albumPath) {
+      persons.value = [];
+      return;
+    }
+    persons.value = await invoke<PersonInfo[]>("list_persons_in_album", {
+      albumPath: props.albumPath,
+    });
   } catch {
     persons.value = [];
   }
@@ -262,7 +273,7 @@ const openImage = trace("openImage", async (path: string) => {
 
   <!-- ============ 人物管理 ============ -->
   <section class="scan-area">
-    <PersonPanel :persons="persons" @refresh="loadPersons" />
+    <PersonPanel :persons="persons" count-unit="张照片" @refresh="loadPersons" />
   </section>
 
   <!-- FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） -->

@@ -3,7 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import type { PersonInfo } from "../types/photo";
 import { useNotify } from "../composables/useNotify";
 
-defineProps<{ persons: PersonInfo[] }>();
+const props = withDefaults(
+  defineProps<{
+    persons: PersonInfo[];
+    /** 计数单位文案：全局人物库="张脸"，相册过滤场景传"张照片" */
+    countUnit?: string;
+  }>(),
+  { countUnit: "张脸" },
+);
 const emit = defineEmits<{ refresh: [] }>();
 const notify = useNotify();
 
@@ -60,7 +67,7 @@ const removePerson = async (ps: PersonInfo) => {
         <div class="person-card-top">
           <span class="person-card-id mono">{{ ps.id }}</span>
           <span class="person-card-name">{{ ps.name || ps.id }}</span>
-          <span class="person-card-count">{{ ps.face_count }} 张脸</span>
+          <span class="person-card-count">{{ ps.face_count }} {{ props.countUnit }}</span>
         </div>
         <div class="person-card-actions">
           <input
