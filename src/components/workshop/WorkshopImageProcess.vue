@@ -80,7 +80,18 @@ const showResult = ref(false);
 /** 蒙版上是否有选中区域（无蒙版 = 整图处理，不再阻止「应用」） */
 const hasMask = ref(false);
 
-const imgEl = new Image();
+/**
+ * FEAT-067 叠加处理：处理结果可「转正」为新底图，继续叠加下一个算子。
+ * - baseEl   ：当前底图（初始为原图；promote 后为最近一次结果）
+ * - baseBlob ：当前底图字节（null = 原图文件，apply 时从 srcPath 取；非 null 直接上传，
+ *              避免把中间结果落盘）
+ * - steps    ：已叠加的算子链（状态栏展示）
+ * 后端 /api/apply 天然接受任意图片字节，叠加纯前端实现，算子无需感知。
+ */
+const baseEl = new Image();
+let baseBlob: Blob | null = null;
+const steps = ref<string[]>([]);
+
 const resultEl = new Image();
 let resultBlob: Blob | null = null;
 let objectUrls: string[] = [];
@@ -190,11 +201,13 @@ async function chooseImage() {
 
 function loadImage(path: string): Promise<void> {
   return new Promise((resolve) => {
-    const url = convertFileSrc(path);
-    imgEl.onload = () => {
+    baseEl.onload = () => {
       srcPath.value = path;
-      maskCanvas.width = imgEl.naturalWidth;
-      maskCanvas.height = imgEl.naturalHeight;
+      // 叠加链复位：底图回到原图
+      baseBlob = null;
+      steps.value = [];
+      maskCanvas.width = baseEl.naturalWidth;
+      maskCanvas.height = baseEl.naturalHeight;
       // 赋值 width/height 已把画布重置为全透明（= 未选中），无需再铺底色
       hasMask.value = false;
       hasResult.value = false;
@@ -202,18 +215,18 @@ function loadImage(path: string): Promise<void> {
       resultBlob = null;
       fitDisplay();
       redraw();
-      statusMsg.value = `已载入 ${imgEl.naturalWidth}×${imgEl.naturalHeight}，框选或涂抹要处理的区域（不画=整图）`;
+      statusMsg.value = `已载入 ${baseEl.naturalWidth}×${baseEl.naturalHeight}，框选或涂抹要处理的区域（不画=整图）`;
       resolve();
     };
-    imgEl.onerror = () => {
+    baseEl.onerror = () => {
       statusMsg.value = "图片加载失败";
       resolve();
     };
-    imgEl.src = url;
+    baseEl.src = convertFileSrc(path);
   });
 }
 
-/** 显示画布适配：最长边贴合容器（保持比例） */
+/** 显示画布适配：最长边贴合容器（保持比例）。以当前底图（可能是叠加结果）为准 */
 function fitDisplay() {
   const disp = displayCanvas.value;
   const overlay = overlayCanvas.value;
@@ -224,10 +237,10 @@ function fitDisplay() {
   // 帧未稳定/容器被隐藏时宽度可能为 0，兜底避免算出 1×1 画布
   const maxW = cw > 0 ? cw : 800;
   const maxH = Math.max(320, window.innerHeight * 0.58);
-  const s = Math.min(1, maxW / imgEl.naturalWidth, maxH / imgEl.naturalHeight);
+  const s = Math.min(1, maxW / baseEl.naturalWidth, maxH / baseEl.naturalHeight);
   scale.value = s;
-  const w = Math.max(1, Math.round(imgEl.naturalWidth * s));
-  const h = Math.max(1, Math.round(imgEl.naturalHeight * s));
+  const w = Math.max(1, Math.round(baseEl.naturalWidth * s));
+  const h = Math.max(1, Math.round(baseEl.naturalHeight * s));
   disp.width = w;
   disp.height = h;
   overlay.width = w;
@@ -237,10 +250,10 @@ function fitDisplay() {
 function redraw() {
   const disp = displayCanvas.value;
   const overlay = overlayCanvas.value;
-  if (!disp || !overlay || !imgEl.naturalWidth) return;
+  if (!disp || !overlay || !baseEl.naturalWidth) return;
   const ctx = disp.getContext("2d")!;
   const showing = showResult.value && hasResult.value;
-  const b = showing ? resultEl : imgEl;
+  const b = showing ? resultEl : baseEl;
   ctx.clearRect(0, 0, disp.width, disp.height);
   ctx.drawImage(b, 0, 0, disp.width, disp.height);
 
@@ -395,8 +408,9 @@ async function apply() {
     // 1) 确保微服务就绪（Rust 侧探活/收养/启动）
     const svc = await ensureBase();
 
-    // 2) 原图字节（asset 协议 fetch，拿原始文件，不经 canvas 重编码）
-    const imgBlob = await (await fetch(convertFileSrc(srcPath.value))).blob();
+    // 2) 底图字节：有叠加链时直接上传当前底图（最近一次结果），否则从原图文件取
+    //    （asset 协议 fetch 拿原始文件，不经 canvas 重编码）
+    const imgBlob = baseBlob ?? (await (await fetch(convertFileSrc(srcPath.value))).blob());
 
     const form = new FormData();
     form.append("op", op.id);
@@ -430,14 +444,57 @@ async function apply() {
       hasResult.value = true;
       showResult.value = true;
       redraw();
-      statusMsg.value = `处理完成（${op.label}）——可勾选对比原图/结果，满意后保存`;
+      statusMsg.value = `处理完成（${op.label}）——可保存、对比，或「以结果继续」叠加下一个算子`;
     };
     resultEl.src = url;
+    steps.value.push(hasMask.value ? `${op.label}(选区)` : op.label);
   } catch (e) {
     statusMsg.value = `处理失败：${String(e)}`;
   } finally {
     processing.value = false;
   }
+}
+
+/**
+ * FEAT-067：把最近一次结果「转正」为新底图，清空蒙版后继续叠加下一个算子。
+ * 结果与底图同分辨率（算子不改尺寸），蒙版画布直接按结果尺寸重置。
+ */
+function promoteResult() {
+  if (!resultBlob) return;
+  const url = URL.createObjectURL(resultBlob);
+  objectUrls.push(url);
+  baseBlob = resultBlob;
+  baseEl.onload = () => {
+    maskCanvas.width = baseEl.naturalWidth;
+    maskCanvas.height = baseEl.naturalHeight;
+    hasMask.value = false;
+    hasResult.value = false;
+    showResult.value = false;
+    resultBlob = null;
+    fitDisplay();
+    redraw();
+    statusMsg.value = `已以结果为底图（${steps.value.length} 步）——重选蒙版后可继续叠加`;
+  };
+  baseEl.src = url;
+}
+
+/** 丢弃叠加链，回到原图重新开始（已保存的结果不受影响） */
+function revertToOriginal() {
+  if (!srcPath.value) return;
+  baseBlob = null;
+  steps.value = [];
+  baseEl.onload = () => {
+    maskCanvas.width = baseEl.naturalWidth;
+    maskCanvas.height = baseEl.naturalHeight;
+    hasMask.value = false;
+    hasResult.value = false;
+    showResult.value = false;
+    resultBlob = null;
+    fitDisplay();
+    redraw();
+    statusMsg.value = "已回到原图";
+  };
+  baseEl.src = convertFileSrc(srcPath.value);
 }
 
 async function saveResult() {
@@ -600,12 +657,19 @@ onBeforeUnmount(() => {
           <input v-model="showResult" type="checkbox" @change="redraw" />
           对比结果
         </label>
+        <button v-if="hasResult" class="ip-btn" type="button" @click="promoteResult">
+          🔗 以结果继续
+        </button>
+        <button v-if="baseBlob" class="ip-btn" type="button" @click="revertToOriginal">
+          ↩️ 回到原图
+        </button>
         <button class="ip-btn" type="button" :disabled="!hasResult" @click="saveResult">💾 保存结果</button>
         <button class="ip-btn ip-primary" type="button" :disabled="!canApply" @click="apply">
           {{ processing ? "处理中…" : `✨ 应用${currentOp ? currentOp.label : ""}` }}
         </button>
       </div>
     </footer>
+    <div v-if="steps.length" class="ip-chain">叠加链：{{ steps.join(" → ") }}</div>
   </section>
 </template>
 
@@ -868,5 +932,13 @@ onBeforeUnmount(() => {
   font-size: 13px;
   color: var(--color-text-2);
   cursor: pointer;
+}
+
+/* 叠加链展示：当前已应用的算子序列 */
+.ip-chain {
+  font-size: 12px;
+  color: var(--color-text-2);
+  opacity: 0.85;
+  text-align: right;
 }
 </style>
