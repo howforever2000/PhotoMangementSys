@@ -110,27 +110,30 @@ async function handleLogin() {
   background-position: center;
 }
 
+/* BUG-2026-0919-001：原遮罩 alpha 0.55~0.9 把封面盖得太死，登录页看不出"相册"氛围。
+   降到 0.15~0.52：封面清晰可辨，只在文字/卡片区域保留局部压暗（卡片自身带底色），保证可读。 */
 .auth-overlay {
   position: absolute;
   inset: 0;
   z-index: 1;
   background:
-    radial-gradient(120% 120% at 20% 0%, rgba(20, 28, 64, 0.55) 0%, rgba(8, 12, 28, 0.86) 100%),
-    linear-gradient(180deg, rgba(8, 12, 28, 0.78) 0%, rgba(8, 12, 28, 0.9) 100%);
+    radial-gradient(90% 90% at 50% 42%, rgba(8, 12, 28, 0.10) 0%, rgba(8, 12, 28, 0.42) 100%),
+    linear-gradient(180deg, rgba(8, 12, 28, 0.16) 0%, rgba(8, 12, 28, 0.52) 100%);
 }
 
+/* 玻璃态卡片：半透明深底 + 模糊，封面从卡片里透出来；
+   底色自带压暗，文字不再依赖遮罩浓度保证对比 */
 .auth-card {
   position: relative;
   z-index: 2;
   width: 100%;
   max-width: 400px;
-  /* backdrop-filter 半径过大（16px）会让覆盖层下文字发糊，这里降到 8px */
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(12, 18, 38, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
   border-radius: 16px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
   padding: 36px 32px 28px;
 }
 
