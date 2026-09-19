@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import { useThemeStore } from "../../stores/theme";
@@ -76,9 +76,68 @@ const srcPath = ref("");
 const statusMsg = ref("先选择一张图片");
 const processing = ref(false);
 const hasResult = ref(false);
-const showResult = ref(false);
 /** 蒙版上是否有选中区域（无蒙版 = 整图处理，不再阻止「应用」） */
 const hasMask = ref(false);
+
+/**
+ * FEAT-068 修图前后对比（仿 Lightroom）：
+ *  - edit ：编辑态（蒙版可画）
+ *  - side ：左右并排对比（Lightroom 的 Y/Y 快捷键，再按 Y 回编辑态）
+ *  - split：单画布分割对比，分割线可拖动（左原图 / 右结果）
+ * 「原图」指当前底图 baseEl（叠加链下的最近基底），「结果」为最近一次应用输出。
+ */
+type ViewMode = "edit" | "side" | "split";
+const viewMode = ref<ViewMode>("edit");
+/** 分割线位置（0~1，占画布宽度比例） */
+const splitX = ref(0.5);
+let splitDragging = false;
+
+function setView(m: ViewMode) {
+  if (m !== "edit" && !hasResult.value) return;
+  if (viewMode.value === m) return;
+  viewMode.value = m;
+}
+
+/** 视图切换后画布重挂载（side 模式换分支），等 DOM 稳定后重算尺寸并重绘 */
+watch(viewMode, async () => {
+  await nextTick();
+  if (srcPath.value) {
+    fitDisplay();
+    redraw();
+  }
+});
+
+/** Y 键：Lightroom 式左右对比开关（有结果时可用；输入控件聚焦时不劫持） */
+function onCompareKey(e: KeyboardEvent) {
+  if (e.key !== "y" && e.key !== "Y") return;
+  if (!hasResult.value) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  e.preventDefault();
+  setView(viewMode.value === "side" ? "edit" : "side");
+}
+window.addEventListener("keydown", onCompareKey);
+
+/* ---------------- 分割线拖动 ---------------- */
+const splitFrameEl = ref<HTMLElement | null>(null);
+
+function onSplitDown(e: PointerEvent) {
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  splitDragging = true;
+}
+function onSplitMove(e: PointerEvent) {
+  if (!splitDragging) return;
+  const frame = splitFrameEl.value;
+  if (!frame) return;
+  const r = frame.getBoundingClientRect();
+  splitX.value = Math.min(0.98, Math.max(0.02, (e.clientX - r.left) / r.width));
+  redraw();
+}
+function onSplitUp(e: PointerEvent) {
+  if (!splitDragging) return;
+  splitDragging = false;
+  (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+}
 
 /**
  * FEAT-067 叠加处理：处理结果可「转正」为新底图，继续叠加下一个算子。
@@ -104,6 +163,8 @@ const maskCtx = maskCanvas.getContext("2d")!;
 
 const displayCanvas = ref<HTMLCanvasElement | null>(null);
 const overlayCanvas = ref<HTMLCanvasElement | null>(null);
+/** FEAT-068：左右对比模式的「结果」画布（原图复用 displayCanvas） */
+const sideResultCanvas = ref<HTMLCanvasElement | null>(null);
 /** 舞台容器（fitDisplay 量可用宽度用：画布被 .ip-frame 包着，不能拿画布父元素量） */
 const stageEl = ref<HTMLElement | null>(null);
 
@@ -211,7 +272,7 @@ function loadImage(path: string): Promise<void> {
       // 赋值 width/height 已把画布重置为全透明（= 未选中），无需再铺底色
       hasMask.value = false;
       hasResult.value = false;
-      showResult.value = false;
+      viewMode.value = "edit";
       resultBlob = null;
       fitDisplay();
       redraw();
@@ -229,13 +290,17 @@ function loadImage(path: string): Promise<void> {
 /** 显示画布适配：最长边贴合容器（保持比例）。以当前底图（可能是叠加结果）为准 */
 function fitDisplay() {
   const disp = displayCanvas.value;
+  if (!disp) return;
   const overlay = overlayCanvas.value;
-  if (!disp || !overlay) return;
+  const side = sideResultCanvas.value;
   // 量舞台而不是画布父元素：画布父元素是 .ip-frame（尺寸由画布自己撑开），
   // 拿它当容器会形成「画布多宽容器就多宽」的闭环，窗口放大时画布缩不回去。
   const cw = stageEl.value?.clientWidth ?? 0;
   // 帧未稳定/容器被隐藏时宽度可能为 0，兜底避免算出 1×1 画布
-  const maxW = cw > 0 ? cw : 800;
+  // FEAT-068：左右对比时两画布平分舞台宽度（中间留 16px 间隙）
+  const availW = cw > 0 ? cw : 800;
+  const twoUp = viewMode.value === "side" && hasResult.value;
+  const maxW = twoUp ? (availW - 16) / 2 : availW;
   const maxH = Math.max(320, window.innerHeight * 0.58);
   const s = Math.min(1, maxW / baseEl.naturalWidth, maxH / baseEl.naturalHeight);
   scale.value = s;
@@ -243,51 +308,96 @@ function fitDisplay() {
   const h = Math.max(1, Math.round(baseEl.naturalHeight * s));
   disp.width = w;
   disp.height = h;
-  overlay.width = w;
-  overlay.height = h;
+  if (overlay) {
+    overlay.width = w;
+    overlay.height = h;
+  }
+  if (side) {
+    side.width = w;
+    side.height = h;
+  }
 }
 
 function redraw() {
   const disp = displayCanvas.value;
-  const overlay = overlayCanvas.value;
-  if (!disp || !overlay || !baseEl.naturalWidth) return;
+  if (!disp || !baseEl.naturalWidth) return;
   const ctx = disp.getContext("2d")!;
-  const showing = showResult.value && hasResult.value;
-  const b = showing ? resultEl : baseEl;
   ctx.clearRect(0, 0, disp.width, disp.height);
-  ctx.drawImage(b, 0, 0, disp.width, disp.height);
+  const overlay = overlayCanvas.value;
+  const octx = overlay?.getContext("2d") ?? null;
+
+  /* ---- FEAT-068 左右对比：左=当前底图，右=最近结果 ---- */
+  if (viewMode.value === "side" && hasResult.value) {
+    ctx.drawImage(baseEl, 0, 0, disp.width, disp.height);
+    const rc = sideResultCanvas.value;
+    if (rc) {
+      const rctx = rc.getContext("2d")!;
+      rctx.clearRect(0, 0, rc.width, rc.height);
+      rctx.drawImage(resultEl, 0, 0, rc.width, rc.height);
+    }
+    return;
+  }
+
+  /* ---- FEAT-068 分割对比：底图整幅，结果裁剪到分割线左侧 ---- */
+  if (viewMode.value === "split" && hasResult.value) {
+    ctx.drawImage(baseEl, 0, 0, disp.width, disp.height);
+    const sx = Math.round(disp.width * splitX.value);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, sx, disp.height);
+    ctx.clip();
+    ctx.drawImage(resultEl, 0, 0, disp.width, disp.height);
+    ctx.restore();
+    // 分割线画在 overlay：深色描边 + 白线，亮/暗底都可见
+    if (overlay && octx) {
+      octx.clearRect(0, 0, overlay.width, overlay.height);
+      octx.strokeStyle = "rgba(0,0,0,.55)";
+      octx.lineWidth = 4;
+      octx.beginPath();
+      octx.moveTo(sx, 0);
+      octx.lineTo(sx, overlay.height);
+      octx.stroke();
+      octx.strokeStyle = "#fff";
+      octx.lineWidth = 2;
+      octx.beginPath();
+      octx.moveTo(sx, 0);
+      octx.lineTo(sx, overlay.height);
+      octx.stroke();
+    }
+    return;
+  }
+
+  /* ---- 编辑态（原逻辑）：底图 + 蒙版红色叠加 + 框选预览 ---- */
+  if (!overlay || !octx) return;
+  ctx.drawImage(baseEl, 0, 0, disp.width, disp.height);
 
   // 蒙版红色半透明叠加
-  // BUG-2026-0918-010：展示结果时不画叠加（结果图上盖红色会让人以为处理失败）。
-  // 关键：clearRect 必须在 if 之外无条件执行 —— 只加 if 不 clear，画布上会残留
-  // 上一次画的红色像素，看起来就像没修好。
-  const octx = overlay.getContext("2d")!;
+  // BUG-2026-0918-010：编辑态才画叠加（结果/对比视图上盖红色会让人以为处理失败）。
+  // clearRect 已在上方执行，不会残留上一次的红色像素。
   octx.clearRect(0, 0, overlay.width, overlay.height);
-  if (!showing) {
-    octx.save();
-    octx.drawImage(maskCanvas, 0, 0, overlay.width, overlay.height);
-    octx.globalCompositeOperation = "source-in";
-    octx.fillStyle = "rgba(255,64,64,.5)";
-    octx.fillRect(0, 0, overlay.width, overlay.height);
-    octx.restore();
-    // 框选拖拽预览（同样只在非结果态画）
-    if (dragRect.value) {
-      const { x, y, w, h } = dragRect.value;
-      octx.strokeStyle = "#ffd54a";
-      octx.lineWidth = 1.5;
-      octx.setLineDash([5, 4]);
-      octx.strokeRect(x, y, w, h);
-    }
+  octx.save();
+  octx.drawImage(maskCanvas, 0, 0, overlay.width, overlay.height);
+  octx.globalCompositeOperation = "source-in";
+  octx.fillStyle = "rgba(255,64,64,.5)";
+  octx.fillRect(0, 0, overlay.width, overlay.height);
+  octx.restore();
+  // 框选拖拽预览
+  if (dragRect.value) {
+    const { x, y, w, h } = dragRect.value;
+    octx.strokeStyle = "#ffd54a";
+    octx.lineWidth = 1.5;
+    octx.setLineDash([5, 4]);
+    octx.strokeRect(x, y, w, h);
   }
 }
 
 /**
- * 开始编辑蒙版前调用（BUG-2026-0918-010）：结果态下叠加不可见，此时若直接改蒙版，
- * 用户会「静默改掉而看不见」。故一律先切回原图态，让他看得见自己在改什么。
+ * 开始编辑蒙版前调用：对比视图（side/split）下叠加不可见，此时若直接改蒙版，
+ * 用户会「静默改掉而看不见」。故一律先切回编辑态，让他看得见自己在改什么。
  */
 function beginEdit() {
-  if (showResult.value) {
-    showResult.value = false;
+  if (viewMode.value !== "edit") {
+    viewMode.value = "edit";
     redraw();
   }
 }
@@ -437,14 +547,17 @@ async function apply() {
     }
     resultBlob = await resp.blob();
 
-    // 4) 展示结果
+    // 4) 展示结果：自动进入分割对比（编辑态时）；已在对比视图则保持
     const url = URL.createObjectURL(resultBlob);
     objectUrls.push(url);
     resultEl.onload = () => {
       hasResult.value = true;
-      showResult.value = true;
-      redraw();
-      statusMsg.value = `处理完成（${op.label}）——可保存、对比，或「以结果继续」叠加下一个算子`;
+      if (viewMode.value === "edit") viewMode.value = "split";
+      else {
+        fitDisplay();
+        redraw();
+      }
+      statusMsg.value = `处理完成（${op.label}）——可保存、按 Y 左右对比或拖动分割线对比，或「以结果继续」叠加下一个算子`;
     };
     resultEl.src = url;
     steps.value.push(hasMask.value ? `${op.label}(选区)` : op.label);
@@ -469,7 +582,7 @@ function promoteResult() {
     maskCanvas.height = baseEl.naturalHeight;
     hasMask.value = false;
     hasResult.value = false;
-    showResult.value = false;
+    viewMode.value = "edit";
     resultBlob = null;
     fitDisplay();
     redraw();
@@ -488,7 +601,7 @@ function revertToOriginal() {
     maskCanvas.height = baseEl.naturalHeight;
     hasMask.value = false;
     hasResult.value = false;
-    showResult.value = false;
+    viewMode.value = "edit";
     resultBlob = null;
     fitDisplay();
     redraw();
@@ -532,6 +645,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
+  window.removeEventListener("keydown", onCompareKey);
   objectUrls.forEach((u) => URL.revokeObjectURL(u));
   objectUrls = [];
 });
@@ -594,21 +708,46 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div ref="stageEl" class="ip-stage">
+    <div ref="stageEl" class="ip-stage" :class="{ 'ip-stage-side': viewMode === 'side' && hasResult }">
+      <!-- FEAT-068 左右对比：左右两帧各画一张（Lightroom Y 视图） -->
+      <template v-if="viewMode === 'side' && hasResult && srcPath">
+        <div class="ip-frame ip-frame-half">
+          <canvas ref="displayCanvas" class="ip-canvas"></canvas>
+          <span class="ip-tag">原图</span>
+        </div>
+        <div class="ip-frame ip-frame-half">
+          <canvas ref="sideResultCanvas" class="ip-canvas"></canvas>
+          <span class="ip-tag ip-tag-right">结果</span>
+        </div>
+      </template>
       <!-- BUG-2026-0918-008：画布必须包在 .ip-frame 里、由 display 画布在文档流中撑开高度。
            画布直接当 .ip-stage 的绝对定位子元素时不参与父容器高度计算，舞台高度只剩
            min-height，图比它高就向下溢出、盖住参数行与底栏。 -->
-      <div class="ip-frame">
+      <div v-else ref="splitFrameEl" class="ip-frame">
         <canvas ref="displayCanvas" class="ip-canvas"></canvas>
         <canvas
           ref="overlayCanvas"
           class="ip-overlay"
-          :class="{ 'ip-crosshair': tool === 'rect', 'ip-brush-cursor': tool !== 'rect' }"
+          :class="{ 'ip-crosshair': tool === 'rect', 'ip-brush-cursor': tool !== 'rect', 'ip-noevents': viewMode === 'split' }"
           @pointerdown="onPointerDown"
           @pointermove="onPointerMove"
           @pointerup="onPointerUp"
           @pointercancel="onPointerUp"
         ></canvas>
+        <!-- FEAT-068 分割对比：可拖动的分割线（左原图 / 右结果） -->
+        <div
+          v-if="viewMode === 'split' && hasResult"
+          class="ip-split-divider"
+          :style="{ left: splitX * 100 + '%' }"
+          title="拖动对比原图与结果"
+          @pointerdown="onSplitDown"
+          @pointermove="onSplitMove"
+          @pointerup="onSplitUp"
+          @pointercancel="onSplitUp"
+        >
+          <span class="ip-tag">原图</span>
+          <span class="ip-tag ip-tag-right">结果</span>
+        </div>
       </div>
       <div v-if="!srcPath" class="ip-empty">📂 先选择一张图片开始编辑</div>
     </div>
@@ -653,10 +792,12 @@ onBeforeUnmount(() => {
         statusMsg
       }}</span>
       <div class="ip-actions">
-        <label v-if="hasResult" class="ip-check">
-          <input v-model="showResult" type="checkbox" @change="redraw" />
-          对比结果
-        </label>
+        <!-- FEAT-068：三态视图切换（替代旧「对比结果」复选框） -->
+        <div v-if="hasResult" class="ip-seg ip-viewseg">
+          <button type="button" :class="{ on: viewMode === 'edit' }" @click="setView('edit')" title="返回编辑蒙版">✏️ 编辑</button>
+          <button type="button" :class="{ on: viewMode === 'side' }" @click="setView('side')" title="快捷键 Y">⬒ 左右对比</button>
+          <button type="button" :class="{ on: viewMode === 'split' }" @click="setView('split')" title="拖动中间分割线">⬟ 分割对比</button>
+        </div>
         <button v-if="hasResult" class="ip-btn" type="button" @click="promoteResult">
           🔗 以结果继续
         </button>
@@ -784,6 +925,59 @@ onBeforeUnmount(() => {
 .ip-frame {
   position: relative;
   flex: 0 0 auto;
+}
+
+/* ---- FEAT-068 对比视图 ---- */
+/* 左右对比：舞台两帧并排，中间留 16px 间隙 */
+.ip-stage-side {
+  gap: 16px;
+}
+
+.ip-frame-half {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+/* 对比标签：小徽标贴在画布角上 */
+.ip-tag {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.ip-tag-right {
+  left: auto;
+  right: 8px;
+}
+
+/* 分割对比：分割线手柄（线本身画在 overlay 上，这里提供拖拽热区） */
+.ip-split-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  margin-left: -7px;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 3;
+}
+
+/* 对比视图下 overlay 不再接收指针事件（防止在看不见的地方偷偷改蒙版） */
+.ip-overlay.ip-noevents {
+  pointer-events: none;
+}
+
+/* 底部视图切换组：与其他按钮对齐 */
+.ip-viewseg {
+  align-items: center;
 }
 
 .ip-canvas,
