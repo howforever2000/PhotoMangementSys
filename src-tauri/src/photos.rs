@@ -35,38 +35,37 @@ pub async fn get_photo_thumbs(
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    // 1. 主流程加锁查表（短锁）
-    let hit_map: HashMap<String, String> = {
+    // 1. 锁外 stat + 算 hash（大网格=上千次 fs::metadata，不能占着 Mutex 做 IO）
+    let hashes: Vec<String> = paths
+        .iter()
+        .filter_map(|p| {
+            let path = std::path::Path::new(p);
+            let (len, mtime) = std::fs::metadata(path).ok().map(|md| {
+                (
+                    md.len(),
+                    md.modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0),
+                )
+            })?;
+            Some(crate::thumbnail::thumb_photo_hash(path, len, mtime))
+        })
+        .collect();
+    // 短锁：纯 SQL 查表
+    let table_hits: Vec<crate::db::thumb_cache::ThumbCacheHit> = {
         let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
-        let hashes: Vec<String> = paths
-            .iter()
-            .filter_map(|p| {
-                let path = std::path::Path::new(p);
-                let (len, mtime) = std::fs::metadata(path).ok().map(|md| {
-                    (
-                        md.len(),
-                        md.modified()
-                            .ok()
-                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map(|d| d.as_nanos())
-                            .unwrap_or(0),
-                    )
-                })?;
-                Some(crate::thumbnail::thumb_photo_hash(path, len, mtime))
-            })
-            .collect();
-        match db.lookup_thumb_caches(&hashes) {
-            Ok(hits) => hits
-                .into_iter()
-                .filter(|h| {
-                    !h.thumb_path.is_empty()
-                        && std::path::Path::new(&h.thumb_path).is_file()
-                })
-                .map(|h| (h.photo_hash, h.thumb_path))
-                .collect(),
-            Err(_) => HashMap::new(),
-        }
+        db.lookup_thumb_caches(&hashes).unwrap_or_default()
     };
+    // 锁外过滤存活（thumb_path stat 也是 IO）
+    let hit_map: HashMap<String, String> = table_hits
+        .into_iter()
+        .filter(|h| {
+            !h.thumb_path.is_empty() && std::path::Path::new(&h.thumb_path).is_file()
+        })
+        .map(|h| (h.photo_hash, h.thumb_path))
+        .collect();
 
     let hit_from_table = hit_map.len();
 
@@ -284,57 +283,58 @@ pub fn delete_photo_records(
 /// 批量「本地文件删除」：删除磁盘照片文件，并级联清理扫描记录、排除表与网格缩略图缓存
 ///
 /// 危险操作：文件不可恢复，前端必须二次确认后才调用。
+/// async + spawn_blocking：逐张删文件是批量磁盘 IO，不占主线程。
 #[tauri::command]
-pub fn delete_photo_files(
+pub async fn delete_photo_files(
     album_id: i64,
     paths: Vec<String>,
-    state: tauri::State<crate::AppState>,
-    session: tauri::State<crate::SessionState>,
+    session: tauri::State<'_, crate::SessionState>,
     app: tauri::AppHandle,
 ) -> Result<PhotoDeleteOutcome, String> {
     let _t = log_call!("delete_photo_files", &format!("album_id={album_id} paths={}", paths.len()));
     let user_id = crate::require_user(&session)?;
-    let requested = paths.len();
-    if paths.is_empty() {
-        return Ok(PhotoDeleteOutcome { requested, deleted: 0, failed: 0, failed_paths: Vec::new() });
-    }
-    // 相册归属校验（不直接操作 albums 表，借 exclude 的校验逻辑前置于事务外会写脏数据，
-    // 因此先只读查一次归属）
-    {
-        let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.get_album(album_id, user_id).map_err(|e| e.to_string())?;
-    }
-    // 1. 先算每张原图的缩略图缓存名（指纹依赖原文件存在，必须在删文件前算好）
-    let thumb_names: Vec<String> = paths
-        .iter()
-        .map(|p| crate::thumbnail::grid_thumb_cache_name(album_id, std::path::Path::new(p)))
-        .collect();
-    // 2. 删磁盘文件，逐张统计成败
-    let mut deleted = 0usize;
-    let mut failed_paths = Vec::new();
-    for p in &paths {
-        match std::fs::remove_file(p) {
-            Ok(_) => deleted += 1,
-            Err(e) => {
-                crate::logger::log_warn(&format!("[delete_photo_files] 删除失败 path={p} err={e}"));
-                failed_paths.push(p.clone());
+    let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<PhotoDeleteOutcome, String> {
+        use tauri::Manager;
+        let requested = paths.len();
+        if paths.is_empty() {
+            return Ok(PhotoDeleteOutcome { requested, deleted: 0, failed: 0, failed_paths: Vec::new() });
+        }
+        let state = app.state::<crate::AppState>();
+        // 1. 相册归属校验 + 清理缩略图缓存（表行 + 磁盘文件，两套命名都覆盖）。
+        //    指纹依赖原文件存在，必须在删文件之前做（复用回收站删除的统一清理逻辑，
+        //    修复旧实现只清 WebP 嵌套命名、漏删 JPG 平铺文件与表行的孤儿缓存问题）
+        {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            db.get_album(album_id, user_id).map_err(|e| e.to_string())?;
+            crate::photos::cleanup_thumb_caches_for_paths(&db, &app, &paths);
+        }
+        // 2. 删磁盘文件，逐张统计成败
+        let mut deleted = 0usize;
+        let mut failed_paths = Vec::new();
+        for p in &paths {
+            match std::fs::remove_file(p) {
+                Ok(_) => deleted += 1,
+                Err(e) => {
+                    crate::logger::log_warn(&format!("[delete_photo_files] 删除失败 path={p} err={e}"));
+                    failed_paths.push(p.clone());
+                }
             }
         }
-    }
-    // 3. 级联清理：缩略图缓存 + 成功删除文件的扫描记录与排除表（失败项保留原状可重试）
-    if let Ok(thumbs) = crate::thumbs_dir(&app) {
-        crate::thumbnail::remove_grid_thumb_files(&thumb_names, &thumbs);
-    }
-    if deleted > 0 {
-        let ok_paths: Vec<String> = paths.iter().filter(|p| !failed_paths.contains(p)).cloned().collect();
-        let db = state.0.lock().map_err(|e| e.to_string())?;
-        let _ = db.exclude_album_photos(album_id, user_id, &ok_paths);
-        let _ = db.delete_content_by_paths(&ok_paths);
-    }
-    let failed = failed_paths.len();
-    let outcome = PhotoDeleteOutcome { requested, deleted, failed, failed_paths };
+        // 3. 级联清理：成功删除文件的扫描记录与排除表（失败项保留原状可重试）
+        if deleted > 0 {
+            let ok_paths: Vec<String> = paths.iter().filter(|p| !failed_paths.contains(p)).cloned().collect();
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            let _ = db.exclude_album_photos(album_id, user_id, &ok_paths);
+            let _ = db.delete_content_by_paths(&ok_paths);
+        }
+        let failed = failed_paths.len();
+        Ok(PhotoDeleteOutcome { requested, deleted, failed, failed_paths })
+    })
+    .await
+    .map_err(|e| format!("delete_photo_files 任务失败: {e}"))
+    .and_then(std::convert::identity)?;
     crate::logger::log_call_end_with("delete_photo_files", _t,
-        &format!("OK | deleted={deleted} failed={failed}"));
+        &format!("OK | deleted={} failed={}", outcome.deleted, outcome.failed));
     Ok(outcome)
 }
 
@@ -371,48 +371,55 @@ pub fn cleanup_thumb_caches_for_paths(db: &crate::db::Database, app: &tauri::App
 ///
 /// 与 delete_photo_files（永久删除不可恢复）的区别：文件可在回收站找回。
 /// 前端必须二次确认后才调用。无需相册 id（分类/地点视图照片可能无归属）。
+/// async + spawn_blocking：逐张移入回收站是批量磁盘 IO，不占主线程。
 #[tauri::command]
-pub fn delete_photos_to_trash(
+pub async fn delete_photos_to_trash(
     paths: Vec<String>,
-    state: tauri::State<crate::AppState>,
-    session: tauri::State<crate::SessionState>,
+    session: tauri::State<'_, crate::SessionState>,
     app: tauri::AppHandle,
 ) -> Result<PhotoDeleteOutcome, String> {
     let _t = log_call!("delete_photos_to_trash", &format!("paths={}", paths.len()));
     let _user_id = crate::require_user(&session)?;
-    let requested = paths.len();
-    if paths.is_empty() {
-        return Ok(PhotoDeleteOutcome { requested, deleted: 0, failed: 0, failed_paths: Vec::new() });
-    }
-    // 1. 原图仍可读 → 先清理缩略图缓存（指纹依赖文件存在）
-    {
-        let db = state.0.lock().map_err(|e| e.to_string())?;
-        crate::photos::cleanup_thumb_caches_for_paths(&db, &app, &paths);
-    }
-    // 2. 逐张移入系统回收站
-    let mut deleted = 0usize;
-    let mut failed_paths = Vec::new();
-    for p in &paths {
-        match trash::delete(std::path::Path::new(p)) {
-            Ok(_) => deleted += 1,
-            Err(e) => {
-                crate::logger::log_warn(&format!("[delete_photos_to_trash] 回收站删除失败 path={p} err={e}"));
-                failed_paths.push(p.clone());
+    let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<PhotoDeleteOutcome, String> {
+        use tauri::Manager;
+        let requested = paths.len();
+        if paths.is_empty() {
+            return Ok(PhotoDeleteOutcome { requested, deleted: 0, failed: 0, failed_paths: Vec::new() });
+        }
+        let state = app.state::<crate::AppState>();
+        // 1. 原图仍可读 → 先清理缩略图缓存（指纹依赖文件存在）
+        {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            crate::photos::cleanup_thumb_caches_for_paths(&db, &app, &paths);
+        }
+        // 2. 逐张移入系统回收站
+        let mut deleted = 0usize;
+        let mut failed_paths = Vec::new();
+        for p in &paths {
+            match trash::delete(std::path::Path::new(p)) {
+                Ok(_) => deleted += 1,
+                Err(e) => {
+                    crate::logger::log_warn(&format!("[delete_photos_to_trash] 回收站删除失败 path={p} err={e}"));
+                    failed_paths.push(p.clone());
+                }
             }
         }
-    }
-    // 3. 级联清扫描记录（仅成功项；失败项保留原状可重试）
-    let failed = failed_paths.len();
-    if deleted > 0 {
-        let ok_paths: Vec<String> = paths.iter().filter(|p| !failed_paths.contains(p)).cloned().collect();
-        let db = state.0.lock().map_err(|e| e.to_string())?;
-        let _ = db.delete_content_by_paths(&ok_paths);
-    }
-    let outcome = PhotoDeleteOutcome { requested, deleted, failed, failed_paths };
+        // 3. 级联清扫描记录（仅成功项；失败项保留原状可重试）
+        if deleted > 0 {
+            let ok_paths: Vec<String> = paths.iter().filter(|p| !failed_paths.contains(p)).cloned().collect();
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            let _ = db.delete_content_by_paths(&ok_paths);
+        }
+        let failed = failed_paths.len();
+        Ok(PhotoDeleteOutcome { requested, deleted, failed, failed_paths })
+    })
+    .await
+    .map_err(|e| format!("delete_photos_to_trash 任务失败: {e}"))
+    .and_then(std::convert::identity)?;
     crate::logger::log_call_end_with(
         "delete_photos_to_trash",
         _t,
-        &format!("OK | deleted={deleted} failed={failed}"),
+        &format!("OK | deleted={} failed={}", outcome.deleted, outcome.failed),
     );
     Ok(outcome)
 }
@@ -541,82 +548,86 @@ pub struct PhotoMoveOutcome {
 /// 把一批照片移动到另一相册（物理移动文件进入目标相册文件夹，并同步内容/打分记录）。
 /// 目标目录重名自动加 _1/_2 序号；成功后清理源相册的缩略图缓存。
 #[tauri::command]
-pub fn move_photos_to_album(
+pub async fn move_photos_to_album(
     album_id: i64,
     paths: Vec<String>,
     target_album_id: i64,
+    session: tauri::State<'_, crate::SessionState>,
     app: tauri::AppHandle,
-    state: tauri::State<crate::AppState>,
-    session: tauri::State<crate::SessionState>,
 ) -> Result<PhotoMoveOutcome, String> {
     let _t = log_call!("move_photos_to_album", &format!("album_id={album_id} target={target_album_id} paths={}", paths.len()));
     let user_id = crate::require_user(&session)?;
     if album_id == target_album_id {
         return Err("目标相册不能是当前相册".into());
     }
-    let target_path = {
-        let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.get_album(target_album_id, user_id).map_err(|e| e.to_string())?.path
-    };
-    std::fs::create_dir_all(&target_path).map_err(|e| format!("目标相册文件夹不可用: {e}"))?;
-    // 目标目录已存在的文件名（避免覆盖）
-    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if let Ok(rd) = std::fs::read_dir(&target_path) {
-        for e in rd.flatten() {
-            if let Some(name) = e.file_name().to_str() {
-                used.insert(name.to_string());
+    let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<PhotoMoveOutcome, String> {
+        use tauri::Manager;
+        let state = app.state::<crate::AppState>();
+        let target_path = {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            db.get_album(target_album_id, user_id).map_err(|e| e.to_string())?.path
+        };
+        std::fs::create_dir_all(&target_path).map_err(|e| format!("目标相册文件夹不可用: {e}"))?;
+        // 移动前清理被移照片的缩略图缓存（表行 + 磁盘文件，两套命名都覆盖）。
+        // 指纹依赖原路径可读，必须在移动前做；移动后路径变了指纹就对不上了
+        {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            crate::photos::cleanup_thumb_caches_for_paths(&db, &app, &paths);
+        }
+        // 目标目录已存在的文件名（避免覆盖）
+        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Ok(rd) = std::fs::read_dir(&target_path) {
+            for e in rd.flatten() {
+                if let Some(name) = e.file_name().to_str() {
+                    used.insert(name.to_string());
+                }
             }
         }
-    }
-    let requested = paths.len();
-    let mut moved = 0usize;
-    let mut failed_paths = Vec::new();
-    for src in &paths {
-        if !std::path::Path::new(src).is_file() {
-            failed_paths.push(src.clone());
-            continue;
+        let requested = paths.len();
+        let mut moved = 0usize;
+        let mut failed_paths = Vec::new();
+        for src in &paths {
+            if !std::path::Path::new(src).is_file() {
+                failed_paths.push(src.clone());
+                continue;
+            }
+            let base = std::path::Path::new(src);
+            let fname = base.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or(fname);
+            let ext = base.extension().and_then(|s| s.to_str()).unwrap_or("");
+            let mut name = fname.to_string();
+            let mut i = 1;
+            while used.contains(&name) {
+                name = if ext.is_empty() {
+                    format!("{stem}_{i}")
+                } else {
+                    format!("{stem}_{i}.{ext}")
+                };
+                i += 1;
+            }
+            used.insert(name.clone());
+            let dest = std::path::Path::new(&target_path).join(&name);
+            let ok = std::fs::rename(src, &dest).is_ok()
+                || (std::fs::copy(src, &dest).is_ok() && std::fs::remove_file(src).is_ok());
+            if !ok {
+                failed_paths.push(src.clone());
+                continue;
+            }
+            moved += 1;
+            let dest_str = dest.to_string_lossy().to_string();
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            let _ = db.move_photo_content_path(user_id, src, &dest_str, target_album_id);
+            let _ = db.move_photo_rating_path(user_id, src, &dest_str);
         }
-        let base = std::path::Path::new(src);
-        let fname = base.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or(fname);
-        let ext = base.extension().and_then(|s| s.to_str()).unwrap_or("");
-        let mut name = fname.to_string();
-        let mut i = 1;
-        while used.contains(&name) {
-            name = if ext.is_empty() {
-                format!("{stem}_{i}")
-            } else {
-                format!("{stem}_{i}.{ext}")
-            };
-            i += 1;
-        }
-        used.insert(name.clone());
-        let dest = std::path::Path::new(&target_path).join(&name);
-        let ok = std::fs::rename(src, &dest).is_ok()
-            || (std::fs::copy(src, &dest).is_ok() && std::fs::remove_file(src).is_ok());
-        if !ok {
-            failed_paths.push(src.clone());
-            continue;
-        }
-        moved += 1;
-        let dest_str = dest.to_string_lossy().to_string();
-        let db = state.0.lock().map_err(|e| e.to_string())?;
-        let _ = db.move_photo_content_path(user_id, src, &dest_str, target_album_id);
-        let _ = db.move_photo_rating_path(user_id, src, &dest_str);
-    }
-    // 清理源相册中已成功移走照片的缩略图缓存（失败不影响结果）
-    if let Ok(thumbs) = crate::thumbs_dir(&app) {
-        let names: Vec<String> = paths
-            .iter()
-            .filter(|p| !failed_paths.contains(p))
-            .map(|p| crate::thumbnail::grid_thumb_cache_name(album_id, std::path::Path::new(p)))
-            .collect();
-        crate::thumbnail::remove_grid_thumb_files(&names, &thumbs);
-    }
-    let failed = failed_paths.len();
-    let out = PhotoMoveOutcome { requested, moved, failed, failed_paths, target_id: target_album_id };
-    crate::logger::log_call_end_with("move_photos_to_album", _t, &format!("OK | moved={moved} failed={failed}"));
-    Ok(out)
+        let failed = failed_paths.len();
+        Ok(PhotoMoveOutcome { requested, moved, failed, failed_paths, target_id: target_album_id })
+    })
+    .await
+    .map_err(|e| format!("move_photos_to_album 任务失败: {e}"))
+    .and_then(std::convert::identity)?;
+    crate::logger::log_call_end_with("move_photos_to_album", _t,
+        &format!("OK | moved={} failed={}", outcome.moved, outcome.failed));
+    Ok(outcome)
 }
 
 

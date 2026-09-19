@@ -74,7 +74,7 @@ pub fn create_album(
 /// - `size_bytes`: 文件夹真实占用空间
 /// - `shoot_time`: 相册内图片的 EXIF 拍摄时间（YYYY-MM-DD）
 /// - `cover_path`: 若没有封面，自动用文件夹内第一张图片的缩略图作为封面（写回 SQL）
-pub fn fill_album_stats(album: &mut crate::db::Album, thumbs_dir: &Path, state: &tauri::State<crate::AppState>) {
+pub fn fill_album_stats(album: &mut crate::db::Album, thumbs_dir: &Path, state: &crate::AppState) {
     let dir = std::path::Path::new(&album.path);
 
     // 变更探测：递归文件总数（轻量，只数不读，每相册几 ms）
@@ -145,7 +145,7 @@ pub fn fill_album_stats(album: &mut crate::db::Album, thumbs_dir: &Path, state: 
 /// 父子相册共享照片时行归属互抢，表现为「之前入库的照片变未入库」）。
 /// 一次全量路径查询 + Rust 侧前缀匹配，避免逐相册 LIKE N+1。
 /// 多用户隔离：`user_id` 由调用方传入，仅统计当前用户已入库行。
-pub fn fill_scanned_counts(albums: &mut [crate::db::Album], user_id: i64, state: &tauri::State<crate::AppState>) {
+pub fn fill_scanned_counts(albums: &mut [crate::db::Album], user_id: i64, state: &crate::AppState) {
     let Ok(db) = state.0.lock() else { return };
     let pairs: Vec<(i64, String)> = albums.iter().map(|a| (a.id, a.path.clone())).collect();
     let Ok(map) = db.count_scanned_by_prefix(user_id, &pairs) else { return };
@@ -159,24 +159,34 @@ pub fn fill_scanned_counts(albums: &mut [crate::db::Album], user_id: i64, state:
 ///
 /// 返回时为无封面的相册自动补第一张图缩略图。
 /// 多用户隔离：仅返回当前登录用户的相册。
+///
+/// async + spawn_blocking：每相册 walkdir 变更探测 + 可能的全量重扫（封面缩略图
+/// 生成 / EXIF 读取都是秒级 IO）。同步命令跑在主线程，重活会卡死整个 UI 的 IPC。
 #[tauri::command]
-pub fn get_albums(
+pub async fn get_albums(
     app: tauri::AppHandle,
-    state: tauri::State<crate::AppState>,
-    session: tauri::State<crate::SessionState>,
+    session: tauri::State<'_, crate::SessionState>,
 ) -> Result<Vec<crate::db::Album>, String> {
     let _t = log_call!("get_albums");
     let user_id = crate::require_user(&session)?;
-    let thumbs = crate::thumbs_dir(&app)?;
+    let albums = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<crate::db::Album>, String> {
+        use tauri::Manager;
+        let thumbs = crate::thumbs_dir(&app)?;
+        let state = app.state::<crate::AppState>();
         let mut albums = {
             let db = state.0.lock().map_err(|e| e.to_string())?;
             db.get_albums(user_id).map_err(|e| e.to_string())?
         };
-    for a in albums.iter_mut() {
-        fill_album_stats(a, &thumbs, &state);
-    }
-    // FEAT-036：批量填充每个相册的已入库照片数（一次 SQL 分组统计，避免 N+1）
-    fill_scanned_counts(&mut albums, user_id, &state);
+        for a in albums.iter_mut() {
+            fill_album_stats(a, &thumbs, &state);
+        }
+        // FEAT-036：批量填充每个相册的已入库照片数（一次 SQL 分组统计，避免 N+1）
+        fill_scanned_counts(&mut albums, user_id, &state);
+        Ok(albums)
+    })
+    .await
+    .map_err(|e| format!("get_albums 任务失败: {e}"))
+    .and_then(std::convert::identity)?;
     crate::logger::log_call_end_with("get_albums", _t, &format!("OK | count={}", albums.len()));
     Ok(albums)
 }
@@ -185,22 +195,30 @@ pub fn get_albums(
 /// 获取单个相册详情（需求 §4.2 get_album）
 ///
 /// 多用户隔离：仅能获取归属当前用户的相册。
+/// async + spawn_blocking：可能触发全量重扫 + 缩略图生成（见 get_albums 注释）。
 #[tauri::command]
-pub fn get_album(
+pub async fn get_album(
     id: i64,
     app: tauri::AppHandle,
-    state: tauri::State<crate::AppState>,
-    session: tauri::State<crate::SessionState>,
+    session: tauri::State<'_, crate::SessionState>,
 ) -> Result<crate::db::Album, String> {
     let user_id = crate::require_user(&session)?;
-    let thumbs = crate::thumbs_dir(&app)?;
-    let mut album = {
-        let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.get_album(id, user_id).map_err(|e| e.to_string())?
-    };
-    fill_album_stats(&mut album, &thumbs, &state);
-    // FEAT-036：填充该相册已入库照片数（单元素切片复用批量逻辑）
-    fill_scanned_counts(std::slice::from_mut(&mut album), user_id, &state);
+    let album = tauri::async_runtime::spawn_blocking(move || -> Result<crate::db::Album, String> {
+        use tauri::Manager;
+        let thumbs = crate::thumbs_dir(&app)?;
+        let state = app.state::<crate::AppState>();
+        let mut album = {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            db.get_album(id, user_id).map_err(|e| e.to_string())?
+        };
+        fill_album_stats(&mut album, &thumbs, &state);
+        // FEAT-036：填充该相册已入库照片数（单元素切片复用批量逻辑）
+        fill_scanned_counts(std::slice::from_mut(&mut album), user_id, &state);
+        Ok(album)
+    })
+    .await
+    .map_err(|e| format!("get_album 任务失败: {e}"))
+    .and_then(std::convert::identity)?;
     Ok(album)
 }
 
@@ -209,35 +227,44 @@ pub fn get_album(
 ///
 /// 无需先执行内容扫描即可展示照片：轻量 walkdir 收集图片路径。
 /// 多用户隔离：仅能列出归属当前用户的相册。
+/// async + spawn_blocking：全相册目录遍历不应占住主线程。
 #[tauri::command]
-pub fn list_album_photos(
+pub async fn list_album_photos(
     album_id: i64,
-    state: tauri::State<crate::AppState>,
-    session: tauri::State<crate::SessionState>,
+    app: tauri::AppHandle,
+    session: tauri::State<'_, crate::SessionState>,
 ) -> Result<Vec<String>, String> {
     let _t = log_call!("list_album_photos", &format!("album_id={album_id}"));
     let user_id = crate::require_user(&session)?;
-    let dir = {
-        let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.get_album(album_id, user_id)
-            .map_err(|e| e.to_string())?
-            .path
-    };
-    // 过滤已被「记录删除」排除的照片（本地文件保留，但不再出现在网格中）
-    let excluded: std::collections::HashSet<String> = {
-        let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.list_excluded_photos(album_id)
-            .map_err(|e| e.to_string())?
+    let paths = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>, String> {
+        use tauri::Manager;
+        let state = app.state::<crate::AppState>();
+        let dir = {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            db.get_album(album_id, user_id)
+                .map_err(|e| e.to_string())?
+                .path
+        };
+        // 过滤已被「记录删除」排除的照片（本地文件保留，但不再出现在网格中）
+        let excluded: std::collections::HashSet<String> = {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            db.list_excluded_photos(album_id)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .collect()
+        };
+        let mut count = 0usize;
+        let paths: Vec<String> = crate::thumbnail::list_album_images(Path::new(&dir))
             .into_iter()
-            .collect()
-    };
-    let mut count = 0usize;
-    let paths: Vec<String> = crate::thumbnail::list_album_images(Path::new(&dir))
-        .into_iter()
-        .filter(|p| !excluded.contains(p))
-        .inspect(|_| count += 1)
-        .collect();
-    crate::logger::log_call_end_with("list_album_photos", _t, &format!("OK | count={count}"));
+            .filter(|p| !excluded.contains(p))
+            .inspect(|_| count += 1)
+            .collect();
+        crate::logger::log_call_end_with("list_album_photos", _t, &format!("OK | count={count}"));
+        Ok(paths)
+    })
+    .await
+    .map_err(|e| format!("list_album_photos 任务失败: {e}"))
+    .and_then(std::convert::identity)?;
     Ok(paths)
 }
 
@@ -590,172 +617,194 @@ pub struct MergeAlbumOutcome {
 /// - 仅当源相册所有照片成功移动后才删除其记录；有失败则保留记录并列入 `skipped`
 /// - `mode="move"`（默认）：照片**物理移动**进目标相册文件夹；`mode="record"`：仅删除源相册记录、**不移动文件**（文件保留在磁盘原处）
 /// - 多用户隔离：仅能合并归属当前用户的相册
+/// - async + spawn_blocking：物理移动大量文件是秒级 IO；同步命令跑在主线程会卡死 UI
 #[tauri::command]
-pub fn merge_albums(
+pub async fn merge_albums(
     source_ids: Vec<i64>,
     target_id: i64,
     mode: Option<String>,
     app: tauri::AppHandle,
-    state: tauri::State<crate::AppState>,
-    session: tauri::State<crate::SessionState>,
+    session: tauri::State<'_, crate::SessionState>,
 ) -> Result<MergeAlbumOutcome, String> {
-    let mode = mode.as_deref().unwrap_or("move");
-    let is_move = mode != "record";
+    let mode = mode.as_deref().unwrap_or("move").to_string();
     let _t = log_call!("merge_albums", &format!("source={source_ids:?} target={target_id} mode={mode}"));
     let user_id = crate::require_user(&session)?;
+    let out = tauri::async_runtime::spawn_blocking(move || -> Result<MergeAlbumOutcome, String> {
+        use tauri::Manager;
+        let state = app.state::<crate::AppState>();
+        let is_move = mode != "record";
 
-    let target_path = {
-        let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.get_album(target_id, user_id).map_err(|e| e.to_string())?.path
-    };
-    let db = state.0.lock().map_err(|e| e.to_string())?;
-
-    // 目标目录中已存在的文件名（避免覆盖）—— 仅物理移动模式需要
-    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if is_move {
-        std::fs::create_dir_all(&target_path).map_err(|e| format!("目标相册文件夹不可用: {e}"))?;
-        if let Ok(rd) = std::fs::read_dir(&target_path) {
-            for e in rd.flatten() {
-                if let Some(name) = e.file_name().to_str() {
-                    used.insert(name.to_string());
+        // 阶段1（短锁）：读目标路径与全部源相册信息，随后立即释放锁。
+        // 物理文件移动是秒级 IO，绝不能抱着 Mutex 做（会阻塞所有其他命令的 DB 访问）
+        let mut failed_ids: Vec<i64> = Vec::new();
+        let (target_path, sources): (String, Vec<crate::db::Album>) = {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            let target_path =
+                db.get_album(target_id, user_id).map_err(|e| e.to_string())?.path;
+            let mut sources = Vec::new();
+            for sid in &source_ids {
+                if *sid == target_id {
+                    continue; // 不能合并到自身
+                }
+                // 取不到源相册信息 → 失败跳过
+                match db.get_album(*sid, user_id) {
+                    Ok(a) => sources.push(a),
+                    Err(_) => failed_ids.push(*sid),
                 }
             }
-        }
-    }
-
-    let mut merged = 0usize;
-    let mut files_moved = 0usize;
-    let mut files_failed = 0usize;
-    let mut skipped = Vec::new();
-    let mut failed_ids = Vec::new();
-    let mut removed_ids = Vec::new();
-    // 合并来源收集：成功删除源记录后插入 album_merged_sources，供卡片显示历史来源
-    // 收集顺序为处理顺序（去重：同一源不会被处理多次）。
-    let mut merged_sources_to_record: Vec<(i64, String, String)> = Vec::new();
-
-    for sid in &source_ids {
-        if *sid == target_id {
-            continue; // 不能合并到自身
-        }
-        // 先取源相册信息（无论 move/record 都要）；取不到则失败跳过
-        let src_album = match db.get_album(*sid, user_id) {
-            Ok(a) => a,
-            Err(_) => {
-                failed_ids.push(*sid);
-                continue;
-            }
+            (target_path, sources)
         };
-        // 同目录无需移动，但来源仍可记录（语义上 = 标记为合并来源）
-        // 这里只在删除前检查路径一致性
+
+        // 目标目录中已存在的文件名（避免覆盖）—— 仅物理移动模式需要
+        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
         if is_move {
-            let src_path = src_album.path.clone();
-            if src_path != target_path {
-                let src_images = crate::thumbnail::list_album_images(std::path::Path::new(&src_path));
-                let mut moved_ok = true;
-                for src in &src_images {
-                    let base = std::path::Path::new(src);
-                    let fname = base.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                    let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or(fname);
-                    let ext = base.extension().and_then(|s| s.to_str()).unwrap_or("");
-                    // 重名去重
-                    let mut name = fname.to_string();
-                    let mut i = 1;
-                    while used.contains(&name) {
-                        name = if ext.is_empty() {
-                            format!("{stem}_{i}")
+            std::fs::create_dir_all(&target_path)
+                .map_err(|e| format!("目标相册文件夹不可用: {e}"))?;
+            if let Ok(rd) = std::fs::read_dir(&target_path) {
+                for e in rd.flatten() {
+                    if let Some(name) = e.file_name().to_str() {
+                        used.insert(name.to_string());
+                    }
+                }
+            }
+        }
+
+        let mut merged = 0usize;
+        let mut files_moved = 0usize;
+        let mut files_failed = 0usize;
+        let mut skipped = Vec::new();
+        let mut removed_ids = Vec::new();
+        // 合并来源收集：成功删除源记录后插入 album_merged_sources，供卡片显示历史来源
+        // 收集顺序为处理顺序（去重：同一源不会被处理多次）。
+        let mut merged_sources_to_record: Vec<(i64, String, String)> = Vec::new();
+
+        // 阶段2（无锁）：物理移动文件
+        for src_album in &sources {
+            // 同目录无需移动，但来源仍可记录（语义上 = 标记为合并来源）
+            if is_move {
+                let src_path = src_album.path.clone();
+                if src_path != target_path {
+                    let src_images =
+                        crate::thumbnail::list_album_images(std::path::Path::new(&src_path));
+                    let mut moved_ok = true;
+                    for src in &src_images {
+                        let base = std::path::Path::new(src);
+                        let fname = base.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                        let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or(fname);
+                        let ext = base.extension().and_then(|s| s.to_str()).unwrap_or("");
+                        // 重名去重
+                        let mut name = fname.to_string();
+                        let mut i = 1;
+                        while used.contains(&name) {
+                            name = if ext.is_empty() {
+                                format!("{stem}_{i}")
+                            } else {
+                                format!("{stem}_{i}.{ext}")
+                            };
+                            i += 1;
+                        }
+                        used.insert(name.clone());
+                        let dest = std::path::Path::new(&target_path).join(&name);
+                        // 同卷 rename，失败再尝试 copy+remove
+                        let ok = std::fs::rename(src, &dest).is_ok()
+                            || (std::fs::copy(src, &dest).is_ok()
+                                && std::fs::remove_file(src).is_ok());
+                        if ok {
+                            files_moved += 1;
                         } else {
-                            format!("{stem}_{i}.{ext}")
-                        };
-                        i += 1;
+                            files_failed += 1;
+                            moved_ok = false;
+                        }
                     }
-                    used.insert(name.clone());
-                    let dest = std::path::Path::new(&target_path).join(&name);
-                    // 同卷 rename，失败再尝试 copy+remove
-                    let ok = std::fs::rename(src, &dest).is_ok()
-                        || (std::fs::copy(src, &dest).is_ok() && std::fs::remove_file(src).is_ok());
-                    if ok {
-                        files_moved += 1;
-                    } else {
-                        files_failed += 1;
-                        moved_ok = false;
+                    // 尽力清理已空的原文件夹
+                    let _ = std::fs::remove_dir(&src_path);
+                    if !moved_ok {
+                        skipped.push(src_album.id);
+                        continue;
                     }
                 }
-                // 尽力清理已空的原文件夹
-                let _ = std::fs::remove_dir(&src_path);
-                if !moved_ok {
-                    skipped.push(*sid);
-                    continue;
             }
-            }
+            // 收集来源（删除前先记录）
+            merged_sources_to_record
+                .push((src_album.id, src_album.name.clone(), src_album.path.clone()));
         }
-        // 收集来源（删除前先记录）
-        merged_sources_to_record.push((src_album.id, src_album.name, src_album.path));
 
-        if db.delete_album(*sid, user_id).is_ok() {
-            merged += 1;
-            removed_ids.push(*sid);
-        } else {
-            failed_ids.push(*sid);
-        }
-    }
-
-    // 在事务内把成功合并的源相册信息写入 album_merged_sources（供卡片显示历史来源）。
-    // 只对 merged 的源记录；唯一约束 (album_id, source_id) 防重复。
-    if !merged_sources_to_record.is_empty() {
-        match db.conn().unchecked_transaction() {
-            Ok(tx) => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-                let mut had_error = false;
-                for (sid, sname, spath) in &merged_sources_to_record {
-                    if tx.execute(
-                        "INSERT OR IGNORE INTO album_merged_sources
-                           (album_id, source_id, source_name, source_path, user_id, merged_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                        rusqlite::params![target_id, sid, sname, spath, user_id, now],
-                    ).is_err() {
-                        had_error = true;
-                        break;
-                    }
-                }
-                if had_error {
-                    // 写来源失败不回滚合并：用户已经合并成功了，写来源只是元信息
-                    let _ = tx.rollback();
+        // 阶段3（短锁）：删除源相册记录 + 事务写入合并来源
+        {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            for (sid, _sname, _spath) in &merged_sources_to_record {
+                if db.delete_album(*sid, user_id).is_ok() {
+                    merged += 1;
+                    removed_ids.push(*sid);
                 } else {
-                    let _ = tx.commit();
+                    failed_ids.push(*sid);
                 }
             }
-            Err(_) => {
-                // 事务创建失败不阻塞合并主流程
+
+            // 在事务内把成功合并的源相册信息写入 album_merged_sources（供卡片显示历史来源）。
+            // 只对 merged 的源记录；唯一约束 (album_id, source_id) 防重复。
+            if !merged_sources_to_record.is_empty() {
+                match db.conn().unchecked_transaction() {
+                    Ok(tx) => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0);
+                        let mut had_error = false;
+                        for (sid, sname, spath) in &merged_sources_to_record {
+                            if tx
+                                .execute(
+                                    "INSERT OR IGNORE INTO album_merged_sources
+                                       (album_id, source_id, source_name, source_path, user_id, merged_at)
+                                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                                    rusqlite::params![target_id, sid, sname, spath, user_id, now],
+                                )
+                                .is_err()
+                            {
+                                had_error = true;
+                                break;
+                            }
+                        }
+                        if had_error {
+                            // 写来源失败不回滚合并：用户已经合并成功了，写来源只是元信息
+                            let _ = tx.rollback();
+                        } else {
+                            let _ = tx.commit();
+                        }
+                    }
+                    Err(_) => {
+                        // 事务创建失败不阻塞合并主流程
+                    }
+                }
             }
         }
-    }
 
-    // 清理已删除源相册的缩略图缓存（失败不影响结果）
-    if let Ok(thumbs) = crate::thumbs_dir(&app) {
-        for id in &removed_ids {
-            crate::thumbnail::cleanup_all_album_thumbs(*id, &thumbs);
+        // 阶段4（无锁）：清理已删除源相册的缩略图缓存（失败不影响结果）
+        if let Ok(thumbs) = crate::thumbs_dir(&app) {
+            for id in &removed_ids {
+                crate::thumbnail::cleanup_all_album_thumbs(*id, &thumbs);
+            }
         }
-    }
 
-    drop(db);
-    let skipped_count = skipped.len();
-    let out = MergeAlbumOutcome {
-        requested: source_ids.len(),
-        merged,
-        files_moved,
-        files_failed,
-        skipped,
-        failed_ids,
-        target_id,
-    };
+        Ok(MergeAlbumOutcome {
+            requested: source_ids.len(),
+            merged,
+            files_moved,
+            files_failed,
+            skipped,
+            failed_ids,
+            target_id,
+        })
+    })
+    .await
+    .map_err(|e| format!("merge_albums 任务失败: {e}"))
+    .and_then(std::convert::identity)?;
 
     crate::logger::log_call_end_with(
         "merge_albums",
         _t,
-        &format!("OK | merged={merged} files_moved={files_moved} files_failed={files_failed} skipped={skipped_count}"),
+        &format!("OK | merged={} files_moved={} files_failed={} skipped={}",
+            out.merged, out.files_moved, out.files_failed, out.skipped.len()),
     );
     Ok(out)
 }

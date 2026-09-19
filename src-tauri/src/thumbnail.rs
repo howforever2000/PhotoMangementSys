@@ -292,30 +292,73 @@ where
     let hashes: Vec<String> = source_hashes.iter().map(|(_, h)| h.clone()).collect();
     let hit_map = db_lookup(&hashes); // hash → thumb_path（已验证 alive）
 
-    // 2. 生成未命中项
-    let mut out: Vec<(String, String)> = Vec::with_capacity(sources.len());
+    // 2. 生成未命中项（并行：按 CPU 核数分块，首次打开大相册（缓存全冷）提速数倍）
+    let misses: Vec<(String, String)> = source_hashes
+        .iter()
+        .filter(|(_, hash)| !hit_map.contains_key(hash))
+        .cloned()
+        .collect();
+    let mut gen_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut generated: Vec<(String, String, u64, u128)> = Vec::new(); // (source, thumb, len, mtime_ns)
-    for (source, hash) in &source_hashes {
-        if let Some(thumb) = hit_map.get(hash) {
-            out.push((source.clone(), thumb.clone()));
-            continue;
-        }
-        let path = std::path::Path::new(source.as_str());
-        let (len, mtime_ns) = match read_file_meta(path) {
-            Some(m) => m,
-            None => continue,
-        };
-        match ensure_grid_thumb(album_id, path, thumbs_dir, None, 0) {
-            Ok(thumb) => {
-                generated.push((source.clone(), thumb.clone(), len, mtime_ns));
-                out.push((source.clone(), thumb));
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(8);
+    // 小批量（<2×核数）直接串行，省去线程开销
+    if misses.len() >= workers * 2 && workers > 1 {
+        let gen_sync = std::sync::Mutex::new((gen_map, generated));
+        let chunk_size = misses.len().div_ceil(workers);
+        std::thread::scope(|scope| {
+            for part in misses.chunks(chunk_size) {
+                let gen_sync = &gen_sync;
+                scope.spawn(move || {
+                    for (source, _hash) in part {
+                        let path = std::path::Path::new(source.as_str());
+                        let (len, mtime_ns) = match read_file_meta(path) {
+                            Some(m) => m,
+                            None => continue,
+                        };
+                        if let Ok(thumb) = ensure_grid_thumb(album_id, path, thumbs_dir, None, 0) {
+                            let mut g = gen_sync.lock().unwrap();
+                            g.0.insert(source.clone(), thumb.clone());
+                            g.1.push((source.clone(), thumb, len, mtime_ns));
+                        }
+                        // 单张失败不影响其余：跳过
+                    }
+                });
             }
-            Err(_) => {
-                // 单张失败不影响其余：跳过
+        });
+        let g = gen_sync.into_inner().unwrap();
+        gen_map = g.0;
+        generated = g.1;
+    } else {
+        for (source, _hash) in &misses {
+            let path = std::path::Path::new(source.as_str());
+            let (len, mtime_ns) = match read_file_meta(path) {
+                Some(m) => m,
+                None => continue,
+            };
+            match ensure_grid_thumb(album_id, path, thumbs_dir, None, 0) {
+                Ok(thumb) => {
+                    gen_map.insert(source.clone(), thumb.clone());
+                    generated.push((source.clone(), thumb, len, mtime_ns));
+                }
+                Err(_) => {
+                    // 单张失败不影响其余：跳过
+                }
             }
         }
     }
-    // 3. 回调写表（让调用方决定怎么写、怎么加锁）
+    // 3. 按请求顺序组装结果（表命中项在前，新生成项按原顺序插入）
+    let mut out: Vec<(String, String)> = Vec::with_capacity(sources.len());
+    for (source, hash) in &source_hashes {
+        if let Some(thumb) = hit_map.get(hash) {
+            out.push((source.clone(), thumb.clone()));
+        } else if let Some(thumb) = gen_map.get(source) {
+            out.push((source.clone(), thumb.clone()));
+        }
+    }
+    // 4. 回调写表（让调用方决定怎么写、怎么加锁）
     on_generated(&generated);
     out
 }
@@ -889,6 +932,54 @@ mod tests {
         // 删除相册：网格缩略图一并清理
         cleanup_all_album_thumbs(7, &thumbs);
         assert!(!Path::new(t).exists());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 并行生成路径：批量（≥2×核数）未命中项走 scoped threads，全部生成且
+    /// 二次调用全命中缓存（文件数不增长 = 不重复生成）
+    #[test]
+    fn parallel_generation_bulk_and_cache_hit() {
+        let tmp = std::env::temp_dir().join(format!("pm_par_thumb_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let img_dir = tmp.join("photos");
+        std::fs::create_dir_all(&img_dir).unwrap();
+
+        let mut sources: Vec<String> = Vec::new();
+        for i in 0..24 {
+            let p = img_dir.join(format!("p{i:02}.jpg"));
+            image::RgbImage::new(120, 90).save(&p).unwrap();
+            sources.push(p.to_string_lossy().into_owned());
+        }
+        let thumbs = tmp.join("thumbs");
+
+        // 首次：并行批量生成，24 张全部产出
+        let t0 = std::time::Instant::now();
+        let pairs = ensure_grid_thumbs_with_lookup(
+            11,
+            &sources,
+            &thumbs,
+            &|_hashes| std::collections::HashMap::new(),
+            |_gen| {},
+        );
+        eprintln!("并行生成 24 张耗时: {}ms", t0.elapsed().as_millis());
+        assert_eq!(pairs.len(), 24, "全部应生成成功");
+        for (_, thumb) in &pairs {
+            assert!(Path::new(thumb).exists());
+        }
+
+        // 二次：磁盘缓存命中（指纹命名不变），目录文件数不增长 = 不重复生成
+        let before = std::fs::read_dir(thumbs.join("grid")).unwrap().count();
+        let pairs2 = ensure_grid_thumbs_with_lookup(
+            11,
+            &sources,
+            &thumbs,
+            &|_hashes| std::collections::HashMap::new(),
+            |_gen| {},
+        );
+        let after = std::fs::read_dir(thumbs.join("grid")).unwrap().count();
+        assert_eq!(pairs2.len(), 24);
+        assert_eq!(before, after, "二次调用不得新增缓存文件（防重复生成）");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
