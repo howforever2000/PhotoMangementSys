@@ -1,4 +1,4 @@
-# VCR packaging-time runtime deps (models are external files, not listed here).
+﻿# VCR packaging-time runtime deps (models are external files, not listed here).
 # NOTE: keep this file pure ASCII. Windows pip decodes requirements files with the
 # system locale (GBK/cp936), so non-ASCII comments break `pip install -r` with
 # UnicodeDecodeError. See BUG-2026-0920-001.

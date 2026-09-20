@@ -1,4 +1,4 @@
-# 视觉内容识别微服务依赖（模型导出仅需一次，推理期只需以下运行时依赖）
+﻿# 视觉内容识别微服务依赖（模型导出仅需一次，推理期只需以下运行时依赖）
 #   pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 fastapi>=0.110
 uvicorn>=0.29

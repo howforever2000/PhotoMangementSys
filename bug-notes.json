@@ -2287,6 +2287,42 @@
       ],
       "created_at": "2026-09-19T23:40:00+08:00",
       "fixed_at": "2026-09-19T23:40:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-007",
+      "date": "2026-09-20",
+      "status": "resolved",
+      "title": "requirements 文件引入中文注释后，中文 Windows 上 pip 按 GBK 解码失败，发布构建流水线挂死",
+      "module": "构建流水线 / python/requirements*.txt（build_vcr_exe.ps1 → pip install -r）",
+      "symptom": [
+        "build_vcr_exe.ps1 步骤 2 抛 UnicodeDecodeError: 'gbk' codec can't decode byte 0x80 in position 417",
+        "auto_decode cp936 failed；同文件历史构建（纯 ASCII 注释时期）从未复现"
+      ],
+      "root_cause": {
+        "summary": "pip 解析 requirements 只认 BOM；无 BOM 时回落 locale 首选编码（中文 Windows = GBK）。UTF-8 中文注释字节被按 GBK 断句 → 解码崩溃",
+        "detail": [
+          "DirectML 方案 A 落地时给 requirements-vcr-packaging.txt 加了大段中文说明（UTF-8 无 BOM），引爆该雷",
+          "python/requirements.txt 同样有中文注释，属同款潜伏雷"
+        ]
+      },
+      "evidence_log": [
+        "pip 24.2（.venv-vcr）auto_decode：BOM 检测失败后走 locale.getpreferredencoding（cp936）",
+        "加 BOM 后 pip install --dry-run -r 复验 exit 0"
+      ],
+      "solution": {
+        "summary": "两个 requirements 文件写入 UTF-8 BOM（内容零改动），pip 检测到 BOM 即按 UTF-8 解码",
+        "steps": [
+          "python/requirements-vcr-packaging.txt、python/requirements.txt 头部加 EF BB BF",
+          "用 venv 内同版本 pip 做 dry-run 复验"
+        ]
+      },
+      "lessons": [
+        "会被 Windows 工具链按 locale 读取的文本文件（requirements/.ps1/.bat 等）写非 ASCII 内容时，要么带 BOM，要么调用方强制 PYTHONUTF8=1",
+        "「以前能过」不等于「现在能过」：注释内容也是构建输入"
+      ],
+      "keywords": ["requirements", "BOM", "GBK", "UnicodeDecodeError", "pip", "auto_decode", "构建流水线", "中文注释"],
+      "created_at": "2026-09-20T09:30:00+08:00",
+      "fixed_at": "2026-09-20T09:30:00+08:00"
     }
   ]
 }
