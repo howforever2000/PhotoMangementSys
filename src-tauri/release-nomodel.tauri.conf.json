@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "version": "0.4.0",
+  "bundle": {
+    "active": true,
+    "resources": {
+      "../python/dist/vcr-server.exe": "vcr/vcr-server.exe",
+      "../python/models/yolov8n-det.onnx": "vcr/models/yolov8n-det.onnx",
+      "../python/models/det_500m.onnx": "vcr/models/det_500m.onnx",
+      "../python/models/w600k_mbf.onnx": "vcr/models/w600k_mbf.onnx",
+      "../python/models/paddleocr-det.onnx": "vcr/models/paddleocr-det.onnx"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}
