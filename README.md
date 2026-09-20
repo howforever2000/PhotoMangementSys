@@ -162,7 +162,8 @@ python/
 
 ### 6.1 安装
 
-- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新稳定版 **v0.3.1**，约 460MB，内含 VCR 微服务与运行必需的全部 AI 模型；**v0.4.0-beta** 为预发布——代码与标签已发布，改进内容见「十一、版本历史」，安装包待构建后补充）：
+- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新稳定版 **v0.3.1**，约 460MB，内含 VCR 微服务与运行必需的全部 AI 模型；**v0.4.0-beta** 预发布已提供**无语义模型 MSI**，137MB——语义模型装后在「⚙ 性能设置 → 📥 模型下载」获取，改进内容见「十一、版本历史」）：
+  - v0.4.0-beta（预发布）：[`PhotoManagementSys_0.4.0-beta_x64_en-US-nomodel.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.0-beta/PhotoManagementSys_0.4.0-beta_x64_en-US-nomodel.msi)（MSI，无语义模型版）
   - [`PhotoManagementSys_0.3.1_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64-setup.exe)（NSIS，按用户安装到 `%LOCALAPPDATA%`，无需管理员权限，推荐）
   - 或 [`PhotoManagementSys_0.3.1_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64_en-US.msi)（MSI，按机器安装到 `Program Files`，需管理员权限）
   - 从旧版升级：建议先卸载旧版再安装（两种安装范围不同，否则会同时存在两份）
