@@ -37,6 +37,9 @@ jpeg-decoder = "0.3"
 trash = "5"
 # 遍历目录找图片
 walkdir = "2"
+# 并行扫描线程池（FEAT-064）：EXIF 解析是 IO/CPU 混合负载，多线程显著提速；
+# 用 rayon 而非手写线程池 —— 工作窃取调度对「张数不均（大小文件混合）」的负载更均衡
+rayon = "1.10"
 # 读取图片 EXIF（拍摄时间）
 kamadak-exif = "0.6"
 # 密码哈希（多用户登录，Argon2id 抗 GPU 暴力破解）

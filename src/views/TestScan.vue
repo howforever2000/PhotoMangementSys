@@ -7,19 +7,27 @@
  *   2. 「解析地名」：GPS 聚类 → 本地省/市点面判断（离线秒回；未命中才联网）
  *   3. 视图切换：按时间（年→月）/ 按地点 查看识别结果，验证准确率
  *   4. 「按年·地点组织移动」：创建 {dir}/{年份}/{地点}/ 两级文件夹并移动照片（破坏性，需确认）
+ *
+ * FEAT-064 架构变更（两个用户反馈的问题）：
+ *   ① **退出页面任务不消失**：任务状态由后端 `ScanJobState`（进程级）+ 前端
+ *      `useScanTaskStore`（脱离组件）共同持有，页面卸载/路由切换都不中断；
+ *      重新进入页面用 `get_scan_job` 快照即刻恢复进度与结果。
+ *   ② **多线程 + 可调核数**：扫描走 rayon 线程池并行（`scan_test_photos_cancellable`），
+ *      线程数在右上角「⚙ 性能设置」里可调，并支持**按当前相册实测推荐最优值**。
  */
-import { computed, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { TestPhoto, OrganizeReport, ScanProgress } from "../types/photo";
+import type { TestPhoto } from "../types/photo";
 import { useThemeStore } from "../stores/theme";
+import { useScanTaskStore } from "../stores/scanTask";
 import { useNotify } from "../composables/useNotify";
+import ScanPerfSettings from "../components/ScanPerfSettings.vue";
 
 const router = useRouter();
 const theme = useThemeStore();
 const notify = useNotify();
+const task = useScanTaskStore();
 
 /** 页面级主题变量：卡片/按钮原为固定白底，深色模式下会突兀发白 */
 const tsVars = computed(() => {
@@ -39,31 +47,125 @@ const tsVars = computed(() => {
 const dirPath = ref("");
 /** 是否递归扫描子目录（小组件功能，用户可选；后续全局扫描沿用同一开关） */
 const recursive = ref(false);
-/** 扫描结果 */
-const photos = ref<TestPhoto[] | null>(null);
 /** 视图模式：time=按时间（年→月） / place=按地点 */
 const viewMode = ref<"time" | "place">("time");
-/** 状态 */
-const scanning = ref(false);
-const resolving = ref(false);
-const organizing = ref(false);
+/** 本地错误（启动校验/操作失败；任务自身的错误走 task.snapshot.error） */
 const error = ref("");
-/** 移动报告 */
-const report = ref<OrganizeReport | null>(null);
-/** 进度（resolve/organize） */
-const progress = ref<ScanProgress | null>(null);
-let unlistenProgress: UnlistenFn | null = null;
+/** 性能设置弹窗 */
+const perfOpen = ref(false);
 
-/** 监听后端进度事件（resolve=解析地名 / organize=组织移动，逐张上报） */
-listen<ScanProgress>("test-scan-progress", (e) => {
-  progress.value = e.payload;
-}).then((fn) => {
-  unlistenProgress = fn;
+/** 扫描结果（来自 store，脱离组件存活） */
+const photos = computed(() => task.photos);
+/** 运行中（后端权威状态） */
+const running = computed(() => task.running);
+/** 各阶段是否在跑（用于按钮文案/禁用） */
+const scanning = computed(() => running.value && task.phase === "scan");
+const resolving = computed(() => running.value && task.phase === "resolve");
+const organizing = computed(() => running.value && task.phase === "organize");
+/** 进度（优先实时事件，回落快照） */
+const progress = computed(() => task.progress);
+/** 状态条文案（含「后台执行中」提示） */
+const statusText = computed(() => task.statusText);
+/** 组织移动报告 */
+const report = computed(() => task.organizeReport);
+/** 任务错误 */
+const jobError = computed(() => task.snapshot.error);
+
+/** 页面挂载：恢复后端任务状态 + 注册事件/轮询（这是「退出后回来能续上」的入口） */
+onMounted(async () => {
+  await task.ensureListener();
+  try {
+    const snap = await task.refresh();
+    // 恢复上次的目录与递归选项（任务挂在 store 上，切页面回来仍连续）
+    if (snap.dir) {
+      dirPath.value = snap.dir;
+      recursive.value = snap.recursive;
+    }
+    if (snap.status === "running") {
+      task.startPolling();
+      notify.info(
+        `${task.statusText}中…`,
+        `任务在后台继续执行（${snap.threads} 线程），离开本页面不会中断`,
+        4000,
+      );
+    }
+  } catch (e) {
+    console.warn("[test-scan] 恢复任务状态失败:", e);
+  }
+  // 有历史结果（已完成）→ 重新拉取照片列表以渲染分组
+  await maybeLoadPhotos();
 });
 
+/** 卸载时只停轮询/事件，**不清任务状态** —— 这就是「退出后任务不消失」 */
 onUnmounted(() => {
-  unlistenProgress?.();
+  task.dispose();
 });
+
+/**
+ * 任务终态 → 自动拉取结果列表 / 提示
+ *
+ * 场景：用户在扫描跑着的时候切到别的页面，任务在后台完成了。此时页面重新挂载
+ * 时 `refresh()` 已拿到终态，但照片列表还没拉（快照不含整表）；本 watch 负责补上。
+ * 同时给一个 Toast 告知「后台那件事干完了」——否则用户可能不知道结果已就绪。
+ */
+watch(
+  () => [task.snapshot.status, task.snapshot.finished_at] as const,
+  async ([status, finishedAt], prev) => {
+    const prevStatus = prev?.[0];
+    if (status === "running") return;
+    if (status === "idle") return;
+    // 只在「刚进入终态」时触发（避免重复提示/重复拉取）
+    if (prevStatus === status && prev?.[1] === finishedAt) return;
+    await maybeLoadPhotos();
+    const snap = task.snapshot;
+    if (status === "done") {
+      if (snap.phase === "organize") {
+        const rep = snap.organize;
+        notify.success(
+          "组织移动完成",
+          rep ? `已移动 ${rep.moved} 张${rep.conflict ? `，冲突跳过 ${rep.conflict}` : ""}` : "",
+          5000,
+        );
+      } else if (snap.phase === "resolve") {
+        notify.success(
+          "地名解析完成",
+          `${snap.place_count} / ${snap.photo_count} 张有地点`,
+          5000,
+        );
+      } else {
+        notify.success("扫描完成", `共 ${snap.photo_count} 张`, 5000);
+      }
+    } else if (status === "failed") {
+      notify.error("任务失败", snap.error);
+    } else if (status === "cancelled") {
+      notify.warning("任务已停止", "已处理部分结果保留", 4000);
+    }
+  },
+);
+
+/** 任务处于终态且有目录 → 拉取照片列表（快照不含整表） */
+async function maybeLoadPhotos() {
+  const snap = task.snapshot;
+  if (!snap.dir) return;
+  if (snap.status === "idle") return;
+  // organize 阶段把照片**移走**了：此时再扫原目录只会得到 0 张（照片已在新文件夹），
+  // 会把结果区清空、只留一份报告 —— 报告里已有完整统计，故不重扫。
+  // 若用户想看结果，切到按年目录再扫即可（那是新位置，语义正确）。
+  if (snap.phase === "organize") {
+    task.photosLoaded = true;
+    return;
+  }
+  // 扫描到 0 张时无需拉列表（空态文案由模板处理）
+  if (snap.photo_count === 0) {
+    task.photosLoaded = true;
+    return;
+  }
+  try {
+    await task.loadPhotos(snap.dir, snap.recursive);
+  } catch (e) {
+    console.warn("[test-scan] 加载结果列表失败:", e);
+  }
+}
 
 /** 选择文件夹 */
 async function browseDir() {
@@ -77,56 +179,37 @@ async function browseDir() {
   }
 }
 
-/** 扫描：时间 + GPS 坐标（recursive 控制是否递归子目录） */
+/** 扫描：时间 + GPS 坐标（recursive 控制是否递归子目录；后台并行执行） */
 async function scanPhotos() {
-  if (scanning.value || !dirPath.value) return;
-  scanning.value = true;
+  if (running.value || !dirPath.value) return;
   error.value = "";
-  report.value = null;
   try {
-    photos.value = await invoke<TestPhoto[]>("scan_test_photos", { path: dirPath.value, recurse: recursive.value });
-    if (photos.value.length === 0) {
-      error.value = recursive.value
-        ? "扫描到 0 张图片（已递归子目录）。请确认所选文件夹及其子目录下含有图片。"
-        : "扫描到 0 张直接图片。本功能只扫描所选文件夹下的直接图片（不递归子目录），请确认照片直接放在该文件夹中，或在下方勾选「递归子目录」。";
-    }
+    await task.start("scan", dirPath.value, recursive.value);
+    notify.info(
+      "扫描已开始",
+      `后台并行执行（${task.threadsUsed} 线程），离开本页面不会中断`,
+      4000,
+    );
   } catch (e) {
-    error.value = `扫描失败：${e}`;
-    photos.value = null;
-  } finally {
-    scanning.value = false;
+    error.value = `扫描启动失败：${e}`;
   }
 }
 
 /** 解析地名：GPS 聚类 + 本地省/市优先（离线秒回，未命中联网兜底），逐张进度上报 */
 async function resolvePlaces() {
-  if (resolving.value || !dirPath.value) return;
-  resolving.value = true;
+  if (running.value || !dirPath.value) return;
   error.value = "";
-  progress.value = null;
   try {
-    photos.value = await invoke<TestPhoto[]>("resolve_test_places", { path: dirPath.value, recurse: recursive.value });
-    // 完成：进度条置满
-    if (photos.value) {
-      const withGps = photos.value.filter((p) => p.lat !== null).length;
-      progress.value = {
-        phase: "resolve",
-        current: withGps,
-        total: withGps,
-        file_name: "完成",
-        message: "解析完成",
-      };
-    }
+    await task.start("resolve", dirPath.value, recursive.value);
+    notify.info("地名解析已开始", "后台执行中，离开本页面不会中断", 4000);
   } catch (e) {
-    error.value = `地名解析失败：${e}`;
-  } finally {
-    resolving.value = false;
+    error.value = `地名解析启动失败：${e}`;
   }
 }
 
 /** 按年·地点组织移动（破坏性操作，需确认） */
 async function organizePhotos() {
-  if (organizing.value || !dirPath.value || !photos.value) return;
+  if (running.value || !dirPath.value || !photos.value.length) return;
   const hasPlace = photos.value.some((p) => p.place);
   const ok = await notify.confirm(
     "组织移动照片",
@@ -137,24 +220,25 @@ async function organizePhotos() {
     { type: "danger", confirmText: "确认移动" },
   );
   if (!ok) return;
-  organizing.value = true;
   error.value = "";
-  progress.value = null;
   try {
-    report.value = await invoke<OrganizeReport>("organize_test_photos", { path: dirPath.value, recurse: recursive.value });
-    // 完成：进度条置满（organize 阶段 total=全部照片）
-    progress.value = {
-      phase: "organize",
-      current: report.value.total,
-      total: report.value.total,
-      file_name: "完成",
-      message: "组织移动完成",
-    };
+    await task.start("organize", dirPath.value, recursive.value);
+    notify.info("组织移动已开始", "破坏性操作执行中，可在进度条查看", 4000);
   } catch (e) {
-    error.value = `组织移动失败：${e}`;
-  } finally {
-    organizing.value = false;
+    error.value = `组织移动启动失败：${e}`;
   }
+}
+
+/** 停止当前任务（已处理部分保留） */
+async function stopTask() {
+  await task.cancel();
+  notify.info("正在停止", "当前任务会尽快收敛，已处理部分结果保留", 3500);
+}
+
+/** 清除记录（回到空闲态） */
+async function clearTask() {
+  if (running.value) return;
+  await task.clear();
 }
 
 /** 年份提取（兜底：无 shoot_time 用 GPS 日期不可得时按 undefined） */
@@ -172,7 +256,7 @@ interface YearGroup {
   months: MonthGroup[];
 }
 function groupByTime(): YearGroup[] {
-  if (!photos.value) return [];
+  if (!photos.value.length) return [];
   const map = new Map<string, Map<string, TestPhoto[]>>();
   for (const p of photos.value) {
     const y = yearOf(p);
@@ -195,7 +279,7 @@ function groupByTime(): YearGroup[] {
 
 /** 按地点分组：地点 → 照片（无地点排最后） */
 function groupByPlace(): { place: string; photos: TestPhoto[] }[] {
-  if (!photos.value) return [];
+  if (!photos.value.length) return [];
   const map = new Map<string, TestPhoto[]>();
   for (const p of photos.value) {
     const key = p.place ?? "无地点";
@@ -218,15 +302,34 @@ function fmtCoord(p: TestPhoto): string {
 }
 
 /** 统计 */
-const stats = () => {
-  const ps = photos.value ?? [];
+const stats = computed(() => {
+  const ps = photos.value;
   return {
     total: ps.length,
     withTime: ps.filter((p) => p.shoot_time).length,
     withGps: ps.filter((p) => p.lat !== null).length,
     withPlace: ps.filter((p) => p.place).length,
   };
-};
+});
+
+/** 速率/剩余时间展示（运行中才有意义） */
+const rateText = computed(() => {
+  const p = progress.value;
+  if (!running.value || !p || !p.rate) return "";
+  const eta = p.eta_sec;
+  const etaStr =
+    eta == null ? "" : eta < 60 ? ` · 剩余约 ${Math.ceil(eta)} 秒` : ` · 剩余约 ${Math.ceil(eta / 60)} 分钟`;
+  return `${p.rate.toFixed(0)} 张/秒${etaStr}`;
+});
+
+/** 进度条标题 */
+const phaseLabel = computed(() => {
+  const ph = progress.value?.phase ?? task.phase;
+  if (ph === "scan") return "🔍 扫描中";
+  if (ph === "resolve") return "📍 解析地名";
+  if (ph === "organize") return "📁 组织移动";
+  return "";
+});
 </script>
 
 <template>
@@ -239,7 +342,28 @@ const stats = () => {
           扫描文件夹提取拍摄时间 / GPS → 按年·地点分组预览 → 一键组织移动（不落库，需确认）
         </p>
       </div>
+      <!-- FEAT-064：右上角性能设置（扫描线程数 + 按相册实测推荐） -->
+      <button
+        class="btn perf-btn"
+        title="扫描线程数 / 按当前相册实测推荐最优线程"
+        @click="perfOpen = true"
+      >
+        ⚙ 性能设置
+      </button>
     </header>
+
+    <!-- 性能设置弹窗（Teleport 到 body，避免被页面容器裁剪） -->
+    <Teleport to="body">
+      <div v-if="perfOpen" class="perf-mask" @click.self="perfOpen = false">
+        <div class="perf-dialog" :style="tsVars">
+          <div class="perf-head">
+            <h3>⚙ 扫描性能设置</h3>
+            <button class="btn btn-sm" @click="perfOpen = false">✕</button>
+          </div>
+          <ScanPerfSettings :dir="dirPath" :recursive="recursive" />
+        </div>
+      </div>
+    </Teleport>
 
     <!-- 目录选择 + 操作（扫描小组件：支持递归模式选择） -->
     <section class="toolbar glass-card">
@@ -248,52 +372,106 @@ const stats = () => {
           v-model="dirPath"
           class="dir-input"
           placeholder="输入文件夹路径，或点击「浏览」选择（勾选递归则扫子目录）"
+          :disabled="running"
           @keyup.enter="scanPhotos"
         />
-        <button class="btn" @click="browseDir">浏览…</button>
-        <button class="btn btn-primary" :disabled="scanning || !dirPath" @click="scanPhotos">
+        <button class="btn" :disabled="running" @click="browseDir">浏览…</button>
+        <button
+          class="btn btn-primary"
+          :disabled="running || !dirPath"
+          @click="scanPhotos"
+        >
           {{ scanning ? "扫描中…" : "扫描" }}
         </button>
-        <button class="btn btn-primary" :disabled="resolving || !photos || !dirPath" @click="resolvePlaces">
+        <button
+          class="btn btn-primary"
+          :disabled="running || !photos.length || !dirPath"
+          @click="resolvePlaces"
+        >
           {{ resolving ? "地名解析中…" : "解析地名" }}
         </button>
-        <button class="btn btn-danger" :disabled="organizing || !photos || !dirPath" @click="organizePhotos">
+        <button
+          class="btn btn-danger"
+          :disabled="running || !photos.length || !dirPath"
+          @click="organizePhotos"
+        >
           {{ organizing ? "移动中…" : "按年·地点组织移动" }}
+        </button>
+        <!-- FEAT-064：运行中显示「停止」；空闲且有记录显示「清除记录」 -->
+        <button v-if="running" class="btn btn-stop" @click="stopTask">■ 停止</button>
+        <button
+          v-else-if="task.snapshot.status !== 'idle'"
+          class="btn btn-sm"
+          @click="clearTask"
+        >
+          🧹 清除记录
         </button>
       </div>
       <!-- 递归模式开关（小组件功能） -->
-      <label class="recursive-toggle" :class="{ active: recursive }">
-        <input type="checkbox" v-model="recursive" />
+      <label class="recursive-toggle" :class="{ active: recursive, locked: running }">
+        <input type="checkbox" v-model="recursive" :disabled="running" />
         <span class="recursive-label">递归子目录</span>
         <span class="recursive-desc">{{ recursive ? "扫描所选文件夹及其所有子目录" : "只扫所选文件夹直接图片（不递归）" }}</span>
       </label>
-      <p class="hint">解析地名：本地省/市离线查询（GPS 聚类，秒回）；仅未命中（国外/公海）时才联网。组织移动为破坏性操作，执行前有确认。</p>
+      <p class="hint">
+        解析地名：本地省/市离线查询（GPS 聚类，秒回）；仅未命中（国外/公海）时才联网。组织移动为破坏性操作，执行前有确认。<br />
+        <b>任务在后台执行</b>：离开本页面不会中断，重新进入可继续查看进度与结果；扫描为多线程并行，
+        线程数可在右上角「⚙ 性能设置」中调整（支持按当前相册实测推荐）。
+      </p>
     </section>
 
-    <!-- 进度条（解析地名 / 组织移动，逐张上报） -->
-    <section v-if="progress" class="progress-card glass-card">
-      <div class="progress-head">
-        <span class="progress-phase">{{ progress.phase === "resolve" ? "🔍 解析地名" : "📁 组织移动" }}</span>
-        <span class="progress-count">{{ progress.current }} / {{ progress.total }}</span>
+    <!-- 任务状态条（FEAT-064：状态/进度/线程数/停止；退出页面回来仍可见） -->
+    <section
+      v-if="task.snapshot.status !== 'idle'"
+      class="job-card glass-card"
+      :class="{ 'job-running': running }"
+    >
+      <div class="job-head">
+        <span class="job-status" :class="`st-${task.snapshot.status}`">
+          <span v-if="running" class="job-dot"></span>
+          {{ statusText }}
+        </span>
+        <span v-if="task.threadsUsed" class="job-threads">{{ task.threadsUsed }} 线程</span>
+        <span v-if="running" class="job-bg-tip">后台执行中 · 可安全离开本页面</span>
+        <button v-if="running" class="btn btn-stop btn-sm" @click="stopTask">■ 停止</button>
       </div>
-      <div class="progress-track">
-        <div
-          class="progress-fill"
-          :class="{ 'fill-done': progress.current >= progress.total }"
-          :style="{ width: (progress.total > 0 ? (progress.current / progress.total) * 100 : 0) + '%' }"
-        ></div>
-      </div>
-      <div class="progress-msg">
-        <span class="progress-file" :title="progress.file_name">{{ progress.file_name }}</span>
-        <span class="progress-result">{{ progress.message }}</span>
-      </div>
+
+      <!-- 进度条 -->
+      <template v-if="progress && progress.total > 0">
+        <div class="progress-track">
+          <div
+            class="progress-fill"
+            :class="{ 'fill-done': progress.current >= progress.total }"
+            :style="{ width: task.percent + '%' }"
+          ></div>
+        </div>
+        <div class="progress-msg">
+          <span class="progress-file" :title="progress.file_name">
+            <b class="progress-phase">{{ phaseLabel }}</b>
+            {{ progress.file_name || "—" }}
+          </span>
+          <span class="progress-count">
+            {{ progress.current }} / {{ progress.total }}（{{ task.percent }}%）
+          </span>
+        </div>
+        <div class="progress-sub">
+          <span class="progress-result">{{ progress.message }}</span>
+          <span v-if="rateText" class="progress-rate">{{ rateText }}</span>
+        </div>
+      </template>
     </section>
 
     <p v-if="error" class="scan-error">{{ error }}</p>
+    <p v-if="jobError && task.snapshot.status === 'failed'" class="scan-error">
+      任务失败：{{ jobError }}
+    </p>
 
     <!-- 移动报告 -->
     <section v-if="report" class="glass-card report-card">
-      <h3 class="card-title">组织移动报告</h3>
+      <h3 class="card-title">
+        组织移动报告
+        <span v-if="report.cancelled" class="report-cancel-tag">（用户中途停止，为已处理部分的统计）</span>
+      </h3>
       <div class="report-stats">
         <span class="kpi">总数 <b>{{ report.total }}</b></span>
         <span class="kpi ok">已移动 <b>{{ report.moved }}</b></span>
@@ -309,15 +487,14 @@ const stats = () => {
           <li v-for="f in report.folders" :key="f">{{ f }}</li>
         </ul>
       </details>
-      <button class="btn btn-sm" @click="report = null">关闭报告</button>
     </section>
 
     <!-- 结果区 -->
-    <template v-if="photos">
+    <template v-if="photos.length">
       <div class="result-bar glass-card">
         <div class="stat-line">
-          共 <b>{{ stats().total }}</b> 张（直接图片）｜有时间 <b>{{ stats().withTime }}</b> ｜
-          有 GPS <b>{{ stats().withGps }}</b> ｜ 有地点 <b>{{ stats().withPlace }}</b>
+          共 <b>{{ stats.total }}</b> 张（直接图片）｜有时间 <b>{{ stats.withTime }}</b> ｜
+          有 GPS <b>{{ stats.withGps }}</b> ｜ 有地点 <b>{{ stats.withPlace }}</b>
         </div>
         <div class="view-switch">
           <button class="btn btn-sm" :class="{ 'btn-active': viewMode === 'time' }" @click="viewMode = 'time'">按时间</button>
@@ -362,7 +539,13 @@ const stats = () => {
       </div>
     </template>
 
-    <p v-else-if="!scanning && !error" class="empty-tip">选择文件夹后点击「扫描」，验证时间/地点识别准确率与照片移动功能。</p>
+    <p v-else-if="!running && !error && task.snapshot.status === 'idle'" class="empty-tip">
+      选择文件夹后点击「扫描」，验证时间/地点识别准确率与照片移动功能。
+    </p>
+    <p v-else-if="!running && task.snapshot.status === 'done' && task.snapshot.photo_count === 0" class="empty-tip">
+      扫描完成但未发现图片：
+      {{ recursive ? "请确认所选文件夹及其子目录下含有图片。" : "本功能只扫描所选文件夹下的直接图片（不递归子目录），请确认照片直接放在该文件夹中，或勾选「递归子目录」。" }}
+    </p>
   </div>
 </template>
 
@@ -380,9 +563,17 @@ const stats = () => {
   gap: 16px;
   margin-bottom: 20px;
 }
+.header-text {
+  flex: 1;
+}
 .header-text h1 {
   font-size: 20px;
   margin: 0;
+}
+/* FEAT-064：性能设置按钮固定在头部右侧 */
+.perf-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .page-sub {
   color: var(--ts-muted);
@@ -407,18 +598,25 @@ const stats = () => {
   flex: 1;
   min-width: 260px;
   padding: 8px 12px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--ts-btn-border);
   border-radius: 8px;
   font-size: 13px;
   outline: none;
+  background: var(--ts-btn-bg);
+  color: var(--ts-text);
 }
 .dir-input:focus {
   border-color: #396cd8;
 }
+.dir-input:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
 .hint {
-  color: #6b7280;
+  color: var(--ts-muted);
   font-size: 12px;
   margin: 10px 0 0;
+  line-height: 1.65;
 }
 .recursive-toggle {
   display: inline-flex;
@@ -426,19 +624,23 @@ const stats = () => {
   gap: 8px;
   margin-top: 10px;
   padding: 6px 12px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--ts-btn-border);
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.15s;
   user-select: none;
 }
-.recursive-toggle:hover {
+.recursive-toggle:hover:not(.locked) {
   border-color: #396cd8;
-  background: #eef3fb;
+  background: var(--ts-btn-hover);
 }
 .recursive-toggle.active {
   border-color: #396cd8;
-  background: #eef3fb;
+  background: var(--ts-btn-hover);
+}
+.recursive-toggle.locked {
+  opacity: 0.7;
+  cursor: not-allowed;
 }
 .recursive-toggle input {
   margin: 0;
@@ -451,31 +653,59 @@ const stats = () => {
 }
 .recursive-desc {
   font-size: 12px;
-  color: #667085;
-}
-/* 进度条 */
-.progress-card {
-  padding: 12px 16px;
-}
-.progress-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-}
-.progress-phase {
-  font-size: 13px;
-  font-weight: 600;
-  color: #1f2937;
-}
-.progress-count {
-  font-family: "Consolas", monospace;
-  font-size: 12px;
   color: var(--ts-muted);
 }
+/* FEAT-064：任务状态卡 */
+.job-card {
+  padding: 12px 16px;
+}
+.job-running {
+  border-color: rgba(57, 108, 216, 0.45);
+}
+.job-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.job-status {
+  font-size: 13px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.job-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #396cd8;
+  animation: job-pulse 1.2s ease-in-out infinite;
+}
+@keyframes job-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.st-running { color: #396cd8; }
+.st-done { color: #16a34a; }
+.st-failed { color: #e5484d; }
+.st-cancelled { color: #d97706; }
+.job-threads {
+  font-size: 12px;
+  color: var(--ts-muted);
+  border: 1px solid var(--ts-btn-border);
+  border-radius: 6px;
+  padding: 1px 7px;
+}
+.job-bg-tip {
+  font-size: 11.5px;
+  color: #16a34a;
+}
+/* 进度条 */
 .progress-track {
   height: 8px;
-  background: #eef0f3;
+  background: var(--ts-btn-hover);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -495,15 +725,36 @@ const stats = () => {
   margin-top: 6px;
   font-size: 12px;
 }
-.progress-file {
+.progress-phase {
   color: #396cd8;
+  margin-right: 6px;
+}
+.progress-file {
+  color: var(--ts-text);
   font-family: "Consolas", monospace;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.progress-count {
+  font-family: "Consolas", monospace;
+  font-size: 12px;
+  color: var(--ts-muted);
+  white-space: nowrap;
+}
+.progress-sub {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: 11.5px;
+}
 .progress-result {
   color: var(--ts-muted);
+}
+.progress-rate {
+  color: #16a34a;
+  font-family: "Consolas", monospace;
   white-space: nowrap;
 }
 .btn {
@@ -517,7 +768,7 @@ const stats = () => {
   transition: all 0.2s;
 }
 /* 排除带自身语义色的按钮，避免悬停态覆盖它们的主色 */
-.btn:hover:not(.btn-primary):not(.btn-danger) {
+.btn:hover:not(.btn-primary):not(.btn-danger):not(.btn-stop):not(.btn-active) {
   border-color: #396cd8;
   color: #396cd8;
   background: var(--ts-btn-hover);
@@ -540,6 +791,15 @@ const stats = () => {
   background: #d13438;
   color: #fff;
 }
+.btn-stop {
+  background: #d97706;
+  color: #fff;
+  border-color: #d97706;
+}
+.btn-stop:hover {
+  background: #b45309;
+  color: #fff;
+}
 .btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
@@ -555,16 +815,22 @@ const stats = () => {
 }
 .scan-error {
   color: #e5484d;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  background: rgba(229, 72, 77, 0.08);
+  border: 1px solid rgba(229, 72, 77, 0.35);
   border-radius: 8px;
   padding: 10px 14px;
   margin-bottom: 14px;
   font-size: 13px;
+  white-space: pre-wrap;
 }
 .report-card .card-title {
   margin: 0 0 10px;
   font-size: 15px;
+}
+.report-cancel-tag {
+  font-size: 12px;
+  font-weight: 400;
+  color: #d97706;
 }
 .report-stats {
   display: flex;
@@ -638,7 +904,7 @@ const stats = () => {
 .group-title {
   margin: 0 0 8px;
   font-size: 15px;
-  color: #1f2937;
+  color: var(--ts-text);
   border-bottom: 2px solid #396cd8;
   display: inline-block;
   padding-bottom: 4px;
@@ -658,7 +924,7 @@ const stats = () => {
 }
 .photo-table td {
   padding: 7px 10px;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--ts-panel-border);
   color: var(--ts-muted);
 }
 .photo-table tr:last-child td {
@@ -683,8 +949,39 @@ const stats = () => {
 }
 .empty-tip {
   text-align: center;
-  color: #6b7280;
+  color: var(--ts-muted);
   padding: 40px 0;
   font-size: 13px;
+}
+/* 性能设置弹窗 */
+.perf-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 3000;
+  padding: 24px;
+}
+.perf-dialog {
+  background: var(--ts-panel-bg);
+  border: 1px solid var(--ts-panel-border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  max-height: 86vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+  color: var(--ts-text);
+}
+.perf-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.perf-head h3 {
+  margin: 0;
+  font-size: 15px;
 }
 </style>

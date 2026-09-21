@@ -66,12 +66,145 @@ export interface OrganizeReport {
   failed: number;
   target_root: string;
   folders: string[];
+  /** 用户中途取消（true 时上述计数为「已处理部分」的统计） */
+  cancelled?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// FEAT-064：扫描分组工具异步任务（退出页面不中断 + 并行扫描 + 进度可恢复）
+// 对应 Rust `test_scan_job::JobSnapshot` / `JobProgress` / `OrganizeSummary`
+// ---------------------------------------------------------------------------
+
+/** 任务阶段 */
+export type ScanJobPhase = "scan" | "resolve" | "organize";
+
+/** 任务状态 */
+export type ScanJobStatus = "idle" | "running" | "done" | "failed" | "cancelled";
+
+/** 进度快照 —— 对应 Rust `test_scan_job::JobProgress` */
+export interface ScanJobProgress {
+  phase: ScanJobPhase;
+  current: number;
+  total: number;
+  file_name: string;
+  message: string;
+  /** 每秒处理量（实时估算） */
+  rate: number;
+  /** 预计剩余秒数（无法估算为 null） */
+  eta_sec: number | null;
+}
+
+/** 组织移动结果 —— 对应 Rust `test_scan_job::OrganizeSummary` */
+export interface OrganizeSummary {
+  total: number;
+  moved: number;
+  conflict: number;
+  no_time: number;
+  no_place: number;
+  failed: number;
+  target_root: string;
+  folders: string[];
+  cancelled?: boolean;
+}
+
+/**
+ * 任务状态快照 —— 对应 Rust `test_scan_job::JobSnapshot`
+ *
+ * 页面挂载时 `get_scan_job` 拉取本结构即可**完整恢复**视图（进度/结果/错误），
+ * 这是「退出页面任务不消失」在前端的落点。
+ */
+export interface ScanJobSnapshot {
+  status: ScanJobStatus;
+  phase: ScanJobPhase | null;
+  /** 本次任务的目标目录 */
+  dir: string;
+  recursive: boolean;
+  /** 任务使用的并行度（扫描阶段生效） */
+  threads: number;
+  progress: ScanJobProgress | null;
+  /** 扫描结果照片数 */
+  photo_count: number;
+  /** 已解析出地名的张数 */
+  place_count: number;
+  /** 组织移动报告（仅 organize 完成时有值） */
+  organize: OrganizeSummary | null;
+  error: string;
+  /** Unix 秒；0 = 未开始/未结束 */
+  started_at: number;
+  finished_at: number;
+}
+
+/** 扫描性能画像（CPU 拓扑 + 推荐线程数）—— 对应 Rust `scan_perf::CpuTopology` */
+export interface ScanPerfTopology {
+  /** 逻辑核数（含超线程） */
+  logical: number;
+  /** 物理核数 */
+  physical: number;
+  /** 大小核混合架构（Intel 12 代+） */
+  hybrid: boolean;
+  /** 物理核是否为推断值 */
+  estimated: boolean;
+  /** 磁盘介质类型（SSD / HDD / 未知） */
+  disk_kind: string;
+  /** 依据本机拓扑推荐的扫描线程数 */
+  recommended: number;
+  /** 推荐理由（一行说明） */
+  reason: string;
+  /** 可选档位 */
+  options: number[];
+  /** 用户已保存的自定义值（null = 跟随推荐） */
+  saved: number | null;
+  /** 实际生效值 */
+  effective: number;
+}
+
+/** 实测校准的单个档位结果 —— 对应 Rust `calibrate_scan_threads.results[]` */
+export interface ScanCalibEntry {
+  threads: number;
+  count?: number;
+  ms?: number;
+  per_sec?: number;
+  per_file_ms?: number;
+  error?: string;
+}
+
+/**
+ * 实测校准结果 —— 对应 Rust `calibrate_scan_threads`
+ *
+ * `best_threads` 是「达峰值 95% 的最小档位」（性价比最优），
+ * 与 `peak_threads`（绝对峰值）可能不同 —— UI 需同时展示并由用户决定采用哪个。
+ */
+export interface ScanCalibration {
+  /** 实测样本张数 */
+  sample: number;
+  /** 目录内图片总数 */
+  total: number;
+  /** 样本平均文件大小（字节） */
+  avg_bytes: number;
+  /** 推荐采用的最优档（达峰值 95% 的最小值） */
+  best_threads: number;
+  /** 实测绝对峰值档 */
+  peak_threads: number;
+  /** 最优档吞吐（张/秒） */
+  best_per_sec: number;
+  /** 峰值档吞吐（张/秒） */
+  peak_per_sec: number;
+  /** 相对单线程的提速比 */
+  speedup: number;
+  /** 机检推荐值（拓扑推断） */
+  recommended: number;
+  logical: number;
+  physical: number;
+  disk_kind: string;
+  /** 推荐理由（多段用「；」连接） */
+  reason: string;
+  results: ScanCalibEntry[];
 }
 
 /** 扫描进度事件 —— 对应 Rust `test_scan::ScanProgress` */
 export interface ScanProgress {
-  /** 阶段：resolve=解析地名 / organize=组织移动 */
-  phase: "resolve" | "organize";
+  /** 阶段：scan=扫描 / resolve=解析地名 / organize=组织移动 */
+  phase: "scan" | "resolve" | "organize";
   current: number;
   total: number;
   file_name: string;
