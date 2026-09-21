@@ -2287,6 +2287,145 @@
       ],
       "created_at": "2026-09-19T23:40:00+08:00",
       "fixed_at": "2026-09-19T23:40:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-007",
+      "date": "2026-09-20",
+      "status": "open",
+      "severity": "high",
+      "title": "语义未就绪时「以图搜图/搜索」结果被警告横幅整块吞掉：警告与结果区同处一条 v-if/v-else 链，后端已返回 60 条命中却一条都渲染不出来",
+      "module": "src/views/SmartSearch.vue（结果区条件渲染）",
+      "symptom": [
+        "用户截图：智能搜索页只挂一条黄色警告『语义检索未就绪：当前仅能按关键词匹配…』，下方既看不到『找到 N 张照片』也看不到『没有找到匹配的照片』，点「以图搜图」像完全没反应",
+        "同一时刻 app.log 反证后端是好的：11:29:11 smart_search_by_image END | 151ms | 结果 OK | hits=60，前端随后还按 60 张发起缩略图请求",
+        "关键词搜索有命中时同样不显示（只要 semReady === false）"
+      ],
+      "root_cause": {
+        "summary": "警告横幅用的是 v-if（不是 v-else-if），它另起了一条条件链：v-if=\"semReady === false\" → v-else-if=\"!searched\" → v-else-if=\"results.length === 0\" → v-else（结果网格）。警告一成立，后面三个分支全部被跳过 —— 数据在内存里、缩略图也拉了，就是渲染不出来。",
+        "detail": [
+          "SmartSearch.vue:426 <p v-if=\"semReady === false\"> 与 :434 / :440 / :452 的 v-else-if / v-else 是『相邻兄弟同一链』：普通 v-if 会新建一条链并成为首分支，v-else-if 全部挂到它上面",
+          "上一层的 v-if=\"searching\" / v-else-if=\"error\" 是另一条链，未被破坏 —— 所以『搜索中…』能正常出现，只有结果区被吞",
+          "semReady 仅在组件挂载时由 warmup_semantic_service 定一次且不重试；本次会话 11:28:10 / 11:28:25 / 11:28:36 三次挂载都落在退避窗口内（见 BUG-2026-0920-008）→ 每次都 false → 整个页面生命周期都被吞",
+          "截图即该状态：queryImagePath 已被赋值（说明以图搜图确实成功返回过），横幅下方却没有任何结果或空态文案"
+        ]
+      },
+      "solution": {
+        "summary": "把警告横幅摘出结果条件链（独立 v-if，放结果区之外），结果分支改为不依赖 semReady 的独立判断；并让 semReady 支持重试",
+        "steps": [
+          "模板：ss-warn 移出条件链（独立渲染），保证语义未就绪时仍能看到关键词/以图搜图命中结果",
+          "结果区恢复四态且互不依赖 semReady：!searched 引导 / searching 加载 / results.length===0 空态 / 结果网格",
+          "semReady 增重试：挂载时为 false 则在退避期后（如 5~30s）重探，成功即撤下横幅，不再一次定死",
+          "文案按真实原因分档（未下载 / 服务拉起中 / 退避中），不再一切原因都写『CLIP 模型未下载』"
+        ]
+      },
+      "evidence_log": [
+        "[代码] SmartSearch.vue:426 v-if=\"semReady === false\"；:434 v-else-if=\"!searched\"；:440 v-else-if=\"results.length === 0\"；:452 v-else",
+        "[app.log] 11:29:11.941 smart_search_by_image END | 151ms | 结果 OK | hits=60 → 随后 get_photo_thumbs requested=1/2/4/20/33（合计 60）",
+        "[app.log] 11:28:10 / 11:28:25 / 11:28:36 三次挂载均无 warmup_semantic_service 日志行（退避期在 log_call! 之前就 return Ok(false)）→ semReady=false",
+        "[用户截图] 查询图 chip『以图搜图：L1030278.jpg』在（=后端成功），横幅下方无任何结果/空态文案"
+      ],
+      "related_files": ["src/views/SmartSearch.vue"],
+      "keywords": ["以图搜图", "语义未就绪", "v-if", "v-else-if", "条件链", "结果被吞", "semReady", "警告横幅", "BUG-2026-0920-007"],
+      "created_at": "2026-09-20T11:50:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-008",
+      "date": "2026-09-20",
+      "status": "open",
+      "severity": "high",
+      "title": "一次瞬时语义失败即封杀 180s：CLIP 首次加载窗口内的 503 被判为确定性失败进入退避，服务端真因（detail）当场丢弃，提示文案还误导成「模型未下载」",
+      "module": "src-tauri/src/vision.rs（退避与响应解析）+ content.rs / textdesc.rs（降级判定）",
+      "symptom": [
+        "用户报『全部扫描入库了，但以图搜图/语义搜索搜不到，页面只挂一条警告』",
+        "app.log：11:27:37 [smart_search] 图像语义降级: embedding 响应缺少 results → 随后 11:28:14/16/17/18/21/47 连续 6 次『CLIP 服务暂不可用（退避中）』，hits 全为 0",
+        "约 1 分半后语义自行恢复：11:29:00 smart_search.semantic 图像语义 417；11:29:11 以图搜图 151ms 返回 60 条",
+        "服务端与模型其实都正常：运行态 GET /health → ok=true、clip_ready=true、load_errors={}；安装目录 vcr/models/chinese-clip 齐备（377MB 整图 + 172MB/204MB 拆分件 + tokenizer.json + vocab.txt）"
+      ],
+      "root_cause": {
+        "summary": "判定过粗 + 观测缺失。① vision.rs::embed_text_batch 只看响应体有没有 results，不看 HTTP 状态与 detail，于是 FastAPI 的 503 {\"detail\": …} 被简化成『缺少 results』，服务端真因当场丢失；② semantic_recall / recall_by_image / recall_by_text 只要这一次调用失败就 mark_semantic_down()，把『CLIP 会话尚未加载完 / 正在重建』这类瞬时态与『模型缺失』这类确定性态一视同仁，封杀 180s（SEMANTIC_DOWN_TTL）；③ 退避期内所有语义通道（含以图搜图）直接 return Err 降级为纯关键词，命中 0；④ 前端文案把一切原因都写成『CLIP 模型未下载』。",
+        "detail": [
+          "时间线（app.log）：11:23:15 安装版启动 → 11:24:22 打开性能设置（forced_cpu=true, threads=8）→ 11:24:41~11:25:00 连续 4 次 start_model_download（chinese-clip-fp32）+ 源自检 → 11:25:10~11:25:28 benchmark_sweep channel=clip_vision（首次拉起 CLIP 图塔会话）→ 11:25:33 set_threads 12（服务端后台重建会话）→ 11:27:36 首次搜索（此刻 /health 的 clip 仍为 false）→ 11:27:37.5 失败并进入退避 → 11:27:39 clip=true",
+          "失败请求正落在『CLIP 首次加载 / 会话重建』窗口内；服务端走 HTTPException 返回了带 detail 的 JSON，但宿主不解析 detail，因此 app.log 里没有任何服务端原因，事后无法定位（子进程 stderr 只进内存环形缓冲，不落盘）",
+          "退避一旦设立，后续 6 次搜索全部瞬退（耗时 0ms），用户侧表现为『扫描入库了却什么都搜不到』",
+          "对照：模型与运行时没问题（b16 档 clip_ready=true；12 线程 clip_vision 实测 103.87ms/张，说明打包版已含 pin 过版本的 onnxruntime）"
+        ]
+      },
+      "solution": {
+        "summary": "区分瞬时失败与确定性失败 + 保留服务端原因 + 退避可自愈",
+        "steps": [
+          "embed_text_batch / embed_images_batch：先判 HTTP 状态，非 2xx 把 detail 带进错误串（如『识别服务 503: CLIP 未就绪 …』）并写 app.log，杜绝『缺少 results』掩盖真因",
+          "新增可重试判定：仅当错误属模型缺失 / 端口不可达 / 组件过期等确定性原因才 mark_semantic_down()；对 503『未就绪/正在加载』改为带退让重试（1s/2s/4s，最多约 10s）后再决定是否降级",
+          "退避自愈：TTL 180s → 15~30s，或首次失败只跳过本次、下次请求重试；页面挂载的 warmup 在退避到期后自动重探",
+          "补红灯回归：把已就绪服务的 CLIP 会话强制置为未就绪，断言首次调用返回可重试错误且不进入长时间退避"
+        ]
+      },
+      "evidence_log": [
+        "[app.log] 11:27:37.542 [smart_search] 图像语义降级: embedding 响应缺少 results",
+        "[app.log] 11:28:14/16/17/18/21/47 [smart_search] 图像语义降级 + 描述语义降级: CLIP 服务暂不可用（退避中）；smart_search END hits=0",
+        "[app.log] 11:29:00.602 smart_search.semantic END | 254ms | 图像语义 417 · 描述语义 0 · 融合 0 → 417（自发恢复）",
+        "[运行态] GET http://127.0.0.1:18765/health → ok=true clip_ready=true load_errors={}；/models → b16 downloaded=true ready=true active=true（377377730 B）",
+        "[运行态] 安装目录 vcr/models/chinese-clip：clip_vision.onnx 172808559 / clip_text.onnx 204568782 / tokenizer.json / vocab.txt 均在 → 『模型未下载』文案与实际不符"
+      ],
+      "related_files": ["src-tauri/src/vision.rs", "src-tauri/src/content.rs", "src-tauri/src/textdesc.rs", "src/views/SmartSearch.vue"],
+      "keywords": ["语义退避", "SEMANTIC_DOWN_TTL", "embedding 响应缺少 results", "detail 丢失", "瞬时失败", "CLIP 懒加载", "503", "可观测性", "BUG-2026-0920-008"],
+      "created_at": "2026-09-20T11:50:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0921-003",
+      "date": "2026-09-21",
+      "status": "open",
+      "severity": "high",
+      "title": "模型下载进度永不显示：`model-dl-progress` 监听器被绑在「开始扫描」入口上，没跑过扫描的会话收不到任何进度事件",
+      "module": "src/stores/content.ts（事件监听注册时机）+ src/components/ModelGpuSettings.vue + src-tauri/src/model_dl.rs（进度上报）",
+      "symptom": [
+        "扫描中心 → ⚙ 性能设置 → 📥 模型下载，点「⬇ 下载」后行内只有静态快照：进度条恒 0% / 显示 0.0 MB，整个过程看不到推进",
+        "下载完成后重新打开面板才变成「✓ 已下载」（那一步走的是 list_model_downloads 的文件存在性判断）",
+        "用户视角：『下完了才知道它在下』"
+      ],
+      "root_cause": {
+        "summary": "`model-dl-progress` 的唯一注册点在 `ensureProgressListener()`（content.ts:434），而它只在「开始扫描」时被调用（startCombinedScan :494 / beginGlobalScan :638）。会话里没跑过扫描 ⇒ 监听器从未注册 ⇒ 后端每 150ms 上报的进度事件全部无人接收。面板自身只有 onMounted 的一次 list_model_downloads 快照，于是进度条永远停在那一刻的 0%。",
+        "detail": [
+          "content.ts:434-463 一次性注册 classify-progress / embed-progress / model-dl-progress 三个事件，却被绑在扫描入口上 —— 事件归属与触发时机错配",
+          "ModelGpuSettings.vue:232-239 onMounted → listModelDownloads() 只取一次快照；:337 startDl → startModelDownload → invoke 后再取一次快照；两次拿到的都是静态值（start() 写进 STORE 的是 bytes=0/total=0，见 model_dl.rs:205-218）",
+          "次要 1：emit_progress（model_dl.rs:780）只 app.emit、不回写 STORE → 任何一次 list 刷新都会把进行中的行打回 0%，直到下一个流事件（≤150ms）才恢复，观感上闪回",
+          "次要 2：download_first_wins（model_dl.rs:377-424）官方/镜像双路竞速下载同一文件，两路各自用『自己的 bytes/total』上报同一个模型名 → 同一条进度条被两个独立计数交替刷新，百分比非单调、来回跳；若某路响应无 Content-Length（total=0），progressPct 恒返回 0"
+        ]
+      },
+      "solution": {
+        "summary": "把下载进度监听从扫描入口解耦（随 store 首次使用无条件注册）+ 面板轮询兜底 + 进度口径统一为「模型级聚合」",
+        "steps": [
+          "content.ts：把 model-dl-progress 的 listen 从 ensureProgressListener() 抽成独立幂等函数（ensureModelDlListener()），在 store 初始化 / 首次 listModelDownloads() / 首次 startModelDownload() 时注册一次",
+          "ModelGpuSettings.vue：面板挂载即注册监听；存在 running 行时以 1s 轮询 list_model_downloads 兜底（监听失败也能看到进度），全部结束后停止轮询",
+          "model_dl.rs::emit_progress 同步更新 STORE（否则 list 快照与实时值不一致）",
+          "双路竞速按模型级聚合上报（两路 bytes 取 max 或分片求和，total 用 spec 已知体积），避免一条进度条被两个计数交替刷新",
+          "UI：total 未知时用不确定态（条纹动画 + 已下载量），不要显示 0%；行内补「X MB / 共 Y MB」",
+          "回归：冷启动应用（不跑扫描）→ 点一次下载 → 断言 3 秒内出现进度条并单调推进"
+        ]
+      },
+      "evidence_log": [
+        "[app.log 2026-09-21] 09:57:02 启动 → 09:57:13 打开性能设置（list_models/threads/gpu）→ 09:57:17.473 start_model_download → 09:57:49 再开面板仍显示 fp32 未下载 → 10:00:33 面板才显示 b16-fp32 已下载",
+        "[app.log] 该会话 scan_album_combined / begin_global_scan / start_combined_scan 计数 = 0 → ensureProgressListener() 从未执行 → model-dl-progress 无人监听",
+        "[代码] content.ts:434 内注册 model-dl-progress；调用点仅 :494（startCombinedScan）与 :638（beginGlobalScan）",
+        "[代码] ModelGpuSettings.vue:235 onMounted → listModelDownloads()（单次快照）；:337 startDl 后同样只做一次快照",
+        "[代码] model_dl.rs:780 emit_progress 仅 app.emit 不写 STORE；:205-218 start() 写 STORE 的 bytes=0/total=0",
+        "[代码] model_dl.rs:401-424 双路竞速（official/mirror）对同一 name 并发上报进度"
+      ],
+      "related_files": [
+        "src/stores/content.ts",
+        "src/components/ModelGpuSettings.vue",
+        "src-tauri/src/model_dl.rs"
+      ],
+      "keywords": [
+        "模型下载",
+        "进度条",
+        "model-dl-progress",
+        "监听注册时机",
+        "ensureProgressListener",
+        "断点续传",
+        "双路竞速",
+        "BUG-2026-0921-003"
+      ],
+      "created_at": "2026-09-21T10:20:00+08:00"
     }
   ]
 }
