@@ -293,11 +293,13 @@ const openImage = trace("openImage", async (path: string) => {
 
 <style scoped>
 /* ---- 通用扫描区 ---- */
+/* BUG-2026-0921-005：背景/灰字原先硬编码浅色值，深色模式下 var(--color-text)
+   翻成浅色落在白底上，整版文字「隐身」。全部改为主题变量，随模式自适应。 */
 .scan-area {
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   margin-bottom: 20px;
-  background: #fff;
+  background: var(--color-surface);
 }
 
 .scan-toolbar {
@@ -341,7 +343,7 @@ const openImage = trace("openImage", async (path: string) => {
   background: transparent;
   border: none;
   cursor: pointer;
-  color: #667085;
+  color: var(--color-text-3);
   padding: 2px;
   border-radius: 4px;
   margin-top: 2px;
@@ -361,16 +363,16 @@ const openImage = trace("openImage", async (path: string) => {
 
 .scan-error {
   padding: 8px 14px;
-  color: #e5484d;
+  color: var(--color-danger);
   font-size: 13px;
-  background: #fef2f2;
+  background: var(--color-danger-soft);
   margin: 0;
 }
 
 .scan-empty {
   padding: 24px 14px;
   text-align: center;
-  color: #667085;
+  color: var(--color-text-3);
   font-size: 13px;
 }
 
@@ -430,13 +432,13 @@ const openImage = trace("openImage", async (path: string) => {
 
 /* 图片名可点击 */
 .img-name-link {
-  color: #396cd8;
+  color: var(--color-link);
   cursor: pointer;
   text-decoration: underline dotted;
 }
 
 .img-name-link:hover {
-  color: #2f5cc2;
+  color: var(--color-primary-hover);
 }
 
 /* 批次选择 */
@@ -445,15 +447,16 @@ const openImage = trace("openImage", async (path: string) => {
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: #667085;
+  color: var(--color-text-3);
 }
 
 .batch-select select {
   padding: 2px 4px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--color-border);
   border-radius: 4px;
   font-size: 12px;
-  background: #fff;
+  background: var(--color-surface-2);
+  color: inherit;
 }
 
 /* 按钮（通用） */
@@ -474,31 +477,31 @@ const openImage = trace("openImage", async (path: string) => {
 .btn-danger:hover { background: #cf3e43; color: #fff; }
 .btn-ghost { background: transparent; color: #396cd8; border-color: #396cd8; }
 .btn-ghost:hover { background: rgba(57, 108, 216, 0.08); color: #2f5cc2; }
-.btn-mini { padding: 2px 6px; font-size: 11px; border: 1px solid #d0d5dd; border-radius: 3px; background: #fff; cursor: pointer; }
+.btn-mini { padding: 2px 6px; font-size: 11px; border: 1px solid var(--color-border); border-radius: 3px; background: var(--color-surface-2); color: inherit; cursor: pointer; }
 .btn-mini:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ---- 组合扫描 ---- */
 .combo-area { margin-bottom: 24px; }
-.combo-controls { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 14px; background: #f8f9fa; border-radius: 6px; margin-bottom: 12px; }
+.combo-controls { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 14px; background: var(--color-surface-2); border-radius: 6px; margin-bottom: 12px; }
 .combo-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; flex: 1; min-width: 0; }
-.combo-check { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid #d0d5dd; border-radius: 6px; cursor: pointer; transition: all 0.15s; }
-.combo-check:hover { border-color: #396cd8; background: #eef3fb; }
-.combo-check.active { border-color: #396cd8; background: #eef3fb; }
+.combo-check { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px; cursor: pointer; transition: all 0.15s; }
+.combo-check:hover { border-color: var(--color-link); background: var(--color-soft-accent); }
+.combo-check.active { border-color: var(--color-link); background: var(--color-soft-accent); }
 .combo-check input[type="checkbox"] { margin-right: 2px; }
 .combo-check-label { font-weight: 500; font-size: 13px; }
-.combo-check-desc { font-size: 11px; color: #667085; }
+.combo-check-desc { font-size: 11px; color: var(--color-text-3); }
 .combo-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.gpu-info { font-size: 12px; color: #667085; }
-.gpu-info.ok { color: #15803d; }
+.gpu-info { font-size: 12px; color: var(--color-text-3); }
+.gpu-info.ok { color: var(--color-ok); }
 .combo-table th:nth-child(7), .combo-table td:nth-child(7) { width: 80px; }
 .combo-table th:nth-child(8), .combo-table td:nth-child(8) { width: 120px; }
 .combo-table th:nth-child(9), .combo-table td:nth-child(9) { width: 180px; }
 
 /* 进度条 */
 .combo-progress { padding: 8px 14px; }
-.progress-track { height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; }
-.progress-fill { height: 100%; background: #396cd8; transition: width 0.3s; border-radius: 3px; }
-.progress-text { font-size: 11px; color: #667085; margin: 4px 0 0; }
+.progress-track { height: 6px; background: var(--color-border); border-radius: 3px; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--color-link); transition: width 0.3s; border-radius: 3px; }
+.progress-text { font-size: 11px; color: var(--color-text-3); margin: 4px 0 0; }
 
 /* 影调徽标（组合表用） */
 .tone-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; }
@@ -508,8 +511,8 @@ const openImage = trace("openImage", async (path: string) => {
 
 /* 分页 */
 .vision-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
-.pager-size { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #667085; }
-.pager-size select { padding: 2px 4px; border: 1px solid #d0d5dd; border-radius: 4px; font-size: 12px; }
+.pager-size { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--color-text-3); }
+.pager-size select { padding: 2px 4px; border: 1px solid var(--color-border); border-radius: 4px; font-size: 12px; background: var(--color-surface-2); color: inherit; }
 .pager-nav { display: flex; align-items: center; gap: 6px; }
-.pager-info { font-size: 12px; color: #667085; }
+.pager-info { font-size: 12px; color: var(--color-text-3); }
 </style>
