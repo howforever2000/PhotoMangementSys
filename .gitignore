@@ -95,3 +95,5 @@ python/bench/*_log.txt
 /gpu_verify_out.txt
 /sfc*_out.txt
 /tsc*.txt
+/_*.txt
+/_*.mjs
