@@ -2323,6 +2323,355 @@
       "keywords": ["requirements", "BOM", "GBK", "UnicodeDecodeError", "pip", "auto_decode", "构建流水线", "中文注释"],
       "created_at": "2026-09-20T09:30:00+08:00",
       "fixed_at": "2026-09-20T09:30:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-009",
+      "date": "2026-09-20",
+      "status": "fixed",
+      "severity": "high",
+      "title": "语义未就绪时「以图搜图/搜索」结果被警告横幅整块吞掉：警告与结果区同处一条 v-if/v-else 链，后端已返回 60 条命中却一条都渲染不出来",
+      "module": "src/views/SmartSearch.vue（结果区条件渲染）",
+      "symptom": [
+        "用户截图：智能搜索页只挂一条黄色警告『语义检索未就绪：当前仅能按关键词匹配…』，下方既看不到『找到 N 张照片』也看不到『没有找到匹配的照片』，点「以图搜图」像完全没反应",
+        "同一时刻 app.log 反证后端是好的：11:29:11 smart_search_by_image END | 151ms | 结果 OK | hits=60，前端随后还按 60 张发起缩略图请求",
+        "关键词搜索有命中时同样不显示（只要 semReady === false）"
+      ],
+      "root_cause": {
+        "summary": "警告横幅用的是 v-if（不是 v-else-if），它另起了一条条件链：v-if=\"semReady === false\" → v-else-if=\"!searched\" → v-else-if=\"results.length === 0\" → v-else（结果网格）。警告一成立，后面三个分支全部被跳过 —— 数据在内存里、缩略图也拉了，就是渲染不出来。",
+        "detail": [
+          "SmartSearch.vue:426 <p v-if=\"semReady === false\"> 与 :434 / :440 / :452 的 v-else-if / v-else 是『相邻兄弟同一链』：普通 v-if 会新建一条链并成为首分支，v-else-if 全部挂到它上面",
+          "上一层的 v-if=\"searching\" / v-else-if=\"error\" 是另一条链，未被破坏 —— 所以『搜索中…』能正常出现，只有结果区被吞",
+          "semReady 仅在组件挂载时由 warmup_semantic_service 定一次且不重试；本次会话 11:28:10 / 11:28:25 / 11:28:36 三次挂载都落在退避窗口内（见 BUG-2026-0920-008）→ 每次都 false → 整个页面生命周期都被吞",
+          "截图即该状态：queryImagePath 已被赋值（说明以图搜图确实成功返回过），横幅下方却没有任何结果或空态文案"
+        ]
+      },
+      "solution": {
+        "summary": "把警告横幅摘出结果条件链（独立 v-if，放结果区之外），结果分支改为不依赖 semReady 的独立判断；并让 semReady 支持重试",
+        "steps": [
+          "模板：ss-warn 移出条件链（独立渲染），保证语义未就绪时仍能看到关键词/以图搜图命中结果",
+          "结果区恢复四态且互不依赖 semReady：!searched 引导 / searching 加载 / results.length===0 空态 / 结果网格",
+          "semReady 增重试：挂载时为 false 则在退避期后（如 5~30s）重探，成功即撤下横幅，不再一次定死",
+          "文案按真实原因分档（未下载 / 服务拉起中 / 退避中），不再一切原因都写『CLIP 模型未下载』"
+        ]
+      },
+      "evidence_log": [
+        "[代码] SmartSearch.vue:426 v-if=\"semReady === false\"；:434 v-else-if=\"!searched\"；:440 v-else-if=\"results.length === 0\"；:452 v-else",
+        "[app.log] 11:29:11.941 smart_search_by_image END | 151ms | 结果 OK | hits=60 → 随后 get_photo_thumbs requested=1/2/4/20/33（合计 60）",
+        "[app.log] 11:28:10 / 11:28:25 / 11:28:36 三次挂载均无 warmup_semantic_service 日志行（退避期在 log_call! 之前就 return Ok(false)）→ semReady=false",
+        "[用户截图] 查询图 chip『以图搜图：L1030278.jpg』在（=后端成功），横幅下方无任何结果/空态文案"
+      ],
+      "related_files": [
+        "src/views/SmartSearch.vue"
+      ],
+      "keywords": [
+        "以图搜图",
+        "语义未就绪",
+        "v-if",
+        "v-else-if",
+        "条件链",
+        "结果被吞",
+        "semReady",
+        "警告横幅",
+        "BUG-2026-0920-009"
+      ],
+      "fix": {
+        "summary": "警告横幅改为独立区块（与结果区彻底解耦）；结果区改为完整四态且不含任何语义变量；语义状态由 bool 升级为分档状态并支持退避到期自动重探 + 手动重试",
+        "changes": [
+          "SmartSearch.vue 模板：`<p v-if=\"semStatus && !semStatus.ready\" class=\"ss-warn\">` 上移到结果链**之前**，自成一个 v-if 兄弟节点；结果链改回完整四态 —— v-if=\"searching\" → v-else-if=\"error\" → v-else-if=\"!searched\" → v-else-if=\"results.length === 0\" → v-else（网格）。任何一个语义变量都再不出现在这条链上",
+          "SmartSearch.vue 脚本：删除 semReady(bool|null)；新增 semStatus(ref<SemanticStatus|null>) + refreshSemanticStatus() + retrySemantic()；onMounted 同时做「预热（fire-and-forget）」与「只读状态探测」两件事",
+          "新增 ss-retry 按钮样式（hover/disabled 态齐全），提示条内提供一键重试",
+          "onUnmounted(clearSemTimer)：离开页面清掉退避重探定时器，避免切页后仍触发"
+        ],
+        "files": [
+          "src/views/SmartSearch.vue"
+        ],
+        "verification": [
+          "npx vue-tsc --noEmit → EXIT=0（无输出）",
+          "@vue/compiler-sfc 分段编译 → script OK (bindings=47) / template OK / style OK (scoped) / SFC RESULT: OK"
+        ]
+      },
+      "fixed_at": "2026-09-21T10:40:00+08:00",
+      "created_at": "2026-09-20T11:50:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0920-008",
+      "date": "2026-09-20",
+      "status": "fixed",
+      "severity": "high",
+      "title": "一次瞬时语义失败即封杀 180s：CLIP 首次加载窗口内的 503 被判为确定性失败进入退避，服务端真因（detail）当场丢弃，提示文案还误导成「模型未下载」",
+      "module": "src-tauri/src/vision.rs（退避与响应解析）+ content.rs / textdesc.rs（降级判定）",
+      "symptom": [
+        "用户报『全部扫描入库了，但以图搜图/语义搜索搜不到，页面只挂一条警告』",
+        "app.log：11:27:37 [smart_search] 图像语义降级: embedding 响应缺少 results → 随后 11:28:14/16/17/18/21/47 连续 6 次『CLIP 服务暂不可用（退避中）』，hits 全为 0",
+        "约 1 分半后语义自行恢复：11:29:00 smart_search.semantic 图像语义 417；11:29:11 以图搜图 151ms 返回 60 条",
+        "服务端与模型其实都正常：运行态 GET /health → ok=true、clip_ready=true、load_errors={}；安装目录 vcr/models/chinese-clip 齐备（377MB 整图 + 172MB/204MB 拆分件 + tokenizer.json + vocab.txt）"
+      ],
+      "root_cause": {
+        "summary": "判定过粗 + 观测缺失。① vision.rs::embed_text_batch 只看响应体有没有 results，不看 HTTP 状态与 detail，于是 FastAPI 的 503 {\"detail\": …} 被简化成『缺少 results』，服务端真因当场丢失；② semantic_recall / recall_by_image / recall_by_text 只要这一次调用失败就 mark_semantic_down()，把『CLIP 会话尚未加载完 / 正在重建』这类瞬时态与『模型缺失』这类确定性态一视同仁，封杀 180s（SEMANTIC_DOWN_TTL）；③ 退避期内所有语义通道（含以图搜图）直接 return Err 降级为纯关键词，命中 0；④ 前端文案把一切原因都写成『CLIP 模型未下载』。",
+        "detail": [
+          "时间线（app.log）：11:23:15 安装版启动 → 11:24:22 打开性能设置（forced_cpu=true, threads=8）→ 11:24:41~11:25:00 连续 4 次 start_model_download（chinese-clip-fp32）+ 源自检 → 11:25:10~11:25:28 benchmark_sweep channel=clip_vision（首次拉起 CLIP 图塔会话）→ 11:25:33 set_threads 12（服务端后台重建会话）→ 11:27:36 首次搜索（此刻 /health 的 clip 仍为 false）→ 11:27:37.5 失败并进入退避 → 11:27:39 clip=true",
+          "失败请求正落在『CLIP 首次加载 / 会话重建』窗口内；服务端走 HTTPException 返回了带 detail 的 JSON，但宿主不解析 detail，因此 app.log 里没有任何服务端原因，事后无法定位（子进程 stderr 只进内存环形缓冲，不落盘）",
+          "退避一旦设立，后续 6 次搜索全部瞬退（耗时 0ms），用户侧表现为『扫描入库了却什么都搜不到』",
+          "对照：模型与运行时没问题（b16 档 clip_ready=true；12 线程 clip_vision 实测 103.87ms/张，说明打包版已含 pin 过版本的 onnxruntime）"
+        ]
+      },
+      "solution": {
+        "summary": "区分瞬时失败与确定性失败 + 保留服务端原因 + 退避可自愈",
+        "steps": [
+          "embed_text_batch / embed_images_batch：先判 HTTP 状态，非 2xx 把 detail 带进错误串（如『识别服务 503: CLIP 未就绪 …』）并写 app.log，杜绝『缺少 results』掩盖真因",
+          "新增可重试判定：仅当错误属模型缺失 / 端口不可达 / 组件过期等确定性原因才 mark_semantic_down()；对 503『未就绪/正在加载』改为带退让重试（1s/2s/4s，最多约 10s）后再决定是否降级",
+          "退避自愈：TTL 180s → 15~30s，或首次失败只跳过本次、下次请求重试；页面挂载的 warmup 在退避到期后自动重探",
+          "补红灯回归：把已就绪服务的 CLIP 会话强制置为未就绪，断言首次调用返回可重试错误且不进入长时间退避"
+        ]
+      },
+      "evidence_log": [
+        "[app.log] 11:27:37.542 [smart_search] 图像语义降级: embedding 响应缺少 results",
+        "[app.log] 11:28:14/16/17/18/21/47 [smart_search] 图像语义降级 + 描述语义降级: CLIP 服务暂不可用（退避中）；smart_search END hits=0",
+        "[app.log] 11:29:00.602 smart_search.semantic END | 254ms | 图像语义 417 · 描述语义 0 · 融合 0 → 417（自发恢复）",
+        "[运行态] GET http://127.0.0.1:18765/health → ok=true clip_ready=true load_errors={}；/models → b16 downloaded=true ready=true active=true（377377730 B）",
+        "[运行态] 安装目录 vcr/models/chinese-clip：clip_vision.onnx 172808559 / clip_text.onnx 204568782 / tokenizer.json / vocab.txt 均在 → 『模型未下载』文案与实际不符"
+      ],
+      "related_files": [
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/textdesc.rs",
+        "src/views/SmartSearch.vue"
+      ],
+      "keywords": [
+        "语义退避",
+        "SEMANTIC_DOWN_TTL",
+        "embedding 响应缺少 results",
+        "detail 丢失",
+        "瞬时失败",
+        "CLIP 懒加载",
+        "503",
+        "可观测性",
+        "BUG-2026-0920-008"
+      ],
+      "fix": {
+        "summary": "错误分类化：先判 HTTP 状态并把 detail 落 app.log；503「未就绪/加载中」按可重试处理（1s/2s/4s 退让）；只有确定性失败才进退避；退避 TTL 180s → 20s",
+        "changes": [
+          "vision.rs：新增 RETRYABLE_PREFIX / is_retryable_err / should_enter_backoff / note_semantic_failure / semantic_backoff_remaining，把「是否进退避」收敛到单一入口（原三处调用点各自 mark_semantic_down，正是本缺陷的成因）",
+          "vision.rs：新增 post_json_with_retry()，embed_text_batch / embed_images_batch 全部改走它 —— **先看 HTTP status**，非 2xx 时取 FastAPI 的 detail（extract_detail）写 [WARN][embed] 进 app.log，杜绝『缺少 results』覆盖真因",
+          "vision.rs：http_failure_err() 判定 503 或错误体含「未就绪/加载中/init…/loading」→ 带 RETRYABLE_PREFIX 前缀；退让 1s/2s/4s 后仍失败才返回该错误；连接层失败（端口不通）立即返回、不做无谓等待",
+          "vision.rs：SEMANTIC_DOWN_TTL 180s → 20s。确定性失败（模型缺失/端口不通/组件过期）已由 clip_model_present() 与实例登记廉价拦截，不需要长退避兜底",
+          "content.rs / textdesc.rs：三处调用点改用 crate::vision::note_semantic_failure(&e) —— 可重试型只跳过本次，确定性失败才进退避",
+          "content.rs：新增 semantic_status 命令，把原因分档为 ready / model_missing / service_unreachable / backoff / index_model_mismatch（只读探测，不拉起服务、不改退避）；lib.rs 注册",
+          "vision.rs：2xx 但响应缺 results 时显式报错（原为静默返回空列表，会把『索引在库里却搜不到』的根因吞掉）",
+          "vision.rs 新增 #[cfg(test)] mod semantic_backoff_tests：4 条回归"
+        ],
+        "files": [
+          "src-tauri/src/vision.rs",
+          "src-tauri/src/content.rs",
+          "src-tauri/src/textdesc.rs",
+          "src-tauri/src/lib.rs"
+        ],
+        "verification": [
+          "cargo check --all-targets → EXIT=0，Finished dev profile in 24.71s",
+          "cargo test --lib semantic_backoff_tests → 4 passed（not_ready_must_not_enter_backoff / fatal_error_enters_backoff / backoff_ttl_is_short / extract_detail_handles_bodies）"
+        ]
+      },
+      "fixed_at": "2026-09-21T10:40:00+08:00",
+      "created_at": "2026-09-20T11:50:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0921-003",
+      "date": "2026-09-21",
+      "status": "open",
+      "severity": "high",
+      "title": "模型下载进度永不显示：`model-dl-progress` 监听器被绑在「开始扫描」入口上，没跑过扫描的会话收不到任何进度事件",
+      "module": "src/stores/content.ts（事件监听注册时机）+ src/components/ModelGpuSettings.vue + src-tauri/src/model_dl.rs（进度上报）",
+      "symptom": [
+        "扫描中心 → ⚙ 性能设置 → 📥 模型下载，点「⬇ 下载」后行内只有静态快照：进度条恒 0% / 显示 0.0 MB，整个过程看不到推进",
+        "下载完成后重新打开面板才变成「✓ 已下载」（那一步走的是 list_model_downloads 的文件存在性判断）",
+        "用户视角：『下完了才知道它在下』"
+      ],
+      "root_cause": {
+        "summary": "`model-dl-progress` 的唯一注册点在 `ensureProgressListener()`（content.ts:434），而它只在「开始扫描」时被调用（startCombinedScan :494 / beginGlobalScan :638）。会话里没跑过扫描 ⇒ 监听器从未注册 ⇒ 后端每 150ms 上报的进度事件全部无人接收。面板自身只有 onMounted 的一次 list_model_downloads 快照，于是进度条永远停在那一刻的 0%。",
+        "detail": [
+          "content.ts:434-463 一次性注册 classify-progress / embed-progress / model-dl-progress 三个事件，却被绑在扫描入口上 —— 事件归属与触发时机错配",
+          "ModelGpuSettings.vue:232-239 onMounted → listModelDownloads() 只取一次快照；:337 startDl → startModelDownload → invoke 后再取一次快照；两次拿到的都是静态值（start() 写进 STORE 的是 bytes=0/total=0，见 model_dl.rs:205-218）",
+          "次要 1：emit_progress（model_dl.rs:780）只 app.emit、不回写 STORE → 任何一次 list 刷新都会把进行中的行打回 0%，直到下一个流事件（≤150ms）才恢复，观感上闪回",
+          "次要 2：download_first_wins（model_dl.rs:377-424）官方/镜像双路竞速下载同一文件，两路各自用『自己的 bytes/total』上报同一个模型名 → 同一条进度条被两个独立计数交替刷新，百分比非单调、来回跳；若某路响应无 Content-Length（total=0），progressPct 恒返回 0"
+        ]
+      },
+      "solution": {
+        "summary": "把下载进度监听从扫描入口解耦（随 store 首次使用无条件注册）+ 面板轮询兜底 + 进度口径统一为「模型级聚合」",
+        "steps": [
+          "content.ts：把 model-dl-progress 的 listen 从 ensureProgressListener() 抽成独立幂等函数（ensureModelDlListener()），在 store 初始化 / 首次 listModelDownloads() / 首次 startModelDownload() 时注册一次",
+          "ModelGpuSettings.vue：面板挂载即注册监听；存在 running 行时以 1s 轮询 list_model_downloads 兜底（监听失败也能看到进度），全部结束后停止轮询",
+          "model_dl.rs::emit_progress 同步更新 STORE（否则 list 快照与实时值不一致）",
+          "双路竞速按模型级聚合上报（两路 bytes 取 max 或分片求和，total 用 spec 已知体积），避免一条进度条被两个计数交替刷新",
+          "UI：total 未知时用不确定态（条纹动画 + 已下载量），不要显示 0%；行内补「X MB / 共 Y MB」",
+          "回归：冷启动应用（不跑扫描）→ 点一次下载 → 断言 3 秒内出现进度条并单调推进"
+        ]
+      },
+      "evidence_log": [
+        "[app.log 2026-09-21] 09:57:02 启动 → 09:57:13 打开性能设置（list_models/threads/gpu）→ 09:57:17.473 start_model_download → 09:57:49 再开面板仍显示 fp32 未下载 → 10:00:33 面板才显示 b16-fp32 已下载",
+        "[app.log] 该会话 scan_album_combined / begin_global_scan / start_combined_scan 计数 = 0 → ensureProgressListener() 从未执行 → model-dl-progress 无人监听",
+        "[代码] content.ts:434 内注册 model-dl-progress；调用点仅 :494（startCombinedScan）与 :638（beginGlobalScan）",
+        "[代码] ModelGpuSettings.vue:235 onMounted → listModelDownloads()（单次快照）；:337 startDl 后同样只做一次快照",
+        "[代码] model_dl.rs:780 emit_progress 仅 app.emit 不写 STORE；:205-218 start() 写 STORE 的 bytes=0/total=0",
+        "[代码] model_dl.rs:401-424 双路竞速（official/mirror）对同一 name 并发上报进度"
+      ],
+      "related_files": [
+        "src/stores/content.ts",
+        "src/components/ModelGpuSettings.vue",
+        "src-tauri/src/model_dl.rs"
+      ],
+      "keywords": [
+        "模型下载",
+        "进度条",
+        "model-dl-progress",
+        "监听注册时机",
+        "ensureProgressListener",
+        "断点续传",
+        "双路竞速",
+        "BUG-2026-0921-003"
+      ],
+      "created_at": "2026-09-21T10:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0921-004",
+      "date": "2026-09-21",
+      "status": "fixed",
+      "severity": "high",
+      "title": "「向量在库里却一条都搜不出」的静默写错标：扫描落库用写死的 fp16 兜底 model 标识；描述向量又以 fp32 标识落库 —— 与查询侧 /health.model_id 精确等值匹配后，失配的那批永久不可读",
+      "module": "src-tauri/src/content.rs（语义扫描落库）+ db/embedding.rs（按 model 过滤读取）+ textdesc.rs + db/category.rs",
+      "symptom": [
+        "向量确实已入库：photo_embeddings 653 条、photo_text_embeddings 648 条，BLOB 各 2048 字节（512 维 f32）",
+        "但每次搜索 app.log 都出现『描述语义降级: 描述向量索引为空（请先重建描述索引）』—— 648 条描述向量一条都读不到，且不重建就永远读不到",
+        "同一次搜索里图像语义却正常（11:29:00 实测召回 417 条），所以现象是『一半索引活着、一半索引像不存在』"
+      ],
+      "root_cause": {
+        "summary": "写入侧的 model 标签与读取侧不一致，向量就会永久不可达，而系统不作任何提示。① content.rs 语义扫描落库时写成 clip_model_id(app).await.unwrap_or_else(|_| \"chinese-clip-vit-b16-fp16\")：一旦 /health 取不到 model_id（服务刚起、CLIP 仍在加载），向量被静默贴上 fp16 标签 —— 若真实档位是 fp32，这批向量在查询侧再也匹配不上；② 描述索引是在档位为 b16-fp32 时构建的（648 条 fp32 标签），之后档位回到 b16(fp16)，读取侧只认 fp16，整批向量成为孤儿；③ 设计上『换档必须换标识』（config.py 注释：历史值不可更改）确实避免了向量空间混用，却没有任何机制阻止旧向量无声失效 —— 用户看到的就是『向量存在却查不到』。",
+        "detail": [
+          "读取侧是精确等值匹配，没有任何回退：db/embedding.rs:126 load_all_embeddings `WHERE user_id = ?1 AND model = ?2`；textdesc.rs:370 load_text_embeddings(user_id, DESC_KIND, &model)；model 来自 GET /health 的 model_id（vision.rs::clip_model_id）",
+          "档位口径：python/vcr/config.py CLIP_MODEL_META 给每个档位固定 id（b16 → chinese-clip-vit-b16-fp16 / b16-fp32 → chinese-clip-vit-b16-fp32）；active_clip() 持久化选择优先（且须拆分件就绪），否则按 CLIP_MODELS 顺序取第一个就绪者；实测 models/current_clip.json = {\"name\":\"b16\"} → /health.model_id = …-fp16",
+          "DB 实测：photo_embeddings 653/653 = chinese-clip-vit-b16-fp16（与当前 model_id 一致 → 可读）；photo_text_embeddings 648/648 = chinese-clip-vit-b16-fp32（与当前 model_id 不一致 → 全批不可读）",
+          "失效是**静默**的：category_index_stats（db/category.rs:555）本来就区分 indexed（本档）/ stale（他档），但此前没有任何日志或界面把它与『搜不到』关联，唯一线索只有那句容易被忽略的『请先重建描述索引』",
+          "写入侧的兜底是致命的：unwrap_or_else 把『拿不到档位』这个**必须中止**的前置条件，降级成『猜一个』——而猜错的代价是数据永久不可达且无人知晓"
+        ]
+      },
+      "solution": {
+        "summary": "杜绝静默写错标 + 把失配显性化 + 给出重建入口",
+        "steps": [
+          "content.rs 语义扫描落库：删掉写死的 fp16 兜底，clip_model_id 失败即中止并明确报错『无法确定当前语义模型档位，已中止向量写入以免写错标签』—— 宁可失败，绝不静默写错标",
+          "content.rs semantic_status 新增 index_model_mismatch 档：indexed==0 && stale>0 时直接告知『语义索引与当前模型档位 X 不匹配：库中 N 条向量出自其它档位，无法参与检索』，而不是笼统的『CLIP 模型未下载』",
+          "数据侧补救：描述索引需重建一次才恢复可读 —— 调用 textdesc.rs:605 rebuild_desc_index（命令已存在）",
+          "待办（未做）：前端在 index_model_mismatch 时直接给『重建描述索引』按钮，而不是只跳转扫描中心；并在换档成功后主动提示『索引需重建』"
+        ]
+      },
+      "evidence_log": [
+        "[DB 实测] photo_embeddings: total 653, model=chinese-clip-vit-b16-fp16 dim=512 user_id=1, 每条 embedding 长度 2048",
+        "[DB 实测] photo_text_embeddings: ('desc', 'chinese-clip-vit-b16-fp32', 648)",
+        "[app.log] 11:29:00.601 与 11:29:01.585 → 『[smart_search] 描述语义降级: 描述向量索引为空（请先重建描述索引）』，同一行 smart_search.semantic END 显示『图像语义 417 · 描述语义 0 · 融合 0 → 417』",
+        "[代码] content.rs:826（改前）let model = crate::vision::clip_model_id(app).await.unwrap_or_else(|_| \"chinese-clip-vit-b16-fp16\".to_string());",
+        "[代码] db/embedding.rs:126 与 textdesc.rs:370 均为 model 精确等值过滤；db/category.rs:555 category_index_stats 暴露 indexed/stale 两数",
+        "[运行态] python/models/current_clip.json = {\"name\":\"b16\"}；同目录 chinese-clip/ 与 chinese-clip-fp32/ 的 clip_vision.onnx + clip_text.onnx 均存在（两档都 ready，故档位完全取决于该 json）"
+      ],
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/db/embedding.rs",
+        "src-tauri/src/textdesc.rs",
+        "src-tauri/src/db/category.rs",
+        "python/vcr/config.py"
+      ],
+      "keywords": [
+        "向量失配",
+        "model 标识",
+        "静默兜底",
+        "索引不可达",
+        "描述向量",
+        "stale",
+        "换档重建",
+        "clip_model_id",
+        "BUG-2026-0921-004"
+      ],
+      "fix": {
+        "summary": "去掉写入侧写死的档位兜底（改为显式中止），并把档位失配作为独立原因档暴露给前端",
+        "files": [
+          "src-tauri/src/content.rs"
+        ],
+        "verification": [
+          "cargo check --all-targets → EXIT=0",
+          "DB 只读复核确认两套 model 标签并存（653 fp16 / 648 fp32），失配结论可复现"
+        ]
+      },
+      "fixed_at": "2026-09-21T10:45:00+08:00",
+      "created_at": "2026-09-21T10:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0921-005",
+      "date": "2026-09-21",
+      "status": "fixed",
+      "severity": "high",
+      "title": "深色模式下「组合扫描 / 全局扫描」面板文字与背景无区分：面板背景硬编码白色而文字用 var(--color-text)，深色下翻成浅色落在白底上，整版「隐身」",
+      "module": "src/components/ScanPanel.vue + GlobalScanPanel.vue + ConfirmDialog.vue + AlbumMeta.vue + src/assets/main.css（主题令牌）",
+      "symptom": [
+        "深色模式下打开相册详情「组合扫描」面板：表格行、表头、说明文字全部变成浅色白底上的淡蓝，几乎不可读（用户截图）",
+        "全局扫描入库页面（GlobalScanPanel）同源问题：相册勾选列表、逐相册状态表、进度区同样不可读",
+        "深色模式下确认弹窗（ConfirmDialog）标题被 main.css 的 body.theme-dark .confirm-title 翻成浅色，落在硬编码白底上不可读",
+        "浅色模式完全正常 —— 只有深色模式触发"
+      ],
+      "root_cause": {
+        "summary": "这些组件的卡片/面板背景、徽标底、悬停底、灰字全部硬编码浅色（#fff / #f8f9fa / #eef3fb / #667085 / #98a2b3 / #d0d5dd 等），但文字色用了随模式翻转的 var(--color-text*)。深色模式主题把文字翻成浅色后，浅色文字落在仍为白色的硬编码背景上，对比度归零。",
+        "detail": [
+          "ScanPanel .scan-area background:#fff + .scan-table th/td color:var(--color-text) 是截图中的直接成因",
+          "GlobalScanPanel 同一套写法（.gs-area/.gs-select-block/.gs-table/.gs-st 徽标）共 21 处硬编码浅色背景",
+          "ConfirmDialog 特殊：弹窗背景硬编码 #fff，而全局 main.css 深色规则 body.theme-dark .confirm-title 把标题翻浅 → 标题隐身",
+          "main.css 缺少次级面板/徽标/软色板的深色令牌，组件作者只能硬编码"
+        ]
+      },
+      "solution": {
+        "summary": "建立完整软色板令牌（浅/深两套），把四个组件的硬编码颜色全部替换为变量，随模式自适应",
+        "steps": [
+          "main.css 新增令牌：--color-surface-2 / --color-soft-accent / --color-neutral-soft / --color-danger-soft / --color-ok(-soft) / --color-warn(-soft) / --color-link，浅色取原硬编码值，深色取半透明亮色/提亮色",
+          "ScanPanel：面板/进度/勾选卡/分页/输入控件/灰字全部变量化",
+          "GlobalScanPanel：面板/相册勾选区/徽标/状态表/汇总条/进度区全部变量化",
+          "ConfirmDialog：弹窗底色与标题/正文改用 var(--color-surface)/var(--color-text*)（保留调用方 --cd-btn-* 内联按钮机制）",
+          "AlbumMeta：stat-clickable 悬停底与 tag-chip 改用 --color-soft-accent/--color-link"
+        ]
+      },
+      "evidence_log": [
+        "[截图] 用户提供的深色模式组合扫描截图：白面板 + 浅色文字，表格行文字不可读",
+        "[机制] main.css body.theme-dark 将 --color-text 定义为 #f5f7ff；ScanPanel .scan-table td color:var(--color-text) 落在 background:#fff 上",
+        "[排查] 全库 grep『var(--color-text 与硬编码浅色背景混用』：命中 ScanPanel/GlobalScanPanel/ConfirmDialog/AlbumMeta/AlbumCard/ContentSearch；后两者徽标自带文字色（两种模式可读）无需修改",
+        "[验证] npx vue-tsc --noEmit 退出码 0；@vue/compiler-sfc 对 4 个改动 SFC parse/script/template/style 编译全部通过"
+      ],
+      "related_files": [
+        "src/assets/main.css",
+        "src/components/ScanPanel.vue",
+        "src/components/GlobalScanPanel.vue",
+        "src/components/ConfirmDialog.vue",
+        "src/components/AlbumMeta.vue"
+      ],
+      "keywords": [
+        "深色模式",
+        "对比度",
+        "主题令牌",
+        "硬编码背景",
+        "软色板",
+        "surface-2",
+        "BUG-2026-0921-005"
+      ],
+      "fix": {
+        "summary": "软色板令牌化：新增 9 个深/浅成对令牌，四个组件全部改用变量；深色下面板变深底、文字变浅字，对比度恢复",
+        "files": [
+          "src/assets/main.css",
+          "src/components/ScanPanel.vue",
+          "src/components/GlobalScanPanel.vue",
+          "src/components/ConfirmDialog.vue",
+          "src/components/AlbumMeta.vue"
+        ],
+        "verification": [
+          "npx vue-tsc --noEmit → EXIT=0（零类型错误）",
+          "@vue/compiler-sfc 编译 ScanPanel/GlobalScanPanel/ConfirmDialog/AlbumMeta → 全部 OK",
+          "grep 复核：两个扫描面板中不再残留面向文字的硬编码浅色背景（保留项均为主色按钮/自带文字色的徽标）"
+        ]
+      },
+      "fixed_at": "2026-09-21T11:05:00+08:00",
+      "created_at": "2026-09-21T11:05:00+08:00"
     }
   ]
 }

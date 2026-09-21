@@ -415,10 +415,12 @@ onMounted(() => {
 
 <style scoped>
 /* ---- 区域容器（与 ScanPanel 白底卡片风格一致） ---- */
+/* BUG-2026-0921-005：与 ScanPanel 同源问题——浅色背景硬编码 + var(--color-text)
+   深色下翻浅，文字落在白底上不可读。全部改为主题变量。 */
 .gs-area {
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--color-surface);
   overflow: hidden;
 }
 
@@ -433,7 +435,7 @@ onMounted(() => {
 
 .gs-desc {
   font-size: 12px;
-  color: #667085;
+  color: var(--color-text-3);
   margin: 0;
   max-width: 640px;
   line-height: 1.6;
@@ -481,16 +483,16 @@ onMounted(() => {
 .btn-ghost { background: #eef2ff; color: #2f5cc2; border-color: #b9cdf5; }
 .btn-ghost:hover:not(:disabled) { background: #e1e9ff; border-color: #396cd8; color: #2f5cc2; }
 .btn-ghost:disabled { background: #f2f4f8; border-color: #e3e7ee; color: #9aa4b4; cursor: not-allowed; }
-.btn-mini { padding: 2px 8px; font-size: 11px; border: 1px solid #d0d5dd; border-radius: 3px; background: #fff; cursor: pointer; }
-.btn-mini:hover { border-color: #396cd8; color: #396cd8; }
-.btn-mini:disabled { background: #f0f2f6; color: #9aa4b4; cursor: not-allowed; }
+.btn-mini { padding: 2px 8px; font-size: 11px; border: 1px solid var(--color-border); border-radius: 3px; background: var(--color-surface-2); color: inherit; cursor: pointer; }
+.btn-mini:hover { border-color: var(--color-link); color: var(--color-link); }
+.btn-mini:disabled { background: var(--color-neutral-soft); color: var(--color-text-3); cursor: not-allowed; }
 
 /* ---- 相册勾选区 ---- */
 .gs-select-block {
   margin: 0 14px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-border);
   border-radius: 6px;
-  background: #f8f9fa;
+  background: var(--color-surface-2);
 }
 
 .gs-select-head {
@@ -498,7 +500,7 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   padding: 8px 10px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--color-border);
   flex-wrap: wrap;
 }
 
@@ -513,8 +515,8 @@ onMounted(() => {
 }
 .gs-check-all.disabled { opacity: 0.6; cursor: not-allowed; }
 
-.gs-select-count { font-size: 12px; color: #667085; }
-.gs-select-count b { color: #396cd8; }
+.gs-select-count { font-size: 12px; color: var(--color-text-3); }
+.gs-select-count b { color: var(--color-link); }
 
 .gs-filter { margin-left: auto; }
 .gs-filter-input {
@@ -522,12 +524,13 @@ onMounted(() => {
   height: 28px;
   padding: 0 8px;
   font-size: 12px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--color-border);
   border-radius: 4px;
-  background: #fff;
+  background: var(--color-surface-2);
+  color: inherit;
   outline: none;
 }
-.gs-filter-input:focus { border-color: #396cd8; }
+.gs-filter-input:focus { border-color: var(--color-link); }
 
 .gs-album-list {
   max-height: 260px;
@@ -538,7 +541,7 @@ onMounted(() => {
   padding: 18px 10px;
   text-align: center;
   font-size: 12px;
-  color: #98a2b3;
+  color: var(--color-text-3);
   margin: 0;
 }
 
@@ -547,14 +550,14 @@ onMounted(() => {
   align-items: center;
   gap: 10px;
   padding: 7px 10px;
-  border-bottom: 1px solid #eef0f4;
+  border-bottom: 1px solid var(--color-border);
   cursor: pointer;
   transition: background 0.12s;
   font-size: 13px;
 }
 .gs-album-row:last-child { border-bottom: none; }
-.gs-album-row:hover { background: #eef3fb; }
-.gs-album-row.checked { background: #eef3fb; }
+.gs-album-row:hover { background: var(--color-soft-accent); }
+.gs-album-row.checked { background: var(--color-soft-accent); }
 .gs-album-row.locked { cursor: default; }
 .gs-album-row input[type="checkbox"] { flex: none; }
 
@@ -575,7 +578,7 @@ onMounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
-  color: #98a2b3;
+  color: var(--color-text-3);
 }
 
 .gs-album-meta {
@@ -592,9 +595,9 @@ onMounted(() => {
   font-size: 11px;
   white-space: nowrap;
 }
-.gs-badge-plain { background: #eef1f6; color: #667085; }
-.gs-badge-ok { background: #e6f6ea; color: #15803d; }
-.gs-badge-todo { background: #fdf3e0; color: #b45309; }
+.gs-badge-plain { background: var(--color-neutral-soft); color: var(--color-text-3); }
+.gs-badge-ok { background: var(--color-ok-soft); color: var(--color-ok); }
+.gs-badge-todo { background: var(--color-warn-soft); color: var(--color-warn); }
 
 /* ---- 扫描设置 ---- */
 .gs-controls {
@@ -611,40 +614,41 @@ onMounted(() => {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--color-border);
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.15s;
-  background: #fff;
+  background: transparent;
 }
-.gs-check:hover { border-color: #396cd8; background: #eef3fb; }
-.gs-check.active { border-color: #396cd8; background: #eef3fb; }
+.gs-check:hover { border-color: var(--color-link); background: var(--color-soft-accent); }
+.gs-check.active { border-color: var(--color-link); background: var(--color-soft-accent); }
 .gs-check input:disabled { cursor: not-allowed; }
 .gs-check-label { font-weight: 500; font-size: 13px; }
-.gs-check-desc { font-size: 11px; color: #667085; }
+.gs-check-desc { font-size: 11px; color: var(--color-text-3); }
 
 .batch-select {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: #667085;
+  color: var(--color-text-3);
 }
 .batch-select select {
   padding: 2px 4px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--color-border);
   border-radius: 4px;
   font-size: 12px;
-  background: #fff;
+  background: var(--color-surface-2);
+  color: inherit;
 }
 
 /* ---- 错误 / 进度 ---- */
 .gs-error {
   margin: 0;
   padding: 8px 14px;
-  color: #e5484d;
+  color: var(--color-danger);
   font-size: 13px;
-  background: #fef2f2;
+  background: var(--color-danger-soft);
 }
 
 .gs-progress-block { padding: 10px 14px 14px; }
@@ -657,11 +661,11 @@ onMounted(() => {
   margin-bottom: 6px;
 }
 .gs-progress-title { font-size: 13px; font-weight: 600; color: var(--color-text); }
-.gs-progress-percent { font-size: 13px; color: #396cd8; font-weight: 600; }
+.gs-progress-percent { font-size: 13px; color: var(--color-link); font-weight: 600; }
 
 .gs-track {
   height: 8px;
-  background: #e5e7eb;
+  background: var(--color-border);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -687,8 +691,8 @@ onMounted(() => {
 .gs-current {
   margin-top: 12px;
   padding: 8px 10px;
-  background: #f8f9fa;
-  border: 1px solid #eef0f4;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
   border-radius: 6px;
 }
 .gs-current-head {
@@ -708,24 +712,24 @@ onMounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.gs-current-detail { font-size: 11px; color: #667085; }
+.gs-current-detail { font-size: 11px; color: var(--color-text-3); }
 
 .gs-summary {
   margin: 12px 0 0;
   padding: 8px 10px;
   font-size: 13px;
-  color: #15803d;
-  background: #e6f6ea;
+  color: var(--color-ok);
+  background: var(--color-ok-soft);
   border-radius: 6px;
 }
-.gs-summary.has-failed { color: #b45309; background: #fdf3e0; }
+.gs-summary.has-failed { color: var(--color-warn); background: var(--color-warn-soft); }
 
 /* ---- 逐相册状态表 ---- */
 .gs-table-wrap {
   margin-top: 12px;
   max-height: 300px;
   overflow-y: auto;
-  border: 1px solid #eef0f4;
+  border: 1px solid var(--color-border);
   border-radius: 6px;
 }
 
@@ -750,19 +754,19 @@ onMounted(() => {
 
 .gs-table td {
   padding: 5px 8px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--color-border);
   vertical-align: middle;
 }
 
-.gs-table tr:hover td { background: #fafbfc; }
-.gs-table tr.row-current td { background: #eef3fb; }
+.gs-table tr:hover td { background: var(--color-soft-accent); }
+.gs-table tr.row-current td { background: var(--color-soft-accent); }
 
 .col-idx { width: 36px; text-align: center; color: var(--color-text-2); }
 .col-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .col-status { width: 76px; }
 .col-num { width: 60px; text-align: center; }
-.num-failed { color: #e5484d; font-weight: 600; }
-.col-err { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #98a2b3; }
+.num-failed { color: var(--color-danger); font-weight: 600; }
+.col-err { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-3); }
 
 .gs-st {
   display: inline-block;
@@ -771,11 +775,11 @@ onMounted(() => {
   font-size: 11px;
   white-space: nowrap;
 }
-.gs-st.st-pending { background: #eef1f6; color: #667085; }
-.gs-st.st-running { background: #e0e9fa; color: #396cd8; animation: gs-pulse 1.5s ease-in-out infinite; }
-.gs-st.st-done { background: #e6f6ea; color: #15803d; }
-.gs-st.st-failed { background: #fef2f2; color: #e5484d; }
-.gs-st.st-stopped { background: #fdf3e0; color: #b45309; }
+.gs-st.st-pending { background: var(--color-neutral-soft); color: var(--color-text-3); }
+.gs-st.st-running { background: var(--color-soft-accent); color: var(--color-link); animation: gs-pulse 1.5s ease-in-out infinite; }
+.gs-st.st-done { background: var(--color-ok-soft); color: var(--color-ok); }
+.gs-st.st-failed { background: var(--color-danger-soft); color: var(--color-danger); }
+.gs-st.st-stopped { background: var(--color-warn-soft); color: var(--color-warn); }
 
 @keyframes gs-pulse {
   0%, 100% { opacity: 1; }
@@ -785,7 +789,7 @@ onMounted(() => {
 .gs-empty {
   padding: 22px 14px;
   text-align: center;
-  color: #98a2b3;
+  color: var(--color-text-3);
   font-size: 13px;
 }
 .gs-empty p { margin: 0; }

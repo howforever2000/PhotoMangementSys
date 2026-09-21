@@ -300,16 +300,24 @@ pub async fn recall_by_image(
     if crate::vision::semantic_backoff_active() {
         return Err("CLIP 服务暂不可用（退避中）".into());
     }
-    let model = crate::vision::clip_model_id(app).await?;
+    let model = match crate::vision::clip_model_id(app).await {
+        Ok(m) => m,
+        Err(e) => {
+            crate::vision::note_semantic_failure(&e);
+            return Err(e);
+        }
+    };
 
     // 1. 查询图 → 向量（缩略图优先，保证与建库输入一致）
     let input = query_image_input(state, image_path);
-    let mut q = match crate::vision::embed_images_batch(&[input], 1, app, None)
-        .await?
-        .into_iter()
-        .next()
-        .and_then(|r| r.embedding)
-    {
+    let encoded = match crate::vision::embed_images_batch(&[input], 1, app, None).await {
+        Ok(list) => list,
+        Err(e) => {
+            crate::vision::note_semantic_failure(&e);
+            return Err(e);
+        }
+    };
+    let mut q = match encoded.into_iter().next().and_then(|r| r.embedding) {
         Some(v) => v,
         None => return Err("查询图编码失败（图片无法解码？）".into()),
     };
@@ -360,8 +368,20 @@ pub async fn recall_by_text(
     if crate::vision::semantic_backoff_active() {
         return Err("CLIP 服务暂不可用（退避中）".into());
     }
-    let model = crate::vision::clip_model_id(app).await?;
-    let mut q = crate::vision::embed_text_query(keyword, app).await?;
+    let model = match crate::vision::clip_model_id(app).await {
+        Ok(m) => m,
+        Err(e) => {
+            crate::vision::note_semantic_failure(&e);
+            return Err(e);
+        }
+    };
+    let mut q = match crate::vision::embed_text_query(keyword, app).await {
+        Ok(q) => q,
+        Err(e) => {
+            crate::vision::note_semantic_failure(&e);
+            return Err(e);
+        }
+    };
     l2_normalize(&mut q);
     crate::vision::clear_semantic_down();
 

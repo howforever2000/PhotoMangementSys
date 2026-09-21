@@ -35,6 +35,18 @@
   --color-surface: #ffffff;     /* 卡片/面板 */
   --color-border: #e6e8ee;
 
+  /* 软色板（BUG-2026-0921-005）：面板/徽标/悬停态使用，
+     与 --color-surface 配套；深色模式在 body.theme-dark 中整体翻暗 */
+  --color-surface-2: #f8f9fa;   /* 次级面板 / 控件底色 */
+  --color-soft-accent: #eef3fb; /* 选中 / 悬停软蓝底 */
+  --color-neutral-soft: #eef1f6;/* 中性徽标底 */
+  --color-danger-soft: #fef2f2; /* 危险提示底 */
+  --color-ok: #15803d;          /* 成功文字 */
+  --color-ok-soft: #e6f6ea;     /* 成功底 */
+  --color-warn: #b45309;        /* 警示文字 */
+  --color-warn-soft: #fdf3e0;   /* 警示底 */
+  --color-link: #396cd8;        /* 链接 / 强调（深色下提亮） */
+
   /* 圆角 */
   --radius-lg: 14px;
   --radius: 10px;
@@ -62,6 +74,16 @@ body.theme-dark {
   --color-primary-soft: rgba(57, 108, 216, 0.22);
   --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.45);
   --shadow-hover: 0 12px 28px rgba(0, 0, 0, 0.55);
+  /* 软色板深色对应值（BUG-2026-0921-005） */
+  --color-surface-2: rgba(255, 255, 255, 0.05);
+  --color-soft-accent: rgba(57, 108, 216, 0.22);
+  --color-neutral-soft: rgba(255, 255, 255, 0.08);
+  --color-danger-soft: rgba(229, 72, 77, 0.16);
+  --color-ok: #4ade80;
+  --color-ok-soft: rgba(34, 197, 94, 0.16);
+  --color-warn: #fbbf24;
+  --color-warn-soft: rgba(245, 158, 11, 0.16);
+  --color-link: #8ab4ff;
 }
 
 /* 背景图模式（BUG-2026-0919-002）：

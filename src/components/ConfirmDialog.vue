@@ -129,7 +129,10 @@ watch(
 .confirm-dialog {
   width: 380px;
   max-width: calc(100vw - 48px);
-  background: #fff;
+  /* BUG-2026-0921-005：白底硬编码 + main.css 深色覆盖把标题翻浅 → 深色下标题隐身。
+     底色/文字全部走主题变量，随模式自适应。 */
+  background: var(--color-surface, #fff);
+  color: var(--color-text, #2c3e50);
   border-radius: 14px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.25);
   padding: 22px 24px;
@@ -138,14 +141,14 @@ watch(
 .confirm-title {
   font-size: 16px;
   font-weight: 700;
-  color: #2c3e50;
+  color: var(--color-text, #2c3e50);
   margin-bottom: 10px;
 }
 
 .confirm-msg {
   font-size: 13px;
   line-height: 1.8;
-  color: #666;
+  color: var(--color-text-2, #666);
   white-space: pre-line;
   margin-bottom: 20px;
 }

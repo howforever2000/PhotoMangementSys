@@ -562,7 +562,7 @@ const saveTags = trace("saveTags", async () => {
 }
 
 .stat-clickable:hover {
-  background: #eef3fb;
+  background: var(--color-soft-accent, #eef3fb);
 }
 
 .stat-edit {
@@ -628,8 +628,8 @@ const saveTags = trace("saveTags", async () => {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
-  background: #eef3fb;
-  color: #396cd8;
+  background: var(--color-soft-accent, #eef3fb);
+  color: var(--color-link, #396cd8);
   font-size: 12px;
   font-weight: 500;
 }

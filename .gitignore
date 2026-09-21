@@ -96,3 +96,5 @@ python/bench/*_log.txt
 /sfc*_out.txt
 /tsc*.txt
 /src-tauri/chk*.txt
+/_*.txt
+/_*.mjs

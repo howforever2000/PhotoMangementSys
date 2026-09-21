@@ -711,16 +711,55 @@ const ALIVE_TIMEOUT: Duration = Duration::from_secs(25);
 /// 但「模型未下载 / 服务起不来」这类确定性失败若每次都重试，会让每次搜索都白等
 /// 数秒并反复拉起进程，故失败后进入退避窗口（TTL 内直接降级纯关键词）。
 static SEMANTIC_DOWN_AT: Mutex<Option<Instant>> = Mutex::new(None);
-const SEMANTIC_DOWN_TTL: Duration = Duration::from_secs(180);
 
-/// 语义服务是否处于退避窗口
-pub fn semantic_backoff_active() -> bool {
+/// 退避窗口时长。
+///
+/// 原为 180s，是把「瞬时抖动」与「确定性失败」混为一谈的代价：重启后 CLIP 首次
+/// 加载期间的**一次** 503，会让之后整整 3 分钟内**所有**搜索静默降级成纯关键词，
+/// 用户看到的现象就是「向量明明在库里，却一条都搜不出来」（BUG-2026-0920-008）。
+/// 而真正需要长窗口保护的确定性失败（模型缺失 / 端口不通 / 组件过期）已由
+/// `clip_model_present()` 与实例登记廉价拦截，不必靠长退避兜。故压到 20s：
+/// 既避开瞬时抖动期的连续硬等，又保证服务恢复后最多 20s 内自动回归。
+const SEMANTIC_DOWN_TTL: Duration = Duration::from_secs(20);
+
+/// 可重试错误的标记前缀：`embed_*` 判定为「服务未就绪 / 模型加载中」时返回。
+///
+/// 调用方据此区分「本次跳过」与「进入退避」——只有确定性失败才进退避，
+/// 自愈型失败（503 加载中）绝不能把整条语义链路锁死数十秒。
+const RETRYABLE_PREFIX: &str = "[retryable]";
+
+/// 错误是否属于「可重试」（服务加载中 / 未就绪这类会自愈的失败）
+pub fn is_retryable_err(e: &str) -> bool {
+    e.starts_with(RETRYABLE_PREFIX)
+}
+
+/// 是否应因该错误进入退避窗口（可重试错误只跳过本次，不退避）
+pub fn should_enter_backoff(e: &str) -> bool {
+    !is_retryable_err(e)
+}
+
+/// 记一次语义调用失败：可重试型（服务加载中/未就绪）只跳过本次，确定性失败才进退避
+///
+/// 收敛到单一入口，避免三个调用点（图像语义 / 描述语义 / 以图搜图）各自为政——
+/// 「任何失败都 mark_semantic_down」正是 BUG-2026-0920-008 的成因。
+pub fn note_semantic_failure(e: &str) {
+    if should_enter_backoff(e) {
+        mark_semantic_down();
+    }
+}
+
+/// 退避窗口剩余时长（未在退避返回 None）
+pub fn semantic_backoff_remaining() -> Option<Duration> {
     SEMANTIC_DOWN_AT
         .lock()
         .ok()
         .and_then(|g| *g)
-        .map(|t| t.elapsed() < SEMANTIC_DOWN_TTL)
-        .unwrap_or(false)
+        .and_then(|t| SEMANTIC_DOWN_TTL.checked_sub(t.elapsed()))
+}
+
+/// 语义服务是否处于退避窗口
+pub fn semantic_backoff_active() -> bool {
+    semantic_backoff_remaining().is_some()
 }
 
 /// 标记语义不可用（进入退避窗口）
@@ -734,6 +773,76 @@ pub fn mark_semantic_down() {
 pub fn clear_semantic_down() {
     if let Ok(mut g) = SEMANTIC_DOWN_AT.lock() {
         *g = None;
+    }
+}
+
+/// 语义链路可用性快照（前端据此给出**分档**提示，而不是笼统的一句「模型未下载」）
+///
+/// 背景（BUG-2026-0920-006/007）：前端此前只拿到 `warmup_semantic_service -> bool`，
+/// 任何失败都渲染成同一句「CLIP 模型未下载」；而真实原因可能是退避中、服务没起来、
+/// 或索引与当前模型档位不匹配。用户照提示去「下载模型」，当然解决不了问题。
+#[derive(Debug, Clone, Serialize)]
+pub struct SemanticStatus {
+    /// 是否可用
+    pub ready: bool,
+    /// 机器可读原因码：ready / model_missing / backoff / service_unreachable
+    pub code: String,
+    /// 面向用户的说明（说清「发生了什么 + 怎么办」）
+    pub message: String,
+    /// 退避剩余毫秒（0 = 未在退避）
+    pub backoff_remaining_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
+// embedding 端点错误分类（BUG-2026-0920-008）
+//
+// 原实现直接 `.json()` 解析响应体：FastAPI 的 503 `{"detail": "..."}` 是一个**合法
+// JSON**，于是被成功解析，随后落到 `resp.get("results") == None`，真实原因被
+// 「embedding 响应缺少 results」整句覆盖——app.log 里再也看不出到底是「没就绪」
+// 还是「模型缺失」。此处改为**先判 HTTP 状态**，把 detail 原样带出并落日志。
+// ---------------------------------------------------------------------------
+
+/// 从 FastAPI 错误体里取 `detail`（取不到退回原始文本；压平换行并截断防刷屏）
+fn extract_detail(body: &str) -> String {
+    let txt = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("detail")
+                .and_then(|d| d.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| body.trim().to_string());
+    let flat = txt.replace(['\r', '\n'], " ");
+    if flat.chars().count() > 300 {
+        flat.chars().take(300).collect::<String>() + "…"
+    } else {
+        flat
+    }
+}
+
+/// 该失败是否属于「服务未就绪 / 模型加载中」这类可自愈的失败
+///
+/// 判据：503（服务暂不可用）本身即视为可重试；其余状态码需错误体里有明确的加载
+/// 语义（中英文）才按可重试处理——避免把「模型缺失」这类确定性错误也当成抖动，
+/// 否则会陷入「每次搜索都白等 7 秒」的反向坑。
+fn is_not_ready(status: reqwest::StatusCode, detail: &str) -> bool {
+    let d = detail.to_lowercase();
+    let loading = d.contains("未就绪")
+        || d.contains("加载中")
+        || d.contains("正在加载")
+        || d.contains("初始化")
+        || d.contains("not ready")
+        || d.contains("loading")
+        || d.contains("initializ");
+    loading || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+}
+
+/// 把「非 2xx 响应」翻译成明确错误（可重试型带 `RETRYABLE_PREFIX` 前缀）
+fn http_failure_err(status: reqwest::StatusCode, detail: &str) -> String {
+    if is_not_ready(status, detail) {
+        format!("{RETRYABLE_PREFIX} 语义服务未就绪（HTTP {status}）：{detail}")
+    } else {
+        format!("语义服务调用失败（HTTP {status}）：{detail}")
     }
 }
 
@@ -1872,6 +1981,77 @@ mod tests {
     }
 }
 
+/// FEAT-SEM 语义退避的回归测试（BUG-2026-0920-008）
+#[cfg(test)]
+mod semantic_backoff_tests {
+    use super::*;
+
+    /// 回归：CLIP **强制未就绪**（503「加载中」）必须判为可重试，不得进入退避窗口
+    ///
+    /// 旧实现「任何失败都 mark_semantic_down」，于是重启后 CLIP 首次加载期的一次 503
+    /// 就把整条语义链路锁死 180s——表现正是「向量明明在库里，却一条都搜不出来」。
+    #[test]
+    fn not_ready_must_not_enter_backoff() {
+        let zh = http_failure_err(reqwest::StatusCode::SERVICE_UNAVAILABLE, "CLIP 模型加载中");
+        assert!(is_retryable_err(&zh), "503 加载中必须判为可重试: {zh}");
+        assert!(!should_enter_backoff(&zh), "可重试错误不得进退避: {zh}");
+
+        // 非 503 但带明确加载语义（英文）同样要认
+        let en = http_failure_err(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "model loading");
+        assert!(is_retryable_err(&en), "英文 loading 也必须认: {en}");
+
+        // 端到端：强制未就绪后，语义链路必须仍可用
+        clear_semantic_down();
+        note_semantic_failure(&zh);
+        assert!(
+            !semantic_backoff_active(),
+            "可重试失败之后不得处于退避中（CLIP 强制未就绪不得进长时间退避）"
+        );
+        assert!(semantic_backoff_remaining().is_none());
+    }
+
+    /// 确定性失败仍须进退避，否则每次搜索都要白等连接超时
+    #[test]
+    fn fatal_error_enters_backoff() {
+        let missing = http_failure_err(reqwest::StatusCode::NOT_FOUND, "模型缺失");
+        assert!(!is_retryable_err(&missing), "{missing}");
+        assert!(should_enter_backoff(&missing));
+
+        // 端口不通（连接层失败）不带可重试前缀 → 进退避
+        let conn = "调用 embedding 服务失败: error sending request for url";
+        assert!(should_enter_backoff(conn));
+
+        clear_semantic_down();
+        note_semantic_failure(&missing);
+        assert!(semantic_backoff_active(), "确定性失败必须进退避");
+        assert!(semantic_backoff_remaining().is_some());
+        clear_semantic_down();
+    }
+
+    /// 退避窗口必须足够短：服务恢复后自动回归，而不是让用户干等数分钟
+    #[test]
+    fn backoff_ttl_is_short() {
+        assert!(
+            SEMANTIC_DOWN_TTL <= Duration::from_secs(30),
+            "退避窗口过长 = 「一次抖动丢掉几分钟的语义检索」: {SEMANTIC_DOWN_TTL:?}"
+        );
+    }
+
+    /// detail 提取：FastAPI 错误体取 detail / 非 JSON 退回原文 / 压平换行 / 超长截断
+    #[test]
+    fn extract_detail_handles_bodies() {
+        assert_eq!(extract_detail(r#"{"detail":"模型缺失"}"#), "模型缺失");
+        assert_eq!(extract_detail("plain text"), "plain text");
+        // JSON 转义换行 → 解码后是真换行 → 压平成空格
+        assert_eq!(extract_detail("{\"detail\":\"a\\nb\"}"), "a b");
+        let long = "x".repeat(400);
+        assert!(
+            extract_detail(&long).chars().count() <= 301,
+            "超长 detail 必须被截断"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 语义搜索（FEAT-SEM）：Chinese-CLIP embedding 客户端
 // 解耦原则与分类通道一致：本模块只是 HTTP 客户端，模型生命周期由微服务管理；
@@ -1896,6 +2076,61 @@ pub struct EmbedProgress {
     pub total: usize,
     pub done: usize,
     pub failed: usize,
+}
+
+/// 向 VCR 提交 JSON 并解析响应：**先判 HTTP 状态**，未就绪按 1s/2s/4s 退让重试
+///
+/// - 2xx → 返回解析后的 JSON
+/// - 503「未就绪 / 加载中」→ 退让重试（最多 3 次）；最终错误带 `RETRYABLE_PREFIX`，
+///   调用方据此**不进入退避**，只是本次搜索降级为纯关键词
+/// - 其他非 2xx → 立即返回确定性错误（模型缺失 / 组件过期等），调用方进退避
+/// - 连接层失败（端口不通 / 进程已退）→ 立即返回，不做无谓等待
+///
+/// 无论走哪条路径，真实原因都会写进 app.log——此前只落在 stderr，用户与排查者
+/// 都看不到（BUG-2026-0920-008 的直接成因）。
+async fn post_json_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    what: &str,
+) -> Result<serde_json::Value, String> {
+    // 退让间隔：第 1/2/3 次失败后分别等 1s / 2s / 4s（合计最多 7s）
+    const DELAYS_MS: [u64; 3] = [1000, 2000, 4000];
+    let mut last_err = String::new();
+    for (attempt, delay_ms) in DELAYS_MS.iter().enumerate() {
+        match client.post(url).json(body).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    return resp
+                        .json::<serde_json::Value>()
+                        .await
+                        .map_err(|e| format!("解析 {what} 结果失败: {e}"));
+                }
+                let raw = resp.text().await.unwrap_or_default();
+                let detail = extract_detail(&raw);
+                crate::logger::log_warn(&format!("[embed] {what} HTTP {status} | {detail}"));
+                let err = http_failure_err(status, &detail);
+                // 确定性失败：不值得再等，直接把真实原因交给调用方
+                if !is_retryable_err(&err) {
+                    return Err(err);
+                }
+                last_err = err;
+                crate::logger::log_info(&format!(
+                    "[embed] {what} 第 {} 次未就绪，{}ms 后重试",
+                    attempt + 1,
+                    delay_ms
+                ));
+            }
+            Err(e) => {
+                let msg = format!("调用 embedding 服务失败: {e}");
+                crate::logger::log_warn(&format!("[embed] {what} {msg}"));
+                return Err(msg);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(*delay_ms)).await;
+    }
+    Err(last_err)
 }
 
 /// 批量编码：图片路径 → 512 维归一化向量（Chinese-CLIP fp16，双塔 vision 侧）
@@ -1931,38 +2166,39 @@ pub async fn embed_images_batch(
         {
             break;
         }
-        let resp: serde_json::Value = client
-            .post(format!("{}/embed_batch", vcr_base()))
-            .json(&serde_json::json!({ "paths": chunk }))
-            .send()
-            .await
-            .map_err(|e| format!("调用 embedding 服务失败: {e}"))?
-            .json()
-            .await
-            .map_err(|e| format!("解析 embedding 结果失败: {e}"))?;
+        let resp = post_json_with_retry(
+            &client,
+            &format!("{}/embed_batch", vcr_base()),
+            &serde_json::json!({ "paths": chunk }),
+            "embed_batch",
+        )
+        .await?;
 
-        if let Some(items) = resp.get("results").and_then(|v| v.as_array()) {
-            for item in items {
-                let path = item
-                    .get("path")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let embedding = item
-                    .get("embedding")
-                    .and_then(|x| x.as_array())
-                    .map(|a| a.iter().filter_map(|f| f.as_f64()).map(|f| f as f32).collect::<Vec<f32>>());
-                let error = item
-                    .get("error")
-                    .and_then(|x| x.as_str())
-                    .map(|s| s.to_string());
-                if embedding.is_some() {
-                    done += 1;
-                } else {
-                    failed += 1;
-                }
-                results.push(EmbedResult { path, embedding, error });
+        let Some(items) = resp.get("results").and_then(|v| v.as_array()) else {
+            // 2xx 却没有 results：响应结构不对（服务版本不匹配等）。显式报错而不是
+            // 静默返回空列表——否则「索引在库里却搜不到」的根因会被悄悄吞掉。
+            return Err("embedding 响应缺少 results（服务版本过旧？）".to_string());
+        };
+        for item in items {
+            let path = item
+                .get("path")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let embedding = item
+                .get("embedding")
+                .and_then(|x| x.as_array())
+                .map(|a| a.iter().filter_map(|f| f.as_f64()).map(|f| f as f32).collect::<Vec<f32>>());
+            let error = item
+                .get("error")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string());
+            if embedding.is_some() {
+                done += 1;
+            } else {
+                failed += 1;
             }
+            results.push(EmbedResult { path, embedding, error });
         }
 
         let _ = app.emit(
@@ -2005,19 +2241,17 @@ pub async fn embed_text_batch(
     ensure_service_ready(&client, app, false).await?;
     let mut out: Vec<(String, Vec<f32>)> = Vec::with_capacity(texts.len());
     for chunk in texts.chunks(64) {
-        let resp: serde_json::Value = client
-            .post(format!("{}/embed_text_batch", vcr_base()))
-            .json(&serde_json::json!({ "texts": chunk }))
-            .send()
-            .await
-            .map_err(|e| format!("调用 embedding 服务失败: {e}"))?
-            .json()
-            .await
-            .map_err(|e| format!("解析 embedding 结果失败: {e}"))?;
+        let resp = post_json_with_retry(
+            &client,
+            &format!("{}/embed_text_batch", vcr_base()),
+            &serde_json::json!({ "texts": chunk }),
+            "embed_text_batch",
+        )
+        .await?;
         let items = resp
             .get("results")
             .and_then(|x| x.as_array())
-            .ok_or_else(|| "embedding 响应缺少 results".to_string())?;
+            .ok_or_else(|| "embedding 响应缺少 results（服务版本过旧？）".to_string())?;
         for item in items {
             let text = item
                 .get("text")
