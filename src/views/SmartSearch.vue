@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, reactive } from "vue";
+import { computed, onMounted, onUnmounted, ref, reactive } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useRouter } from "vue-router";
@@ -72,29 +72,80 @@ function fileUrl(p: string): string {
 }
 
 /**
- * FEAT-SEM：进入搜索页时后台预热语义服务（fire-and-forget），并把结果显性化。
+ * FEAT-SEM：语义链路状态（**分档**原因 + 重试入口）
  *
  * 预热的价值：重启应用后 VCR 服务未运行、CLIP 会话未加载，若不预热则首次搜索
- * 要么多等数秒、要么静默降级成纯关键词。模型未下载时后端直接返回 false，
- * 不会拉起无谓进程。
+ * 要么多等数秒、要么静默降级成纯关键词。
  *
- * 为什么要把结果存下来（BUG-2026-0920-006）：语义链路失败时后端原只写 stderr，
- * 前端无任何提示，用户看到的就是「以前能搜到、现在搜不到了」却查不出原因。
- * 这里把可用性暴露给模板，不可用时给出显性提示与修复入口。
+ * 为什么要分档（BUG-2026-0920-006/007）：旧实现只拿到
+ * `warmup_semantic_service -> bool`，任何 false 都渲染成同一句「CLIP 模型未下载」；
+ * 而真实原因可能是退避中、服务没起来、或索引与当前模型档位不匹配——用户照提示去
+ * 「下载模型」，当然解决不了问题。现在改读 `semantic_status`，按 code 分档：
+ *   model_missing        模型文件确实没下载        → 引导去「⚙ 性能设置」下载
+ *   service_unreachable  服务没起来 / 模型加载中   → 直接搜索即可触发启动
+ *   backoff              刚失败过一次的短暂退避    → 倒计时后自动重探
+ *   index_model_mismatch 向量在库里但档位不匹配    → 引导去扫描中心重建索引
  *
- * 语义可用性：null=探测中 / true=就绪 / false=不可用（已降级为关键词检索）
+ * ⚠ 关键约定：本状态**不参与**结果区的条件链。语义不可用只影响召回质量，
+ * 绝不该影响结果的展示——此前两者耦合在同一条 v-if 链上，后端明明返回了
+ * 417 条结果，页面上却一条都渲染不出来（BUG-2026-0920-007）。
  */
-const semReady = ref<boolean | null>(null);
+interface SemanticStatus {
+  ready: boolean;
+  code: string;
+  message: string;
+  backoff_remaining_ms: number;
+}
+
+const semStatus = ref<SemanticStatus | null>(null);
+const semRetrying = ref(false);
+/** 退避到期后自动重探的定时器（离开页面必须清掉，否则切页后仍会触发） */
+let semRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearSemTimer() {
+  if (semRetryTimer !== null) {
+    clearTimeout(semRetryTimer);
+    semRetryTimer = null;
+  }
+}
+
+/** 只读探测语义状态；若正处于退避，则在到期后自动重探一次 */
+async function refreshSemanticStatus() {
+  clearSemTimer();
+  try {
+    const s = await invoke<SemanticStatus>("semantic_status");
+    semStatus.value = s;
+    // 退避是**有时限**的：到期自动重探，服务恢复后无需用户任何操作即回归
+    if (!s.ready && s.code === "backoff" && s.backoff_remaining_ms > 0) {
+      semRetryTimer = setTimeout(() => {
+        semRetryTimer = null;
+        refreshSemanticStatus();
+      }, s.backoff_remaining_ms + 500);
+    }
+  } catch {
+    // 探测本身失败：不覆盖已有状态，也不阻塞搜索
+  }
+}
+
+/** 手动重试：先真正拉起服务（warmup），再刷新状态 */
+async function retrySemantic() {
+  if (semRetrying.value) return;
+  semRetrying.value = true;
+  try {
+    await invoke<boolean>("warmup_semantic_service");
+  } catch {
+    /* 失败原因交给随后的状态探测说明 */
+  } finally {
+    await refreshSemanticStatus();
+    semRetrying.value = false;
+  }
+}
 
 onMounted(() => {
-  invoke<boolean>("warmup_semantic_service")
-    .then((ok) => {
-      semReady.value = ok;
-    })
-    .catch(() => {
-      // 预热失败不影响普通关键词搜索（搜索时会再尝试并自动降级）
-      semReady.value = false;
-    });
+  // 预热：真正让服务与 CLIP 会话起来（fire-and-forget，不阻塞首屏）
+  invoke<boolean>("warmup_semantic_service").catch(() => {});
+  // 状态：只读探测，用于给出分档提示
+  refreshSemanticStatus();
   // 人物下拉（精确过滤用）；失败不阻塞搜索
   invoke<PersonInfo[]>("list_persons")
     .then((list) => {
@@ -104,6 +155,8 @@ onMounted(() => {
       persons.value = [];
     });
 });
+
+onUnmounted(clearSemTimer);
 
 /**
  * FEAT-067：以图搜图（选一张照片找相似）
@@ -413,6 +466,21 @@ function showTag(r: SmartHit): string {
       <button class="btn f-reset" @click="resetFilters">清空</button>
     </div>
 
+    <!-- 语义不可用提示（独立区块：与下方结果区的条件链完全解耦，绝不隐藏结果） -->
+    <p v-if="semStatus && !semStatus.ready" class="ss-warn">
+      ⚠ {{ semStatus.message }}
+      <span v-if="semStatus.code === 'model_missing'">
+        前往
+        <router-link to="/scan" class="ss-link">扫描中心 → ⚙ 性能设置</router-link>
+      </span>
+      <span v-else-if="semStatus.code === 'index_model_mismatch'">
+        前往<router-link to="/scan" class="ss-link">扫描中心</router-link>重建
+      </span>
+      <button class="ss-retry" :disabled="semRetrying" @click="retrySemantic">
+        {{ semRetrying ? "重试中…" : "重试" }}
+      </button>
+    </p>
+
     <!-- 加载 -->
     <div v-if="searching" class="ss-loading">正在搜索…</div>
 
@@ -421,14 +489,6 @@ function showTag(r: SmartHit): string {
       <div class="ss-empty-icon">⚠️</div>
       <p class="ss-empty-text">搜索失败：{{ error }}</p>
     </div>
-
-    <!-- 语义不可用提示（显性化降级，避免「悄悄搜不到」） -->
-    <p v-if="semReady === false" class="ss-warn">
-      ⚠ 语义检索未就绪：当前只做关键词匹配。
-      常见原因：CLIP 模型未下载 / 识别服务未就绪（可在
-      <router-link to="/scan" class="ss-link">扫描中心 → ⚙ 性能设置</router-link>
-      查看并下载语义模型），或语义索引尚未构建。
-    </p>
 
     <!-- 未开始搜索：引导输入 -->
     <div v-else-if="!searched" class="ss-empty">
@@ -524,6 +584,26 @@ function showTag(r: SmartHit): string {
   background: rgba(180, 83, 9, 0.1);
   border: 1px solid rgba(180, 83, 9, 0.3);
   color: #b45309;
+}
+/* 提示条内的「重试」：语义通道失败后的一键恢复入口 */
+.ss-retry {
+  margin-left: 8px;
+  padding: 1px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #b45309;
+  background: rgba(180, 83, 9, 0.08);
+  border: 1px solid rgba(180, 83, 9, 0.45);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+.ss-retry:hover:not(:disabled) {
+  background: rgba(180, 83, 9, 0.2);
+}
+.ss-retry:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 .ss-page {
   padding: 20px;

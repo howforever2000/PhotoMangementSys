@@ -413,6 +413,8 @@ pub fn run() {
             content::commands::get_photo_tags,
             content::commands::smart_search,
             content::commands::warmup_semantic_service,
+            // FEAT-SEM：语义链路状态（分档原因，供搜索页给出准确提示与重试入口）
+            content::commands::semantic_status,
             // FEAT-067：以图搜图 + 描述向量（人物编号不入向量，人物走 faces 精确过滤）
             textdesc::commands::smart_search_by_image,
             textdesc::commands::rebuild_desc_index,

@@ -64,7 +64,11 @@ async fn semantic_recall(
             q
         }
         Err(e) => {
-            crate::vision::mark_semantic_down();
+            // 只有确定性失败（模型缺失 / 端口不通 / 组件过期）才进退避；
+            // 「服务未就绪·加载中」这类可重试型失败只跳过本次——否则重启后 CLIP
+            // 首次加载的一次 503 会把之后数十秒内所有搜索都锁成纯关键词，
+            // 表现正是「向量在库里却搜不出来」（BUG-2026-0920-008）
+            crate::vision::note_semantic_failure(&e);
             return Err(e);
         }
     };
@@ -819,7 +823,15 @@ async fn scan_album_embeddings(
     }
 
     // 3. 增量差集：已有向量的照片跳过（重复扫描秒级完成；按当前档位模型隔离）
-    let model = crate::vision::clip_model_id(app).await.unwrap_or_else(|_| "chinese-clip-vit-b16-fp16".to_string());
+    //
+    // ⚠ 这里**绝不能**用一个写死的模型标识兜底。历史上写成
+    // `clip_model_id(app).await.unwrap_or_else(|_| "…-fp16")`：一旦 /health 拿不到
+    // model_id（服务刚起、模型还在加载），向量就会被贴上「fp16」标签落库。若真实
+    // 档位是 fp32，这批向量在查询侧永远匹配不上——**向量在库里，却一条都搜不出来**
+    // （BUG-2026-0921-004）。宁可显式失败，也不要静默写错标。
+    let model = crate::vision::clip_model_id(app)
+        .await
+        .map_err(|e| format!("无法确定当前语义模型档位，已中止向量写入以免写错标签：{e}"))?;
     let all_hashes: Vec<String> = meta.iter().map(|(_, h, _)| h.clone()).collect();
     let existing: std::collections::HashSet<String> = {
         let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
@@ -1716,6 +1728,83 @@ pub mod commands {
                 Err(e)
             }
         }
+    }
+
+    /// FEAT-SEM：语义链路状态（前端据此给出**分档**提示 + 重试入口）
+    ///
+    /// 与 `warmup_semantic_service` 的区别：后者只返回一个 bool，前端拿到 false 只能
+    /// 渲染同一句「CLIP 模型未下载」；而真实原因可能是退避中、服务没起来、或索引与当前
+    /// 模型档位不一致（BUG-2026-0920-006/007）——用户照提示去「下载模型」当然没用。
+    ///
+    /// **只读探测**：不拉起服务、不改动退避状态。否则「看一眼状态」本身就变成一次冷启动。
+    #[tauri::command]
+    pub async fn semantic_status(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<crate::vision::SemanticStatus, String> {
+        use crate::vision::{
+            clip_model_present, clip_ready, semantic_backoff_remaining, SemanticStatus,
+        };
+
+        // 1. 退避窗口（最高优先：退避期内其它探测都无意义）
+        if let Some(rest) = semantic_backoff_remaining() {
+            return Ok(SemanticStatus {
+                ready: false,
+                code: "backoff".into(),
+                message: format!(
+                    "语义服务刚失败过一次，正在约 {} 秒的短暂退避内；本次已自动降级为关键词匹配，稍后会重试。",
+                    rest.as_secs().max(1)
+                ),
+                backoff_remaining_ms: rest.as_millis() as u64,
+            });
+        }
+        // 2. 模型文件缺失（唯一真正需要用户「去下载」的情形）
+        if !clip_model_present() {
+            return Ok(SemanticStatus {
+                ready: false,
+                code: "model_missing".into(),
+                message: "CLIP 语义模型尚未下载，当前只能做关键词匹配。可前往「扫描中心 → ⚙ 性能设置」下载语义模型。".into(),
+                backoff_remaining_ms: 0,
+            });
+        }
+        // 3. 服务未运行 / 模型未加载完成
+        if !clip_ready(&app).await {
+            return Ok(SemanticStatus {
+                ready: false,
+                code: "service_unreachable".into(),
+                message: "语义识别服务未就绪（尚未启动，或正在加载模型）。直接搜索就会触发启动，也可点「重试」立即拉起。".into(),
+                backoff_remaining_ms: 0,
+            });
+        }
+        // 4. 索引与当前档位不一致：向量确实在库里，但没有一条属于当前模型 —— 换档后
+        //    未重建的典型症状，用户看到的就是「向量存在却搜不出任何东西」。
+        let user_id = require_user(&session)?;
+        if let Ok(model) = crate::vision::clip_model_id(&app).await {
+            let stats = {
+                let db = state.0.lock().map_err(|e| format!("{e:?}"))?;
+                db.category_index_stats(user_id, &model).ok()
+            };
+            if let Some(s) = stats {
+                if s.indexed == 0 && s.stale > 0 {
+                    return Ok(SemanticStatus {
+                        ready: false,
+                        code: "index_model_mismatch".into(),
+                        message: format!(
+                            "语义索引与当前模型档位「{model}」不匹配：库中 {} 条向量出自其它档位，无法参与检索。请在「扫描中心」重建语义向量索引。",
+                            s.stale
+                        ),
+                        backoff_remaining_ms: 0,
+                    });
+                }
+            }
+        }
+        Ok(SemanticStatus {
+            ready: true,
+            code: "ready".into(),
+            message: String::new(),
+            backoff_remaining_ms: 0,
+        })
     }
 }
 
