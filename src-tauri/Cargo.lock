@@ -2797,6 +2797,7 @@ dependencies = [
  "kamadak-exif",
  "password-hash",
  "rand_core",
+ "rayon",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",

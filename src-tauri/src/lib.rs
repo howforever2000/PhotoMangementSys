@@ -29,9 +29,11 @@ mod model_dl;
 mod photo_info;
 mod photo_scan;
 mod persons;
+mod scan_perf;
 mod session;
 mod studio;
 mod test_scan;
+mod test_scan_job;
 mod textdesc;
 mod thumbnail;
 mod tone;
@@ -300,6 +302,8 @@ pub fn run() {
                     app.manage(AppState(Mutex::new(database)));
                     app.manage(SessionState(Mutex::new(Some(uid))));
                     app.manage(ScanState::default());
+                    // FEAT-064：扫描分组工具的异步任务状态（进程级，页面切换不丢）
+                    app.manage(test_scan_job::ScanJobState::default());
                 }
                 None => {
                     // token 缺失/失效 → 清理磁盘文件，按未登录启动
@@ -313,6 +317,8 @@ pub fn run() {
                     app.manage(AppState(Mutex::new(database)));
                     app.manage(SessionState(Mutex::new(None)));
                     app.manage(ScanState::default());
+                    // FEAT-064：扫描分组工具的异步任务状态（进程级，页面切换不丢）
+                    app.manage(test_scan_job::ScanJobState::default());
                 }
             }
             Ok(())
@@ -369,6 +375,18 @@ pub fn run() {
             test_scan::commands::scan_test_photos,
             test_scan::commands::resolve_test_places,
             test_scan::commands::organize_test_photos,
+            // FEAT-064：扫描分组工具异步任务（退出页面不中断 + 并行扫描）
+            test_scan::commands::start_scan_job,
+            test_scan::commands::start_resolve_job,
+            test_scan::commands::start_organize_job,
+            test_scan::commands::get_scan_job,
+            test_scan::commands::cancel_scan_job,
+            test_scan::commands::clear_scan_job,
+            test_scan::commands::reset_scan_job,
+            // FEAT-064：文件扫描并行度设置（CPU 拓扑 + 推荐线程数 + 实测校准）
+            vcr_settings::get_scan_perf,
+            vcr_settings::set_scan_perf,
+            vcr_settings::calibrate_scan_threads,
             scan_album_tones,
             get_photo_info,
             delete_photo_records,

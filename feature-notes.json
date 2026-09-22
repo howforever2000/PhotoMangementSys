@@ -2149,7 +2149,30 @@
       "tests": ["npx vue-tsc --noEmit：0 错误（2026-09-19 复跑）", "cargo test --lib：108 passed / 0 failed / 2 ignored（同上复跑）"],
       "created_at": "2026-09-19T23:40:00+08:00",
       "updated_at": "2026-09-19T23:40:00+08:00"
+    },
+    {
+      "id": "FEAT-069",
+      "name": "相册扫描分组工具 · 后台异步任务 + 多线程扫描 + 按相册实测推荐线程数",
+      "status": "done",
+      "module": "test_scan.rs / test_scan_job.rs / scan_perf.rs / scanTask.ts / TestScan.vue / ScanPerfSettings.vue",
+      "description": "修复两个用户反馈问题：①界面不能异步扫描、退出页面任务消失；②新增右上角「⚙ 性能设置」可设扫描核数。① 任务状态从「前端页面组件」提升到「后端进程级 ScanJobState」，命令改为「启动即返回」（start_scan_job / start_resolve_job / start_organize_job + get_scan_job / cancel_scan_job / clear_scan_job），前端用 Pinia store（useScanTaskStore）+ test-scan-progress 事件（20Hz 节流）与 700ms 兜底轮询双通道维持视图，页面卸载/路由切换不中断，重进页面用 get_scan_job 快照即刻恢复进度与结果。② 扫描走 rayon 线程池并行（scan_test_photos_parallel / _cancellable），线程数可在「⚙ 性能设置」调整并持久化；推荐值由 scan_perf.rs 按 CPU 拓扑（物理核/逻辑核/大小核）+ 磁盘类型（SSD/HDD）实际计算，并支持「按当前相册实测」（calibrate_scan_threads）——用该目录真实文件分层抽样在多档位实测，给出最优线程。",
+      "related_files": ["src-tauri/src/test_scan_job.rs", "src-tauri/src/scan_perf.rs", "src-tauri/src/test_scan.rs", "src-tauri/src/vcr_settings.rs", "src-tauri/src/lib.rs", "src-tauri/Cargo.toml", "src/stores/scanTask.ts", "src/components/ScanPerfSettings.vue", "src/views/TestScan.vue", "src/types/photo.ts"],
+      "keywords": ["异步扫描", "后台任务", "退出不消失", "任务恢复", "多线程", "rayon", "并行扫描", "线程数设置", "性能设置", "实测推荐", "CPU 拓扑", "物理核", "磁盘类型", "ScanJobState", "useScanTaskStore", "calibrate_scan_threads", "相册扫描分组工具"],
+      "implementation": {
+        "任务状态机": "test_scan_job.rs：ScanJobState(Arc<Mutex<JobInner>>) 托管在 tauri::State（进程级，页面卸载不影响）；JobSnapshot 为前端渲染的唯一依据（status/phase/dir/threads/progress/photo_count/place_count/organize/error/时间戳）；job_id 代次号防止旧任务收尾覆盖新任务；进度单调递增（max 保护）避免并行乱序回退；同一时刻只允许一个任务（扫描/解析/移动共用一个槽位，三者操作同一批文件）",
+        "Arc 化设计": "ScanJobState 内部用 Arc<Mutex<..>> 而非裸 Mutex —— 任务体跑在 spawn_blocking 线程上，需要一份可 move 进 'static 闭包的句柄（tauri::State 本身带借用生命周期，不能被 move）；克隆 ScanJobState 只是克隆 Arc，代价可忽略",
+        "启动即返回": "命令 await 的是「线程启动」而非「任务完成」：spawn_blocking 起线程后立即返回快照。这是「异步扫描 + 退出不消失」的关键——命令不阻塞，任务归属进程而非页面",
+        "进度双通道": "回调里同时「写状态（供恢复，每次更新）」+「发事件（供实时，节流 20Hz）」；事件节流是因为万张相册逐张 emit 会压垮 WebView 事件循环；但「最后一帧」（current==total）强制发送，避免进度条停在 99% 不动的经典问题",
+        "并行扫描": "collect_image_files 先枚举文件（拿到 total 作进度分母）→ rayon 线程池并行解析 EXIF → 结果按原索引归位（保证顺序稳定，与串行结果逐字节一致）；线程数 clamp 到 min(threads, 文件数)；用 rayon 而非手写线程池，工作窃取调度对「大小文件混合」负载更均衡",
+        "取消语义": "scan_test_photos_cancellable / resolve_ / organize_ 全链路接受 Arc<AtomicBool> 取消标记；取消后返回**已处理部分**（而非报错），用户点停止能看到「扫到一半」的数据；rayon 无内建中断，worker 先查标记 → 置位即返回 None → collect 后过滤，这是最轻量的收敛方式",
+        "线程数推荐": "scan_perf.rs：物理核 = 逻辑核/2（奇数逻辑核或 Pentium/Celeron/Atom/9400F 等无超线程型号则不折半）；推荐 = 物理核 + (逻辑核-物理核)×2/5，封顶 12（8 线程后收益递减）；机械盘（HDD）压到 ≤4 线程（随机读寻道敏感，多线程反而变慢），下限 2；磁盘类型用 PowerShell Get-PhysicalDisk 取 MediaType；落盘 app_data_dir/scan_threads.json（与 Python VCR 的 current_threads.json 分开）",
+        "按相册实测": "calibrate_scan_threads：按文件大小分层抽样（大/中/小各约 70 张，避免「同一次连拍大小雷同」的偏样本）→ 在 6~7 个档位（1/2/物理核/半物理核/推荐/推荐×1.5/硬上限）各预热 1 轮 + 正式 2 轮取最小值 → 「最优」取**达峰值吞吐 95% 的最小线程数**（峰值档常只快不到 5% 却多占一倍 CPU，性价比低）；返回 reason 字符串说明推荐依据，前端展示各档位吞吐对比条 + 「采用最优/采用峰值」按钮"
+      },
+      "highlights": ["任务归属进程（后端 ScanJobState + 前端 store），页面切换/卸载/重进都能续上——彻底消除「退出后任务消失」", "进度双通道（事件 20Hz 实时 + 轮询 700ms 兜底）既流畅又不会因事件丢帧而卡住；终态由轮询确定性收敛", "并行扫描结果与串行**逐字节一致**（有测试断言把关），并行化不改变语义", "取消返回已处理部分而非报错，破坏性操作（组织移动）中途停止也不会「白干」", "推荐线程数基于真实硬件画像（物理核 + 超线程折扣 + 盘型约束）而非简单等于逻辑核数——机械盘上直接拉满线程会变慢", "「按当前相册实测」用真实文件分层抽样实测，比纯拓扑推断更贴合该相册（大图/小图、SSD/HDD 都影响结论）", "「最优」定义为达峰值 95% 的最小档，兼顾速度与 CPU 占用（不盲目追峰值）", "扫描线程数与 VCR 推理线程数**刻意分离**：前者 IO 密集受盘型约束，后者纯计算取物理核，共用会互相误导"],
+      "tests": ["cargo test --lib：121 passed / 0 failed / 2 ignored（新增 8 个测试：并行一致性、取消返回部分、线程数 clamp、推荐值区间、HDD 限流、无超线程不加成、单核下限、档位列表）", "npm run build（vue-tsc --noEmit && vite build）：零错误", "cargo build --lib：通过（34.15s）", "并行一致性测试 parallel_scan_matches_serial：2/4/8 线程与串行结果的文件名/路径/时间逐项比对 + 进度回调必须覆盖到最后一张", "推荐值测试捕获真实缺陷：physical_cores 会读注册表，测试无法构造期望值 → 拆出纯函数 physical_cores_for 后三分支（奇数核/普通型号/无超线程型号）全覆盖"],
+      "created_at": "2026-09-21T16:30:00+08:00",
+      "updated_at": "2026-09-21T16:30:00+08:00"
     }
   ],
-  "updated": "2026-09-19T23:40:00+08:00"
+  "updated": "2026-09-21T16:30:00+08:00"
 }
