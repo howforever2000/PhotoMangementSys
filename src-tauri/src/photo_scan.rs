@@ -65,31 +65,58 @@ pub struct PhotoExif {
 /// - 单张图片打开/EXIF 读取失败不影响整体，该图片字段置 `None` 照常返回
 /// - 结果按文件名升序排列，便于人工核对
 pub fn scan_album_photos(dir: &str) -> Result<Vec<PhotoExif>, String> {
-    let root = Path::new(dir);
-    if !root.is_dir() {
-        return Err(format!("路径不存在或不是文件夹: {dir}"));
-    }
+    let paths = crate::vision::walk_image_paths(dir)?;
+    Ok(read_exif_paths(&paths))
+}
 
-    let mut photos: Vec<PhotoExif> = Vec::new();
-    for entry in walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
-    {
-        let Ok(e) = entry else { continue };
-        if !e.file_type().is_file() {
-            continue;
-        }
-        let name = e.file_name().to_string_lossy().to_string();
-        if !is_image_file(&name) {
-            continue;
-        }
-        let path = e.into_path();
-        photos.push(read_photo_exif(&path, &name));
-    }
-
+/// 对**已收集好的路径列表**读 EXIF（避免重复遍历目录）。
+///
+/// 遍历规则由 `vision::walk_image_paths` 统一负责；本函数只做「逐张读取 + 排序」。
+pub fn read_exif_paths(paths: &[std::path::PathBuf]) -> Vec<PhotoExif> {
+    let mut photos: Vec<PhotoExif> = paths
+        .iter()
+        .map(|p| {
+            let name = p
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            read_photo_exif(p, &name)
+        })
+        .collect();
     photos.sort_by(|a, b| a.file_name.cmp(&b.file_name));
-    Ok(photos)
+    photos
+}
+
+/// 多线程版：按 `threads` 切分路径列表并行读 EXIF。
+///
+/// 为什么值得多线程：EXIF 读取是「打开文件 → 解析容器」的**延迟敏感**任务
+/// （每次都是一串随机 IO + 元数据解析），单线程时 CPU 大量时间花在等 IO 上。
+/// EXIF 完全在本进程内、无共享瓶颈，多线程能真实摊薄 IO 延迟。
+///
+/// 线程数取 `threads.max(1)`，并按「chunk 数 = 线程数」均分；结果仍按文件名排序，
+/// 与单线程版**逐字段一致**（排序在合并后统一做，不依赖线程完成顺序）。
+pub fn read_exif_paths_parallel(paths: &[std::path::PathBuf], threads: usize) -> Vec<PhotoExif> {
+    let n_threads = threads.max(1);
+    if paths.len() <= 1 || n_threads <= 1 {
+        return read_exif_paths(paths);
+    }
+    // 均分：每块至少 1 张，避免路径数 < 线程数时产生空块
+    let chunk_size = paths.len().div_ceil(n_threads).max(1);
+    let chunks: Vec<Vec<std::path::PathBuf>> = paths
+        .chunks(chunk_size)
+        .map(|c| c.to_vec())
+        .collect();
+    let handles: Vec<_> = chunks
+        .into_iter()
+        .map(|chunk| std::thread::spawn(move || read_exif_paths(&chunk)))
+        .collect();
+    let mut out: Vec<PhotoExif> = handles
+        .into_iter()
+        .filter_map(|h| h.join().ok())
+        .flatten()
+        .collect();
+    out.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    out
 }
 
 /// 在扫描基础上补充反向地理编码（联网，每张有坐标的照片 ~1.1s 限速）

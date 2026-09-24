@@ -21,5 +21,13 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"],
+
+  /*
+   * 测试文件用 Node 内置 test runner 跑（`node --experimental-strip-types --test`），
+   * 依赖 `node:test` / `node:assert` 等 Node 内置模块，而应用侧的 tsconfig
+   * 只有 DOM lib、没有 @types/node —— 混在一起会报 TS2307。
+   * 所以把 `*.test.ts` 排除出应用类型检查，它们由 tsconfig.test.json 单独覆盖。
+   */
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

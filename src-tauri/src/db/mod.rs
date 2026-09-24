@@ -13,8 +13,8 @@ pub mod embedding;
 pub mod thumb_cache;
 pub use category::{CategoryIndexStats, CategoryOverviewRow, CategoryPhotoRow};
 pub use content::{
-    AlbumContentRow, CategoryGroupRow, ContentFilters, ContentSearchHit, LocationGroupRow,
-    PhotoContentRecord, SmartHit,
+    AlbumContentRow, CategoryGroupRow, ContentFilters, ContentSearchHit, FieldGroups,
+    LocationGroupRow, PhotoContentRecord, SmartHit,
 };
 pub use embedding::EmbeddingVersion;
 pub use thumb_cache::ThumbCacheRecord;

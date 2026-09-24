@@ -70,6 +70,45 @@ pub struct PhotoContentRecord {
     pub avg_luma: Option<f64>,
     pub lat: Option<f64>,
     pub lon: Option<f64>,
+    /// **P2**：本次写入声明「我产出了哪些字段组」。
+    ///
+    /// 为什么需要它：同一个 \photo_hash\ 会被两条互不相同的扫描路径写入 ——
+    /// AI 分支（category/label/人物/检索串）与非 AI 分支（EXIF/影调）。
+    /// 每条分支只该覆盖**自己产出**的字段，另一边的成果必须原样保留。
+    ///
+    /// 「哪些字段属于本次产出」不能靠「值是否为空」推断，因为**空值有两种含义**：
+    ///   ① 本次没做这件事（如没勾影调）→ 必须保留旧值
+    ///   ② 本次做了、结果就是空（如 AI 重扫这张确实没识别出任何东西）→ 必须写空
+    /// 用 \COALESCE(excluded.x, 旧值)\ 会把 ② 误判成 ①，导致**旧标签永远清不掉**
+    /// （用户即便勾「全量覆盖」重扫也无效，是难以解释的顽固脏数据）。
+    ///
+    /// 因此改为显式声明：本分支负责的字段组，一律**直接覆盖**（含写空）；
+    /// 不负责的字段组，SQL 侧用 COALESCE 保留旧值。
+    pub owns: FieldGroups,
+}
+
+/// 写入方对字段组的所有权声明（见 [\PhotoContentRecord::owns\]）。
+///
+/// 三组字段分别由不同扫描分支产出，互相独立：
+/// - \i\：AI/人物识别的产物（category / label / top3 / 人物 / content 检索串）
+/// - \exif\：EXIF 解析的产物（拍摄时间 / 地点 / 快门 / ISO / 光圈 / 焦段 / GPS）
+/// - \	one\：影调分析的产物（tone_type / avg_luma）
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FieldGroups {
+    pub ai: bool,
+    pub exif: bool,
+    pub tone: bool,
+}
+
+impl FieldGroups {
+    /// AI 分支：产出 AI 字段；EXIF / 影调视本次勾选情况由调用方补齐
+    pub const AI: Self = Self { ai: true, exif: false, tone: false };
+    /// AI + EXIF（AI 扫描路径顺带读了 EXIF，但不做影调）
+    pub const AI_EXIF: Self = Self { ai: true, exif: true, tone: false };
+    /// 非 AI 分支（EXIF + 影调）
+    pub const EXIF_TONE: Self = Self { ai: false, exif: true, tone: true };
+    /// 全量写入（所有字段组都归本次所有 → 全部直接覆盖，含写空）
+    pub const ALL: Self = Self { ai: true, exif: true, tone: true };
 }
 
 /// 内容搜索结果（命中照片 + 所属相册信息，供前端跳转）
@@ -1369,18 +1408,62 @@ fn upsert_one(tx: &Transaction, rec: &PhotoContentRecord) -> Result<(), DbError>
                  ?22,?23,?24,?25,?26,?27,?28)
          ON CONFLICT(photo_hash) DO UPDATE SET
              path=excluded.path, parent_dir=excluded.parent_dir, album_id=excluded.album_id,
-             content=excluded.content, category=excluded.category, sub_category=excluded.sub_category,
-             label=excluded.label, confidence=excluded.confidence, top3_json=excluded.top3_json,
-             person_ids=excluded.person_ids, person_count=excluded.person_count,
-             shoot_time=excluded.shoot_time, location=excluded.location,
-             shutter_speed=excluded.shutter_speed, iso=excluded.iso, aperture=excluded.aperture,
-             focal_length=excluded.focal_length, lat=excluded.lat, lon=excluded.lon,
-             iso_num=excluded.iso_num, focal_num=excluded.focal_num,
-             aperture_num=excluded.aperture_num, shutter_num=excluded.shutter_num,
+             -- P2：按「谁产出谁负责」分组覆盖，见 `PhotoContentRecord::owns` 的长注释。
+             --
+             -- 规则：**本分支拥有的字段组 → 直接覆盖（含写空）；不拥有的 → COALESCE 保留旧值。**
+             --
+             -- 为什么不能用「值为空就保留」这种统一写法：空值有两种含义 ——
+             --   ① 本次没做这件事 → 要保留旧值
+             --   ② 本次做了、结果就是空（AI 重扫确实没识别出东西）→ 要写空
+             -- 统一 COALESCE 会把 ② 误判成 ①，旧标签永远清不掉（勾「全量覆盖」也无效）。
+             --
+             -- 参数位：?29=own_ai ?30=own_exif ?31=own_tone
+             content=CASE WHEN ?29 THEN excluded.content
+                         ELSE COALESCE(NULLIF(excluded.content, ''), photo_content_scan.content) END,
+             category=CASE WHEN ?29 THEN excluded.category
+                           ELSE COALESCE(excluded.category, photo_content_scan.category) END,
+             sub_category=CASE WHEN ?29 THEN excluded.sub_category
+                               ELSE COALESCE(excluded.sub_category, photo_content_scan.sub_category) END,
+             label=CASE WHEN ?29 THEN excluded.label
+                        ELSE COALESCE(excluded.label, photo_content_scan.label) END,
+             confidence=CASE WHEN ?29 THEN excluded.confidence
+                             ELSE COALESCE(excluded.confidence, photo_content_scan.confidence) END,
+             top3_json=CASE WHEN ?29 THEN excluded.top3_json
+                            ELSE COALESCE(excluded.top3_json, photo_content_scan.top3_json) END,
+             person_ids=CASE WHEN ?29 THEN excluded.person_ids
+                             ELSE COALESCE(excluded.person_ids, photo_content_scan.person_ids) END,
+             person_count=CASE WHEN ?29 THEN excluded.person_count
+                               ELSE MAX(excluded.person_count, photo_content_scan.person_count) END,
+             shoot_time=CASE WHEN ?30 THEN excluded.shoot_time
+                             ELSE COALESCE(excluded.shoot_time, photo_content_scan.shoot_time) END,
+             location=CASE WHEN ?30 THEN excluded.location
+                           ELSE COALESCE(excluded.location, photo_content_scan.location) END,
+             shutter_speed=CASE WHEN ?30 THEN excluded.shutter_speed
+                                ELSE COALESCE(excluded.shutter_speed, photo_content_scan.shutter_speed) END,
+             iso=CASE WHEN ?30 THEN excluded.iso
+                      ELSE COALESCE(excluded.iso, photo_content_scan.iso) END,
+             aperture=CASE WHEN ?30 THEN excluded.aperture
+                           ELSE COALESCE(excluded.aperture, photo_content_scan.aperture) END,
+             focal_length=CASE WHEN ?30 THEN excluded.focal_length
+                               ELSE COALESCE(excluded.focal_length, photo_content_scan.focal_length) END,
+             lat=CASE WHEN ?30 THEN excluded.lat
+                      ELSE COALESCE(excluded.lat, photo_content_scan.lat) END,
+             lon=CASE WHEN ?30 THEN excluded.lon
+                      ELSE COALESCE(excluded.lon, photo_content_scan.lon) END,
+             iso_num=CASE WHEN ?30 THEN excluded.iso_num
+                          ELSE COALESCE(excluded.iso_num, photo_content_scan.iso_num) END,
+             focal_num=CASE WHEN ?30 THEN excluded.focal_num
+                            ELSE COALESCE(excluded.focal_num, photo_content_scan.focal_num) END,
+             aperture_num=CASE WHEN ?30 THEN excluded.aperture_num
+                               ELSE COALESCE(excluded.aperture_num, photo_content_scan.aperture_num) END,
+             shutter_num=CASE WHEN ?30 THEN excluded.shutter_num
+                              ELSE COALESCE(excluded.shutter_num, photo_content_scan.shutter_num) END,
              -- FEAT-SEM 顺带修复：组合扫描未勾影调时 tone 字段为 None，
              -- 不再覆盖已有影调为 NULL（勾影调时以最新扫描为准，行为不变）
-             tone_type=COALESCE(excluded.tone_type, photo_content_scan.tone_type),
-             avg_luma=COALESCE(excluded.avg_luma, photo_content_scan.avg_luma),
+             tone_type=CASE WHEN ?31 THEN excluded.tone_type
+                            ELSE COALESCE(excluded.tone_type, photo_content_scan.tone_type) END,
+             avg_luma=CASE WHEN ?31 THEN excluded.avg_luma
+                           ELSE COALESCE(excluded.avg_luma, photo_content_scan.avg_luma) END,
              scanned_at=excluded.scanned_at",
         params![
             rec.photo_hash, rec.path, rec.parent_dir, rec.album_id, rec.user_id, rec.content,
@@ -1391,6 +1474,9 @@ fn upsert_one(tx: &Transaction, rec: &PhotoContentRecord) -> Result<(), DbError>
             rec.iso_num, rec.focal_num, rec.aperture_num, rec.shutter_num,
             rec.tone_type, rec.avg_luma,
             Database::now_secs(),
+            rec.owns.ai,
+            rec.owns.exif,
+            rec.owns.tone,
         ],
     )?;
     Ok(())
@@ -1438,7 +1524,146 @@ mod tests {
             avg_luma: Some(72.0),
             lat: Some(31.921282),
             lon: Some(107.6375),
+            // 测试夹具默认「全字段组归本次所有」= 直接覆盖语义，
+            // 与引入 `owns` 之前的旧行为一致（既有测试无需逐条改写）。
+            owns: FieldGroups::ALL,
         }
+    }
+
+    /// P2 核心安全网：**非 AI 分支的落库不得抹掉 AI 分支的成果**。
+    ///
+    /// 真实场景复现：用户先勾「人物识别」扫了一遍（照片有了 category/label/人物/
+    /// 检索串），之后只勾「影调」补扫一次。此时非 AI 分支写出的记录里 AI 字段
+    /// 全是 None —— 若 SQL 是 `label=excluded.label` 直接覆盖，这张照片的标签
+    /// 会被清成 NULL，用户视角就是「补扫一次，标签全没了」，且没有任何报错。
+    ///
+    /// 这条测试同时锁住 `content`（检索串）：EXIF-only 扫描算不出检索串，
+    /// 若被空串覆盖，「以图搜文」会静默失效。
+    #[test]
+    fn p2_non_ai_upsert_preserves_ai_fields() {
+        let db = mem_db();
+        // 第一次：AI 分支写入（含全部 AI 字段）
+        let ai_rec = sample_rec("HASH1", "/x/a.jpg");
+        db.upsert_photo_content(&ai_rec).unwrap();
+        // 第二次：非 AI 分支补扫（只带 EXIF/影调，AI 字段按 P2 纪律留空）
+        // `owns` 是关键：声明「本分支只产出 EXIF + 影调」，
+        // AI 字段组交给 COALESCE 保护 —— 这正是被测的行为。
+        let exif_only = PhotoContentRecord {
+            content: String::new(),
+            category: None,
+            sub_category: None,
+            label: None,
+            confidence: None,
+            top3_json: None,
+            person_ids: None,
+            person_count: 0,
+            tone_type: Some("high-key".into()),
+            avg_luma: Some(180.0),
+            owns: FieldGroups::EXIF_TONE,
+            ..ai_rec.clone()
+        };
+        db.upsert_photo_content(&exif_only).unwrap();
+
+        // 仍是同一行
+        let n: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM photo_content_scan WHERE photo_hash='HASH1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "同哈希不得新增行");
+
+        // AI 字段必须原样保留
+        let (cat, label, conf, pids, pcount, content): (
+            Option<String>,
+            Option<String>,
+            Option<f64>,
+            Option<String>,
+            i64,
+            String,
+        ) = db
+            .conn
+            .query_row(
+                "SELECT category, label, confidence, person_ids, person_count, content
+                 FROM photo_content_scan WHERE photo_hash='HASH1'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(cat.as_deref(), Some("animal"), "非 AI 补扫不得清空 category");
+        assert_eq!(label.as_deref(), Some("golden retriever"), "不得清空 label");
+        assert_eq!(conf, Some(0.9), "不得清空 confidence");
+        assert_eq!(pids.as_deref(), Some(r#"["P001"]"#), "不得清空 person_ids");
+        assert_eq!(pcount, 1, "person_count=0 视为无产出，不得清零");
+        assert!(content.contains("狗"), "检索串不得被空串覆盖（否则以图搜文失效）");
+
+        // 本次真正产出的字段照常生效
+        let (tone, luma): (Option<String>, Option<f64>) = db
+            .conn
+            .query_row(
+                "SELECT tone_type, avg_luma FROM photo_content_scan WHERE photo_hash='HASH1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tone.as_deref(), Some("high-key"), "本次产出的影调应生效");
+        assert_eq!(luma, Some(180.0));
+    }
+
+    /// P2 反向安全网：**声明了所有权就必须真的写空**，不能被 COALESCE 挡住。
+    ///
+    /// 与 `p2_non_ai_upsert_preserves_ai_fields` 互为反面，二者缺一不可：
+    /// - 上一条锁「没产出 → 别动旧值」（COALESCE 该生效时生效）
+    /// - 本条锁「产出了但是空 → 必须写空」（COALESCE 不该生效时别生效）
+    ///
+    /// 为什么必须有：COALESCE 无法区分「本次没做这件事」与「本次做了但结果为空」。
+    /// 若图省事统一用 `COALESCE(excluded.x, 旧值)`，第二条语义就永久丢失 ——
+    /// 用户重扫发现 AI 没识别出任何标签（照片是纯风景、没人没物体），
+    /// 期望旧标签被清掉，实际却**一直保留**，且勾「全量覆盖」也无效。
+    #[test]
+    fn p2_owned_empty_fields_really_overwrite() {
+        let db = mem_db();
+        // 第一次：AI 扫描识别出一堆标签
+        db.upsert_photo_content(&sample_rec("HASH1", "/x/a.jpg"))
+            .unwrap();
+        // 第二次：全量重扫，本次 AI 也跑了，但什么都没识别出来
+        // → owns 声明 AI 归本次所有，字段为 None 表示「结果就是空」
+        let empty_ai = PhotoContentRecord {
+            content: String::new(),
+            category: None,
+            sub_category: None,
+            label: None,
+            confidence: None,
+            top3_json: None,
+            person_ids: None,
+            person_count: 0,
+            owns: FieldGroups::ALL,
+            ..sample_rec("HASH1", "/x/a.jpg")
+        };
+        db.upsert_photo_content(&empty_ai).unwrap();
+
+        let (cat, label, content): (Option<String>, Option<String>, String) = db
+            .conn
+            .query_row(
+                "SELECT category, label, content FROM photo_content_scan WHERE photo_hash='HASH1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(cat, None, "声明拥有 → 空结果必须真的写空");
+        assert_eq!(label, None, "声明拥有 → 空结果必须真的写空");
+        assert_eq!(content, "", "声明拥有 → 空检索串必须真的写空");
     }
 
     #[test]
@@ -1467,10 +1692,12 @@ mod tests {
         let r1 = sample_rec("HASH1", "/x/a.jpg"); // tone: low-key / 72.0
         db.upsert_photo_content(&r1).unwrap();
         // 二次扫描：影调未勾选 → tone 字段 None；AI label 变化照常覆盖
+        // `owns.tone=false` 才是「本轮没做影调」的正确表达（不是「做了但结果为空」）
         let r2 = PhotoContentRecord {
             label: Some("new-label".into()),
             tone_type: None,
             avg_luma: None,
+            owns: FieldGroups { ai: true, exif: true, tone: false },
             ..r1
         };
         db.upsert_photo_content(&r2).unwrap();
@@ -1487,10 +1714,11 @@ mod tests {
             .unwrap();
         assert_eq!(tone.as_deref(), Some("low-key"), "未勾影调应保留原值");
         assert_eq!(luma, Some(72.0), "未勾影调应保留原亮度");
-        // 三次扫描：重新勾影调 → 以最新扫描值为准
+        // 三次扫描：重新勾影调 → 以最新扫描值为准（owns.tone 回到 true）
         let r3 = PhotoContentRecord {
             tone_type: Some("high-key".into()),
             avg_luma: Some(200.0),
+            owns: FieldGroups { ai: true, exif: true, tone: true },
             ..r2
         };
         db.upsert_photo_content(&r3).unwrap();

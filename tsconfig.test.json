@@ -1,0 +1,29 @@
+{
+  /*
+   * 纯前端逻辑单测（Node 内置 test runner）的独立类型配置。
+   *
+   * 为什么不并入 tsconfig.json：应用侧是 DOM 环境（lib 只有 ES2020/DOM），
+   * 而测试要在 Node 里跑、用 `node:test` / `node:assert/strict`。
+   * 两者的全局环境不同，混在一起要么给应用引入 @types/node，
+   * 要么让测试报 TS2307。分开配置各管一摊最干净。
+   *
+   * 运行：
+   *   node --experimental-strip-types --test src/utils/scanImport.test.ts
+   * 类型检查：
+   *   npx tsc -p tsconfig.test.json --noEmit
+   */
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ES2022"],
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.test.ts"]
+}

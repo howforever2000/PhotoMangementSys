@@ -416,11 +416,32 @@ pub async fn classify_paths(
 
 /// 收集目录内全部图片路径（与 photo_scan/tone 一致的遍历规则）
 pub fn collect_images(dir: &str) -> Result<Vec<String>, String> {
+    Ok(walk_image_paths(dir)?
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect())
+}
+
+/// 唯一的目录遍历入口（T10）：一次 `walkdir` 产出全部图片路径，供各分支复用。
+///
+/// 背景：`scan_album_combined` 里 AI 识别（本模块）、影调（`tone.rs`）、EXIF
+/// （`photo_scan.rs`）以及语义向量分支各自独立遍历同一目录 —— 同一棵目录树被走了
+/// 4 遍。在机械盘 / 网络盘上，每次遍历都是一串随机 IO，重复遍历是纯粹的浪费。
+///
+/// 遍历规则必须与历史各分支保持一致（否则某分支会「看不到」某些图）：
+/// - 递归子目录；
+/// - 跳过隐藏文件与隐藏目录（`filter_entry` 只看文件名首字符）；
+/// - 只收 `IMAGE_EXTS` 白名单扩展名（大小写不敏感）；
+/// - 结果**已排序**（历史各分支都会 sort，提前排好可省多次排序）。
+///
+/// 调用方拿到 `Vec<PathBuf>` 后各自 `filter` 出关心的子集即可；只要不修改遍历规则，
+/// 返回值与各自单独调用 `collect_images` / `tone.rs` / `photo_scan.rs` 完全等价。
+pub fn walk_image_paths(dir: &str) -> Result<Vec<std::path::PathBuf>, String> {
     let root = Path::new(dir);
     if !root.is_dir() {
         return Err(format!("路径不存在或不是文件夹: {dir}"));
     }
-    let mut photos: Vec<String> = Vec::new();
+    let mut photos: Vec<std::path::PathBuf> = Vec::new();
     for entry in walkdir::WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -433,7 +454,7 @@ pub fn collect_images(dir: &str) -> Result<Vec<String>, String> {
         let name = e.file_name().to_string_lossy().to_string();
         let lower = name.to_lowercase();
         if IMAGE_EXTS.iter().any(|ext| lower.ends_with(&format!(".{ext}"))) {
-            photos.push(e.into_path().to_string_lossy().into_owned());
+            photos.push(e.into_path());
         }
     }
     photos.sort();

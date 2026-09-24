@@ -38,12 +38,21 @@ export interface GlobalScanItem {
   albumId: number;
   albumName: string;
   status: GlobalScanItemStatus;
-  /** 本次扫描报告：识别总张数 */
+  /**
+   * 该相册目录内的照片总数
+   *
+   * ⚠️ BUG-2026-0922-008：早期版本把「本次差集大小」填进来，
+   * 增量模式下已入库相册全被渲染成「共 0 张」。现在它稳定表示「相册有多大」。
+   */
   total: number;
   /** 成功写入/更新的记录数（入库张数） */
   written: number;
   /** 识别失败张数 */
   failed: number;
+  /** 本次真正处理的张数（= 后端差集大小；增量模式下常远小于 total） */
+  processed: number;
+  /** 因已入库且未变化而跳过的张数 */
+  skipped: number;
   /** 失败/异常信息 */
   error: string;
 }
@@ -629,6 +638,8 @@ export const useContentStore = defineStore("content", {
         total: 0,
         written: 0,
         failed: 0,
+        processed: 0,
+        skipped: 0,
         error: "",
       }));
       job.currentIndex = -1;
@@ -677,6 +688,10 @@ export const useContentStore = defineStore("content", {
             item.total = outcome.report.total;
             item.written = outcome.report.written;
             item.failed = outcome.report.failed;
+            // 旧后端可能不带这两个字段（`#[serde(default)]` 只保证序列化侧可省略，
+            // 反序列化仍以 Rust 结构体为准；这里用 `??` 兜底以防灰度不一致）
+            item.processed = outcome.report.processed ?? 0;
+            item.skipped = outcome.report.skipped ?? 0;
             item.status = "done";
           } catch (e) {
             if (job.scanId !== myId) return;

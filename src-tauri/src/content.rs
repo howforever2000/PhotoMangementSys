@@ -220,14 +220,61 @@ pub struct ContentScanProgress {
 }
 
 /// 一次内容扫描的报告
+///
+/// ⚠️ 字段口径（BUG-2026-0922-008）：
+///
+/// `total` 曾经是「本次处理/识别的张数」。增量差集引入后，这个含义在
+/// 「已入库相册」上会退化成 0（差集为空），而前端表格按「共 N 张」展示 ——
+/// 于是全局扫描完毕后，十几个明明有照片的相册全部显示「共 0 张」。
+///
+/// 现在把三件事拆开，各自只有一个含义，**不再复用**：
+/// - `total`：**该相册目录内的图片总数**（不随增量模式变化，是稳定的「相册有多大」）
+/// - `processed`：本次真正处理（识别/解码/写库）的张数 = 差集大小
+/// - `skipped`：因已入库且文件未变化而跳过的张数
+///
+/// 恒等式（增量与全量均成立）：`total == processed + skipped`
+///
+/// 保留 `total` 为「目录总数」而非改名，是为了不破坏既有前端消费点；
+/// `skipped` 用 `#[serde(default)]` 以兼容仅传三个字段的旧载荷。
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanReport {
-    /// 本次扫描识别到的图片数（含识别失败）
+    /// 该相册目录内的图片总数（**不是**本次处理数）
     pub total: usize,
     /// 成功写入/更新的记录数
     pub written: usize,
     /// 识别失败（未落库）数
     pub failed: usize,
+    /// 本次真正处理（进入识别/解码/写库）的张数 = 增量差集大小
+    pub processed: usize,
+    /// 因已入库且文件未变化而跳过的张数
+    #[serde(default)]
+    pub skipped: usize,
+}
+
+impl ScanReport {
+    /// 由「相册目录总数 + 本次处理数」构造报告（其余字段各自传入）。
+    ///
+    /// 抽成构造函数而不是让每个分支各自手写字面量：上一轮的 bug 正是
+    /// 「AI 分支填差集、非 AI 分支填写入数」这类**各写各的**造成的语义漂移。
+    /// 统一入口后，`total`/`processed`/`skipped` 的三角关系只有一处实现，
+    /// 单测可以直接断言恒等式（见 `scan_report_identity_holds`）。
+    pub(crate) fn new(
+        dir_total: usize,
+        processed: usize,
+        written: usize,
+        failed: usize,
+    ) -> ScanReport {
+        // clamped：`processed` 由各分支独立统计，理论上可能因「缩略图失败重算」
+        // 等边角情况略大于目录总数。宁可钳到 0 也不要出现负数溢出（usize 减法会 panic）。
+        let skipped = dir_total.saturating_sub(processed);
+        ScanReport {
+            total: dir_total,
+            written,
+            failed,
+            processed,
+            skipped,
+        }
+    }
 }
 
 /// 内容扫描命令返回值：报告 + 识别明细（供前端复用现有识别表格展示）
@@ -410,6 +457,8 @@ fn build_records(
             avg_luma: None,
             lat: ex.lat,
             lon: ex.lon,
+            // 本函数同时产出 AI 字段与 EXIF（影调不在此路径）→ 声明 AI+EXIF 所有权
+            owns: crate::db::FieldGroups::AI_EXIF,
         });
 
         let _ = app.emit(
@@ -428,12 +477,19 @@ fn build_records(
 ///
 /// - 参数与 `build_records` 一致 + `tone_scan` 可选（`None` 跳过影调字段）
 /// - 影调按路径匹配合并；未命中则 tone 字段留 None
+/// - **P4**：`exif_scan` 由调用方传入（第 1 步已读过的那一份），本函数不再自己
+///   `read_photo_exif`。此前同一份 EXIF 被读两遍（第 1 步一遍、这里一遍），
+///   而第 1 步读出的 `exifs` 在 AI 分支完全不参与 → 读了就丢，纯浪费。
+///   现在 EXIF 也纳入增量差集，这个「一份数据两处读」必须先消除，
+///   否则增量逻辑会建立在双读的错误前提上。
 /// - 返回 `(records, unified_rows)`：records 供落库，unified_rows 供前端统一表格展示
+#[allow(clippy::too_many_arguments)]
 fn build_records_combined(
     album_id: i64,
     user_id: i64,
     results: &[crate::vision::VisionResult],
     tone_scan: Option<&Vec<crate::tone::PhotoTone>>,
+    exif_scan: &[crate::photo_scan::PhotoExif],
     app: &tauri::AppHandle,
 ) -> Result<(Vec<PhotoContentRecord>, Vec<UnifiedScanRow>), String> {
     // 影调按路径建索引（命中才填充，未命中仍返回 EXIF + AI 行）
@@ -445,6 +501,12 @@ fn build_records_combined(
                     .collect()
             })
             .unwrap_or_default();
+
+    // P4：EXIF 也按路径建索引，复用第 1 步读出的那一份（不再逐张重读）。
+    // 未命中时退化为「字段全空」的行 —— 与旧行为一致（旧代码读失败也是 None 字段），
+    // 但省掉一次完整的 EXIF 解析。
+    let exif_map: std::collections::HashMap<&str, &crate::photo_scan::PhotoExif> =
+        exif_scan.iter().map(|e| (e.path.as_str(), e)).collect();
 
     let mut recs: Vec<PhotoContentRecord> = Vec::with_capacity(results.len());
     let mut rows: Vec<UnifiedScanRow> = Vec::with_capacity(results.len());
@@ -486,9 +548,19 @@ fn build_records_combined(
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let ex = crate::photo_scan::read_photo_exif(path, &name);
+        // P4：优先复用第 1 步已读出的 EXIF；未命中才现读。
+        // 正常路径下必然命中（esults\ 的路径来自同一次 walk），
+        // 兜底现读只是保证「未勾 basic 时本分支仍能自给自足」。
+        let ex_owned;
+        let ex: &crate::photo_scan::PhotoExif = match exif_map.get(r.path.as_str()) {
+            Some(e) => e,
+            None => {
+                ex_owned = crate::photo_scan::read_photo_exif(path, &name);
+                &ex_owned
+            }
+        };
         // FEAT-067：地点补齐（GPS → 离线行政区划反查）
-        let place = resolve_location(&ex);
+        let place = resolve_location(ex);
 
         // 影调匹配（按路径；未命中留 None）
         let tone = tone_map.get(&r.path);
@@ -554,16 +626,25 @@ fn build_records_combined(
             avg_luma,
             lat: ex.lat,
             lon: ex.lon,
+            // P2：AI 分支**必定**产出 AI 字段；
+            // EXIF 每次都会读到（exif_map 命中或兜底现读）⇒ 归本次所有，可直接覆盖；
+            // 影调只在本轮跑了才拥有 —— 未跑时 `tone_type/avg_luma` 恒为 None，
+            // 若声明拥有就会把旧影调写成空（勾「只做 AI」时反而毁掉上次的影调结果）。
+            owns: crate::db::FieldGroups {
+                ai: true,
+                exif: true,
+                tone: tone_scan.is_some(),
+            },
         });
 
         rows.push(UnifiedScanRow {
             file_name: r.file_name.clone(),
             path: r.path.clone(),
-            iso: ex.iso,
-            aperture: ex.aperture,
-            shutter_speed: ex.shutter_speed,
-            focal_length: ex.focal_length,
-            shoot_time: ex.shoot_time,
+            iso: ex.iso.clone(),
+            aperture: ex.aperture.clone(),
+            shutter_speed: ex.shutter_speed.clone(),
+            focal_length: ex.focal_length.clone(),
+            shoot_time: ex.shoot_time.clone(),
             iso_num: ex.iso_num,
             focal_num: ex.focal_num,
             aperture_num: ex.aperture_num,
@@ -617,6 +698,152 @@ fn opt_nonempty(s: &str) -> Option<String> {
     } else {
         Some(s.to_string())
     }
+}
+
+/// P2：非 AI 分支（只勾 EXIF / 影调）的记录构造 —— 让「做过」这件事留下证据。
+///
+/// 为什么必须有：增量扫描的**唯一判据**是 `photo_content_scan` 里有没有这一行。
+/// 此前非 AI 分支扫完只在内存里拼 `UnifiedScanRow` 给前端看，一条也不落库
+/// ⇒ ① 刷新/重进页面数据就没了（用户视角：白扫）② 下次扫描的差集算不出这一张
+/// ⇒ 永远全量重做，增量功能对「只勾影调」的用户完全失效。
+///
+/// 字段填写纪律（**只看自己产出的那几个**）：
+/// - 填：`path` / `parent_dir` / `album_id` / `user_id` / EXIF 全字段 / 影调两字段
+/// - 留 `None`：`category` / `sub_category` / `label` / `confidence` / `top3_json` /
+///   `person_ids` / `person_count` / `content`
+///   —— 这些是 AI 分支的产出。留空不是偷懒，而是靠 `owns` 所有权声明来保护：
+///   AI 字段组不归本次所有时，`upsert_one` 用 `COALESCE` 保留旧值，不动老标签。
+///   若这里硬塞空串/0，会把该照片此前 AI 扫描的标签整片抹掉（见 `db/content.rs`
+///   里 `upsert_one` 的长注释）。
+///
+/// `owns` 归属：纯影调路径 → 只拥有 `tone`；以 EXIF 为轴的路径 → 拥有 `exif`，
+/// 影调看本轮是否命中。**AI 字段组恒为 `false`**。
+///
+/// 影调沿用与 AI 分支同一套匹配口径（按 `path` 索引），保证两条路径写出的
+/// `tone_type` 字符串完全一致（都是 `format!("{:?}")`，即 `LowKey`/`MidKey`/`HighKey`）。
+fn build_records_from_exif_tone(
+    album_id: i64,
+    user_id: i64,
+    exifs: &[crate::photo_scan::PhotoExif],
+    tones: &[crate::tone::PhotoTone],
+) -> Vec<PhotoContentRecord> {
+    let tone_map: HashMap<&str, &crate::tone::PhotoTone> =
+        tones.iter().map(|t| (t.path.as_str(), t)).collect();
+
+    // 只用 EXIF 列表作主轴（勾 basic 时它涵盖全部差集照片）。
+    // 未勾 basic 只勾影调时，`exifs` 为空 → 改以影调列表为轴，保证影调结果是完整的。
+    let mut recs: Vec<PhotoContentRecord> = Vec::with_capacity(exifs.len().max(tones.len()));
+
+    if exifs.is_empty() {
+        for t in tones {
+            let path = Path::new(&t.path);
+            let (len, mtime_ns) = stat_len_mtime(path);
+            recs.push(PhotoContentRecord {
+                photo_hash: photo_hash(&t.path, len, mtime_ns),
+                path: t.path.clone(),
+                parent_dir: parent_dir_of(path),
+                album_id: Some(album_id),
+                user_id,
+                content: String::new(),
+                category: None,
+                sub_category: None,
+                label: None,
+                confidence: None,
+                top3_json: None,
+                person_ids: None,
+                person_count: 0,
+                shoot_time: None,
+                location: None,
+                shutter_speed: None,
+                iso: None,
+                aperture: None,
+                focal_length: None,
+                iso_num: None,
+                focal_num: None,
+                aperture_num: None,
+                shutter_num: None,
+                tone_type: t.tone_type.map(|e| format!("{:?}", e)),
+                avg_luma: t.avg_luma,
+                lat: None,
+                lon: None,
+                // 纯影调路径：AI 字段一概不碰（含 content），只拥有影调。
+                // 这里 exifs 为空 ⇒ 没有 EXIF 可写，故 exif 也声明为「不拥有」，
+                // 否则会把此前 basic 扫出的 EXIF 整片清空。
+                owns: crate::db::FieldGroups { ai: false, exif: false, tone: true },
+            });
+        }
+        return recs;
+    }
+
+    for ex in exifs {
+        let path = Path::new(&ex.path);
+        let (len, mtime_ns) = stat_len_mtime(path);
+        let tone = tone_map.get(ex.path.as_str());
+        recs.push(PhotoContentRecord {
+            photo_hash: photo_hash(&ex.path, len, mtime_ns),
+            path: ex.path.clone(),
+            parent_dir: parent_dir_of(path),
+            album_id: Some(album_id),
+            user_id,
+            content: String::new(),
+            category: None,
+            sub_category: None,
+            label: None,
+            confidence: None,
+            top3_json: None,
+            person_ids: None,
+            person_count: 0,
+            shoot_time: ex.shoot_time.clone(),
+            location: resolve_location(ex),
+            shutter_speed: ex.shutter_speed.clone(),
+            iso: ex.iso.clone(),
+            aperture: ex.aperture.clone(),
+            focal_length: ex.focal_length.clone(),
+            iso_num: ex.iso_num,
+            focal_num: ex.focal_num,
+            aperture_num: ex.aperture_num,
+            shutter_num: ex.shutter_num,
+            tone_type: tone.and_then(|t| t.tone_type.map(|e| format!("{:?}", e))),
+            avg_luma: tone.and_then(|t| t.avg_luma),
+            lat: ex.lat,
+            lon: ex.lon,
+            // 以 EXIF 为轴的路径：EXIF 全字段直接覆盖；
+            // 影调仅在命中（本轮影调结果里有这一张）时才拥有 ——
+            // 未勾影调 / 未命中时 `tone_type` 为 None，不拥有才不会误清旧值。
+            owns: crate::db::FieldGroups {
+                ai: false,
+                exif: true,
+                tone: tone.is_some(),
+            },
+        });
+    }
+    recs
+}
+
+/// 取 `(len, mtime_ns)` 供 `photo_hash` 使用；stat 失败返回 `(0, 0)`。
+///
+/// 与 `build_records_combined` 内的同款逻辑抽出，避免三处各写一遍。
+/// 失败时并非「静默丢弃」：`photo_hash(path, 0, 0)` 仍会产出一个确定的哈希，
+/// 该照片照常入库；若文件真的不可读，下游 EXIF/解码阶段会走各自的失败留痕路径。
+fn stat_len_mtime(path: &Path) -> (u64, u128) {
+    match std::fs::metadata(path) {
+        Ok(md) => (
+            md.len(),
+            md.modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ),
+        Err(_) => (0, 0),
+    }
+}
+
+/// 取父目录字符串（无父目录时为空串，与 `build_records_combined` 口径一致）
+fn parent_dir_of(path: &Path) -> String {
+    path.parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// FEAT-044：扫描入库成功后预热本批缩略图，让智慧相册子页面首屏 0 IO 命中。
@@ -731,16 +958,14 @@ async fn prewarm_thumbs_after_scan(
 
 /// 语义向量扫描（FEAT-SEM）：相册内照片 → 缩略图 → CLIP 编码 → photo_embeddings 落库
 ///
-/// 流程：收集照片（与 AI 分支同规则）→ 缩略图映射（查表优先，缺失现场生成）→
-/// 增量差集（跳过已有向量）→ 分批 `vision::embed_images_batch`（fp16，batch 可选默认 8）→
-/// 500/批事务 upsert → 返回报告与明细行（供前端统一表格展示）。
-#[allow(clippy::too_many_arguments)]
+/// 流程：路径由调用方传入（同一次 walk 的产物 + 已算好的增量差集）→ 缩略图映射（查表优先，
+/// 缺失现场生成）→ 同档位向量差集（跳过已编码）→ 分批 `vision::embed_images_batch`
+/// （fp16，batch 可选默认 8）→ 500/批事务 upsert → 返回报告与明细行（供前端统一表格展示）。
 async fn scan_album_embeddings(
     album_id: i64,
     user_id: i64,
-    dir: &str,
+    paths: &[std::path::PathBuf],
     batch_size: usize,
-    overwrite: bool,
     app: &tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -749,9 +974,15 @@ async fn scan_album_embeddings(
 
     use crate::db::{embedding::EmbeddingRecord, DbError};
 
-    let photos = crate::vision::collect_images(dir)?;
+    // 路径由调用方传入（同一次 walk 的产物 + 已算好的增量差集），
+    // 本函数不再自己 `collect_images(dir)` 重走一遍目录，也不再自己判断增量
+    // （判据已统一到 `photo_hash` 差集，见 `scan_album_combined` 的 P8 段）。
+    let photos: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     if photos.is_empty() {
-        return Ok((ScanReport { total: 0, written: 0, failed: 0 }, Vec::new()));
+        return Ok((ScanReport::new(0, 0, 0, 0), Vec::new()));
     }
     let thumbs_dir = crate::thumbs_dir(app)?;
 
@@ -819,10 +1050,12 @@ async fn scan_album_embeddings(
         meta.extend(generated);
     }
     if meta.is_empty() {
-        return Ok((ScanReport { total: photos.len(), written: 0, failed: photos.len() }, Vec::new()));
+        // 缩略图全部生成失败 → 这一批（差集）一张都处理不了。
+        // `processed` 记 0（确实没有成功处理的），`failed` 记差集大小（全部失败）。
+        return Ok((ScanReport::new(photos.len(), 0, 0, photos.len()), Vec::new()));
     }
 
-    // 3. 增量差集：已有向量的照片跳过（重复扫描秒级完成；按当前档位模型隔离）
+    // 3. 同档位向量差集：已有向量的照片跳过（重复扫描秒级完成；按当前档位模型隔离）
     //
     // ⚠ 这里**绝不能**用一个写死的模型标识兜底。历史上写成
     // `clip_model_id(app).await.unwrap_or_else(|_| "…-fp16")`：一旦 /health 拿不到
@@ -838,12 +1071,28 @@ async fn scan_album_embeddings(
         db.lookup_embedding_hashes(&all_hashes, &model).unwrap_or_default()
     };
     let meta_len = meta.len();
-    // 覆盖模式：全部重算（已有向量被 upsert 覆盖）；增量模式：跳过已有
+    // `photo_hash` 差集已在调用方统一算过（P8），走到这里 `photos` 本身**就是**差集；
+    // 此处再叠一层「已有同档位向量」的过滤，是因为两条判据不同源：
+    //   - `photo_hash` 差集 ⊆ `photo_content_scan`（EXIF/AI/影调表的记录）
+    //   - 向量表单独的「已编码」记录按 (photo_hash, model) 存
+    // 换过 CLIP 档位时，照片在 `photo_content_scan` 有记录但向量表没有 → 必须补齐。
+    // 因此这一层**不能删**，它不是重复判断，而是覆盖「模型切档后向量需重建」的场景。
     let todo: Vec<(String, String, String)> = meta
         .into_iter()
-        .filter(|(_, h, _)| overwrite || !existing.contains(h))
+        .filter(|(_, h, _)| !existing.contains(h))
         .collect();
-    let _skipped = photos.len() - todo.len();
+    // 日志口径：`photos.len() - todo.len()` 会把**缩略图生成失败**的照片
+    // 也算成「已有向量跳过」—— 这两件事完全不同：前者是失败（需排查文件），
+    // 后者是正常的增量跳过（预期行为）。混在一起会让「跳过 N 张」这个数字失去意义。
+    let skipped = meta_len - todo.len();
+    let thumb_failed = photos.len() - meta_len;
+    // 增量决策必须可见 —— 此前只有 AI 分支打了「跳过 N 张」，
+    // 向量分支跳过多少张、为什么跳过完全看不出来，导致「选了增量还是慢」无法归因。
+    crate::logger::log_info(&format!(
+        "[scan.incr] album={album_id} 向量 | 输入 {total} 张 · 待编码 {todo_n} 张 · 已有同档位向量跳过 {skipped} 张 · 缩略图失败 {thumb_failed} 张",
+        total = photos.len(),
+        todo_n = todo.len(),
+    ));
 
     // 4. 分批编码（进度事件由 embed_images_batch 内部 emit "embed-progress"）
     let thumb_to_src: HashMap<String, (String, String)> = todo
@@ -904,7 +1153,11 @@ async fn scan_album_embeddings(
     let failed = results.iter().filter(|r| r.embedding.is_none()).count() + (photos.len() - meta_len);
 
     Ok((
-        ScanReport { total: photos.len(), written, failed },
+        // `photos.len()` 在外层合并逻辑里只被用于累加 written / failed
+        // （total / processed / skipped 由调用方按相册目录口径自己持有），
+        // 但这里仍要给出自洽的一组值，避免单独调用时出现 total < written 的矛盾报告。
+        // `processed` = 实际进入编码的照片数（`meta_len`，即缩略图可用的那批）。
+        ScanReport::new(photos.len(), meta_len, written, failed),
         rows,
     ))
 }
@@ -958,7 +1211,8 @@ pub mod commands {
         let upsert = (|| -> Result<ScanReport, String> {
             let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
             db.upsert_photo_contents(&recs).map_err(|e| format!("{:?}", e))?;
-            Ok(ScanReport { total, written, failed })
+            // `total` 是整册识别出的张数（此路径为全量识别，故 processed == total）
+            Ok(ScanReport::new(total, total, written, failed))
         })();
         // FEAT-044：扫描入库完成后预热缩略图（为智慧相册子页面提供首屏 0 IO 命中）
         // 独立 try，避免预热失败不影响入库结果。
@@ -1129,16 +1383,153 @@ pub mod commands {
         let do_semantic = scan_types.contains(&"semantic".to_string());
         let batch = batch_size.unwrap_or(8).clamp(4, 64) as usize;
 
+        // ===================================================================
+        // T10/P5：目录只走一遍（且不阻塞异步运行时）
+        //
+        // 此前 AI 识别、影调、EXIF 三个分支各自 walkdir 一遍同一目录（语义分支
+        // 内部还会再走一次），同一棵树被走 4 遍。机械盘/网络盘上每次遍历都是一串
+        // 随机 IO，这是纯粹的重复浪费。现在统一 walk 一次，各分支复用产物。
+        // walk_image_paths 是同步 IO，包进 spawn_blocking 避免占死异步 worker。
+        // ===================================================================
+        let all_paths = {
+            let dir2 = dir.clone();
+            tauri::async_runtime::spawn_blocking(move || crate::vision::walk_image_paths(&dir2))
+                .await
+                .map_err(|e| format!("目录遍历任务线程失败: {e}"))??
+        };
+
+        // ===================================================================
+        // P8：增量统一判据 —— photo_hash 差集
+        //
+        // 旧实现里每条腿各自为政：AI 分支自己查一次 hash 差集、向量分支自己查一次，
+        // 影调/EXIF 则完全不看增量。判据分散导致「某条腿漏判/误判」
+        // 且无法统一解释「这次扫描到底跳过了什么」。
+        //
+        // 现在统一在这里算一次差集。成本极低：`photo_hash` 只取
+        // (文件长度, mtime, 路径) 三项 —— 微秒级 stat，而解码是毫秒级，差三个数量级。
+        //
+        // ⚠️ 诚实边界：差集省不掉 walk + stat。要确定「文件没变」就必须看文件；
+        //    能省的只有解码（本地耗时的 90%+）。
+        //
+        // 判据表是 `photo_content_scan`（EXIF/AI/影调共同落库的那张表），
+        // 与旧 AI 分支用的 `lookup_scanned_hashes_by_album` 是同一张表 → 口径一致。
+        // ===================================================================
+        let pending: Vec<std::path::PathBuf> = if overwrite {
+            logger::log_info(&format!(
+                "[scan.incr] album={album_id} 全量覆盖模式 | 目录 {} 张 · 待处理 {} 张 · 跳过 0 张",
+                all_paths.len(),
+                all_paths.len()
+            ));
+            all_paths.clone()
+        } else {
+            let scanned: std::collections::HashSet<String> = {
+                let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+                db.lookup_scanned_hashes_by_album(album_id)
+                    .map_err(|e| format!("{e}"))?
+            };
+            let kept: Vec<std::path::PathBuf> = all_paths
+                .iter()
+                .filter(|p| {
+                    let ps = p.to_string_lossy();
+                    let hash = match std::fs::metadata(p) {
+                        Ok(md) => {
+                            let mtime = md
+                                .modified()
+                                .ok()
+                                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                                .map(|d| d.as_nanos())
+                                .unwrap_or(0);
+                            photo_hash(&ps, md.len(), mtime)
+                        }
+                        // stat 失败（权限/已删除）→ 保守地算作「待处理」，
+                        // 让后面对它的读取失败走既有错误路径并留痕，而不是静默丢弃。
+                        Err(_) => String::new(),
+                    };
+                    hash.is_empty() || !scanned.contains(&hash)
+                })
+                .cloned()
+                .collect();
+            let skipped = all_paths.len() - kept.len();
+            logger::log_info(&format!(
+                "[scan.incr] album={album_id} 增量模式（统一判据 photo_hash）| 目录 {} 张 · 待处理 {} 张 · 跳过 {skipped} 张",
+                all_paths.len(),
+                kept.len()
+            ));
+            kept
+        };
+
+        // ===================================================================
+        // P10：相册级「零变化」早退
+        //
+        // 全局批量增量扫几十个已入库相册时，每个都要走完全部阶段（含多次 spawn_blocking
+        // 与 microservice 调用），绝大部分相册其实一张新照片都没有。
+        //
+        // 正确表达是「**文件级差集为空**」而不是「凭记录不看目录」——
+        // 后者会漏掉外部改动（用户在资源管理器里换了图但路径未变）。
+        // 这里已经真的 walk 过、真的逐张 stat 过，所以早退是安全的。
+        // ===================================================================
+        if pending.is_empty() {
+            logger::log_info(&format!(
+                "[scan.incr] album={album_id} 差集为空 → 本相册无变化，跳过全部阶段"
+            ));
+            logger::log_call_end_with(
+                "scan_album_combined",
+                _t,
+                &format!("OK | 增量无变化 | 目录 {} 张 · 全部跳过", all_paths.len()),
+            );
+            // BUG-2026-0922-008：这里曾经返回 `total: 0` —— 前端据此显示
+            // 「共 0 张」，与「相册里明明有照片」直接矛盾（全局扫描一结束，
+            // 所有已入库相册全变成 0/0）。早退只说明「本次没有要处理的」，
+            // **不等于相册是空的**，所以 total 必须填真实目录张数。
+            return Ok(CombinedScanOutcome {
+                report: ScanReport::new(all_paths.len(), 0, 0, 0),
+                rows: Vec::new(),
+            });
+        }
+
+        // 本地并行线程数：EXIF / 影调是纯本地 IO+CPU 任务，多线程真实摊薄延迟；
+        // 夹在 [1,8]，避免小机器上线程过多互抢。
+        let threads_local = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(1, 8);
+
+        // EXIF 扫描（AI 与非 AI 分支都要：AI 分支的 build_records_combined 复用这份数据，
+        // 消除此前「同一份 EXIF 读两遍」的浪费）→ 放入阻塞线程
+        let exifs = if do_basic {
+            let paths2 = pending.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::photo_scan::read_exif_paths_parallel(&paths2, threads_local)
+            })
+            .await
+            .map_err(|e| format!("EXIF 任务线程失败: {e}"))?
+        } else {
+            Vec::new()
+        };
+
+        // 影调扫描为同步重活 → 放入阻塞线程，避免占满异步运行时影响其他命令。
+        // P9：增量模式下只处理差集（此前总是全量重扫）。
+        let tones = if do_tone {
+            let paths2 = pending.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::tone::analyze_paths_parallel(&paths2, threads_local)
+            })
+            .await
+            .map_err(|e| format!("影调任务线程失败: {e}"))?
+        } else {
+            Vec::new()
+        };
+
         // FEAT-SEM：语义向量扫描与 AI 识别同为异步 HTTP，在 outcome 构建前完成，
-        // 结果合并进 CombinedScanOutcome（report 累加，rows 追加）
+        // 结果合并进 CombinedScanOutcome（report 累加，rows 追加）。
+        // P5/P9：只吃差集，不再自己重走目录。
         let semantic_outcome: Option<Result<(ScanReport, Vec<UnifiedScanRow>), String>> = if do_semantic {
             Some(
                 scan_album_embeddings(
                     album_id,
                     user_id,
-                    &dir,
+                    &pending,
                     batch,
-                    overwrite,
                     &app,
                     &state,
                     cancel.clone(),
@@ -1149,72 +1540,20 @@ pub mod commands {
             None
         };
 
-        // AI 识别为异步 HTTP（在异步运行时上每批检查取消标记），不占用主线程
+        // AI 识别：只吃文件、不读 EXIF。
+        // P8/P9：差集已在上面统一算好 → 这里不再自己查一遍 hash（判据统一，也省一次遍历）。
         let vision_results = if do_ai {
-            // FEAT-SEM：增量模式跳过已入库照片（识别是最重的一步，跳过可省大部分耗时）
-            let photos = crate::vision::collect_images(&dir)?;
-            let paths: Vec<String> = if overwrite {
-                photos
-            } else {
-                let (path_hash_pairs, scanned) = {
-                    let hashes: Vec<(String, String)> = photos
-                        .iter()
-                        .filter_map(|p| {
-                            let path = Path::new(p);
-                            let (len, mtime) = std::fs::metadata(path).ok().map(|md| {
-                                (
-                                    md.len(),
-                                    md.modified()
-                                        .ok()
-                                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                                        .map(|d| d.as_nanos())
-                                        .unwrap_or(0),
-                                )
-                            })?;
-                            Some((p.clone(), photo_hash(p, len, mtime)))
-                        })
-                        .collect();
-                    let scanned = {
-                        let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
-                        db.lookup_scanned_hashes_by_album(album_id)
-                            .map_err(|e| format!("{e}"))?
-                    };
-                    (hashes, scanned)
-                };
-                let kept: Vec<String> = path_hash_pairs
-                    .into_iter()
-                    .filter(|(_, h)| !scanned.contains(h))
-                    .map(|(p, _)| p)
-                    .collect();
-                logger::log_info(&format!(
-                    "[scan] 增量模式：{}/{} 张待识别（跳过已入库 {} 张）",
-                    kept.len(),
-                    photos.len(),
-                    photos.len() - kept.len()
-                ));
-                kept
-            };
+            let paths: Vec<String> = pending
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            logger::log_info(&format!(
+                "[scan.incr] album={album_id} AI 识别 | 目录 {} 张 · 待识别 {} 张 · 跳过 {} 张（增量判据：photo_hash）",
+                all_paths.len(),
+                paths.len(),
+                all_paths.len().saturating_sub(paths.len()),
+            ));
             crate::vision::classify_paths(&paths, batch, &app, Some(cancel.clone())).await?
-        } else {
-            Vec::new()
-        };
-
-        // 影调扫描为同步重活 → 放入阻塞线程，避免占满异步运行时影响其他命令
-        let tones = if do_tone {
-            let dir2 = dir.clone();
-            tauri::async_runtime::spawn_blocking(move || crate::tone::scan_album_tones(&dir2))
-                .await
-                .map_err(|e| format!("影调任务线程失败: {e}"))??
-        } else {
-            Vec::new()
-        };
-
-        // EXIF 扫描（仅非 AI 分支需要）→ 同样放入阻塞线程
-        let exifs = if do_basic && !do_ai {
-            let dir2 = dir.clone();
-            tauri::async_runtime::spawn_blocking(move || crate::photo_scan::scan_album_photos(&dir2))
-                .await
-                .map_err(|e| format!("EXIF 任务线程失败: {e}"))??
         } else {
             Vec::new()
         };
@@ -1222,89 +1561,93 @@ pub mod commands {
         let mut outcome: Result<CombinedScanOutcome, String> = (|| -> Result<CombinedScanOutcome, String> {
             if do_ai {
                 let tone_ref = if do_tone { Some(&tones) } else { None };
+                // P4：EXIF 由上面第 1 步已读出的那一份传入，本函数不再自己逐张重读
+                // （此前同一份 EXIF 被读两遍：第 1 步一遍、这里一遍）。
                 let (recs, rows) =
-                    build_records_combined(album_id, user_id, &vision_results, tone_ref, &app)?;
+                    build_records_combined(album_id, user_id, &vision_results, tone_ref, &exifs, &app)?;
                 let written_count = recs.len();
                 {
                     let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
                     db.upsert_photo_contents(&recs).map_err(|e| format!("{:?}", e))?;
                 }
-                // FEAT-044：组合扫描入库完成后预热缩略图。
-                // recs 准备返回外层用于 in-progress 预热——避免闭包生命周期问题
-                // 在这里直接持有 recs paths，outcome 返回后在外层调预热。
-                let report = ScanReport {
-                    total: vision_results.len(),
-                    written: written_count,
-                    failed: vision_results.iter().filter(|r| r.error.is_some()).count(),
-                };
+                // BUG-2026-0922-008：`total` 曾经填 `vision_results.len()`（= 差集大小）。
+                // 增量模式下差集常常为 0，前端就把有照片的相册显示成「共 0 张」。
+                // 现在 total = 目录真实张数；本次处理了多少交给 `processed`。
+                let report = ScanReport::new(
+                    all_paths.len(),
+                    vision_results.len(),
+                    written_count,
+                    vision_results.iter().filter(|r| r.error.is_some()).count(),
+                );
                 Ok(CombinedScanOutcome { report, rows })
             } else {
-                let tone_map: std::collections::HashMap<String, &crate::tone::PhotoTone> =
-                    if do_tone {
-                        tones.iter().map(|t| (t.path.clone(), t)).collect()
-                    } else {
-                        std::collections::HashMap::new()
-                    };
+                // P2：非 AI 分支也必须落库。
+                //
+                // 旧行为：只在内存拼 `UnifiedScanRow` 给前端看 → `written: 0`。
+                // 三个后果，按严重度排序：
+                //   ① **增量扫描对它永久失效**：差集判据是 `photo_content_scan` 有没有这一行，
+                //      不落库 ⇒ 每次扫描都把它当新照片，全量重做（这是用户最直观的「白等」）。
+                //   ② **数据丢失缺陷**：刷新页面/切走再回来，刚扫出的 EXIF/影调全没了。
+                //   ③ 前端表格显示的 `total` 有值而 `written` 恒为 0，语义自相矛盾。
+                //
+                // 实现上**先造 records、再由 records 派生 rows**（而不是像旧代码那样
+                // 两个循环各拼一遍）：DB 与 UI 同源，杜绝「表里有、库里没有」这类漂移。
+                let recs = build_records_from_exif_tone(album_id, user_id, &exifs, &tones);
 
-                let mut all_rows: Vec<UnifiedScanRow> = Vec::new();
-                if do_basic {
-                    for ex in &exifs {
-                        let tone = tone_map.get(&ex.path);
-                        all_rows.push(UnifiedScanRow {
-                            file_name: ex.file_name.clone(),
-                            path: ex.path.clone(),
-                            iso: ex.iso.clone(),
-                            aperture: ex.aperture.clone(),
-                            shutter_speed: ex.shutter_speed.clone(),
-                            focal_length: ex.focal_length.clone(),
-                            shoot_time: ex.shoot_time.clone(),
-                            iso_num: ex.iso_num,
-                            focal_num: ex.focal_num,
-                            aperture_num: ex.aperture_num,
-                            shutter_num: ex.shutter_num,
-                            tone_type: tone.map(|t| t.tone_type.map(|e| format!("{:?}", e))).unwrap_or(None),
-                            avg_luma: tone.map(|t| t.avg_luma).unwrap_or(None),
-                            category: None,
-                            sub_category: None,
-                            label: None,
-                            confidence: None,
-                            top3: Vec::new(),
-                            person_ids: Vec::new(),
-                            person_count: 0,
-                        });
-                    }
-                } else {
-                    for t in &tones {
-                        all_rows.push(UnifiedScanRow {
-                            file_name: t.file_name.clone(),
-                            path: t.path.clone(),
-                            iso: None,
-                            aperture: None,
-                            shutter_speed: None,
-                            focal_length: None,
-                            shoot_time: None,
-                            iso_num: None,
-                            focal_num: None,
-                            aperture_num: None,
-                            shutter_num: None,
-                            tone_type: t.tone_type.map(|e| format!("{:?}", e)),
-                            avg_luma: t.avg_luma,
-                            category: None,
-                            sub_category: None,
-                            label: None,
-                            confidence: None,
-                            top3: Vec::new(),
-                            person_ids: Vec::new(),
-                            person_count: 0,
-                        });
-                    }
+                // 供前端表格展示：影调/EXIF 按路径索引（与 recs 同一份数据）
+                let tone_map: std::collections::HashMap<&str, &crate::tone::PhotoTone> =
+                    tones.iter().map(|t| (t.path.as_str(), t)).collect();
+                let exif_map: std::collections::HashMap<&str, &crate::photo_scan::PhotoExif> =
+                    exifs.iter().map(|e| (e.path.as_str(), e)).collect();
+
+                let mut all_rows: Vec<UnifiedScanRow> = Vec::with_capacity(recs.len());
+                for rec in &recs {
+                    let ex = exif_map.get(rec.path.as_str());
+                    let tone = tone_map.get(rec.path.as_str());
+                    let file_name = Path::new(&rec.path)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    all_rows.push(UnifiedScanRow {
+                        file_name,
+                        path: rec.path.clone(),
+                        iso: ex.and_then(|e| e.iso.clone()),
+                        aperture: ex.and_then(|e| e.aperture.clone()),
+                        shutter_speed: ex.and_then(|e| e.shutter_speed.clone()),
+                        focal_length: ex.and_then(|e| e.focal_length.clone()),
+                        shoot_time: ex.and_then(|e| e.shoot_time.clone()),
+                        iso_num: ex.and_then(|e| e.iso_num),
+                        focal_num: ex.and_then(|e| e.focal_num),
+                        aperture_num: ex.and_then(|e| e.aperture_num),
+                        shutter_num: ex.and_then(|e| e.shutter_num),
+                        tone_type: tone.and_then(|t| t.tone_type.map(|e| format!("{:?}", e))),
+                        avg_luma: tone.and_then(|t| t.avg_luma),
+                        category: None,
+                        sub_category: None,
+                        label: None,
+                        confidence: None,
+                        top3: Vec::new(),
+                        person_ids: Vec::new(),
+                        person_count: 0,
+                    });
                 }
+
+                // P2 落库：写失败必须报错而不是静默通过 —— 否则 `written` 会撒谎，
+                // 用户以为扫完了，实际下次仍是全量。
+                let written_count = recs.len();
+                {
+                    let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+                    db.upsert_photo_contents(&recs).map_err(|e| format!("{:?}", e))?;
+                }
+                logger::log_info(&format!(
+                    "[scan.incr] album={album_id} 非AI分支落库 | EXIF {} 张 · 影调 {} 张 → 写入 {written_count} 条（照片级去重后）",
+                    exifs.len(),
+                    tones.len(),
+                ));
                 Ok(CombinedScanOutcome {
-                    report: ScanReport {
-                        total: all_rows.len(),
-                        written: 0,
-                        failed: 0,
-                    },
+                    // BUG-2026-0922-008：同样不能把 `written_count` 当 total。
+                    // 非 AI 分支只处理 diff 里的照片，写库数与「相册有多大」是两件事。
+                    report: ScanReport::new(all_paths.len(), recs.len(), written_count, 0),
                     rows: all_rows,
                 })
             }
@@ -1316,7 +1659,16 @@ pub mod commands {
             Some(Err(e)) => outcome = Err(format!("语义扫描失败: {e}")),
             Some(Ok((report, rows))) => {
                 if let Ok(o) = outcome.as_mut() {
-                    o.report.total += report.total;
+                    // BUG-2026-0922-008：**只能累加 written / failed**。
+                    //
+                    // `total` / `processed` / `skipped` 都是「相册目录」维度的量，
+                    // 而两条腿跑的是**同一个相册的同一份差集**：
+                    //   total      两侧完全相同 → 相加会翻倍成 2N
+                    //   processed  两侧都是同一个差集大小 → 相加会翻倍
+                    //   skipped    相加同样翻倍
+                    // 旧代码只累加 total 而 total 恰好是差集大小，所以「翻倍」被掩盖了。
+                    // 语义分支的跳过数另有归因，走独立日志（见 `[scan.incr] … 向量 |`），
+                    // 不往相册级报告里混。
                     o.report.written += report.written;
                     o.report.failed += report.failed;
                     o.rows.extend(rows);
@@ -1948,5 +2300,156 @@ mod tests {
         assert_ne!(a, d, "不同大小哈希应不同");
         let e = photo_hash("/x/a.jpg", 100, 1234567891);
         assert_ne!(a, e, "不同 mtime 哈希应不同");
+    }
+
+    // =====================================================================
+    // BUG-2026-0922-008：ScanReport 三字段恒等式
+    //
+    // 这组断言锁住的是「前端为什么能看到 0」这件事不再复发：
+    //   total == processed + skipped  必须**永远**成立
+    // 且「相册里有多少张」这个数（total）绝不能随增量模式变化。
+    // =====================================================================
+
+    /// 恒等式：total 永远等于 processed + skipped（各分支共用同一构造函数）
+    #[test]
+    fn scan_report_identity_holds() {
+        // 全量扫描：目录 10 张，全部处理
+        let full = ScanReport::new(10, 10, 10, 0);
+        assert_eq!(full.total, 10);
+        assert_eq!(full.processed, 10);
+        assert_eq!(full.skipped, 0);
+        assert_eq!(
+            full.total,
+            full.processed + full.skipped,
+            "全量：total 必须 = processed + skipped"
+        );
+
+        // 增量扫描：目录 10 张、差集 3 张 → 跳过 7 张
+        let incr = ScanReport::new(10, 3, 3, 0);
+        assert_eq!(incr.total, 10, "total 是目录张数，不随增量模式缩水");
+        assert_eq!(incr.skipped, 7);
+        assert_eq!(incr.total, incr.processed + incr.skipped);
+
+        // 零变化早退：目录 10 张、差集空 → total 仍须是 10，绝不是 0
+        let noop = ScanReport::new(10, 0, 0, 0);
+        assert_eq!(noop.total, 10, "无变化 ≠ 空相册：total 必须保留真实张数");
+        assert_eq!(noop.skipped, 10);
+        assert_eq!(noop.total, noop.processed + noop.skipped);
+    }
+
+    /// 缩略图全失败等边角情况：processed 由各分支独立统计可能略大于目录总数，
+    /// `skipped` 必须钳到 0 而不是下溢 panic（usize 减法溢出在 debug 下会直接崩）。
+    #[test]
+    fn scan_report_never_underflows_when_processed_exceeds_total() {
+        let odd = ScanReport::new(5, 7, 0, 7);
+        assert_eq!(odd.total, 5);
+        assert_eq!(odd.skipped, 0, "processed > total 时 skipped 必须钳为 0，不得下溢");
+    }
+
+    /// 真实空相册：目录 0 张 → 三数全 0，此时前端显示「共 0 张」才是正确的。
+    #[test]
+    fn scan_report_for_truly_empty_album_is_all_zero() {
+        let empty = ScanReport::new(0, 0, 0, 0);
+        assert_eq!((empty.total, empty.processed, empty.skipped), (0, 0, 0));
+    }
+
+    // =====================================================================
+    // P2：非 AI 分支落库 —— 记录构造的字段分区纪律
+    //
+    // 这三条断言锁住的是「增量扫描能否生效」的前提：非 AI 分支必须造出记录，
+    // 且造出的记录**不能带 AI 字段的假值**（否则会经 upsert 覆盖掉 AI 结果）。
+    // =====================================================================
+
+    /// 构造一个只填了 EXIF 字段的样本（模拟 `read_exif_paths_parallel` 的产出）
+    fn sample_exif(path: &str) -> crate::photo_scan::PhotoExif {
+        let mut ex = crate::photo_scan::read_photo_exif(Path::new("/nonexistent/p.jpg"), "p.jpg");
+        ex.path = path.to_string();
+        ex.file_name = Path::new(path)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        ex.shoot_time = Some("2024-02-10 18:30:00".into());
+        ex.iso = Some("400".into());
+        ex.iso_num = Some(400);
+        ex.aperture = Some("f/1.8".into());
+        ex.aperture_num = Some(1.8);
+        ex.shutter_speed = Some("1/125s".into());
+        ex.shutter_num = Some(0.008);
+        ex.focal_length = Some("35mm".into());
+        ex.focal_num = Some(35.0);
+        ex
+    }
+
+    fn sample_tone(path: &str, luma: f64) -> crate::tone::PhotoTone {
+        crate::tone::PhotoTone {
+            file_name: Path::new(path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            path: path.to_string(),
+            histogram: vec![0u32; 256],
+            avg_luma: Some(luma),
+            tone_type: Some(if luma < 85.0 {
+                crate::tone::ToneType::LowKey
+            } else if luma > 170.0 {
+                crate::tone::ToneType::HighKey
+            } else {
+                crate::tone::ToneType::MidKey
+            }),
+        }
+    }
+
+    /// P2 正向：EXIF+影调必须产出记录（否则增量判据缺失，每次都全量重做）
+    #[test]
+    fn p2_exif_tone_path_writes_records_without_ai_fields() {
+        let exifs = vec![sample_exif("/a/1.jpg")];
+        let tones = vec![sample_tone("/a/1.jpg", 60.0)];
+        let recs = build_records_from_exif_tone(1, 1, &exifs, &tones);
+        assert_eq!(recs.len(), 1, "非 AI 分支必须产出记录（落库是增量判据的前提）");
+        let r = &recs[0];
+        assert!(r.category.is_none(), "category 是 AI 产出，非 AI 分支必须留 None");
+        assert!(r.sub_category.is_none());
+        assert!(r.label.is_none());
+        assert!(r.confidence.is_none());
+        assert!(r.top3_json.is_none());
+        assert!(r.person_ids.is_none());
+        assert_eq!(r.person_count, 0, "0 由 SQL 侧 CASE 判为「无产出」");
+        assert!(r.content.is_empty(), "空串由 SQL 侧 NULLIF 判为「无产出」");
+        assert!(!r.owns.ai, "声明 owns.ai=false 才是保留旧标签的充分条件");
+    }
+
+    /// P2 兜底：只勾影调不勾 EXIF 时，记录仍以影调列表为轴产出 ——
+    /// 否则「只统计影调」这个选项永远不落库。
+    #[test]
+    fn p2_tone_only_path_still_writes_records() {
+        let tones = vec![sample_tone("/a/1.jpg", 200.0), sample_tone("/a/2.jpg", 100.0)];
+        let recs = build_records_from_exif_tone(3, 1, &[], &tones);
+        assert_eq!(recs.len(), 2, "只勾影调也必须落库");
+        assert_eq!(recs[0].tone_type.as_deref(), Some("HighKey"));
+        assert_eq!(recs[1].tone_type.as_deref(), Some("MidKey"));
+        // EXIF 字段全空（本次没读）
+        assert!(recs[0].iso.is_none());
+        assert!(recs[0].shoot_time.is_none());
+        // 关键：本次没读 EXIF ⇒ **不能**声明拥有 exif，
+        // 否则会把此前 basic 扫出的拍摄时间/地点整片清空。
+        assert!(!recs[0].owns.exif, "没读 EXIF 就不得声明拥有");
+        assert!(!recs[0].owns.ai);
+        assert!(recs[0].owns.tone, "影调是本轴数据，归本次所有");
+    }
+
+    /// P2 口径一致性：两条分支写出的 `tone_type` 字符串必须**逐字节相同**。
+    ///
+    /// 这条容易被忽略但后果实在：若一边写 `"LowKey"`（`{:?}`）、另一边写
+    /// `"low-key"`（serde kebab-case），那么按影调筛选时会漏掉一半照片，
+    /// 而且因为两批数据都「看起来正常」，极难发现。
+    #[test]
+    fn p2_tone_type_string_matches_other_branch() {
+        let tones = vec![sample_tone("/a/1.jpg", 60.0)];
+        let recs = build_records_from_exif_tone(1, 1, &[], &tones);
+        assert_eq!(
+            recs[0].tone_type.as_deref(),
+            Some(format!("{:?}", crate::tone::ToneType::LowKey).as_str()),
+            "必须与 build_records_combined 的 format!({{:?}}) 口径一致"
+        );
     }
 }

@@ -41,12 +41,22 @@ export interface ContentScanProgress {
 
 /** 一次内容扫描报告 —— 对应 Rust `content::ScanReport` */
 export interface ScanReport {
-  /** 本次识别到的图片数（含识别失败） */
+  /**
+   * 该相册目录内的图片总数（**不是**本次处理数）
+   *
+   * ⚠️ BUG-2026-0922-008：增量模式下这个值曾经退化成「差集大小」，
+   * 导致已入库相册全被显示成「共 0 张」。它现在的唯一含义是「相册有多大」，
+   * 不随增量/全量模式变化。
+   */
   total: number;
   /** 成功写入/更新的记录数 */
   written: number;
   /** 识别失败（未落库）数 */
   failed: number;
+  /** 本次真正处理（进入识别/解码/写库）的张数 = 增量差集大小 */
+  processed: number;
+  /** 因已入库且文件未变化而跳过的张数（恒有 `total === processed + skipped`） */
+  skipped: number;
 }
 
 /** 内容扫描命令返回值 —— 对应 Rust `content::ScanOutcome` */

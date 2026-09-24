@@ -11,12 +11,13 @@
 import { computed, onMounted, ref } from "vue";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
-import type { GlobalScanItemStatus } from "../stores/content";
+import type { GlobalScanItem, GlobalScanItemStatus } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
 import { useThemeStore } from "../stores/theme";
 import ModelGpuSettings from "./ModelGpuSettings.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import { SCAN_MODE_TITLE, SCAN_MODE_TIP } from "../utils/scanModeTip";
+import { scanItemNote, type ScanItemNote } from "../utils/scanItemNote";
 
 const albumStore = useAlbumStore();
 const contentStore = useContentStore();
@@ -114,6 +115,8 @@ const doneCount = computed(() => items.value.filter((i) => i.status === "done").
 const failedCount = computed(() => items.value.filter((i) => i.status === "failed").length);
 const stoppedCount = computed(() => items.value.filter((i) => i.status === "stopped").length);
 const totalWritten = computed(() => items.value.reduce((n, i) => n + i.written, 0));
+/** 因「已入库且未变化」而跳过的总张数（增量模式下的主要结果，必须可见） */
+const totalSkipped = computed(() => items.value.reduce((n, i) => n + i.skipped, 0));
 const hasSummary = computed(
   () => !running.value && items.value.length > 0 && job.value.finishedAt != null,
 );
@@ -125,6 +128,17 @@ const STATUS_META: Record<GlobalScanItemStatus, { label: string; cls: string }> 
   failed: { label: "失败", cls: "st-failed" },
   stopped: { label: "已停止", cls: "st-stopped" },
 };
+
+/**
+ * 备注列文案（纯函数在 `utils/scanItemNote.ts`，便于单测覆盖三分支）
+ *
+ * 修复前这里无条件渲染 `共 N 张`，而 `N` 在增量模式下是「本次差集大小」——
+ * 已入库相册差集为空 ⇒ 一行行「共 0 张」，与相册里明明有照片直接矛盾
+ * （BUG-2026-0922-008）。
+ */
+function itemNote(it: GlobalScanItem): ScanItemNote {
+  return scanItemNote(it);
+}
 
 // ---- 启停 ----
 // ---- FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） ----
@@ -348,6 +362,7 @@ onMounted(() => {
         <template v-if="failedCount">· 失败 <b>{{ failedCount }}</b> 个</template>
         <template v-if="stoppedCount">· 停止剩余 <b>{{ stoppedCount }}</b> 个</template>
         · 累计入库 <b>{{ totalWritten }}</b> 张照片
+        <template v-if="totalSkipped">· 跳过 <b>{{ totalSkipped }}</b> 张（已是最新）</template>
       </p>
 
       <!-- 逐相册状态表 -->
@@ -372,7 +387,7 @@ onMounted(() => {
               </td>
               <td class="col-num">{{ it.status === "pending" ? "—" : it.written }}</td>
               <td class="col-num" :class="{ 'num-failed': it.failed > 0 }">{{ it.status === "pending" ? "—" : it.failed }}</td>
-              <td class="col-err" :title="it.error">{{ it.error || (it.status === "done" ? `共 ${it.total} 张` : "—") }}</td>
+              <td class="col-err" :title="it.error || itemNote(it).title">{{ it.error || itemNote(it).text }}</td>
             </tr>
           </tbody>
         </table>

@@ -19,9 +19,6 @@ use serde::Serialize;
 /// 下采样目标边长（px）
 const SAMPLE_SIZE: u32 = 256;
 
-/// 支持的图片扩展名（与 thumbnail 模块保持一致；为解耦本地复制一份）
-const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp"];
-
 /// 影调类型（平均亮度法判断）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -54,31 +51,70 @@ pub struct PhotoTone {
 /// - 目录不存在或不是文件夹 → 返回错误
 /// - 单张图片解码失败不影响整体，该图片 histogram 为空、tone_type 为 None
 pub fn scan_album_tones(dir: &str) -> Result<Vec<PhotoTone>, String> {
-    let root = Path::new(dir);
-    if !root.is_dir() {
-        return Err(format!("路径不存在或不是文件夹: {dir}"));
-    }
+    let paths = crate::vision::walk_image_paths(dir)?;
+    Ok(analyze_paths(&paths))
+}
 
-    let mut tones: Vec<PhotoTone> = Vec::new();
-    for entry in walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
-    {
-        let Ok(e) = entry else { continue };
-        if !e.file_type().is_file() {
-            continue;
-        }
-        let name = e.file_name().to_string_lossy().to_string();
-        if !is_image_file(&name) {
-            continue;
-        }
-        let path = e.into_path();
-        tones.push(analyze_photo(&path, &name));
-    }
-
+/// 对**已收集好的路径列表**做影调分析（避免重复遍历目录）。
+///
+/// 遍历规则由 `vision::walk_image_paths` 统一负责，本函数只做「逐张分析 + 排序」，
+/// 与 `scan_album_tones` 的结果完全一致（后者现在也就是调它）。
+pub fn analyze_paths(paths: &[std::path::PathBuf]) -> Vec<PhotoTone> {
+    let mut tones: Vec<PhotoTone> = paths
+        .iter()
+        .map(|p| {
+            let name = p
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            analyze_photo(p, &name)
+        })
+        .collect();
     tones.sort_by(|a, b| a.file_name.cmp(&b.file_name));
-    Ok(tones)
+    tones
+}
+
+/// 多线程版影调分析（仿 `photo_scan::read_exif_paths_parallel`）。
+///
+/// 为什么值得并行：影调是**纯 CPU + 独立 IO** 的任务（下采样解码 → 直方图），
+/// 单张之间零共享状态、零顺序依赖，天然易并行。
+///
+/// 与 `analyze_paths` 的**结果完全等价**：
+/// - 同样先按 `file_name` 排序（多线程分片会打乱顺序，必须重排才能对齐单线程口径）
+/// - 分片方式同 `read_exif_paths_parallel`：`chunk = ceil(n / threads)`，
+///   各线程处理互不重叠的连续区间，最后按分片顺序拼接
+///
+/// `threads` 由调用方按需给出；传 0 或 1 时退化为单线程，
+/// 避免小相册（几十张）为起线程付出调度开销。
+pub fn analyze_paths_parallel(paths: &[std::path::PathBuf], threads: usize) -> Vec<PhotoTone> {
+    let n = paths.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let threads = threads.max(1).min(n);
+    if threads == 1 {
+        return analyze_paths(paths);
+    }
+
+    let chunk = n.div_ceil(threads);
+    let mut tones: Vec<PhotoTone> = std::thread::scope(|scope| {
+        let handles: Vec<_> = paths
+            .chunks(chunk)
+            .map(|part| scope.spawn(move || analyze_paths(part)))
+            .collect();
+        let mut all: Vec<PhotoTone> = Vec::with_capacity(n);
+        for h in handles {
+            match h.join() {
+                Ok(mut v) => all.append(&mut v),
+                // 单张分析内部已经把「解码失败」收敛为 None 字段、不 panic，
+                // 线程 join 失败只可能是 OOM 等极端情况：跳过该分片而非整册失败。
+                Err(_) => {}
+            }
+        }
+        all
+    });
+    tones.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    tones
 }
 
 /// 分析单张图片：下采样解码 → 灰度直方图 → 平均亮度 → 影调类型
@@ -151,12 +187,6 @@ fn decode_sampled(path: &Path) -> Option<image::RgbImage> {
     let img = image::open(path).ok()?.thumbnail(SAMPLE_SIZE, SAMPLE_SIZE);
     Some(img.to_rgb8())
 }
-
-fn is_image_file(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    IMAGE_EXTS.iter().any(|ext| lower.ends_with(&format!(".{ext}")))
-}
-
 
 pub mod commands {
 
