@@ -34,6 +34,8 @@ v5（语义分类）：分类模型（yolov8*-cls）、Places365 场景、花朵
 """
 import os
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -52,8 +54,20 @@ from vcr.schemas import (
     EmbedTextRequest,
     PersonMergeRequest,
 )
-from vcr.services.embed_service import get_embed_service
-from vcr.services.pipeline import classify_one
+from vcr.services.embed_service import get_embed_service, take_embed_stats
+from vcr.services.pipeline import classify_one, take_channel_stats
+
+
+def _log(msg: str) -> None:
+    """4.1 观测：把批次计时打到 stderr（宿主 Rust 侧会转存到 app.log）。
+
+    刻意不引入 logging 配置：uvicorn 以 log_level="warning" 运行，直接 print 到
+    stderr 是唯一稳定可见的通道，也不会改变任何既有日志行为。
+    """
+    try:
+        print(f"[vcr.stat] {msg}", flush=True)
+    except Exception:
+        pass
 
 app = FastAPI(title="VCR", docs_url=None, redoc_url=None)
 
@@ -250,19 +264,83 @@ def classify(req: ClassifyRequest):
     return r
 
 
+# ---------------------------------------------------------------------------
+# P-OPT2：照片级并行（一个线程处理一张照片，P 张同时在飞）
+#
+# 动机（实测依据，勿凭直觉改回）：
+#   - 通道级两流并行（P-OPT1）的收益被 tone 占比（~9%）锁死，封顶 1.1x；
+#   - 真机截图：classify 期间 16 核总利用率仅 ~12% —— det/face/ocr 会话
+#     intra_op=threads()（默认物理核夹 [4,8]）吃不满机器；
+#   - 单张里还有一段串行 PIL 解码（4096px 原图数十 ms）夹在两次推理之间。
+#   ⇒ 照片级并行让「下一张解码」与「当前张推理」重叠，并填补 ONNX 同步缝隙。
+#     实测：python/bench/photo_parallel_bench.py（等价性 + 吞吐扫档）。
+#
+# 为什么安全（逐条已核实）：
+#   - ONNX 会话 run() 线程安全（model_registry.run 只做只读查表 + sess.run）；
+#   - face 落库已由 pipeline._FACE_STORE_LOCK 串行化（检测/对齐/编码在锁外）；
+#   - ocr / tone / arbitrator 均为每调用局部状态，无共享可变状态；
+#   - 惰性加载有 registry._lock（RLock）保护，并发首触发不会重复建会话。
+# 语义说明：结果按输入顺序对齐（pool.map 保序），None（解码失败）语义逐字保持；
+#   person_ids 允许置换 —— register() 分组结构不变，但「新人编号」分配顺序随
+#   完成序，这是照片级并行的固有语义，不是缺陷。
+# ---------------------------------------------------------------------------
+_PHOTO_POOL: ThreadPoolExecutor | None = None
+
+
+def _photo_pool() -> ThreadPoolExecutor:
+    """模块级照片并行池（随进程常驻，不按请求重建）。P=1 时不使用（纯串行零开销）。"""
+    global _PHOTO_POOL
+    if _PHOTO_POOL is None:
+        _PHOTO_POOL = ThreadPoolExecutor(
+            max_workers=config.PHOTO_PARALLEL, thread_name_prefix="vcr-photo"
+        )
+    return _PHOTO_POOL
+
+
 @app.post("/classify_batch")
 def classify_batch(req: ClassifyBatchRequest):
     # 批次由客户端控制（R3），此处仅做安全封顶，避免单次超大请求
     paths = req.paths[: config.BATCH_CHUNK_MAX]
     results: list = []
-    for p in paths:
-        r = classify_one(p, get_registry())
+    t_batch = time.perf_counter()
+    registry = get_registry()
+    level = max(1, int(config.PHOTO_PARALLEL))
+    if level <= 1 or len(paths) <= 1:
+        # P=1：纯串行路径，与旧版行为逐字一致（零线程开销）
+        rs = [classify_one(p, registry) for p in paths]
+    else:
+        # P>1：块内照片并发；pool.map 保序；异常照旧向上抛（语义不变 → 500）
+        rs = list(_photo_pool().map(lambda p: classify_one(p, registry), paths))
+    for p, r in zip(paths, rs):
         if r is None:
             results.append(
                 ClassifyError(path=p, file_name=os.path.basename(p), error="无法读取图片").model_dump()
             )
         else:
             results.append(r.model_dump())
+    # 4.1 观测：整批结束 → 打印「批总耗时 + 各通道均摊」（一行看清成本结构）
+    #
+    # P-OPT1：口径随通道并行调整。原来各通道是串行的，相加≈单张耗时；现在
+    # tone 与 GPU 流并发，相加会**大于**单张耗时（重叠部分被算了两遍）。
+    # 因此额外打印 wall 两项，让「为什么各通道加总 ≠ 单张耗时」一眼可解释：
+    #   wall_gpu  每条腿实际阻塞在 GPU 流上的墙钟时间（det→face→ocr 全链）
+    #   wall_wait 等 tone 收尾的剩余时间（常态≈0 说明 tone 已被完全重叠）
+    #   tone      tone 的**实际计算耗时**（并发执行，不占关键路径）
+    try:
+        ms_batch = (time.perf_counter() - t_batch) * 1000.0
+        stats, n = take_channel_stats()
+        if n > 0:
+            per = lambda k: stats.get(k, 0.0) / n  # noqa: E731
+            _log(
+                f"classify_batch 批={len(paths)}张 P={level} 总={ms_batch:.0f}ms "
+                f"均摊 {ms_batch / max(len(paths), 1):.1f}ms/张 | "
+                f"decode {per('decode'):.1f} · meta {per('meta'):.1f} · det {per('det'):.1f} · "
+                f"tone {per('tone'):.1f}(并发) · ocr {per('ocr'):.1f} · face {per('face'):.1f}(命中 {stats.get('face_used', 0.0) / n * 100:.0f}%) · "
+                f"arb {per('arb'):.1f} | wall: gpu {per('wall_gpu'):.1f} · 等tone {per('wall_wait'):.1f} | "
+                f"合计 {per('total'):.1f}ms/张"
+            )
+    except Exception:
+        pass
     return {"results": results}
 
 
@@ -326,7 +404,15 @@ def embed_batch(req: EmbedBatchRequest):
         if not svc.ready():
             raise HTTPException(503, f"CLIP 未就绪: {svc.status().get('error') or '模型缺失'}")
         paths = req.paths[: config.BATCH_CHUNK_MAX]
-        return {"results": svc.embed_images(paths)}
+        out = svc.embed_images(paths)
+        # 4.1 观测：解码 vs 推理两段拆分（判定该并行化解码还是优化推理）
+        try:
+            _s, summary = take_embed_stats()
+            if summary:
+                _log(f"embed_batch 批={len(paths)}张 | {summary}")
+        except Exception:
+            pass
+        return {"results": out}
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001

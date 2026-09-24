@@ -14,6 +14,7 @@
 """
 import os
 import threading
+import time
 
 import numpy as np
 
@@ -21,6 +22,48 @@ from .. import config
 from ..preprocess import clip_tensor, open_image
 
 TEXT_BATCH_MAX = 64          # 单次文本批量编码封顶
+
+
+# ---------------------------------------------------------------------------
+# 4.1 观测：图像编码的「解码 / 推理」两段耗时累加器
+#
+# 动机：embed_images 是先串行解码整批、再一次性前向。单看总耗时无法判断该优化
+# 解码（并行化/流水线）还是优化推理（升图优化级别/换档位）。这里分开记账，
+# 由 server 的 /embed_batch 在整批返回前打印一行汇总。
+#
+# 纯记账：不落盘、不参与任何判断分支。
+# ---------------------------------------------------------------------------
+_ESTAT_LOCK = threading.Lock()
+_ESTAT: dict[str, float] = {}
+
+
+def _account_embed(*, decode_ms: float, infer_ms: float, n_decoded: int, n_requested: int) -> None:
+    with _ESTAT_LOCK:
+        _ESTAT["decode_ms"] = _ESTAT.get("decode_ms", 0.0) + float(decode_ms)
+        _ESTAT["infer_ms"] = _ESTAT.get("infer_ms", 0.0) + float(infer_ms)
+        _ESTAT["n_decoded"] = _ESTAT.get("n_decoded", 0.0) + float(n_decoded)
+        _ESTAT["n_requested"] = _ESTAT.get("n_requested", 0.0) + float(n_requested)
+        _ESTAT["calls"] = _ESTAT.get("calls", 0.0) + 1.0
+
+
+def take_embed_stats() -> tuple[dict[str, float], str]:
+    """取出并清空累加器 → (统计值, 可直接打印的一行摘要)。"""
+    with _ESTAT_LOCK:
+        s, n = dict(_ESTAT), int(_ESTAT.get("calls", 0))
+        _ESTAT.clear()
+    if n <= 0:
+        return {}, ""
+    dec, inf = s.get("decode_ms", 0.0), s.get("infer_ms", 0.0)
+    tot = dec + inf
+    ndec = int(s.get("n_decoded", 0))
+    per_img = (dec / ndec) if ndec else 0.0
+    summary = (
+        f"call={n} 请求={int(s.get('n_requested', 0))}张 成功解码={ndec}张 | "
+        f"解码合计 {dec:.0f}ms({(dec * 100.0 / tot if tot else 0.0):.0f}%) "
+        f"推理合计 {inf:.0f}ms({(inf * 100.0 / tot if tot else 0.0):.0f}%) | "
+        f"解码均摊 {per_img:.1f}ms/张"
+    )
+    return s, summary
 
 
 class _MiniBertTok:
@@ -224,6 +267,7 @@ class EmbedService:
         results: list[dict | None] = [None] * len(paths)
         pixels: list[np.ndarray] = []
         idxs: list[int] = []
+        t_dec0 = time.perf_counter()
         for i, p in enumerate(paths):
             img = open_image(p)
             if img is None:
@@ -231,11 +275,20 @@ class EmbedService:
                 continue
             pixels.append(clip_tensor(img))
             idxs.append(i)
+        # 4.1 观测：解码（含 letterbox/resize/归一）与推理两段分开记，判定谁是真瓶颈
+        t_dec1 = time.perf_counter()
         if pixels:
             # 批内分片 ≤8，控制 fp16 峰值内存
             out = get_registry().run_clip_vision(np.vstack(pixels))  # (N, dim)
             for row, i in enumerate(idxs):
                 results[i] = {"path": paths[i], "embedding": self._l2(out[row]).tolist()}
+        t_inf1 = time.perf_counter()
+        _account_embed(
+            decode_ms=(t_dec1 - t_dec0) * 1000.0,
+            infer_ms=(t_inf1 - t_dec1) * 1000.0,
+            n_decoded=len(pixels),
+            n_requested=len(paths),
+        )
         return results
 
 
