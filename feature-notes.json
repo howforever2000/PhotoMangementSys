@@ -2322,7 +2322,58 @@
       },
       "created_at": "2026-09-28T18:10:00+08:00",
       "updated_at": "2026-09-28T18:10:00+08:00"
+    },
+    {
+      "id": "FEAT-079",
+      "name": "一次解码 + 一次缩放多尺度派生：三通道共用 letterbox / 影调从 base 派生 / face_align 按采样区裁剪",
+      "status": "done",
+      "module": "python/vcr/preprocess.py（Letterbox / letterbox / face_align）+ detector / ocr_service / face_service / pipeline / tone_service 传参改造",
+      "description": "点 3：同一张解码上排着 4 遍缩放、其中 3 遍是纯重复 —— det/ocr/face 三个通道的 letterbox 参数完全一致（最长边 640 等比 + BILINEAR），却各从原图 resize 一次；影调又自己从原图 resize 到 256 一次；face_align 每张脸都把整张 20MP 原图转成 RGB 数组再 warp（而目的图只有 112x112）。本点把它们全部收敛成「解码一次 → 缩放一次 → 各尺度按需派生」。",
+      "related_files": [
+        "python/vcr/preprocess.py",
+        "python/vcr/services/pipeline.py",
+        "python/vcr/services/detector.py",
+        "python/vcr/services/ocr_service.py",
+        "python/vcr/services/face_service.py",
+        "python/vcr/services/tone_service.py"
+      ],
+      "keywords": [
+        "一次解码",
+        "多尺度派生",
+        "letterbox",
+        "缩放去重",
+        "face_align",
+        "采样区裁剪",
+        "点 3",
+        "预处理优化",
+        "Letterbox"
+      ],
+      "implementation": {
+        "Letterbox 值对象": "新增 preprocess.Letterbox(base, r, size)：base = 最长边 640 的等比缩放图（三通道共用同一份），r = 原图→base 的缩放比，size = 原图像素尺寸。det_tensor / ocr_tensor / face_det_tensor 改成只吃它，pipeline 里 letterbox(img) 调一次。",
+        "几何换算继续用原图的 r": "这是等价性的关键：decode 仍按「(letterbox坐标 - pad) / r」反算到**原图**坐标（r 从原图算），越界过滤与面积比仍用原图尺寸 lb.size —— 所以 bbox / kps / area_ratio 与旧实现完全一致，而不是从 base 反推再缩放（那会引入 ~1px 取整漂移，可能翻转 FACE_MIN_PIX=24 的边界判定）。",
+        "影调从 base 派生": "classify_one 把 lb.base 交给 _tone_timed，compute_tone 只做 640→256 一步（~6.8ms，原图直算 35.6ms）。那份 640 缩放 det 本来就要算，属增量为零的派生。",
+        "face_align 按采样区裁剪": "旧实现先 np.asarray(整张 4096 图) 再 warpAffine，而目的图只有 112x112。现在先算「112x112 输出画布经 M⁻¹ 映射回源图的外接框」裁出那一小块再 warp。两个易错点已写进注释：① 范围必须用整张输出画布的逆映射，用 ARC_DST 的外接框会少裁（画布上模板之外的像素同样取样）→ 出黑边；② 原图→裁剪图的偏移要经线性部分 A（M2 = [A | t + A·origin]），写成 t - origin 会整块采错位置。"
+      },
+      "verified": {
+        "单位成本（同进程同热状态）": "4096→640 BILINEAR 37.7ms/张、4096→256 35.6ms/张、face_align 旧 25.24 → 新 1.54 ms/次（16.3x）；旧实现一张图要排 4 遍缩放（3×37.7 + 35.6 ≈ 148.7ms），新实现 1 遍 37.7ms。",
+        "模型段（[vcr.stat]，P=6 批稳态均摊 ms/张）": "det.pre 49~84 → 5.7~19；ocr.pre 64~82 → 17~21；face.pre 60~85 → 7~30；tone 36~70 → 2.9~3.4；face.align 53~71 → 3.8~45。decode 段口径变化：letterbox 上提后并入 decode（decode 读数上升是**合并**不是退步），det.pre/ocr.pre/face.pre 才是这一步的收益面。",
+        "吞吐（bench_cpu_gpu_modes.py，P=6，40 张，批 8）": "点 2 后 119.9~124.7 → 本点 105.9~109.7 ms/张（1.11~1.18x）；对原始基线 149.4 累计 1.36~1.41x。收益小于「省下 ~148ms 串行 CPU」的直觉，因为 P=6 下各段读数本就被争用抬高，真实省的是 CPU 预算而不是等量墙钟。",
+        "等价性（三层）": "① 合成数据：verify_postprocess_equiv.py 全通过（本点不改后处理，回归防线仍在）；② 真实管线 A/B：48 张 test 相册改造前后 category/sub_category/label/confidence/person_count/source/person_ids **零差异**；③ 影调：53 张 avg_luma 差 max 0.009、NIGHT_LUMA=45 阈值无一穿越；④ 人脸：88 张脸的 ArcFace 嵌入余弦 min 0.99961 / mean 0.99999，距 FACE_SIM=0.45 有 0.55 余量（像素级 0.06% 差异来自 cv2 float32 求逆的 ULP 舍入）。"
+      },
+      "deferred": {
+        "item": "AI 腿改喂 ≤1280px（点 3 文档里的头条项，用 PIL draft 走 JPEG DCT 降采样）",
+        "measured": "draft((1024,1024)) 在 3712x5568 上选 1/2 尺寸 → 解码 89.28 → 69.17 ms/张（只省 IDCT，Huffman 解码与文件读取不变），配套 resize 37.69 → 13.44 ms/张；合计约省 44ms/张串行（本点之后字面口径）。",
+        "why_deferred": [
+          "按本点实测规律外推：约 148ms 的串行 CPU 节省只换到 ~13% 墙钟，44ms 大约只值 4~6%",
+          "有实际精度风险：det 的远景小目标与 OCR 小字（文档明确标注这是唯一需要召回验证的点）",
+          "有契约风险：img.size 变小后落库的 face bbox 会变成 1/2 坐标，而 /persons/{id}/avatar 是拿这些坐标去裁**原图**的 —— 必须在 register 前按原图尺寸回乘，改动面比前两项大",
+          "需重新做召回等价性验证（本点用的 48 张相册可能不足以覆盖远景小字）"
+        ],
+        "next_if_revisited": "先做 draft 的解码/缩放基准 + 召回验证，再连同 bbox 坐标回乘一起立项；不应只为 4~6% 冒精度风险。"
+      },
+      "created_at": "2026-09-28T19:30:00+08:00",
+      "updated_at": "2026-09-28T19:30:00+08:00"
     }
   ],
-  "updated": "2026-09-28T18:10:00+08:00"
+  "updated": "2026-09-28T19:30:00+08:00"
 }

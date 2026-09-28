@@ -143,16 +143,19 @@ def _needs_face(det_out) -> bool:
     return False
 
 
-def _gpu_channels(img, registry, path: str, use_face: bool) -> tuple:
+def _gpu_channels(img, lb, registry, path: str, use_face: bool) -> tuple:
     """GPU 流：det → (条件) face → ocr。返回 (det_out, ocr_out, face_hits, face_used, 各段耗时)。
 
     ⚠️ face 必须留在本函数内、排在 det 之后 —— 它的触发条件 `_needs_face` 吃的是
     det 的输出。把它挪到另一条流会读到未初始化的 det 结果（等于随机跳过人脸标号）。
 
+    `img` 是原图（只用于 face_align：对齐必须在原分辨率上取脸）；
+    `lb` 是点 3 抽出的**共用缩放**，det/ocr/face 的 letterbox 都从它贴底。
+
     返回的时间戳是单调递增的 perf_counter，供 _account 复用原有口径。
     """
     t_det_in = time.perf_counter()
-    det_out = detector.run(img, registry)
+    det_out = detector.run(lb, registry)
     t_det = time.perf_counter()
 
     face_hits: list[dict] = []
@@ -161,7 +164,7 @@ def _gpu_channels(img, registry, path: str, use_face: bool) -> tuple:
         try:
             svc = face_service.get_face_service(registry)
             # 检测 + 对齐 + 编码（耗时大头）不加锁；只有落库那一步需要串行
-            faces = svc.detect_faces(img)
+            faces = svc.detect_faces(lb)
             hits: list[dict] = []
             for f in faces:
                 emb = svc.embed(img, f)
@@ -177,7 +180,7 @@ def _gpu_channels(img, registry, path: str, use_face: bool) -> tuple:
             face_hits = []          # 与串行版逐字一致的降级语义
     t_face = time.perf_counter()
 
-    ocr_out = ocr_service.get_ocr_service(registry).run(img)
+    ocr_out = ocr_service.get_ocr_service(registry).run(lb)
     t_ocr = time.perf_counter()
     return det_out, ocr_out, face_hits, face_used, (t_det_in, t_det, t_face, t_ocr)
 
@@ -187,19 +190,23 @@ def classify_one(path: str, registry, use_face: bool = True) -> ClassifyResult |
     img = preprocess.open_image(path)
     if img is None:
         return None
+    # 点 3：解码一次 + 缩放一次，det/ocr/face 三通道与影调共用同一份缩放结果。
+    # 旧实现每个通道都从**原图**重新 resize 一次 —— 4096→640 实测 37.7ms、
+    # 4096→256（影调）实测 35.6ms，同一张解码上排了 4 遍缩放、3 遍纯重复。
+    lb = preprocess.letterbox(img)
     t_decode = time.perf_counter()
 
     meta = _meta_of(img, path)
     t_meta = time.perf_counter()
 
     # P-OPT1：两条流并发。
-    #   CPU 流：tone（纯 numpy，与 GPU 流零依赖）
+    #   CPU 流：影调（从共用缩放派生，与原图直算的 avg_luma 实测最大差 0.009，
+    #           NIGHT_LUMA=45 阈值在 53 张实测相册上无一穿越）
     #   GPU 流：det → face → ocr（见 _gpu_channels）
-    # 二者访问同一张已解码的 img（PIL Image 只读使用，不做原地修改）→ 可安全共享。
-    fut_tone = _CHANNEL_POOL.submit(_tone_timed, img)
+    fut_tone = _CHANNEL_POOL.submit(_tone_timed, lb.base)
     t_submit = time.perf_counter()
     det_out, ocr_out, face_hits, face_used, gts = _gpu_channels(
-        img, registry, path, use_face
+        img, lb, registry, path, use_face
     )
     t_gpu_done = time.perf_counter()
     # 等 CPU 流收尾。若 tone 比 GPU 流快（常态），这里是零等待。

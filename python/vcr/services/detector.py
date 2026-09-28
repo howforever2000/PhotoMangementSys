@@ -9,7 +9,6 @@
 from dataclasses import dataclass, field
 
 import numpy as np
-from PIL import Image
 
 from .. import config, preprocess, timing
 
@@ -128,15 +127,17 @@ def _decode(out: np.ndarray, cls_ids: tuple[int, ...],
     ]
 
 
-def run(img: Image.Image, registry) -> DetOutcome:
+def run(lb: preprocess.Letterbox, registry) -> DetOutcome:
     sess = registry.det
     if sess is None:
         return DetOutcome(ready=False, error="检测模型缺失")
 
     # 细粒度记账：预处理 / ONNX 前向 / 后处理（NMS+统计）三分。
     # det 是每张图必经的通道，这三项的比例决定了「该优化预处理还是换模型」。
+    # 注意：解码与 4096→640 的缩放已上提到 pipeline 的 letterbox() 一次做完，
+    # 这里的 det.pre 只剩「贴灰底 + 归一化」（亚毫秒级）。
     with timing.span("det.pre"):
-        tensor, scale, pad_x, pad_y = preprocess.det_tensor(img)
+        tensor, scale, pad_x, pad_y = preprocess.det_tensor(lb)
     with timing.span("det.run"):
         out = registry.run("det", tensor)[0][0]    # (84, 8400)
 
@@ -148,7 +149,7 @@ def run(img: Image.Image, registry) -> DetOutcome:
     # 重叠被判为误检），且对车流误检（e-7278 假框与车不重叠）无效，故弃用；
     # 改用仲裁器的「密集车流 + 全小框 → 跳过 street」规则（config.VEHICLE_HEAVY_N）。
 
-    w, h = img.size
+    w, h = lb.size
     area_ratio = max((((bk.x2 - bk.x1) * (bk.y2 - bk.y1)) / (w * h)) for bk in persons) if persons else 0.0
     max_conf = max((b.conf for b in persons), default=0.0)
     return DetOutcome(

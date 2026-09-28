@@ -160,20 +160,19 @@ class FaceService:
         ]
 
     # ------------------------------------------------------------------
-    def detect_faces(self, img: Image.Image) -> list[Face]:
+    def detect_faces(self, lb: preprocess.Letterbox) -> list[Face]:
         if not self.ready():
             return []
-        # 细粒度记账：face 是单张最大头（实测 42.9%），必须能区分
-        # 「检测前向」与「Python 解码后处理（逐锚点循环）」谁更贵 ——
-        # 后者是纯 Python 循环，最容易被低估。
+        # 细粒度记账：face 是单张最大头，必须能区分「检测前向」与「后处理」。
+        # face.pre 只剩贴黑底 + 归一化（解码与缩放已上提到 pipeline 的 letterbox()）。
         with timing.span("face.pre"):
-            tensor, scale, pad_x, pad_y = preprocess.face_det_tensor(img)
+            tensor, scale, pad_x, pad_y = preprocess.face_det_tensor(lb)
         with timing.span("face.det"):
             outputs = self.registry.run("face_det", tensor)
         with timing.span("face.post"):
             faces = self._decode_scrfd(outputs, scale, pad_x, pad_y)
-            # 过滤过小人脸 + 越界
-            w, h = img.size
+            # 过滤过小人脸 + 越界（用**原图**尺寸：解码的 scale 也是从原图算的）
+            w, h = lb.size
             kept = []
             for f in faces:
                 bw, bh = f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]
@@ -223,7 +222,9 @@ class FaceService:
         """返回 [{person_id, bbox, sim}]，空列表 = 无可用人脸。"""
         if not self.ready():
             return []
-        faces = self.detect_faces(img)
+        # 检测走共用的缩放（letterbox()），对齐仍用原图 —— 只有 pipeline 才能
+        # 复用已算好的 letterbox，这个独立入口自己算一次
+        faces = self.detect_faces(preprocess.letterbox(img))
         hits: list[dict] = []
         for f in faces:
             emb = self.embed(img, f)

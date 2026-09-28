@@ -14,7 +14,6 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
-from PIL import Image
 
 from .. import config, preprocess, timing
 
@@ -40,14 +39,15 @@ class OcrService:
         return self.registry.is_ready("ocr")
 
     # ------------------------------------------------------------------
-    def run(self, img: Image.Image) -> OcrOutcome:
+    def run(self, lb: preprocess.Letterbox) -> OcrOutcome:
         if not self.ready():
             return OcrOutcome(error="OCR 模型缺失")
         try:
             # 细粒度记账：OCR 的 DB 后处理（膨胀+连通域+minAreaRect）是纯 CPU 循环，
             # 文本密集图上可能比前向还贵 —— 拆开才能看清该优化哪一段。
+            # 解码与 4096→640 缩放已上提到 pipeline 的 letterbox() 一次做完。
             with timing.span("ocr.pre"):
-                tensor, scale, pad_x, pad_y = preprocess.ocr_tensor(img)
+                tensor, scale, pad_x, pad_y = preprocess.ocr_tensor(lb)
             with timing.span("ocr.run"):
                 out = self.registry.run("ocr", tensor)[0]  # (1,1,H/4,W/4) 概率图（sigmoid）
                 prob = np.asarray(out[0, 0], dtype=np.float32)
@@ -65,7 +65,7 @@ class OcrService:
             contours, _ = cv2.findContours(bitmap, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
             total_area = 0.0
             n_boxes = 0
-            img_area = float(img.size[0] * img.size[1])
+            img_area = float(lb.size[0] * lb.size[1])
             for c in contours:
                 ca = float(cv2.contourArea(c))
                 if ca < 9:
