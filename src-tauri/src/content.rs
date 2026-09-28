@@ -1383,6 +1383,10 @@ pub mod commands {
         let do_semantic = scan_types.contains(&"semantic".to_string());
         let batch = batch_size.unwrap_or(8).clamp(4, 64) as usize;
 
+        // 细粒度耗时记账：每个板块一段，命令结束前打一行汇总（见 scan_timing 模块说明）。
+        // 纯记账 —— 不参与任何判断分支，出问题最多是少一行日志。
+        let mut timing = crate::scan_timing::ScanTiming::new(album_id);
+
         // ===================================================================
         // T10/P5：目录只走一遍（且不阻塞异步运行时）
         //
@@ -1391,12 +1395,14 @@ pub mod commands {
         // 随机 IO，这是纯粹的重复浪费。现在统一 walk 一次，各分支复用产物。
         // walk_image_paths 是同步 IO，包进 spawn_blocking 避免占死异步 worker。
         // ===================================================================
+        let t_walk = std::time::Instant::now();
         let all_paths = {
             let dir2 = dir.clone();
             tauri::async_runtime::spawn_blocking(move || crate::vision::walk_image_paths(&dir2))
                 .await
                 .map_err(|e| format!("目录遍历任务线程失败: {e}"))??
         };
+        timing.span_with("walk", t_walk, &format!("{}张", all_paths.len()));
 
         // ===================================================================
         // P8：增量统一判据 —— photo_hash 差集
@@ -1414,6 +1420,7 @@ pub mod commands {
         // 判据表是 `photo_content_scan`（EXIF/AI/影调共同落库的那张表），
         // 与旧 AI 分支用的 `lookup_scanned_hashes_by_album` 是同一张表 → 口径一致。
         // ===================================================================
+        let t_diff = std::time::Instant::now();
         let pending: Vec<std::path::PathBuf> = if overwrite {
             logger::log_info(&format!(
                 "[scan.incr] album={album_id} 全量覆盖模式 | 目录 {} 张 · 待处理 {} 张 · 跳过 0 张",
@@ -1457,6 +1464,7 @@ pub mod commands {
             ));
             kept
         };
+        timing.span_with("差集", t_diff, &format!("待处理{}张", pending.len()));
 
         // ===================================================================
         // P10：相册级「零变化」早退
@@ -1481,6 +1489,7 @@ pub mod commands {
             // 「共 0 张」，与「相册里明明有照片」直接矛盾（全局扫描一结束，
             // 所有已入库相册全变成 0/0）。早退只说明「本次没有要处理的」，
             // **不等于相册是空的**，所以 total 必须填真实目录张数。
+            timing.emit("早退·无变化");
             return Ok(CombinedScanOutcome {
                 report: ScanReport::new(all_paths.len(), 0, 0, 0),
                 rows: Vec::new(),
@@ -1496,6 +1505,7 @@ pub mod commands {
 
         // EXIF 扫描（AI 与非 AI 分支都要：AI 分支的 build_records_combined 复用这份数据，
         // 消除此前「同一份 EXIF 读两遍」的浪费）→ 放入阻塞线程
+        let t_exif = std::time::Instant::now();
         let exifs = if do_basic {
             let paths2 = pending.clone();
             tauri::async_runtime::spawn_blocking(move || {
@@ -1506,9 +1516,13 @@ pub mod commands {
         } else {
             Vec::new()
         };
+        if do_basic {
+            timing.span_with("EXIF", t_exif, &format!("{}线程·{}张", threads_local, exifs.len()));
+        }
 
         // 影调扫描为同步重活 → 放入阻塞线程，避免占满异步运行时影响其他命令。
         // P9：增量模式下只处理差集（此前总是全量重扫）。
+        let t_tone = std::time::Instant::now();
         let tones = if do_tone {
             let paths2 = pending.clone();
             tauri::async_runtime::spawn_blocking(move || {
@@ -1519,10 +1533,14 @@ pub mod commands {
         } else {
             Vec::new()
         };
+        if do_tone {
+            timing.span_with("影调", t_tone, &format!("{}线程·{}张", threads_local, tones.len()));
+        }
 
         // FEAT-SEM：语义向量扫描与 AI 识别同为异步 HTTP，在 outcome 构建前完成，
         // 结果合并进 CombinedScanOutcome（report 累加，rows 追加）。
         // P5/P9：只吃差集，不再自己重走目录。
+        let t_sem = std::time::Instant::now();
         let semantic_outcome: Option<Result<(ScanReport, Vec<UnifiedScanRow>), String>> = if do_semantic {
             Some(
                 scan_album_embeddings(
@@ -1539,9 +1557,13 @@ pub mod commands {
         } else {
             None
         };
+        if do_semantic {
+            timing.span_with("语义向量", t_sem, &format!("批次{}", batch));
+        }
 
         // AI 识别：只吃文件、不读 EXIF。
         // P8/P9：差集已在上面统一算好 → 这里不再自己查一遍 hash（判据统一，也省一次遍历）。
+        let t_ai = std::time::Instant::now();
         let vision_results = if do_ai {
             let paths: Vec<String> = pending
                 .iter()
@@ -1557,7 +1579,11 @@ pub mod commands {
         } else {
             Vec::new()
         };
+        if do_ai {
+            timing.span_with("AI识别", t_ai, &format!("批次{}·{}张", batch, vision_results.len()));
+        }
 
+        let t_store = std::time::Instant::now();
         let mut outcome: Result<CombinedScanOutcome, String> = (|| -> Result<CombinedScanOutcome, String> {
             if do_ai {
                 let tone_ref = if do_tone { Some(&tones) } else { None };
@@ -1652,6 +1678,11 @@ pub mod commands {
                 })
             }
         })();
+        let store_note = match &outcome {
+            Ok(o) => format!("写入{}条", o.report.written),
+            Err(_) => "失败".to_string(),
+        };
+        timing.span_with("构建+落库", t_store, &store_note);
 
         // FEAT-SEM：合并语义向量扫描结果；语义子任务失败则整体报错（用户明确勾选，
         // 部分成功无意义——向量未入库，搜索仍搜不到）
@@ -1686,6 +1717,7 @@ pub mod commands {
             Err(e) => logger::log_call_end_with("scan_album_combined", _t, &format!("ERR | {e}")),
         }
         // FEAT-044：组合扫描入库成功后预热缩略图（仅 do_ai 路径写库，prewarm 也只对 do_ai 生效）
+        let t_prewarm = std::time::Instant::now();
         if do_ai && outcome.is_ok() {
             let prewarm_paths: Vec<String> = vision_results
                 .iter()
@@ -1694,19 +1726,33 @@ pub mod commands {
                 .collect();
             if !prewarm_paths.is_empty() {
                 let _ = prewarm_thumbs_after_scan(&app, &state, album_id, user_id, &prewarm_paths).await;
+                timing.span_with("缩略图预热", t_prewarm, &format!("{}张", prewarm_paths.len()));
             }
         }
         // v5 语义分类：扫描完成后自动重建分类命中（关键词向量已缓存，成本毫秒~秒级）。
         // 失败不阻塞扫描结果——用户仍可在分类页手动「重建」。
+        let t_rebuild = std::time::Instant::now();
         if outcome.is_ok() && (do_ai || do_semantic) {
             match crate::category::rebuild_semantic_hits(&app, &state, user_id).await {
-                Ok(rep) => logger::log_info(&format!(
-                    "[scan] 分类命中已重建：分类 {} · 命中 {} · 索引 {} · {}ms",
-                    rep.categories, rep.hits, rep.indexed, rep.ms
-                )),
-                Err(e) => logger::log_info(&format!("[scan] 分类重建跳过（不影响扫描）：{e}")),
+                Ok(rep) => {
+                    logger::log_info(&format!(
+                        "[scan] 分类命中已重建：分类 {} · 命中 {} · 索引 {} · {}ms",
+                        rep.categories, rep.hits, rep.indexed, rep.ms
+                    ));
+                    timing.span_with("分类重建", t_rebuild, &format!("命中{}", rep.hits));
+                }
+                Err(e) => {
+                    logger::log_info(&format!("[scan] 分类重建跳过（不影响扫描）：{e}"));
+                    timing.span_with("分类重建", t_rebuild, "跳过");
+                }
             }
         }
+        // 细粒度耗时汇总（一行看清本次扫描每个板块各花了多少）
+        timing.emit(&format!(
+            "{} | 目录{}张",
+            if overwrite { "全量" } else { "增量" },
+            all_paths.len()
+        ));
         outcome
     }
 

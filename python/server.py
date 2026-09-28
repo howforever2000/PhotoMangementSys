@@ -56,6 +56,17 @@ from vcr.schemas import (
 )
 from vcr.services.embed_service import get_embed_service, take_embed_stats
 from vcr.services.pipeline import classify_one, take_channel_stats
+from vcr import timing
+
+# 模型段分组：一行日志里怎么排「内部明细」（顺序即展示顺序）
+_MODEL_GROUPS: dict[str, tuple[str, ...]] = {
+    "det": ("det.pre", "det.run", "det.post"),
+    "ocr": ("ocr.pre", "ocr.run", "ocr.post"),
+    "face": ("face.pre", "face.det", "face.post", "face.align", "face.rec", "face.store"),
+}
+_CLIP_GROUPS: dict[str, tuple[str, ...]] = {
+    "clip": ("clip.open", "clip.pre", "clip.fwd"),
+}
 
 
 def _log(msg: str) -> None:
@@ -341,6 +352,14 @@ def classify_batch(req: ClassifyBatchRequest):
             )
     except Exception:
         pass
+    # 模型段级明细（det/ocr/face 各自的 预处理·前向·后处理 均摊，带实际调用次数）
+    try:
+        acc, cnt = timing.take()
+        detail = timing.render_groups(acc, cnt, _MODEL_GROUPS)
+        if detail:
+            _log(f"classify_batch 模型段均摊 P={level} | {detail}")
+    except Exception:
+        pass
     return {"results": results}
 
 
@@ -410,6 +429,16 @@ def embed_batch(req: EmbedBatchRequest):
             _s, summary = take_embed_stats()
             if summary:
                 _log(f"embed_batch 批={len(paths)}张 | {summary}")
+        except Exception:
+            pass
+        # 模型段级明细（PIL 解码 / CLIP 预处理 / 图像塔前向 各自均摊）
+        try:
+            acc, cnt = timing.take()
+            # clip.fwd 是整批一次前向（批次唯一的物理作用域），需标注批合计并折算每张
+            detail = timing.render_groups(acc, cnt, _CLIP_GROUPS,
+                                          batch_keys=frozenset({"clip.fwd"}))
+            if detail:
+                _log(f"embed_batch 模型段均摊 | {detail}")
         except Exception:
             pass
         return {"results": out}

@@ -471,6 +471,8 @@ pub async fn classify_paths(
     let mut results: Vec<VisionResult> = Vec::with_capacity(photos.len());
     let mut done = 0usize;
     let mut failed = 0usize;
+    // 批次级耗时记账（纯记账：失败只影响日志，不影响识别结果）
+    let mut bt = crate::scan_timing::BatchTiming::new("classify");
 
     for chunk in photos.chunks(batch) {
         // 收到停止请求 → 提前结束，保留已识别部分
@@ -481,6 +483,7 @@ pub async fn classify_paths(
         {
             break;
         }
+        let t_chunk = std::time::Instant::now();
         let resp: serde_json::Value = client
             .post(format!("{}/classify_batch", vcr_base()))
             .json(&serde_json::json!({ "paths": chunk }))
@@ -490,6 +493,14 @@ pub async fn classify_paths(
             .json()
             .await
             .map_err(|e| format!("解析识别结果失败: {e}"))?;
+        let idx = bt.push(chunk.len(), t_chunk.elapsed().as_secs_f64() * 1000.0);
+        // 批数过多时只打首末 + 采样批（细腻度与刷屏的折中，见 should_log 注释）
+        if bt.should_log(idx) {
+            crate::logger::log_info(&crate::scan_timing::render_batch_line(
+                bt.label(), idx, photos.len().div_ceil(batch), chunk.len(),
+                bt.spans_last_ms().unwrap_or(0.0),
+            ));
+        }
 
         if let Some(items) = resp.get("results").and_then(|v| v.as_array()) {
             for item in items {
@@ -513,6 +524,11 @@ pub async fn classify_paths(
             },
         );
     }
+
+    // 批次汇总：一行看清「批间是否抖动」（批最快/最慢差距大 ⇒ 服务端或 IO 不稳）
+    crate::logger::log_info(&crate::scan_timing::render_batch_summary(
+        bt.label(), &bt.summarize(),
+    ));
 
     Ok(results)
 }
@@ -2353,6 +2369,7 @@ pub async fn embed_images_batch(
     let mut results: Vec<EmbedResult> = Vec::with_capacity(paths.len());
     let mut done = 0usize;
     let mut failed = 0usize;
+    let mut bt = crate::scan_timing::BatchTiming::new("embed");
 
     for chunk in paths.chunks(batch) {
         // 收到停止请求 → 提前结束，保留已完成部分
@@ -2363,6 +2380,7 @@ pub async fn embed_images_batch(
         {
             break;
         }
+        let t_chunk = std::time::Instant::now();
         let resp = post_json_with_retry(
             &client,
             &format!("{}/embed_batch", vcr_base()),
@@ -2370,6 +2388,13 @@ pub async fn embed_images_batch(
             "embed_batch",
         )
         .await?;
+        let idx = bt.push(chunk.len(), t_chunk.elapsed().as_secs_f64() * 1000.0);
+        if bt.should_log(idx) {
+            crate::logger::log_info(&crate::scan_timing::render_batch_line(
+                bt.label(), idx, paths.len().div_ceil(batch), chunk.len(),
+                bt.spans_last_ms().unwrap_or(0.0),
+            ));
+        }
 
         let Some(items) = resp.get("results").and_then(|v| v.as_array()) else {
             // 2xx 却没有 results：响应结构不对（服务版本不匹配等）。显式报错而不是
@@ -2408,6 +2433,10 @@ pub async fn embed_images_batch(
             },
         );
     }
+
+    crate::logger::log_info(&crate::scan_timing::render_batch_summary(
+        bt.label(), &bt.summarize(),
+    ));
 
     Ok(results)
 }

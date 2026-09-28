@@ -30,6 +30,7 @@ mod photo_info;
 mod photo_scan;
 mod persons;
 mod scan_perf;
+mod scan_timing;
 mod session;
 mod studio;
 mod test_scan;

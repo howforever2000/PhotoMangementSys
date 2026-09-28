@@ -63,7 +63,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from .. import config, preprocess
+from .. import config, preprocess, timing
 from ..schemas import ClassifyResult, TopItem
 from . import arbitrator, detector, face_service, ocr_service, tone_service
 
@@ -168,7 +168,9 @@ def _gpu_channels(img, registry, path: str, use_face: bool) -> tuple:
                 if emb is None:
                     continue
                 with _FACE_STORE_LOCK:
-                    pid, sim = svc.store.register(emb, path, f"{f.bbox}")
+                    # 落库单独记：这是持锁的串行段，P 路并行时它会成为争用点
+                    with timing.span("face.store"):
+                        pid, sim = svc.store.register(emb, path, f"{f.bbox}")
                 hits.append({"person_id": pid, "bbox": f.bbox, "sim": round(sim, 3)})
             face_hits = hits
         except Exception:

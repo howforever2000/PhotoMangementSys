@@ -1,0 +1,93 @@
+<svg viewBox="0 0 680 414" width="100%" xmlns="http://www.w3.org/2000/svg" role="img"
+     font-family="system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif">
+<title>批量扫描入库的阶段流水线与 AI 单张成本结构</title>
+<desc>三行串行阶段：Rust 本地（walk 目录、增量差集、EXIF 与影调）、Python 微服务（CLIP 语义向量、AI 规则识别、合并落库），之后是返回前的收尾动作；底部条形图显示 AI 单张通道耗时占比。</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+
+<text x="40" y="24" font-size="12" fill="#888780">Rust 宿主 · 本地线程（阶段间严格串行）</text>
+
+<g>
+<rect x="40" y="32" width="170" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+<text x="125" y="52" font-size="14" font-weight="500" fill="#B5D4F4" text-anchor="middle" dominant-baseline="central">walk 目录一次</text>
+<text x="125" y="70" font-size="12" fill="#85B7EB" text-anchor="middle" dominant-baseline="central">递归排序，唯一入口</text>
+</g>
+<path d="M210 60 L250 60" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g>
+<rect x="255" y="32" width="170" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+<text x="340" y="52" font-size="14" font-weight="500" fill="#B5D4F4" text-anchor="middle" dominant-baseline="central">photo_hash 差集</text>
+<text x="340" y="70" font-size="12" fill="#85B7EB" text-anchor="middle" dominant-baseline="central">增量 or 覆盖扫描</text>
+</g>
+<path d="M425 60 L465 60" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g>
+<rect x="470" y="32" width="170" height="56" rx="8" fill="#0C447C" stroke="#85B7EB" stroke-width="0.5"/>
+<text x="555" y="52" font-size="14" font-weight="500" fill="#B5D4F4" text-anchor="middle" dominant-baseline="central">EXIF + 影调</text>
+<text x="555" y="70" font-size="12" fill="#85B7EB" text-anchor="middle" dominant-baseline="central">多线程 clamp(1,8)</text>
+</g>
+
+<path d="M555 88 L555 108 L125 108 L125 128" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<text x="40" y="136" font-size="12" fill="#888780">Python VCR 微服务 · HTTP 分批（两条腿串行）</text>
+
+<g>
+<rect x="40" y="144" width="170" height="56" rx="8" fill="#3C3489" stroke="#AFA9EC" stroke-width="0.5"/>
+<text x="125" y="164" font-size="14" font-weight="500" fill="#CECBF6" text-anchor="middle" dominant-baseline="central">语义向量 CLIP</text>
+<text x="125" y="182" font-size="12" fill="#AFA9EC" text-anchor="middle" dominant-baseline="central">约 90ms/张 · 分批</text>
+</g>
+<path d="M210 172 L250 172" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g>
+<rect x="255" y="144" width="170" height="56" rx="8" fill="#3C3489" stroke="#AFA9EC" stroke-width="0.5"/>
+<text x="340" y="164" font-size="14" font-weight="500" fill="#CECBF6" text-anchor="middle" dominant-baseline="central">AI 规则识别</text>
+<text x="340" y="182" font-size="12" fill="#AFA9EC" text-anchor="middle" dominant-baseline="central">154~163ms/张 · P=6</text>
+</g>
+<path d="M425 172 L465 172" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g>
+<rect x="470" y="144" width="170" height="56" rx="8" fill="#3C3489" stroke="#AFA9EC" stroke-width="0.5"/>
+<text x="555" y="164" font-size="14" font-weight="500" fill="#CECBF6" text-anchor="middle" dominant-baseline="central">合并落库</text>
+<text x="555" y="182" font-size="12" fill="#AFA9EC" text-anchor="middle" dominant-baseline="central">单事务 + FTS5</text>
+</g>
+
+<path d="M555 200 L555 220 L125 220 L125 240" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<text x="40" y="248" font-size="12" fill="#888780">返回前的收尾（体感：进度条已 100% 仍在跑）</text>
+
+<g>
+<rect x="40" y="256" width="170" height="56" rx="8" fill="#444441" stroke="#B4B2A9" stroke-width="0.5"/>
+<text x="125" y="276" font-size="14" font-weight="500" fill="#D3D1C7" text-anchor="middle" dominant-baseline="central">缩略图预热</text>
+<text x="125" y="294" font-size="12" fill="#B4B2A9" text-anchor="middle" dominant-baseline="central">256px WebP</text>
+</g>
+<path d="M210 284 L250 284" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g>
+<rect x="255" y="256" width="170" height="56" rx="8" fill="#444441" stroke="#B4B2A9" stroke-width="0.5"/>
+<text x="340" y="276" font-size="14" font-weight="500" fill="#D3D1C7" text-anchor="middle" dominant-baseline="central">分类命中重建</text>
+<text x="340" y="294" font-size="12" fill="#B4B2A9" text-anchor="middle" dominant-baseline="central">ms ~ s 级</text>
+</g>
+<path d="M425 284 L465 284" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+<g>
+<rect x="470" y="256" width="170" height="56" rx="8" fill="#444441" stroke="#B4B2A9" stroke-width="0.5"/>
+<text x="555" y="276" font-size="14" font-weight="500" fill="#D3D1C7" text-anchor="middle" dominant-baseline="central">命令返回</text>
+<text x="555" y="294" font-size="12" fill="#B4B2A9" text-anchor="middle" dominant-baseline="central">前端表格出数</text>
+</g>
+
+<text x="40" y="346" font-size="12" fill="#888780">AI 单张成本结构（P=1 实测占比，4096px 原图）</text>
+<rect x="40" y="354" width="257" height="24" fill="#A32D2D"/>
+<text x="168" y="366" font-size="12" fill="#FFFFFF" text-anchor="middle" dominant-baseline="central">face 42.9%</text>
+<rect x="297" y="354" width="150" height="24" fill="#BA7517"/>
+<text x="372" y="366" font-size="12" fill="#FFFFFF" text-anchor="middle" dominant-baseline="central">ocr 24.9%</text>
+<rect x="447" y="354" width="141" height="24" fill="#185FA5"/>
+<text x="517" y="366" font-size="12" fill="#FFFFFF" text-anchor="middle" dominant-baseline="central">det 23.5%</text>
+<rect x="588" y="354" width="52" height="24" fill="#0F6E56"/>
+<text x="614" y="366" font-size="12" fill="#FFFFFF" text-anchor="middle" dominant-baseline="central">8.5%</text>
+
+<rect x="40" y="388" width="10" height="10" rx="2" fill="#A32D2D"/>
+<text x="56" y="393" font-size="12" fill="#888780" dominant-baseline="central">face（条件触发）</text>
+<rect x="190" y="388" width="10" height="10" rx="2" fill="#BA7517"/>
+<text x="206" y="393" font-size="12" fill="#888780" dominant-baseline="central">ocr（每张必跑）</text>
+<rect x="340" y="388" width="10" height="10" rx="2" fill="#185FA5"/>
+<text x="356" y="393" font-size="12" fill="#888780" dominant-baseline="central">det（每张必跑）</text>
+<rect x="470" y="388" width="10" height="10" rx="2" fill="#0F6E56"/>
+<text x="486" y="393" font-size="12" fill="#888780" dominant-baseline="central">tone（并发）</text>
+</svg>

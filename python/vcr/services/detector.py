@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from PIL import Image
 
-from .. import config, preprocess
+from .. import config, preprocess, timing
 
 PERSON_CLASS_ID = 0          # COCO 索引 0 = person
 VEHICLE_CLASS_IDS = (2, 3, 5, 7)   # car / motorcycle / bus / truck
@@ -69,8 +69,12 @@ def run(img: Image.Image, registry) -> DetOutcome:
     if sess is None:
         return DetOutcome(ready=False, error="检测模型缺失")
 
-    tensor, scale, pad_x, pad_y = preprocess.det_tensor(img)
-    out = registry.run("det", tensor)[0][0]        # (84, 8400)
+    # 细粒度记账：预处理 / ONNX 前向 / 后处理（NMS+统计）三分。
+    # det 是每张图必经的通道，这三项的比例决定了「该优化预处理还是换模型」。
+    with timing.span("det.pre"):
+        tensor, scale, pad_x, pad_y = preprocess.det_tensor(img)
+    with timing.span("det.run"):
+        out = registry.run("det", tensor)[0][0]    # (84, 8400)
 
     def decode(cls_ids: tuple) -> list[Box]:
         boxes: list[Box] = []
@@ -90,8 +94,9 @@ def run(img: Image.Image, registry) -> DetOutcome:
                 boxes.append(Box(x1, y1, x2, y2, conf))
         return _nms(boxes, config.NMS_IOU)
 
-    persons = decode((PERSON_CLASS_ID,))
-    vehicles = decode(VEHICLE_CLASS_IDS)
+    with timing.span("det.post"):
+        persons = decode((PERSON_CLASS_ID,))
+        vehicles = decode(VEHICLE_CLASS_IDS)
 
     # 说明：人框与车辆框重叠降级方案实测会误伤「骑电动车的人」（e--7 骑手框与车
     # 重叠被判为误检），且对车流误检（e-7278 假框与车不重叠）无效，故弃用；

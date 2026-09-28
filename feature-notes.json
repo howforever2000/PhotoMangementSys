@@ -2194,7 +2194,55 @@
       },
       "created_at": "2026-09-28T15:45:00+08:00",
       "updated_at": "2026-09-28T15:45:00+08:00"
+    },
+    {
+      "id": "FEAT-076",
+      "name": "批量扫描三层细粒度耗时记账（scan.timing / scan.batch / vcr.stat 模型段）",
+      "status": "done",
+      "module": "src-tauri/src/scan_timing.rs + python/vcr/timing.py + content.rs / vision.rs / server.py / services 埋点",
+      "description": "优化批量扫描入库前先把「钱花在哪」测清楚。此前只有「一张图总共多少 ms」，回答不了「这 150ms 里是解码、预处理、ONNX 前向还是 Python 后处理」。本次按三层拆开口径：相册级（[scan.timing] 每板块一段）、批次级（[scan.batch] 批间抖动与批最快/最慢）、模型段级（[vcr.stat] 每通道 预处理/前向/后处理 各自均摊，带真实调用次数）。三层各自回答不同问题、互不混用。",
+      "related_files": [
+        "src-tauri/src/scan_timing.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/vision.rs",
+        "python/vcr/timing.py",
+        "python/server.py",
+        "python/vcr/services/detector.py",
+        "python/vcr/services/face_service.py",
+        "python/vcr/services/ocr_service.py",
+        "python/vcr/services/embed_service.py",
+        "python/vcr/services/pipeline.py",
+        "python/bench/bench_cpu_gpu_modes.py"
+      ],
+      "keywords": [
+        "耗时记账",
+        "性能观测",
+        "scan.timing",
+        "scan.batch",
+        "vcr.stat",
+        "模型段均摊",
+        "face.post",
+        "ocr.post",
+        "细粒度计时",
+        "批次抖动",
+        "scan_timing.rs",
+        "vcr/timing.py"
+      ],
+      "implementation": {
+        "相册级": "content.rs 在 walk/差集/EXIF/影调/语义向量/AI识别/构建落库/缩略图预热/分类重建 各点一个 Instant，命令结束前由 ScanTiming::emit 打一行 [scan.timing]：全量/增量 | 目录N张 | 总 …ms | 各板块… | 未计入 …（未计入 = 调度/序列化/await 排队残差）。",
+        "批次级": "vision.rs 的 classify_paths / embed_images_batch 用 BatchTiming 累加每批 HTTP 往返耗时，打 [scan.batch] 批 i/N 与汇总（批最快/批最慢）；批数 >30 时只打首末 + 采样批，兼顾细腻度与刷屏。",
+        "模型段级": "python/vcr/timing.py 提供 span 上下文管理器与累加器，service 自己打点（preprocess/run/postprocess 都在它内部，抽公共模块避免 service→pipeline 循环依赖）。均摊口径按「该段自己被调用了几次」，不按整批张数——人脸是条件触发通道（命中率 0%~62%），用整批张数去除会把「只有 40% 的图跑了」读成「每张只花一点」。CLIP 图像塔是整批一次前向（batch_keys），额外折算 ≈x/张。",
+        "记账纪律": "纯记账，不参与任何判断分支，失败最多少一行日志；累加器带锁但锁只包住累加那一行，绝不包住推理（否则测出来的就是串行推理）。"
+      },
+      "verified": {
+        "编译": "cargo test --lib 140 passed / 0 failed / 2 ignored；python -m py_compile 全部通过",
+        "实测读数": "2026-09-28 test 53 相册取样 40 张（批 8、P=6、预热批丢弃）：classify 稳态 189.4ms/张、embed 稳态 124.2ms/张；embed 解码均摊 2.3ms/张（256px 缩略图命中，解码占比 2%）、图像塔前向 ≈121ms/张（98%）",
+        "模型段发现": "单段最大成本是非 ONNX 的纯 Python——face.post（SCRFD 解码+NMS 逐锚点循环）实测 247~475ms/次调用（每批 x1~x7 次），远超 det.run 与 ocr.run；ocr.post 在文本密集图上 81.5ms/批（稀疏图 1.8ms/批）；face.align 130~215ms/次、face.store（持锁）54~99ms/次。这组读数是后续「向量化后处理」立项的直接依据。",
+        "抖动量级": "classify 批间 126.7~327.5ms/张（4 倍），抖动源为 face 通道命中率而非服务端不稳——没有模型段口径时会被误读成 IO 抖动"
+      },
+      "created_at": "2026-09-28T16:20:00+08:00",
+      "updated_at": "2026-09-28T16:20:00+08:00"
     }
   ],
-  "updated": "2026-09-28T15:45:00+08:00"
+  "updated": "2026-09-28T16:20:00+08:00"
 }

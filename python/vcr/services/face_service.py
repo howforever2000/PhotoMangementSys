@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from .. import config, preprocess
+from .. import config, preprocess, timing
 from ..persistence.person_store import get_store
 
 STRIDES = [8, 16, 32]
@@ -113,22 +113,28 @@ class FaceService:
     def detect_faces(self, img: Image.Image) -> list[Face]:
         if not self.ready():
             return []
-        tensor, scale, pad_x, pad_y = preprocess.face_det_tensor(img)
-        outputs = self.registry.run("face_det", tensor)
-        faces = self._decode_scrfd(outputs, img.size[0], img.size[1], scale, pad_x, pad_y)
-        # 过滤过小人脸 + 越界
-        w, h = img.size
-        kept = []
-        for f in faces:
-            bw, bh = f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]
-            if min(bw, bh) < config.FACE_MIN_PIX:
-                continue
-            if f.bbox[0] < 0 or f.bbox[1] < 0 or f.bbox[2] > w or f.bbox[3] > h:
-                continue
-            kept.append(f)
-        kept.sort(key=lambda f: f.score, reverse=True)
-        # NMS 去重（SCRFD 同脸多框），IoU 阈值与检测一致
-        kept = self._nms_faces(kept)
+        # 细粒度记账：face 是单张最大头（实测 42.9%），必须能区分
+        # 「检测前向」与「Python 解码后处理（逐锚点循环）」谁更贵 ——
+        # 后者是纯 Python 循环，最容易被低估。
+        with timing.span("face.pre"):
+            tensor, scale, pad_x, pad_y = preprocess.face_det_tensor(img)
+        with timing.span("face.det"):
+            outputs = self.registry.run("face_det", tensor)
+        with timing.span("face.post"):
+            faces = self._decode_scrfd(outputs, img.size[0], img.size[1], scale, pad_x, pad_y)
+            # 过滤过小人脸 + 越界
+            w, h = img.size
+            kept = []
+            for f in faces:
+                bw, bh = f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]
+                if min(bw, bh) < config.FACE_MIN_PIX:
+                    continue
+                if f.bbox[0] < 0 or f.bbox[1] < 0 or f.bbox[2] > w or f.bbox[3] > h:
+                    continue
+                kept.append(f)
+            kept.sort(key=lambda f: f.score, reverse=True)
+            # NMS 去重（SCRFD 同脸多框），IoU 阈值与检测一致
+            kept = self._nms_faces(kept)
         return kept[:16]          # 单图最多标号 16 张脸
 
     @staticmethod
@@ -157,8 +163,10 @@ class FaceService:
         if sess is None:
             return None
         try:
-            tensor = preprocess.face_align(img, face.kps)
-            out = self.registry.run("face_rec", tensor)[0][0]
+            with timing.span("face.align"):
+                tensor = preprocess.face_align(img, face.kps)
+            with timing.span("face.rec"):
+                out = self.registry.run("face_rec", tensor)[0][0]
             emb = np.asarray(out, dtype=np.float32)
             n = np.linalg.norm(emb)
             return emb / n if n > 0 else None

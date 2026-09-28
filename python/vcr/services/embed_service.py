@@ -20,6 +20,7 @@ import numpy as np
 
 from .. import config
 from ..preprocess import clip_tensor, open_image
+from .. import timing
 
 TEXT_BATCH_MAX = 64          # 单次文本批量编码封顶
 
@@ -269,17 +270,23 @@ class EmbedService:
         idxs: list[int] = []
         t_dec0 = time.perf_counter()
         for i, p in enumerate(paths):
-            img = open_image(p)
+            # 细粒度：PIL 解码（读文件+解 JPEG）与 CLIP 预处理（resize/crop/归一）拆开。
+            # 语义腿输入是 256px 缩略图，解码占比本应很低；若这里 open 偏高，
+            # 说明缩略图没命中、仍在解原图 —— 一眼可查。
+            with timing.span("clip.open"):
+                img = open_image(p)
             if img is None:
                 results[i] = {"path": p, "error": "无法读取图片"}
                 continue
-            pixels.append(clip_tensor(img))
+            with timing.span("clip.pre"):
+                pixels.append(clip_tensor(img))
             idxs.append(i)
         # 4.1 观测：解码（含 letterbox/resize/归一）与推理两段分开记，判定谁是真瓶颈
         t_dec1 = time.perf_counter()
         if pixels:
             # 批内分片 ≤8，控制 fp16 峰值内存
-            out = get_registry().run_clip_vision(np.vstack(pixels))  # (N, dim)
+            with timing.span("clip.fwd"):
+                out = get_registry().run_clip_vision(np.vstack(pixels))  # (N, dim)
             for row, i in enumerate(idxs):
                 results[i] = {"path": paths[i], "embedding": self._l2(out[row]).tolist()}
         t_inf1 = time.perf_counter()
