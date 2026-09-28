@@ -2373,7 +2373,54 @@
       },
       "created_at": "2026-09-28T19:30:00+08:00",
       "updated_at": "2026-09-28T19:30:00+08:00"
+    },
+    {
+      "id": "FEAT-080",
+      "name": "GPU 会话进程内串行锁（单消费者队列）—— P≥2 不再段错误，GPU 模式反超 CPU 1.33~1.37×",
+      "status": "done",
+      "module": "python/vcr/model_registry.py（_GPU_RUN_LOCK / _gpu_backed / run / run_clip_vision / run_clip_text）",
+      "description": "点 4：DirectML 会话非线程安全，照片级并行 P≥2 时两个线程同时进 sess.run 直接 ACCESS_VIOLATION 段错误（BUG-2026-0923-001，GPU 模式 P=6 整批 RemoteDisconnected），所以旧实测只能退回 GPU P=1（305ms/张）并得出「GPU 判负」的结论。本点给所有绑到非 CPU provider 的会话加一把进程内全局串行锁，把 GPU 变成单消费者队列：推理串行、CPU 侧解码/letterbox/归一化/NMS/人脸库写入仍保持 P 路并行。这是文档里「真命题是 GPU + 单消费者队列」的落地。",
+      "related_files": [
+        "python/vcr/model_registry.py",
+        "python/bench/bench_cpu_gpu_modes.py"
+      ],
+      "keywords": [
+        "GPU",
+        "DML",
+        "DirectML",
+        "串行锁",
+        "单消费者队列",
+        "段错误",
+        "BUG-2026-0923-001",
+        "点 4",
+        "吞吐",
+        "并行"
+      ],
+      "implementation": {
+        "锁的粒度": "进程内全局一把（不是每会话一把）：DML 各会话共享同一个 D3D 设备与命令队列，跨会话并发 run 同样不安全，锁得越细只是把「段错误」换成驱动级设备丢失。",
+        "锁的范围": "只包 sess.run（run / run_clip_vision / run_clip_text 三个入口），绝不包预处理与后处理 —— 否则实测口径变成「串行推理」，P 路并行收益全没了（与 vcr/timing.py 同一条纪律）。",
+        "判据": "_gpu_backed(key) 读 **ORT 实测绑定** 的 provider（_session_facts 记的 sess.get_providers()），不是用户请求的 provider：开了 GPU 但加载回退到 CPU 时不该白持锁。facts 缺失时保守当作 GPU（错锁只慢一档，漏锁是段错误）。纯 CPU 会话恒返回 False → 零开销。",
+        "回归护栏": "纯 CPU 路径不动，p4-cpu 实测 109.4ms/张，与点 3 后的 105.9~109.7 同一水位，证明锁没有误伤 CPU 模式。"
+      },
+      "verified": {
+        "崩溃消失": "gpu-p6（P=6）连续两轮稳态 **80.0 / 82.6 ms/张**，全程无 RemoteDisconnected（改造前同一轮次直接 CRASHED）。",
+        "GPU 反超 CPU": "同日同机 cpu-p6 = **109.4 ms/张** ⇒ GPU 1.33~1.37×。这推翻了文档 4.4 节的旧结论（gpu-p1 305.1 vs cpu-p6 152.6「GPU 判负」）——那个结论测的是「GPU 但只能 P=1」的实现，不是「GPU + 单消费者队列」。",
+        "并发重叠率大涨": "两腿并发实验（--overlap 4）：GPU 模式（AI 在 DML、CLIP fp16 在 CPU）顺序 6665ms → 并发 4538ms = **1.469×**（重叠率 0.754）；对比点 2 之后的纯 CPU 模式只有 8008 → 7573 = 1.057×。原因正是两条腿**互不抢同一份算力**：AI 的前向在 GPU，CLIP 与 Python 侧胶水在 CPU。",
+        "会话表自证": "/health 显示 det=['DmlExecutionProvider','CPUExecutionProvider']、ocr 同、face/clip 与 faces 仍 CPU（fp16 档被 _clip_providers 钉死）。",
+        "CLIP fp32 走 DML —— 结论是**不要切**": "实测 b16-fp32 + DML：embed 单独跑 61.3 ms/张（对比 fp16 CPU 122.4~123.9，确实 2×）；但与 AI 腿**同时**跑时，两者争同一把全局锁，AI 从 80 → 166.5 ms/张，两腿并发墙钟 166.5 ms/张，**反而慢于**「fp16 CLIP 在 CPU + AI 在 GPU」的 141.8 ms/张。GPU 队列是稀缺资源，CLIP 的 ~87ms/张 排在 det/ocr 前面反而把关键路径拉长。⇒ 默认保持 fp16/CPU；除非将来能把 CLIP 放进独立设备队列。"
+      },
+      "testedAndReverted": {
+        "item": "文档点 4 的第三项「face 的小模型（SCRFD/ArcFace）仍留 CPU（DML 反而变慢）」",
+        "evidence": "实现后实测 p4b-gpu = 83.5 ms/张，对比留在 DML 的 80.0 / 82.6 ms/张 —— **无增益甚至略负**（docs 表 B 的 face.det 7.8→12.2ms 是 P=1 口径，P=6 + 全局锁下两者的差异被争用淹没）。按「只留有实测支撑的改动」回退，未进入最终提交。"
+      },
+      "endToEnd": {
+        "基线": "AI 腿 149.4 + 语义腿 127.7 = 277.1 ms/张（串行）；计入原本串行的影调 ~30ms 约 307 ms/张",
+        "现在": "两腿并发实测 141.8 ms/张（4538ms / 32 张，点 1 并发 + 点 4 GPU）",
+        "结论": "关键路径 277.1 → 141.8 = **1.95×**；含影调 307 → 141.8 = **2.16×**（另一轮基线 313.6 → 2.21×）。单看 AI 腿 149.4 → 80.0~82.6 = 1.82×。文档的「端到端 2× 以上」达成，但**没有达到文档预估的 2.5×** —— 主要因为语义腿（CLIP fp16 CPU 123ms/张）现在成了长杆，而它无法在不抢 GPU 队列的前提下提速（见 CLIP fp32 实测）。"
+      },
+      "created_at": "2026-09-28T21:10:00+08:00",
+      "updated_at": "2026-09-28T21:10:00+08:00"
     }
   ],
-  "updated": "2026-09-28T19:30:00+08:00"
+  "updated": "2026-09-28T21:10:00+08:00"
 }

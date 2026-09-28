@@ -22,6 +22,27 @@ from . import config
 # 冷却期内不重试（避免 classify 每张图都重试一次加载），冷却期满后下次访问自动重试。
 LOAD_RETRY_COOLDOWN = 30.0
 
+# ---------------------------------------------------------------------------
+# 点 4：GPU 会话进程内串行锁（BUG-2026-0923-001 的解法）
+#
+# DirectML 会话**非线程安全**：照片级并行 P≥2 时两个线程同时进 sess.run 会直接
+# ACCESS_VIOLATION 段错误 —— 实测 GPU 模式 P=6 整批 RemoteDisconnected，
+# bench 如实记为 CRASHED，旧结论只能退到「GPU 只能 P=1」，而 P=1 又输给 CPU P=6。
+#
+# 解法不是把 P 降回 1，而是「GPU 会话串行 + CPU 侧预处理/后处理保持 P 路并行」：
+# 把 GPU 变成一个**单消费者队列**，解码、letterbox、归一化、NMS、人脸库写入
+# 仍在锁外并发 —— 这正是文档点 4 的真命题。
+#
+# 为什么是进程内**全局**一把锁而不是每会话一把：
+#   DML 各会话共享同一个 D3D 设备与命令队列，跨会话并发 run 同样不安全；
+#   锁得越细只是把「段错误」换成驱动级的设备丢失/花屏，排查代价更高。
+#
+# 纪律：**锁只包住 sess.run**。绝不把预处理/后处理也圈进去 —— 那会把实测口径
+# 变成「串行推理」，CPU 侧的 P 路并行收益就全没了（与 vcr/timing.py 同一条纪律）。
+# 纯 CPU 会话不过这把锁，零开销。
+# ---------------------------------------------------------------------------
+_GPU_RUN_LOCK = threading.Lock()
+
 
 class ModelRegistry:
     def __init__(self):
@@ -288,22 +309,52 @@ class ModelRegistry:
         return self._load_errors.get(key, "")
 
     # ------------------------------------------------------------------
+    def _gpu_backed(self, key: str) -> bool:
+        """该会话是否真绑到非 CPU provider（决定 run 是否过 GPU 串行锁）。
+
+        读的是 **ORT 实测绑定**的 provider（_session_facts 从 sess.get_providers()
+        取的），不是用户请求的 provider —— 用户开了 GPU 但加载回退到 CPU 时
+        不该白持锁（这也是 /health 会话表能看到的同一份事实）。
+
+        facts 缺失时**保守当作 GPU**：错锁的代价只是串行一档，漏锁的代价是段错误
+        （BUG-2026-0923-001 直接把整批扫描打死）。正常路径下 CPU 会话的 facts
+        恒为 ['CPUExecutionProvider']，不会白持锁。
+        """
+        info = self._session_info.get(key)
+        if info is None:
+            return True
+        provs = info.get("providers")
+        if not provs:
+            return True
+        return any(not str(p).startswith("CPU") for p in provs)
+
     def run(self, key: str, tensor) -> list[np.ndarray]:
         sess = self._sessions[key]
+        if self._gpu_backed(key):
+            with _GPU_RUN_LOCK:
+                return sess.run(None, {sess.get_inputs()[0].name: tensor})
         return sess.run(None, {sess.get_inputs()[0].name: tensor})
 
     def run_clip_vision(self, pixel_values: np.ndarray) -> np.ndarray:
         """图像塔前向 → (N,dim) fp32（fp16 图输出已 cast 回 fp32）。"""
         sess = self._sessions["clip_vision"]
-        return sess.run(None, {sess.get_inputs()[0].name: pixel_values})[0].astype(np.float32)
+        feed = {sess.get_inputs()[0].name: pixel_values}
+        if self._gpu_backed("clip_vision"):
+            with _GPU_RUN_LOCK:
+                return sess.run(None, feed)[0].astype(np.float32)
+        return sess.run(None, feed)[0].astype(np.float32)
 
     def run_clip_text(self, input_ids: np.ndarray, attention_mask: np.ndarray) -> np.ndarray:
         """文本塔前向 → (N,dim) fp32。"""
         sess = self._sessions["clip_text"]
-        return sess.run(None, {
+        feed = {
             sess.get_inputs()[0].name: input_ids,
             sess.get_inputs()[1].name: attention_mask,
-        })[0].astype(np.float32)
+        }
+        if self._gpu_backed("clip_text"):
+            with _GPU_RUN_LOCK:
+                return sess.run(None, feed)[0].astype(np.float32)
+        return sess.run(None, feed)[0].astype(np.float32)
 
     # ------------------------------------------------------------------
     # FEAT-053：固定张量测速 —— CPU/GPU 真实加速比一键对比
