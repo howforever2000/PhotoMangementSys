@@ -2172,7 +2172,29 @@
       "tests": ["cargo test --lib：121 passed / 0 failed / 2 ignored（新增 8 个测试：并行一致性、取消返回部分、线程数 clamp、推荐值区间、HDD 限流、无超线程不加成、单核下限、档位列表）", "npm run build（vue-tsc --noEmit && vite build）：零错误", "cargo build --lib：通过（34.15s）", "并行一致性测试 parallel_scan_matches_serial：2/4/8 线程与串行结果的文件名/路径/时间逐项比对 + 进度回调必须覆盖到最后一张", "推荐值测试捕获真实缺陷：physical_cores 会读注册表，测试无法构造期望值 → 拆出纯函数 physical_cores_for 后三分支（奇数核/普通型号/无超线程型号）全覆盖"],
       "created_at": "2026-09-21T16:30:00+08:00",
       "updated_at": "2026-09-21T16:30:00+08:00"
+    },
+    {
+      "id": "FEAT-075",
+      "name": "登录页启动封面替换为实拍壁纸 + 系统更名为「本地相册搭子」",
+      "status": "done",
+      "module": "src/views/Login.vue / covers/cover.jpg / src-tauri/tauri.conf.json / index.html",
+      "description": "按用户要求把登录页（启动后可见的首屏）固定封面从原设计图 covers/cover.png 换成实拍日出山峦壁纸（源图 D:/YUAN HAO/Pictures/壁纸/20260928-Image_1790578366194_587_edit_314986081038539-3.jpg，4096x2304），同时把系统对外名称统一为「本地相册搭子」。封面只被 Login.vue 引用（Register / ForgotPassword 是浅色纯色渐变、无封面），改动面收敛在一处。原设计封面 covers/cover.png 未覆盖，回滚只需把 import 路径改回去。",
+      "related_files": ["src/views/Login.vue", "covers/cover.jpg", "covers/login-preview.png", "src-tauri/tauri.conf.json", "index.html"],
+      "keywords": ["登录页封面", "启动封面", "封面换图", "本地相册搭子", "系统命名", "窗口标题", "cover.jpg", "Login.vue", "auth-cover", "壁纸"],
+      "implementation":       {
+        "封面素材": "源图 4096x2304 / 1.5MB 对登录页过重（全屏 background-size:cover 用不到 4K）。Pillow 等比缩到 2560x1440、JPEG quality=88 progressive optimize 输出 covers/cover.jpg，434KB（原图 28%），保留 2K 全屏清晰度。",
+        "引用切换": "Login.vue 的 import 由 ../../covers/cover.png 改为 ../../covers/cover.jpg；.auth-cover 样式（cover + center）不动。",
+        "命名统一": "登录页主标题「本地相册管理」→「本地相册搭子」；index.html <title> 与 tauri.conf.json 窗口 title 同步改名。productName/identifier 未动（牵动安装包与注册表标识），Home.vue 顶栏标题也未动。",
+        "回滚路径": "Login.vue import 改回 cover.png 即回到原设计封面。"
+      },
+      "verified":       {
+        "编译": "@vue/compiler-sfc parse + compileScript + compileTemplate 通过，零模板/脚本错误",
+        "运行": "vite dev(1420) + Playwright(msedge headless, 1280x800) 打开 /login：document.title 与 .auth-title 均为「本地相册搭子」，封面资源 /covers/cover.jpg 返回 200 image/jpeg，控制台 0 error / 0 warning",
+        "可读性": "新封面均值亮度 135、卡片区 154（偏亮）。卡片 rgba(12,18,38,0.42) + blur 叠加后浅色标题 #f5f7ff 对比度约 5.8:1，高于 WCAG AA 4.5:1，故未额外加深遮罩（避免把封面盖死）"
+      },
+      "created_at": "2026-09-28T15:45:00+08:00",
+      "updated_at": "2026-09-28T15:45:00+08:00"
     }
   ],
-  "updated": "2026-09-21T16:30:00+08:00"
+  "updated": "2026-09-28T15:45:00+08:00"
 }

@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "本地相册管理",
+        "title": "本地相册搭子",
         "width": 1280,
         "height": 800,
         "minWidth": 960,

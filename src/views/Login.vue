@@ -2,8 +2,10 @@
 import { ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "../stores/auth";
-// 登录页固定使用设计封面（不随主题/皮肤变化）
-import coverImg from "../../covers/cover.png";
+// 登录页固定使用启动封面（不随主题/皮肤变化）
+// FEAT-075：封面替换为实拍壁纸 covers/cover.jpg（2560x1440）；
+// 旧设计封面保留为 covers/cover.png，需要回滚时改回这一行路径即可。
+import coverImg from "../../covers/cover.jpg";
 
 const auth = useAuthStore();
 const router = useRouter();
@@ -47,7 +49,7 @@ async function handleLogin() {
     <div class="auth-overlay"></div>
     <div class="auth-card">
       <header class="auth-header">
-        <h1 class="auth-title">本地相册管理</h1>
+        <h1 class="auth-title">本地相册搭子</h1>
         <p class="auth-subtitle">登录后管理你的相册空间</p>
       </header>
 
@@ -185,7 +187,7 @@ async function handleLogin() {
   padding: 0 12px;
   font-size: 14px;
   /* FEAT-059：由不透明白底（#ffffff）改为「玻璃态」——
-     半透明 + 背景模糊，让 covers/cover.png 从输入框里透出来；
+     半透明 + 背景模糊，让 covers/cover.jpg 从输入框里透出来；
      文字改浅色并加极淡阴影，保证在背景图亮部也可读。 */
   color: #f5f7ff;
   border: 1px solid rgba(255, 255, 255, 0.38);
