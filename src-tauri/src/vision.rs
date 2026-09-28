@@ -57,7 +57,8 @@ fn pick_cold_port() -> u16 {
     0
 }
 
-/// 实例落盘文件（跨应用重启收养存活服务 / 清理僵尸）：{"pid":..,"port":..}
+/// 实例落盘文件（跨应用重启收养存活服务 / 清理僵尸）：
+/// `{"pid":..,"port":..,"wait_fails":..}`
 fn instance_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app
         .path()
@@ -65,16 +66,31 @@ fn instance_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("获取应用数据目录失败: {e}"))?
         .join("vcr-instance.json"))
 }
-fn save_instance(app: &tauri::AppHandle, pid: u32, port: u16) {
+
+/// 实例记录解析（纯函数，便于单测）：旧记录没有 `wait_fails` → 按 0 处理
+fn parse_instance_json(txt: &str) -> Option<(u32, u16, u32)> {
+    let v: serde_json::Value = serde_json::from_str(txt).ok()?;
+    let pid = v.get("pid")?.as_u64()? as u32;
+    let port = v.get("port")?.as_u64()? as u16;
+    let fails = v.get("wait_fails").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+    Some((pid, port, fails))
+}
+
+/// 写实例记录。
+/// `wait_fails`：该实例被「收养等待」判超时的累计次数，用于把「加载慢」与「僵死」分开
+/// （见 BUG-2026-0928-001 与 `ADOPT_WAIT_MAX` 的说明）
+fn save_instance(app: &tauri::AppHandle, pid: u32, port: u16, wait_fails: u32) {
     if let Ok(f) = instance_file(app) {
-        let _ = std::fs::write(f, format!("{{\"pid\":{},\"port\":{}}}", pid, port));
+        let _ = std::fs::write(
+            f,
+            format!("{{\"pid\":{pid},\"port\":{port},\"wait_fails\":{wait_fails}}}"),
+        );
     }
 }
-fn load_instance(app: &tauri::AppHandle) -> Option<(u32, u16)> {
+fn load_instance(app: &tauri::AppHandle) -> Option<(u32, u16, u32)> {
     let f = instance_file(app).ok()?;
     let txt = std::fs::read_to_string(f).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
-    Some((v.get("pid")?.as_u64()? as u32, v.get("port")?.as_u64()? as u16))
+    parse_instance_json(&txt)
 }
 fn clear_instance(app: &tauri::AppHandle) {
     if let Ok(f) = instance_file(app) {
@@ -95,6 +111,81 @@ fn pid_alive(pid: u32) -> bool {
     #[cfg(not(target_os = "windows"))]
     {
         Path::new(&format!("/proc/{pid}")).exists()
+    }
+}
+
+/// 从 `tasklist /FI "PID eq N" /NH` 的输出里解析映像名（纯函数，便于单测）
+///
+/// 数据行形如：
+/// `QQ.exe                       20240 Console                   13    154,320 K`
+/// 无匹配时 Windows 打印 `信息: 没有运行的任务匹配指定标准。`（英文系统为 `INFO: …`），
+/// 这类提示行不是数据行，必须排除——否则会把「进程不存在」误读成映像名。
+fn parse_tasklist_image(out: &str) -> Option<String> {
+    for line in out.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("信息:") || line.starts_with("INFO:") {
+            continue;
+        }
+        let name = line.split_whitespace().next().unwrap_or("");
+        if name.to_ascii_lowercase().ends_with(".exe") {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// 查询 PID 的映像名（Windows tasklist / Unix /proc 的 comm）
+fn pid_image_name(pid: u32) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .ok()?;
+        parse_tasklist_image(&String::from_utf8_lossy(&out.stdout))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .ok()
+            .map(|s| s.trim().to_string())
+    }
+}
+
+/// 该 PID 是否真的属于本项目识别服务进程
+///
+/// **为什么必须单独判**：`pid_alive` 只回答「这个 PID 存不存在」，而 PID 会被系统
+/// 回收复用。实例文件里记的 pid 一旦被别的程序占用（实测 20240 → QQ.exe），
+/// `pid_alive` 恒为 true，B 段就会判定「进程启动中 → 收养等待（不杀）」，对一个
+/// 根本没人监听的端口白等 90s；超时后「实例保留」→ 下一轮又收养同一个假 PID →
+/// 服务永远起不来（BUG-2026-0928-001）。所以「存活」之外还要验明正身。
+///
+/// 判据：打包版映像名是 `vcr-server.exe`（唯一）；开发版是 `python.exe`，
+/// 需再校验命令行含 `server.py`（与 `kill_our_orphans` 同一口径）。
+fn pid_is_our_service(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        match pid_image_name(pid) {
+            Some(img) if img.eq_ignore_ascii_case("vcr-server.exe") => true,
+            Some(img) if img.eq_ignore_ascii_case("python.exe") => {
+                // 开发版：映像名不唯一，必须看命令行，避免把用户的其他 python 当成服务
+                let script = format!(
+                    "$c = (Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' | Select-Object -ExpandProperty CommandLine); if ($c -like '*server.py*') {{ 'YES' }} else {{ 'NO' }}"
+                );
+                std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-Command", &script])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).contains("YES"))
+                    .unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::fs::read_to_string(format!("/proc/{pid}/cmdline"))
+            .map(|c| c.contains("server.py") || c.contains("vcr-server"))
+            .unwrap_or(false)
     }
 }
 
@@ -139,6 +230,18 @@ fn kill_our_orphans() {
 }
 /// 服务就绪等待上限（FEAT-051 后需加载 l/m 全通道模型，DML 首次初始化较慢）
 const READY_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// 同一实例允许「收养等待超时」的次数上限（BUG-2026-0928-001）
+///
+/// 「进程存活但端口不通」有两种截然不同的成因，不能一视同仁：
+/// - **加载中**：Python 先起进程、加载完模型才 listen，属于正常态 → 必须留着等；
+/// - **僵死**：进程卡在 import / 模型加载死锁，永远等不到 → 必须杀掉重来。
+///
+/// 两者在单次探测上无法区分，只能靠「累计等待时长」推断。取 3 次 × 90s ≈ 4.5 分钟
+/// 作为分界：远超本机大模型冷加载耗时（实测数十秒量级），不会误杀正在加载的进程，
+/// 又能给「实例保留」这条路径一个有穷的出口——否则一个僵死实例会被无限期收养，
+/// ensure 永远走不到 C 段冷启动。
+const ADOPT_WAIT_MAX: u32 = 3;
 /// FEAT-051：要求的服务 API 版本（GPU 开关 + 模型切换能力）；
 /// 探测到运行中服务版本过旧时自动 POST /shutdown 重启到新版本
 /// FEAT-051：API 版本。宿主检测到运行中服务版本过旧时自动重启到新版。
@@ -575,7 +678,7 @@ async fn ensure_service_ready(
     }
 
     // B. 实例记录（本进程或上次运行遗留）
-    if let Some((pid, port)) = inst {
+    if let Some((pid, port, wait_fails)) = inst {
         let base = format!("http://127.0.0.1:{port}");
         let (probe, digest) = probe_base(client, &base).await;
         perf_log(&format!(
@@ -617,30 +720,68 @@ async fn ensure_service_ready(
                 //（与 C 段超时策略一致）。旧版在此直接 kill 存活进程，C 段保留的
                 // 加载进程被下一轮 ensure 误杀重启 → 「杀→重拉→再杀」死循环
                 //（PID 连环变化 + ConnectionResetError 10054 刷屏）。
+                //
+                // BUG-2026-0928-001：上述推理隐含「存活的 PID 就是我们的服务进程」
+                // 这个前提，而 PID 会被系统回收复用。实例里记的 pid 若已被别的程序
+                // 占用（实测 20240 → QQ.exe），pid_alive 恒为 true，于是既不杀也不
+                // 冷启动，对一个无人监听的端口白等 90s，超时后「实例保留」→ 下一轮
+                // 又收养同一个假 PID → 服务永远起不来。故先验明正身再决定收养与否。
                 let alive = pid_alive(pid);
+                let ours = alive && pid_is_our_service(pid);
                 perf_log(&format!(
-                    "ensure B段 端口不可达 pid={pid} 进程存活={alive} → {}",
-                    if alive { "收养等待（不杀）" } else { "清场后冷启动" }
+                    "ensure B段 端口不可达 pid={pid} 进程存活={alive} 属于本服务={ours} → {}",
+                    if !alive {
+                        "清场后冷启动"
+                    } else if ours {
+                        "收养等待（不杀）"
+                    } else {
+                        "PID 已被复用，清场后冷启动"
+                    }
                 ));
-                if alive {
+                if alive && !ours {
+                    // 该 PID 上的进程与我们无关（多半是系统把它回收给了别的程序）：
+                    // 保留记录只会让以后每一轮都白等，直接清掉走冷启动。
+                    // 注意绝不 kill 这个 pid —— 它现在属于别人的进程。
+                    let img = pid_image_name(pid).unwrap_or_else(|| "<未知进程>".into());
+                    perf_log(&format!(
+                        "ensure B段 实例记录失效：pid={pid} 现为 {img}（非本项目识别服务），仅清除记录不杀进程"
+                    ));
+                    clear_instance(app);
+                } else if alive {
                     match wait_service(client, &base, wait_models).await {
                         Ok(()) => {
                             set_base(base);
+                            // 已就绪，重置累计失败计数
+                            save_instance(app, pid, port, 0);
                             perf_log(&format!(
                                 "ensure 完成（B段收养启动中进程）| 耗时 {}ms",
                                 t0.elapsed().as_millis()
                             ));
                             return Ok(());
                         }
-                        // 进程仍在启动/加载：保留实例，下次 ensure 继续收养等待
+                        // 进程仍在启动/加载：保留实例，下次 ensure 继续收养等待；
+                        // 但累计到 ADOPT_WAIT_MAX 次就判僵死，杀掉重来（避免无限期白等）
                         Err(err) => {
-                            perf_log(&format!("ensure 失败（B段收养等待超时，实例保留）| {err}"));
-                            return Err(err);
+                            let fails = wait_fails + 1;
+                            if fails >= ADOPT_WAIT_MAX {
+                                perf_log(&format!(
+                                    "ensure B段 累计 {fails} 次收养等待超时（≥{ADOPT_WAIT_MAX}）→ 判定僵死，强杀 pid={pid} 转冷启动 | {err}"
+                                ));
+                                kill_pid(pid);
+                                clear_instance(app);
+                            } else {
+                                save_instance(app, pid, port, fails);
+                                perf_log(&format!(
+                                    "ensure 失败（B段收养等待超时 {fails}/{ADOPT_WAIT_MAX}，实例保留）| {err}"
+                                ));
+                                return Err(err);
+                            }
                         }
                     }
+                } else {
+                    // 进程确已死亡（崩溃 / bind 失败残留）→ 清场后走 C 冷启动
+                    clear_instance(app);
                 }
-                // 进程确已死亡（崩溃 / bind 失败残留）→ 清场后走 C 冷启动
-                clear_instance(app);
             }
         }
     } else {
@@ -678,7 +819,7 @@ async fn ensure_service_ready(
         match wait_service(client, &base, wait_models).await {
             Ok(()) => {
                 set_base(base.clone());
-                save_instance(app, pid, port);
+                save_instance(app, pid, port, 0);
                 perf_log(&format!(
                     "ensure 完成（C段冷启动成功）| base={base} pid={pid} wait_models={wait_models} 耗时 {}ms",
                     t0.elapsed().as_millis()
@@ -704,9 +845,11 @@ async fn ensure_service_ready(
                     ));
                     return Err(stale_component_err(&spawn_target_path(app)));
                 }
-                // 进程仍存活 = 正在加载模型 → 保留进程，落实例供收养，提示稍候
+                // 进程仍存活 = 正在加载模型 → 保留进程，落实例供收养，提示稍候。
+                // wait_fails 记 1：本轮冷启动已经完整等过一次超时，下一轮收养若再
+                // 超时即累加，到 ADOPT_WAIT_MAX 判僵死（BUG-2026-0928-001）
                 set_base(base.clone());
-                save_instance(app, pid, port);
+                save_instance(app, pid, port, 1);
                 perf_log(&format!(
                     "ensure 未就绪但进程存活（加载中，实例保留供收养）| base={base} pid={pid} 耗时 {}ms | {timeout_err} | {digest}",
                     t0.elapsed().as_millis()
@@ -2000,6 +2143,39 @@ mod tests {
         let got = resolve_python_interpreter().expect("venv 存在时应能解析出解释器");
         assert_eq!(got, venv, "应优先选择项目自带 venv");
     }
+
+    /// BUG-2026-0928-001：PID 复用防护的两个纯函数判据。
+    /// 本机实测现场：vcr-instance.json 记着 pid=20240，而该 PID 当时已被 QQ.exe 占用，
+    /// `pid_alive` 恒 true → 收养等待 90s → 超时保留 → 服务永远起不来。
+    #[test]
+    fn test_parse_tasklist_image_recognizes_foreign_process() {
+        // tasklist /NH 的真实数据行（多空格分隔，首列为映像名）
+        let line = "QQ.exe                       20240 Console                   13    154,320 K";
+        assert_eq!(parse_tasklist_image(line).as_deref(), Some("QQ.exe"));
+        let line2 = "vcr-server.exe                12345 Console                    1     90,120 K";
+        assert_eq!(parse_tasklist_image(line2).as_deref(), Some("vcr-server.exe"));
+        let line3 = "python.exe                     8888 Console                    1    210,000 K";
+        assert_eq!(parse_tasklist_image(line3).as_deref(), Some("python.exe"));
+    }
+
+    /// 「无匹配任务」的提示行不是数据行，绝不能当成映像名——
+    /// 否则「进程不存在」会被误判成「进程存在且是别的东西」。
+    #[test]
+    fn test_parse_tasklist_image_rejects_no_match_and_empty() {
+        assert_eq!(parse_tasklist_image("信息: 没有运行的任务匹配指定标准。"), None);
+        assert_eq!(parse_tasklist_image("INFO: No tasks are running which match the specified criteria."), None);
+        assert_eq!(parse_tasklist_image(""), None);
+        assert_eq!(parse_tasklist_image("   \n  \n"), None);
+    }
+
+    /// 实例记录解析：新格式带 wait_fails；旧格式（升级前写入的）必须按 0 兼容
+    #[test]
+    fn test_parse_instance_json_backward_compatible() {
+        assert_eq!(parse_instance_json(r#"{"pid":20240,"port":18765,"wait_fails":2}"#), Some((20240, 18765, 2)));
+        assert_eq!(parse_instance_json(r#"{"pid":20240,"port":18765}"#), Some((20240, 18765, 0)));
+        assert_eq!(parse_instance_json("not json"), None);
+        assert_eq!(parse_instance_json(r#"{"port":18765}"#), None);
+    }
 }
 
 /// FEAT-SEM 语义退避的回归测试（BUG-2026-0920-008）
@@ -2331,7 +2507,7 @@ pub async fn clip_ready(app: &tauri::AppHandle) -> bool {
     if let Some(base) = current_base() {
         return probe_clip(client, base).await;
     }
-    if let Some((_, port)) = load_instance(app) {
+    if let Some((_, port, _)) = load_instance(app) {
         return probe_clip(client, format!("http://127.0.0.1:{port}")).await;
     }
     false

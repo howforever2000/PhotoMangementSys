@@ -2730,6 +2730,44 @@
         "[既有注释] test_scan.rs::scan_test_photos_parallel 文档称「单张约 0.3~2ms」——实测生产路径为 0.06~0.85ms/张（Python Pillow 代理测得 2.5~3.2ms/张，故该估计很可能源自 Python 侧，高估了 3~10 倍）"
       ],
       "created_at": "2026-09-22T09:40:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0928-001",
+      "date": "2026-09-28",
+      "status": "fixed",
+      "severity": "high",
+      "title": "识别服务实例收养未验明 PID 正身：PID 被系统回收复用后对空端口白等 90s，且无限期重复收养，服务永远起不来",
+      "module": "src-tauri/src/vision.rs（ensure_service_ready B 段 / load_instance / save_instance / pid_alive）",
+      "symptom": [
+        "应用启动后识别服务长时间不可用，日志反复出现「实例存在，等待就绪」类记录，但端口始终连不上",
+        "同一实例被跨轮次反复收养，never 走到 C 段冷启动",
+        "实测实例文件记录的 pid=20240 已被系统回收给 QQ.exe：pid_alive(20240) 恒为 true，B 段据此判定「进程启动中 → 收养等待（不杀）」",
+        "等待上限 READY_TIMEOUT=90s 超时后走「实例保留」分支 → 下一轮又收养同一个假 PID"
+      ],
+      "root_cause": {
+        "summary": "「进程存活」被当成了「我们的服务存活」。pid_alive 只回答 PID 是否存在，而 PID 会被操作系统回收复用；实例文件（vcr-instance.json）里的 pid 一旦指向别的程序，存活判断就永久为真，收养等待陷入无穷循环。",
+        "detail": [
+          "收养等待（等待 Python 先起进程、加载完模型再 listen）本身是正常态，与「僵死」在单次探测上无法区分 —— 缺少把两者分开的判据",
+          "「实例保留」分支没有失败计数：无论多少次超时都保留实例，等于给僵死实例一个无限期的出口",
+          "pid_alive 的实现是 OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) / kill(pid,0)，只验证 PID 有效，不验证映像名或命令行"
+        ]
+      },
+      "solution": {
+        "summary": "存活之外再验明正身（映像名 + 命令行），并给收养等待加累计次数上限，超限判僵死强杀转冷启动。",
+        "steps": [
+          "新增 pid_image_name（Windows 走 tasklist /FI \"PID eq N\" /NH，Unix 读 /proc/<pid>/comm）+ 纯函数 parse_tasklist_image（排除中文「信息: 没有运行的任务…」与英文 INFO: 提示行）",
+          "新增 pid_is_our_service：打包版认 vcr-server.exe；开发版认 python.exe 且命令行含 server.py（与 kill_our_orphans 同一口径），避免把用户的其他 python 进程误杀",
+          "instance 记录扩展为 {pid, port, wait_fails}；load_instance 返回三元组，parse_instance_json 对旧格式（无 wait_fails）按 0 兼容",
+          "收养等待超时累计 wait_fails+1，达到 ADOPT_WAIT_MAX=3（约 3×90s≈4.5 分钟，远超本机大模型冷加载耗时）即判定僵死、强杀实例转冷启动；冷启动记 wait_fails=1，使下一轮收养再超时能继续累加",
+          "补 3 例纯函数单测：实例记录旧格式兼容、tasklist 输出解析（认数据行 / 排除无匹配提示行与空行）"
+        ]
+      },
+      "related_files": [
+        "src-tauri/src/vision.rs"
+      ],
+      "log_hint": "搜索日志中的「ensure B段」「收养等待」「实例保留」「结束本项目识别服务进程」；对照 vcr-instance.json 里的 pid 是否等于当前 python/vcr-server 进程",
+      "created_at": "2026-09-28T16:10:00+08:00",
+      "fixed_at": "2026-09-28T16:10:00+08:00"
     }
   ]
 }
