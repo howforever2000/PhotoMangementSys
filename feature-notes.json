@@ -2420,7 +2420,80 @@
       },
       "created_at": "2026-09-28T21:10:00+08:00",
       "updated_at": "2026-09-28T21:10:00+08:00"
+    },
+    {
+      "id": "FEAT-081",
+      "name": "性能设置界面重构：只保留与硬件有关的开关 + 三段式分区 + 「性能设置 / 模型管理」双页签",
+      "status": "done",
+      "module": "src/components/settings/*（新增 10 个组件）+ ModelGpuSettings.vue（单体 1054 行 → 150 行布局壳）+ GlobalScanPanel / ScanPanel / stores/content.ts / App.vue",
+      "description": "按「只保留和用户硬件有关的设施（适配不同电脑）」重做设置界面。先逐项核对后端作用域再分拣：保留（GPU 加速、CPU 线程数、语义模型档位）、移出（模型下载 + 镜像源自检 + 自定义源 → 独立「模型管理」页签，因为它依赖网络而非硬件，且不依赖识别服务）、降级折叠（扫描批次 / 实测诊断 → 默认收起的「高级选项」）。",
+      "related_files": [
+        "src/components/settings/PerfSettingsDialog.vue",
+        "src/components/settings/ClipTierSection.vue",
+        "src/components/settings/HardwareSection.vue",
+        "src/components/settings/GpuSection.vue",
+        "src/components/settings/ThreadsSection.vue",
+        "src/components/settings/ScanAdvancedSection.vue",
+        "src/components/settings/BenchmarkSection.vue",
+        "src/components/settings/ModelManageSection.vue",
+        "src/components/settings/ModelDownloadsSection.vue",
+        "src/components/settings/ModelSourcesSection.vue",
+        "src/components/ModelGpuSettings.vue",
+        "src/components/GlobalScanPanel.vue",
+        "src/components/ScanPanel.vue",
+        "src/stores/content.ts",
+        "src/App.vue"
+      ],
+      "keywords": [
+        "性能设置",
+        "设置界面",
+        "分区",
+        "页签",
+        "折叠",
+        "批次",
+        "模型管理",
+        "硬件适配",
+        "交互友好",
+        "PerfSettingsDialog",
+        "scanBatch"
+      ],
+      "implementation": {
+        "分拣依据（后端作用域核对）": [
+          "批次 8/16/32：content.rs clamp(4,64) 默认 8；对识别腿只是「一批 HTTP 的张数」，底稿 §5.1 陷阱2 实测无吞吐收益 → 保留但移出可见行，收进「高级选项」折叠区（用户确认）",
+          "语义模型档位 / GPU 加速 / CPU 线程数：直接对应机器能力 → 保留为一级",
+          "模型下载 + 镜像源自检 + 自定义源：走 model_dl.rs（网络），且不依赖识别服务 → 从性能面板移出为「📦 模型管理」页签（用户确认选 a）",
+          "会话实测 / 推理测速 / 线程扫档：是「跑一次才知道」的诊断，不是设置 → 折叠进「高级选项」",
+          "扫描线程数（ScanPerfSettings）：只作用于扫描分组工具，已隔离在该工具自己的 ⚙ 里 → 不动"
+        ],
+        "布局": "弹窗两页签（⚙ 性能设置 / 📦 模型管理，后者有「有模型未下载」小圆点提示）；性能页自上而下三段：① 本机硬件（GPU 加速 + 检测、CPU 线程数）② 语义模型（档位）③ 高级选项（复用 CollapseSection，默认收起、localStorage 记忆）。分区之间用分隔线而不是再套卡片，避免「卡中卡」。",
+        "共享数据不传 prop": "gpuStatus / vcrThreads / vcrModels / modelDownloads / scanBatch 全部落在 Pinia；各分区自加载、自报错、动作直接写 store → 父子与兄弟分区自动同步，不存在「改了一处另一处还是旧值」（旧实现的 gpuStatus 存本地 ref 就有这毛病）。",
+        "批次单一来源": "新增 store.scanBatch + setScanBatch（localStorage 键 pm:scan-batch），两个扫描面板都从这里读；旧实现两处各持一个 ref，值互不同步。",
+        "两个入口统一": "ScanPanel（相册扫描）原来只有一个裸「检测 GPU」按钮、没有设置入口；现在两边渲染同一个 PerfSettingsDialog。",
+        "长任务不放假取消": "测速/扫档用 withTimeout 兜底；invoke 无取消语义（withTimeout.ts 已注明超时只解除 UI 阻塞），因此不提供假的「取消」按钮，改为把等待时长写进按钮文案（测速中…（最长约 6 分钟））并说明后端仍会跑完。",
+        "拆分": "单文件超 300 行即拆：原 1054 行的 ModelGpuSettings 拆成 10 个文件，最大 284 行（BenchmarkSection），单一分区只管一件事（GPU / 线程 / 档位 / 批次 / 测速 / 下载 / 源治理）。",
+        "主题变量": "新组件统一用 main.css 真实主题变量 --color-*，不再用旧组件里从未定义过的 --ts-*（旧代码全部走 fallback，深色模式下一直是错的）。"
+      },
+      "verified": {
+        "静态": "npx vue-tsc --noEmit 零错误 · npm run build 通过 · npm test 8/8 通过",
+        "浏览器实测（Playwright + 注入 Tauri IPC mock，覆盖加载态）": [
+          "两个入口都能打开弹窗：全局扫描页与相册详情页（后者需先展开「🧩 组合扫描」折叠区）",
+          "页签切换正常：切到「模型管理」后性能分区不再渲染",
+          "「高级选项」默认收起、点击展开，批次下拉 8/16/32 可选",
+          "改批次为 16 → localStorage[pm:scan-batch]=16，证实两面板共用同一份",
+          "扫描面板上残留的 .batch-select 数量 = 0（可见行已移除）",
+          "换语义档位：改下拉 → 先弹 ConfirmDialog 且服务端未被调用；取消 → 下拉回显原值且调用数仍为 0；确认 → 恰好 1 次 set_vcr_model + toast",
+          "Esc 关闭弹窗后页面仍停在原路由",
+          "点遮罩关闭正常；全程控制台 0 error"
+        ],
+        "视觉": "截图经视觉模型复核：页签/分区/控件层级分明，无文字截断、溢出或重叠"
+      },
+      "fixed": [
+        "全局 ESC 导致弹窗关掉后页面也被路由返回：PerfSettingsDialog 原先只设 open=false 未 preventDefault，App.vue 的 onGlobalEsc 看到 defaultPrevented=false 就 router.back()（浏览器里表现为跳到 about:blank）。改为与 ConfirmDialog 同一口径 —— 挂 document 冒泡阶段 + preventDefault + stopPropagation；并把 .psd-mask 补进 App.vue 的「弹窗出现时不接管」白名单。",
+        "GlobalScanPanel 移除批次下拉时多删了一层 div（构建期 [vite:vue] Invalid end tag 暴露）→ 已修正，模板标签恢复平衡。"
+      ],
+      "created_at": "2026-09-28T19:30:00+08:00",
+      "updated_at": "2026-09-28T19:30:00+08:00"
     }
   ],
-  "updated": "2026-09-28T21:10:00+08:00"
+  "updated": "2026-09-28T19:30:00+08:00"
 }

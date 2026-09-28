@@ -4,7 +4,7 @@
  *
  * 跨相册批量扫描入库组件，托管在主页「图片扫描」板块下的专属页面：
  * - 勾选要扫描入库的相册（支持全选 / 反选，显示照片数与已入库数）
- * - 扫描类型复用相册管理中的组合扫描（EXIF 基础 / 影调分析 / 人物 · 文档识别）+ 批次
+ * - 扫描类型复用相册管理中的组合扫描（EXIF 基础 / 影调分析 / 人物 · 文档识别）
  * - 支持启动 / 停止；两级进度条（相册级总进度 + 当前相册照片级进度）
  * - 后台执行：任务状态存于 Pinia store，离开页面扫描不中断，回来恢复显示
  */
@@ -13,8 +13,7 @@ import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import type { GlobalScanItem, GlobalScanItemStatus } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
-import { useThemeStore } from "../stores/theme";
-import ModelGpuSettings from "./ModelGpuSettings.vue";
+import PerfSettingsDialog from "./settings/PerfSettingsDialog.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import { SCAN_MODE_TITLE, SCAN_MODE_TIP } from "../utils/scanModeTip";
 import { scanItemNote, type ScanItemNote } from "../utils/scanItemNote";
@@ -22,9 +21,8 @@ import { scanItemNote, type ScanItemNote } from "../utils/scanItemNote";
 const albumStore = useAlbumStore();
 const contentStore = useContentStore();
 const notify = useNotify();
-const theme = useThemeStore();
 
-/** FEAT-051：识别性能设置弹窗（GPU 加速 / 分类模型） */
+/** FEAT-051：性能设置弹窗（⚙ 性能设置 / 📦 模型管理） */
 const perfOpen = ref(false);
 
 // ---- 全局扫描任务（来自 store，脱离组件存活） ----
@@ -86,11 +84,12 @@ const filteredAlbums = computed(() => {
   );
 });
 
-// ---- 扫描设置（复用相册管理组合扫描的类型 + 批次） ----
+// ---- 扫描设置（复用相册管理组合扫描的类型） ----
 // FEAT-SEM：语义向量默认勾选
 const scanTypes = ref<string[]>(["basic", "tone", "person", "semantic"]);
-const BATCH_OPTIONS = [8, 16, 32];
-const batch = ref(8);
+// 批次已收进 ⚙ 性能设置 →「高级选项」（对识别腿无吞吐收益，不该占扫描面板的可见位）；
+// 值存在 Pinia（localStorage 持久化），与相册扫描共用同一份。
+const scanBatch = computed(() => contentStore.scanBatch);
 
 // ---- 进度计算 ----
 /** 已到终态的相册数（done / failed / stopped） */
@@ -164,7 +163,7 @@ function launchScan(overwrite: boolean) {
   const entries = albums.value
     .filter((a) => selectedIds.value.has(a.id))
     .map((a) => ({ id: a.id, name: a.name }));
-  const ok = contentStore.beginGlobalScan(entries, [...scanTypes.value], batch.value, overwrite);
+  const ok = contentStore.beginGlobalScan(entries, [...scanTypes.value], scanBatch.value, overwrite);
   if (ok) {
     notify.info(
       "全局扫描已开始",
@@ -207,7 +206,7 @@ onMounted(() => {
       <div class="gs-actions">
         <button
           class="btn btn-ghost"
-          title="GPU 加速 / 分类模型切换"
+          title="GPU 加速 / CPU 线程数 / 语义模型 / 模型下载"
           @click="perfOpen = true"
         >
           ⚙ 性能设置
@@ -314,11 +313,6 @@ onMounted(() => {
           <span class="gs-check-desc">自然语言搜图 · 需 CLIP 模型</span>
         </label>
       </div>
-      <label class="batch-select">批次
-        <select v-model="batch" :disabled="running">
-          <option v-for="b in BATCH_OPTIONS" :key="b" :value="b">{{ b }}</option>
-        </select>
-      </label>
     </div>
 
     <p v-if="job.error" class="gs-error">{{ job.error }}</p>
@@ -400,18 +394,8 @@ onMounted(() => {
     </div>
   </section>
 
-  <!-- FEAT-051：识别性能设置弹窗（GPU 加速 / 分类模型，点击设置按钮展开） -->
-  <Teleport to="body">
-    <div v-if="perfOpen" class="perf-mask" @click.self="perfOpen = false">
-      <div class="perf-dialog" :style="theme.cardStyle">
-        <div class="perf-head">
-          <h3>⚙ 识别性能设置</h3>
-          <button class="btn perf-close" @click="perfOpen = false">✕</button>
-        </div>
-        <ModelGpuSettings />
-      </div>
-    </div>
-  </Teleport>
+  <!-- FEAT-051：性能设置弹窗（⚙ 性能设置 / 📦 模型管理，与相册扫描共用） -->
+  <PerfSettingsDialog v-model="perfOpen" />
 
   <!-- FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） -->
   <ConfirmDialog
@@ -641,21 +625,7 @@ onMounted(() => {
 .gs-check-label { font-weight: 500; font-size: 13px; }
 .gs-check-desc { font-size: 11px; color: var(--color-text-3); }
 
-.batch-select {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--color-text-3);
-}
-.batch-select select {
-  padding: 2px 4px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  font-size: 12px;
-  background: var(--color-surface-2);
-  color: inherit;
-}
+/* 批次选择已移至 ⚙ 性能设置 → 高级选项 */
 
 /* ---- 错误 / 进度 ---- */
 .gs-error {
@@ -808,40 +778,4 @@ onMounted(() => {
   font-size: 13px;
 }
 .gs-empty p { margin: 0; }
-</style>
-
-<style scoped>
-/* FEAT-051：识别性能设置弹窗 */
-.perf-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 1200;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.perf-dialog {
-  width: min(560px, 94vw);
-  max-height: 86vh;
-  overflow-y: auto;
-  border-radius: 14px;
-  padding: 16px 18px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
-}
-.perf-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-}
-.perf-head h3 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 700;
-}
-.perf-close {
-  padding: 2px 10px;
-  font-size: 14px;
-}
 </style>

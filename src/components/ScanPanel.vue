@@ -3,12 +3,12 @@ import { computed, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useContentStore } from "../stores/content";
-import type { VcrGpuStatus } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import { trace } from "../utils/trace";
 import { categoryLabel } from "../utils/categoryLabel";
 import PersonPanel from "./PersonPanel.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
+import PerfSettingsDialog from "./settings/PerfSettingsDialog.vue";
 import { SCAN_MODE_TITLE, SCAN_MODE_TIP } from "../utils/scanModeTip";
 import { PERF_TIMEOUT, withTimeout } from "../utils/withTimeout";
 import { useNotify } from "../composables/useNotify";
@@ -25,8 +25,11 @@ const toneLabelMap: Record<string, string> = {
 
 // FEAT-SEM：语义向量默认勾选（其余三项保持原默认）
 const comboScanTypes = ref<string[]>(["basic", "tone", "person", "semantic"]);
-const comboBatch = ref(8);
-const BATCH_OPTIONS = [8, 16, 32];
+// 批次不再在面板上占一个下拉：它是「高级选项」里的一项（对识别腿无吞吐收益），
+// 值统一存 Pinia（localStorage 持久化），与全局扫描共用同一份。
+const comboBatch = computed(() => contentStore.scanBatch);
+/** ⚙ 性能设置弹窗（与全局扫描共用同一实现） */
+const perfOpen = ref(false);
 // 任务状态来自全局 store（键 = albumId），脱离组件存活：
 // 退出相册页后后端继续扫描，重新进入仍能看到进度与结果 → 支持后台工作
 const job = computed(() => contentStore.jobFor(props.albumId));
@@ -96,22 +99,15 @@ function stopScan() {
   contentStore.stopCombinedScan(props.albumId);
 }
 
-// ---- GPU 加速状态（仅展示，不参与扫描逻辑） ----
-const gpuStatus = ref<VcrGpuStatus | null>(null);
-const gpuLoading = ref(false);
+// ---- GPU 加速状态（只读展示；改状态请去 ⚙ 性能设置） ----
+// 直接读 store：在弹窗里开/关加速后这里**立即**同步（旧实现存本地 ref，改完还是旧值）。
+const gpuStatus = computed(() => contentStore.gpuStatus);
 async function fetchGpuStatus() {
-  gpuLoading.value = true;
   try {
-    // 带超时：避免后端未响应时按钮永久停在「检测中…」（BUG-2026-0921-003）
-    gpuStatus.value = await withTimeout(
-      contentStore.fetchGpuStatus(),
-      PERF_TIMEOUT.read,
-      "get_vcr_gpu_status",
-    );
+    // 带超时：避免后端未响应时水不返回（BUG-2026-0921-003）
+    await withTimeout(contentStore.fetchGpuStatus(), PERF_TIMEOUT.read, "get_vcr_gpu_status");
   } catch {
-    gpuStatus.value = null;
-  } finally {
-    gpuLoading.value = false;
+    /* 拿不到就保持原值：不能把失败显示成「当前用 CPU」 */
   }
 }
 
@@ -217,9 +213,12 @@ const openImage = trace("openImage", async (path: string) => {
           </label>
         </div>
         <div class="combo-meta">
-          <label class="batch-select">批次<select v-model="comboBatch"><option v-for="b in BATCH_OPTIONS" :key="b" :value="b">{{ b }}</option></select></label>
-          <button class="btn btn-mini" :disabled="gpuLoading" @click="fetchGpuStatus">{{ gpuLoading ? "检测中…" : "检测 GPU" }}</button>
-          <div v-if="gpuStatus" class="gpu-info" :class="{ ok: gpuStatus.use_gpu }">GPU: {{ gpuStatus.use_gpu ? "✅ " + gpuStatus.provider : "❌ CPU (" + gpuStatus.provider + ")" }}</div>
+          <button class="btn btn-ghost" title="GPU 加速 / CPU 线程数 / 语义模型档位" @click="perfOpen = true">
+            ⚙ 性能设置
+          </button>
+          <div v-if="gpuStatus" class="gpu-info" :class="{ ok: gpuStatus.use_gpu }">
+            GPU: {{ gpuStatus.use_gpu ? "✅ " + gpuStatus.provider : "❌ CPU (" + gpuStatus.provider + ")" }}
+          </div>
         </div>
       </div>
 
@@ -289,6 +288,9 @@ const openImage = trace("openImage", async (path: string) => {
     @neutral="launchScan(false)"
     @cancel="modeDialogVisible = false"
   />
+
+  <!-- ⚙ 性能设置 / 📦 模型管理（与全局扫描共用同一实现） -->
+  <PerfSettingsDialog v-model="perfOpen" />
 </template>
 
 <style scoped>
@@ -441,23 +443,7 @@ const openImage = trace("openImage", async (path: string) => {
   color: var(--color-primary-hover);
 }
 
-/* 批次选择 */
-.batch-select {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--color-text-3);
-}
-
-.batch-select select {
-  padding: 2px 4px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  font-size: 12px;
-  background: var(--color-surface-2);
-  color: inherit;
-}
+/* ⚙ 性能设置弹窗（含批次选项，见 settings/PerfSettingsDialog.vue） */
 
 /* 按钮（通用） */
 .btn {

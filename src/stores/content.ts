@@ -121,6 +121,27 @@ function emptyJob(): CombinedScanJob {
   };
 }
 
+// ------------------------------------------------------------------
+// 扫描批次（每批 HTTP 张数）—— 持久化的单一来源
+//
+// 为什么放 store 而不是各扫描面板各持一个 ref：原来「批次」在相册扫描与
+// 全局扫描两处各有一个下拉，值互不同步——用户改了一处，另一处还是 8。现在统一从这里读写，并把选择存 localStorage（跨会话保留）。
+// 后端口径是 `batch_size.unwrap_or(8).clamp(4, 64)`，前端只提供 8/16/32 档。
+// ------------------------------------------------------------------
+/** 扫描批次可选档（只在「⚙ 性能设置 → 高级选项」里改） */
+export const BATCH_OPTIONS = [8, 16, 32];
+const BATCH_STORAGE_KEY = "pm:scan-batch";
+
+function loadScanBatch(): number {
+  try {
+    const n = Number(localStorage.getItem(BATCH_STORAGE_KEY));
+    if (BATCH_OPTIONS.includes(n)) return n;
+  } catch {
+    /* localStorage 不可用（隐私模式等）→ 用默认值 */
+  }
+  return 8;
+}
+
 /**
  * 内容扫描与智能搜索状态 —— 对应 Rust `content` 服务层
  *
@@ -168,6 +189,8 @@ export const useContentStore = defineStore("content", {
     lastCategoryRebuild: null as CategoryRebuildReport | null,
     /** v6：CPU 线程数现状（性能设置展示/调整） */
     vcrThreads: null as VcrThreadsInfo | null,
+    /** 扫描批次（每批 HTTP 张数，默认 8）；单一来源，两个扫描面板共用 */
+    scanBatch: loadScanBatch(),
   }),
 
   actions: {
@@ -182,6 +205,16 @@ export const useContentStore = defineStore("content", {
         return this.lastReport;
       } finally {
         this.isScanning = false;
+      }
+    },
+
+    /** 设置扫描批次（仅 8/16/32 三档，与后端 clamp(4,64) 兼容），写入 localStorage */
+    setScanBatch(n: number): void {
+      this.scanBatch = BATCH_OPTIONS.includes(n) ? n : 8;
+      try {
+        localStorage.setItem(BATCH_STORAGE_KEY, String(this.scanBatch));
+      } catch {
+        /* 持久化失败不影响本次使用 */
       }
     },
 
