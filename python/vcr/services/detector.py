@@ -39,29 +39,93 @@ class DetOutcome:
     error: str = ""
 
 
-def _nms(boxes: list[Box], iou_thr: float) -> list[Box]:
-    """标准 IoU NMS，按置信度降序贪心抑制。"""
-    if not boxes:
+def nms_indices(coords: np.ndarray, scores: np.ndarray, iou_thr: float) -> np.ndarray:
+    """贪心 IoU NMS（向量化）：返回保留下来的下标，按置信度降序。
+
+    coords (N,4) = x1,y1,x2,y2；scores (N,)。
+
+    为什么用 float64：旧实现是 Python float（float64）算 IoU 的，降成 float32
+    会在阈值附近产生非等价取舍（实测 kps 用 float32 就会与旧值差 1e-4）。
+    并列分数用**稳定**排序保持输入顺序 —— 与旧实现 Python 的
+    `sorted(..., reverse=True)`（稳定）逐项一致。
+
+    为什么仍是 while 循环：NMS 本身是串行贪心（后一个的取舍依赖前一个的结果），
+    不能整体向量化；但循环体一次处理「当前框 vs 剩余全部框」，N 个候选只需
+    N 次 numpy 调用而不是 O(N²) 次 Python 层比较。
+    """
+    n = coords.shape[0]
+    if n == 0:
+        return np.empty(0, dtype=np.int64)
+    c = coords.astype(np.float64, copy=False)
+    order = np.argsort(-scores.astype(np.float64, copy=False), kind="stable")
+    keep: list[int] = []
+    while order.size:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        rest = order[1:]
+        x1 = np.maximum(c[i, 0], c[rest, 0])
+        y1 = np.maximum(c[i, 1], c[rest, 1])
+        x2 = np.minimum(c[i, 2], c[rest, 2])
+        y2 = np.minimum(c[i, 3], c[rest, 3])
+        inter = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+        area_i = (c[i, 2] - c[i, 0]) * (c[i, 3] - c[i, 1])
+        area_r = (c[rest, 2] - c[rest, 0]) * (c[rest, 3] - c[rest, 1])
+        union = area_i + area_r - inter
+        iou = np.where(union > 0, inter / np.where(union > 0, union, 1.0), 0.0)
+        order = rest[iou <= iou_thr]
+    return np.asarray(keep, dtype=np.int64)
+
+
+def _decode(out: np.ndarray, cls_ids: tuple[int, ...],
+            scale: float, pad_x: int, pad_y: int) -> list[Box]:
+    """YOLOv8 原始输出 (84, N) → 某几类的框（过滤 + 反 letterbox + NMS）。
+
+    向量化：旧实现对每个 cls_id 扫 8400 个锚点（person + 4 个车类共 42000 次
+    Python 迭代），每次都要 float() 取值、拼 Box。现在一次掩码取全部命中项。
+
+    等价性要点（别改）：
+      - 阈值用 `~(s < thresh)` 而不是 `s >= thresh` —— 旧实现是
+        `if conf < thresh: continue`，NaN 会被保留；
+      - NMS 仍对**cls_ids 的并集**做一次（旧实现的 decode 是在收集完所有
+        类别后才调一次 _nms），不是逐类各做一次；
+      - 候选项顺序保持「类别主序、锚点次序」，NMS 并列分数时取舍与旧实现一致。
+    """
+    coord_parts: list[np.ndarray] = []
+    conf_parts: list[np.ndarray] = []
+    for cls_id in cls_ids:
+        scores = out[BOX_HEAD + cls_id]
+        # 阈值：旧实现是 `conf = float(scores[i])` 后 `if conf < thresh: continue`，
+        # 即 float64 比较。NEP50 下 float32 数组与 Python float 比是弱提升，会把
+        # 阈值降到 float32(0.35)，让「恰好等于 float32 阈值」的框多活一个
+        # （与 face 侧同一坑）。用 ~(s < t) 保留 NaN 的旧语义。
+        idx = np.flatnonzero(~(scores.astype(np.float64) < config.PERSON_CONF_MIN))
+        if idx.size == 0:
+            continue
+        # float64：旧实现用 float(out[..]) 做 Python 浮点运算，降精度会改变取值
+        cx = out[0, idx].astype(np.float64)
+        cy = out[1, idx].astype(np.float64)
+        bw = out[2, idx].astype(np.float64)
+        bh = out[3, idx].astype(np.float64)
+        coord_parts.append(np.stack([
+            ((cx - bw / 2) - pad_x) / scale,
+            ((cy - bh / 2) - pad_y) / scale,
+            ((cx + bw / 2) - pad_x) / scale,
+            ((cy + bh / 2) - pad_y) / scale,
+        ], axis=1))
+        conf_parts.append(scores[idx].astype(np.float64))
+
+    if not coord_parts:
         return []
-    boxes = sorted(boxes, key=lambda b: b.conf, reverse=True)
-    keep: list[Box] = []
-    while boxes:
-        best = boxes.pop(0)
-        keep.append(best)
-        boxes = [b for b in boxes if _iou(best, b) <= iou_thr]
-    return keep
-
-
-def _iou(a: Box, b: Box) -> float:
-    x1 = max(a.x1, b.x1)
-    y1 = max(a.y1, b.y1)
-    x2 = min(a.x2, b.x2)
-    y2 = min(a.y2, b.y2)
-    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-    area_a = (a.x2 - a.x1) * (a.y2 - a.y1)
-    area_b = (b.x2 - b.x1) * (b.y2 - b.y1)
-    union = area_a + area_b - inter
-    return inter / union if union > 0 else 0.0
+    coords = np.concatenate(coord_parts)
+    confs = np.concatenate(conf_parts)
+    keep = nms_indices(coords, confs, config.NMS_IOU)
+    return [
+        Box(float(coords[i, 0]), float(coords[i, 1]),
+            float(coords[i, 2]), float(coords[i, 3]), float(confs[i]))
+        for i in keep
+    ]
 
 
 def run(img: Image.Image, registry) -> DetOutcome:
@@ -76,27 +140,9 @@ def run(img: Image.Image, registry) -> DetOutcome:
     with timing.span("det.run"):
         out = registry.run("det", tensor)[0][0]    # (84, 8400)
 
-    def decode(cls_ids: tuple) -> list[Box]:
-        boxes: list[Box] = []
-        for cls_id in cls_ids:
-            scores = out[BOX_HEAD + cls_id]
-            for i in range(scores.shape[0]):
-                conf = float(scores[i])
-                if conf < config.PERSON_CONF_MIN:
-                    continue
-                cx, cy = float(out[0, i]), float(out[1, i])
-                bw, bh = float(out[2, i]), float(out[3, i])
-                # 锚点坐标 → letterbox 坐标 → 原图坐标
-                x1 = ((cx - bw / 2) - pad_x) / scale
-                y1 = ((cy - bh / 2) - pad_y) / scale
-                x2 = ((cx + bw / 2) - pad_x) / scale
-                y2 = ((cy + bh / 2) - pad_y) / scale
-                boxes.append(Box(x1, y1, x2, y2, conf))
-        return _nms(boxes, config.NMS_IOU)
-
     with timing.span("det.post"):
-        persons = decode((PERSON_CLASS_ID,))
-        vehicles = decode(VEHICLE_CLASS_IDS)
+        persons = _decode(out, (PERSON_CLASS_ID,), scale, pad_x, pad_y)
+        vehicles = _decode(out, VEHICLE_CLASS_IDS, scale, pad_x, pad_y)
 
     # 说明：人框与车辆框重叠降级方案实测会误伤「骑电动车的人」（e--7 骑手框与车
     # 重叠被判为误检），且对车流误检（e-7278 假框与车不重叠）无效，故弃用；

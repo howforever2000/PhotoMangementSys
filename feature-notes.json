@@ -2279,7 +2279,50 @@
       },
       "created_at": "2026-09-28T17:05:00+08:00",
       "updated_at": "2026-09-28T17:05:00+08:00"
+    },
+    {
+      "id": "FEAT-078",
+      "name": "后处理向量化：SCRFD 解码+NMS / YOLOv8 解码+NMS（face.post 实测 784x）",
+      "status": "done",
+      "module": "python/vcr/services/face_service.py（_scrfd_candidates / _decode_scrfd / _nms_faces）+ python/vcr/services/detector.py（nms_indices / _decode）+ python/bench/verify_postprocess_equiv.py",
+      "description": "把 SCRFD 人脸解码与 YOLOv8 检测解码从「Python 逐锚点双层循环」改成 numpy 掩码 + 批量反算。旧实现每张图要跑 16800 次（80×80×2 + 40×40×2 + 20×20×2）Python 迭代，每次 numpy 标量取值 + float() + append；YOLOv8 侧更狠，person + 4 个车类共 42000 次迭代。这两段全程持有 GIL，照片级并行 P=6 时一个人就把别的线程挡在门外（同批 ocr.post 被抬到 40ms 就是这个原因，其真实计算只要 0.9ms）。",
+      "related_files": [
+        "python/vcr/services/face_service.py",
+        "python/vcr/services/detector.py",
+        "python/bench/verify_postprocess_equiv.py"
+      ],
+      "keywords": [
+        "向量化",
+        "SCRFD",
+        "NMS",
+        "face.post",
+        "det.post",
+        "GIL",
+        "后处理优化",
+        "numpy",
+        "等价性验证"
+      ],
+      "implementation": {
+        "SCRFD 解码": "_scrfd_candidates 把单个 stride 的输出摊平成 (scores, boxes, kpsf, cell, w)：4D 通道式用 transpose(1,2,0) 把 anchor 挪到最后一维，2D 扁平式直接切列。摊平顺序刻意保持「cell 主序、anchor 次序」与旧双层循环一致（顺序决定分数并列时 NMS 的取舍）。随后一次布尔掩码取命中项、一次广播算出 K×4 框与 K×5×2 关键点。",
+        "NMS": "detector.nms_indices 用 float64 + 稳定 argsort 实现贪心 NMS：循环体一次处理「当前框 vs 剩余全部框」，N 个候选只要 N 次 numpy 调用，而不是 O(N²) 次 Python 层比较。face 侧 _nms_faces 与 det 侧共用它。",
+        "dtype 纪律（三个真踩到的坑，等价性脚本已固化为用例）": [
+          "kps 的 letterbox 反算：旧实现 (pts - np.array([pad_x, pad_y])) / scale 走的是 float32 - int64 → float64，写成 dtype=float32 会与旧值差 1e-4",
+          "阈值比较：NEP50 下 float32 数组与 Python float 比较是弱提升，阈值被降到 float32(0.35)=0.3499999940395355，于是「恰好等于 float32 阈值」的候选在新实现里通过、旧实现里被丢弃 → 必须先 astype(float64) 再比",
+          "NaN 语义：旧实现是 `if score < thresh: continue`，NaN 会被保留；写成 `scores >= thresh` 会把 NaN 丢掉 → 用 ~(s < t)"
+        ],
+        "ocr.post 为什么没做（先测量后决策）": "实测（53 张相册、串行）ocr.post 真实成本只要 0.94 ms/张（p50 0.62 / p95 3.07 / max 6.42），连通域数量 p50=1 / p95=22 / max=52 —— 该相册上根本没有可优化的空间。批次日志里 ocr.post 40ms 级读数是 GIL 被 face.post 占住造成的放大，不是真实计算。⇒ 结论：ocr.post 不做向量化，收益来自「减少 face.post 的 GIL 占用」。"
+      },
+      "verified": {
+        "同进程同条件 A/B（真实照片 24 张，有脸 9 张）": "SCRFD 解码 116.41 → 0.15 ms/张（784x）；YOLOv8 解码 5.12 → 0.43 ms/张（12x）；两者 bbox/score/kps/框列表逐项全等。",
+        "合成数据等价性（python/bench/verify_postprocess_equiv.py，旧实现原样保留为参照）": "SCRFD 2D 扁平式（det_500m）与 4D 通道式（det_10g）各 32705 个候选逐项一致；阈值边界（恰好等于阈值 / NaN 保留）65410 个候选一致；YOLOv8 多类并集一次 NMS 3237 个框一致；NMS 空/单个/全重叠/并列/分离五种边界通过。",
+        "真实管线 A/B（48 张 test 相册，P=1 逐字段）": "改造前后 category / sub_category / label / confidence / person_count / source / person_ids 全部零差异。",
+        "批次级（[vcr.stat] 模型段，P=6）": "face.post 266~475ms/次 调用 → 0.15~10ms/次；det.post 5.4~9.0 → 0.15~8.9ms/批。",
+        "吞吐（bench_cpu_gpu_modes.py，P=6，40 张，批 8）": "classify 稳态 149.4ms/张（face 重批出现时 189.4）→ 119.9~124.7ms/张，约 1.20~1.25x；face 命中率高的那一批 232.1~327.5ms/张 → 155.1~166.0ms/张（-30%~-53%）。embed 腿受本机噪声影响大（CLIP 前向批间在 857~2675ms 之间跳），其读数不作为本点的证据。",
+        "副作用（重要）": "点 1「三腿并发」的收益在本次改造后从 1.297x 降到 1.057x —— 因为并发原本主要在填「另一条腿被 GIL 挡住而空出来的 CPU」。去掉 GIL 占用后两条腿都是真 CPU 负载，重叠空间自然变小。两点不叠加，但各自独立为正。"
+      },
+      "created_at": "2026-09-28T18:10:00+08:00",
+      "updated_at": "2026-09-28T18:10:00+08:00"
     }
   ],
-  "updated": "2026-09-28T17:05:00+08:00"
+  "updated": "2026-09-28T18:10:00+08:00"
 }
