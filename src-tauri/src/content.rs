@@ -1520,67 +1520,128 @@ pub mod commands {
             timing.span_with("EXIF", t_exif, &format!("{}线程·{}张", threads_local, exifs.len()));
         }
 
-        // 影调扫描为同步重活 → 放入阻塞线程，避免占满异步运行时影响其他命令。
-        // P9：增量模式下只处理差集（此前总是全量重扫）。
+        // ===================================================================
+        // P-OPT3（点 1）：三腿并发 —— 影调 ∥ 语义向量 ∥ AI 识别
+        //
+        // 现状是三条腿严格串行 await，但三者**彼此零依赖**：
+        //   - 影调是纯本地解码+直方图，与任何模型无关；
+        //   - 语义腿打 /embed_batch（CLIP 图像塔），AI 腿打 /classify_batch
+        //     （det/face/ocr），不同端点、不同会话，互不消费对方输出；
+        //   - 三者输入都只是上面算好的不可变差集 `pending`。
+        // 串行 await 白白丢掉重叠：实测（bench_cpu_gpu_modes.py --overlap 4，P=6）
+        // 语义腿 ∥ AI 腿 = 顺序 9905ms → 并发 7636ms，**1.30x**（同一份 CPU 预算
+        // 争用使其达不到理论 max() 的 1.67x，但重叠确实发生）。
+        //
+        // 硬约束照旧：EXIF 是阶段 0，**先跑完**再启动三腿（时间+地点先于语义向量）。
+        // 取消语义照旧：两条 HTTP 腿仍只在批次之间检查 `cancel`。
+        // ===================================================================
         let t_tone = std::time::Instant::now();
-        let tones = if do_tone {
-            let paths2 = pending.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                crate::tone::analyze_paths_parallel(&paths2, threads_local)
-            })
-            .await
-            .map_err(|e| format!("影调任务线程失败: {e}"))?
-        } else {
-            Vec::new()
-        };
-        if do_tone {
-            timing.span_with("影调", t_tone, &format!("{}线程·{}张", threads_local, tones.len()));
-        }
 
-        // FEAT-SEM：语义向量扫描与 AI 识别同为异步 HTTP，在 outcome 构建前完成，
-        // 结果合并进 CombinedScanOutcome（report 累加，rows 追加）。
-        // P5/P9：只吃差集，不再自己重走目录。
-        let t_sem = std::time::Instant::now();
-        let semantic_outcome: Option<Result<(ScanReport, Vec<UnifiedScanRow>), String>> = if do_semantic {
-            Some(
-                scan_album_embeddings(
-                    album_id,
-                    user_id,
-                    &pending,
-                    batch,
-                    &app,
-                    &state,
-                    cancel.clone(),
-                )
-                .await,
-            )
-        } else {
-            None
-        };
-        if do_semantic {
-            timing.span_with("语义向量", t_sem, &format!("批次{}", batch));
-        }
-
-        // AI 识别：只吃文件、不读 EXIF。
-        // P8/P9：差集已在上面统一算好 → 这里不再自己查一遍 hash（判据统一，也省一次遍历）。
-        let t_ai = std::time::Instant::now();
-        let vision_results = if do_ai {
-            let paths: Vec<String> = pending
+        // AI 腿的增量日志：内容在并发前算好，避免把 all_paths 移进 future
+        // （future 是 async move，引用不 Copy 的值会被整体搬走）。
+        let ai_paths: Vec<String> = if do_ai {
+            let v: Vec<String> = pending
                 .iter()
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect();
             logger::log_info(&format!(
                 "[scan.incr] album={album_id} AI 识别 | 目录 {} 张 · 待识别 {} 张 · 跳过 {} 张（增量判据：photo_hash）",
                 all_paths.len(),
-                paths.len(),
-                all_paths.len().saturating_sub(paths.len()),
+                v.len(),
+                all_paths.len().saturating_sub(v.len()),
             ));
-            crate::vision::classify_paths(&paths, batch, &app, Some(cancel.clone())).await?
+            v
         } else {
             Vec::new()
         };
+
+        // 腿 1：影调（本地 CPU，spawn_blocking 不占异步 worker）
+        let tone_fut = {
+            let paths2 = pending.clone();
+            async move {
+                if do_tone {
+                    tauri::async_runtime::spawn_blocking(move || {
+                        crate::tone::analyze_paths_parallel(&paths2, threads_local)
+                    })
+                    .await
+                    .map_err(|e| format!("影调任务线程失败: {e}"))
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+        };
+
+        // 腿 2：语义向量（异步 HTTP → vcr-clip）。`Instant` 在 future 内部读，
+        // 这样记的是该腿自己的墙钟，而不是「启动三腿到 join 返回」的公共时长。
+        // 引用一律显式绑定后再进 future：async move 会把非 Copy 的捕获整体搬走，
+        // 而 `pending` / `app` / `state` 后面还要用。
+        let sem_fut = {
+            let pending_ref: &[std::path::PathBuf] = &pending;
+            let app_ref = &app;
+            let state_ref = &state;
+            let cancel_sem = cancel.clone();
+            async move {
+                if do_semantic {
+                    let t = std::time::Instant::now();
+                    let r = scan_album_embeddings(
+                        album_id,
+                        user_id,
+                        pending_ref,
+                        batch,
+                        app_ref,
+                        state_ref,
+                        cancel_sem,
+                    )
+                    .await;
+                    Some((t, r))
+                } else {
+                    None
+                }
+            }
+        };
+
+        // 腿 3：AI 识别（异步 HTTP → vcr-ai）。P8/P9：差集已统一算好，
+        // 这里不再自己查一遍 hash（判据统一，也省一次遍历）。
+        let ai_fut = {
+            let app_ref = &app;
+            let cancel_ai = cancel.clone();
+            async move {
+                if do_ai {
+                    let t = std::time::Instant::now();
+                    crate::vision::classify_paths(&ai_paths, batch, app_ref, Some(cancel_ai))
+                        .await
+                        .map(|v| (t, v))
+                } else {
+                    Ok((std::time::Instant::now(), Vec::new()))
+                }
+            }
+        };
+
+        let (tone_res, sem_res, ai_res) = tokio::join!(tone_fut, sem_fut, ai_fut);
+
+        let tones = tone_res?;
+        if do_tone {
+            timing.span_with("影调", t_tone, &format!("{}线程·{}张", threads_local, tones.len()));
+        }
+
+        // FEAT-SEM：语义向量扫描与 AI 识别同为异步 HTTP，在 outcome 构建前完成，
+        // 结果合并进 CombinedScanOutcome（report 累加，rows 追加）。
+        let semantic_outcome: Option<Result<(ScanReport, Vec<UnifiedScanRow>), String>> =
+            match sem_res {
+                Some((t_sem, r)) => {
+                    timing.span_with("语义向量", t_sem, &format!("批次{}（与AI腿并发）", batch));
+                    Some(r)
+                }
+                None => None,
+            };
+
+        let (t_ai, vision_results) = ai_res?;
         if do_ai {
-            timing.span_with("AI识别", t_ai, &format!("批次{}·{}张", batch, vision_results.len()));
+            timing.span_with(
+                "AI识别",
+                t_ai,
+                &format!("批次{}·{}张（与语义腿并发）", batch, vision_results.len()),
+            );
         }
 
         let t_store = std::time::Instant::now();

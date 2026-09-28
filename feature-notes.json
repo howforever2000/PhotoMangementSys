@@ -2242,7 +2242,44 @@
       },
       "created_at": "2026-09-28T16:20:00+08:00",
       "updated_at": "2026-09-28T16:20:00+08:00"
+    },
+    {
+      "id": "FEAT-077",
+      "name": "批量扫描三腿并发：影调 ∥ 语义向量 ∥ AI 识别（P-OPT3）",
+      "status": "done",
+      "module": "src-tauri/src/content.rs（scan_album_combined）+ src-tauri/src/scan_timing.rs（重叠口径）",
+      "description": "把 scan_album_combined 里「影调 → 语义向量 → AI 识别」三条串行 await 的腿改成 tokio::join! 并发。三条腿彼此零依赖：影调是纯本地解码+直方图；语义腿打 /embed_batch（CLIP 图像塔）、AI 腿打 /classify_batch（det/face/ocr），不同端点不同会话、互不消费对方输出；三者输入都只是已经算好的不可变差集。串行 await 白白丢掉重叠——单张关键路径上语义腿 ~124ms 与 AI 腿 ~150ms 本可以叠在一起。",
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/scan_timing.rs",
+        "python/bench/bench_cpu_gpu_modes.py"
+      ],
+      "keywords": [
+        "三腿并发",
+        "tokio::join",
+        "阶段并行",
+        "P-OPT3",
+        "scan_album_combined",
+        "重叠",
+        "并发重叠",
+        "overlap"
+      ],
+      "implementation": {
+        "结构": "EXIF 仍是阶段 0 先跑完（硬约束：时间+地点必须先于语义向量），随后 tone_fut（spawn_blocking 本地 CPU）/ sem_fut（scan_album_embeddings）/ ai_fut（classify_paths）三腿 tokio::join!。future 一律显式绑定 &pending / &app / &state / cancel.clone() 再进 async move，避免把后续还要用的值搬走。",
+        "各腿口径": "每条腿的 Instant 在 future 内部读，记的是该腿自己的墙钟，而不是「启动到 join 返回」的公共时长；join 之后按 影调 → 语义向量 → AI识别 顺序落 span。",
+        "观测适配": "scan_timing.render_spans 新增「阶段重叠(并发) ~Xms」：各阶段之和 > 墙钟时显式给出重叠量，而不是夹成「未计入 0」（否则读者会以为记账漏了）。阈值 0.5ms，避免亚毫秒误差误报。",
+        "安全依据": "两腿各自调 ensure_service_ready，但该函数被 ENSURE_LOCK（tokio Mutex）单飞保护，并发冷启动不会拉起两个 Python 进程；classify_paths 不碰 DB，scan_album_embeddings 只在自己的批次里短锁写向量表，与 join 之后的 build+落库不重叠；取消语义不变（两条 HTTP 腿仍只在批次之间检查 cancel，并发后反而更灵敏）。",
+        "为什么先不做进程拆分": "文档点 1 设想把 CLIP 拆成独立进程（vcr-clip）再并发。实测表明零依赖并发本身就能拿到 1.30x，而同进程两请求由 FastAPI 线程池并行处理、ONNX run 释放 GIL —— 拆进程（内存翻倍 + 双实例管理）留作后续叠加项，先拿无架构代价的那部分收益。"
+      },
+      "verified": {
+        "实测（并发潜力）": "python/bench/bench_cpu_gpu_modes.py --overlap 4（test 53 取样、批 8、P=6）：语义腿 ∥ AI 腿 顺序 9905ms（AI 5925 + 语义 3981）→ 并发 7636ms = 1.297x，重叠率 0.57（同一份 CPU 预算争用，达不到理论 max() 的 1.67x，但重叠确实发生）。",
+        "实测（稳态基线）": "同轮 classify 稳态 32 张 149.4ms/张、embed 稳态 32 张 127.7ms/张；estimated 端到端单张 ~307ms（EXIF 0.08 + 影调 30 + 语义 128 + AI 149）→ ~240ms，约 1.28x。",
+        "编译与单测": "cargo check --lib 通过（仅既有 4 条 dead_code 警告）；cargo test --lib 141 passed / 0 failed / 2 ignored（含新增 render_spans 重叠用例）",
+        "未做": "未在完整 App 内做端到端复测（需 Tauri 会话 + 已登录用户 + 相册）；App 内验证方式：扫描后 grep [scan.timing]，影调/语义向量/AI识别 三段之和大于总墙钟时会出现「阶段重叠(并发) ~Xms」。"
+      },
+      "created_at": "2026-09-28T17:05:00+08:00",
+      "updated_at": "2026-09-28T17:05:00+08:00"
     }
   ],
-  "updated": "2026-09-28T16:20:00+08:00"
+  "updated": "2026-09-28T17:05:00+08:00"
 }

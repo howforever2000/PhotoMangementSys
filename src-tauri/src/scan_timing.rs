@@ -119,11 +119,20 @@ pub fn render_spans(spans: &[PhaseSpan], wall_ms: f64) -> String {
         }
     }
     let rest = (wall_ms - sum).max(0.0);
+    // 各阶段之和 > 墙钟 ⇒ 阶段之间存在**并发重叠**（现状只有「点 1 三腿并发」会
+    // 走到这里：影调 ∥ 语义向量 ∥ AI 识别）。必须显式给出重叠量——否则读者
+    // 看到「未计入 0」会以为记账漏了，而真相是三条腿同时在跑。
+    let overlap = (sum - wall_ms).max(0.0);
+    let tail = if overlap > 0.5 {
+        format!("阶段重叠(并发) ~{}", fmt_ms(overlap))
+    } else {
+        format!("未计入(调度/序列化/等待) {}", fmt_ms(rest))
+    };
     format!(
-        "总 {}ms | {} | 未计入(调度/序列化/等待) {}",
+        "总 {}ms | {} | {}",
         fmt_ms(wall_ms),
         parts.join(" · "),
-        fmt_ms(rest)
+        tail
     )
 }
 
@@ -286,9 +295,19 @@ mod tests {
     }
 
     #[test]
-    fn render_spans_residual_never_negative() {
-        // 各阶段之和大于墙钟（时钟精度 / 阶段重叠）时不输出负数
+    fn render_spans_reports_overlap_when_phases_run_concurrently() {
+        // 各阶段之和大于墙钟 = 阶段并发重叠（点 1 三腿并发），必须显式标出，
+        // 而不是输出「未计入 0」让读者以为记账漏了。
         let spans = vec![PhaseSpan { name: "AI".into(), ms: 500.0, note: String::new() }];
+        let line = render_spans(&spans, 480.0);
+        assert!(line.contains("阶段重叠(并发) ~20"), "{line}");
+        assert!(!line.contains("未计入"), "{line}");
+    }
+
+    #[test]
+    fn render_spans_residual_never_negative() {
+        // 残差为负但落在亚毫秒内（时钟精度）：仍按「未计入 0」输出，不误报重叠
+        let spans = vec![PhaseSpan { name: "AI".into(), ms: 480.2, note: String::new() }];
         let line = render_spans(&spans, 480.0);
         assert!(line.contains("未计入(调度/序列化/等待) 0"), "{line}");
     }

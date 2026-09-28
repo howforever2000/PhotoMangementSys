@@ -18,6 +18,12 @@
 已知结论（2026-09-28）：
   - GPU 模式 P≥2 会崩（DML 会话并发 run 段错误，BUG-2026-0923-001），本脚本如实
     记为 CRASHED_OR_FAILED，不要「改成 P=1 重跑」来掩盖。
+
+--overlap K（点 1 的物理依据）：用 K 批做「语义腿 ∥ AI 腿」并发实验。
+  在同一轮、同一预热状态下**现场重测**顺序基线（classify K 批 → embed K 批）
+  与并发基线（两者同时发），比值即 Rust 侧改 tokio::join! 的天花板。
+  实测（2026-09-28，test 53，K=4，P=6）：顺序 9905ms → 并发 7636ms = 1.297x。
+  达不到理论 max() 的 1.67x，因为两条腿抢同一份 CPU 预算 —— 这是真实上界。
 """
 import argparse
 import json
@@ -35,6 +41,22 @@ CWD = ROOT / "python"
 IMG_DIR = Path(r"D:/YUAN HAO/Pictures/2026/test")
 N_IMAGES = 40        # 5 批：第 1 批当预热（模型懒加载 + 首次前向），统计只用后 4 批
 BATCH = 8
+# --overlap K：用 K 批做「语义腿 ∥ AI 腿」并发实验（0 = 跳过）。
+# 顺序基线在同一轮、同一预热状态下现场重测（而不是复用稳态读数），保证可比。
+OVERLAP_BATCHES = 0
+
+
+def _timed_loop(port, endpoint, chunks):
+    """顺序把 chunks 一批批发到 endpoint，返回 (墙钟秒, 成功张数)。
+
+    刻意与生产调用同构：一批一个 HTTP 请求，中间不做任何重叠。
+    """
+    t0 = time.time()
+    ok = 0
+    for chunk in chunks:
+        r = http("POST", f"http://127.0.0.1:{port}{endpoint}", {"paths": chunk})
+        ok += len(r.get("results", []))
+    return time.time() - t0, ok
 
 
 def http(method, url, body=None, timeout=300):
@@ -170,6 +192,49 @@ def run_round(tag, mode, parallel, port, log_dir):
         except Exception as e:
             print("[health-after] 读取失败:", e, flush=True)
 
+        # 4.2 并发腿实验（点 1 的物理依据）：语义腿 ∥ AI 腿
+        #
+        # 现状是两者**串行 await**（Rust 侧先 await 语义腿、再 await AI 腿）。
+        # 本实验在同一轮、同一预热状态下现场重测两种排布：
+        #   顺序：classify K 批 → embed K 批（墙钟 = 两者之和）
+        #   并发：两者同时发（墙钟 = max，前提是服务端真能并行处理两个请求）
+        # 比值 = 顺序墙钟 / 并发墙钟，就是 Rust 侧改 tokio::join! 的天花板。
+        if OVERLAP_BATCHES > 0:
+            k = min(OVERLAP_BATCHES, len(imgs) // BATCH, len(thumbs) // BATCH)
+            if k <= 0:
+                result["overlap"] = {"error": "样本不足，无法做并发实验"}
+            else:
+                cls_chunks = [imgs[i * BATCH:(i + 1) * BATCH] for i in range(k)]
+                emb_chunks = [thumbs[i * BATCH:(i + 1) * BATCH] for i in range(k)]
+                # 顺序基线（现场重测，不与稳态读数拼接）
+                t_ai, n_ai = _timed_loop(port, "/classify_batch", cls_chunks)
+                t_sem, n_sem = _timed_loop(port, "/embed_batch", emb_chunks)
+                # 并发：两条腿各占一个客户端线程
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+                    t0 = time.time()
+                    f_ai = ex.submit(_timed_loop, port, "/classify_batch", cls_chunks)
+                    f_sem = ex.submit(_timed_loop, port, "/embed_batch", emb_chunks)
+                    _, n_ai2 = f_ai.result()
+                    _, n_sem2 = f_sem.result()
+                    t_both = time.time() - t0
+                result["overlap"] = {
+                    "batches": k, "n": n_ai,
+                    "seq_ai_ms": round(t_ai * 1000, 1),
+                    "seq_sem_ms": round(t_sem * 1000, 1),
+                    "seq_total_ms": round((t_ai + t_sem) * 1000, 1),
+                    "concurrent_ms": round(t_both * 1000, 1),
+                    "speedup": round((t_ai + t_sem) / t_both, 3) if t_both > 0 else None,
+                    "overlap_ratio": round((t_ai + t_sem - t_both) / min(t_ai, t_sem), 3)
+                    if min(t_ai, t_sem) > 0 else None,
+                    "results_ok": [n_ai2, n_sem2],
+                }
+                o = result["overlap"]
+                print(f"  overlap  K={k} 批 | 顺序 AI {o['seq_ai_ms']:.0f}ms + 语义 "
+                      f"{o['seq_sem_ms']:.0f}ms = {o['seq_total_ms']:.0f}ms | "
+                      f"并发 {o['concurrent_ms']:.0f}ms | 提速 {o['speedup']}x "
+                      f"(重叠率 {o['overlap_ratio']})", flush=True)
+
         result["status"] = "OK"
         result["classify"] = cls_batches
         result["embed"] = emb_batches
@@ -196,6 +261,11 @@ def run_round(tag, mode, parallel, port, log_dir):
 def summarize(r):
     if r.get("status") != "OK":
         return f"{r['tag']}: {r['status']}"
+    ov = ""
+    if r.get("overlap") and r["overlap"].get("speedup"):
+        o = r["overlap"]
+        ov = (f" || overlap 顺序 {o['seq_total_ms']:.0f}ms → 并发 {o['concurrent_ms']:.0f}ms"
+              f" = {o['speedup']}x")
 
     def agg(b):
         n = sum(x["n"] for x in b)
@@ -215,11 +285,17 @@ def summarize(r):
     }
     return (f"{r['tag']}: provider={r.get('provider')} | "
             f"classify 稳态 {cn}张 {cms:.0f}ms ({cper:.1f}ms/张) [预热批 {cms1:.0f}ms] | "
-            f"embed 稳态 {en}张 {ems:.0f}ms ({eper:.1f}ms/张) [预热批 {ems1:.0f}ms]")
+            f"embed 稳态 {en}张 {ems:.0f}ms ({eper:.1f}ms/张) [预热批 {ems1:.0f}ms]{ov}")
 
 
 def main():
-    global N_IMAGES, BATCH
+    global N_IMAGES, BATCH, OVERLAP_BATCHES
+    # 服务端 [vcr.stat] 行是 UTF-8，但 Windows 控制台默认 GBK —— 不显式设 UTF-8 时
+    # 打印读数会 UnicodeEncodeError 中断整轮（结果 JSON 都写不出去）。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--round", action="append", required=True,
                     help="格式 tag:mode:parallel，如 cpu-p6:cpu:6")
@@ -227,8 +303,10 @@ def main():
     ap.add_argument("--images", type=int, default=N_IMAGES,
                     help=f"取样张数（默认 {N_IMAGES}，第 1 批当预热不计入稳态）")
     ap.add_argument("--batch", type=int, default=BATCH)
+    ap.add_argument("--overlap", type=int, default=OVERLAP_BATCHES,
+                    help="用 K 批做「语义腿 ∥ AI 腿」并发实验（0 = 跳过）")
     args = ap.parse_args()
-    N_IMAGES, BATCH = args.images, args.batch
+    N_IMAGES, BATCH, OVERLAP_BATCHES = args.images, args.batch, args.overlap
 
     log_dir = ROOT / "python" / "bench" / "out" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
