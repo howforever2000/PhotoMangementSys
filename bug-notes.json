@@ -2768,6 +2768,49 @@
       "log_hint": "搜索日志中的「ensure B段」「收养等待」「实例保留」「结束本项目识别服务进程」；对照 vcr-instance.json 里的 pid 是否等于当前 python/vcr-server 进程",
       "created_at": "2026-09-28T16:10:00+08:00",
       "fixed_at": "2026-09-28T16:10:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0928-002",
+      "date": "2026-09-28",
+      "status": "fixed",
+      "severity": "medium",
+      "title": "「入库」列显示 824 而相册只有 412 张（正好两倍）：内容表行数与向量表行数被相加进同一个指标",
+      "module": "src-tauri/src/content.rs（semantic_outcome 合并段 + 新增 merge_semantic_report）",
+      "symptom": [
+        "全局扫描表格某相册：状态「完成」、入库 824、失败 0，而备注写「共 412 张（本次处理 412 张）」—— 入库数是总张数的两倍，读起来像「同一相册被扫描了两遍」",
+        "相册详情「组合扫描」顶部汇总会同样显示「已写入内容库 824/412 张」",
+        "底部「累计入库 N 张照片」随之虚高一倍"
+      ],
+      "root_cause": {
+        "summary": "scan_album_combined 会跑两条腿并把它们的报告合并：AI/EXIF 腿写 photo_content_scan（每张 1 行）、语义腿写 photo_embeddings（每张 1 条向量）。合并语句是 `o.report.written += report.written`，于是同一批 412 张照片的两张表行数被加在一起（412 + 412 = 824），而前端把这个字段显示在叫「入库」的列上。",
+        "detail": [
+          "日志铁证（app.log 2026-09-28 22:59:42）：`scan_album_combined END | total=412 written=824`，且这次调用**只有一条** END 行 → 并非真的扫描两遍",
+          "同一次调用内的两条腿各自只跑了一遍：`classify 汇总 · 52批 412张`（22:57:08）与 `embed 汇总 · 52批 412张`（22:59:42），`[scan.incr] album=63 向量 | 输入 412 张 · 待编码 412 张`",
+          "上一次修复 BUG-2026-0922-008 只纠正了 total/processed/skipped 三者不能相加，注释里写的「只能累加 written / failed」把 written 一并放行了 —— 但 written 与它们不同：两条腿的 written 指向的是**同一批照片**，不是两个独立的量",
+          "后果：违反 `written <= total` 的自洽性（相册只有 412 张却报入库 824），与 ScanReport 文档里「避免 total < written 的矛盾报告」直接冲突"
+        ]
+      },
+      "solution": {
+        "summary": "把两条腿的报告合并抽成纯函数 merge_semantic_report：written 按**照片维度**取 max（两腿最多都只覆盖同一批照片，取大者即「至少写入过一次」的照片数，且恒 <= total），failed 按**任务维度**保持相加（内容失败与向量失败是两件事），total/processed/skipped 继续不动。",
+        "steps": [
+          "content.rs 新增 `pub(crate) fn merge_semantic_report(base: &mut ScanReport, sem: &ScanReport)`，函数头完整记录口径与两条腿各写哪张表",
+          "合并调用点由两行 `+=` 改为调用该函数；原地更新 BUG-2026-0922-008 的注释，说明为什么 written 不能沿用同一套「累加」结论",
+          "补 3 例回归单测：① 412+412 必须仍是 412（用户实测案例）② 只跑语义时基线 written=0 要被顶上 412 ③ written 取 max、failed 相加、total/processed/skipped 不被触碰"
+        ]
+      },
+      "evidence_log": [
+        "[app.log] 2026-09-28 22:59:42 [WARN] [AOP:RET] scan_album_combined END | SLOW | 耗时 195928ms | 结果 OK | total=412 written=824",
+        "[app.log] 2026-09-28 22:57:08 [scan.batch] classify 汇总 · 52批 412张 · 合计 41581ms · 均摊 101/张",
+        "[app.log] 2026-09-28 22:59:42 [scan.batch] embed 汇总 · 52批 412张 · 合计 24619ms · 均摊 59.8/张",
+        "[app.log] 2026-09-28 22:57:08 [scan.incr] album=63 向量 | 输入 412 张 · 待编码 412 张 · 已有同档位向量跳过 0 张 · 缩略图失败 0 张",
+        "[cargo test] 144 passed / 0 failed（含新增 3 例 merge_semantic_report 回归）"
+      ],
+      "log_hint": "grep 'scan_album_combined END' 取 total/written 两值：若 written > total 即为本缺陷（修复前）；再看同一次调用内 classify/embed 两条汇总行是否都等于同一批次张数，以区分「真的扫了两遍」与「两张表行数被相加」。",
+      "related_files": [
+        "src-tauri/src/content.rs"
+      ],
+      "created_at": "2026-09-28T23:20:00+08:00",
+      "fixed_at": "2026-09-28T23:20:00+08:00"
     }
   ]
 }

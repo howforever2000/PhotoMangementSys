@@ -277,6 +277,31 @@ impl ScanReport {
     }
 }
 
+/// 合并语义腿（向量）的报告到主报告 —— 纯函数，便于单测
+///
+/// BUG-2026-0928-002：旧实现是 `written += written`，于是 412 张照片的相册在
+/// 「入库」列里显示 **824**（实测日志：`total=412 written=824`）。两条腿写的是
+/// **同一批照片的两个不同表**：
+///   AI / EXIF 腿 → `photo_content_scan`（每张 1 行）
+///   语义腿       → `photo_embeddings`（每张 1 条向量）
+/// 相加既违反 `written <= total`（相册只有 412 张），也与本文件里
+/// 「避免单独调用时出现 total < written 的矛盾报告」的自洽要求相左 ——
+/// **它不是扫描了两遍**（日志里只有一次 `scan_album_combined`，
+/// classify/embed 各汇总一次 412 张），只是两张表的行数被加在了一个叫「入库」的列上。
+///
+/// 口径：
+/// - `written` 是**照片维度**的量（UI 列名「入库」）→ 取 max：两腿最多都只覆盖
+///   同一批照片，取大者即「至少写入过一次」的照片数，且恒 `<= total`；
+///   只跑语义时基线 written=0（非 AI 分支若 EXIF/影调都没勾则 0 条），max 也能取到 412。
+/// - `failed` 是**任务维度**的量（内容失败与向量失败是两件事，任一都会影响用户）
+///   → 保持相加。
+/// - `total` / `processed` / `skipped` 是**相册目录**维度的量，两条腿跑的是同一份
+///   差集，**绝不能**在这里累加（翻倍的教训见 BUG-2026-0922-008）。
+pub(crate) fn merge_semantic_report(base: &mut ScanReport, sem: &ScanReport) {
+    base.written = base.written.max(sem.written);
+    base.failed += sem.failed;
+}
+
 /// 内容扫描命令返回值：报告 + 识别明细（供前端复用现有识别表格展示）
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanOutcome {
@@ -1751,7 +1776,7 @@ pub mod commands {
             Some(Err(e)) => outcome = Err(format!("语义扫描失败: {e}")),
             Some(Ok((report, rows))) => {
                 if let Ok(o) = outcome.as_mut() {
-                    // BUG-2026-0922-008：**只能累加 written / failed**。
+                    // BUG-2026-0922-008：**只能累加 failed，written 取 max**。
                     //
                     // `total` / `processed` / `skipped` 都是「相册目录」维度的量，
                     // 而两条腿跑的是**同一个相册的同一份差集**：
@@ -1759,10 +1784,12 @@ pub mod commands {
                     //   processed  两侧都是同一个差集大小 → 相加会翻倍
                     //   skipped    相加同样翻倍
                     // 旧代码只累加 total 而 total 恰好是差集大小，所以「翻倍」被掩盖了。
+                    //
+                    // `written` 也不能相加（BUG-2026-0928-002）：内容表与向量表各 412 行，
+                    // 相加后「入库 824」> 「共 412 张」。口径与理由见 merge_semantic_report。
                     // 语义分支的跳过数另有归因，走独立日志（见 `[scan.incr] … 向量 |`），
                     // 不往相册级报告里混。
-                    o.report.written += report.written;
-                    o.report.failed += report.failed;
+                    merge_semantic_report(&mut o.report, &report);
                     o.rows.extend(rows);
                 }
             }
@@ -2458,6 +2485,48 @@ mod tests {
     fn scan_report_for_truly_empty_album_is_all_zero() {
         let empty = ScanReport::new(0, 0, 0, 0);
         assert_eq!((empty.total, empty.processed, empty.skipped), (0, 0, 0));
+    }
+
+    // =====================================================================
+    // BUG-2026-0928-002：语义腿报告合并 —— 「入库 824 / 共 412 张」回归防线
+    // =====================================================================
+
+    /// 用户实测案例：412 张相册，内容表写了 412 行、向量表写了 412 条，
+    /// 旧实现 `written +=` 得 824，前端「入库」列就显示 824（> 共 412 张）。
+    /// 取 max 后必须仍是 412 —— **不是扫描了两遍，是两张表的行数被加在了一起**。
+    #[test]
+    fn merge_semantic_report_does_not_double_written() {
+        let mut base = ScanReport::new(412, 412, 412, 0);
+        let sem = ScanReport::new(412, 412, 412, 0);
+        merge_semantic_report(&mut base, &sem);
+        assert_eq!(base.written, 412, "两条腿写同一批照片，入库数不得相加成 824");
+        assert!(base.written <= base.total, "恒有 written <= total");
+    }
+
+    /// 只跑语义（非 AI 分支因 EXIF/影调都没勾而 0 条）→ 语义腿的 412 必须顶上来，
+    /// 否则「只扫向量」的相册会显示成入库 0。
+    #[test]
+    fn merge_semantic_report_promotes_semantic_written_when_base_is_zero() {
+        let mut base = ScanReport::new(412, 412, 0, 0);
+        let sem = ScanReport::new(412, 412, 412, 0);
+        merge_semantic_report(&mut base, &sem);
+        assert_eq!(base.written, 412);
+    }
+
+    /// 两腿写入集合不一致（内容 400 张成功、向量 412 条都成功）→ 取大者；
+    /// 失败是**任务维度**的量（内容失败与向量失败是两件事）→ 仍相加。
+    /// total/processed/skipped 是相册目录维度，合并不碰它们（BUG-2026-0922-008）。
+    #[test]
+    fn merge_semantic_report_uses_max_for_written_and_sum_for_failed() {
+        let mut base = ScanReport::new(412, 412, 400, 3);
+        let sem = ScanReport::new(412, 412, 412, 12);
+        merge_semantic_report(&mut base, &sem);
+        assert_eq!(base.written, 412, "written 取 max 而非相加");
+        assert_eq!(base.failed, 15, "failed 是两个任务的失败之和");
+        assert_eq!(base.total, 412);
+        assert_eq!(base.processed, 412);
+        assert_eq!(base.skipped, 0);
+        assert!(base.written <= base.total);
     }
 
     // =====================================================================
