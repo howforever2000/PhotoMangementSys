@@ -3111,7 +3111,7 @@
     {
       "id": "BUG-2026-0929-009",
       "date": "2026-09-29",
-      "status": "open",
+      "status": "fixed",
       "severity": "high",
       "title": "回归：扫描入库后描述索引不重建——rebuild_text_index 在扫描流程零调用点，扫完的照片用时间/地点搜不到",
       "module": "src-tauri/src/content.rs（扫描流程无 textdesc 调用）；src-tauri/src/textdesc.rs:446（函数本身健在）；调用点仅 persons.rs:637 / textdesc.rs:632",
@@ -3132,8 +3132,10 @@
       },
       "solution": "在 scan_album_combined 写库完成后、命令返回之前（或后台收尾，若将来恢复 T3）调用 textdesc::rebuild_text_index。仅本次扫描范围可先全量调用（函数本身有 source_hash 增量短路，未变照片不重编码）。注意必须排在 EXIF 落库之后，否则描述会缺年份地点并被指纹固化。",
       "lessons": [
-        "回退一个功能块时，先画出「哪些调用点是我这次引入的、哪些是被我借用的通道」——T2 借了 T3 的收尾通道，通道一删它就静默消失",
-        "跨模块的隐式依赖（扫描→描述索引）应有回归测试兜底：扫一批→按时间搜索→必须命中"
+        "回退一个功能块时，先画出「哪些调用点是我引入的、哪些是借我的通道」—— T2 借了 T3 的收尾通道，通道一删它就静默消失，且不报错不崩溃，只表现为「搜不到」",
+        "source_hash 指纹类的自愈机制有个前提：必须有人主动触发。缺了调用点就永不自愈 —— 所以这类「借道」的调用必须有回归测试守着",
+        "源码断言测试是「调用点类缺陷」的对症防线：真跑要 AppHandle + 识别服务，但失败模式就是「调用点被删」，读源码数调用次数即可锁住，且已实测能红",
+        "增量早退路径是容易漏的第二条路径：本例缺口照片的 photo_hash 已在库内 → 差集恒空 → 必然早退，只在正常路径补调用等于没修"
       ],
       "keywords": [
         "描述索引",
@@ -3149,13 +3151,37 @@
         "src-tauri/src/textdesc.rs",
         "src-tauri/src/lib.rs"
       ],
-      "log_hint": "grep -rn 'rebuild_text_index' src-tauri/src/ 应有 3 处（textdesc 定义、persons 改名、扫描流程）；只剩 2 处即为本回归。",
+      "log_hint": "grep '[scan.desc]' 应出现：素材 14621 · 重算 N · 未变 M · 空描述 E · 去重文本 U · Xms；首次应为 重算≈8820 / 未变≈5801，之后应为 重算 0 / 未变 14621。两条路径都会打印，故早退扫描（增量无变化）也应看到该行。",
       "evidence_log": [
-        "grep -rn 'textdesc' content.rs → 仅 2168 recall_by_text（搜索侧），扫描路径无调用",
-        "grep -rn 'rebuild_text_index' . → persons.rs:637、textdesc.rs:446/632，无 content.rs",
-        "grep -rn 'PostScanState|run_post_scan_tasks|scan-post-done|desc_needed' src-tauri/src → 零命中（收尾机制已回退）"
+        "[sqlite 实测] photo_text_embeddings kind='desc' = 5801；photo_content_scan = 14621；其中 0 行无法生成描述 → 覆盖率 39.7%，缺口 8820 张（60.3%）",
+        "[sqlite 实测] 按相册：album 15 内容2876/已建1540/缺1336；album 57 内容1314/已建0；album 36 内容1090/已建0；album 19、29、32 完整无缺 → 证实「回退之后扫的一批全军覆没」",
+        "[sqlite 实测] 唯一描述去重：14621 张 → 3130 种（去重率 78.6%）→ 首次补建实际送文本塔约 3130 条而非 8820 条",
+        "[code] rebuild_text_index 全仓调用点：persons.rs:637（人物改名）、textdesc.rs:632（手动命令）—— 扫描流程零调用",
+        "[cargo test] 147 passed / 0 failed / 3 ignored；cargo check --all-targets 零错误",
+        "[防线有效性实测] 临时删除一个调用点 → desc_index_rebuild_called_on_both_scan_paths 立即 FAILED；还原后复绿",
+        "[E2E 待跑] 应用与识别服务当时均未运行（ps 无相关进程、18765 端口拒绝连接）"
       ],
-      "created_at": "2026-09-29T09:35:00+08:00"
+      "created_at": "2026-09-29T09:35:00+08:00",
+      "fixed_at": "2026-09-29T11:20:00+08:00",
+      "fix": "content.rs 抽出共用函数 rebuild_desc_index_after_scan(app, state, user_id, timing)：日志 [scan.desc] + timing.span_with(\"描述索引\") + 失败只落日志不阻塞（与「分类重建」同策略）。在扫描流程的**两条路径**各调用一次：① 正常路径 —— 排在 upsert_photo_contents 之后、timing.emit 之前（EXIF 依赖硬约束）；② 增量早退路径 —— 排在 timing.emit(\"早退·无变化\") 之前。刻意不按 scan_types 过滤：source_hash 短路 + 文本去重使无缺口时只剩读表算指纹（≈10~30ms），无条件调用才能自愈。",
+      "fix_scope": {
+        "改了哪些": [
+          "src-tauri/src/content.rs：新增 rebuild_desc_index_after_scan（约 40 行，含完整设计注释）",
+          "正常路径调用点（分类重建块之后、timing.emit 之前）",
+          "增量早退路径调用点（timing.emit(\"早退·无变化\") 之前）",
+          "新增源码级回归测试 desc_index_rebuild_called_on_both_scan_paths"
+        ],
+        "没改的": [
+          "textdesc.rs：一行未动（rebuild_text_index 自带 source_hash 增量、文本去重、空描述跳过、批量编码）",
+          "db/content.rs：一行未动（load_desc_sources 签名不变，保持全库语义）",
+          "前端：一行未动（不需要新事件、新 UI）",
+          "并发机制：未引入 PostScanState，不重开刚被回退的收尾后台化口子"
+        ]
+      },
+      "decision": {
+        "决策1 执行方式": "A 同步 —— 与既有「分类重建」同级；实测去重率 78.6% 让首次成本仅几秒到十几秒，之后近零；避免重开刚被回退的 T3 后台收尾口子（那会带回 P1/P3/P6/P7/P11 五项并发风险）",
+        "决策2 重建范围": "A 全库 —— 与原清单 Q6（仅本次相册）不同，已单独提异议并被采纳：全库零签名改动、更彻底（顺手补掉任何历史缺口）、成本有界；相册级过滤要动 db::load_desc_sources，归入 P14"
+      }
     },
     {
       "id": "BUG-2026-0928-003",

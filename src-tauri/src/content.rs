@@ -1378,6 +1378,55 @@ pub mod commands {
 
     // ---- FEAT-026：组合扫描 + 读表 + 条件搜索 ----
 
+    /// P0（原 T2）：扫描成功后重建描述向量索引 —— 修「扫完的照片用时间/地点搜不到」。
+    ///
+    /// 背景：`rebuild_text_index` 全仓仅有两个调用点（`persons.rs` 人物改名、
+    /// `textdesc.rs` 手动命令），**扫描流程零调用**。它原本借道 T3 的后台收尾通道，
+    /// T3/T4 整体回退时被连带删除 —— 通道没了，借道的东西静默消失。实测后果：
+    /// `photo_content_scan` 14621 行，描述向量只有 5801 条，**60.3%（8820 张）用
+    /// 「2024年2月」/「杭州」搜不到**；album 57/36 等整册 0 条。见 BUG-2026-0929-009。
+    ///
+    /// **两条路径都必须调用**：
+    /// 1. **正常路径**：必须排在 `upsert_photo_contents` 之后 —— 描述分段的年份来自
+    ///    `shoot_time`、地点来自 `location`，二者都由该 upsert 写入。若在落库前编码，
+    ///    `source_hash`（基于描述分段算）会把「缺年份地点」的错误指纹固化下来、之后
+    ///    永不重算 —— 比不建索引更糟。**这是硬约束，不得上移。**
+    /// 2. **增量早退路径**（差集为空直接返回）：那些照片在 `photo_content_scan` 里
+    ///    **已经存在**，所以 diff 恒为空 —— 若不在这里也重建，重扫「内容已入库但描述
+    ///    向量缺失」的相册永远补不回来，表现为「修好了却验不过」。
+    ///
+    /// 为什么刻意不按 `scan_types` 过滤：`rebuild_text_index` 自带 `source_hash` 增量
+    /// 短路 + 文本去重，无缺口时只读表算指纹（实测 14621 行 ≈10~30ms 持锁）、不编码
+    /// 不写库。无条件调用才能让任何一次扫描成功都顺手补上历史缺口（自愈）。
+    ///
+    /// 失败策略与上方「分类重建」一致：只落日志、不阻塞扫描结果 —— 模型未下载 /
+    /// 识别服务未就绪时 `clip_model_id` 在函数首行快速失败，零副作用，下次扫描自愈。
+    ///
+    /// 成本（实测本机库）：已建且指纹未变的 5801 条直接短路；8820 张待编码照片去重后
+    /// 仅 ≈3130 种唯一描述（去重率 78.6%）→ 首次补建几秒到十几秒，**只发生一次**，
+    /// 之后 pending 为空、整体几十毫秒。
+    async fn rebuild_desc_index_after_scan(
+        app: &tauri::AppHandle,
+        state: &tauri::State<'_, AppState>,
+        user_id: i64,
+        timing: &mut crate::scan_timing::ScanTiming,
+    ) {
+        let t = std::time::Instant::now();
+        match crate::textdesc::rebuild_text_index(app, state, user_id).await {
+            Ok(rep) => {
+                logger::log_info(&format!(
+                    "[scan.desc] 描述索引已重建 | 素材 {} · 重算 {} · 未变 {} · 空描述 {} · 去重文本 {} · {}ms",
+                    rep.total, rep.built, rep.unchanged, rep.empty, rep.unique_texts, rep.ms
+                ));
+                timing.span_with("描述索引", t, &format!("重算{}张", rep.built));
+            }
+            Err(e) => {
+                logger::log_info(&format!("[scan.desc] 描述索引跳过（不影响扫描结果）：{e}"));
+                timing.span_with("描述索引", t, "跳过");
+            }
+        }
+    }
+
     /// 组合扫描（EXIF + 影调 + AI 可选组合）并统一入库
     ///
     /// - `scan_types`：允许的集合为 `["basic", "tone", "ai"]`，前端勾选项直接映射
@@ -1534,6 +1583,10 @@ pub mod commands {
             // 「共 0 张」，与「相册里明明有照片」直接矛盾（全局扫描一结束，
             // 所有已入库相册全变成 0/0）。早退只说明「本次没有要处理的」，
             // **不等于相册是空的**，所以 total 必须填真实目录张数。
+            // P0（原 T2）：早退路径**也要**补描述索引 —— 这些照片在 photo_content_scan
+            // 里已存在，差集恒为空；若跳过，重扫「内容已入库但描述向量缺失」的相册
+            // （如 album 57/36，整册 0 条向量）永远补不回来，表现为「修好了却验不过」。
+            rebuild_desc_index_after_scan(&app, &state, user_id, &mut timing).await;
             timing.emit("早退·无变化");
             return Ok(CombinedScanOutcome {
                 report: ScanReport::new(all_paths.len(), 0, 0, 0),
@@ -1879,6 +1932,10 @@ pub mod commands {
                     timing.span_with("分类重建", t_rebuild, "跳过");
                 }
             }
+        }
+        // P0（原 T2）：正常路径 —— 必须在 `upsert_photo_contents` 之后（EXIF 依赖已满足）
+        if outcome.is_ok() {
+            rebuild_desc_index_after_scan(&app, &state, user_id, &mut timing).await;
         }
         // 细粒度耗时汇总（一行看清本次扫描每个板块各花了多少）
         timing.emit(&format!(
@@ -2671,6 +2728,62 @@ mod tests {
             recs[0].tone_type.as_deref(),
             Some(format!("{:?}", crate::tone::ToneType::LowKey).as_str()),
             "必须与 build_records_combined 的 format!({{:?}}) 口径一致"
+        );
+    }
+
+    /// P0（原 T2）回归防线：扫描流程必须在**两条路径**上都重建描述索引。
+    ///
+    /// 为什么用源码断言而不用集成测试：真跑需要 Tauri `AppHandle` + 识别服务，测试里
+    /// 造不出来；而这个缺陷的**实际失败模式恰恰就是「调用点被删」** —— T3 收尾后台化
+    /// 整体回退时，借道它的 `rebuild_text_index` 调用一起消失，不报错、不崩溃，只表现
+    /// 为「搜不到」，且因 `source_hash` 指纹机制不会自愈。源码断言正好锁住这个模式：
+    /// 任何重构/回退只要动了任一调用点或顺序，这里立刻红。
+    ///
+    /// 两条路径缺一不可：
+    /// - **正常路径**（EXIF 落库后）：负责新扫的照片；
+    /// - **增量早退路径**（差集为空）：负责「内容已入库但描述向量缺失」的相册
+    ///   （如 album 57/36 整册 0 向量），否则重扫永远补不回来。
+    #[test]
+    fn desc_index_rebuild_called_on_both_scan_paths() {
+        let src_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("content.rs");
+        let src = std::fs::read_to_string(&src_path).expect("应能读到 content.rs 源码");
+
+        // 只看生产代码：截到第一个 #[cfg(test)] 之前，否则本测试自身的字符串会自匹配
+        let prod = &src[..src.find("#[cfg(test)]").expect("content.rs 应含 cfg(test)")];
+
+        let def = prod
+            .lines()
+            .filter(|l| l.trim_start().starts_with("async fn rebuild_desc_index_after_scan"))
+            .count();
+        assert_eq!(def, 1, "函数应恰好定义一次，实际 {def}");
+
+        let calls: Vec<usize> = prod
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| {
+                let t = l.trim();
+                t.starts_with("rebuild_desc_index_after_scan(&app") && t.ends_with(".await;")
+            })
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            calls.len(),
+            2,
+            "必须在「正常路径」与「增量早退路径」各调用一次，实际 {} 处（行号 {:?}）",
+            calls.len(),
+            calls
+        );
+
+        // EXIF 依赖：至少要有一处调用排在最后一次 upsert 之后
+        // （描述分段的年份来自 shoot_time、地点来自 location，两者都由 upsert 写入；
+        //   提前编码会把缺年份地点的错误 source_hash 固化，之后永不重算）
+        let last_upsert = prod.rfind("db.upsert_photo_contents(").expect("应有 upsert 调用");
+        let last_call = prod
+            .rfind("rebuild_desc_index_after_scan(&app")
+            .expect("应有重建调用");
+        assert!(
+            last_call > last_upsert,
+            "描述索引重建必须有一处排在 upsert_photo_contents 之后，否则 EXIF 未落库就编码"
         );
     }
 }
