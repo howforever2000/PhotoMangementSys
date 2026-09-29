@@ -3199,6 +3199,73 @@
       ],
       "created_at": "2026-09-29T09:50:00+08:00",
       "fixed_at": "2026-09-29T09:50:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0929-010",
+      "date": "2026-09-29",
+      "status": "fixed",
+      "severity": "high",
+      "title": "语义腿缩略图生成单线程串行且零埋点：412 张耗时 169.8s（412ms/张）占整册 83%，是三腿并发的关键路径",
+      "module": "src-tauri/src/content.rs（scan_album_embeddings 第 2 步缺失缩略图生成）+ src-tauri/src/thumbnail.rs",
+      "symptom": [
+        "新扫一个相册，[scan.timing] 总耗时 203s，其中语义腿独占 195s，AI 腿 41.6s 跑完后空等 154s",
+        "日志出现长达 129 秒的空白（album=63：22:57:08 classify 汇总 → 22:59:17 [scan.incr] 向量），期间零输出",
+        "用户侧表现：进度条已 100% 却一直卡在「扫描中」，无法归因、无法判断是否卡死",
+        "文件系统时间戳为证：album_63 的 412 张缩略图生成于 22:56:27.292 → 22:59:17.474 = 169.8s，最后一张与随后的 ensure 日志（22:59:17.475）严丝合缝"
+      ],
+      "root_cause": {
+        "summary": "缩略图生成被写成单线程串行循环，且没有任何进度埋点；它藏在三腿并发的语义腿内部，因而是无人看见的关键路径。",
+        "detail": [
+          "旧代码 `missing2.iter().filter_map(|(src,hash)| ensure_grid_thumb(...)).collect()` —— 单线程，一次跑完才返回",
+          "整个 spawn_blocking 块内零日志，跑完前外部完全无感；129 秒空白即来源于此",
+          "语义腿必须先有缩略图才能编码（缩略图直送 CLIP），所以它天然是语义腿的前置串行段",
+          "矛盾点：同仓库的 ensure_grid_thumbs_with_lookup（prewarm 走的路）早就是并行实现（std::thread::scope + available_parallelism().min(8)，还有 parallel_generation_bulk_and_cache_hit 单测），语义腿却没复用、自己写了单线程循环",
+          "412ms/张 的绝对值里还含与 Python 识别服务抢核的代价（隔离实测仅 42ms/张）"
+        ]
+      },
+      "solution": {
+        "summary": "在 thumbnail.rs 新增 ensure_grid_thumbs_missing_parallel：按核数分块 std::thread::scope 并行 + 按下标落位保证输出顺序 + 每张回调进度；语义腿改调它并补三档 [scan.thumb] 日志。",
+        "steps": [
+          "thumbnail.rs：ensure_grid_thumbs_missing_parallel(album_id, missing, thumbs_dir, user_id, on_progress)；线程数 available_parallelism().min(8)；样本 < 2×线程数时退化串行；输出 (source, photo_hash, thumb_path) 顺序与输入一致，失败项丢弃（与旧 filter_map 语义一致）",
+          "私有 generate_missing_range 承载并行块与串行退化共用的同一段逻辑，避免闭包跨线程的 Sync 约束",
+          "content.rs：语义腿第 2 步改调新函数，补 [scan.thumb] 开始/进度(每 100 张+末张)/完成(含均摊) 三档日志；顺手用 std::mem::take 省掉 missing 的 clone",
+          "回归单测 missing_parallel_preserves_order_and_reports_progress：锁住「换成并行后输出仍保序、进度回调每张恰好一次、空输入与串行退化分支均正确」",
+          "#[ignore] 基准 thumb_bench_serial_vs_parallel（PM_THUMB_BENCH_DIR 指定真实相册目录），供后续复跑"
+        ]
+      },
+      "evidence_log": [
+        "[app.log] 2026-09-28 22:56:26.648 [scan.incr] album=63 增量模式 | 目录 412 · 待处理 412 · 跳过 0",
+        "[app.log] 2026-09-28 22:57:08.445 [scan.batch] classify 汇总 · 52批 412张 · 合计 41581ms ← AI 腿到此结束",
+        "[app.log] 2026-09-28 22:59:17.475 [PERF] ensure 请求 ← 22:57:08~22:59:17 共 129 秒零日志",
+        "[app.log] 2026-09-28 22:59:49.811 [scan.timing] album=63 | 总 203241ms · 影调/语义向量/AI 均 195529ms",
+        "[fs] thumbs/grid/album_63_* 生成于 22:56:27.292 → 22:59:17.474 = 169.8s，恰 412 张，412ms/张",
+        "[bench release] [thumb_bench] 样本 96 张 | 串行(旧) 4000ms (42ms/张) | 并行(新) 976ms (10ms/张) | 加速 4.10x",
+        "[cargo test] 146 passed / 0 failed / 3 ignored；cargo check --all-targets 零错误"
+      ],
+      "fix": "content.rs 语义腿改调 thumbnail::ensure_grid_thumbs_missing_parallel 并补 [scan.thumb] 三档埋点；thumbnail.rs 新增并行生成函数 + 单测 + 可复跑基准。",
+      "log_hint": "新日志三档：grep '[scan.thumb]' 应出现 开始/进度/完成 三类；若仍有上百秒空白段，看 [scan.timing] 里语义腿是否远大于 AI 腿。",
+      "keywords": [
+        "缩略图生成",
+        "单线程",
+        "P19",
+        "关键路径",
+        "三腿并发",
+        "scan.thumb",
+        "并行化",
+        "零埋点",
+        "169.8s"
+      ],
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/thumbnail.rs"
+      ],
+      "created_at": "2026-09-29T10:05:00+08:00",
+      "fixed_at": "2026-09-29T10:05:00+08:00",
+      "lessons": [
+        "三腿/多腿并发时，每条腿内部的前置串行段（这里：缩略图生成）才是真正的关键路径，腿外的耗时统计看不见它 —— 要按段埋点而不是只按腿记时",
+        "仓库里已有并行实现（ensure_grid_thumbs_with_lookup）时，新增同类循环前先搜一遍，手写串行版是重复造轮子的反向操作",
+        "「129 秒零日志」本身就是缺陷：任何超过 1s 的同步工作段都应有进入与进度输出，否则事后无法归因"
+      ]
     }
   ]
 }

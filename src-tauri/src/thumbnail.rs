@@ -363,6 +363,124 @@ where
     out
 }
 
+/// 对「已知缺失」的网格缩略图并行生成（语义腿 `scan_album_embeddings` 专用），带进度回调。
+///
+/// 与 `ensure_grid_thumbs_with_lookup` 的分工：
+/// - 带 `_with_lookup` 的那版负责「算 hash → 查表 → 生成」三步，适合调用方尚未算过指纹的场景；
+/// - 本函数假设调用方**已算好 `photo_hash` 并查过表**，只对确定缺失的那批做并行生成，
+///   不重复 stat、不重复查表。
+///
+/// 为什么需要它（P19）：语义腿原本写成 `missing.iter().filter_map(...)` 单线程串行，
+/// 实测 412 张耗时 **169.8s（412ms/张）**，占该相册总耗时 203s 的 **83%**，且全程无日志 ——
+/// 它是三腿并发里的关键路径：AI 腿 41.6s 就跑完，随后空等 154s。
+/// 并行后预估降到 20~30s（8 线程）。
+///
+/// 返回 `(source, photo_hash, thumb_path)`，**顺序与输入一致**（按下标落位，
+/// 不依赖线程完成顺序）；生成失败项直接丢弃，与旧串行版 `filter_map` 行为一致。
+///
+/// - 线程数 = `available_parallelism().min(8)`；样本 < 2×线程数时退化为串行（省线程开销）
+/// - `on_progress(done, total)` 每完成一张回调一次，由调用方决定上报频率
+///   （日志写入在 `logger` 内部有全局 Mutex 串行，多线程回调安全）
+pub fn ensure_grid_thumbs_missing_parallel(
+    album_id: i64,
+    missing: &[(String, String)],
+    thumbs_dir: &Path,
+    user_id: i64,
+    on_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> Vec<(String, String, String)> {
+    let total = missing.len();
+    if total == 0 {
+        return Vec::new();
+    }
+
+    // 结果按下标落位：线程完成顺序不影响输出顺序
+    let out: std::sync::Mutex<Vec<Option<(String, String, String)>>> =
+        std::sync::Mutex::new((0..total).map(|_| None).collect());
+    let done = std::sync::atomic::AtomicUsize::new(0);
+
+    let workers = std::thread::available_parallelism()
+        .map(|w| w.get())
+        .unwrap_or(4)
+        .min(8)
+        .max(1);
+
+    if total >= workers * 2 && workers > 1 {
+        let chunk = total.div_ceil(workers);
+        std::thread::scope(|scope| {
+            for (wi, part) in missing.chunks(chunk).enumerate() {
+                let out = &out;
+                let done = &done;
+                let on_progress = on_progress;
+                scope.spawn(move || {
+                    generate_missing_range(
+                        album_id,
+                        thumbs_dir,
+                        user_id,
+                        part,
+                        wi * chunk,
+                        out,
+                        done,
+                        total,
+                        on_progress,
+                    );
+                });
+            }
+        });
+    } else {
+        generate_missing_range(
+            album_id,
+            thumbs_dir,
+            user_id,
+            missing,
+            0,
+            &out,
+            &done,
+            total,
+            on_progress,
+        );
+    }
+
+    out.into_inner()
+        .unwrap()
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// 生成一段缺失项并按下标写入 `out`（并行块与串行退化共用同一段逻辑）。
+///
+/// 私有：只服务于 `ensure_grid_thumbs_missing_parallel`，避免闭包跨线程捕获带来的 `Sync` 约束。
+fn generate_missing_range(
+    album_id: i64,
+    thumbs_dir: &Path,
+    user_id: i64,
+    items: &[(String, String)],
+    start_idx: usize,
+    out: &std::sync::Mutex<Vec<Option<(String, String, String)>>>,
+    done: &std::sync::atomic::AtomicUsize,
+    total: usize,
+    on_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) {
+    for (i, (src, hash)) in items.iter().enumerate() {
+        // 与旧串行版语义一致：单张失败不影响其余，丢弃该项继续
+        if let Ok(tp) = ensure_grid_thumb(
+            album_id,
+            std::path::Path::new(src),
+            thumbs_dir,
+            None,
+            user_id,
+        ) {
+            if let Ok(mut g) = out.lock() {
+                g[start_idx + i] = Some((src.clone(), hash.clone(), tp));
+            }
+        }
+        let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if let Some(cb) = on_progress {
+            cb(d, total);
+        }
+    }
+}
+
 /// 删除相册的全部网格缩略图（删除相册记录时调用，避免缓存磁盘持续增长）
 pub fn cleanup_album_grid_thumbs(album_id: i64, thumbs_dir: &Path) {
     let grid_dir = thumbs_dir.join(GRID_THUMBS_SUBDIR);
@@ -982,6 +1100,141 @@ mod tests {
         assert_eq!(before, after, "二次调用不得新增缓存文件（防重复生成）");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// P19：语义腿的并行缩略图生成 —— 输出顺序不依赖线程完成顺序、
+    /// 进度回调每张恰好一次、小样本退化串行仍正确。
+    ///
+    /// 回归背景：旧版是单线程串行且零埋点，412 张耗时 169.8s 成为三腿并发的关键路径
+    /// （BUG-2026-0929-010）。这里同时锁住「换成并行后语义不变」。
+    #[test]
+    fn missing_parallel_preserves_order_and_reports_progress() {
+        let tmp = std::env::temp_dir().join(format!("pm_missing_par_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let img_dir = tmp.join("photos");
+        std::fs::create_dir_all(&img_dir).unwrap();
+
+        // hash 用可预测值：用来断言「输出与输入同序」而不只是「个数对」
+        let mut missing: Vec<(String, String)> = Vec::new();
+        for i in 0..24 {
+            let p = img_dir.join(format!("p{i:02}.jpg"));
+            image::RgbImage::new(120, 90).save(&p).unwrap();
+            missing.push((p.to_string_lossy().into_owned(), format!("h{i:02}")));
+        }
+        let thumbs = tmp.join("thumbs");
+
+        let progress = std::sync::atomic::AtomicUsize::new(0);
+        let last_total = std::sync::atomic::AtomicUsize::new(0);
+        let out = ensure_grid_thumbs_missing_parallel(
+            77,
+            &missing,
+            &thumbs,
+            9,
+            Some(&|_done, total| {
+                progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                last_total.store(total, std::sync::atomic::Ordering::Relaxed);
+            }),
+        );
+
+        assert_eq!(out.len(), 24, "全部应生成成功");
+        for (i, (src, hash, thumb)) in out.iter().enumerate() {
+            assert_eq!(hash, &format!("h{i:02}"), "输出必须与输入同序（不依赖线程完成顺序）");
+            assert_eq!(src, &missing[i].0);
+            assert!(Path::new(thumb).exists(), "缩略图文件应存在");
+        }
+        assert_eq!(
+            progress.load(std::sync::atomic::Ordering::Relaxed),
+            24,
+            "进度回调每张恰好一次"
+        );
+        assert_eq!(last_total.load(std::sync::atomic::Ordering::Relaxed), 24);
+
+        // 空输入：不生成、不回调
+        let empty = ensure_grid_thumbs_missing_parallel(77, &[], &thumbs, 9, None);
+        assert!(empty.is_empty(), "空输入应返回空");
+
+        // 小样本（< 2×线程数）走串行退化分支，结果必须一致
+        let small: Vec<(String, String)> = missing.iter().take(3).cloned().collect();
+        let thumbs2 = tmp.join("thumbs2");
+        let out2 = ensure_grid_thumbs_missing_parallel(77, &small, &thumbs2, 9, None);
+        assert_eq!(out2.len(), 3, "串行退化分支应同样产出 3 张");
+        for (i, (_, hash, _)) in out2.iter().enumerate() {
+            assert_eq!(hash, &format!("h{i:02}"), "串行分支也要保序");
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// P19 实测基准：语义腿缩略图生成 串行（旧） vs 并行（新）。
+    ///
+    /// 需要**真实照片**（合成 120×90 小图测不出差异，解码成本不在一个量级）：
+    /// ```text
+    /// PM_THUMB_BENCH_DIR="<相册目录>" [PM_THUMB_BENCH_N=96] \\
+    ///   cargo test --lib thumb_bench_serial_vs_parallel -- --ignored --nocapture
+    /// ```
+    #[ignore = "真实照片基准：设 PM_THUMB_BENCH_DIR 后手动运行"]
+    #[test]
+    fn thumb_bench_serial_vs_parallel() {
+        let dir = std::env::var("PM_THUMB_BENCH_DIR")
+            .expect("请设置 PM_THUMB_BENCH_DIR=<相册目录>");
+        let n_take: usize = std::env::var("PM_THUMB_BENCH_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(96);
+
+        let all = list_album_images(Path::new(&dir));
+        assert!(!all.is_empty(), "目录无图片: {dir}");
+        let sources: Vec<String> = all.into_iter().take(n_take).collect();
+        let n = sources.len();
+
+        // 预热页缓存：两边都读同一批源文件，先把磁盘读延迟从计时里摘掉
+        for s in sources.iter().take(8) {
+            let _ = std::fs::read(s);
+        }
+
+        // 两个独立 thumbs 目录，保证两边都真生成（不命中对方的磁盘缓存）
+        let base = std::env::temp_dir().join(format!("thumb_bench_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir_serial = base.join("serial");
+        let dir_parallel = base.join("parallel");
+
+        // —— 串行（旧实现：语义腿原来就是这段 filter_map）——
+        let t0 = std::time::Instant::now();
+        let serial: Vec<String> = sources
+            .iter()
+            .filter_map(|src| ensure_grid_thumb(77, Path::new(src), &dir_serial, None, 0).ok())
+            .collect();
+        let ms_serial = t0.elapsed().as_millis();
+
+        // —— 并行（P19 新实现）——
+        let missing: Vec<(String, String)> = sources
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.clone(), format!("h{i:04}")))
+            .collect();
+        let t1 = std::time::Instant::now();
+        let parallel = ensure_grid_thumbs_missing_parallel(77, &missing, &dir_parallel, 0, None);
+        let ms_parallel = t1.elapsed().as_millis();
+
+        assert_eq!(serial.len(), n, "串行应全部成功");
+        assert_eq!(parallel.len(), n, "并行应全部成功");
+        // 顺序一致性：并行版产出的 photo_hash 必须与输入同序
+        for (i, (_, hash, _)) in parallel.iter().enumerate() {
+            assert_eq!(hash, &format!("h{i:04}"), "并行输出必须保序");
+        }
+
+        let speedup = if ms_parallel > 0 {
+            ms_serial as f64 / ms_parallel as f64
+        } else {
+            f64::INFINITY
+        };
+        eprintln!(
+            "[thumb_bench] 样本 {n} 张 | 串行(旧) {ms_serial}ms ({:.0}ms/张) | 并行(新) {ms_parallel}ms ({:.0}ms/张) | 加速 {speedup:.2}x",
+            ms_serial as f64 / n as f64,
+            ms_parallel as f64 / n as f64,
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// 指纹确定性：同一文件多次计算必须完全一致（回归 DefaultHasher 随机种子 bug：

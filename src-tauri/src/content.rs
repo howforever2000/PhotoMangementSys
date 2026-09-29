@@ -1049,29 +1049,49 @@ async fn scan_album_embeddings(
         }
     }
 
-    // 2. 缺失缩略图现场生成（阻塞线程，db=None 只生成文件不写表；写表随向量批次一并完成）
+    // 2. 缺失缩略图现场生成（阻塞线程**并行**，db=None 只生成文件不写表；写表随向量批次一并完成）
+    //
+    // P19：原先这里是 `missing.iter().filter_map(...)` 单线程串行 —— 实测 412 张耗时
+    // 169.8s（412ms/张），占该相册总耗时 203s 的 83%，且全程无日志（跑完才返回），
+    // 因而它是三腿并发里的关键路径：AI 腿 41.6s 跑完后空等 154s。见 BUG-2026-0929-010。
+    // 改用 thumbnail::ensure_grid_thumbs_missing_parallel（按核数分块并行 + 进度回调）。
     if !missing.is_empty() {
         let thumbs_dir2 = thumbs_dir.clone();
-        let missing2 = missing.clone();
+        // 已消费掉 missing，后续不再需要（这里直接 take 省一次 412 项的 clone）
+        let missing2 = std::mem::take(&mut missing);
+        let n_total = missing2.len();
+        let workers = std::thread::available_parallelism()
+            .map(|w| w.get())
+            .unwrap_or(4)
+            .min(8);
+        let t_thumb = std::time::Instant::now();
+        crate::logger::log_info(&format!(
+            "[scan.thumb] album={album_id} 缩略图 | 待生成 {n_total} 张 · {workers} 线程（并行）"
+        ));
         let generated: Vec<(String, String, String)> = tauri::async_runtime::spawn_blocking(move || {
-            missing2
-                .iter()
-                .filter_map(|(src, hash)| {
-                    match crate::thumbnail::ensure_grid_thumb(
-                        album_id,
-                        std::path::Path::new(src),
-                        &thumbs_dir2,
-                        None,
-                        user_id,
-                    ) {
-                        Ok(tp) => Some((src.clone(), hash.clone(), tp)),
-                        Err(_) => None,
+            crate::thumbnail::ensure_grid_thumbs_missing_parallel(
+                album_id,
+                &missing2,
+                &thumbs_dir2,
+                user_id,
+                Some(&|done: usize, total: usize| {
+                    // 每 100 张上报一次 + 末张（避免 412 条日志刷屏）
+                    if done % 100 == 0 || done == total {
+                        crate::logger::log_info(&format!(
+                            "[scan.thumb] album={album_id} 缩略图进度 {done}/{total}"
+                        ));
                     }
-                })
-                .collect()
+                }),
+            )
         })
         .await
         .map_err(|e| format!("缩略图生成任务失败: {e}"))?;
+        let ms_thumb = t_thumb.elapsed().as_millis();
+        crate::logger::log_info(&format!(
+            "[scan.thumb] album={album_id} 缩略图完成 {}/{n_total} 张 · {ms_thumb}ms · {:.0}ms/张",
+            generated.len(),
+            (ms_thumb as f64) / n_total as f64
+        ));
         meta.extend(generated);
     }
     if meta.is_empty() {
