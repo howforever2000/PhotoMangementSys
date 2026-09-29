@@ -1559,8 +1559,13 @@ pub mod commands {
         //
         // 硬约束照旧：EXIF 是阶段 0，**先跑完**再启动三腿（时间+地点先于语义向量）。
         // 取消语义照旧：两条 HTTP 腿仍只在批次之间检查 `cancel`。
+        //
+        // ⚠ **并发段的记时纪律**：`span_*` 都是 join 返回之后才调的，
+        // 因此每条腿必须把「起点 + 终点」都在 future 内部读出来再带出去，用 `span_ms`
+        // 记两者的差。若只把起点带出来、用 `span_with(起点)`，记到的就是
+        //「本腿起点 → join 返回」= **最慢那条腿的时长**（实测三段全是 195529ms，
+        //  毫无区分度，还会把「阶段重叠」算大）。详见 scan_timing 模块头注释。
         // ===================================================================
-        let t_tone = std::time::Instant::now();
 
         // AI 腿的增量日志：内容在并发前算好，避免把 all_paths 移进 future
         // （future 是 async move，引用不 Copy 的值会被整体搬走）。
@@ -1585,19 +1590,22 @@ pub mod commands {
             let paths2 = pending.clone();
             async move {
                 if do_tone {
+                    // 不在 future 内用 `?`：`?` 会让块的错误类型变成「待推断」，
+                    // else 分支的 `Ok(..)` 又给不出约束（E0283）。改成整条 map_err→map。
+                    let t0 = std::time::Instant::now();
                     tauri::async_runtime::spawn_blocking(move || {
                         crate::tone::analyze_paths_parallel(&paths2, threads_local)
                     })
                     .await
                     .map_err(|e| format!("影调任务线程失败: {e}"))
+                    .map(|r| (t0, std::time::Instant::now(), r))
                 } else {
-                    Ok(Vec::new())
+                    Ok((std::time::Instant::now(), std::time::Instant::now(), Vec::new()))
                 }
             }
         };
 
-        // 腿 2：语义向量（异步 HTTP → vcr-clip）。`Instant` 在 future 内部读，
-        // 这样记的是该腿自己的墙钟，而不是「启动三腿到 join 返回」的公共时长。
+        // 腿 2：语义向量（异步 HTTP → vcr-clip）。**起止都在 future 内**（见上方记时纪律）。
         // 引用一律显式绑定后再进 future：async move 会把非 Copy 的捕获整体搬走，
         // 而 `pending` / `app` / `state` 后面还要用。
         let sem_fut = {
@@ -1607,7 +1615,7 @@ pub mod commands {
             let cancel_sem = cancel.clone();
             async move {
                 if do_semantic {
-                    let t = std::time::Instant::now();
+                    let t0 = std::time::Instant::now();
                     let r = scan_album_embeddings(
                         album_id,
                         user_id,
@@ -1618,7 +1626,7 @@ pub mod commands {
                         cancel_sem,
                     )
                     .await;
-                    Some((t, r))
+                    Some((t0, std::time::Instant::now(), r))
                 } else {
                     None
                 }
@@ -1632,39 +1640,56 @@ pub mod commands {
             let cancel_ai = cancel.clone();
             async move {
                 if do_ai {
-                    let t = std::time::Instant::now();
+                    let t0 = std::time::Instant::now();
                     crate::vision::classify_paths(&ai_paths, batch, app_ref, Some(cancel_ai))
                         .await
-                        .map(|v| (t, v))
+                        .map(|v| (t0, std::time::Instant::now(), v))
                 } else {
-                    Ok((std::time::Instant::now(), Vec::new()))
+                    Ok((
+                        std::time::Instant::now(),
+                        std::time::Instant::now(),
+                        Vec::new(),
+                    ))
                 }
             }
         };
 
         let (tone_res, sem_res, ai_res) = tokio::join!(tone_fut, sem_fut, ai_fut);
 
-        let tones = tone_res?;
+        // 并发段耗时 = future 自己的 (终点 - 起点)，见上方记时纪律
+        let ms = |a: std::time::Instant, b: std::time::Instant| -> f64 {
+            b.duration_since(a).as_secs_f64() * 1000.0
+        };
+
+        let (t_tone0, t_tone1, tones) = tone_res?;
         if do_tone {
-            timing.span_with("影调", t_tone, &format!("{}线程·{}张", threads_local, tones.len()));
+            timing.span_ms(
+                "影调",
+                ms(t_tone0, t_tone1),
+                &format!("{}线程·{}张", threads_local, tones.len()),
+            );
         }
 
         // FEAT-SEM：语义向量扫描与 AI 识别同为异步 HTTP，在 outcome 构建前完成，
         // 结果合并进 CombinedScanOutcome（report 累加，rows 追加）。
         let semantic_outcome: Option<Result<(ScanReport, Vec<UnifiedScanRow>), String>> =
             match sem_res {
-                Some((t_sem, r)) => {
-                    timing.span_with("语义向量", t_sem, &format!("批次{}（与AI腿并发）", batch));
+                Some((t_sem0, t_sem1, r)) => {
+                    timing.span_ms(
+                        "语义向量",
+                        ms(t_sem0, t_sem1),
+                        &format!("批次{}（与AI腿并发）", batch),
+                    );
                     Some(r)
                 }
                 None => None,
             };
 
-        let (t_ai, vision_results) = ai_res?;
+        let (t_ai0, t_ai1, vision_results) = ai_res?;
         if do_ai {
-            timing.span_with(
+            timing.span_ms(
                 "AI识别",
-                t_ai,
+                ms(t_ai0, t_ai1),
                 &format!("批次{}·{}张（与语义腿并发）", batch, vision_results.len()),
             );
         }

@@ -17,6 +17,14 @@
 //!   各板块耗时相加通常**小于**总墙钟（await 调度、事件 emit、serde 序列化、
 //!   spawn_blocking 的排队都要时间）。没有这一项，读者会误以为「数字对不上是记账错了」，
 //!   从而不敢用这份数据下结论。显式给出残差，是对读者的诚实。
+//!
+//! ⚠ **并发段怎么记（BUG-2026-0928-003）**：
+//!   三腿并发（影调 ∥ 语义 ∥ AI）后，`span_*` 都是 `tokio::join!` 返回之后才调用的。
+//!   - 用 `span_with(name, 起点)` → 记到的是「本段起点 → join 返回」= **最慢那条腿的
+//!     时长**，三条段会读出三个几乎相同的数（实测 195529 / 195529 / 195489 ms），
+//!     完全无法归因，还会把 `阶段重叠` 算得虚大；
+//!   - 正确做法：把「起点 + 终点」都在 future 内部读出来带出去，用 `span_ms` 记差值。
+//!   顺序段（walk / EXIF / 落库 / 预热 / 重建）不受影响，继续用 `span_with` 即可。
 
 use std::time::Instant;
 
@@ -58,8 +66,8 @@ impl ScanTiming {
         ms
     }
 
-    /// 直接记一段已知耗时（调用方已经算好的，如 Python 侧回报的服务端内部耗时）
-    #[allow(dead_code)] // API 完整性保留：回填外部耗时（如 Python 回报）时用
+    /// 直接记一段已知耗时（调用方已经算好的，如并发段「future 自己的起止差」、
+    /// 或 Python 侧回报的服务端内部耗时）
     pub fn span_ms(&mut self, name: &str, ms: f64, note: &str) {
         self.spans.push(PhaseSpan { name: name.to_string(), ms, note: note.to_string() });
     }
@@ -292,6 +300,19 @@ mod tests {
         assert!(line.contains("影调 356"), "{line}");
         // 残差 = 600 - (210+356) = 34
         assert!(line.contains("未计入(调度/序列化/等待) 34"), "{line}");
+    }
+
+    /// 并发段专用记法：span_ms 原样记下传入的段耗时（BUG-2026-0928-003 的正确路径）
+    #[test]
+    fn span_ms_records_given_duration_verbatim() {
+        let mut t = ScanTiming::new(1);
+        t.span_ms("语义向量", 195529.0, "批次8（与AI腿并发）");
+        t.span_ms("AI识别", 41581.0, "批次8·412张（与语义腿并发）");
+        let spans = t.spans();
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].name, "语义向量");
+        assert_eq!(spans[0].ms, 195529.0, "必须原样记下传入的段耗时");
+        assert_eq!(spans[1].ms, 41581.0);
     }
 
     #[test]

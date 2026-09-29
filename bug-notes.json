@@ -3156,6 +3156,49 @@
         "grep -rn 'PostScanState|run_post_scan_tasks|scan-post-done|desc_needed' src-tauri/src → 零命中（收尾机制已回退）"
       ],
       "created_at": "2026-09-29T09:35:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0928-003",
+      "date": "2026-09-28",
+      "status": "fixed",
+      "severity": "low",
+      "title": "[scan.timing] 三腿并发段的耗时全等于 join 时长（195529/195529/195489ms 三个几乎一样的数），无法归因并发瓶颈",
+      "module": "src-tauri/src/content.rs（三腿 join 后的 span 记账）+ src-tauri/src/scan_timing.rs（模块头纪律 + span_ms）",
+      "symptom": [
+        "album=63 的 [scan.timing] 输出 影调 195529 · 语义向量 195529 · AI识别 195489 —— 三段几乎相同，而总墙钟只有 203241ms",
+        "三段之和远超墙钟 → 「阶段重叠(并发) ~391017」这个数字也被撑大，读者会误以为重叠了 6.5 分钟",
+        "无法据此判断哪条腿是长杆：实际上 AI 腿的 52 批 HTTP 只用了 41.6s，语义腿花了 195s（其中 171s 是缺失缩略图的现场生成，那段无任何日志）"
+      ],
+      "root_cause": {
+        "summary": "点 1 引入三腿并发后，span 是在 tokio::join! 返回**之后**才调用的，而每条腿只把「起点」带了出去 —— span_with(name, 起点) 算的是 elapsed() = 起点到现在，于是记到的是「本腿起点 → join 返回」，也就是**最慢那条腿的时长**，三条腿自然读出三个几乎一样的数。",
+        "detail": [
+          "当时代码注释写的是「Instant 在 future 内部读，这样记的是该腿自己的墙钟」—— 只读起点不读终点，这个说法是错的",
+          "顺序段（walk / EXIF / 构建+落库 / 缩略图预热 / 分类重建）不受影响：它们的 span 调用紧跟本段结束，elapsed() 就是本段耗时",
+          "FEAT-076 的三层口径本是为优化归因服务的，归因失准等于相册级这一层观测白做"
+        ]
+      },
+      "solution": {
+        "summary": "并发段的起止**都在 future 内部**读出来带出去，用 span_ms 记两者差值；scan_timing 模块头写明这条纪律，防止再犯。",
+        "steps": [
+          "三腿 future 一律返回 (t_start, t_end, 结果)；join 后统一用 ms(a,b) 闭包算差值再调 span_ms",
+          "影调腿改用 map_err→map 链式返回，避免 future 内用 `?` 导致块的错误类型无法推断（E0283）",
+          "scan_timing.rs 模块头新增「并发段怎么记」段落，写明 span_with 的误用后果与 span_ms 的正确路径",
+          "span_ms 去掉 #[allow(dead_code)]（现已真被调用），补 1 例单测钉死「原样记下传入的段耗时」"
+        ]
+      },
+      "evidence_log": [
+        "[app.log] 2026-09-28 22:59:49 [scan.timing] album=63 ... 总 203241ms | ... 影调 195529 · 语义向量 195529 · AI识别 195489 | 阶段重叠(并发) ~391017",
+        "[app.log] 同一次调用：[scan.batch] classify 汇总 · 52批 412张 · 合计 41581ms（AI 腿实际只跑 41.6s）",
+        "[app.log] 同一次调用：22:56:26.758 [scan.incr] album=63 AI 识别 与 22:56:26.799 ensure 请求 —— 两腿同时起步，相隔 41ms",
+        "[cargo test] 145 passed / 0 failed（含新增 span_ms_records_given_duration_verbatim）"
+      ],
+      "log_hint": "看 [scan.timing]：若「影调/语义向量/AI识别」三段数值几乎相等且 ≈ 总墙钟，即为本缺陷（修复前）；修复后三段应各不相同，且三段之和 − 总墙钟 = 合理的重叠量。",
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/scan_timing.rs"
+      ],
+      "created_at": "2026-09-29T09:50:00+08:00",
+      "fixed_at": "2026-09-29T09:50:00+08:00"
     }
   ]
 }
