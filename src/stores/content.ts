@@ -126,10 +126,12 @@ function emptyJob(): CombinedScanJob {
 //
 // 为什么放 store 而不是各扫描面板各持一个 ref：原来「批次」在相册扫描与
 // 全局扫描两处各有一个下拉，值互不同步——用户改了一处，另一处还是 8。现在统一从这里读写，并把选择存 localStorage（跨会话保留）。
-// 后端口径是 `batch_size.unwrap_or(8).clamp(4, 64)`，前端只提供 8/16/32 档。
+// 后端口径是 `batch_size.unwrap_or(8).clamp(4, 64)`；档位必须与
+// `vcr_settings::calibrate_scan_batch` 的 LEVELS **完全一致** —— 否则实测可能
+// 推荐出一个下拉里选不到的值（P23 上线前就是 8/16/32 vs 实测 4~64 错位）。
 // ------------------------------------------------------------------
 /** 扫描批次可选档（只在「⚙ 性能设置 → 高级选项」里改） */
-export const BATCH_OPTIONS = [8, 16, 32];
+export const BATCH_OPTIONS = [4, 8, 16, 32, 64];
 const BATCH_STORAGE_KEY = "pm:scan-batch";
 
 function loadScanBatch(): number {

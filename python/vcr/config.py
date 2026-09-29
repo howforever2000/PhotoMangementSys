@@ -73,7 +73,10 @@ CLIP_MODEL_META: dict[str, dict] = {
         "note": "精度/速度平衡档，任何核显本都可跑",
     },
     "b16-fp32": {
-        "label": "B/16 fp32 · GPU 可加速（719MB）",
+        # P20：原本写死「（719MB）」在 label 里，与 meta.bytes（754MB，整图时代体积）
+        # 以及会话实测的 clip_vision.onnx 单文件（345MB）三个数互相矛盾。
+        # 体积改由 `clip_disk_bytes()` 磁盘实算，label 不再携带硬编码体积。
+        "label": "B/16 fp32 · GPU 可加速",
         "dim": 512,
         "size": 224,
         "max_len": 52,

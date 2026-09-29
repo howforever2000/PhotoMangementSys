@@ -3292,6 +3292,122 @@
         "仓库里已有并行实现（ensure_grid_thumbs_with_lookup）时，新增同类循环前先搜一遍，手写串行版是重复造轮子的反向操作",
         "「129 秒零日志」本身就是缺陷：任何超过 1s 的同步工作段都应有进入与进度输出，否则事后无法归因"
       ]
+    },
+    {
+      "id": "BUG-2026-0929-011",
+      "date": "2026-09-29",
+      "status": "fixed",
+      "severity": "medium",
+      "title": "改线程数后「会话实测」不刷新——显示的是被销毁的旧会话事实（UI 报 4 线程 · 当前，实测却写 8 线程）",
+      "module": "src/components/settings/BenchmarkSection.vue（applyThreads vs runBenchmark）+ python/vcr/model_registry.py（set_threads / _reload_all）",
+      "symptom": [
+        "「线程测速」表标「4 线程 · 当前」，同一屏的「会话实测」却写「实际绑定 … 8 线程」，两行自相矛盾",
+        "必须点一次「测速（人物检测通道）」（它内部会 fetchVcrModels）才纠正",
+        "期间用户无法确认线程设置到底生效没有"
+      ],
+      "root_cause": {
+        "summary": "两处测速对待「刷新会话实测」的待遇不对称：一个刷新，一个不刷新。",
+        "detail": [
+          "后端 set_threads（model_registry.py:550）确实做了 config.set_threads(n) + self._reload_all()，即刻销毁全部会话、按新线程数惰性重建 —— 后端是对的",
+          "前端 runBenchmark()（推理测速，117 行）末尾有 void store.fetchVcrModels()；applyThreads()（改线程，100 行）只 notify.success 就返回，没有拉取",
+          "于是 store.vcrModels.loaded 里留着的是**销毁前那次会话**的 facts（threads=8），而 store.vcrThreads 已经是新值 4 → 两行必然对不上",
+          "惰性重建完成后也不会自动刷新，因为没有任何东西在拉"
+        ]
+      },
+      "solution": "applyThreads 成功分支补 void store.fetchVcrModels()，与 runBenchmark 对齐。",
+      "evidence_log": [
+        "[code] BenchmarkSection.vue:117 runBenchmark 末尾有 fetchVcrModels；applyThreads（:100）没有",
+        "[code] model_registry.py:550 set_threads → config.set_threads + _reload_all（销毁会话）",
+        "[code] model_registry.py:72 _session_facts 注释自述「确实在用 GPU / 确实换了模型的铁证」",
+        "[user screenshot] 线程测速「4 线程 · 当前」vs 会话实测「8 线程」同屏矛盾"
+      ],
+      "log_hint": "改线程后无需点测速，会话实测应在 1.5s 内与下拉显示的线程数一致；若仍是旧值即本缺陷。",
+      "keywords": [
+        "会话实测",
+        "applyThreads",
+        "fetchVcrModels",
+        "stale",
+        "线程不同步",
+        "P21"
+      ],
+      "related_files": [
+        "src/components/settings/BenchmarkSection.vue",
+        "python/vcr/model_registry.py"
+      ],
+      "created_at": "2026-09-29T16:40:00+08:00",
+      "fixed_at": "2026-09-29T16:40:00+08:00",
+      "lessons": [
+        "同一屏上并列展示「配置值」与「事实值」时，任何一处数据源更新都必须同步刷新另一处 —— 否则用户会得出「功能没生效」的错误结论",
+        "「事实类」展示字段（ground truth）尤其不能滞后：它的全部价值就在于比配置更可信"
+      ]
+    },
+    {
+      "id": "BUG-2026-0929-012",
+      "date": "2026-09-29",
+      "status": "fixed",
+      "severity": "low",
+      "title": "模型体积三个口径混标（MiB 与十进制 MB 并排、双塔与单塔不标）+ GPU 说明三处打架，被读成「加载的模型与会话实测不一致」",
+      "module": "python/vcr/config.py（label/bytes）· model_registry.py（clip_disk_bytes/bytes_disk）· src/components/settings/ClipTierSection.vue · BenchmarkSection.vue（providerText）",
+      "symptom": [
+        "档位选择器显示 754MB，会话实测显示 345MB，用户判断「加载的模型和会话实测不一致」",
+        "同一档位 label 内嵌「（719MB）」，UI 又算出 754MB，两个数并排",
+        "档位说「GPU 可加速」、说明写「GPU 默认未开启」、会话实测写「DirectML+CPU」—— 三处互相矛盾",
+        "档位切换后台加载期间「模型加载中…」徽标不会自动消失（无轮询）"
+      ],
+      "root_cause": {
+        "summary": "不是数值错误，是**单位不统一 + 部分/整体不标**，再叠加 provider 文案把「候选序列」当成「实际绑定」。",
+        "detail": [
+          "实测核算（fp32）：图塔 345,193,788 B = 329.2 MiB = 345.2 十进制 MB；文本塔 408,709,491 B = 389.78 MiB = 408.7 MB；双塔合计 753,903,279 B = 719.0 MiB = 753.9 MB",
+          "所以 label 的 719 = **MiB**、UI `bytes/1e6` 的 754 = **十进制 MB**，同一个文件两个单位并排；meta.bytes（753,665,706）与磁盘实算只差 0.03%，本来就是同一个量",
+          "会话实测只报 clip_vision.onnx 单文件 345，与档位的双塔 754 不是一个量：345 + 409 = 754 才对得上",
+          "get_providers() 返回的是 ORT provider **候选序列**，[Dml, CPU] 中末尾 CPU 是默认兜底项，不代表 GPU 未生效；真正回退只看 cpu_fallback",
+          "begin_clip_switch 立即改 config 并清会话、finish_clip_switch 后台加载（可达数十秒），中间态无轮询则徽标不消失",
+          "（我初判「bytes 754 与磁盘 719 对不上」是错的 —— 对得上，是单位不同；注释已同步修正，避免留下错误注释误导后人）"
+        ]
+      },
+      "solution": {
+        "summary": "统一到「磁盘实算 + 十进制 MB + 明标部分/整体」，并把 provider 文案改成区分「候选序列」与「真回退」。",
+        "steps": [
+          "config.py：label 去掉硬编码「（719MB）」，体积不再写进字符串",
+          "model_registry.py：新增 clip_disk_bytes(paths) 实算双塔，clip_models_info 输出 bytes_disk",
+          "types/content.ts：VcrModelInfo 加 bytes_disk?: number（带完整口径注释）",
+          "ClipTierSection.vue：档位 tip 与下拉改显「双塔 XMB（图塔+文本塔 · 磁盘实算）」，未下载才回退 bytes",
+          "BenchmarkSection.vue：会话实测改显「图塔 X + 文本塔 Y = 双塔 Z」；新增 providerText()，Dml+CPU → 「DirectML（GPU 已生效，另有 1 项 CPU 兜底）」，cpu_fallback 才提示回退",
+          "ClipTierSection.vue：clip_ready === false 时每 1.5s 轮询 load(true)，onUnmounted 停钟"
+        ]
+      },
+      "evidence_log": [
+        "[实测] clip_vision.onnx = 345,193,788 B (329.2 MiB / 345.2 MB十进制)",
+        "[实测] clip_text.onnx   = 408,709,491 B (389.78 MiB / 408.7 MB十进制)",
+        "[实测] 双塔合计 = 753,903,279 B = 718.98 MiB；meta.bytes = 753,665,706 B = 718.75 MiB → 差 0.03%，同一个量",
+        "[实测] 345.2 + 408.7 = 753.9 MB ≈ 档位显示的 754 → 对账成立",
+        "[校验] python ast.parse 双文件通过；npx vue-tsc --noEmit 0 错误"
+      ],
+      "log_hint": "看会话实测是否同时列出图塔与文本塔、且两者之和等于档位显示的双塔体积；provider 文案若出现「CPU 兜底」字样即 GPU 实际生效。",
+      "keywords": [
+        "体积口径",
+        "MiB",
+        "十进制MB",
+        "bytes_disk",
+        "provider文案",
+        "加载中徽标",
+        "P20",
+        "P22"
+      ],
+      "related_files": [
+        "python/vcr/config.py",
+        "python/vcr/model_registry.py",
+        "src/components/settings/ClipTierSection.vue",
+        "src/components/settings/BenchmarkSection.vue",
+        "src/types/content.ts"
+      ],
+      "created_at": "2026-09-29T16:40:00+08:00",
+      "fixed_at": "2026-09-29T16:40:00+08:00",
+      "lessons": [
+        "同一事物在 label（手写字符串）、meta.bytes（构建期常量）、会话 facts（运行期实测）三处出现时，只要单位或粒度不一致就会被读成 bug —— 对外口径应统一到「磁盘实算 + 明标单位 + 明标部分还是整体」",
+        "同一个错误结论写进代码注释比不写更糟：本次我先断言「bytes 与磁盘对不上」，实算后发现是 MiB/MB 单位差，随即修正了三处注释",
+        "get_providers() 是**候选序列**而非实际绑定，直接 join(\"+\") 展示会误导；必须结合 cpu_fallback 判断真回退"
+      ]
     }
   ]
 }

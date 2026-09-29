@@ -44,6 +44,34 @@ LOAD_RETRY_COOLDOWN = 30.0
 _GPU_RUN_LOCK = threading.Lock()
 
 
+def clip_disk_bytes(paths: dict) -> int:
+    """P20：双塔在磁盘上的**实算**体积之和（clip_vision.onnx + clip_text.onnx）。
+
+    存在意义：让「档位体积」与「会话实测体积」能当场对账，不再各说各话。
+
+    实测核过的三个口径（fp32 档）：
+
+    1. `CLIP_MODEL_META[...]["bytes"]` = 753,665,706 B = 718.75 **MiB** = 753.7 **十进制 MB**；
+    2. label 里原写死的「（719MB）」是 **MiB**，而 UI 算式 `bytes/1e6` 给的是
+       **十进制 MB（754）** —— 两个单位并排，看起来像两个不同的体积；
+    3. 会话实测 `file_size` = **clip_vision.onnx 单文件**（fp32 为 345.2 MB 十进制），
+       与档位的**双塔合计**根本不是一个量（345 + 409 = 754 才对得上）。
+
+    所以矛盾不在数值，而在**单位不统一 + 部分/整体不标**。本函数统一以磁盘实算
+    + 十进制 MB 对外，UI 再把图塔/文本塔都列出来，两件事同时消解。
+    未下载时返回 0（UI 回退到 `bytes` 展示下载成本）。
+    """
+    total = 0
+    for key in ("vision", "text"):
+        fp = paths.get(key)
+        if fp and os.path.isfile(fp):
+            try:
+                total += os.path.getsize(fp)
+            except OSError:
+                pass
+    return total
+
+
 class ModelRegistry:
     def __init__(self):
         self._sessions: dict[str, ort.InferenceSession] = {}
@@ -496,6 +524,16 @@ class ModelRegistry:
                 "size": meta["size"],
                 # 模型体积（UI 在下载/切换前明示成本）
                 "bytes": meta.get("bytes", 0),
+                # P20：磁盘实算的**双塔合计**（clip_vision + clip_text），统一对外口径。
+                # 实测核过的三个数字（fp32）：
+                #   1) meta.bytes = 753,665,706 B = 718.75 MiB = 753.7 十进制 MB
+                #      —— 与磁盘实算 753,903,279 B **本来就是同一个量**（差 0.03%）；
+                #   2) 原 label 里的「719MB」是 **MiB**，UI 算式 `bytes/1e6` 给的是
+                #      **十进制 MB（754）** —— 两个单位并排，看着像两个不同体积；
+                #   3) 会话实测 file_size = **clip_vision.onnx 单文件** 345.2 MB，与档位的
+                #      **双塔合计**不是同一个量（345 + 409 = 754 才对得上）。
+                # 结论：矛盾不在数值，在**单位不统一 + 部分/整体不标**。
+                "bytes_disk": clip_disk_bytes(p),
                 # 已就绪 = 拆分件在；仅整图在 → 首次使用时自动拆（仍可选）
                 "downloaded": vision_ok or whole_ok,
                 "ready": vision_ok,

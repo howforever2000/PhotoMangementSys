@@ -388,6 +388,8 @@ pub fn run() {
             vcr_settings::get_scan_perf,
             vcr_settings::set_scan_perf,
             vcr_settings::calibrate_scan_threads,
+            // P23：批次大小标定（同一批样本交错轮转实测各档 ms/张，写 batch_calibration.json）
+            vcr_settings::calibrate_scan_batch,
             scan_album_tones,
             get_photo_info,
             delete_photo_records,

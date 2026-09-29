@@ -9,7 +9,7 @@
  * 服务的调用。它失败即代表服务没起来 —— 由父组件据此显示横幅并锁定其余分区
  * （BUG-2026-0918-002：不可用时**锁定而非整块隐藏**）。
  */
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useContentStore } from "../../stores/content";
 import { useNotify } from "../../composables/useNotify";
 import { PERF_TIMEOUT, withTimeout } from "../../utils/withTimeout";
@@ -45,8 +45,15 @@ const active = computed(() => info.value?.models?.find((m) => m.active) ?? null)
 const tip = computed(() => {
   const m = active.value;
   if (!m) return "";
-  const mb = m.bytes ? ` · ${(m.bytes / 1e6).toFixed(0)}MB` : "";
-  return `${m.dim} 维 · 输入 ${m.size}×${m.size}${mb}`;
+  const mb = (n: number) => `${(n / 1e6).toFixed(0)}MB`;
+  // P20：体积优先报**磁盘实算双塔合计**，与会话实测的「图塔 + 文本塔」同口径，
+  // 当场就能 345 + 390 = 719 对账；只有未下载时才回退到 `bytes`（整图时代体积）。
+  const size = m.bytes_disk
+    ? ` · 双塔 ${mb(m.bytes_disk)}（图塔+文本塔 · 磁盘实算）`
+    : m.bytes
+      ? ` · ${mb(m.bytes)}（整图体积 · 拆分前）`
+      : "";
+  return `${m.dim} 维 · 输入 ${m.size}×${m.size}${size}`;
 });
 
 async function load(silent = false) {
@@ -75,6 +82,32 @@ watch(
   () => props.retryToken,
   () => void load(),
 );
+
+// P22：档位切换后服务端是**后台异步加载**（`finish_clip_switch`，耗时可达数十秒），
+// `set_vcr_model` 立刻返回时 `clip_ready` 还是 false。没有轮询的话，「模型加载中…」
+// 徽标会一直挂着，哪怕加载早已完成 —— 这正是「配置说 A、实测说 B」错觉的另一半
+// 来源（另一半是 P21 的会话实测不刷新）。加载完后停钟，与 onUnmounted 成对清理。
+const readyTimer = ref<number | null>(null);
+function stopReadyPoll() {
+  if (readyTimer.value != null) {
+    window.clearInterval(readyTimer.value);
+    readyTimer.value = null;
+  }
+}
+watch(
+  () => info.value?.clip_ready,
+  (v) => {
+    if (v !== false) {
+      stopReadyPoll();
+      return;
+    }
+    if (readyTimer.value == null) {
+      readyTimer.value = window.setInterval(() => void load(true), 1500);
+    }
+  },
+  { immediate: true },
+);
+onUnmounted(stopReadyPoll);
 
 /** 用户改下拉 → 先弹二次确认，确认后才真正切档 */
 function onChange() {
@@ -129,9 +162,15 @@ async function onConfirm() {
           :value="m.name"
           :disabled="!m.downloaded"
         >
-          {{ m.label }}{{ m.bytes ? ` · ${(m.bytes / 1e6).toFixed(0)}MB` : "" }}{{
-            m.downloaded ? "" : "（未下载）"
-          }}{{ m.active ? " ✓当前" : "" }}
+          {{
+            m.label
+          }}{{
+            m.bytes_disk
+              ? ` · 双塔 ${(m.bytes_disk / 1e6).toFixed(0)}MB`
+              : m.bytes
+                ? ` · 整图 ${(m.bytes / 1e6).toFixed(0)}MB`
+                : ""
+          }}{{ m.downloaded ? "" : "（未下载）" }}{{ m.active ? " ✓当前" : "" }}
         </option>
       </select>
 
