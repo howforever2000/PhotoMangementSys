@@ -243,6 +243,24 @@ const themeOptions = [
   { id: "color", label: "纯色" },
 ] as const;
 
+/** 组件色调调色盘（预设单色快选；旁边的取色器可选任意色） */
+const COMP_SWATCHES = [
+  "#ffffff",
+  "#f5f6f8",
+  "#eef3fb",
+  "#e0f2fe",
+  "#e6f6ea",
+  "#fdf3e0",
+  "#fef2f2",
+  "#f3e8ff",
+  "#242a38",
+] as const;
+
+function setCompColor(c: string) {
+  theme.compColor = c;
+  theme.persist();
+}
+
 function setBgStyle(v: string) {
   theme.bgStyle = v as "image" | "gradient" | "color";
   theme.persist();
@@ -478,6 +496,40 @@ onBeforeUnmount(() => {
                 >
                   深色
                 </button>
+              </div>
+            </div>
+
+            <div class="pm-section">
+              <div class="pm-section-title">组件色调</div>
+              <p class="pm-hint pm-comp-hint">
+                卡片 / 面板等组件的底色 · 单色 · 默认白色
+                {{ theme.mode === "dark" ? "（深色模式下不生效）" : "" }}
+              </p>
+              <div class="pm-color-row">
+                <input
+                  type="color"
+                  v-model="theme.compColor"
+                  @change="theme.persist()"
+                  aria-label="组件色调取色器"
+                />
+                <span class="pm-mono">{{ theme.compColor }}</span>
+                <button class="pm-btn pm-btn-clear" type="button" @click="setCompColor('#ffffff')">
+                  恢复白色
+                </button>
+              </div>
+              <div class="pm-swatches" role="group" aria-label="组件色调调色盘">
+                <button
+                  v-for="c in COMP_SWATCHES"
+                  :key="c"
+                  type="button"
+                  class="pm-swatch"
+                  :class="{ on: theme.compColor.toLowerCase() === c }"
+                  :style="{ background: c }"
+                  :title="c"
+                  :aria-label="'组件色调 ' + c"
+                  :aria-pressed="theme.compColor.toLowerCase() === c"
+                  @click="setCompColor(c)"
+                ></button>
               </div>
             </div>
 
@@ -1018,6 +1070,36 @@ onBeforeUnmount(() => {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
   color: var(--pm-label);
+}
+/* 组件色调（FEAT-084） */
+.pm-comp-hint {
+  margin: -2px 0 10px;
+}
+.pm-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.pm-swatch {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--pm-soft-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+}
+.pm-swatch:hover {
+  border-color: #3a6cf5;
+  transform: translateY(-1px);
+}
+.pm-swatch:focus-visible {
+  outline: 2px solid #3a6cf5;
+  outline-offset: 2px;
+}
+.pm-swatch.on {
+  box-shadow: 0 0 0 2px var(--pm-input-bg), 0 0 0 4px #3a6cf5;
 }
 .pm-grade {
   display: flex;

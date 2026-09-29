@@ -1,5 +1,17 @@
 import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
+import {
+  TEXT_DARK,
+  TEXT_LIGHT,
+  componentTone,
+  contrastRatio,
+  hexToRgb,
+  hexToRgba,
+  isDarkText,
+  mixRgb,
+  normalizeHex,
+  relLum,
+} from "../utils/color";
 
 /** 偏好设置与背景图分开存储：
  *  - 背景图 data URL 可能几百 KB，若和偏好一起写，超出 localStorage 配额时会导致
@@ -12,6 +24,8 @@ export type BackgroundStyle = "image" | "gradient" | "color";
 
 interface Prefs {
   mode: ThemeMode;
+  /** 组件色调：卡片/面板等组件底色（单色，默认白色；仅浅色模式下发，Q4-A） */
+  compColor: string;
   bgStyle: BackgroundStyle;
   bgColor: string;
   gradFrom: string;
@@ -22,6 +36,7 @@ interface Prefs {
 
 const DEFAULTS: Prefs = {
   mode: "light",
+  compColor: "#ffffff",
   bgStyle: "color",
   bgColor: "#f5f6f8",
   gradFrom: "#396cd8",
@@ -72,46 +87,8 @@ function loadImage(): string {
   }
 }
 
-/* ---------- 背景亮度/对比度计算工具（BUG-2026-0919-002） ---------- */
-
-function hexToRgb(hex: string): [number, number, number] {
-  let h = hex.replace("#", "").trim();
-  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
-  const n = Number.parseInt(h.slice(0, 6) || "000000", 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-}
-
-/** WCAG 相对亮度（sRGB 线性化） */
-function relLum(rgb: [number, number, number]): number {
-  const f = (v: number) => {
-    const s = v / 255;
-    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
-  };
-  return 0.2126 * f(rgb[0]) + 0.7152 * f(rgb[1]) + 0.0722 * f(rgb[2]);
-}
-
-function contrastRatio(a: number, b: number): number {
-  const hi = Math.max(a, b);
-  const lo = Math.min(a, b);
-  return (hi + 0.05) / (lo + 0.05);
-}
-
-function mixRgb(a: [number, number, number], b: [number, number, number], t: number): [number, number, number] {
-  return [
-    Math.round(a[0] + (b[0] - a[0]) * t),
-    Math.round(a[1] + (b[1] - a[1]) * t),
-    Math.round(a[2] + (b[2] - a[2]) * t),
-  ];
-}
-
-const TEXT_DARK: [number, number, number] = [0x1f, 0x27, 0x33]; // 浅色模式主文字
-const TEXT_LIGHT: [number, number, number] = [0xf5, 0xf7, 0xff]; // 深色模式主文字
-
-/** 文字色是否属于「深色文字」（决定阴影方向） */
-function isDarkText(color: string): boolean {
-  const [r, g, b] = hexToRgb(color);
-  return r + g + b < 384;
-}
+/* 背景亮度/对比度与组件色调派生的纯函数已抽到 utils/color.ts（FEAT-084）：
+   同一套 RGB/WCAG 工具供背景对比与组件色调共用，且可被 node:test 直接单测。 */
 
 /**
  * 全局主题/皮肤状态。
@@ -121,6 +98,8 @@ function isDarkText(color: string): boolean {
 export const useThemeStore = defineStore("theme", () => {
   const saved = loadPrefs();
   const mode = ref<ThemeMode>(saved.mode);
+  // 归一化：保证始终是合法小写 hex（坏值/大写旧数据回落默认白色）
+  const compColor = ref(normalizeHex(saved.compColor, DEFAULTS.compColor));
   const bgStyle = ref<BackgroundStyle>(saved.bgStyle);
   const bgColor = ref(saved.bgColor);
   const gradFrom = ref(saved.gradFrom);
@@ -132,6 +111,7 @@ export const useThemeStore = defineStore("theme", () => {
   function persist() {
     const prefs: Prefs = {
       mode: mode.value,
+      compColor: compColor.value,
       bgStyle: bgStyle.value,
       bgColor: bgColor.value,
       gradFrom: gradFrom.value,
@@ -170,6 +150,7 @@ export const useThemeStore = defineStore("theme", () => {
 
   function reset() {
     mode.value = DEFAULTS.mode;
+    compColor.value = DEFAULTS.compColor;
     bgStyle.value = DEFAULTS.bgStyle;
     bgColor.value = DEFAULTS.bgColor;
     gradFrom.value = DEFAULTS.gradFrom;
@@ -264,10 +245,17 @@ export const useThemeStore = defineStore("theme", () => {
     return base;
   });
 
-  /** 卡片/面板内文字：跟随模式（卡片底色也由模式决定，永远对比充足） */
-  const textColor = computed(() => (isDark.value ? "#f5f7ff" : "#1f2733"));
+  /** 组件色调派生（FEAT-084）：底色 + 次级底 + 描边 + 文字，一次算全 */
+  const compTone = computed(() => componentTone(compColor.value));
+
+  /** 卡片/面板内文字：深色模式恒浅色；浅色模式随组件色调自动取深/浅 */
+  const textColor = computed(() =>
+    isDark.value || compTone.value.onDark ? "#f5f7ff" : "#1f2733",
+  );
   const subTextColor = computed(() =>
-    isDark.value ? "rgba(225,232,255,.86)" : "rgba(36,48,68,.88)",
+    isDark.value || compTone.value.onDark
+      ? "rgba(225,232,255,.86)"
+      : "rgba(36,48,68,.88)",
   );
 
   /** 页面背景上的文字：与实际背景做对比度计算（a 尽量一致 / b 对比明显） */
@@ -314,7 +302,47 @@ export const useThemeStore = defineStore("theme", () => {
   // 初始化同步一次（覆盖刷新场景）
   applyBodyTheme(mode.value === "dark");
   watch(mode, (m) => applyBodyTheme(m === "dark"));
-  /** 卡片/容器底色：深色模式用深色实底，浅色模式用白色实底，保证图标与文字始终可读 */
+
+  /* ---------- 组件色调下发（FEAT-084） ----------
+     卡片/面板/控件底色不再是写死的令牌，由用户选的单色覆盖到 body 内联变量。
+     两条边界（Q1-A/Q4-A 决策）：
+       · 默认白色 → 不写内联，完全回落 main.css 令牌，默认外观零变化；
+       · 深色模式 → 不写内联（深色卡片维持原样），组件色调仅浅色模式生效。 */
+  const COMP_VARS = [
+    "--color-surface",
+    "--color-surface-2",
+    "--color-border",
+    "--color-text",
+    "--color-text-2",
+    "--color-text-3",
+  ];
+  const TEXT_VARS = ["--color-text", "--color-text-2", "--color-text-3"];
+
+  function applyCompColor() {
+    if (typeof document === "undefined") return;
+    const body = document.body;
+    const off =
+      mode.value === "dark" ||
+      normalizeHex(compColor.value) === normalizeHex(DEFAULTS.compColor);
+    if (off) {
+      COMP_VARS.forEach((k) => body.style.removeProperty(k));
+      return;
+    }
+    const tone = compTone.value;
+    body.style.setProperty("--color-surface", tone.surface);
+    body.style.setProperty("--color-surface-2", tone.surface2);
+    body.style.setProperty("--color-border", tone.border);
+    if (tone.onDark) {
+      body.style.setProperty("--color-text", tone.text);
+      body.style.setProperty("--color-text-2", tone.text2);
+      body.style.setProperty("--color-text-3", tone.text3);
+    } else {
+      TEXT_VARS.forEach((k) => body.style.removeProperty(k));
+    }
+  }
+  watch([compColor, mode], applyCompColor, { immediate: true });
+
+  /** 卡片/容器底色：深色模式用深色实底，浅色模式跟随组件色调（默认白色实底） */
   const cardStyle = computed(() =>
     isDark.value
       ? {
@@ -322,13 +350,18 @@ export const useThemeStore = defineStore("theme", () => {
           border: "1px solid rgba(255,255,255,.09)",
         }
       : {
-          background: "rgba(255,255,255,.94)",
-          border: "1px solid rgba(0,0,0,.07)",
+          background: hexToRgba(compColor.value, 0.94),
+          /* 默认白色时描边维持原令牌值，保证默认外观零变化 */
+          border:
+            normalizeHex(compColor.value) === normalizeHex(DEFAULTS.compColor)
+              ? "1px solid rgba(0,0,0,.07)"
+              : `1px solid ${compTone.value.border}`,
         },
   );
 
   return {
     mode,
+    compColor,
     bgStyle,
     bgColor,
     gradFrom,
