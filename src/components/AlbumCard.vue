@@ -42,7 +42,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 
 <template>
   <article
-    class="album-card"
+    class="album-card glass-surface"
     :class="{ 'card-selected': selected, 'card-manage': selectMode }"
     :tabindex="0"
     role="button"
@@ -119,9 +119,9 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   position: relative;
   background: var(--card-bg, #fff);
   color: var(--text, #333);
-  border-radius: 12px;
+  border-radius: var(--radius-card);
   overflow: hidden;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-1);
   cursor: pointer;
   transition: transform 0.2s, box-shadow 0.2s;
 }
@@ -138,7 +138,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 .card-cover {
   position: relative;
   height: 160px;
-  background: var(--panel-bg, #f0f0f0);
+  background: var(--panel-bg, var(--color-surface-2));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -159,7 +159,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   pointer-events: none;
 }
 .scan-badge-in {
-  background: rgba(47, 158, 68, 0.85);
+  background: #15803d;
   color: #fff;
 }
 .scan-badge-out {
@@ -219,7 +219,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   overflow: hidden;
   text-overflow: ellipsis;
   vertical-align: bottom;
-  color: #396cd8;
+  color: var(--color-link);
   cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -302,7 +302,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 
 .location-tag.no-loc {
   color: var(--muted, #999);
-  background: var(--panel-bg, #f0f0f0);
+  background: var(--panel-bg, var(--color-surface-2));
 }
 
 /* FEAT-A：合并来源列表 */

@@ -108,8 +108,6 @@ interface SubModule {
   desc: string;
   path?: string; // 跳转路径（与 actionTab 二选一）
   tab?: string; // 选中某 tab
-  /** 强调色（渐变） */
-  gradient: string;
 }
 const subModules: SubModule[] = [
   {
@@ -117,28 +115,24 @@ const subModules: SubModule[] = [
     title: "人物",
     desc: "按出现频率自动聚类，支持命名、合并、查看照片",
     tab: "face",
-    gradient: "linear-gradient(135deg, #6a8df0 0%, #a764ec 100%)",
   },
   {
     icon: "🌟",
     title: "回忆",
     desc: "智能相册故事：按月 / 按年聚合的精彩瞬间",
     path: "/memories",
-    gradient: "linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%)",
   },
   {
     icon: "📅",
     title: "时间线",
     desc: "跨相册按拍摄时间聚合浏览",
     path: "/timeline",
-    gradient: "linear-gradient(135deg, #43cea2 0%, #185a9d 100%)",
   },
   {
     icon: "🔎",
     title: "智能搜索",
     desc: "自然语言 + 多维筛选检索照片",
     path: "/search",
-    gradient: "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)",
   },
 ];
 
@@ -152,8 +146,8 @@ function openSub(m: SubModule) {
   <div class="smart-page" :style="{ color: theme.textColor }">
     <button class="btn smart-back" @click="router.push('/home')">← 返回主页</button>
 
-    <!-- Hero：渐变背景 + 标题 + 关键统计 -->
-    <section class="smart-hero" :style="{ background: 'linear-gradient(135deg, #6a8df0 0%, #a764ec 50%, #f093fb 100%)' }">
+    <!-- Hero：磨砂玻璃横幅（去彩虹化：墨绿玻璃 + 单点强调） -->
+    <section class="smart-hero glass-surface">
       <div class="smart-hero-mask"></div>
       <div class="smart-hero-content">
         <div class="smart-hero-eyebrow">SMART ALBUM</div>
@@ -198,8 +192,7 @@ function openSub(m: SubModule) {
       <button
         v-for="m in subModules"
         :key="m.title"
-        class="smart-subcard"
-        :style="{ background: m.gradient }"
+        class="smart-subcard glass-surface"
         @click="openSub(m)"
       >
         <span class="smart-subicon">{{ m.icon }}</span>
@@ -245,20 +238,23 @@ function openSub(m: SubModule) {
 }
 .smart-back { margin-bottom: 14px; }
 
-/* ---- Hero ---- */
+/* ---- Hero：磨砂玻璃（容器=玻璃，方案 §三） ---- */
 .smart-hero {
   position: relative;
   height: 210px;
-  border-radius: 20px;
+  border-radius: var(--radius-card);
   overflow: hidden;
   margin-bottom: 22px;
-  color: #fff;
-  box-shadow: 0 10px 30px rgba(106, 141, 240, 0.25);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--color-text);
+  box-shadow: var(--shadow-2);
 }
 .smart-hero-mask {
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 80% 20%, rgba(255, 255, 255, 0.25), transparent 60%);
+  /* 统一光源：左上 135° 高光 */
+  background: var(--liquid-highlight);
   pointer-events: none;
 }
 .smart-hero-content {
@@ -272,7 +268,8 @@ function openSub(m: SubModule) {
 .smart-hero-eyebrow {
   font-size: 12px;
   letter-spacing: 3px;
-  opacity: 0.85;
+  /* 单点强调 */
+  color: var(--color-link);
   margin-bottom: 6px;
 }
 .smart-hero-title {
@@ -281,8 +278,8 @@ function openSub(m: SubModule) {
   font-weight: 800;
   letter-spacing: 2px;
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
-  /* 页面背景上的标题：on-bg 对比色（BUG-2026-0919-004） */
-  color: var(--color-on-bg, inherit);
+  /* 容器内文字：对玻璃等效底色取对比色 */
+  color: var(--color-text);
 }
 .smart-hero-sub {
   margin: 0 0 16px;
@@ -320,10 +317,10 @@ function openSub(m: SubModule) {
 .stat-divider {
   width: 1px;
   height: 26px;
-  background: rgba(255, 255, 255, 0.35);
+  background: var(--glass-border);
 }
 
-/* ---- 子模块卡（带渐变背景） ---- */
+/* ---- 子模块卡（玻璃 + 单点强调，去彩虹化） ---- */
 .smart-subgrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -336,16 +333,17 @@ function openSub(m: SubModule) {
   gap: 12px;
   text-align: left;
   padding: 14px 16px;
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   cursor: pointer;
-  border: none;
-  color: #fff;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--color-text);
   transition: transform 0.18s ease, box-shadow 0.18s ease;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-1);
 }
 .smart-subcard:hover {
   transform: translateY(-3px);
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--shadow-2);
 }
 .smart-subicon {
   font-size: 26px;

@@ -109,6 +109,6 @@ export function componentTone(hex: string): ComponentTone {
     border: onDark ? "rgba(255,255,255,.16)" : rgbToHex(mixRgb(rgb, [0, 0, 0], 0.12)),
     text: onDark ? "#f5f7ff" : "#1f2733",
     text2: onDark ? "rgba(225,232,255,.86)" : "rgba(36,48,68,.88)",
-    text3: onDark ? "rgba(214,221,240,.66)" : "#4b5b6e",
+    text3: onDark ? "rgba(214,221,240,.82)" : "#4b5b6e",
   };
 }

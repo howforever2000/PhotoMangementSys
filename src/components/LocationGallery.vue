@@ -461,7 +461,7 @@ onMounted(load);
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #43cea2 0%, #185a9d 100%);
+  background: linear-gradient(135deg, #12332a 0%, #050f0c 100%);
 }
 .loc-cover img {
   width: 100%;
@@ -589,8 +589,8 @@ onMounted(load);
   flex: 1;
 }
 .btn.active {
-  border-color: rgba(106, 141, 240, 0.8);
-  color: #6a8df0;
+  border-color: var(--color-link);
+  color: var(--color-link);
 }
 .btn-danger {
   color: #e03131;

@@ -1926,7 +1926,7 @@ function onKey(e: KeyboardEvent) {
 }
 
 .view-bar-label {
-  color: #396cd8;
+  color: var(--color-link);
   font-weight: 600;
   margin-right: 4px;
 }
@@ -1936,7 +1936,7 @@ function onKey(e: KeyboardEvent) {
 }
 
 .bc-item {
-  color: #396cd8;
+  color: var(--color-link);
 }
 
 .bc-link {
@@ -2151,10 +2151,8 @@ function onKey(e: KeyboardEvent) {
 }
 
 .year-group {
-  border: 1px solid var(--card-border);
-  border-radius: 12px;
-  overflow: hidden;
-  background: var(--card-bg);
+  /* 去卡片化（方案 §三）：分组容器不再自带卡片底，靠间距 + 细线分隔 */
+  margin-bottom: 4px;
 }
 
 /* 路线图跳转后的高亮动画 */
@@ -2189,19 +2187,21 @@ function onKey(e: KeyboardEvent) {
 }
 
 .group-year {
-  background: var(--tint-bg);
-  border-bottom: 1px solid var(--tint-border);
+  background: transparent;
+  border-bottom: 1px solid var(--color-border);
+  /* 标题上方留白 > 下方 */
+  padding-top: 20px;
 }
 
 .group-season {
-  background: var(--panel-bg);
-  border-bottom: 1px solid var(--card-border);
+  background: transparent;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .group-month {
-  background: var(--panel-bg);
-  border-bottom: 1px solid var(--card-border);
-  padding: 8px 16px 8px 32px;
+  background: transparent;
+  border-bottom: 1px solid var(--color-border);
+  padding: 6px 16px 6px 32px;
 }
 
 .group-title {
@@ -2219,8 +2219,8 @@ function onKey(e: KeyboardEvent) {
 
 .group-bc {
   font-size: 12px;
-  color: #396cd8;
-  background: rgba(57, 108, 216, 0.08);
+  color: var(--color-link);
+  background: var(--color-soft-accent);
   border-radius: 4px;
   padding: 1px 8px;
 }
@@ -2334,19 +2334,20 @@ function onKey(e: KeyboardEvent) {
 }
 
 .btn-danger {
-  background: #e5484d;
+  background: var(--color-danger);
   color: #fff;
   border-color: #e5484d;
 }
 
 .btn-danger:hover {
-  background: #d13438;
+  background: var(--color-danger-hover);
   color: #fff;
 }
 
 /* FEAT-037：批量扫描入库「强调」按钮（深浅色主题适配）
-   目的：让工具条扫描分组在众多 .btn 中一眼可见，浅色主题下不再"看不见"。
-   实现：实心渐变背景 + 强对比边框 + 阴影 + 左侧色块，并同时作用于工具条按钮和弹窗「开始扫描」按钮。 */
+   目的：让工具条扫描分组在众多 .btn 中一眼可见。
+   实现：强调色边框 + 软强调底 + 阴影；**去掉左侧 3px 色条**
+   （impeccable detect 报 side-tab slop：卡片侧边粗色条是 AI 生成 UI 的典型特征）。 */
 .tb-group.tb-scan {
   position: relative;
   padding: 2px 10px 2px 12px;
@@ -2355,41 +2356,30 @@ function onKey(e: KeyboardEvent) {
   background: var(--tint-bg);
   border: 1px solid var(--tint-border);
 }
-.tb-group.tb-scan::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: linear-gradient(180deg, #396cd8 0%, #6a4ec9 100%);
-}
 .tb-group.tb-scan .tb-group-label {
-  color: #396cd8;
+  color: var(--color-primary);
   font-weight: 600;
 }
 
+/* 液态玻璃主按钮（全页唯一实心主按钮，方案 §三） */
 .btn-scan-feature {
-  background: linear-gradient(135deg, #396cd8 0%, #5a5ad8 50%, #6a4ec9 100%);
+  background: var(--color-primary);
   color: #fff;
-  border: 1px solid #2f5cc2;
+  border: 1px solid var(--color-primary);
   font-weight: 600;
   letter-spacing: 0.2px;
-  box-shadow: 0 1px 2px rgba(57, 108, 216, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  box-shadow: var(--shadow-1), inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
 .btn-scan-feature:hover:not(:disabled) {
-  background: linear-gradient(135deg, #2f5cc2 0%, #4a4ac8 50%, #5a3eb9 100%);
+  background: var(--color-primary-hover);
   color: #fff;
-  border-color: #264db0;
-  box-shadow: 0 2px 6px rgba(57, 108, 216, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  border-color: var(--color-primary-hover);
+  box-shadow: var(--shadow-2), inset 0 1px 0 rgba(255, 255, 255, 0.22);
   transform: translateY(-1px);
 }
 .btn-scan-feature:active:not(:disabled) {
   transform: translateY(0);
-  box-shadow: 0 1px 2px rgba(57, 108, 216, 0.3);
+  box-shadow: var(--shadow-1);
 }
 .btn-scan-feature:disabled {
   background: var(--input-border);
@@ -2400,17 +2390,13 @@ function onKey(e: KeyboardEvent) {
   opacity: 0.7;
 }
 
-/* 弹窗标题：扫描功能专属高亮（与按钮同色系渐变文字） */
+/* 弹窗标题：单点强调（去掉渐变文字——强调靠字重，不靠渐变） */
 .dialog-title-accent {
-  background: linear-gradient(135deg, #396cd8 0%, #6a4ec9 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
+  color: var(--color-link);
   font-weight: 700;
 }
 .dialog-scan-feature {
-  border-top: 3px solid #396cd8;
+  border-top: 1px solid var(--color-border);
 }
 
 /* 批量导入进度条 */
@@ -2492,11 +2478,8 @@ function onKey(e: KeyboardEvent) {
 }
 
 .location-group {
-  border: 1px solid var(--card-border);
-  border-radius: 12px;
-  overflow: hidden;
-  background: var(--card-bg);
-  margin-bottom: 12px;
+  /* 去卡片化：地点分组头直接浮在页面背景上 */
+  margin-bottom: 4px;
 }
 
 .group-location {

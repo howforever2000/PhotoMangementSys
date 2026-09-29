@@ -609,7 +609,7 @@ body.theme-dark .pg-action-msg {
   white-space: nowrap;
 }
 .mono { font-family: Consolas, Monaco, monospace; }
-.person-id { font-size: 12px; color: #396cd8; margin-top: 2px; }
+.person-id { font-size: 12px; color: var(--color-link); margin-top: 2px; }
 .person-date { font-size: 11px; opacity: 0.6; margin-top: 4px; }
 
 .mini-btn {
@@ -623,7 +623,7 @@ body.theme-dark .pg-action-msg {
   transition: all 0.15s;
   flex-shrink: 0;
 }
-.mini-btn:hover { border-color: #396cd8; color: #396cd8; }
+.mini-btn:hover { border-color: var(--color-link); color: var(--color-link); }
 .mini-btn.ok { background: #396cd8; border-color: #396cd8; color: #fff; }
 .merge-btn { margin-top: 6px; }
 
@@ -686,7 +686,7 @@ body.theme-dark .pg-action-msg {
   font-size: 15px;
 }
 .merge-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.merge-id { font-size: 11px; color: #396cd8; }
+.merge-id { font-size: 11px; color: var(--color-link); }
 .merge-count { margin-left: auto; font-size: 12px; opacity: 0.7; }
 .merge-actions { margin-top: 14px; display: flex; justify-content: flex-end; }
 

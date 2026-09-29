@@ -195,7 +195,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="gs-area">
+  <section class="gs-area glass-surface">
     <!-- 顶部说明 + 主控按钮 -->
     <div class="gs-toolbar">
       <p class="gs-desc">
@@ -418,7 +418,7 @@ onMounted(() => {
    深色下翻浅，文字落在白底上不可读。全部改为主题变量。 */
 .gs-area {
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-card);
   background: var(--color-surface);
   overflow: hidden;
 }
@@ -464,7 +464,7 @@ onMounted(() => {
   font-weight: 600;
   transition: background 0.2s, border-color 0.2s, color 0.2s, box-shadow 0.12s, transform 0.1s;
 }
-.btn:hover:not(:disabled) { border-color: #396cd8; color: #396cd8; box-shadow: 0 2px 8px rgba(16, 24, 40, 0.08); }
+.btn:hover:not(:disabled) { border-color: var(--color-link); color: var(--color-link); box-shadow: 0 2px 8px rgba(16, 24, 40, 0.08); }
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:focus-visible { outline: 2px solid rgba(57, 108, 216, 0.55); outline-offset: 2px; }
 .btn:disabled {
@@ -476,8 +476,8 @@ onMounted(() => {
 .gs-btn-primary { background: #396cd8; color: #fff; border-color: #396cd8; }
 .gs-btn-primary:hover:not(:disabled) { background: #2f5cc2; border-color: #2f5cc2; color: #fff; }
 .gs-btn-primary:disabled { background: #a8bde8; border-color: #a8bde8; color: #fff; cursor: not-allowed; }
-.gs-btn-danger { background: #e5484d; color: #fff; border-color: #e5484d; }
-.gs-btn-danger:hover:not(:disabled) { background: #cf3e43; border-color: #cf3e43; color: #fff; }
+.gs-btn-danger { background: var(--color-danger); color: #fff; border-color: var(--color-danger); }
+.gs-btn-danger:hover:not(:disabled) { background: var(--color-danger-hover); border-color: var(--color-danger-hover); color: #fff; }
 .gs-btn-danger:disabled { background: #f0b3b5; border-color: #f0b3b5; color: #fff; cursor: not-allowed; }
 .btn-ghost { background: #eef2ff; color: #2f5cc2; border-color: #b9cdf5; }
 .btn-ghost:hover:not(:disabled) { background: #e1e9ff; border-color: #396cd8; color: #2f5cc2; }

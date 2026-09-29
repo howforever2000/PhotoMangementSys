@@ -114,7 +114,6 @@ interface SubModule {
   icon: string;
   title: string;
   desc: string;
-  gradient: string;
 }
 const subModules: SubModule[] = [
   {
@@ -122,28 +121,24 @@ const subModules: SubModule[] = [
     icon: "🗂️",
     title: "全局照片扫描入库",
     desc: "勾选相册批量扫描入库，支持全选、启停、进度与后台执行",
-    gradient: "linear-gradient(135deg, #396cd8 0%, #5a8bf7 100%)",
   },
   {
     tab: "by-time-place",
     icon: "🗓️",
     title: "按年·地点浏览",
     desc: "把扫描结果按年 / 地点组织聚合展示（待开发）",
-    gradient: "linear-gradient(135deg, #43cea2 0%, #185a9d 100%)",
   },
   {
     tab: "dedupe",
     icon: "🧹",
     title: "重复扫描清理",
     desc: "基于哈希找出已入库但重复扫描的照片，支持一键清理（待开发）",
-    gradient: "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)",
   },
   {
     tab: "test",
     icon: "🧪",
     title: "相册扫描分组工具",
     desc: "扫描任意文件夹 → 按年·地点分组预览与批量移动（独立子页面）",
-    gradient: "linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%)",
   },
 ];
 
@@ -172,11 +167,8 @@ function onTabClick(t: ScanTab) {
   <div class="scan-page" :style="{ color: theme.textColor }">
     <button class="btn scan-back" @click="router.push('/home')">← 返回主页</button>
 
-    <!-- Hero：渐变背景 + 标题 + 关键统计 + 任务状态 -->
-    <section
-      class="scan-hero"
-      :style="{ background: 'linear-gradient(135deg, #396cd8 0%, #5a8bf7 50%, #7eb6ff 100%)' }"
-    >
+    <!-- Hero：磨砂玻璃横幅（去彩虹化：墨绿玻璃 + 单点强调） -->
+    <section class="scan-hero glass-surface">
       <div class="scan-hero-mask"></div>
       <div class="scan-hero-content">
         <div class="scan-hero-eyebrow">SCAN HUB</div>
@@ -224,9 +216,8 @@ function onTabClick(t: ScanTab) {
       <button
         v-for="m in subModules"
         :key="m.tab"
-        class="scan-subcard"
+        class="scan-subcard glass-surface"
         :class="{ 'scan-subcard-active': activeTab === m.tab, 'scan-subcard-disabled': !tabs.find((t) => t.key === m.tab)?.enabled }"
-        :style="{ background: m.gradient }"
         @click="openSub(m)"
       >
         <span class="scan-subicon">{{ m.icon }}</span>
@@ -281,20 +272,23 @@ function onTabClick(t: ScanTab) {
 }
 .scan-back { margin-bottom: 14px; }
 
-/* ---- Hero ---- */
+/* ---- Hero：磨砂玻璃（容器=玻璃，方案 §三） ---- */
 .scan-hero {
   position: relative;
   height: 220px;
-  border-radius: 20px;
+  border-radius: var(--radius-card);
   overflow: hidden;
   margin-bottom: 22px;
-  color: #fff;
-  box-shadow: 0 10px 30px rgba(57, 108, 216, 0.25);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--color-text);
+  box-shadow: var(--shadow-2);
 }
 .scan-hero-mask {
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 80% 20%, rgba(255, 255, 255, 0.25), transparent 60%);
+  /* 统一光源：左上 135° 高光（方案 --liquid-highlight） */
+  background: var(--liquid-highlight);
   pointer-events: none;
 }
 .scan-hero-content {
@@ -308,7 +302,8 @@ function onTabClick(t: ScanTab) {
 .scan-hero-eyebrow {
   font-size: 12px;
   letter-spacing: 3px;
-  opacity: 0.85;
+  /* 单点强调：全屏只留这一处强调色 */
+  color: var(--color-link);
   margin-bottom: 6px;
 }
 .scan-hero-title {
@@ -317,8 +312,8 @@ function onTabClick(t: ScanTab) {
   font-weight: 800;
   letter-spacing: 2px;
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
-  /* 页面背景上的标题：on-bg 对比色（BUG-2026-0919-004） */
-  color: var(--color-on-bg, inherit);
+  /* 容器内文字：对玻璃等效底色取对比色（theme store 下发） */
+  color: var(--color-text);
 }
 .scan-hero-sub {
   margin: 0 0 16px;
@@ -362,7 +357,7 @@ function onTabClick(t: ScanTab) {
   50% { opacity: 0.7; }
 }
 
-/* ---- 子模块卡（带渐变背景） ---- */
+/* ---- 子模块卡（玻璃 + 单点强调，去彩虹化） ---- */
 .scan-subgrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -375,19 +370,20 @@ function onTabClick(t: ScanTab) {
   gap: 12px;
   text-align: left;
   padding: 14px 16px;
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   cursor: pointer;
-  border: none;
-  color: #fff;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--color-text);
   transition: transform 0.18s ease, box-shadow 0.18s ease;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-1);
 }
 .scan-subcard:hover:not(.scan-subcard-disabled) {
   transform: translateY(-3px);
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--shadow-2);
 }
 .scan-subcard-active {
-  outline: 3px solid #fff;
+  outline: 2px solid var(--color-link);
   outline-offset: 1px;
   transform: translateY(-3px);
 }

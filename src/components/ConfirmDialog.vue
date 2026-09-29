@@ -178,13 +178,13 @@ watch(
 }
 
 .btn-danger {
-  background: #e5484d;
+  background: var(--color-danger);
   color: #fff;
   border-color: #e5484d;
 }
 
 .btn-danger:hover {
-  background: #d13438;
+  background: var(--color-danger-hover);
 }
 
 .btn-primary {

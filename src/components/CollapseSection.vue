@@ -48,7 +48,7 @@ function toggle() {
 </script>
 
 <template>
-  <section class="collapse-section">
+  <section class="collapse-section glass-surface">
     <header class="cs-head" @click="toggle">
       <svg viewBox="0 0 16 16" class="cs-chevron" :class="{ open }" aria-hidden="true">
         <path
@@ -74,8 +74,8 @@ function toggle() {
 .collapse-section {
   background: var(--color-surface, #fff);
   border: 1px solid var(--color-border, #e2e6ee);
-  border-radius: 14px;
-  box-shadow: 0 4px 18px rgba(31, 51, 102, 0.06);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-1);
   overflow: hidden;
   color: var(--color-text);
 }

@@ -69,7 +69,7 @@ function navigate(to?: string) {
 }
 
 .breadcrumb-link {
-  color: #396cd8;
+  color: var(--color-link);
   text-decoration: none;
   cursor: pointer;
   padding: 1px 3px;

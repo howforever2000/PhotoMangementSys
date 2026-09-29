@@ -11,6 +11,7 @@ import {
   mixRgb,
   normalizeHex,
   relLum,
+  rgbToHex,
 } from "../utils/color";
 
 /** 偏好设置与背景图分开存储：
@@ -35,15 +36,22 @@ interface Prefs {
 }
 
 const DEFAULTS: Prefs = {
-  mode: "light",
-  compColor: "#ffffff",
+  /* 整体转暗（Q4-A）：模式固定深色、背景为深墨绿，组件色调即墨绿玻璃（Q2-A） */
+  mode: "dark",
+  /* 组件色调 = 玻璃色调：比页面背景亮一档，保证「背景→容器→内容」三层可读 */
+  compColor: "#16443a",
   bgStyle: "color",
-  bgColor: "#f5f6f8",
-  gradFrom: "#396cd8",
-  gradTo: "#8a3ffc",
+  bgColor: "#0e211b",
+  gradFrom: "#12332a",
+  gradTo: "#050f0c",
   gradAngle: 135,
   bgOpacity: 0.45,
 };
+
+/** 玻璃分层透明度（方案 §二）：容器 0.42（区间 0.35~0.50）/ 次级面板 0.66 / 弹层 0.78 */
+const GLASS_ALPHA = 0.42;
+const PANEL_ALPHA = 0.66;
+const DIALOG_ALPHA = 0.78;
 
 /** 深色模式对应的默认纯色背景 */
 const DARK_BG = "#1c202b";
@@ -97,7 +105,9 @@ function loadImage(): string {
  */
 export const useThemeStore = defineStore("theme", () => {
   const saved = loadPrefs();
-  const mode = ref<ThemeMode>(saved.mode);
+  /* 基础色调入口已移除 + 整体转暗（Q4-A）：模式固定为默认值。
+     否则旧 localStorage 里的 light 会让新视觉世界对老安装不生效。 */
+  const mode = ref<ThemeMode>(DEFAULTS.mode);
   // 归一化：保证始终是合法小写 hex（坏值/大写旧数据回落默认白色）
   const compColor = ref(normalizeHex(saved.compColor, DEFAULTS.compColor));
   const bgStyle = ref<BackgroundStyle>(saved.bgStyle);
@@ -245,17 +255,20 @@ export const useThemeStore = defineStore("theme", () => {
     return base;
   });
 
-  /** 组件色调派生（FEAT-084）：底色 + 次级底 + 描边 + 文字，一次算全 */
-  const compTone = computed(() => componentTone(compColor.value));
-
-  /** 卡片/面板内文字：深色模式恒浅色；浅色模式随组件色调自动取深/浅 */
-  const textColor = computed(() =>
-    isDark.value || compTone.value.onDark ? "#f5f7ff" : "#1f2733",
+  /**
+   * 玻璃等效底色：组件色调以 GLASS_ALPHA 叠在**实际页面背景**上（Q2-A）。
+   * 文字对比必须对着这个等效色算——玻璃是半透明的，只拿色调原色判断会误判
+   * （深墨绿玻璃叠在白背景上其实是中灰，该配深色字而不是浅色字）。
+   */
+  const glassRgb = computed(() =>
+    mixRgb(effectiveBg.value, hexToRgb(compColor.value), GLASS_ALPHA),
   );
+  const glassTone = computed(() => componentTone(rgbToHex(glassRgb.value)));
+
+  /** 容器/面板内文字：随玻璃等效底色自动取深/浅，保证 ≥4.5:1（方案 §四.4） */
+  const textColor = computed(() => (glassTone.value.onDark ? "#f5f7ff" : "#1f2733"));
   const subTextColor = computed(() =>
-    isDark.value || compTone.value.onDark
-      ? "rgba(225,232,255,.86)"
-      : "rgba(36,48,68,.88)",
+    glassTone.value.onDark ? "rgba(225,232,255,.86)" : "rgba(36,48,68,.88)",
   );
 
   /** 页面背景上的文字：与实际背景做对比度计算（a 尽量一致 / b 对比明显） */
@@ -303,60 +316,46 @@ export const useThemeStore = defineStore("theme", () => {
   applyBodyTheme(mode.value === "dark");
   watch(mode, (m) => applyBodyTheme(m === "dark"));
 
-  /* ---------- 组件色调下发（FEAT-084） ----------
-     卡片/面板/控件底色不再是写死的令牌，由用户选的单色覆盖到 body 内联变量。
-     两条边界（Q1-A/Q4-A 决策）：
-       · 默认白色 → 不写内联，完全回落 main.css 令牌，默认外观零变化；
-       · 深色模式 → 不写内联（深色卡片维持原样），组件色调仅浅色模式生效。 */
-  const COMP_VARS = [
-    "--color-surface",
-    "--color-surface-2",
-    "--color-border",
-    "--color-text",
-    "--color-text-2",
-    "--color-text-3",
-  ];
-  const TEXT_VARS = ["--color-text", "--color-text-2", "--color-text-3"];
-
+  /* ---------- 组件色调下发（FEAT-084/085）：容器 = 玻璃 ----------
+     玻璃底色 = 组件色调以半透明度叠在页面背景上（Q2-A），
+     文字色对**玻璃等效底色**取对比更高的一侧；所有值常驻下发，
+     换背景色/背景图/组件色调都会重新推导。 */
   function applyCompColor() {
     if (typeof document === "undefined") return;
     const body = document.body;
-    const off =
-      mode.value === "dark" ||
-      normalizeHex(compColor.value) === normalizeHex(DEFAULTS.compColor);
-    if (off) {
-      COMP_VARS.forEach((k) => body.style.removeProperty(k));
-      return;
-    }
-    const tone = compTone.value;
-    body.style.setProperty("--color-surface", tone.surface);
-    body.style.setProperty("--color-surface-2", tone.surface2);
+    const tone = glassTone.value;
+    body.style.setProperty("--color-surface", compFill(GLASS_ALPHA));
+    body.style.setProperty("--color-surface-2", compFill(PANEL_ALPHA));
     body.style.setProperty("--color-border", tone.border);
-    if (tone.onDark) {
-      body.style.setProperty("--color-text", tone.text);
-      body.style.setProperty("--color-text-2", tone.text2);
-      body.style.setProperty("--color-text-3", tone.text3);
-    } else {
-      TEXT_VARS.forEach((k) => body.style.removeProperty(k));
-    }
+    body.style.setProperty("--color-text", tone.text);
+    body.style.setProperty("--color-text-2", tone.text2);
+    body.style.setProperty("--color-text-3", tone.text3);
+    /* 别名令牌必须在同一层下发：`--glass-bg: var(--color-surface)` 写在 :root 时，
+       会用 :root 的值（白）在 :root 就算完，子元素继承到的是已解析的白底 */
+    body.style.setProperty("--glass-bg", compFill(GLASS_ALPHA));
+    body.style.setProperty("--liquid-bg", compFill(PANEL_ALPHA));
+    body.style.setProperty("--glass-border", tone.border);
   }
-  watch([compColor, mode], applyCompColor, { immediate: true });
+  watch([compColor, effectiveBg], applyCompColor, { immediate: true });
 
-  /** 卡片底色（颜色值）：深色模式恒深实底，浅色模式跟随组件色调（默认白色） */
-  const cardBg = computed(() =>
-    isDark.value ? "rgba(30,34,46,.92)" : hexToRgba(compColor.value, 0.94),
-  );
-  /** 卡片描边（颜色值）：默认白色时维持原令牌值，保证默认外观零变化 */
-  const cardBorder = computed(() => {
-    if (isDark.value) return "rgba(255,255,255,.09)";
-    return normalizeHex(compColor.value) === normalizeHex(DEFAULTS.compColor)
-      ? "rgba(0,0,0,.07)"
-      : compTone.value.border;
-  });
-  /** 卡片/容器整套样式（内联 style 直接消费） */
+  /** 组件色调按透明度渲染：容器 / 次级面板 / 弹层 */
+  function compFill(alpha: number) {
+    return hexToRgba(compColor.value, alpha);
+  }
+  const glassFill = computed(() => compFill(GLASS_ALPHA));
+  const panelFill = computed(() => compFill(PANEL_ALPHA));
+  const dialogFill = computed(() => compFill(DIALOG_ALPHA));
+
+  /** 卡片底色（颜色值）：即玻璃填充 */
+  const cardBg = computed(() => compFill(GLASS_ALPHA));
+  /** 卡片描边（颜色值）：玻璃边缘内高光，方向随等效底色明暗 */
+  const cardBorder = computed(() => glassTone.value.border);
+  /** 卡片/容器整套样式（内联 style 直接消费）：玻璃材质三件套 */
   const cardStyle = computed(() => ({
     background: cardBg.value,
     border: `1px solid ${cardBorder.value}`,
+    backdropFilter: "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
+    boxShadow: "var(--shadow-1)",
   }));
 
   return {
@@ -379,6 +378,10 @@ export const useThemeStore = defineStore("theme", () => {
     cardStyle,
     cardBg,
     cardBorder,
+    compFill,
+    glassFill,
+    panelFill,
+    dialogFill,
     persist,
     saveImage,
     reset,

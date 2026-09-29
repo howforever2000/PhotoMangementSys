@@ -19,8 +19,8 @@
   --color-primary: #396cd8;
   --color-primary-hover: #2f5cc2;
   --color-primary-soft: #eef2ff;
-  --color-danger: #e5484d;
-  --color-danger-hover: #d13438;
+  --color-danger: #d13438;   /* 白字实底 ≥4.5:1（原 #e5484d 仅 3.9:1） */
+  --color-danger-hover: #b92e33;
 
   /* 文字色阶 —— 浅色模式
      整体加深一档，确保小字号（11–12px）在白底上也能达到 WCAG AA。
@@ -53,8 +53,29 @@
   --radius-sm: 8px;
 
   /* 阴影 */
-  --shadow-card: 0 2px 10px rgba(16, 24, 40, 0.06);
-  --shadow-hover: 0 12px 28px rgba(16, 24, 40, 0.14);
+  /* ========== 玻璃材质令牌（界面质感方案 §二 · FEAT-085） ==========
+     容器=磨砂玻璃，控件=液态玻璃，缩略图=实色蒙层，弹层=三级深阴影。
+     组件只引用令牌，不硬编码具体数值。 */
+  --glass-blur: 18px;                  /* 容器模糊半径（方案 16~24px） */
+  --glass-saturate: 1.3;               /* 玻璃后背景饱和度（方案 1.2~1.4） */
+  --glass-bg: var(--color-surface);    /* 容器填充：由 theme store 按组件色调下发 */
+  --glass-border: var(--color-border); /* 玻璃边缘内高光 1px */
+  --liquid-bg: var(--color-surface-2); /* 液态控件填充（透明度下限 45%） */
+  --liquid-highlight: linear-gradient(135deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0) 46%);
+
+  /* 文字令牌（单一事实来源仍是 --color-text*，这里只做方案命名收口） */
+  --text-primary: var(--color-text);
+  --text-secondary: var(--color-text-2);
+
+  /* 圆角：全局统一 12~16 */
+  --radius-card: 14px;
+
+  /* 三级阴影体系：静态浅 / 悬浮中 / 弹层深 */
+  --shadow-1: 0 1px 2px rgba(3, 12, 9, 0.16);
+  --shadow-2: 0 10px 28px rgba(3, 12, 9, 0.24);
+  --shadow-3: 0 24px 64px rgba(0, 0, 0, 0.45);
+  --shadow-card: var(--shadow-1);
+  --shadow-hover: var(--shadow-2);
 
   /* 间距 */
   --gap: 16px;
@@ -67,13 +88,13 @@
 body.theme-dark {
   --color-text: #f5f7ff;
   --color-text-2: rgba(225, 232, 255, 0.86);
-  --color-text-3: rgba(214, 221, 240, 0.66);
-  --color-bg: #1c202b;
+  --color-text-3: rgba(214, 221, 240, 0.82);
+  --color-bg: #0e211b;
   --color-surface: rgba(30, 34, 46, 0.94);
   --color-border: rgba(255, 255, 255, 0.1);
   --color-primary-soft: rgba(57, 108, 216, 0.22);
-  --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.45);
-  --shadow-hover: 0 12px 28px rgba(0, 0, 0, 0.55);
+  --shadow-card: var(--shadow-1);
+  --shadow-hover: var(--shadow-2);
   /* 软色板深色对应值（BUG-2026-0921-005） */
   --color-surface-2: rgba(255, 255, 255, 0.05);
   --color-soft-accent: rgba(57, 108, 216, 0.22);
@@ -92,6 +113,18 @@ body.theme-dark {
    这里只负责应用一层 1px 级的细阴影，把文字从亮斑里"托"出来。 */
 body.theme-on-image {
   text-shadow: var(--pm-text-shadow, 0 1px 3px rgba(0, 0, 0, 0.35));
+}
+
+/* ==========================================================================
+   磨砂玻璃容器（材质分职：容器=玻璃，控件=液态，缩略图=实色蒙层）
+   组件把自己的类加上 glass-surface：背景/描边仍由组件用 var(--color-surface)
+   系令牌提供，这里只补玻璃**材质属性**（模糊/饱和/阴影/圆角）。
+   ========================================================================== */
+.glass-surface,
+.glass-card {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: var(--shadow-1);
 }
 
 /* 统一盒模型：避免组件内 width+padding 溢出 */

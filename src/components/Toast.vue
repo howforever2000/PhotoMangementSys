@@ -160,7 +160,7 @@ function onLeave() {
   color: #fff;
 }
 .toast-btn-danger {
-  background: #e5484d;
+  background: var(--color-danger);
   color: #fff;
 }
 .toast-close {

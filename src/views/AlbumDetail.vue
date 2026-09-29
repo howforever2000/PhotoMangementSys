@@ -212,15 +212,15 @@ onMounted(load);
   gap: 8px;
 }
 .btn-home {
-  /* 主页按钮与返回按钮区分：紫色调 */
-  background: linear-gradient(135deg, #6a8df0 0%, #a764ec 100%);
-  color: #fff;
-  border-color: transparent;
+  /* 次按钮：幽灵/描边样式（每屏只留一个实心主按钮） */
+  background: transparent;
+  color: var(--color-link);
+  border: 1px solid var(--color-border);
 }
 .btn-home:hover {
-  background: linear-gradient(135deg, #5a7de0 0%, #9754dc 100%);
-  color: #fff;
-  border-color: transparent;
+  background: var(--color-soft-accent);
+  color: var(--color-primary-hover);
+  border-color: var(--color-link);
 }
 
 .nav-actions {
@@ -249,13 +249,13 @@ onMounted(load);
 }
 
 .btn-danger {
-  background: #e5484d;
+  background: var(--color-danger);
   color: #fff;
   border-color: #e5484d;
 }
 
 .btn-danger:hover {
-  background: #d13438;
+  background: var(--color-danger-hover);
   color: #fff;
 }
 

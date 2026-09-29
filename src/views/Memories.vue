@@ -187,16 +187,18 @@ function gotoPerson(p: PersonInfo) {
   router.push({ path: "/smart", query: { tab: "face", person: p.id } });
 }
 
-/* -------------------- Hero 渐变色（按月 key 分散到柔和调色板） -------------------- */
+/* -------------------- 故事卡底色（去彩虹化：墨绿同色系 8 档明度） --------------------
+   彩虹调色板会让「回忆」页变成色卡墙；改为同一墨绿色系内只靠明度区分月份，
+   与全局「一套主色、单点强调」一致（方案 §四.3）。 */
 const PALETTE = [
-  "linear-gradient(135deg, #6a8df0 0%, #a764ec 100%)",
-  "linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%)",
-  "linear-gradient(135deg, #43cea2 0%, #185a9d 100%)",
-  "linear-gradient(135deg, #f6d365 0%, #fda085 100%)",
-  "linear-gradient(135deg, #8e2de2 0%, #4a00e0 100%)",
-  "linear-gradient(135deg, #00c6ff 0%, #0072ff 100%)",
-  "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)",
-  "linear-gradient(135deg, #5ee7df 0%, #b490ca 100%)",
+  "linear-gradient(135deg, #16413a 0%, #061712 100%)",
+  "linear-gradient(135deg, #123b3f 0%, #051518 100%)",
+  "linear-gradient(135deg, #14452f 0%, #061a12 100%)",
+  "linear-gradient(135deg, #0f3a35 0%, #051413 100%)",
+  "linear-gradient(135deg, #1a4536 0%, #071b15 100%)",
+  "linear-gradient(135deg, #123b3a 0%, #051515 100%)",
+  "linear-gradient(135deg, #0e3530 0%, #041210 100%)",
+  "linear-gradient(135deg, #18453f 0%, #071a17 100%)",
 ];
 function paletteFor(key: string): string {
   let h = 0;
@@ -267,8 +269,8 @@ function goAlbumFromLightbox(albumId: number) {
     <!-- 顶部返回 -->
     <button class="btn mem-back" @click="router.push('/home')">← 主页</button>
 
-    <!-- Hero：渐变背景 + 标题 + 关键统计 -->
-    <section class="mem-hero" :style="{ background: 'linear-gradient(135deg, #6a8df0 0%, #a764ec 50%, #f093fb 100%)' }">
+    <!-- Hero：磨砂玻璃横幅（去彩虹化） -->
+    <section class="mem-hero glass-surface">
       <div class="mem-hero-mask"></div>
       <div class="mem-hero-content">
         <div class="mem-hero-eyebrow">SMART MEMORIES</div>
@@ -463,20 +465,23 @@ function goAlbumFromLightbox(albumId: number) {
   margin-bottom: 14px;
 }
 
-/* ---- Hero ---- */
+/* ---- Hero：磨砂玻璃（容器=玻璃，方案 §三） ---- */
 .mem-hero {
   position: relative;
   height: 220px;
-  border-radius: 20px;
+  border-radius: var(--radius-card);
   overflow: hidden;
   margin-bottom: 28px;
-  color: #fff;
-  box-shadow: 0 10px 30px rgba(106, 141, 240, 0.25);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--color-text);
+  box-shadow: var(--shadow-2);
 }
 .mem-hero-mask {
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 80% 20%, rgba(255, 255, 255, 0.25), transparent 60%);
+  /* 统一光源：左上 135° 高光 */
+  background: var(--liquid-highlight);
   pointer-events: none;
 }
 .mem-hero-content {
@@ -490,7 +495,8 @@ function goAlbumFromLightbox(albumId: number) {
 .mem-hero-eyebrow {
   font-size: 12px;
   letter-spacing: 3px;
-  opacity: 0.85;
+  /* 单点强调 */
+  color: var(--color-link);
   margin-bottom: 6px;
 }
 .mem-hero-title {
@@ -499,8 +505,8 @@ function goAlbumFromLightbox(albumId: number) {
   font-weight: 800;
   letter-spacing: 4px;
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
-  /* 页面背景上的标题：on-bg 对比色（BUG-2026-0919-004） */
-  color: var(--color-on-bg, inherit);
+  /* 容器内文字：对玻璃等效底色取对比色 */
+  color: var(--color-text);
 }
 .mem-hero-sub {
   margin: 6px 0 18px;
@@ -781,14 +787,16 @@ function goAlbumFromLightbox(albumId: number) {
   margin: 0 auto 6px;
   border-radius: 50%;
   overflow: hidden;
-  background: linear-gradient(135deg, #6a8df0, #a764ec);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  /* 单点强调：首字母用强调色 */
+  color: var(--color-link);
   font-size: 28px;
   font-weight: 600;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--shadow-1);
 }
 .mem-person-avatar img {
   width: 100%;

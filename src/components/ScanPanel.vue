@@ -142,7 +142,7 @@ const openImage = trace("openImage", async (path: string) => {
 
 <template>
   <!-- ============ 组合扫描（FEAT-026，统一 EXIF / 影调 / AI 入口，可折叠） ============ -->
-  <section class="scan-area combo-area">
+  <section class="scan-area combo-area glass-surface">
     <div class="scan-toolbar">
       <div class="combo-title-wrap">
         <p class="scan-sub">勾选扫描类型（可多选，至少一项即可），一次完成 EXIF / 影调 / 人物·文档识别；结果同时写入内容库，可用于智能搜索与语义分类。扫描在后台执行，退出相册页不中断，可随时点击「停止」结束</p>
@@ -267,7 +267,7 @@ const openImage = trace("openImage", async (path: string) => {
    翻成浅色落在白底上，整版文字「隐身」。全部改为主题变量，随模式自适应。 */
 .scan-area {
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-card);
   margin-bottom: 20px;
   background: var(--color-surface);
 }
@@ -423,14 +423,14 @@ const openImage = trace("openImage", async (path: string) => {
   font-size: 14px;
   transition: all 0.2s;
 }
-.btn:hover { border-color: #396cd8; color: #396cd8; }
+.btn:hover { border-color: var(--color-link); color: var(--color-link); }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .btn-primary { background: #396cd8; color: #fff; border-color: #396cd8; }
 .btn-primary:hover { background: #2f5cc2; color: #fff; }
-.btn-danger { background: #e5484d; color: #fff; border-color: #e5484d; }
-.btn-danger:hover { background: #cf3e43; color: #fff; }
-.btn-ghost { background: transparent; color: #396cd8; border-color: #396cd8; }
-.btn-ghost:hover { background: rgba(57, 108, 216, 0.08); color: #2f5cc2; }
+.btn-danger { background: var(--color-danger); color: #fff; border-color: var(--color-danger); }
+.btn-danger:hover { background: var(--color-danger-hover); color: #fff; }
+.btn-ghost { background: transparent; color: var(--color-link); border-color: var(--color-link); }
+.btn-ghost:hover { background: rgba(57, 108, 216, 0.08); color: var(--color-primary-hover); }
 .btn-mini { padding: 2px 6px; font-size: 11px; border: 1px solid var(--color-border); border-radius: 3px; background: var(--color-surface-2); color: inherit; cursor: pointer; }
 .btn-mini:disabled { opacity: 0.5; cursor: not-allowed; }
 

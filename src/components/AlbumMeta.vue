@@ -353,7 +353,7 @@ const saveTags = trace("saveTags", async () => {
   border-radius: 8px;
   overflow: hidden;
   position: relative;
-  background: #f0f0f0;
+  background: var(--color-surface-2);
 }
 
 .cover-large img {

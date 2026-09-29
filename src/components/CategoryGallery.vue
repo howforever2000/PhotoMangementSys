@@ -879,8 +879,8 @@ onMounted(load);
   flex: 1;
 }
 .btn.active {
-  border-color: rgba(106, 141, 240, 0.8);
-  color: #6a8df0;
+  border-color: var(--color-link);
+  color: var(--color-link);
 }
 .btn-danger {
   color: #e03131;

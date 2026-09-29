@@ -17,25 +17,25 @@ const theme = useThemeStore();
  * 弹窗通过 teleport 挂到 body，无法继承 scoped 样式，若把颜色写死，
  * 深色模式下会出现「深底 + 深色标题 + 浅色输入框」的不可读组合。
  */
-const pmStyle = computed(() => {
-  const dark = theme.isDark;
-  return {
-    background: dark ? "rgba(30,34,46,.96)" : "#fff",
-    border: dark ? "1px solid rgba(255,255,255,.09)" : "1px solid rgba(0,0,0,.07)",
-    color: theme.textColor,
-    "--pm-text": dark ? "#f5f7ff" : "#1f2733",
-    "--pm-label": dark ? "rgba(214,221,240,.78)" : "#5a6474",
-    "--pm-hint": dark ? "rgba(214,221,240,.55)" : "#6b7280",
-    "--pm-input-bg": dark ? "rgba(18,20,28,.75)" : "#f4f6f9",
-    "--pm-input-border": dark ? "rgba(255,255,255,.14)" : "#e2e6ee",
-    "--pm-input-disabled-bg": dark ? "rgba(255,255,255,.04)" : "#eef1f5",
-    "--pm-btn-bg": dark ? "rgba(255,255,255,.07)" : "#f0f2f6",
-    "--pm-btn-color": dark ? "#e6e9f5" : "#4a5568",
-    "--pm-btn-hover": dark ? "rgba(255,255,255,.13)" : "#e6e9f0",
-    "--pm-soft-border": dark ? "rgba(255,255,255,.14)" : "#e2e6ee",
-    "--pm-danger-hover": dark ? "rgba(229,72,77,.22)" : "#fdf0f0",
-  };
-});
+const pmStyle = computed(() => ({
+  /* 弹层 = 玻璃 + 最高模糊 + 三级深阴影（方案 §三：层级顶点） */
+  background: theme.dialogFill,
+  backdropFilter: "blur(24px) saturate(var(--glass-saturate))",
+  boxShadow: "var(--shadow-3)",
+  border: `1px solid ${theme.cardBorder}`,
+  color: theme.textColor,
+  "--pm-text": theme.textColor,
+  "--pm-label": theme.subTextColor,
+  "--pm-hint": theme.subTextColor,
+  "--pm-input-bg": theme.compFill(0.34),
+  "--pm-input-border": theme.cardBorder,
+  "--pm-input-disabled-bg": theme.compFill(0.16),
+  "--pm-btn-bg": theme.compFill(0.2),
+  "--pm-btn-color": theme.textColor,
+  "--pm-btn-hover": theme.compFill(0.32),
+  "--pm-soft-border": theme.cardBorder,
+  "--pm-danger-hover": "rgba(229,72,77,.22)",
+}));
 
 /** 当前登录账户名（未登录时显示默认文案） */
 const username = () => auth.user?.username ?? "未登录";
@@ -310,9 +310,7 @@ onBeforeUnmount(() => {
   <div
     class="home-page"
     :style="{
-      '--card-shadow': theme.isDark
-        ? '0 16px 40px rgba(0,0,0,.55)'
-        : '0 12px 28px rgba(16,24,40,.14)',
+      '--card-shadow': 'var(--shadow-2)',
     }"
   >
     <div class="home-content">
@@ -641,6 +639,8 @@ onBeforeUnmount(() => {
 
 .avatar {
   font-size: 16px;
+  /* 黑色回退字形（无 emoji 字体时）在深色玻璃上不可读 */
+  color: var(--color-text);
 }
 
 /* FEAT-045：用户头像（user-chip 圆形小图 + 弹窗预览） */
@@ -786,10 +786,8 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 16px;
   padding: 22px 20px;
-  /* blur 由 14px 降到 6px，避免卡片文字发雾 */
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  border-radius: var(--radius-lg);
+  /* 玻璃材质（模糊/高光/阴影）由 :style="cardStyle" 下发，不再写死 blur */
+  border-radius: var(--radius-card);
   transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s, background 0.2s;
   cursor: pointer;
 }
