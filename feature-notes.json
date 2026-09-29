@@ -2641,12 +2641,13 @@
       "name": "主题弹窗新增「组件色调」：单色 · 调色盘 · 默认白色（仅浅色模式生效）",
       "status": "done",
       "module": "src/utils/color.ts（新，颜色数学+派生）、src/stores/theme.ts、src/views/Home.vue",
-      "description": "用户要把组件（卡片/面板）颜色做成可调设置，取名「组件色调」，单色、调色盘选择、默认白色。四项决策：Q1-A 保留浅色/深色那节另加新节；Q2-A 只管组件底色（--color-surface 系）；Q3-A 一个取色区 = 取色器 + 9 色预设调色板 + hex + 恢复白色；Q4-A 白色仅浅色默认、深色模式维持原深色卡片。实现：theme store 新增 compColor（入 pm-theme 持久化、reset 恢复、载入时 normalizeHex 归一化），applyCompColor 把 --color-surface/-surface-2/-border（+ 文字三件）内联覆盖到 body —— 两条硬边界：默认白色或深色模式一律 removeProperty 回落 main.css 令牌，保证默认外观零变化；文字取向不看模式而看对比度（componentTone 在深/浅两档文字里取对比更高者），避免深色组件底+深色文字隐身。颜色数学从 theme.ts 抽到 utils/color.ts（纯函数、node:test 可测），theme.ts 与组件色调共用同一套 RGB/WCAG 实现，避免双份漂移。",
+      "description": "用户要把组件（卡片/面板）颜色做成可调设置，取名「组件色调」，单色、调色盘选择、默认白色。四项决策：Q1-A 保留浅色/深色那节另加新节；Q2-A 只管组件底色（--color-surface 系）；Q3-A 一个取色区 = 取色器 + 9 色预设调色板 + hex + 恢复白色；Q4-A 白色仅浅色默认、深色模式维持原深色卡片。实现：theme store 新增 compColor（入 pm-theme 持久化、reset 恢复、载入时 normalizeHex 归一化），applyCompColor 把 --color-surface/-surface-2/-border（+ 文字三件）内联覆盖到 body —— 两条硬边界：默认白色或深色模式一律 removeProperty 回落 main.css 令牌，保证默认外观零变化；文字取向不看模式而看对比度（componentTone 在深/浅两档文字里取对比更高者），避免深色组件底+深色文字隐身。颜色数学从 theme.ts 抽到 utils/color.ts（纯函数、node:test 可测），theme.ts 与组件色调共用同一套 RGB/WCAG 实现，避免双份漂移。【二轮 0929】按用户三点反馈再改：① 删除弹窗「基础色调（浅色/深色）」小节（用户判定与组件色调重复）；② 组件色调 UI 精简为「一个色块 + 可输入色号」——去掉9 色预设调色板与恢复白色按钮，色号输入框走 normalizeHex（#ffffff / ffffff / #fff 均可，非法输入回滚当前值），交互对齐背景色设置；③ 相册管理页小相册卡片底色 --card-bg / --card-border 改绑 theme.cardBg / theme.cardBorder（store 新增两个 computed，cardStyle 改由其拼装），相册卡片随组件色调变色。遗留：模式切换入口移除后，深色模式不再有 UI 入口（store 的 mode/setMode 逻辑保留未删，旧 localStorage 里存了 dark 的用户会停在深色且无处切回）。",
       "related_files": [
         "src/utils/color.ts",
         "src/utils/color.test.ts",
         "src/stores/theme.ts",
         "src/views/Home.vue",
+        "src/views/AlbumList.vue",
         "src/assets/main.css"
       ],
       "keywords": [
@@ -2658,10 +2659,10 @@
         "WCAG 对比度",
         "color.ts"
       ],
-      "tests": "npx vue-tsc --noEmit 零错误；npm run test:types 零错误；npx vite build 成功；npm test 16 passed / 0 failed（新增 8 例：默认白派生==既有令牌、深底翻浅字、文字恒取对比高侧、次级底/描边层级、mixRgb 端点、hexToRgba、normalizeHex 坏值回落、黑对白≈21:1）。单测先跑红过一次：hexToRgba('bad') 断言错（bad 是合法 3 位 hex → bbaadd），已改正测试而非改代码。",
+      "tests": "npx vue-tsc --noEmit 零错误；npm run test:types 零错误；npx vite build 成功；npm test 16 passed / 0 failed（新增 8 例：默认白派生==既有令牌、深底翻浅字、文字恒取对比高侧、次级底/描边层级、mixRgb 端点、hexToRgba、normalizeHex 坏值回落、黑对白≈21:1）。单测先跑红过一次：hexToRgba('bad') 断言错（bad 是合法 3 位 hex → bbaadd），已改正测试而非改代码。二轮后三项均复跑：vue-tsc 0 错 / vite build 成功 / 16 例全绿。",
       "created_at": "2026-09-29T16:35:00+08:00",
-      "updated_at": "2026-09-29T16:35:00+08:00"
+      "updated_at": "2026-09-29T16:52:00+08:00"
     }
   ],
-  "updated": "2026-09-29T16:35:00+08:00"
+  "updated": "2026-09-29T16:52:00+08:00"
 }

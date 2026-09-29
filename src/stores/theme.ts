@@ -342,22 +342,22 @@ export const useThemeStore = defineStore("theme", () => {
   }
   watch([compColor, mode], applyCompColor, { immediate: true });
 
-  /** 卡片/容器底色：深色模式用深色实底，浅色模式跟随组件色调（默认白色实底） */
-  const cardStyle = computed(() =>
-    isDark.value
-      ? {
-          background: "rgba(30,34,46,.92)",
-          border: "1px solid rgba(255,255,255,.09)",
-        }
-      : {
-          background: hexToRgba(compColor.value, 0.94),
-          /* 默认白色时描边维持原令牌值，保证默认外观零变化 */
-          border:
-            normalizeHex(compColor.value) === normalizeHex(DEFAULTS.compColor)
-              ? "1px solid rgba(0,0,0,.07)"
-              : `1px solid ${compTone.value.border}`,
-        },
+  /** 卡片底色（颜色值）：深色模式恒深实底，浅色模式跟随组件色调（默认白色） */
+  const cardBg = computed(() =>
+    isDark.value ? "rgba(30,34,46,.92)" : hexToRgba(compColor.value, 0.94),
   );
+  /** 卡片描边（颜色值）：默认白色时维持原令牌值，保证默认外观零变化 */
+  const cardBorder = computed(() => {
+    if (isDark.value) return "rgba(255,255,255,.09)";
+    return normalizeHex(compColor.value) === normalizeHex(DEFAULTS.compColor)
+      ? "rgba(0,0,0,.07)"
+      : compTone.value.border;
+  });
+  /** 卡片/容器整套样式（内联 style 直接消费） */
+  const cardStyle = computed(() => ({
+    background: cardBg.value,
+    border: `1px solid ${cardBorder.value}`,
+  }));
 
   return {
     mode,
@@ -377,6 +377,8 @@ export const useThemeStore = defineStore("theme", () => {
     onBgColor,
     onBgSubColor,
     cardStyle,
+    cardBg,
+    cardBorder,
     persist,
     saveImage,
     reset,
