@@ -98,3 +98,6 @@ python/bench/*_log.txt
 /src-tauri/chk*.txt
 /_*.txt
 /_*.mjs
+
+# 发布产物：model.zip（361 MB）等打包产物不入库，一律走 GitHub Release 附件
+/*.zip
