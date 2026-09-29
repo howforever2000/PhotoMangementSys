@@ -2612,7 +2612,30 @@
       "tests": "开工前基线：cargo check --all-targets 零错误；cargo test --lib 180 passed / 0 failed / 2 ignored；npx vue-tsc --noEmit 零错误。每批收尾需复跑这三项 + 对应验证项。",
       "created_at": "2026-09-29T09:35:00+08:00",
       "updated_at": "2026-09-29T16:40:00+08:00"
+    },
+    {
+      "id": "FEAT-083",
+      "name": "相册详情页彻底移除人物注册表（人物管理职责归位智慧相册）",
+      "status": "done",
+      "module": "src/components/ScanPanel.vue（相册扫描面板）、src/views/AlbumDetail.vue、src/components/PersonGallery.vue",
+      "description": "用户反馈『相册界面不应该出现人物注册表』（截图：组合扫描面板下方整片 PXXX 卡片）。决策：彻底移除、不留跳转入口、不显示人物数——人物的浏览/重命名/合并/删除职责归位智慧相册。改动：① ScanPanel 删除 <PersonPanel> 渲染段与仅为它服务的 persons state、loadPersons()、onMounted 加载、扫描结束后的 loadPersons 刷新、invoke/PersonInfo/PersonPanel 引用，进入相册页与每轮扫描结束各少一次 list_persons_in_album IPC；② 组件 props 移除已无用的 albumPath，AlbumDetail 相应去掉 :album-path 传参与『+ 人物』注释；③ 删除孤儿组件 src/components/PersonPanel.vue（全项目仅 ScanPanel 一处引用）；④ PersonGallery 注释更正为人物浏览唯一入口。未动：后端 persons.rs / person_store.py、智慧相册 PersonGallery、SmartSearch 人物筛选、GlobalScanPanel、以及『人物·文档识别』扫描勾选项（识别照常写库，只是相册页不再展示注册表）。",
+      "related_files": [
+        "src/components/ScanPanel.vue",
+        "src/views/AlbumDetail.vue",
+        "src/components/PersonPanel.vue",
+        "src/components/PersonGallery.vue"
+      ],
+      "keywords": [
+        "人物注册表",
+        "相册详情页",
+        "ScanPanel",
+        "PersonPanel",
+        "智慧相册",
+        "UI 精简"
+      ],
+      "created_at": "2026-09-29T15:58:00+08:00",
+      "updated_at": "2026-09-29T15:58:00+08:00"
     }
   ],
-  "updated": "2026-09-29T16:40:00+08:00"
+  "updated": "2026-09-29T15:58:00+08:00"
 }

@@ -165,16 +165,13 @@ onMounted(load);
         <ContentSearch :album-id="albumId" />
       </CollapseSection>
 
-      <!-- 扫描面板：组合扫描（EXIF/影调/AI 统一入口，后台执行）+ 人物 -->
+      <!-- 扫描面板：组合扫描（EXIF/影调/AI 统一入口，后台执行）。人物注册表已移至智慧相册 -->
       <CollapseSection
         title="🧩 组合扫描"
         subtitle="EXIF / 影调 / AI 统一入口 · 后台执行 · 退出页面不中断"
         storage-key="detail-scan"
       >
-        <ScanPanel
-          :album-id="albumId"
-          :album-path="store.currentAlbum.path"
-        />
+        <ScanPanel :album-id="albumId" />
       </CollapseSection>
 
       <!-- 照片网格浏览：相册内照片一览 + 大图查看（放在最后，作为浏览区） -->

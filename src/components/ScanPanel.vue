@@ -1,19 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useContentStore } from "../stores/content";
-import type { PersonInfo } from "../types/photo";
 import { trace } from "../utils/trace";
 import { categoryLabel } from "../utils/categoryLabel";
-import PersonPanel from "./PersonPanel.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import PerfSettingsDialog from "./settings/PerfSettingsDialog.vue";
 import { SCAN_MODE_TITLE, SCAN_MODE_TIP } from "../utils/scanModeTip";
 import { PERF_TIMEOUT, withTimeout } from "../utils/withTimeout";
 import { useNotify } from "../composables/useNotify";
 
-const props = defineProps<{ albumId: number; albumPath: string }>();
+const props = defineProps<{ albumId: number }>();
 const contentStore = useContentStore();
 const notify = useNotify();
 
@@ -42,18 +39,13 @@ const comboProgress = computed(() => job.value.progress);
 onMounted(() => {
   // 重新进入时恢复之前勾选的类型（若仍在扫描则不中断）
   if (job.value.types.length) comboScanTypes.value = [...job.value.types];
-  // 进入页面即加载当前相册的人物列表（此前只有扫描结束后才会加载）
-  loadPersons();
 });
 
-// 扫描结束后刷新人物列表与 GPU 状态（同人标号可能因本次识别变化）
+// 扫描结束后刷新 GPU 状态
 watch(
   () => job.value.running,
   (now, prev) => {
-    if (prev && !now && job.value.report) {
-      loadPersons();
-      fetchGpuStatus();
-    }
+    if (prev && !now && job.value.report) fetchGpuStatus();
   },
 );
 
@@ -136,25 +128,6 @@ const readAlbumContent = trace("readAlbumContent", async () => {
     job.value.error = `读表失败：${e}`;
   } finally {
     readScanning.value = false;
-  }
-});
-
-// ---- 人物管理（BUG-2026-0919-003：只显示当前相册的人物） ----
-// 此前用全局 list_persons，相册详情页会混入其他相册的人物与全局计数。
-// 改用 list_persons_in_album：后端按相册路径过滤 faces，计数=该人物在
-// 当前相册中出现的照片数（去重）。
-const persons = ref<PersonInfo[]>([]);
-const loadPersons = trace("loadPersons", async () => {
-  try {
-    if (!props.albumPath) {
-      persons.value = [];
-      return;
-    }
-    persons.value = await invoke<PersonInfo[]>("list_persons_in_album", {
-      albumPath: props.albumPath,
-    });
-  } catch {
-    persons.value = [];
   }
 });
 
@@ -268,11 +241,6 @@ const openImage = trace("openImage", async (path: string) => {
         </div>
       </div>
     </div>
-  </section>
-
-  <!-- ============ 人物管理 ============ -->
-  <section class="scan-area">
-    <PersonPanel :persons="persons" count-unit="张照片" @refresh="loadPersons" />
   </section>
 
   <!-- FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） -->

@@ -4,7 +4,7 @@
  *
  * 数据源：persons.db 直读（list_persons，按脸数降序）；头像本地裁剪缓存。
  * 支持：行内重命名 / 合并到其他人物（二次确认）。
- * 与 ScanPanel 内 PersonPanel 的差异：本组件面向浏览场景，完全离线可用。
+ * 人物注册表/人物浏览的唯一入口（相册页扫描面板已不再展示注册表）。
  */
 import { computed, onMounted, ref, type Directive } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
