@@ -2493,7 +2493,78 @@
       ],
       "created_at": "2026-09-28T19:30:00+08:00",
       "updated_at": "2026-09-28T19:30:00+08:00"
+    },
+    {
+      "id": "FEAT-082",
+      "name": "扫描入库优化执行清单（P1–P18）：正确性 / 冗余 / 资源冲突 / 增量 / 并行 / 观测 六类 18 项施工项",
+      "status": "in-progress",
+      "module": "docs/扫描入库优化-执行清单.md（清单本体）；施工面 src-tauri/src/content.rs / tone.rs / vision.rs / db/mod.rs、src/components/settings/*",
+      "description": "对 v3 方案已落地改动（T1–T10）做的独立代码审计，叠加「增量扫描选了后依然会把已入库的相册扫描一遍」这条新诉求，产出的分优先级执行清单。18 项按 P1–P18 排序，每项给出【解决什么问题】【代码层面改动方案】【原因】三段，并标注行号级证据与验证方式。核心结论三条：① 当前「增量」只覆盖 7 条腿里的 2 条，最贵的影调每次全量解码，根因是影调/EXIF 在非 AI 分支不落库、没有判据可查；② 四阶段严格串行就是「后台资源没占满」的结构性原因，唯一安全的重叠是 IO 密集的 EXIF 与 CPU 密集的微服务，绝不重叠两个 HTTP 阶段（inter_op=1 会核心超订）；③ T1 重排引入 EXIF 双读回归、T10 实际只把 4 遍降为 2 遍、T3 收尾后台化引入「与新扫描争抢微服务」，均不在原 v3 清单内。【0929 复核】与 dev-workbubby 分支施工并行推进：18 项中 9 项已完成（P2/P4/P5/P8/P9/P10/P12/P13/P15，代码内带 P 编号注释）、1 项部分（P16）、3 项未做（P14/P17/P18）、5 项因 T3/T4 收尾后台化机制整体回退而失效（P1/P3/P6/P7/P11）。回退连带两处丢失：textdesc::rebuild_text_index 扫描后零调用点（已登记BUG-2026-0929-009）、「写库即返回」消失、prewarm 与分类重建回到写库与返回之间。",
+      "related_files": [
+        "docs/扫描入库优化-执行清单.md",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/tone.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/photo_scan.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/textdesc.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/settings/PerfSettingsDialog.vue",
+        "src/stores/content.ts"
+      ],
+      "keywords": [
+        "扫描入库",
+        "执行清单",
+        "增量扫描",
+        "P1-P18",
+        "photo_hash",
+        "差集",
+        "相册级早退",
+        "影调并行",
+        "三腿并发",
+        "单飞锁",
+        "微服务争抢",
+        "落库判据",
+        "描述索引回归",
+        "第一性原理",
+        "scan.timing"
+      ],
+      "implementation": {
+        "优先级分组": {
+          "第 1 批 正确性": "P1 收尾需求位丢失竞态 · P2 影调/EXIF 结果不落库 · P3 收尾完成事件漏通知被合并相册",
+          "第 2 批 清冗余": "P4 do_ai 时 EXIF 读两遍 · P5 目录只走一遍 + walk 不阻塞异步运行时",
+          "第 3 批 增量生效": "P8 统一 photo_hash 判据 · P9 四条腿只处理差集 · P10 相册级零变化早退",
+          "第 4 批 资源与健壮": "P6 后台收尾与新扫描争抢微服务 · P7 prewarm 重复/丢失 · P11 收尾 panic 守卫",
+          "第 5 批 可观测": "P15 扫描日志数字不自洽 · P16 收尾阶段中途进度事件",
+          "第 6 批 并行提速": "P12 影调并行化 · P13 EXIF 与 HTTP 阶段重叠 · P14 DB 单连接 Mutex 改只读连接池",
+          "第 7 批 功能体验": "P17 批次实测命令 · P18 性能设置 UI 交互"
+        },
+        "依赖链": "P2→P8→P9→P10；P4→P9；P5→P10；P6→P13；P17→P18；其余独立",
+        "0929复核状态": {
+          "已完成(9)": "P2 影调/EXIF 落库（build_records_from_exif_tone）· P4 exifs 传入 build_records_combined · P5 目录只走一遍（scan_album_embeddings 收 paths）· P8 photo_hash 统一差集 · P9 四腿只吃差集 · P10 相册级零变化早退 · P12 影调并行 analyze_paths_parallel · P13 三腿并发 7796096 实测 1.30x · P15 日志三项修正",
+          "部分(1)": "P16 timing 细粒度记账在（FEAT-076），但收尾已回同步、不再需要后台中途进度",
+          "未做(3)": "P14 DB 仍单 Connection+Mutex（WAL 被抵消）· P17 batch_profiles 随回退消失 · P18 ScanPerfSettings.vue 已被 FEAT-081 重构为 src/components/settings/，原目标文件不存在",
+          "已失效(5)": "P1/P3/P6/P7/P11 全部依附 PostScanState 单飞收尾机制，该机制已整体回退（PostScanState / run_post_scan_tasks / scan-post-done / desc_needed 零命中）",
+          "新回归(1)": "BUG-2026-0929-009 描述索引扫描后不重建——rebuild_text_index 全仓仅 persons.rs:637 与 textdesc.rs:632 两处调用，扫描流程零调用点",
+          "剩余待办": "T2 回归 → P14 → P17 → P18；若要恢复写库即返回，先重做 P1/P3/P6/P7/P11 五项"
+        },
+        "第一性原理约束": [
+          "微服务 intra_op=逻辑核数、inter_op=1（model_registry.py:115）→ 并发请求=核心超订，客户端访问必须串行，图像向量与 AI 两个 HTTP 阶段绝不互相并行",
+          "photo_hash(path,len,mtime)（content.rs）只算 stat 三元组不读内容，微秒级 vs 解码毫秒级，差三个数量级，是唯一合理增量判据",
+          "EXIF 是 IO 密集、微服务是 CPU 密集，资源正交 → 唯一安全的阶段重叠",
+          "影调是无共享瓶颈的易并行任务，但做阶段重叠后会与微服务争核，P12 与 P13 需互相重估"
+        ],
+        "明确不做": [
+          "相册级凭记录直接跳过（不看目录）——会漏掉外部改动，只能做为显式用户选项且默认关闭",
+          "AI 与图像向量两个 HTTP 阶段并行——需压测，但 inter_op=1 已强烈暗示不可行",
+          "T6 批次实测以提速为预期目标——诚实预期是测出「无显著差异」，价值是用数据证伪"
+        ]
+      },
+      "tests": "开工前基线：cargo check --all-targets 零错误；cargo test --lib 180 passed / 0 failed / 2 ignored；npx vue-tsc --noEmit 零错误。每批收尾需复跑这三项 + 对应验证项。",
+      "created_at": "2026-09-29T09:35:00+08:00",
+      "updated_at": "2026-09-29T09:35:00+08:00"
     }
   ],
-  "updated": "2026-09-28T19:30:00+08:00"
+  "updated": "2026-09-29T09:35:00+08:00"
 }

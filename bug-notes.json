@@ -2811,6 +2811,351 @@
       ],
       "created_at": "2026-09-28T23:20:00+08:00",
       "fixed_at": "2026-09-28T23:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-0929-001",
+      "date": "2026-09-29",
+      "status": "open",
+      "severity": "high",
+      "title": "后台收尾单飞锁两个并发缺陷：需求位在竞态窗口内丢失 + 任务 panic 后 running 永久卡 true",
+      "module": "src-tauri/src/content.rs（run_post_scan_tasks 1660-1670、scan_album_combined 1549、PostScanState）",
+      "symptom": [
+        "连扫多个相册后，后一个相册的描述索引/分类重建需求静默不执行，用时间或地点搜索搜不到刚扫的照片",
+        "缺陷无任何日志表现——索引只是「没更新」，不报错",
+        "若收尾任务中途 panic（detached 任务无人接管），running 停在 true，本会话之后所有扫描的收尾都被 already_running 挡掉，且无日志可查"
+      ],
+      "root_cause": {
+        "summary": "典型 lost-update：生产端在消费端持锁期间登记需求，消费端却在释放锁之前就把需求位查完了，退出后这条需求永远没人认领。",
+        "detail": [
+          "消费端（content.rs:1660）先 post_round_should_continue(desc.load(), rebuild.load()) 得出「无需求」，再（1670）才 running.store(false) —— 两步之间的窗口内生产端登记的需求会漏掉",
+          "生产端（1549）顺序是 running.swap(true) 成功后再 store 需求位，因此 already_running=true 时它只登记不 spawn，完全依赖消费端自检需求位",
+          "run_post_scan_tasks 是 tauri::async_runtime::spawn 的 detached 任务，panic 不会释放 running，无 RAII 兜底"
+        ]
+      },
+      "solution": "把「查需求」移到「释放锁」之后并用 CAS 抢回：running.store(false) 后再 load 需求位，若仍非空则 compare_exchange(false,true) 抢回继续跑一轮，CAS 失败说明别人已接手可安全退出。另在 run_post_scan_tasks 开头加 RunningGuard（impl Drop 时 store(false)）兜底 panic。",
+      "lessons": [
+        "单飞锁 + 需求位合并的模式，释放锁与复查需求必须成对且顺序是「先放后查」，否则需求位会丢",
+        "detached 异步任务里的全局锁标志，必须用 RAII guard 兜底，不能只靠正常路径释放"
+      ],
+      "keywords": [
+        "单飞锁",
+        "lost-update",
+        "竞态",
+        "需求位",
+        "panic守卫",
+        "PostScanState",
+        "收尾"
+      ],
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "id": "BUG-2026-0929-002",
+      "date": "2026-09-29",
+      "status": "open",
+      "severity": "medium",
+      "title": "scan-post-done 事件只带创建任务的 album_id，被合并进来的相册徽标永久卡在「索引更新中」",
+      "module": "src-tauri/src/content.rs:1674-1686（emit）+ src/stores/content.ts:491（监听路由）",
+      "symptom": [
+        "连扫两个相册时，第二个相册的「索引更新中」徽标永远不消失",
+        "只有刷新或重启应用才能清掉"
+      ],
+      "root_cause": {
+        "summary": "单飞锁是进程级的，一个收尾任务可以服务多个相册，但事件只按任务创建时的 album_id 发一个。",
+        "detail": [
+          "run_post_scan_tasks(app, album_id, ...) 的 album_id 是发起任务的那个相册（A）",
+          "B 相册的收尾请求被合并进来时只置 desc_needed/rebuild_needed 位，不传递自己的 album_id",
+          "前端 content.ts:491 判定 id != null && combinedJobs[id] 成立 → 只清 A 的 postRunning，走不到 else 全清分支"
+        ]
+      },
+      "solution": "PostScanState 加 served_albums: Mutex<HashSet<i64>>，生产端合并时插入自己的 album_id，任务结束逐个 emit；或任务结束时统一发 album_id: null 触发前端全清（前端 else 分支已支持）。P16 的中途进度事件也应复用同一集合。",
+      "lessons": [
+        "用进程级单飞合并「每相册」型任务时，完成通知必须覆盖所有被服务的相册，否则 UI 状态机不闭合"
+      ],
+      "keywords": [
+        "scan-post-done",
+        "徽标",
+        "索引更新中",
+        "合并",
+        "album_id",
+        "事件路由"
+      ],
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src/stores/content.ts"
+      ]
+    },
+    {
+      "id": "BUG-2026-0929-003",
+      "date": "2026-09-29",
+      "status": "open",
+      "severity": "medium",
+      "title": "收尾 prewarm 双缺陷：合并请求的预热路径被丢弃，且单飞循环每轮重复执行同一份 prewarm",
+      "module": "src-tauri/src/content.rs:1561-1573（仅 !already_running 才取路径）+ 1631-1637（循环内不消费）",
+      "symptom": [
+        "两个相册连扫时，第二个相册的新照片缩略图不预热，首屏打开要现场解码",
+        "收尾任务跑多轮时，同一份 prewarm_paths 在第 2 轮被重复执行"
+      ],
+      "root_cause": {
+        "summary": "prewarm 是「每相册」数据，却被当成「每任务」的一次性参数传递。",
+        "detail": [
+          "run_post_scan_tasks(..., prewarm_paths) 是按值传入的函数参数；already_running 为 true 时调用方只登记需求位，B 相册的 prewarm 路径根本没有传递路径可走",
+          "循环内只判断 !prewarm_paths.is_empty() 就执行，没有 mem::take 消费，第 2、3 轮会重复预热同一份列表（虽幂等但白跑）"
+        ]
+      },
+      "solution": "改成挂在 PostScanState 上的共享累加器 prewarm_pending: Mutex<Vec<String>>，生产端 extend 追加，消费端每轮 std::mem::take 一次取空。",
+      "lessons": [
+        "用单飞合并时，「每任务型」参数（进度、路径集）需要显式的累加器载体，否则合并即丢失"
+      ],
+      "keywords": [
+        "prewarm",
+        "缩略图预热",
+        "合并丢失",
+        "重复执行",
+        "PostScanState"
+      ],
+      "related_files": [
+        "src-tauri/src/content.rs"
+      ]
+    },
+    {
+      "id": "BUG-2026-0929-004",
+      "date": "2026-09-29",
+      "status": "open",
+      "severity": "medium",
+      "title": "EXIF 被读两遍且结果丢一份：T1 阶段重排去掉了 do_basic && !do_ai 守卫（v3 方案引入的回归）",
+      "module": "src-tauri/src/content.rs:1240-1250（独立 EXIF 扫描）+ 1376（build_records_combined）+ 508（内部 read_photo_exif）",
+      "symptom": [
+        "同时勾选「EXIF + AI 识别」时，每张照片的 EXIF 被解析两次",
+        "第一次（多线程独立扫描）的结果存在 exifs 变量里，在 do_ai 分支完全不参与构建、只进 summary 日志",
+        "增量模式下第一次扫描读全量照片的 EXIF，却只给新照片写库，老照片读一遍直接丢弃"
+      ],
+      "root_cause": {
+        "summary": "原代码用 do_basic && !do_ai 保证 EXIF 只被读一次（AI 分支由 build_records_combined 自带 EXIF），T1 重排阶段时改成无条件读，没补等价保护。",
+        "detail": [
+          "exifs 在函数内只被引用 3 次：赋值、非 do_ai 分支的循环、[scan.summary] 日志计数",
+          "do_ai 分支调 build_records_combined(&vision_results, ...) 不传 exifs，内部 content.rs:508 自己逐张 read_photo_exif"
+        ]
+      },
+      "solution": "方案 A 最小改动：恢复 do_basic && !do_ai 守卫。方案 B 更彻底：把 exifs 传进 build_records_combined，消掉内部重复 read_photo_exif。此项是 P9「EXIF 增量」的正确性前置。",
+      "lessons": [
+        "阶段重排时要逐个核对「被重排的产物在下游还有没有消费方」，没有消费方就不该生产"
+      ],
+      "keywords": [
+        "EXIF双读",
+        "T1",
+        "do_basic && !do_ai",
+        "冗余IO",
+        "回归",
+        "增量"
+      ],
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/photo_scan.rs"
+      ]
+    },
+    {
+      "id": "BUG-2026-0929-005",
+      "date": "2026-09-29",
+      "status": "open",
+      "severity": "medium",
+      "title": "T10「目录只走一遍」未兑现：实际从 4 遍降为 2 遍，且 walk 是同步调用阻塞异步运行时",
+      "module": "src-tauri/src/content.rs:1214（walk_image_paths 同步）+ 780（scan_album_embeddings 内 collect_images 再走一次）",
+      "symptom": [
+        "每次扫描目录仍被遍历两次：scan_album_combined 一次、scan_album_embeddings 内部再一次",
+        "T10 的注释声称「现在统一走一次」，与实际行为不符",
+        "网络盘上同步 walkdir 跑在 async fn 里，会占住异步运行时 worker，拖慢同进程其他命令"
+      ],
+      "root_cause": {
+        "summary": "scan_album_embeddings 收的是 &dir 而不是调用方已有的 all_paths，且它内部调 collect_images（= walk_image_paths + to_string）。",
+        "detail": [
+          "调用点（content.rs 附近）传 &dir，函数第一行就 collect_images(dir) 重新遍历",
+          "两次遍历之间若文件变动，AI 分支（吃 all_paths）与向量分支（吃自己的遍历）会看到不同文件集",
+          "walk_image_paths 在 async command 里被同步调用，未包 spawn_blocking"
+        ]
+      },
+      "solution": "scan_album_embeddings 签名改为接收 paths: &[PathBuf]，由调用方传 all_paths；walk_image_paths 调用点包进 tauri::async_runtime::spawn_blocking。",
+      "lessons": [
+        "把「走一遍」作为约束落地时，要检查每个下游函数是否还持有自己的遍历入口，否则只是消掉了旧分支的新代码、漏了最深的那个"
+      ],
+      "keywords": [
+        "T10",
+        "目录遍历",
+        "walk_image_paths",
+        "collect_images",
+        "双走",
+        "阻塞异步运行时"
+      ],
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/vision.rs"
+      ]
+    },
+    {
+      "id": "BUG-2026-0929-006",
+      "date": "2026-09-29",
+      "status": "open",
+      "severity": "high",
+      "title": "组合扫描非 AI 分支影调/EXIF 结果不落库：刷新即丢数据，且增量扫描因此无判据可查",
+      "module": "src-tauri/src/content.rs:1445-1465（非 do_ai 分支 written:0 且无 upsert）；db/content.rs:1330（lookup_scanned_hashes_by_album）",
+      "symptom": [
+        "只勾「影调」或「EXIF」扫描后，扫描面板能看到结果，但刷新/重启后 read_album_content 读不到",
+        "选「增量扫描」时影调仍全量解码每张照片、EXIF 仍全量读取——已入库相册被重复扫描一遍",
+        "[scan.summary] 中该模式下 written 恒为 0"
+      ],
+      "root_cause": {
+        "summary": "「跳过」的前提是「留下做过的证据」，而影调/EXIF 在非 AI 分支根本没留证据——既丢数据，也没有判据可查。",
+        "detail": [
+          "upsert_photo_contents 全仓仅 3 处调用：content.rs:1000（scan_album_content）、1101（ensure_photo_scanned）、1380（组合扫描 do_ai 分支）",
+          "组合扫描非 AI 分支构建 all_rows 后直接返回 {written: 0, rows}，不写 photo_content_scan",
+          "所以增量判据 lookup_scanned_hashes_by_album / 向量 existing 都覆盖不到影调与 EXIF"
+        ]
+      },
+      "solution": "非 AI 分支在返回前补一次 upsert_photo_contents，把 tone_type/avg_luma 与 EXIF 字段写入 photo_content_scan，written 改为真实写入数。这是 P8→P9→P10 增量三步的总前置。",
+      "lessons": [
+        "任何「增量跳过」功能落地前，先确认被跳过的产物是否已持久化，否则是无根之木"
+      ],
+      "keywords": [
+        "影调落库",
+        "EXIF落库",
+        "written:0",
+        "增量无判据",
+        "数据刷新丢失",
+        "photo_content_scan"
+      ],
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/tone.rs",
+        "src-tauri/src/photo_scan.rs"
+      ]
+    },
+    {
+      "id": "BUG-2026-0929-007",
+      "date": "2026-09-29",
+      "status": "open",
+      "severity": "low",
+      "title": "扫描日志数字不自洽：_skipped 混入缩略图失败、ms_walk 未计入阶段汇总、idle 为死条件且命名反义",
+      "module": "src-tauri/src/content.rs:874（_skipped）、1215/1487（ms_walk 与 sum）、1678（idle）",
+      "symptom": [
+        "[scan.incr] 向量分支的「跳过 N 张」把缩略图生成失败的照片也算成「已有同档位向量」",
+        "[scan.phase] 汇总各阶段占比之和不足 100%（目录遍历耗时不在 sum 里）",
+        "收尾结束条件 let idle = post.running.load() 紧跟在 store(false) 之后，恒为 false，!idle 恒真，该项为死条件"
+      ],
+      "root_cause": {
+        "summary": "记账字段的口径与命名没跟上实现。",
+        "detail": [
+          "_skipped = photos.len() - todo.len()，而 todo 来自 meta（已扣掉缩略图生成失败的 filter_map 丢弃项），两者分母不同",
+          "ms_walk 被单独 log 但未加进 sum = ms_dir + ms_semantic + ms_ai + ms_tone + ms_exif + ms_build",
+          "idle 读的是 running 标志本身，命名与语义相反，且 release 后读回无意义"
+        ]
+      },
+      "solution": "skipped = meta.len() - todo.len()，缩略图失败单列 thumb_failed；sum 加入 ms_walk；删除 idle 或改名为 running_after 并重写条件。",
+      "lessons": [
+        "日志是优化的对账依据，字段口径与命名必须与实现一致，否则会误导下一轮优化决策"
+      ],
+      "keywords": [
+        "scan.incr",
+        "scan.phase",
+        "日志失真",
+        "skipped",
+        "ms_walk",
+        "idle"
+      ],
+      "related_files": [
+        "src-tauri/src/content.rs"
+      ]
+    },
+    {
+      "id": "BUG-2026-0929-008",
+      "date": "2026-09-29",
+      "status": "open",
+      "severity": "medium",
+      "title": "收尾后台化（T3）引入新冲突：后台描述索引/分类重建与新发起的扫描争抢单实例 CLIP 微服务",
+      "module": "src-tauri/src/content.rs:1604-1668（run_post_scan_tasks）；python/vcr/model_registry.py:115-116",
+      "symptom": [
+        "扫完 A 相册立刻扫 B，B 的图像向量/AI 批耗时明显上升",
+        "CPU 出现超订（多线程互相争抢），整体吞吐不升反降",
+        "T3 之前不存在：收尾是同步的，B 根本起不来"
+      ],
+      "root_cause": {
+        "summary": "T3 让写库即返回，前端可以立刻发起下一次扫描，而 A 的收尾任务正在调 embed_text_batch / 分类重建；两个客户端同时打同一个单实例微服务。",
+        "detail": [
+          "model_registry.py:115-116 设定 intra_op_num_threads = 逻辑核数、inter_op_num_threads = 1",
+          "inter_op=1 表示会话级算子串行，intra_op=核数 表示单个算子吃满所有核",
+          "两个并发请求各开一份 intra-op 线程池 → 核心超订，不是并发加速",
+          "run_post_scan_tasks 没有任何「前台正在扫描」的让路检查"
+        ]
+      },
+      "solution": "PostScanState 加 foreground_busy: AtomicBool（扫描命令进入置 true、退出置 false），收尾循环每轮开始前检查，busy 时退避 sleep 后重试。此项是 P13 阶段重叠的前置。",
+      "lessons": [
+        "把长任务从主流程拆到后台时，要同时评估它与新到前台任务的资源竞争——本地不阻塞 ≠ 服务端不争抢"
+      ],
+      "keywords": [
+        "微服务争抢",
+        "核心超订",
+        "T3",
+        "收尾后台化",
+        "foreground_busy",
+        "intra_op",
+        "inter_op"
+      ],
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/lib.rs",
+        "python/vcr/model_registry.py"
+      ]
+    },
+    {
+      "id": "BUG-2026-0929-009",
+      "date": "2026-09-29",
+      "status": "open",
+      "severity": "high",
+      "title": "回归：扫描入库后描述索引不重建——rebuild_text_index 在扫描流程零调用点，扫完的照片用时间/地点搜不到",
+      "module": "src-tauri/src/content.rs（扫描流程无 textdesc 调用）；src-tauri/src/textdesc.rs:446（函数本身健在）；调用点仅 persons.rs:637 / textdesc.rs:632",
+      "symptom": [
+        "新扫一批照片后，用「2024年2月」或「杭州西湖」这类时间/地点关键词搜索，搜不到刚扫的这些照片",
+        "手动点一次「重建描述索引」命令后才能搜到；或改一次人物名也能触发",
+        "纯 AI/向量可搜（图像向量与 FTS 都正常），只有「描述向量」这第三路空缺，三路 RRF 融合因此少一路",
+        "该缺陷是原 v3 方案 T2 要解决的问题，曾在未提交改动里修好，随 T3/T4 收尾机制一起被回退"
+      ],
+      "root_cause": {
+        "summary": "「扫描后重建描述索引」原本挂在后台收尾任务里（T2 借 T3 的收尾通道执行），T3/T4 整体回退时它被连带删除，没有被单独保留。",
+        "detail": [
+          "rebuild_text_index 全仓仅两处调用：persons.rs:637（人物改名后）与 textdesc.rs:632（手动 rebuild_desc_index 命令）",
+          "content.rs 里 grep textdesc 只剩 recall_by_text（搜索侧），扫描入库路径零调用",
+          "desc_segments 的年份来自 photo_content_scan.shoot_time、地点来自 location，两者都由 EXIF 分支写入——数据在库里，只是没送去编码成向量",
+          "而 source_hash 基于描述分段计算：下次扫描时指纹不变就不重算，所以不会自愈，必须有显式调用点"
+        ]
+      },
+      "solution": "在 scan_album_combined 写库完成后、命令返回之前（或后台收尾，若将来恢复 T3）调用 textdesc::rebuild_text_index。仅本次扫描范围可先全量调用（函数本身有 source_hash 增量短路，未变照片不重编码）。注意必须排在 EXIF 落库之后，否则描述会缺年份地点并被指纹固化。",
+      "lessons": [
+        "回退一个功能块时，先画出「哪些调用点是我这次引入的、哪些是被我借用的通道」——T2 借了 T3 的收尾通道，通道一删它就静默消失",
+        "跨模块的隐式依赖（扫描→描述索引）应有回归测试兜底：扫一批→按时间搜索→必须命中"
+      ],
+      "keywords": [
+        "描述索引",
+        "rebuild_text_index",
+        "回归",
+        "语义搜索",
+        "T2",
+        "时间地点搜索",
+        "source_hash"
+      ],
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/textdesc.rs",
+        "src-tauri/src/lib.rs"
+      ],
+      "log_hint": "grep -rn 'rebuild_text_index' src-tauri/src/ 应有 3 处（textdesc 定义、persons 改名、扫描流程）；只剩 2 处即为本回归。",
+      "evidence_log": [
+        "grep -rn 'textdesc' content.rs → 仅 2168 recall_by_text（搜索侧），扫描路径无调用",
+        "grep -rn 'rebuild_text_index' . → persons.rs:637、textdesc.rs:446/632，无 content.rs",
+        "grep -rn 'PostScanState|run_post_scan_tasks|scan-post-done|desc_needed' src-tauri/src → 零命中（收尾机制已回退）"
+      ],
+      "created_at": "2026-09-29T09:35:00+08:00"
     }
   ]
 }
