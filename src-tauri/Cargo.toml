@@ -2,6 +2,9 @@
 name = "photo-management-sys"
 version = "0.4.1"
 description = "Local photo album management app"
+# 个人/学习/非营利免费，商业用途需另行书面授权 —— 见仓库根 LICENSE
+# （PolyForm Noncommercial 1.0.0，SPDX 合法标识符）
+license = "PolyForm-Noncommercial-1.0.0"
 authors = ["haoyuan"]
 edition = "2021"
 
