@@ -383,7 +383,7 @@ export const useThemeStore = defineStore("theme", () => {
         ? "var(--liquid-highlight)"
         : material.value === "glazed"
           ? "var(--glazed-highlight)"
-          : "none",
+          : "var(--frosted-highlight)",
     border: `1px solid ${cardBorder.value}`,
     /* 修补：内联路径此前缺 -webkit- 前缀，Safari/WebView 下零模糊 */
     WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(var(--glass-saturate))",

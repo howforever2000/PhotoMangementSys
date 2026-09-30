@@ -163,7 +163,8 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   color: #fff;
 }
 .scan-badge-out {
-  background: rgba(138, 128, 120, 0.75);
+  /* 深灰实底压住卡片光泽层：白字 11px 需 ≥4.5:1（原 0.75 透底被新光泽层提亮到 4.43） */
+  background: rgba(96, 88, 82, 0.88);
   color: #fff;
 }
 

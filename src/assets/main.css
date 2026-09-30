@@ -78,16 +78,22 @@
     rgba(255, 255, 255, 0.14) 16%,
     rgba(255, 255, 255, 0) 34%
   );
+  /* 磨砂光泽带：磨砂玻璃同样有顶部受光面，只是比釉瓷更柔（雾面反射） */
+  --frosted-highlight: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.28) 0%,
+    rgba(255, 255, 255, 0.08) 14%,
+    rgba(255, 255, 255, 0) 30%
+  );
 
-  /* 公共表面光影：顶部受光棱线 + 底部收暗 + 双层投影（环境光 + 主光）。
-     两条消费路径（.glass-* 类与 cardStyle 内联）都引用本令牌，改一处全局生效。
-     材质升级：四边棱线（上下明暗 + 左右微亮）让玻璃「有厚度」，
-     落影拆成近距接触影 + 远距弥散影两层，浮起感更真实。 */
+  /* 公共表面光影：双向倒角（顶部白亮棱 + 底部暗色玻璃壁）+ 双层投影。
+     厚度感 = 顶亮/底暗的色差；底暗壁在浅色背景下尤其关键（白对白会隐形）。
+     两条消费路径（.glass-* 类与 cardStyle 内联）都引用本令牌，改一处全局生效。 */
   --shadow-1:
-    inset 0 1px 0 rgba(255, 255, 255, 0.42),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.1),
-    inset 1px 0 0 rgba(255, 255, 255, 0.08),
-    inset -1px 0 0 rgba(255, 255, 255, 0.08),
+    inset 0 1px 1px rgba(255, 255, 255, 0.5),
+    inset 0 -1px 1.5px rgba(0, 0, 0, 0.2),
+    inset 1px 0 1px rgba(255, 255, 255, 0.1),
+    inset -1px 0 1px rgba(0, 0, 0, 0.08),
     0 2px 4px rgba(0, 0, 0, 0.16),
     0 20px 44px -16px rgba(0, 0, 0, 0.42);
 
@@ -161,12 +167,12 @@ body.theme-on-image {
 body.mat-frosted {
   --glass-blur: 24px;
   --glass-saturate: 1.15;
-  /* 磨砂投影：柔和弥散（验收表：磨砂 → 柔和），保留四边棱线 */
+  /* 磨砂倒角：柔和但保留顶亮/底暗双向色差 */
   --shadow-1:
-    inset 0 1px 0 rgba(255, 255, 255, 0.38),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.08),
-    inset 1px 0 0 rgba(255, 255, 255, 0.07),
-    inset -1px 0 0 rgba(255, 255, 255, 0.07),
+    inset 0 1px 1px rgba(255, 255, 255, 0.45),
+    inset 0 -1px 1.5px rgba(0, 0, 0, 0.18),
+    inset 1px 0 1px rgba(255, 255, 255, 0.08),
+    inset -1px 0 1px rgba(0, 0, 0, 0.06),
     0 2px 4px rgba(0, 0, 0, 0.12),
     0 16px 36px -16px rgba(0, 0, 0, 0.34);
 }
@@ -174,12 +180,12 @@ body.mat-frosted {
 body.mat-liquid {
   --glass-blur: 10px;
   --glass-saturate: 1.6;
-  /* 液态投影：更深、对比更强（验收表：液态 → 更深） */
+  /* 液态倒角：更强对比，顶亮棱与底暗壁都加厚一档 */
   --shadow-1:
-    inset 0 1px 0 rgba(255, 255, 255, 0.55),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.12),
-    inset 1px 0 0 rgba(255, 255, 255, 0.1),
-    inset -1px 0 0 rgba(255, 255, 255, 0.1),
+    inset 0 1.5px 1px rgba(255, 255, 255, 0.6),
+    inset 0 -1.5px 2px rgba(0, 0, 0, 0.24),
+    inset 1.5px 0 1px rgba(255, 255, 255, 0.12),
+    inset -1.5px 0 1px rgba(0, 0, 0, 0.12),
     0 2px 5px rgba(0, 0, 0, 0.16),
     0 22px 48px -14px rgba(0, 0, 0, 0.5);
 }
@@ -190,10 +196,10 @@ body.mat-glazed {
   --glass-blur: 6px;
   --glass-saturate: 1.35;
   --shadow-1:
-    inset 0 1px 0 rgba(255, 255, 255, 0.6),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.14),
-    inset 1px 0 0 rgba(255, 255, 255, 0.12),
-    inset -1px 0 0 rgba(255, 255, 255, 0.12),
+    inset 0 1.5px 1px rgba(255, 255, 255, 0.65),
+    inset 0 -1.5px 2px rgba(0, 0, 0, 0.26),
+    inset 1.5px 0 1px rgba(255, 255, 255, 0.14),
+    inset -1.5px 0 1px rgba(0, 0, 0, 0.14),
     0 3px 6px rgba(0, 0, 0, 0.2),
     0 24px 52px -14px rgba(0, 0, 0, 0.55);
 }
@@ -226,7 +232,7 @@ body.mat-frosted .glass-card::before {
   border-radius: inherit;
   pointer-events: none;
   background-image: var(--grain),
-    radial-gradient(140% 70% at 50% 0%, rgba(255, 255, 255, 0.16), transparent 58%),
+    radial-gradient(140% 70% at 50% 0%, rgba(255, 255, 255, 0.22), transparent 58%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(0, 0, 0, 0.05));
   background-size: 120px 120px, 100% 100%, 100% 100%;
   mix-blend-mode: soft-light;
@@ -284,10 +290,11 @@ body.mat-glazed .glass-card::before {
   mix-blend-mode: soft-light;
   opacity: 0.8;
 }
-/* —— 玻璃边缘：渐变光泽棱环（厚度感）——
-   1px 渐变描边环：左上受光最亮 → 中段收暗 → 右下留一道微弱环境反光，
-   像真实玻璃棱边那样沿边亮度在变，而不是一条均匀细线。
-   mask-composite 只保留边缘 1px，内部零遮挡；随 border-radius 自适应。
+/* —— 玻璃边缘：双色调渐变棱环（厚度感 + 双向光泽）——
+   两层背景沿 1.5px 棱环分布：
+   ① 180°：顶部白色镜面高光 → 中段收暗 → 底部暗色玻璃壁（浅色背景下「厚度」靠暗壁读出）；
+   ② 135°：左上/右下两角的额外角部反光（玻璃棱边对光源/环境的反射）。
+   mask-composite 只保留边缘 1.5px，内部零遮挡；随 border-radius 自适应。
    三类容器共享：.glass-surface / .glass-card / .candy-surface（彩虹卡） */
 .glass-surface::after,
 .glass-card::after,
@@ -296,15 +303,23 @@ body.mat-glazed .glass-card::before {
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  padding: 1px; /* 环宽 = 玻璃厚度 */
-  background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.55) 0%,
-    rgba(255, 255, 255, 0.1) 26%,
-    rgba(255, 255, 255, 0.05) 48%,
-    rgba(255, 255, 255, 0.14) 74%,
-    rgba(255, 255, 255, 0.34) 100%
-  );
+  padding: 1.5px; /* 环宽 = 玻璃厚度 */
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.9) 0%,
+      rgba(255, 255, 255, 0.26) 20%,
+      rgba(255, 255, 255, 0) 44%,
+      rgba(0, 0, 0, 0) 56%,
+      rgba(15, 28, 24, 0.26) 100%
+    ),
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.4) 0%,
+      rgba(255, 255, 255, 0) 30%,
+      rgba(255, 255, 255, 0) 68%,
+      rgba(255, 255, 255, 0.42) 100%
+    );
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
   mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
@@ -530,6 +545,12 @@ body.mat-liquid .glass-card {
 body.mat-glazed .glass-surface,
 body.mat-glazed .glass-card {
   background-image: var(--glazed-highlight);
+  background-color: var(--glass-bg);
+  background-repeat: no-repeat;
+}
+body.mat-frosted .glass-surface,
+body.mat-frosted .glass-card {
+  background-image: var(--frosted-highlight);
   background-color: var(--glass-bg);
   background-repeat: no-repeat;
 }
