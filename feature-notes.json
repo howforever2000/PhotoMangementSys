@@ -2893,7 +2893,31 @@
       ],
       "created_at": "2026-10-01T02:00:00+08:00",
       "updated_at": "2026-10-01T02:00:00+08:00"
+    },
+    {
+      "id": "FEAT-092",
+      "name": "人脸质量闸门（几何/尺寸/清晰度 + 边缘质量限新建）",
+      "module": "VCR 人脸通道（face_service / pipeline / person_store）",
+      "purpose": "治「非人脸被当人脸」与「垃圾簇吸人」：把不像人脸的框在嵌入前剔掉，并禁止低质量脸新建人物（垃圾簇的起点）",
+      "implementation": {
+        "backend": "face_service.face_geometry_quality(bbox, kps)：仅用框+5点关键点判质量（零图像运算）→ ok / marginal / reject 三档；aligned_blur()：对齐图 Laplacian 方差（嵌入前判，顺带省掉 模糊脸的 r50 前向）；embed_checked()：几何→对齐→清晰度→嵌入，返回 (向量, 档位)；assign()：按档位落库（marginal → register(allow_new=False, update_centroid=False)）；person_store.register 新增 allow_new / update_centroid 两个关键字参数（默认 True，旧调用点零影响）",
+        "frontend": "无（本轮纯后端精度治理）",
+        "key_points": [
+          "detect_faces 出口就做几何闸门（不等嵌入），pipeline 与 process_photo 共用 assign() 单一入口",
+          "边缘质量脸（极端侧脸/小脸/轻模糊）允许并入旧簇，但不准新建、不更新质心——不丢真脸又防污染",
+          "阈值全部来自实测分布，不是拍的：见 config.FACE_QUALITY_* 各条注释",
+          "FACE_DET_CONF 0.50→0.55、FACE_MIN_PIX 32→48（实测丢 26%/13% 垃圾、真脸样本 0%/0.8% 损失）"
+        ]
+      },
+      "highlights": [
+        "真实数据 A/B（P111 垃圾簇 53 框 vs 大簇真人脸对照 250 框）：闸门上线后垃圾框 53→4（滤掉 92.5%），对照真脸 250→227（保住 90.8%）",
+        "端到端回归：真人像照片照旧标出 P003/P040/P041（未误杀）；垃圾照片不再新建簇",
+        "单测 python/bench/face_quality_check.py：8 项断言（正常脸/垃圾框/小脸/侧脸/细长框/清晰度极值）全绿",
+        "现状量化：用户库 1387 位人物里 1086 位只出现 1 次（94% 为垃圾级簇，≥20 张脸的真人仅 17 位）→ 需重建"
+      ],
+      "created_at": "2026-10-01T03:00:00+08:00",
+      "updated_at": "2026-10-01T03:00:00+08:00"
     }
   ],
-  "updated": "2026-10-01T02:00:00+08:00"
+  "updated": "2026-10-01T03:00:00+08:00"
 }
