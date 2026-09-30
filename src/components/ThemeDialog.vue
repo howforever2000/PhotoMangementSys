@@ -243,7 +243,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
               </button>
             </div>
             <p class="pm-hint" style="margin: 6px 0 0">
-              磨砂：高模糊柔化背景 · 液态：低模糊 + 流体高光 · 釉瓷：缎面颗粒 + 镜面天光带（全局生效）
+              磨砂：高模糊 + 粗颗粒喷砂 · 液态：低模糊 + 流体高光 · 釉瓷：陶瓷釉面开片 + 镜面天光（全局生效）
             </p>
           </div>
 

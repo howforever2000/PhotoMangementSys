@@ -99,8 +99,14 @@
 
   /* 磨砂噪点：fractalNoise 生成，静态贴图零开销 */
   --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
-  /* 细缎噪点：更高频率 + 更小贴图，釉瓷材质的缎面细颗粒 */
+  /* 磨砂粗颗粒：低频率噪声 = 更大颗粒（喷砂/酸蚀玻璃质感），透明度提高让颗粒真正可辨 */
+  --grain-coarse: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.45' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  /* 细缎噪点：更高频率 + 更小贴图，液态材质的细颗粒 */
   --grain-fine: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.6' numOctaves='2'/%3E%3C/filter%3E%3Crect width='72' height='72' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  /* 釉面开片（冰裂纹）：fractalNoise 平滑场 → feColorMatrix 把亮度搬进 alpha →
+     feComponentTransfer table 窄峰（31 点表中单点为 1）提取等值线 → 闭合细环网，
+     即陶瓷开片形态；rect opacity 0.55 控制若隐若现。参数由 6 组矩阵实测选定 */
+  --glazed-craze: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cfilter id='c'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.018' numOctaves='1' seed='8'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.92 0 0 0 0 0.95 0 0 0 0 0.9 1 0 0 0 0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='table' tableValues='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='400' height='400' filter='url(%23c)' opacity='0.55'/%3E%3C/svg%3E");
 
   /* 文字令牌（单一事实来源仍是 --color-text*，这里只做方案命名收口） */
   --text-primary: var(--color-text);
@@ -218,12 +224,10 @@ body.mat-glazed {
   box-shadow: var(--shadow-1);
 }
 
-/* —— 磨砂：雾面 = 顶部天光池 + 纵向明暗渐变 + 噪点颗粒 ——
-   伪元素用 border-radius: inherit 自裁（不用 overflow:hidden：会裁掉
-   user-box 内伸出的 ⚙ 下拉菜单与卡片 hover 溢出物）；
-   soft-light 极轻，盖在文字上是常见的全卡噪点滤镜手法。
-   材质升级：追加顶部天光池（radial）让雾面有「受光面」，
-   噪点透明度 0.6 → 0.78 让颗粒真正可见，不再像平涂色块。 */
+/* —— 磨砂：雾面 = 顶部天光池 + 纵向明暗渐变 + 粗颗粒喷砂 ——
+   颗粒升级：baseFrequency 0.9→0.45、贴图 120→160px，颗粒更大更明显，
+   是「喷砂/酸蚀玻璃」的砂面，不再是几乎看不见的细粉。
+   伪元素用 border-radius: inherit 自裁；soft-light 盖字是常见全卡噪点手法。 */
 body.mat-frosted .glass-surface::before,
 body.mat-frosted .glass-card::before {
   content: "";
@@ -231,12 +235,12 @@ body.mat-frosted .glass-card::before {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  background-image: var(--grain),
+  background-image: var(--grain-coarse),
     radial-gradient(140% 70% at 50% 0%, rgba(255, 255, 255, 0.22), transparent 58%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(0, 0, 0, 0.05));
-  background-size: 120px 120px, 100% 100%, 100% 100%;
+  background-size: 160px 160px, 100% 100%, 100% 100%;
   mix-blend-mode: soft-light;
-  opacity: 0.78;
+  opacity: 0.9;
 }
 
 /* —— 液态：透镜边缘 + 内部光池（静态部分）—— */
@@ -253,7 +257,9 @@ body.mat-liquid .glass-card::before {
   filter: blur(4px);
 }
 
-/* —— 釉瓷：缎面细颗粒 + 顶部镜面带（本体高光由下方 background-image 规则承担）—— */
+/* —— 釉瓷：陶瓷釉面 = 细开片裂纹 + 缎面细颗粒 + 两处柔和釉色光池 ——
+   开片是陶瓷釉面的标志性特征：细白裂纹网（--glazed-craze）
+   叠在缎面颗粒上，再加两处大而柔的受光/反光池，安静而有深度。 */
 body.mat-glazed .glass-surface::before,
 body.mat-glazed .glass-card::before {
   content: "";
@@ -261,11 +267,12 @@ body.mat-glazed .glass-card::before {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  background-image: var(--grain-fine),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(0, 0, 0, 0.05));
-  background-size: 72px 72px, 100% 100%;
+  background-image: var(--glazed-craze), var(--grain-fine),
+    radial-gradient(90% 70% at 20% 10%, rgba(255, 255, 255, 0.3), transparent 55%),
+    radial-gradient(80% 65% at 80% 90%, rgba(255, 255, 255, 0.16), transparent 52%);
+  background-size: 400px 400px, 72px 72px, 100% 100%, 100% 100%;
   mix-blend-mode: soft-light;
-  opacity: 0.85;
+  opacity: 0.95;
 }
 
 /* ==========================================================================
@@ -284,9 +291,10 @@ body.mat-glazed .glass-card::before {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  background-image: var(--grain),
+  /* 糖果卡与磨砂同用粗颗粒：糖霜砂感，与全应用颗粒尺度一致 */
+  background-image: var(--grain-coarse),
     linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(0, 0, 0, 0.08));
-  background-size: 120px 120px, 100% 100%;
+  background-size: 160px 160px, 100% 100%;
   mix-blend-mode: soft-light;
   opacity: 0.8;
 }
