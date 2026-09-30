@@ -281,7 +281,7 @@ function rawScore(v: number): string {
 <template>
   <Teleport to="body">
     <div class="cm-mask" @click.self="emit('close')">
-      <div class="cm-dialog" :style="theme.cardStyle">
+      <div class="cm-dialog glass-card" :style="theme.cardStyle">
         <!-- 头部 -->
         <header class="cm-head">
           <h3>⚙ 分类管理</h3>

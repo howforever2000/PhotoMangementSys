@@ -462,7 +462,7 @@ onMounted(load);
         <article
           v-for="t in cards"
           :key="t.id"
-          class="cat-card"
+          class="cat-card glass-card"
           :style="theme.cardStyle"
           :title="`${t.name} · ${t.count} 张`"
           @click="openCategory(t)"
@@ -590,7 +590,7 @@ onMounted(load);
     <!-- 删除方式选择（批量 / 预览删除） -->
     <Teleport to="body">
       <div v-if="modeDialogPaths" class="del-mask" @click.self="modeDialogPaths = null">
-        <div class="del-dialog" :style="theme.cardStyle">
+        <div class="del-dialog glass-card" :style="theme.cardStyle">
           <h4>选择删除方式（{{ modeDialogPaths.length }} 张）</h4>
           <button class="del-opt" @click="pickMode('records')">
             <b>📄 本地记录删除</b>

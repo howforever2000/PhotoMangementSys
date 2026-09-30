@@ -280,7 +280,7 @@ onMounted(load);
           <article
             v-for="g in namedGroups"
             :key="g.location ?? 'unknown'"
-            class="loc-card"
+            class="loc-card glass-card"
             :style="theme.cardStyle"
             :title="`${groupLabel(g)} · ${g.count} 张`"
             @click="openGroup(g)"
@@ -297,7 +297,7 @@ onMounted(load);
         </div>
         <!-- 未记录地点：弱化卡片，固定排最后 -->
         <div v-if="unknownGroup" class="loc-unknown-row">
-          <button class="loc-unknown" :style="theme.cardStyle" @click="openGroup(unknownGroup)">
+          <button class="loc-unknown glass-card" :style="theme.cardStyle" @click="openGroup(unknownGroup)">
             <span class="loc-unknown-icon">🗺️</span>
             <span class="loc-unknown-name">{{ UNKNOWN_LABEL }}</span>
             <span class="loc-unknown-count">{{ unknownGroup.count }} 张 · 无定位 / 境外</span>
@@ -368,7 +368,7 @@ onMounted(load);
     <!-- 删除方式选择（批量 / 预览删除） -->
     <Teleport to="body">
       <div v-if="modeDialogPaths" class="del-mask" @click.self="modeDialogPaths = null">
-        <div class="del-dialog" :style="theme.cardStyle">
+        <div class="del-dialog glass-card" :style="theme.cardStyle">
           <h4>选择删除方式（{{ modeDialogPaths.length }} 张）</h4>
           <button class="del-opt" @click="pickMode('records')">
             <b>📄 本地记录删除</b>

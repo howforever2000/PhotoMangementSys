@@ -339,7 +339,7 @@ const vFocus: Directive<HTMLElement> = {
 
     <!-- 人物卡片网格 -->
     <div v-else class="person-grid">
-      <article v-for="p in persons" :key="p.id" class="person-card" :style="surfaceStyle" :title="`${displayName(p)}（${p.id}）`">
+      <article v-for="p in persons" :key="p.id" class="person-card glass-card" :style="surfaceStyle" :title="`${displayName(p)}（${p.id}）`">
         <div class="person-avatar-wrap" @click.stop="openPhotos(p)" title="点击查看该人物的照片">
           <img v-if="avatarMap[p.id]" :src="avatarMap[p.id]" class="person-avatar" alt="" />
           <span v-else class="person-avatar person-avatar-fallback">{{ displayName(p).slice(0, 1) }}</span>
@@ -378,7 +378,7 @@ const vFocus: Directive<HTMLElement> = {
     <!-- 合并：选择目标人物弹窗 -->
     <Teleport to="body">
       <div v-if="mergingSource && !pendingTarget" class="merge-mask" @click.self="mergingSource = null">
-        <div class="merge-dialog" :style="surfaceStyle">
+        <div class="merge-dialog glass-card" :style="surfaceStyle">
           <h4>将 {{ displayName(mergingSource) }}（{{ mergingSource.face_count }} 张脸）合并到…</h4>
           <p class="merge-tip">选择保留的目标人物；被并者的人脸与计数将全部转移。</p>
           <div class="merge-list">
@@ -420,7 +420,7 @@ const vFocus: Directive<HTMLElement> = {
     <!-- 查看该人物的照片（缩略图网格） -->
     <Teleport to="body">
       <div v-if="viewingPerson" class="viewer-mask" @click.self="closePhotos">
-        <div class="viewer-dialog" :style="surfaceStyle">
+        <div class="viewer-dialog glass-card" :style="surfaceStyle">
           <div class="viewer-head">
             <span class="viewer-title">{{ displayName(viewingPerson) }} 的照片</span>
             <span class="viewer-count">{{ viewingPhotos.length }} 张</span>
@@ -486,7 +486,7 @@ const vFocus: Directive<HTMLElement> = {
     <!-- FEAT-050：删除方式选择（两种选择即最终确认） -->
     <Teleport to="body">
       <div v-if="modeDialogPaths" class="del-mask" @click.self="modeDialogPaths = null">
-        <div class="del-dialog" :style="surfaceStyle">
+        <div class="del-dialog glass-card" :style="surfaceStyle">
           <h4>选择删除方式（{{ modeDialogPaths.length }} 张）</h4>
           <button class="del-opt" @click="pickMode('records')">
             <b>📄 本地记录删除</b>

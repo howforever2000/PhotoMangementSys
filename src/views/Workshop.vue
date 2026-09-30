@@ -98,7 +98,7 @@ onMounted(() => {
         <article
           v-for="w in widgets"
           :key="w.id"
-          class="widget-card"
+          class="widget-card glass-card"
           :class="{ 'widget-ready': w.ready, 'widget-pending': !w.ready }"
           :style="cardStyle"
           @click="openWidget(w)"

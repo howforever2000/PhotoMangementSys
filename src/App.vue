@@ -19,6 +19,32 @@ const theme = useThemeStore();
 const router = useRouter();
 
 /**
+ * 液态材质追光（FEAT-086 表面光学）：一次事件委托，全站卡片生效
+ *  —— 把光标在卡片内的坐标写入 --mx/--my，::after 追光层只动 opacity，不重排。
+ *  类路径（.glass-surface/.glass-card）与内联路径（cardStyle + 补挂 .glass-card）都命中。
+ *  rAF 合帧：pointermove 每帧最多写一次，避免高频 style 写入。
+ */
+let lightRaf = 0;
+let lightEv: PointerEvent | null = null;
+function onPointerLight(e: PointerEvent) {
+  // 磨砂材质下 ::after 追光层不存在，直接短路，零写入
+  if (!document.body.classList.contains("mat-liquid")) return;
+  lightEv = e;
+  if (lightRaf) return;
+  lightRaf = requestAnimationFrame(() => {
+    lightRaf = 0;
+    const ev = lightEv;
+    lightEv = null;
+    if (!ev) return;
+    const card = (ev.target as HTMLElement | null)?.closest?.(".glass-card, .glass-surface") as HTMLElement | null;
+    if (!card) return;
+    const r = card.getBoundingClientRect();
+    card.style.setProperty("--mx", `${ev.clientX - r.left}px`);
+    card.style.setProperty("--my", `${ev.clientY - r.top}px`);
+  });
+}
+
+/**
  * FEAT-ESC：全局 ESC 行为
  *  - 优先级最低：当页面内有弹窗/选模式时由各页面拦截，这里不接管
  *  - 路由返回上一级：仅在非弹窗/非选模式时生效，且 history 深度>1
@@ -56,9 +82,13 @@ onMounted(async () => {
     store.fetchAlbums().catch(() => {});
   }
   window.addEventListener("keydown", onGlobalEsc);
+  // 液态追光：passive 监听，只写自定义属性（磨砂材质下 ::after 不命中，零视觉开销）
+  window.addEventListener("pointermove", onPointerLight, { passive: true });
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onGlobalEsc);
+  window.removeEventListener("pointermove", onPointerLight);
+  if (lightRaf) cancelAnimationFrame(lightRaf);
 });
 </script>
 

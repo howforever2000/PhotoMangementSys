@@ -56,7 +56,7 @@ watch(open, (v) => {
   <Teleport to="body">
     <div v-if="open" class="psd-mask" role="presentation" @click.self="open = false">
       <div
-        class="psd-dialog"
+        class="psd-dialog glass-card"
         role="dialog"
         aria-modal="true"
         aria-label="性能设置与模型管理"

@@ -223,7 +223,7 @@ onBeforeUnmount(() => {
           <h1 class="app-title">本地相册管理</h1>
           <p class="app-subtitle">轻量级本地相册管理系统</p>
         </div>
-        <div class="user-box" :style="cardStyle">
+        <div class="user-box glass-card" :style="cardStyle">
           <button class="user-chip" type="button" @click="openProfile" :title="'修改基本信息'">
             <img
               v-if="auth.user?.avatar"
@@ -286,7 +286,7 @@ onBeforeUnmount(() => {
         <article
           v-for="m in modules"
           :key="m.id"
-          class="module-card"
+          class="module-card glass-card"
           :class="{ 'module-ready': m.ready, 'module-pending': !m.ready }"
           :style="cardStyle"
           @click="openModule(m)"

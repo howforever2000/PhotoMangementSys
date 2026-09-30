@@ -258,7 +258,7 @@ const listEl = ref<HTMLDivElement | null>(null);
   <Teleport to="body">
     <Transition name="import-err-fade">
       <div v-if="visible" class="ier-mask" @click.self="close">
-        <div class="ier-dialog" :style="panelStyle" role="dialog" aria-modal="true">
+        <div class="ier-dialog glass-card" :style="panelStyle" role="dialog" aria-modal="true">
           <div class="ier-head">
             <div class="ier-title">{{ dialogTitle }}</div>
             <button class="ier-close" title="关闭 (Esc)" @click="close">×</button>

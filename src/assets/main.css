@@ -63,7 +63,24 @@
   --glass-bg: var(--color-surface);    /* 容器填充：由 theme store 按组件色调下发 */
   --glass-border: var(--color-border); /* 玻璃边缘内高光 1px */
   --liquid-bg: var(--color-surface-2); /* 液态控件填充（透明度下限 45%） */
-  --liquid-highlight: linear-gradient(135deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0) 46%);
+  /* 液态高光加强（FEAT-086 表面光学）：起始 0.3 → 0.45，衰减段拉长 */
+  --liquid-highlight: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.45) 0%,
+    rgba(255, 255, 255, 0.1) 38%,
+    rgba(255, 255, 255, 0) 58%
+  );
+
+  /* 公共表面光影：顶部受光棱线 + 底部收暗 + 双层投影（环境光 + 主光）。
+     两条消费路径（.glass-* 类与 cardStyle 内联）都引用本令牌，改一处全局生效。 */
+  --shadow-1:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.08),
+    0 1px 2px rgba(0, 0, 0, 0.1),
+    0 16px 40px -12px rgba(0, 0, 0, 0.28);
+
+  /* 磨砂噪点：fractalNoise 生成，静态贴图零开销 */
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
 
   /* 文字令牌（单一事实来源仍是 --color-text*，这里只做方案命名收口） */
   --text-primary: var(--color-text);
@@ -72,8 +89,7 @@
   /* 圆角：全局统一 12~16 */
   --radius-card: 14px;
 
-  /* 三级阴影体系：静态浅 / 悬浮中 / 弹层深 */
-  --shadow-1: 0 1px 2px rgba(3, 12, 9, 0.16);
+  /* 三级阴影体系：静态浅（--shadow-1 定义于上方表面光影） / 悬浮中 / 弹层深 */
   --shadow-2: 0 10px 28px rgba(3, 12, 9, 0.24);
   --shadow-3: 0 24px 64px rgba(0, 0, 0, 0.45);
   --shadow-card: var(--shadow-1);
@@ -124,13 +140,25 @@ body.theme-on-image {
    两条消费路径同时覆盖：.glass-surface/.glass-card（类）与 cardStyle（内联引用令牌）。
    ========================================================================== */
 body.mat-frosted {
-  --glass-blur: 18px;
-  --glass-saturate: 1.3;
+  --glass-blur: 24px;
+  --glass-saturate: 1.15;
+  /* 磨砂投影：柔和弥散（验收表：磨砂 → 柔和） */
+  --shadow-1:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.06),
+    0 1px 2px rgba(0, 0, 0, 0.08),
+    0 12px 28px -14px rgba(0, 0, 0, 0.2);
 }
 
 body.mat-liquid {
-  --glass-blur: 6px;
-  --glass-saturate: 1.55;
+  --glass-blur: 10px;
+  --glass-saturate: 1.6;
+  /* 液态投影：更深、对比更强（验收表：液态 → 更深） */
+  --shadow-1:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.1),
+    0 1px 2px rgba(0, 0, 0, 0.1),
+    0 18px 40px -10px rgba(0, 0, 0, 0.38);
 }
 
 /* ==========================================================================
@@ -140,9 +168,43 @@ body.mat-liquid {
    ========================================================================== */
 .glass-surface,
 .glass-card {
+  position: relative; /* 伪元素定位前提（卡片已有 backdrop-filter，包含块行为无增量变化） */
+  background-color: var(--glass-bg); /* 修补：磨砂路径此前没有填充 */
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   box-shadow: var(--shadow-1);
+}
+
+/* —— 磨砂：雾面 = 纵向明暗渐变 + 噪点颗粒 ——
+   伪元素用 border-radius: inherit 自裁（不用 overflow:hidden：会裁掉
+   user-box 内伸出的 ⚙ 下拉菜单与卡片 hover 溢出物）；
+   soft-light 极轻，盖在文字上是常见的全卡噪点滤镜手法 */
+body.mat-frosted .glass-surface::before,
+body.mat-frosted .glass-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background-image: var(--grain),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(0, 0, 0, 0.05));
+  background-size: 120px 120px, 100% 100%;
+  mix-blend-mode: soft-light;
+  opacity: 0.6;
+}
+
+/* —— 液态：透镜边缘 + 内部光池（静态部分）—— */
+body.mat-liquid .glass-surface::before,
+body.mat-liquid .glass-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 90% at 18% 0%, rgba(255, 255, 255, 0.2), transparent 45%),
+    radial-gradient(100% 80% at 85% 100%, rgba(255, 255, 255, 0.1), transparent 40%);
+  filter: blur(4px);
 }
 
 /* 统一盒模型：避免组件内 width+padding 溢出 */

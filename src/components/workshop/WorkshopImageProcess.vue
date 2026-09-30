@@ -652,7 +652,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="ip" :style="panelStyle">
+  <section class="ip glass-card" :style="panelStyle">
     <header class="ip-head">
       <button class="ip-btn" type="button" @click="chooseImage">📂 选择图片</button>
       <div class="ip-tools">

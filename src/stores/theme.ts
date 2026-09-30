@@ -251,12 +251,24 @@ export const useThemeStore = defineStore("theme", () => {
   });
 
   /**
-   * 玻璃等效底色：组件色调以 **compAlpha**（FEAT-086 可调）叠在**实际页面背景**上。
-   * 文字对比必须对着这个等效色算——玻璃是半透明的，只拿色调原色判断会误判
-   * （深墨绿玻璃叠在白背景上其实是中灰，该配深色字而不是浅色字）。
+   * 液态填充色（FEAT-086 表面光学）：向白混 20% 提亮呈现「湿玻璃」磨砂维持组件原色。
+   * 在 compFill 入口收口（而非只改 cardBg）：--color-surface/--glass-bg（类路径）与
+   * cardStyle（内联路径）同一出口，文字对比计算 glassRgb 也用它，三处永远一致。
+   * 注：不采用方案里的 color-mix(...white) —— 它会把 alpha 从 0.42 推到 0.536，
+   * 用户调的 compAlpha 滑块被材质嘴改；这里只提亮色相、alpha 恒由滑块决定。
    */
+  const fillColor = computed(() =>
+    material.value === "liquid"
+      ? rgbToHex(mixRgb(hexToRgb(compColor.value), [255, 255, 255], 0.2))
+      : compColor.value,
+  );
+
+  /** 玻璃等效底色：组件色调以 **compAlpha**（FEAT-086 可调）叠在**实际页面背景**上。
+   *  文字对比必须对着这个等效色算——玻璃是半透明的，只拿色调原色判断会误判
+   *  （深墨绿玻璃叠在白背景上其实是中灰，该配深色字而不是浅色字）。
+   *  fillColor 参与：液态掺白后等效底色变浅，文字取向必须跟着变。 */
   const glassRgb = computed(() =>
-    mixRgb(effectiveBg.value, hexToRgb(compColor.value), compAlpha.value),
+    mixRgb(effectiveBg.value, hexToRgb(fillColor.value), compAlpha.value),
   );
   const glassTone = computed(() => componentTone(rgbToHex(glassRgb.value)));
 
@@ -346,9 +358,9 @@ export const useThemeStore = defineStore("theme", () => {
   }
   watch([compColor, compAlpha, effectiveBg], applyCompColor, { immediate: true });
 
-  /** 组件色调按透明度渲染：容器 / 次级面板 / 弹层 */
+  /** 组件色调按透明度渲染：容器 / 次级面板 / 弹层（液态经 fillColor 提亮，见上） */
   function compFill(alpha: number) {
-    return hexToRgba(compColor.value, alpha);
+    return hexToRgba(fillColor.value, alpha);
   }
   const glassFill = computed(() => compFill(containerAlpha.value));
   const panelFill = computed(() => compFill(panelAlpha.value));
@@ -364,6 +376,8 @@ export const useThemeStore = defineStore("theme", () => {
     backgroundColor: cardBg.value,
     backgroundImage: material.value === "liquid" ? "var(--liquid-highlight)" : "none",
     border: `1px solid ${cardBorder.value}`,
+    /* 修补：内联路径此前缺 -webkit- 前缀，Safari/WebView 下零模糊 */
+    WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
     backdropFilter: "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
     boxShadow: "var(--shadow-1)",
   }));
