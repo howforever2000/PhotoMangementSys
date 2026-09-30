@@ -178,7 +178,7 @@ function onTabClick(t: ScanTab) {
       class="scan-hero glass-surface"
       :style="{
         background:
-          'linear-gradient(rgba(4,14,11,.45), rgba(4,14,11,.45)), linear-gradient(135deg, #396cd8 0%, #5a8bf7 50%, #7eb6ff 100%)',
+          'linear-gradient(135deg, #FFFCBD 0%, #F075C7 55%, #65D5F9 100%)',
       }"
     >
       <div class="scan-hero-content">
@@ -285,7 +285,7 @@ function onTabClick(t: ScanTab) {
 }
 .scan-back { margin-bottom: 14px; }
 
-/* ---- Hero：磨砂玻璃（容器=玻璃，方案 §三） ---- */
+/* ---- Hero：糖果彩虹横幅（与下方子模块卡同一色族 · 用户色卡） ---- */
 .scan-hero {
   position: relative;
   height: 220px;
@@ -293,9 +293,9 @@ function onTabClick(t: ScanTab) {
   overflow: hidden;
   margin-bottom: 22px;
   background: var(--glass-bg); /* 未内联渐变时的玻璃回退 */
-  border: 1px solid var(--glass-border);
-  /* 彩虹横幅上恒用白字（与背景图无关） */
-  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  /* 糖果浅底 → 墨色字（与子卡一致） */
+  color: #1f2733;
   box-shadow: var(--shadow-2);
 }
 .scan-hero-content {
@@ -309,8 +309,8 @@ function onTabClick(t: ScanTab) {
 .scan-hero-eyebrow {
   font-size: 12px;
   letter-spacing: 3px;
-  /* 彩虹底上的角标：白字保证可读，不再用强调色 */
-  color: rgba(255, 255, 255, 0.92);
+  /* 糖果底上的角标：墨色降透明度 */
+  color: #1f2733;
   margin-bottom: 6px;
 }
 .scan-hero-title {
@@ -318,9 +318,8 @@ function onTabClick(t: ScanTab) {
   margin: 0 0 6px;
   font-weight: 800;
   letter-spacing: 2px;
-  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
-  /* 彩虹底上恒用白字 */
-  color: #fff;
+  text-shadow: none;
+  color: #1f2733;
 }
 .scan-hero-sub {
   margin: 0 0 16px;
@@ -343,7 +342,7 @@ function onTabClick(t: ScanTab) {
 .stat-num {
   font-size: 20px;
   font-weight: 700;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  text-shadow: none;
   white-space: nowrap;
 }
 .stat-label {
@@ -354,7 +353,7 @@ function onTabClick(t: ScanTab) {
 .stat-divider {
   width: 1px;
   height: 26px;
-  background: rgba(255, 255, 255, 0.35);
+  background: rgba(31, 39, 51, 0.28);
 }
 .scan-task-stat.running .stat-num {
   animation: scan-task-pulse 1.6s ease-in-out infinite;
@@ -364,7 +363,7 @@ function onTabClick(t: ScanTab) {
   50% { opacity: 0.7; }
 }
 
-/* ---- 子模块卡（玻璃 + 单点强调，去彩虹化） ---- */
+/* ---- 子模块卡（糖果彩虹 · 同一色族） ---- */
 .scan-subgrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));

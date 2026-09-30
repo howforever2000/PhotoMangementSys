@@ -274,7 +274,7 @@ function goAlbumFromLightbox(albumId: number) {
       class="mem-hero glass-surface"
       :style="{
         background:
-          'linear-gradient(rgba(4,14,11,.45), rgba(4,14,11,.45)), linear-gradient(135deg, #6a8df0 0%, #a764ec 50%, #f093fb 100%)',
+          'linear-gradient(135deg, #FFFCBD 0%, #65D5F9 55%, #F075C7 100%)',
       }"
     >
       <div class="mem-hero-content">
@@ -470,7 +470,7 @@ function goAlbumFromLightbox(albumId: number) {
   margin-bottom: 14px;
 }
 
-/* ---- Hero：磨砂玻璃（容器=玻璃，方案 §三） ---- */
+/* ---- Hero：糖果彩虹横幅（与下方故事卡同一色族 · 用户色卡） ---- */
 .mem-hero {
   position: relative;
   height: 220px;
@@ -478,9 +478,9 @@ function goAlbumFromLightbox(albumId: number) {
   overflow: hidden;
   margin-bottom: 28px;
   background: var(--glass-bg); /* 未内联渐变时的玻璃回退 */
-  border: 1px solid var(--glass-border);
-  /* 彩虹横幅上恒用白字 */
-  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  /* 糖果浅底 → 墨色字（与故事卡色族一致） */
+  color: #1f2733;
   box-shadow: var(--shadow-2);
 }
 .mem-hero-content {
@@ -494,8 +494,8 @@ function goAlbumFromLightbox(albumId: number) {
 .mem-hero-eyebrow {
   font-size: 12px;
   letter-spacing: 3px;
-  /* 彩虹底上的角标：白字保证可读 */
-  color: rgba(255, 255, 255, 0.92);
+  /* 糖果底上的角标：墨色降透明度 */
+  color: #1f2733;
   margin-bottom: 6px;
 }
 .mem-hero-title {
@@ -503,9 +503,8 @@ function goAlbumFromLightbox(albumId: number) {
   margin: 0;
   font-weight: 800;
   letter-spacing: 4px;
-  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
-  /* 彩虹底上恒用白字 */
-  color: #fff;
+  text-shadow: none;
+  color: #1f2733;
 }
 .mem-hero-sub {
   margin: 6px 0 18px;
@@ -527,7 +526,7 @@ function goAlbumFromLightbox(albumId: number) {
 .stat-num {
   font-size: 22px;
   font-weight: 700;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  text-shadow: none;
 }
 .stat-label {
   font-size: 12px;
@@ -536,7 +535,7 @@ function goAlbumFromLightbox(albumId: number) {
 .stat-divider {
   width: 1px;
   height: 28px;
-  background: rgba(255, 255, 255, 0.35);
+  background: rgba(31, 39, 51, 0.28);
 }
 
 /* ---- Section 通用 ---- */
