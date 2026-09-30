@@ -294,12 +294,189 @@ pub fn delete_person(pid: &str) -> Result<(), String> {
     }
 }
 fn representative_face(conn: &rusqlite::Connection, pid: &str) -> Option<(String, String)> {
+    // 代表脸 = 「与质心最相似」的一张（不再取最早登记的一张）。
+    // 为什么改：质心是该人物所有脸的方向均值，与它最相似的脸就是最典型的正面大脸；
+    // 最早登记的可能是远处小脸/侧脸，裁出来糊成一片（用户反馈的「封面看不出是谁」）。
+    // 并列时取 bbox 面积更大者，再并列取 id 小者 —— 结果稳定不跳变。
+    let centroid: Vec<u8> = conn
+        .query_row(
+            "SELECT centroid FROM persons WHERE id = ?1",
+            rusqlite::params![pid],
+            |r| r.get(0),
+        )
+        .ok()?;
+    if centroid.is_empty() || centroid.len() % 4 != 0 {
+        return None;
+    }
+    let c: Vec<f32> = centroid
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    let cn = c.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if cn <= 0.0 {
+        return None;
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, photo_path, bbox, embedding FROM faces WHERE person_id = ?1 \
+             ORDER BY created_at ASC, id ASC",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map(rusqlite::params![pid], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
+            ))
+        })
+        .ok()?;
+    let mut best: Option<(f32, i64, i64, String, String)> = None;
+    for (id, path, bbox, blob) in rows.flatten() {
+        if blob.len() != c.len() * 4 {
+            continue;
+        }
+        let e: Vec<f32> = blob
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        let en = e.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if en <= 0.0 {
+            continue;
+        }
+        let dot = c.iter().zip(e.iter()).map(|(a, b)| a * b).sum::<f32>();
+        let sim = dot / (cn * en);
+        let area = parse_bbox(&bbox)
+            .map(|(x1, y1, x2, y2)| (x2 - x1) * (y2 - y1))
+            .unwrap_or(0);
+        let better = match &best {
+            None => true,
+            Some((bs, ba, bid, _, _)) => {
+                sim > *bs || (sim == *bs && (area > *ba || (area == *ba && id < *bid)))
+            }
+        };
+        if better {
+            best = Some((sim, area, id, path, bbox));
+        }
+    }
+    best.map(|(_, _, _, path, bbox)| (path, bbox))
+}
+
+/// 人脸集签名 `"<张数>:<最大face id>"` —— 头像缓存的身份判据。
+///
+/// 为什么用它：人物封面曾经按「文件存在就用」，而 P 编号在库被重建后会被
+/// **新的人物复用**（旧头像文件留在磁盘上）→ 封面显示的是别人（BUG-2026-1001-001，
+/// 实测 2417 个头像里 1952 个比其人物的创建时间还早）。签名只依赖人脸集本身：
+/// 新增登记/合并/删除都会改变它，因此「签名一致 ⇒ 头像仍是这个人」。
+fn face_sig_of(conn: &rusqlite::Connection, pid: &str) -> Option<String> {
     conn.query_row(
-        "SELECT photo_path, bbox FROM faces WHERE person_id = ?1 ORDER BY created_at ASC, id ASC LIMIT 1",
+        "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM faces WHERE person_id = ?1",
         rusqlite::params![pid],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        |r| {
+            let n: i64 = r.get(0)?;
+            let m: i64 = r.get(1)?;
+            Ok(format!("{n}:{m}"))
+        },
     )
     .ok()
+}
+
+/// 单人的人脸集签名（头像命令层用；库不存在 → None）
+pub fn face_sig(pid: &str) -> Result<Option<String>, String> {
+    let Some(conn) = open_db()? else {
+        return Ok(None);
+    };
+    Ok(face_sig_of(&conn, pid))
+}
+
+/// 全量人脸集签名（批量头像校验用：一次 GROUP BY 拿全部，避免 N 次查询）
+pub fn face_sigs() -> Result<std::collections::HashMap<String, String>, String> {
+    let mut out = std::collections::HashMap::new();
+    let Some(conn) = open_db()? else {
+        return Ok(out);
+    };
+    let mut stmt = conn
+        .prepare("SELECT person_id, COUNT(*), COALESCE(MAX(id), 0) FROM faces GROUP BY person_id")
+        .map_err(|e| format!("查询人脸集签名失败: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|e| format!("查询人脸集签名失败: {e}"))?;
+    for row in rows.flatten() {
+        out.insert(row.0, format!("{}:{}", row.1, row.2));
+    }
+    Ok(out)
+}
+
+/// 人物列表（id + 人脸集签名）：批量头像校验用，避免为每个 pid 单独查库
+pub fn persons_with_sig() -> Result<Vec<(String, Option<String>)>, String> {
+    let sigs = face_sigs()?;
+    let Some(conn) = open_db()? else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = conn
+        .prepare("SELECT id FROM persons ORDER BY face_count DESC, id ASC")
+        .map_err(|e| format!("查询人物失败: {e}"))?;
+    let ids: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| format!("查询人物失败: {e}"))?
+        .flatten()
+        .collect();
+    Ok(ids
+        .into_iter()
+        .map(|id| {
+            let s = sigs.get(&id).cloned();
+            (id, s)
+        })
+        .collect())
+}
+
+/// 清空人物库（备份后）并返回 (备份路径, 人物数, 人脸数)。
+///
+/// 换模型/修复错乱后的**显式动作**（宿主二次确认后调用）：不做任何自动清库。
+/// 用 SQLite 自己的备份 API（VACUUM INTO 需要目标不存在；这里用 backup 更稳）。
+pub fn reset_registry() -> Result<(String, i64, i64), String> {
+    let path = persons_db_path();
+    if !path.is_file() {
+        return Err(format!("人物注册表不存在: {}", path.display()));
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = path.with_file_name(format!("persons.db.bak-{stamp}"));
+    std::fs::copy(&path, &backup).map_err(|e| format!("备份人物库失败: {e}"))?;
+    let conn = rusqlite::Connection::open(&path).map_err(|e| format!("打开人物注册表失败: {e}"))?;
+    let (mut persons, mut faces) = (0i64, 0i64);
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| e.to_string())?;
+    let r = (|| -> Result<(), String> {
+        persons = conn
+            .query_row("SELECT COUNT(*) FROM persons", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        faces = conn
+            .query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM faces", []).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM persons", []).map_err(|e| e.to_string())?;
+        // meta 一并清空：下次登记时 Python 会写入当前激活模型（全新安装语义）
+        let _ = conn.execute("DELETE FROM meta", []);
+        Ok(())
+    })();
+    match r {
+        Ok(_) => conn.execute_batch("COMMIT").map_err(|e| e.to_string())?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    }
+    Ok((backup.to_string_lossy().into_owned(), persons, faces))
 }
 
 /// 从 "(x1, y1, x2, y2)" 提取整数坐标
@@ -683,6 +860,12 @@ pub fn merge_persons(
     let user_id = crate::require_user(&session)?;
     let r = crate::persons::merge_persons(&target, &source);
     if r.is_ok() {
+        // source 已被删除：它的头像缓存（含签名/自选标记）一并清掉，
+        // 否则 P 编号被后续新建复用时会拿旧头像冒充（BUG-2026-1001-001 同类）。
+        if let Ok(dir) = crate::avatar::commands::avatars_dir(&app) {
+            crate::avatar::remove_avatar_cache(&dir, &source);
+        }
+        // target 人脸集已变 → 签名失配，下次读取自动重裁（前端还会 force 一次）
         spawn_desc_rebuild(&app, user_id, format!("merge {source}->{target}"));
     }
     match &r {
@@ -704,9 +887,9 @@ pub fn delete_person(
     crate::require_user(&session)?;
     let r = crate::persons::delete_person(&pid);
     if r.is_ok() {
-        // 头像缓存文件已无意义，一并清理
+        // 头像缓存文件已无意义，一并清理（含 .sig / .custom 伴随文件）
         if let Ok(dir) = crate::avatar::commands::avatars_dir(&app) {
-            let _ = std::fs::remove_file(dir.join(format!("avatar_{pid}.jpg")));
+            crate::avatar::remove_avatar_cache(&dir, &pid);
         }
         crate::logger::log_call_end_with("delete_person", _t, "OK");
     } else if let Err(e) = &r {
@@ -715,11 +898,127 @@ pub fn delete_person(
     r
 }
 
+
+/// 人物注册表：重建人物库（备份 + 清空 + 清头像缓存）——换识别模型后的显式动作
+///
+/// 为什么必须存在：ArcFace 换模型 = 换嵌入空间，旧质心与新向量不可比（余弦会
+/// 退化成随机值），继续扫只会把同一个人拆成一堆新 P 编号。Python 侧 register()
+/// 会直接报错、宿主扫描前也会预检拦截；本命令是用户确认后的“正路”：备份库 →
+/// 清空 persons/faces/meta → 清头像缓存 → 提示重新全量扫描重建人物。
+///
+/// 备份文件与库同目录（persons.db.bak-<unix 秒>），失败不删原库。
+#[tauri::command]
+pub async fn rebuild_person_registry(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+    session: tauri::State<'_, crate::SessionState>,
+) -> Result<serde_json::Value, String> {
+    let _t = log_call!("rebuild_person_registry", "");
+    crate::require_user(&session)?;
+    // 重活（备份 50MB 库 + 清表）放阻塞线程，不占异步 worker
+    let r = tauri::async_runtime::spawn_blocking(crate::persons::reset_registry)
+        .await
+        .map_err(|e| format!("重建人物库任务线程失败: {e}"))?;
+    let (backup, persons, faces) = match r {
+        Ok(v) => v,
+        Err(e) => {
+            crate::logger::log_call_end_with("rebuild_person_registry", _t, &format!("ERR | {e}"));
+            return Err(e);
+        }
+    };
+    // 内容表的 person_ids 同步清空：那些 P 编号已不存在，留着只会让
+    // 照片卡片/Search 继续引用“幽灵人物”（重新扫描会重写这两个字段）。
+    let content_rows = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        db.conn()
+            .execute(
+                "UPDATE photo_content_scan SET person_ids = NULL, person_count = 0 \
+                 WHERE person_ids IS NOT NULL AND person_ids != ''",
+                [],
+            )
+            .unwrap_or(0)
+    };
+    // 头像缓存全清：P 编号即将重新分配，旧文件一律不可信
+    let cleared = crate::avatar::commands::avatars_dir(&app)
+        .map(|dir| crate::avatar::clear_all_avatar_cache(&dir))
+        .unwrap_or(0);
+    crate::logger::log_call_end_with(
+        "rebuild_person_registry",
+        _t,
+        &format!(
+            "OK | 清空 persons={persons} faces={faces} 头像={cleared} 内容行人脸字段={content_rows} | 备份 {backup}"
+        ),
+    );
+    Ok(serde_json::json!({
+        "backup": backup,
+        "persons": persons,
+        "faces": faces,
+        "avatars_cleared": cleared,
+        "content_rows_cleared": content_rows,
+    }))
+}
+
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 人脸集签名格式："张数:最大id"——头像缓存身份判据的事实来源
+    #[test]
+    fn test_face_sig_format_from_sql() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE faces (id INTEGER PRIMARY KEY AUTOINCREMENT, person_id TEXT);\
+             INSERT INTO faces(person_id) VALUES('P001'),('P001'),('P002');",
+        )
+        .unwrap();
+        assert_eq!(face_sig_of(&conn, "P001").as_deref(), Some("2:2"));
+        assert_eq!(face_sig_of(&conn, "P002").as_deref(), Some("1:3"));
+        // 无脸人物：COUNT=0 也应给出稳定签名（与“查不到人物”区分）
+        assert_eq!(face_sig_of(&conn, "P999").as_deref(), Some("0:0"));
+        // 新增一张脸 → 签名必变（缓存失效判据成立）
+        conn.execute("INSERT INTO faces(person_id) VALUES('P001')", [])
+            .unwrap();
+        assert_eq!(face_sig_of(&conn, "P001").as_deref(), Some("3:4"));
+    }
+
+    /// 代表脸 = 与质心最相似的一张（而非最早登记）
+    #[test]
+    fn test_representative_face_picks_closest_to_centroid() {
+        fn blob(v: [f32; 4]) -> Vec<u8> {
+            v.iter().flat_map(|f| f.to_le_bytes()).collect()
+        }
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE persons (id TEXT PRIMARY KEY, centroid BLOB, face_count INTEGER);\
+             CREATE TABLE faces (id INTEGER PRIMARY KEY AUTOINCREMENT, person_id TEXT, \
+                photo_path TEXT, bbox TEXT, embedding BLOB, created_at TEXT);",
+        )
+        .unwrap();
+        // 质心 = (1,0,0,0)；三张脸按登记顺序：完全同向 / 偏 30° / 偏 45°，
+        // 且面积递增（后两张更大）—— 期望选中“完全同向”的第一张（相似度优先于面积）。
+        conn.execute(
+            "INSERT INTO persons VALUES('P001', ?1, 3)",
+            rusqlite::params![blob([1.0, 0.0, 0.0, 0.0])],
+        )
+        .unwrap();
+        let rows = [
+            ("a.jpg", "(0, 0, 40, 40)", [1.0f32, 0.0, 0.0, 0.0], "2026-01-01 00:00:00"),
+            ("b.jpg", "(0, 0, 400, 400)", [0.87, 0.5, 0.0, 0.0], "2026-01-02 00:00:00"),
+            ("c.jpg", "(0, 0, 900, 900)", [0.7, 0.7, 0.0, 0.0], "2026-01-03 00:00:00"),
+        ];
+        for (p, bb, e, t) in rows {
+            conn.execute(
+                "INSERT INTO faces(person_id, photo_path, bbox, embedding, created_at) \
+                 VALUES('P001', ?1, ?2, ?3, ?4)",
+                rusqlite::params![p, bb, blob(e), t],
+            )
+            .unwrap();
+        }
+        let (path, _bbox) = representative_face(&conn, "P001").unwrap();
+        assert_eq!(path, "a.jpg", "应选与质心最相似的一张");
+    }
 
     #[test]
     fn test_parse_bbox_formats() {

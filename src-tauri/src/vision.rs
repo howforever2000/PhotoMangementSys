@@ -41,7 +41,7 @@ fn clear_base() {
     }
 }
 /// 兼容既有调用：ensure 成功后必然已设置；未设置返回空串（调用方会先 ensure）
-fn vcr_base() -> String {
+pub(crate) fn vcr_base() -> String {
     current_base().unwrap_or_default()
 }
 
@@ -466,6 +466,7 @@ pub async fn classify_paths(
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
     ensure_service_ready(&client, app, true).await?;
+    ensure_person_model_compat(&client).await?;
 
     let batch = batch_size.max(1);
     let mut results: Vec<VisionResult> = Vec::with_capacity(photos.len());
@@ -592,6 +593,7 @@ pub async fn classify_single(path: &str, app: &tauri::AppHandle) -> Result<Visio
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
     ensure_service_ready(&client, app, true).await?;
+    ensure_person_model_compat(&client).await?;
     let resp: serde_json::Value = client
         .post(format!("{}/classify_batch", vcr_base()))
         .json(&serde_json::json!({ "paths": [path] }))
@@ -625,6 +627,43 @@ pub async fn classify_single(path: &str, app: &tauri::AppHandle) -> Result<Visio
     })
 }
 
+/// 人脸向量模型一致性预检（扫描前拦截，避免静默错挂/全量新建）
+///
+/// 为什么必须在扫描入口拦：ArcFace 换模型 = 换嵌入空间。旧质心（mbf 时代）与新
+/// 嵌入（r50）的余弦会退化成随机值 → 要么所有人脸都新建 P 编号（同一人被拆成
+/// 成百上千份），要么乱归簇；而 Python 侧人脸通道的异常是**静默降级**语义
+/// （person_ids=[]），不拦就会把已入库的 person_ids 覆盖成空（数据丢失）。
+///
+/// 判定：注册库非空 且 登记模型 ≠ 当前模型 → 报错引导用户先重建人物库。
+pub(crate) async fn ensure_person_model_compat(client: &reqwest::Client) -> Result<(), String> {
+    let info: serde_json::Value = client
+        .get(format!("{}/persons/emb_model", vcr_base()))
+        .send()
+        .await
+        .map_err(|e| format!("人物库模型预检失败: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("人物库模型预检解析失败: {e}"))?;
+    let registered = info.get("registered").and_then(|v| v.as_str()).unwrap_or("");
+    let active = info.get("active").and_then(|v| v.as_str()).unwrap_or("");
+    let persons = info.get("persons").and_then(|v| v.as_i64()).unwrap_or(0);
+    if persons > 0 && !registered.is_empty() && registered != active {
+        let msg = format!(
+            "人脸识别模型已更换（{registered} → {active}），旧人物库的向量与新模型不可比。\
+             请在「智慧相册 → 人物」页点「重建人物库」，再重新扫描各相册。"
+        );
+        crate::logger::log_info(&format!("[face] 扫描被拦截：{msg}"));
+        return Err(msg);
+    }
+    crate::logger::log_info(&format!(
+        "[face] 模型预检通过：registered={} active={} persons={persons}",
+        if registered.is_empty() { "<空>" } else { registered },
+        active
+    ));
+    Ok(())
+}
+
+
 /// 确保视觉识别微服务已就绪；未运行则启动并轮询 /health
 ///
 /// 启动优先级：
@@ -633,7 +672,7 @@ pub async fn classify_single(path: &str, app: &tauri::AppHandle) -> Result<Visio
 ///
 /// 打包版通过环境变量把「模型目录」指向随安装包内置的资源目录（只读）、
 /// 把「数据目录」指向 app_data_dir（可写，避免写入 Program Files）。
-async fn ensure_service_ready(
+pub(crate) async fn ensure_service_ready(
     client: &reqwest::Client,
     app: &tauri::AppHandle,
     wait_models: bool,

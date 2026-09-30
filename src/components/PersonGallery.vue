@@ -6,10 +6,12 @@
  * 支持：行内重命名 / 合并到其他人物（二次确认）。
  * 人物注册表/人物浏览的唯一入口（相册页扫描面板已不再展示注册表）。
  */
-import { computed, onMounted, ref, type Directive } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, type Directive } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { PersonInfo, PersonPhotoItem } from "../types/photo";
 import ConfirmDialog from "./ConfirmDialog.vue";
+import ContextMenu, { type ContextMenuEntry } from "./ContextMenu.vue";
 import PhotoLightbox from "./PhotoLightbox.vue";
 import { useAlbumStore } from "../stores/album";
 import { useThemeStore } from "../stores/theme";
@@ -136,7 +138,14 @@ function flash(msg: string) {
   setTimeout(() => (actionMsg.value = ""), 4000);
 }
 
-onMounted(load);
+onMounted(() => {
+  void load();
+  void bindAvatarRefresh();
+});
+
+onBeforeUnmount(() => {
+  unlistenAvatarRefresh?.();
+});
 
 /* ---- 查看该人物的照片（复用预计算缩略图 + 大图看图器）---- */
 const viewingPerson = ref<PersonInfo | null>(null);
@@ -207,6 +216,7 @@ function closePhotos() {
   viewingPerson.value = null;
   viewingPhotos.value = [];
   lightboxOpen.value = false;
+  avatarPickMode.value = false;
   exitSelectMode();
 }
 
@@ -282,6 +292,8 @@ async function pickMode(mode: "records" | "trash") {
 /* ---- FEAT-047：自选头像（照片弹窗内指定一张照片作为头像封面） ---- */
 /** 正在设置中的照片路径（防重复点击）；null = 空闲 */
 const settingAvatar = ref<string | null>(null);
+/** 头像挑选模式：由头像右键菜单「更换头像…」进入，弹窗顶部显示提示条 */
+const avatarPickMode = ref(false);
 
 async function setAvatar(p: PersonInfo, photoPath: string) {
   if (settingAvatar.value) return;
@@ -293,11 +305,112 @@ async function setAvatar(p: PersonInfo, photoPath: string) {
     });
     avatarTs.value = Date.now();
     avatarMap.value = { ...avatarMap.value, [p.id]: avatarUrl(p.id, cachePath) };
+    if (avatarPickMode.value) {
+      // 从「更换头像」入口来的：选完即收工，回到画廊看效果
+      closePhotos();
+    }
     flash(`已将所选照片设为 ${displayName(p)} 的头像`);
   } catch (e) {
     flash(`设置头像失败：${String(e)}`);
   } finally {
     settingAvatar.value = null;
+  }
+}
+
+/* ---- 头像右键菜单：更换头像 / 恢复自动头像 / 合并 ---- */
+const ctxMenu = ref<{ x: number; y: number; person: PersonInfo } | null>(null);
+
+function onAvatarContextMenu(e: MouseEvent, p: PersonInfo) {
+  ctxMenu.value = { x: e.clientX, y: e.clientY, person: p };
+}
+
+const ctxItems = computed<ContextMenuEntry[]>(() => {
+  const p = ctxMenu.value?.person;
+  if (!p) return [];
+  return [
+    {
+      label: "更换头像…",
+      icon: "🖼",
+      onClick: () => {
+        avatarPickMode.value = true;
+        void openPhotos(p);
+      },
+    },
+    {
+      label: "恢复自动头像",
+      icon: "🔄",
+      onClick: () => void restoreAvatar(p),
+    },
+    { divider: true },
+    {
+      label: "合并到其他人物…",
+      icon: "🔗",
+      onClick: () => (mergingSource.value = p),
+    },
+  ];
+});
+
+/** 恢复自动头像：抹掉自选标记 + 按当前代表脸重裁（后端命令） */
+async function restoreAvatar(p: PersonInfo) {
+  if (restoringAvatar.value) return;
+  restoringAvatar.value = p.id;
+  try {
+    const cachePath = await invoke<string>("restore_person_avatar", { pid: p.id });
+    avatarTs.value = Date.now();
+    avatarMap.value = { ...avatarMap.value, [p.id]: avatarUrl(p.id, cachePath) };
+    flash(`已恢复 ${displayName(p)} 的自动头像`);
+  } catch (e) {
+    flash(`恢复自动头像失败：${String(e)}`);
+  } finally {
+    restoringAvatar.value = null;
+  }
+}
+
+/* ---- 重建人物库（换识别模型后必须走一次） ---- */
+const rebuilding = ref(false);
+const rebuildConfirm = ref(false);
+
+async function doRebuild() {
+  rebuildConfirm.value = false;
+  if (rebuilding.value) return;
+  rebuilding.value = true;
+  try {
+    const r = await invoke<{
+      backup: string;
+      persons: number;
+      faces: number;
+      avatars_cleared: number;
+    }>("rebuild_person_registry");
+    avatarMap.value = {};
+    persons.value = [];
+    flash(
+      `已重建人物库（清空 ${r.persons} 位人物 / ${r.faces} 张脸 / ${r.avatars_cleared} 个头像缓存，备份：${r.backup}）。请到扫描面板对相册执行「全量扫描」重新识别人脸。`,
+    );
+    await load();
+  } catch (e) {
+    flash(`重建人物库失败：${String(e)}`);
+  } finally {
+    rebuilding.value = false;
+  }
+}
+
+/* ---- 后台重裁完成事件：头像校验失配时后端逐个重裁并上报 ---- */
+const restoringAvatar = ref<string | null>(null);
+let unlistenAvatarRefresh: UnlistenFn | null = null;
+
+async function bindAvatarRefresh() {
+  try {
+    unlistenAvatarRefresh = await listen<{ pid: string; path: string }>(
+      "person-avatar-refreshed",
+      (e) => {
+        const { pid, path } = e.payload;
+        if (!pid || !path) return;
+        avatarTs.value = Date.now();
+        avatarMap.value = { ...avatarMap.value, [pid]: avatarUrl(pid, path) };
+      },
+    );
+  } catch {
+    /* 事件订阅失败不影响画廊主体 */
   }
 }
 
@@ -318,6 +431,14 @@ const vFocus: Directive<HTMLElement> = {
   <div class="pg-wrap" :style="{ color: theme.textColor }">
     <div class="pg-toolbar">
       <span class="pg-summary" v-if="!loading && !loadError">共 {{ persons.length }} 位人物（按出现次数排序）</span>
+      <button
+        class="mini-btn danger pg-rebuild-btn"
+        :disabled="rebuilding"
+        @click="rebuildConfirm = true"
+        title="更换人脸识别模型后使用：备份并清空人物库与头像缓存，再对相册重新扫描以重建人物"
+      >
+        {{ rebuilding ? "重建中…" : "重建人物库" }}
+      </button>
       <button class="btn pg-refresh-btn" @click="load">刷新</button>
     </div>
     <div v-if="actionMsg" class="pg-action-msg">{{ actionMsg }}</div>
@@ -340,7 +461,12 @@ const vFocus: Directive<HTMLElement> = {
     <!-- 人物卡片网格 -->
     <div v-else class="person-grid">
       <article v-for="p in persons" :key="p.id" class="person-card glass-card" :style="surfaceStyle" :title="`${displayName(p)}（${p.id}）`">
-        <div class="person-avatar-wrap" @click.stop="openPhotos(p)" title="点击查看该人物的照片">
+        <div
+          class="person-avatar-wrap"
+          @click.stop="openPhotos(p)"
+          @contextmenu.prevent="onAvatarContextMenu($event, p)"
+          title="点击查看该人物的照片；右键可更换头像"
+        >
           <img v-if="avatarMap[p.id]" :src="avatarMap[p.id]" class="person-avatar" alt="" />
           <span v-else class="person-avatar person-avatar-fallback">{{ displayName(p).slice(0, 1) }}</span>
           <span class="person-face-count">{{ p.face_count }} 张脸</span>
@@ -435,6 +561,10 @@ const vFocus: Directive<HTMLElement> = {
             <button v-else class="mini-btn" @click="enterSelectMode">☑ 多选</button>
             <button class="btn viewer-close" @click="closePhotos">✕</button>
           </div>
+          <!-- 头像挑选模式提示（由头像右键菜单「更换头像…」进入） -->
+          <div v-if="avatarPickMode && !selectMode" class="viewer-pick-hint">
+            正在更换封面：鼠标移到照片上点「设为头像」即可（选完自动关闭）
+          </div>
           <div v-if="viewingLoading" class="viewer-state">正在读取缩略图…</div>
           <div v-else-if="viewingError" class="viewer-state viewer-error">{{ viewingError }}</div>
           <div v-else class="viewer-grid">
@@ -459,6 +589,7 @@ const vFocus: Directive<HTMLElement> = {
               <button
                 v-if="!selectMode"
                 class="viewer-set-avatar"
+                :class="{ 'always-on': avatarPickMode }"
                 title="设为该人物的头像"
                 :disabled="settingAvatar === it.path"
                 @click.stop="onSetAvatar(it.path)"
@@ -500,6 +631,26 @@ const vFocus: Directive<HTMLElement> = {
         </div>
       </div>
     </Teleport>
+
+    <!-- 头像右键菜单：更换头像 / 恢复自动头像 / 合并 -->
+    <ContextMenu
+      v-if="ctxMenu"
+      :items="ctxItems"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      @close="ctxMenu = null"
+    />
+
+    <!-- 重建人物库二次确认（危险操作：清空现有 P 编号与合并结果） -->
+    <ConfirmDialog
+      :visible="rebuildConfirm"
+      title="重建人物库"
+      :message="`将备份并清空人物库（现有 ${persons.length} 位人物的编号、改名与合并结果都会重置），同时清除全部人物头像缓存。\n换人脸识别模型后必须执行；完成后请到扫描面板对相册执行「全量扫描」重新识别人脸。\n备份文件与 persons.db 同目录（persons.db.bak-...），确认继续吗？`"
+      confirm-text="确认重建"
+      :danger="true"
+      @confirm="doRebuild"
+      @cancel="rebuildConfirm = false"
+    />
   </div>
 </template>
 <style scoped>
@@ -515,6 +666,9 @@ const vFocus: Directive<HTMLElement> = {
   font-size: 13px;
 }
 .pg-refresh-btn { margin-left: auto; padding: 4px 12px; font-size: 13px; }
+/* 重建人物库入口：次要危险操作，紧贴刷新按钮左侧 */
+.pg-rebuild-btn { margin-left: auto; margin-right: 8px; padding: 4px 10px; font-size: 12px; }
+.pg-rebuild-btn + .pg-refresh-btn { margin-left: 0; }
 
 .pg-action-msg {
   background: var(--color-primary-soft, #eef5ff);
@@ -735,6 +889,17 @@ body.theme-dark .pg-action-msg {
 .viewer-spacer {
   flex: 1;
 }
+/* 头像挑选模式提示条（由头像右键菜单「更换头像…」进入） */
+.viewer-pick-hint {
+  margin: -4px 0 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  background: rgba(57, 108, 216, 0.12);
+  border: 1px solid rgba(57, 108, 216, 0.35);
+  color: #2f5bc0;
+}
+body.theme-dark .viewer-pick-hint { color: #93b4f5; }
 .mini-btn.danger {
   color: #e03131;
   border-color: rgba(224, 49, 49, 0.5);
@@ -838,7 +1003,8 @@ body.theme-dark .pg-action-msg {
   transition: opacity 0.15s;
 }
 .viewer-cell:hover .viewer-set-avatar,
-.viewer-set-avatar:focus-visible {
+.viewer-set-avatar:focus-visible,
+.viewer-set-avatar.always-on {
   opacity: 1;
 }
 .viewer-set-avatar:disabled {

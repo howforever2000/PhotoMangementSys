@@ -89,6 +89,7 @@ use avatar::commands::{
     clear_user_avatar,
     get_person_avatar,
     get_person_avatars_bulk,
+    restore_person_avatar,
     set_person_avatar_from_photo,
     set_user_avatar,
 };
@@ -115,6 +116,7 @@ use persons::commands::{
     list_persons,
     list_persons_in_album,
     merge_persons,
+    rebuild_person_registry,
     rename_person,
 };
 use photo_info::commands::{get_photo_info};
@@ -409,9 +411,11 @@ pub fn run() {
             get_person_photos,
             get_person_avatar,
             set_person_avatar_from_photo,
+            restore_person_avatar,
             rename_person,
             merge_persons,
             delete_person,
+            rebuild_person_registry,
             content::commands::scan_album_content,
             content::commands::scan_album_combined,
             content::commands::read_album_content,
