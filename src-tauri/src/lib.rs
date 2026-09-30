@@ -142,9 +142,11 @@ use tone::commands::{scan_album_tones};
 use vcr_settings::{
     benchmark_vcr,
     benchmark_vcr_sweep,
+    get_face_tier_info,
     get_vcr_gpu_status,
     get_vcr_threads,
     list_vcr_models,
+    set_face_tier,
     set_vcr_gpu,
     set_vcr_model,
     set_vcr_threads,
@@ -459,6 +461,8 @@ pub fn run() {
             benchmark_vcr_sweep,
             list_vcr_models,
             set_vcr_model,
+            get_face_tier_info,
+            set_face_tier,
             benchmark_vcr,
             cancel_scan,
             // 开发者视角（实时日志副窗口）

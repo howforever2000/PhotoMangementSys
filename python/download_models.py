@@ -20,12 +20,12 @@ GITHUB = "https://github.com"
 HF = "https://hf-mirror.com"
 
 TASKS = {
-    "face": {
-        # InsightFace buffalo_l（唯一档，2026-10-01 定案：不保留轻量档、不做切换）：
+    "face-precise": {
+        # InsightFace buffalo_l（高精度档，默认）：
         #   det_10g.onnx   —— SCRFD-10G，误检（雕像/花纹→人脸）显著少于 500m
         #   w600k_r50.onnx —— ArcFace ResNet50，大姿态/侧脸更稳，聚类错挂下降
         # 源：GitHub 官方 release 经常抽风/被镜像截断，改走 hf-mirror（国内直连，
-        #     与 CLIP 同通道）上的 Immich 镜像仓：仓库内文件名是 detection/model.onnx
+        #     与 CLIP 同通道）上的 Immich 镜像仓：仓内文件名是 detection/model.onnx
         #     与 recognition/model.onnx，落位时重命名回 insightface 原文件名。
         "repo": "immich-app/buffalo_l",
         "root": ".",
@@ -34,6 +34,13 @@ TASKS = {
             "det_10g.onnx": "detection/model.onnx",
             "w600k_r50.onnx": "recognition/model.onnx",
         },
+    },
+    "face-light": {
+        # InsightFace buffalo_sc（轻量档）：det_500m 2.5MB + w600k_mbf 13.6MB，
+        # 比高精度档快 6~7 倍，代价是误检与聚类错挂明显更多（性能设置里可切）
+        "repo": "WePrompt/buffalo_sc",
+        "root": ".",
+        "files": ["det_500m.onnx", "w600k_mbf.onnx"],
     },
     "ocr": {
         # PaddleOCR ch_PP-OCRv4 det（RapidOCR 转换版，社区维护，无需 paddle 环境）
@@ -71,13 +78,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mirror", default="https://ghfast.top",
                         help="GitHub 加速镜像前缀（留空则直连）")
-    parser.add_argument("--tasks", default="face,ocr,clip",
-                        help="逗号分隔：face/ocr/clip/clip-fp32")
+    parser.add_argument("--tasks", default="face-precise,face-light,ocr,clip",
+                        help="逗号分隔：face-precise/face-light/face/ocr/clip/clip-fp32")
     args = parser.parse_args()
     os.makedirs(MODEL_DIR, exist_ok=True)
     mirror = args.mirror.strip() or None
 
-    for task in args.tasks.split(","):
+    # 别名：face = 两档都拉（缺哪档补哪档）
+    tasks: list[str] = []
+    for t in args.tasks.split(","):
+        tasks.extend(["face-precise", "face-light"] if t.strip() == "face" else [t.strip()])
+
+    for task in tasks:
         spec = TASKS.get(task)
         if not spec:
             print(f"[skip] 未知任务 {task}", file=sys.stderr)

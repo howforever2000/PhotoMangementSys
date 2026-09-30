@@ -22,6 +22,7 @@ import type {
   UnifiedScanRow,
   VcrGpuStatus,
   VcrModelsInfo,
+  FaceTiersInfo,
   VcrBenchmarkResult,
   VcrSweepEntry,
   VcrSweepResult,
@@ -173,6 +174,8 @@ export const useContentStore = defineStore("content", {
     gpuStatus: null as VcrGpuStatus | null,
     /** FEAT-051：分类模型候选清单 */
     vcrModels: null as VcrModelsInfo | null,
+    /** 人脸模型档位清单（高精度 / 轻量，可在性能设置里切换并持久化） */
+    faceTiers: null as FaceTiersInfo | null,
     /** FEAT-052：模型下载状态（由 model-dl-progress 事件 + list 拉取更新） */
     modelDownloads: [] as ModelDlStatus[],
     /** 组合扫描后台任务（键 = albumId；脱离组件存活，支持退出相册后后台继续） */
@@ -242,6 +245,18 @@ export const useContentStore = defineStore("content", {
     async setVcrModel(model: string): Promise<VcrModelsInfo> {
       this.vcrModels = await invoke<VcrModelsInfo>("set_vcr_model", { model });
       return this.vcrModels;
+    },
+
+    /** 人脸模型档位清单（是否已下载 / 当前生效 / 会话实测） */
+    async fetchFaceTiers(): Promise<FaceTiersInfo> {
+      this.faceTiers = await invoke<FaceTiersInfo>("get_face_tier_info");
+      return this.faceTiers;
+    },
+
+    /** 切换人脸模型档位（服务端持久化到 models/current_face.json，重启后仍生效） */
+    async setFaceTier(tier: string): Promise<FaceTiersInfo> {
+      this.faceTiers = await invoke<FaceTiersInfo>("set_face_tier", { tier });
+      return this.faceTiers;
     },
 
     /** FEAT-053：固定张量测速（CPU/GPU 真实加速比对比，可能耗时数秒） */

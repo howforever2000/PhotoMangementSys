@@ -270,12 +270,12 @@ class ModelRegistry:
 
     @property
     def face_det(self) -> ort.InferenceSession | None:
-        self._load("face_det", [os.path.join(config.MODEL_DIR, m) for m in config.FACE_DET_MODELS])
+        self._load("face_det", [os.path.join(config.MODEL_DIR, m) for m in config.face_det_models()])
         return self._sessions.get("face_det")
 
     @property
     def face_rec(self) -> ort.InferenceSession | None:
-        self._load("face_rec", [os.path.join(config.MODEL_DIR, m) for m in config.FACE_REC_MODELS])
+        self._load("face_rec", [os.path.join(config.MODEL_DIR, m) for m in config.face_rec_models()])
         return self._sessions.get("face_rec")
 
     @property
@@ -429,8 +429,8 @@ class ModelRegistry:
         else:
             calls = {
                 "det": (config.DET_MODEL, None), "ocr": (config.OCR_MODEL, None),
-                "face_det": (config.FACE_DET_MODELS[0], None),
-                "face_rec": (config.FACE_REC_MODELS[0], None),
+                "face_det": (config.face_det_models()[0], None),
+                "face_rec": (config.face_rec_models()[0], None),
             }
             if key not in calls:
                 raise RuntimeError(f"未知通道: {key}")
@@ -546,6 +546,70 @@ class ModelRegistry:
             "loaded": self._session_info.get("clip_vision"),
             "loaded_text": self._session_info.get("clip_text"),
         }
+
+    # ------------------------------------------------------------------
+    # 人脸模型档位（与语义档位同模式：可切换 + 持久化 + 后台加载）
+    # ------------------------------------------------------------------
+    def face_models_info(self) -> dict:
+        """人脸档位清单（是否已下载 / 当前生效 / 会话实测事实），供性能设置展示。"""
+        current = config.active_face_tier()
+        models = []
+        for name in config.FACE_TIERS:
+            meta = config.FACE_MODEL_META[name]
+            det, rec = config.face_tier_files(name)
+            det_p = os.path.join(config.MODEL_DIR, det)
+            rec_p = os.path.join(config.MODEL_DIR, rec)
+            det_ok, rec_ok = os.path.isfile(det_p), os.path.isfile(rec_p)
+            models.append({
+                "name": name,
+                "label": meta["label"],
+                "accuracy": meta["accuracy"],
+                "speed": meta["speed"],
+                "note": meta["note"],
+                "det": det,
+                "rec": rec,
+                # 两文件合计字节（缺失计 0）—— 与「已下载」同口径，避开单位/部分整体歧义
+                "bytes": (os.path.getsize(det_p) if det_ok else 0)
+                + (os.path.getsize(rec_p) if rec_ok else 0),
+                "downloaded": det_ok and rec_ok,
+                "active": name == current,
+            })
+        return {
+            "models": models,
+            "current": current,
+            "face_ready": self.is_ready("face_det") and self.is_ready("face_rec"),
+            "loaded": self._session_info.get("face_det"),
+            "loaded_rec": self._session_info.get("face_rec"),
+        }
+
+    def begin_face_switch(self, name: str) -> dict:
+        """校验并登记人脸档位目标，清空 face 会话槽位后立即返回；实际加载交后台。
+
+        与 begin_clip_switch 同模式：r50/det_10g 冷加载要数秒，而且档位切换会换
+        嵌入空间（由 persons.db 的 meta.emb_model 守卫拦扫描），不能让 HTTP 卡住。
+        这里只负责“登记 + 作废旧会话”，新档加载由 finish_face_switch 后台完成。
+        """
+        with self._lock:
+            if name not in config.FACE_MODEL_META:
+                raise ValueError(f"未知人脸模型档位: {name}")
+            if not config.face_tier_ready(name):
+                det, rec = config.face_tier_files(name)
+                raise FileNotFoundError(
+                    f"人脸模型未下载: {det} / {rec}（目录 {config.MODEL_DIR}）"
+                )
+            config.set_active_face_tier(name)
+            for k in ("face_det", "face_rec"):
+                self._sessions.pop(k, None)
+                self._ready.pop(k, None)
+                self._load_errors.pop(k, None)
+                self._session_info.pop(k, None)
+            return self.face_models_info()
+
+    def finish_face_switch(self, name: str) -> bool:
+        """后台完成人脸档位切换（属性访问即触发新档会话加载）。"""
+        _ = self.face_det
+        _ = self.face_rec
+        return self.is_ready("face_det") and self.is_ready("face_rec")
 
     def begin_clip_switch(self, name: str) -> dict:
         """校验并登记档位切换目标，清空 CLIP 会话槽位后立即返回。

@@ -44,16 +44,101 @@ PERSONS_DB = os.path.join(DATA_DIR, "persons.db")
 # 规则通道模型（缺失则对应通道自动降级）
 # ---------------------------------------------------------------------------
 DET_MODEL = "yolov8n-det.onnx"                           # COCO 80 类（人物/车辆）
-# 人脸模型：**只保留最新一档**（2026-10-01 定案：不保留轻量档、不做切换）。
-#   det_10g.onnx   —— SCRFD-10G，误检（雕像/花纹/屏幕→人脸）显著少于 500m；
-#   w600k_r50.onnx —— ArcFace ResNet50，大姿态/侧脸显著更稳，聚类错挂下降。
-# 实测代价（7840HS，CPU intra_op=8，bench/face_tier_bench.py，真实相册 10 张）：
-#   检测 11.4ms → 66.8ms（5.9×）；识别 5.5ms → 39.4ms/脸（7.2×）；
-#   即每张「有脸」照片 +55ms、每个脸 +34ms（只影响人脸通道，且只在 _needs_face
-#   命中时跑）。intra_op 12/16 线程反而更慢（78.8ms），8 线程是拆中比最优。
-# 换档即换嵌入空间：person_store 校验 meta.emb_model，不匹配时报错并引导重建人物库。
-FACE_DET_MODELS = ["det_10g.onnx"]      # SCRFD（唯一档）
-FACE_REC_MODELS = ["w600k_r50.onnx"]    # ArcFace 识别（唯一档）
+# ---------------------------------------------------------------------------
+# 人脸模型档位（2026-10-01）：两档**可切换**，选择持久化在 models/current_face.json
+#
+#   precise：det_10g（SCRFD-10G）+ w600k_r50（ArcFace R50）—— 非人脸误检与聚类错挂最少
+#   light  ：det_500m（SCRFD-500M）+ w600k_mbf（MobileFaceNet）—— 快 6~7 倍，误检与错挂明显更多
+#
+# 实测（7840HS，CPU intra_op=8，bench/face_tier_bench.py，真实相册 10 张）：
+#   precise 检测 66.8ms/张 · 识别 39.4ms/脸；light 检测 11.4ms/张 · 识别 5.5ms/脸；
+#   注意 intra_op 12/16 线程反而更慢（det 78.8ms），8 线程是两档的拆中比最优点。
+#
+# ⚠ 换档 = 换人脸向量空间：persons.db 的 meta.emb_model 会拦住不匹配的扫描
+#   （见 person_store.register），必须先去「人物」页执行「重建人物库」再重新扫描。
+# ---------------------------------------------------------------------------
+FACE_MODEL_META: dict[str, dict] = {
+    "precise": {
+        "label": "高精度 · det_10g + w600k_r50（推荐）",
+        "det": "det_10g.onnx",
+        "rec": "w600k_r50.onnx",
+        "accuracy": "非人脸误检最少；侧脸 / 大姿态 / 年龄跨度下聚类最稳",
+        "speed": "检测 ~67ms/张 · 识别 ~39ms/脸（7840HS·8 线程）",
+        "note": "换档会更换人脸向量空间：需先在「人物」页点「重建人物库」，再重新扫描",
+    },
+    "light": {
+        "label": "轻量 · det_500m + w600k_mbf",
+        "det": "det_500m.onnx",
+        "rec": "w600k_mbf.onnx",
+        "accuracy": "误检与聚类错挂明显多于高精度档（老机器 / 大库想跑得快时选它）",
+        "speed": "检测 ~11ms/张 · 识别 ~5.5ms/脸（约 6~7 倍快）",
+        "note": "换档会更换人脸向量空间：需先在「人物」页点「重建人物库」，再重新扫描",
+    },
+}
+FACE_TIERS = ["precise", "light"]
+FACE_DEFAULT_TIER = "precise"
+FACE_CURRENT_PATH = os.path.join(MODEL_DIR, "current_face.json")
+
+
+def face_tier_files(tier: str | None = None) -> tuple[str, str]:
+    """档位 → (检测模型文件名, 识别模型文件名)。未知/缺省 → 当前生效档。"""
+    name = tier if tier in FACE_MODEL_META else active_face_tier()
+    meta = FACE_MODEL_META.get(name) or FACE_MODEL_META[FACE_DEFAULT_TIER]
+    return meta["det"], meta["rec"]
+
+
+def face_tier_ready(tier: str) -> bool:
+    """该档两个模型文件是否都在（不在则不能切、也不能作为“生效档”）。"""
+    det, rec = face_tier_files(tier)
+    return os.path.isfile(os.path.join(MODEL_DIR, det)) and os.path.isfile(
+        os.path.join(MODEL_DIR, rec)
+    )
+
+
+def active_face_tier() -> str:
+    """当前生效档位：持久化选择优先（文件须在），否则取第一个已就绪档，最后回落默认档。
+
+    与 CLIP 档位（active_clip）同一套语义：模型文件被删后不会报一个“用不了的档”。
+    持久化文件缺失/非法/文件不在 → 自动探测，保证升级/拷贝模型目录后仍能开箱可用。
+    """
+    try:
+        if os.path.isfile(FACE_CURRENT_PATH):
+            with open(FACE_CURRENT_PATH, encoding="utf-8") as f:
+                name = json.load(f).get("name")
+            if name in FACE_MODEL_META and face_tier_ready(name):
+                return name
+    except Exception:  # noqa: BLE001
+        pass
+    for n in FACE_TIERS:
+        if face_tier_ready(n):
+            return n
+    return FACE_DEFAULT_TIER
+
+
+def set_active_face_tier(name: str) -> None:
+    """持久化人脸档位选择（失败不阻断：下次启动回落自动探测）。
+
+    这就是「设置一次就记住」的落点：写 models/current_face.json，重启后仍生效。
+    """
+    if name not in FACE_MODEL_META:
+        raise ValueError(f"未知人脸模型档位: {name}")
+    try:
+        with open(FACE_CURRENT_PATH, "w", encoding="utf-8") as f:
+            json.dump({"name": name}, f)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def face_det_models() -> list[str]:
+    """当前档位的人脸检测模型候选（单元素；保留 list 结构便于未来加兑底）"""
+    return [face_tier_files()[0]]
+
+
+def face_rec_models() -> list[str]:
+    """当前档位的人脸识别模型候选（决定嵌入空间）"""
+    return [face_tier_files()[1]]
+
+
 OCR_MODEL = "paddleocr-det.onnx"                        # PaddleOCR ch_PP-OCRv4 det（可选）
 
 # ---------------------------------------------------------------------------

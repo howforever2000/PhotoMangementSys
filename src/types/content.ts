@@ -317,6 +317,40 @@ export interface VcrModelsInfo {
   loaded_text?: VcrSessionFacts;
 }
 
+/** 人脸模型档位单项（precise / light） */
+export interface FaceTierInfo {
+  /** 档位标识：precise（高精度） / light（轻量） */
+  name: string;
+  /** 中文说明（模型组合 + 推荐场景） */
+  label: string;
+  accuracy: string;
+  speed: string;
+  /** 附加说明（换档必须重建人物库等） */
+  note: string;
+  /** 检测模型文件名（det_10g / det_500m） */
+  det: string;
+  /** 识别模型文件名（w600k_r50 / w600k_mbf） */
+  rec: string;
+  /** 两个模型文件合计字节（缺失计 0，与 downloaded 同口径） */
+  bytes: number;
+  /** 两文件都在才可切换 */
+  downloaded: boolean;
+  /** 是否当前生效档 */
+  active: boolean;
+}
+
+/** 人脸模型档位清单（宿主 get_face_tier_info 的返回） */
+export interface FaceTiersInfo {
+  models: FaceTierInfo[];
+  current: string | null;
+  /** 人脸通道是否已加载（切换后台加载期间为 false） */
+  face_ready?: boolean;
+  /** 人脸检测会话实测事实 */
+  loaded?: VcrSessionFacts;
+  /** 人脸识别会话实测事实 */
+  loaded_rec?: VcrSessionFacts;
+}
+
 /** FEAT-053：固定张量测速结果 */
 export interface VcrBenchmarkResult {
   channel: string;

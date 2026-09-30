@@ -88,21 +88,21 @@ class PersonStore:
 
     @staticmethod
     def _active_rec_model() -> str | None:
-        """当前实际会加载的识别模型：候选里第一个**文件真实存在**的；都没有 → None。
+        """当前实际会加载的识别模型（当前档位的文件真实存在才返回；都没有 → None）。
 
-        ！不要回落到「候选列表的第一个名字」：（BUG-2026-1001-016）模型文件缺失时
+        ！不要回落到“候选列表的第一个名字”：（BUG-2026-1001-016）模型文件缺失时
         报出一个并不存在的档位，宿主预检会误判“模型已切换/一致”，而人脸通道其实是
         静默降级（person_ids 全空）—— 用户看到的只是“扫完没人物”。
         """
-        for m in config.FACE_REC_MODELS:
+        for m in config.face_rec_models():
             if os.path.isfile(os.path.join(config.MODEL_DIR, m)):
                 return m
         return None
 
     @staticmethod
     def missing_face_models() -> list[str]:
-        """缺失的人脸模型文件名（检测+识别，供宿主报清楚“缺什么、在哪找”）。"""
-        want = list(config.FACE_REC_MODELS) + list(config.FACE_DET_MODELS)
+        """缺失的人脸模型文件名（当前档位的检测+识别，供宿主报清楚“缺什么、在哪找”）。"""
+        want = list(config.face_rec_models()) + list(config.face_det_models())
         return [m for m in want if not os.path.isfile(os.path.join(config.MODEL_DIR, m))]
 
     def _emb_model(self, conn: sqlite3.Connection) -> str | None:
@@ -123,6 +123,7 @@ class PersonStore:
             "ready": active is not None and not missing,
             "missing": missing,
             "model_dir": config.MODEL_DIR,
+            "tier": config.active_face_tier(),
         }
 
     def rebuild(self) -> dict:

@@ -48,10 +48,11 @@ if ($SkipModels) {
     Write-Host "[2/4] 校验模型文件..." -ForegroundColor Green
     # v5：分类模型（yolov8*-cls / Places365）已下线，改为要求「人物检测 + 人脸 + OCR」
     #     以及语义模型（CLIP，缺它则语义搜索/语义分类在安装包里不可用）
-    # 人脸模型只保留最新一档（det_10g + w600k_r50，2026-10-01），与 config.py 候选表一致
+    # 人脸模型两档都内置（性能设置里可切，换档需重建人物库）；与 config.FACE_MODEL_META 一致
     $required = @(
         "yolov8n-det.onnx",
         "det_10g.onnx", "w600k_r50.onnx",
+        "det_500m.onnx", "w600k_mbf.onnx",
         "paddleocr-det.onnx",
         # 语义模型：双塔整图 + 伴随文件（与 release.tauri.conf.json 的
         # bundle.resources 显式清单严格对应；缺整图会让 tauri build 在打包阶段失败）

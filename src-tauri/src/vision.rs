@@ -250,7 +250,10 @@ const ADOPT_WAIT_MAX: u32 = 3;
 /// v5（语义分类）：分类模型/场景/专家通道下线；语义模型档位切换；新增 /embed_text_batch。
 /// v6：CPU 线程数可调（/threads）+ 测速可临时指定线程数（/benchmark）+ 线程扫档（/benchmark_sweep）。
 /// v7（BUG-2026-1001-016）：/face/warmup 人脸通道预检（模型缺失要吵起来，不能静默降级）+ /persons/emb_model /persons/rebuild。
-const VCR_API_VERSION: u64 = 7;
+/// v8：人脸模型档位可切换（/face/tiers、/face/tier，选择持久化在 current_face.json）。
+///     —— 每次新增端点都必须抬这个版本号：否则宿主不会重启旧服务进程，前端只会看到
+///     “清单加载失败/端点不存在”，排查起来白费半小时（本次实测踩到）。
+const VCR_API_VERSION: u64 = 8;
 /// FEAT-051：ensure 单飞锁 —— 并发命令共享一次「探测/重启/启动」流程，
 /// 邓免多进程同时拚 8765 端口（winerror 10048）
 static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -1891,6 +1894,108 @@ pub async fn vcr_set_gpu(app: &tauri::AppHandle, enabled: bool) -> Result<VcrGpu
         gpu_brief(&s)
     ));
     Ok(s)
+}
+
+/// 人脸模型档位候选清单（高精度/轻量：是否已下载 / 当前生效 / 会话实测事实）
+///
+/// 自愈：性能设置链路走 ensure_perf_ready（只探“进程可达”，不校版本）——
+/// 应用升级后服务还是旧进程时，本端点会 404。遇到这种情况就调一次
+/// ensure_service_ready（带版本校验，会 POST /shutdown 重启服务）再重试一次，
+/// 而不是把“请重启应用”抛给用户（实测：这一来一回白花半小时排查，见 BUG-2026-1001-017）。
+pub async fn vcr_face_tier_info(app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let client = http_client().await?;
+    ensure_perf_ready(&client, app).await?;
+    let base = vcr_base();
+    let get = |base: String| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .get(format!("{base}/face/tiers"))
+                .send()
+                .await
+                .map_err(|e| format!("调用识别服务失败: {e}"))?;
+            let status = resp.status();
+            let v: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("解析结果失败: {e}"))?;
+            Ok::<(reqwest::StatusCode, serde_json::Value), String>((status, v))
+        }
+    };
+    let (mut status, mut v) = get(base.clone()).await?;
+    if status == reqwest::StatusCode::NOT_FOUND {
+        perf_log("face_tiers 命中 404（服务版本过旧）→ 触发服务重启后重试");
+        ensure_service_ready(&client, app, true).await?;
+        let (s2, v2) = get(vcr_base()).await?;
+        status = s2;
+        v = v2;
+    }
+    if !status.is_success() {
+        perf_log(&format!("face_tiers 失败 | HTTP {}", status.as_u16()));
+        return Err(format!(
+            "识别服务不包含人脸档位端点（HTTP {}）；已尝试重启服务仍失败，请重启应用",
+            status.as_u16()
+        ));
+    }
+    perf_log(&format!(
+        "face_tiers | current={} | {}",
+        v.get("current").and_then(|x| x.as_str()).unwrap_or("?"),
+        models_brief(&v)
+    ));
+    Ok(v)
+}
+
+/// 切换人脸模型档位（未下载 / 未知档位 → 提取服务端 detail 报错）
+///
+/// 注意：换档 = 换人脸向量空间，切换后扫描会被 meta.emb_model 守卫拦下，
+/// 需要用户先去「人物」页执行「重建人物库」——前端二次确认里已写明。
+pub async fn vcr_set_face_tier(
+    app: &tauri::AppHandle,
+    tier: &str,
+) -> Result<serde_json::Value, String> {
+    let t0 = Instant::now();
+    perf_log(&format!("face_tier 切换请求 | tier={tier}"));
+    let client = http_client().await?;
+    ensure_perf_ready(&client, app).await?;
+    let post = |base: String, tier: String| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .post(format!("{base}/face/tier"))
+                .json(&serde_json::json!({ "name": tier }))
+                .send()
+                .await
+                .map_err(|e| format!("调用识别服务失败: {e}"))?;
+            let status = resp.status();
+            let v: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("解析结果失败: {e}"))?;
+            Ok::<(reqwest::StatusCode, serde_json::Value), String>((status, v))
+        }
+    };
+    let (mut status, mut v) = post(vcr_base(), tier.to_string()).await?;
+    if status == reqwest::StatusCode::NOT_FOUND {
+        perf_log("face_tier 命中 404（服务版本过旧）→ 触发服务重启后重试");
+        ensure_service_ready(&client, app, true).await?;
+        let (s2, v2) = post(vcr_base(), tier.to_string()).await?;
+        status = s2;
+        v = v2;
+    }
+    if !status.is_success() {
+        let detail = v
+            .get("detail")
+            .and_then(|x| x.as_str())
+            .unwrap_or("切换失败");
+        perf_log(&format!("face_tier 失败 | HTTP {} | {detail}", status.as_u16()));
+        return Err(detail.to_string());
+    }
+    perf_log(&format!(
+        "face_tier 完成（后台加载中）| 耗时 {}ms | current={}",
+        t0.elapsed().as_millis(),
+        v.get("current").and_then(|x| x.as_str()).unwrap_or(tier)
+    ));
+    Ok(v)
 }
 
 /// FEAT-051：语义模型档位候选清单（含是否已下载 / 当前生效 / 会话实测事实）

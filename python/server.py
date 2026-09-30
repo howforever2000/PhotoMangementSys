@@ -97,7 +97,7 @@ def _health_dict() -> dict:
 #     B/16 ↔ L/14-336）；新增 /embed_text_batch。
 # v6：CPU 线程数可调（/threads 读写 + /benchmark 支持临时线程覆盖 + /benchmark_sweep 扫档），
 #     供「⚙ 性能设置」按不同硬件实测选优。
-VCR_API_VERSION = 7  # v7: /face/warmup 人脸通道预检 + /persons/emb_model|rebuild
+VCR_API_VERSION = 8  # v8: 人脸模型档位（/face/tiers、/face/tier 可切换+持久化）
 
 
 @app.get("/health")
@@ -149,6 +149,12 @@ class GpuRequest(BaseModel):
 
 
 class ModelRequest(BaseModel):
+    name: str
+
+
+class FaceTierRequest(BaseModel):
+    """人脸模型档位切换请求（precise / light）"""
+
     name: str
 
 
@@ -559,10 +565,43 @@ def face_warmup():
         "det_ready": det_ready,
         "rec_ready": rec_ready,
         "active": store.emb_model_info()["active"],
+        "tier": config.active_face_tier(),
         "missing": missing,
         "model_dir": config.MODEL_DIR,
         "load_errors": reg.load_errors(),
     }
+
+
+@app.get("/face/tiers")
+def face_tiers():
+    """人脸模型档位清单（高精度/轻量：是否已下载 / 当前生效 / 会话实测事实）。"""
+    return get_registry().face_models_info()
+
+
+@app.post("/face/tier")
+def set_face_tier(req: FaceTierRequest):
+    """切换人脸模型档位（未下载 / 未知档位返回 400）。
+
+    与 /model（语义档位）同一套模式：登记 + 作废旧会话后立即返回，新档加载走后台线程
+    （r50/det_10g 冷加载数秒，且档位切换会换向量空间 —— 由 meta.emb_model 守卫拦扫描，
+    需用户先去「人物」页重建人物库）。
+    """
+    try:
+        info = get_registry().begin_face_switch(req.name)
+    except (ValueError, FileNotFoundError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    threading.Thread(
+        target=_finish_face_switch, args=(req.name,), name="vcr-face-switch", daemon=True
+    ).start()
+    return {"ok": True, "loading": True, **info}
+
+
+def _finish_face_switch(name: str) -> None:
+    """后台完成人脸档位切换（加载失败时下次访问会自动重试）。"""
+    import sys
+
+    ok = get_registry().finish_face_switch(name)
+    print(f"[VCR] 人脸模型切换 {name}: {'完成' if ok else '失败'}", file=sys.stderr)
 
 
 @app.delete("/persons/{pid}")

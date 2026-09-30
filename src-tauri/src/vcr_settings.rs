@@ -773,6 +773,48 @@ pub async fn set_vcr_gpu(enabled: bool, app: tauri::AppHandle) -> Result<crate::
 }
 
 
+/// 人脸模型档位清单（高精度 / 轻量）：供「性能设置」展示与切换
+///
+/// 与语义档位（list_vcr_models）同模式：调用失败即代表服务不可用，由前端提示。
+#[tauri::command]
+pub async fn get_face_tier_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let _t = log_call!("get_face_tier_info");
+    let r = crate::vision::vcr_face_tier_info(&app).await;
+    match &r {
+        Ok(v) => crate::logger::log_call_end_with(
+            "get_face_tier_info",
+            _t,
+            &format!(
+                "OK | current={}",
+                v.get("current").and_then(|x| x.as_str()).unwrap_or("?")
+            ),
+        ),
+        Err(e) => crate::logger::log_call_end_with("get_face_tier_info", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
+/// 切换人脸模型档位（precise / light）；选择由服务端持久化，重启后仍生效
+#[tauri::command]
+pub async fn set_face_tier(tier: String, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let _t = log_call!("set_face_tier", &format!("tier={tier}"));
+    let r = crate::vision::vcr_set_face_tier(&app, &tier).await;
+    match &r {
+        Ok(v) => crate::logger::log_call_end_with(
+            "set_face_tier",
+            _t,
+            &format!(
+                "OK | current={}",
+                v.get("current").and_then(|x| x.as_str()).unwrap_or("?")
+            ),
+        ),
+        Err(e) => crate::logger::log_call_end_with("set_face_tier", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
 /// FEAT-051：分类模型候选清单（含是否已下载 / 当前生效）
 #[tauri::command]
 pub async fn list_vcr_models(app: tauri::AppHandle) -> Result<serde_json::Value, String> {

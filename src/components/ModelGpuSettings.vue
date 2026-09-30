@@ -21,6 +21,7 @@ import { ref } from "vue";
 import CollapseSection from "./CollapseSection.vue";
 import HardwareSection from "./settings/HardwareSection.vue";
 import ClipTierSection from "./settings/ClipTierSection.vue";
+import FaceTierSection from "./settings/FaceTierSection.vue";
 import ScanAdvancedSection from "./settings/ScanAdvancedSection.vue";
 import BenchmarkSection from "./settings/BenchmarkSection.vue";
 
@@ -71,6 +72,11 @@ function retry() {
         @failed="onServiceFail"
         @recovered="onServiceOk"
       />
+    </section>
+
+    <!-- ②b 人脸模型档位（两档可切、选择持久化；换档后需重建人物库） -->
+    <section class="block">
+      <FaceTierSection :locked="initFailed" :retry-token="retryToken" />
     </section>
 
     <!-- ③ 高级选项：默认折叠，状态记在 localStorage（下次进入保持） -->
