@@ -3443,6 +3443,40 @@
       "log_hint": "[face] 扫描被拦截：… / [face] 模型预检通过：registered=… active=…",
       "created_at": "2026-10-01T00:00:00+08:00",
       "fixed_at": "2026-10-01T00:00:00+08:00"
+    },
+    {
+      "id": "BUG-20261001-015",
+      "title": "重建人物库后增量扫描仍然跳过所有人脸（人脸永远回不来）",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": "点「重建人物库」后，只勾 AI 识别的增量扫描显示「跳过全部」，人物页始终 0 位人物；必须手动选全量才可能有结果",
+      "root_cause": "重建只清空 content 表的 person_ids/person_count，照片行仍在 → 增量扫描的 photo_hash 差集把这些照片全判为「已入库无变化」→ 人脸通道一次都不跑。而重建的语义就是「人脸要重做」，二者语义冲突",
+      "fix": "新增 face_rebuild_queue：重建时按「person_ids 非空 OR person_count>0」登记，扫描（勾选人物）时并入差集并强制处理，写完即出队；已入库无变化的照片不再被无条件跳过",
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/persons.rs"
+      ],
+      "log_hint": "[scan.incr] … 其中待重做人脸 N 张 / [scan.face] album=N 待重做人脸出队 N 张",
+      "created_at": "2026-10-01T00:00:00+08:00",
+      "fixed_at": "2026-10-01T00:00:00+08:00"
+    },
+    {
+      "id": "BUG-20261001-016",
+      "title": "dev 构建取到陈旧的模型副本目录 + 模型缺失静默降级，扫完 0 位人物",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": "换成新脸型模型并重扫多个相册后，人物页仍是「0 位人物」，刷新无效（用户现场）；日志里 /health 显示 face_ready=false",
+      "root_cause": "① debug 构建里 resource_dir() 就是 target/debug，而那里残留着一份早期拷贝的 vcr/models（只有旧模型）→「资源目录优先」用到了陈旧副本，新模型放在 python/models 却不被看见；② 模型缺失时人脸通道是静默降级（face_hits=[]），扫描一路「成功」；③ 预检函数 _active_rec_model() 在文件缺失时回落到候选列表的名字，把「缺失」报成了「已切换」，宿主预检因此也拦不住",
+      "fix": "① debug 构建锁定源码 python/models（打包版逻辑不变）；② 新增 /face/warmup 主动触发加载并回报 missing/model_dir，宿主扫描入口不就绪即报错中止；③ Python 端模型缺失时 register() 直接报错、不再写「幻觉档位」，emb_model_info 增加 ready/missing/model_dir",
+      "related_files": [
+        "src-tauri/src/vision.rs",
+        "python/server.py",
+        "python/vcr/persistence/person_store.py"
+      ],
+      "log_hint": "[face] 扫描被拦截：人脸识别通道不可用：缺少模型文件 X（模型目录 Y）/ 模型目录: …python\\models",
+      "created_at": "2026-10-01T00:00:00+08:00",
+      "fixed_at": "2026-10-01T00:00:00+08:00"
     }
   ]
 }

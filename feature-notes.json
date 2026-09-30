@@ -2848,7 +2848,29 @@
       ],
       "created_at": "2026-10-01T00:00:00+08:00",
       "updated_at": "2026-10-01T00:00:00+08:00"
+    },
+    {
+      "id": "FEAT-090",
+      "name": "人脸通道预检（大声失败）+ 重建后增量重做人脸队列",
+      "module": "扫描链路 / VCR 人脸通道",
+      "purpose": "把「人脸通道的静默降级」变成显式报错，并保证「重建人物库后即使跑增量扫描也能重做人脸」",
+      "implementation": {
+        "backend": "① POST /face/warmup：主动触发人脸会话惰性加载，回报 {ready,det_ready,rec_ready,active,missing,model_dir,load_errors}；宿主 ensure_face_channel_ready 在 classify 入口轮询（≤60s）后仍不就绪即中止扫描并报出缺失文件名与模型目录。② persons.db 之外的 photos.db 新增 face_rebuild_queue 表：重建人物库时按「person_ids 非空 OR person_count>0」入队，扫描（勾选人物）时把队列并入photo_hash 差集，写完记录即出队。③ debug 构建的模型目录锁定源码 python/models。",
+        "frontend": "无新增交互（错误消息由扫描链路弹给用户）",
+        "key_points": [
+          "入队判据的第二条 person_count>0 是实测数据定的：全库 15185 行 person_ids 全空、但还有 3492 行 person_count>0 —— 只认 person_ids 时重建会变成空操作",
+          "队列用独立小表而不是给 photo_content_scan 加列：不动既有 upsert 的列清单，迁移风险最小",
+          "出队只清「本次真的写了的路径」，失败/取消的留队列下次重试",
+          "VCR_API_VERSION 6→7：宿主据此自动重启旧服务进程，新端点立刻生效"
+        ]
+      },
+      "highlights": [
+        "端到端验证：新增模型后 /face/warmup ready=true（1s），/classify_batch 对真实照片返回 P007/P040/P041 三个人物 → 人脸登记链路恢复",
+        "Rust 单测锁住队列行为：只收有人脸证据的行、空数组不入队、已清过一轮的库靠 person_count 兜底、出队具备选择性"
+      ],
+      "created_at": "2026-10-01T00:00:00+08:00",
+      "updated_at": "2026-10-01T00:00:00+08:00"
     }
   ],
-  "updated": "2026-10-01T00:00:00+08:00"
+  "updated": "2026-10-01T01:00:00+08:00"
 }
