@@ -78,7 +78,7 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
 }
 
 .album-mini:hover {
-  border-color: #396cd8;
+  border-color: var(--color-primary);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
@@ -112,7 +112,7 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
 /* 拖拽中的相册 */
 .album-mini.dragging {
   opacity: 0.4;
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 
 /* 勾选管理模式：卡片点击提示 */
@@ -122,8 +122,8 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
 
 /* 被勾选的卡片 */
 .album-mini.mini-selected {
-  border-color: #396cd8;
-  box-shadow: 0 0 0 2px rgba(57, 108, 216, 0.25);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 25%, transparent);
 }
 
 /* 勾选角标 */
@@ -146,8 +146,8 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
 }
 
 .mini-check.checked {
-  background: #396cd8;
-  border-color: #396cd8;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
   color: #fff;
 }
 
@@ -167,7 +167,7 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
 }
 .mini-scan-in {
-  background: #2f9e44;
+  background: var(--color-ok-text);
 }
 .mini-scan-out {
   background: #b3b3b3;

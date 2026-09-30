@@ -207,7 +207,7 @@ async function handleLogin() {
 }
 
 .field-input:focus {
-  border-color: #8ab4ff;
+  border-color: var(--color-link);
   box-shadow: 0 0 0 3px rgba(110, 168, 255, 0.32);
   background: rgba(255, 255, 255, 0.18);
 }
@@ -239,7 +239,7 @@ async function handleLogin() {
   font-size: 15px;
   font-weight: 600;
   color: #fff;
-  background: #396cd8;
+  background: var(--color-primary);
   border: none;
   border-radius: 8px;
   cursor: pointer;

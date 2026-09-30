@@ -466,21 +466,21 @@ onMounted(() => {
 }
 .btn:hover:not(:disabled) { border-color: var(--color-link); color: var(--color-link); box-shadow: 0 2px 8px rgba(16, 24, 40, 0.08); }
 .btn:active:not(:disabled) { transform: translateY(1px); }
-.btn:focus-visible { outline: 2px solid rgba(57, 108, 216, 0.55); outline-offset: 2px; }
+.btn:focus-visible { outline: 2px solid color-mix(in srgb, var(--color-primary) 55%, transparent); outline-offset: 2px; }
 .btn:disabled {
   background: #eef1f6;
   border-color: #dfe4ec;
   color: #98a2b3;
   cursor: not-allowed;
 }
-.gs-btn-primary { background: #396cd8; color: #fff; border-color: #396cd8; }
-.gs-btn-primary:hover:not(:disabled) { background: #2f5cc2; border-color: #2f5cc2; color: #fff; }
+.gs-btn-primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
+.gs-btn-primary:hover:not(:disabled) { background: var(--color-primary-hover); border-color: var(--color-primary-hover); color: #fff; }
 .gs-btn-primary:disabled { background: #a8bde8; border-color: #a8bde8; color: #fff; cursor: not-allowed; }
 .gs-btn-danger { background: var(--color-danger); color: #fff; border-color: var(--color-danger); }
 .gs-btn-danger:hover:not(:disabled) { background: var(--color-danger-hover); border-color: var(--color-danger-hover); color: #fff; }
 .gs-btn-danger:disabled { background: #f0b3b5; border-color: #f0b3b5; color: #fff; cursor: not-allowed; }
-.btn-ghost { background: #eef2ff; color: #2f5cc2; border-color: #b9cdf5; }
-.btn-ghost:hover:not(:disabled) { background: #e1e9ff; border-color: #396cd8; color: #2f5cc2; }
+.btn-ghost { background: #eef2ff; color: var(--color-primary-hover); border-color: #b9cdf5; }
+.btn-ghost:hover:not(:disabled) { background: #e1e9ff; border-color: var(--color-primary); color: var(--color-primary-hover); }
 .btn-ghost:disabled { background: #f2f4f8; border-color: #e3e7ee; color: #9aa4b4; cursor: not-allowed; }
 .btn-mini { padding: 2px 8px; font-size: 11px; border: 1px solid var(--color-border); border-radius: 3px; background: var(--color-surface-2); color: inherit; cursor: pointer; }
 .btn-mini:hover { border-color: var(--color-link); color: var(--color-link); }
@@ -656,7 +656,7 @@ onMounted(() => {
 }
 .gs-fill {
   height: 100%;
-  background: linear-gradient(90deg, #396cd8, #5a8bf7);
+  background: linear-gradient(90deg, var(--color-primary), var(--color-primary));
   transition: width 0.3s;
   border-radius: 4px;
 }

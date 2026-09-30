@@ -215,8 +215,8 @@ async function handleRegister() {
 }
 
 .field-input:focus {
-  border-color: #396cd8;
-  box-shadow: 0 0 0 3px rgba(57, 108, 216, 0.12);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 12%, transparent);
   background: #fff;
 }
 
@@ -236,7 +236,7 @@ async function handleRegister() {
   font-weight: 600;
   letter-spacing: 1px;
   color: #fff;
-  background: #396cd8;
+  background: var(--color-primary);
   border: none;
   border-radius: 8px;
   cursor: pointer;
@@ -270,7 +270,7 @@ async function handleRegister() {
 }
 
 .auth-link {
-  color: #396cd8;
+  color: var(--color-primary);
   text-decoration: none;
   font-weight: 500;
 }

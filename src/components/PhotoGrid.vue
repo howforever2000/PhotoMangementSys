@@ -929,11 +929,11 @@ function onKey(e: KeyboardEvent) {
   margin-left: auto;
   border: none;
   border-radius: 50%;
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
   font-size: 17px;
   cursor: pointer;
-  box-shadow: 0 4px 14px rgba(57, 108, 216, 0.45);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--color-primary) 45%, transparent);
   transition: transform 0.15s, background 0.15s;
 }
 .pg-top-btn:hover {
@@ -975,18 +975,18 @@ function onKey(e: KeyboardEvent) {
   font-size: 13px;
   font-weight: 600;
   border-radius: 8px;
-  border: 1.5px solid #396cd8;
+  border: 1.5px solid var(--color-primary);
   background: #f0f5ff;
-  color: #2f5cc2;
-  box-shadow: 0 1px 3px rgba(57, 108, 216, 0.18);
+  color: var(--color-primary-hover);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
   transition: background 0.15s, transform 0.1s, box-shadow 0.15s, border-color 0.15s;
 }
 .pg-action:hover:not(:disabled) {
   background: #e0ebff;
-  border-color: #2f5cc2;
+  border-color: var(--color-primary-hover);
   color: #1f4caa;
   transform: translateY(-1px);
-  box-shadow: 0 2px 6px rgba(57, 108, 216, 0.28);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--color-primary) 28%, transparent);
 }
 .pg-action:disabled {
   opacity: 0.5;
@@ -1003,13 +1003,13 @@ function onKey(e: KeyboardEvent) {
 .pg-action-refresh {
   border-style: dashed;
   background: #fafbff;
-  color: #396cd8;
+  color: var(--color-primary);
 }
 
 .pg-hint {
   background: #f5f7ff;
   border: 1px solid #dbe3ff;
-  color: #396cd8;
+  color: var(--color-primary);
   border-radius: 8px;
   padding: 10px 14px;
   font-size: 13px;
@@ -1046,15 +1046,15 @@ function onKey(e: KeyboardEvent) {
   cursor: pointer;
   transition: all 0.15s;
 }
-.chip:hover { border-color: #396cd8; color: #396cd8; }
-.chip.active { background: #396cd8; border-color: #396cd8; color: #fff; }
+.chip:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.chip.active { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
 
 .pg-loading, .pg-error, .pg-empty {
   text-align: center;
   padding: 40px 20px;
   color: #667085;
 }
-.pg-error { color: #e5484d; }
+.pg-error { color: var(--color-danger); }
 
 .pg-grid {
   display: grid;
@@ -1188,7 +1188,7 @@ function onKey(e: KeyboardEvent) {
 }
 
 .pg-person-fallback {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
   font-size: 11px;
   line-height: 18px;
@@ -1222,11 +1222,11 @@ function onKey(e: KeyboardEvent) {
 
 /* ---- 多选删除 ---- */
 .pg-action.pg-selecting {
-  background: #396cd8;
-  border-color: #396cd8;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
   color: #fff;
   border-style: solid;
-  box-shadow: 0 2px 8px rgba(57, 108, 216, 0.35);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 35%, transparent);
 }
 
 .pg-select-bar {
@@ -1244,7 +1244,7 @@ function onKey(e: KeyboardEvent) {
   top: 0;
   z-index: 5;
   backdrop-filter: blur(8px);
-  box-shadow: 0 2px 10px rgba(57, 108, 216, 0.08);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--color-primary) 8%, transparent);
 }
 .pg-select-all {
   display: flex;
@@ -1255,7 +1255,7 @@ function onKey(e: KeyboardEvent) {
 }
 .pg-selected-count {
   font-weight: 600;
-  color: #396cd8;
+  color: var(--color-primary);
 }
 .pg-select-tip {
   color: #5f6b7a;
@@ -1281,8 +1281,8 @@ function onKey(e: KeyboardEvent) {
   gap: 8px;
 }
 .btn-danger-pg {
-  background: #e5484d;
-  border-color: #e5484d;
+  background: var(--color-danger);
+  border-color: var(--color-danger);
   color: #fff;
 }
 .btn-danger-pg:hover { background: #d03a3f; }
@@ -1300,7 +1300,7 @@ function onKey(e: KeyboardEvent) {
 }
 
 .pg-cell-selected {
-  outline: 3px solid #396cd8;
+  outline: 3px solid var(--color-primary);
   outline-offset: -3px;
 }
 
@@ -1328,7 +1328,7 @@ function onKey(e: KeyboardEvent) {
   pointer-events: none;
 }
 .pg-check.on {
-  background: #396cd8;
+  background: var(--color-primary);
   border-color: #fff;
 }
 
@@ -1384,8 +1384,8 @@ function onKey(e: KeyboardEvent) {
   text-align: left;
   transition: all 0.15s;
 }
-.pg-target-item:hover { border-color: #396cd8; }
-.pg-target-item.active { border-color: #396cd8; background: rgba(57, 108, 216, 0.08); }
+.pg-target-item:hover { border-color: var(--color-primary); }
+.pg-target-item.active { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
 .pg-target-name { font-weight: 600; font-size: 14px; }
 .pg-target-meta { font-size: 12px; opacity: 0.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pg-dialog-actions { margin-top: 14px; display: flex; justify-content: flex-end; gap: 8px; }
@@ -1402,7 +1402,7 @@ function onKey(e: KeyboardEvent) {
 }
 .pg-star.on { color: #ffd43b; }
 .pg-star:hover { transform: scale(1.12); }
-.pg-rating-value { margin-left: 10px; font-size: 14px; color: #396cd8; font-weight: 600; }
+.pg-rating-value { margin-left: 10px; font-size: 14px; color: var(--color-primary); font-weight: 600; }
 .pg-rating-warn,
 .pg-rating-hint {
   margin: 0 0 10px;

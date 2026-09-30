@@ -1105,10 +1105,10 @@ function onKey(e: KeyboardEvent) {
       '--panel-bg': theme.onBgDark ? 'rgba(0,0,0,.04)' : 'rgba(255,255,255,.06)',
       '--input-bg': theme.onBgDark ? 'rgba(255,255,255,.65)' : 'rgba(20,22,30,.7)',
       '--input-border': theme.onBgDark ? 'rgba(0,0,0,.14)' : 'rgba(255,255,255,.14)',
-      '--tint-bg': theme.onBgDark ? 'rgba(57,108,216,.14)' : 'rgba(57,108,216,.18)',
-      '--tint-border': theme.onBgDark ? 'rgba(57,108,216,.4)' : 'rgba(57,108,216,.35)',
-      '--hover-bg': theme.onBgDark ? 'rgba(57,108,216,.08)' : 'rgba(255,255,255,.07)',
-      '--danger-bg': theme.onBgDark ? 'rgba(229,72,77,.12)' : 'rgba(229,72,77,.15)',
+      '--tint-bg': theme.onBgDark ? 'color-mix(in srgb, var(--color-primary) 14%, transparent)' : 'color-mix(in srgb, var(--color-primary) 18%, transparent)',
+      '--tint-border': theme.onBgDark ? 'color-mix(in srgb, var(--color-primary) 40%, transparent)' : 'color-mix(in srgb, var(--color-primary) 35%, transparent)',
+      '--hover-bg': theme.onBgDark ? 'color-mix(in srgb, var(--color-primary) 8%, transparent)' : 'rgba(255,255,255,.07)',
+      '--danger-bg': theme.onBgDark ? 'color-mix(in srgb, var(--color-danger) 12%, transparent)' : 'color-mix(in srgb, var(--color-danger) 15%, transparent)',
     }"
   >
     <!-- 顶部工具栏（需求 §5.3） -->
@@ -1863,16 +1863,16 @@ function onKey(e: KeyboardEvent) {
   background: var(--hover-bg);
 }
 .tb-organize {
-  background: rgba(57, 108, 216, 0.06);
-  border: 1px solid rgba(57, 108, 216, 0.18);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 18%, transparent);
 }
 .tb-label {
   background: rgba(34, 159, 110, 0.06);
   border: 1px solid rgba(34, 159, 110, 0.18);
 }
 .tb-danger {
-  background: rgba(229, 72, 77, 0.08);
-  border: 1px solid rgba(229, 72, 77, 0.22);
+  background: color-mix(in srgb, var(--color-danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 22%, transparent);
 }
 .tb-selected-pill {
   display: inline-flex;
@@ -1882,8 +1882,8 @@ function onKey(e: KeyboardEvent) {
   font-size: 13px;
   font-weight: 600;
   color: #2f5de0;
-  background: rgba(57, 108, 216, 0.15);
-  border: 1px solid rgba(57, 108, 216, 0.3);
+  background: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
   border-radius: 999px;
 }
 .tb-selected-pill b {
@@ -1903,7 +1903,7 @@ function onKey(e: KeyboardEvent) {
 }
 
 .select:focus {
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 
 .btn-icon {
@@ -1950,7 +1950,7 @@ function onKey(e: KeyboardEvent) {
 }
 
 .bc-link:hover {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
 }
 
@@ -1991,7 +1991,7 @@ function onKey(e: KeyboardEvent) {
 }
 
 .search-input:focus {
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 
 .search-clear {
@@ -2105,9 +2105,9 @@ function onKey(e: KeyboardEvent) {
 
 .result-jump {
   flex-shrink: 0;
-  border: 1px solid #396cd8;
+  border: 1px solid var(--color-primary);
   background: var(--tint-bg);
-  color: #396cd8;
+  color: var(--color-primary);
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 10px;
@@ -2116,7 +2116,7 @@ function onKey(e: KeyboardEvent) {
 }
 
 .result-jump:hover {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
 }
 
@@ -2128,15 +2128,15 @@ function onKey(e: KeyboardEvent) {
 .btn-back {
   border: none;
   background: transparent;
-  color: #396cd8;
+  color: var(--color-primary);
   padding: 4px 8px;
   font-size: 14px;
 }
 
 .btn-back:hover {
-  background: rgba(57, 108, 216, 0.08);
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
   border-color: transparent;
-  color: #396cd8;
+  color: var(--color-primary);
 }
 
 .page-title {
@@ -2165,7 +2165,7 @@ function onKey(e: KeyboardEvent) {
 
 @keyframes yearFlash {
   0% {
-    box-shadow: 0 0 0 3px rgba(57, 108, 216, 0.4);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 40%, transparent);
     background: var(--hover-bg);
   }
   100% {
@@ -2293,7 +2293,7 @@ function onKey(e: KeyboardEvent) {
 }
 
 .context-menu-danger {
-  color: #e5484d;
+  color: var(--color-danger);
 }
 
 .context-menu-danger:hover {
@@ -2316,18 +2316,18 @@ function onKey(e: KeyboardEvent) {
 }
 
 .btn:hover {
-  border-color: #396cd8;
-  color: #396cd8;
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 
 .btn-primary {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 
 .btn-primary:hover {
-  background: #2f5cc2;
+  background: var(--color-primary-hover);
   color: #fff;
 }
 
@@ -2339,7 +2339,7 @@ function onKey(e: KeyboardEvent) {
 .btn-danger {
   background: var(--color-danger);
   color: #fff;
-  border-color: #e5484d;
+  border-color: var(--color-danger);
 }
 
 .btn-danger:hover {
@@ -2417,7 +2417,7 @@ function onKey(e: KeyboardEvent) {
 
 .import-fill {
   height: 100%;
-  background: #396cd8;
+  background: var(--color-primary);
   border-radius: 4px;
   transition: width 0.3s ease;
 }
@@ -2465,7 +2465,7 @@ function onKey(e: KeyboardEvent) {
 .link-btn {
   border: none;
   background: none;
-  color: #396cd8;
+  color: var(--color-primary);
   cursor: pointer;
   font-size: 14px;
   padding: 0 4px;
@@ -2547,7 +2547,7 @@ function onKey(e: KeyboardEvent) {
 }
 
 .input:focus {
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 
 .textarea {
@@ -2573,7 +2573,7 @@ function onKey(e: KeyboardEvent) {
 }
 
 .error-msg {
-  color: #e5484d;
+  color: var(--color-danger);
   font-size: 14px;
   margin: 0 0 12px;
 }
@@ -2619,11 +2619,11 @@ function onKey(e: KeyboardEvent) {
   color: var(--text, inherit);
 }
 .combo-check:hover {
-  border-color: #396cd8;
+  border-color: var(--color-primary);
   background: #eef3fb;
 }
 .combo-check.active {
-  border-color: #396cd8;
+  border-color: var(--color-primary);
   background: #eef3fb;
 }
 .combo-check input[type="checkbox"] {
@@ -2660,7 +2660,7 @@ function onKey(e: KeyboardEvent) {
 }
 .batch-scan-progress {
   font-size: 12.5px;
-  color: #396cd8;
+  color: var(--color-primary);
   background: #eef3fb;
   border: 1px solid #dbe3ff;
   border-radius: 8px;
@@ -2703,7 +2703,7 @@ function onKey(e: KeyboardEvent) {
   background: rgba(120, 120, 140, 0.1);
 }
 .folder-item.active {
-  background: rgba(57, 108, 216, 0.12);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
   font-weight: 600;
 }
 
@@ -2723,8 +2723,8 @@ function onKey(e: KeyboardEvent) {
   transition: all 0.15s;
 }
 .bmode.active {
-  background: rgba(57, 108, 216, 0.12);
-  border-color: rgba(57, 108, 216, 0.5);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 50%, transparent);
   font-weight: 600;
 }
 
@@ -2740,7 +2740,7 @@ function onKey(e: KeyboardEvent) {
   background: var(--card-bg);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
   font-size: 20px;
-  color: #396cd8;
+  color: var(--color-primary);
   cursor: pointer;
   transition: opacity 0.3s ease, transform 0.3s ease, background 0.2s;
   z-index: 150;

@@ -396,8 +396,8 @@ function goAlbumFromLightbox(albumId: number) {
 /* FEAT-E：跳定位高亮（query 定位 + 滚动后亮色边框 1.8s 淡出） */
 .tl-year.tl-highlight,
 .tl-month.tl-highlight {
-  background: rgba(57, 108, 216, 0.12);
-  box-shadow: 0 0 0 3px rgba(57, 108, 216, 0.35) inset;
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 35%, transparent) inset;
   border-radius: 10px;
 }
 .tl-year-title {
@@ -559,7 +559,7 @@ function goAlbumFromLightbox(albumId: number) {
   background: var(--card-bg, #fff);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.16);
   font-size: 20px;
-  color: #396cd8;
+  color: var(--color-primary);
   cursor: pointer;
   z-index: 150;
   display: flex;
@@ -569,7 +569,7 @@ function goAlbumFromLightbox(albumId: number) {
   transition: transform 0.2s ease, background 0.2s;
 }
 .tl-top-btn:hover {
-  background: var(--color-soft-accent, rgba(57, 108, 216, 0.12));
+  background: var(--color-soft-accent, color-mix(in srgb, var(--color-primary) 12%, transparent));
   transform: scale(1.08);
 }
 .tl-top-btn:active {

@@ -247,7 +247,7 @@ async function onConfirm() {
   font-size: 13px;
 }
 .sel:focus-visible {
-  outline: 2px solid rgba(57, 108, 216, 0.55);
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 55%, transparent);
   outline-offset: 1px;
 }
 .sel:disabled {
@@ -291,7 +291,7 @@ async function onConfirm() {
   color: var(--color-primary);
 }
 .btn:focus-visible {
-  outline: 2px solid rgba(57, 108, 216, 0.55);
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 55%, transparent);
   outline-offset: 2px;
 }
 .btn:disabled {

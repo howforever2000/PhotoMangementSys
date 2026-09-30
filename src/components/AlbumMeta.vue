@@ -441,7 +441,7 @@ const saveTags = trace("saveTags", async () => {
 .name-input {
   font-size: 16px;
   padding: 8px 12px;
-  border: 1px solid #396cd8;
+  border: 1px solid var(--color-primary);
   border-radius: 6px;
   outline: none;
   max-width: 400px;
@@ -464,7 +464,7 @@ const saveTags = trace("saveTags", async () => {
 }
 
 .path-link:hover {
-  color: #396cd8;
+  color: var(--color-primary);
 }
 
 .detail-desc-wrap {
@@ -481,7 +481,7 @@ const saveTags = trace("saveTags", async () => {
 
 .desc-edit-hint {
   font-size: 11px;
-  color: #396cd8;
+  color: var(--color-primary);
   opacity: 0;
   transition: opacity 0.15s;
 }
@@ -499,7 +499,7 @@ const saveTags = trace("saveTags", async () => {
 .desc-textarea {
   font-size: 13px;
   padding: 8px 12px;
-  border: 1px solid #396cd8;
+  border: 1px solid var(--color-primary);
   border-radius: 6px;
   outline: none;
   resize: vertical;
@@ -527,7 +527,7 @@ const saveTags = trace("saveTags", async () => {
 }
 
 .parent-path:hover {
-  color: #396cd8;
+  color: var(--color-primary);
 }
 
 .detail-stats {
@@ -595,7 +595,7 @@ const saveTags = trace("saveTags", async () => {
 }
 
 .input-sm:focus {
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 
 /* 标签 */
@@ -629,7 +629,7 @@ const saveTags = trace("saveTags", async () => {
   padding: 2px 8px;
   border-radius: 4px;
   background: var(--color-soft-accent, #eef3fb);
-  color: var(--color-link, #396cd8);
+  color: var(--color-link, var(--color-primary));
   font-size: 12px;
   font-weight: 500;
 }
@@ -651,7 +651,7 @@ const saveTags = trace("saveTags", async () => {
 }
 
 .tag-del:hover {
-  color: #e5484d;
+  color: var(--color-danger);
 }
 
 .tag-empty {
@@ -695,8 +695,8 @@ const saveTags = trace("saveTags", async () => {
 }
 
 .btn:hover {
-  border-color: #396cd8;
-  color: #396cd8;
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 
 .btn-sm {
@@ -706,25 +706,25 @@ const saveTags = trace("saveTags", async () => {
 }
 
 .btn-primary {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 
 .btn-primary:hover {
-  background: #2f5cc2;
+  background: var(--color-primary-hover);
   color: #fff;
 }
 
 .btn-ghost {
   background: transparent;
-  color: #396cd8;
-  border-color: #396cd8;
+  color: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .btn-ghost:hover {
-  background: rgba(57, 108, 216, 0.08);
-  color: #2f5cc2;
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  color: var(--color-primary-hover);
 }
 
 .btn:disabled {

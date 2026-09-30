@@ -157,7 +157,7 @@ function providerLabel(p: string): string {
   color: var(--color-primary);
 }
 .btn:focus-visible {
-  outline: 2px solid rgba(57, 108, 216, 0.55);
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 55%, transparent);
   outline-offset: 2px;
 }
 .btn:disabled {

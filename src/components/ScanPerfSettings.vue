@@ -358,8 +358,8 @@ const calibMaxRate = computed(() =>
   font-size: 12.5px;
 }
 .sps-btn:hover:not(:disabled) {
-  border-color: #396cd8;
-  color: #396cd8;
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 .sps-btn:disabled {
   opacity: 0.55;
@@ -370,12 +370,12 @@ const calibMaxRate = computed(() =>
   font-size: 12px;
 }
 .sps-btn-primary {
-  background: #396cd8;
-  border-color: #396cd8;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
   color: #fff;
 }
 .sps-btn-primary:hover:not(:disabled) {
-  background: #2f5cc2;
+  background: var(--color-primary-hover);
   color: #fff;
 }
 .sps-status {
@@ -383,7 +383,7 @@ const calibMaxRate = computed(() =>
   color: var(--ts-text, #2c3e50);
 }
 .sps-status b {
-  color: #396cd8;
+  color: var(--color-primary);
 }
 .sps-dim {
   font-size: 12px;
@@ -403,7 +403,7 @@ const calibMaxRate = computed(() =>
   font-size: 11.5px;
 }
 .sps-err {
-  color: #e5484d;
+  color: var(--color-danger);
 }
 .sps-note {
   border-top: 1px dashed var(--ts-panel-border, rgba(127, 127, 127, 0.25));
@@ -435,7 +435,7 @@ const calibMaxRate = computed(() =>
   color: var(--ts-text, #2c3e50);
 }
 .sps-calib-sum .kpi b.ok {
-  color: #16a34a;
+  color: var(--color-ok-vivid);
 }
 .sps-rows {
   display: flex;
@@ -461,7 +461,7 @@ const calibMaxRate = computed(() =>
 .sps-bar-fill {
   height: 100%;
   border-radius: 4px;
-  background: linear-gradient(90deg, #396cd8, #5a8ce8);
+  background: linear-gradient(90deg, var(--color-primary), #5a8ce8);
   transition: width 0.3s ease;
 }
 .sps-calib-rate {
@@ -471,18 +471,18 @@ const calibMaxRate = computed(() =>
   text-align: right;
 }
 .sps-calib-row.best .sps-calib-th {
-  color: #16a34a;
+  color: var(--color-ok-vivid);
   font-weight: 600;
 }
 .sps-calib-row.best .sps-bar-fill {
-  background: linear-gradient(90deg, #16a34a, #22c55e);
+  background: linear-gradient(90deg, var(--color-ok-vivid), #22c55e);
 }
 .sps-calib-row.peak .sps-calib-th {
-  color: #d97706;
+  color: var(--color-warn-text);
 }
 .sps-calib-row.cur .sps-calib-th::after {
   content: " ←";
-  color: #396cd8;
+  color: var(--color-primary);
 }
 .sps-calib-actions {
   display: flex;

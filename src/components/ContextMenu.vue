@@ -135,8 +135,8 @@ function onItemClick(item: ContextMenuItem) {
 }
 
 .ctx-item:hover:not(.disabled) {
-  background: rgba(57, 108, 216, 0.1);
-  color: #2f5cc2;
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary-hover);
 }
 
 .ctx-item.disabled {
@@ -145,11 +145,11 @@ function onItemClick(item: ContextMenuItem) {
 }
 
 .ctx-item.danger {
-  color: #e5484d;
+  color: var(--color-danger);
 }
 
 .ctx-item.danger:hover:not(.disabled) {
-  background: rgba(229, 72, 77, 0.1);
+  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
   color: #c0393b;
 }
 

@@ -241,7 +241,7 @@ const busyText = computed(() => {
   font-size: 13px;
 }
 .sel:focus-visible {
-  outline: 2px solid rgba(57, 108, 216, 0.55);
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 55%, transparent);
   outline-offset: 1px;
 }
 .stat {
@@ -258,7 +258,7 @@ const busyText = computed(() => {
   margin-top: 6px;
 }
 .dim {
-  color: var(--color-text-4, #9aa0a6);
+  color: var(--color-text-2, #9aa0a6);
 }
 .err {
   color: var(--color-danger, #d54941);
@@ -290,11 +290,11 @@ const busyText = computed(() => {
 }
 /* 实测最优档 + 当前已选档 都高亮，方便一眼看出「是否需要改」 */
 .calib-tbl tr.best td:first-child {
-  color: var(--color-success, #2f9e44);
+  color: var(--color-ok-vivid, var(--color-ok-text));
   font-weight: 600;
 }
 .calib-tbl tr.cur td:nth-child(2) {
-  color: var(--color-primary, #396cd8);
+  color: var(--color-primary, var(--color-primary));
 }
 .calib-acts {
   display: flex;

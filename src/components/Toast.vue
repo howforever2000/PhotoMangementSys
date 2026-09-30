@@ -18,15 +18,15 @@ const icons: Record<string, string> = {
 const typeColor = computed(() => {
   switch (props.toast.type) {
     case "success":
-      return "#2f9e44";
+      return "var(--color-ok-text)";
     case "warning":
-      return "#e8a03c";
+      return "var(--color-warn-text)";
     case "error":
-      return "#e5484d";
+      return "var(--color-danger)";
     case "info":
-      return "#396cd8";
+      return "var(--color-primary)";
     default:
-      return "#396cd8";
+      return "var(--color-primary)";
   }
 });
 
@@ -156,7 +156,7 @@ function onLeave() {
   color: inherit;
 }
 .toast-btn-primary {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
 }
 .toast-btn-danger {

@@ -9,6 +9,9 @@
  *   - gradMid：三段渐变中段色标（旧数据缺失 → 由首尾两色插值补出）；
  *   - compAlpha：组件玻璃填充不透明度（旧数据缺失 → 沿用 0.42 默认）；
  *   - material：玻璃材质（磨砂 frosted / 液态 liquid），预设一律磨砂。
+ *
+ * FEAT-087 新增字段：
+ *   - saturation：全局饱和度缩放（1 = 原始色，白字/背景/品牌色/语义色统一乘）
  */
 import { hexToRgb, mixRgb, normalizeHex, rgbToHex } from "./color.ts";
 
@@ -23,6 +26,8 @@ export interface Prefs {
   compColor: string;
   /** 组件玻璃填充不透明度（容器基准；面板 = +0.24，弹层 = +0.36） */
   compAlpha: number;
+  /** 全局饱和度缩放：1 = 原始色（所有颜色令牌统一乘，含背景/品牌/语义色） */
+  saturation: number;
   /** 玻璃材质 */
   material: Material;
   bgStyle: BackgroundStyle;
@@ -40,6 +45,7 @@ export const DEFAULTS: Prefs = {
   /* 组件色调 = 玻璃色调：比页面背景亮一档，保证「背景→容器→内容」三层可读 */
   compColor: "#16443a",
   compAlpha: 0.42,
+  saturation: 1,
   material: "frosted",
   bgStyle: "color",
   bgColor: "#0e211b",
@@ -84,6 +90,7 @@ export function normalizePrefs(raw: unknown): Prefs {
     mode: oneOf(r.mode, ["light", "dark"], DEFAULTS.mode),
     compColor: normalizeHex(str(r.compColor, DEFAULTS.compColor), DEFAULTS.compColor),
     compAlpha: num(r.compAlpha, DEFAULTS.compAlpha, 0.15, 0.9),
+    saturation: num(r.saturation, DEFAULTS.saturation, 0.4, 1.5),
     material: oneOf(r.material, MATERIALS, DEFAULTS.material),
     bgStyle: oneOf(r.bgStyle, BG_STYLES, DEFAULTS.bgStyle),
     bgColor: normalizeHex(str(r.bgColor, DEFAULTS.bgColor), DEFAULTS.bgColor),

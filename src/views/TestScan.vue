@@ -608,7 +608,7 @@ const phaseLabel = computed(() => {
   color: var(--ts-text);
 }
 .dir-input:focus {
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 /* placeholder 别被 body.theme-dark 全局白系规则盖掉：本页输入框是浅底（onBg 系） */
 .dir-input::placeholder {
@@ -637,11 +637,11 @@ const phaseLabel = computed(() => {
   user-select: none;
 }
 .recursive-toggle:hover:not(.locked) {
-  border-color: #396cd8;
+  border-color: var(--color-primary);
   background: var(--ts-btn-hover);
 }
 .recursive-toggle.active {
-  border-color: #396cd8;
+  border-color: var(--color-primary);
   background: var(--ts-btn-hover);
 }
 .recursive-toggle.locked {
@@ -666,7 +666,7 @@ const phaseLabel = computed(() => {
   padding: 12px 16px;
 }
 .job-running {
-  border-color: rgba(57, 108, 216, 0.45);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
 }
 .job-head {
   display: flex;
@@ -686,17 +686,17 @@ const phaseLabel = computed(() => {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #396cd8;
+  background: var(--color-primary);
   animation: job-pulse 1.2s ease-in-out infinite;
 }
 @keyframes job-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
-.st-running { color: #396cd8; }
-.st-done { color: #16a34a; }
-.st-failed { color: #e5484d; }
-.st-cancelled { color: #d97706; }
+.st-running { color: var(--color-primary); }
+.st-done { color: var(--color-ok-vivid); }
+.st-failed { color: var(--color-danger); }
+.st-cancelled { color: var(--color-warn-text); }
 .job-threads {
   font-size: 12px;
   color: var(--ts-muted);
@@ -706,7 +706,7 @@ const phaseLabel = computed(() => {
 }
 .job-bg-tip {
   font-size: 11.5px;
-  color: #16a34a;
+  color: var(--color-ok-vivid);
 }
 /* 进度条 */
 .progress-track {
@@ -717,12 +717,12 @@ const phaseLabel = computed(() => {
 }
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #396cd8, #5a8ce8);
+  background: linear-gradient(90deg, var(--color-primary), #5a8ce8);
   border-radius: 4px;
   transition: width 0.25s ease;
 }
 .progress-fill.fill-done {
-  background: linear-gradient(90deg, #16a34a, #22c55e);
+  background: linear-gradient(90deg, var(--color-ok-vivid), #22c55e);
 }
 .progress-msg {
   display: flex;
@@ -732,7 +732,7 @@ const phaseLabel = computed(() => {
   font-size: 12px;
 }
 .progress-phase {
-  color: #396cd8;
+  color: var(--color-primary);
   margin-right: 6px;
 }
 .progress-file {
@@ -759,7 +759,7 @@ const phaseLabel = computed(() => {
   color: var(--ts-muted);
 }
 .progress-rate {
-  color: #16a34a;
+  color: var(--color-ok-vivid);
   font-family: "Consolas", monospace;
   white-space: nowrap;
 }
@@ -775,35 +775,35 @@ const phaseLabel = computed(() => {
 }
 /* 排除带自身语义色的按钮，避免悬停态覆盖它们的主色 */
 .btn:hover:not(.btn-primary):not(.btn-danger):not(.btn-stop):not(.btn-active) {
-  border-color: #396cd8;
-  color: #396cd8;
+  border-color: var(--color-primary);
+  color: var(--color-primary);
   background: var(--ts-btn-hover);
 }
 .btn-primary {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 .btn-primary:hover {
-  background: #2f5cc2;
+  background: var(--color-primary-hover);
   color: #fff;
 }
 .btn-danger {
   background: var(--color-danger);
   color: #fff;
-  border-color: #e5484d;
+  border-color: var(--color-danger);
 }
 .btn-danger:hover {
   background: var(--color-danger-hover);
   color: #fff;
 }
 .btn-stop {
-  background: #d97706;
+  background: var(--color-warn-text);
   color: #fff;
-  border-color: #d97706;
+  border-color: var(--color-warn-text);
 }
 .btn-stop:hover {
-  background: #b45309;
+  background: var(--color-warn-solid, var(--color-warn-solid));
   color: #fff;
 }
 .btn:disabled {
@@ -815,14 +815,14 @@ const phaseLabel = computed(() => {
   font-size: 12px;
 }
 .btn-active {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 .scan-error {
-  color: #e5484d;
-  background: rgba(229, 72, 77, 0.08);
-  border: 1px solid rgba(229, 72, 77, 0.35);
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 35%, transparent);
   border-radius: 8px;
   padding: 10px 14px;
   margin-bottom: 14px;
@@ -836,7 +836,7 @@ const phaseLabel = computed(() => {
 .report-cancel-tag {
   font-size: 12px;
   font-weight: 400;
-  color: #d97706;
+  color: var(--color-warn-text);
 }
 .report-stats {
   display: flex;
@@ -853,13 +853,13 @@ const phaseLabel = computed(() => {
   color: var(--ts-text);
 }
 .report-stats .ok b {
-  color: #16a34a;
+  color: var(--color-ok-vivid);
 }
 .report-stats .warn b {
-  color: #d97706;
+  color: var(--color-warn-text);
 }
 .report-stats .err b {
-  color: #e5484d;
+  color: var(--color-danger);
 }
 .report-root {
   color: var(--ts-muted);
@@ -871,7 +871,7 @@ const phaseLabel = computed(() => {
 }
 .folder-detail summary {
   cursor: pointer;
-  color: #396cd8;
+  color: var(--color-primary);
   font-size: 13px;
 }
 .folder-list {
@@ -911,7 +911,7 @@ const phaseLabel = computed(() => {
   margin: 0 0 8px;
   font-size: 15px;
   color: var(--ts-text);
-  border-bottom: 2px solid #396cd8;
+  border-bottom: 2px solid var(--color-primary);
   display: inline-block;
   padding-bottom: 4px;
 }
@@ -938,7 +938,7 @@ const phaseLabel = computed(() => {
 }
 .p-name {
   font-family: "Consolas", monospace;
-  color: #396cd8;
+  color: var(--color-primary);
   width: 38%;
 }
 .p-time {
@@ -951,7 +951,7 @@ const phaseLabel = computed(() => {
   font-size: 12px;
 }
 .p-place {
-  color: #b45309;
+  color: var(--color-warn-solid, var(--color-warn-solid));
 }
 .empty-tip {
   text-align: center;

@@ -573,7 +573,7 @@ function showTag(r: SmartHit): string {
   backdrop-filter: blur(3px);
 }
 .ss-album:hover {
-  background: rgba(57, 108, 216, 0.9);
+  background: color-mix(in srgb, var(--color-primary) 90%, transparent);
 }
 .ss-warn {
   margin: 0 0 12px;
@@ -581,9 +581,9 @@ function showTag(r: SmartHit): string {
   border-radius: 10px;
   font-size: 12.5px;
   line-height: 1.7;
-  background: rgba(180, 83, 9, 0.1);
-  border: 1px solid rgba(180, 83, 9, 0.3);
-  color: #b45309;
+  background: color-mix(in srgb, var(--color-warn-solid) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warn-solid) 30%, transparent);
+  color: var(--color-warn-solid, var(--color-warn-solid));
 }
 /* 提示条内的「重试」：语义通道失败后的一键恢复入口 */
 .ss-retry {
@@ -591,15 +591,15 @@ function showTag(r: SmartHit): string {
   padding: 1px 10px;
   font-size: 12px;
   line-height: 1.6;
-  color: #b45309;
-  background: rgba(180, 83, 9, 0.08);
-  border: 1px solid rgba(180, 83, 9, 0.45);
+  color: var(--color-warn-solid, var(--color-warn-solid));
+  background: color-mix(in srgb, var(--color-warn-solid) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warn-solid) 45%, transparent);
   border-radius: 999px;
   cursor: pointer;
   transition: background 0.15s, opacity 0.15s;
 }
 .ss-retry:hover:not(:disabled) {
-  background: rgba(180, 83, 9, 0.2);
+  background: color-mix(in srgb, var(--color-warn-solid) 20%, transparent);
 }
 .ss-retry:disabled {
   opacity: 0.55;

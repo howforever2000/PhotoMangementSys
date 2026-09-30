@@ -840,12 +840,12 @@ onMounted(() => {
   cursor: pointer;
 }
 .dw-mode-btn:hover {
-  border-color: #396cd8;
+  border-color: var(--color-primary);
   color: #9dbcff;
 }
 .dw-mode-btn.active {
-  background: #396cd8;
-  border-color: #396cd8;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
   color: #fff;
 }
 .dw-mode-hint {
@@ -887,7 +887,7 @@ onMounted(() => {
 }
 .dw-sql-editor:focus {
   outline: none;
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 .dw-sql-echo {
   margin: 0;

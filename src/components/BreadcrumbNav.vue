@@ -78,7 +78,7 @@ function navigate(to?: string) {
 }
 
 .breadcrumb-link:hover {
-  background: rgba(57, 108, 216, 0.1);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
   text-decoration: underline;
 }
 

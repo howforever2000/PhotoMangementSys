@@ -217,9 +217,9 @@ const subStyle = computed(() => ({
 }));
 
 const categoryColors: Record<ParsedError["category"], string> = {
-  path_missing: "#e8a03c",
-  duplicate: "#396cd8",
-  permission: "#e5484d",
+  path_missing: "var(--color-warn-text)",
+  duplicate: "var(--color-primary)",
+  permission: "var(--color-danger-text)",
   invalid_path: "#9333ea",
   unknown: "#666",
 };
@@ -403,9 +403,9 @@ const listEl = ref<HTMLDivElement | null>(null);
   font-weight: 600;
   font-size: 12px;
 }
-.ier-pill-ok { background: rgba(47, 158, 68, 0.18); color: #2f9e44; }
-.ier-pill-skip { background: rgba(57, 108, 216, 0.18); color: #396cd8; }
-.ier-pill-fail { background: rgba(229, 72, 77, 0.18); color: #e5484d; }
+.ier-pill-ok { background: color-mix(in srgb, var(--color-ok-text) 18%, transparent); color: var(--color-ok-text); }
+.ier-pill-skip { background: color-mix(in srgb, var(--color-primary) 18%, transparent); color: var(--color-primary); }
+.ier-pill-fail { background: color-mix(in srgb, var(--color-danger) 18%, transparent); color: var(--color-danger); }
 
 .ier-bucket {
   display: flex;
@@ -446,27 +446,27 @@ const listEl = ref<HTMLDivElement | null>(null);
 .ier-exists-head {
   font-size: 13px;
   font-weight: 600;
-  color: #2f9e44;
+  color: var(--color-ok-text);
   margin-bottom: 6px;
 }
 body.theme-dark .ier-exists-head {
-  color: #6ed27a;
+  color: var(--color-ok-text);
 }
 .ier-item-exists {
-  border-color: rgba(47, 158, 68, 0.35);
-  background: rgba(47, 158, 68, 0.07);
+  border-color: color-mix(in srgb, var(--color-ok-text) 35%, transparent);
+  background: color-mix(in srgb, var(--color-ok-text) 7%, transparent);
 }
 .ier-cat-exists {
-  background: #2f9e44 !important;
+  background: var(--color-ok-text) !important;
 }
 body.theme-dark .ier-cat-exists {
-  background: #2f9e44 !important;
+  background: var(--color-ok-text) !important;
 }
 .ier-advice-exists {
-  color: #2f9e44 !important;
+  color: var(--color-ok-text) !important;
 }
 body.theme-dark .ier-advice-exists {
-  color: #6ed27a !important;
+  color: var(--color-ok-text) !important;
 }
 .ier-item-head {
   display: flex;
@@ -545,15 +545,15 @@ body.theme-dark .ier-advice-exists {
 .btn-cancel { background: transparent; }
 .btn-cancel:hover { background: rgba(127, 127, 127, 0.1); }
 .btn-secondary {
-  background: rgba(57, 108, 216, 0.1);
-  border-color: rgba(57, 108, 216, 0.4);
-  color: #396cd8;
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+  color: var(--color-primary);
 }
-.btn-secondary:hover { background: rgba(57, 108, 216, 0.18); }
+.btn-secondary:hover { background: color-mix(in srgb, var(--color-primary) 18%, transparent); }
 .btn-primary {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 .btn-primary:hover { background: #2f5fc1; }
 

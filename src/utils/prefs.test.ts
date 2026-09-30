@@ -10,6 +10,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULTS, normalizePrefs } from "./prefs.ts";
 
+test("FEAT-087 saturation：越界被夹到 0.4~1.5，坏值回落 1", () => {
+  assert.equal(normalizePrefs({}).saturation, 1);
+  assert.equal(normalizePrefs({ saturation: 0.1 }).saturation, 0.4);
+  assert.equal(normalizePrefs({ saturation: 9 }).saturation, 1.5);
+  assert.equal(normalizePrefs({ saturation: "xx" }).saturation, 1);
+  assert.equal(normalizePrefs({ saturation: 1.35 }).saturation, 1.35);
+});
+
 test("旧结构（FEAT-084 时代）→ 补出 gradMid 中点 + 默认 compAlpha/material", () => {
   const legacy = {
     mode: "dark",
@@ -26,6 +34,8 @@ test("旧结构（FEAT-084 时代）→ 补出 gradMid 中点 + 默认 compAlpha
   assert.equal(p.gradMid, "#808080");
   assert.equal(p.compAlpha, DEFAULTS.compAlpha);
   assert.equal(p.material, "frosted");
+  // FEAT-087：旧结构无 saturation → 补 1（饱和度管线默认不干预旧外观）
+  assert.equal(p.saturation, 1);
   assert.equal(p.compColor, "#123456");
   assert.equal(p.gradAngle, 90);
 });

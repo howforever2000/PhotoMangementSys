@@ -9,6 +9,7 @@ import {
   mixRgb,
   onBgText,
   rgbToHex,
+  saturateColor,
 } from "../utils/color";
 import { DEFAULTS, normalizePrefs, type BackgroundStyle, type Material, type Prefs, type ThemeMode } from "../utils/prefs";
 import { presetPrefs, type Preset } from "../utils/presets";
@@ -79,6 +80,8 @@ export const useThemeStore = defineStore("theme", () => {
   const compColor = ref(saved.compColor);
   /** FEAT-086：组件玻璃不透明度（容器基准；面板/弹层按固定偏移派生） */
   const compAlpha = ref(saved.compAlpha);
+  /** FEAT-087：全局饱和度缩放（1 = 原始色）——统一风格的总闸门 */
+  const saturation = ref(saved.saturation);
   /** FEAT-086：玻璃材质（磨砂/液态），预设一律磨砂 */
   const material = ref<Material>(saved.material);
   const bgStyle = ref<BackgroundStyle>(saved.bgStyle);
@@ -96,6 +99,7 @@ export const useThemeStore = defineStore("theme", () => {
       mode: mode.value,
       compColor: compColor.value,
       compAlpha: compAlpha.value,
+      saturation: saturation.value,
       material: material.value,
       bgStyle: bgStyle.value,
       bgColor: bgColor.value,
@@ -152,6 +156,7 @@ export const useThemeStore = defineStore("theme", () => {
     mode.value = DEFAULTS.mode;
     compColor.value = DEFAULTS.compColor;
     compAlpha.value = DEFAULTS.compAlpha;
+    saturation.value = DEFAULTS.saturation;
     material.value = DEFAULTS.material;
     bgStyle.value = DEFAULTS.bgStyle;
     bgColor.value = DEFAULTS.bgColor;
@@ -164,6 +169,19 @@ export const useThemeStore = defineStore("theme", () => {
     persist();
   }
 
+  /* ---------- FEAT-087：全局饱和度统一管线 ----------
+     用户选定的**基础色**（组件色调 / 背景纯色 / 渐变三色标）：
+     所有下游派生（玻璃等效底、文字对比、图层 CSS）一律读这两个访问器，
+     因此饱和度一处生效、对比度也跟着重算（saturateColor 只改 S 不改 L，
+     文字对比不会被饱和度调整弄崩）。
+     品牌色/语义色族另在 applyAccentVars 里下发（含组件里已注册的 var 引用）。 */
+  const sat = (hex: string) => saturateColor(hex, saturation.value);
+  const compColorEff = computed(() => sat(compColor.value));
+  const bgColorEff = computed(() => sat(bgColor.value));
+  const gradFromEff = computed(() => sat(gradFrom.value));
+  const gradMidEff = computed(() => sat(gradMid.value));
+  const gradToEff = computed(() => sat(gradTo.value));
+
   /* ---------- 背景层样式（App.vue 全局背景，作用于除登录页外的所有页面） ---------- */
 
   /** 底层：纯色或三段渐变；背景图模式下作为图片底色 */
@@ -171,10 +189,10 @@ export const useThemeStore = defineStore("theme", () => {
     if (bgStyle.value === "gradient") {
       // FEAT-086：三段色标（旧数据无中段时 normalizePrefs 已补出中点，兼容两段视觉）
       return {
-        background: `linear-gradient(${gradAngle.value}deg, ${gradFrom.value}, ${gradMid.value}, ${gradTo.value})`,
+        background: `linear-gradient(${gradAngle.value}deg, ${gradFromEff.value}, ${gradMidEff.value}, ${gradToEff.value})`,
       };
     }
-    return { background: bgColor.value };
+    return { background: bgColorEff.value };
   });
 
   /** 图片层：仅背景图模式有值，透明度只淡化图片不影响文字 */
@@ -237,9 +255,9 @@ export const useThemeStore = defineStore("theme", () => {
 
   /** 实际背景的 RGB（图层叠加后的等效色；三段渐变取分段积分均值） */
   const effectiveBg = computed<[number, number, number]>(() => {
-    const base = hexToRgb(bgColor.value);
+    const base = hexToRgb(bgColorEff.value);
     if (bgStyle.value === "gradient") {
-      return gradientAverage(hexToRgb(gradFrom.value), hexToRgb(gradMid.value), hexToRgb(gradTo.value));
+      return gradientAverage(hexToRgb(gradFromEff.value), hexToRgb(gradMidEff.value), hexToRgb(gradToEff.value));
     }
     if (bgStyle.value === "image") {
       // 图片层以 bgOpacity 叠在底层纯色之上：等效色 = 图片均色*α + 底色*(1-α)
@@ -260,10 +278,10 @@ export const useThemeStore = defineStore("theme", () => {
    */
   const fillColor = computed(() =>
     material.value === "liquid"
-      ? rgbToHex(mixRgb(hexToRgb(compColor.value), [255, 255, 255], 0.2))
+      ? rgbToHex(mixRgb(hexToRgb(compColorEff.value), [255, 255, 255], 0.2))
       : material.value === "glazed"
-        ? rgbToHex(mixRgb(hexToRgb(compColor.value), [255, 255, 255], 0.3))
-        : compColor.value,
+        ? rgbToHex(mixRgb(hexToRgb(compColorEff.value), [255, 255, 255], 0.3))
+        : compColorEff.value,
   );
 
   /** 玻璃等效底色：组件色调以 **compAlpha**（FEAT-086 可调）叠在**实际页面背景**上。
@@ -302,7 +320,7 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--color-on-bg-2", onBgSubColor.value);
     // 背景上的链接色：body.theme-dark 的 --color-link 恒浅蓝（玻璃卡语境），
     // 落在页面背景上的链接需要另一套 —— 浅背景→深蓝，深背景→浅蓝
-    body.style.setProperty("--color-link-on-bg", onBgDark.value ? "#2f5cc2" : "#8ab4ff");
+    body.style.setProperty("--color-link-on-bg", sat(onBgDark.value ? "#2f5cc2" : "#8ab4ff"));
     // 背景图模式加一层与文字同向的细描边阴影，抵抗图片亮斑（星空亮部等）
     const onImage = bgStyle.value === "image" && !!bgImage.value;
     body.classList.toggle("theme-on-image", onImage);
@@ -369,6 +387,47 @@ export const useThemeStore = defineStore("theme", () => {
   }
   watch([compColor, compAlpha, effectiveBg], applyCompColor, { immediate: true });
 
+  /* ---------- FEAT-087：品牌色 / 语义色族下发 ----------
+     组件里已把硬编码色值注册成 var(--color-*)（codemod 扫描替换），
+     这里用同一个 sat() 管线重发一遍 —— 饱和度滑块一处生效，
+     按钮/链接/圆点/进度条/危提示全部跟着变，风格自然统一。
+     基值与 main.css :root 保持一致（saturation=1 时与旧版逐像素相同）。 */
+  function applyAccentVars() {
+    if (typeof document === "undefined") return;
+    const body = document.body;
+    const P = "#396cd8"; // 品牌主色（main.css :root --color-primary）
+    const PH = "#2f5cc2";
+    const D = "#d13438";
+    const DH = "#b92e33";
+    const OK = "#15803d";
+    const OKV = "#16a34a"; // 进度/成功强调绿
+    const W = "#b45309";
+    body.style.setProperty("--color-primary", sat(P));
+    body.style.setProperty("--color-primary-hover", sat(PH));
+    body.style.setProperty("--color-danger", sat(D));
+    body.style.setProperty("--color-danger-hover", sat(DH));
+    /* 成功/警示色在 main.css 里是**模式双值**（深色提亮）——这里必须镜像同一套基值，
+       否则内联覆写会把深色档压回浅色档（曾把「已入库」徽标的亮绿 #4ade80
+       改成深绿 #15803d，对比度回落，被逐像素回归抓到）。 */
+    body.style.setProperty("--color-ok", sat(isDark.value ? "#4ade80" : OK));
+    body.style.setProperty("--color-warn", sat(isDark.value ? "#fbbf24" : W));
+    /* “实底”系列：组件原本硬编码的深色档（白字/亮底配套），不随模式变
+       —— 保持与旧版逐像素一致，同时仍受饱和度统一控制 */
+    body.style.setProperty("--color-ok-solid", sat(OK));
+    body.style.setProperty("--color-warn-solid", sat(W));
+    body.style.setProperty("--color-ok-vivid", sat(OKV));
+    /* 深底上的语义文字色：单独一档（提亮档）。
+       浅色档的 #e03131 在深绿玻璃上仅 3.7:1（11px 文字不达 AA），
+       此处给 AA 亮红；仍走同一饱和度管线，亮度锁定所以对比恒定 */
+    body.style.setProperty("--color-ok-text", sat(isDark.value ? "#6ed27a" : "#2f9e44"));
+    body.style.setProperty("--color-danger-text", sat(isDark.value ? "#f87171" : "#c92a2a"));
+    body.style.setProperty("--color-warn-text", sat(isDark.value ? "#f59e0b" : "#b45309"));
+    /* 玻璃卡语境链接色（body.theme-dark 恒为浅蓝 #8ab4ff）：直接覆写 --color-link，
+       组件里的 var(--color-link) 引用自动跟随；仅做饱和度缩放（不改 HSL 亮度） */
+    body.style.setProperty("--color-link", sat(isDark.value ? "#8ab4ff" : P));
+  }
+  watch([saturation, isDark], applyAccentVars, { immediate: true });
+
   /** 组件色调按透明度渲染：容器 / 次级面板 / 弹层（液态经 fillColor 提亮，见上） */
   function compFill(alpha: number) {
     return hexToRgba(fillColor.value, alpha);
@@ -416,13 +475,14 @@ export const useThemeStore = defineStore("theme", () => {
     "--pm-btn-color": textColor.value,
     "--pm-btn-hover": compFill(0.32),
     "--pm-soft-border": cardBorder.value,
-    "--pm-danger-hover": "rgba(229,72,77,.22)",
+    "--pm-danger-hover": "color-mix(in srgb, var(--color-danger) 22%, transparent)",
   }));
 
   return {
     mode,
     compColor,
     compAlpha,
+    saturation,
     material,
     bgStyle,
     bgColor,

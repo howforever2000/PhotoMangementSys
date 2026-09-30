@@ -407,10 +407,10 @@ function openSub(m: SubModule) {
   opacity: 0.85;
   transition: all 0.15s;
 }
-.tab-item:hover:not(.disabled) { border-color: #396cd8; color: #396cd8; opacity: 1; }
+.tab-item:hover:not(.disabled) { border-color: var(--color-primary); color: var(--color-primary); opacity: 1; }
 .tab-item.active {
-  background: #396cd8;
-  border-color: #396cd8;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
   box-shadow: none;
   color: #fff;
   opacity: 1;

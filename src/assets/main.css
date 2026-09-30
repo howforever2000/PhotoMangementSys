@@ -21,6 +21,16 @@
   --color-primary-soft: #eef2ff;
   --color-danger: #d13438;   /* 白字实底 ≥4.5:1（原 #e5484d 仅 3.9:1） */
   --color-danger-hover: #b92e33;
+  /* 成功/警示强调色（FEAT-087 饱和度管线会按主题重发；此处为兜底基值）
+     - 普通版：模式双值（body.theme-dark 中提亮）
+     - solid 版：固定深色档，供“实底+白字”类组件使用
+     - text 版：直接作为**深底上的文字色**（需足够亮才达 AA） */
+  --color-ok-vivid: #16a34a;
+  --color-ok-solid: #15803d;
+  --color-warn-solid: #b45309;
+  --color-ok-text: #2f9e44;
+  --color-danger-text: #c92a2a;
+  --color-warn-text: #b45309;
 
   /* 文字色阶 —— 浅色模式
      整体加深一档，确保小字号（11–12px）在白底上也能达到 WCAG AA。
@@ -154,6 +164,11 @@ body.theme-dark {
   --color-ok-soft: rgba(34, 197, 94, 0.16);
   --color-warn: #fbbf24;
   --color-warn-soft: rgba(245, 158, 11, 0.16);
+  /* FEAT-087：深底上的语义文字色（提亮档）——
+     原 #e03131 在深绿玻璃上仅 3.7:1（11px 文字不达标），此处给 AA 亮红 */
+  --color-danger-text: #f87171;
+  --color-warn-text: #f59e0b;
+  --color-ok-text: #6ed27a;
   --color-link: #8ab4ff;
 }
 

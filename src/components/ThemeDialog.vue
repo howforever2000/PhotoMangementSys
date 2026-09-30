@@ -281,6 +281,24 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
               />
               <b>{{ Math.round(theme.compAlpha * 100) }}%</b>
             </label>
+
+            <!-- FEAT-087：全局饱和度 —— 一处控制背景/组件色调/品牌色/语义色的浓淡，统一风格 -->
+            <label class="pm-range">
+              <span>全局饱和度</span>
+              <input
+                type="range"
+                v-model.number="theme.saturation"
+                min="0.4"
+                max="1.5"
+                step="0.05"
+                aria-label="全局饱和度缩放"
+                @change="theme.persist()"
+              />
+              <b>{{ Math.round(theme.saturation * 100) }}%</b>
+            </label>
+            <p class="pm-hint" style="margin: 6px 0 0">
+              统一调色：背景 / 组件色调 / 按钮与状态色同时生效，只改浓淡不改明暗（100% = 原始色）
+            </p>
           </div>
 
           <div class="pm-section">

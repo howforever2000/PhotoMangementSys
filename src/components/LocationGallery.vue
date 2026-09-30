@@ -593,8 +593,8 @@ onMounted(load);
   color: var(--color-link);
 }
 .btn-danger {
-  color: #e03131;
-  border-color: rgba(224, 49, 49, 0.5);
+  color: var(--color-danger-text);
+  border-color: color-mix(in srgb, var(--color-danger-text) 50%, transparent);
 }
 .btn-danger:disabled {
   opacity: 0.45;

@@ -1063,7 +1063,7 @@ function goAlbumFromLightbox(albumId: number) {
   opacity: 0.72;
 }
 .mb-loading {
-  color: var(--color-link, #396cd8);
+  color: var(--color-link, var(--color-primary));
   opacity: 1;
 }
 .mb-actions {
@@ -1082,17 +1082,17 @@ function goAlbumFromLightbox(albumId: number) {
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 .mb-btn:hover {
-  border-color: var(--color-link, #396cd8);
-  color: var(--color-link, #396cd8);
+  border-color: var(--color-link, var(--color-primary));
+  color: var(--color-link, var(--color-primary));
 }
 .mb-btn-primary {
-  background: #396cd8;
-  border-color: #396cd8;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
   color: #fff;
 }
 .mb-btn-primary:hover {
-  background: #2f5cc2;
-  border-color: #2f5cc2;
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
   color: #fff;
 }
 /* 框内滚动：高度自适应视口，照片多时整页不被拖长 */
@@ -1174,11 +1174,11 @@ function goAlbumFromLightbox(albumId: number) {
   height: 38px;
   border: none;
   border-radius: 50%;
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
   font-size: 17px;
   cursor: pointer;
-  box-shadow: 0 4px 14px rgba(57, 108, 216, 0.45);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--color-primary) 45%, transparent);
   transition: transform 0.15s, background 0.15s;
 }
 .mb-top-btn:hover {

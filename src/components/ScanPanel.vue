@@ -384,7 +384,7 @@ const openImage = trace("openImage", async (path: string) => {
 }
 
 .scan-table tr:hover td {
-  background: rgba(57, 108, 216, 0.06);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
 }
 
 .col-idx {
@@ -425,12 +425,12 @@ const openImage = trace("openImage", async (path: string) => {
 }
 .btn:hover { border-color: var(--color-link); color: var(--color-link); }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-.btn-primary { background: #396cd8; color: #fff; border-color: #396cd8; }
-.btn-primary:hover { background: #2f5cc2; color: #fff; }
+.btn-primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
+.btn-primary:hover { background: var(--color-primary-hover); color: #fff; }
 .btn-danger { background: var(--color-danger); color: #fff; border-color: var(--color-danger); }
 .btn-danger:hover { background: var(--color-danger-hover); color: #fff; }
 .btn-ghost { background: transparent; color: var(--color-link); border-color: var(--color-link); }
-.btn-ghost:hover { background: rgba(57, 108, 216, 0.08); color: var(--color-primary-hover); }
+.btn-ghost:hover { background: color-mix(in srgb, var(--color-primary) 8%, transparent); color: var(--color-primary-hover); }
 .btn-mini { padding: 2px 6px; font-size: 11px; border: 1px solid var(--color-border); border-radius: 3px; background: var(--color-surface-2); color: inherit; cursor: pointer; }
 .btn-mini:disabled { opacity: 0.5; cursor: not-allowed; }
 

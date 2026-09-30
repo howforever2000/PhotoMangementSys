@@ -864,8 +864,8 @@ onBeforeUnmount(() => {
 
 .ip-primary {
   color: #fff;
-  background: #3a6cf5;
-  border-color: #3a6cf5;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .ip-primary:hover:not(:disabled) {
@@ -885,8 +885,8 @@ onBeforeUnmount(() => {
 
 .ip-tool.on {
   color: #fff;
-  background: #3a6cf5;
-  border-color: #3a6cf5;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .ip-brush {
@@ -1056,8 +1056,8 @@ onBeforeUnmount(() => {
 
 .ip-seg button.on {
   color: #fff;
-  background: #3a6cf5;
-  border-color: #3a6cf5;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .ip-seg button:disabled {
@@ -1097,9 +1097,9 @@ onBeforeUnmount(() => {
   gap: 12px;
   flex-wrap: wrap;
   padding: 8px 12px;
-  border: 1px solid rgba(229, 72, 77, 0.35);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 35%, transparent);
   border-radius: 10px;
-  background: rgba(229, 72, 77, 0.08);
+  background: color-mix(in srgb, var(--color-danger) 8%, transparent);
 }
 
 .ip-status {
@@ -1110,7 +1110,7 @@ onBeforeUnmount(() => {
 }
 
 .ip-status.err {
-  color: #e5484d;
+  color: var(--color-danger);
 }
 
 .ip-actions {

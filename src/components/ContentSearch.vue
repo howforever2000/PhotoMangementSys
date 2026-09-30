@@ -544,7 +544,7 @@ const toneLabelMap: Record<string, string> = {
 }
 
 .content-search-input:focus {
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 
 .search-clear {
@@ -557,7 +557,7 @@ const toneLabelMap: Record<string, string> = {
 }
 
 .search-clear:hover {
-  color: #e5484d;
+  color: var(--color-danger);
 }
 
 .content-search-results {
@@ -654,7 +654,7 @@ const toneLabelMap: Record<string, string> = {
   padding: 1px 6px;
   border-radius: 3px;
   background: #eef3fb;
-  color: #396cd8;
+  color: var(--color-primary);
   font-size: 11px;
 }
 
@@ -724,7 +724,7 @@ const toneLabelMap: Record<string, string> = {
   background: transparent;
   border: none;
   font-size: 11px;
-  color: #396cd8;
+  color: var(--color-primary);
   cursor: pointer;
   padding: 0;
 }
@@ -741,7 +741,7 @@ const toneLabelMap: Record<string, string> = {
   cursor: pointer;
   transition: background 0.12s;
 }
-.suggestion-item:hover { background: rgba(57,108,216,.08); }
+.suggestion-item:hover { background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
 
 /* P1 搜索结果关键词高亮 */
 .content-hit-name mark {

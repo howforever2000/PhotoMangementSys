@@ -672,7 +672,7 @@ const vFocus: Directive<HTMLElement> = {
 
 .pg-action-msg {
   background: var(--color-primary-soft, #eef5ff);
-  border: 1px solid rgba(57, 108, 216, 0.3);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
   color: #2f5bc0;
   border-radius: 8px;
   padding: 8px 12px;
@@ -680,7 +680,7 @@ const vFocus: Directive<HTMLElement> = {
   margin-bottom: 12px;
 }
 body.theme-dark .pg-action-msg {
-  color: #93b4f5;
+  color: var(--color-link);
 }
 
 .pg-state {
@@ -689,7 +689,7 @@ body.theme-dark .pg-action-msg {
   opacity: 0.8;
   color: inherit;
 }
-.pg-error { color: #e5484d; }
+.pg-error { color: var(--color-danger); }
 .pg-hint {
   opacity: 0.65;
   font-size: 13px;
@@ -724,10 +724,10 @@ body.theme-dark .pg-action-msg {
   border-radius: 50%;
   object-fit: cover;
   display: block;
-  border: 2px solid rgba(57, 108, 216, 0.35);
+  border: 2px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
 }
 .person-avatar-fallback {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
   font-size: 26px;
   line-height: 60px;
@@ -739,7 +739,7 @@ body.theme-dark .pg-action-msg {
   bottom: -4px;
   left: 50%;
   transform: translateX(-50%);
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
   font-size: 11px;
   padding: 1px 8px;
@@ -778,14 +778,14 @@ body.theme-dark .pg-action-msg {
   flex-shrink: 0;
 }
 .mini-btn:hover { border-color: var(--color-link); color: var(--color-link); }
-.mini-btn.ok { background: #396cd8; border-color: #396cd8; color: #fff; }
+.mini-btn.ok { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
 .merge-btn { margin-top: 6px; }
 
 .person-rename-input {
   width: 100%;
   font-size: 13px;
   padding: 3px 8px;
-  border: 1px solid #396cd8;
+  border: 1px solid var(--color-primary);
   border-radius: 6px;
   outline: none;
 }
@@ -825,7 +825,7 @@ body.theme-dark .pg-action-msg {
   text-align: left;
   transition: all 0.15s;
 }
-.merge-item:hover { border-color: #396cd8; background: rgba(57, 108, 216, 0.06); }
+.merge-item:hover { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 6%, transparent); }
 .merge-avatar {
   width: 36px;
   height: 36px;
@@ -833,7 +833,7 @@ body.theme-dark .pg-action-msg {
   object-fit: cover;
 }
 .merge-avatar-fallback {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
   line-height: 34px;
   text-align: center;
@@ -876,7 +876,7 @@ body.theme-dark .pg-action-msg {
 .viewer-count { font-size: 13px; opacity: 0.7; }
 .viewer-close { margin-left: auto; padding: 4px 12px; font-size: 14px; }
 .viewer-state { text-align: center; padding: 40px 20px; opacity: 0.8; }
-.viewer-error { color: #e5484d; }
+.viewer-error { color: var(--color-danger); }
 .viewer-grid {
   overflow-y: auto;
   display: grid;
@@ -895,14 +895,14 @@ body.theme-dark .pg-action-msg {
   padding: 6px 10px;
   border-radius: 8px;
   font-size: 12px;
-  background: rgba(57, 108, 216, 0.12);
-  border: 1px solid rgba(57, 108, 216, 0.35);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
   color: #2f5bc0;
 }
-body.theme-dark .viewer-pick-hint { color: #93b4f5; }
+body.theme-dark .viewer-pick-hint { color: var(--color-link); }
 .mini-btn.danger {
-  color: #e03131;
-  border-color: rgba(224, 49, 49, 0.5);
+  color: var(--color-danger-text);
+  border-color: color-mix(in srgb, var(--color-danger-text) 50%, transparent);
 }
 .mini-btn.danger:disabled {
   opacity: 0.45;

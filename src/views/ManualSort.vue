@@ -48,15 +48,15 @@ const msVars = computed(() => {
     "--ms-border-strong": onDark ? "rgba(0,0,0,.18)" : "rgba(255,255,255,.18)",
     "--ms-hover": onDark ? "rgba(0,0,0,.06)" : "rgba(255,255,255,.08)",
     "--ms-nav-color": onDark ? "rgba(214,221,240,.72)" : "rgba(60,70,90,.72)",
-    "--ms-tag-bg": onDark ? "rgba(57,108,216,.2)" : "rgba(57,108,216,.14)",
-    "--ms-tag-color": onDark ? "#93b4f5" : "#2f5cc2",
-    "--ms-accent-tint": onDark ? "rgba(57,108,216,.22)" : "rgba(57,108,216,.14)",
+    "--ms-tag-bg": onDark ? "color-mix(in srgb, var(--color-primary) 20%, transparent)" : "color-mix(in srgb, var(--color-primary) 14%, transparent)",
+    "--ms-tag-color": onDark ? "var(--color-link)" : "var(--color-primary-hover)",
+    "--ms-accent-tint": onDark ? "color-mix(in srgb, var(--color-primary) 22%, transparent)" : "color-mix(in srgb, var(--color-primary) 14%, transparent)",
     // 输入框/下拉菜单/拖拽浮层是自带实底的浮层：维持原深浅二分（浮层自洽，不随页面背景）
     "--ms-input-bg": dark ? "rgba(18,20,28,.7)" : "#fff",
     "--ms-menu-bg": dark ? "rgba(30,34,46,.98)" : "#fff",
     "--ms-shadow": dark ? "0 8px 28px rgba(0,0,0,.5)" : "0 8px 24px rgba(16,24,40,.12)",
     "--ms-ghost-bg": dark ? "rgba(255,255,255,.1)" : "#f0f3f8",
-    "--ms-danger-hover": dark ? "rgba(229,72,77,.2)" : "#fdf0f0",
+    "--ms-danger-hover": dark ? "color-mix(in srgb, var(--color-danger) 20%, transparent)" : "#fdf0f0",
   };
 });
 
@@ -822,7 +822,7 @@ onBeforeUnmount(() => {
 
 .manual-nav-label {
   /* 目录标签落在页面背景条上：用背景向链接色 */
-  color: var(--color-link-on-bg, #396cd8);
+  color: var(--color-link-on-bg, var(--color-primary));
   font-weight: 600;
   margin-right: 4px;
 }
@@ -836,7 +836,7 @@ onBeforeUnmount(() => {
 }
 
 .manual-nav-item {
-  color: var(--color-link-on-bg, #396cd8);
+  color: var(--color-link-on-bg, var(--color-primary));
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 4px;
@@ -844,7 +844,7 @@ onBeforeUnmount(() => {
 }
 
 .manual-nav-item:hover {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
 }
 
@@ -855,7 +855,7 @@ onBeforeUnmount(() => {
 
 @keyframes folderFlash {
   0% {
-    box-shadow: 0 0 0 3px rgba(57, 108, 216, 0.4);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 40%, transparent);
     background: #f0f5ff;
   }
   100% {
@@ -865,7 +865,7 @@ onBeforeUnmount(() => {
 }
 
 .btn { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--ms-border-strong); background: var(--ms-panel-bg); color: var(--ms-text); cursor: pointer; font-size: 14px; }
-.btn-primary { background: #396cd8; color: #fff; border-color: #396cd8; }
+.btn-primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
 .btn-sm { padding: 5px 10px; font-size: 12px; }
 .btn:disabled { opacity: .6; }
 
@@ -894,7 +894,7 @@ onBeforeUnmount(() => {
   gap: 8px;
   padding: 6px 12px 6px 6px;
   background: var(--ms-panel-bg);
-  border: 1px solid #396cd8;
+  border: 1px solid var(--color-primary);
   border-radius: 8px;
   box-shadow: var(--ms-shadow);
   pointer-events: none;
@@ -926,7 +926,7 @@ onBeforeUnmount(() => {
 
 .folder-tree { display: flex; flex-direction: column; gap: 12px; }
 .folder-node { border: 1px solid var(--ms-border); border-radius: 10px; background: var(--ms-panel-bg); }
-.folder-node.drag-over { border-color: #396cd8; background: var(--ms-accent-tint); box-shadow: 0 0 0 2px rgba(57,108,216,.2); }
+.folder-node.drag-over { border-color: var(--color-primary); background: var(--ms-accent-tint); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 20%, transparent); }
 .folder-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--ms-border); }
 .folder-icon { font-size: 16px; }
 .folder-name { font-weight: 600; font-size: 14px; color: var(--ms-text); }
@@ -936,7 +936,7 @@ onBeforeUnmount(() => {
 .tag-del { border: none; background: none; color: #9a6a00; cursor: pointer; font-size: 12px; }
 .folder-actions { margin-left: auto; display: flex; gap: 4px; }
 .mini-btn { border: 1px solid var(--ms-border-strong); background: var(--ms-panel-bg); color: var(--ms-text); border-radius: 6px; font-size: 11px; padding: 3px 8px; cursor: pointer; }
-.mini-btn:hover { border-color: #396cd8; color: #396cd8; }
+.mini-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
 .folder-albums { display: flex; flex-wrap: wrap; gap: 10px; padding: 10px 14px; }
 
 .level-2 { margin-left: 24px; margin-bottom: 8px; background: var(--ms-panel-bg-2); }
@@ -947,7 +947,7 @@ onBeforeUnmount(() => {
 .context-menu-item:hover { background: var(--ms-hover); }
 .ctx-submenu { border-top: 1px solid var(--ms-border); margin-top: 4px; padding-top: 4px; }
 .ctx-sub { font-size: 13px; color: var(--ms-nav-color); }
-.context-menu-danger { color: #e5484d; }
+.context-menu-danger { color: var(--color-danger); }
 .context-menu-danger:hover { background: var(--ms-danger-hover); }
 
 .dialog-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 100; }

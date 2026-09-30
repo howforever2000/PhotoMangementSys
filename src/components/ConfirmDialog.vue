@@ -180,7 +180,7 @@ watch(
 .btn-danger {
   background: var(--color-danger);
   color: #fff;
-  border-color: #e5484d;
+  border-color: var(--color-danger);
 }
 
 .btn-danger:hover {
@@ -188,16 +188,16 @@ watch(
 }
 
 .btn-primary {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 
 /* 中性按钮（非危险场景的第三选项）：主键淡蓝描边风格 */
 .btn-neutral {
   background: #eef3fb;
-  color: #396cd8;
-  border-color: #396cd8;
+  color: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .btn-neutral:hover {

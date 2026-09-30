@@ -127,7 +127,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 }
 .album-card:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(57, 108, 216, 0.45);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 45%, transparent);
 }
 
 .album-card:hover {
@@ -159,7 +159,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   pointer-events: none;
 }
 .scan-badge-in {
-  background: #15803d;
+  background: var(--color-ok-solid, var(--color-ok-solid));
   color: #fff;
 }
 .scan-badge-out {
@@ -227,7 +227,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 }
 
 .path-link:hover {
-  color: #2f5cc2;
+  color: var(--color-primary-hover);
 }
 
 .card-stats {
@@ -270,14 +270,14 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 }
 
 .checkmark.checked {
-  background: #396cd8;
-  border-color: #396cd8;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
   color: #fff;
 }
 
 .card-selected {
-  border: 2px solid #396cd8;
-  box-shadow: 0 0 0 2px rgba(57, 108, 216, 0.2);
+  border: 2px solid var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
 
 /* 勾选管理模式：禁用悬停上浮，光标为默认 */
@@ -296,7 +296,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   margin: 0 0 8px;
   padding: 2px 10px;
   font-size: 12px;
-  color: #396cd8;
+  color: var(--color-primary);
   background: #eef3ff;
   border-radius: 12px;
 }

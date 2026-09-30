@@ -625,7 +625,7 @@ onMounted(load);
   opacity: 0.7;
 }
 .cg-index.warn {
-  color: #b45309;
+  color: var(--color-warn-solid, var(--color-warn-solid));
   opacity: 1;
 }
 .cg-total {
@@ -638,8 +638,8 @@ onMounted(load);
   border-radius: 10px;
   font-size: 12px;
   line-height: 1.7;
-  background: rgba(180, 83, 9, 0.1);
-  border: 1px solid rgba(180, 83, 9, 0.28);
+  background: color-mix(in srgb, var(--color-warn-solid) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warn-solid) 28%, transparent);
 }
 .cat-tag {
   position: absolute;
@@ -883,8 +883,8 @@ onMounted(load);
   color: var(--color-link);
 }
 .btn-danger {
-  color: #e03131;
-  border-color: rgba(224, 49, 49, 0.5);
+  color: var(--color-danger-text);
+  border-color: color-mix(in srgb, var(--color-danger-text) 50%, transparent);
 }
 .btn-danger:disabled {
   opacity: 0.45;

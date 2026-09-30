@@ -243,15 +243,15 @@ onMounted(load);
 /* 悬停态只作用于「普通按钮」：若直接写 `.btn:hover`，其选择符权重与
    `.btn-home:hover` 相同、且位于其后，会覆盖主页按钮的紫色背景与白色文字。 */
 .btn:hover:not(.btn-home):not(.btn-primary):not(.btn-danger) {
-  border-color: #396cd8;
-  color: #396cd8;
+  border-color: var(--color-primary);
+  color: var(--color-primary);
   background: var(--detail-btn-hover);
 }
 
 .btn-danger {
   background: var(--color-danger);
   color: #fff;
-  border-color: #e5484d;
+  border-color: var(--color-danger);
 }
 
 .btn-danger:hover {
@@ -265,13 +265,13 @@ onMounted(load);
 }
 
 .btn-primary {
-  background: #396cd8;
+  background: var(--color-primary);
   color: #fff;
-  border-color: #396cd8;
+  border-color: var(--color-primary);
 }
 
 .btn-primary:hover {
-  background: #2f5cc2;
+  background: var(--color-primary-hover);
   color: #fff;
 }
 
