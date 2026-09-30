@@ -249,6 +249,13 @@ body.theme-dark .pm-dialog input:disabled {
   color: var(--pm-text);
   font-weight: 600;
 }
+/* 角度滑块禁用态（背景非渐变时）：降透明度 + 去指针，四态齐全 */
+.pm-range-off {
+  opacity: 0.45;
+}
+.pm-range-off input[type="range"] {
+  cursor: not-allowed;
+}
 .pm-hidden-input {
   display: none;
 }

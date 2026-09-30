@@ -43,6 +43,9 @@ const activePresetId = computed(() => {
   return hit?.id ?? "";
 });
 
+/** 角度滑块可用性：背景必须处于渐变态（纯色/背景图下改角度无可见效果 → 禁用） */
+const angleEnabled = computed(() => theme.bgStyle === "gradient");
+
 /* ---------------- 自定义效果（原弹窗能力迁入） ---------------- */
 const bgFileInput = ref<HTMLInputElement | null>(null);
 
@@ -172,7 +175,10 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
               :aria-pressed="activePresetId === p.id"
               @click="applyPreset(p)"
             >
-              <span class="pm-preset-swatch" :style="{ background: presetGradient(p) }"></span>
+              <span
+                class="pm-preset-swatch"
+                :style="{ background: presetGradient(p, theme.gradAngle) }"
+              ></span>
               <span class="pm-preset-name">
                 <span>{{ p.name }}</span>
                 <span class="pm-preset-badge">磨砂 · {{ Math.round(p.compAlpha * 100) }}%</span>
@@ -184,6 +190,24 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
               <span v-if="activePresetId === p.id" class="pm-preset-check" aria-hidden="true">✓</span>
             </button>
           </div>
+
+          <!-- 角度：作用于当前预设渐变；未套用预设（背景非渐变）时禁用，避免“改了没反应” -->
+          <label class="pm-range" :class="{ 'pm-range-off': !angleEnabled }">
+            <span>角度</span>
+            <input
+              type="range"
+              v-model.number="theme.gradAngle"
+              min="0"
+              max="360"
+              :disabled="!angleEnabled"
+              aria-label="预设渐变角度"
+              @change="theme.persist()"
+            />
+            <b>{{ theme.gradAngle }}°</b>
+          </label>
+          <p v-if="!angleEnabled" class="pm-hint" style="margin: 4px 0 0">
+            先点一套预设应用后即可调角度
+          </p>
         </div>
 
         <!-- ============ 自定义效果 ============ -->

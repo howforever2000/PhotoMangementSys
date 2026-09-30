@@ -101,7 +101,7 @@ export function matchesPreset(p: Preset, prefs: Prefs): boolean {
   );
 }
 
-/** 预设卡片上的渐变预览 CSS（竖向，与设计图一致） */
-export function presetGradient(p: Preset): string {
-  return `linear-gradient(180deg, ${p.colors[0]}, ${p.colors[1]}, ${p.colors[2]})`;
+/** 预设卡片上的渐变预览 CSS（默认 180° 竖向；传 angle 则同步当前背景角度） */
+export function presetGradient(p: Preset, angle = p.angle): string {
+  return `linear-gradient(${angle}deg, ${p.colors[0]}, ${p.colors[1]}, ${p.colors[2]})`;
 }
