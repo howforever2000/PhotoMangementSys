@@ -157,7 +157,7 @@ function onLeave() {
 }
 .toast-btn-primary {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
 }
 .toast-btn-danger {
   background: var(--color-danger);

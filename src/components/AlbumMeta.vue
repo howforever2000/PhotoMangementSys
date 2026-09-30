@@ -464,7 +464,7 @@ const saveTags = trace("saveTags", async () => {
 }
 
 .path-link:hover {
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 
 .detail-desc-wrap {
@@ -481,7 +481,7 @@ const saveTags = trace("saveTags", async () => {
 
 .desc-edit-hint {
   font-size: 11px;
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   opacity: 0;
   transition: opacity 0.15s;
 }
@@ -527,7 +527,7 @@ const saveTags = trace("saveTags", async () => {
 }
 
 .parent-path:hover {
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 
 .detail-stats {
@@ -696,7 +696,7 @@ const saveTags = trace("saveTags", async () => {
 
 .btn:hover {
   border-color: var(--color-primary);
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 
 .btn-sm {
@@ -707,7 +707,7 @@ const saveTags = trace("saveTags", async () => {
 
 .btn-primary {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   border-color: var(--color-primary);
 }
 
@@ -718,7 +718,7 @@ const saveTags = trace("saveTags", async () => {
 
 .btn-ghost {
   background: transparent;
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   border-color: var(--color-primary);
 }
 

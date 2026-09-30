@@ -180,7 +180,7 @@ function cancelDl(name: string) {
 }
 .btn:hover:not(:disabled) {
   border-color: var(--color-primary);
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 .btn:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--color-primary) 55%, transparent);

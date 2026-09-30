@@ -70,7 +70,7 @@
 }
 .pm-field input:focus {
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px rgba(90, 139, 247, 0.15);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 25%, transparent);
 }
 .pm-field input:disabled {
   color: var(--pm-hint);
@@ -114,12 +114,12 @@
   outline-offset: 2px;
 }
 .pm-btn-primary {
-  color: #fff;
+  color: var(--color-on-primary);
   background: var(--color-primary);
   border-color: var(--color-primary);
 }
 .pm-btn-primary:hover {
-  background: #2f5de0;
+  background: var(--color-primary-hover);
 }
 .pm-btn-clear {
   margin-left: 8px;
@@ -157,10 +157,15 @@
   border-color: var(--color-primary);
 }
 .pm-seg button.on {
-  color: #fff;
+  color: var(--color-on-primary);
   background: var(--color-primary);
   border-color: var(--color-primary);
 }
+/* 风险读数（FEAT-094）：透明度/背景组合下文字对比不足时的那行提示 */
+.pm-warn {
+  color: var(--color-warn) !important;
+}
+
 .pm-color-row {
   display: flex;
   align-items: center;
@@ -196,7 +201,7 @@
 }
 .pm-hex:focus {
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px rgba(90, 139, 247, 0.15);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 25%, transparent);
 }
 
 /* main.css 的 body.theme-dark 全局输入兑底 rgba(18,20,28,.7)（特异性 0,2,2）会压过
@@ -300,6 +305,18 @@ body.theme-dark .pm-dialog input:disabled {
 }
 
 /* ---------- 预设效果网格 ---------- */
+/* 默认卡（FEAT-094）：单独一张通栏卡，位于渐变网格之上 */
+.pm-preset-default {
+  display: block;
+  width: 100%;
+  margin-bottom: 12px;
+}
+/* 默认卡的色卡位换成壁纸缩略图（渐变卡仍是 background 简写） */
+.pm-preset-cover {
+  background-size: cover;
+  background-position: center;
+  height: 84px;
+}
 .pm-presets {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -323,7 +340,7 @@ body.theme-dark .pm-dialog input:disabled {
 }
 .pm-preset.on {
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 2px rgba(58, 108, 245, 0.35);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 40%, transparent);
 }
 .pm-preset-swatch {
   display: block;
@@ -371,7 +388,7 @@ body.theme-dark .pm-dialog input:disabled {
   line-height: 22px;
   text-align: center;
   font-size: 13px;
-  color: #fff;
+  color: var(--color-on-primary);
   background: var(--color-primary);
   border: 2px solid rgba(255, 255, 255, 0.9);
   border-radius: 50%;

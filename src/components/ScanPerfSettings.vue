@@ -359,7 +359,7 @@ const calibMaxRate = computed(() =>
 }
 .sps-btn:hover:not(:disabled) {
   border-color: var(--color-primary);
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 .sps-btn:disabled {
   opacity: 0.55;
@@ -372,7 +372,7 @@ const calibMaxRate = computed(() =>
 .sps-btn-primary {
   background: var(--color-primary);
   border-color: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
 }
 .sps-btn-primary:hover:not(:disabled) {
   background: var(--color-primary-hover);
@@ -383,7 +383,7 @@ const calibMaxRate = computed(() =>
   color: var(--ts-text, #2c3e50);
 }
 .sps-status b {
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 .sps-dim {
   font-size: 12px;
@@ -482,7 +482,7 @@ const calibMaxRate = computed(() =>
 }
 .sps-calib-row.cur .sps-calib-th::after {
   content: " ←";
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 .sps-calib-actions {
   display: flex;

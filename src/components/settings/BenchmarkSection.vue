@@ -244,7 +244,7 @@ async function runBenchmark() {
 }
 .btn:hover:not(:disabled) {
   border-color: var(--color-primary);
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 .btn:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--color-primary) 55%, transparent);
@@ -310,6 +310,6 @@ async function runBenchmark() {
 }
 .sweep-row.cur .sweep-th::after {
   content: " ←";
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 </style>

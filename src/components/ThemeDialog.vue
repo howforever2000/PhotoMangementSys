@@ -10,7 +10,7 @@
  * 由 Home.vue 渲染并 teleport 到 body；样式走全局 .pm-*（pm-dialog.css）。
  */
 import { onBeforeUnmount, onMounted, ref, computed } from "vue";
-import { useThemeStore } from "../stores/theme";
+import { DEFAULT_WALLPAPER, useThemeStore } from "../stores/theme";
 import { normalizeHex } from "../utils/color";
 import { PRESETS, matchesPreset, presetGradient } from "../utils/presets";
 
@@ -163,8 +163,34 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
           aria-labelledby="tab-preset"
         >
           <p class="pm-hint" style="margin: -4px 0 12px">
-            5 套设计渐变 · 点击整套应用（背景 + 组件色 + 透明度 + 磨砂质感）
+            默认外观 = 启动封面（与登录页同一张壁纸 + 落日紫金）；下面 5 套是设计渐变，点击整套应用
           </p>
+
+          <!-- 默认卡（FEAT-094）：点一下回到「启动封面 + 落日紫金」，与底部的「恢复默认」等价。
+               以前重置后 5 张预设卡会全部掉高亮（选中态判据只认渐变），这里把默认态补成一张卡。 -->
+          <button
+            class="pm-preset pm-preset-default"
+            :class="{ on: theme.isStartupCover }"
+            type="button"
+            :aria-pressed="theme.isStartupCover"
+            @click="theme.reset()"
+          >
+            <span
+              class="pm-preset-swatch pm-preset-cover"
+              :style="{ backgroundImage: `url(${DEFAULT_WALLPAPER})` }"
+            ></span>
+            <span class="pm-preset-name">
+              <span>启动封面（默认）</span>
+              <span class="pm-preset-badge">壁纸 · {{ Math.round(theme.bgOpacity * 100) }}%</span>
+            </span>
+            <span class="pm-preset-dots">
+              <i style="background: #2b2140"></i>
+              <i style="background: #e8a33d"></i>
+              <i style="background: #ffd9a0"></i>
+            </span>
+            <span v-if="theme.isStartupCover" class="pm-preset-check" aria-hidden="true">✓</span>
+          </button>
+
           <div class="pm-presets">
             <button
               v-for="p in PRESETS"
@@ -273,7 +299,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
               <input
                 type="range"
                 v-model.number="theme.compAlpha"
-                min="0.15"
+                min="0"
                 max="0.9"
                 step="0.01"
                 aria-label="组件玻璃透明度（不透明度）"
@@ -281,6 +307,15 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
               />
               <b>{{ Math.round(theme.compAlpha * 100) }}%</b>
             </label>
+            <!-- FEAT-094：透明度能拉到 0，但代价当场说清楚 ——
+                 文字色是按背景**均值**推的，卡片的填充就是那层「把局部差异抹平」的底；
+                 这条读数逐带算过，比一个拍脑袋的下限诚实。 -->
+            <p class="pm-hint" :class="{ 'pm-warn': theme.readability.worst < 4.5 }" style="margin: 2px 0 0">
+              实测最深色带上的文字对比 ≈ {{ theme.readability.worst.toFixed(1) }}:1
+              <template v-if="theme.readability.worst < 4.5">
+                （低于 4.5:1：当前背景明暗差较大，透明度低时暗带上的字会看不清——调高透明度，或换深色/深渐变色背景）
+              </template>
+            </p>
 
             <!-- FEAT-087：全局饱和度 —— 一处控制背景/组件色调/品牌色/语义色的浓淡，统一风格 -->
             <label class="pm-range">

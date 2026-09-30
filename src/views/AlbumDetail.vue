@@ -244,7 +244,7 @@ onMounted(load);
    `.btn-home:hover` 相同、且位于其后，会覆盖主页按钮的紫色背景与白色文字。 */
 .btn:hover:not(.btn-home):not(.btn-primary):not(.btn-danger) {
   border-color: var(--color-primary);
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   background: var(--detail-btn-hover);
 }
 
@@ -266,7 +266,7 @@ onMounted(load);
 
 .btn-primary {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   border-color: var(--color-primary);
 }
 

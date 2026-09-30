@@ -189,14 +189,14 @@ watch(
 
 .btn-primary {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   border-color: var(--color-primary);
 }
 
 /* 中性按钮（非危险场景的第三选项）：主键淡蓝描边风格 */
 .btn-neutral {
   background: #eef3fb;
-  color: var(--color-primary);
+  color: var(--color-primary-ink);
   border-color: var(--color-primary);
 }
 

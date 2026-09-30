@@ -8,7 +8,38 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULTS, normalizePrefs } from "./prefs.ts";
+import { DEFAULTS, isDefaultLook, normalizePrefs } from "./prefs.ts";
+
+test("FEAT-094 默认外观 = 启动封面（壁纸 + 落日紫金）", () => {
+  // 背景回到「背景图」模式，且默认字就是壁纸；颜色为落日紫金
+  assert.equal(DEFAULTS.bgStyle, "image");
+  assert.equal(DEFAULTS.compColor, "#2b2140");
+  assert.equal(DEFAULTS.compAlpha, 0.64);
+  assert.equal(DEFAULTS.bgOpacity, 0.55);
+  assert.equal(DEFAULTS.material, "frosted");
+});
+
+test("FEAT-094 isDefaultLook：空输入归一化后命中默认，任一可调项被改即掉高亮", () => {
+  // 空输入 → 归一化结果必须**就是**默认外观（gradMid 若不等首尾中点，这条会红）
+  assert.equal(isDefaultLook(normalizePrefs({}), false), true);
+  // 用户自己选过背景图 → 一律不算默认
+  assert.equal(isDefaultLook(normalizePrefs({}), true), false);
+  const perturbations = [
+    { bgStyle: "color" },
+    { bgStyle: "gradient" },
+    { bgColor: "#000000" },
+    { gradFrom: "#000000" },
+    { compColor: "#16443a" },
+    { compAlpha: 0.42 },
+    { bgOpacity: 0.45 },
+    { material: "liquid" },
+  ];
+  for (const patch of perturbations) {
+    assert.equal(isDefaultLook(normalizePrefs(patch), false), false, `patch=${JSON.stringify(patch)}`);
+  }
+  // 饱和度不算「脱离默认」（它只改浓淡不改结构，否则拖一下滑块默认卡就掉高亮）
+  assert.equal(isDefaultLook(normalizePrefs({ saturation: 0.6 }), false), true);
+});
 
 test("FEAT-087 saturation：越界被夹到 0.4~1.5，坏值回落 1", () => {
   assert.equal(normalizePrefs({}).saturation, 1);
@@ -54,7 +85,12 @@ test("越界数值被夹紧到合法区间", () => {
   assert.equal(p.bgOpacity, 0.05);
 
   const q = normalizePrefs({ compAlpha: 0.01, bgOpacity: 3 });
-  assert.equal(q.compAlpha, 0.15);
+  // FEAT-094：透明度下限由 0.15 放开到 0 —— 「能不能用 0」取决于背景是否够均匀，
+  // 该由用户看着弹窗里的实测读数自己决定，不该被一个拍脑袋的下限拦住。
+  // 0.01 现在处于合法区间内，原样保留（旧行为会被下限顶到 0.15）。
+  assert.equal(q.compAlpha, 0.01);
+  assert.equal(normalizePrefs({ compAlpha: -3 }).compAlpha, 0);
+  assert.equal(normalizePrefs({ compAlpha: 0 }).compAlpha, 0);
   assert.equal(q.bgOpacity, 1);
 });
 

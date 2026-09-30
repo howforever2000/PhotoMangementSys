@@ -693,7 +693,7 @@ const phaseLabel = computed(() => {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
-.st-running { color: var(--color-primary); }
+.st-running { color: var(--color-primary-text); }
 .st-done { color: var(--color-ok-vivid); }
 .st-failed { color: var(--color-danger); }
 .st-cancelled { color: var(--color-warn-text); }
@@ -732,7 +732,7 @@ const phaseLabel = computed(() => {
   font-size: 12px;
 }
 .progress-phase {
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   margin-right: 6px;
 }
 .progress-file {
@@ -776,12 +776,12 @@ const phaseLabel = computed(() => {
 /* 排除带自身语义色的按钮，避免悬停态覆盖它们的主色 */
 .btn:hover:not(.btn-primary):not(.btn-danger):not(.btn-stop):not(.btn-active) {
   border-color: var(--color-primary);
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   background: var(--ts-btn-hover);
 }
 .btn-primary {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   border-color: var(--color-primary);
 }
 .btn-primary:hover {
@@ -816,7 +816,7 @@ const phaseLabel = computed(() => {
 }
 .btn-active {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   border-color: var(--color-primary);
 }
 .scan-error {
@@ -871,7 +871,7 @@ const phaseLabel = computed(() => {
 }
 .folder-detail summary {
   cursor: pointer;
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   font-size: 13px;
 }
 .folder-list {
@@ -938,7 +938,7 @@ const phaseLabel = computed(() => {
 }
 .p-name {
   font-family: "Consolas", monospace;
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   width: 38%;
 }
 .p-time {

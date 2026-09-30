@@ -262,7 +262,7 @@ async function onConfirm() {
 }
 .btn:hover:not(:disabled) {
   border-color: var(--color-primary);
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 .btn-sm {
   padding: 3px 9px;

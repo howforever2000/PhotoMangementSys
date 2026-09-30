@@ -19,7 +19,23 @@ const fs = require("fs");
 
 const { INIT } = require("./mock-init.cjs");
 
-const ROUTES = ["/home", "/albums", "/scan", "/smart", "/memories", "/album/1"];
+const ROUTES = [
+  "/home",
+  "/albums",
+  "/scan",
+  "/smart",
+  "/memories",
+  "/album/1",
+  /* FEAT-094：强调色与默认背景改动影响全站，把带按钮/链接/表格较多的工作页一并纳入 */
+  "/timeline",
+  "/manual-sort",
+  "/workshop",
+  "/scan/test",
+];
+
+/* 可选：PM_AUDIT_ALPHA=<0~0.9> 覆盖「组件透明度」跑一轮（规范化会补齐其余字段），
+   用于实测「透明度下限到底能在哪」——不是拍脑袋定 0.15。 */
+const ALPHA_OVERRIDE = process.env.PM_AUDIT_ALPHA;
 
 const AUDIT = () => {
   /* ---------- 颜色基础 ---------- */
@@ -294,6 +310,11 @@ const AUDIT = () => {
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const page = await ctx.newPage();
     await page.addInitScript(INIT);
+    if (ALPHA_OVERRIDE !== undefined) {
+      await page.addInitScript((a) => {
+        localStorage.setItem("pm-theme", JSON.stringify({ compAlpha: Number(a) }));
+      }, ALPHA_OVERRIDE);
+    }
     await page.goto(`http://localhost:1420${route}`, { waitUntil: "networkidle", timeout: 20000 }).catch(() => {});
     await page.waitForTimeout(1200);
     const res = await page.evaluate(AUDIT).catch((e) => ({ url: route, error: String(e) }));

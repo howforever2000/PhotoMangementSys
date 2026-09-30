@@ -272,7 +272,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 .checkmark.checked {
   background: var(--color-primary);
   border-color: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
 }
 
 .card-selected {
@@ -296,7 +296,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   margin: 0 0 8px;
   padding: 2px 10px;
   font-size: 12px;
-  color: var(--color-primary);
+  color: var(--color-primary-ink);
   background: #eef3ff;
   border-radius: 12px;
 }

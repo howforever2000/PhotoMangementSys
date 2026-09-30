@@ -404,7 +404,7 @@ const listEl = ref<HTMLDivElement | null>(null);
   font-size: 12px;
 }
 .ier-pill-ok { background: color-mix(in srgb, var(--color-ok-text) 18%, transparent); color: var(--color-ok-text); }
-.ier-pill-skip { background: color-mix(in srgb, var(--color-primary) 18%, transparent); color: var(--color-primary); }
+.ier-pill-skip { background: color-mix(in srgb, var(--color-primary) 18%, transparent); color: var(--color-primary-text); }
 .ier-pill-fail { background: color-mix(in srgb, var(--color-danger) 18%, transparent); color: var(--color-danger); }
 
 .ier-bucket {
@@ -547,12 +547,12 @@ body.theme-dark .ier-advice-exists {
 .btn-secondary {
   background: color-mix(in srgb, var(--color-primary) 10%, transparent);
   border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 .btn-secondary:hover { background: color-mix(in srgb, var(--color-primary) 18%, transparent); }
 .btn-primary {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   border-color: var(--color-primary);
 }
 .btn-primary:hover { background: #2f5fc1; }

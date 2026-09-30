@@ -201,6 +201,51 @@ export function isDarkText(color: string): boolean {
   return r + g + b < 384;
 }
 
+/**
+ * 组件透明度（α）能低到多少的实测量尺（FEAT-094）。
+ *
+ * 为什么要它：整个主题体系里**文字色只有一个**，而且按背景的**均值**推出；
+ * 而背景的局部亮度可能相差十倍（落日壁纸：山影 0.05 → 天空 0.55；
+ * 预设「粉绿晨光」：顶带 #ffd7d7 → 底带 #195e53）。
+ * 卡片填充 α 正是那层「把局部差异向组件色调收敛」的东西 ——
+ * α 越小，各色带的差异越裸露，均值算出的文字色就会在某一带上不够看。
+ * 本函数逐带算出「当前 α 下最差的那条带到底多少:1」，
+ * 让界面能把这句话说出来，而不是靠一个拍脑袋的下限把人拦住。
+ *
+ * @param bands 背景在该场景下的代表性色带（渐变的 f/m/t；背景图的暗/中/亮分位色）
+ * @param avg   主题用来推文字色的均值背景色
+ * @param fill  组件填充色（已含材质提亮）
+ * @param alpha 组件透明度
+ */
+export interface BandContrast {
+  /** 按均值选出的文字色 */
+  text: string;
+  /** 逐带对比度的最小值 */
+  worst: number;
+  /** 最差的那条带的等效玻璃色 */
+  worstGlass: string;
+}
+
+export function glassBandContrast(bands: Rgb[], avg: Rgb, fill: string, alpha: number): BandContrast {
+  const tone = hexToRgb(normalizeHex(fill, "#ffffff"));
+  const textRgb = hexToRgb(componentTone(rgbToHex(mixRgb(avg, tone, alpha))).text);
+  let worst = Infinity;
+  let worstGlass = rgbToHex(tone);
+  for (const band of bands) {
+    const glass = mixRgb(band, tone, alpha);
+    const r = contrastRatio(relLum(textRgb), relLum(glass));
+    if (r < worst) {
+      worst = r;
+      worstGlass = rgbToHex(glass);
+    }
+  }
+  return {
+    text: rgbToHex(textRgb),
+    worst: Number.isFinite(worst) ? worst : 0,
+    worstGlass,
+  };
+}
+
 /** 组件色调派生结果：一次算出要下发的整组令牌 */
 export interface ComponentTone {
   /** 组件底色偏深 → 文字需翻成浅色 */

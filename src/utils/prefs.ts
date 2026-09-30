@@ -42,19 +42,49 @@ export interface Prefs {
 
 export const DEFAULTS: Prefs = {
   mode: "dark",
-  /* 组件色调 = 玻璃色调：比页面背景亮一档，保证「背景→容器→内容」三层可读 */
-  compColor: "#16443a",
-  compAlpha: 0.42,
+  /* FEAT-094：默认外观 = 「启动封面」——壁纸用登录页那张日落山峦（covers/login-sunset.jpg），
+     组件配色与其配套的落日紫金（与登录/注册/忘记密码三页同一套，见 utils/loginTheme.ts）。
+     壁纸本身**不存 localStorage**：theme store 在「背景图模式且用户未自定义图」时回落到
+     构建产物里的内置资源，所以 176KB 图片不会占本地存储配额、也不会随偏好丢失。 */
+  /* 组件色调 = 玻璃色调：比壁纸更暗一档，保证「背景→容器→内容」三层可读 */
+  compColor: "#2b2140",
+  compAlpha: 0.64,
   saturation: 1,
   material: "frosted",
-  bgStyle: "color",
-  bgColor: "#0e211b",
-  gradFrom: "#12332a",
-  gradMid: "#0c211b",
-  gradTo: "#050f0c",
+  bgStyle: "image",
+  /* 图片层下方的底色：紫夜色 —— 壁纸是暖粉紫，底下若仍是墨绿会把画面染脏 */
+  bgColor: "#1a1428",
+  /* 渐变档的三段色标也换成紫夜色系（用户在弹窗里切到「渐变色」时的默认值）。
+     注意：gradMid **必须等于 gradFrom/gradTo 的插值中点**（#3b2b52 + #120e1c 的一半）——
+     normalizePrefs 对缺中段的旧数据就是这么推的，prefs.test 锁了「空输入 == DEFAULTS」这条不变量。 */
+  gradFrom: "#3b2b52",
+  gradMid: "#271d37",
+  gradTo: "#120e1c",
   gradAngle: 135,
-  bgOpacity: 0.45,
+  /* 壁纸透明度 55%：明显但含蓄（此前 45% 几乎看不出背景图） */
+  bgOpacity: 0.55,
 };
+
+/**
+ * 当前偏好是否就是「默认外观（启动封面）」—— 主题弹窗用它高亮默认卡。
+ * 不拿对象深比对，而是逐字段比可调项：mode/saturation 不参与（改了颜色浓淡但结构未变
+ * 不算脱离默认，否则用户拖一下饱和度卡片就掉高亮，反而困惑）。
+ * hasCustomImage：用户自己选过背景图 → 一律不算默认。
+ */
+export function isDefaultLook(prefs: Prefs, hasCustomImage: boolean): boolean {
+  if (hasCustomImage) return false;
+  return (
+    prefs.bgStyle === DEFAULTS.bgStyle &&
+    prefs.bgColor === DEFAULTS.bgColor &&
+    prefs.gradFrom === DEFAULTS.gradFrom &&
+    prefs.gradMid === DEFAULTS.gradMid &&
+    prefs.gradTo === DEFAULTS.gradTo &&
+    prefs.compColor === DEFAULTS.compColor &&
+    Math.abs(prefs.compAlpha - DEFAULTS.compAlpha) < 0.001 &&
+    Math.abs(prefs.bgOpacity - DEFAULTS.bgOpacity) < 0.001 &&
+    prefs.material === DEFAULTS.material
+  );
+}
 
 const BG_STYLES: BackgroundStyle[] = ["image", "gradient", "color"];
 const MATERIALS: Material[] = ["frosted", "liquid", "glazed"];
@@ -89,7 +119,7 @@ export function normalizePrefs(raw: unknown): Prefs {
   return {
     mode: oneOf(r.mode, ["light", "dark"], DEFAULTS.mode),
     compColor: normalizeHex(str(r.compColor, DEFAULTS.compColor), DEFAULTS.compColor),
-    compAlpha: num(r.compAlpha, DEFAULTS.compAlpha, 0.15, 0.9),
+    compAlpha: num(r.compAlpha, DEFAULTS.compAlpha, 0, 0.9),
     saturation: num(r.saturation, DEFAULTS.saturation, 0.4, 1.5),
     material: oneOf(r.material, MATERIALS, DEFAULTS.material),
     bgStyle: oneOf(r.bgStyle, BG_STYLES, DEFAULTS.bgStyle),

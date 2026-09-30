@@ -559,7 +559,7 @@ function goAlbumFromLightbox(albumId: number) {
   background: var(--card-bg, #fff);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.16);
   font-size: 20px;
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   cursor: pointer;
   z-index: 150;
   display: flex;

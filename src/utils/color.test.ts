@@ -13,6 +13,7 @@ import {
   TEXT_LIGHT,
   componentTone,
   contrastRatio,
+  glassBandContrast,
   hexToRgb,
   hexToRgba,
   hslToRgb,
@@ -160,4 +161,27 @@ test("saturateColor：灰度色（S=0）任何系数下仍是灰度", () => {
     const [r, g, b] = hexToRgb(saturateColor("#808080", f));
     assert.ok(Math.abs(r - g) < 2 && Math.abs(g - b) < 2, `灰度被染上颜色: ${r},${g},${b}`);
   }
+});
+test("FEAT-094 glassBandContrast：深色背景 α=0 仍安全，浅顶带渐变则必须靠填充兑底", () => {
+  // ① 新默认外观（启动封面 55% + 遮罩）三带都很暗 —— α 拉到 0 也能达标
+  const cover = ["#69515a", "#4b3f4e", "#1b1d43"].map(hexToRgb);
+  const dark = glassBandContrast(cover, hexToRgb("#4b3f4e"), "#2b2140", 0);
+  assert.ok(dark.worst >= 6, `深色背景 α=0 应仍有足够对比，实测 ${dark.worst.toFixed(2)}:1`);
+
+  // ② 预设「粉绿晨光」（顶带亮 #ffd7d7 / 底带暗 #195e53）：α=0 时文字只有一个色，
+  //    均值推出墨字 → 底带上就崩了；把填充加回来才收敛。这就是「透明度下限」的真实理由。
+  const bands = ["#ffd7d7", "#7e9963", "#195e53"].map(hexToRgb);
+  const avg = [
+    Math.round((bands[0][0] + 2 * bands[1][0] + bands[2][0]) / 4),
+    Math.round((bands[0][1] + 2 * bands[1][1] + bands[2][1]) / 4),
+    Math.round((bands[0][2] + 2 * bands[1][2] + bands[2][2]) / 4),
+  ];
+  const zero = glassBandContrast(bands, avg, "#f2f9f4", 0);
+  const mid = glassBandContrast(bands, avg, "#f2f9f4", 0.3);
+  const full = glassBandContrast(bands, avg, "#f2f9f4", 0.6);
+  assert.ok(zero.worst < 3, `α=0 应暴露明暗差，实测 ${zero.worst.toFixed(2)}:1`);
+  assert.ok(mid.worst > zero.worst, "α 提高应单调收敛（0.3 > 0）");
+  assert.ok(full.worst >= mid.worst, "α 提高应单调收敛（0.6 > 0.3）");
+  assert.ok(full.worst >= 4.5, `设计值附近应达标，实测 ${full.worst.toFixed(2)}:1`);
+  assert.equal(zero.text, "#1f2733", "文字色应仍由均值玻璃决定（与 componentTone 同源）");
 });

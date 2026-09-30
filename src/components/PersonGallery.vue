@@ -673,7 +673,7 @@ const vFocus: Directive<HTMLElement> = {
 .pg-action-msg {
   background: var(--color-primary-soft, #eef5ff);
   border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
-  color: #2f5bc0;
+  color: var(--color-primary-text);
   border-radius: 8px;
   padding: 8px 12px;
   font-size: 13px;
@@ -728,7 +728,7 @@ body.theme-dark .pg-action-msg {
 }
 .person-avatar-fallback {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   font-size: 26px;
   line-height: 60px;
   text-align: center;
@@ -740,7 +740,7 @@ body.theme-dark .pg-action-msg {
   left: 50%;
   transform: translateX(-50%);
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   font-size: 11px;
   padding: 1px 8px;
   border-radius: 999px;
@@ -778,7 +778,7 @@ body.theme-dark .pg-action-msg {
   flex-shrink: 0;
 }
 .mini-btn:hover { border-color: var(--color-link); color: var(--color-link); }
-.mini-btn.ok { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
+.mini-btn.ok { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
 .merge-btn { margin-top: 6px; }
 
 .person-rename-input {
@@ -834,7 +834,7 @@ body.theme-dark .pg-action-msg {
 }
 .merge-avatar-fallback {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   line-height: 34px;
   text-align: center;
   font-size: 15px;
@@ -897,7 +897,7 @@ body.theme-dark .pg-action-msg {
   font-size: 12px;
   background: color-mix(in srgb, var(--color-primary) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
-  color: #2f5bc0;
+  color: var(--color-primary-text);
 }
 body.theme-dark .viewer-pick-hint { color: var(--color-link); }
 .mini-btn.danger {

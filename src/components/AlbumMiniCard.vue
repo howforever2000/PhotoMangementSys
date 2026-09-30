@@ -148,7 +148,7 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
 .mini-check.checked {
   background: var(--color-primary);
   border-color: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
 }
 
 /* 角标需相对卡片定位 */

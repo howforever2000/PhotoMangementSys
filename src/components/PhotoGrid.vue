@@ -930,14 +930,14 @@ function onKey(e: KeyboardEvent) {
   border: none;
   border-radius: 50%;
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   font-size: 17px;
   cursor: pointer;
   box-shadow: 0 4px 14px color-mix(in srgb, var(--color-primary) 45%, transparent);
   transition: transform 0.15s, background 0.15s;
 }
 .pg-top-btn:hover {
-  background: #2f5bc0;
+  background: var(--color-primary-hover);
   transform: translateY(-2px);
 }
 
@@ -1003,13 +1003,13 @@ function onKey(e: KeyboardEvent) {
 .pg-action-refresh {
   border-style: dashed;
   background: #fafbff;
-  color: var(--color-primary);
+  color: var(--color-primary-ink);
 }
 
 .pg-hint {
   background: #f5f7ff;
   border: 1px solid #dbe3ff;
-  color: var(--color-primary);
+  color: var(--color-primary-ink);
   border-radius: 8px;
   padding: 10px 14px;
   font-size: 13px;
@@ -1046,8 +1046,8 @@ function onKey(e: KeyboardEvent) {
   cursor: pointer;
   transition: all 0.15s;
 }
-.chip:hover { border-color: var(--color-primary); color: var(--color-primary); }
-.chip.active { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
+.chip:hover { border-color: var(--color-primary); color: var(--color-primary-text); }
+.chip.active { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
 
 .pg-loading, .pg-error, .pg-empty {
   text-align: center;
@@ -1189,7 +1189,7 @@ function onKey(e: KeyboardEvent) {
 
 .pg-person-fallback {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   font-size: 11px;
   line-height: 18px;
   text-align: center;
@@ -1224,7 +1224,7 @@ function onKey(e: KeyboardEvent) {
 .pg-action.pg-selecting {
   background: var(--color-primary);
   border-color: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   border-style: solid;
   box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 35%, transparent);
 }
@@ -1234,8 +1234,9 @@ function onKey(e: KeyboardEvent) {
   align-items: center;
   gap: 14px;
   flex-wrap: wrap;
-  background: #f5f7ff;
-  border: 1px solid #dbe3ff;
+  /* 深色世界里的浅底会与继承来的浅色文字撞车（既有可读性问题，FEAT-094 顺手修） */
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 32%, transparent);
   border-radius: 8px;
   padding: 8px 12px;
   margin-bottom: 10px;
@@ -1255,7 +1256,7 @@ function onKey(e: KeyboardEvent) {
 }
 .pg-selected-count {
   font-weight: 600;
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 .pg-select-tip {
   color: #5f6b7a;
@@ -1402,7 +1403,7 @@ function onKey(e: KeyboardEvent) {
 }
 .pg-star.on { color: #ffd43b; }
 .pg-star:hover { transform: scale(1.12); }
-.pg-rating-value { margin-left: 10px; font-size: 14px; color: var(--color-primary); font-weight: 600; }
+.pg-rating-value { margin-left: 10px; font-size: 14px; color: var(--color-primary-text); font-weight: 600; }
 .pg-rating-warn,
 .pg-rating-hint {
   margin: 0 0 10px;

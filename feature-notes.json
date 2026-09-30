@@ -3121,7 +3121,71 @@
       ],
       "created_at": "2026-09-30T23:15:00+08:00",
       "updated_at": "2026-09-30T23:15:00+08:00"
+    },
+    {
+      "id": "FEAT-094",
+      "name": "应用默认外观改为「启动封面」：壁纸成为默认背景 + 强调色改落日金 + 组件透明度放开到 0（附实测读数）",
+      "module": "src/utils/prefs.ts、src/stores/theme.ts、src/assets/main.css、src/assets/pm-dialog.css、src/components/ThemeDialog.vue、src/App.vue、src/utils/color.ts、src/**/*.vue（39+49+17 处样式成对改写）",
+      "purpose": "用户反馈两点：① Home 页「预定义效果 → 恢复默认」回到的是深墨绿纯色，而不是登录页那张启动封面；② 「组件透明度为什么不可以调到零」。前者是默认外观口径要统一（登录页 = 应用默认），后者是当初 0.15 的下限没有实测依据。",
+      "implementation": {
+        "默认外观": [
+          "DEFAULTS：bgStyle image + compColor #2b2140 + compAlpha 0.64 + bgOpacity 0.55 + bgColor 改紫夜色 #1a1428 + 三段渐变改紫夜色系（gradMid 必须是首尾中点 #271d37，否则破坏「空输入 == DEFAULTS」不变量，被测试抓到过）",
+          "theme store：bgImageEff = 用户自定义图 || 内置 covers/login-sunset.jpg（**不进 localStorage**，避免 176KB data URL 撞配额）；layerImage/sampleBgImage/theme-on-image 全部改读 bgImageEff",
+          "新增层 .app-bg-scrim（上重下轻 .52/.34/.26/.38）：页面级文字（页头/面包屑/返回按钮/相册统计）直接压在壁纸亮部上，实测白字在天空带只有 3.3~4.1:1 → 靠遮罩压到达标",
+          "ThemeDialog 预定义效果顶部新增「启动封面（默认）」卡：点击=恢复默认，缩略图用内置壁纸，选中态由 prefs.isDefaultLook 纯函数判定 —— 顺手补掉「重置后 5 张渐变卡全都不高亮」的空洞"
+        ],
+        "强调色改金": [
+          "main.css :root + theme store applyAccentVars：--color-primary #396cd8 → #e8a33d，新增 --color-on-primary（墨字 #2a1a08）与 --color-primary-ink（浅底上的深金 #8a5a12）；--color-link 与 on-bg 链接色同步改暖金",
+          "全仓成对改写 105 处：39 个「强调色填充 + 白字」块改墨字（金底白字只有 2.16:1），49 处把强调色当文字用的块按底分档（深底 → --color-primary-text 浅金，硬编码浅底的旧浅色主题残留 → --color-primary-ink），17 处旧品牌蓝 hex/rgba（含聚焦光环、pm-btn-primary hover、ghost 按钮）改令牌",
+          "顺手修两处既有暗色可读性问题：.pg-select-bar（浅底 + 继承来的浅字）与 .combo-check:hover/.active 的浅底改暗金纱"
+        ],
+        "组件透明度可到 0": [
+          "prefs 钳制 0.15→0、滑块 min 0.15→0",
+          "新增 utils/color.ts glassBandContrast(bands, avg, fill, α)：按主题真实模型逐带算「最差的那条色带还剩多少对比」——文字色只有一个且由背景**均值**推出，卡片填充正是抹平局部差异的那层",
+          "theme store 新增 readability computed：渐变用 f/m/t 三带，背景图用 32×32 采样的 P05/P50/P95 三带并折算图片层透明度与遮罩端点均值（不折算会误报：真实 6.7:1 被报成 1.5:1）",
+          "ThemeDialog 透明度滑块下加实测读数 + <4.5:1 时警示：默认外观 α=0 实测 7.5:1（可用）；预设「粉绿晨光」α=0 实测 2.0:1（警示）"
+        ]
+      },
+      "highlights": [
+        "α 能到多少的实测结论（原 0.15 下限既无依据也没起作用：渐变预设的暗带在 15% 就已经掉到 1.8~2.8:1）",
+        "默认（启动封面 55% + 遮罩）：α=0 → 6.7:1、α=0.64 → 11.0:1 —— 全带达标，所以 0 是成立的",
+        "浅顶带渐变预设（如 #ffd7d7→#195e53）：α=0 → 1.98:1、0.30 → 3.95:1、设计值 0.6 → 7.8:1",
+        "渲染像素审计（新 .impeccable/audit-contrast-pixels.cjs）在开发中发现两个方法论坑并修正：① 旧审计看不到 url() 背景图 → 背景图模式下给「假通过」；② 分位数采样会把大字/emoji 的字墨当成背景 → 假失败。现用「贴边取样 + 剔除字墨 + 裁剪到最近有底色的祖先」",
+        "探针抓到并修掉一个静默 bug：isStartupCover 把 hasCustomImage 参数传反（!bgImage.value），导致默认卡永远不高亮",
+        "默认外观与登录页同源由测试锁定：loginTheme.test 断言 AUTH_PALETTE.cardTone === DEFAULTS.compColor"
+      ],
+      "tests": [
+        "npm test 44/44（新增 4 例：默认即启动封面、isDefaultLook 扰动、登录页与默认同色、glassBandContrast 深底 α=0 安全 / 浅顶带 α 单调收敛）",
+        "npx vue-tsc --noEmit 零错误；npm run build 成功",
+        ".impeccable/audit-contrast.cjs 十路由 failCount=0（CSS 推算版）",
+        ".impeccable/verify-alpha-readout.cjs：滑块 min=0、默认 α=0 读数 7.5:1 无警告、预设 α=0 读数 2.0:1 出警告、点默认卡后偏好 = DEFAULTS 且卡片高亮、控制台 0 错误",
+        "截图留档 .impeccable/review/feat094-{home,albums,scan}.png"
+      ],
+      "related_files": [
+        "src/utils/prefs.ts",
+        "src/stores/theme.ts",
+        "src/utils/color.ts",
+        "src/App.vue",
+        "src/components/ThemeDialog.vue",
+        "src/assets/main.css",
+        "src/assets/pm-dialog.css",
+        ".impeccable/audit-contrast-pixels.cjs",
+        ".impeccable/verify-alpha-readout.cjs"
+      ],
+      "keywords": [
+        "默认外观",
+        "启动封面",
+        "落日金",
+        "强调色",
+        "组件透明度",
+        "对比度",
+        "色带",
+        "遮罩",
+        "scrim"
+      ],
+      "created_at": "2026-09-30T23:55:00+08:00",
+      "updated_at": "2026-09-30T23:55:00+08:00"
     }
   ],
-  "updated": "2026-09-30T23:20:00+08:00"
+  "updated": "2026-09-30T23:55:00+08:00"
 }

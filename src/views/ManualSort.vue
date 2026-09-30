@@ -845,7 +845,7 @@ onBeforeUnmount(() => {
 
 .manual-nav-item:hover {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
 }
 
 /* 目录跳转后的分组高亮 */
@@ -865,7 +865,7 @@ onBeforeUnmount(() => {
 }
 
 .btn { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--ms-border-strong); background: var(--ms-panel-bg); color: var(--ms-text); cursor: pointer; font-size: 14px; }
-.btn-primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
+.btn-primary { background: var(--color-primary); color: var(--color-on-primary); border-color: var(--color-primary); }
 .btn-sm { padding: 5px 10px; font-size: 12px; }
 .btn:disabled { opacity: .6; }
 
@@ -936,7 +936,7 @@ onBeforeUnmount(() => {
 .tag-del { border: none; background: none; color: #9a6a00; cursor: pointer; font-size: 12px; }
 .folder-actions { margin-left: auto; display: flex; gap: 4px; }
 .mini-btn { border: 1px solid var(--ms-border-strong); background: var(--ms-panel-bg); color: var(--ms-text); border-radius: 6px; font-size: 11px; padding: 3px 8px; cursor: pointer; }
-.mini-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.mini-btn:hover { border-color: var(--color-primary); color: var(--color-primary-text); }
 .folder-albums { display: flex; flex-wrap: wrap; gap: 10px; padding: 10px 14px; }
 
 .level-2 { margin-left: 24px; margin-bottom: 8px; background: var(--ms-panel-bg-2); }

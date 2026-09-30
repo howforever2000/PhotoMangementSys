@@ -20,6 +20,13 @@ import {
   authMsgBg,
   authScrimBackground,
 } from "./loginTheme.ts";
+import { DEFAULTS } from "./prefs.ts";
+
+test("登录页与应用默认外观同源：组件色调与壁纸必须一致（同一张启动封面）", () => {
+  // 视觉上「登录页 = 应用默认外观」是本次改动的核心承诺；色调/壁纸一漂移就会两套世界
+  assert.equal(AUTH_PALETTE.cardTone, DEFAULTS.compColor, "登录卡色调应与默认组件色调同色");
+  assert.equal(DEFAULTS.bgStyle, "image", "应用默认必须是背景图模式（即启动封面）");
+});
 
 const glassBright = authGlass(AUTH_WALLPAPER_SAMPLES.brightest);
 const glassDark = authGlass(AUTH_WALLPAPER_SAMPLES.darkest);

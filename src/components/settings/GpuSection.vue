@@ -154,7 +154,7 @@ function providerLabel(p: string): string {
 }
 .btn:hover:not(:disabled) {
   border-color: var(--color-primary);
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 .btn:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--color-primary) 55%, transparent);
@@ -168,7 +168,7 @@ function providerLabel(p: string): string {
 .btn-primary {
   background: var(--color-primary-soft);
   border-color: #b9cdf5;
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 .btn-primary.on {
   background: var(--color-ok-soft);

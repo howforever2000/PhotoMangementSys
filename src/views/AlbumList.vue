@@ -1881,14 +1881,14 @@ function onKey(e: KeyboardEvent) {
   padding: 4px 10px;
   font-size: 13px;
   font-weight: 600;
-  color: #2f5de0;
+  color: var(--color-primary-text);
   background: color-mix(in srgb, var(--color-primary) 15%, transparent);
   border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
   border-radius: 999px;
 }
 .tb-selected-pill b {
   font-size: 14px;
-  color: #2f5de0;
+  color: var(--color-primary-text);
 }
 
 .select {
@@ -1951,7 +1951,7 @@ function onKey(e: KeyboardEvent) {
 
 .bc-link:hover {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
 }
 
 /* 搜索栏 */
@@ -2107,7 +2107,7 @@ function onKey(e: KeyboardEvent) {
   flex-shrink: 0;
   border: 1px solid var(--color-primary);
   background: var(--tint-bg);
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 10px;
@@ -2117,7 +2117,7 @@ function onKey(e: KeyboardEvent) {
 
 .result-jump:hover {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
 }
 
 .result-arrow {
@@ -2128,7 +2128,7 @@ function onKey(e: KeyboardEvent) {
 .btn-back {
   border: none;
   background: transparent;
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   padding: 4px 8px;
   font-size: 14px;
 }
@@ -2136,7 +2136,7 @@ function onKey(e: KeyboardEvent) {
 .btn-back:hover {
   background: color-mix(in srgb, var(--color-primary) 8%, transparent);
   border-color: transparent;
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 
 .page-title {
@@ -2317,12 +2317,12 @@ function onKey(e: KeyboardEvent) {
 
 .btn:hover {
   border-color: var(--color-primary);
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 
 .btn-primary {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   border-color: var(--color-primary);
 }
 
@@ -2360,14 +2360,14 @@ function onKey(e: KeyboardEvent) {
   border: 1px solid var(--tint-border);
 }
 .tb-group.tb-scan .tb-group-label {
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   font-weight: 600;
 }
 
 /* 液态玻璃主按钮（全页唯一实心主按钮，方案 §三） */
 .btn-scan-feature {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   border: 1px solid var(--color-primary);
   font-weight: 600;
   letter-spacing: 0.2px;
@@ -2465,7 +2465,7 @@ function onKey(e: KeyboardEvent) {
 .link-btn {
   border: none;
   background: none;
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   cursor: pointer;
   font-size: 14px;
   padding: 0 4px;
@@ -2620,11 +2620,11 @@ function onKey(e: KeyboardEvent) {
 }
 .combo-check:hover {
   border-color: var(--color-primary);
-  background: #eef3fb;
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
 }
 .combo-check.active {
   border-color: var(--color-primary);
-  background: #eef3fb;
+  background: color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
 .combo-check input[type="checkbox"] {
   margin-right: 2px;
@@ -2660,7 +2660,7 @@ function onKey(e: KeyboardEvent) {
 }
 .batch-scan-progress {
   font-size: 12.5px;
-  color: var(--color-primary);
+  color: var(--color-primary-ink);
   background: #eef3fb;
   border: 1px solid #dbe3ff;
   border-radius: 8px;
@@ -2740,7 +2740,7 @@ function onKey(e: KeyboardEvent) {
   background: var(--card-bg);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
   font-size: 20px;
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   cursor: pointer;
   transition: opacity 0.3s ease, transform 0.3s ease, background 0.2s;
   z-index: 150;

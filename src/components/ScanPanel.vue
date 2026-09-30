@@ -425,7 +425,7 @@ const openImage = trace("openImage", async (path: string) => {
 }
 .btn:hover { border-color: var(--color-link); color: var(--color-link); }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-.btn-primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
+.btn-primary { background: var(--color-primary); color: var(--color-on-primary); border-color: var(--color-primary); }
 .btn-primary:hover { background: var(--color-primary-hover); color: #fff; }
 .btn-danger { background: var(--color-danger); color: #fff; border-color: var(--color-danger); }
 .btn-danger:hover { background: var(--color-danger-hover); color: #fff; }

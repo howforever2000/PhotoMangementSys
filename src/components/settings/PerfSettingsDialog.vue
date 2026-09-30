@@ -151,7 +151,7 @@ watch(open, (v) => {
 .psd-tab.on {
   background: var(--color-primary-soft);
   border-color: #b9cdf5;
-  color: var(--color-primary);
+  color: var(--color-primary-text);
 }
 .psd-dot {
   display: inline-block;

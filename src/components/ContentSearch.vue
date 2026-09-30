@@ -654,7 +654,7 @@ const toneLabelMap: Record<string, string> = {
   padding: 1px 6px;
   border-radius: 3px;
   background: #eef3fb;
-  color: var(--color-primary);
+  color: var(--color-primary-ink);
   font-size: 11px;
 }
 
@@ -724,7 +724,7 @@ const toneLabelMap: Record<string, string> = {
   background: transparent;
   border: none;
   font-size: 11px;
-  color: var(--color-primary);
+  color: var(--color-primary-text);
   cursor: pointer;
   padding: 0;
 }

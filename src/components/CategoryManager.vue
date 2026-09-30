@@ -710,7 +710,7 @@ function rawScore(v: number): string {
   flex-wrap: wrap;
   font-size: 12.5px;
 }
-.cm-hit b { color: var(--color-primary); font-size: 14px; }
+.cm-hit b { color: var(--color-primary-text); font-size: 14px; }
 .cm-dim { opacity: 0.62; font-size: 11.5px; }
 .cm-err { color: var(--color-danger-text); font-size: 11.5px; }
 .cm-samples {
@@ -781,7 +781,7 @@ function rawScore(v: number): string {
 .cm-btn.primary {
   background: var(--color-primary);
   border-color: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
 }
 .cm-btn.primary:hover:not(:disabled) { background: #2f5cc0; }
 .cm-btn.danger { color: var(--color-danger-text); border-color: color-mix(in srgb, var(--color-danger-text) 50%, transparent); }

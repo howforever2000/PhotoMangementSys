@@ -846,7 +846,7 @@ onMounted(() => {
 .dw-mode-btn.active {
   background: var(--color-primary);
   border-color: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
 }
 .dw-mode-hint {
   color: #7d8798;

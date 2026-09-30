@@ -1088,7 +1088,7 @@ function goAlbumFromLightbox(albumId: number) {
 .mb-btn-primary {
   background: var(--color-primary);
   border-color: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
 }
 .mb-btn-primary:hover {
   background: var(--color-primary-hover);
@@ -1175,14 +1175,14 @@ function goAlbumFromLightbox(albumId: number) {
   border: none;
   border-radius: 50%;
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-on-primary);
   font-size: 17px;
   cursor: pointer;
   box-shadow: 0 4px 14px color-mix(in srgb, var(--color-primary) 45%, transparent);
   transition: transform 0.15s, background 0.15s;
 }
 .mb-top-btn:hover {
-  background: #2f5bc0;
+  background: var(--color-primary-hover);
   transform: translateY(-2px);
 }
 .mb-top-enter-active,

@@ -96,6 +96,8 @@ onBeforeUnmount(() => {
   <div class="app-shell">
     <div class="app-bg-base" :style="theme.layerBase"></div>
     <div v-if="theme.layerImage" class="app-bg-img" :style="theme.layerImage"></div>
+    <!-- FEAT-094：背景图上的遮罩（上重下轻）——页头/面包屑等直掽压在壁纸亮部上的文字靠它达标 -->
+    <div v-if="theme.layerScrim" class="app-bg-scrim" :style="theme.layerScrim"></div>
     <div class="app-content">
       <router-view />
     </div>
@@ -109,9 +111,10 @@ onBeforeUnmount(() => {
   min-height: 100vh;
 }
 
-/* 全局背景层：底层（纯色/渐变）+ 可选图片层（透明度只淡化图片），位于所有页面之下 */
+/* 全局背景层：底层（纯色/渐变）+ 可选图片层（透明度只淡化图片）+ 图片遮罩，位于所有页面之下 */
 .app-bg-base,
-.app-bg-img {
+.app-bg-img,
+.app-bg-scrim {
   position: fixed;
   inset: 0;
   z-index: 0;

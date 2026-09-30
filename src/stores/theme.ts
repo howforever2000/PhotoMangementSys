@@ -2,17 +2,24 @@ import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 import {
   componentTone,
+  glassBandContrast,
   gradientAverage,
   hexToRgb,
   hexToRgba,
   isDarkText,
   mixRgb,
   onBgText,
+  relLum,
   rgbToHex,
   saturateColor,
+  type Rgb,
 } from "../utils/color";
-import { DEFAULTS, normalizePrefs, type BackgroundStyle, type Material, type Prefs, type ThemeMode } from "../utils/prefs";
+import { DEFAULTS, isDefaultLook, normalizePrefs, type BackgroundStyle, type Material, type Prefs, type ThemeMode } from "../utils/prefs";
 import { presetPrefs, type Preset } from "../utils/presets";
+/* FEAT-094：默认背景图 = 登录页那张启动封面。作为构建产物里的内置资源引用
+   （Vite 会给出带哈希的 URL），**不写 localStorage** —— 否则 176KB 的 data URL
+   很容易撞上存储配额，进而把整套偏好保存都拖掉（本文件开头的键分离就是这么来的）。 */
+import defaultWallpaper from "../../covers/login-sunset.jpg";
 
 /** 偏好设置与背景图分开存储：
  *  - 背景图 data URL 可能几百 KB，若和偏好一起写，超出 localStorage 配额时会导致
@@ -20,8 +27,17 @@ import { presetPrefs, type Preset } from "../utils/presets";
 const KEY_PREFS = "pm-theme";
 const KEY_IMAGE = "pm-theme-image";
 
-/** 深色模式对应的默认纯色背景 */
-const DARK_BG = "#1c202b";
+/** 深色模式对应的默认纯色背景（setMode 在亮/暗之间同步底色时用） */
+const DARK_BG = "#1a1428";
+
+/** 默认背景图（启动封面）的构建产物 URL */
+export const DEFAULT_WALLPAPER = defaultWallpaper;
+
+/** 背景图遮罩的取色与四个端点（layerScrim 与「可读性读数」共用，避免两处漂移） */
+const SCRIM_RGB: Rgb = [10, 8, 20];
+const SCRIM_STOPS = [0.52, 0.34, 0.26, 0.38];
+/** 遮罩的等效不透明度（四端点均值）：把背景图折算成「等效色带」时用它 */
+const SCRIM_MEAN_ALPHA = SCRIM_STOPS.reduce((a, b) => a + b, 0) / SCRIM_STOPS.length;
 
 function loadPrefs(): Prefs {
   try {
@@ -94,8 +110,16 @@ export const useThemeStore = defineStore("theme", () => {
   const bgOpacity = ref(saved.bgOpacity);
   const bgImage = ref(loadImage());
 
-  function persist() {
-    const prefs: Prefs = {
+  /* 生效的背景图：用户自定义图优先，否则回落到内置的启动封面。
+     必须声明在前（放在后面会被 layerImage / watch 的 immediate 提前引用 → TDZ，
+     FEAT-086 的 containerAlpha 踩过同一个坑）。 */
+  const bgImageEff = computed(() => bgImage.value || DEFAULT_WALLPAPER);
+  /** 是否在用内置封面（决定主题弹窗默认卡的高亮状态）——第二个参数是「用户有没有自定义图」 */
+  const isStartupCover = computed(() => isDefaultLook(prefsSnapshot(), !!bgImage.value));
+
+  /** 当前偏好的纯对象快照（persist 与「是否默认外观」共用一个来源，避免两处字段清单漂移） */
+  function prefsSnapshot(): Prefs {
+    return {
       mode: mode.value,
       compColor: compColor.value,
       compAlpha: compAlpha.value,
@@ -109,8 +133,11 @@ export const useThemeStore = defineStore("theme", () => {
       gradAngle: gradAngle.value,
       bgOpacity: bgOpacity.value,
     };
+  }
+
+  function persist() {
     try {
-      localStorage.setItem(KEY_PREFS, JSON.stringify(prefs));
+      localStorage.setItem(KEY_PREFS, JSON.stringify(prefsSnapshot()));
     } catch {
       /* 忽略 */
     }
@@ -197,12 +224,33 @@ export const useThemeStore = defineStore("theme", () => {
 
   /** 图片层：仅背景图模式有值，透明度只淡化图片不影响文字 */
   const layerImage = computed(() => {
-    if (bgStyle.value !== "image" || !bgImage.value) return null;
+    if (bgStyle.value !== "image") return null;
     return {
-      backgroundImage: `url(${bgImage.value})`,
+      backgroundImage: `url(${bgImageEff.value})`,
       backgroundSize: "cover",
       backgroundPosition: "center",
       opacity: bgOpacity.value,
+    };
+  });
+
+  /**
+   * 背景图上的遮罩（FEAT-094）。
+   * 页面级文字（页头标题、面包屑、返回/主页按钮、相册统计）是直掽压在背景上的，
+   * 而壁纸的局部亮度差很大（落日图：底部深靖山 0.05 → 天空亮带 0.55，相差 10 倍），
+   * 主题只能给一个文字色 —— 实测白字在天空带上只有 3.3~4.1:1（不够 4.5）。
+   * 所以补一层**上重下轻**的遮罩：页头永远在最上方 → 上端压得较重；
+   * 中部留给卡片（卡片自带玻璃底），底部轻收以免画面发死。
+   * 这里不用渐变背景那种「按均值算对比」的自适应 —— 局部亮块靠遮罩硬压，
+   * 与登录页（.auth-overlay）同一思路。
+   */
+  const layerScrim = computed(() => {
+    if (bgStyle.value !== "image") return null;
+    const [a0, a1, a2, a3] = SCRIM_STOPS;
+    const c = rgbToHex(SCRIM_RGB);
+    return {
+      backgroundImage:
+        `linear-gradient(180deg, ${hexToRgba(c, a0)} 0%, ${hexToRgba(c, a1)} 34%, ` +
+        `${hexToRgba(c, a2)} 66%, ${hexToRgba(c, a3)} 100%)`,
     };
   });
 
@@ -221,9 +269,13 @@ export const useThemeStore = defineStore("theme", () => {
 
   /** 背景图平均色（异步采样；null=尚未算出，先按底层纯色处理） */
   const bgImageAvg = ref<[number, number, number] | null>(null);
+  /* 背景图的「暗 / 中 / 亮」三条分位色带（FEAT-094）：界面要如实告诉你
+     「当前组件透明度下最差的那条带还剩多少对比」——只看均值会掩盖局部亮块的危害。 */
+  const bgImageBands = ref<Rgb[] | null>(null);
   function sampleBgImage(dataUrl: string) {
     if (!dataUrl || typeof document === "undefined") {
       bgImageAvg.value = null;
+      bgImageBands.value = null;
       return;
     }
     const img = new Image();
@@ -238,20 +290,30 @@ export const useThemeStore = defineStore("theme", () => {
         const d = ctx.getImageData(0, 0, N, N).data;
         let r = 0, g = 0, b = 0;
         const px = d.length / 4;
+        const colors: Rgb[] = [];
         for (let i = 0; i < d.length; i += 4) {
           r += d[i];
           g += d[i + 1];
           b += d[i + 2];
+          colors.push([d[i], d[i + 1], d[i + 2]]);
         }
         bgImageAvg.value = [Math.round(r / px), Math.round(g / px), Math.round(b / px)];
+        // 分位采样：P05 / P50 / P95 三条带，抗单像素噪声
+        colors.sort((a, c) => relLum(a) - relLum(c));
+        const at = (t: number) => colors[Math.min(colors.length - 1, Math.floor(t * colors.length))];
+        bgImageBands.value = [at(0.05), at(0.5), at(0.95)];
       } catch {
         bgImageAvg.value = null;
+        bgImageBands.value = null;
       }
     };
-    img.onerror = () => (bgImageAvg.value = null);
+    img.onerror = () => {
+      bgImageAvg.value = null;
+      bgImageBands.value = null;
+    };
     img.src = dataUrl;
   }
-  watch(bgImage, sampleBgImage, { immediate: true });
+  watch(bgImageEff, sampleBgImage, { immediate: true });
 
   /** 实际背景的 RGB（图层叠加后的等效色；三段渐变取分段积分均值） */
   const effectiveBg = computed<[number, number, number]>(() => {
@@ -318,11 +380,11 @@ export const useThemeStore = defineStore("theme", () => {
     const body = document.body;
     body.style.setProperty("--color-on-bg", onBgColor.value);
     body.style.setProperty("--color-on-bg-2", onBgSubColor.value);
-    // 背景上的链接色：body.theme-dark 的 --color-link 恒浅蓝（玻璃卡语境），
-    // 落在页面背景上的链接需要另一套 —— 浅背景→深蓝，深背景→浅蓝
-    body.style.setProperty("--color-link-on-bg", sat(onBgDark.value ? "#2f5cc2" : "#8ab4ff"));
+    // 背景上的链接色：body.theme-dark 的 --color-link 恒为浅金（玻璃卡语境），
+    // 落在页面背景上的链接需要另一套 —— 浅背景→深金，深背景→浅金
+    body.style.setProperty("--color-link-on-bg", sat(onBgDark.value ? "#8a5a12" : "#ffd9a0"));
     // 背景图模式加一层与文字同向的细描边阴影，抵抗图片亮斑（星空亮部等）
-    const onImage = bgStyle.value === "image" && !!bgImage.value;
+    const onImage = bgStyle.value === "image" && !!bgImageEff.value;
     body.classList.toggle("theme-on-image", onImage);
     body.style.setProperty(
       "--pm-text-shadow",
@@ -331,7 +393,7 @@ export const useThemeStore = defineStore("theme", () => {
         : "0 1px 3px rgba(0,0,0,.38)",
     );
   }
-  watch([onBgColor, onBgDark, bgStyle, bgImage], applyTextVars, { immediate: true });
+  watch([onBgColor, onBgDark, bgStyle, bgImageEff], applyTextVars, { immediate: true });
 
   /* ---------- 把深/浅色模式同步到 body ----------
      这样 main.css 中的 `body.theme-dark { --color-text: ... }` 才能覆盖全局，
@@ -395,8 +457,13 @@ export const useThemeStore = defineStore("theme", () => {
   function applyAccentVars() {
     if (typeof document === "undefined") return;
     const body = document.body;
-    const P = "#396cd8"; // 品牌主色（main.css :root --color-primary）
-    const PH = "#2f5cc2";
+    const P = "#e8a33d"; // 品牌主色（main.css :root --color-primary）：FEAT-094 由蓝改「落日金」
+    const PH = "#f2b355";
+    /* 金底白字只有 2.16:1 ⇒ 填充类必须配墨字；金色当**文字**写在深玻璃上时
+       用浅金档 #ffd9a0（≈7:1），不能直接用填充金（≈3.7:1 不够 4.5）。 */
+    const PRIMARY_TEXT = "#ffd9a0";
+    const ON_PRIMARY = "#2a1a08";
+    const LINK_LIGHT = "#8a5a12"; // 浅背景上的链接（深金）
     const D = "#d13438";
     const DH = "#b92e33";
     const OK = "#15803d";
@@ -404,6 +471,10 @@ export const useThemeStore = defineStore("theme", () => {
     const W = "#b45309";
     body.style.setProperty("--color-primary", sat(P));
     body.style.setProperty("--color-primary-hover", sat(PH));
+    /* FEAT-094 新增两档：金填充上允许读的文字色 / 深底上的金色文字档 */
+    body.style.setProperty("--color-on-primary", ON_PRIMARY);
+    body.style.setProperty("--color-primary-text", sat(PRIMARY_TEXT));
+    body.style.setProperty("--color-link-text-light", LINK_LIGHT);
     body.style.setProperty("--color-danger", sat(D));
     body.style.setProperty("--color-danger-hover", sat(DH));
     /* 成功/警示色在 main.css 里是**模式双值**（深色提亮）——这里必须镜像同一套基值，
@@ -431,9 +502,9 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--candy-rose", sat("#fb6d9b"));
     body.style.setProperty("--candy-indigo", sat("#505fdd"));
     body.style.setProperty("--candy-violet", sat("#3a36e4"));
-    /* 玻璃卡语境链接色（body.theme-dark 恒为浅蓝 #8ab4ff）：直接覆写 --color-link，
+    /* 玻璃卡语境链接色（body.theme-dark 恒为浅金 #ffd9a0）：直接覆写 --color-link，
        组件里的 var(--color-link) 引用自动跟随；仅做饱和度缩放（不改 HSL 亮度） */
-    body.style.setProperty("--color-link", sat(isDark.value ? "#8ab4ff" : P));
+    body.style.setProperty("--color-link", sat(isDark.value ? PRIMARY_TEXT : LINK_LIGHT));
   }
   watch([saturation, isDark], applyAccentVars, { immediate: true });
 
@@ -487,6 +558,34 @@ export const useThemeStore = defineStore("theme", () => {
     "--pm-danger-hover": "color-mix(in srgb, var(--color-danger) 22%, transparent)",
   }));
 
+  /**
+   * 当前背景 + 当前组件透明度下，「最差的那条色带」上的文字对比（FEAT-094）。
+   * 主题弹窗把它如实显示在透明度滑块下面 —— 是这个值（而不是拍脑袋的下限）
+   * 决定用户能不能把透明度拉到 0：背景越均匀、越暗，这个值越高，0 就真的可行。
+   * 放在 effectiveBg / fillColor 之后声明：computed 虽惰性，但同层 watch 可能提前触发。
+   */
+  const readability = computed(() => {
+    const scrim = rgbToHex(SCRIM_RGB);
+    /* 背景图：色带要按**实际呈现**折算 —— 先按 bgOpacity 叠到底色上，再过一层遮罩（取端点均值）。
+       直接用原始壁纸色带会把读数报得过于悲观（实测过：真实 6.7:1 被报成 1.5:1，等于误报）。 */
+    const imageBands = (bgImageBands.value ?? []).map((b) =>
+      mixRgb(mixRgb(b, hexToRgb(bgColorEff.value), 1 - bgOpacity.value), hexToRgb(scrim), SCRIM_MEAN_ALPHA),
+    );
+    const bands: Rgb[] =
+      bgStyle.value === "gradient"
+        ? [hexToRgb(gradFromEff.value), hexToRgb(gradMidEff.value), hexToRgb(gradToEff.value)]
+        : bgStyle.value === "image" && imageBands.length
+          ? imageBands
+          : [hexToRgb(bgColorEff.value)];
+    const avg =
+      bgStyle.value === "gradient"
+        ? gradientAverage(hexToRgb(gradFromEff.value), hexToRgb(gradMidEff.value), hexToRgb(gradToEff.value))
+        : bgStyle.value === "image"
+          ? mixRgb(effectiveBg.value, hexToRgb(scrim), SCRIM_MEAN_ALPHA)
+          : effectiveBg.value;
+    return glassBandContrast(bands, avg, fillColor.value, compAlpha.value);
+  });
+
   return {
     mode,
     compColor,
@@ -503,6 +602,9 @@ export const useThemeStore = defineStore("theme", () => {
     bgImage,
     layerBase,
     layerImage,
+    layerScrim,
+    bgImageEff,
+    isStartupCover,
     isDark,
     textColor,
     subTextColor,
@@ -512,6 +614,7 @@ export const useThemeStore = defineStore("theme", () => {
     cardStyle,
     cardBg,
     cardBorder,
+    readability,
     compFill,
     glassFill,
     panelFill,

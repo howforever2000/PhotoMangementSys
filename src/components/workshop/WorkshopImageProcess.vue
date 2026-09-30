@@ -863,7 +863,7 @@ onBeforeUnmount(() => {
 }
 
 .ip-primary {
-  color: #fff;
+  color: var(--color-on-primary);
   background: var(--color-primary);
   border-color: var(--color-primary);
 }
@@ -884,7 +884,7 @@ onBeforeUnmount(() => {
 }
 
 .ip-tool.on {
-  color: #fff;
+  color: var(--color-on-primary);
   background: var(--color-primary);
   border-color: var(--color-primary);
 }
@@ -1055,7 +1055,7 @@ onBeforeUnmount(() => {
 }
 
 .ip-seg button.on {
-  color: #fff;
+  color: var(--color-on-primary);
   background: var(--color-primary);
   border-color: var(--color-primary);
 }
