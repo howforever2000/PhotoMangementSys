@@ -3,6 +3,7 @@ import { createPinia } from "pinia";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./assets/main.css";
 import "./assets/pm-dialog.css"; /* FEAT-086：共享弹窗样式（.pm-*） */
+import "./assets/auth.css"; /* FEAT-093：三张鉴权页共用样式（.auth-*） */
 
 /**
  * 多窗口入口：Rust 侧创建的副窗口加载同一份 index.html，这里按窗口 label 分流：

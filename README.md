@@ -322,6 +322,14 @@ PhotoMangementSys/
 
 ## 十一、版本历史
 
+### v0.4.1（进行中）— 应用图标与登录页视觉识别（FEAT-093）
+
+> 口径说明：0.4.1 期间的其余功能以 `feature-notes.json` 为准（逐条登记 FEAT-084 ~ FEAT-093），此处只记**用户第一眼能看到的身份变化**。
+
+- **新应用图标**：换为「窗台逆光相机」（`封面和图标/icon-final-window-sill.png`，1923×1922 自带透明圆角）——`npx tauri icon` 重新生成 `src-tauri/icons` 全套（含 `icon.ico` 六档帧、`icon.icns`、Windows 方标商店素材、android/ios），窗口/任务栏/安装包图标一并生效；网页 favicon 从脚手架默认的 `/vite.svg` 换为同源图标（`public/favicon.png`）。图标母版替换为 `design/app-icon.png`（1024² RGBA），今后 `npx tauri icon design/app-icon.png` 即可整套再生成。
+- **登录页换启动壁纸**：`covers/login-sunset.jpg`（日落山峦，2560×1440 / 176KB，源图 2.0MB 按 9% 压缩，实测 MAE 0.57、最大偏差 11、天空无台阶带）；旧图 `covers/cover.jpg` / `cover.png` 保留可回滚。
+- **登录页配色「落日紫金」并接入默认效果材质**：登录 / 注册 / 忘记密码三页收口为共用外壳（`components/AuthShell.vue` + `assets/auth.css`，此前三页各有一份逐字重复的样式），卡片挂 `.glass-surface` ⇒ 模糊/饱和/材质高光随主题弹窗的磨砂·液态·釉瓷全局材质切换；配色（深紫罗兰玻璃 + 落日金主按钮 + 暖金链接）对着壁纸实测亮度推导，落在 `utils/loginTheme.ts` 纯函数里、由 `loginTheme.test.ts` 断言对比度，`.impeccable/verify-auth.cjs` 再按**真实渲染像素**在三种材质 × 两种状态（默认 / 字段报错）下复测：全 0 不达标、0 控制台错误（最低 4.76:1）。同时补齐输入框聚焦环、链接 `:focus-visible`、错误/成功提示 `role` 语义。
+
 ### v0.4.0-beta（2026-09-19）— 图像处理时代开端：重构与性能地基 + 创意工坊（预发布）
 
 > **定位**：3.x 的「语义检索 + 分类器自定义」已在 v0.3.0 收官（找得到、归得对），4.0 转向**图像处理**主线（改得好）——本 beta 交付重构与性能地基 + 创意工坊初步能力，完整版将包含 agent 图像编辑。

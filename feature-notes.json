@@ -1865,8 +1865,16 @@
         "输入框从「死白」变成与卡片同材质，背景图从输入框里透出",
         "顺手堵住自动填充这个高频「改了没用」的坑（不查 DevTools 很难发现）"
       ],
-      "related_files": ["src/views/Login.vue"],
-      "keywords": ["登录页", "玻璃态", "backdrop-filter", "autofill", "封面图"],
+      "related_files": [
+        "src/views/Login.vue"
+      ],
+      "keywords": [
+        "登录页",
+        "玻璃态",
+        "backdrop-filter",
+        "autofill",
+        "封面图"
+      ],
       "tests": [
         "npm run build（vue-tsc --noEmit + vite build）通过",
         "人工冒烟：登录页输入框可透视封面图；输入/聚焦/错误态文字清晰；触发浏览器自动填充后不出现白底"
@@ -1893,8 +1901,19 @@
         "打码不再只看列名：别名/表达式列也能被值指纹拦住，且不提供任何「显示明文」开关",
         "表结构 DDL 一键可查，排查索引/列类型不用再开外部工具"
       ],
-      "related_files": ["src-tauri/src/devdata.rs", "src-tauri/src/lib.rs", "src/dev/DataWindowApp.vue"],
-      "keywords": ["只读 SQL", "SQL 沙箱", "打码", "用户信息", "DDL", "开发者视角"],
+      "related_files": [
+        "src-tauri/src/devdata.rs",
+        "src-tauri/src/lib.rs",
+        "src/dev/DataWindowApp.vue"
+      ],
+      "keywords": [
+        "只读 SQL",
+        "SQL 沙箱",
+        "打码",
+        "用户信息",
+        "DDL",
+        "开发者视角"
+      ],
       "tests": [
         "npm run build（vue-tsc --noEmit）通过；cargo check 需在开发机执行（本机沙箱禁止执行 rustc）",
         "人工冒烟：表数据模式仍按打码显示 users/sessions；SQL 模式 SELECT * FROM users 的 username/email/phone/password_hash 均为打码值；写入语句（UPDATE/DROP/PRAGMA/分号多语句）被拒绝并给出原因；未写 LIMIT 时可看到实际执行 SQL 与截断标记"
@@ -1919,8 +1938,22 @@
         "镜像源不再写死：自检把「哪个源在你这台机器/这条线路上可用」变成界面可读事实，还能填自建镜像前缀（存模型目录，随模型目录走）",
         "已核实 ModelScope 的 AI-ModelScope/chinese-clip-vit-base-patch16 只有 pytorch_model.bin/vocab.txt、无 onnx 与 tokenizer.json，不能直接当 onnx 源，故未纳入内置候选"
       ],
-      "related_files": ["src-tauri/src/model_dl.rs", "src-tauri/src/lib.rs", "src/components/ModelGpuSettings.vue", "src/stores/content.ts", "src/types/content.ts"],
-      "keywords": ["模型下载", "镜像源", "hf-mirror", "aifasthub", "超时", "源自检", "download_sources.json"],
+      "related_files": [
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/ModelGpuSettings.vue",
+        "src/stores/content.ts",
+        "src/types/content.ts"
+      ],
+      "keywords": [
+        "模型下载",
+        "镜像源",
+        "hf-mirror",
+        "aifasthub",
+        "超时",
+        "源自检",
+        "download_sources.json"
+      ],
       "tests": [
         "npm run build（vue-tsc --noEmit）通过",
         "人工冒烟：性能设置 → 镜像源自检显示逐源状态/耗时；自定义源保存后下载优先使用；下载失败错误整行可见；下载完成后档位可切换并生效",
@@ -1947,8 +1980,18 @@
         "来源指纹是安全底线：镜像 A 的字节绝不与镜像 B 拼在一起，宁可重下也不产出坏模型",
         "取消不再等于丢弃进度（旧实现 cancel 直接删文件），弱网操作成本显著下降"
       ],
-      "related_files": ["src-tauri/src/model_dl.rs", "src/components/ModelGpuSettings.vue"],
-      "keywords": ["断点续传", "Range", "206", "分片", "Content-Range", "取消保留断点"],
+      "related_files": [
+        "src-tauri/src/model_dl.rs",
+        "src/components/ModelGpuSettings.vue"
+      ],
+      "keywords": [
+        "断点续传",
+        "Range",
+        "206",
+        "分片",
+        "Content-Range",
+        "取消保留断点"
+      ],
       "tests": [
         "npm run build（vue-tsc --noEmit）通过",
         "人工冒烟建议：下载中取消 → 模型目录留下 .dl_*.onnx 与 .meta → 再点下载应从断点继续（进度起点 > 0）；把 .meta 里的 url 改成别的源后应看到分片被重置重下",
@@ -2117,8 +2160,29 @@
       "name": "多模态检索 · 以图搜图 + 描述向量（三路 RRF）+ 人物真名嵌入 + 扫描补齐地点",
       "status": "done",
       "description": "在现有 CLIP 图像向量检索之上补齐文本侧：①以图搜图 smart_search_by_image（复用现有图像向量库，查询向量来自图片编码）；②新表 photo_text_embeddings 存照片描述的文本向量，带 source_hash 增量重建（描述没变不重算）；③扫描入库时补齐地点（EXIF GPS → geo_index 离线反查，无网可用）；④人物真名作为描述嵌入前缀（开关默认开，走路线 B：P 编号 token 不参与编码，人物过滤靠 faces.person_id 精确过滤），改名/合并时增量重算受影响照片的描述向量；⑤描述向量接入检索：图像向量 / 关键词 / 描述向量三路 RRF 融合，前端 SmartSearch 增加以图搜图入口与人物精确过滤。注：本条为补登——实现于 2026-09-18（提交 6f63419 / 7528d1c / 0668d84 / 3fd4535 / f5a20f9），当时报告输出被截断未登记，2026-09-18 补记。",
-      "related_files": ["src-tauri/src/textdesc.rs", "src-tauri/src/db/embedding.rs", "src-tauri/src/content.rs", "src-tauri/src/lib.rs", "src-tauri/src/db/mod.rs", "src-tauri/src/db/content.rs", "src/views/SmartSearch.vue"],
-      "keywords": ["以图搜图", "smart_search_by_image", "描述向量", "photo_text_embeddings", "source_hash", "增量重建", "geo_index", "GPS 反查地点", "人物真名嵌入", "改名/合并增量重算", "三路 RRF", "SmartSearch"],
+      "related_files": [
+        "src-tauri/src/textdesc.rs",
+        "src-tauri/src/db/embedding.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/db/content.rs",
+        "src/views/SmartSearch.vue"
+      ],
+      "keywords": [
+        "以图搜图",
+        "smart_search_by_image",
+        "描述向量",
+        "photo_text_embeddings",
+        "source_hash",
+        "增量重建",
+        "geo_index",
+        "GPS 反查地点",
+        "人物真名嵌入",
+        "改名/合并增量重算",
+        "三路 RRF",
+        "SmartSearch"
+      ],
       "implementation": {
         "以图搜图": "textdesc.rs：smart_search_by_image —— 输入图片 → CLIP 图像编码 → 在现有图像向量库做近邻检索（复用既有图像向量链路，不复制第二套库）",
         "描述向量表": "db/embedding.rs + db/content.rs：photo_text_embeddings（photo_id ↔ 文本向量 + 模型标识）；重建以 source_hash 为门槛——描述文本/人物名等参与编码的内容 hash 没变就跳过，避免全量重编码",
@@ -2126,8 +2190,18 @@
         "人物真名嵌入": "textdesc.rs：描述编码文本前可拼接人物真名（设置开关，默认开）；改名/合并人物时按 faces.person_id 找到受影响照片，增量重算其描述向量（实测 170 人全部改名 ≈ 28s，不是瓶颈）。设计依据：三轮实测证明 P 编号类 token（P001 / 十二号人 / 12号人 / 真实姓名）无法稳定参与向量编码，走路线 B——人物约束不入向量，检索时用 faces.person_id 精确过滤",
         "三路 RRF": "content.rs：检索融合图像向量、关键词、描述向量三路结果（RRF），任一路命中均可召回；SmartSearch.vue 增加以图搜图入口（选本地图片发起检索）与人物精确过滤控件"
       },
-      "highlights": ["描述向量重建走 source_hash 增量，改一个人名不会触发全库重编码", "人物匹配坚持路线 B（精确过滤），不以低区分度 token 污染向量空间——有三轮实测数据背书（P 编号 acc 5%、编号人 60~70%、真实姓名 52.4%，disc 均远低于 0.05 门槛）", "地点补齐全离线（GPS → geo_index），扫描不再依赖外网", "三路 RRF 只做融合不改各路实现，单路可独立降级"],
-      "tests": ["cargo test --lib：104 passed / 0 failed / 2 ignored（2026-09-18 补登时复跑，基线一致）", "npm run build（vue-tsc --noEmit && vite build）：零错误（同上复跑）", "人物标签入向量三轮实测（chinese-clip-vit-b16-fp16，CPU，经项目 POST /embed_text_batch）：disc 中位数最高 0.0228（真实姓名，门槛 0.05）；裸标签查描述库 acc 最高 70%（12号人，门槛 90%）→ 全部不达标，定路线 B。原始数据在系统 temp（cbc-feat067-* 目录，会随清理丢失）", "改名成本实测：编码吞吐 33.93 条/秒（CPU b16）；170 人全部改名 28.2s（含合并重算 10.4s）→ 增量重算可用"],
+      "highlights": [
+        "描述向量重建走 source_hash 增量，改一个人名不会触发全库重编码",
+        "人物匹配坚持路线 B（精确过滤），不以低区分度 token 污染向量空间——有三轮实测数据背书（P 编号 acc 5%、编号人 60~70%、真实姓名 52.4%，disc 均远低于 0.05 门槛）",
+        "地点补齐全离线（GPS → geo_index），扫描不再依赖外网",
+        "三路 RRF 只做融合不改各路实现，单路可独立降级"
+      ],
+      "tests": [
+        "cargo test --lib：104 passed / 0 failed / 2 ignored（2026-09-18 补登时复跑，基线一致）",
+        "npm run build（vue-tsc --noEmit && vite build）：零错误（同上复跑）",
+        "人物标签入向量三轮实测（chinese-clip-vit-b16-fp16，CPU，经项目 POST /embed_text_batch）：disc 中位数最高 0.0228（真实姓名，门槛 0.05）；裸标签查描述库 acc 最高 70%（12号人，门槛 90%）→ 全部不达标，定路线 B。原始数据在系统 temp（cbc-feat067-* 目录，会随清理丢失）",
+        "改名成本实测：编码吞吐 33.93 条/秒（CPU b16）；170 人全部改名 28.2s（含合并重算 10.4s）→ 增量重算可用"
+      ],
       "created_at": "2026-09-18T19:20:00+08:00",
       "updated_at": "2026-09-18T19:20:00+08:00"
     },
@@ -2137,16 +2211,34 @@
       "status": "done",
       "module": "创意工坊 / WorkshopImageProcess.vue",
       "description": "WorkshopImageProcess 新增三种视图模式：edit（编辑态，蒙版可画）/ side（左右并排，Lightroom Y/Y 快捷键再按回编辑态）/ split（单画布分割对比，分割线可拖动，左原图右结果）。『原图』指叠加链下当前底图 baseEl（最近基底），『结果』为最近一次应用输出；无结果时对比入口禁用，输入控件聚焦时不劫持 Y 键。",
-      "related_files": ["src/components/workshop/WorkshopImageProcess.vue"],
-      "keywords": ["修图对比", "前后对比", "Lightroom", "Y/Y", "分割线", "split", "并排对比", "WorkshopImageProcess", "创意工坊"],
+      "related_files": [
+        "src/components/workshop/WorkshopImageProcess.vue"
+      ],
+      "keywords": [
+        "修图对比",
+        "前后对比",
+        "Lightroom",
+        "Y/Y",
+        "分割线",
+        "split",
+        "并排对比",
+        "WorkshopImageProcess",
+        "创意工坊"
+      ],
       "implementation": {
         "视图模式": "viewMode: edit | side | split 三态；watch 视图切换后 nextTick 重算画布尺寸并重绘（side 模式画布分支重挂载）",
         "并排对比": "side 模式两画布平分舞台宽度（中间 16px 间隙），左=当前底图 displayCanvas，右=最近结果 sideResultCanvas",
         "分割对比": "split 模式单画布按 splitX 裁切绘制：左半原图右半结果，分割线 PointerCapture 拖动（钳制 0.02~0.98），拖动即时重绘",
         "快捷键": "window keydown 监听 Y 键切换 side ↔ edit；INPUT/TEXTAREA/contentEditable 聚焦时不劫持"
       },
-      "highlights": ["「原图」语义跟随叠加链（baseEl 最近基底），叠加处理多次应用后对比仍是『上一基底 vs 最新结果』", "开始新编辑自动从对比态切回 edit 态，蒙版绘制与对比视图互不干扰"],
-      "tests": ["npx vue-tsc --noEmit：0 错误（2026-09-19 复跑）", "cargo test --lib：108 passed / 0 failed / 2 ignored（同上复跑）"],
+      "highlights": [
+        "「原图」语义跟随叠加链（baseEl 最近基底），叠加处理多次应用后对比仍是『上一基底 vs 最新结果』",
+        "开始新编辑自动从对比态切回 edit 态，蒙版绘制与对比视图互不干扰"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit：0 错误（2026-09-19 复跑）",
+        "cargo test --lib：108 passed / 0 failed / 2 ignored（同上复跑）"
+      ],
       "created_at": "2026-09-19T23:40:00+08:00",
       "updated_at": "2026-09-19T23:40:00+08:00"
     },
@@ -2156,8 +2248,37 @@
       "status": "done",
       "module": "test_scan.rs / test_scan_job.rs / scan_perf.rs / scanTask.ts / TestScan.vue / ScanPerfSettings.vue",
       "description": "修复两个用户反馈问题：①界面不能异步扫描、退出页面任务消失；②新增右上角「⚙ 性能设置」可设扫描核数。① 任务状态从「前端页面组件」提升到「后端进程级 ScanJobState」，命令改为「启动即返回」（start_scan_job / start_resolve_job / start_organize_job + get_scan_job / cancel_scan_job / clear_scan_job），前端用 Pinia store（useScanTaskStore）+ test-scan-progress 事件（20Hz 节流）与 700ms 兜底轮询双通道维持视图，页面卸载/路由切换不中断，重进页面用 get_scan_job 快照即刻恢复进度与结果。② 扫描走 rayon 线程池并行（scan_test_photos_parallel / _cancellable），线程数可在「⚙ 性能设置」调整并持久化；推荐值由 scan_perf.rs 按 CPU 拓扑（物理核/逻辑核/大小核）+ 磁盘类型（SSD/HDD）实际计算，并支持「按当前相册实测」（calibrate_scan_threads）——用该目录真实文件分层抽样在多档位实测，给出最优线程。",
-      "related_files": ["src-tauri/src/test_scan_job.rs", "src-tauri/src/scan_perf.rs", "src-tauri/src/test_scan.rs", "src-tauri/src/vcr_settings.rs", "src-tauri/src/lib.rs", "src-tauri/Cargo.toml", "src/stores/scanTask.ts", "src/components/ScanPerfSettings.vue", "src/views/TestScan.vue", "src/types/photo.ts"],
-      "keywords": ["异步扫描", "后台任务", "退出不消失", "任务恢复", "多线程", "rayon", "并行扫描", "线程数设置", "性能设置", "实测推荐", "CPU 拓扑", "物理核", "磁盘类型", "ScanJobState", "useScanTaskStore", "calibrate_scan_threads", "相册扫描分组工具"],
+      "related_files": [
+        "src-tauri/src/test_scan_job.rs",
+        "src-tauri/src/scan_perf.rs",
+        "src-tauri/src/test_scan.rs",
+        "src-tauri/src/vcr_settings.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/Cargo.toml",
+        "src/stores/scanTask.ts",
+        "src/components/ScanPerfSettings.vue",
+        "src/views/TestScan.vue",
+        "src/types/photo.ts"
+      ],
+      "keywords": [
+        "异步扫描",
+        "后台任务",
+        "退出不消失",
+        "任务恢复",
+        "多线程",
+        "rayon",
+        "并行扫描",
+        "线程数设置",
+        "性能设置",
+        "实测推荐",
+        "CPU 拓扑",
+        "物理核",
+        "磁盘类型",
+        "ScanJobState",
+        "useScanTaskStore",
+        "calibrate_scan_threads",
+        "相册扫描分组工具"
+      ],
       "implementation": {
         "任务状态机": "test_scan_job.rs：ScanJobState(Arc<Mutex<JobInner>>) 托管在 tauri::State（进程级，页面卸载不影响）；JobSnapshot 为前端渲染的唯一依据（status/phase/dir/threads/progress/photo_count/place_count/organize/error/时间戳）；job_id 代次号防止旧任务收尾覆盖新任务；进度单调递增（max 保护）避免并行乱序回退；同一时刻只允许一个任务（扫描/解析/移动共用一个槽位，三者操作同一批文件）",
         "Arc 化设计": "ScanJobState 内部用 Arc<Mutex<..>> 而非裸 Mutex —— 任务体跑在 spawn_blocking 线程上，需要一份可 move 进 'static 闭包的句柄（tauri::State 本身带借用生命周期，不能被 move）；克隆 ScanJobState 只是克隆 Arc，代价可忽略",
@@ -2168,8 +2289,23 @@
         "线程数推荐": "scan_perf.rs：物理核 = 逻辑核/2（奇数逻辑核或 Pentium/Celeron/Atom/9400F 等无超线程型号则不折半）；推荐 = 物理核 + (逻辑核-物理核)×2/5，封顶 12（8 线程后收益递减）；机械盘（HDD）压到 ≤4 线程（随机读寻道敏感，多线程反而变慢），下限 2；磁盘类型用 PowerShell Get-PhysicalDisk 取 MediaType；落盘 app_data_dir/scan_threads.json（与 Python VCR 的 current_threads.json 分开）",
         "按相册实测": "calibrate_scan_threads：按文件大小分层抽样（大/中/小各约 70 张，避免「同一次连拍大小雷同」的偏样本）→ 在 6~7 个档位（1/2/物理核/半物理核/推荐/推荐×1.5/硬上限）各预热 1 轮 + 正式 2 轮取最小值 → 「最优」取**达峰值吞吐 95% 的最小线程数**（峰值档常只快不到 5% 却多占一倍 CPU，性价比低）；返回 reason 字符串说明推荐依据，前端展示各档位吞吐对比条 + 「采用最优/采用峰值」按钮"
       },
-      "highlights": ["任务归属进程（后端 ScanJobState + 前端 store），页面切换/卸载/重进都能续上——彻底消除「退出后任务消失」", "进度双通道（事件 20Hz 实时 + 轮询 700ms 兜底）既流畅又不会因事件丢帧而卡住；终态由轮询确定性收敛", "并行扫描结果与串行**逐字节一致**（有测试断言把关），并行化不改变语义", "取消返回已处理部分而非报错，破坏性操作（组织移动）中途停止也不会「白干」", "推荐线程数基于真实硬件画像（物理核 + 超线程折扣 + 盘型约束）而非简单等于逻辑核数——机械盘上直接拉满线程会变慢", "「按当前相册实测」用真实文件分层抽样实测，比纯拓扑推断更贴合该相册（大图/小图、SSD/HDD 都影响结论）", "「最优」定义为达峰值 95% 的最小档，兼顾速度与 CPU 占用（不盲目追峰值）", "扫描线程数与 VCR 推理线程数**刻意分离**：前者 IO 密集受盘型约束，后者纯计算取物理核，共用会互相误导"],
-      "tests": ["cargo test --lib：121 passed / 0 failed / 2 ignored（新增 8 个测试：并行一致性、取消返回部分、线程数 clamp、推荐值区间、HDD 限流、无超线程不加成、单核下限、档位列表）", "npm run build（vue-tsc --noEmit && vite build）：零错误", "cargo build --lib：通过（34.15s）", "并行一致性测试 parallel_scan_matches_serial：2/4/8 线程与串行结果的文件名/路径/时间逐项比对 + 进度回调必须覆盖到最后一张", "推荐值测试捕获真实缺陷：physical_cores 会读注册表，测试无法构造期望值 → 拆出纯函数 physical_cores_for 后三分支（奇数核/普通型号/无超线程型号）全覆盖"],
+      "highlights": [
+        "任务归属进程（后端 ScanJobState + 前端 store），页面切换/卸载/重进都能续上——彻底消除「退出后任务消失」",
+        "进度双通道（事件 20Hz 实时 + 轮询 700ms 兜底）既流畅又不会因事件丢帧而卡住；终态由轮询确定性收敛",
+        "并行扫描结果与串行**逐字节一致**（有测试断言把关），并行化不改变语义",
+        "取消返回已处理部分而非报错，破坏性操作（组织移动）中途停止也不会「白干」",
+        "推荐线程数基于真实硬件画像（物理核 + 超线程折扣 + 盘型约束）而非简单等于逻辑核数——机械盘上直接拉满线程会变慢",
+        "「按当前相册实测」用真实文件分层抽样实测，比纯拓扑推断更贴合该相册（大图/小图、SSD/HDD 都影响结论）",
+        "「最优」定义为达峰值 95% 的最小档，兼顾速度与 CPU 占用（不盲目追峰值）",
+        "扫描线程数与 VCR 推理线程数**刻意分离**：前者 IO 密集受盘型约束，后者纯计算取物理核，共用会互相误导"
+      ],
+      "tests": [
+        "cargo test --lib：121 passed / 0 failed / 2 ignored（新增 8 个测试：并行一致性、取消返回部分、线程数 clamp、推荐值区间、HDD 限流、无超线程不加成、单核下限、档位列表）",
+        "npm run build（vue-tsc --noEmit && vite build）：零错误",
+        "cargo build --lib：通过（34.15s）",
+        "并行一致性测试 parallel_scan_matches_serial：2/4/8 线程与串行结果的文件名/路径/时间逐项比对 + 进度回调必须覆盖到最后一张",
+        "推荐值测试捕获真实缺陷：physical_cores 会读注册表，测试无法构造期望值 → 拆出纯函数 physical_cores_for 后三分支（奇数核/普通型号/无超线程型号）全覆盖"
+      ],
       "created_at": "2026-09-21T16:30:00+08:00",
       "updated_at": "2026-09-21T16:30:00+08:00"
     },
@@ -2179,15 +2315,32 @@
       "status": "done",
       "module": "src/views/Login.vue / covers/cover.jpg / src-tauri/tauri.conf.json / index.html",
       "description": "按用户要求把登录页（启动后可见的首屏）固定封面从原设计图 covers/cover.png 换成实拍日出山峦壁纸（源图 D:/YUAN HAO/Pictures/壁纸/20260928-Image_1790578366194_587_edit_314986081038539-3.jpg，4096x2304），同时把系统对外名称统一为「本地相册搭子」。封面只被 Login.vue 引用（Register / ForgotPassword 是浅色纯色渐变、无封面），改动面收敛在一处。原设计封面 covers/cover.png 未覆盖，回滚只需把 import 路径改回去。",
-      "related_files": ["src/views/Login.vue", "covers/cover.jpg", "covers/login-preview.png", "src-tauri/tauri.conf.json", "index.html"],
-      "keywords": ["登录页封面", "启动封面", "封面换图", "本地相册搭子", "系统命名", "窗口标题", "cover.jpg", "Login.vue", "auth-cover", "壁纸"],
-      "implementation":       {
+      "related_files": [
+        "src/views/Login.vue",
+        "covers/cover.jpg",
+        "covers/login-preview.png",
+        "src-tauri/tauri.conf.json",
+        "index.html"
+      ],
+      "keywords": [
+        "登录页封面",
+        "启动封面",
+        "封面换图",
+        "本地相册搭子",
+        "系统命名",
+        "窗口标题",
+        "cover.jpg",
+        "Login.vue",
+        "auth-cover",
+        "壁纸"
+      ],
+      "implementation": {
         "封面素材": "源图 4096x2304 / 1.5MB 对登录页过重（全屏 background-size:cover 用不到 4K）。Pillow 等比缩到 2560x1440、JPEG quality=88 progressive optimize 输出 covers/cover.jpg，434KB（原图 28%），保留 2K 全屏清晰度。",
         "引用切换": "Login.vue 的 import 由 ../../covers/cover.png 改为 ../../covers/cover.jpg；.auth-cover 样式（cover + center）不动。",
         "命名统一": "登录页主标题「本地相册管理」→「本地相册搭子」；index.html <title> 与 tauri.conf.json 窗口 title 同步改名。productName/identifier 未动（牵动安装包与注册表标识），Home.vue 顶栏标题也未动。",
         "回滚路径": "Login.vue import 改回 cover.png 即回到原设计封面。"
       },
-      "verified":       {
+      "verified": {
         "编译": "@vue/compiler-sfc parse + compileScript + compileTemplate 通过，零模板/脚本错误",
         "运行": "vite dev(1420) + Playwright(msedge headless, 1280x800) 打开 /login：document.title 与 .auth-title 均为「本地相册搭子」，封面资源 /covers/cover.jpg 返回 200 image/jpeg，控制台 0 error / 0 warning",
         "可读性": "新封面均值亮度 135、卡片区 154（偏亮）。卡片 rgba(12,18,38,0.42) + blur 叠加后浅色标题 #f5f7ff 对比度约 5.8:1，高于 WCAG AA 4.5:1，故未额外加深遮罩（避免把封面盖死）"
@@ -2917,7 +3070,58 @@
       ],
       "created_at": "2026-10-01T03:00:00+08:00",
       "updated_at": "2026-10-01T03:00:00+08:00"
+    },
+    {
+      "id": "FEAT-093",
+      "name": "应用图标全套替换 + 登录/注册/忘记密码三页视觉统一（落日紫金 + 接入默认效果材质）",
+      "module": "src-tauri/icons（npx tauri icon 生成）、public/favicon.png、index.html、covers/login-sunset.jpg、src/utils/loginTheme.ts(+test)、src/assets/auth.css、src/components/AuthShell.vue、src/views/{Login,Register,ForgotPassword}.vue、src/main.ts、.impeccable/verify-auth.cjs",
+      "purpose": "用户指定：① 软件图标换成「窗台逆光相机」icon-final-window-sill.png；② 登录界面背景换成日落山峦 IMG_20260930_225558.png；③ 登录界面同时使用「风格定义（主题/皮肤）里的默认效果」；④ 为这个默认背景的组件配一组合适的配色。四项一次交付，附带把两张旧图（favicon / cover.jpg）与三页重复样式一起收口。",
+      "implementation": {
+        "图标": [
+          "源图 1923×1922（非正方形，tauri icon 会直接报 Source image must be square）→ 居中裁到 1922×1922 后执行 npx tauri icon（CLI 2.11.4）",
+          "生成 icons/{32x32,64x64,128x128,128x128@2x,icon}.png + icon.ico（6 档帧 16/24/32/48/64/256）+ icon.icns + Windows 方标商店素材 + android/ios 全套",
+          "源图自带透明圆角（四角 A=0，Format32bppArgb），无需自己挖圆角；tauri.conf.json 引用路径未变（同名覆盖）",
+          "index.html favicon 由脚手架默认 /vite.svg 换为 public/favicon.png（= icons/128x128.png）；删除零引用的旧资产 public/app-icon.png（1024×1024 白底，与 design/app-icon.png 同字节，全仓无引用）",
+          "图标母版落到仓库内的 design/app-icon.png（1024×1024 RGBA，四角 alpha=0，替换原先的白底旧母版）——沿用既有约定（该文件本来就是图标母版），今后 npx tauri icon design/app-icon.png 即可整套再生成；等价性实测：用新母版重生成与已提交图标逐像素比对，大差异（>24）像素占 0.07%~0.13% 且 100% 集中在圆角边缘（1922² 原始源图 vs 1024² 母版在圆角抗锯齿上的亚像素差），均值差 0.10~0.24，肉眼不可辨；已提交的 icons 仍按 1922² 原图生成（更锐）"
+        ],
+        "登录壁纸": [
+          "IMG_20260930_225558.png 2730×1536 / 1951KB → Pillow LANCZOS 2560×1440 + JPEG q88 optimize progressive → covers/login-sunset.jpg 176KB（源图 9.0%）",
+          "质量实测：MAE 0.57 / P99 2.0 / MAX 11；天空平坦行相邻像素最大台阶 2.0（无 banding）",
+          "旧图 covers/cover.jpg（FEAT-075）与 cover.png 全部保留，回滚只改 auth.css 一行 url()"
+        ],
+        "颜色体系（为什么这么配）": [
+          "壁纸实测采样（源图按 6px 步长分区）：顶部暖橙 #f7bf9d（最亮且正落在卡片上沿）、中部玫紫 #a56e95、卡片区均值 #be798b、底部深靛 #29347b",
+          "组件色调取深紫罗兰 #2b2140（与壁纸紫山同色系）、玻璃 α=0.64；主按钮落日金 #e8a33d 配墨字 #2a1a08（金底白字只有 2.16:1）；链接暖金 #ffd9a0；提示条 #7a1a2a/#14532d 深底亮字",
+          "遮罩两层（暗角 + 上浅下深 .36~.50），卡片区等效不透明度下限 0.35 —— 既压暗亮部又不像 BUG-2026-0919-001 那样把封面盖死",
+          "结论全部落在 utils/loginTheme.ts 的纯函数里（authGlass/authFieldBg/authMsgBg/authCssVars/authScrimBackground），CSS 只引用 var(--auth-*)"
+        ],
+        "接入默认效果（用户第③条）": [
+          "卡片挂 .glass-surface：模糊/饱和/材质高光/玻璃棱环/shadow-1 全部由 main.css 的 body.mat-frosted|mat-liquid|mat-glazed 提供 ⇒ 用户在主题弹窗换材质，登录卡跟着换",
+          "配色不抢 background-color 的特异性：在 .auth-card 上就地重指向 --glass-bg / --glass-border（main.css 仍按 var(--glass-bg) 取色，等于换色不换机制）",
+          "材质高光在本卡按全局 ~28% 压缩（--frosted/liquid/glazed-highlight 局部重指向）：全局高光按深底白字 ~15:1 的余量设计，登录卡压在最亮粉带上余量薄得多（按全局强度实测副标题 4.16:1、液态下 3.91:1）；高光**种类**仍由 body.mat-* 决定"
+        ],
+        "三页收口": [
+          "新增 components/AuthShell.vue（壁纸 + 遮罩 + 玻璃卡 + 标题/副标题 + 默认/页脚双插槽）与 assets/auth.css（全局 .auth-* 命名空间，与 pm-dialog.css 同口径）",
+          "Login/Register/ForgotPassword 各删掉一份逐字重复的 ~120 行 scoped 样式块（Register 与 ForgotPassword 此前完全一致）；Register/ForgotPassword 顺带从「旧浅色白卡片」迁移到深色玻璃世界（FEAT-075 备注里承认过这三页不统一）",
+          "补齐无障碍：输入框聚焦环（只动描边+光环，不加底色状态以免多一处对比度要复核）、链接 :focus-visible、错误/成功提示 role=alert/status、按钮 :hover:not(:disabled) 与 :active 态"
+        ]
+      },
+      "highlights": [
+        "渲染像素实测（.impeccable/verify-auth.cjs）：三路由 × 三材质（磨砂/液态/釉瓷）× 两状态（默认/字段报错）共 18 轮，**全 0 不达标**，最低对比 4.76:1，控制台 0 错误",
+        "为什么不用现成的 audit-contrast.cjs：它按祖先链+兄弟遮罩**推算**底色，遇到「背景是 photo（background-image: url）」与「材质高光是伪元素」两类会退回兜底深色 → 假通过；本脚本改为截图→回送页面用 canvas 解码→读真实像素，浅字取最亮样本/深字取最暗样本",
+        "解析模型与渲染像素对账：磨砂 0.038~0.044、液态 0.062~0.065、釉瓷 0.045~0.079（模型不含 ::before 材质层 soft-light 颗粒/开片，属预期），证明 loginTheme.ts 单测那套推导与真实渲染一致",
+        "踩坑（三个，全在本轮内被实测抓住）：① 采样环落在元素外，把「金底墨字」量成压在紫玻璃上的 1.45:1 假失败 → 改为「元素自带底色则只取框内、无底色则只取框外」；② 渐变高度比例超过末段时会**外推**成负 alpha，对账出现 rgb(-23,-40,3) → 补夹紧；③ 中文首字从 x=0 起笔，框内 l+4 采样会点到墨迹本身 → 同上规则排除",
+        "图标小尺寸诚实评估：相机在 16/24px 任务栏档位只剩「暖色小方块 + 深色机身」的剪影（源图是摄影写实图，细节天然吃亏），32px 起可辨认为相机；若要 16px 也清晰，需单独为小尺寸裁切放大相机主体",
+        "副作用为零：theme store / prefs / presets 结构未动，旧 localStorage 兼容；其它页面样式不受影响（.auth-* 全部收在 .auth-page 命名空间下）"
+      ],
+      "tests": [
+        "npm test 40/40 全绿（新增 src/utils/loginTheme.test.ts 8 例：卡片文字 ≥4.5:1、暗端对比单调、输入框正文/占位符/框线 3:1、金底墨字且白字必然不达标、提示条、CSS 变量同源与遮罩层数、遮罩下限自洽、坏值不抛错）",
+        "npx vue-tsc --noEmit 零错误；npm run build 成功",
+        ".impeccable/verify-auth.cjs（Playwright + 未登录 IPC mock，需 vite dev 1420）：结构与令牌、材质跟随（blur 24→10→6 与三种高光梯度）、壁纸/favicon 资源可加载、18 轮渲染像素对比度、模型对账"
+      ],
+      "created_at": "2026-09-30T23:15:00+08:00",
+      "updated_at": "2026-09-30T23:15:00+08:00"
     }
   ],
-  "updated": "2026-10-01T03:00:00+08:00"
+  "updated": "2026-09-30T23:20:00+08:00"
 }

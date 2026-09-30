@@ -1,12 +1,14 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "../stores/auth";
-// 登录页固定使用启动封面（不随主题/皮肤变化）
-// FEAT-075：封面替换为实拍壁纸 covers/cover.jpg（2560x1440）；
-// 旧设计封面保留为 covers/cover.png，需要回滚时改回这一行路径即可。
-import coverImg from "../../covers/cover.jpg";
+import AuthShell from "../components/AuthShell.vue";
 
+// 登录页固定使用启动壁纸（covers/login-sunset.jpg），不随主题/皮肤变化。
+// FEAT-093：壁纸与落日紫金配色的单一事实来源是
+//   · src/assets/auth.css（.auth-cover 的 url）
+//   · src/utils/loginTheme.ts（色值 + 对比度断言）
+// 换图只需改上面两处，本组件不再持有图片资源。
 const auth = useAuthStore();
 const router = useRouter();
 const route = useRoute();
@@ -44,242 +46,41 @@ async function handleLogin() {
 </script>
 
 <template>
-  <div class="auth-page">
-    <div class="auth-cover" :style="{ backgroundImage: `url(${coverImg})` }"></div>
-    <div class="auth-overlay"></div>
-    <div class="auth-card">
-      <header class="auth-header">
-        <h1 class="auth-title">本地相册搭子</h1>
-        <p class="auth-subtitle">登录后管理你的相册空间</p>
-      </header>
+  <AuthShell title="本地相册搭子" subtitle="登录后管理你的相册空间">
+    <form class="auth-form" @submit.prevent="handleLogin">
+      <label class="field">
+        <span class="field-label">账户名 / 邮箱 / 手机号</span>
+        <input
+          v-model="account"
+          class="field-input"
+          type="text"
+          placeholder="输入账户名、邮箱或手机号"
+          autocomplete="username"
+        />
+      </label>
 
-      <form class="auth-form" @submit.prevent="handleLogin">
-        <label class="field">
-          <span class="field-label">账户名 / 邮箱 / 手机号</span>
-          <input
-            v-model="account"
-            class="field-input"
-            type="text"
-            placeholder="输入账户名、邮箱或手机号"
-            autocomplete="username"
-          />
-        </label>
+      <label class="field">
+        <span class="field-label">密码</span>
+        <input
+          v-model="password"
+          class="field-input"
+          type="password"
+          placeholder="输入密码"
+          autocomplete="current-password"
+        />
+      </label>
 
-        <label class="field">
-          <span class="field-label">密码</span>
-          <input
-            v-model="password"
-            class="field-input"
-            type="password"
-            placeholder="输入密码"
-            autocomplete="current-password"
-          />
-        </label>
+      <p v-if="errorMsg" class="error-msg" role="alert">{{ errorMsg }}</p>
 
-        <p v-if="errorMsg" class="error-msg">{{ errorMsg }}</p>
+      <button class="btn-primary" type="submit" :disabled="isSubmitting">
+        {{ isSubmitting ? "登录中…" : "登 录" }}
+      </button>
+    </form>
 
-        <button class="btn-primary" type="submit" :disabled="isSubmitting">
-          {{ isSubmitting ? "登录中…" : "登 录" }}
-        </button>
-      </form>
-
-      <footer class="auth-footer">
-        <router-link class="auth-link" to="/forgot-password">忘记密码？</router-link>
-        <span class="auth-divider">|</span>
-        <router-link class="auth-link" to="/register">注册新账户</router-link>
-      </footer>
-    </div>
-  </div>
+    <template #footer>
+      <router-link class="auth-link" to="/forgot-password">忘记密码？</router-link>
+      <span class="auth-divider">|</span>
+      <router-link class="auth-link" to="/register">注册新账户</router-link>
+    </template>
+  </AuthShell>
 </template>
-
-<style scoped>
-.auth-page {
-  position: relative;
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  overflow: hidden;
-}
-
-/* 固定设计封面：登录页专属，不受主题设置影响 */
-.auth-cover {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  background-size: cover;
-  background-position: center;
-}
-
-/* BUG-2026-0919-001：原遮罩 alpha 0.55~0.9 把封面盖得太死，登录页看不出"相册"氛围。
-   降到 0.15~0.52：封面清晰可辨，只在文字/卡片区域保留局部压暗（卡片自身带底色），保证可读。 */
-.auth-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  background:
-    radial-gradient(90% 90% at 50% 42%, rgba(8, 12, 28, 0.10) 0%, rgba(8, 12, 28, 0.42) 100%),
-    linear-gradient(180deg, rgba(8, 12, 28, 0.16) 0%, rgba(8, 12, 28, 0.52) 100%);
-}
-
-/* 玻璃态卡片：半透明深底 + 模糊，封面从卡片里透出来；
-   底色自带压暗，文字不再依赖遮罩浓度保证对比 */
-.auth-card {
-  position: relative;
-  z-index: 2;
-  width: 100%;
-  max-width: 400px;
-  background: rgba(12, 18, 38, 0.42);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  backdrop-filter: blur(14px) saturate(1.15);
-  -webkit-backdrop-filter: blur(14px) saturate(1.15);
-  border-radius: 16px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
-  padding: 36px 32px 28px;
-}
-
-.auth-header {
-  text-align: center;
-  margin-bottom: 28px;
-}
-
-.auth-title {
-  margin: 0 0 8px;
-  font-size: 24px;
-  font-weight: 700;
-  color: #f5f7ff;
-  /* 替换原本"靠阴影发光"的做法：用 text-stroke + 微阴影，笔画边缘清晰。
-     注意：-webkit-text-stroke 在 Win/Chrome 上对中文支持有限，阴影作为兜底。 */
-  -webkit-text-stroke: 0.3px rgba(255, 255, 255, 0.4);
-  text-shadow:
-    0 0 14px rgba(120, 160, 255, 0.35),
-    0 1px 2px rgba(0, 0, 0, 0.4);
-  letter-spacing: 0.5px;
-}
-
-.auth-subtitle {
-  margin: 0;
-  font-size: 13px;
-  color: rgba(225, 232, 255, 0.82);
-}
-
-.auth-form {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.field-label {
-  font-size: 13px;
-  color: #f0f3fb;
-  font-weight: 500;
-}
-
-.field-input {
-  height: 42px;
-  padding: 0 12px;
-  font-size: 14px;
-  /* FEAT-059：由不透明白底（#ffffff）改为「玻璃态」——
-     半透明 + 背景模糊，让 covers/cover.jpg 从输入框里透出来；
-     文字改浅色并加极淡阴影，保证在背景图亮部也可读。 */
-  color: #f5f7ff;
-  border: 1px solid rgba(255, 255, 255, 0.38);
-  border-radius: 8px;
-  outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
-  background: rgba(255, 255, 255, 0.12);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.32);
-}
-
-.field-input::placeholder {
-  /* 占位符不能顺着 text-shadow 变糊：单独去掉阴影并压低不透明度 */
-  color: rgba(226, 233, 255, 0.6);
-  text-shadow: none;
-}
-
-.field-input:focus {
-  border-color: var(--color-link);
-  box-shadow: 0 0 0 3px rgba(110, 168, 255, 0.32);
-  background: rgba(255, 255, 255, 0.18);
-}
-
-/* FEAT-059：WebView2/Chromium 的自动填充会把底刷成不透明浅黄底，
-   玻璃态失效（用户看到"改了没用"）。用内阴影铺满 + 超长过渡延迟覆盖，
-   不需要 JS，也不影响手输场景。 */
-.field-input:-webkit-autofill,
-.field-input:-webkit-autofill:hover,
-.field-input:-webkit-autofill:focus {
-  -webkit-text-fill-color: #f5f7ff;
-  caret-color: #f5f7ff;
-  box-shadow: 0 0 0 1000px rgba(28, 36, 62, 0.82) inset;
-  transition: background-color 9999s ease-out 0s;
-}
-
-.error-msg {
-  margin: 0;
-  font-size: 13px;
-  color: #d64545;
-  background: #fdf0f0;
-  border: 1px solid #f5d4d4;
-  border-radius: 8px;
-  padding: 8px 12px;
-}
-
-.btn-primary {
-  height: 44px;
-  font-size: 15px;
-  font-weight: 600;
-  color: #fff;
-  background: var(--color-primary);
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
-  letter-spacing: 1px;
-}
-
-.btn-primary:hover {
-  background: #2f5bc0;
-}
-
-.btn-primary:active {
-  transform: translateY(1px);
-}
-
-.btn-primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.auth-footer {
-  margin-top: 20px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 10px;
-  font-size: 13px;
-}
-
-.auth-link {
-  color: #aacbff;
-  text-decoration: none;
-  font-weight: 500;
-}
-
-.auth-link:hover {
-  text-decoration: underline;
-}
-
-.auth-divider {
-  color: rgba(214, 221, 240, 0.5);
-}
-</style>

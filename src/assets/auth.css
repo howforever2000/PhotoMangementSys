@@ -1,0 +1,249 @@
+/* =============================================================================
+ * 登录 / 注册 / 忘记密码三页共用样式（FEAT-093）
+ *
+ * 为什么是全局样式文件而不是组件 scoped：
+ *   三页的表单内容由各页面通过 <slot> 传进 AuthShell（插槽内容带的是**父页面的**
+ *   scope 属性，组件自己的 scoped 规则选不中它）；且三页原本各有一份逐字重复的
+ *   样式块。放全局文件 + 全部选择器收在 .auth-page 命名空间下，与 pm-dialog.css
+ *   同一口径（FEAT-086 先例）。
+ *
+ * 颜色一律走 var(--auth-*)：色值由 utils/loginTheme.ts 算出来、在 .auth-page 上
+ * 内联下发（单一事实来源，对比度断言断的就是那一套），本文件只管布局与状态。
+ *
+ * 「默认效果」接法：卡片挂 .glass-surface，材质属性（模糊/饱和/材质高光/玻璃棱环）
+ * 全部由 main.css 的 body.mat-frosted|mat-liquid|mat-glazed 提供 —— 用户在主题弹窗里
+ * 换材质，登录卡跟着换；这里只把玻璃填充色 --glass-bg 在卡片上**就地重指向**成
+ * 登录页配色（变量重指向，不与 main.css 抢 background-color 的特异性）。
+ *
+ * 换启动壁纸：改下面 .auth-cover 的 url() 一行即可（旧图 covers/cover.jpg 仍保留）。
+ * ========================================================================== */
+
+.auth-page {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+}
+
+/* 启动壁纸：固定，不随主题设置变化（登录页是产品第一眼形象） */
+.auth-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-image: url("../../covers/login-sunset.jpg");
+  background-size: cover;
+  background-position: center;
+}
+
+/* 遮罩：压暗壁纸把视线收进卡片。两层渐变的强度由 loginTheme.AUTH_SCRIM 算出，
+   下限保证卡片区最亮处仍 ≥0.35（对比度断言取的就是这个下限）。
+   注意不能压太狠 —— BUG-2026-0919-001 曾因遮罩过浓把封面盖死。 */
+.auth-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background-image: var(--auth-scrim);
+}
+
+/* 玻璃卡片：材质来自 .glass-surface（body.mat-*），配色来自 --auth-* */
+.auth-card {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 420px;
+  /* 就地重指向玻璃填充/描边令牌：main.css 的 .glass-surface 仍按 var(--glass-bg)
+     取色，于是「材质机制照旧、配色换成落日紫金」，无需与全局规则比特异性 */
+  --glass-bg: var(--auth-card-bg);
+  --glass-border: var(--auth-card-border);
+  /* 材质高光强度在本卡上压到全局的 ~28%（全局值见 main.css :root）：
+     全局高光按「深底白字 ~15:1」的余量设计，而登录卡压在最亮的粉带上余量薄得多
+     —— 按全局强度实测：磨砂顶部 24px 标题只有 4.0:1、13px 副标题 4.16:1；
+     液态/釉瓷高光更强（实测副标题降到 3.91:1），因此三种材质统一按同一比例压缩。
+     高光的**种类**仍由 body.mat-* 决定（磨砂顶部天光 / 液态 135° 流体 / 釉瓷镜面天光带），
+     只减强度；数值与 .impeccable/verify-auth.cjs 的渲染像素实测配套（三材质全 0 不达标）。 */
+  --frosted-highlight: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.08) 0%,
+    rgba(255, 255, 255, 0.025) 14%,
+    rgba(255, 255, 255, 0) 30%
+  );
+  --liquid-highlight: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.12) 0%,
+    rgba(255, 255, 255, 0.03) 38%,
+    rgba(255, 255, 255, 0) 58%
+  );
+  --glazed-highlight: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.13) 0%,
+    rgba(255, 255, 255, 0.04) 16%,
+    rgba(255, 255, 255, 0) 34%
+  );
+  border: 1px solid var(--auth-card-border);
+  border-radius: 18px;
+  box-shadow: var(--shadow-1), 0 18px 48px -12px rgba(8, 6, 16, 0.62);
+  padding: 36px 32px 28px;
+  color: var(--auth-title);
+}
+
+.auth-header {
+  text-align: center;
+  margin-bottom: 26px;
+}
+
+.auth-title {
+  margin: 0 0 8px;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--auth-title);
+  /* 壁纸亮部（天空）方向的细描边阴影，把标题从亮斑里托出来 */
+  text-shadow: 0 1px 3px rgba(10, 6, 20, 0.55);
+}
+
+.auth-subtitle {
+  margin: 0;
+  font-size: 13px;
+  color: var(--auth-sub);
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--auth-label);
+}
+
+.field-input {
+  height: 42px;
+  padding: 0 12px;
+  font-size: 14px;
+  color: var(--auth-title);
+  background: var(--auth-field-bg);
+  border: 1px solid var(--auth-field-border);
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.field-input::placeholder {
+  color: var(--auth-placeholder);
+  text-shadow: none;
+}
+
+/* 聚焦态只动描边与光环，不动底色 —— 底色的文字对比度已由单测钉住，
+   多一个底色状态就多一处对比度需要复核 */
+.field-input:focus {
+  border-color: var(--auth-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--auth-accent) 32%, transparent);
+}
+
+/* WebView2/Chromium 自动填充会把底刷成不透明浅黄、玻璃态失效（FEAT-059 踩过）：
+   用不透明内阴影铺满 + 超长过渡延迟盖回去，无需 JS */
+.field-input:-webkit-autofill,
+.field-input:-webkit-autofill:hover,
+.field-input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--auth-title);
+  caret-color: var(--auth-title);
+  box-shadow: 0 0 0 1000px var(--auth-field-bg-solid) inset;
+  transition: background-color 9999s ease-out 0s;
+}
+
+.error-msg,
+.success-msg {
+  margin: 0;
+  font-size: 13px;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.error-msg {
+  color: var(--auth-danger-text);
+  background: var(--auth-danger-bg);
+  border: 1px solid color-mix(in srgb, var(--auth-danger-text) 30%, transparent);
+}
+
+.success-msg {
+  color: var(--auth-ok-text);
+  background: var(--auth-ok-bg);
+  border: 1px solid color-mix(in srgb, var(--auth-ok-text) 30%, transparent);
+}
+
+.btn-primary {
+  height: 44px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  /* 金底墨字：落日金上白字只有 2.16:1，必须用深色字（loginTheme.test.ts 钉住） */
+  color: var(--auth-accent-ink);
+  background: var(--auth-accent);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--auth-accent-hover);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn-primary:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--auth-accent) 42%, transparent);
+}
+
+.btn-primary:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.auth-footer {
+  margin-top: 20px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.auth-footer .footer-text {
+  color: var(--auth-sub);
+}
+
+.auth-link {
+  color: var(--auth-link);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.auth-link:hover {
+  text-decoration: underline;
+}
+
+/* 键盘可达：链接的聚焦环单独给（默认 outline 在深玻璃上几乎看不见） */
+.auth-link:focus-visible {
+  outline: 2px solid var(--auth-link);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.auth-divider {
+  color: color-mix(in srgb, var(--auth-sub) 60%, transparent);
+}
