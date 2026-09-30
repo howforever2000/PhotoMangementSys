@@ -478,8 +478,8 @@ function goAlbumFromLightbox(albumId: number) {
   overflow: hidden;
   margin-bottom: 28px;
   background: var(--glass-bg); /* 未内联渐变时的玻璃回退 */
-  /* 描边降为辅助：方向棱线（顶亮底暗）由 candy-surface 的 inset 阴影接管 */
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  /* 描边只做兜底：边缘光泽由 ::after 渐变棱环主导（左上亮→右下反光） */
+  border: 1px solid rgba(255, 255, 255, 0.14);
   /* 糖果浅底 → 墨色字（与故事卡色族一致） */
   color: #1f2733;
   box-shadow: var(--shadow-2);
