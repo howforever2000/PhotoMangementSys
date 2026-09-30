@@ -97,7 +97,7 @@ def _health_dict() -> dict:
 #     B/16 ↔ L/14-336）；新增 /embed_text_batch。
 # v6：CPU 线程数可调（/threads 读写 + /benchmark 支持临时线程覆盖 + /benchmark_sweep 扫档），
 #     供「⚙ 性能设置」按不同硬件实测选优。
-VCR_API_VERSION = 6
+VCR_API_VERSION = 7  # v7: /face/warmup 人脸通道预检 + /persons/emb_model|rebuild
 
 
 @app.get("/health")
@@ -536,6 +536,33 @@ def persons_rebuild():
     重建后需全量重扫（覆盖模式）重新登记人脸；头像缓存由宿主负责清理。
     """
     return get_store().rebuild()
+
+
+@app.post("/face/warmup")
+def face_warmup():
+    """触发人脸通道加载并回报真实就绪情况（宿主扫描前预检用）。
+
+    为什么不看 /health：/health 是只读状态（绝不触发加载），人脸通道是惰性加载的，
+    新进程里 face_ready 恒为 false——据此预检会误判。这里主动访问会话触发加载，
+    再回报 {ready, det_ready, rec_ready, missing, model_dir, load_errors}。
+    模型缺失时 ready=false 且 missing 给出确切文件名与目录（用户要的就是这两条信息）。
+    """
+    reg = get_registry()
+    _ = reg.face_det  # 属性访问即触发惰性加载
+    _ = reg.face_rec
+    store = get_store()
+    missing = store.missing_face_models()
+    det_ready = reg.is_ready("face_det")
+    rec_ready = reg.is_ready("face_rec")
+    return {
+        "ready": det_ready and rec_ready,
+        "det_ready": det_ready,
+        "rec_ready": rec_ready,
+        "active": store.emb_model_info()["active"],
+        "missing": missing,
+        "model_dir": config.MODEL_DIR,
+        "load_errors": reg.load_errors(),
+    }
 
 
 @app.delete("/persons/{pid}")

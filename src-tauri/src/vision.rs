@@ -249,7 +249,8 @@ const ADOPT_WAIT_MAX: u32 = 3;
 /// v4（FEAT-SEM）：语义搜索 —— /embed_text /embed_batch /health.clip_ready。
 /// v5（语义分类）：分类模型/场景/专家通道下线；语义模型档位切换；新增 /embed_text_batch。
 /// v6：CPU 线程数可调（/threads）+ 测速可临时指定线程数（/benchmark）+ 线程扫档（/benchmark_sweep）。
-const VCR_API_VERSION: u64 = 6;
+/// v7（BUG-2026-1001-016）：/face/warmup 人脸通道预检（模型缺失要吵起来，不能静默降级）+ /persons/emb_model /persons/rebuild。
+const VCR_API_VERSION: u64 = 7;
 /// FEAT-051：ensure 单飞锁 —— 并发命令共享一次「探测/重启/启动」流程，
 /// 邓免多进程同时拚 8765 端口（winerror 10048）
 static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -466,7 +467,7 @@ pub async fn classify_paths(
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
     ensure_service_ready(&client, app, true).await?;
-    ensure_person_model_compat(&client).await?;
+    ensure_face_channel_ready(&client).await?;
 
     let batch = batch_size.max(1);
     let mut results: Vec<VisionResult> = Vec::with_capacity(photos.len());
@@ -593,7 +594,7 @@ pub async fn classify_single(path: &str, app: &tauri::AppHandle) -> Result<Visio
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
     ensure_service_ready(&client, app, true).await?;
-    ensure_person_model_compat(&client).await?;
+    ensure_face_channel_ready(&client).await?;
     let resp: serde_json::Value = client
         .post(format!("{}/classify_batch", vcr_base()))
         .json(&serde_json::json!({ "paths": [path] }))
@@ -627,15 +628,56 @@ pub async fn classify_single(path: &str, app: &tauri::AppHandle) -> Result<Visio
     })
 }
 
-/// 人脸向量模型一致性预检（扫描前拦截，避免静默错挂/全量新建）
+/// 人脸通道预检（扫描前）：模型文件就位 + 能真正加载 + 向量库模型口径一致。
 ///
-/// 为什么必须在扫描入口拦：ArcFace 换模型 = 换嵌入空间。旧质心（mbf 时代）与新
-/// 嵌入（r50）的余弦会退化成随机值 → 要么所有人脸都新建 P 编号（同一人被拆成
-/// 成百上千份），要么乱归簇；而 Python 侧人脸通道的异常是**静默降级**语义
-/// （person_ids=[]），不拦就会把已入库的 person_ids 覆盖成空（数据丢失）。
-///
-/// 判定：注册库非空 且 登记模型 ≠ 当前模型 → 报错引导用户先重建人物库。
-pub(crate) async fn ensure_person_model_compat(client: &reqwest::Client) -> Result<(), String> {
+/// 为什么必须“吵”：人脸通道的异常是**静默降级**语义（face_hits=[]），模型缺失时
+/// 扫描会一路“成功”但一张脸都不登记——用户现场看到的就是「扫完 0 位人物」（BUG-2026-1001-016）。
+/// 本函数把两类静默失败提前变成显式报错：
+///   ① 模型文件缺失/加载失败 → POST /face/warmup 主动触发惰性加载，必要时轮询等待
+///   ② 登记向量与新模型不可比 → GET /persons/emb_model（换模型必须重建人物库）
+pub(crate) async fn ensure_face_channel_ready(client: &reqwest::Client) -> Result<(), String> {
+    // ① 触发人脸通道加载并轮询到就绪（r50 冷加载数秒，给 60s 上限）
+    let t0 = std::time::Instant::now();
+    let deadline = t0 + Duration::from_secs(60);
+    loop {
+        let v: serde_json::Value = client
+            .post(format!("{}/face/warmup", vcr_base()))
+            .send()
+            .await
+            .map_err(|e| format!("人脸通道预检失败: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("人脸通道预检解析失败: {e}"))?;
+        if v.get("ready").and_then(|x| x.as_bool()).unwrap_or(false) {
+            crate::logger::log_info(&format!(
+                "[face] 通道预检通过：active={} 耗时 {}ms",
+                v.get("active").and_then(|x| x.as_str()).unwrap_or("?"),
+                t0.elapsed().as_millis()
+            ));
+            break;
+        }
+        let missing: Vec<String> = v
+            .get("missing")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let dir = v.get("model_dir").and_then(|x| x.as_str()).unwrap_or("?");
+        let reason = if !missing.is_empty() {
+            format!("缺少模型文件 {}（模型目录 {}）", missing.join("、"), dir)
+        } else {
+            v.get("load_errors")
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "原因未知".into())
+        };
+        if std::time::Instant::now() > deadline {
+            let msg = format!("人脸识别通道不可用：{reason}。请确认模型文件已就位后重试。");
+            crate::logger::log_info(&format!("[face] 扫描被拦截：{msg}"));
+            return Err(msg);
+        }
+        crate::logger::log_info(&format!("[face] 人脸通道等待中… {} | {reason}", t0.elapsed().as_millis()));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    // ② 向量库模型口径一致（旧质心与新嵌入不可比，混聚 = 静默错挂）
     let info: serde_json::Value = client
         .get(format!("{}/persons/emb_model", vcr_base()))
         .send()
@@ -1109,6 +1151,11 @@ fn link_or_copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// 解析「模型目录」（全应用唯一口径）
 ///
+/// 0. **debug 构建（开发态）→ 源码目录 `python/models`**：开发时唯一的模型真源。
+///    曾经的坑（BUG-2026-1001-016）：debug 构建里 `resource_dir()` 就是 `target/debug`，
+///    而那里恰好残留着一份早期拷贝的 `vcr/models` →「资源目录优先」用的是那份**陈旧副本**：
+///    往 python/models 放新模型，服务却按旧目录找，人脸通道报「模型文件缺失」并静默降级
+///    （扫完 0 位人物）。debug 构建不发布、不存在“内置资源”，锁定源码目录最不容易错。
 /// 1. 环境变量 `VCR_MODEL_DIR`（已设置则直接采用，便于调试 / 自定义部署）
 /// 2. 打包版内置资源 `resource_dir/vcr/models`：
 ///    - 可写（NSIS 默认按用户安装）→ 直接用它；
@@ -1120,6 +1167,13 @@ pub fn resolve_model_dir(app: &tauri::AppHandle) -> PathBuf {
     if let Ok(v) = std::env::var("VCR_MODEL_DIR") {
         if !v.is_empty() {
             return PathBuf::from(v);
+        }
+    }
+    if cfg!(debug_assertions) {
+        let dev_dir = project_python_dir().join("models");
+        if dev_dir.is_dir() {
+            // 与打包版同口径的中文/空格路径归一化（\?\ 前缀），便于日志对照
+            return std::fs::canonicalize(&dev_dir).unwrap_or(dev_dir);
         }
     }
     if let Ok(res) = app.path().resource_dir() {

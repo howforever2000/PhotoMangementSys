@@ -307,6 +307,15 @@ impl Database {
                 lon          REAL,
                 user_tags    TEXT,
                 scanned_at   INTEGER NOT NULL
+            );
+            -- 待重做人脸的照片队列（BUG-2026-1001-015）：
+            -- 重建人物库后，照片在 photo_content_scan 里已有行 → 增量扫描的 photo_hash
+            -- 差集会把它们全部跳过，导致「重建了却永远不再识别人脸」。
+            -- 重建时把这些人脸字段被清空的照片登记到这里，扫描（勾选人物）时强制重做，
+            -- 做完即删。用独立小表而非给 photo_content_scan 加列：不动既有 upsert 的列清单。
+            CREATE TABLE IF NOT EXISTS face_rebuild_queue (
+                path     TEXT PRIMARY KEY,
+                added_at INTEGER NOT NULL
             );",
         )?;
         // 索引：父目录 + 绝对地址（需求 R3），另加 user_id / album_id 隔离索引
@@ -1378,6 +1387,60 @@ impl Database {
         Ok(out)
     }
 
+    // =================================================================
+    // 待重做人脸队列（BUG-2026-1001-015）
+    // =================================================================
+
+    /// 把人脸字段被清空的照片登记进「待重做人脸」队列（重建人物库时调用）。
+    ///
+    /// 判据（两条取并，实测数据定的）：
+    ///   ① `person_ids` 非空 → 明确有人脸证据被清掉，必须重做；
+    ///   ② `person_count > 0` → 这张照片当时跑过人脸通道（该字段来自 YOLO 人数门控
+    ///      `_needs_face`），即使 person_ids 早被上一轮清理成 NULL，也该重做。
+    ///      只用 ① 会漏掉「已被清过一轮」的库（实测 15185 行里 person_ids 全空、
+    ///      但还有 3492 行 person_count>0）——重建就变成了空操作，人脸永远回不来。
+    pub fn face_rebuild_mark_from_content(&self) -> Result<usize, DbError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let n = self.conn.execute(
+            "INSERT OR IGNORE INTO face_rebuild_queue(path, added_at) \
+             SELECT path, ?1 FROM photo_content_scan \
+             WHERE (person_ids IS NOT NULL AND person_ids NOT IN ('', '[]')) \
+                OR person_count > 0",
+            params![now],
+        )?;
+        Ok(n)
+    }
+
+    /// 全量待重做人脸路径集合（扫描差集合并用）
+    pub fn face_rebuild_paths(&self) -> Result<HashSet<String>, DbError> {
+        let mut stmt = self.conn.prepare("SELECT path FROM face_rebuild_queue")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = HashSet::new();
+        for r in rows {
+            out.insert(r?);
+        }
+        Ok(out)
+    }
+
+    /// 清掉已重做完的队列项（按路径分批，避开 SQLite 变量数上限）
+    pub fn face_rebuild_clear(&self, paths: &[String]) -> Result<usize, DbError> {
+        let mut n = 0usize;
+        for chunk in paths.chunks(400) {
+            let holders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!(
+                "DELETE FROM face_rebuild_queue WHERE path IN ({})",
+                holders.join(",")
+            );
+            let params_vec: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+            n += self.conn.execute(&sql, params_vec.as_slice())?;
+        }
+        Ok(n)
+    }
+
     /// 按绝对路径批量删除内容扫描记录（照片记录删除/文件删除后级联调用）
     /// 返回实际删除的行数。
     pub fn delete_content_by_paths(&self, paths: &[String]) -> Result<usize, DbError> {
@@ -1493,6 +1556,70 @@ mod tests {
         db.init_schema().unwrap();
         db.init_content_schema().unwrap();
         db
+    }
+
+    // =================================================================
+    // 待重做人脸队列（BUG-2026-1001-015）
+    //
+    // 锁住的是：「重建人物库后，增量扫描必须把人脸字段被清空的照片重新做一遍」。
+    // 旧行为：清空 person_ids 后这些行仍在 content 表里 → photo_hash 差集全部跳过
+    // → 人脸永远回不来（用户现场：“重建后增量扫描依然跳过所有”）。
+    // =================================================================
+
+    /// 登记队列：收「有人脸证据」的照片（person_ids 非空，或 person_count>0）
+    #[test]
+    fn face_rebuild_queue_marks_candidates() {
+        let db = mem_db();
+        let mut with_person = sample_rec("h1", "D:/a/1.jpg");
+        with_person.person_ids = Some("[\"P001\"]".into());
+        with_person.person_count = 1;
+        // 第二张：无人物（sample_rec 默认带 P001，必须显式清掉才能代表“没脸”的照片）
+        let mut without = sample_rec("h2", "D:/a/2.jpg");
+        without.person_ids = None;
+        without.person_count = 0;
+        // 第三张：空数组（历史上可能写入 '' / '[]'）也不能入队
+        let mut empty_arr = sample_rec("h3", "D:/a/3.jpg");
+        empty_arr.person_ids = Some("[]".into());
+        empty_arr.person_count = 0;
+        // 第四张（用户现场那种库）：person_ids 已被上一轮清理成 NULL，但 person_count>0
+        // —— 这正是“跑过人脸通道”的证据，必须入队，否则重建变空操作
+        let mut cleared = sample_rec("h4", "D:/a/4.jpg");
+        cleared.person_ids = None;
+        cleared.person_count = 3;
+        db.upsert_photo_contents(&[with_person, without, empty_arr, cleared])
+            .unwrap();
+
+        let n = db.face_rebuild_mark_from_content().unwrap();
+        assert_eq!(n, 2, "person_ids 非空 + person_count>0 两类都要入队");
+        let paths = db.face_rebuild_paths().unwrap();
+        assert!(paths.contains("D:/a/1.jpg"));
+        assert!(paths.contains("D:/a/4.jpg"), "已清过一轮的库靠 person_count 兜底");
+        assert!(!paths.contains("D:/a/2.jpg"));
+        assert!(!paths.contains("D:/a/3.jpg"), "空数组不是“有人脸证据”");
+
+        // 重复登记幂等（INSERT OR IGNORE）——重复点「重建人物库」不应堆叠
+        assert_eq!(db.face_rebuild_mark_from_content().unwrap(), 0);
+    }
+
+    /// 出队：只清已重做完的路径，未处理的保留（失败/取消要能下次重试）
+    #[test]
+    fn face_rebuild_queue_clear_is_selective() {
+        let db = mem_db();
+        for (h, p) in [("h1", "D:/a/1.jpg"), ("h2", "D:/a/2.jpg"), ("h3", "D:/a/3.jpg")] {
+            let mut rec = sample_rec(h, p);
+            rec.person_ids = Some("[\"P001\"]".into());
+            db.upsert_photo_contents(&[rec]).unwrap();
+        }
+        db.face_rebuild_mark_from_content().unwrap();
+        assert_eq!(db.face_rebuild_paths().unwrap().len(), 3);
+
+        let n = db
+            .face_rebuild_clear(&["D:/a/1.jpg".to_string(), "D:/a/3.jpg".to_string()])
+            .unwrap();
+        assert_eq!(n, 2);
+        let left = db.face_rebuild_paths().unwrap();
+        assert_eq!(left.len(), 1);
+        assert!(left.contains("D:/a/2.jpg"), "未处理的必须留着");
     }
 
     fn sample_rec(hash: &str, path: &str) -> PhotoContentRecord {

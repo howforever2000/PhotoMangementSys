@@ -926,17 +926,23 @@ pub async fn rebuild_person_registry(
             return Err(e);
         }
     };
-    // 内容表的 person_ids 同步清空：那些 P 编号已不存在，留着只会让
-    // 照片卡片/Search 继续引用“幽灵人物”（重新扫描会重写这两个字段）。
-    let content_rows = {
+    // 内容表：先把「人脸字段非空」的照片登记进待重做队列，再清空那两个字段。
+    // 只清字段而不入队 = 以后增量扫描会把它们当“已入库无变化”全部跳过，
+    // 人脸永远不会回来（BUG-2026-1001-015，用户现场：“重建后增量扫描依然跳过所有”）。
+    let (queued, content_rows) = {
         let db = state.0.lock().map_err(|e| e.to_string())?;
-        db.conn()
+        let queued = db
+            .face_rebuild_mark_from_content()
+            .map_err(|e| format!("登记待重做人脸失败: {e}"))?;
+        let rows = db
+            .conn()
             .execute(
                 "UPDATE photo_content_scan SET person_ids = NULL, person_count = 0 \
                  WHERE person_ids IS NOT NULL AND person_ids != ''",
                 [],
             )
-            .unwrap_or(0)
+            .unwrap_or(0);
+        (queued, rows)
     };
     // 头像缓存全清：P 编号即将重新分配，旧文件一律不可信
     let cleared = crate::avatar::commands::avatars_dir(&app)
@@ -946,7 +952,7 @@ pub async fn rebuild_person_registry(
         "rebuild_person_registry",
         _t,
         &format!(
-            "OK | 清空 persons={persons} faces={faces} 头像={cleared} 内容行人脸字段={content_rows} | 备份 {backup}"
+            "OK | 清空 persons={persons} faces={faces} 头像={cleared} 内容行人脸字段={content_rows} 待重做入队={queued} | 备份 {backup}"
         ),
     );
     Ok(serde_json::json!({
@@ -955,6 +961,7 @@ pub async fn rebuild_person_registry(
         "faces": faces,
         "avatars_cleared": cleared,
         "content_rows_cleared": content_rows,
+        "face_rebuild_queued": queued,
     }))
 }
 

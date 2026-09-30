@@ -87,26 +87,42 @@ class PersonStore:
         return np.frombuffer(blob, dtype=np.float32).copy()
 
     @staticmethod
-    def _active_rec_model() -> str:
-        """当前实际会加载的识别模型（与 model_registry 候选顺序同一规则：第一个存在者）。"""
+    def _active_rec_model() -> str | None:
+        """当前实际会加载的识别模型：候选里第一个**文件真实存在**的；都没有 → None。
+
+        ！不要回落到「候选列表的第一个名字」：（BUG-2026-1001-016）模型文件缺失时
+        报出一个并不存在的档位，宿主预检会误判“模型已切换/一致”，而人脸通道其实是
+        静默降级（person_ids 全空）—— 用户看到的只是“扫完没人物”。
+        """
         for m in config.FACE_REC_MODELS:
             if os.path.isfile(os.path.join(config.MODEL_DIR, m)):
                 return m
-        return config.FACE_REC_MODELS[0]
+        return None
+
+    @staticmethod
+    def missing_face_models() -> list[str]:
+        """缺失的人脸模型文件名（检测+识别，供宿主报清楚“缺什么、在哪找”）。"""
+        want = list(config.FACE_REC_MODELS) + list(config.FACE_DET_MODELS)
+        return [m for m in want if not os.path.isfile(os.path.join(config.MODEL_DIR, m))]
 
     def _emb_model(self, conn: sqlite3.Connection) -> str | None:
         row = conn.execute("SELECT value FROM meta WHERE key='emb_model'").fetchone()
         return row[0] if row is not None else None
 
     def emb_model_info(self) -> dict:
-        """宿主扫描前预检用：登记模型 vs 当前将加载的模型 + 人物数。"""
+        """宿主扫描前预检用：登记模型 vs 当前将加载的模型 + 人物数 + 模型文件就绪情况。"""
         with self._conn() as conn:
             registered = self._emb_model(conn)
             n = conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0]
+        active = self._active_rec_model()
+        missing = self.missing_face_models()
         return {
             "registered": registered,
-            "active": self._active_rec_model(),
+            "active": active,
             "persons": n,
+            "ready": active is not None and not missing,
+            "missing": missing,
+            "model_dir": config.MODEL_DIR,
         }
 
     def rebuild(self) -> dict:
@@ -170,6 +186,13 @@ class PersonStore:
         person_id, sim = self.match(emb)
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         active = self._active_rec_model()
+        if active is None:
+            # 模型文件缺失：绝不在 meta 里写“幻觉档位”，也不静默把脸归入新建人物
+            # （那样会粉饰成“扫出来了”。必须报错，由宿主报给用户）
+            raise RuntimeError(
+                f"人脸识别模型文件缺失（{config.MODEL_DIR}）：缺少 "
+                + "、".join(self.missing_face_models())
+            )
         with self._conn() as conn:
             # 向量空间防混（换模型后旧质心与新嵌入不可比，混聚 = 静默错挂）：
             # 已有登记但模型不匹配 → 直接报错，由宿主引导重建人物库。

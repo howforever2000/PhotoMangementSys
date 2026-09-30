@@ -1515,6 +1515,14 @@ pub mod commands {
         // 与旧 AI 分支用的 `lookup_scanned_hashes_by_album` 是同一张表 → 口径一致。
         // ===================================================================
         let t_diff = std::time::Instant::now();
+        // 待重做人脸队列（重建人物库后登记）：只影响勾了「人物」的扫描。
+        // 读在差集前：空集时零开销，且后续早退判据 must 看到它。
+        let queue_face: std::collections::HashSet<String> = if do_ai {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.face_rebuild_paths().map_err(|e| format!("{e}"))?
+        } else {
+            std::collections::HashSet::new()
+        };
         let pending: Vec<std::path::PathBuf> = if overwrite {
             logger::log_info(&format!(
                 "[scan.incr] album={album_id} 全量覆盖模式 | 目录 {} 张 · 待处理 {} 张 · 跳过 0 张",
@@ -1546,15 +1554,30 @@ pub mod commands {
                         // 让后面对它的读取失败走既有错误路径并留痕，而不是静默丢弃。
                         Err(_) => String::new(),
                     };
+                    // 「待重做人脸」队列里的照片必须重做（BUG-2026-1001-015）：
+                    // 重建人物库后它们的行还在 content 表里（photo_hash 未变），
+                    // 不例外就会被差集跳过 → 人脸永远回不来。队列只影响勾了人物的扫描。
+                    if do_ai && queue_face.contains(ps.as_ref()) {
+                        return true;
+                    }
                     hash.is_empty() || !scanned.contains(&hash)
                 })
                 .cloned()
                 .collect();
+            let queued_hit = if do_ai {
+                all_paths
+                    .iter()
+                    .filter(|p| queue_face.contains(p.to_string_lossy().as_ref()))
+                    .count()
+            } else {
+                0
+            };
             let skipped = all_paths.len() - kept.len();
             logger::log_info(&format!(
-                "[scan.incr] album={album_id} 增量模式（统一判据 photo_hash）| 目录 {} 张 · 待处理 {} 张 · 跳过 {skipped} 张",
+                "[scan.incr] album={album_id} 增量模式（统一判据 photo_hash）| 目录 {} 张 · 待处理 {} 张 · 跳过 {skipped} 张（其中待重做人脸 {} 张）",
                 all_paths.len(),
-                kept.len()
+                kept.len(),
+                queued_hit
             ));
             kept
         };
@@ -1779,6 +1802,24 @@ pub mod commands {
                 {
                     let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
                     db.upsert_photo_contents(&recs).map_err(|e| format!("{:?}", e))?;
+                    // 人脸已重做完 → 出队（BUG-2026-1001-015）。只清「本次真的写了的路径」，
+                    // 失败/被取消的照片继续留在队列里，下次扫描自动重试。
+                    if do_ai && !queue_face.is_empty() {
+                        let done: Vec<String> = recs
+                            .iter()
+                            .map(|r| r.path.clone())
+                            .filter(|p| queue_face.contains(p))
+                            .collect();
+                        match db.face_rebuild_clear(&done) {
+                            Ok(n) if n > 0 => logger::log_info(&format!(
+                                "[scan.face] album={album_id} 待重做人脸出队 {n} 张"
+                            )),
+                            Ok(_) => {}
+                            Err(e) => logger::log_info(&format!(
+                                "[scan.face] album={album_id} 出队失败（下次扫描会重试）: {e}"
+                            )),
+                        }
+                    }
                 }
                 // BUG-2026-0922-008：`total` 曾经填 `vision_results.len()`（= 差集大小）。
                 // 增量模式下差集常常为 0，前端就把有照片的相册显示成「共 0 张」。
