@@ -2752,7 +2752,57 @@
       ],
       "created_at": "2026-09-30T11:30:00+08:00",
       "updated_at": "2026-09-30T11:55:00+08:00"
+    },
+    {
+      "id": "FEAT-087",
+      "name": "时间线回到顶部箭头 + 回忆页「月度浏览框」（按月按需加载，不再跳整条时间线）",
+      "status": "done",
+      "module": "src/views/Timeline.vue、src/views/Memories.vue、src/App.vue（全局 ESC 弹层豁免）",
+      "description": "两个浏览体验与性能优化：① 时间线页照片多、页面长（实测 256 张时 scrollHeight≈6600px），新增右下角悬浮「回到顶部」圆钮（fixed 44×44 / 右下 24px / z-index 150），rAF 节流监听窗口滚动，滚动 >300px 才淡入，点击平滑回顶，与相册列表页同款；离开页面时移除监听并 cancelAnimationFrame。② 回忆页点「月回忆」故事卡原来 router.push 到 /timeline 再按 year/month 滚动定位，代价是 Timeline 拉全量 list_timeline + 为全量照片生成缩略图；改为本页弹出「月度浏览框」（.mb-mask/.mb-panel）：只渲染该月照片网格，框内滚动（参考相册详情页缩略图浏览框），滚动 >300px 时框内右下角出现回到顶部箭头，点照片复用页内 PhotoLightbox，头部保留「📅 时间线定位」按钮作为跨月浏览的逃生口（仍走原 FEAT-E query 定位）。性能：Memories 的 loadThumbs(items) 改为按子集请求（300/批分批 IPC），首屏只取故事卡/年度卡封面 + 本月精选，打开月度浏览框时只补该月缺失缩略图——实测首屏缩略图请求从 256 张降到 7 张，打开某月才请求该月 96 张。交互细节：打开时锁 body 滚动、Esc 关闭（capture 监听 + preventDefault，避免全局 ESC 触发 router.back；上层有灯箱/右键菜单/确认框时交由它们先处理）、关闭恢复滚动；面板底色用 background-color: --color-bg 实底 + background-image: --color-surface 叠加（--color-surface 是半透明玻璃，直接用会透出页面内容导致浅字浮在花底上），文字用 --color-text 成对令牌，深色预设下不发灰。",
+      "implementation": {
+        "frontend": "Vue3 组合式：Timeline 增 window scroll 监听 + transition tl-top 悬浮钮；Memories 增 monthBox/mbShowTop/mbLoading 状态机 + openMonthBox/closeMonthBox/onMonthBoxKey，loadThumbs(items) 支持子集与分批；App.vue 全局 ESC 豁免清单加入 .mb-mask",
+        "key_points": [
+          "月度浏览框不 Teleport：与页内 PhotoLightbox 同处 .app-content 层叠上下文，z-index 950 < 灯箱 1000，大图始终在上",
+          "缩略图按需分批（300/批）：首屏 7/256，打开某月 96/256，不再全量预生成",
+          "Esc 用 capture + preventDefault，先于全局 ESC（否则 App 的 router.back 会退出本页）",
+          "上层有 .lb-overlay/.context-menu/.dialog-mask/.pm-modal 时月度框不抢 Esc，只关最上层",
+          "弹层底色 = 实色 --color-bg + 半透明 --color-surface 叠加，避免玻璃透底造成对比度失效"
+        ]
+      },
+      "highlights": [
+        "Playwright 断言全过：按钮 fixed/right24/bottom24/44×44/z150、滚到 1500 点击回顶 scrollY=0",
+        "月度框 cells=96 与该月张数一致、URL 不变（不再跳 /timeline）、body overflow 锁/恢复正确",
+        "缩略图请求量实测：首屏 7 条（总 256），打开月度框再补 96 条",
+        "Esc 分层关闭：灯箱关→月度框仍在→再按关月度框，灯箱仍在月度框之上（elementFromPoint 命中 .lb-overlay）"
+      ],
+      "related_files": [
+        "src/views/Timeline.vue",
+        "src/views/Memories.vue",
+        "src/App.vue",
+        ".impeccable/verify-membox.cjs",
+        ".impeccable/mock-init.cjs"
+      ],
+      "keywords": [
+        "时间线",
+        "回到顶部",
+        "回忆",
+        "月度浏览框",
+        "按需缩略图",
+        "性能",
+        "Esc",
+        "灯箱层级"
+      ],
+      "related": [
+        "FEAT-E 回忆页跳转定位（保留为月度框内的逃生口）",
+        "FEAT-034-B 内部大图查看器"
+      ],
+      "tests": [
+        "vue-tsc --noEmit 通过",
+        "Playwright + IPC mock 验收（.impeccable/verify-membox.cjs）：Timeline 回顶、月度框数量/URL/锁滚/框内回顶/灯箱层级/Esc 分层、缩略图请求量，全部通过"
+      ],
+      "created_at": "2026-09-30T15:50:00+08:00",
+      "updated_at": "2026-09-30T15:50:00+08:00"
     }
   ],
-  "updated": "2026-09-30T10:10:00+08:00"
+  "updated": "2026-09-30T15:50:00+08:00"
 }

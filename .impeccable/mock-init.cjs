@@ -51,6 +51,9 @@ const TIMELINE = [
 const INIT = `
 window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {};
 window.__TAURI_INTERNALS__ = {
+  convertFileSrc(path, _protocol, _cfg) {
+    return "asset://localhost/" + encodeURIComponent(path);
+  },
   transformCallback(cb, once) {
     const id = Math.floor(Math.random() * 1e9);
     window["__cb_" + id] = (res) => { try { cb(res); } catch (e) {} if (once) delete window["__cb_" + id]; };

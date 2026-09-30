@@ -67,8 +67,8 @@ function onGlobalEsc(e: KeyboardEvent) {
   const target = e.target as HTMLElement | null;
   const tag = target?.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
-  // 弹窗 / mask / dialog 出现时也跳过（由页面级处理；.psd-mask = 性能设置/模型管理弹窗）
-  if (document.querySelector(".pm-modal, .pg-mask, .lb-overlay, .context-menu, .dialog-mask, .psd-mask")) return;
+  // 弹窗 / mask / dialog 出现时也跳过（由页面级处理；.psd-mask = 性能设置/模型管理弹窗，.mb-mask = 回忆页月度浏览框）
+  if (document.querySelector(".pm-modal, .pg-mask, .lb-overlay, .context-menu, .dialog-mask, .psd-mask, .mb-mask")) return;
   // 路由返回上一级
   if (window.history.length > 1) {
     e.preventDefault();

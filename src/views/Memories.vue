@@ -12,7 +12,7 @@
  *  - 年度回顾：每年一张 16:9 大图 + 年份 + 张数 + 主人物
  *  - Hero：紫蓝渐变 + 关键统计（总照片/总人物/总相册/本月）
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useAlbumStore } from "../stores/album";
@@ -138,22 +138,33 @@ function pickHero(items: ContentSearchHit[]): ContentSearchHit | null {
 }
 
 /* -------------------- 缩略图加载 -------------------- */
-async function loadThumbs() {
+/**
+ * 只为「给定子集」补缩略图（按 album_id 分组批量取，复用指纹缓存）。
+ * 不再一次性对全量时间线照片生成缩略图 —— 照片一多首屏非常重；
+ * 改为按需：首屏只取封面/本月精选，打开月度浏览框时再取该月。
+ */
+async function loadThumbs(items: ContentSearchHit[]) {
   const byAlbum = new Map<number, string[]>();
-  for (const r of rows.value) {
+  for (const r of items) {
+    if (thumbMap.value[r.path]) continue; // 已有缓存：跳过
     const aid = r.album_id ?? 0;
     if (!byAlbum.has(aid)) byAlbum.set(aid, []);
-    if (!thumbMap.value[r.path]) byAlbum.get(aid)!.push(r.path);
+    byAlbum.get(aid)!.push(r.path);
   }
   await Promise.all(
-    [...byAlbum.keys()].map(async (aid) => {
-      const paths = byAlbum.get(aid) ?? [];
+    [...byAlbum.entries()].map(async ([aid, paths]) => {
       if (!paths.length) return;
       try {
-        const pairs = await invoke<[string, string][]>("get_photo_thumbs", { albumId: aid, paths });
-        for (const [path, thumb] of pairs) if (!thumbMap.value[path]) thumbMap.value[path] = thumb;
+        // 分批（300/批）：单次 IPC 载荷可控，大批量月也能边滚边补
+        for (let i = 0; i < paths.length; i += 300) {
+          const pairs = await invoke<[string, string][]>("get_photo_thumbs", {
+            albumId: aid,
+            paths: paths.slice(i, i + 300),
+          });
+          for (const [path, thumb] of pairs) if (!thumbMap.value[path]) thumbMap.value[path] = thumb;
+        }
       } catch {
-        /* 缺图不阻塞 */
+        /* 缺图不阻塞：卡片回退占位 */
       }
     }),
   );
@@ -217,15 +228,71 @@ function openLightbox(photoPath: string) {
   lightboxOpen.value = true;
 }
 
-/* -------------------- 故事卡点击 → 跳到时间线页并定位月份 -------------------- */
+/* -------------------- 故事卡点击 → 打开「月度浏览框」（只加载该月） -------------------- */
+/**
+ * 点月回忆不再跳时间线页：时间线要拉全量照片 + 全量缩略图，计算很重；
+ * 改为在本页弹出该月的照片浏览框（参考相册详情页「缩略图浏览」框：
+ * 框内滚动 + 右下回到顶部 + 点击开大图），只补该月缺失的缩略图。
+ */
+const monthBox = ref<MonthGroup | null>(null);
+const monthBoxEl = ref<HTMLElement | null>(null);
+const mbShowTop = ref(false);
+const mbLoading = ref(false);
+
+async function openMonthBox(m: MonthGroup) {
+  monthBox.value = m;
+  mbShowTop.value = false;
+  window.addEventListener("keydown", onMonthBoxKey, true); // capture：先于全局 ESC（否则会 router.back 退出本页）
+  document.body.style.overflow = "hidden"; // 背景页锁滚
+  await nextTick();
+  monthBoxEl.value?.scrollTo({ top: 0 });
+  // 只为该月补缺失缩略图（已有缓存的直接复用）
+  if (m.items.some((r) => !thumbMap.value[r.path])) {
+    mbLoading.value = true;
+    try {
+      await loadThumbs(m.items);
+    } finally {
+      mbLoading.value = false;
+    }
+  }
+}
+
+function closeMonthBox() {
+  if (!monthBox.value) return;
+  monthBox.value = null;
+  document.body.style.overflow = "";
+  window.removeEventListener("keydown", onMonthBoxKey, true);
+}
+
+function onMonthBoxKey(e: KeyboardEvent) {
+  if (e.key !== "Escape" || !monthBox.value) return;
+  // 上层还有弹层（灯箱/右键菜单/确认框）时交由它们自己处理，只关最上层
+  if (document.querySelector(".lb-overlay, .context-menu, .dialog-mask, .pm-modal")) return;
+  e.preventDefault(); // 让全局 ESC 识别为「页面已拦截」，不触发 router.back
+  e.stopPropagation();
+  closeMonthBox();
+}
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onMonthBoxKey, true);
+  document.body.style.overflow = "";
+});
+
+function onMbScroll() {
+  mbShowTop.value = (monthBoxEl.value?.scrollTop ?? 0) > 300;
+}
+function mbToTop() {
+  monthBoxEl.value?.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+/* -------------------- 仍需整条时间线时（跨月对比）才跳时间线页 -------------------- */
 /**
  * FEAT-E：带 query 跳转，Timeline 页会读 year + month 自动滚动 / 展开 / 高亮。
- * - 故事卡：跳到对应 yyyy-MM 月份。
- * - 年度回顾：跳到对应年份（Timeline 页会按年自动选中并定位）。
+ * - 月度浏览框右上角「时间线中定位」用：需要跨月浏览时才走这里。
+ * - month 必须传两位 "MM"（Timeline 分组 id 为 `y-{y}-m-{MM}`）。
  */
 function gotoMonth(m: MonthGroup) {
-  // month 必须传两位 "MM" 格式（如 "08"）：Timeline 分组 id 为 `y-{y}-m-{MM}`，
-  // 之前 String(Number) 丢失前导零，1~9 月 getElementById 落空 → 停在年份顶部（早期月份照片）。
+  closeMonthBox();
   router.push({ path: "/timeline", query: { year: String(m.year), month: m.key.slice(5, 7) } });
 }
 
@@ -248,7 +315,7 @@ onMounted(async () => {
     if (!store.albums.length) {
       store.fetchAlbums().catch(() => {});
     }
-    await loadThumbs();
+    await loadThumbs(initialThumbItems());
   } catch (e) {
     error.value = String(e);
     notify.error("加载回忆失败", String(e));
@@ -256,6 +323,15 @@ onMounted(async () => {
     loading.value = false;
   }
 });
+
+/** 首屏只需：故事卡封面 + 年度卡封面 + 本月精选（其余按打开浏览框时再补） */
+function initialThumbItems(): ContentSearchHit[] {
+  const covers = [
+    ...monthGroups.value.map((m) => m.hero),
+    ...yearGroups.value.map((y) => y.hero),
+  ].filter((x): x is ContentSearchHit => !!x);
+  return [...covers, ...thisMonthItems.value];
+}
 /** 大图工具栏「📁 在相册中查看」：关掉看图器，跳相册并带 ?focus 定位高亮该照片 */
 function goAlbumFromLightbox(albumId: number) {
   lightboxOpen.value = false;
@@ -339,7 +415,7 @@ function goAlbumFromLightbox(albumId: number) {
           :key="m.key"
           class="mem-story candy-surface"
           :style="{ background: paletteFor(m.key) }"
-          @click="gotoMonth(m)"
+          @click="openMonthBox(m)"
         >
           <div class="mem-story-photo">
             <img
@@ -446,6 +522,59 @@ function goAlbumFromLightbox(albumId: number) {
         </div>
       </div>
     </section>
+
+    <!-- 月度浏览框：只含该月照片，框内滚动（参考相册缩略图浏览框）
+         不 Teleport：与页内 PhotoLightbox 同处 .app-content 层叠上下文，
+         z-index 950 < 灯箱 1000，开大图时不会被盖住 -->
+    <div v-if="monthBox" class="mb-mask" @click.self="closeMonthBox">
+        <div class="mb-panel" role="dialog" aria-modal="true" :aria-label="`${monthBox.label} 照片浏览`">
+          <header class="mb-head">
+            <div class="mb-head-main">
+              <h3 class="mb-title">{{ monthBox.label }}</h3>
+              <span class="mb-sub">{{ monthBox.items.length }} 张</span>
+              <span v-if="monthBox.topLocation" class="mb-sub">📍 {{ monthBox.topLocation }}</span>
+              <span v-if="mbLoading" class="mb-sub mb-loading">正在生成缩略图…</span>
+            </div>
+            <div class="mb-actions">
+              <button class="mb-btn" title="需要跨月对比时，再去完整时间线定位该月" @click="gotoMonth(monthBox)">📅 时间线定位</button>
+              <button class="mb-btn mb-btn-primary" @click="closeMonthBox">✕ 关闭</button>
+            </div>
+          </header>
+
+          <div v-if="!monthBox.items.length" class="mb-empty">该月暂无可浏览的照片</div>
+
+          <div v-else ref="monthBoxEl" class="mb-scroll" @scroll.passive="onMbScroll">
+            <div class="mb-grid">
+              <figure
+                v-for="r in monthBox.items"
+                :key="r.id"
+                class="mb-cell"
+                :title="[r.label, r.location, r.album_name].filter(Boolean).join(' · ') || r.path"
+                @click="openLightbox(r.path)"
+              >
+                <img
+                  v-if="thumbMap[r.path]"
+                  :src="fileUrl(thumbMap[r.path])"
+                  loading="lazy"
+                  decoding="async"
+                  alt=""
+                  class="mb-img"
+                />
+                <div v-else class="mb-ph"></div>
+                <figcaption v-if="r.label || r.location" class="mb-cap">
+                  <span v-if="r.label" class="mb-cap-label">{{ r.label }}</span>
+                  <span v-if="r.location">📍 {{ r.location }}</span>
+                </figcaption>
+              </figure>
+            </div>
+
+            <!-- 框内回到顶部箭头（与相册缩略图浏览框一致） -->
+            <transition name="mb-top">
+              <button v-if="mbShowTop" class="mb-top-btn" title="回到顶部" @click="mbToTop">↑</button>
+            </transition>
+          </div>
+        </div>
+    </div>
 
     <!-- 看图器：仅传原图路径（meta 可选；timeline 中使用轻量场景不需） -->
     <PhotoLightbox
@@ -878,6 +1007,199 @@ function goAlbumFromLightbox(albumId: number) {
   margin: 0;
 }
 
+/* ---- 月度浏览框（参考相册详情页「缩略图浏览」框） ---- */
+.mb-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 950; /* 低于 PhotoLightbox（1000）：大图始终盖在其上 */
+  background: rgba(15, 18, 26, 0.62);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+.mb-panel {
+  width: min(1080px, 100%);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  /* 用全局面板令牌：--color-surface 与 --color-text 成对（深色预设下自动翻暗，
+     原写法 --panel-bg 回退 #fff + 深色下浅字 → 白底浅字看不清）。
+     --color-surface 本身是半透明玻璃：先垫一层实色 --color-bg 再叠玻璃面，
+     页面内容不再透过面板，文字对比度稳定。 */
+  background-color: var(--color-bg, #0e211b);
+  background-image: linear-gradient(var(--color-surface, #ffffff), var(--color-surface, #ffffff));
+  color: var(--color-text, #1f2733);
+  border: 1px solid var(--color-border, rgba(127, 127, 127, 0.25));
+  border-radius: 16px;
+  box-shadow: var(--shadow-2, 0 24px 60px rgba(0, 0, 0, 0.35));
+  overflow: hidden;
+}
+.mb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--color-border, rgba(127, 127, 127, 0.18));
+}
+.mb-head-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.mb-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+.mb-sub {
+  font-size: 12px;
+  opacity: 0.72;
+}
+.mb-loading {
+  color: var(--color-link, #396cd8);
+  opacity: 1;
+}
+.mb-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.mb-btn {
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border, rgba(127, 127, 127, 0.3));
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.mb-btn:hover {
+  border-color: var(--color-link, #396cd8);
+  color: var(--color-link, #396cd8);
+}
+.mb-btn-primary {
+  background: #396cd8;
+  border-color: #396cd8;
+  color: #fff;
+}
+.mb-btn-primary:hover {
+  background: #2f5cc2;
+  border-color: #2f5cc2;
+  color: #fff;
+}
+/* 框内滚动：高度自适应视口，照片多时整页不被拖长 */
+.mb-scroll {
+  position: relative;
+  overflow-y: auto;
+  padding: 14px;
+  scrollbar-width: thin;
+}
+.mb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.mb-cell {
+  margin: 0;
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  background: rgba(127, 127, 127, 0.12);
+  transition: transform 0.12s ease;
+}
+.mb-cell:hover {
+  transform: translateY(-2px);
+}
+.mb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* 未生成缩略图的骨架（尺寸稳定，避免格子跳动） */
+.mb-ph {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.mb-ph::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.35) 50%, transparent 80%);
+  animation: mbShimmer 1.2s infinite;
+}
+@keyframes mbShimmer {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+.mb-cap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 11px;
+  color: #fff;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.65));
+}
+.mb-cap span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.mb-cap-label {
+  font-weight: 600;
+}
+/* 框内回到顶部箭头 */
+.mb-top-btn {
+  position: sticky;
+  bottom: 12px;
+  margin-left: auto;
+  display: block;
+  width: 38px;
+  height: 38px;
+  border: none;
+  border-radius: 50%;
+  background: #396cd8;
+  color: #fff;
+  font-size: 17px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(57, 108, 216, 0.45);
+  transition: transform 0.15s, background 0.15s;
+}
+.mb-top-btn:hover {
+  background: #2f5bc0;
+  transform: translateY(-2px);
+}
+.mb-top-enter-active,
+.mb-top-leave-active {
+  transition: opacity 0.2s ease;
+}
+.mb-top-enter-from,
+.mb-top-leave-to {
+  opacity: 0;
+}
+.mb-empty {
+  text-align: center;
+  padding: 60px 20px;
+  opacity: 0.7;
+  font-size: 14px;
+}
+
 @media (max-width: 640px) {
   .memories-page { padding: 12px; }
   .mem-hero { height: 200px; }
@@ -886,5 +1208,9 @@ function goAlbumFromLightbox(albumId: number) {
   .mem-story { flex: 0 0 180px; height: 240px; }
   .mem-year { flex: 0 0 260px; height: 170px; }
   .mem-person { flex: 0 0 80px; }
+  .mb-mask { padding: 10px; }
+  .mb-panel { max-height: calc(100vh - 20px); }
+  .mb-head { padding: 12px 14px; }
+  .mb-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useRoute, useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
@@ -109,6 +109,30 @@ async function loadThumbs() {
     }),
   );
 }
+
+/* ---- 回到顶部：时间线跨年/跨月很长，滚下去后一键回顶 ---- */
+const showBackToTop = ref(false);
+let scrollRaf: number | null = null;
+
+/** rAF 节流监听窗口滚动（与相册列表页同一套阈值 300px） */
+function onWinScroll() {
+  if (scrollRaf != null) return;
+  scrollRaf = requestAnimationFrame(() => {
+    showBackToTop.value = window.scrollY > 300;
+    scrollRaf = null;
+  });
+}
+
+function scrollToTop() {
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+onMounted(() => window.addEventListener("scroll", onWinScroll, { passive: true }));
+onBeforeUnmount(() => {
+  window.removeEventListener("scroll", onWinScroll);
+  if (scrollRaf != null) cancelAnimationFrame(scrollRaf);
+  scrollRaf = null;
+});
 
 /* ---- FEAT-034-B：内部大图查看器 ---- */
 const lightboxOpen = ref(false);
@@ -301,6 +325,17 @@ function goAlbumFromLightbox(albumId: number) {
         </div>
       </section>
     </div>
+
+    <!-- 回到顶部箭头：滚动超过一屏后出现，点击平滑回顶 -->
+    <transition name="tl-top">
+      <button
+        v-show="showBackToTop"
+        class="tl-top-btn"
+        title="回到顶部"
+        aria-label="回到顶部"
+        @click="scrollToTop"
+      >↑</button>
+    </transition>
 
     <!-- FEAT-034-B：内部大图查看器（点击缩略图打开） -->
     <PhotoLightbox
@@ -512,6 +547,44 @@ function goAlbumFromLightbox(albumId: number) {
     opacity: 0.4;
   }
 }
+/* 回到顶部按钮（与相册列表页同款：右下角悬浮圆钮） */
+.tl-top-btn {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border, rgba(127, 127, 127, 0.3));
+  background: var(--card-bg, #fff);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.16);
+  font-size: 20px;
+  color: #396cd8;
+  cursor: pointer;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  transition: transform 0.2s ease, background 0.2s;
+}
+.tl-top-btn:hover {
+  background: var(--color-soft-accent, rgba(57, 108, 216, 0.12));
+  transform: scale(1.08);
+}
+.tl-top-btn:active {
+  transform: scale(0.95);
+}
+.tl-top-enter-active,
+.tl-top-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.tl-top-enter-from,
+.tl-top-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
 @media (max-width: 640px) {
   .tl-page {
     padding: 12px;
