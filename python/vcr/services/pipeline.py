@@ -167,13 +167,17 @@ def _gpu_channels(img, lb, registry, path: str, use_face: bool) -> tuple:
             faces = svc.detect_faces(lb)
             hits: list[dict] = []
             for f in faces:
-                emb = svc.embed(img, f)
+                # 质量闸门在这边：几何不过 → 直接丢（连嵌入都不算）；
+                # 边缘质量（极端侧脸/小脸/轻模糊）→ 只准并入旧簇，不准新建（防垃圾簇）
+                emb, verdict = svc.embed_checked(img, f)
                 if emb is None:
                     continue
                 with _FACE_STORE_LOCK:
                     # 落库单独记：这是持锁的串行段，P 路并行时它会成为争用点
                     with timing.span("face.store"):
-                        pid, sim = svc.store.register(emb, path, f"{f.bbox}")
+                        pid, sim = svc.assign(emb, verdict, path, f"{f.bbox}")
+                if pid is None:      # 边缘质量且未匹配上 → 不标号
+                    continue
                 hits.append({"person_id": pid, "bbox": f.bbox, "sim": round(sim, 3)})
             face_hits = hits
         except Exception:

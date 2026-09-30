@@ -97,7 +97,7 @@ def _health_dict() -> dict:
 #     B/16 ↔ L/14-336）；新增 /embed_text_batch。
 # v6：CPU 线程数可调（/threads 读写 + /benchmark 支持临时线程覆盖 + /benchmark_sweep 扫档），
 #     供「⚙ 性能设置」按不同硬件实测选优。
-VCR_API_VERSION = 8  # v8: 人脸模型档位（/face/tiers、/face/tier 可切换+持久化）
+VCR_API_VERSION = 9  # v9: 人脸质量闸门（几何/尺寸/清晰度 + 边缘质量限新建），行为变更须重启服务
 
 
 @app.get("/health")

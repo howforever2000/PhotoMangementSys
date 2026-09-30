@@ -178,13 +178,31 @@ class PersonStore:
                 best_sim, best_id = sim, r["id"]
         return (best_id, best_sim) if best_sim >= config.FACE_SIM else (None, best_sim)
 
-    def register(self, emb: np.ndarray, photo_path: str, bbox: str) -> tuple[str, float]:
-        """匹配或新建人物，返回 (person_id, sim)。"""
+    def register(
+        self,
+        emb: np.ndarray,
+        photo_path: str,
+        bbox: str,
+        *,
+        allow_new: bool = True,
+        update_centroid: bool = True,
+    ) -> tuple[str | None, float]:
+        """匹配或新建人物，返回 (person_id, sim)。
+
+        allow_new/update_centroid 是给“边缘质量脸”（极端侧脸/小脸/轻模糊）用的：
+        它们是真脸，并入已有簇无害，但**不能用来新建人物、也不该更新质心**——
+        实测垃圾簇（如 P111）都是从“一张烂脸开出一个新 P 编号、把质心拖向自己、
+        再吸更多烂脸”开始。默认 True 保持原有调用点语义不变。
+
+        allow_new=False 且未匹配上 → 返回 (None, sim)，**不入库**（宁可不标号）。
+        """
         emb = np.asarray(emb, dtype=np.float32)
         norm = np.linalg.norm(emb)
         if norm > 0:
             emb = emb / norm
         person_id, sim = self.match(emb)
+        if person_id is None and not allow_new:
+            return None, sim
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         active = self._active_rec_model()
         if active is None:
@@ -219,15 +237,22 @@ class PersonStore:
                 row = conn.execute(
                     "SELECT centroid, face_count FROM persons WHERE id=?", (person_id,)
                 ).fetchone()
-                # 增量均值并归一化
-                c = self._from_blob(row["centroid"])
-                n = row["face_count"]
-                c = (c * n + emb) / (n + 1)
-                c = c / (np.linalg.norm(c) + 1e-9)
-                conn.execute(
-                    "UPDATE persons SET centroid=?, face_count=? WHERE id=?",
-                    (self._to_blob(c), n + 1, person_id),
-                )
+                if update_centroid:
+                    # 增量均值并归一化
+                    c = self._from_blob(row["centroid"])
+                    n = row["face_count"]
+                    c = (c * n + emb) / (n + 1)
+                    c = c / (np.linalg.norm(c) + 1e-9)
+                    conn.execute(
+                        "UPDATE persons SET centroid=?, face_count=? WHERE id=?",
+                        (self._to_blob(c), n + 1, person_id),
+                    )
+                else:
+                    # 边缘质量脸：计数照加（“张脸”要真实），但质心不动
+                    conn.execute(
+                        "UPDATE persons SET face_count=? WHERE id=?",
+                        (row["face_count"] + 1, person_id),
+                    )
             conn.execute(
                 "INSERT INTO faces(person_id, photo_path, bbox, embedding, created_at) VALUES(?,?,?,?,?)",
                 (person_id, photo_path, bbox, self._to_blob(emb), now),

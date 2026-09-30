@@ -17,6 +17,75 @@ from ..persistence.person_store import get_store
 
 STRIDES = [8, 16, 32]
 
+# 质量判定的三档结果
+QUALITY_OK = "ok"        # 正常：可建新人物、可更新质心
+QUALITY_MARGINAL = "marginal"  # 边缘：只准并入已有簇，不准新建、不更新质心
+QUALITY_REJECT = "reject"      # 硬丢：不参与嵌入
+
+
+def face_geometry_quality(bbox: tuple[int, int, int, int], kps: np.ndarray) -> str:
+    """仅用检测输出的框 + 5 点关键点判质量（不做图像运算，免费）。
+
+    为什么先看几何：实测垃圾框（低头/后脑勺/手挡脸/风扇）与真人脸的差别主要在
+    **关键点不成人脸形状**——眼距占框宽中位 0.07 vs 0.46、鼻-眼纵向比 4.96 vs 0.57。
+    判别项与阈值均来自实测分布（见 config.FACE_QUALITY_* 注释）。
+    """
+    x1, y1, x2, y2 = bbox
+    bw, bh = max(x2 - x1, 1), max(y2 - y1, 1)
+    aspect = bw / bh
+    lo, hi = config.FACE_QUALITY_ASPECT
+    if not (lo <= aspect <= hi):
+        return QUALITY_REJECT
+    side = min(bw, bh)
+    if side < config.FACE_MIN_PIX:
+        return QUALITY_REJECT
+
+    le, re_, nose, mouth_l, mouth_r = kps
+    eye_d = float(np.linalg.norm(re_ - le))
+    if eye_d <= 1e-6:
+        return QUALITY_REJECT
+    eye_span = eye_d / bw
+    lo, hi = config.FACE_QUALITY_EYE_SPAN
+    if not (lo <= eye_span <= hi):
+        return QUALITY_REJECT
+
+    yaw = abs(float(nose[0]) - (float(le[0]) + float(re_[0])) / 2.0) / eye_d
+    roll = abs(
+        float(np.degrees(np.arctan2(float(re_[1]) - float(le[1]), float(re_[0]) - float(le[0]))))
+    )
+    if yaw > config.FACE_QUALITY_YAW or roll > config.FACE_QUALITY_ROLL_DEG:
+        return QUALITY_REJECT
+
+    eye_mid_y = (float(le[1]) + float(re_[1])) / 2.0
+    nose_dy = (float(nose[1]) - eye_mid_y) / eye_d
+    lo, hi = config.FACE_QUALITY_NOSE_DY
+    if not (lo <= nose_dy <= hi):
+        return QUALITY_REJECT
+    mouth_dy = ((float(mouth_l[1]) + float(mouth_r[1])) / 2.0 - float(nose[1])) / eye_d
+    lo, hi = config.FACE_QUALITY_MOUTH_DY
+    if not (lo <= mouth_dy <= hi):
+        return QUALITY_REJECT
+
+    # 边缘（仍可用，但不该当“新人脸基准”）：侧脸/转过头/小脸/轻模糊
+    if (
+        yaw > config.FACE_MARGINAL_YAW
+        or roll > config.FACE_MARGINAL_ROLL_DEG
+        or side < config.FACE_MARGINAL_MIN_PIX
+    ):
+        return QUALITY_MARGINAL
+    return QUALITY_OK
+
+
+def aligned_blur(tensor: np.ndarray) -> float:
+    """对齐后 112×112 张量的清晰度（Laplacian 方差）。
+
+    tensor 是 face_align 输出 (1,3,112,112) float32（已是 (x-127.5)/128 量纲）
+    → 回到 0~255 后再算方差，与 config.FACE_QUALITY_BLUR_MIN 同口径。
+    """
+    arr = tensor[0].transpose(1, 2, 0) * 128.0 + 127.5
+    gray = cv2.cvtColor(np.clip(arr, 0, 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
 
 # ---------------------------------------------------------------------------
 # SCRFD 解码（向量化）
@@ -164,8 +233,7 @@ class FaceService:
     # ------------------------------------------------------------------
     def detect_faces(self, lb: preprocess.Letterbox) -> list[Face]:
         if not self.ready():
-            return []
-        # 细粒度记账：face 是单张最大头，必须能区分「检测前向」与「后处理」。
+            return []        # 细粒度记账：face 是单张最大头，必须能区分「检测前向」与「后处理」。
         # face.pre 只剩贴黑底 + 归一化（解码与缩放已上提到 pipeline 的 letterbox()）。
         with timing.span("face.pre"):
             tensor, scale, pad_x, pad_y = preprocess.face_det_tensor(lb)
@@ -188,6 +256,9 @@ class FaceService:
             kept.sort(key=lambda f: f.score, reverse=True)
             # NMS 去重（SCRFD 同脸多框），IoU 阈值与检测一致
             kept = self._nms_faces(kept)
+            # 几何质量闸门（免费，仅用框+关键点）：把“不像人脸”的框在嵌入之前剔掉。
+            # 实测这能把 P111 那种垃圾簇的框去掉 8 成以上（见 config 质量闸门注释）。
+            kept = [f for f in kept if face_geometry_quality(f.bbox, f.kps) != QUALITY_REJECT]
         return kept[:16]          # 单图最多标号 16 张脸
 
     @staticmethod
@@ -206,24 +277,75 @@ class FaceService:
         return [faces[int(i)] for i in nms_indices(coords, scores, 0.45)]
 
     # ------------------------------------------------------------------
-    def embed(self, img: Image.Image, face: Face) -> np.ndarray | None:
+    def embed_checked(
+        self, img: Image.Image, face: Face
+    ) -> tuple[np.ndarray | None, str]:
+        """对齐 + 清晰度门槛 + 嵌入，返回 (嵌入向量|None, 质量档位)。
+
+        为什么要返回质量档位：垃圾簇是从「一张烂脸先开出一个新 P 编号」开始吸人的。
+        边缘质量的脸（极端侧脸/小脸/轻模糊）本身是真脸，丢掉可惜，但让它们参与
+        “新建人物 + 更新质心” 就会把簇带偏 ⇒ 由调用方按档位决定（见 QUALITY_* 注释与
+        person_store.register(allow_new=..., update_centroid=...)）。
+        """
+        verdict = face_geometry_quality(face.bbox, face.kps)
+        if verdict == QUALITY_REJECT:
+            return None, QUALITY_REJECT
         sess = self.registry.face_rec
         if sess is None:
-            return None
+            return None, QUALITY_REJECT
         try:
             with timing.span("face.align"):
                 tensor = preprocess.face_align(img, face.kps)
+            # 清晰度门槛放在嵌入之前：模糊脸既省下 r50 前向（~39ms/脸），
+            # 也避免给库里灌噪声向量。方差只算一次（硬门槛与边缘档共用）。
+            blur = aligned_blur(tensor)
+            if blur < config.FACE_QUALITY_BLUR_MIN:
+                return None, QUALITY_REJECT
             with timing.span("face.rec"):
                 out = self.registry.run("face_rec", tensor)[0][0]
             emb = np.asarray(out, dtype=np.float32)
             n = np.linalg.norm(emb)
-            return emb / n if n > 0 else None
+            if n <= 0:
+                return None, QUALITY_REJECT
+            emb = emb / n
+            if verdict == QUALITY_OK and blur < config.FACE_MARGINAL_BLUR:
+                verdict = QUALITY_MARGINAL
+            return emb, verdict
         except Exception:
-            return None
+            return None, QUALITY_REJECT
+
+    # ------------------------------------------------------------------
+    def embed(self, img: Image.Image, face: Face) -> np.ndarray | None:
+        """兼容旧调用点：只要嵌入向量（内部走带质量门槛的 embed_checked）"""
+        emb, _ = self.embed_checked(img, face)
+        return emb
+
+    # ------------------------------------------------------------------
+    def assign(
+        self, emb: np.ndarray, verdict: str, photo_path: str, bbox: str
+    ) -> tuple[str | None, float]:
+        """按质量档位落库（两条链路共用的唯一入口）。
+
+        - ok       ：正常登记（可新建人物、参与质心更新）
+        - marginal ：只允许并入已有簇（不准新建、不更新质心）
+                     这是防“垃圾簇”的关键：垃圾簇均从“一张烂脸开出一个新 P 编号、
+                     然后把质心拖向自己、再吸更多烂脸”开始。
+        返回 (person_id | None, sim)；None = 未入库（边缘质量且没匹配上）。
+        """
+        if verdict == QUALITY_MARGINAL:
+            return self.store.register(
+                emb, photo_path, bbox, allow_new=False, update_centroid=False
+            )
+        return self.store.register(emb, photo_path, bbox)
 
     # ------------------------------------------------------------------
     def process_photo(self, img: Image.Image, photo_path: str) -> list[dict]:
-        """返回 [{person_id, bbox, sim}]，空列表 = 无可用人脸。"""
+        """返回 [{person_id, bbox, sim}]，空列表 = 无可用人脸。
+
+        质量分层用法：
+          - ok：正常登记（可新建人物、参与质心更新）
+          - marginal：只允许并入已有簇（不准新建、不更新质心）——这是防垃圾簇的关键
+        """
         if not self.ready():
             return []
         # 检测走共用的缩放（letterbox()），对齐仍用原图 —— 只有 pipeline 才能
@@ -231,10 +353,12 @@ class FaceService:
         faces = self.detect_faces(preprocess.letterbox(img))
         hits: list[dict] = []
         for f in faces:
-            emb = self.embed(img, f)
+            emb, verdict = self.embed_checked(img, f)
             if emb is None:
                 continue
-            pid, sim = self.store.register(emb, photo_path, f"{f.bbox}")
+            pid, sim = self.assign(emb, verdict, photo_path, f"{f.bbox}")
+            if pid is None:
+                continue
             hits.append({"person_id": pid, "bbox": f.bbox, "sim": round(sim, 3)})
         return hits
 
