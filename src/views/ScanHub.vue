@@ -167,9 +167,14 @@ function onTabClick(t: ScanTab) {
   <div class="scan-page" :style="{ color: theme.textColor }">
     <button class="btn scan-back" @click="router.push('/home')">← 返回主页</button>
 
-    <!-- Hero：磨砂玻璃横幅（去彩虹化：墨绿玻璃 + 单点强调） -->
-    <section class="scan-hero glass-surface">
-      <div class="scan-hero-mask"></div>
+    <!-- Hero：彩虹横幅（按需求保留）；自带 45% 暗纱保证白字 ≥4.5:1 -->
+    <section
+      class="scan-hero glass-surface"
+      :style="{
+        background:
+          'linear-gradient(rgba(4,14,11,.45), rgba(4,14,11,.45)), linear-gradient(135deg, #396cd8 0%, #5a8bf7 50%, #7eb6ff 100%)',
+      }"
+    >
       <div class="scan-hero-content">
         <div class="scan-hero-eyebrow">SCAN HUB</div>
         <h1 class="scan-hero-title">🔍 图片扫描</h1>
@@ -279,17 +284,11 @@ function onTabClick(t: ScanTab) {
   border-radius: var(--radius-card);
   overflow: hidden;
   margin-bottom: 22px;
-  background: var(--glass-bg);
+  background: var(--glass-bg); /* 未内联渐变时的玻璃回退 */
   border: 1px solid var(--glass-border);
-  color: var(--color-text);
+  /* 彩虹横幅上恒用白字（与背景图无关） */
+  color: #fff;
   box-shadow: var(--shadow-2);
-}
-.scan-hero-mask {
-  position: absolute;
-  inset: 0;
-  /* 统一光源：左上 135° 高光（方案 --liquid-highlight） */
-  background: var(--liquid-highlight);
-  pointer-events: none;
 }
 .scan-hero-content {
   position: relative;
@@ -302,8 +301,8 @@ function onTabClick(t: ScanTab) {
 .scan-hero-eyebrow {
   font-size: 12px;
   letter-spacing: 3px;
-  /* 单点强调：全屏只留这一处强调色 */
-  color: var(--color-link);
+  /* 彩虹底上的角标：白字保证可读，不再用强调色 */
+  color: rgba(255, 255, 255, 0.92);
   margin-bottom: 6px;
 }
 .scan-hero-title {
@@ -311,9 +310,9 @@ function onTabClick(t: ScanTab) {
   margin: 0 0 6px;
   font-weight: 800;
   letter-spacing: 2px;
-  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
-  /* 容器内文字：对玻璃等效底色取对比色（theme store 下发） */
-  color: var(--color-text);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+  /* 彩虹底上恒用白字 */
+  color: #fff;
 }
 .scan-hero-sub {
   margin: 0 0 16px;

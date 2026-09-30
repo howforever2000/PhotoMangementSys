@@ -146,9 +146,14 @@ function openSub(m: SubModule) {
   <div class="smart-page" :style="{ color: theme.textColor }">
     <button class="btn smart-back" @click="router.push('/home')">← 返回主页</button>
 
-    <!-- Hero：磨砂玻璃横幅（去彩虹化：墨绿玻璃 + 单点强调） -->
-    <section class="smart-hero glass-surface">
-      <div class="smart-hero-mask"></div>
+    <!-- Hero：彩虹横幅（按需求保留）；自带 45% 暗纱保证白字 ≥4.5:1 -->
+    <section
+      class="smart-hero glass-surface"
+      :style="{
+        background:
+          'linear-gradient(rgba(4,14,11,.45), rgba(4,14,11,.45)), linear-gradient(135deg, #6a8df0 0%, #a764ec 50%, #f093fb 100%)',
+      }"
+    >
       <div class="smart-hero-content">
         <div class="smart-hero-eyebrow">SMART ALBUM</div>
         <h1 class="smart-hero-title">🧠 智慧相册</h1>
@@ -245,17 +250,11 @@ function openSub(m: SubModule) {
   border-radius: var(--radius-card);
   overflow: hidden;
   margin-bottom: 22px;
-  background: var(--glass-bg);
+  background: var(--glass-bg); /* 未内联渐变时的玻璃回退 */
   border: 1px solid var(--glass-border);
-  color: var(--color-text);
+  /* 彩虹横幅上恒用白字 */
+  color: #fff;
   box-shadow: var(--shadow-2);
-}
-.smart-hero-mask {
-  position: absolute;
-  inset: 0;
-  /* 统一光源：左上 135° 高光 */
-  background: var(--liquid-highlight);
-  pointer-events: none;
 }
 .smart-hero-content {
   position: relative;
@@ -268,8 +267,8 @@ function openSub(m: SubModule) {
 .smart-hero-eyebrow {
   font-size: 12px;
   letter-spacing: 3px;
-  /* 单点强调 */
-  color: var(--color-link);
+  /* 彩虹底上的角标：白字保证可读 */
+  color: rgba(255, 255, 255, 0.92);
   margin-bottom: 6px;
 }
 .smart-hero-title {
@@ -277,9 +276,9 @@ function openSub(m: SubModule) {
   margin: 0 0 6px;
   font-weight: 800;
   letter-spacing: 2px;
-  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
-  /* 容器内文字：对玻璃等效底色取对比色 */
-  color: var(--color-text);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+  /* 彩虹底上恒用白字 */
+  color: #fff;
 }
 .smart-hero-sub {
   margin: 0 0 16px;

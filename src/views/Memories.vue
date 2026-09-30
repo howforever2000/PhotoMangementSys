@@ -269,9 +269,14 @@ function goAlbumFromLightbox(albumId: number) {
     <!-- 顶部返回 -->
     <button class="btn mem-back" @click="router.push('/home')">← 主页</button>
 
-    <!-- Hero：磨砂玻璃横幅（去彩虹化） -->
-    <section class="mem-hero glass-surface">
-      <div class="mem-hero-mask"></div>
+    <!-- Hero：彩虹横幅（按需求保留）；自带 45% 暗纱保证白字 ≥4.5:1 -->
+    <section
+      class="mem-hero glass-surface"
+      :style="{
+        background:
+          'linear-gradient(rgba(4,14,11,.45), rgba(4,14,11,.45)), linear-gradient(135deg, #6a8df0 0%, #a764ec 50%, #f093fb 100%)',
+      }"
+    >
       <div class="mem-hero-content">
         <div class="mem-hero-eyebrow">SMART MEMORIES</div>
         <h1 class="mem-hero-title">回忆</h1>
@@ -472,17 +477,11 @@ function goAlbumFromLightbox(albumId: number) {
   border-radius: var(--radius-card);
   overflow: hidden;
   margin-bottom: 28px;
-  background: var(--glass-bg);
+  background: var(--glass-bg); /* 未内联渐变时的玻璃回退 */
   border: 1px solid var(--glass-border);
-  color: var(--color-text);
+  /* 彩虹横幅上恒用白字 */
+  color: #fff;
   box-shadow: var(--shadow-2);
-}
-.mem-hero-mask {
-  position: absolute;
-  inset: 0;
-  /* 统一光源：左上 135° 高光 */
-  background: var(--liquid-highlight);
-  pointer-events: none;
 }
 .mem-hero-content {
   position: relative;
@@ -495,8 +494,8 @@ function goAlbumFromLightbox(albumId: number) {
 .mem-hero-eyebrow {
   font-size: 12px;
   letter-spacing: 3px;
-  /* 单点强调 */
-  color: var(--color-link);
+  /* 彩虹底上的角标：白字保证可读 */
+  color: rgba(255, 255, 255, 0.92);
   margin-bottom: 6px;
 }
 .mem-hero-title {
@@ -504,9 +503,9 @@ function goAlbumFromLightbox(albumId: number) {
   margin: 0;
   font-weight: 800;
   letter-spacing: 4px;
-  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
-  /* 容器内文字：对玻璃等效底色取对比色 */
-  color: var(--color-text);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+  /* 彩虹底上恒用白字 */
+  color: #fff;
 }
 .mem-hero-sub {
   margin: 6px 0 18px;
