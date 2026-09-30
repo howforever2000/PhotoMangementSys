@@ -108,6 +108,8 @@ interface SubModule {
   desc: string;
   path?: string; // 跳转路径（与 actionTab 二选一）
   tab?: string; // 选中某 tab
+  /** 鲜艳彩虹底（糖果色系，按用户色卡） */
+  gradient: string;
 }
 const subModules: SubModule[] = [
   {
@@ -115,24 +117,28 @@ const subModules: SubModule[] = [
     title: "人物",
     desc: "按出现频率自动聚类，支持命名、合并、查看照片",
     tab: "face",
+    gradient: "linear-gradient(135deg, #65D5F9 0%, #F075C7 100%)",
   },
   {
     icon: "🌟",
     title: "回忆",
     desc: "智能相册故事：按月 / 按年聚合的精彩瞬间",
     path: "/memories",
+    gradient: "linear-gradient(135deg, #FFFCBD 0%, #F075C7 100%)",
   },
   {
     icon: "📅",
     title: "时间线",
     desc: "跨相册按拍摄时间聚合浏览",
     path: "/timeline",
+    gradient: "linear-gradient(135deg, #65D5F9 0%, #FB6D9B 100%)",
   },
   {
     icon: "🔎",
     title: "智能搜索",
     desc: "自然语言 + 多维筛选检索照片",
     path: "/search",
+    gradient: "linear-gradient(135deg, #FFFCBD 0%, #65D5F9 100%)",
   },
 ];
 
@@ -198,6 +204,7 @@ function openSub(m: SubModule) {
         v-for="m in subModules"
         :key="m.title"
         class="smart-subcard glass-surface"
+        :style="{ background: m.gradient }"
         @click="openSub(m)"
       >
         <span class="smart-subicon">{{ m.icon }}</span>
@@ -335,8 +342,9 @@ function openSub(m: SubModule) {
   border-radius: var(--radius-card);
   cursor: pointer;
   background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  color: var(--color-text);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  /* 糖果色底 → 墨色字（浅色渐变上白字不达标） */
+  color: #1f2733;
   transition: transform 0.18s ease, box-shadow 0.18s ease;
   box-shadow: var(--shadow-1);
 }
@@ -357,11 +365,12 @@ function openSub(m: SubModule) {
   font-size: 15px;
   font-weight: 700;
   display: block;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  color: #1f2733;
+  text-shadow: none;
 }
 .smart-subdesc {
   font-size: 12px;
-  opacity: 0.92;
+  color: rgba(31, 39, 51, 0.92);
   display: block;
   margin-top: 2px;
 }

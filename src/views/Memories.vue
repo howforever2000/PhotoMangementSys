@@ -187,18 +187,18 @@ function gotoPerson(p: PersonInfo) {
   router.push({ path: "/smart", query: { tab: "face", person: p.id } });
 }
 
-/* -------------------- 故事卡底色（去彩虹化：墨绿同色系 8 档明度） --------------------
-   彩虹调色板会让「回忆」页变成色卡墙；改为同一墨绿色系内只靠明度区分月份，
-   与全局「一套主色、单点强调」一致（方案 §四.3）。 */
+/* -------------------- 故事/年度卡底色（鲜艳彩虹 · 用户色卡） --------------------
+   六个基色来自用户提供的色卡：#FFFCBD / #F075C7 / #65D5F9 / #FB6D9B / #505FDD / #3A36E4；
+   文字是白字，底部靠 .mem-story-fade / .mem-year-fade 的黑色 scrim 保对比度。 */
 const PALETTE = [
-  "linear-gradient(135deg, #16413a 0%, #061712 100%)",
-  "linear-gradient(135deg, #123b3f 0%, #051518 100%)",
-  "linear-gradient(135deg, #14452f 0%, #061a12 100%)",
-  "linear-gradient(135deg, #0f3a35 0%, #051413 100%)",
-  "linear-gradient(135deg, #1a4536 0%, #071b15 100%)",
-  "linear-gradient(135deg, #123b3a 0%, #051515 100%)",
-  "linear-gradient(135deg, #0e3530 0%, #041210 100%)",
-  "linear-gradient(135deg, #18453f 0%, #071a17 100%)",
+  "linear-gradient(135deg, #FFFCBD 0%, #F075C7 100%)",
+  "linear-gradient(135deg, #65D5F9 0%, #FB6D9B 100%)",
+  "linear-gradient(135deg, #F075C7 0%, #505FDD 100%)",
+  "linear-gradient(135deg, #FB6D9B 0%, #3A36E4 100%)",
+  "linear-gradient(135deg, #65D5F9 0%, #F075C7 100%)",
+  "linear-gradient(135deg, #FFFCBD 0%, #65D5F9 100%)",
+  "linear-gradient(135deg, #FB6D9B 0%, #505FDD 100%)",
+  "linear-gradient(135deg, #505FDD 0%, #3A36E4 100%)",
 ];
 function paletteFor(key: string): string {
   let h = 0;
@@ -614,7 +614,8 @@ function goAlbumFromLightbox(albumId: number) {
 .mem-story-fade {
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 50%, rgba(0, 0, 0, 0.65) 100%);
+  /* 鲜艳底 + 白字：黑纱从 27% 就开始起、压到 0.9，把标题区顶到 ≥4.5:1 */
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 27%, rgba(0, 0, 0, 0.9) 100%);
 }
 .mem-story-body {
   position: absolute;
@@ -740,7 +741,8 @@ function goAlbumFromLightbox(albumId: number) {
 .mem-year-fade {
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.1) 0%, rgba(0, 0, 0, 0.55) 100%);
+  /* 同上：年度卡也是鲜艳底 + 白字 */
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0.85) 100%);
 }
 .mem-year-body {
   position: absolute;

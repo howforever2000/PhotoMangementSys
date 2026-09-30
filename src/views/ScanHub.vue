@@ -114,6 +114,8 @@ interface SubModule {
   icon: string;
   title: string;
   desc: string;
+  /** 鲜艳彩虹底（糖果色系，按用户色卡） */
+  gradient: string;
 }
 const subModules: SubModule[] = [
   {
@@ -121,24 +123,28 @@ const subModules: SubModule[] = [
     icon: "🗂️",
     title: "全局照片扫描入库",
     desc: "勾选相册批量扫描入库，支持全选、启停、进度与后台执行",
+    gradient: "linear-gradient(135deg, #FFFCBD 0%, #F075C7 100%)",
   },
   {
     tab: "by-time-place",
     icon: "🗓️",
     title: "按年·地点浏览",
     desc: "把扫描结果按年 / 地点组织聚合展示（待开发）",
+    gradient: "linear-gradient(135deg, #65D5F9 0%, #FB6D9B 100%)",
   },
   {
     tab: "dedupe",
     icon: "🧹",
     title: "重复扫描清理",
     desc: "基于哈希找出已入库但重复扫描的照片，支持一键清理（待开发）",
+    gradient: "linear-gradient(135deg, #FFFCBD 0%, #65D5F9 100%)",
   },
   {
     tab: "test",
     icon: "🧪",
     title: "相册扫描分组工具",
     desc: "扫描任意文件夹 → 按年·地点分组预览与批量移动（独立子页面）",
+    gradient: "linear-gradient(135deg, #F075C7 0%, #FB6D9B 100%)",
   },
 ];
 
@@ -223,6 +229,8 @@ function onTabClick(t: ScanTab) {
         :key="m.tab"
         class="scan-subcard glass-surface"
         :class="{ 'scan-subcard-active': activeTab === m.tab, 'scan-subcard-disabled': !tabs.find((t) => t.key === m.tab)?.enabled }"
+        :style="{ background: m.gradient }"
+        :aria-disabled="!tabs.find((t) => t.key === m.tab)?.enabled"
         @click="openSub(m)"
       >
         <span class="scan-subicon">{{ m.icon }}</span>
@@ -372,8 +380,9 @@ function onTabClick(t: ScanTab) {
   border-radius: var(--radius-card);
   cursor: pointer;
   background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  color: var(--color-text);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  /* 糖果色底 → 墨色字（浅色渐变上白字不达标） */
+  color: #1f2733;
   transition: transform 0.18s ease, box-shadow 0.18s ease;
   box-shadow: var(--shadow-1);
 }
@@ -403,11 +412,12 @@ function onTabClick(t: ScanTab) {
   font-size: 15px;
   font-weight: 700;
   display: block;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  color: #1f2733;
+  text-shadow: none;
 }
 .scan-subdesc {
   font-size: 12px;
-  opacity: 0.92;
+  color: rgba(31, 39, 51, 0.92);
   display: block;
   margin-top: 2px;
 }
