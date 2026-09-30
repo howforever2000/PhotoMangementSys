@@ -175,7 +175,7 @@ function onTabClick(t: ScanTab) {
 
     <!-- Hero：彩虹横幅（按需求保留）；自带 45% 暗纱保证白字 ≥4.5:1 -->
     <section
-      class="scan-hero glass-surface"
+      class="scan-hero glass-surface candy-surface"
       :style="{
         background:
           'linear-gradient(135deg, #FFFCBD 0%, #F075C7 55%, #65D5F9 100%)',
@@ -227,7 +227,7 @@ function onTabClick(t: ScanTab) {
       <button
         v-for="m in subModules"
         :key="m.tab"
-        class="scan-subcard glass-surface"
+        class="scan-subcard glass-surface candy-surface"
         :class="{ 'scan-subcard-active': activeTab === m.tab, 'scan-subcard-disabled': !tabs.find((t) => t.key === m.tab)?.enabled }"
         :style="{ background: m.gradient }"
         :aria-disabled="!tabs.find((t) => t.key === m.tab)?.enabled"
@@ -293,7 +293,8 @@ function onTabClick(t: ScanTab) {
   overflow: hidden;
   margin-bottom: 22px;
   background: var(--glass-bg); /* 未内联渐变时的玻璃回退 */
-  border: 1px solid rgba(255, 255, 255, 0.45);
+  /* 描边降为辅助：方向棱线（顶亮底暗）由 candy-surface 的 inset 阴影接管 */
+  border: 1px solid rgba(255, 255, 255, 0.3);
   /* 糖果浅底 → 墨色字（与子卡一致） */
   color: #1f2733;
   box-shadow: var(--shadow-2);
@@ -309,8 +310,9 @@ function onTabClick(t: ScanTab) {
 .scan-hero-eyebrow {
   font-size: 12px;
   letter-spacing: 3px;
-  /* 糖果底上的角标：墨色降透明度 */
-  color: #1f2733;
+  font-weight: 600;
+  /* 糖果底上的角标：墨色加重量，小字距排不发散 */
+  color: #17202e;
   margin-bottom: 6px;
 }
 .scan-hero-title {
@@ -324,7 +326,8 @@ function onTabClick(t: ScanTab) {
 .scan-hero-sub {
   margin: 0 0 16px;
   font-size: 13.5px;
-  opacity: 0.92;
+  /* 去掉 opacity，用实色：渐变过渡区上副标题不再发虚 */
+  color: #2a3547;
 }
 .scan-stats {
   display: flex;
@@ -347,7 +350,7 @@ function onTabClick(t: ScanTab) {
 }
 .stat-label {
   font-size: 11.5px;
-  opacity: 0.9;
+  color: #2a3547;
   white-space: nowrap;
 }
 .stat-divider {
@@ -379,7 +382,7 @@ function onTabClick(t: ScanTab) {
   border-radius: var(--radius-card);
   cursor: pointer;
   background: var(--glass-bg);
-  border: 1px solid rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.3);
   /* 糖果色底 → 墨色字（浅色渐变上白字不达标） */
   color: #1f2733;
   transition: transform 0.18s ease, box-shadow 0.18s ease;
@@ -416,13 +419,14 @@ function onTabClick(t: ScanTab) {
 }
 .scan-subdesc {
   font-size: 12px;
-  color: rgba(31, 39, 51, 0.92);
+  /* 与标题同墨色：12px 小字在任何糖果色端点都 ≥4.5:1（#2e3a4e 在粉端仅 4.27） */
+  color: #1f2733;
   display: block;
   margin-top: 2px;
 }
 .scan-subarrow {
   font-size: 16px;
-  opacity: 0.75;
+  opacity: 0.85;
   flex-shrink: 0;
 }
 

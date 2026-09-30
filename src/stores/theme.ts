@@ -251,7 +251,8 @@ export const useThemeStore = defineStore("theme", () => {
   });
 
   /**
-   * 液态填充色（FEAT-086 表面光学）：向白混 20% 提亮呈现「湿玻璃」磨砂维持组件原色。
+   * 液态/釉瓷填充色（FEAT-086 表面光学 + 釉瓷扩展）：向白提亮呈现「湿玻璃/瓷面」。
+   * 液态掺白 20%；釉瓷掺白 30%（瓷面更亮更硬挺）。磨砂维持组件原色。
    * 在 compFill 入口收口（而非只改 cardBg）：--color-surface/--glass-bg（类路径）与
    * cardStyle（内联路径）同一出口，文字对比计算 glassRgb 也用它，三处永远一致。
    * 注：不采用方案里的 color-mix(...white) —— 它会把 alpha 从 0.42 推到 0.536，
@@ -260,7 +261,9 @@ export const useThemeStore = defineStore("theme", () => {
   const fillColor = computed(() =>
     material.value === "liquid"
       ? rgbToHex(mixRgb(hexToRgb(compColor.value), [255, 255, 255], 0.2))
-      : compColor.value,
+      : material.value === "glazed"
+        ? rgbToHex(mixRgb(hexToRgb(compColor.value), [255, 255, 255], 0.3))
+        : compColor.value,
   );
 
   /** 玻璃等效底色：组件色调以 **compAlpha**（FEAT-086 可调）叠在**实际页面背景**上。
@@ -275,7 +278,7 @@ export const useThemeStore = defineStore("theme", () => {
   /** 容器/面板内文字：随玻璃等效底色自动取深/浅，保证 ≥4.5:1（方案 §四.4） */
   const textColor = computed(() => (glassTone.value.onDark ? "#f5f7ff" : "#1f2733"));
   const subTextColor = computed(() =>
-    glassTone.value.onDark ? "rgba(225,232,255,.86)" : "rgba(36,48,68,.88)",
+    glassTone.value.onDark ? "rgba(228,235,255,.92)" : "rgba(36,48,68,.9)",
   );
 
   /** 页面背景上的文字：与实际背景做对比度计算
@@ -323,6 +326,7 @@ export const useThemeStore = defineStore("theme", () => {
     if (typeof document === "undefined") return;
     document.body.classList.toggle("mat-frosted", m === "frosted");
     document.body.classList.toggle("mat-liquid", m === "liquid");
+    document.body.classList.toggle("mat-glazed", m === "glazed");
   }
   applyMaterial(material.value);
   watch(material, applyMaterial);
@@ -371,10 +375,15 @@ export const useThemeStore = defineStore("theme", () => {
   /** 卡片描边（颜色值）：玻璃边缘内高光，方向随等效底色明暗 */
   const cardBorder = computed(() => glassTone.value.border);
   /** 卡片/容器整套样式（内联 style 直接消费）：玻璃材质三件套。
-   *  液态材质叠加 135° 高光层（--liquid-highlight，main.css 令牌） */
+   *  液态叠 135° 流体高光（--liquid-highlight），釉瓷叠顶部镜面带（--glazed-highlight） */
   const cardStyle = computed(() => ({
     backgroundColor: cardBg.value,
-    backgroundImage: material.value === "liquid" ? "var(--liquid-highlight)" : "none",
+    backgroundImage:
+      material.value === "liquid"
+        ? "var(--liquid-highlight)"
+        : material.value === "glazed"
+          ? "var(--glazed-highlight)"
+          : "none",
     border: `1px solid ${cardBorder.value}`,
     /* 修补：内联路径此前缺 -webkit- 前缀，Safari/WebView 下零模糊 */
     WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(var(--glass-saturate))",

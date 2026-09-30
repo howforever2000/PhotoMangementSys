@@ -70,17 +70,31 @@
     rgba(255, 255, 255, 0.1) 38%,
     rgba(255, 255, 255, 0) 58%
   );
+  /* 釉瓷高光（新增材质）：顶部镜面受光带——瓷器表面那道「天光反射」,
+     与液态的 135° 流体高光不同，釉瓷是水平漫射带，更安静、更硬挺 */
+  --glazed-highlight: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.5) 0%,
+    rgba(255, 255, 255, 0.14) 16%,
+    rgba(255, 255, 255, 0) 34%
+  );
 
   /* 公共表面光影：顶部受光棱线 + 底部收暗 + 双层投影（环境光 + 主光）。
-     两条消费路径（.glass-* 类与 cardStyle 内联）都引用本令牌，改一处全局生效。 */
+     两条消费路径（.glass-* 类与 cardStyle 内联）都引用本令牌，改一处全局生效。
+     材质升级：四边棱线（上下明暗 + 左右微亮）让玻璃「有厚度」，
+     落影拆成近距接触影 + 远距弥散影两层，浮起感更真实。 */
   --shadow-1:
-    inset 0 1px 0 rgba(255, 255, 255, 0.35),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.08),
-    0 1px 2px rgba(0, 0, 0, 0.1),
-    0 16px 40px -12px rgba(0, 0, 0, 0.28);
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.1),
+    inset 1px 0 0 rgba(255, 255, 255, 0.08),
+    inset -1px 0 0 rgba(255, 255, 255, 0.08),
+    0 2px 4px rgba(0, 0, 0, 0.16),
+    0 20px 44px -16px rgba(0, 0, 0, 0.42);
 
   /* 磨砂噪点：fractalNoise 生成，静态贴图零开销 */
   --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  /* 细缎噪点：更高频率 + 更小贴图，釉瓷材质的缎面细颗粒 */
+  --grain-fine: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.6' numOctaves='2'/%3E%3C/filter%3E%3Crect width='72' height='72' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
 
   /* 文字令牌（单一事实来源仍是 --color-text*，这里只做方案命名收口） */
   --text-primary: var(--color-text);
@@ -90,7 +104,11 @@
   --radius-card: 14px;
 
   /* 三级阴影体系：静态浅（--shadow-1 定义于上方表面光影） / 悬浮中 / 弹层深 */
-  --shadow-2: 0 10px 28px rgba(3, 12, 9, 0.24);
+  --shadow-2:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.1),
+    0 4px 10px rgba(0, 0, 0, 0.18),
+    0 24px 56px -16px rgba(0, 0, 0, 0.5);
   --shadow-3: 0 24px 64px rgba(0, 0, 0, 0.45);
   --shadow-card: var(--shadow-1);
   --shadow-hover: var(--shadow-2);
@@ -105,8 +123,9 @@
    —— 这里只声明变量覆盖，body 文本色由下方 body 块应用。 */
 body.theme-dark {
   --color-text: #f5f7ff;
-  --color-text-2: rgba(225, 232, 255, 0.86);
-  --color-text-3: rgba(214, 221, 240, 0.82);
+  /* 弱化文字提亮（.86→.92 / .82→.88）：深绿玻璃上小字号不再发灰 */
+  --color-text-2: rgba(228, 235, 255, 0.92);
+  --color-text-3: rgba(219, 226, 245, 0.88);
   --color-bg: #0e211b;
   --color-surface: rgba(30, 34, 46, 0.94);
   --color-border: rgba(255, 255, 255, 0.1);
@@ -142,12 +161,14 @@ body.theme-on-image {
 body.mat-frosted {
   --glass-blur: 24px;
   --glass-saturate: 1.15;
-  /* 磨砂投影：柔和弥散（验收表：磨砂 → 柔和） */
+  /* 磨砂投影：柔和弥散（验收表：磨砂 → 柔和），保留四边棱线 */
   --shadow-1:
-    inset 0 1px 0 rgba(255, 255, 255, 0.3),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.06),
-    0 1px 2px rgba(0, 0, 0, 0.08),
-    0 12px 28px -14px rgba(0, 0, 0, 0.2);
+    inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.08),
+    inset 1px 0 0 rgba(255, 255, 255, 0.07),
+    inset -1px 0 0 rgba(255, 255, 255, 0.07),
+    0 2px 4px rgba(0, 0, 0, 0.12),
+    0 16px 36px -16px rgba(0, 0, 0, 0.34);
 }
 
 body.mat-liquid {
@@ -155,10 +176,26 @@ body.mat-liquid {
   --glass-saturate: 1.6;
   /* 液态投影：更深、对比更强（验收表：液态 → 更深） */
   --shadow-1:
-    inset 0 1px 0 rgba(255, 255, 255, 0.45),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.1),
-    0 1px 2px rgba(0, 0, 0, 0.1),
-    0 18px 40px -10px rgba(0, 0, 0, 0.38);
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.12),
+    inset 1px 0 0 rgba(255, 255, 255, 0.1),
+    inset -1px 0 0 rgba(255, 255, 255, 0.1),
+    0 2px 5px rgba(0, 0, 0, 0.16),
+    0 22px 48px -14px rgba(0, 0, 0, 0.5);
+}
+
+/* —— 釉瓷 glazed（新增第三材质）：低模糊 + 缑面细颗粒 + 顶部镜面受光带 ——
+   安静的硬挺感：不是液态那种流动高光，而是瓷面上一道水平的漫反射天光。 */
+body.mat-glazed {
+  --glass-blur: 6px;
+  --glass-saturate: 1.35;
+  --shadow-1:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.14),
+    inset 1px 0 0 rgba(255, 255, 255, 0.12),
+    inset -1px 0 0 rgba(255, 255, 255, 0.12),
+    0 3px 6px rgba(0, 0, 0, 0.2),
+    0 24px 52px -14px rgba(0, 0, 0, 0.55);
 }
 
 /* ==========================================================================
@@ -175,10 +212,12 @@ body.mat-liquid {
   box-shadow: var(--shadow-1);
 }
 
-/* —— 磨砂：雾面 = 纵向明暗渐变 + 噪点颗粒 ——
+/* —— 磨砂：雾面 = 顶部天光池 + 纵向明暗渐变 + 噪点颗粒 ——
    伪元素用 border-radius: inherit 自裁（不用 overflow:hidden：会裁掉
    user-box 内伸出的 ⚙ 下拉菜单与卡片 hover 溢出物）；
-   soft-light 极轻，盖在文字上是常见的全卡噪点滤镜手法 */
+   soft-light 极轻，盖在文字上是常见的全卡噪点滤镜手法。
+   材质升级：追加顶部天光池（radial）让雾面有「受光面」，
+   噪点透明度 0.6 → 0.78 让颗粒真正可见，不再像平涂色块。 */
 body.mat-frosted .glass-surface::before,
 body.mat-frosted .glass-card::before {
   content: "";
@@ -187,10 +226,11 @@ body.mat-frosted .glass-card::before {
   border-radius: inherit;
   pointer-events: none;
   background-image: var(--grain),
+    radial-gradient(140% 70% at 50% 0%, rgba(255, 255, 255, 0.16), transparent 58%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(0, 0, 0, 0.05));
-  background-size: 120px 120px, 100% 100%;
+  background-size: 120px 120px, 100% 100%, 100% 100%;
   mix-blend-mode: soft-light;
-  opacity: 0.6;
+  opacity: 0.78;
 }
 
 /* —— 液态：透镜边缘 + 内部光池（静态部分）—— */
@@ -205,6 +245,64 @@ body.mat-liquid .glass-card::before {
     radial-gradient(120% 90% at 18% 0%, rgba(255, 255, 255, 0.2), transparent 45%),
     radial-gradient(100% 80% at 85% 100%, rgba(255, 255, 255, 0.1), transparent 40%);
   filter: blur(4px);
+}
+
+/* —— 釉瓷：缎面细颗粒 + 顶部镜面带（本体高光由下方 background-image 规则承担）—— */
+body.mat-glazed .glass-surface::before,
+body.mat-glazed .glass-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background-image: var(--grain-fine),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(0, 0, 0, 0.05));
+  background-size: 72px 72px, 100% 100%;
+  mix-blend-mode: soft-light;
+  opacity: 0.85;
+}
+
+/* ==========================================================================
+   糖果釉面（彩虹 hero / 入口卡 / 故事卡共享材质层）
+   渐变底色仍由各组件内联 background 提供，这里只叠两层：
+   ① soft-light 噪点颗粒 + 纵向明暗 —— 纸感颗粒，破「平涂渐变」的塑料感；
+   ② 顶部镜面高光带 + 四边方向棱线 —— 糖果表面那道受光反射。
+   组件模板加 .candy-surface 类即可，渐变色值不动。
+   ========================================================================== */
+.candy-surface {
+  position: relative;
+}
+.candy-surface::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background-image: var(--grain),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(0, 0, 0, 0.08));
+  background-size: 120px 120px, 100% 100%;
+  mix-blend-mode: soft-light;
+  opacity: 0.8;
+}
+.candy-surface::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.36) 0%,
+      rgba(255, 255, 255, 0.1) 14%,
+      rgba(255, 255, 255, 0) 30%
+    ),
+    linear-gradient(0deg, rgba(0, 0, 0, 0.1) 0%, rgba(0, 0, 0, 0) 22%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.14),
+    inset 1px 0 0 rgba(255, 255, 255, 0.14),
+    inset -1px 0 0 rgba(255, 255, 255, 0.14);
 }
 
 /* 统一盒模型：避免组件内 width+padding 溢出 */
@@ -344,7 +442,7 @@ body.theme-dark .btn-ghost {
 body.theme-dark .btn:disabled {
   background: rgba(255, 255, 255, 0.06);
   border-color: rgba(255, 255, 255, 0.12);
-  color: rgba(214, 221, 240, 0.45);
+  color: rgba(219, 226, 245, 0.55);
 }
 
 /* 输入框 / select / textarea */
@@ -365,7 +463,7 @@ body.theme-dark input[type="number"] {
 body.theme-dark .input::placeholder,
 body.theme-dark input::placeholder,
 body.theme-dark textarea::placeholder {
-  color: rgba(214, 221, 240, 0.45);
+  color: rgba(219, 226, 245, 0.55);
 }
 
 /* 灰色提示文字（友列表/空状态） */
@@ -412,13 +510,19 @@ body.theme-dark kbd {
 }
 
 /* ==========================================================================
-   液态材质高光层（FEAT-086）：必须排在 body.theme-dark 的 background 简写之后 ——
-   同特异性下简写会把 background-image 重置为 none，规则放前面高光就白写了。
-   磨砂材质不命中此规则，零额外绘制。
+   液态/釉瓷材质高光层（FEAT-086 + 釉瓷扩展）：必须排在 body.theme-dark 的
+   background 简写之后 —— 同特异性下简写会把 background-image 重置为 none，
+   规则放前面高光就白写了。磨砂材质不命中此规则，零额外绘制。
    ========================================================================== */
 body.mat-liquid .glass-surface,
 body.mat-liquid .glass-card {
   background-image: var(--liquid-highlight);
+  background-color: var(--glass-bg);
+  background-repeat: no-repeat;
+}
+body.mat-glazed .glass-surface,
+body.mat-glazed .glass-card {
+  background-image: var(--glazed-highlight);
   background-color: var(--glass-bg);
   background-repeat: no-repeat;
 }

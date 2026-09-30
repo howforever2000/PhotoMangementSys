@@ -145,7 +145,8 @@ export function componentTone(hex: string): ComponentTone {
     ),
     border: onDark ? "rgba(255,255,255,.16)" : rgbToHex(mixRgb(rgb, [0, 0, 0], 0.12)),
     text: onDark ? "#f5f7ff" : "#1f2733",
-    text2: onDark ? "rgba(225,232,255,.86)" : "rgba(36,48,68,.88)",
-    text3: onDark ? "rgba(214,221,240,.82)" : "#4b5b6e",
+    // 弱化文字提亮（原 .86/.82 在深绿玻璃上小字号发灰，实测提升到 .92/.88）
+    text2: onDark ? "rgba(228,235,255,.92)" : "rgba(36,48,68,.9)",
+    text3: onDark ? "rgba(219,226,245,.88)" : "#4b5b6e",
   };
 }

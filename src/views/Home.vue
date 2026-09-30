@@ -655,7 +655,9 @@ onBeforeUnmount(() => {
   font-size: 14px;
   flex-shrink: 0;
   white-space: nowrap;
-  color: var(--color-text-2);
+  /* 链接色 + 加重：灰色箭头在深绿玻璃上存在感太弱，行动入口应该一眼可见 */
+  color: var(--color-link);
+  font-weight: 600;
 }
 
 @media (max-width: 640px) {

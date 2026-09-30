@@ -234,9 +234,16 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
               >
                 液态玻璃
               </button>
+              <button
+                type="button"
+                :class="{ on: theme.material === 'glazed' }"
+                @click="theme.material = 'glazed'; theme.persist()"
+              >
+                釉瓷玻璃
+              </button>
             </div>
             <p class="pm-hint" style="margin: 6px 0 0">
-              磨砂：高模糊柔化背景 · 液态：低模糊 + 流体高光（全局生效）
+              磨砂：高模糊柔化背景 · 液态：低模糊 + 流体高光 · 釉瓷：缎面颗粒 + 镜面天光带（全局生效）
             </p>
           </div>
 

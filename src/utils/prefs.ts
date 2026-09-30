@@ -14,8 +14,8 @@ import { hexToRgb, mixRgb, normalizeHex, rgbToHex } from "./color.ts";
 
 export type ThemeMode = "light" | "dark";
 export type BackgroundStyle = "image" | "gradient" | "color";
-/** 玻璃材质预设：磨砂（高模糊）/ 液态（低模糊 + 高光流体） */
-export type Material = "frosted" | "liquid";
+/** 玻璃材质预设：磨砂（高模糊）/ 液态（低模糊 + 高光流体）/ 釉瓷（缎面 + 镜面天光带） */
+export type Material = "frosted" | "liquid" | "glazed";
 
 export interface Prefs {
   mode: ThemeMode;
@@ -51,7 +51,7 @@ export const DEFAULTS: Prefs = {
 };
 
 const BG_STYLES: BackgroundStyle[] = ["image", "gradient", "color"];
-const MATERIALS: Material[] = ["frosted", "liquid"];
+const MATERIALS: Material[] = ["frosted", "liquid", "glazed"];
 
 function str(v: unknown, fallback: string): string {
   return typeof v === "string" ? v : fallback;

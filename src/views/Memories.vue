@@ -271,7 +271,7 @@ function goAlbumFromLightbox(albumId: number) {
 
     <!-- Hero：彩虹横幅（按需求保留）；自带 45% 暗纱保证白字 ≥4.5:1 -->
     <section
-      class="mem-hero glass-surface"
+      class="mem-hero glass-surface candy-surface"
       :style="{
         background:
           'linear-gradient(135deg, #FFFCBD 0%, #65D5F9 55%, #F075C7 100%)',
@@ -337,7 +337,7 @@ function goAlbumFromLightbox(albumId: number) {
         <article
           v-for="m in monthGroups"
           :key="m.key"
-          class="mem-story"
+          class="mem-story candy-surface"
           :style="{ background: paletteFor(m.key) }"
           @click="gotoMonth(m)"
         >
@@ -397,7 +397,7 @@ function goAlbumFromLightbox(albumId: number) {
         <article
           v-for="y in yearGroups"
           :key="y.year"
-          class="mem-year"
+          class="mem-year candy-surface"
           :style="{ background: paletteFor(String(y.year)) }"
           @click="gotoYear(y)"
         >
@@ -478,7 +478,8 @@ function goAlbumFromLightbox(albumId: number) {
   overflow: hidden;
   margin-bottom: 28px;
   background: var(--glass-bg); /* 未内联渐变时的玻璃回退 */
-  border: 1px solid rgba(255, 255, 255, 0.45);
+  /* 描边降为辅助：方向棱线（顶亮底暗）由 candy-surface 的 inset 阴影接管 */
+  border: 1px solid rgba(255, 255, 255, 0.3);
   /* 糖果浅底 → 墨色字（与故事卡色族一致） */
   color: #1f2733;
   box-shadow: var(--shadow-2);
@@ -494,8 +495,9 @@ function goAlbumFromLightbox(albumId: number) {
 .mem-hero-eyebrow {
   font-size: 12px;
   letter-spacing: 3px;
-  /* 糖果底上的角标：墨色降透明度 */
-  color: #1f2733;
+  font-weight: 600;
+  /* 糖果底上的角标：墨色加重量 */
+  color: #17202e;
   margin-bottom: 6px;
 }
 .mem-hero-title {
@@ -509,7 +511,8 @@ function goAlbumFromLightbox(albumId: number) {
 .mem-hero-sub {
   margin: 6px 0 18px;
   font-size: 14px;
-  opacity: 0.9;
+  /* 去掉 opacity，用实色：渐变过渡区上副标题不再发虚 */
+  color: #2a3547;
 }
 .mem-stats {
   display: flex;
@@ -555,7 +558,8 @@ function goAlbumFromLightbox(albumId: number) {
 }
 .mem-section-sub {
   font-size: 12px;
-  opacity: 0.7;
+  /* 深绿底上的弱说明文字提亮一档（原 0.7 偏灰） */
+  color: var(--color-text-2);
 }
 
 /* ---- 故事行（月度）水平滚动 ---- */
@@ -584,12 +588,18 @@ function goAlbumFromLightbox(albumId: number) {
   position: relative;
   cursor: pointer;
   color: #fff;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
+  /* 材质升级：糖果釉面的方向棱线 + 更实的落影（原 0.15 浮而不定） */
+  box-shadow: var(--shadow-1);
   transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 .mem-story:hover {
   transform: translateY(-3px);
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow-2);
+}
+/* candy-surface 颗粒层必须在照片/暗纱之上（absolute 子元素按 DOM 顺序盖住伪元素） */
+.mem-story::before,
+.mem-story::after {
+  z-index: 1;
 }
 .mem-story-photo {
   position: absolute;
@@ -620,7 +630,7 @@ function goAlbumFromLightbox(albumId: number) {
   position: absolute;
   inset: auto 0 0 0;
   padding: 14px 16px 16px;
-  z-index: 1;
+  z-index: 2;
 }
 .mem-story-title {
   margin: 0 0 4px;
@@ -720,12 +730,17 @@ function goAlbumFromLightbox(albumId: number) {
   position: relative;
   color: #fff;
   cursor: pointer;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-1);
   transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 .mem-year:hover {
   transform: translateY(-3px);
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--shadow-2);
+}
+/* 同 mem-story：颗粒/高光层提到照片之上，正文再提一级 */
+.mem-year::before,
+.mem-year::after {
+  z-index: 1;
 }
 .mem-year-photo {
   position: absolute;
@@ -747,7 +762,7 @@ function goAlbumFromLightbox(albumId: number) {
   position: absolute;
   inset: auto 0 0 0;
   padding: 16px 20px;
-  z-index: 1;
+  z-index: 2;
 }
 .mem-year-title {
   margin: 0 0 4px;
