@@ -87,7 +87,9 @@ def ref_decode_scrfd(outputs, scale, pad_x, pad_y):
                         [cx + kps[idx, i * 2] * stride, cy + kps[idx, i * 2 + 1] * stride]
                         for i in range(5)
                     ])
-                if score < config.PERSON_CONF_MIN:
+                # SCRFD 人脸通道阈值独立于 YOLO（FACE_DET_CONF，2026-10-01）：
+                # 人脸假检分数多在 0.35~0.5，真脸普遍 >0.7，两通道不再共用同一门槛
+                if score < config.FACE_DET_CONF:
                     continue
                 d = d * stride
                 x1, y1 = cx - d[0], cy - d[1]
@@ -160,9 +162,9 @@ def synth_scrfd(rng, layout, thresh_around=False):
         # 让一部分分数越过阈值（否则等于没测）
         sc = np.where(sc > 0.75, sc + 0.24, sc).astype(np.float32)
         if thresh_around:
-            # 精确等于阈值 + NaN：考 `score < thresh` 的边界语义
+            # 精确等于阈值 + NaN：考 `score < thresh` 的边界语义（SCRFD 用 FACE_DET_CONF）
             flat = sc.reshape(-1)
-            flat[0] = config.PERSON_CONF_MIN
+            flat[0] = config.FACE_DET_CONF
             flat[1] = np.nan
         outs.extend([sc, bx, kp])
     return outs
@@ -257,7 +259,9 @@ def main():
     print("== NMS 边界（空 / 单个 / 全重叠 / 并列 / 分离） ==")
     check_nms_edge_cases()
     print("   通过")
-    print("\n全部等价性检查通过 ✅（向量化未改变任何输出字段）")
+    # 不用 emoji：Windows 控制台默认 GBK，打印 ✅ 会 UnicodeEncodeError 且退出码非 0
+    # （曾经把“检查全通过”变成“看起来失败”，误导后续排查）
+    print("\n全部等价性检查通过 [OK]（向量化未改变任何输出字段）")
 
 
 if __name__ == "__main__":

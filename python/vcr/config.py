@@ -44,8 +44,16 @@ PERSONS_DB = os.path.join(DATA_DIR, "persons.db")
 # 规则通道模型（缺失则对应通道自动降级）
 # ---------------------------------------------------------------------------
 DET_MODEL = "yolov8n-det.onnx"                           # COCO 80 类（人物/车辆）
-FACE_DET_MODELS = ["det_10g.onnx", "det_500m.onnx"]     # SCRFD（buffalo_l/s → sc 兜底）
-FACE_REC_MODELS = ["w600k_mbf.onnx", "w600k_r50.onnx"]  # ArcFace 识别
+# 人脸模型：**只保留最新一档**（2026-10-01 定案：不保留轻量档、不做切换）。
+#   det_10g.onnx   —— SCRFD-10G，误检（雕像/花纹/屏幕→人脸）显著少于 500m；
+#   w600k_r50.onnx —— ArcFace ResNet50，大姿态/侧脸显著更稳，聚类错挂下降。
+# 实测代价（7840HS，CPU intra_op=8，bench/face_tier_bench.py，真实相册 10 张）：
+#   检测 11.4ms → 66.8ms（5.9×）；识别 5.5ms → 39.4ms/脸（7.2×）；
+#   即每张「有脸」照片 +55ms、每个脸 +34ms（只影响人脸通道，且只在 _needs_face
+#   命中时跑）。intra_op 12/16 线程反而更慢（78.8ms），8 线程是拆中比最优。
+# 换档即换嵌入空间：person_store 校验 meta.emb_model，不匹配时报错并引导重建人物库。
+FACE_DET_MODELS = ["det_10g.onnx"]      # SCRFD（唯一档）
+FACE_REC_MODELS = ["w600k_r50.onnx"]    # ArcFace 识别（唯一档）
 OCR_MODEL = "paddleocr-det.onnx"                        # PaddleOCR ch_PP-OCRv4 det（可选）
 
 # ---------------------------------------------------------------------------
@@ -288,8 +296,17 @@ STREET_PERSON_N = 3           # 人数 ≥3 → 扫街候选
 STREET_MAX_AREA = 0.20        # 且最大人框面积 <20%
 GROUP_AREA = 0.10             # 2 人且面积 ≥10% → 合影（仍归人物）
 IGNORE_PERSON_AREA = 0.10     # 最大人框面积 <10% 的单人 → 路人，不覆盖分类
-FACE_MIN_PIX = 24             # 人脸最小边长（像素），小于则跳过标号
-FACE_SIM = 0.45               # 人脸 cosine 相似度阈值（≥ 视为同一人）
+# 人脸误检双门槛（2026-10-01 收紧，修复「雕像/花纹/屏幕被判成人脸」）：
+#   FACE_DET_CONF：SCRFD 检测分数门槛。此前复用 PERSON_CONF_MIN(0.35)，假脸
+#     （纹理/海报）分数多落在 0.35~0.5，真脸普遍 >0.7 → 提到 0.5 误杀极少；
+#   FACE_MIN_PIX：24→32。24px 的脸放大到 112 喂给 ArcFace 产出的是噪声向量，
+#     是聚类错挂（陌生人进簇/质心漂移）的隐形污染源。
+FACE_DET_CONF = 0.50          # SCRFD 人脸框最低检测分数（独立于 YOLO PERSON_CONF_MIN）
+FACE_MIN_PIX = 32             # 人脸最小边长（像素），小于则跳过标号
+# FACE_SIM：0.45→0.55。实测旧库 1255/9866 张脸与自身质心相似度 <0.60、
+# 332 张与「别人的质心」更近（错挂）；0.55 配合 r50 嵌入在「错并」与「过碎」
+# 之间取平衡（r50 同人相似度普遍 >0.6，异人 <0.45）。
+FACE_SIM = 0.55               # 人脸 cosine 相似度阈值（≥ 视为同一人）
 
 # ---------------------------------------------------------------------------
 # 夜景通道（影调主导，降级版）

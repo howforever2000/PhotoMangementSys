@@ -204,8 +204,8 @@ Installers include the models by default. If a given installer does not, verify 
 ```
 vcr/models/
 ├─ yolov8n-det.onnx                          # COCO detection / people (required)
-├─ det_500m.onnx                             # SCRFD face detection (required)
-├─ w600k_mbf.onnx                            # ArcFace face embeddings (required)
+├─ det_10g.onnx                             # SCRFD face detection (required, single tier)
+├─ w600k_r50.onnx                            # ArcFace face embeddings (required, single tier)
 ├─ paddleocr-det.onnx                        # document OCR (optional, degrades automatically)
 └─ chinese-clip/                             # semantic model (B/16 fp16, required)
    ├─ onnx/model_fp16.onnx                   #   dual-tower graph (split into vision/text on first use)
@@ -350,7 +350,7 @@ Check that the corresponding `.onnx` files exist under `vcr/models/`; if not, ob
 
 **Installer**
 
-- Size 574 MB → **457 MB**: only runtime-required models ship (person detection `yolov8n-det`, face `det_500m` + `w600k_mbf`, OCR `paddleocr-det`, semantic `chinese-clip/onnx/model_fp16.onnx`); retired classifiers and development-only models (`chinese-clip-fp32`, `chinese-clip-vit-b-16`) are no longer embedded and other tiers are downloaded in-app on demand.
+- Size 574 MB → **457 MB**: only runtime-required models ship (person detection `yolov8n-det`, face `det_10g` + `w600k_r50`, OCR `paddleocr-det`, semantic `chinese-clip/onnx/model_fp16.onnx`); retired classifiers and development-only models (`chinese-clip-fp32`, `chinese-clip-vit-b-16`) are no longer embedded and other tiers are downloaded in-app on demand.
 - Known limitation: the packaged `vcr-server.exe` does not include onnxruntime-directml, so DirectML acceleration is unavailable in installed builds (BUG-2026-0920-004, decision pending); the default B/16 fp16 semantic tier runs on CPU.
 
 ### v0.2.0 (2026-09-09) — VCR process governance & model management

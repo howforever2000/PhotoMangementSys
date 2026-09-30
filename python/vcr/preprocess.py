@@ -114,7 +114,7 @@ def face_align(img: Image.Image, kps: np.ndarray, size: int = 112) -> np.ndarray
 
     等价性：像素级 0.06% 的通道值会因 cv2 内部 float32 求逆的 ULP 舍入换一个
     插值邻居（实测单图最大 217）。下游已实测：88 张脸的 ArcFace 嵌入余弦
-    min 0.99961 / mean 0.99999，距 FACE_SIM=0.45 判定阈值有 0.55 的余量。
+    min 0.99961 / mean 0.99999，距 FACE_SIM（现为 0.55）仍有充足余量。
     """
     M, _ = cv2.estimateAffinePartial2D(
         np.asarray(kps, dtype=np.float32),

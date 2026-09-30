@@ -207,8 +207,8 @@ python/
 ```
 vcr/models/
 ├─ yolov8n-det.onnx                          # COCO 检测 / 人物（必选）
-├─ det_500m.onnx                             # SCRFD 人脸检测（必选）
-├─ w600k_mbf.onnx                            # ArcFace 人像特征（必选）
+├─ det_10g.onnx                             # SCRFD 人脸检测（必选，唯一档）
+├─ w600k_r50.onnx                            # ArcFace 人像特征（必选，唯一档）
 ├─ paddleocr-det.onnx                        # 文档 OCR（可选，缺失自动降级）
 └─ chinese-clip/                             # 语义模型（B/16 fp16，必选）
    ├─ onnx/model_fp16.onnx                   #   双塔整图（首次使用自动拆成 vision/text 子图）
@@ -387,7 +387,7 @@ PhotoMangementSys/
 
 **安装包**
 
-- 体积 574MB → **457MB**：只保留运行必需模型（人物检测 `yolov8n-det`、人脸 `det_500m` + `w600k_mbf`、OCR `paddleocr-det`、语义 `chinese-clip/onnx/model_fp16.onnx`）；已下线的分类模型与开发用模型（`chinese-clip-fp32`、`chinese-clip-vit-b-16`）不再内嵌，其余档位应用内按需下载。
+- 体积 574MB → **457MB**：只保留运行必需模型（人物检测 `yolov8n-det`、人脸 `det_10g` + `w600k_r50`、OCR `paddleocr-det`、语义 `chinese-clip/onnx/model_fp16.onnx`）；已下线的分类模型与开发用模型（`chinese-clip-fp32`、`chinese-clip-vit-b-16`）不再内嵌，其余档位应用内按需下载。
 - 已知限制：打包版 `vcr-server.exe` 未含 onnxruntime-directml，安装版无法启用 DirectML 加速（BUG-2026-0920-004，待决策）；默认语义档 B/16 fp16 固定 CPU 推理。
 
 ### v0.2.0（2026-09-09）— VCR 进程治理与模型管理

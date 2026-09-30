@@ -517,6 +517,27 @@ def merge_persons(body: PersonMergeRequest):
     return {"ok": True}
 
 
+@app.get("/persons/emb_model")
+def persons_emb_model():
+    """人物库嵌入模型信息（宿主扫描前预检）。
+
+    registered = 登记本库向量时用的模型；active = 当前将加载的模型。
+    两者不一致 → 宿主应中止人脸识别并引导用户重建人物库（换模型即换向量空间，
+    混聚 = 静默错挂/全员新建）。
+    """
+    return get_store().emb_model_info()
+
+
+@app.post("/persons/rebuild")
+def persons_rebuild():
+    """重建人物库：备份 persons.db 后清空 persons/faces/meta（显式动作，需二次确认）。
+
+    返回 {backup, persons, faces}：备份路径与清掉的数量，供宿主日志与前端提示。
+    重建后需全量重扫（覆盖模式）重新登记人脸；头像缓存由宿主负责清理。
+    """
+    return get_store().rebuild()
+
+
 @app.delete("/persons/{pid}")
 def delete_person(pid: str):
     if not get_store().delete(pid):

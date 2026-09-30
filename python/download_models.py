@@ -21,9 +21,19 @@ HF = "https://hf-mirror.com"
 
 TASKS = {
     "face": {
-        # InsightFace buffalo_sc（SCRFD det_500m 2.5MB + ArcFace w600k_mbf 13.6MB）
-        "url": f"{GITHUB}/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip",
-        "files": ["det_500m.onnx", "w600k_mbf.onnx"],
+        # InsightFace buffalo_l（唯一档，2026-10-01 定案：不保留轻量档、不做切换）：
+        #   det_10g.onnx   —— SCRFD-10G，误检（雕像/花纹→人脸）显著少于 500m
+        #   w600k_r50.onnx —— ArcFace ResNet50，大姿态/侧脸更稳，聚类错挂下降
+        # 源：GitHub 官方 release 经常抽风/被镜像截断，改走 hf-mirror（国内直连，
+        #     与 CLIP 同通道）上的 Immich 镜像仓：仓库内文件名是 detection/model.onnx
+        #     与 recognition/model.onnx，落位时重命名回 insightface 原文件名。
+        "repo": "immich-app/buffalo_l",
+        "root": ".",
+        "files": ["det_10g.onnx", "w600k_r50.onnx"],
+        "urls": {
+            "det_10g.onnx": "detection/model.onnx",
+            "w600k_r50.onnx": "recognition/model.onnx",
+        },
     },
     "ocr": {
         # PaddleOCR ch_PP-OCRv4 det（RapidOCR 转换版，社区维护，无需 paddle 环境）
@@ -78,11 +88,14 @@ def main():
             if all(os.path.isfile(os.path.join(d, f)) for f in spec["files"]):
                 print(f"[skip] {task} 模型已存在")
                 continue
+            # urls：落位文件名 → 仓内真实路径（镜像仓常改文件名/分目录，
+            # 如 Immich 的 buffalo_l 仓：detection/model.onnx → det_10g.onnx）
+            urls = spec.get("urls") or {}
             for f in spec["files"]:
                 dest = os.path.join(d, f)
                 if os.path.isfile(dest):
                     continue
-                dl(base + f, dest)
+                dl(base + urls.get(f, f), dest)
             continue
         # face: zip 多文件
         if all(os.path.isfile(os.path.join(MODEL_DIR, f)) for f in spec["files"]):

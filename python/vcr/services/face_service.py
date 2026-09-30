@@ -119,7 +119,9 @@ class FaceService:
             # float32(0.35)=0.3499999940395355，于是「恰好等于 float32 阈值」的候选
             # 在新实现里变成通过、旧实现里被丢弃（实测差 3 个候选）。
             # 用 ~(s < t) 而不是 s >= t，同样是为了让 NaN 的路径与旧实现一致。
-            idx = np.flatnonzero(~(scores.astype(np.float64) < config.PERSON_CONF_MIN))
+            # 阈值用 FACE_DET_CONF（2026-10-01 起独立于 YOLO 的 PERSON_CONF_MIN）：
+            # 人脸框误检（雕像/花纹/屏幕）分数多在 0.35~0.5，真脸普遍 >0.7。
+            idx = np.flatnonzero(~(scores.astype(np.float64) < config.FACE_DET_CONF))
             if idx.size == 0:
                 continue
             stride_f = np.float32(stride)
@@ -171,7 +173,9 @@ class FaceService:
             outputs = self.registry.run("face_det", tensor)
         with timing.span("face.post"):
             faces = self._decode_scrfd(outputs, scale, pad_x, pad_y)
-            # 过滤过小人脸 + 越界（用**原图**尺寸：解码的 scale 也是从原图算的）
+            # 过滤过小人脸 + 越界（用**原图**尺寸：解码的 scale 也是从原图算的）。
+            # FACE_MIN_PIX 24→32（2026-10-01）：24px 脸喂 ArcFace 产出噪声向量，
+            # 是聚类错挂的隐形污染源；32px 以下的远处真人本来也聚不进正确的簇。
             w, h = lb.size
             kept = []
             for f in faces:
