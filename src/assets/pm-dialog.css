@@ -1,0 +1,402 @@
+/* =============================================================================
+ * 通用弹窗样式（.pm-*）：Teleport 到 body 的弹窗共用（Home 基本信息 / 主题皮肤）
+ * 抽自 views/Home.vue 的非 scoped style 块（FEAT-086）——主题弹窗重构为独立组件后
+ * 两处都要用，放组件里会互相依赖，故收口到全局样式文件。
+ * 颜色全部走 --pm-* 变量，由各弹窗根节点的 :style 下发（深浅模式自适应）。
+ * ========================================================================== */
+
+.pm-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(10, 14, 28, 0.45);
+  backdrop-filter: blur(4px);
+}
+.pm-dialog {
+  width: min(440px, 100%);
+  max-height: 86vh;
+  overflow-y: auto;
+  background: #fff;
+  border-radius: 18px;
+  padding: 24px 24px 20px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+  color: var(--pm-text);
+}
+/* 主题弹窗更宽：预设卡片需要两列网格 */
+.pm-dialog-wide {
+  width: min(560px, 100%);
+}
+.pm-dialog-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.pm-dialog-head h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--pm-text);
+}
+.pm-hint {
+  font-size: 12px;
+  color: var(--pm-hint);
+}
+.pm-field {
+  margin-bottom: 14px;
+}
+.pm-field label {
+  display: block;
+  font-size: 13px;
+  color: var(--pm-label);
+  margin-bottom: 6px;
+}
+.pm-field input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  font-size: 14px;
+  color: var(--pm-text);
+  background: var(--pm-input-bg);
+  border: 1px solid var(--pm-input-border);
+  border-radius: 10px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.pm-field input:focus {
+  border-color: #5a8bf7;
+  box-shadow: 0 0 0 3px rgba(90, 139, 247, 0.15);
+}
+.pm-field input:disabled {
+  color: var(--pm-hint);
+  background: var(--pm-input-disabled-bg);
+}
+.pm-error {
+  margin: 4px 0 10px;
+  font-size: 13px;
+  color: #e5484d;
+}
+.pm-ok {
+  margin: 4px 0 10px;
+  font-size: 13px;
+  color: #2f9e44;
+}
+.pm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+.pm-btn {
+  height: 38px;
+  padding: 0 18px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--pm-btn-color);
+  background: var(--pm-btn-bg);
+  border: 1px solid var(--pm-soft-border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.pm-btn:hover {
+  background: var(--pm-btn-hover);
+}
+.pm-btn:focus-visible,
+.pm-seg button:focus-visible,
+.pm-tab:focus-visible {
+  outline: 2px solid #5a8bf7;
+  outline-offset: 2px;
+}
+.pm-btn-primary {
+  color: #fff;
+  background: #3a6cf5;
+  border-color: #3a6cf5;
+}
+.pm-btn-primary:hover {
+  background: #2f5de0;
+}
+.pm-btn-clear {
+  margin-left: 8px;
+  color: #e5484d;
+}
+.pm-btn-clear:hover {
+  background: var(--pm-danger-hover);
+}
+.pm-section {
+  margin-bottom: 16px;
+}
+.pm-section-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pm-label);
+  margin-bottom: 8px;
+}
+.pm-seg {
+  display: flex;
+  gap: 8px;
+}
+.pm-seg button {
+  flex: 1;
+  height: 34px;
+  font-size: 13px;
+  color: var(--pm-label);
+  background: var(--pm-input-bg);
+  border: 1px solid var(--pm-input-border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.pm-seg button:hover {
+  border-color: #5a8bf7;
+}
+.pm-seg button.on {
+  color: #fff;
+  background: #3a6cf5;
+  border-color: #3a6cf5;
+}
+.pm-color-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.pm-color-row input[type="color"] {
+  width: 52px;
+  height: 40px;
+  padding: 2px;
+  border: 1px solid var(--pm-soft-border);
+  border-radius: 10px;
+  background: var(--pm-input-bg);
+  cursor: pointer;
+}
+.pm-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  color: var(--pm-label);
+}
+/* 组件色调（FEAT-084）：一个色块 + 可输入色号 */
+.pm-comp-hint {
+  margin: -2px 0 10px;
+}
+.pm-hex {
+  width: 116px;
+  height: 40px;
+  padding: 0 10px;
+  background: var(--pm-input-bg);
+  border: 1px solid var(--pm-input-border);
+  border-radius: 10px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.pm-hex:focus {
+  border-color: #5a8bf7;
+  box-shadow: 0 0 0 3px rgba(90, 139, 247, 0.15);
+}
+
+/* main.css 的 body.theme-dark 全局输入兑底 rgba(18,20,28,.7)（特异性 0,2,2）会压过
+   .pm-hex/.pm-field input 的 --pm-input-bg，把弹窗输入框刷成深底——套用浅色预设后
+   弹窗是浅色，出现「深底+深字」（FEAT-086 冒烟实测）。
+   这里用带属性选择器的更高特异性（0,3,3）盖回，颜色仍由弹窗 --pm-* 下发。 */
+body.theme-dark .pm-dialog .pm-hex,
+body.theme-dark .pm-dialog input[type="text"],
+body.theme-dark .pm-dialog input[type="password"],
+body.theme-dark .pm-dialog input[type="email"],
+body.theme-dark .pm-dialog input[type="search"],
+body.theme-dark .pm-dialog input[type="tel"],
+body.theme-dark .pm-dialog input[type="number"] {
+  background: var(--pm-input-bg);
+  color: var(--pm-text);
+  border-color: var(--pm-input-border);
+}
+body.theme-dark .pm-dialog .pm-hex:disabled,
+body.theme-dark .pm-dialog input:disabled {
+  background: var(--pm-input-disabled-bg);
+  color: var(--pm-hint);
+}
+.pm-grade {
+  display: flex;
+  gap: 12px;
+}
+.pm-grade input[type="color"] {
+  width: 52px;
+  height: 40px;
+  padding: 2px;
+  border: 1px solid var(--pm-soft-border);
+  border-radius: 10px;
+  background: var(--pm-input-bg);
+  cursor: pointer;
+}
+.pm-range {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--pm-label);
+  margin-top: 12px;
+}
+.pm-range input[type="range"] {
+  flex: 1;
+}
+.pm-range b {
+  min-width: 40px;
+  text-align: right;
+  color: var(--pm-text);
+  font-weight: 600;
+}
+.pm-hidden-input {
+  display: none;
+}
+.pm-preview {
+  height: 110px;
+  border-radius: 12px;
+  background-size: cover;
+  background-position: center;
+  margin-top: 12px;
+  border: 1px solid var(--pm-soft-border);
+}
+
+/* ---------- 顶部页签（FEAT-086：预定义效果 / 自定义效果） ---------- */
+.pm-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 16px;
+  background: var(--pm-input-bg);
+  border: 1px solid var(--pm-input-border);
+  border-radius: 12px;
+}
+.pm-tab {
+  flex: 1;
+  height: 34px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--pm-label);
+  background: transparent;
+  border: none;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.18s, color 0.18s, box-shadow 0.18s;
+}
+.pm-tab:hover {
+  color: var(--pm-text);
+}
+.pm-tab[aria-selected="true"] {
+  color: var(--pm-text);
+  background: var(--pm-btn-bg);
+  box-shadow: var(--shadow-1);
+}
+
+/* ---------- 预设效果网格 ---------- */
+.pm-presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.pm-preset {
+  position: relative; /* ✓ 选中徽标定位锚 */
+  display: block;
+  padding: 8px;
+  text-align: left;
+  background: var(--pm-input-bg);
+  border: 1px solid var(--pm-input-border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.18s, transform 0.18s, box-shadow 0.18s;
+}
+.pm-preset:hover {
+  border-color: #5a8bf7;
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-2);
+}
+.pm-preset.on {
+  border-color: #3a6cf5;
+  box-shadow: 0 0 0 2px rgba(58, 108, 245, 0.35);
+}
+.pm-preset-swatch {
+  display: block;
+  height: 72px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+.pm-preset-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 8px;
+  padding-right: 0; /* 名称行不预留：徽标改浮于色卡右上角 */
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pm-text);
+}
+.pm-preset-badge {
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 1px 7px;
+  border-radius: 8px;
+  color: var(--pm-hint);
+  background: var(--pm-btn-bg);
+  border: 1px solid var(--pm-input-border);
+}
+.pm-preset-dots {
+  display: flex;
+  gap: 5px;
+  margin-top: 6px;
+}
+.pm-preset-dots i {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+}
+.pm-preset-check {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 22px;
+  height: 22px;
+  line-height: 22px;
+  text-align: center;
+  font-size: 13px;
+  color: #fff;
+  background: #3a6cf5;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+
+/* ---------- 页签切换过渡 ---------- */
+.pm-panel-enter-active,
+.pm-panel-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.pm-panel-enter-from,
+.pm-panel-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.modal-enter-active,
+.modal-leave-active {
+  transition: opacity 0.22s ease;
+}
+.modal-enter-active .pm-dialog,
+.modal-leave-active .pm-dialog {
+  transition: transform 0.22s ease, opacity 0.22s ease;
+}
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+}
+.modal-enter-from .pm-dialog,
+.modal-leave-to .pm-dialog {
+  transform: translateY(14px) scale(0.98);
+  opacity: 0;
+}

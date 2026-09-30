@@ -67,6 +67,43 @@ export function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
   ];
 }
 
+/**
+ * 三段渐变（0 → mid → 1 各占一半）的平均色：(from + 2·mid + to) / 4。
+ * 分段线性插值在整个区间上的积分均值——用于把三段渐变折算成
+ * 「等效纯色背景」，供文字对比度计算（FEAT-086 三段渐变预设）。
+ */
+export function gradientAverage(from: Rgb, mid: Rgb, to: Rgb): Rgb {
+  return [
+    Math.round((from[0] + 2 * mid[0] + to[0]) / 4),
+    Math.round((from[1] + 2 * mid[1] + to[1]) / 4),
+    Math.round((from[2] + 2 * mid[2] + to[2]) / 4),
+  ];
+}
+
+/**
+ * 直接落在页面背景上的文字取色（标题/副标题）：
+ *   a. 首选色（跟随模式）对比 ≥4.5:1 → 用首选；
+ *   b. 首选不足 → 深/浅两档里取 ≥4.5:1 的一侧；
+ *   c. 两档都不足（等效背景落在中灰区）→ 黑/白两端取对比更高者，
+ *      保证任何背景 ≥4.5:1（FEAT-086：预设中灰背景可达 4.26:1，需黑白兜底）。
+ * 返回颜色文本（#rrggbb 或常量色）。
+ */
+export function onBgText(bg: Rgb, prefersLight: boolean): string {
+  const lum = relLum(bg);
+  const preferred = prefersLight ? TEXT_LIGHT : TEXT_DARK;
+  const preferredHex = prefersLight ? "#f5f7ff" : "#1f2733";
+  if (contrastRatio(relLum(preferred), lum) >= 4.5) return preferredHex;
+
+  const cLight = contrastRatio(relLum(TEXT_LIGHT), lum);
+  const cDark = contrastRatio(relLum(TEXT_DARK), lum);
+  if (Math.max(cLight, cDark) >= 4.5) return cLight >= cDark ? "#f5f7ff" : "#1f2733";
+
+  // 双双不足 → 纯黑/纯白两端取更高（纯色端点对比总 ≥ 5.9:1，除非背景恰为中灰）
+  const cWhite = contrastRatio(relLum([255, 255, 255]), lum);
+  const cBlack = contrastRatio(relLum([0, 0, 0]), lum);
+  return cWhite >= cBlack ? "#ffffff" : "#000000";
+}
+
 /** 文字色是否属于「深色文字」（决定阴影方向） */
 export function isDarkText(color: string): boolean {
   const [r, g, b] = hexToRgb(color);

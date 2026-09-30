@@ -1,57 +1,23 @@
 import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 import {
-  TEXT_DARK,
-  TEXT_LIGHT,
   componentTone,
-  contrastRatio,
+  gradientAverage,
   hexToRgb,
   hexToRgba,
   isDarkText,
   mixRgb,
-  normalizeHex,
-  relLum,
+  onBgText,
   rgbToHex,
 } from "../utils/color";
+import { DEFAULTS, normalizePrefs, type BackgroundStyle, type Material, type Prefs, type ThemeMode } from "../utils/prefs";
+import { presetPrefs, type Preset } from "../utils/presets";
 
 /** 偏好设置与背景图分开存储：
  *  - 背景图 data URL 可能几百 KB，若和偏好一起写，超出 localStorage 配额时会导致
  *    整个主题保存失败（表现为"下次登录设置就丢了"）。分开存，图片写失败也不影响偏好。 */
 const KEY_PREFS = "pm-theme";
 const KEY_IMAGE = "pm-theme-image";
-
-export type ThemeMode = "light" | "dark";
-export type BackgroundStyle = "image" | "gradient" | "color";
-
-interface Prefs {
-  mode: ThemeMode;
-  /** 组件色调：卡片/面板等组件底色（单色，默认白色；仅浅色模式下发，Q4-A） */
-  compColor: string;
-  bgStyle: BackgroundStyle;
-  bgColor: string;
-  gradFrom: string;
-  gradTo: string;
-  gradAngle: number;
-  bgOpacity: number;
-}
-
-const DEFAULTS: Prefs = {
-  /* 整体转暗（Q4-A）：模式固定深色、背景为深墨绿，组件色调即墨绿玻璃（Q2-A） */
-  mode: "dark",
-  /* 组件色调 = 玻璃色调：比页面背景亮一档，保证「背景→容器→内容」三层可读 */
-  compColor: "#16443a",
-  bgStyle: "color",
-  bgColor: "#0e211b",
-  gradFrom: "#12332a",
-  gradTo: "#050f0c",
-  gradAngle: 135,
-  bgOpacity: 0.45,
-};
-
-/** 玻璃分层透明度（方案 §二）：容器 0.42（区间 0.35~0.50）/ 次级面板 0.66 / 弹层 0.78 */
-const GLASS_ALPHA = 0.42;
-const PANEL_ALPHA = 0.66;
-const DIALOG_ALPHA = 0.78;
 
 /** 深色模式对应的默认纯色背景 */
 const DARK_BG = "#1c202b";
@@ -73,7 +39,7 @@ function loadPrefs(): Prefs {
           /* 图片过大则丢弃，不影响偏好 */
         }
       }
-      const prefs = { ...DEFAULTS, ...old } as Prefs;
+      const prefs = normalizePrefs(old);
       try {
         localStorage.setItem(KEY_PREFS, JSON.stringify(prefs));
       } catch {
@@ -81,7 +47,8 @@ function loadPrefs(): Prefs {
       }
       return prefs;
     }
-    return { ...DEFAULTS, ...parsed };
+    // FEAT-086：旧结构（无 gradMid/compAlpha/material）在这里归一化补齐
+    return normalizePrefs(parsed);
   } catch {
     return { ...DEFAULTS };
   }
@@ -108,11 +75,17 @@ export const useThemeStore = defineStore("theme", () => {
   /* 基础色调入口已移除 + 整体转暗（Q4-A）：模式固定为默认值。
      否则旧 localStorage 里的 light 会让新视觉世界对老安装不生效。 */
   const mode = ref<ThemeMode>(DEFAULTS.mode);
-  // 归一化：保证始终是合法小写 hex（坏值/大写旧数据回落默认白色）
-  const compColor = ref(normalizeHex(saved.compColor, DEFAULTS.compColor));
+  // 归一化：保证始终是合法小写 hex / 合法数值（坏值回落默认，FEAT-086 走 normalizePrefs）
+  const compColor = ref(saved.compColor);
+  /** FEAT-086：组件玻璃不透明度（容器基准；面板/弹层按固定偏移派生） */
+  const compAlpha = ref(saved.compAlpha);
+  /** FEAT-086：玻璃材质（磨砂/液态），预设一律磨砂 */
+  const material = ref<Material>(saved.material);
   const bgStyle = ref<BackgroundStyle>(saved.bgStyle);
   const bgColor = ref(saved.bgColor);
   const gradFrom = ref(saved.gradFrom);
+  /** FEAT-086：三段渐变中段色标 */
+  const gradMid = ref(saved.gradMid);
   const gradTo = ref(saved.gradTo);
   const gradAngle = ref(saved.gradAngle);
   const bgOpacity = ref(saved.bgOpacity);
@@ -122,9 +95,12 @@ export const useThemeStore = defineStore("theme", () => {
     const prefs: Prefs = {
       mode: mode.value,
       compColor: compColor.value,
+      compAlpha: compAlpha.value,
+      material: material.value,
       bgStyle: bgStyle.value,
       bgColor: bgColor.value,
       gradFrom: gradFrom.value,
+      gradMid: gradMid.value,
       gradTo: gradTo.value,
       gradAngle: gradAngle.value,
       bgOpacity: bgOpacity.value,
@@ -134,6 +110,20 @@ export const useThemeStore = defineStore("theme", () => {
     } catch {
       /* 忽略 */
     }
+  }
+
+  /** FEAT-086：一键套用预定义效果（整套联动：三段渐变 + 组件色 + 透明度 + 磨砂） */
+  function applyPreset(p: Preset) {
+    const patch = presetPrefs(p);
+    bgStyle.value = patch.bgStyle!;
+    gradFrom.value = patch.gradFrom!;
+    gradMid.value = patch.gradMid!;
+    gradTo.value = patch.gradTo!;
+    gradAngle.value = patch.gradAngle!;
+    compColor.value = patch.compColor!;
+    compAlpha.value = patch.compAlpha!;
+    material.value = patch.material!;
+    persist();
   }
 
   /** 单独保存背景图（压缩后的 data URL），失败不影响其他偏好 */
@@ -161,9 +151,12 @@ export const useThemeStore = defineStore("theme", () => {
   function reset() {
     mode.value = DEFAULTS.mode;
     compColor.value = DEFAULTS.compColor;
+    compAlpha.value = DEFAULTS.compAlpha;
+    material.value = DEFAULTS.material;
     bgStyle.value = DEFAULTS.bgStyle;
     bgColor.value = DEFAULTS.bgColor;
     gradFrom.value = DEFAULTS.gradFrom;
+    gradMid.value = DEFAULTS.gradMid;
     gradTo.value = DEFAULTS.gradTo;
     gradAngle.value = DEFAULTS.gradAngle;
     bgOpacity.value = DEFAULTS.bgOpacity;
@@ -173,10 +166,13 @@ export const useThemeStore = defineStore("theme", () => {
 
   /* ---------- 背景层样式（App.vue 全局背景，作用于除登录页外的所有页面） ---------- */
 
-  /** 底层：纯色或渐变；背景图模式下作为图片底色 */
+  /** 底层：纯色或三段渐变；背景图模式下作为图片底色 */
   const layerBase = computed(() => {
     if (bgStyle.value === "gradient") {
-      return { background: `linear-gradient(${gradAngle.value}deg, ${gradFrom.value}, ${gradTo.value})` };
+      // FEAT-086：三段色标（旧数据无中段时 normalizePrefs 已补出中点，兼容两段视觉）
+      return {
+        background: `linear-gradient(${gradAngle.value}deg, ${gradFrom.value}, ${gradMid.value}, ${gradTo.value})`,
+      };
     }
     return { background: bgColor.value };
   });
@@ -207,7 +203,6 @@ export const useThemeStore = defineStore("theme", () => {
 
   /** 背景图平均色（异步采样；null=尚未算出，先按底层纯色处理） */
   const bgImageAvg = ref<[number, number, number] | null>(null);
-
   function sampleBgImage(dataUrl: string) {
     if (!dataUrl || typeof document === "undefined") {
       bgImageAvg.value = null;
@@ -240,11 +235,11 @@ export const useThemeStore = defineStore("theme", () => {
   }
   watch(bgImage, sampleBgImage, { immediate: true });
 
-  /** 实际背景的 RGB（图层叠加后的等效色） */
+  /** 实际背景的 RGB（图层叠加后的等效色；三段渐变取分段积分均值） */
   const effectiveBg = computed<[number, number, number]>(() => {
     const base = hexToRgb(bgColor.value);
     if (bgStyle.value === "gradient") {
-      return mixRgb(hexToRgb(gradFrom.value), hexToRgb(gradTo.value), 0.5);
+      return gradientAverage(hexToRgb(gradFrom.value), hexToRgb(gradMid.value), hexToRgb(gradTo.value));
     }
     if (bgStyle.value === "image") {
       // 图片层以 bgOpacity 叠在底层纯色之上：等效色 = 图片均色*α + 底色*(1-α)
@@ -256,12 +251,12 @@ export const useThemeStore = defineStore("theme", () => {
   });
 
   /**
-   * 玻璃等效底色：组件色调以 GLASS_ALPHA 叠在**实际页面背景**上（Q2-A）。
+   * 玻璃等效底色：组件色调以 **compAlpha**（FEAT-086 可调）叠在**实际页面背景**上。
    * 文字对比必须对着这个等效色算——玻璃是半透明的，只拿色调原色判断会误判
    * （深墨绿玻璃叠在白背景上其实是中灰，该配深色字而不是浅色字）。
    */
   const glassRgb = computed(() =>
-    mixRgb(effectiveBg.value, hexToRgb(compColor.value), GLASS_ALPHA),
+    mixRgb(effectiveBg.value, hexToRgb(compColor.value), compAlpha.value),
   );
   const glassTone = computed(() => componentTone(rgbToHex(glassRgb.value)));
 
@@ -271,16 +266,9 @@ export const useThemeStore = defineStore("theme", () => {
     glassTone.value.onDark ? "rgba(225,232,255,.86)" : "rgba(36,48,68,.88)",
   );
 
-  /** 页面背景上的文字：与实际背景做对比度计算（a 尽量一致 / b 对比明显） */
-  const onBgColor = computed(() => {
-    const bgLum = relLum(effectiveBg.value);
-    const preferred = isDark.value ? TEXT_LIGHT : TEXT_DARK;
-    if (contrastRatio(relLum(preferred), bgLum) >= 4.5) {
-      return isDark.value ? "#f5f7ff" : "#1f2733";
-    }
-    const pickLight = contrastRatio(relLum(TEXT_LIGHT), bgLum) >= contrastRatio(relLum(TEXT_DARK), bgLum);
-    return pickLight ? "#f5f7ff" : "#1f2733";
-  });
+  /** 页面背景上的文字：与实际背景做对比度计算
+   *  （a 尽量一致 / b 不足 4.5 取更高 / c 双双不足黑白兜底 —— FEAT-086 预设中调背景可达 4.26:1） */
+  const onBgColor = computed(() => onBgText(effectiveBg.value, isDark.value));
   const onBgSubColor = computed(() => {
     const [r, g, b] = hexToRgb(onBgColor.value);
     return `rgba(${r},${g},${b},.8)`;
@@ -316,54 +304,100 @@ export const useThemeStore = defineStore("theme", () => {
   applyBodyTheme(mode.value === "dark");
   watch(mode, (m) => applyBodyTheme(m === "dark"));
 
-  /* ---------- 组件色调下发（FEAT-084/085）：容器 = 玻璃 ----------
-     玻璃底色 = 组件色调以半透明度叠在页面背景上（Q2-A），
+  /* ---------- 玻璃材质切换（FEAT-086）：磨砂 frosted / 液态 liquid ----------
+     body 挂 mat-* 类，main.css 据此覆写 --glass-blur / --glass-saturate / 高光层；
+     卡片（cardStyle 内联）与 .glass-surface（类）两条消费路径同时生效（全局 Q3）。 */
+  function applyMaterial(m: Material) {
+    if (typeof document === "undefined") return;
+    document.body.classList.toggle("mat-frosted", m === "frosted");
+    document.body.classList.toggle("mat-liquid", m === "liquid");
+  }
+  applyMaterial(material.value);
+  watch(material, applyMaterial);
+
+  /* ---------- 组件色调下发（FEAT-084/085/086）：容器 = 玻璃 ----------
+     玻璃底色 = 组件色调以 compAlpha（可调）叠在页面背景上（Q2-A），
      文字色对**玻璃等效底色**取对比更高的一侧；所有值常驻下发，
-     换背景色/背景图/组件色调都会重新推导。 */
+     换背景色/背景图/组件色调/透明度/材质都会重新推导。 */
+
+  /** 玻璃分层透明度（由可调 compAlpha 派生）：
+   *  容器 = compAlpha（默认 0.42）/ 次级面板 +0.24 / 弹层 +0.36，封顶 0.95。
+   *  必须声明在 applyCompColor 的 immediate watch 之前（TDZ：否则首帧就抛
+   *  Cannot access 'containerAlpha' before initialization —— 冒烟实测踩过）。 */
+  const containerAlpha = computed(() => compAlpha.value);
+  const panelAlpha = computed(() => Math.min(0.95, compAlpha.value + 0.24));
+  const dialogAlpha = computed(() => Math.min(0.95, compAlpha.value + 0.36));
+
   function applyCompColor() {
     if (typeof document === "undefined") return;
     const body = document.body;
     const tone = glassTone.value;
-    body.style.setProperty("--color-surface", compFill(GLASS_ALPHA));
-    body.style.setProperty("--color-surface-2", compFill(PANEL_ALPHA));
+    body.style.setProperty("--color-surface", compFill(containerAlpha.value));
+    body.style.setProperty("--color-surface-2", compFill(panelAlpha.value));
     body.style.setProperty("--color-border", tone.border);
     body.style.setProperty("--color-text", tone.text);
     body.style.setProperty("--color-text-2", tone.text2);
     body.style.setProperty("--color-text-3", tone.text3);
     /* 别名令牌必须在同一层下发：`--glass-bg: var(--color-surface)` 写在 :root 时，
        会用 :root 的值（白）在 :root 就算完，子元素继承到的是已解析的白底 */
-    body.style.setProperty("--glass-bg", compFill(GLASS_ALPHA));
-    body.style.setProperty("--liquid-bg", compFill(PANEL_ALPHA));
+    body.style.setProperty("--glass-bg", compFill(containerAlpha.value));
+    body.style.setProperty("--liquid-bg", compFill(panelAlpha.value));
     body.style.setProperty("--glass-border", tone.border);
   }
-  watch([compColor, effectiveBg], applyCompColor, { immediate: true });
+  watch([compColor, compAlpha, effectiveBg], applyCompColor, { immediate: true });
 
   /** 组件色调按透明度渲染：容器 / 次级面板 / 弹层 */
   function compFill(alpha: number) {
     return hexToRgba(compColor.value, alpha);
   }
-  const glassFill = computed(() => compFill(GLASS_ALPHA));
-  const panelFill = computed(() => compFill(PANEL_ALPHA));
-  const dialogFill = computed(() => compFill(DIALOG_ALPHA));
+  const glassFill = computed(() => compFill(containerAlpha.value));
+  const panelFill = computed(() => compFill(panelAlpha.value));
+  const dialogFill = computed(() => compFill(dialogAlpha.value));
 
   /** 卡片底色（颜色值）：即玻璃填充 */
-  const cardBg = computed(() => compFill(GLASS_ALPHA));
+  const cardBg = computed(() => compFill(containerAlpha.value));
   /** 卡片描边（颜色值）：玻璃边缘内高光，方向随等效底色明暗 */
   const cardBorder = computed(() => glassTone.value.border);
-  /** 卡片/容器整套样式（内联 style 直接消费）：玻璃材质三件套 */
+  /** 卡片/容器整套样式（内联 style 直接消费）：玻璃材质三件套。
+   *  液态材质叠加 135° 高光层（--liquid-highlight，main.css 令牌） */
   const cardStyle = computed(() => ({
-    background: cardBg.value,
+    backgroundColor: cardBg.value,
+    backgroundImage: material.value === "liquid" ? "var(--liquid-highlight)" : "none",
     border: `1px solid ${cardBorder.value}`,
     backdropFilter: "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
     boxShadow: "var(--shadow-1)",
   }));
 
+  /** 弹窗面板变量包（--pm-*）：Home 基本信息弹窗与 ThemeDialog 共用（FEAT-086）。
+   *  弹层 = 玻璃 + 高模糊 + 三级深阴影；颜色随组件色调/材质实时重推。 */
+  const dialogVarStyle = computed(() => ({
+    background: dialogFill.value,
+    backdropFilter: "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
+    boxShadow: "var(--shadow-3)",
+    border: `1px solid ${cardBorder.value}`,
+    color: textColor.value,
+    "--pm-text": textColor.value,
+    "--pm-label": subTextColor.value,
+    "--pm-hint": subTextColor.value,
+    "--pm-input-bg": compFill(0.34),
+    "--pm-input-border": cardBorder.value,
+    "--pm-input-disabled-bg": compFill(0.16),
+    "--pm-btn-bg": compFill(0.2),
+    "--pm-btn-color": textColor.value,
+    "--pm-btn-hover": compFill(0.32),
+    "--pm-soft-border": cardBorder.value,
+    "--pm-danger-hover": "rgba(229,72,77,.22)",
+  }));
+
   return {
     mode,
     compColor,
+    compAlpha,
+    material,
     bgStyle,
     bgColor,
     gradFrom,
+    gradMid,
     gradTo,
     gradAngle,
     bgOpacity,
@@ -382,9 +416,11 @@ export const useThemeStore = defineStore("theme", () => {
     glassFill,
     panelFill,
     dialogFill,
+    dialogVarStyle,
     persist,
     saveImage,
     reset,
     setMode,
+    applyPreset,
   };
 });
