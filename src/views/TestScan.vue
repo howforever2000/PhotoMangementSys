@@ -29,17 +29,19 @@ const theme = useThemeStore();
 const notify = useNotify();
 const task = useScanTaskStore();
 
-/** 页面级主题变量：卡片/按钮原为固定白底，深色模式下会突兀发白 */
+/** 页面级主题变量：面板近乎透明，文字实际落在页面背景上 ——
+ *  颜色跟随实际背景的对比度（theme.onBg*），面板底/边框按 onBgDark 二分；
+ *  旧写法按 mode.isDark 二分，浅色预设下白字融进浅背景（用户反馈）。 */
 const tsVars = computed(() => {
-  const dark = theme.isDark;
+  const onDark = theme.onBgDark; // true = 浅背景配深字
   return {
-    "--ts-panel-bg": dark ? "rgba(255,255,255,.045)" : "#fff",
-    "--ts-panel-border": dark ? "rgba(255,255,255,.1)" : "#e5e7eb",
-    "--ts-btn-bg": dark ? "rgba(255,255,255,.06)" : "#fff",
-    "--ts-btn-border": dark ? "rgba(255,255,255,.18)" : "#ddd",
-    "--ts-btn-hover": dark ? "rgba(255,255,255,.12)" : "#f2f4f7",
-    "--ts-text": dark ? "#f5f7ff" : "#2c3e50",
-    "--ts-muted": dark ? "rgba(214,221,240,.6)" : "#888",
+    "--ts-panel-bg": onDark ? "rgba(0,0,0,.04)" : "rgba(255,255,255,.045)",
+    "--ts-panel-border": onDark ? "rgba(0,0,0,.1)" : "rgba(255,255,255,.1)",
+    "--ts-btn-bg": onDark ? "rgba(0,0,0,.045)" : "rgba(255,255,255,.06)",
+    "--ts-btn-border": onDark ? "rgba(0,0,0,.16)" : "rgba(255,255,255,.18)",
+    "--ts-btn-hover": onDark ? "rgba(0,0,0,.08)" : "rgba(255,255,255,.12)",
+    "--ts-text": theme.onBgColor,
+    "--ts-muted": theme.onBgSubColor,
   };
 });
 
@@ -607,6 +609,10 @@ const phaseLabel = computed(() => {
 }
 .dir-input:focus {
   border-color: #396cd8;
+}
+/* placeholder 别被 body.theme-dark 全局白系规则盖掉：本页输入框是浅底（onBg 系） */
+.dir-input::placeholder {
+  color: var(--ts-muted);
 }
 .dir-input:disabled {
   opacity: 0.7;

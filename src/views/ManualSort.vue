@@ -31,24 +31,27 @@ const theme = useThemeStore();
 const notify = useNotify();
 
 /** 页面级主题变量。
- *  本页原本全部写死浅色（白底 #fff / 灰边 #ddd / 深蓝字 #2c3e50），深色模式下
- *  会出现「深色背景 + 纯白卡片 + 深色文字」的割裂观感，且对比度不可控。
- *  改为统一下发 `--ms-*` 变量，样式块消费变量；浅色模式取值与原设计一致。 */
+ *  本页面板近乎透明，文字实际落在页面背景上 —— 颜色必须跟随**实际背景**的对比度
+ *  （theme.onBg*）而不是 mode.isDark（mode 恒为 dark，浅色预设下白字会融进浅背景）。
+ *  面板底/边框/悬停色按 onBgDark 二分：浅背景→黑色系半透明，深背景→白色系半透明。 */
 const msVars = computed(() => {
+  const onDark = theme.onBgDark; // true = 浅背景配深字
+  // 浮层（输入弹窗/右键菜单/拖拽浮层）自带实底、不透页面背景：仍按 mode 二分
   const dark = theme.isDark;
   return {
-    "--ms-text": dark ? "#f5f7ff" : "#2c3e50",
-    "--ms-muted": dark ? "rgba(214,221,240,.6)" : "#8a94a6",
-    "--ms-panel-bg": dark ? "rgba(255,255,255,.04)" : "#fff",
-    "--ms-panel-bg-2": dark ? "rgba(255,255,255,.06)" : "#fbfcfe",
-    "--ms-panel-bg-3": dark ? "rgba(255,255,255,.09)" : "#f7f9fc",
-    "--ms-border": dark ? "rgba(255,255,255,.1)" : "#e6e9f0",
-    "--ms-border-strong": dark ? "rgba(255,255,255,.18)" : "#d8dee9",
-    "--ms-hover": dark ? "rgba(255,255,255,.08)" : "#f4f6fa",
-    "--ms-nav-color": dark ? "rgba(214,221,240,.72)" : "#555",
-    "--ms-tag-bg": dark ? "rgba(57,108,216,.2)" : "#eef3ff",
-    "--ms-tag-color": dark ? "#93b4f5" : "#396cd8",
-    "--ms-accent-tint": dark ? "rgba(57,108,216,.22)" : "#f0f5ff",
+    "--ms-text": theme.onBgColor,
+    "--ms-muted": theme.onBgSubColor,
+    "--ms-panel-bg": onDark ? "rgba(0,0,0,.035)" : "rgba(255,255,255,.04)",
+    "--ms-panel-bg-2": onDark ? "rgba(0,0,0,.03)" : "rgba(255,255,255,.06)",
+    "--ms-panel-bg-3": onDark ? "rgba(0,0,0,.045)" : "rgba(255,255,255,.09)",
+    "--ms-border": onDark ? "rgba(0,0,0,.1)" : "rgba(255,255,255,.1)",
+    "--ms-border-strong": onDark ? "rgba(0,0,0,.18)" : "rgba(255,255,255,.18)",
+    "--ms-hover": onDark ? "rgba(0,0,0,.06)" : "rgba(255,255,255,.08)",
+    "--ms-nav-color": onDark ? "rgba(214,221,240,.72)" : "rgba(60,70,90,.72)",
+    "--ms-tag-bg": onDark ? "rgba(57,108,216,.2)" : "rgba(57,108,216,.14)",
+    "--ms-tag-color": onDark ? "#93b4f5" : "#2f5cc2",
+    "--ms-accent-tint": onDark ? "rgba(57,108,216,.22)" : "rgba(57,108,216,.14)",
+    // 输入框/下拉菜单/拖拽浮层是自带实底的浮层：维持原深浅二分（浮层自洽，不随页面背景）
     "--ms-input-bg": dark ? "rgba(18,20,28,.7)" : "#fff",
     "--ms-menu-bg": dark ? "rgba(30,34,46,.98)" : "#fff",
     "--ms-shadow": dark ? "0 8px 28px rgba(0,0,0,.5)" : "0 8px 24px rgba(16,24,40,.12)",
@@ -818,7 +821,8 @@ onBeforeUnmount(() => {
 }
 
 .manual-nav-label {
-  color: #396cd8;
+  /* 目录标签落在页面背景条上：用背景向链接色 */
+  color: var(--color-link-on-bg, #396cd8);
   font-weight: 600;
   margin-right: 4px;
 }
@@ -832,7 +836,7 @@ onBeforeUnmount(() => {
 }
 
 .manual-nav-item {
-  color: #396cd8;
+  color: var(--color-link-on-bg, #396cd8);
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 4px;

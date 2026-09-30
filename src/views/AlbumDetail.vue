@@ -19,17 +19,17 @@ const store = useAlbumStore();
 const theme = useThemeStore();
 const notify = useNotify();
 
-/** 页面级主题变量：本页按钮/文本原先写死浅色（#fff / #ddd / #2c3e50），
- *  深色模式下会变成"深底 + 白按钮 + 深色字"的刺眼组合。
- *  这里统一以 `--detail-*` 下发，样式块消费变量，浅色模式保持原外观。 */
+/** 页面级主题变量：本页按钮/文本直接落在页面背景上 ——
+ *  颜色跟随实际背景的对比度（theme.onBg*），按钮底/边框按 onBgDark 二分；
+ *  旧写法按 mode.isDark 二分，浅色预设下白字融进浅背景。 */
 const detailVars = computed(() => {
-  const dark = theme.isDark;
+  const onDark = theme.onBgDark; // true = 浅背景配深字
   return {
-    "--detail-text": dark ? "#f5f7ff" : "#2c3e50",
-    "--detail-muted": dark ? "rgba(214,221,240,.62)" : "#667085",
-    "--detail-btn-bg": dark ? "rgba(255,255,255,.06)" : "#fff",
-    "--detail-btn-border": dark ? "rgba(255,255,255,.18)" : "#ddd",
-    "--detail-btn-hover": dark ? "rgba(255,255,255,.13)" : "#f2f4f7",
+    "--detail-text": theme.onBgColor,
+    "--detail-muted": theme.onBgSubColor,
+    "--detail-btn-bg": onDark ? "rgba(0,0,0,.05)" : "rgba(255,255,255,.06)",
+    "--detail-btn-border": onDark ? "rgba(0,0,0,.16)" : "rgba(255,255,255,.18)",
+    "--detail-btn-hover": onDark ? "rgba(0,0,0,.1)" : "rgba(255,255,255,.13)",
   };
 });
 

@@ -27,11 +27,12 @@ const initialPhoto = (() => {
 
 const cardStyle = computed(() => theme.cardStyle);
 
-const badgeStyle = computed(() =>
-  theme.isDark
-    ? { color: "rgba(255,255,255,.85)", background: "rgba(120,120,130,.4)", border: "1px solid rgba(255,255,255,.18)" }
-    : { color: "rgba(50,60,80,.85)", background: "rgba(0,0,0,.06)", border: "1px solid rgba(0,0,0,.08)" },
-);
+/** 「待开发」徽标：落在玻璃卡上，跟随玻璃等效底色取字色（旧 isDark 二分在浅色卡上融底） */
+const badgeStyle = computed(() => ({
+  color: theme.subTextColor,
+  background: "rgba(120,120,130,.4)",
+  border: `1px solid ${theme.cardBorder}`,
+}));
 
 /** 工坊小组件清单 */
 const widgets = [

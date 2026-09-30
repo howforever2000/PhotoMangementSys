@@ -21,14 +21,13 @@ const pmStyle = computed(() => theme.dialogVarStyle);
 const username = () => auth.user?.username ?? "未登录";
 
 /** 深色模式视觉（与背景样式自由搭配） */
-const isDark = computed(() => theme.isDark);
-
 const cardStyle = computed(() => theme.cardStyle);
-const badgeStyle = computed(() =>
-  isDark.value
-    ? { color: "rgba(255,255,255,.85)", background: "rgba(120,120,130,.4)", border: "1px solid rgba(255,255,255,.18)" }
-    : { color: "rgba(50,60,80,.85)", background: "rgba(0,0,0,.06)", border: "1px solid rgba(0,0,0,.08)" },
-);
+/** 「待开发」徽标：落在玻璃卡上，跟随玻璃等效底色取字色（旧 isDark 二分在浅色卡上融底） */
+const badgeStyle = computed(() => ({
+  color: theme.subTextColor,
+  background: "rgba(120,120,130,.4)",
+  border: `1px solid ${theme.cardBorder}`,
+}));
 
 /** 退出登录并回到登录页 */
 async function handleLogout() {

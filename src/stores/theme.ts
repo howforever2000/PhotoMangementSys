@@ -288,6 +288,10 @@ export const useThemeStore = defineStore("theme", () => {
     const [r, g, b] = hexToRgb(onBgColor.value);
     return `rgba(${r},${g},${b},.8)`;
   });
+  /** 页面背景上文字的明暗方向：浅背景→深字（true）。供各页 msVars/tsVars 等
+   *  页面级变量二分面板底/边框/悬停色的取向（旧写法按 mode.isDark 二分，
+   *  在浅色预设 + 恒定 dark mode 下永远下发白字，是「文字融进浅背景」的根因） */
+  const onBgDark = computed(() => isDarkText(onBgColor.value));
 
   /* 把「页面背景文字色」写到 body 内联 CSS 变量，供各页头部 title/subtitle 消费；
      --color-text* 不再内联覆盖——恢复由 main.css 的模式类控制（卡片语境）。 */
@@ -296,6 +300,9 @@ export const useThemeStore = defineStore("theme", () => {
     const body = document.body;
     body.style.setProperty("--color-on-bg", onBgColor.value);
     body.style.setProperty("--color-on-bg-2", onBgSubColor.value);
+    // 背景上的链接色：body.theme-dark 的 --color-link 恒浅蓝（玻璃卡语境），
+    // 落在页面背景上的链接需要另一套 —— 浅背景→深蓝，深背景→浅蓝
+    body.style.setProperty("--color-link-on-bg", onBgDark.value ? "#2f5cc2" : "#8ab4ff");
     // 背景图模式加一层与文字同向的细描边阴影，抵抗图片亮斑（星空亮部等）
     const onImage = bgStyle.value === "image" && !!bgImage.value;
     body.classList.toggle("theme-on-image", onImage);
@@ -306,7 +313,7 @@ export const useThemeStore = defineStore("theme", () => {
         : "0 1px 3px rgba(0,0,0,.38)",
     );
   }
-  watch([onBgColor, bgStyle, bgImage], applyTextVars, { immediate: true });
+  watch([onBgColor, onBgDark, bgStyle, bgImage], applyTextVars, { immediate: true });
 
   /* ---------- 把深/浅色模式同步到 body ----------
      这样 main.css 中的 `body.theme-dark { --color-text: ... }` 才能覆盖全局，
@@ -432,6 +439,7 @@ export const useThemeStore = defineStore("theme", () => {
     subTextColor,
     onBgColor,
     onBgSubColor,
+    onBgDark,
     cardStyle,
     cardBg,
     cardBorder,

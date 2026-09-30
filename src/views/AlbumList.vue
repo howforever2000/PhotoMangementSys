@@ -1098,16 +1098,17 @@ function onKey(e: KeyboardEvent) {
       color: theme.textColor,
       '--text': theme.textColor,
       '--sub-text': theme.subTextColor,
-      '--muted': theme.isDark ? 'rgba(214,221,240,.55)' : 'rgba(60,70,90,.55)',
+      // 弱文字直接落在页面背景上：跟随实际背景对比度（旧 isDark 二分在浅色预设下融底）
+      '--muted': theme.onBgSubColor,
       '--card-bg': theme.cardBg,
       '--card-border': theme.cardBorder,
-      '--panel-bg': theme.isDark ? 'rgba(255,255,255,.06)' : '#f7f9fc',
-      '--input-bg': theme.isDark ? 'rgba(20,22,30,.7)' : '#fff',
-      '--input-border': theme.isDark ? 'rgba(255,255,255,.14)' : '#ddd',
-      '--tint-bg': theme.isDark ? 'rgba(57,108,216,.18)' : '#eef3ff',
-      '--tint-border': theme.isDark ? 'rgba(57,108,216,.35)' : '#e0e9fa',
-      '--hover-bg': theme.isDark ? 'rgba(255,255,255,.07)' : 'rgba(57,108,216,.08)',
-      '--danger-bg': theme.isDark ? 'rgba(229,72,77,.15)' : '#fdf0f0',
+      '--panel-bg': theme.onBgDark ? 'rgba(0,0,0,.04)' : 'rgba(255,255,255,.06)',
+      '--input-bg': theme.onBgDark ? 'rgba(255,255,255,.65)' : 'rgba(20,22,30,.7)',
+      '--input-border': theme.onBgDark ? 'rgba(0,0,0,.14)' : 'rgba(255,255,255,.14)',
+      '--tint-bg': theme.onBgDark ? 'rgba(57,108,216,.14)' : 'rgba(57,108,216,.18)',
+      '--tint-border': theme.onBgDark ? 'rgba(57,108,216,.4)' : 'rgba(57,108,216,.35)',
+      '--hover-bg': theme.onBgDark ? 'rgba(57,108,216,.08)' : 'rgba(255,255,255,.07)',
+      '--danger-bg': theme.onBgDark ? 'rgba(229,72,77,.12)' : 'rgba(229,72,77,.15)',
     }"
   >
     <!-- 顶部工具栏（需求 §5.3） -->
@@ -1926,7 +1927,8 @@ function onKey(e: KeyboardEvent) {
 }
 
 .view-bar-label {
-  color: var(--color-link);
+  /* 标签落在页面背景条上：用背景向链接色（--color-link 浅蓝是玻璃卡语境） */
+  color: var(--color-link-on-bg, var(--color-link));
   font-weight: 600;
   margin-right: 4px;
 }
@@ -1936,7 +1938,8 @@ function onKey(e: KeyboardEvent) {
 }
 
 .bc-item {
-  color: var(--color-link);
+  /* 面包屑落在页面背景上：用背景向链接色（--color-link 是玻璃卡语境的浅蓝，浅背景上失比） */
+  color: var(--color-link-on-bg, var(--color-link));
 }
 
 .bc-link {
