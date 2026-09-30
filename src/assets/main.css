@@ -104,9 +104,10 @@
   /* 细缎噪点：更高频率 + 更小贴图，液态材质的细颗粒 */
   --grain-fine: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.6' numOctaves='2'/%3E%3C/filter%3E%3Crect width='72' height='72' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
   /* 釉面开片（冰裂纹）：fractalNoise 平滑场 → 亮度搬进 alpha → table 窄峰提取等值线环网；
-   后接 feGaussianBlur 0.6 把锐线变「釉下纹」，再套径向遮罩让裂纹向边缘聚集、中心淡出
-   （釉厚堆边的陶瓷意象）——避开文字区，接缝也随之消隐；rect opacity 0.42 控制强度 */
-  --glazed-craze: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cdefs%3E%3Cfilter id='c' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.018' numOctaves='1' seed='8'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.92 0 0 0 0 0.95 0 0 0 0 0.9 1 0 0 0 0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='table' tableValues='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'/%3E%3C/feComponentTransfer%3E%3CfeGaussianBlur stdDeviation='0.6'/%3E%3C/filter%3E%3CradialGradient id='f' cx='0.5' cy='0.5' r='0.72'%3E%3Cstop offset='0.45' stop-color='%23000'/%3E%3Cstop offset='1' stop-color='%23fff'/%3E%3C/radialGradient%3E%3Cmask id='m'%3E%3Crect width='400' height='400' fill='url(%23f)'/%3E%3C/mask%3E%3C/defs%3E%3Crect width='400' height='400' filter='url(%23c)' mask='url(%23m)' opacity='0.42'/%3E%3C/svg%3E");
+   后接 feGaussianBlur 0.6 把锐线变「釉下纹」。注意：边缘淡出不用 SVG 内遮罩
+   （径向遮罩会随贴图平铺，每个 tile 各一个中心死区 → 卡面纹理斑驳），
+   而是用元素级 CSS mask（见下方 ::before 规则），以卡片自身为中心连贯淡出 */
+  --glazed-craze: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cfilter id='c' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.018' numOctaves='1' seed='8'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.92 0 0 0 0 0.95 0 0 0 0 0.9 1 0 0 0 0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='table' tableValues='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'/%3E%3C/feComponentTransfer%3E%3CfeGaussianBlur stdDeviation='0.6'/%3E%3C/filter%3E%3Crect width='400' height='400' filter='url(%23c)' opacity='0.5'/%3E%3C/svg%3E");
 
   /* 文字令牌（单一事实来源仍是 --color-text*，这里只做方案命名收口） */
   --text-primary: var(--color-text);
@@ -258,8 +259,10 @@ body.mat-liquid .glass-card::before {
 }
 
 /* —— 釉瓷：陶瓷釉面 = 细开片裂纹 + 缎面细颗粒 + 两处柔和釉色光池 ——
-   开片是陶瓷釉面的标志性特征：细白裂纹网（--glazed-craze）
-   叠在缎面颗粒上，再加两处大而柔的受光/反光池，安静而有深度。 */
+   开片是陶瓷釉面的标志性特征：细白裂纹网（--glazed-craze）叠在缎面颗粒上。
+   整个材质层再套元素级 mask：以卡片自身为中心，中心 34% 完全透明 → 边缘完全不透明
+   ——裂纹和颗粒「向边缘堆积、中心留白」（釉厚堆边），文字区纯净，
+   且不透明度调到最高时釉面依然清晰（soft-light 在均匀实底上照常生效）。 */
 body.mat-glazed .glass-surface::before,
 body.mat-glazed .glass-card::before {
   content: "";
@@ -268,11 +271,13 @@ body.mat-glazed .glass-card::before {
   border-radius: inherit;
   pointer-events: none;
   background-image: var(--glazed-craze), var(--grain-fine),
-    radial-gradient(90% 70% at 20% 10%, rgba(255, 255, 255, 0.3), transparent 55%),
-    radial-gradient(80% 65% at 80% 90%, rgba(255, 255, 255, 0.16), transparent 52%);
+    radial-gradient(90% 70% at 20% 10%, rgba(255, 255, 255, 0.34), transparent 55%),
+    radial-gradient(80% 65% at 80% 90%, rgba(255, 255, 255, 0.18), transparent 52%);
   background-size: 400px 400px, 72px 72px, 100% 100%, 100% 100%;
   mix-blend-mode: soft-light;
   opacity: 0.95;
+  -webkit-mask: radial-gradient(115% 95% at 50% 50%, rgba(0, 0, 0, 0) 34%, #000 74%);
+  mask: radial-gradient(115% 95% at 50% 50%, rgba(0, 0, 0, 0) 34%, #000 74%);
 }
 
 /* ==========================================================================
