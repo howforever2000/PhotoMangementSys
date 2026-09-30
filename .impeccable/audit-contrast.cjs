@@ -26,6 +26,14 @@ const AUDIT = () => {
   const parse = (c) => {
     if (!c) return null;
     if (c === "transparent") return { r: 0, g: 0, b: 0, a: 0 };
+    /* var(--token[, fallback])：从 body 计算样式解出真实值。
+       糖果渐变串现在引用 var(--candy-*)（FEAT-087），不解的话
+       渐变采样会拿不到色 → 误判成兜底深色 → 产生假阳性失败。 */
+    const vm = c.match(/^var\(\s*(--[\w-]+)\s*(?:,([\s\S]+))?\)$/);
+    if (vm) {
+      const resolved = getComputedStyle(document.body).getPropertyValue(vm[1]).trim();
+      return parse(resolved || (vm[2] || "").trim());
+    }
     const m = c.match(/rgba?\(([^)]+)\)/);
     if (!m) {
       if (/^#[0-9a-f]{3,8}$/i.test(c)) {

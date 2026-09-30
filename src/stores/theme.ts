@@ -422,6 +422,15 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--color-ok-text", sat(isDark.value ? "#6ed27a" : "#2f9e44"));
     body.style.setProperty("--color-danger-text", sat(isDark.value ? "#f87171" : "#c92a2a"));
     body.style.setProperty("--color-warn-text", sat(isDark.value ? "#f59e0b" : "#b45309"));
+    /* 糖果彩虹色板：hero 横幅 / 入口卡 / 回忆故事卡的渐变基色。
+       这些渐变串在 <script> 里拼装（内联 :style），所以必须注册成令牌才能被
+       饱和度统一带动（否则滑块只影响按钮/背景，糖果卡原地不动）。 */
+    body.style.setProperty("--candy-cream", sat("#fffcbd"));
+    body.style.setProperty("--candy-pink", sat("#f075c7"));
+    body.style.setProperty("--candy-blue", sat("#65d5f9"));
+    body.style.setProperty("--candy-rose", sat("#fb6d9b"));
+    body.style.setProperty("--candy-indigo", sat("#505fdd"));
+    body.style.setProperty("--candy-violet", sat("#3a36e4"));
     /* 玻璃卡语境链接色（body.theme-dark 恒为浅蓝 #8ab4ff）：直接覆写 --color-link，
        组件里的 var(--color-link) 引用自动跟随；仅做饱和度缩放（不改 HSL 亮度） */
     body.style.setProperty("--color-link", sat(isDark.value ? "#8ab4ff" : P));

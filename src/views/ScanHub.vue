@@ -123,28 +123,28 @@ const subModules: SubModule[] = [
     icon: "🗂️",
     title: "全局照片扫描入库",
     desc: "勾选相册批量扫描入库，支持全选、启停、进度与后台执行",
-    gradient: "linear-gradient(135deg, #FFFCBD 0%, #F075C7 100%)",
+    gradient: "linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-pink) 100%)",
   },
   {
     tab: "by-time-place",
     icon: "🗓️",
     title: "按年·地点浏览",
     desc: "把扫描结果按年 / 地点组织聚合展示（待开发）",
-    gradient: "linear-gradient(135deg, #65D5F9 0%, #FB6D9B 100%)",
+    gradient: "linear-gradient(135deg, var(--candy-blue) 0%, var(--candy-rose) 100%)",
   },
   {
     tab: "dedupe",
     icon: "🧹",
     title: "重复扫描清理",
     desc: "基于哈希找出已入库但重复扫描的照片，支持一键清理（待开发）",
-    gradient: "linear-gradient(135deg, #FFFCBD 0%, #65D5F9 100%)",
+    gradient: "linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-blue) 100%)",
   },
   {
     tab: "test",
     icon: "🧪",
     title: "相册扫描分组工具",
     desc: "扫描任意文件夹 → 按年·地点分组预览与批量移动（独立子页面）",
-    gradient: "linear-gradient(135deg, #F075C7 0%, #FB6D9B 100%)",
+    gradient: "linear-gradient(135deg, var(--candy-pink) 0%, var(--candy-rose) 100%)",
   },
 ];
 
@@ -178,7 +178,7 @@ function onTabClick(t: ScanTab) {
       class="scan-hero glass-surface candy-surface"
       :style="{
         background:
-          'linear-gradient(135deg, #FFFCBD 0%, #F075C7 55%, #65D5F9 100%)',
+          'linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-pink) 55%, var(--candy-blue) 100%)',
       }"
     >
       <div class="scan-hero-content">

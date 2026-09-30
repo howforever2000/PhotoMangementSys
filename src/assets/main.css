@@ -32,6 +32,16 @@
   --color-danger-text: #c92a2a;
   --color-warn-text: #b45309;
 
+  /* 糖果彩虹色板（FEAT-087）：hero 横幅 / 入口卡 / 回忆故事卡的渐变基色，
+     六个取用户色卡。组件（含 script 里拼的渐变串）统一引用这几个令牌，
+     由 theme store 的饱和度管线一起下发浓淡；此处为兜底基值。 */
+  --candy-cream: #fffcbd;
+  --candy-pink: #f075c7;
+  --candy-blue: #65d5f9;
+  --candy-rose: #fb6d9b;
+  --candy-indigo: #505fdd;
+  --candy-violet: #3a36e4;
+
   /* 文字色阶 —— 浅色模式
      整体加深一档，确保小字号（11–12px）在白底上也能达到 WCAG AA。
      旧版 #6b7280 在 #f5f6f8 上对比度≈4.6:1（边界通过），

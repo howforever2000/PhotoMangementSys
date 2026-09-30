@@ -199,17 +199,17 @@ function gotoPerson(p: PersonInfo) {
 }
 
 /* -------------------- 故事/年度卡底色（鲜艳彩虹 · 用户色卡） --------------------
-   六个基色来自用户提供的色卡：#FFFCBD / #F075C7 / #65D5F9 / #FB6D9B / #505FDD / #3A36E4；
+   六个基色来自用户提供的色卡：var(--candy-cream) / var(--candy-pink) / var(--candy-blue) / var(--candy-rose) / var(--candy-indigo) / var(--candy-violet)；
    文字是白字，底部靠 .mem-story-fade / .mem-year-fade 的黑色 scrim 保对比度。 */
 const PALETTE = [
-  "linear-gradient(135deg, #FFFCBD 0%, #F075C7 100%)",
-  "linear-gradient(135deg, #65D5F9 0%, #FB6D9B 100%)",
-  "linear-gradient(135deg, #F075C7 0%, #505FDD 100%)",
-  "linear-gradient(135deg, #FB6D9B 0%, #3A36E4 100%)",
-  "linear-gradient(135deg, #65D5F9 0%, #F075C7 100%)",
-  "linear-gradient(135deg, #FFFCBD 0%, #65D5F9 100%)",
-  "linear-gradient(135deg, #FB6D9B 0%, #505FDD 100%)",
-  "linear-gradient(135deg, #505FDD 0%, #3A36E4 100%)",
+  "linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-pink) 100%)",
+  "linear-gradient(135deg, var(--candy-blue) 0%, var(--candy-rose) 100%)",
+  "linear-gradient(135deg, var(--candy-pink) 0%, var(--candy-indigo) 100%)",
+  "linear-gradient(135deg, var(--candy-rose) 0%, var(--candy-violet) 100%)",
+  "linear-gradient(135deg, var(--candy-blue) 0%, var(--candy-pink) 100%)",
+  "linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-blue) 100%)",
+  "linear-gradient(135deg, var(--candy-rose) 0%, var(--candy-indigo) 100%)",
+  "linear-gradient(135deg, var(--candy-indigo) 0%, var(--candy-violet) 100%)",
 ];
 function paletteFor(key: string): string {
   let h = 0;
@@ -350,7 +350,7 @@ function goAlbumFromLightbox(albumId: number) {
       class="mem-hero glass-surface candy-surface"
       :style="{
         background:
-          'linear-gradient(135deg, #FFFCBD 0%, #65D5F9 55%, #F075C7 100%)',
+          'linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-blue) 55%, var(--candy-pink) 100%)',
       }"
     >
       <div class="mem-hero-content">

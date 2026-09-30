@@ -17,7 +17,7 @@ const sat = Number(process.argv[3] ?? 1);
     const prefs = JSON.parse(localStorage.getItem("pm-theme") || "{}");
     localStorage.setItem("pm-theme", JSON.stringify({ ...prefs, saturation: s }));
   }, sat);
-  for (const [name, route] of [["home", "/home"], ["scan", "/scan"]]) {
+  for (const [name, route] of [["home", "/home"], ["scan", "/scan"], ["smart", "/smart"], ["memories", "/memories"]]) {
     await page.goto(`http://localhost:1420${route}`, { waitUntil: "domcontentloaded", timeout: 20000 });
     await page.waitForTimeout(2000);
     await page.screenshot({ path: `.impeccable/review/sat-${tag}-${name}.png` });

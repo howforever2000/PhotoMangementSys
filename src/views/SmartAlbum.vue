@@ -117,28 +117,28 @@ const subModules: SubModule[] = [
     title: "人物",
     desc: "按出现频率自动聚类，支持命名、合并、查看照片",
     tab: "face",
-    gradient: "linear-gradient(135deg, #65D5F9 0%, #F075C7 100%)",
+    gradient: "linear-gradient(135deg, var(--candy-blue) 0%, var(--candy-pink) 100%)",
   },
   {
     icon: "🌟",
     title: "回忆",
     desc: "智能相册故事：按月 / 按年聚合的精彩瞬间",
     path: "/memories",
-    gradient: "linear-gradient(135deg, #FFFCBD 0%, #F075C7 100%)",
+    gradient: "linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-pink) 100%)",
   },
   {
     icon: "📅",
     title: "时间线",
     desc: "跨相册按拍摄时间聚合浏览",
     path: "/timeline",
-    gradient: "linear-gradient(135deg, #65D5F9 0%, #FB6D9B 100%)",
+    gradient: "linear-gradient(135deg, var(--candy-blue) 0%, var(--candy-rose) 100%)",
   },
   {
     icon: "🔎",
     title: "智能搜索",
     desc: "自然语言 + 多维筛选检索照片",
     path: "/search",
-    gradient: "linear-gradient(135deg, #FFFCBD 0%, #65D5F9 100%)",
+    gradient: "linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-blue) 100%)",
   },
 ];
 
@@ -157,7 +157,7 @@ function openSub(m: SubModule) {
       class="smart-hero glass-surface candy-surface"
       :style="{
         background:
-          'linear-gradient(135deg, #65D5F9 0%, #FB6D9B 55%, #F075C7 100%)',
+          'linear-gradient(135deg, var(--candy-blue) 0%, var(--candy-rose) 55%, var(--candy-pink) 100%)',
       }"
     >
       <div class="smart-hero-content">
