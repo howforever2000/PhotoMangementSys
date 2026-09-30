@@ -3408,6 +3408,41 @@
         "同一个错误结论写进代码注释比不写更糟：本次我先断言「bytes 与磁盘对不上」，实算后发现是 MiB/MB 单位差，随即修正了三处注释",
         "get_providers() 是**候选序列**而非实际绑定，直接 join(\"+\") 展示会误导；必须结合 cpu_fallback 判断真回退"
       ]
+    },
+    {
+      "id": "BUG-20261001-013",
+      "title": "人物封面显示别人（头像缓存只判「文件存在」，P 编号复用后旧文件冒充本人）",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": "人物卡片封面是与该人物无关的另一张脸（用户截图中 P094/P582/P169/P003 多个不符）",
+      "root_cause": "avatars/avatar_<pid>.jpg 仅以「文件是否存在」判定缓存有效：历史 persons.db 重建/清空后 P 编号被新人物复用，磁盘上的旧头像文件仍被当作本人；merge_persons 只 force 刷新目标、未清被并者缓存；代表脸取「最早登记」易落到远处小脸",
+      "fix": "① 缓存加身份签名并在读取时校验，失配即删旧重裁，批量接口清孤儿缓存 + 后台重裁 + 事件刷新；② 自选头像加 .custom 标记，永不自动覆盖；③ merge 清被并者缓存；④ 代表脸改为「与质心最相似」；⑤ 新增「恢复自动头像」「重建人物库」入口",
+      "related_files": [
+        "src-tauri/src/avatar.rs",
+        "src-tauri/src/persons.rs",
+        "src/components/PersonGallery.vue"
+      ],
+      "log_hint": "[avatar] 后台重裁完成：N/M 张；get_person_avatars_bulk 结果含 stale=/orphan= 计数",
+      "created_at": "2026-10-01T00:00:00+08:00",
+      "fixed_at": "2026-10-01T00:00:00+08:00"
+    },
+    {
+      "id": "BUG-20261001-014",
+      "title": "换人脸识别模型会静默清空已入库的 person_ids（人脸通道异常=静默降级）",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": "换模型后重扫：同一人被拆成大量新 P 编号，或照片 person_ids 被覆盖成空（数据丢失）",
+      "root_cause": "ArcFace 换模型 = 换嵌入空间，旧质心与新嵌入的余弦退化为随机值；而 pipeline 对人脸通道异常是静默降级（face_hits=[]），扫描继续并把空 person_ids 写库",
+      "fix": "persons.db 增加 meta.emb_model；Python register() 不匹配直接报错；宿主在 classify_paths / classify_single 入口调用 /persons/emb_model 预检并中止扫描，提示先执行「重建人物库」；重建 = 备份 + 清空 + 清头像与内容表人脸字段，再全量重扫",
+      "related_files": [
+        "python/vcr/persistence/person_store.py",
+        "python/server.py",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/persons.rs"
+      ],
+      "log_hint": "[face] 扫描被拦截：… / [face] 模型预检通过：registered=… active=…",
+      "created_at": "2026-10-01T00:00:00+08:00",
+      "fixed_at": "2026-10-01T00:00:00+08:00"
     }
   ]
 }

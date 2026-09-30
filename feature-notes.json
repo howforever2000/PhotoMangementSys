@@ -2802,7 +2802,53 @@
       ],
       "created_at": "2026-09-30T15:50:00+08:00",
       "updated_at": "2026-09-30T15:50:00+08:00"
+    },
+    {
+      "id": "FEAT-088",
+      "name": "人脸模型换档：det_10g + w600k_r50（只保留最新一档）",
+      "module": "VCR 人脸通道 / 模型分发",
+      "purpose": "降低「非人脸被误检成脸」与聚类错挂：检测换 SCRFD-10G、识别换 ArcFace R50；按用户决定不再保留轻量档与切换入口（唯一档，避免两档向量空间并行带来的数据口径分裂）",
+      "implementation": {
+        "backend": "config.FACE_DET_MODELS=[det_10g.onnx]、FACE_REC_MODELS=[w600k_r50.onnx]（单档）；download_models.py 的 face 任务改走 hf-mirror 的 immich-app/buffalo_l 镜像仓（仓内 detection/model.onnx、recognition/model.onnx → 落位重命名）；GitHub 官方 release 经 gh 代理下载会被截断（实测 238.6MB 坏包：中央目录可读、局部文件头损坏，Expand-Archive / zipfile / tar 全部解不开）",
+        "frontend": "无界面改动（档位不可切换）",
+        "key_points": [
+          "误检双门槛：新增 FACE_DET_CONF=0.50（独立于 YOLO 的 PERSON_CONF_MIN=0.35，假脸分数多落在 0.35~0.5）；FACE_MIN_PIX 24→32（24px 脸喂 ArcFace 只会产出噪声向量）",
+          "换档即换嵌入空间：persons.db 新增 meta.emb_model 记录登记模型，register() 不匹配直接报错，宿主扫描入口 /persons/emb_model 预检拦截（否则人脸通道静默降级会把 person_ids 清空）",
+          "打包清单同步换档：release.tauri.conf.json resources + release.ps1 required",
+          "旧档模型文件（det_500m / w600k_mbf / buffalo_sc.zip）已从 python/models 移除"
+        ]
+      },
+      "highlights": [
+        "实测代价（python/bench/face_tier_bench.py，7840HS CPU intra_op=8，真实相册 10 张）：检测 11.4ms→66.8ms（5.9×）、识别 5.5ms→39.4ms/脸（7.2×）；即每张有脸照片 +55ms、每个脸 +34ms，只影响 _needs_face 命中的照片",
+        "线程数实测：intra_op 16 线程反而更慢（det 78.8ms / rec 49.6ms）→ 换档后不要凭直觉加线程，8 线程仍最优",
+        "hf-mirror 单文件直下（16.9MB + 174.4MB）约 2MB/s，比 zip 走 gh 代理可靠"
+      ],
+      "created_at": "2026-10-01T00:00:00+08:00",
+      "updated_at": "2026-10-01T00:00:00+08:00"
+    },
+    {
+      "id": "FEAT-089",
+      "name": "人物封面身份校验 + 右键更换头像 + 重建人物库",
+      "module": "人物注册表（persons.rs / avatar.rs / PersonGallery.vue）",
+      "purpose": "修复「封面显示的不是本人的脸」，并给用户可控的封面选择与换模型后的重建入口",
+      "implementation": {
+        "backend": "头像缓存加身份签名 avatar_<pid>.sig（内容 \"人脸张数:最大face id\"，人脸增删/合并/重建都会变）+ 自选标记 avatar_<pid>.custom；get_person_avatar / get_person_avatars_bulk 命中前校验签名，失配即删旧重裁；批量接口清理孤儿缓存并把失配项交后台任务逐个重裁、emit person-avatar-refreshed；代表脸由「最早登记」改为「与质心最相似」（并列取面积大者）；merge_persons 清被并者缓存；新增 restore_person_avatar（恢复自动头像）与 rebuild_person_registry（备份 + 清库 + 清头像 + 清 content 表 person_ids）",
+        "frontend": "PersonGallery：头像右键菜单（更换头像… / 恢复自动头像 / 合并）、头像挑选模式提示条、后台重裁事件驱动的头像渐进刷新、工具栏「重建人物库」危险操作（二次确认）",
+        "key_points": [
+          "签名只依赖人脸集、不依赖时间：规避「文件 mtime vs created_at」方案在 local/UTC 口径上的假失配",
+          "自选头像永久优先：身份变化也不被自动重裁覆盖（用户选择 > 自动推断）",
+          "批量接口不阻塞：失配头像先返回 null，后台重裁完再事件推送（避免一次画廊加载同步重裁上千张）",
+          "重建人物库同时清空 content 表 person_ids，避免界面继续引用已不存在的 P 编号"
+        ]
+      },
+      "highlights": [
+        "实测证据：2417 个头像缓存中 1952 个比其人物创建时间还早（历史 persons.db 重建 + P 编号复用），抽查 P582/P169 缓存里的脸与库中代表脸不是同一个人 —— 旧实现只看「文件在不在」",
+        "Python 冒烟（50MB 真实库副本）：旧库自动补记 w600k_mbf → 扫描被拦截；rebuild 产出 persons.db.bak-<ts>（2418 人物可读）、清 2418 人/9866 脸、meta 复位、可再登记",
+        "Rust 新增 4 条单测锁判据：签名格式、代表脸选择、文件名→pid 解析、缓存可信性（含自选标记）"
+      ],
+      "created_at": "2026-10-01T00:00:00+08:00",
+      "updated_at": "2026-10-01T00:00:00+08:00"
     }
   ],
-  "updated": "2026-09-30T15:50:00+08:00"
+  "updated": "2026-10-01T00:00:00+08:00"
 }
