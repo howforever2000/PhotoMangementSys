@@ -3477,6 +3477,23 @@
       "log_hint": "[face] 扫描被拦截：人脸识别通道不可用：缺少模型文件 X（模型目录 Y）/ 模型目录: …python\\models",
       "created_at": "2026-10-01T00:00:00+08:00",
       "fixed_at": "2026-10-01T00:00:00+08:00"
+    },
+    {
+      "id": "BUG-20261001-017",
+      "title": "新增服务端点后忘记抬 VCR_API_VERSION：性能设置「人脸模型」清单加载失败（HTTP 404）",
+      "status": "fixed",
+      "severity": "medium",
+      "symptom": "性能设置里的人脸模型档位显示「清单加载失败」，日志为 face_tiers 失败 | HTTP 404，而 /health 一切正常（api=7）",
+      "root_cause": "新增 /face/tiers、/face/tier 端点时没有抬 VCR_API_VERSION（停在 7）→ 宿主的版本校验认为运行中的服务“够新”，不会重启它；而性能设置链路走 ensure_perf_ready（只探进程可达、不校版本），于是旧进程一直服务，新端点 404",
+      "fix": "① VCR_API_VERSION 7→8（宿主会在带版本校验的 ensure 路径自动 POST /shutdown 重启服务）；② 人脸档位两个代理在遇到 404 时自愈：调用一次 ensure_service_ready（含版本校验）后重试一次；③ 前端把服务端错误原文显示出来（而不是只写「加载失败」），下次一眼能区分“端点不存在/模型未下载”",
+      "related_files": [
+        "python/server.py",
+        "src-tauri/src/vision.rs",
+        "src/components/settings/FaceTierSection.vue"
+      ],
+      "log_hint": "face_tiers 命中 404（服务版本过旧）→ 触发服务重启后重试",
+      "created_at": "2026-10-01T02:00:00+08:00",
+      "fixed_at": "2026-10-01T02:00:00+08:00"
     }
   ]
 }

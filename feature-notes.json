@@ -2870,7 +2870,30 @@
       ],
       "created_at": "2026-10-01T00:00:00+08:00",
       "updated_at": "2026-10-01T00:00:00+08:00"
+    },
+    {
+      "id": "FEAT-091",
+      "name": "人脸模型档位可切换 + 选择持久化（性能设置）",
+      "module": "VCR 人脸通道 / 性能设置",
+      "purpose": "精度与速度由用户按机器/相册体量自己选，且**设置一次就记住**（重启仍生效）",
+      "implementation": {
+        "backend": "config.FACE_MODEL_META 两档：precise（det_10g + w600k_r50，默认）/ light（det_500m + w600k_mbf）；get/set_active_face_tier 持久化到 models/current_face.json（与 CLIP 档位同一套语义：文件不在则回落自动探测）；model_registry.face_models_info / begin_face_switch（登记 + 作废旧会话）/ finish_face_switch（后台加载）；新增 GET /face/tiers + POST /face/tier，/face/warmup 与 /persons/emb_model 回报当前档位",
+        "frontend": "新增 settings/FaceTierSection.vue（挂在 ModelGpuSettings 的语义模型之后）：档位下拉 + 双档规格（检测/识别模型与合计体积）+ 切换二次确认（写明换档必须重建人物库）；失败时显示服务端错误原文，便于区分“端点不存在/模型未下载”",
+        "key_points": [
+          "换档 = 换嵌入空间：persons.db 的 meta.emb_model 会拦住不匹配的扫描并引导重建（上一轮已落地）",
+          "与语义档位同模式：立即返回 + 后台加载，UI 在 face_ready=false 期间轮询「模型加载中…」",
+          "只切档不清库：用户不点「重建人物库」就不会丢改名/合并结果（扫描被拦时有明确提示）",
+          "两档模型都进发行包（release.ps1 required + release.tauri.conf.json resources）"
+        ]
+      },
+      "highlights": [
+        "实测两档成本（7840HS·8 线程·真实相册）：precise 检测 66.8ms/张 + 识别 39.4ms/脸；light 11.4ms/张 + 5.5ms/脸（约 6~7 倍）",
+        "端到端验证：/face/tiers 两档 downloaded=true；切 light → current=light 且持久化文件写入、active 变 w600k_mbf；切回 precise 同样成立；未知档位返回 400",
+        "下载源：高精度走 hf-mirror 的 immich-app/buffalo_l，轻量走 hf-mirror 的 WePrompt/buffalo_sc（GitHub 直连已被重置/截断）"
+      ],
+      "created_at": "2026-10-01T02:00:00+08:00",
+      "updated_at": "2026-10-01T02:00:00+08:00"
     }
   ],
-  "updated": "2026-10-01T01:00:00+08:00"
+  "updated": "2026-10-01T02:00:00+08:00"
 }
