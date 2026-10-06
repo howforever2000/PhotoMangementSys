@@ -254,6 +254,35 @@ body.theme-dark .pm-dialog input:disabled {
   color: var(--pm-text);
   font-weight: 600;
 }
+/* 色温刻度尺（Q3）：冷 ← → 暖 两个端点色点。
+   只做视觉锚点，不承担交互 —— 真正的输入仍是上面的 range 滑块，
+   加一套可点的刻度会引入第二份状态源（且要处理键盘/无障碍），
+   对一个 ±1 的连续量来说刻度尺的信息增量不值这个复杂度。 */
+.pm-temp-scale {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--pm-hint);
+  /* 与上方滑块的内容左缘对齐（pm-range 的 label 宽度由弹性布局给出，
+     这里用同样的 padding 让两个色点落在滑轨的两端附近） */
+  padding: 0 50px 0 46px;
+}
+.pm-temp-dot {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+}
+/* 端点色取自 utils/color.ts 的 TEMP_COOL / TEMP_WARM —— 同一套锚色，
+   用户看到的示意与实际位移的目标方向一致。 */
+.pm-temp-cool {
+  background: linear-gradient(90deg, #b0cdf5, rgba(176, 205, 245, 0.15));
+}
+.pm-temp-warm {
+  background: linear-gradient(90deg, rgba(255, 217, 176, 0.15), #ffd9b0);
+}
+
 /* 角度滑块禁用态（背景非渐变时）：降透明度 + 去指针，四态齐全 */
 .pm-range-off {
   opacity: 0.45;
@@ -316,6 +345,29 @@ body.theme-dark .pm-dialog input:disabled {
   background-size: cover;
   background-position: center;
   height: 84px;
+}
+/* 预设组（C10）：标题用弱化文字 + 顶部细分隔线，**不加背景块** ——
+   弹窗本身已是玻璃面板，再套一层有底色的分组容器会变成「卡片套卡片」，
+   在素化目标下这是纯层级噪点。分隔线 + 小字标题足够分组。 */
+.pm-preset-group + .pm-preset-group {
+  margin-top: 18px;
+}
+.pm-preset-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-top: 12px;
+  margin-bottom: 10px;
+  border-top: 1px solid var(--pm-soft-border);
+}
+.pm-preset-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--pm-text);
+}
+.pm-preset-group-note {
+  font-size: 11px;
+  color: var(--pm-hint);
 }
 .pm-presets {
   display: grid;

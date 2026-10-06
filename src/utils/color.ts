@@ -113,30 +113,18 @@ export function hslToRgb(h: number, s: number, l: number): Rgb {
 }
 
 /**
- * 饱和度缩放（全局风格统一管线的核心变换）：HSL 空间把 S 乘以 factor，
- * **同时锁定 WCAG 相对亮度**——以 HSL 亮度 L 为变量二分回原亮度。
+ * 在给定 HSL 色相/饱和度下，求「WCAG 相对亮度最接近 targetLum」的 RGB。
  *
- * 为什么必须锁亮度：HSL 的 L 不等于 WCAG 亮度，单纯缩放 S 会连带改变亮度
- * （实测：主色降到 0.4 饱和后白字对比从 4.8 跌到 4.12；升到 2.0 后
- * 危险色白字跌到 3.97）—— 对比度随滑块漂移是不可接受的。
- * 锁定后：饱和度只改“多浓”，不改“多亮”，白字/黑字的对比度全档恒定。
+ * 抽出来是因为两条管线都要它：饱和度缩放（saturateColor）与色温（applyTemperature）。
+ * 单独抽成函数后，锁亮度的行为只有一份实现，改一处两条管线同时受益。
  *
- * - factor = 1 → 原色不变（老配置逐像素零变化）
- * - 灰度色（S=0）无彩色可缩，直接返回
+ * 两步扫描（粗 256 步 + 局部细化）把误差压到 1e-5 量级 ——
+ * 单次二分后再取整会因 8bit 量化漂移 ~0.002（实测主色 0.7 档就超了），
+ * 而这一点漂移就能让白字对比从 5.02 跌到 4.96（验收阈值 4.5，安全余量不翼而飞）。
  */
-export function saturateColor(hex: string, factor: number): string {
-  const rgb = hexToRgb(hex);
-  if (!Number.isFinite(factor) || factor === 1) return rgbToHex(rgb);
-  const [h, s, l] = rgbToHsl(rgb);
-  if (s === 0) return rgbToHex(rgb);
-  const targetLum = relLum(rgb);
-  const s2 = Math.max(0, Math.min(1, s * factor));
-  /* 亮度关于 L 单调 ⇒ 扫 L 取「量化后 WCAG 亮度最接近原色」的那一个。
-     两步扫描（粗 256 步 + 局部细化）把误差压到 1e-5 量级 ——
-     单次二分后再取整会因 8bit 量化漂移 ~0.002（实测主色 0.7 档就超了），
-     而这一点漂移就能让白字对比从 5.02 跌到 4.96（验收阈值 4.5，安全余量不翼而飞）。 */
-  const errAt = (L: number) => Math.abs(relLum(hslToRgb(h, s2, L)) - targetLum);
-  let bestL = l;
+export function hslAtTargetLum(h: number, s: number, targetLum: number): Rgb {
+  const errAt = (L: number) => Math.abs(relLum(hslToRgb(h, s, L)) - targetLum);
+  let bestL = 0.5;
   let bestErr = Infinity;
   for (let i = 0; i <= 256; i += 1) {
     const L = i / 256;
@@ -155,7 +143,90 @@ export function saturateColor(hex: string, factor: number): string {
       bestL = L;
     }
   }
-  return rgbToHex(hslToRgb(h, s2, bestL));
+  return hslToRgb(h, s, bestL);
+}
+
+/**
+ * 饱和度缩放（全局风格统一管线的核心变换）：HSL 空间把 S 乘以 factor，
+ * **同时锁定 WCAG 相对亮度**——以 HSL 亮度 L 为变量二分回原亮度。
+ *
+ * 为什么必须锁亮度：HSL 的 L 不等于 WCAG 亮度，单纯缩放 S 会连带改变亮度
+ * （实测：主色降到 0.4 饱和后白字对比从 4.8 跌到 4.12；升到 2.0 后
+ * 危险色白字跌到 3.97）—— 对比度随滑块漂移是不可接受的。
+ * 锁定后：饱和度只改"多浓"，不改"多亮"，白字/黑字的对比度全档恒定。
+ *
+ * - factor = 1 → 原色不变（老配置逐像素零变化）
+ * - 灰度色（S=0）无彩色可缩，直接返回
+ */
+export function saturateColor(hex: string, factor: number): string {
+  const rgb = hexToRgb(hex);
+  if (!Number.isFinite(factor) || factor === 1) return rgbToHex(rgb);
+  const [h, s] = rgbToHsl(rgb);
+  if (s === 0) return rgbToHex(rgb);
+  const s2 = Math.max(0, Math.min(1, s * factor));
+  return rgbToHex(hslAtTargetLum(h, s2, relLum(rgb)));
+}
+
+/** 色温锚点：暖端取落日晨光的米金，冷端取天光的灰蓝（两端同为高明度锚，位移幅度可控） */
+export const TEMP_WARM = "#ffd9b0";
+export const TEMP_COOL = "#b0cdf5";
+
+/**
+ * 色温位移（Q3）：沿「暖锚 ↔ 冷锚」的色相轴插值，**同时锁定 WCAG 亮度**。
+ *
+ * 与 saturateColor 同源的关键约束：锁亮度。没有它的话，
+ * 色温往暖推会顺带把颜色提亮（米金锚比原色亮），链接/文字对比会随滑块漂移 ——
+ * 这正是上一条里「饱和度缩放曾把白字对比从 4.8 跌到 4.12」的同一个坑。
+ *
+ * - t = 0 → 原色不变（老用户零位移，外观逐像素不变）
+ * - 灰度色（S=0）无色相可移，原样返回
+ * - 饱和度只朝锚点靠拢 60%，避免低饱和的「素色系」被染色相推成彩色
+ */
+export function applyTemperature(hex: string, t: number): string {
+  const rgb = hexToRgb(hex);
+  const clamped = Math.max(-1, Math.min(1, Number.isFinite(t) ? t : 0));
+  if (clamped === 0) return rgbToHex(rgb);
+  const [h, s] = rgbToHsl(rgb);
+  if (s === 0) return rgbToHex(rgb);
+  const anchor = rgbToHsl(hexToRgb(clamped > 0 ? TEMP_WARM : TEMP_COOL));
+  const amt = Math.abs(clamped);
+  // 色相沿**最短弧**插值：0°/358° 之间只走 2°，不走 358°
+  let dh = anchor[0] - h;
+  if (dh > 180) dh -= 360;
+  if (dh < -180) dh += 360;
+  const h2 = (((h + dh * amt) % 360) + 360) % 360;
+  const s2 = Math.max(0, Math.min(1, s + (anchor[1] - s) * amt * 0.6));
+  return rgbToHex(hslAtTargetLum(h2, s2, relLum(rgb)));
+}
+
+/** 深玻璃上的链接浅金档（≈7:1 起，唯一被允许直接写死的一档） */
+export const LINK_GOLD_LIGHT = "#ffd9a0";
+/** 链接的金相：色相 38（落日金所在色相）、饱和度 0.77 —— 只在亮度轴上滑动 */
+export const LINK_GOLD_HUE = 38;
+export const LINK_GOLD_SAT = 0.77;
+
+/**
+ * 玻璃卡上的链接色（Q5=A 的 Bug 修复）。
+ *
+ * 旧实现用 `isDark` 二分给一个固定深金（#8a5a12），但链接实际落在**玻璃等效底色**上 ——
+ * 浅玻璃 + 恒定 dark mode 时那个组合正好是最差情况，实测 5 套预设只有 2.20~2.64:1
+ * （远低于 AA 4.5:1，Home 的「进入 →」因此发灰看不见）。
+ *
+ * 现在按目标底色现算：深底沿用浅金档（观感零变化），浅底固定金相、在亮度轴上
+ * 从 0.60 向下扫，取**首个**达到 target 的色。这样既保住「金」这个品牌相，
+ * 又让深浅两档自然由玻璃明暗决定，不需要第二套手工色板。
+ */
+export function linkOnGlass(glassHex: string, target = 4.5): string {
+  const glass = normalizeHex(glassHex, "#ffffff");
+  const lum = relLum(hexToRgb(glass));
+  if (componentTone(glass).onDark && contrastRatio(relLum(hexToRgb(LINK_GOLD_LIGHT)), lum) >= target) {
+    return LINK_GOLD_LIGHT;
+  }
+  for (let L = 0.6; L >= 0.04; L -= 0.004) {
+    const c = hslToRgb(LINK_GOLD_HUE, LINK_GOLD_SAT, L);
+    if (contrastRatio(relLum(c), lum) >= target) return rgbToHex(c);
+  }
+  return "#000000";
 }
 
 /**

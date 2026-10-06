@@ -6,7 +6,9 @@ import {
   gradientAverage,
   hexToRgb,
   hexToRgba,
+  applyTemperature,
   isDarkText,
+  linkOnGlass,
   mixRgb,
   onBgText,
   relLum,
@@ -98,6 +100,8 @@ export const useThemeStore = defineStore("theme", () => {
   const compAlpha = ref(saved.compAlpha);
   /** FEAT-087：全局饱和度缩放（1 = 原始色）——统一风格的总闸门 */
   const saturation = ref(saved.saturation);
+  /** Q3：色温（-1 冷 ↔ 0 中性 ↔ +1 暖）——只染审美色，语义色族一律不接 */
+  const temperature = ref(saved.temperature);
   /** FEAT-086：玻璃材质（磨砂/液态），预设一律磨砂 */
   const material = ref<Material>(saved.material);
   const bgStyle = ref<BackgroundStyle>(saved.bgStyle);
@@ -124,6 +128,7 @@ export const useThemeStore = defineStore("theme", () => {
       compColor: compColor.value,
       compAlpha: compAlpha.value,
       saturation: saturation.value,
+      temperature: temperature.value,
       material: material.value,
       bgStyle: bgStyle.value,
       bgColor: bgColor.value,
@@ -184,6 +189,7 @@ export const useThemeStore = defineStore("theme", () => {
     compColor.value = DEFAULTS.compColor;
     compAlpha.value = DEFAULTS.compAlpha;
     saturation.value = DEFAULTS.saturation;
+    temperature.value = DEFAULTS.temperature;
     material.value = DEFAULTS.material;
     bgStyle.value = DEFAULTS.bgStyle;
     bgColor.value = DEFAULTS.bgColor;
@@ -203,11 +209,22 @@ export const useThemeStore = defineStore("theme", () => {
      文字对比不会被饱和度调整弄崩）。
      品牌色/语义色族另在 applyAccentVars 里下发（含组件里已注册的 var 引用）。 */
   const sat = (hex: string) => saturateColor(hex, saturation.value);
-  const compColorEff = computed(() => sat(compColor.value));
-  const bgColorEff = computed(() => sat(bgColor.value));
-  const gradFromEff = computed(() => sat(gradFrom.value));
-  const gradMidEff = computed(() => sat(gradMid.value));
-  const gradToEff = computed(() => sat(gradTo.value));
+
+  /* ---------- Q3：色温管线 ----------
+     与饱和度的**关键区别**：色温只作用于「审美色」（背景三色标 / 组件色调 /
+     品牌金 / candy 色板），**语义色族一概不接**。
+     原因：色温是沿色相轴推的，危险红 #d13438 往暖推就变成橙红、成功绿往冷推
+     就变成青绿 —— 状态色的含义会被染色改掉，这是不可接受的。
+     饱和度没有这个问题（红还是红，只是更浓/更淡），所以它可以统辖全色板。
+     顺序：**先饱和后色温**，两者都锁 WCAG 亮度，串联后亮度仍然不变。 */
+  const temp = (hex: string) => applyTemperature(sat(hex), temperature.value);
+  /* 经色温后的四个背景/组件入口。中间层不再是 compColorEff 这类「只过饱和度」的
+     访问器 —— 保留它们会让两条管线并存、下游随时可能取错一条（那正是本次要消除的）。 */
+  const compColorTemp = computed(() => temp(compColor.value));
+  const bgColorTemp = computed(() => temp(bgColor.value));
+  const gradFromTemp = computed(() => temp(gradFrom.value));
+  const gradMidTemp = computed(() => temp(gradMid.value));
+  const gradToTemp = computed(() => temp(gradTo.value));
 
   /* ---------- 背景层样式（App.vue 全局背景，作用于除登录页外的所有页面） ---------- */
 
@@ -216,10 +233,10 @@ export const useThemeStore = defineStore("theme", () => {
     if (bgStyle.value === "gradient") {
       // FEAT-086：三段色标（旧数据无中段时 normalizePrefs 已补出中点，兼容两段视觉）
       return {
-        background: `linear-gradient(${gradAngle.value}deg, ${gradFromEff.value}, ${gradMidEff.value}, ${gradToEff.value})`,
+        background: `linear-gradient(${gradAngle.value}deg, ${gradFromTemp.value}, ${gradMidTemp.value}, ${gradToTemp.value})`,
       };
     }
-    return { background: bgColorEff.value };
+    return { background: bgColorTemp.value };
   });
 
   /** 图片层：仅背景图模式有值，透明度只淡化图片不影响文字 */
@@ -317,9 +334,13 @@ export const useThemeStore = defineStore("theme", () => {
 
   /** 实际背景的 RGB（图层叠加后的等效色；三段渐变取分段积分均值） */
   const effectiveBg = computed<[number, number, number]>(() => {
-    const base = hexToRgb(bgColorEff.value);
+    const base = hexToRgb(bgColorTemp.value);
     if (bgStyle.value === "gradient") {
-      return gradientAverage(hexToRgb(gradFromEff.value), hexToRgb(gradMidEff.value), hexToRgb(gradToEff.value));
+      return gradientAverage(
+        hexToRgb(gradFromTemp.value),
+        hexToRgb(gradMidTemp.value),
+        hexToRgb(gradToTemp.value),
+      );
     }
     if (bgStyle.value === "image") {
       // 图片层以 bgOpacity 叠在底层纯色之上：等效色 = 图片均色*α + 底色*(1-α)
@@ -340,10 +361,10 @@ export const useThemeStore = defineStore("theme", () => {
    */
   const fillColor = computed(() =>
     material.value === "liquid"
-      ? rgbToHex(mixRgb(hexToRgb(compColorEff.value), [255, 255, 255], 0.2))
+      ? rgbToHex(mixRgb(hexToRgb(compColorTemp.value), [255, 255, 255], 0.2))
       : material.value === "glazed"
-        ? rgbToHex(mixRgb(hexToRgb(compColorEff.value), [255, 255, 255], 0.3))
-        : compColorEff.value,
+        ? rgbToHex(mixRgb(hexToRgb(compColorTemp.value), [255, 255, 255], 0.3))
+        : compColorTemp.value,
   );
 
   /** 玻璃等效底色：组件色调以 **compAlpha**（FEAT-086 可调）叠在**实际页面背景**上。
@@ -469,11 +490,15 @@ export const useThemeStore = defineStore("theme", () => {
     const OK = "#15803d";
     const OKV = "#16a34a"; // 进度/成功强调绿
     const W = "#b45309";
-    body.style.setProperty("--color-primary", sat(P));
-    body.style.setProperty("--color-primary-hover", sat(PH));
+    /* 品牌主色 + candy 色板走**饱和度 → 色温**双管线（审美色，可以被染色温）。
+       语义色族（成功绿/危险红/警示橙）只走饱和度、**绝不接色温**：
+       色温是沿色相轴推的，危险红推暖就成橙红、成功绿推冷就成青绿，
+       状态色的含义会被染色改掉。饱和度无此问题（红仍是红，只改浓淡）。 */
+    body.style.setProperty("--color-primary", temp(P));
+    body.style.setProperty("--color-primary-hover", temp(PH));
     /* FEAT-094 新增两档：金填充上允许读的文字色 / 深底上的金色文字档 */
     body.style.setProperty("--color-on-primary", ON_PRIMARY);
-    body.style.setProperty("--color-primary-text", sat(PRIMARY_TEXT));
+    body.style.setProperty("--color-primary-text", temp(PRIMARY_TEXT));
     body.style.setProperty("--color-link-text-light", LINK_LIGHT);
     body.style.setProperty("--color-danger", sat(D));
     body.style.setProperty("--color-danger-hover", sat(DH));
@@ -495,18 +520,21 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--color-warn-text", sat(isDark.value ? "#f59e0b" : "#b45309"));
     /* 糖果彩虹色板：hero 横幅 / 入口卡 / 回忆故事卡的渐变基色。
        这些渐变串在 <script> 里拼装（内联 :style），所以必须注册成令牌才能被
-       饱和度统一带动（否则滑块只影响按钮/背景，糖果卡原地不动）。 */
-    body.style.setProperty("--candy-cream", sat("#fffcbd"));
-    body.style.setProperty("--candy-pink", sat("#f075c7"));
-    body.style.setProperty("--candy-blue", sat("#65d5f9"));
-    body.style.setProperty("--candy-rose", sat("#fb6d9b"));
-    body.style.setProperty("--candy-indigo", sat("#505fdd"));
-    body.style.setProperty("--candy-violet", sat("#3a36e4"));
-    /* 玻璃卡语境链接色（body.theme-dark 恒为浅金 #ffd9a0）：直接覆写 --color-link，
-       组件里的 var(--color-link) 引用自动跟随；仅做饱和度缩放（不改 HSL 亮度） */
-    body.style.setProperty("--color-link", sat(isDark.value ? PRIMARY_TEXT : LINK_LIGHT));
+       饱和度 + 色温统一带动（否则滑块只影响按钮/背景，糖果卡原地不动）。 */
+    body.style.setProperty("--candy-cream", temp("#fffcbd"));
+    body.style.setProperty("--candy-pink", temp("#f075c7"));
+    body.style.setProperty("--candy-blue", temp("#65d5f9"));
+    body.style.setProperty("--candy-rose", temp("#fb6d9b"));
+    body.style.setProperty("--candy-indigo", temp("#505fdd"));
+    body.style.setProperty("--candy-violet", temp("#3a36e4"));
+    /* 玻璃卡语境的链接色（Q5=A 的 Bug 修复）：**按玻璃等效底色现算**，不再用 isDark 二分。
+       旧写法给一个固定深金（LINK_LIGHT #8a5a12），但链接实际落在玻璃上 —— 浅玻璃 +
+       恒定 dark mode 正好是最差组合，实测 5 套预设只有 2.20~2.64:1（AA 需 4.5:1），
+       Home 的「进入 →」因此发灰看不见。现在深底自动用浅金档（观感零变化），
+       浅底固定金相、在亮度轴上扫到首个达标色（utils/color.ts 的 linkOnGlass）。 */
+    body.style.setProperty("--color-link", sat(linkOnGlass(rgbToHex(glassRgb.value))));
   }
-  watch([saturation, isDark], applyAccentVars, { immediate: true });
+  watch([saturation, temperature, isDark, glassRgb], applyAccentVars, { immediate: true });
 
   /** 组件色调按透明度渲染：容器 / 次级面板 / 弹层（液态经 fillColor 提亮，见上） */
   function compFill(alpha: number) {
@@ -521,15 +549,12 @@ export const useThemeStore = defineStore("theme", () => {
   /** 卡片描边（颜色值）：玻璃边缘内高光，方向随等效底色明暗 */
   const cardBorder = computed(() => glassTone.value.border);
   /** 卡片/容器整套样式（内联 style 直接消费）：玻璃材质三件套。
-   *  液态叠 135° 流体高光（--liquid-highlight），釉瓷叠顶部镜面带（--glazed-highlight） */
+   *  三种材质的高光/光池/暗角全部引用全局令牌（--liquid-highlight 等 + ::before/::after 层），
+   *  这里只下发「内联路径独有的那一部分」：模糊与填充。
+   *  —— 材质层的元素级 mask/滤镜走伪元素，cardStyle 不重复它们，
+   *  避免同一样式在类路径与内联路径下画出两套不同的光学。 */
   const cardStyle = computed(() => ({
     backgroundColor: cardBg.value,
-    backgroundImage:
-      material.value === "liquid"
-        ? "var(--liquid-highlight)"
-        : material.value === "glazed"
-          ? "var(--glazed-highlight)"
-          : "var(--frosted-highlight)",
     border: `1px solid ${cardBorder.value}`,
     /* 修补：内联路径此前缺 -webkit- 前缀，Safari/WebView 下零模糊 */
     WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
@@ -569,17 +594,21 @@ export const useThemeStore = defineStore("theme", () => {
     /* 背景图：色带要按**实际呈现**折算 —— 先按 bgOpacity 叠到底色上，再过一层遮罩（取端点均值）。
        直接用原始壁纸色带会把读数报得过于悲观（实测过：真实 6.7:1 被报成 1.5:1，等于误报）。 */
     const imageBands = (bgImageBands.value ?? []).map((b) =>
-      mixRgb(mixRgb(b, hexToRgb(bgColorEff.value), 1 - bgOpacity.value), hexToRgb(scrim), SCRIM_MEAN_ALPHA),
+      mixRgb(mixRgb(b, hexToRgb(bgColorTemp.value), 1 - bgOpacity.value), hexToRgb(scrim), SCRIM_MEAN_ALPHA),
     );
     const bands: Rgb[] =
       bgStyle.value === "gradient"
-        ? [hexToRgb(gradFromEff.value), hexToRgb(gradMidEff.value), hexToRgb(gradToEff.value)]
+        ? [hexToRgb(gradFromTemp.value), hexToRgb(gradMidTemp.value), hexToRgb(gradToTemp.value)]
         : bgStyle.value === "image" && imageBands.length
           ? imageBands
-          : [hexToRgb(bgColorEff.value)];
+          : [hexToRgb(bgColorTemp.value)];
     const avg =
       bgStyle.value === "gradient"
-        ? gradientAverage(hexToRgb(gradFromEff.value), hexToRgb(gradMidEff.value), hexToRgb(gradToEff.value))
+        ? gradientAverage(
+            hexToRgb(gradFromTemp.value),
+            hexToRgb(gradMidTemp.value),
+            hexToRgb(gradToTemp.value),
+          )
         : bgStyle.value === "image"
           ? mixRgb(effectiveBg.value, hexToRgb(scrim), SCRIM_MEAN_ALPHA)
           : effectiveBg.value;
@@ -591,6 +620,7 @@ export const useThemeStore = defineStore("theme", () => {
     compColor,
     compAlpha,
     saturation,
+    temperature,
     material,
     bgStyle,
     bgColor,

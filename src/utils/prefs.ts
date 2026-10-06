@@ -12,6 +12,12 @@
  *
  * FEAT-087 新增字段：
  *   - saturation：全局饱和度缩放（1 = 原始色，白字/背景/品牌色/语义色统一乘）
+ *
+ * Q3 新增字段：
+ *   - temperature：色温（-1 冷 ↔ 0 中性 ↔ +1 暖）。默认 0 = 零位移，
+ *     所以老安装的 localStorage 归一化后外观逐像素不变。
+ *     与 saturation 的区别：**语义色族不接色温** —— 把危险红推暖就变成橙红，
+ *     语义会失效；饱和度没有这个问题（红仍是红）。
  */
 import { hexToRgb, mixRgb, normalizeHex, rgbToHex } from "./color.ts";
 
@@ -28,6 +34,8 @@ export interface Prefs {
   compAlpha: number;
   /** 全局饱和度缩放：1 = 原始色（所有颜色令牌统一乘，含背景/品牌/语义色） */
   saturation: number;
+  /** 色温：-1 冷 ↔ 0 中性 ↔ +1 暖（只改色相轴，WCAG 亮度锁定；**不作用于语义色族**） */
+  temperature: number;
   /** 玻璃材质 */
   material: Material;
   bgStyle: BackgroundStyle;
@@ -46,10 +54,15 @@ export const DEFAULTS: Prefs = {
      组件配色与其配套的落日紫金（与登录/注册/忘记密码三页同一套，见 utils/loginTheme.ts）。
      壁纸本身**不存 localStorage**：theme store 在「背景图模式且用户未自定义图」时回落到
      构建产物里的内置资源，所以 176KB 图片不会占本地存储配额、也不会随偏好丢失。 */
-  /* 组件色调 = 玻璃色调：比壁纸更暗一档，保证「背景→容器→内容」三层可读 */
-  compColor: "#2b2140",
+  /* 组件色调 = 玻璃色调：比壁纸更暗一档，保证「背景→容器→内容」三层可读。
+     素化 C7：#2b2140（S≈0.34，带明显紫）→ #2a2630（S≈0.14，近中性灰紫）。
+     原值把紫带进了卡片底，于是「壁纸的暖粉紫 + 卡片的紫 + 强调金」三套色相并存。
+     降饱和后卡片底退成中性承载体，层次全交给明度 —— 壁纸那一个色相不再被稀释。 */
+  compColor: "#2a2630",
   compAlpha: 0.64,
   saturation: 1,
+  /* Q3 色温默认 0 = 零位移 ⇒ 老用户（localStorage 里没有这个字段）的外观逐像素不变 */
+  temperature: 0,
   material: "frosted",
   bgStyle: "image",
   /* 图片层下方的底色：紫夜色 —— 壁纸是暖粉紫，底下若仍是墨绿会把画面染脏 */
@@ -121,6 +134,7 @@ export function normalizePrefs(raw: unknown): Prefs {
     compColor: normalizeHex(str(r.compColor, DEFAULTS.compColor), DEFAULTS.compColor),
     compAlpha: num(r.compAlpha, DEFAULTS.compAlpha, 0, 0.9),
     saturation: num(r.saturation, DEFAULTS.saturation, 0.4, 1.5),
+    temperature: num(r.temperature, DEFAULTS.temperature, -1, 1),
     material: oneOf(r.material, MATERIALS, DEFAULTS.material),
     bgStyle: oneOf(r.bgStyle, BG_STYLES, DEFAULTS.bgStyle),
     bgColor: normalizeHex(str(r.bgColor, DEFAULTS.bgColor), DEFAULTS.bgColor),

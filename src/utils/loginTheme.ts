@@ -57,7 +57,11 @@ export interface AuthPalette {
 }
 
 export const AUTH_PALETTE: AuthPalette = {
-  cardTone: "#2b2140",
+  /* 素化 C7：与 DEFAULTS.compColor 同步降饱和（#2b2140 → #2a2630）。
+     登录卡压在壁纸**最亮的那条粉带**上，卡底若自带明显的紫，壁纸的粉与卡的紫
+     会在同一张卡上直接对撞；降成近中性灰紫后，卡片退回承载体，
+     壁纸那一个色相完整地透上来。linkTheme.test.ts 断言两者同色，这条是它的锚点。 */
+  cardTone: "#2a2630",
   cardAlpha: 0.64,
   title: "#ffffff",
   sub: "#f5f3fd",

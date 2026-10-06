@@ -120,9 +120,14 @@ test("CSS 变量包：令牌齐全且与常量同源，遮罩层数正确", () =
   }
   assert.equal(vars["--auth-title"], AUTH_PALETTE.title);
   assert.equal(vars["--auth-accent"], AUTH_PALETTE.accent);
+  // 刻意从 cardTone 现算，而不是钉死字面量：cardTone 在素化 C7 里被降过饱和
+  // （#2b2140 → #2a2630），这里跟着走一次即可，不必每次改色都改测试。
+  // 真正的锚点是上面那条「cardTone === DEFAULTS.compColor」——
+  // 只要登录卡与默认组件色调还是同一个色，两处就永远不会漂移。
+  const ct = hexToRgb(AUTH_PALETTE.cardTone);
   assert.equal(
     vars["--auth-field-bg"],
-    `rgba(43,33,64,${AUTH_PALETTE.fieldAlpha})`,
+    `rgba(${ct[0]},${ct[1]},${ct[2]},${AUTH_PALETTE.fieldAlpha})`,
     "输入框底应由组件色调 × fieldAlpha 推出",
   );
   assert.ok(vars["--auth-scrim"].includes("radial-gradient"), "遮罩应含暗角层");
