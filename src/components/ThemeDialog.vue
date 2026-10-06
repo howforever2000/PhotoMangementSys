@@ -12,7 +12,7 @@
 import { onBeforeUnmount, onMounted, ref, computed } from "vue";
 import { DEFAULT_WALLPAPER, useThemeStore } from "../stores/theme";
 import { normalizeHex } from "../utils/color";
-import { PRESETS, matchesPreset, presetGradient } from "../utils/presets";
+import { ALL_PRESETS, PRESET_GROUPS, matchesPreset, presetGradient } from "../utils/presets";
 
 const emit = defineEmits<{ close: [] }>();
 const theme = useThemeStore();
@@ -31,15 +31,16 @@ function onTabKey(e: KeyboardEvent) {
   activeTab.value = activeTab.value === "preset" ? "custom" : "preset";
 }
 
-/* ---------------- 预定义效果 ---------------- */
-function applyPreset(p: (typeof PRESETS)[number]) {
+/* ---------------- 预定义效果（两组：经典渐变 / 素色系） ---------------- */
+function applyPreset(p: (typeof ALL_PRESETS)[number]) {
   theme.applyPreset(p);
 }
 
-/** 当前偏好命中的预设 id（决定选中态高亮） */
+/** 当前偏好命中的预设 id（跨两组查，决定选中态高亮） */
 const activePresetId = computed(() => {
   const cur = theme.$state;
-  const hit = PRESETS.find((p) => matchesPreset(p, { ...cur, mode: theme.mode }));
+  const all = PRESET_GROUPS.flatMap((g) => g.items);
+  const hit = all.find((p) => matchesPreset(p, { ...cur, mode: theme.mode }));
   return hit?.id ?? "";
 });
 
@@ -191,30 +192,43 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
             <span v-if="theme.isStartupCover" class="pm-preset-check" aria-hidden="true">✓</span>
           </button>
 
-          <div class="pm-presets">
-            <button
-              v-for="p in PRESETS"
-              :key="p.id"
-              class="pm-preset"
-              :class="{ on: activePresetId === p.id }"
-              type="button"
-              :aria-pressed="activePresetId === p.id"
-              @click="applyPreset(p)"
-            >
-              <span
-                class="pm-preset-swatch"
-                :style="{ background: presetGradient(p, theme.gradAngle) }"
-              ></span>
-              <span class="pm-preset-name">
-                <span>{{ p.name }}</span>
-                <span class="pm-preset-badge">磨砂 · {{ Math.round(p.compAlpha * 100) }}%</span>
-              </span>
-              <span class="pm-preset-dots">
-                <i v-for="c in p.colors" :key="c" :style="{ background: c }"></i>
-                <i :style="{ background: p.compColor }" title="组件色"></i>
-              </span>
-              <span v-if="activePresetId === p.id" class="pm-preset-check" aria-hidden="true">✓</span>
-            </button>
+          <!--
+            分组排版（C10）：默认卡通栏独占一行，两组渐变各带一个分组标题。
+            为什么加标题而不是加筛选/折叠控件：10 张卡一屏能看完，
+            而筛选器会引入第二份状态（「当前筛了哪组」）需要与主题偏好分开持久化，
+            对一个一次性浏览的场景不值这个复杂度。
+            标题用弱化文字 + 分隔线而非背景块 —— 避免「卡片套卡片」的层级噪点。
+          -->
+          <div v-for="g in PRESET_GROUPS" :key="g.group" class="pm-preset-group">
+            <div class="pm-preset-group-head">
+              <span class="pm-preset-group-title">{{ g.title }}</span>
+              <span class="pm-preset-group-note">{{ g.note }}</span>
+            </div>
+            <div class="pm-presets">
+              <button
+                v-for="p in g.items"
+                :key="p.id"
+                class="pm-preset"
+                :class="{ on: activePresetId === p.id }"
+                type="button"
+                :aria-pressed="activePresetId === p.id"
+                @click="applyPreset(p)"
+              >
+                <span
+                  class="pm-preset-swatch"
+                  :style="{ background: presetGradient(p, theme.gradAngle) }"
+                ></span>
+                <span class="pm-preset-name">
+                  <span>{{ p.name }}</span>
+                  <span class="pm-preset-badge">磨砂 · {{ Math.round(p.compAlpha * 100) }}%</span>
+                </span>
+                <span class="pm-preset-dots">
+                  <i v-for="c in p.colors" :key="c" :style="{ background: c }"></i>
+                  <i :style="{ background: p.compColor }" title="组件色"></i>
+                </span>
+                <span v-if="activePresetId === p.id" class="pm-preset-check" aria-hidden="true">✓</span>
+              </button>
+            </div>
           </div>
 
           <!-- 角度：作用于当前预设渐变；未套用预设（背景非渐变）时禁用，避免“改了没反应” -->
@@ -333,6 +347,33 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
             </label>
             <p class="pm-hint" style="margin: 6px 0 0">
               统一调色：背景 / 组件色调 / 按钮与状态色同时生效，只改浓淡不改明暗（100% = 原始色）
+            </p>
+
+            <!-- Q3 色温：在饱和度旁边，同属「一处调全局」的旋钮。
+                 与饱和度的分工写在 hint 里 —— 语义色（成功/危险/警示）**不接色温**，
+                 这是刻意的：色温沿色相轴推，危险红推暖就成橙红，语义会失效。 -->
+            <label class="pm-range">
+              <span>色温</span>
+              <input
+                type="range"
+                v-model.number="theme.temperature"
+                min="-1"
+                max="1"
+                step="0.05"
+                aria-label="色温：冷到暖"
+                @change="theme.persist()"
+              />
+              <b>{{ Math.round(theme.temperature * 100) > 0 ? "+" : "" }}{{ Math.round(theme.temperature * 100) }}%</b>
+            </label>
+            <div class="pm-temp-scale" aria-hidden="true">
+              <span>冷</span>
+              <i class="pm-temp-dot pm-temp-cool"></i>
+              <i class="pm-temp-dot pm-temp-warm"></i>
+              <span>暖</span>
+            </div>
+            <p class="pm-hint" style="margin: 2px 0 0">
+              只改色温不改明暗（对比度不漂移）；背景 / 组件色调 / 强调色同步生效，
+              <b>状态色（成功·危险·警示）刻意不参与</b> —— 染色温会让「危险」变成橙红
             </p>
           </div>
 

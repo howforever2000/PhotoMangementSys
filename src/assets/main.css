@@ -84,55 +84,72 @@
      FEAT-086：下方 body.mat-frosted / body.mat-liquid 按「玻璃材质」设置覆写
      模糊/饱和/高光三件套，全局生效（卡片、面板、弹层、控件同一套材质）。 */
   --glass-blur: 18px;                  /* 容器模糊半径（方案 16~24px） */
-  --glass-saturate: 1.3;               /* 玻璃后背景饱和度（方案 1.2~1.4） */
+  --glass-saturate: 1.05;              /* 玻璃后背景饱和度（素化 C1：1.3 → 1.05） */
   --glass-bg: var(--color-surface);    /* 容器填充：由 theme store 按组件色调下发 */
   --glass-border: var(--color-border); /* 玻璃边缘内高光 1px */
   --liquid-bg: var(--color-surface-2); /* 液态控件填充（透明度下限 45%） */
-  /* 液态高光加强（FEAT-086 表面光学）：起始 0.3 → 0.45，衰减段拉长 */
+  /* 液态高光（素化 C2/M2）：0.45 → 0.20，且衰减段**大幅拉短**——
+     液态的招牌是「窄而快衰减」的一束反光（22% 处就基本收干净），
+     旧值拖到 58% 是一整片糊白，卡面因此发闷发艳。 */
   --liquid-highlight: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.45) 0%,
-    rgba(255, 255, 255, 0.1) 38%,
-    rgba(255, 255, 255, 0) 58%
+    rgba(255, 255, 255, 0.2) 0%,
+    rgba(255, 255, 255, 0.05) 22%,
+    rgba(255, 255, 255, 0) 42%
   );
-  /* 釉瓷高光（新增材质）：顶部镜面受光带——瓷器表面那道「天光反射」,
-     与液态的 135° 流体高光不同，釉瓷是水平漫射带，更安静、更硬挺 */
+  /* 釉瓷高光（素化 C2/M3）：0.5 → 0.22，并改成**双带**——
+     一条窄主带（顶部 0~11%）+ 一条极淡副带（17%），像瓷面上方开了一扇窗。
+     旧写法是半张脸的漫射，那正是塑料膜感的来源。 */
   --glazed-highlight: linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.5) 0%,
-    rgba(255, 255, 255, 0.14) 16%,
-    rgba(255, 255, 255, 0) 34%
+    rgba(255, 255, 255, 0.22) 0%,
+    rgba(255, 255, 255, 0.07) 11%,
+    rgba(255, 255, 255, 0.09) 17%,
+    rgba(255, 255, 255, 0.02) 27%,
+    rgba(255, 255, 255, 0) 38%
   );
-  /* 磨砂光泽带：磨砂玻璃同样有顶部受光面，只是比釉瓷更柔（雾面反射） */
+  /* 磨砂光泽带（素化 C2/M1）：0.28 → 0.13。磨砂是三者里最弱的受光面 ——
+     它的质感来自砂粒与雾，不是亮度；高光只负责让顶沿「不是死平的一条线」。 */
   --frosted-highlight: linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.28) 0%,
-    rgba(255, 255, 255, 0.08) 14%,
+    rgba(255, 255, 255, 0.13) 0%,
+    rgba(255, 255, 255, 0.04) 14%,
     rgba(255, 255, 255, 0) 30%
   );
 
-  /* 公共表面光影：双向倒角（顶部白亮棱 + 底部暗色玻璃壁）+ 双层投影。
-     厚度感 = 顶亮/底暗的色差；底暗壁在浅色背景下尤其关键（白对白会隐形）。
-     两条消费路径（.glass-* 类与 cardStyle 内联）都引用本令牌，改一处全局生效。 */
+  /* 公共表面光影：双向倒角（顶部白亮棱 + 底部暗色玻璃壁）+ 单柔光投影。
+     素化 C5：删掉原来的第二层硬投影 `0 2px 4px .16` —— 那道 4px 的近距离黑影
+     会在卡底画出一条脏边，且和柔光的落点打架（两个不同尺度的影，看起来像两层）。
+     现在只留「极浅环境影（贴地，给重量）+ 大范围柔光（给悬浮）」，是更厚而不是更花。 */
   --shadow-1:
-    inset 0 1px 1px rgba(255, 255, 255, 0.5),
-    inset 0 -1px 1.5px rgba(0, 0, 0, 0.2),
-    inset 1px 0 1px rgba(255, 255, 255, 0.1),
-    inset -1px 0 1px rgba(0, 0, 0, 0.08),
-    0 2px 4px rgba(0, 0, 0, 0.16),
-    0 20px 44px -16px rgba(0, 0, 0, 0.42);
+    inset 0 1px 1px rgba(255, 255, 255, 0.45),
+    inset 0 -1px 1.5px rgba(0, 0, 0, 0.22),
+    inset 1px 0 1px rgba(255, 255, 255, 0.09),
+    inset -1px 0 1px rgba(0, 0, 0, 0.09),
+    0 1px 2px rgba(0, 0, 0, 0.08),
+    0 20px 44px -16px rgba(0, 0, 0, 0.4);
 
   /* 磨砂噪点：fractalNoise 生成，静态贴图零开销 */
   --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
-  /* 磨砂粗颗粒：低频率噪声 = 更大颗粒（喷砂/酸蚀玻璃质感），透明度提高让颗粒真正可辨 */
-  --grain-coarse: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.45' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  /* 磨砂粗颗粒：低频率噪声 = 更大颗粒（喷砂/酸蚀玻璃质感）。
+     素化 C4：opacity 0.5 → 0.28 —— 颗粒的**尺度**留在「喷砂」，
+     但强度压到「哑光」。0.5 配 soft-light 会让整卡发脏/发毛，像蒙了层灰。 */
+  --grain-coarse: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.45' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.28'/%3E%3C/svg%3E");
+  /* 极细雾层（素化 C4 新增）：高频低对比的粉尘。
+     单靠粗颗粒只有「砂」，缺「雾」——双尺度叠加才有磨砂玻璃那种
+     「近看有颗粒、退远成柔雾」的层次。opacity 0.12 是刻意压低的：
+     它只在粗颗粒的沟壑里补一层，不该自己显形。 */
+  --grain-mist: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.15' numOctaves='2'/%3E%3C/filter%3E%3Crect width='96' height='96' filter='url(%23n)' opacity='0.12'/%3E%3C/svg%3E");
   /* 细缎噪点：更高频率 + 更小贴图，液态材质的细颗粒 */
   --grain-fine: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.6' numOctaves='2'/%3E%3C/filter%3E%3Crect width='72' height='72' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
   /* 釉面开片（冰裂纹）：fractalNoise 平滑场 → 亮度搬进 alpha → table 窄峰提取等值线环网；
    后接 feGaussianBlur 0.6 把锐线变「釉下纹」。注意：边缘淡出不用 SVG 内遮罩
    （径向遮罩会随贴图平铺，每个 tile 各一个中心死区 → 卡面纹理斑驳），
    而是用元素级 CSS mask（见下方 ::before 规则），以卡片自身为中心连贯淡出 */
-  --glazed-craze: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cfilter id='c' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.018' numOctaves='1' seed='8'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.92 0 0 0 0 0.95 0 0 0 0 0.9 1 0 0 0 0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='table' tableValues='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'/%3E%3C/feComponentTransfer%3E%3CfeGaussianBlur stdDeviation='0.6'/%3E%3C/filter%3E%3Crect width='400' height='400' filter='url(%23c)' opacity='0.5'/%3E%3C/svg%3E");
+  --glazed-craze: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cfilter id='c' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.018' numOctaves='1' seed='8'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.92 0 0 0 0 0.95 0 0 0 0 0.9 1 0 0 0 0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='table' tableValues='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'/%3E%3C/feComponentTransfer%3E%3CfeGaussianBlur stdDeviation='0.6'/%3E%3C/filter%3E%3Crect width='400' height='400' filter='url(%23c)' opacity='0.62'/%3E%3C/svg%3E");
+  /* 釉瓷粗开片（M3 新增）：低频率（0.011）→ 网格更大更疏，模拟「转折处的大开片」。
+     与细主纹同配方不同 seed，避免两层网格叠成规则摩尔纹（CSS 侧再做一次位移）。 */
+  --glazed-craze-coarse: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='c2' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.011' numOctaves='1' seed='23'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.94 0 0 0 0 0.96 0 0 0 0 0.92 1 0 0 0 0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='table' tableValues='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'/%3E%3C/feComponentTransfer%3E%3CfeGaussianBlur stdDeviation='0.7'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23c2)' opacity='0.5'/%3E%3C/svg%3E");
 
   /* 文字令牌（单一事实来源仍是 --color-text*，这里只做方案命名收口） */
   --text-primary: var(--color-text);
@@ -201,44 +218,64 @@ body.theme-on-image {
    - 液态 liquid：低模糊 + 高饱和 + 135° 高光层 —— 流体玻璃观感
    两条消费路径同时覆盖：.glass-surface/.glass-card（类）与 cardStyle（内联引用令牌）。
    ========================================================================== */
+/* ==========================================================================
+   三种材质的**招牌动作**（Q4：保留强区分，各自一眼可辨）
+   素化后三者的区分不再靠「更亮更艳」，而是靠各自的**光学成因**：
+     磨砂 = 背后颜色零失真，只有雾        （最厚、最安静，饱和度 1.0）
+     液态 = 光标边缘折射 + 内部反差      （唯一动态材质，饱和度 1.15）
+     釉瓷 = 可辨认的冰裂纹              （唯一有纹理，饱和度 1.05）
+   ========================================================================== */
+
 body.mat-frosted {
-  --glass-blur: 24px;
-  --glass-saturate: 1.15;
-  /* 磨砂倒角：柔和但保留顶亮/底暗双向色差 */
+  /* M1：blur 24 → 30px —— 雾要「厚」才有砂感；saturate 1.15 → 1.0 ——
+     磨砂玻璃**不改变背后颜色的浓淡**，这是它区别于液态/釉瓷的物理事实。
+     旧值 1.15 已经在偷偷提饱和，加上涨到 1.6 的液态，整屏就是从这里艳起来的。 */
+  --glass-blur: 30px;
+  --glass-saturate: 1;
+  /* 磨砂倒角：柔和但保留顶亮/底暗双向色差（同样按素化口径去掉硬投影） */
   --shadow-1:
-    inset 0 1px 1px rgba(255, 255, 255, 0.45),
-    inset 0 -1px 1.5px rgba(0, 0, 0, 0.18),
-    inset 1px 0 1px rgba(255, 255, 255, 0.08),
-    inset -1px 0 1px rgba(0, 0, 0, 0.06),
-    0 2px 4px rgba(0, 0, 0, 0.12),
-    0 16px 36px -16px rgba(0, 0, 0, 0.34);
+    inset 0 1px 1px rgba(255, 255, 255, 0.42),
+    inset 0 -1px 1.5px rgba(0, 0, 0, 0.2),
+    inset 1px 0 1px rgba(255, 255, 255, 0.07),
+    inset -1px 0 1px rgba(0, 0, 0, 0.07),
+    0 1px 2px rgba(0, 0, 0, 0.07),
+    0 16px 36px -16px rgba(0, 0, 0, 0.32);
 }
 
 body.mat-liquid {
+  /* M2：saturate 1.6 → 1.15。1.6 是全应用最大的「艳」来源 ——
+     它把背后壁纸/渐变的彩度直接放大 60%，整屏跟着变艳。
+     液态仍需一点彩度增益（湿玻璃会聚光），所以留 1.15 而不是 1.0。 */
   --glass-blur: 10px;
-  --glass-saturate: 1.6;
-  /* 液态倒角：更强对比，顶亮棱与底暗壁都加厚一档 */
+  --glass-saturate: 1.15;
+  /* 液态倒角：三者中对比最强（折射面两侧亮度差最大）；
+     末尾两道 inset 暗角是液态的招牌之一（见 M2）—— 内侧压暗，透镜才有「厚」。
+     放在令牌里而不是规则里，是为了内联 cardStyle 路径也拿到同一份（内联会盖规则）。 */
   --shadow-1:
-    inset 0 1.5px 1px rgba(255, 255, 255, 0.6),
-    inset 0 -1.5px 2px rgba(0, 0, 0, 0.24),
-    inset 1.5px 0 1px rgba(255, 255, 255, 0.12),
-    inset -1.5px 0 1px rgba(0, 0, 0, 0.12),
-    0 2px 5px rgba(0, 0, 0, 0.16),
-    0 22px 48px -14px rgba(0, 0, 0, 0.5);
+    inset 0 1.5px 1px rgba(255, 255, 255, 0.52),
+    inset 0 -1.5px 2px rgba(0, 0, 0, 0.26),
+    inset 1.5px 0 1px rgba(255, 255, 255, 0.11),
+    inset -1.5px 0 1px rgba(0, 0, 0, 0.13),
+    inset 0 0 24px rgba(0, 0, 0, 0.16),
+    inset 0 0 6px rgba(0, 0, 0, 0.1),
+    0 1px 3px rgba(0, 0, 0, 0.1),
+    0 22px 48px -14px rgba(0, 0, 0, 0.48);
 }
 
-/* —— 釉瓷 glazed（新增第三材质）：低模糊 + 缑面细颗粒 + 顶部镜面受光带 ——
-   安静的硬挺感：不是液态那种流动高光，而是瓷面上一道水平的漫反射天光。 */
+/* —— 釉瓷 glazed：低模糊 + 缎面细颗粒 + 冰裂纹 + 双带镜面天光 ——
+   安静的硬挺感：不是液态那种流动高光，而是瓷面上一道窄窄的天光带。 */
 body.mat-glazed {
+  /* M3：saturate 1.35 → 1.05。釉面的彩度增益应该接近 1（釉是透明玻璃层，
+     只加一层缎面质感，不该把底下的颜色染浓）。 */
   --glass-blur: 6px;
-  --glass-saturate: 1.35;
+  --glass-saturate: 1.05;
   --shadow-1:
-    inset 0 1.5px 1px rgba(255, 255, 255, 0.65),
-    inset 0 -1.5px 2px rgba(0, 0, 0, 0.26),
-    inset 1.5px 0 1px rgba(255, 255, 255, 0.14),
-    inset -1.5px 0 1px rgba(0, 0, 0, 0.14),
-    0 3px 6px rgba(0, 0, 0, 0.2),
-    0 24px 52px -14px rgba(0, 0, 0, 0.55);
+    inset 0 1.5px 1px rgba(255, 255, 255, 0.58),
+    inset 0 -1.5px 2px rgba(0, 0, 0, 0.28),
+    inset 1.5px 0 1px rgba(255, 255, 255, 0.13),
+    inset -1.5px 0 1px rgba(0, 0, 0, 0.15),
+    0 1px 3px rgba(0, 0, 0, 0.12),
+    0 24px 52px -14px rgba(0, 0, 0, 0.5);
 }
 
 /* ==========================================================================
@@ -255,9 +292,11 @@ body.mat-glazed {
   box-shadow: var(--shadow-1);
 }
 
-/* —— 磨砂：雾面 = 顶部天光池 + 纵向明暗渐变 + 粗颗粒喷砂 ——
-   颗粒升级：baseFrequency 0.9→0.45、贴图 120→160px，颗粒更大更明显，
-   是「喷砂/酸蚀玻璃」的砂面，不再是几乎看不见的细粉。
+/* —— 磨砂 M1：雾面 = 双尺度砂粒（粗砂 + 极细雾）+ 顶部天光池 ——
+   素化 C4 的两个动作：
+   ① 颗粒强度降到哑光档（贴图 opacity 0.28），近看仍是喷砂，退远成柔雾；
+   ② 分布不再是全卡平铺 —— 元素级 mask 让砂粒**上强下弱**，
+      再叠纵向明暗（上亮下暗）。真实磨砂片的磨蚀面朝上，越往下越光。
    伪元素用 border-radius: inherit 自裁；soft-light 盖字是常见全卡噪点手法。 */
 body.mat-frosted .glass-surface::before,
 body.mat-frosted .glass-card::before {
@@ -266,33 +305,68 @@ body.mat-frosted .glass-card::before {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  background-image: var(--grain-coarse),
-    radial-gradient(140% 70% at 50% 0%, rgba(255, 255, 255, 0.22), transparent 58%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(0, 0, 0, 0.05));
-  background-size: 160px 160px, 100% 100%, 100% 100%;
+  background-image: var(--grain-coarse), var(--grain-mist),
+    radial-gradient(140% 70% at 50% 0%, rgba(255, 255, 255, 0.18), transparent 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(0, 0, 0, 0.05));
+  background-size: 160px 160px, 96px 96px, 100% 100%, 100% 100%;
   mix-blend-mode: soft-light;
   opacity: 0.9;
+  /* 上强下弱：顶部 100% → 底部 35%。不用 SVG 内遮罩（会随贴图平铺出死区），
+     用元素级 mask（linear-gradient 沿纵轴，与卡片自身对齐）。 */
+  -webkit-mask: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.72) 52%, rgba(0, 0, 0, 0.35) 100%);
+  mask: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.72) 52%, rgba(0, 0, 0, 0.35) 100%);
 }
 
-/* —— 液态：透镜边缘 + 内部光池（静态部分）—— */
+/* —— 液态 M2：招牌动作 = **光标边缘折射** ——
+   图层分工（三材质里唯一需要额外一层的）：
+     · 卡片元素自身（background-image / box-shadow）：静态光学 ——
+       135° 高光带 + 两处内部光池 + 内侧暗角；
+     · ::before：动态折射环（被 mask 裁成边框环，环外完全不绘制）；
+     · ::after：棱环（与其他两材质共用）。
+   静态部分放元素自身而不是伪元素，是因为折射环要用 content-box mask 裁剪，
+   而 mask 会连带裁掉伪元素上的 inset 暗角 —— 暗角必须留在元素上。
+
+   ① 内侧暗角：液态的灵魂是「边缘把光折进来、内部反而更暗」，
+      旧版只有光池没有暗角，整张卡从中心往外一路变亮 —— 那是发光的塑料板，
+      不是透镜。暗角与 135° 高光形成方向反差。
+   ② 折射环：App.vue 的一次性事件委托把光标在卡内的坐标写入 --mx/--my。
+      **折射只发生在边缘一圈**，不是全卡泛光 —— 两个理由：
+        · 物理上透镜的折射发生在弯曲的边缘（掠射角），中心是平的、不折射；
+          全卡泛光等于宣称「这是一块球形毛玻璃」，反而不真；
+        · 全卡泛光会把整张卡提亮一档，等于把刚压下去的「素」又推回「艳」。
+      光标不在卡内时 --mx/--my 未定义 → 亮斑中心落在卡外 → 环上无光，等于零绘制。 */
 body.mat-liquid .glass-surface::before,
 body.mat-liquid .glass-card::before {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: inherit;
+  padding: 12%; /* 环宽 = 卡片短边的 12% */
   pointer-events: none;
-  background:
-    radial-gradient(120% 90% at 18% 0%, rgba(255, 255, 255, 0.2), transparent 45%),
-    radial-gradient(100% 80% at 85% 100%, rgba(255, 255, 255, 0.1), transparent 40%);
-  filter: blur(4px);
+  background: radial-gradient(
+    24rem 24rem at var(--mx, -30rem) var(--my, -30rem),
+    rgba(255, 255, 255, 0.32),
+    rgba(255, 255, 255, 0.11) 30%,
+    rgba(255, 255, 255, 0) 58%
+  );
+  background-repeat: no-repeat;
+  /* 环外区域完全不绘制（文字区零遮挡），与棱环层同一手法 */
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
 }
 
-/* —— 釉瓷：陶瓷釉面 = 细开片裂纹 + 缎面细颗粒 + 两处柔和釉色光池 ——
-   开片是陶瓷釉面的标志性特征：细白裂纹网（--glazed-craze）叠在缎面颗粒上。
-   整个材质层再套元素级 mask：以卡片自身为中心，中心 34% 完全透明 → 边缘完全不透明
-   ——裂纹和颗粒「向边缘堆积、中心留白」（釉厚堆边），文字区纯净，
-   且不透明度调到最高时釉面依然清晰（soft-light 在均匀实底上照常生效）。 */
+/* —— 釉瓷 M3：陶瓷釉面 = **双尺度冰裂纹** + 缎面细颗粒 + 边缘加密 ——
+   招牌动作是「可辨认的冰裂纹」（三者中唯一有纹理的）。
+   做法：两套开片贴图叠加 —— 细密主纹（400px 细网）打底，稀疏粗纹（240px）
+   压在上层形成「转折处的大开片」。对比提高（贴图 opacity 0.5 → 0.62）、
+   元素层 opacity 降到 0.8，让裂纹读作**釉下纹**（在釉层之下）而非表面划痕。
+   mask 从径向改为「中心留白 + 边缘加密」双段，模拟釉厚在转折处的堆积。 */
 body.mat-glazed .glass-surface::before,
 body.mat-glazed .glass-card::before {
   content: "";
@@ -300,14 +374,21 @@ body.mat-glazed .glass-card::before {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  background-image: var(--glazed-craze), var(--grain-fine),
-    radial-gradient(90% 70% at 20% 10%, rgba(255, 255, 255, 0.34), transparent 55%),
-    radial-gradient(80% 65% at 80% 90%, rgba(255, 255, 255, 0.18), transparent 52%);
-  background-size: 400px 400px, 72px 72px, 100% 100%, 100% 100%;
+  background-image: var(--glazed-craze), var(--glazed-craze-coarse), var(--grain-fine),
+    radial-gradient(90% 70% at 20% 10%, rgba(255, 255, 255, 0.26), transparent 55%),
+    radial-gradient(80% 65% at 80% 90%, rgba(255, 255, 255, 0.14), transparent 52%);
+  background-size:
+    400px 400px,
+    240px 240px,
+    72px 72px,
+    100% 100%,
+    100% 100%;
+  /* 第二层开片做位移：同一张贴图错开，避免两层网格叠成规则的摩尔纹 */
+  background-position: 0 0, 117px 71px, 0 0, 0 0, 0 0;
   mix-blend-mode: soft-light;
-  opacity: 0.95;
-  -webkit-mask: radial-gradient(115% 95% at 50% 50%, rgba(0, 0, 0, 0) 34%, #000 74%);
-  mask: radial-gradient(115% 95% at 50% 50%, rgba(0, 0, 0, 0) 34%, #000 74%);
+  opacity: 0.8;
+  -webkit-mask: radial-gradient(115% 95% at 50% 50%, rgba(0, 0, 0, 0) 30%, rgba(0, 0, 0, 0.55) 58%, #000 76%);
+  mask: radial-gradient(115% 95% at 50% 50%, rgba(0, 0, 0, 0) 30%, rgba(0, 0, 0, 0.55) 58%, #000 76%);
 }
 
 /* ==========================================================================
@@ -337,6 +418,10 @@ body.mat-glazed .glass-card::before {
    两层背景沿 1.5px 棱环分布：
    ① 180°：顶部白色镜面高光 → 中段收暗 → 底部暗色玻璃壁（浅色背景下「厚度」靠暗壁读出）；
    ② 135°：左上/右下两角的额外角部反光（玻璃棱边对光源/环境的反射）。
+   素化 C3：顶部白 0.9 → 0.5、底部暗壁 0.26 → 0.34。**厚度改由暗壁读出**——
+   1.5px 上刷到 0.9 的纯白描边是「贴纸边缘」（贴纸的白边是硬的、均匀的），
+   而真实玻璃的厚度来自「上缘受光 / 下缘透出背后暗色」这一对色差。
+   白棱压到 0.5、暗壁加深，卡面立刻从贴纸变回玻璃。
    mask-composite 只保留边缘 1.5px，内部零遮挡；随 border-radius 自适应。
    三类容器共享：.glass-surface / .glass-card / .candy-surface（彩虹卡） */
 .glass-surface::after,
@@ -350,18 +435,18 @@ body.mat-glazed .glass-card::before {
   background:
     linear-gradient(
       180deg,
-      rgba(255, 255, 255, 0.9) 0%,
-      rgba(255, 255, 255, 0.26) 20%,
+      rgba(255, 255, 255, 0.5) 0%,
+      rgba(255, 255, 255, 0.16) 20%,
       rgba(255, 255, 255, 0) 44%,
       rgba(0, 0, 0, 0) 56%,
-      rgba(15, 28, 24, 0.26) 100%
+      rgba(12, 22, 20, 0.34) 100%
     ),
     linear-gradient(
       135deg,
-      rgba(255, 255, 255, 0.4) 0%,
+      rgba(255, 255, 255, 0.26) 0%,
       rgba(255, 255, 255, 0) 30%,
       rgba(255, 255, 255, 0) 68%,
-      rgba(255, 255, 255, 0.42) 100%
+      rgba(255, 255, 255, 0.28) 100%
     );
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
@@ -581,7 +666,13 @@ body.theme-dark kbd {
    ========================================================================== */
 body.mat-liquid .glass-surface,
 body.mat-liquid .glass-card {
-  background-image: var(--liquid-highlight);
+  /* 静态光学全部落在元素自身（见 M2 图层分工说明）：
+     两处内部光池叠在 135° 高光带之上；内侧暗角在 --shadow-1 令牌里
+     （不能放这里 —— 内联 cardStyle 的 boxShadow 会盖掉本规则）。 */
+  background-image:
+    radial-gradient(120% 90% at 18% 0%, rgba(255, 255, 255, 0.16), transparent 45%),
+    radial-gradient(100% 80% at 85% 100%, rgba(255, 255, 255, 0.08), transparent 40%),
+    var(--liquid-highlight);
   background-color: var(--glass-bg);
   background-repeat: no-repeat;
 }
@@ -594,6 +685,27 @@ body.mat-glazed .glass-card {
 body.mat-frosted .glass-surface,
 body.mat-frosted .glass-card {
   background-image: var(--frosted-highlight);
+  background-color: var(--glass-bg);
+  background-repeat: no-repeat;
+}
+
+/* ==========================================================================
+   液态 M2 的招牌动作：**光标边缘折射**
+   ----------------------------------------------------------------------------
+   App.vue 的一次性事件委托把光标在卡内的坐标写入 --mx/--my，这里消费它们。
+
+   关键设计（也是这次素化的重点）：折射只发生在**边缘一圈**内，而不是
+   「整张卡跟着光标泛光」。理由有两个：
+     ① 物理上，透镜的折射发生在**弯曲的边缘**（掠射角），中心是平的、不折射 ——
+        全卡泛光等于宣称「这张卡是一块球形毛玻璃」，反而不真；
+     ② 全卡泛光会把整张卡提亮一档，等于把「素」又推回「艳」。
+
+   实现：径向亮斑 + content-box mask 裁成**边框环**（与棱环层同一手法）。
+   光标不在卡内时 --mx/--my 未定义 → 亮斑中心落在卡外 → 环上无光，零可见效果。
+   ========================================================================== */
+body.mat-liquid .glass-surface,
+body.mat-liquid .glass-card {
+  background-image: var(--liquid-highlight);
   background-color: var(--glass-bg);
   background-repeat: no-repeat;
 }

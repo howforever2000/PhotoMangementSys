@@ -8,12 +8,21 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { hexToRgb, rgbToHsl } from "./color.ts";
 import { DEFAULTS, isDefaultLook, normalizePrefs } from "./prefs.ts";
 
 test("FEAT-094 默认外观 = 启动封面（壁纸 + 落日紫金）", () => {
   // 背景回到「背景图」模式，且默认字就是壁纸；颜色为落日紫金
   assert.equal(DEFAULTS.bgStyle, "image");
-  assert.equal(DEFAULTS.compColor, "#2b2140");
+  // 素化 C7：组件色调由 #2b2140（S≈0.34，带明显紫）降为 #2a2630（S≈0.14，近中性灰紫）。
+  // 这里钉的是「低饱和」这条口径而不是字面量 —— 换壁纸/换底色时不必回来改测试，
+  // 但任何人把默认底色调回高饱和都会被这条抓住。
+  assert.equal(DEFAULTS.compColor, "#2a2630");
+  {
+    const [h, s] = rgbToHsl(hexToRgb(DEFAULTS.compColor));
+    assert.ok(s <= 0.2, `默认组件色饱和度 ${s.toFixed(2)} > 0.2（素化口径：卡片底应近中性）`);
+    assert.ok(h > 240 || h < 60, `默认组件色色相 ${h.toFixed(0)} 应落在中性紫区间（260~300 或其对侧）`);
+  }
   assert.equal(DEFAULTS.compAlpha, 0.64);
   assert.equal(DEFAULTS.bgOpacity, 0.55);
   assert.equal(DEFAULTS.material, "frosted");
@@ -39,6 +48,9 @@ test("FEAT-094 isDefaultLook：空输入归一化后命中默认，任一可调�
   }
   // 饱和度不算「脱离默认」（它只改浓淡不改结构，否则拖一下滑块默认卡就掉高亮）
   assert.equal(isDefaultLook(normalizePrefs({ saturation: 0.6 }), false), true);
+  // 同理适用于色温（Q3）：它也只改色相不改结构
+  assert.equal(isDefaultLook(normalizePrefs({ temperature: 0.6 }), false), true);
+  assert.equal(isDefaultLook(normalizePrefs({ temperature: -1 }), false), true);
 });
 
 test("FEAT-087 saturation：越界被夹到 0.4~1.5，坏值回落 1", () => {
@@ -47,6 +59,18 @@ test("FEAT-087 saturation：越界被夹到 0.4~1.5，坏值回落 1", () => {
   assert.equal(normalizePrefs({ saturation: 9 }).saturation, 1.5);
   assert.equal(normalizePrefs({ saturation: "xx" }).saturation, 1);
   assert.equal(normalizePrefs({ saturation: 1.35 }).saturation, 1.35);
+});
+
+test("Q3 temperature：默认 0（老用户零位移）、越界被夹到 ±1、坏值回落 0", () => {
+  assert.equal(DEFAULTS.temperature, 0);
+  // 老 localStorage 里没有这个字段 → 补 0 ⇒ 外观逐像素不变（这是「不迁移」的技术依据）
+  assert.equal(normalizePrefs({}).temperature, 0);
+  assert.equal(normalizePrefs({ compColor: "#123456" }).temperature, 0);
+  assert.equal(normalizePrefs({ temperature: 0.35 }).temperature, 0.35);
+  assert.equal(normalizePrefs({ temperature: -9 }).temperature, -1);
+  assert.equal(normalizePrefs({ temperature: 9 }).temperature, 1);
+  assert.equal(normalizePrefs({ temperature: "warm" }).temperature, 0);
+  assert.equal(normalizePrefs({ temperature: NaN }).temperature, 0);
 });
 
 test("旧结构（FEAT-084 时代）→ 补出 gradMid 中点 + 默认 compAlpha/material", () => {

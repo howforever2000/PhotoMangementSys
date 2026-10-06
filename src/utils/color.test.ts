@@ -9,20 +9,29 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  LINK_GOLD_HUE,
+  LINK_GOLD_LIGHT,
+  LINK_GOLD_SAT,
+  TEMP_COOL,
+  TEMP_WARM,
   TEXT_DARK,
   TEXT_LIGHT,
+  applyTemperature,
   componentTone,
   contrastRatio,
   glassBandContrast,
   hexToRgb,
   hexToRgba,
+  hslAtTargetLum,
   hslToRgb,
   isDarkText,
+  linkOnGlass,
   mixRgb,
   normalizeHex,
   relLum,
   rgbToHsl,
   saturateColor,
+  type Rgb,
 } from "./color.ts";
 
 test("normalizeHex：归一化 #rgb/#RRGGBB，坏值回落白色", () => {
@@ -162,6 +171,99 @@ test("saturateColor：灰度色（S=0）任何系数下仍是灰度", () => {
     assert.ok(Math.abs(r - g) < 2 && Math.abs(g - b) < 2, `灰度被染上颜色: ${r},${g},${b}`);
   }
 });
+/* ---------- Q3：色温管线（applyTemperature） ---------- */
+
+test("hslAtTargetLum：求出的色 WCAG 亮度落在目标附近", () => {
+  for (const [h, s, target] of [
+    [38, 0.77, 0.35],
+    [210, 0.4, 0.12],
+    [300, 0.9, 0.6],
+  ] as const) {
+    const got = relLum(hslAtTargetLum(h, s, target));
+    assert.ok(Math.abs(got - target) < 0.003, `h=${h} s=${s} 目标 ${target} 实得 ${got}`);
+  }
+});
+
+test("applyTemperature：t=0 原样返回（老用户零位移，外观逐像素不变）", () => {
+  for (const hex of ["#e8a33d", "#2b2140", "#f1eee9", "#2c3e4e"]) {
+    assert.equal(applyTemperature(hex, 0), normalizeHex(hex));
+  }
+});
+
+test("applyTemperature：暖推与冷推方向相反，且**WCAG 亮度锁定**", () => {
+  for (const hex of ["#e8a33d", "#7e9963", "#92acbf", "#505fdd"]) {
+    const [h0, s0] = rgbToHsl(hexToRgb(hex));
+    const l0 = relLum(hexToRgb(hex));
+    const warmH = rgbToHsl(hexToRgb(TEMP_WARM))[0];
+    const coolH = rgbToHsl(hexToRgb(TEMP_COOL))[0];
+    const toWarm = rgbToHsl(hexToRgb(applyTemperature(hex, 1)))[0];
+    const toCool = rgbToHsl(hexToRgb(applyTemperature(hex, -1)))[0];
+    const arc = (a: number, b: number) => {
+      const d = Math.abs(a - b) % 360;
+      return Math.min(d, 360 - d);
+    };
+    // 判据是「朝目标锚靠拢」而非「离另一个锚更远」——原色可能本就贴近某端
+    // （如 #e8a33d 的色相 37 就已在暖锚 38 上），此时位移本就趋近 0。
+    // 容差 1° 给色相量化留余量。
+    assert.ok(
+      arc(toWarm, warmH) <= arc(h0, warmH) + 1,
+      `${hex} 暖推应朝暖锚靠: ${h0.toFixed(1)}→${toWarm.toFixed(1)}（锚 ${warmH}）`,
+    );
+    assert.ok(
+      arc(toCool, coolH) <= arc(h0, coolH) + 1,
+      `${hex} 冷推应朝冷锚靠: ${h0.toFixed(1)}→${toCool.toFixed(1)}（锚 ${coolH}）`,
+    );
+    assert.ok(arc(toWarm, toCool) > 1, `${hex} 暖/冷两端必须真的分开`);
+    // 锁亮度是硬不变量：没有它，色温滑块会顺带改对比度
+    for (const t of [-1, -0.5, 0.5, 1]) {
+      const out = hexToRgb(applyTemperature(hex, t));
+      assert.ok(Math.abs(relLum(out) - l0) < 0.005, `${hex}@${t} 亮度漂移 ${relLum(out) - l0}`);
+    }
+    // 饱和度只朝锚点靠拢 60%，不能被染色相推成彩色
+    const sWarm = rgbToHsl(hexToRgb(applyTemperature(hex, 1)))[1];
+    assert.ok(sWarm <= s0 + (rgbToHsl(hexToRgb(TEMP_WARM))[1] - s0) * 0.6 + 0.01);
+  }
+});
+
+test("applyTemperature：灰度色（S=0）不被染上颜色；越界 t 被夹到 ±1", () => {
+  for (const t of [-1, 1, -99, 99, NaN]) {
+    const [r, g, b] = hexToRgb(applyTemperature("#808080", t));
+    assert.ok(Math.abs(r - g) < 2 && Math.abs(g - b) < 2, `灰度被染色: ${r},${g},${b}`);
+  }
+  assert.equal(applyTemperature("#e8a33d", 5), applyTemperature("#e8a33d", 1));
+  assert.equal(applyTemperature("#e8a33d", -5), applyTemperature("#e8a33d", -1));
+  assert.equal(applyTemperature("#e8a33d", NaN), "#e8a33d");
+});
+
+/* ---------- Q5=A：玻璃上的链接色（linkOnGlass） ---------- */
+
+test("linkOnGlass：深玻璃沿用浅金档（默认外观观感零变化）", () => {
+  assert.equal(linkOnGlass("#31253f"), LINK_GOLD_LIGHT);
+  assert.equal(linkOnGlass("#251f3f"), LINK_GOLD_LIGHT);
+});
+
+test("linkOnGlass：浅玻璃现算深金，且**始终 ≥4.5:1**（修复前只有 2.20~2.64:1）", () => {
+  for (const glass of ["#c1cebe", "#dec9d2", "#bac7cc", "#c5c6d6", "#bcd6ce", "#dad4cb", "#cacfd9"]) {
+    const link = linkOnGlass(glass);
+    const ratio = contrastRatio(relLum(hexToRgb(link)), relLum(hexToRgb(glass)));
+    assert.ok(ratio >= 4.5, `${glass} 链接 ${link} 仅 ${ratio.toFixed(2)}:1`);
+    // 必须保住「金」这个品牌相：色相锁定在 LINK_GOLD_HUE 附近
+    const [h, s] = rgbToHsl(hexToRgb(link));
+    assert.ok(Math.abs(h - LINK_GOLD_HUE) <= 1, `${glass} 链接色相 ${h} 偏离金相`);
+    assert.ok(s > 0.5, `${glass} 链接饱和度 ${s} 低了，不像金`);
+  }
+});
+
+test("linkOnGlass：目标越高 → 链接越深（单调），且不会退回非金色", () => {
+  const glass = "#dad4cb";
+  const at45 = relLum(hexToRgb(linkOnGlass(glass, 4.5)));
+  const at7 = relLum(hexToRgb(linkOnGlass(glass, 7)));
+  assert.ok(at7 < at45, `target=7 应更深: ${at7} vs ${at45}`);
+  assert.ok(contrastRatio(relLum(hexToRgb(linkOnGlass(glass, 7))), relLum(hexToRgb(glass))) >= 7);
+});
+
+/* ---------- FEAT-094 glassBandContrast ---------- */
+
 test("FEAT-094 glassBandContrast：深色背景 α=0 仍安全，浅顶带渐变则必须靠填充兑底", () => {
   // ① 新默认外观（启动封面 55% + 遮罩）三带都很暗 —— α 拉到 0 也能达标
   const cover = ["#69515a", "#4b3f4e", "#1b1d43"].map(hexToRgb);
@@ -170,8 +272,8 @@ test("FEAT-094 glassBandContrast：深色背景 α=0 仍安全，浅顶带渐变
 
   // ② 预设「粉绿晨光」（顶带亮 #ffd7d7 / 底带暗 #195e53）：α=0 时文字只有一个色，
   //    均值推出墨字 → 底带上就崩了；把填充加回来才收敛。这就是「透明度下限」的真实理由。
-  const bands = ["#ffd7d7", "#7e9963", "#195e53"].map(hexToRgb);
-  const avg = [
+  const bands: Rgb[] = ["#ffd7d7", "#7e9963", "#195e53"].map(hexToRgb);
+  const avg: Rgb = [
     Math.round((bands[0][0] + 2 * bands[1][0] + bands[2][0]) / 4),
     Math.round((bands[0][1] + 2 * bands[1][1] + bands[2][1]) / 4),
     Math.round((bands[0][2] + 2 * bands[1][2] + bands[2][2]) / 4),
