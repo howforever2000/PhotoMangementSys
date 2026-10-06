@@ -3,6 +3,36 @@
 // 严格对应 Rust 侧 `src-tauri/src/db/mod.rs` 中的结构体字段，
 // 保证前端 invoke 调用的参数与返回值类型安全。
 
+/** FEAT-095：相册类型 —— 对应 Rust `db::ALBUM_KIND_*` */
+export type AlbumKind = "normal" | "archived" | "hidden";
+
+/** FEAT-095：普通相册类型（`kind` 缺省值，历史行为不变） */
+export const ALBUM_KIND_NORMAL: AlbumKind = "normal";
+
+/** 判断是否为虚拟相册（归档 / 隐藏）：无真实文件夹，读照片走标记表 */
+export function isVirtualAlbum(album: Pick<Album, "kind">): boolean {
+  return album.kind === "archived" || album.kind === "hidden";
+}
+
+/**
+ * FEAT-095：相册管理可见性过滤（决策 D3 + 隐含需求 I8）
+ *
+ * 后端 `get_albums` 会把归档 / 隐藏两个系统相册一并返回（前端无法靠「有没有这张卡」
+ * 判断该不该显示，因为权限判断在前端）。这里做唯一入口的过滤：
+ * 1. **隐藏相册**：`hiddenUnlocked` 为 false 时不可见（决策 D3：解锁后本次会话一直可见）；
+ * 2. **空虚拟相册**：归档 / 隐藏里 0 张照片时不展示（隐含需求 I8）——
+ *    否则相册管理一进来就杵着两个空壳卡片，用户会以为是 bug。
+ *
+ * 普通相册永远不受影响，历史行为零变更。
+ */
+export function filterVisibleAlbums(albums: Album[], hiddenUnlocked: boolean): Album[] {
+  return albums.filter((a) => {
+    if (a.kind === "hidden" && !hiddenUnlocked) return false;
+    if (isVirtualAlbum(a) && a.photo_count <= 0) return false;
+    return true;
+  });
+}
+
 /** 相册实体 —— 对应 Rust `db::Album` / 需求 §3.1 */
 export interface Album {
   id: number;
@@ -35,6 +65,11 @@ export interface Album {
   folder_id: number | null;
   /** 所属分组完整路径（如 "旅行/欧洲/巴黎"） */
   folder_path: string;
+  /** FEAT-095：相册类型
+   *  - `"normal"`：普通相册，绑定真实本地文件夹
+   *  - `"archived"`：归档相册（虚拟，存被归档的照片，相册管理中显示为「归档」）
+   *  - `"hidden"`：隐藏相册（虚拟，存被隐藏的照片，需个人信息输密码解锁后才可见） */
+  kind: AlbumKind;
   /** 合并来源相册列表（FEAT-A）
    *  记录该相册历史上被合并进来的源相册（id / name / path），
    *  用于相册卡片下显示「由 X 个相册合并而来」，每条路径可点击跳转。

@@ -9,6 +9,8 @@ import { useContentStore } from "../stores/content";
 import { useThemeStore } from "../stores/theme";
 import { SCAN_MODE_TITLE, SCAN_MODE_TIP } from "../utils/scanModeTip";
 import type { Album, CreateAlbumInput } from "../types/album";
+import { isVirtualAlbum } from "../types/album";
+import { useVaultStore } from "../stores/vault";
 import type { Folder, ManualTree } from "../types/folder";
 import type { ContentSearchHit } from "../types/content";
 import { groupByTime, seasonName, MONTH_NAMES } from "../utils/timeGroup";
@@ -27,6 +29,8 @@ const store = useAlbumStore();
 const contentStore = useContentStore();
 const theme = useThemeStore();
 const notify = useNotify();
+/** FEAT-095：隐藏相册解锁态（未解锁时该相册不在 store.albums 里） */
+const vault = useVaultStore();
 
 // ---------- 回到顶部按钮状态 ----------
 const scrollTop = ref(0);
@@ -59,11 +63,21 @@ function fileUrl(path: string | null): string {
 /** 在系统文件管理器中打开文件夹内部（需求：地址可点击进入目录） */
 async function openAlbumPath(path: string, event: MouseEvent) {
   event.stopPropagation(); // 阻止卡片点击跳转详情页
+  // FEAT-095：归档 / 隐藏是虚拟相册，path 是哨兵值而非真实目录，无法「在资源管理器中打开」
+  if (isVirtualPath(path)) {
+    notify.info("系统内置相册", "「归档」与「隐藏」相册是照片的聚合视图，没有对应的本地文件夹。");
+    return;
+  }
   try {
     await invoke("open_folder", { path });
   } catch (e) {
     notify.error("无法打开文件夹", `${path}\n${e}`);
   }
+}
+
+/** FEAT-095：判断是否为虚拟相册哨兵路径（`__virtual__://archive|hidden`） */
+function isVirtualPath(path: string): boolean {
+  return path.startsWith("__virtual__://");
 }
 
 /** FEAT-A：合并来源路径点击 —— 直接调 open_folder，事件已由子组件 stopPropagation */
@@ -666,6 +680,12 @@ function onRightClick(albumId: number, event: MouseEvent) {
   };
 }
 
+/** FEAT-095：右键目标是否为系统内置虚拟相册（据此隐藏重命名 / 删除） */
+const contextMenuIsVirtual = computed(() => {
+  const album = store.albums.find((a) => a.id === contextMenu.value.albumId);
+  return album ? isVirtualAlbum(album) : false;
+});
+
 /** 关闭右键菜单 */
 function closeContextMenu() {
   contextMenu.value.visible = false;
@@ -787,9 +807,19 @@ const sortMode = ref<"date" | "location" | "manual">(
   (localStorage.getItem("album-sort-mode") as "date" | "location" | "manual") ?? "date",
 );
 
+/**
+ * FEAT-095：归档 / 隐藏虚拟相册
+ *
+ * 这两个相册没有真实文件夹与拍摄时间，混进按年份/季节的分组里既无意义也难找，
+ * 故单独抽出来在顶部固定成一块。普通相册的分组 / 排序视图一律排除它们
+ * （`normalAlbums` 是唯一喂给分组逻辑的口子）。
+ */
+const virtualAlbums = computed(() => store.albums.filter(isVirtualAlbum));
+const normalAlbums = computed(() => store.albums.filter((a) => !isVirtualAlbum(a)));
+
 /** 按地点排序的相册（手动 location 标签），无地点的排在最后 */
 const locationSortedAlbums = computed(() => {
-  return [...store.albums].sort((a, b) => {
+  return [...normalAlbums.value].sort((a, b) => {
     const la = a.location ?? "￿"; // 无地点排最后
     const lb = b.location ?? "￿";
     return la.localeCompare(lb);
@@ -825,8 +855,8 @@ const locationGroups = computed<Array<{ location: string | null; albums: Album[]
 /** 折叠状态：key 为分组的唯一标识 */
 const collapsed = ref<Set<string>>(new Set());
 
-/** 时间分组的相册树 */
-const groupedYears = computed<YearGroup[]>(() => groupByTime(store.albums));
+/** 时间分组的相册树（FEAT-095：排除归档 / 隐藏虚拟相册，它们单独成块展示） */
+const groupedYears = computed<YearGroup[]>(() => groupByTime(normalAlbums.value));
 
 /** 是否折叠某分组 */
 function isCollapsed(key: string): boolean {
@@ -1333,6 +1363,33 @@ function onKey(e: KeyboardEvent) {
       </span>
     </div>
 
+    <!--
+      FEAT-095：归档 / 隐藏相册固定区块
+      不参与时间 / 地点 / 手动排序（没有真实文件夹与拍摄时间），始终置顶展示。
+    -->
+    <section v-if="virtualAlbums.length" class="virtual-albums">
+      <h2 class="group-head group-year">📦 系统相册</h2>
+      <div class="album-grid">
+        <AlbumCard
+          v-for="album in virtualAlbums"
+          :key="album.id"
+          :album="album"
+          :select-mode="false"
+          :selected="false"
+          @click="router.push(`/album/${album.id}`)"
+          @contextmenu="onRightClick(album.id, $event)"
+          @open-path="openAlbumPath(album.path, $event)"
+        />
+      </div>
+      <p class="virtual-hint">
+        「归档」与「隐藏」是照片的聚合视图：照片仍在原位置不变。
+        归档可在相册中直接查看；隐藏相册需在
+        <RouterLink to="/home">个人信息</RouterLink>
+        中输入登录密码解锁
+        <template v-if="vault.hiddenUnlocked">（当前已解锁）</template>。
+      </p>
+    </section>
+
     <!-- 日期模式：时间分组视图（年 → 季节 → 月，可折叠） -->
     <main v-if="sortMode === 'date'" class="timeline-view">
       <template v-for="yg in groupedYears" :key="yg.year">
@@ -1483,10 +1540,11 @@ function onKey(e: KeyboardEvent) {
       <div class="context-menu-item" @click="router.push(`/album/${contextMenu.albumId}`)">
         <span class="ctx-icon">📂</span> 打开
       </div>
-      <div class="context-menu-item" @click="openRenameDialog">
+      <!-- FEAT-095：归档 / 隐藏为系统内置虚拟相册，重命名与删除入口不给（改名会让「名为归档的相册」丢失语义） -->
+      <div v-if="!contextMenuIsVirtual" class="context-menu-item" @click="openRenameDialog">
         <span class="ctx-icon">✏️</span> 重命名
       </div>
-      <div class="context-menu-item context-menu-danger" @click="contextDelete">
+      <div v-if="!contextMenuIsVirtual" class="context-menu-item context-menu-danger" @click="contextDelete">
         <span class="ctx-icon">🗑️</span> 删除
       </div>
     </div>
@@ -2400,6 +2458,25 @@ function onKey(e: KeyboardEvent) {
 }
 .dialog-scan-feature {
   border-top: 1px solid var(--color-border);
+}
+
+/* FEAT-095：归档 / 隐藏系统相册区块 */
+.virtual-albums {
+  margin-bottom: 28px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--color-border, rgba(128, 138, 158, 0.24));
+}
+.virtual-hint {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--color-link);
+  opacity: 0.85;
+}
+.virtual-hint a {
+  color: var(--color-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 /* 批量导入进度条 */

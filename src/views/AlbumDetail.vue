@@ -12,12 +12,15 @@ import BreadcrumbNav from "../components/BreadcrumbNav.vue";
 import ScanPanel from "../components/ScanPanel.vue";
 import PhotoGrid from "../components/PhotoGrid.vue";
 import { useNotify } from "../composables/useNotify";
+import { useVaultStore } from "../stores/vault";
 
 const route = useRoute();
 const router = useRouter();
 const store = useAlbumStore();
 const theme = useThemeStore();
 const notify = useNotify();
+/** FEAT-095：隐藏相册解锁态（未解锁时禁止直达详情页） */
+const vault = useVaultStore();
 
 /** 页面级主题变量：本页按钮/文本直接落在页面背景上 ——
  *  颜色跟随实际背景的对比度（theme.onBg*），按钮底/边框按 onBgDark 二分；
@@ -100,6 +103,11 @@ const breadcrumbs = computed((): { label: string; to?: string }[] => {
 
 const deleteAlbum = trace("deleteAlbum", async () => {
   if (deleting.value) return;
+  // FEAT-095：归档 / 隐藏是系统内置虚拟相册，删掉会导致标记数据无处安放
+  if (isVirtual.value) {
+    notify.warning("系统内置相册不可删除", "「归档」与「隐藏」相册由系统维护，请通过照片的归档 / 隐藏操作来管理内容。");
+    return;
+  }
   const name = store.currentAlbum?.name ?? "";
   deleteConfirmMessage.value =
     `确定要删除相册「${name}」吗？\n\n此操作仅删除相册记录，不会删除本地照片文件。`;
@@ -126,6 +134,24 @@ function handleAlbumUpdate(updated: any) {
 }
 
 onMounted(load);
+
+/* ---- FEAT-095：虚拟相册（归档 / 隐藏）差异化处理 ---- */
+
+/** 当前相册是否虚拟（归档 / 隐藏） */
+const isVirtual = computed(() => {
+  const k = store.currentAlbum?.kind;
+  return k === "archived" || k === "hidden";
+});
+
+/**
+ * 隐藏相册在未解锁时不允许直达详情页（绕过相册管理的密码门禁）
+ *
+ * 直接访问 `/album/:id` 也拦一道：隐藏相册的门禁不能只做在列表过滤上，
+ * 否则把 id 写进地址栏就等于绕过密码。
+ */
+const vaultDenied = computed(
+  () => store.currentAlbum?.kind === "hidden" && !vault.hiddenUnlocked,
+);
 </script>
 
 <template>
@@ -139,7 +165,8 @@ onMounted(load);
         <BreadcrumbNav :crumbs="breadcrumbs" />
       </div>
       <div class="nav-actions">
-        <button class="btn btn-danger" :disabled="deleting" @click="deleteAlbum">
+        <!-- FEAT-095：虚拟相册不提供「删除相册」入口（系统内置，不可删） -->
+        <button v-if="!isVirtual" class="btn btn-danger" :disabled="deleting" @click="deleteAlbum">
           {{ deleting ? "删除中…" : "删除相册" }}
         </button>
       </div>
@@ -151,9 +178,25 @@ onMounted(load);
       <button class="btn btn-primary" @click="goBack">返回列表</button>
     </div>
 
+    <!-- FEAT-095：隐藏相册未解锁（地址栏直达时的兜底拦截） -->
+    <div v-else-if="vaultDenied" class="not-found">
+      <p>🔒 该相册已隐藏，需在「个人信息」中输入密码解锁后才能查看。</p>
+      <button class="btn btn-primary" @click="goBack">返回列表</button>
+    </div>
+
     <template v-else-if="store.currentAlbum">
-      <!-- 相册信息头 -->
+      <!-- FEAT-095：虚拟相册横幅（说明这是归档 / 隐藏聚合视图，且不可删除相册本身） -->
+      <div v-if="isVirtual" class="virtual-banner">
+        <span v-if="store.currentAlbum.kind === 'archived'">📦</span>
+        <span v-else>🔒</span>
+        <b>{{ store.currentAlbum.name }}</b>
+        <span class="virtual-desc">{{ store.currentAlbum.description }}</span>
+        <span class="virtual-tip">照片仍在原位置，可在此批量打分 / 标签 / 归档 / 删除，或取回原相册。</span>
+      </div>
+
+      <!-- 相册信息头（虚拟相册无封面 / 简介可编辑能力，跳过） -->
       <AlbumMeta
+        v-if="!isVirtual"
         :album="store.currentAlbum"
         :setting-cover="settingCover"
         @update:album="handleAlbumUpdate"
@@ -161,12 +204,13 @@ onMounted(load);
       />
 
       <!-- 三个功能区统一用 CollapseSection 折叠：搜索 / 扫描在前，缩略图浏览在最后 -->
-      <CollapseSection title="🔍 照片搜索" storage-key="detail-search">
+      <CollapseSection v-if="!isVirtual" title="🔍 照片搜索" storage-key="detail-search">
         <ContentSearch :album-id="albumId" />
       </CollapseSection>
 
       <!-- 扫描面板：组合扫描（EXIF/影调/AI 统一入口，后台执行）。人物注册表已移至智慧相册 -->
       <CollapseSection
+        v-if="!isVirtual"
         title="🧩 组合扫描"
         subtitle="EXIF / 影调 / AI 统一入口 · 后台执行 · 退出页面不中断"
         storage-key="detail-scan"
@@ -176,8 +220,13 @@ onMounted(load);
 
       <!-- 照片网格浏览：相册内照片一览 + 大图查看（放在最后，作为浏览区） -->
       <CollapseSection title="🖼️ 缩略图浏览" storage-key="detail-photos">
-        <!-- FEAT-034-B：接收路由 query.focus（时间线跳转定位目标照片路径） -->
-        <PhotoGrid :album-id="albumId" :focus-path="focusPath" />
+        <!-- FEAT-034-B：接收路由 query.focus（时间线跳转定位目标照片路径）
+             FEAT-095：albumKind 传给 PhotoGrid，决定右键菜单是「归档」还是「取消归档」 -->
+        <PhotoGrid
+          :album-id="albumId"
+          :focus-path="focusPath"
+          :album-kind="store.currentAlbum.kind"
+        />
       </CollapseSection>
     </template>
 
@@ -285,4 +334,22 @@ onMounted(load);
   font-size: 16px;
   margin-bottom: 16px;
 }
+
+/* FEAT-095：归档 / 隐藏虚拟相册横幅 */
+.virtual-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  border-radius: 12px;
+  font-size: 13px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 32%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--detail-text);
+}
+.virtual-banner b { font-size: 15px; }
+.virtual-desc { color: var(--detail-muted); }
+.virtual-tip { color: var(--detail-muted); font-size: 12px; }
 </style>

@@ -557,6 +557,43 @@ pub fn update_profile(
 }
 
 
+/// 校验当前登录用户的密码（用于解锁「隐藏相册」等敏感操作）
+///
+/// 与登录同一套 `verify_password` 逻辑（argon2 校验），**不回传任何密码信息**，
+/// 只返回是否匹配。前端据此决定是否展示隐藏相册。
+#[tauri::command]
+pub fn verify_current_password(
+    password: String,
+    state: tauri::State<crate::AppState>,
+    session: tauri::State<crate::SessionState>,
+) -> Result<bool, String> {
+    // 日志只记是否通过，绝不记录密码本身
+    let _t = log_call!("verify_current_password", "password=***");
+    let r = (|| -> Result<bool, String> {
+        let user_id = crate::require_user(&session)?;
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let user = crate::auth::fetch_all_users(db.conn())?
+            .into_iter()
+            .find(|u| u.id == user_id)
+            .ok_or_else(|| "用户不存在".to_string())?;
+        Ok(crate::auth::verify_password(&user.password_hash, &password))
+    })();
+    match &r {
+        Ok(ok) => crate::logger::log_call_end_with(
+            "verify_current_password",
+            _t,
+            if *ok { "OK | matched" } else { "OK | mismatched" },
+        ),
+        Err(e) => crate::logger::log_call_end_with(
+            "verify_current_password",
+            _t,
+            &format!("ERR | {e}"),
+        ),
+    }
+    r
+}
+
+
 /// 登录/注册成功后写入记住登录 token（默认 3 天免密复用上次用户）
 ///
 /// 失败不阻断登录（仅记日志）：记住登录是体验增强，不影响本次会话。

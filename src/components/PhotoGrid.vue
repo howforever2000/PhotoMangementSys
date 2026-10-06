@@ -8,12 +8,15 @@ import { useContentStore } from "../stores/content";
 import { useToastStore } from "../stores/toast";
 import { useNotify } from "../composables/useNotify";
 import type { AlbumContentRow } from "../types/content";
-import type { PersonInfo } from "../types/photo";
+import type { PersonInfo, PhotoDeleteOutcome } from "../types/photo";
 import { categoryLabel } from "../utils/categoryLabel";
-import ConfirmDialog from "./ConfirmDialog.vue";
 import PhotoLightbox from "./PhotoLightbox.vue";
 import ContextMenu from "./ContextMenu.vue";
 import type { ContextMenuEntry } from "./ContextMenu.vue";
+import PhotoDeleteDialog, { type DeleteMode } from "./PhotoDeleteDialog.vue";
+import PhotoZoomBar from "./PhotoZoomBar.vue";
+import { usePhotoActions } from "../composables/usePhotoActions";
+import type { PhotoMarkState } from "../types/photo";
 
 /**
  * 照片网格浏览组件
@@ -27,6 +30,8 @@ import type { ContextMenuEntry } from "./ContextMenu.vue";
 
 const props = defineProps<{ albumId: number; /** FEAT-034-B：需要滚动定位并高亮的照片路径（来自外部路由 query），加载完成后 1.8s 高亮 */
   focusPath?: string;
+  /** FEAT-095：相册类型（归档 / 隐藏虚拟相册）；决定右键菜单显示「归档」还是「取消归档」 */
+  albumKind?: string;
 }>();
 const emit = defineEmits<{
   (e: "count", n: number): void;
@@ -178,6 +183,8 @@ async function load() {
       if (t) cached[p] = t;
     }
     thumbMap.value = cached;
+    // FEAT-095：同步标记状态（角标 + 右键菜单「归档 / 取消归档」文案）
+    void loadMarkStates(paths);
     // 首屏缩略图由格子注册后的 IntersectionObserver 初始回调自动触发，无需额外预取
   } catch (e) {
     loadError.value = String(e);
@@ -267,54 +274,118 @@ function openLightbox(index: number) {
 /* ---- P1 右键上下文菜单 ---- */
 const ctxMenu = ref<{ x: number; y: number; entries: ContextMenuEntry[] } | null>(null);
 
-/** 照片右键菜单：选中和查看 */
+/**
+ * FEAT-095：归档 / 隐藏动作（与 PersonGallery / CategoryGallery 共用同一套语义）
+ */
+const photoActions = usePhotoActions();
+
+/** FEAT-095（R1）：网格格子尺寸（缩略图缩放条驱动） */
+const cellSize = ref(180);
+
+/** 当前相册对应的标记状态（普通相册为 null） */
+const albumMarkState = computed<PhotoMarkState | null>(() => {
+  if (props.albumKind === "archived") return "archived";
+  if (props.albumKind === "hidden") return "hidden";
+  return null;
+});
+
+/**
+ * 照片右键菜单（FEAT-095 / R8：与原图预览工具栏功能对齐）
+ *
+ * 菜单项：查看大图 / 选中 / 打分 / 标签 / 编辑 / 归档（虚拟相册内为「取消归档」）/
+ * 隐藏（虚拟相册内为「取消隐藏」）/ 删除（二次确认双模式）。
+ * 归档与隐藏均支持多选（决策 D2：针对照片的操作，非相册整体）。
+ */
 function openPhotoContextMenu(e: MouseEvent, path: string, index: number) {
   e.preventDefault();
   e.stopPropagation();
-  // 如果未在选择模式，先选中该照片
-  if (!selectMode.value) {
-    toggleSelectMode();
-    toggleSelect(path);
-  }
-  const entries: ContextMenuEntry[] = [
-    {
-      label: "查看大图",
-      icon: "🖼️",
-      onClick: () => {
-        lightboxIndex.value = index;
-        lightboxOpen.value = true;
+  // 同步标记状态，让「归档 / 取消归档」文案准确
+  void photoActions.loadMarkStates([path]);
+
+  // 归档 / 隐藏：普通相册里打标记，虚拟相册里取消标记回到原相册
+  const markState = photoActions.markStateOf(path) ?? albumMarkState.value;
+  const inVirtual = albumMarkState.value !== null;
+
+  ctxMenu.value = {
+    x: e.clientX,
+    y: e.clientY,
+    entries: [
+      {
+        label: "查看大图",
+        icon: "🖼️",
+        onClick: () => {
+          lightboxIndex.value = index;
+          lightboxOpen.value = true;
+        },
       },
-    },
-    {
-      label: "选中此照片",
-      icon: "✓",
-      onClick: () => {
-        if (!selectMode.value) toggleSelectMode();
-        toggleSelect(path);
+      {
+        label: "选中此照片",
+        icon: "✓",
+        onClick: () => {
+          if (!selectMode.value) toggleSelectMode();
+          toggleSelect(path);
+        },
       },
-    },
-    { divider: true },
-    {
-      label: "从相册移除（记录删除）",
-      icon: "🗑️",
-      onClick: () => {
-        if (!selectMode.value) toggleSelectMode();
-        toggleSelect(path);
-        requestDelete("record");
+      { divider: true },
+      {
+        label: "打分…",
+        icon: "★",
+        onClick: () => {
+          if (!selectMode.value) toggleSelectMode();
+          toggleSelect(path);
+          openRating();
+        },
       },
-    },
-    {
-      label: "永久删除本地文件",
-      icon: "⚠️",
-      danger: true,
-      onClick: () => {
-        if (!selectMode.value) toggleSelectMode();
-        toggleSelect(path);
-        requestDelete("file");
+      {
+        label: "添加 / 编辑标签…",
+        icon: "🏷",
+        onClick: () => {
+          lightboxIndex.value = index;
+          lightboxOpen.value = true;
+        },
       },
-    },
-  ];
-  ctxMenu.value = { x: e.clientX, y: e.clientY, entries };
+      {
+        label: "在创意工坊编辑",
+        icon: "✏️",
+        onClick: () => photoActions.openInWorkshop(path),
+      },
+      { divider: true },
+      {
+        label: inVirtual ? "取消归档" : "归档",
+        icon: "📦",
+        onClick: () => {
+          const ok = inVirtual
+            ? markState === "hidden"
+              ? photoActions.unhide([path])
+              : photoActions.unarchive([path])
+            : photoActions.archive([path]);
+          void ok.then((done) => done && void load());
+        },
+      },
+      {
+        label: inVirtual ? "取消隐藏" : "隐藏",
+        icon: "🔒",
+        onClick: () => {
+          const ok = inVirtual
+            ? markState === "archived"
+              ? photoActions.unarchive([path])
+              : photoActions.unhide([path])
+            : photoActions.hide([path]);
+          void ok.then((done) => done && void load());
+        },
+      },
+      {
+        label: "删除…",
+        icon: "🗑",
+        danger: true,
+        onClick: () => {
+          if (!selectMode.value) toggleSelectMode();
+          toggleSelect(path);
+          requestDelete("records");
+        },
+      },
+    ],
+  };
 }
 
 function closeCtxMenu() {
@@ -325,12 +396,45 @@ function closeLightbox() {
   lightboxOpen.value = false;
 }
 
+/**
+ * FEAT-095：大图内的删除按钮 → 复用多选删除的二次确认链路
+ *
+ * 大图打开时若不在选择模式，先把当前照片设为选中（沿用右键菜单的老做法），
+ * 这样删除确认与撤销 Toast 的行为和网格右键完全一致。
+ */
+function onLightboxDelete(path: string) {
+  if (!selectedPaths.value.has(path)) {
+    if (!selectMode.value) toggleSelectMode();
+    toggleSelect(path);
+  }
+  requestDelete("records");
+}
+
+/** FEAT-095：大图内的归档 / 隐藏按钮 */
+async function onLightboxMark(kind: PhotoMarkState, path: string, marked: boolean) {
+  const ok = kind === "archived"
+    ? await photoActions.apply("archived", [path], marked)
+    : await photoActions.apply("hidden", [path], marked);
+  if (!ok) return;
+  // 当前照片已不在本视图 → 关闭大图并刷新列表
+  if (marked && albumMarkState.value === null) {
+    lightboxOpen.value = false;
+  }
+  await load();
+}
+
 /* ---- 多选删除：选择模式 + 二次确认（记录删除 / 文件删除两种）---- */
 const selectMode = ref(false);
 const selectedPaths = ref<Set<string>>(new Set());
 
-/** 二次确认弹窗状态：null=关闭；否则记录待删模式与路径 */
-const confirmState = ref<null | { mode: "record" | "file"; paths: string[] }>(null);
+/**
+ * 二次确认弹窗状态：null=关闭；否则记录待删模式与路径
+ *
+ * FEAT-095：mode 由 `"record" | "file"` 改为共享组件的 `DeleteMode`
+ * （`records` = 相册记录删除 / `trash` = 本地删除移入回收站），
+ * 删除方式选择统一交给 `PhotoDeleteDialog`。
+ */
+const confirmState = ref<null | { mode: DeleteMode; paths: string[] }>(null);
 const deleting = ref(false);
 const deleteMsg = ref("");
 
@@ -364,6 +468,12 @@ function openRating() {
   const avg = ratingStats.value.avg;
   ratingPick.value = avg >= 1 ? Math.round(avg) : 5;
   ratingOpen.value = true;
+}
+
+/** FEAT-095：加载完成后同步标记状态（归档 / 隐藏角标与右键菜单文案都依赖它） */
+async function loadMarkStates(paths: string[]) {
+  if (!paths.length) return;
+  await photoActions.loadMarkStates(paths);
 }
 
 /* ---- 合并到其他相册 ---- */
@@ -403,43 +513,63 @@ function toggleSelectAll() {
 }
 
 /** 打开二次确认弹窗（当前勾选的照片，两种删除模式） */
-function requestDelete(mode: "record" | "file") {
+function requestDelete(mode: DeleteMode = "records") {
   const paths = [...selectedPaths.value];
   if (!paths.length) return;
   confirmState.value = { mode, paths };
 }
 
-const confirmTitle = computed(() =>
-  confirmState.value?.mode === "file" ? "删除本地文件" : "删除相册记录"
-);
+/** FEAT-095：删除方式二选一（选模式即最终确认，交由共享弹窗） */
+async function pickDeleteMode(mode: DeleteMode) {
+  if (!confirmState.value) return;
+  // 用户在共享弹窗里选了「本地删除」，覆盖原先预选的模式
+  confirmState.value = { ...confirmState.value, mode };
+  await doConfirmedDelete();
+}
 
-const confirmMessage = computed(() => {
-  if (!confirmState.value) return "";
-  const n = confirmState.value.paths.length;
-  return confirmState.value.mode === "file"
-    ? `将永久删除 ${n} 张照片的本地文件，此操作不可恢复！同时清除对应的扫描/AI 记录与缩略图缓存。确定继续吗？`
-    : `将从本相册移除 ${n} 张照片并清除其扫描/AI 记录，本地文件保留、可重新扫描找回。确定继续吗？`;
-});
+/**
+ * FEAT-095：批量归档 / 隐藏（决策 D2：针对照片的多选操作，非相册整体）
+ *
+ * 在归档 / 隐藏相册内点同一按钮 = 取消标记，让照片回到原相册；
+ * 在普通相册内 = 打标记，照片移入对应虚拟相册。两条路径共用 `photoActions`。
+ */
+async function onBatchMark(kind: PhotoMarkState) {
+  const paths = [...selectedPaths.value];
+  if (!paths.length || photoActions.busy.value) return;
+  // 当前就在这个状态的虚拟相册里 → 反向操作（取消）
+  const unmark = albumMarkState.value === kind;
+  const ok = kind === "archived"
+    ? unmark ? await photoActions.unarchive(paths) : await photoActions.archive(paths)
+    : unmark ? await photoActions.unhide(paths) : await photoActions.hide(paths);
+  if (!ok) return;
+  exitSelectMode();
+  await load();
+}
 
 /** 确认后执行删除：调后端命令 → 刷新网格 → 报告结果
  *  - 记录删除模式显示「撤销」Toast（参考 Gmail）
- *  - 文件删除模式（不可逆）仅提示结果 */
+ *  - 本地删除（移入回收站，可找回）仅提示结果 */
 async function doConfirmedDelete() {
   if (!confirmState.value || deleting.value) return;
   const { mode, paths } = confirmState.value;
   deleting.value = true;
   deleteMsg.value = "";
   try {
+    // FEAT-095：虚拟相册（归档 / 隐藏）没有「原相册」语义，删除统一按路径处理
+    const inVirtual = albumMarkState.value !== null;
     const outcome =
-      mode === "file"
-        ? await albumStore.deletePhotoFiles(props.albumId, paths)
-        : await albumStore.deletePhotoRecords(props.albumId, paths);
+      mode === "trash"
+        ? inVirtual
+          ? await invoke<PhotoDeleteOutcome>("delete_photos_to_trash", { paths })
+          : await albumStore.deletePhotoFiles(props.albumId, paths)
+        : inVirtual
+          ? await invoke<PhotoDeleteOutcome>("delete_photo_records_by_paths", { paths })
+          : await albumStore.deletePhotoRecords(props.albumId, paths);
     exitSelectMode();
     await load(); // 重新拉取列表（后端已过滤被移除项）并回传新计数
-    if (mode === "file") {
-      // 文件删除不可逆，不给撤销按钮
+    if (mode === "trash") {
       deleteMsg.value =
-        `已处理 ${outcome.deleted} / ${outcome.requested} 张` +
+        `已处理 ${outcome.deleted} / ${outcome.requested} 张（文件已移入回收站）` +
         (outcome.failed ? `，${outcome.failed} 张失败：${outcome.failed_paths.slice(0, 3).join("、")}` : "");
       if (deleteMsg.value) setTimeout(() => (deleteMsg.value = ""), 5000);
     } else {
@@ -448,8 +578,15 @@ async function doConfirmedDelete() {
       const undoPaths = paths.slice(0, deleted);
       const undoFn = async () => {
         try {
-          const restored = await albumStore.restorePhotoRecords(props.albumId, undoPaths);
-          toastStore.success("已恢复", `成功恢复 ${restored} 张照片`);
+          if (inVirtual) {
+            // 虚拟相册里「撤销」= 取消归档 / 隐藏，让照片回到原相册
+            await (albumMarkState.value === "hidden"
+              ? photoActions.unhide(undoPaths)
+              : photoActions.unarchive(undoPaths));
+          } else {
+            const restored = await albumStore.restorePhotoRecords(props.albumId, undoPaths);
+            toastStore.success("已恢复", `成功恢复 ${restored} 张照片`);
+          }
           await load(); // 重新显示
         } catch (e) {
           toastStore.error("恢复失败", String(e));
@@ -459,7 +596,7 @@ async function doConfirmedDelete() {
         "success",
         `已移除 ${deleted} 张照片`,
         [{ label: "撤销", onClick: undoFn, style: "primary" }],
-        "从相册移除，可在「最近删除」中恢复",
+        inVirtual ? "已移出归档 / 隐藏，可撤销" : "从相册移除，可在「最近删除」中恢复",
         5000,
       );
     }
@@ -661,7 +798,7 @@ function onKey(e: KeyboardEvent) {
     toggleSelectAll();
   } else if (e.key === "Delete" && selectedPaths.value.size > 0) {
     e.preventDefault();
-    requestDelete("record");
+    requestDelete("records");
   }
 }
 </script>
@@ -671,6 +808,8 @@ function onKey(e: KeyboardEvent) {
     <header class="pg-header">
       <h3 class="pg-title">照片浏览</h3>
       <span v-if="!loading" class="pg-count">{{ visiblePhotos.length }} / {{ photos.length }} 张</span>
+      <!-- FEAT-095（R1）：缩略图缩放条 -->
+      <PhotoZoomBar v-model="cellSize" :disabled="!photos.length" />
       <button
         v-if="photos.length"
         class="btn pg-action pg-action-select"
@@ -700,8 +839,19 @@ function onKey(e: KeyboardEvent) {
         <button class="btn" :disabled="!selectedPaths.size || merging" @click="openMerge">合并到相册…</button>
         <button class="btn" :disabled="!selectedPaths.size || busyRating" @click="openRating">打分…</button>
         <button class="btn" :disabled="!selectedPaths.size || exporting" @click="doExport">导出选中…</button>
-        <button class="btn" :disabled="!selectedPaths.size || deleting" @click="requestDelete('record')">删除相册记录</button>
-        <button class="btn btn-danger-pg" :disabled="!selectedPaths.size || deleting" @click="requestDelete('file')">删除本地文件…</button>
+        <!-- FEAT-095：归档 / 隐藏（批量，针对照片） -->
+        <button
+          class="btn"
+          :disabled="!selectedPaths.size || photoActions.busy.value"
+          @click="onBatchMark('archived')"
+        >📦 {{ albumMarkState === 'archived' ? '取消归档' : '归档' }}</button>
+        <button
+          class="btn"
+          :disabled="!selectedPaths.size || photoActions.busy.value"
+          @click="onBatchMark('hidden')"
+        >🔒 {{ albumMarkState === 'hidden' ? '取消隐藏' : '隐藏' }}</button>
+        <button class="btn" :disabled="!selectedPaths.size || deleting" @click="requestDelete('records')">删除相册记录</button>
+        <button class="btn btn-danger-pg" :disabled="!selectedPaths.size || deleting" @click="requestDelete('trash')">删除本地文件…</button>
       </div>
     </div>
     <div v-if="deleteMsg" class="pg-delete-msg">{{ deleteMsg }}</div>
@@ -753,7 +903,8 @@ function onKey(e: KeyboardEvent) {
 
     <!-- 照片子框：照片多时只在框内滚动，整页不动；右下角提供回到顶部 -->
     <div v-else class="pg-scroll" ref="scrollEl" @scroll.passive="onScroll">
-      <div class="pg-grid">
+      <!-- FEAT-095：格子尺寸由缩放条驱动；兜底值写在 .pg-grid 的 CSS 里 -->
+      <div class="pg-grid" :style="{ gridTemplateColumns: `repeat(auto-fill, minmax(${cellSize}px, 1fr))` }">
       <figure
         v-for="(ph, i) in visiblePhotos"
         :key="ph.path"
@@ -785,6 +936,12 @@ function onKey(e: KeyboardEvent) {
         </div>
         <!-- 打分星标（>0 才显示，左上角） -->
         <span v-if="ratingMap[ph.path] > 0" class="pg-rating" :title="`打分 ${ratingMap[ph.path]} 星`">{{ "★".repeat(ratingMap[ph.path]) }}</span>
+        <!-- FEAT-095：归档 / 隐藏角标（右上角） -->
+        <span
+          v-if="photoActions.markStateOf(ph.path)"
+          class="pg-mark"
+          :title="photoActions.markStateOf(ph.path) === 'archived' ? '已归档' : '已隐藏'"
+        >{{ photoActions.markStateOf(ph.path) === 'archived' ? '📦' : '🔒' }}</span>
         <figcaption v-if="ph.meta?.category" class="pg-badge" :title="ph.meta.category">{{ categoryLabel(ph.meta.category) }}</figcaption>
         <!-- 人物角标：头像小框 + 自定义命名（最多 3 人，超出 +N） -->
         <div v-if="(ph.meta?.person_ids ?? []).length" class="pg-person">
@@ -807,13 +964,20 @@ function onKey(e: KeyboardEvent) {
       </transition>
     </div>
 
-    <!-- 大图查看器：点击照片打开，按需加载单张原图（含详细信息面板与像素分布图） -->
+    <!-- 大图查看器：点击照片打开（FEAT-095：启用删除 / 归档 / 隐藏按钮） -->
     <PhotoLightbox
       v-if="lightboxOpen"
       :photos="lightboxPhotos"
       :index="lightboxIndex"
       :persons="personsMap"
+      deletable
+      markable
+      :archived="albumMarkState === 'archived'"
+      :hidden="albumMarkState === 'hidden'"
       @close="closeLightbox"
+      @delete="onLightboxDelete"
+      @archive="(p, m) => onLightboxMark('archived', p, m)"
+      @hide="(p, m) => onLightboxMark('hidden', p, m)"
     />
 
     <!-- P1 右键上下文菜单 -->
@@ -825,14 +989,12 @@ function onKey(e: KeyboardEvent) {
       @close="closeCtxMenu"
     />
 
-    <!-- 删除二次确认：明确区分两种模式及后果 -->
-    <ConfirmDialog
-      :visible="confirmState !== null"
-      :title="confirmTitle"
-      :message="confirmMessage"
-      :confirm-text="confirmState?.mode === 'file' ? '永久删除文件' : '确认移除'"
-      :danger="confirmState?.mode === 'file'"
-      @confirm="doConfirmedDelete"
+    <!-- FEAT-095：删除二次确认（相册记录删除 / 本地删除移入回收站） -->
+    <PhotoDeleteDialog
+      :paths="confirmState?.paths ?? null"
+      :in-virtual-album="albumMarkState !== null"
+      :busy="deleting"
+      @pick="pickDeleteMode"
       @cancel="confirmState = null"
     />
 
@@ -1403,6 +1565,19 @@ function onKey(e: KeyboardEvent) {
 }
 .pg-star.on { color: #ffd43b; }
 .pg-star:hover { transform: scale(1.12); }
+
+/* FEAT-095：归档 / 隐藏角标（与左上的评分星标对称，避免互相遮挡） */
+.pg-mark {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 999px;
+}
 .pg-rating-value { margin-left: 10px; font-size: 14px; color: var(--color-primary-text); font-weight: 600; }
 .pg-rating-warn,
 .pg-rating-hint {

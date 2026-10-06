@@ -74,11 +74,73 @@ pub struct Album {
     /// 所属分组完整路径（如 "旅行/欧洲/巴黎"）
     #[serde(default)]
     pub folder_path: String,
+    /// FEAT-095：相册类型（数据库字段 `albums.kind`）
+    ///
+    /// - `"normal"`：普通相册，绑定真实本地文件夹（默认值，历史行均为此值）
+    /// - `"archived"`：归档相册（虚拟，`path` 为 `__virtual__://archive`，不落盘目录）
+    /// - `"hidden"`：隐藏相册（虚拟，`path` 为 `__virtual__://hidden`）
+    ///
+    /// 虚拟相册的 `path` 是约定哨兵值而非真实目录：读照片走 `photo_marks` 表，
+    /// 不做 walkdir（见 `album::list_album_photos` 按 kind 分流）。
+    #[serde(default = "default_album_kind")]
+    pub kind: String,
     /// 合并来源相册列表（FEAT-A）：
     /// 该相册历史上由哪些相册合并而来，用于封面下显示"由 X 个相册合并而成"。
     /// 不在数据库行里，命令层从 `album_merged_sources` 表填充。
     #[serde(default)]
     pub merged_sources: Vec<MergedSource>,
+}
+
+// =====================================================================
+// FEAT-095：相册类型与虚拟相册（归档 / 隐藏）
+// =====================================================================
+
+/// 普通相册（绑定真实文件夹）
+pub const ALBUM_KIND_NORMAL: &str = "normal";
+/// 归档相册（虚拟，收集被归档的照片）
+pub const ALBUM_KIND_ARCHIVED: &str = "archived";
+/// 隐藏相册（虚拟，需密码解锁后才在相册管理中可见）
+pub const ALBUM_KIND_HIDDEN: &str = "hidden";
+
+/// 归档相册的哨兵路径（约定值，非真实目录）
+pub const VIRTUAL_PATH_ARCHIVE: &str = "__virtual__://archive";
+/// 隐藏相册的哨兵路径（约定值，非真实目录）
+pub const VIRTUAL_PATH_HIDDEN: &str = "__virtual__://hidden";
+
+/// 照片标记状态：归档
+pub const MARK_ARCHIVED: &str = "archived";
+/// 照片标记状态：隐藏
+pub const MARK_HIDDEN: &str = "hidden";
+
+/// FEAT-095：普通相册类型（`albums.kind` 默认值 / 历史行回退值）
+pub fn default_album_kind() -> String {
+    ALBUM_KIND_NORMAL.to_string()
+}
+
+/// 判断 kind 是否为虚拟相册（归档 / 隐藏）
+pub fn is_virtual_album_kind(kind: &str) -> bool {
+    kind == ALBUM_KIND_ARCHIVED || kind == ALBUM_KIND_HIDDEN
+}
+
+/// 归档 / 隐藏批量设置结果
+#[derive(Debug, Clone, Serialize)]
+pub struct PhotoMarkOutcome {
+    /// 请求数量
+    pub requested: usize,
+    /// 成功标记数量
+    pub marked: usize,
+    /// 取消标记数量（取消归档 / 取消隐藏）
+    pub unmarked: usize,
+    /// 失败路径
+    pub failed_paths: Vec<String>,
+}
+
+/// 单张照片的标记状态查询结果
+#[derive(Debug, Clone, Serialize)]
+pub struct PhotoMarkState {
+    pub path: String,
+    /// `None` = 未归档未隐藏；`Some("archived")` / `Some("hidden")`
+    pub state: Option<String>,
 }
 
 /// 单个合并来源条目（FEAT-A）
@@ -165,6 +227,10 @@ pub enum DbError {
     #[error("相册不存在: ID {0}")]
     NotFound(i64),
 
+    /// FEAT-095：归档 / 隐藏相册为系统内置虚拟相册，禁止删除 / 重命名
+    #[error("归档/隐藏相册为系统内置相册，不可删除: ID {0}")]
+    ProtectedAlbum(i64),
+
     #[error("数据库错误: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
@@ -244,7 +310,8 @@ impl Database {
                 updated_at  INTEGER NOT NULL,
                 location    TEXT,
                 folder_id   INTEGER,
-                sort_order  INTEGER DEFAULT 0
+                sort_order  INTEGER DEFAULT 0,
+                kind        TEXT    NOT NULL DEFAULT 'normal'
             );",
         )?;
         // 手动排序分组表（最多三级父子关系）
@@ -349,6 +416,29 @@ impl Database {
         let _ = self.conn.execute_batch("ALTER TABLE albums ADD COLUMN location TEXT;");
         let _ = self.conn.execute_batch("ALTER TABLE albums ADD COLUMN folder_id INTEGER;");
         let _ = self.conn.execute_batch("ALTER TABLE albums ADD COLUMN sort_order INTEGER DEFAULT 0;");
+        // FEAT-095：为旧库补充 albums.kind（归档 / 隐藏相册类型）；历史行回退为 normal
+        let _ = self
+            .conn
+            .execute_batch("ALTER TABLE albums ADD COLUMN kind TEXT NOT NULL DEFAULT 'normal';");
+        let _ = self.conn.execute_batch(
+            "UPDATE albums SET kind = 'normal' WHERE kind IS NULL OR kind = '';",
+        );
+        // FEAT-095：照片标记表（归档 / 隐藏）
+        //   - 只打标记，不移动文件：照片仍在原相册目录，EXIF / 评分 / 人物关联全部保留
+        //   - state ∈ ('archived', 'hidden')，主键 (user_id, path) 保证幂等去重
+        //   - 多用户隔离：所有读写均按 user_id 过滤
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS photo_marks (
+                user_id    INTEGER NOT NULL,
+                path       TEXT    NOT NULL,
+                state      TEXT    NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(user_id, path)
+            );",
+        )?;
+        let _ = self
+            .conn
+            .execute_batch("CREATE INDEX IF NOT EXISTS idx_photo_marks_state ON photo_marks(user_id, state);");
         // 迁移：folder_albums 数据回填（12ccfb2 改进）
         // 自 folder_albums 成为分组归属唯一事实源后，读取不再依赖 albums.folder_id。
         // 但历史数据库可能存在「仅在 albums.folder_id 记录归属、folder_albums 无关联行」
@@ -487,8 +577,10 @@ impl Database {
 
     /// 从一行记录构造 Album
     ///
-    /// 列顺序: id, name, path, description, cover_path, created_at, updated_at, location
+    /// 列顺序: id, name, path, description, cover_path, created_at, updated_at, location, kind
     fn row_to_album(row: &rusqlite::Row) -> rusqlite::Result<Album> {
+        // FEAT-095：kind 允许为 NULL（旧库 / 手工插入行），统一回退为 normal
+        let kind: Option<String> = row.get(8)?;
         Ok(Album {
             id: row.get(0)?,
             name: row.get(1)?,
@@ -498,6 +590,7 @@ impl Database {
             created_at: row.get(5)?,
             updated_at: row.get(6)?,
             location: row.get(7)?,
+            kind: kind.filter(|k| !k.is_empty()).unwrap_or_else(default_album_kind),
             photo_count: 0,
             shoot_time: None,
             size_bytes: 0,
@@ -508,6 +601,11 @@ impl Database {
             merged_sources: Vec::new(),
         })
     }
+
+    /// 相册读取统一列清单（`get_albums` / `get_album` / `find_album_by_path` 共用，
+    /// 与 `row_to_album` 的列顺序严格对应）
+    const ALBUM_COLS: &'static str =
+        "id, name, path, description, cover_path, created_at, updated_at, location, kind";
 
     // ---------------- CRUD ----------------
 
@@ -556,10 +654,10 @@ impl Database {
     /// 查得表示 path 已被其他用户占用，需提示为「已存在」友好跳过场景。
     pub fn find_any_album_by_path(&self, path: &str) -> Result<Option<Album>, DbError> {
         let result = self.conn.query_row(
-            "SELECT id, name, path, description, cover_path, created_at, updated_at, location
-             FROM albums
-             WHERE path = ?1
-             LIMIT 1",
+            &format!(
+                "SELECT {} FROM albums WHERE path = ?1 LIMIT 1",
+                Self::ALBUM_COLS
+            ),
             params![path],
             Self::row_to_album,
         );
@@ -576,9 +674,10 @@ impl Database {
     /// 限定在当前登录用户的相册空间内查询。
     pub fn find_album_by_path(&self, path: &str, user_id: i64) -> Result<Option<Album>, DbError> {
         let result = self.conn.query_row(
-            "SELECT id, name, path, description, cover_path, created_at, updated_at, location
-             FROM albums
-             WHERE path = ?1 AND user_id = ?2",
+            &format!(
+                "SELECT {} FROM albums WHERE path = ?1 AND user_id = ?2",
+                Self::ALBUM_COLS
+            ),
             params![path, user_id],
             Self::row_to_album,
         );
@@ -593,12 +692,10 @@ impl Database {
     ///
     /// 多用户隔离：仅返回归属 `user_id` 的相册。
     pub fn get_albums(&self, user_id: i64) -> Result<Vec<Album>, DbError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, path, description, cover_path, created_at, updated_at, location
-             FROM albums
-             WHERE user_id = ?1
-             ORDER BY updated_at DESC",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM albums WHERE user_id = ?1 ORDER BY updated_at DESC",
+            Self::ALBUM_COLS
+        ))?;
         let rows = stmt.query_map(params![user_id], Self::row_to_album)?;
         let mut albums: Vec<Album> = rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)?;
         self.load_album_tags(&mut albums)?;
@@ -948,9 +1045,10 @@ impl Database {
         let mut album = self
             .conn
             .query_row(
-                "SELECT id, name, path, description, cover_path, created_at, updated_at, location
-                 FROM albums
-                 WHERE id = ?1 AND user_id = ?2",
+                &format!(
+                    "SELECT {} FROM albums WHERE id = ?1 AND user_id = ?2",
+                    Self::ALBUM_COLS
+                ),
                 params![id, user_id],
                 Self::row_to_album,
             )
@@ -1152,8 +1250,231 @@ impl Database {
         Ok(affected)
     }
 
+    // ---------------- FEAT-095：归档 / 隐藏标记 ----------------
+
+    /// 惰性创建当前用户的两个虚拟相册（归档 / 隐藏）
+    ///
+    /// 用 `INSERT OR IGNORE` + 哨兵 path 的 UNIQUE 约束保证幂等：
+    /// 首次调用插入，之后每次调用都是 0 行的 no-op。
+    /// 只建记录不建目录 —— 虚拟相册的 path 是约定哨兵值。
+    pub fn ensure_virtual_albums(&self, user_id: i64) -> Result<(), DbError> {
+        let now = Self::now_secs();
+        for (path, name, kind, desc) in [
+            (
+                VIRTUAL_PATH_ARCHIVE,
+                "归档",
+                ALBUM_KIND_ARCHIVED,
+                "已归档的照片（不移动文件，仅在本相册集中查看）",
+            ),
+            (
+                VIRTUAL_PATH_HIDDEN,
+                "隐藏",
+                ALBUM_KIND_HIDDEN,
+                "隐藏的照片（需在个人信息中输入密码解锁后可见）",
+            ),
+        ] {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO albums
+                    (name, path, description, cover_path, created_at, updated_at, user_id, kind)
+                 VALUES (?1, ?2, ?3, NULL, ?4, ?4, ?5, ?6)",
+                params![name, path, desc, now, user_id, kind],
+            )
+            .map_err(DbError::Sqlite)?;
+        }
+        Ok(())
+    }
+
+    /// 批量设置 / 取消照片标记（归档 / 隐藏）
+    ///
+    /// `marked = true` 写入或覆盖 state；`false` 删除该行（取消归档 / 取消隐藏）。
+    /// 单事务保证一批操作要么全成功要么全回滚（原子性）。
+    /// 状态互斥：同一张照片同时只能处于一个状态，写入 archived 会覆盖 hidden。
+    pub fn set_photo_marks(
+        &self,
+        user_id: i64,
+        state: &str,
+        paths: &[String],
+        marked: bool,
+    ) -> Result<PhotoMarkOutcome, DbError> {
+        let requested = paths.len();
+        let mut outcome = PhotoMarkOutcome {
+            requested,
+            marked: 0,
+            unmarked: 0,
+            failed_paths: Vec::new(),
+        };
+        if paths.is_empty() {
+            return Ok(outcome);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let now = Self::now_secs();
+        for p in paths {
+            let r = if marked {
+                tx.execute(
+                    "INSERT INTO photo_marks(user_id, path, state, updated_at)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(user_id, path) DO UPDATE SET
+                        state = excluded.state, updated_at = excluded.updated_at",
+                    params![user_id, p, state, now],
+                )
+                .map(|_| 1usize)
+            } else {
+                tx.execute(
+                    "DELETE FROM photo_marks WHERE user_id = ?1 AND path = ?2 AND state = ?3",
+                    params![user_id, p, state],
+                )
+                .map(|_| 0usize)
+            };
+            match r {
+                Ok(n) => {
+                    if marked {
+                        outcome.marked += n;
+                    } else {
+                        outcome.unmarked += n;
+                    }
+                }
+                Err(e) => {
+                    crate::logger::log_error(
+                        "photo_marks",
+                        &format!("set_photo_marks failed for path: {e:?}"),
+                    );
+                    outcome.failed_paths.push(p.clone());
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(outcome)
+    }
+
+    /// 列出**任意状态**下被标记的照片路径集合（`list_album_photos` 过滤用）
+    ///
+    /// 一次查询拿到 archived + hidden 全部路径，避免在列表命令里查两遍。
+    pub fn list_all_marked_paths(
+        &self,
+        user_id: i64,
+    ) -> Result<std::collections::HashSet<String>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM photo_marks WHERE user_id = ?1")
+            .map_err(DbError::Sqlite)?;
+        let rows = stmt
+            .query_map(params![user_id], |r| r.get::<_, String>(0))
+            .map_err(DbError::Sqlite)?;
+        let mut set = std::collections::HashSet::new();
+        for row in rows {
+            set.insert(row.map_err(DbError::Sqlite)?);
+        }
+        Ok(set)
+    }
+
+    /// 列出某状态下的照片路径（归档 / 隐藏相册的数据源）
+    ///
+    /// 按 `updated_at` 降序（最近归档/隐藏的排前面），单次查询无 N+1。
+    pub fn list_photo_marks(&self, user_id: i64, state: &str) -> Result<Vec<String>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT path FROM photo_marks WHERE user_id = ?1 AND state = ?2
+                 ORDER BY updated_at DESC, path ASC",
+            )
+            .map_err(DbError::Sqlite)?;
+        let rows = stmt
+            .query_map(params![user_id, state], |r| r.get::<_, String>(0))
+            .map_err(DbError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)
+    }
+
+    /// 批量查询照片标记状态（相册网格右键菜单显示「取消归档 / 取消隐藏」用）
+    pub fn get_photo_mark_states(
+        &self,
+        user_id: i64,
+        paths: &[String],
+    ) -> Result<Vec<PhotoMarkState>, DbError> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        // 分批 IN 查询（SQLite 变量上限 999），避免超长列表直接报错
+        let mut states: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for chunk in paths.chunks(500) {
+            let placeholders = std::iter::repeat("?").take(chunk.len()).collect::<Vec<_>>();
+            let sql = format!(
+                "SELECT path, state FROM photo_marks WHERE user_id = ? AND path IN ({})",
+                placeholders.join(",")
+            );
+            let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> =
+                Vec::with_capacity(chunk.len() + 1);
+            params_vec.push(Box::new(user_id));
+            for p in chunk {
+                params_vec.push(Box::new(p.clone()));
+            }
+            let refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+            let mut stmt = self.conn.prepare(&sql).map_err(DbError::Sqlite)?;
+            let rows = stmt
+                .query_map(refs.as_slice(), |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .map_err(DbError::Sqlite)?;
+            for row in rows {
+                let (p, s) = row.map_err(DbError::Sqlite)?;
+                states.insert(p, s);
+            }
+        }
+        Ok(paths
+            .iter()
+            .map(|p| PhotoMarkState {
+                state: states.get(p).cloned(),
+                path: p.clone(),
+            })
+            .collect())
+    }
+
+    /// 统计某状态下的照片数量（虚拟相册的 photo_count 直接来自这里）
+    pub fn count_photo_marks(&self, user_id: i64, state: &str) -> Result<i64, DbError> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM photo_marks WHERE user_id = ?1 AND state = ?2",
+                params![user_id, state],
+                |r| r.get(0),
+            )
+            .map_err(DbError::Sqlite)
+    }
+
+    /// 统计某状态下**磁盘文件仍存在**的照片数量
+    ///
+    /// 虚拟相册的 photo_count 用这个而不是 `count_photo_marks`：
+    /// 手动删过文件后标记行还在，但不该继续计入张数。
+    pub fn count_photo_marks_alive(&self, user_id: i64, state: &str) -> Result<i64, DbError> {
+        let all = self.list_photo_marks(user_id, state)?;
+        Ok(all
+            .iter()
+            .filter(|p| Path::new(p).is_file())
+            .count() as i64)
+    }
+
+    /// 取某状态下第一张仍存在的照片路径（虚拟相册封面来源）
+    pub fn first_photo_mark_alive(&self, user_id: i64, state: &str) -> Result<Option<String>, DbError> {
+        Ok(self
+            .list_photo_marks(user_id, state)?
+            .into_iter()
+            .find(|p| Path::new(p).is_file()))
+    }
+
     pub fn delete_album(&self, id: i64, user_id: i64) -> Result<(), DbError> {
         let tx = self.conn.unchecked_transaction()?;
+        // FEAT-095：归档 / 隐藏相册是系统内置虚拟相册，不允许删除
+        let kind: Option<String> = tx
+            .query_row(
+                "SELECT kind FROM albums WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(k) = kind.as_deref() {
+            if is_virtual_album_kind(k) {
+                return Err(DbError::ProtectedAlbum(id));
+            }
+        }
         let affected =
             tx.execute("DELETE FROM albums WHERE id = ?1 AND user_id = ?2", params![id, user_id])?;
         if affected == 0 {

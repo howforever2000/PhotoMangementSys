@@ -3185,7 +3185,127 @@
       ],
       "created_at": "2026-09-30T23:55:00+08:00",
       "updated_at": "2026-09-30T23:55:00+08:00"
+    },
+    {
+      "id": "FEAT-095",
+      "name": "照片预览器改造（信息侧栏不遮挡 + 拍摄时间/地点 + 删除/归档/隐藏）+ 归档/隐藏虚拟相册（密码解锁）+ 缩略图矩阵缩放 + 缩略图右键菜单全站对齐",
+      "module": "src-tauri/src/photo_mark.rs（新增）\nsrc-tauri/src/db/mod.rs（albums.kind 列 + photo_marks 表 + 虚拟相册惰性建档 + 8 个标记方法 + ProtectedAlbum 错误）\nsrc-tauri/src/db/content.rs（AlbumContentRow 补 location/lat/lon + 统一列清单/行映射 + read_content_by_paths）\nsrc-tauri/src/album.rs（fill_album_stats 分流 + list_album_photos 虚拟分支 + 过滤标记照片）\nsrc-tauri/src/content.rs（read_album_content 虚拟分支 + get_photo_content_by_path 命令）\nsrc-tauri/src/auth.rs（verify_current_password）\nsrc-tauri/src/lib.rs（mod photo_mark + 4 个命令注册）\nsrc/components/PhotoLightbox.vue、PhotoActionMenu.vue（新增）、PhotoDeleteDialog.vue（新增）、PhotoZoomBar.vue（新增）\nsrc/components/PhotoGrid.vue、PersonGallery.vue、CategoryGallery.vue、LocationGallery.vue\nsrc/composables/usePhotoActions.ts（新增）、src/stores/vault.ts（新增）、src/stores/album.ts\nsrc/views/AlbumDetail.vue、AlbumList.vue、Home.vue\nsrc/types/album.ts、content.ts、photo.ts",
+      "purpose": "用户提 4 类问题：①智慧相册→按人物分类→点头像出的照片矩阵框不能放大缩小；②照片预览框的信息页浮在照片上把小图挡死，且信息里没有拍摄地点；③照片预览下缺少 删除/归档/隐藏 三个动作（删除要二次确认且分两种模式；归档要在相册管理出现一个名为「归档」的相册；隐藏相册要在个人信息输密码解锁后才出现）；④所有照片的缩略图右键菜单与原图预览的功能不对齐（分类/地点画廊甚至只有删除，没有打分/标签）。同时要求编码原子性、复用组件。",
+      "implementation": {
+        "数据模型": [
+          "albums 加一列 kind TEXT NOT NULL DEFAULT 'normal'（normal | archived | hidden）；历史行 ALTER 迁移后统一回填 normal，row_to_album 对 NULL/'' 兜底",
+          "新增 photo_marks 表 (user_id, path, state, updated_at)，主键 (user_id, path) 保证幂等去重；建 idx_photo_marks_state(user_id, state)",
+          "虚拟相册惰性建档：ensure_virtual_albums 用哨兵 path（__virtual__://archive / __virtual__//hidden）+ INSERT OR IGNORE + albums.path 的 UNIQUE 约束保证只建一次",
+          "DbError 新增 ProtectedAlbum(i64)：delete_album 对 kind != normal 直接拒删（Db 层硬约束，不依赖前端隐藏按钮）",
+          "标记行与照片文件解耦：只写 photo_marks，不动文件系统 —— EXIF/评分/标签/人物关联/缩略图缓存全部原样保留"
+        ],
+        "后端分流点": [
+          "fill_album_stats 新增 fill_virtual_album_stats 分支：photo_count 用 count_photo_marks_alive（只数磁盘文件还在的），封面取第一张存活照片的缩略图，size_bytes 保持 0 不谎报",
+          "list_album_photos：kind 为虚拟时查 photo_marks 返回路径（零 walkdir）并过滤文件已删的行；普通相册额外过滤 list_all_marked_paths —— 这就是「归档后从原相册消失」的实现点",
+          "fill_scanned_counts 跳过虚拟相册（哨兵 path 做前缀统计必为 0，省一次全表查询）",
+          "read_album_content：虚拟相册走 read_content_by_paths（归档照片的 album_id 仍指向原相册，WHERE album_id=? 查不到）",
+          "AlbumContentRow 补 location/lat/lon —— 这三个字段原本只在 ContentSearchHit 上有，read_album_content 取不到，导致信息页无法显示地点",
+          "新增 get_photo_content_by_path 命令：智慧相册的人物/分类/地点画廊打开 Lightbox 时不传 meta，靠它兜底查时间与地点",
+          "set_photo_marks / list_marked_photos / get_photo_mark_states / verify_current_password 四个命令均带 log_call 出入口日志；密码只记 password=***，只回 bool"
+        ],
+        "预览器改造": [
+          "R2 不遮挡：信息面板从 absolute 浮层改成 .lb-layout(flex) 下「左图片区 + 右侧并列栏」，图片区 max-width 100% 填满剩余空间；侧栏可折叠（metaCollapsed），折叠后只剩 44px 标题条",
+          "翻页箭头与缩放提示条改挂在 .lb-stage（position:relative）内，原来相对整个遮罩定位会压到信息栏上",
+          "R3 信息补全：拍摄时间提到基本信息区首位并对「未记录」给明确占位（原实现无值时整行消失，用户看不出是没记录还是没显示）；地点优先 meta.location，其次 get_photo_content_by_path 兜底，无地名但有 GPS 坐标时降级显示坐标",
+          "R4 工具栏新增 📦 归档 / 🔒 隐藏（取消归档 / 取消隐藏随状态切文案），归档隐藏逻辑在组件内不落地 —— 只 emit 给父视图，由父视图决定刷新哪份列表",
+          "新增 metaCollapsed / placeInfo / placeLoading / mapUrl 状态，全部在既有 watch + initForCurrentPhoto 里加载，保持原有的「不用 immediate watch」TDZ 规避写法"
+        ],
+        "复用层（原子性）": [
+          "usePhotoActions.ts：归档/隐藏/取消的单一实现（apply/archive/unarchive/hide/unhide + markStates 缓存 + loadMarkStates 静默失败降级 + openInWorkshop）。四处 Gallery 全走它，语义只有一份",
+          "PhotoActionMenu.vue：缩略图右键菜单的唯一实现，内聚 菜单条目 + 快速打分 + 快速标签 + 删除双模式四个弹窗。CategoryGallery / LocationGallery / PersonGallery 三处原本各写一份只含删除项的菜单，现全部换成它",
+          "PhotoDeleteDialog.vue：删除双模式二次确认的唯一实现。原先散落 3 份（PhotoGrid 用 ConfirmDialog、PersonGallery/CategoryGallery/LocationGallery 各有 del-mask 弹窗），语义还各不相同",
+          "PhotoZoomBar.vue：缩略图尺寸缩放条。PhotoGrid 与 PersonGallery 共用；尺寸上限 320px 的理由写在组件注释里（缩略图缓存只有 256px，再大只是糊图）",
+          "filterVisibleAlbums（types/album.ts）+ vault store：隐藏相册门禁只在 album store 的 fetchAlbums 一处收口，页面无需各自判断",
+          "AlbumContentRow 的三处重复 SELECT + 手工行映射收敛为 ALBUM_CONTENT_COLS 常量 + map_album_content_row 函数"
+        ],
+        "隐藏相册密码门禁": [
+          "vault store：hiddenUnlocked 只放内存不落 localStorage —— 落盘等于任何能打开应用的人都能绕过密码看到隐藏相册",
+          "解锁入口在 Home 的「个人信息」弹窗内，与「当前密码」分成两块（前者只读视图凭证，后者是改资料凭证，混在一起会误解）",
+          "unlockHiddenAlbum 动作把「解锁」与「列表可见」绑成一步（散开写迟早出现漏刷新的分支）",
+          "双层拦截：列表过滤（未解锁不在 store.albums 里）+ AlbumDetail 的 vaultDenied（防止把 id 写进地址栏绕过）",
+          "登出时 vault.reset()，解锁态不跨会话也不跨账号",
+          "归档/隐藏相册 0 张时不出现在相册管理（否则一进来就杵两个空壳卡片）"
+        ],
+        "相册管理呈现": [
+          "虚拟相册不进时间/地点分组（没有真实文件夹与拍摄时间），抽成顶部固定的「系统相册」区块",
+          "openAlbumPath 对 __virtual__:// 前缀给出「系统内置相册，没有对应本地文件夹」提示，不再把哨兵路径丢给 open_folder",
+          "右键菜单对虚拟相册隐藏「重命名 / 删除」；AlbumDetail 同样不提供删除相册入口"
+        ],
+        "交互细节": [
+          "四个地点的 PhotoLightbox 都接上了 archive/hide 事件，删除按钮统一走各自的二次确认链路 —— 分类/地点画廊原本只有右键能删，大图里删不了",
+          "PhotoGrid 大图删除时先自动选中当前照片，复用网格右键的老链路，撤销 Toast 行为与右键完全一致",
+          "归档/隐藏相册内的删除：record 模式的「撤销」改为取消归档/隐藏（虚拟相册没有「原相册」可恢复）",
+          "缩略图新增归档/隐藏角标（📦/🔒），与评分星标左右对称，避免互相遮挡",
+          "所有提交类按钮加 busy 禁用（deleting / photoActions.busy），防重复提交"
+        ]
+      },
+      "highlights": [
+        "「归档」的实现选型：给 albums 加 kind 列 + 哨兵 path 做虚拟相册，而不是前端拼一个假 Album 对象。前者让 get_album / list_album_photos / read_album_content / 缩略图缓存 / 相册卡片全部复用既有链路，代价只有 4 个分流点；后者要改 AlbumDetail、PhotoGrid、面包屑等多处",
+        "「归档后从原相册消失」复用了 list_album_photos 的既有过滤集合（album_photo_excluded），再并入 photo_marks 一层，没有为归档另造一套排除机制",
+        "只打标记不移动文件：用户的归档/隐藏需求本质是「视图隔离」而非「文件搬家」，移动文件会破坏相册目录结构、已扫 EXIF、缩略图缓存命名与人物 faces 表的 photo_path 关联",
+        "person.rs 的 faces 表按 photo_path 关联照片 —— 物理移动文件会让已有人脸记录失效，这是「归档/隐藏不移动文件」的硬约束（也是需求里没说清但必须这么实现的原因）",
+        "PersonGallery 的矩阵缩放上限定 320px：缩略图缓存固定 256px，PhotoZoomBar 里把这个上限和理由写进注释，避免后人调到 600px 认为是「高清」",
+        "右键菜单从 4 份不一致的实现收敛为 1 个组件：CategoryGallery / LocationGallery 此前连打分和标签都没有，用户说的「右键也要支持原图预览下面的功能」其实是补齐了三处功能缺失",
+        "verify_current_password 复用 auth::verify_password（argon2），日志只写 password=*** 与 matched/mismatched，不落任何密码数据"
+      ],
+      "tests": [
+        "cargo check 0 error（含 ALBUM_COLS 关联常量、Box<dyn ToSql> 分批 IN 查询、unchecked_transaction 借用规则）",
+        "cargo test 158 passed / 0 failed / 3 ignored（相册 / 人物 / 扫描 / 缩略图等既有单测全绿，新增迁移与标记逻辑未回归）",
+        "npx vue-tsc --noEmit exit 0（本次新增/改动的 15 个前端文件全部通过；ThemeDialog.vue 的既有 PRESETS 未定义报错为他人未提交改动，非本次引入）",
+        "npx vite build exit 0，产物正常分块（PhotoLightbox 独立 chunk 16.49 kB / gzip 6.89 kB）",
+        "npm test 59/59 全绿"
+      ],
+      "related_files": [
+        "src-tauri/src/photo_mark.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/album.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/auth.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/PhotoLightbox.vue",
+        "src/components/PhotoActionMenu.vue",
+        "src/components/PhotoDeleteDialog.vue",
+        "src/components/PhotoZoomBar.vue",
+        "src/components/PhotoGrid.vue",
+        "src/components/PersonGallery.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/LocationGallery.vue",
+        "src/composables/usePhotoActions.ts",
+        "src/stores/vault.ts",
+        "src/stores/album.ts",
+        "src/views/AlbumDetail.vue",
+        "src/views/AlbumList.vue",
+        "src/views/Home.vue",
+        "src/types/album.ts",
+        "src/types/content.ts",
+        "src/types/photo.ts"
+      ],
+      "keywords": [
+        "归档",
+        "隐藏",
+        "虚拟相册",
+        "password",
+        "album.kind",
+        "photo_marks",
+        "lightbox",
+        "缩放",
+        "右键菜单",
+        "缩略图",
+        "拍摄时间",
+        "地点",
+        "删除二次确认",
+        "回收站",
+        "component reuse"
+      ],
+      "created_at": "2026-10-07T00:00:00+08:00",
+      "updated_at": "2026-10-07T00:00:00+08:00"
     }
   ],
-  "updated": "2026-09-30T23:55:00+08:00"
+  "updated": "2026-10-07T00:00:00+08:00"
 }
