@@ -156,6 +156,12 @@ export interface AlbumContentRow {
   shutter_speed: string | null;
   focal_length: string | null;
   shoot_time: string | null;
+  /** FEAT-095：反查地名（省 / 市级）；无 GPS 或未命中为 null */
+  location: string | null;
+  /** FEAT-095：GPS 纬度（WGS84 十进制度） */
+  lat: number | null;
+  /** FEAT-095：GPS 经度（WGS84 十进制度） */
+  lon: number | null;
   iso_num: number | null;
   focal_num: number | null;
   aperture_num: number | null;

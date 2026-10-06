@@ -55,6 +55,46 @@ pub fn create_album(
 }
 
 
+/// FEAT-095：虚拟相册（归档 / 隐藏）的统计与封面回填
+///
+/// 与普通相册的 `fill_album_stats` 互斥分支：数据源是 `photo_marks` 表而非目录。
+/// - `photo_count` 只统计**磁盘文件仍在**的标记（手动删过文件的不再计入）；
+/// - `cover_path` 取第一张仍存在照片的缩略图（优先复用已有缓存，缺失则现场生成一次）；
+/// - `size_bytes` 对虚拟相册无意义，保持 0（不谎报容量）。
+fn fill_virtual_album_stats(
+    album: &mut crate::db::Album,
+    thumbs_dir: &Path,
+    state: &crate::AppState,
+    user_id: i64,
+) {
+    let mark_state = if album.kind == crate::db::ALBUM_KIND_ARCHIVED {
+        crate::db::MARK_ARCHIVED
+    } else {
+        crate::db::MARK_HIDDEN
+    };
+    let (count, first) = {
+        let Ok(db) = state.0.lock() else { return };
+        (
+            db.count_photo_marks_alive(user_id, mark_state).unwrap_or(0),
+            db.first_photo_mark_alive(user_id, mark_state).unwrap_or(None),
+        )
+    };
+    album.photo_count = count;
+    album.size_bytes = 0;
+    album.shoot_time = None;
+    if album.cover_path.is_some() {
+        return;
+    }
+    let Some(src) = first else { return };
+    if let Ok(res) = crate::thumbnail::ensure_thumbnail_from_source(album.id, std::path::Path::new(&src), thumbs_dir)
+    {
+        album.cover_path = Some(res.thumb_path.clone());
+        if let Ok(db) = state.0.lock() {
+            let _ = db.update_album_cover(album.id, album.cover_path.clone());
+        }
+    }
+}
+
 /// 填充相册的统计属性（照片数量、文件夹大小、拍摄时间、默认封面）
 ///
 /// **变更探测 + SQL 复用**（替代 TTL 定时失效）：
@@ -74,7 +114,18 @@ pub fn create_album(
 /// - `size_bytes`: 文件夹真实占用空间
 /// - `shoot_time`: 相册内图片的 EXIF 拍摄时间（YYYY-MM-DD）
 /// - `cover_path`: 若没有封面，自动用文件夹内第一张图片的缩略图作为封面（写回 SQL）
-pub fn fill_album_stats(album: &mut crate::db::Album, thumbs_dir: &Path, state: &crate::AppState) {
+pub fn fill_album_stats(
+    album: &mut crate::db::Album,
+    thumbs_dir: &Path,
+    state: &crate::AppState,
+    user_id: i64,
+) {
+    // FEAT-095：归档 / 隐藏虚拟相册没有真实目录，走 photo_marks 表统计
+    // （photo_count 只计磁盘文件仍在的；封面取第一张仍存在的照片缩略图）
+    if crate::db::is_virtual_album_kind(&album.kind) {
+        fill_virtual_album_stats(album, thumbs_dir, state, user_id);
+        return;
+    }
     let dir = std::path::Path::new(&album.path);
 
     // 变更探测：递归文件总数（轻量，只数不读，每相册几 ms）
@@ -147,7 +198,15 @@ pub fn fill_album_stats(album: &mut crate::db::Album, thumbs_dir: &Path, state: 
 /// 多用户隔离：`user_id` 由调用方传入，仅统计当前用户已入库行。
 pub fn fill_scanned_counts(albums: &mut [crate::db::Album], user_id: i64, state: &crate::AppState) {
     let Ok(db) = state.0.lock() else { return };
-    let pairs: Vec<(i64, String)> = albums.iter().map(|a| (a.id, a.path.clone())).collect();
+    // FEAT-095：虚拟相册的 path 是哨兵值，前缀统计必然为 0，直接跳过（省一次全表查询）
+    let pairs: Vec<(i64, String)> = albums
+        .iter()
+        .filter(|a| !crate::db::is_virtual_album_kind(&a.kind))
+        .map(|a| (a.id, a.path.clone()))
+        .collect();
+    if pairs.is_empty() {
+        return;
+    }
     let Ok(map) = db.count_scanned_by_prefix(user_id, &pairs) else { return };
     for a in albums.iter_mut() {
         a.scanned_photo_count = map.get(&a.id).copied().unwrap_or(0);
@@ -173,12 +232,17 @@ pub async fn get_albums(
         use tauri::Manager;
         let thumbs = crate::thumbs_dir(&app)?;
         let state = app.state::<crate::AppState>();
+        // FEAT-095：惰性创建归档 / 隐藏虚拟相册（幂等，重复调用为 0 行 no-op）
+        {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            db.ensure_virtual_albums(user_id).map_err(|e| e.to_string())?;
+        }
         let mut albums = {
             let db = state.0.lock().map_err(|e| e.to_string())?;
             db.get_albums(user_id).map_err(|e| e.to_string())?
         };
         for a in albums.iter_mut() {
-            fill_album_stats(a, &thumbs, &state);
+            fill_album_stats(a, &thumbs, &state, user_id);
         }
         // FEAT-036：批量填充每个相册的已入库照片数（一次 SQL 分组统计，避免 N+1）
         fill_scanned_counts(&mut albums, user_id, &state);
@@ -211,7 +275,7 @@ pub async fn get_album(
             let db = state.0.lock().map_err(|e| e.to_string())?;
             db.get_album(id, user_id).map_err(|e| e.to_string())?
         };
-        fill_album_stats(&mut album, &thumbs, &state);
+        fill_album_stats(&mut album, &thumbs, &state, user_id);
         // FEAT-036：填充该相册已入库照片数（单元素切片复用批量逻辑）
         fill_scanned_counts(std::slice::from_mut(&mut album), user_id, &state);
         Ok(album)
@@ -223,9 +287,15 @@ pub async fn get_album(
 }
 
 
-/// 列出相册文件夹内所有图片的绝对路径（供照片网格浏览）
+/// 列出相册内所有图片的绝对路径（供照片网格浏览）
 ///
-/// 无需先执行内容扫描即可展示照片：轻量 walkdir 收集图片路径。
+/// 普通相册：轻量 walkdir 收集图片路径。
+/// 虚拟相册（FEAT-095 归档 / 隐藏）：直接查 `photo_marks`，不做任何目录遍历。
+///
+/// 过滤规则（普通相册）：
+///  1. 「记录删除」排除项（`album_photo_excluded`，本地文件保留）；
+///  2. FEAT-095 归档 / 隐藏标记项（`photo_marks`）—— 照片已移入归档 / 隐藏相册，
+///     不再出现在原相册视图中。
 /// 多用户隔离：仅能列出归属当前用户的相册。
 /// async + spawn_blocking：全相册目录遍历不应占住主线程。
 #[tauri::command]
@@ -239,12 +309,34 @@ pub async fn list_album_photos(
     let paths = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>, String> {
         use tauri::Manager;
         let state = app.state::<crate::AppState>();
-        let dir = {
+        let (dir, kind) = {
             let db = state.0.lock().map_err(|e| e.to_string())?;
-            db.get_album(album_id, user_id)
-                .map_err(|e| e.to_string())?
-                .path
+            let a = db.get_album(album_id, user_id).map_err(|e| e.to_string())?;
+            (a.path, a.kind)
         };
+        // FEAT-095：虚拟相册分支 —— 数据源是 photo_marks 表，不碰文件系统
+        if crate::db::is_virtual_album_kind(&kind) {
+            let mark_state = if kind == crate::db::ALBUM_KIND_ARCHIVED {
+                crate::db::MARK_ARCHIVED
+            } else {
+                crate::db::MARK_HIDDEN
+            };
+            let all = {
+                let db = state.0.lock().map_err(|e| e.to_string())?;
+                db.list_photo_marks(user_id, mark_state).map_err(|e| e.to_string())?
+            };
+            // 文件被手动删掉的标记行一并过滤掉（否则网格出现破图占位）
+            let paths: Vec<String> = all
+                .into_iter()
+                .filter(|p| Path::new(p).is_file())
+                .collect();
+            crate::logger::log_call_end_with(
+                "list_album_photos",
+                _t,
+                &format!("OK | virtual kind={kind} count={}", paths.len()),
+            );
+            return Ok(paths);
+        }
         // 过滤已被「记录删除」排除的照片（本地文件保留，但不再出现在网格中）
         let excluded: std::collections::HashSet<String> = {
             let db = state.0.lock().map_err(|e| e.to_string())?;
@@ -253,10 +345,16 @@ pub async fn list_album_photos(
                 .into_iter()
                 .collect()
         };
+        // 归档 / 隐藏标记（FEAT-095）：已移入归档 / 隐藏相册的照片不再出现在原相册
+        let marked: std::collections::HashSet<String> = {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            db.list_all_marked_paths(user_id).map_err(|e| e.to_string())?
+        };
         let mut count = 0usize;
         let paths: Vec<String> = crate::thumbnail::list_album_images(Path::new(&dir))
             .into_iter()
             .filter(|p| !excluded.contains(p))
+            .filter(|p| !marked.contains(p))
             .inspect(|_| count += 1)
             .collect();
         crate::logger::log_call_end_with("list_album_photos", _t, &format!("OK | count={count}"));
@@ -957,7 +1055,7 @@ pub fn set_cover(
     // 手动封面已确定，清理可能残留的自动缩略图缓存，避免孤儿文件
     crate::thumbnail::cleanup_album_auto_thumbs(id, &thumbs);
     // 此时 cover_path 已设置，fill_album_stats 不会覆盖它
-    fill_album_stats(&mut album, &thumbs, &state);
+    fill_album_stats(&mut album, &thumbs, &state, user_id);
     crate::logger::log_info(&format!(
         "[SET_COVER] 阶段4 清理旧缩略图+刷新统计: {}ms",
         t4.elapsed().as_millis()

@@ -1376,6 +1376,38 @@ pub mod commands {
         Ok(out)
     }
 
+    /// FEAT-095：按路径读单张照片的扫描记录（信息页「拍摄时间 / 地点」兜底）
+    ///
+    /// 智慧相册的人物 / 分类 / 地点画廊打开 Lightbox 时不传 meta，
+    /// 这些页面的信息页若没有本命令就永远缺地点。纯 SQL 单行查询，零 IO。
+    #[tauri::command]
+    pub fn get_photo_content_by_path(
+        path: String,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Option<db::AlbumContentRow>, String> {
+        let _t = log_call!("get_photo_content_by_path", &format!("path={path}"));
+        let user_id = require_user(&session)?;
+        let r = (|| -> Result<Option<db::AlbumContentRow>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.get_photo_content_by_path(&path, user_id)
+                .map_err(|e| format!("{:?}", e))
+        })();
+        match &r {
+            Ok(row) => logger::log_call_end_with(
+                "get_photo_content_by_path",
+                _t,
+                if row.is_some() { "OK | HIT" } else { "OK | MISS" },
+            ),
+            Err(e) => logger::log_call_end_with(
+                "get_photo_content_by_path",
+                _t,
+                &format!("ERR | {e}"),
+            ),
+        }
+        r
+    }
+
     // ---- FEAT-026：组合扫描 + 读表 + 条件搜索 ----
 
     /// P0（原 T2）：扫描成功后重建描述向量索引 —— 修「扫完的照片用时间/地点搜不到」。
@@ -2004,6 +2036,37 @@ pub mod commands {
 
         let r = (|| -> Result<(Vec<db::AlbumContentRow>, i64), String> {
             let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            // FEAT-095：归档 / 隐藏虚拟相册分支 —— 其照片的 album_id 仍指向原相册，
+            // 不能走 `WHERE album_id = ?`，改按 photo_marks 的路径集合读（分页在此之前一次性取全量，
+            // 归档 / 隐藏量级远小于普通相册）。
+            let kind: String = db
+                .conn()
+                .query_row(
+                    "SELECT kind FROM albums WHERE id = ?1 AND user_id = ?2",
+                    rusqlite::params![album_id, user_id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| db::ALBUM_KIND_NORMAL.to_string());
+            if db::is_virtual_album_kind(&kind) {
+                let mark_state = if kind == db::ALBUM_KIND_ARCHIVED {
+                    db::MARK_ARCHIVED
+                } else {
+                    db::MARK_HIDDEN
+                };
+                let marked = db
+                    .list_photo_marks(user_id, mark_state)
+                    .map_err(|e| format!("{:?}", e))?;
+                let rows = db
+                    .read_content_by_paths(user_id, &marked)
+                    .map_err(|e| format!("{:?}", e))?;
+                let total = rows.len() as i64;
+                let offset = ((page - 1) * page_size).max(0) as usize;
+                let page_rows: Vec<db::AlbumContentRow> =
+                    rows.into_iter().skip(offset).take(page_size.max(0) as usize).collect();
+                return Ok((page_rows, total));
+            }
             db.read_album_content(album_id, user_id, page, page_size).map_err(|e| format!("{:?}", e))
         })();
         match &r {

@@ -349,3 +349,25 @@ export interface RecentlyExcludedItem {
   excluded_at: number;
   album_name: string;
 }
+
+// ---------------------------------------------------------------------------
+// FEAT-095：照片归档 / 隐藏标记
+// ---------------------------------------------------------------------------
+
+/** 照片标记状态 —— 对应 Rust `db::MARK_ARCHIVED` / `db::MARK_HIDDEN` */
+export type PhotoMarkState = "archived" | "hidden";
+
+/** 单张照片的标记状态 —— 对应 Rust `PhotoMarkState` */
+export interface PhotoMarkStatus {
+  path: string;
+  /** `null` = 未归档未隐藏；否则为当前状态（归档与隐藏互斥） */
+  state: PhotoMarkState | null;
+}
+
+/** 归档 / 隐藏批量设置结果 —— 对应 Rust `PhotoMarkOutcome` */
+export interface PhotoMarkOutcome {
+  requested: number;
+  marked: number;
+  unmarked: number;
+  failed_paths: string[];
+}

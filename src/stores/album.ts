@@ -1,7 +1,20 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import type { Album, CreateAlbumInput, UpdateAlbumInput, BatchAlbumOutcome, MergeAlbumOutcome } from "../types/album";
-import type { PhotoInfo, PhotoDeleteOutcome, ExportOutcome, PhotoMoveOutcome, PhotoRating, PrewarmOutcome, RecentlyExcludedItem } from "../types/photo";
+import { filterVisibleAlbums } from "../types/album";
+import { useVaultStore } from "./vault";
+import type {
+  PhotoInfo,
+  PhotoDeleteOutcome,
+  ExportOutcome,
+  PhotoMoveOutcome,
+  PhotoRating,
+  PrewarmOutcome,
+  RecentlyExcludedItem,
+  PhotoMarkState,
+  PhotoMarkOutcome,
+  PhotoMarkStatus,
+} from "../types/photo";
 
 /** 批量导入跳过项（path 已被其他用户占用时返回，供前端友好提示） */
 export interface SkippedConflict {
@@ -26,8 +39,11 @@ export interface ImportResult {
  */
 export const useAlbumStore = defineStore("album", {
   state: () => ({
-    /** 当前相册列表缓存 */
+    /** 当前相册列表缓存（已按 FEAT-095 可见性过滤，页面直接消费此列表） */
     albums: [] as Album[],
+    /** FEAT-095：后端返回的原始相册列表（含未解锁的隐藏相册 / 空虚拟相册）。
+     *  保留原始值以便「隐藏相册有多少张」这类提示不必再查一次后端。 */
+    rawAlbums: [] as Album[],
     /** 当前正在查看的相册详情 */
     currentAlbum: null as Album | null,
     /** 全局加载状态 */
@@ -35,16 +51,32 @@ export const useAlbumStore = defineStore("album", {
   }),
 
   actions: {
-    /** 获取相册列表并刷新缓存 */
+    /** 获取相册列表并刷新缓存（按 FEAT-095 规则过滤隐藏 / 空虚拟相册） */
     async fetchAlbums(): Promise<Album[]> {
       this.isLoading = true;
       try {
         // folder_id/folder_path 由后端以 folder_albums 为唯一事实源填充，前端不做兜底
-        this.albums = await invoke<Album[]>("get_albums");
+        this.rawAlbums = await invoke<Album[]>("get_albums");
+        // 隐藏相册门禁在相册 store 统一收口：解锁态由 vault store 持有（会话内存）
+        const vault = useVaultStore();
+        this.albums = filterVisibleAlbums(this.rawAlbums, vault.hiddenUnlocked);
         return this.albums;
       } finally {
         this.isLoading = false;
       }
+    },
+
+    /**
+     * FEAT-095：隐藏相册解锁成功后重取列表
+     *
+     * 单独提供一个动作而不是让调用方 `unlock()` 后自己 `fetchAlbums()`：
+     * 「解锁」与「列表可见」本就是一件事，散开写迟早会出现漏刷新的分支。
+     */
+    async unlockHiddenAlbum(password: string): Promise<boolean> {
+      const vault = useVaultStore();
+      const ok = await vault.unlock(password);
+      if (ok) await this.fetchAlbums();
+      return ok;
     },
 
     /** 获取单个相册详情 */
@@ -139,6 +171,55 @@ export const useAlbumStore = defineStore("album", {
     /** 获取人物头像缓存路径（代表脸 bbox 裁剪；服务未运行时抛错由调用方回退） */
     async getPersonAvatar(pid: string, forceRefresh = false): Promise<string> {
       return await invoke<string>("get_person_avatar", { pid, forceRefresh });
+    },
+
+    // ---------------- FEAT-095：归档 / 隐藏标记 ----------------
+
+    /**
+     * 批量归档 / 隐藏照片（只打标记，不移动文件）
+     *
+     * 标记后照片从原相册视图移出（后端 `list_album_photos` 过滤 `photo_marks`），
+     * 集中出现在相册管理的「归档」/「隐藏」相册中。归档与隐藏状态互斥。
+     */
+    async setPhotoMarks(state: PhotoMarkState, paths: string[], marked: boolean): Promise<PhotoMarkOutcome> {
+      if (!paths.length) {
+        return { requested: 0, marked: 0, unmarked: 0, failed_paths: [] };
+      }
+      return await invoke<PhotoMarkOutcome>("set_photo_marks", { state, paths, marked });
+    },
+
+    /** 归档照片（语义化包装，便于调用方少写参数） */
+    async archivePhotos(paths: string[]): Promise<PhotoMarkOutcome> {
+      return this.setPhotoMarks("archived", paths, true);
+    },
+
+    /** 取消归档（照片回到原相册） */
+    async unarchivePhotos(paths: string[]): Promise<PhotoMarkOutcome> {
+      return this.setPhotoMarks("archived", paths, false);
+    },
+
+    /** 隐藏照片 */
+    async hidePhotos(paths: string[]): Promise<PhotoMarkOutcome> {
+      return this.setPhotoMarks("hidden", paths, true);
+    },
+
+    /** 取消隐藏（照片回到原相册） */
+    async unhidePhotos(paths: string[]): Promise<PhotoMarkOutcome> {
+      return this.setPhotoMarks("hidden", paths, false);
+    },
+
+    /** 列出归档 / 隐藏相册的照片路径（虚拟相册的数据源） */
+    async listMarkedPhotos(state: PhotoMarkState): Promise<string[]> {
+      return await invoke<string[]>("list_marked_photos", { state });
+    },
+
+    /** 批量查询照片的标记状态（右键菜单据此显示「取消归档 / 取消隐藏」） */
+    async getPhotoMarkStates(paths: string[]): Promise<PhotoMarkStatus[]> {
+      if (!paths.length) return [];
+      const rows = await invoke<PhotoMarkStatus[]>("get_photo_mark_states", { paths });
+      // 后端返回顺序与 paths 不保证一致，前端按 path 归位供调用方直接索引
+      const map = new Map(rows.map((r) => [r.path, r.state]));
+      return paths.map((p) => ({ path: p, state: map.get(p) ?? null }));
     },
 
     /** 创建相册，成功后刷新列表并返回新相册 */

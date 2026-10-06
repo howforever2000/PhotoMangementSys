@@ -13,8 +13,13 @@ import type { PersonInfo, PersonPhotoItem } from "../types/photo";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import ContextMenu, { type ContextMenuEntry } from "./ContextMenu.vue";
 import PhotoLightbox from "./PhotoLightbox.vue";
+import PhotoDeleteDialog, { type DeleteMode } from "./PhotoDeleteDialog.vue";
+import PhotoActionMenu from "./PhotoActionMenu.vue";
+import PhotoZoomBar from "./PhotoZoomBar.vue";
 import { useAlbumStore } from "../stores/album";
 import { useThemeStore } from "../stores/theme";
+import { usePhotoActions } from "../composables/usePhotoActions";
+import type { PhotoMarkState } from "../types/photo";
 
 const theme = useThemeStore();
 /** 用于调用 prewarmThumbs 等相册级缩略图命令 */
@@ -205,6 +210,9 @@ async function openPhotos(p: PersonInfo) {
     }
     viewingPhotos.value = items;
     if (!items.length) viewingError.value = "该人物暂无登记照片。";
+    // FEAT-095：批量读评分 + 标记状态（右键打分菜单 / 归档按钮文案都依赖它）
+    void loadRatings(items.map((i) => i.path));
+    void photoActions.loadMarkStates(items.map((i) => i.path));
   } catch (e) {
     viewingError.value = String(e);
   } finally {
@@ -220,6 +228,11 @@ function closePhotos() {
   exitSelectMode();
 }
 
+/* ---- FEAT-095（R1）：矩阵预览框缩放 ----
+ * 缩略图缓存固定 256px，放大只做 CSS 拉伸（不触发重新生成），
+ * 故上限取 320px —— 再大只是糊图。上限集中在 PhotoZoomBar 内维护。 */
+const cellSize = ref(140);
+
 function openPhoto(i: number) {
   lightboxIndex.value = i;
   lightboxOpen.value = true;
@@ -228,7 +241,12 @@ function openPhoto(i: number) {
 /* ---- FEAT-050：多选删除（查看弹窗右上角「☑ 多选」→ 勾选 → 删除按钮 → 两种选择） ---- */
 const selectMode = ref(false);
 const selected = ref<Set<string>>(new Set());
+/** FEAT-095：待删除路径（交由 PhotoDeleteDialog 二次确认 + 选模式） */
 const modeDialogPaths = ref<string[] | null>(null);
+/** FEAT-095：删除执行中（禁用弹窗按钮，防重复提交） */
+const deleting = ref(false);
+/** FEAT-095：归档 / 隐藏动作（与全站共用同一套语义） */
+const photoActions = usePhotoActions();
 
 function enterSelectMode() {
   selectMode.value = true;
@@ -257,10 +275,16 @@ function askDeleteCurrent() {
   if (it) modeDialogPaths.value = [it.path];
 }
 
-async function pickMode(mode: "records" | "trash") {
+/**
+ * FEAT-095：删除方式二选一（相册记录删除 / 本地删除移入回收站）
+ *
+ * 两种模式都由后端按路径处理（不依赖相册上下文），所以人物画廊这类
+ * 跨相册来源也能正确执行。执行后重拉当前人物照片列表。
+ */
+async function pickMode(mode: DeleteMode) {
   const paths = modeDialogPaths.value ?? [];
-  modeDialogPaths.value = null;
   if (!paths.length) return;
+  deleting.value = true;
   const cmd = mode === "records" ? "delete_photo_records_by_paths" : "delete_photos_to_trash";
   try {
     const outcome = await invoke<{
@@ -269,6 +293,7 @@ async function pickMode(mode: "records" | "trash") {
       failed: number;
       failed_paths: string[];
     }>(cmd, { paths });
+    modeDialogPaths.value = null;
     // 重新拉取当前人物照片（缓存已清，剩余照片即时补齐）
     const person = viewingPerson.value;
     if (person) await openPhotos(person);
@@ -285,7 +310,95 @@ async function pickMode(mode: "records" | "trash") {
   } catch (e) {
     flash(`删除失败：${String(e)}`);
   } finally {
+    deleting.value = false;
     selected.value = new Set();
+  }
+}
+
+/* ---- FEAT-095（R4 / R8）：归档 / 隐藏 ---- */
+
+/** 从当前列表移除已处理照片（列表已在内存，直接过滤即可，无需重拉） */
+function dropFromView(paths: string[]) {
+  const removed = new Set(paths);
+  viewingPhotos.value = viewingPhotos.value.filter((it) => !removed.has(it.path));
+  const nextSelected = new Set(selected.value);
+  for (const p of paths) nextSelected.delete(p);
+  selected.value = nextSelected;
+  if (lightboxOpen.value) {
+    if (!viewingPhotos.value.length) lightboxOpen.value = false;
+    else lightboxIndex.value = Math.min(lightboxIndex.value, viewingPhotos.value.length - 1);
+  }
+}
+
+/** 归档选中 / 当前照片 */
+async function doArchive(paths: string[], marked: boolean) {
+  const ok = await photoActions.apply("archived", paths, marked);
+  if (ok) dropFromView(paths);
+}
+
+/** 隐藏选中 / 当前照片 */
+async function doHide(paths: string[], marked: boolean) {
+  const ok = await photoActions.apply("hidden", paths, marked);
+  if (ok) dropFromView(paths);
+}
+
+/** 当前大图照片的标记状态（用于按钮文案切换） */
+function currentMarkState(path: string): PhotoMarkState | null {
+  return photoActions.markStateOf(path);
+}
+
+/* ---- FEAT-095（R8）：缩略图右键菜单 ---- */
+
+/**
+ * 右键菜单状态（FEAT-095：条目与快速打分 / 标签 / 删除弹窗都复用 `PhotoActionMenu`）
+ *
+ * 人物画廊比通用菜单多一项「设为该人物的头像」（FEAT-047 的入口），
+ * 通过 `extraItems` 传入，其余条目由共享组件统一维护。
+ */
+const cellCtx = ref<{ x: number; y: number; paths: string[] } | null>(null);
+
+function onCellContextMenu(e: MouseEvent, path: string) {
+  if (selectMode.value || avatarPickMode.value) return;
+  e.preventDefault();
+  e.stopPropagation();
+  cellCtx.value = { x: e.clientX, y: e.clientY, paths: [path] };
+}
+
+/** 人物画廊专属条目：设为该人物的头像 */
+const cellCtxExtra = computed<ContextMenuEntry[]>(() => [
+  {
+    label: "设为该人物的头像",
+    icon: "⭐",
+    onClick: () => {
+      const path = cellCtx.value?.paths[0];
+      if (path) onSetAvatar(path);
+    },
+  },
+]);
+
+/** 右键动作完成后的刷新：归档 / 隐藏 / 删除都会改变当前人物的照片列表 */
+async function onCellCtxRefresh() {
+  const person = viewingPerson.value;
+  if (person) await openPhotos(person);
+}
+
+/** 人物画廊内的评分（后端 photo_ratings 与全站同一体系） */
+const ratings = ref<Record<string, number>>({});
+
+function ratingOf(path: string): number {
+  return ratings.value[path] ?? 0;
+}
+
+/** 打开照片时把评分一并读出来（一次批量，右键打分才能显示当前分） */
+async function loadRatings(paths: string[]) {
+  if (!paths.length) return;
+  try {
+    const rows = await albumStore.getPhotoRatings(paths);
+    const map: Record<string, number> = { ...ratings.value };
+    for (const [p, r] of rows) map[p] = r;
+    ratings.value = map;
+  } catch {
+    /* 评分读取失败按未评分处理 */
   }
 }
 
@@ -550,10 +663,19 @@ const vFocus: Directive<HTMLElement> = {
           <div class="viewer-head">
             <span class="viewer-title">{{ displayName(viewingPerson) }} 的照片</span>
             <span class="viewer-count">{{ viewingPhotos.length }} 张</span>
+            <!-- FEAT-095（R1）：矩阵预览框缩放 -->
+            <PhotoZoomBar v-model="cellSize" :disabled="!viewingPhotos.length" />
             <span class="viewer-spacer"></span>
             <template v-if="selectMode">
               <button class="mini-btn" @click="selectAllPhotos">全选</button>
-              <button class="mini-btn danger" :disabled="!selected.size" @click="openDeleteDialog">
+              <!-- FEAT-095：多选批量归档 / 隐藏（针对照片，非相册整体） -->
+              <button class="mini-btn" :disabled="!selected.size || photoActions.busy.value" @click="doArchive([...selected], true)">
+                📦 归档（{{ selected.size }}）
+              </button>
+              <button class="mini-btn" :disabled="!selected.size || photoActions.busy.value" @click="doHide([...selected], true)">
+                🔒 隐藏（{{ selected.size }}）
+              </button>
+              <button class="mini-btn danger" :disabled="!selected.size || deleting" @click="openDeleteDialog">
                 🗑 删除选中（{{ selected.size }}）
               </button>
               <button class="mini-btn" @click="exitSelectMode">退出</button>
@@ -567,24 +689,34 @@ const vFocus: Directive<HTMLElement> = {
           </div>
           <div v-if="viewingLoading" class="viewer-state">正在读取缩略图…</div>
           <div v-else-if="viewingError" class="viewer-state viewer-error">{{ viewingError }}</div>
-          <div v-else class="viewer-grid">
+          <div v-else class="viewer-grid" :style="{ gridTemplateColumns: `repeat(auto-fill, minmax(${cellSize}px, 1fr))` }">
             <div
               v-for="(it, i) in viewingPhotos"
               :key="it.path"
               class="viewer-cell"
               :class="{ checked: selectMode && selected.has(it.path) }"
               @click="selectMode ? toggleSelect(it.path) : openPhoto(i)"
+              @contextmenu.prevent.stop="onCellContextMenu($event, it.path)"
             >
               <img
                 v-if="it.thumb"
                 :src="photoThumbSrc(it)"
                 class="viewer-photo"
-                :title="it.path"
+                :title="`${it.path}\n右键可打分 / 标签 / 编辑 / 归档 / 隐藏 / 删除`"
                 loading="lazy"
                 alt=""
+                draggable="false"
                 @click.stop="selectMode ? toggleSelect(it.path) : openPhoto(i)"
               />
               <div v-else class="viewer-photo viewer-photo-missing" :title="`缩略图生成中或原图不可用：${it.path}`">🖼</div>
+              <!-- FEAT-095：评分星标角标（与 PhotoGrid 一致，右键打分后即时反映） -->
+              <span v-if="ratingOf(it.path) > 0" class="cell-rating" :title="`打分 ${ratingOf(it.path)} 星`">
+                {{ "★".repeat(ratingOf(it.path)) }}
+              </span>
+              <!-- FEAT-095：归档 / 隐藏状态角标 -->
+              <span v-if="photoActions.markStateOf(it.path)" class="cell-mark" :title="photoActions.markStateOf(it.path) === 'archived' ? '已归档' : '已隐藏'">
+                {{ photoActions.markStateOf(it.path) === "archived" ? "📦" : "🔒" }}
+              </span>
               <!-- FEAT-047：自选头像入口（多选模式下隐藏） -->
               <button
                 v-if="!selectMode"
@@ -601,36 +733,39 @@ const vFocus: Directive<HTMLElement> = {
               </span>
             </div>
           </div>
-          <!-- 原图看图器（启用删除按钮） -->
+          <!-- 原图看图器（启用删除 / 归档 / 隐藏按钮） -->
           <PhotoLightbox
             v-if="lightboxOpen"
             :photos="lightboxPhotos"
             :index="lightboxIndex"
             deletable
+            markable
+            :archived="currentMarkState(lightboxPhotos[lightboxIndex]?.path ?? '') === 'archived'"
+            :hidden="currentMarkState(lightboxPhotos[lightboxIndex]?.path ?? '') === 'hidden'"
             @close="lightboxOpen = false"
             @delete="askDeleteCurrent"
+            @archive="(p, m) => doArchive([p], m)"
+            @hide="(p, m) => doHide([p], m)"
           />
         </div>
       </div>
     </Teleport>
 
-    <!-- FEAT-050：删除方式选择（两种选择即最终确认） -->
-    <Teleport to="body">
-      <div v-if="modeDialogPaths" class="del-mask" @click.self="modeDialogPaths = null">
-        <div class="del-dialog glass-card" :style="surfaceStyle">
-          <h4>选择删除方式（{{ modeDialogPaths.length }} 张）</h4>
-          <button class="del-opt" @click="pickMode('records')">
-            <b>📄 本地记录删除</b>
-            <span>清除扫描 / AI 记录与缩略图缓存，本地文件保留</span>
-          </button>
-          <button class="del-opt" @click="pickMode('trash')">
-            <b>🗑 磁盘删除（移入回收站）</b>
-            <span>照片移入系统回收站，可找回；记录与缓存同步清除</span>
-          </button>
-          <button class="btn del-cancel" @click="modeDialogPaths = null">取消</button>
-        </div>
-      </div>
-    </Teleport>
+    <!-- FEAT-095：删除方式选择（相册记录删除 / 本地删除移入回收站） -->
+    <PhotoDeleteDialog
+      :paths="modeDialogPaths"
+      :busy="deleting"
+      @pick="pickMode"
+      @cancel="modeDialogPaths = null"
+    />
+
+    <!-- FEAT-095（R8）：缩略图右键菜单（复用 PhotoActionMenu，人物画廊追加「设为头像」） -->
+    <PhotoActionMenu
+      :target="cellCtx"
+      :extra-items="cellCtxExtra"
+      :on-refresh="onCellCtxRefresh"
+      :on-close="() => (cellCtx = null)"
+    />
 
     <!-- 头像右键菜单：更换头像 / 恢复自动头像 / 合并 -->
     <ContextMenu
@@ -880,10 +1015,35 @@ body.theme-dark .pg-action-msg {
 .viewer-grid {
   overflow-y: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  /* 格子尺寸由 PhotoZoomBar 的 v-model 驱动（style 绑定在模板上），此处只给兜底值 */
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 8px;
+  align-content: start;
 }
 .viewer-cell { position: relative; }
+
+/* FEAT-095：评分星标 / 归档隐藏角标 */
+.cell-rating {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  font-size: 11px;
+  color: #ffce3a;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  z-index: 1;
+}
+.cell-mark {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 5px;
+  padding: 0 4px;
+  pointer-events: none;
+  z-index: 1;
+}
 
 /* FEAT-050：多选删除 */
 .viewer-spacer {
@@ -937,55 +1097,6 @@ body.theme-dark .viewer-pick-hint { color: var(--color-link); }
   background: #4c8dff;
   border-color: #4c8dff;
 }
-.del-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 1250;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.del-dialog {
-  width: min(420px, 92vw);
-  border-radius: 14px;
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
-}
-.del-dialog h4 {
-  margin: 0 0 4px;
-  font-size: 16px;
-}
-.del-opt {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px solid rgba(127, 127, 127, 0.32);
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-  transition: border-color 0.15s, background 0.15s;
-}
-.del-opt:hover {
-  border-color: rgba(106, 141, 240, 0.75);
-  background: rgba(106, 141, 240, 0.08);
-}
-.del-opt span {
-  font-size: 12px;
-  opacity: 0.65;
-  line-height: 1.5;
-}
-.del-cancel {
-  align-self: flex-end;
-}
-
 /* FEAT-047：自选头像悬浮按钮 */
 .viewer-set-avatar {
   position: absolute;
@@ -1019,6 +1130,8 @@ body.theme-dark .viewer-pick-hint { color: var(--color-link); }
   cursor: zoom-in;
   transition: transform 0.15s;
   display: block;
+  /* FEAT-095：格子可放大到 320px（> 缓存 256px）时不再放大，避免二次糊化 */
+  image-rendering: auto;
 }
 .viewer-photo:hover { transform: scale(1.04); }
 .viewer-photo-missing {

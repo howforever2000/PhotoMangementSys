@@ -37,17 +37,34 @@ const props = defineProps<{
   persons?: Record<string, string>;
   /** FEAT-050：是否启用删除按钮（默认 false，不影响既有调用方；删除事件交由父视图处理） */
   deletable?: boolean;
+  /** FEAT-095：是否启用归档 / 隐藏按钮（默认 false，父视图需处理对应事件） */
+  markable?: boolean;
+  /** FEAT-095：当前照片是否已归档（菜单文案在「归档 / 取消归档」间切换） */
+  archived?: boolean;
+  /** FEAT-095：当前照片是否已隐藏 */
+  hidden?: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "delete", path: string): void;
+  /** FEAT-095：请求归档（marked=true）/ 取消归档（false） */
+  (e: "archive", path: string, marked: boolean): void;
+  /** FEAT-095：请求隐藏（marked=true）/ 取消隐藏（false） */
+  (e: "hide", path: string, marked: boolean): void;
   /** 请求跳到当前照片所属相册（由父视图决定路由；无 albumId 时不触发） */
   (e: "openAlbum", albumId: number): void;
 }>();
 
 const current = ref(props.index);
 const imgLoading = ref(true);
+/**
+ * FEAT-095（R2）：信息栏是否折叠
+ *
+ * 改为右侧并列栏后信息不再遮挡照片，但小屏 / 看图为主时仍会挤占图片宽度，
+ * 故保留折叠能力（点标题右侧箭头）。默认展开 —— 需求明确要求信息页要有拍摄时间与地点。
+ */
+const metaCollapsed = ref(false);
 /** FEAT-064：编辑按钮跳到创意工坊（不需要父视图参与，见 openInWorkshop 注释） */
 const router = useRouter();
 
@@ -273,6 +290,8 @@ watch(
     void loadPhotoInfo(p);
     void tryEnsureScanned(p);
     void loadUserMeta(p);
+    // FEAT-095：meta 缺地点时兜底单查（父视图传了 meta.location 则这次查询结果会被忽略）
+    void loadPlace(p);
   },
 );
 
@@ -400,6 +419,8 @@ function initForCurrentPhoto() {
   void loadPhotoInfo(p);
   void tryEnsureScanned(p);
   void loadUserMeta(p);
+  // FEAT-095：地点兜底查询（必须在 loadPlace 声明之后调用，否则 TDZ）
+  void loadPlace(p);
 }
 void initForCurrentPhoto();
 
@@ -427,6 +448,63 @@ function askDelete() {
   emit("delete", photo.value.path);
 }
 
+/** FEAT-095：归档 / 取消归档（确认流程与列表刷新由父视图负责） */
+function toggleArchive() {
+  emit("archive", photo.value.path, !props.archived);
+}
+
+/** FEAT-095：隐藏 / 取消隐藏 */
+function toggleHide() {
+  emit("hide", photo.value.path, !props.hidden);
+}
+
+/**
+ * FEAT-095：地点信息（需求 R3）
+ *
+ * 优先用 meta（父视图传入的扫描记录，含 location / lat / lon）；
+ * meta 缺失时兜底调 `get_photo_content_by_path` 单查 —— 智慧相册的人物 / 分类
+ * / 地点画廊不传 meta，若不兜底这些页面的信息页永远只有「拍摄时间」没有「地点」。
+ */
+const placeInfo = ref<{ location: string | null; lat: number | null; lon: number | null } | null>(null);
+const placeLoading = ref(false);
+
+async function loadPlace(path: string) {
+  placeInfo.value = null;
+  placeLoading.value = true;
+  try {
+    const row = await invoke<AlbumContentRow | null>("get_photo_content_by_path", { path });
+    placeInfo.value = row
+      ? { location: row.location ?? null, lat: row.lat ?? null, lon: row.lon ?? null }
+      : null;
+  } catch {
+    placeInfo.value = null;
+  } finally {
+    placeLoading.value = false;
+  }
+}
+
+/** 当前应展示的地点（meta 优先，其次兜底查询结果） */
+const placeText = computed<string>(() => {
+  const fromMeta = meta.value?.location?.trim();
+  if (fromMeta) return fromMeta;
+  const fromQuery = placeInfo.value?.location?.trim();
+  if (fromQuery) return fromQuery;
+  const { lat, lon } = placeInfo.value ?? {};
+  // 无反查地名但有 GPS 坐标时，至少给出坐标（比空白信息更有用）
+  if (typeof lat === "number" && typeof lon === "number") {
+    return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+  }
+  return "";
+});
+
+/** 地点为坐标形式时给出地图链接 */
+const mapUrl = computed<string>(() => {
+  const { lat, lon } = placeInfo.value ?? {};
+  if (placeText.value && !/^-?\d+\.\d+, -?\d+\.\d+$/.test(placeText.value)) return "";
+  if (typeof lat !== "number" || typeof lon !== "number") return "";
+  return `https://uri.amap.com/marker?position=${lon},${lat}`;
+});
+
 /**
  * 编辑当前照片（FEAT-064）：跳创意工坊并带上原图路径，工坊首页直接在
  * 「传统图像处理」小组件里载入它（默认算子：区域直方图均衡化），无需再手动选图。
@@ -447,15 +525,138 @@ function openInWorkshop() {
   <div ref="overlayEl" class="lb-overlay" @click.self="emit('close')" @touchstart="onTouchStart" @touchend="onTouchEnd">
     <button class="lb-close" title="关闭 (Esc)" @click="emit('close')">✕</button>
 
-    <!-- 操作提示与当前倍率 -->
-    <div class="lb-zoombar">
-      <span class="lb-hint">
-        <kbd>←</kbd> <kbd>→</kbd> 切图 · <kbd>Esc</kbd> 关闭 · <kbd>Ctrl</kbd>+滚轮缩放 · 双击放大/复原 · <kbd>1-5</kbd> 打星
-      </span>
-      <span v-if="scale !== 1" class="lb-scale">{{ Math.round(scale * 100) }}%</span>
+    <!--
+      FEAT-095（R2）：信息页从「浮层压在照片上」改为**右侧并列栏**。
+      旧实现 `.lb-meta` 是 absolute 定位浮在左下角，小图时直接盖住画面主体；
+      现在图片区（lb-stage）与信息栏（lb-meta）左右并列，互不遮挡。
+      信息栏可折叠，折叠后图片区占满全宽。
+    -->
+    <div class="lb-layout" :class="{ 'meta-collapsed': metaCollapsed }">
+      <div class="lb-stage">
+        <button v-if="photos.length > 1" class="lb-nav lb-prev" title="上一张 (←)" @click="prev">‹</button>
+        <button v-if="photos.length > 1" class="lb-nav lb-next" title="下一张 (→)" @click="next">›</button>
+
+        <div
+          class="lb-main"
+          :class="{ pannable: scale > 1, dragging }"
+          @pointerdown="onDragStart"
+          @pointermove="onDragMove"
+          @pointerup="onDragEnd"
+          @pointercancel="onDragEnd"
+          @dblclick.prevent="toggleZoom"
+        >
+          <div v-show="imgLoading" class="lb-loading">加载中…</div>
+          <!-- 直接指向原文件路径（convertFileSrc），非缩略图 -->
+          <img
+            :src="fileUrl(photo.path)"
+            @load="imgLoading = false"
+            class="lb-img"
+            :class="{ hidden: imgLoading }"
+            :style="{ transform: `translate(${tx}px, ${ty}px) scale(${scale})` }"
+            alt=""
+            draggable="false"
+          />
+        </div>
+
+        <!-- 操作提示与当前倍率（贴在图片区顶部，不占信息栏） -->
+        <div class="lb-zoombar">
+          <span class="lb-hint">
+            <kbd>←</kbd> <kbd>→</kbd> 切图 · <kbd>Esc</kbd> 关闭 · <kbd>Ctrl</kbd>+滚轮缩放 · 双击放大/复原 · <kbd>1-5</kbd> 打星
+          </span>
+          <span v-if="scale !== 1" class="lb-scale">{{ Math.round(scale * 100) }}%</span>
+        </div>
+      </div>
+
+      <!-- 元数据面板（右侧并列栏，可折叠） -->
+      <aside class="lb-meta">
+        <div class="lb-meta-head">
+          <h4>照片信息</h4>
+          <button class="lb-meta-toggle" :title="metaCollapsed ? '展开信息' : '收起信息'" @click="metaCollapsed = !metaCollapsed">
+            {{ metaCollapsed ? "‹" : "›" }}
+          </button>
+        </div>
+        <div v-if="!metaCollapsed" class="lb-meta-body">
+          <div class="lb-filename">{{ photo.path }}</div>
+
+          <dl>
+            <dt>分辨率</dt><dd v-if="photoInfo">{{ photoInfo.width }} × {{ photoInfo.height }} px（{{ (photoInfo.width * photoInfo.height / 1e6).toFixed(1) }} MP）</dd>
+            <template v-else-if="infoError"><dt>提示</dt><dd>无法读取图片信息</dd></template>
+            <template v-if="photoInfo">
+              <dt>文件大小</dt><dd>{{ fmtSize(photoInfo.file_size) }}</dd>
+              <dt>格式</dt><dd>{{ photoInfo.format.toUpperCase() }}</dd>
+            </template>
+            <!-- FEAT-095（R3）：拍摄时间提到基本信息区最前，地点紧随其后 -->
+            <dt>拍摄时间</dt>
+            <dd>
+              <template v-if="meta?.shoot_time">{{ meta.shoot_time }}</template>
+              <span v-else class="lb-unknown">未记录（无 EXIF 或未扫描）</span>
+            </dd>
+            <dt>地点</dt>
+            <dd>
+              <template v-if="placeText">
+                <a v-if="mapUrl" :href="mapUrl" target="_blank" rel="noreferrer" class="lb-place-link">{{ placeText }}</a>
+                <template v-else>{{ placeText }}</template>
+              </template>
+              <span v-else-if="placeLoading" class="lb-unknown">查询中…</span>
+              <span v-else class="lb-unknown">未记录（无 GPS 或未扫描）</span>
+            </dd>
+            <template v-if="meta?.category">
+              <dt>AI 分类</dt><dd>{{ categoryLabel(meta.category) }}<span v-if="meta.sub_category"> / {{ meta.sub_category }}</span></dd>
+              <dt v-if="meta.label">标签</dt><dd v-if="meta.label">{{ meta.label }}</dd>
+              <dt v-if="meta.confidence">置信度</dt><dd v-if="meta.confidence">{{ (meta.confidence * 100).toFixed(1) }}%</dd>
+            </template>
+            <template v-if="(meta?.person_ids ?? []).length">
+              <dt>人物</dt>
+              <dd>{{ meta!.person_ids.map(personLabel).join("、") }}<span v-if="meta!.person_count > 0">（{{ meta!.person_count }}）</span></dd>
+            </template>
+            <template v-if="meta?.iso || meta?.iso_num">
+              <dt>ISO</dt><dd>{{ meta.iso ?? meta.iso_num }}</dd>
+            </template>
+            <template v-if="meta?.aperture || meta?.aperture_num">
+              <dt>光圈</dt><dd>f/{{ meta.aperture ?? meta.aperture_num }}</dd>
+            </template>
+            <template v-if="meta?.shutter_speed || meta?.shutter_num">
+              <dt>快门</dt><dd>{{ meta.shutter_speed ?? meta.shutter_num }}</dd>
+            </template>
+            <template v-if="meta?.focal_length || meta?.focal_num">
+              <dt>焦距</dt><dd>{{ meta.focal_length ?? meta.focal_num }}mm</dd>
+            </template>
+            <template v-if="meta?.tone_type">
+              <dt>影调</dt><dd>{{ meta.tone_type }}<span v-if="meta.avg_luma != null">（亮度 {{ meta.avg_luma.toFixed(1) }}）</span></dd>
+            </template>
+            <template v-if="!meta && scanState === 'scanning'">
+              <dt>AI 识别</dt><dd class="lb-scanning">⏳ 正在后台识别该照片的 AI/EXIF 信息…识别完成后面板自动刷新。</dd>
+            </template>
+            <template v-else-if="!meta && scanState === 'failed'">
+              <dt>提示</dt>
+              <dd>
+                尚未扫描该照片的 AI/EXIF 信息。
+                <br />运行相册详情页的「<b>综合扫描</b>」后即可在此显示分类、人物与拍摄参数。
+                <br /><button class="lb-retry-btn" :disabled="scanningPhoto" @click="retryScan">⟳ 重试扫描</button>
+              </dd>
+            </template>
+            <template v-else-if="!meta">
+              <dt>提示</dt>
+              <dd>
+                尚未扫描该照片的 AI/EXIF 信息。
+                <br />运行相册详情页的「<b>综合扫描</b>」后即可在此显示分类、人物与拍摄参数。
+                <br /><button class="lb-retry-btn" :disabled="scanningPhoto" @click="retryScan">⟳ 立即扫描</button>
+              </dd>
+            </template>
+          </dl>
+
+          <!-- 像素分布图（RGB 三通道直方图，screen 叠加） -->
+          <div v-if="photoInfo?.hist_r?.length" class="lb-hist-wrap">
+            <div class="lb-hist-title">像素分布（R/G/B）</div>
+            <canvas ref="histCanvas" width="300" height="90" class="lb-hist"></canvas>
+          </div>
+
+          <div class="lb-counter">{{ current + 1 }} / {{ photos.length }}</div>
+        </div>
+      </aside>
     </div>
 
-    <!-- FEAT-050：评分 / 标签 / 删除工具栏 -->
+    <!-- FEAT-050 / FEAT-095：评分 / 标签 / 编辑 / 归档 / 隐藏 / 删除工具栏 -->
     <div class="lb-toolbar" @click.stop>
       <div class="lb-stars" title="点击打星，同星再点清除（快捷键 1-5）">
         <button
@@ -482,10 +683,23 @@ function openInWorkshop() {
         title="在所属相册中查看（保留当前浏览位置由父视图决定）"
         @click="photo.albumId != null && emit('openAlbum', photo.albumId)"
       >📁 在相册中查看</button>
+      <template v-if="markable">
+        <span class="lb-tb-sep"></span>
+        <button
+          class="lb-tb-btn"
+          :title="archived ? '取消归档，照片回到原相册' : '归档：照片移入相册管理的「归档」相册（不移动文件）'"
+          @click="toggleArchive"
+        >📦 {{ archived ? "取消归档" : "归档" }}</button>
+        <button
+          class="lb-tb-btn"
+          :title="hidden ? '取消隐藏，照片回到原相册' : '隐藏：照片移入「隐藏」相册（需密码解锁才可见）'"
+          @click="toggleHide"
+        >🔒 {{ hidden ? "取消隐藏" : "隐藏" }}</button>
+      </template>
       <button
         v-if="deletable"
         class="lb-tb-btn danger"
-        title="删除此照片（二次确认）"
+        title="删除此照片（二次确认：相册记录删除 / 本地删除）"
         @click="askDelete"
       >🗑 删除</button>
     </div>
@@ -506,100 +720,6 @@ function openInWorkshop() {
         @keydown.enter.prevent="addTag"
       />
     </div>
-
-    <button v-if="photos.length > 1" class="lb-nav lb-prev" title="上一张 (←)" @click="prev">‹</button>
-    <button v-if="photos.length > 1" class="lb-nav lb-next" title="下一张 (→)" @click="next">›</button>
-
-    <div
-      class="lb-main"
-      :class="{ pannable: scale > 1, dragging }"
-      @pointerdown="onDragStart"
-      @pointermove="onDragMove"
-      @pointerup="onDragEnd"
-      @pointercancel="onDragEnd"
-      @dblclick.prevent="toggleZoom"
-    >
-      <div v-show="imgLoading" class="lb-loading">加载中…</div>
-      <!-- 直接指向原文件路径（convertFileSrc），非缩略图 -->
-      <img
-        :src="fileUrl(photo.path)"
-        @load="imgLoading = false"
-        class="lb-img"
-        :class="{ hidden: imgLoading }"
-        :style="{ transform: `translate(${tx}px, ${ty}px) scale(${scale})` }"
-        alt=""
-        draggable="false"
-      />
-    </div>
-
-    <!-- 元数据面板 -->
-    <aside class="lb-meta">
-      <h4>照片信息</h4>
-      <div class="lb-filename">{{ photo.path }}</div>
-
-      <dl>
-        <dt>分辨率</dt><dd v-if="photoInfo">{{ photoInfo.width }} × {{ photoInfo.height }} px（{{ (photoInfo.width * photoInfo.height / 1e6).toFixed(1) }} MP）</dd>
-        <template v-else-if="infoError"><dt>提示</dt><dd>无法读取图片信息</dd></template>
-        <template v-if="photoInfo">
-          <dt>文件大小</dt><dd>{{ fmtSize(photoInfo.file_size) }}</dd>
-          <dt>格式</dt><dd>{{ photoInfo.format.toUpperCase() }}</dd>
-        </template>
-        <template v-if="meta?.category">
-          <dt>AI 分类</dt><dd>{{ categoryLabel(meta.category) }}<span v-if="meta.sub_category"> / {{ meta.sub_category }}</span></dd>
-          <dt v-if="meta.label">标签</dt><dd v-if="meta.label">{{ meta.label }}</dd>
-          <dt v-if="meta.confidence">置信度</dt><dd v-if="meta.confidence">{{ (meta.confidence * 100).toFixed(1) }}%</dd>
-        </template>
-        <template v-if="(meta?.person_ids ?? []).length">
-          <dt>人物</dt>
-          <dd>{{ meta!.person_ids.map(personLabel).join("、") }}<span v-if="meta!.person_count > 0">（{{ meta!.person_count }}）</span></dd>
-        </template>
-        <template v-if="meta?.shoot_time">
-          <dt>拍摄时间</dt><dd>{{ meta.shoot_time }}</dd>
-        </template>
-        <template v-if="meta?.iso || meta?.iso_num">
-          <dt>ISO</dt><dd>{{ meta.iso ?? meta.iso_num }}</dd>
-        </template>
-        <template v-if="meta?.aperture || meta?.aperture_num">
-          <dt>光圈</dt><dd>f/{{ meta.aperture ?? meta.aperture_num }}</dd>
-        </template>
-        <template v-if="meta?.shutter_speed || meta?.shutter_num">
-          <dt>快门</dt><dd>{{ meta.shutter_speed ?? meta.shutter_num }}</dd>
-        </template>
-        <template v-if="meta?.focal_length || meta?.focal_num">
-          <dt>焦距</dt><dd>{{ meta.focal_length ?? meta.focal_num }}mm</dd>
-        </template>
-        <template v-if="meta?.tone_type">
-          <dt>影调</dt><dd>{{ meta.tone_type }}<span v-if="meta.avg_luma != null">（亮度 {{ meta.avg_luma.toFixed(1) }}）</span></dd>
-        </template>
-        <template v-if="!meta && scanState === 'scanning'">
-          <dt>AI 识别</dt><dd class="lb-scanning">⏳ 正在后台识别该照片的 AI/EXIF 信息…识别完成后面板自动刷新。</dd>
-        </template>
-        <template v-else-if="!meta && scanState === 'failed'">
-          <dt>提示</dt>
-          <dd>
-            尚未扫描该照片的 AI/EXIF 信息。
-            <br />运行相册详情页的「<b>综合扫描</b>」后即可在此显示分类、人物与拍摄参数。
-            <br /><button class="lb-retry-btn" :disabled="scanningPhoto" @click="retryScan">⟳ 重试扫描</button>
-          </dd>
-        </template>
-        <template v-else-if="!meta">
-          <dt>提示</dt>
-          <dd>
-            尚未扫描该照片的 AI/EXIF 信息。
-            <br />运行相册详情页的「<b>综合扫描</b>」后即可在此显示分类、人物与拍摄参数。
-            <br /><button class="lb-retry-btn" :disabled="scanningPhoto" @click="retryScan">⟳ 立即扫描</button>
-          </dd>
-        </template>
-      </dl>
-
-      <!-- 像素分布图（RGB 三通道直方图，screen 叠加） -->
-      <div v-if="photoInfo?.hist_r?.length" class="lb-hist-wrap">
-        <div class="lb-hist-title">像素分布（R/G/B）</div>
-        <canvas ref="histCanvas" width="300" height="90" class="lb-hist"></canvas>
-      </div>
-
-      <div class="lb-counter">{{ current + 1 }} / {{ photos.length }}</div>
-    </aside>
   </div>
 </template>
 
@@ -609,6 +729,25 @@ function openInWorkshop() {
   inset: 0;
   z-index: 1000;
   background: rgba(0, 0, 0, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* FEAT-095（R2）：左图片区 + 右信息栏的并列布局（互不遮挡） */
+.lb-layout {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  height: 100%;
+  /* 底部给工具栏留出安全高度，避免工具栏压住图片底部 */
+  padding: 0 0 58px;
+  box-sizing: border-box;
+}
+.lb-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -645,14 +784,15 @@ function openInWorkshop() {
   cursor: pointer;
   line-height: 1;
 }
+/* FEAT-095：翻页箭头贴图片区两侧，不再相对整个遮罩定位（否则会压到信息栏上） */
+.lb-prev { left: 8px; }
+.lb-next { right: 8px; }
 .lb-nav:hover { background: rgba(255, 255, 255, 0.3); }
-.lb-prev { left: 12px; }
-.lb-next { right: 12px; }
 
 .lb-main {
   position: relative;
-  max-width: 74vw;
-  max-height: 86vh;
+  max-width: 100%;
+  max-height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -667,8 +807,8 @@ function openInWorkshop() {
 }
 
 .lb-img {
-  max-width: 74vw;
-  max-height: 86vh;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
   display: block;
   transition: transform 0.12s ease-out;
@@ -681,10 +821,11 @@ function openInWorkshop() {
 /* 顶部操作提示 + 缩放倍率 */
 .lb-zoombar {
   position: absolute;
-  top: 16px;
+  top: 12px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 2;
+  max-width: calc(100% - 140px);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -725,30 +866,76 @@ function openInWorkshop() {
   font-size: 14px;
 }
 
+/* FEAT-095（R2）：信息面板改为右侧并列栏（不再 absolute 压在照片上） */
 .lb-meta {
-  position: absolute;
-  left: 16px;
-  bottom: 16px;
-  background: rgba(0, 0, 0, 0.6);
-  color: #e7e9ee;
-  border-radius: 10px;
-  padding: 14px 18px;
+  flex: 0 0 340px;
   max-width: 340px;
-  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.55);
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  color: #e7e9ee;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   font-size: 13px;
 }
-.lb-meta h4 { margin: 0 0 8px; color: #fff; font-size: 14px; font-weight: 600; }
+.lb-meta-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 10px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+}
+.lb-meta-head h4 { margin: 0; color: #fff; font-size: 14px; font-weight: 600; }
+.lb-meta-toggle {
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  color: #fff;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.lb-meta-toggle:hover { background: rgba(255, 255, 255, 0.24); }
+.lb-meta-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 18px 16px;
+}
+/* 折叠态只留标题栏 */
+.lb-layout.meta-collapsed .lb-meta {
+  flex: 0 0 44px;
+  max-width: 44px;
+}
 .lb-filename {
   font-size: 12px;
   color: #c8cdd9;
   word-break: break-all;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
+/* FEAT-095（R3）：未记录的拍摄时间 / 地点给明确占位，而不是整行消失 */
+.lb-unknown {
+  color: #8a92a6;
+  font-size: 12px;
+}
+.lb-place-link {
+  color: #8ab4ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.lb-place-link:hover { color: #a8c8ff; }
 .lb-meta dl {
   margin: 0;
   display: grid;
-  grid-template-columns: 72px 1fr;
-  gap: 4px 10px;
+  grid-template-columns: 68px 1fr;
+  gap: 5px 10px;
 }
 .lb-meta dt { color: #b8bfcc; font-weight: 500; }
 .lb-meta dd { margin: 0; color: #e7e9ee; }
@@ -789,13 +976,14 @@ function openInWorkshop() {
   cursor: not-allowed;
 }
 
-/* FEAT-050：评分 / 标签 / 删除工具栏（底部居中，避让左侧元数据面板与两侧翻页箭头） */
+/* FEAT-095：工具栏（底部居中，横跨图片区；信息栏在右侧不参与居中计算） */
 .lb-toolbar {
   position: absolute;
   left: 50%;
-  bottom: 18px;
+  bottom: 12px;
   transform: translateX(-50%);
   z-index: 3;
+  max-width: calc(100vw - 420px);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -861,9 +1049,10 @@ function openInWorkshop() {
 .lb-tag-panel {
   position: absolute;
   left: 50%;
-  bottom: 64px;
+  bottom: 58px;
   transform: translateX(-50%);
   z-index: 3;
+  max-width: min(70vw, calc(100vw - 420px));
   display: flex;
   flex-direction: column;
   gap: 8px;
