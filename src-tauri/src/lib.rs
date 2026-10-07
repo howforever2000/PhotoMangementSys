@@ -432,6 +432,8 @@ pub fn run() {
             content::commands::search_photo_content,
             content::commands::ensure_photo_scanned,
             content::commands::get_photo_content_by_path,
+            // FEAT-096：单张 EXIF 后台补全（纯本地 IO，不依赖 AI 服务）
+            content::commands::backfill_photo_exif,
             content::commands::search_photo_content_with_filters,
             content::commands::list_timeline,
             content::commands::list_content_categories,
