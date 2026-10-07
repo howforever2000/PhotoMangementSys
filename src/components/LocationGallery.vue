@@ -17,6 +17,7 @@ import { useNotify } from "../composables/useNotify";
 import PhotoLightbox from "./PhotoLightbox.vue";
 import PhotoActionMenu from "./PhotoActionMenu.vue";
 import PhotoDeleteDialog, { type DeleteMode } from "./PhotoDeleteDialog.vue";
+import SelectAllCheckbox from "./SelectAllCheckbox.vue";
 import { usePhotoActions } from "../composables/usePhotoActions";
 import type { ContentSearchHit, LocationGroupRow } from "../types/content";
 
@@ -154,11 +155,13 @@ function toggleSelect(path: string) {
   else next.add(path);
   selected.value = next;
 }
-function selectAll() {
-  selected.value = new Set(photos.value.map((p) => p.path));
-}
-function clearSelection() {
-  selected.value = new Set();
+/**
+ * 全选 / 取消全选（FEAT-096：参数为「本次点击意图」，由三态复选框算好传进来）
+ *
+ * @param selectAll `true` = 全选；`false` = 取消全选
+ */
+function selectAll(selectAll = true) {
+  selected.value = selectAll ? new Set(photos.value.map((p) => p.path)) : new Set();
 }
 
 function openModeDialog(paths: string[]) {
@@ -327,8 +330,12 @@ onMounted(load);
           {{ selectMode ? "退出批量" : "☑ 批量管理" }}
         </button>
         <template v-if="selectMode">
-          <button class="btn" @click="selectAll">全选</button>
-          <button class="btn" @click="clearSelection">取消全选</button>
+          <!-- FEAT-096：三态全选复选框（空圈 → 打勾；全选后再点即取消全选，取代原「全选 / 取消全选」两按钮） -->
+          <SelectAllCheckbox
+            :selected-count="selected.size"
+            :total-count="photos.length"
+            @toggle="selectAll"
+          />
           <button class="btn btn-danger" :disabled="!selected.size" @click="openModeDialog([...selected])">
             🗑 删除选中（{{ selected.size }}）
           </button>

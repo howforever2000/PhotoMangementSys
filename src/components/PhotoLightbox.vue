@@ -7,6 +7,7 @@ import type { PhotoInfo } from "../types/photo";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
+import { useResizableDialog } from "../composables/useResizableDialog";
 import { categoryLabel } from "../utils/categoryLabel";
 
 /**
@@ -156,6 +157,11 @@ function onKey(e: KeyboardEvent) {
     e.preventDefault(); // 避免全局 ESC 处理同时触发 router.back
     emit("close");
   }
+  else if (e.key === "F11") {
+    // FEAT-096（R4a）：F11 全屏 / 还原（preventDefault 拦掉浏览器自身全屏，避免全屏后丢失窗口边框）
+    e.preventDefault();
+    rs.toggleFullscreen();
+  }
   else if (e.key >= "1" && e.key <= "5") {
     // FEAT-050：数字键 1-5 快捷打星
     void setRating(Number(e.key));
@@ -288,41 +294,46 @@ watch(
   () => photo.value.path,
   (p) => {
     void loadPhotoInfo(p);
-    void tryEnsureScanned(p);
     void loadUserMeta(p);
-    // FEAT-095：meta 缺地点时兜底单查（父视图传了 meta.location 则这次查询结果会被忽略）
-    void loadPlace(p);
+    // FEAT-096：先补 EXIF（纯本地、快、拿得到时间地点 + album_id），
+    // 补全顺带回填的 album_id 再决定要不要跑 AI 分类 —— 顺序不能反，
+    // 否则画廊场景（无 albumId）会先被判成「无相册上下文」而永远不扫描。
+    void (async () => {
+      await ensureExif(p);
+      await tryEnsureScanned(p);
+    })();
   },
 );
 
 /**
- * FEAT-D：保证当前照片已扫描并落库。
- * - 若 photo.meta 已存在（overrides 或 props 传入）→ 跳过（避免重复 IO）。
- * - 调 ensure_photo_scanned；后端命中库内已有记录直接返回 / 否则单张扫描并落库。
- * - 扫描完成后写入 metaOverrides（path → row），供 meta computed 查找，
- *   不依赖 props 数组项引用（避逸 Vue props 不可变问题）。
- * - 扫描期间 scanState = "scanning" 用于面板提示用户正在后台识别。
+ * FEAT-D：保证当前照片已扫描并落库（AI 分类 / 人物）。
+ *
+ * FEAT-096 变更：`albumId == null` 不再**直接放弃**，而是先用 EXIF 补全顺带回填的
+ * `album_id` 再决定 —— 人物 / 分类 / 地点画廊以前因为没有 albumId 而永远不扫描，
+ * 导致这些页面打开大图连 AI 分类都没有。
  */
 const scanningPhoto = ref(false);
-/** path → 扫描后落库的 row（FEAT-D 缓存层） */
-const metaOverrides = ref<Record<string, AlbumContentRow>>({});
 
 async function tryEnsureScanned(path: string) {
   if (metaOverrides.value[path] || props.photos.find((p) => p.path === path)?.meta) {
     scanState.value = "done";
     return;
   }
-  const p = photo.value;
-  if (p.albumId == null) {
-    // 非相册上下文（Memories / Timeline）不触发
-    scanState.value = "idle";
+  // albumId 优先取父视图传的，其次取 EXIF 补全解析出来的（后端按相册路径前缀解析）
+  // 显式标注 `| undefined`：`Record` 索引在无 noUncheckedIndexedAccess 时被推成非空，
+  // 若写成 `AlbumContentRow` 会被上面的 if 收窄成 never，`backfilled?.album_id` 直接报错。
+  const backfilled = metaOverrides.value[path] as AlbumContentRow | undefined;
+  const albumId = photo.value.albumId ?? backfilled?.album_id ?? null;
+  if (albumId == null) {
+    // 既无相册上下文，EXIF 补全也解析不出归属 → 只做 EXIF，不做 AI 分类
+    scanState.value = backfilled ? "done" : "idle";
     return;
   }
   if (scanningPhoto.value) return;
   scanningPhoto.value = true;
   scanState.value = "scanning";
   try {
-    const row = await contentStore.ensurePhotoScanned(p.albumId, path);
+    const row = await contentStore.ensurePhotoScanned(albumId, path);
     if (row) {
       metaOverrides.value = { ...metaOverrides.value, [path]: row };
       scanState.value = "done";
@@ -337,10 +348,12 @@ async function tryEnsureScanned(path: string) {
   }
 }
 
-/** FEAT-D：手动重试扫描（点击面板中的“手动重试”按钮） */
+/** FEAT-096：手动重试 —— 先补 EXIF 再跑 AI 分类（信息面板的「⟳ 重试」按钮） */
 async function retryScan() {
   if (scanningPhoto.value) return;
-  await tryEnsureScanned(photo.value.path);
+  const p = photo.value.path;
+  await ensureExif(p);
+  await tryEnsureScanned(p);
 }
 
 /** 字节数人性化显示 */
@@ -355,6 +368,56 @@ function personLabel(pid: string): string {
   const name = props.persons?.[pid];
   return name && name !== pid ? `${name}（${pid}）` : pid;
 }
+
+/* ---- FEAT-096（R3）：地点展示 + 窗口式可拖边缩放 / 全屏 ---- */
+
+/**
+ * 当前照片的拍摄地点
+ *
+ * 优先级：反查地名（`location`）→ 无地名但有 GPS 则降级显示坐标。
+ * 「什么都不显示」是最差结果 —— 用户分不清是没记录还是功能坏了。
+ */
+const placeText = computed<string>(() => {
+  const row = meta.value;
+  const place = row?.location?.trim();
+  if (place) return place;
+  const { lat, lon } = row ?? {};
+  if (typeof lat === "number" && typeof lon === "number") {
+    return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+  }
+  return "";
+});
+
+/** 有 GPS 坐标时给地图链接（坐标形式的地点文本也可点） */
+const mapUrl = computed<string>(() => {
+  const { lat, lon } = meta.value ?? {};
+  if (typeof lat !== "number" || typeof lon !== "number") return "";
+  return `https://uri.amap.com/marker?position=${lon},${lat}`;
+});
+
+/** 文件名（标题栏显示，兼作拖动把手的目标提示） */
+const fileName = computed(() => {
+  const p = photo.value?.path ?? "";
+  const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
+  return i >= 0 ? p.slice(i + 1) : p;
+});
+
+/**
+ * 窗口尺寸状态（Windows 窗口框：8 向拖边 + 拖标题栏移动 + 双击全屏）
+ *
+ * 尺寸写在 composable 里，切换照片时不重置 —— 用户放大到能看清细节后
+ * 翻下一张不该又缩回默认大小。
+ */
+const rs = useResizableDialog({
+  initialWidth: 1180,
+  initialHeight: 820,
+  minWidth: 560,
+  minHeight: 380,
+  minHeightVh: 34,
+});
+
+/** 8 向把手方向（与 ResizableDialog 共用同一套 class 约定） */
+const RESIZE_HANDLES = ["n", "s", "e", "w", "ne", "nw", "se", "sw"] as const;
 
 /* ---- FEAT-050：评分 / 标签 / 删除工具栏 ---- */
 const notify = useNotify();
@@ -417,10 +480,12 @@ async function saveTags(next: string[]) {
 function initForCurrentPhoto() {
   const p = photo.value.path;
   void loadPhotoInfo(p);
-  void tryEnsureScanned(p);
   void loadUserMeta(p);
-  // FEAT-095：地点兜底查询（必须在 loadPlace 声明之后调用，否则 TDZ）
-  void loadPlace(p);
+  // FEAT-096：EXIF 补全 → AI 扫描（顺序同上）
+  void (async () => {
+    await ensureExif(p);
+    await tryEnsureScanned(p);
+  })();
 }
 void initForCurrentPhoto();
 
@@ -459,51 +524,57 @@ function toggleHide() {
 }
 
 /**
- * FEAT-095：地点信息（需求 R3）
+ * FEAT-096（R4e）：照片元数据补全 —— 查表 → 缺失则后台 EXIF 补全 → 回填面板
  *
- * 优先用 meta（父视图传入的扫描记录，含 location / lat / lon）；
- * meta 缺失时兜底调 `get_photo_content_by_path` 单查 —— 智慧相册的人物 / 分类
- * / 地点画廊不传 meta，若不兜底这些页面的信息页永远只有「拍摄时间」没有「地点」。
+ * 修复 BUG-2026-1007-004「EXIF 查表有数据但信息页显示无时间/地点」的根因：
+ * 1. 原 `tryEnsureScanned()` 在 `albumId == null` 时**直接 return** ——
+ *    智慧相册的人物 / 分类 / 地点画廊全部命中，所以这些页面**从来没扫描过**，
+ *    表里其实也没有 EXIF；
+ * 2. 原 `ensure_photo_scanned` 依赖 `vision::classify_single`（AI 服务），
+ *    服务没启动整条命令失败 —— 而 EXIF 读取与地名反查都是纯本地 IO / 离线索引，
+ *    **根本不需要 AI**。
+ *
+ * 现在改为：先查表 → `shoot_time` / `location` 缺失时调 `backfill_photo_exif`
+ * （纯本地、不依赖 AI 服务、`owns.exif=true` 不覆盖已有 AI/影调）→ 回填面板。
+ * 失败静默（C2：补全是锦上添花，绝不能让预览卡住）。
  */
-const placeInfo = ref<{ location: string | null; lat: number | null; lon: number | null } | null>(null);
-const placeLoading = ref(false);
+const metaOverrides = ref<Record<string, AlbumContentRow>>({});
+/** 补全进行中（面板显示「计算中」，避免用户以为永远缺字段） */
+const backfilling = ref(false);
+const scannedPhoto = ref(false);
 
-async function loadPlace(path: string) {
-  placeInfo.value = null;
-  placeLoading.value = true;
-  try {
-    const row = await invoke<AlbumContentRow | null>("get_photo_content_by_path", { path });
-    placeInfo.value = row
-      ? { location: row.location ?? null, lat: row.lat ?? null, lon: row.lon ?? null }
-      : null;
-  } catch {
-    placeInfo.value = null;
-  } finally {
-    placeLoading.value = false;
-  }
+/** 判空：字段缺失 或 全是空白 */
+function isBlank(v: string | null | undefined): boolean {
+  return !v || v.trim().length === 0;
 }
 
-/** 当前应展示的地点（meta 优先，其次兜底查询结果） */
-const placeText = computed<string>(() => {
-  const fromMeta = meta.value?.location?.trim();
-  if (fromMeta) return fromMeta;
-  const fromQuery = placeInfo.value?.location?.trim();
-  if (fromQuery) return fromQuery;
-  const { lat, lon } = placeInfo.value ?? {};
-  // 无反查地名但有 GPS 坐标时，至少给出坐标（比空白信息更有用）
-  if (typeof lat === "number" && typeof lon === "number") {
-    return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-  }
-  return "";
-});
+/** 当前照片是否还缺 EXIF 关键字段（拍摄时间 / 地点） */
+function needsExifBackfill(p: string): boolean {
+  const row = metaOverrides.value[p] ?? props.photos.find((x) => x.path === p)?.meta;
+  if (!row) return true;
+  return isBlank(row.shoot_time) || isBlank(row.location);
+}
 
-/** 地点为坐标形式时给出地图链接 */
-const mapUrl = computed<string>(() => {
-  const { lat, lon } = placeInfo.value ?? {};
-  if (placeText.value && !/^-?\d+\.\d+, -?\d+\.\d+$/.test(placeText.value)) return "";
-  if (typeof lat !== "number" || typeof lon !== "number") return "";
-  return `https://uri.amap.com/marker?position=${lon},${lat}`;
-});
+/**
+ * 补全单张照片的 EXIF（拍摄时间 / 地点 / ISO / 光圈 / 快门 / 焦距）
+ *
+ * 已经在库且字段齐全时后端会直接 SKIP（不重复读盘），前端这边只在真缺时才发请求。
+ */
+async function ensureExif(p: string): Promise<void> {
+  if (!needsExifBackfill(p) || backfilling.value) return;
+  backfilling.value = true;
+  try {
+    const row = await invoke<AlbumContentRow | null>("backfill_photo_exif", { path: p });
+    if (row) {
+      metaOverrides.value = { ...metaOverrides.value, [p]: row };
+      scannedPhoto.value = true;
+    }
+  } catch {
+    /* 静默失败：补不上就维持「未记录」，不打扰用户 */
+  } finally {
+    backfilling.value = false;
+  }
+}
 
 /**
  * 编辑当前照片（FEAT-064）：跳创意工坊并带上原图路径，工坊首页直接在
@@ -522,74 +593,76 @@ function openInWorkshop() {
 </script>
 
 <template>
-  <div ref="overlayEl" class="lb-overlay" @click.self="emit('close')" @touchstart="onTouchStart" @touchend="onTouchEnd">
-    <button class="lb-close" title="关闭 (Esc)" @click="emit('close')">✕</button>
-
+  <div
+    ref="overlayEl"
+    class="lb-overlay"
+    @click.self="emit('close')"
+    @touchstart="onTouchStart"
+    @touchend="onTouchEnd"
+  >
     <!--
-      FEAT-095（R2）：信息页从「浮层压在照片上」改为**右侧并列栏**。
-      旧实现 `.lb-meta` 是 absolute 定位浮在左下角，小图时直接盖住画面主体；
-      现在图片区（lb-stage）与信息栏（lb-meta）左右并列，互不遮挡。
-      信息栏可折叠，折叠后图片区占满全宽。
+      FEAT-096（R4a）：原图预览器改成「Windows 窗口框」
+        · 8 向拖边缩放 + 拖标题栏移动 + 双击标题栏 / F11 全屏
+        · 信息面板移到**左侧**且更窄（280px），照片占绝大部分
+        · 信息面板可收起（只看图），全屏与收起状态互不影响
+      遮罩本身仍是全屏（保证点外面能关灯箱），但可交互内容是居中的这个"窗口"。
     -->
-    <div class="lb-layout" :class="{ 'meta-collapsed': metaCollapsed }">
-      <div class="lb-stage">
-        <button v-if="photos.length > 1" class="lb-nav lb-prev" title="上一张 (←)" @click="prev">‹</button>
-        <button v-if="photos.length > 1" class="lb-nav lb-next" title="下一张 (→)" @click="next">›</button>
+    <div
+      class="lb-layout"
+      :class="{ 'meta-collapsed': metaCollapsed, 'lb-fullscreen': rs.fullscreen.value, 'lb-dragging': rs.dragging.value }"
+      :style="rs.sizeStyle.value"
+    >
+      <!-- 8 向把手（全屏时无可拖的边） -->
+      <template v-if="!rs.fullscreen.value">
+        <span
+          v-for="h in RESIZE_HANDLES"
+          :key="h"
+          class="rzd-grip"
+          :class="`rzd-grip-${h}`"
+          @pointerdown="rs.handleDown($event, h)"
+          @pointermove="rs.onPointerMove"
+          @pointerup="rs.onPointerUp"
+          @pointercancel="rs.onPointerUp"
+        />
+      </template>
 
-        <div
-          class="lb-main"
-          :class="{ pannable: scale > 1, dragging }"
-          @pointerdown="onDragStart"
-          @pointermove="onDragMove"
-          @pointerup="onDragEnd"
-          @pointercancel="onDragEnd"
-          @dblclick.prevent="toggleZoom"
-        >
-          <div v-show="imgLoading" class="lb-loading">加载中…</div>
-          <!-- 直接指向原文件路径（convertFileSrc），非缩略图 -->
-          <img
-            :src="fileUrl(photo.path)"
-            @load="imgLoading = false"
-            class="lb-img"
-            :class="{ hidden: imgLoading }"
-            :style="{ transform: `translate(${tx}px, ${ty}px) scale(${scale})` }"
-            alt=""
-            draggable="false"
-          />
-        </div>
-
-        <!-- 操作提示与当前倍率（贴在图片区顶部，不占信息栏） -->
-        <div class="lb-zoombar">
-          <span class="lb-hint">
-            <kbd>←</kbd> <kbd>→</kbd> 切图 · <kbd>Esc</kbd> 关闭 · <kbd>Ctrl</kbd>+滚轮缩放 · 双击放大/复原 · <kbd>1-5</kbd> 打星
-          </span>
-          <span v-if="scale !== 1" class="lb-scale">{{ Math.round(scale * 100) }}%</span>
-        </div>
+      <!-- 标题栏：拖动移动窗口 · 双击全屏/还原 -->
+      <div
+        class="lb-titlebar"
+        @pointerdown="rs.titleDown"
+        @pointermove="rs.onPointerMove"
+        @pointerup="rs.onPointerUp"
+        @pointercancel="rs.onPointerUp"
+        @dblclick="rs.onTitleDoubleClick"
+      >
+        <span class="lb-title" :title="photo.path">🖼 {{ fileName }}</span>
+        <span class="lb-counter">{{ current + 1 }} / {{ photos.length }}</span>
+        <span class="lb-title-spacer"></span>
+        <!-- FEAT-096（R4c）：信息面板显示 / 收起（收起即只看图） -->
+        <button
+          class="lb-tb-btn"
+          :title="metaCollapsed ? '展开照片信息' : '收起信息（只看图）'"
+          @click="metaCollapsed = !metaCollapsed"
+        >{{ metaCollapsed ? "ℹ 显示信息" : "ℹ 收起信息" }}</button>
+        <button
+          class="lb-tb-btn"
+          :title="rs.fullscreen.value ? '还原窗口 (F11)' : '全屏查看 (F11)'"
+          @click="rs.toggleFullscreen"
+        >{{ rs.fullscreen.value ? "🗗 还原" : "⛶ 全屏" }}</button>
+        <button class="lb-close" title="关闭 (Esc)" @click="emit('close')">✕</button>
       </div>
 
-      <!-- 元数据面板（右侧并列栏，可折叠） -->
-      <aside class="lb-meta">
-        <div class="lb-meta-head">
-          <h4>照片信息</h4>
-          <button class="lb-meta-toggle" :title="metaCollapsed ? '展开信息' : '收起信息'" @click="metaCollapsed = !metaCollapsed">
-            {{ metaCollapsed ? "‹" : "›" }}
-          </button>
-        </div>
-        <div v-if="!metaCollapsed" class="lb-meta-body">
-          <div class="lb-filename">{{ photo.path }}</div>
+      <div class="lb-body">
+        <!-- FEAT-096（R4b）：信息面板在左，280px，照片占大部分 -->
+        <aside v-if="!metaCollapsed" class="lb-meta">
+          <div class="lb-filename" :title="photo.path">{{ photo.path }}</div>
 
           <dl>
-            <dt>分辨率</dt><dd v-if="photoInfo">{{ photoInfo.width }} × {{ photoInfo.height }} px（{{ (photoInfo.width * photoInfo.height / 1e6).toFixed(1) }} MP）</dd>
-            <template v-else-if="infoError"><dt>提示</dt><dd>无法读取图片信息</dd></template>
-            <template v-if="photoInfo">
-              <dt>文件大小</dt><dd>{{ fmtSize(photoInfo.file_size) }}</dd>
-              <dt>格式</dt><dd>{{ photoInfo.format.toUpperCase() }}</dd>
-            </template>
-            <!-- FEAT-095（R3）：拍摄时间提到基本信息区最前，地点紧随其后 -->
             <dt>拍摄时间</dt>
             <dd>
               <template v-if="meta?.shoot_time">{{ meta.shoot_time }}</template>
-              <span v-else class="lb-unknown">未记录（无 EXIF 或未扫描）</span>
+              <span v-else-if="backfilling" class="lb-unknown">⏳ 正在读取 EXIF…</span>
+              <span v-else class="lb-unknown">未记录（该照片无 EXIF 拍摄时间）</span>
             </dd>
             <dt>地点</dt>
             <dd>
@@ -597,9 +670,15 @@ function openInWorkshop() {
                 <a v-if="mapUrl" :href="mapUrl" target="_blank" rel="noreferrer" class="lb-place-link">{{ placeText }}</a>
                 <template v-else>{{ placeText }}</template>
               </template>
-              <span v-else-if="placeLoading" class="lb-unknown">查询中…</span>
-              <span v-else class="lb-unknown">未记录（无 GPS 或未扫描）</span>
+              <span v-else-if="backfilling" class="lb-unknown">⏳ 正在读取 GPS…</span>
+              <span v-else class="lb-unknown">未记录（该照片无 GPS 信息）</span>
             </dd>
+            <dt>分辨率</dt><dd v-if="photoInfo">{{ photoInfo.width }} × {{ photoInfo.height }} px（{{ (photoInfo.width * photoInfo.height / 1e6).toFixed(1) }} MP）</dd>
+            <template v-else-if="infoError"><dt>提示</dt><dd>无法读取图片信息</dd></template>
+            <template v-if="photoInfo">
+              <dt>文件大小</dt><dd>{{ fmtSize(photoInfo.file_size) }}</dd>
+              <dt>格式</dt><dd>{{ photoInfo.format.toUpperCase() }}</dd>
+            </template>
             <template v-if="meta?.category">
               <dt>AI 分类</dt><dd>{{ categoryLabel(meta.category) }}<span v-if="meta.sub_category"> / {{ meta.sub_category }}</span></dd>
               <dt v-if="meta.label">标签</dt><dd v-if="meta.label">{{ meta.label }}</dd>
@@ -624,23 +703,22 @@ function openInWorkshop() {
             <template v-if="meta?.tone_type">
               <dt>影调</dt><dd>{{ meta.tone_type }}<span v-if="meta.avg_luma != null">（亮度 {{ meta.avg_luma.toFixed(1) }}）</span></dd>
             </template>
-            <template v-if="!meta && scanState === 'scanning'">
-              <dt>AI 识别</dt><dd class="lb-scanning">⏳ 正在后台识别该照片的 AI/EXIF 信息…识别完成后面板自动刷新。</dd>
+            <!-- FEAT-096：EXIF 已补全但该照片确实没有这些字段时给出可操作的出口 -->
+            <template v-if="scannedPhoto && !meta?.category">
+              <dt>提示</dt>
+              <dd>
+                EXIF 已读取并入库，但本张照片没有 AI 分类信息。
+                <br />可在所属相册执行「<b>组合扫描</b>」补齐分类与人物。
+              </dd>
+            </template>
+            <template v-else-if="!meta && scanState === 'scanning'">
+              <dt>AI 识别</dt><dd class="lb-scanning">⏳ 正在后台识别该照片的 AI 信息…识别完成后面板自动刷新。</dd>
             </template>
             <template v-else-if="!meta && scanState === 'failed'">
               <dt>提示</dt>
               <dd>
-                尚未扫描该照片的 AI/EXIF 信息。
-                <br />运行相册详情页的「<b>综合扫描</b>」后即可在此显示分类、人物与拍摄参数。
-                <br /><button class="lb-retry-btn" :disabled="scanningPhoto" @click="retryScan">⟳ 重试扫描</button>
-              </dd>
-            </template>
-            <template v-else-if="!meta">
-              <dt>提示</dt>
-              <dd>
-                尚未扫描该照片的 AI/EXIF 信息。
-                <br />运行相册详情页的「<b>综合扫描</b>」后即可在此显示分类、人物与拍摄参数。
-                <br /><button class="lb-retry-btn" :disabled="scanningPhoto" @click="retryScan">⟳ 立即扫描</button>
+                AI 识别服务未运行，分类 / 人物暂不可用（拍摄时间与地点不受影响）。
+                <br /><button class="lb-retry-btn" :disabled="scanningPhoto || backfilling" @click="retryScan">⟳ 重试识别</button>
               </dd>
             </template>
           </dl>
@@ -650,11 +728,45 @@ function openInWorkshop() {
             <div class="lb-hist-title">像素分布（R/G/B）</div>
             <canvas ref="histCanvas" width="300" height="90" class="lb-hist"></canvas>
           </div>
+        </aside>
 
-          <div class="lb-counter">{{ current + 1 }} / {{ photos.length }}</div>
+        <div class="lb-stage">
+          <button v-if="photos.length > 1" class="lb-nav lb-prev" title="上一张 (←)" @click="prev">‹</button>
+          <button v-if="photos.length > 1" class="lb-nav lb-next" title="下一张 (→)" @click="next">›</button>
+
+          <div
+            class="lb-main"
+            :class="{ pannable: scale > 1, dragging }"
+            @pointerdown="onDragStart"
+            @pointermove="onDragMove"
+            @pointerup="onDragEnd"
+            @pointercancel="onDragEnd"
+            @dblclick.prevent="toggleZoom"
+          >
+            <div v-show="imgLoading" class="lb-loading">加载中…</div>
+            <!-- 直接指向原文件路径（convertFileSrc），非缩略图 -->
+            <img
+              :src="fileUrl(photo.path)"
+              @load="imgLoading = false"
+              class="lb-img"
+              :class="{ hidden: imgLoading }"
+              :style="{ transform: `translate(${tx}px, ${ty}px) scale(${scale})` }"
+              alt=""
+              draggable="false"
+            />
+          </div>
+
+          <!-- 操作提示与当前倍率 -->
+          <div class="lb-zoombar">
+            <span class="lb-hint">
+              <kbd>←</kbd> <kbd>→</kbd> 切图 · <kbd>Esc</kbd> 关闭 · <kbd>Ctrl</kbd>+滚轮缩放 · 双击放大/复原 · <kbd>1-5</kbd> 打星
+            </span>
+            <span v-if="scale !== 1" class="lb-scale">{{ Math.round(scale * 100) }}%</span>
         </div>
-      </aside>
+      </div>
+      </div>
     </div>
+
 
     <!-- FEAT-050 / FEAT-095：评分 / 标签 / 编辑 / 归档 / 隐藏 / 删除工具栏 -->
     <div class="lb-toolbar" @click.stop>
@@ -728,22 +840,72 @@ function openInWorkshop() {
   position: fixed;
   inset: 0;
   z-index: 1000;
-  background: rgba(0, 0, 0, 0.92);
+  background: rgba(0, 0, 0, 0.9);
+  /* 居中承载"窗口"（.lb-layout）；窗口自身尺寸由 useResizableDialog 决定 */
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-/* FEAT-095（R2）：左图片区 + 右信息栏的并列布局（互不遮挡） */
+/*
+ * FEAT-096（R4a/R4b/R4c）：原图预览器 = 可拖边缩放的窗口
+ *   标题栏（拖动移动 / 双击全屏）
+ *   ├── 信息面板（左侧 280px，可整体收起为「只看图」）
+ *   └── 图片区（占绝大部分）
+ * 尺寸 / 位置由 useResizableDialog 产出（style 绑定），这里只管内部排版。
+ */
 .lb-layout {
+  position: relative;
   display: flex;
-  align-items: stretch;
-  width: 100%;
-  height: 100%;
+  flex-direction: column;
+  border-radius: 12px;
+  background: rgba(10, 12, 18, 0.96);
+  box-shadow: 0 22px 68px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.lb-layout.lb-fullscreen { border-radius: 0; }
+.lb-layout.lb-dragging { transition: none; }
+
+/* ---- 标题栏（兼拖动把手） ---- */
+.lb-titlebar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  padding: 0 8px 0 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: grab;
+  user-select: none;
+}
+.lb-layout.lb-dragging .lb-titlebar { cursor: grabbing; }
+.lb-title {
+  font-size: 12.5px;
+  color: #e7e9ee;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 46%;
+}
+.lb-counter {
+  font-size: 11.5px;
+  color: #9aa3b5;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.lb-title-spacer { flex: 1; }
+
+/* ---- 内容区 ---- */
+.lb-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
   /* 底部给工具栏留出安全高度，避免工具栏压住图片底部 */
-  padding: 0 0 58px;
+  padding-bottom: 54px;
   box-sizing: border-box;
 }
+
 .lb-stage {
   position: relative;
   flex: 1 1 auto;
@@ -753,22 +915,50 @@ function openInWorkshop() {
   justify-content: center;
 }
 
-.lb-close {
+/* ---- 8 向把手（与 ResizableDialog 同一套 class 约定） ---- */
+.lb-layout .rzd-grip {
   position: absolute;
-  top: 16px;
-  right: 16px;
-  z-index: 2;
-  background: rgba(255, 255, 255, 0.15);
+  z-index: 6;
+}
+.lb-layout .rzd-grip:hover {
+  background: color-mix(in srgb, var(--color-primary) 55%, transparent);
+}
+.lb-layout .rzd-grip-n,
+.lb-layout .rzd-grip-s {
+  left: 10px; right: 10px; height: 6px; cursor: ns-resize;
+}
+.lb-layout .rzd-grip-n { top: 0; }
+.lb-layout .rzd-grip-s { bottom: 0; }
+.lb-layout .rzd-grip-e,
+.lb-layout .rzd-grip-w {
+  top: 10px; bottom: 10px; width: 6px; cursor: ew-resize;
+}
+.lb-layout .rzd-grip-e { right: 0; }
+.lb-layout .rzd-grip-w { left: 0; }
+.lb-layout .rzd-grip-ne,
+.lb-layout .rzd-grip-nw,
+.lb-layout .rzd-grip-se,
+.lb-layout .rzd-grip-sw {
+  width: 14px; height: 14px;
+}
+.lb-layout .rzd-grip-ne { top: 0; right: 0; cursor: nesw-resize; }
+.lb-layout .rzd-grip-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.lb-layout .rzd-grip-nw { top: 0; left: 0; cursor: nwse-resize; }
+.lb-layout .rzd-grip-se { bottom: 0; right: 0; cursor: nwse-resize; }
+
+.lb-close {
+  background: rgba(255, 255, 255, 0.12);
   border: none;
   color: #fff;
-  font-size: 22px;
-  width: 40px;
-  height: 40px;
+  font-size: 15px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   cursor: pointer;
   line-height: 1;
+  flex-shrink: 0;
 }
-.lb-close:hover { background: rgba(255, 255, 255, 0.3); }
+.lb-close:hover { background: rgba(255, 255, 255, 0.28); }
 
 .lb-nav {
   position: absolute;
@@ -866,56 +1056,21 @@ function openInWorkshop() {
   font-size: 14px;
 }
 
-/* FEAT-095（R2）：信息面板改为右侧并列栏（不再 absolute 压在照片上） */
+/* FEAT-096（R4b）：信息面板在**左侧**、收窄到 280px，让照片占绝大部分 */
 .lb-meta {
-  flex: 0 0 340px;
-  max-width: 340px;
-  background: rgba(0, 0, 0, 0.55);
-  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  flex: 0 0 280px;
+  max-width: 280px;
+  background: rgba(0, 0, 0, 0.4);
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
   color: #e7e9ee;
-  display: flex;
-  flex-direction: column;
   min-height: 0;
-  font-size: 13px;
-}
-.lb-meta-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px 10px 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  flex-shrink: 0;
-}
-.lb-meta-head h4 { margin: 0; color: #fff; font-size: 14px; font-weight: 600; }
-.lb-meta-toggle {
-  background: rgba(255, 255, 255, 0.12);
-  border: none;
-  color: #fff;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.15s;
-}
-.lb-meta-toggle:hover { background: rgba(255, 255, 255, 0.24); }
-.lb-meta-body {
-  flex: 1;
-  min-height: 0;
+  /* 面板内容比窗口高时自身滚动，不把照片区挤走 */
   overflow-y: auto;
-  padding: 12px 18px 16px;
-}
-/* 折叠态只留标题栏 */
-.lb-layout.meta-collapsed .lb-meta {
-  flex: 0 0 44px;
-  max-width: 44px;
+  padding: 12px 14px 16px;
+  font-size: 12.5px;
 }
 .lb-filename {
-  font-size: 12px;
+  font-size: 11.5px;
   color: #c8cdd9;
   word-break: break-all;
   margin-bottom: 10px;
@@ -976,14 +1131,14 @@ function openInWorkshop() {
   cursor: not-allowed;
 }
 
-/* FEAT-095：工具栏（底部居中，横跨图片区；信息栏在右侧不参与居中计算） */
+/* FEAT-096：工具栏（窗口底部居中；信息栏在左，不参与居中计算） */
 .lb-toolbar {
   position: absolute;
   left: 50%;
   bottom: 12px;
   transform: translateX(-50%);
   z-index: 3;
-  max-width: calc(100vw - 420px);
+  max-width: calc(100% - 60px);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1052,7 +1207,7 @@ function openInWorkshop() {
   bottom: 58px;
   transform: translateX(-50%);
   z-index: 3;
-  max-width: min(70vw, calc(100vw - 420px));
+  max-width: min(70vw, calc(100% - 60px));
   display: flex;
   flex-direction: column;
   gap: 8px;

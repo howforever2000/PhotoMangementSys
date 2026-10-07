@@ -3305,7 +3305,115 @@
       ],
       "created_at": "2026-10-07T00:00:00+08:00",
       "updated_at": "2026-10-07T00:00:00+08:00"
+    },
+    {
+      "id": "FEAT-096",
+      "name": "右键菜单 Windows 语义 + 三态全选复选框 + 窗口式可拖边缩放/全屏 + EXIF 后台补全（修复信息页无时间地点）",
+      "module": "src/components/ContextMenu.vue（重写关闭语义）\nsrc/components/SelectAllCheckbox.vue（新增）\nsrc/components/ResizableDialog.vue（新增）\nsrc/composables/useResizableDialog.ts（新增）\nsrc/components/PhotoLightbox.vue（窗口框 + 信息栏左置 + 后台补全）\nsrc/components/PersonGallery.vue、PhotoGrid.vue、CategoryGallery.vue、LocationGallery.vue\nsrc-tauri/src/content.rs（backfill_photo_exif 命令）\nsrc-tauri/src/db/mod.rs（resolve_album_id_for_path + 单测）\nsrc-tauri/src/lib.rs（命令注册）",
+      "purpose": "用户报 4 个问题：①照片右键菜单出现后点不动、点别处也不消失（不像 Windows）；②全选照片后再点「全选」取消不掉，且按钮应是空圈圈不是按钮；③所有照片预览框（点人物头像等弹出的子图）应能像 Windows 软件框那样拖动边界缩放；④原图预览界面不能全屏、不能拖边缩放，信息面板要放左侧偏小让照片占大部分、可显示可收起，缺失字段应在预览时后台计算入库，且「EXIF 查表有数据却显示无时间无地点」。",
+      "implementation": {
+        "① 右键菜单（ContextMenu.vue）": [
+          "根因 1：全屏遮罩 .ctx-overlay 写了 @click.stop → 点外面永远到不了 document 层的关闭分支，菜单「关不掉」",
+          "根因 2：遮罩写了 @contextmenu.prevent.stop → 右键别处既不关闭、又被 preventDefault 吃掉浏览器原生菜单，导致「右键打开新菜单」这个动作彻底做不到（菜单锁死）",
+          "根因 3：onItemClick 里 item.onClick() 抛错会跳过 emit('close')，菜单永久卡死",
+          "修法：遮罩改 @pointerdown 关闭（左键+右键）/@contextmenu 关闭并**重开**；移除 .stop 与 document 级冗余监听（单一机制）",
+          "右键别处重开的实现：先 emit('close')，再 requestAnimationFrame 等菜单卸载 → 临时把遮罩 pointer-events 置 none → document.elementFromPoint 拿到真实目标 → 合成 MouseEvent('contextmenu') 投递过去，由目标自身 handler 决定弹什么（画廊格子/相册卡片/缩略图…）",
+          "onItemClick 改 try { onClick() } finally { emit('close') }",
+          "补 Esc 关闭（document 级监听，div 不获焦捕获不到）"
+        ],
+        "② 全选复选框（SelectAllCheckbox.vue）": [
+          "根因：CategoryGallery / LocationGallery / PersonGallery 用的是「全选」+ 独立「取消全选」两个按钮，没有「再点一次取消」的语义；PhotoGrid 是原生 <input type=checkbox>，只有 2 态无半选，且外观随系统主题",
+          "修法：抽一个三态组件 —— 空圈（未选）→ 横杠（部分选中，indeterminate）→ 打勾（全选）；点击语义：已全选则取消，否则全选",
+          "CSS 画指示圈而非原生 checkbox，保证「空圈圈/打勾」在各系统主题下一致",
+          "emit 的是「本次点击意图」(selectAll: boolean) 而非让父组件自己再判一次 allSelected —— 之前两处各判一次正是点了没反应的原因",
+          "四个画廊统一接入，删掉冗余的「取消全选」按钮"
+        ],
+        "③ 窗口式缩放（useResizableDialog.ts + ResizableDialog.vue）": [
+          "useResizableDialog：x/y/width/height/fullscreen/dragging 状态 + 8 向几何计算 + 最小尺寸 + 视口收拢",
+          "几何关键点：n/nw/ne 要保持对边（bottom）不动并反向补偿左上角偏移，否则拖动中窗口会「越拖越跑」；全屏态下拖任意边 = 退出全屏并落到指针位置，避免松手后窗口跳回原处",
+          "尺寸约束：minWidth 420 / minHeight 260 / minHeight 取视口 30%，最大不超过视口 -16px（窗口不能被拖出屏幕找不回来）",
+          "双击标题栏 = 最大化/还原；拖标题栏 = 移动窗口（标题栏上的 button 用 closest('button') 排除，不触发拖动）",
+          "ResizableDialog 组件封装 8 个把手 + 标题栏 slot，四处弹窗共用（复制四份必然出现「有的能拖有的不能拖」）",
+          "Q4 决策：尺寸写在 composable 的闭包里，切走再回来不变、退出应用不持久化（持久化会让用户被上次窗口大小困住）"
+        ],
+        "④ 原图预览器（PhotoLightbox.vue）": [
+          "布局改为窗口框：标题栏（文件名 + 序号 + 信息切换 + 全屏 + 关闭）+ 内容区（左侧信息面板 280px + 右侧图片区）",
+          "信息面板从右侧移到左侧并从 340px 收窄到 280px，照片占绝大部分；面板内容超高时自身滚动，不挤走照片区",
+          "metaCollapsed 改成标题栏的显式「ℹ 显示信息 / ℹ 收起信息」按钮（原来藏在面板内部，收起后点不到）",
+          "新增 F11 快捷键全屏/还原（preventDefault 拦掉浏览器自身全屏，否则全屏后窗口边框消失没法还原）",
+          "lb-body 底部留 54px 给工具栏，工具栏 max-width 改 calc(100% - 60px)（跟随窗口宽度而非视口宽度）"
+        ],
+        "④ EXIF 后台补全（根因修复）": [
+          "根因 1：PhotoLightbox.tryEnsureScanned() 在 albumId == null 时直接 return —— 智慧相册的人物/分类/地点画廊全部命中，所以这些页面**从来没扫描过**，表里其实也没有 EXIF（不是显示问题，是数据问题）",
+          "根因 2：ensure_photo_scanned 依赖 vision::classify_single（AI 服务），服务没启动整条命令失败 —— 而 EXIF 读取（read_exif_paths）与地名反查（geo_index::find_region）都是纯本地 IO / 离线索引，**根本不需要 AI**",
+          "修法：新增 backfill_photo_exif(path) 命令，纯本地路径 —— read_photo_exif + resolve_location + upsert",
+          "owns = { ai:false, exif:true, tone:false } → upsert_one 的 CASE/COALESCE 只写 EXIF 字段，已扫好的 AI 分类 / 影调 / 人脸不被覆盖",
+          "album_id 由 resolve_album_id_for_path 解析（详见下），这是本次最危险的点",
+          "前端加载顺序改为：先 ensureExif（快、拿到时间地点 + album_id）→ 再 tryEnsureScanned（慢、且可能因 AI 服务未运行而失败）",
+          "tryEnsureScanned 的 albumId 取值放宽为 photo.albumId ?? backfilled.album_id，画廊场景因此也能跑 AI 分类",
+          "补全期间信息栏显示「⏳ 正在读取 EXIF…」，静默失败（C2：补全是锦上添花，绝不能让预览卡住）",
+          "C4：后端在 shoot_time 与 location 都齐全时直接 SKIP 不读盘，前端也只在 needsExifBackfill 为真时才发请求"
+        ],
+        "album_id 归属保护（最高风险点）": [
+          "upsert_one 里 `album_id=excluded.album_id` 是**无条件覆盖**的 —— EXIF 补全若传 NULL，会把已有归属抹成 NULL，之后相册详情页就查不到这张照片了",
+          "新增 resolve_album_id_for_path(user_id, path)：① photo_content_scan 已有行的 album_id 优先原样沿用（哪怕是 NULL）→ ② 无记录时按相册目录前缀匹配取**最长**（嵌套相册里内层该赢）→ ③ 跳过虚拟相册哨兵 path",
+          "前缀匹配沿用 count_scanned_by_prefix 的分隔符规范（补 sep），避免 /alb1 命中 /alb11",
+          "配套单测 resolve_album_id_for_path_preserves_and_picks_specific 覆盖 6 个场景：最长前缀 / 分隔符规范 / 已有行优先 / NULL 保留 / 跳过虚拟相册 / 多用户隔离"
+        ]
+      },
+      "highlights": [
+        "用户报的「EXIF 显示无时间无地点」查表发现根本不是显示问题 —— 是这些页面从未扫描过，数据压根不在库里。定位这类「看起来是 UI bug」的问题，先分清是「没数据」还是「没显示」能省掉大量无效 UI 改动",
+        "「AI 服务没启动导致 EXIF 也读不出来」是耦合错误：把纯本地 IO（EXIF 解析 + 离线地名词典）挂在需要 GPU 服务的链路上，AI 一停整条信息链就断。拆出 backfill_photo_exif 后，两者可独立失败",
+        "右键菜单「关不掉」的根因是遮罩上的 @click.stop 把 document 级关闭分支的冒泡掐断了 —— 这类 bug 表现为「点了没反应」，但真因在事件传播而非点击逻辑",
+        "全选复选框之前点了没反应，是「子组件算一次意图、父组件再算一次状态」的双重判断导致的状态不同步；改成子组件 emit 意图、父组件只执行，职责才干净",
+        "album_id 无条件覆盖这条是本次最大的坑：一次 EXIF 补全就能让照片从相册详情页消失。resolve_album_id_for_path 的 6 个单测场景（尤其「已有行是 NULL 也原样保留」）就是为这个写的",
+        "窗口化改造把「拖边缩放」抽成 composable + 组件两层：逻辑（8 向几何、约束、视口收拢）与视觉（把手、标题栏）分离，四处弹窗复用同一套，不可能出现「人物弹窗能拖、地点弹窗不能拖」"
+      ],
+      "tests": [
+        "cargo check 0 error",
+        "cargo test 159 passed / 0 failed / 3 ignored（新增 resolve_album_id_for_path_preserves_and_picks_specific 单测 1 条）",
+        "npx vue-tsc --noEmit exit 0",
+        "npm run build（vue-tsc + vite build）exit 0",
+        "npm test 61/61"
+      ],
+      "related_files": [
+        "src/components/ContextMenu.vue",
+        "src/components/SelectAllCheckbox.vue",
+        "src/components/ResizableDialog.vue",
+        "src/composables/useResizableDialog.ts",
+        "src/components/PhotoLightbox.vue",
+        "src/components/PersonGallery.vue",
+        "src/components/PhotoGrid.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/LocationGallery.vue",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/lib.rs"
+      ],
+      "keywords": [
+        "右键菜单",
+        "contextmenu",
+        "ContextMenu",
+        "Windows 语义",
+        "全选",
+        "indeterminate",
+        "三态",
+        "复选框",
+        "resize",
+        "拖边缩放",
+        "全屏",
+        "F11",
+        "窗口框",
+        "EXIF",
+        "backfill",
+        "拍摄时间",
+        "地点",
+        "album_id",
+        "时间线一致性"
+      ],
+      "created_at": "2026-10-07T02:00:00+08:00",
+      "updated_at": "2026-10-07T02:00:00+08:00"
     }
   ],
-  "updated": "2026-10-07T00:00:00+08:00"
+  "updated": "2026-10-07T02:00:00+08:00"
 }

@@ -1376,6 +1376,126 @@ pub mod commands {
         Ok(out)
     }
 
+    /// FEAT-096：单张照片 EXIF 后台补全（**不依赖 AI 服务**）
+    ///
+    /// 修的根因：`ensure_photo_scanned` 走的是 `vision::classify_single`，AI 服务没启动时
+    /// 整条命令直接失败 —— 但 EXIF 读取（`read_exif_paths`）与地名反查（`geo_index::find_region`）
+    /// **都是纯本地 IO / 离线索引**，根本不需要 AI。结果就是「相册里有 EXIF，
+    /// 打开大图却看不到拍摄时间和地点」。
+    ///
+    /// 关键约束：
+    /// - `owns = { ai: false, exif: true, tone: false }` → 只写 EXIF 字段，
+    ///   `upsert_one` 的 COALESCE 逻辑保证已扫好的 AI 分类 / 影调 / 人脸不被覆盖；
+    /// - `album_id` 由 `resolve_album_id_for_path` 解析（优先沿用已有行），
+    ///   否则 `album_id=excluded.album_id` 会把已有归属抹成 NULL；
+    /// - 静默：任何失败只记日志并返回 `None`，不阻塞预览。
+    #[tauri::command]
+    pub fn backfill_photo_exif(
+        path: String,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Option<db::AlbumContentRow>, String> {
+        let _t = log_call!("backfill_photo_exif", &format!("path={path}"));
+        let user_id = require_user(&session)?;
+
+        // 1. 已入库且 EXIF 字段齐全 → 直接返回，不重复读盘（C4：只补真正缺失的）
+        if let Some(existing) = {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.get_photo_content_by_path(&path, user_id)
+                .ok()
+                .flatten()
+        } {
+            let has_shoot = existing.shoot_time.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_some();
+            let has_place = existing.location.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_some();
+            if has_shoot && has_place {
+                logger::log_call_end_with("backfill_photo_exif", _t, "SKIP | already complete");
+                return Ok(Some(existing));
+            }
+        }
+
+        // 2. 纯本地读 EXIF（不解码像素，仅解析文件头，比 AI 分类快几个数量级）
+        let p = Path::new(&path);
+        if !p.is_file() {
+            logger::log_call_end_with("backfill_photo_exif", _t, "MISS | file not found");
+            return Ok(None);
+        }
+        let name = p
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let ex = crate::photo_scan::read_photo_exif(p, &name);
+        // 离线反查地名（geo_index 内存索引，无网络请求）
+        let place = resolve_location(&ex);
+
+        let (len, mtime_ns) = stat_len_mtime(p);
+        let rec = db::PhotoContentRecord {
+            photo_hash: photo_hash(&path, len, mtime_ns),
+            path: path.clone(),
+            parent_dir: parent_dir_of(p),
+            album_id: None, // 下面按行解析后回填
+            user_id,
+            content: String::new(),
+            category: None,
+            sub_category: None,
+            label: None,
+            confidence: None,
+            top3_json: None,
+            person_ids: None,
+            person_count: 0,
+            shoot_time: ex.shoot_time,
+            location: place,
+            shutter_speed: ex.shutter_speed,
+            iso: ex.iso,
+            aperture: ex.aperture,
+            focal_length: ex.focal_length,
+            iso_num: ex.iso_num,
+            focal_num: ex.focal_num,
+            aperture_num: ex.aperture_num,
+            shutter_num: ex.shutter_num,
+            tone_type: None,
+            avg_luma: None,
+            lat: ex.lat,
+            lon: ex.lon,
+            // 只声明 EXIF 归属：AI / 影调字段一律不碰
+            owns: db::FieldGroups { ai: false, exif: true, tone: false },
+        };
+
+        let mut rec = rec;
+        {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            // album_id 必须解析后再写：upsert_one 对该列是无条件覆盖
+            rec.album_id = db
+                .resolve_album_id_for_path(user_id, &path)
+                .map_err(|e| format!("{:?}", e))?;
+        }
+        {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            if let Err(e) = db.upsert_photo_contents(std::slice::from_ref(&rec)) {
+                // 补全是「锦上添花」，失败只记日志，不该让预览报错
+                logger::log_error("backfill_photo_exif", &format!("upsert failed: {e:?}"));
+                logger::log_call_end_with("backfill_photo_exif", _t, "ERR | upsert failed");
+                return Ok(None);
+            }
+        }
+
+        // 3. 读回完整行给前端直接渲染
+        let out = {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.get_photo_content_by_path(&path, user_id)
+                .map_err(|e| format!("{:?}", e))?
+        };
+        logger::log_call_end_with(
+            "backfill_photo_exif",
+            _t,
+            &format!(
+                "OK | shoot_time={} place={}",
+                out.as_ref().and_then(|r| r.shoot_time.clone()).unwrap_or_default(),
+                out.as_ref().and_then(|r| r.location.clone()).unwrap_or_default()
+            ),
+        );
+        Ok(out)
+    }
+
     /// FEAT-095：按路径读单张照片的扫描记录（信息页「拍摄时间 / 地点」兜底）
     ///
     /// 智慧相册的人物 / 分类 / 地点画廊打开 Lightbox 时不传 meta，

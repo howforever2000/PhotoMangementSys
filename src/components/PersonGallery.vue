@@ -16,6 +16,8 @@ import PhotoLightbox from "./PhotoLightbox.vue";
 import PhotoDeleteDialog, { type DeleteMode } from "./PhotoDeleteDialog.vue";
 import PhotoActionMenu from "./PhotoActionMenu.vue";
 import PhotoZoomBar from "./PhotoZoomBar.vue";
+import SelectAllCheckbox from "./SelectAllCheckbox.vue";
+import ResizableDialog from "./ResizableDialog.vue";
 import { useAlbumStore } from "../stores/album";
 import { useThemeStore } from "../stores/theme";
 import { usePhotoActions } from "../composables/usePhotoActions";
@@ -262,8 +264,15 @@ function toggleSelect(path: string) {
   else next.add(path);
   selected.value = next;
 }
-function selectAllPhotos() {
-  selected.value = new Set(viewingPhotos.value.map((it) => it.path));
+/**
+ * 全选 / 取消全选（FEAT-096：改三态复选框后，参数为「本次点击意图」而非内部自行判断）
+ *
+ * @param selectAll `true` = 全选；`false` = 取消全选
+ */
+function selectAllPhotos(selectAll = true) {
+  selected.value = selectAll
+    ? new Set(viewingPhotos.value.map((it) => it.path))
+    : new Set();
 }
 function openDeleteDialog() {
   if (!selected.value.size) return;
@@ -656,33 +665,51 @@ const vFocus: Directive<HTMLElement> = {
       @cancel="pendingTarget = null"
     />
 
-    <!-- 查看该人物的照片（缩略图网格） -->
+    <!-- 查看该人物的照片（缩略图网格）—— FEAT-096（R3）：窗口式可拖边缩放 + 拖标题栏移动 + 全屏 -->
     <Teleport to="body">
       <div v-if="viewingPerson" class="viewer-mask" @click.self="closePhotos">
-        <div class="viewer-dialog glass-card" :style="surfaceStyle">
-          <div class="viewer-head">
-            <span class="viewer-title">{{ displayName(viewingPerson) }} 的照片</span>
-            <span class="viewer-count">{{ viewingPhotos.length }} 张</span>
-            <!-- FEAT-095（R1）：矩阵预览框缩放 -->
-            <PhotoZoomBar v-model="cellSize" :disabled="!viewingPhotos.length" />
-            <span class="viewer-spacer"></span>
-            <template v-if="selectMode">
-              <button class="mini-btn" @click="selectAllPhotos">全选</button>
-              <!-- FEAT-095：多选批量归档 / 隐藏（针对照片，非相册整体） -->
-              <button class="mini-btn" :disabled="!selected.size || photoActions.busy.value" @click="doArchive([...selected], true)">
-                📦 归档（{{ selected.size }}）
+        <ResizableDialog
+          class="viewer-dialog"
+          :style="surfaceStyle"
+          :initial-width="760"
+          :initial-height="580"
+          :min-width="440"
+          :min-height="320"
+        >
+          <template #head="{ fullscreen, toggleFullscreen }">
+            <div class="viewer-head">
+              <span class="viewer-title">{{ displayName(viewingPerson) }} 的照片</span>
+              <span class="viewer-count">{{ viewingPhotos.length }} 张</span>
+              <!-- FEAT-095（R1）：矩阵格子缩放 -->
+              <PhotoZoomBar v-model="cellSize" :disabled="!viewingPhotos.length" />
+              <span class="viewer-spacer"></span>
+              <template v-if="selectMode">
+                <!-- FEAT-096：三态全选复选框（空圈 → 打勾；全选后再点即取消全选） -->
+                <SelectAllCheckbox
+                  :selected-count="selected.size"
+                  :total-count="viewingPhotos.length"
+                  @toggle="selectAllPhotos"
+                />
+                <!-- FEAT-095：多选批量归档 / 隐藏（针对照片，非相册整体） -->
+                <button class="mini-btn" :disabled="!selected.size || photoActions.busy.value" @click="doArchive([...selected], true)">
+                  📦 归档（{{ selected.size }}）
+                </button>
+                <button class="mini-btn" :disabled="!selected.size || photoActions.busy.value" @click="doHide([...selected], true)">
+                  🔒 隐藏（{{ selected.size }}）
+                </button>
+                <button class="mini-btn danger" :disabled="!selected.size || deleting" @click="openDeleteDialog">
+                  🗑 删除选中（{{ selected.size }}）
+                </button>
+                <button class="mini-btn" @click="exitSelectMode">退出</button>
+              </template>
+              <button v-else class="mini-btn" @click="enterSelectMode">☑ 多选</button>
+              <!-- FEAT-096（R3）：全屏 / 还原（双击标题栏同效） -->
+              <button class="mini-btn" :title="fullscreen ? '还原窗口 (F11)' : '全屏查看 (F11)'" @click="toggleFullscreen">
+                {{ fullscreen ? "🗗 还原" : "⛶ 全屏" }}
               </button>
-              <button class="mini-btn" :disabled="!selected.size || photoActions.busy.value" @click="doHide([...selected], true)">
-                🔒 隐藏（{{ selected.size }}）
-              </button>
-              <button class="mini-btn danger" :disabled="!selected.size || deleting" @click="openDeleteDialog">
-                🗑 删除选中（{{ selected.size }}）
-              </button>
-              <button class="mini-btn" @click="exitSelectMode">退出</button>
-            </template>
-            <button v-else class="mini-btn" @click="enterSelectMode">☑ 多选</button>
-            <button class="btn viewer-close" @click="closePhotos">✕</button>
-          </div>
+              <button class="btn viewer-close" @click="closePhotos">✕</button>
+            </div>
+          </template>
           <!-- 头像挑选模式提示（由头像右键菜单「更换头像…」进入） -->
           <div v-if="avatarPickMode && !selectMode" class="viewer-pick-hint">
             正在更换封面：鼠标移到照片上点「设为头像」即可（选完自动关闭）
@@ -747,7 +774,7 @@ const vFocus: Directive<HTMLElement> = {
             @archive="(p, m) => doArchive([p], m)"
             @hide="(p, m) => doHide([p], m)"
           />
-        </div>
+        </ResizableDialog>
       </div>
     </Teleport>
 
@@ -988,16 +1015,11 @@ body.theme-dark .pg-action-msg {
   inset: 0;
   z-index: 1200;
   background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
+/* FEAT-096（R3）：窗口尺寸由 ResizableDialog 的拖边把手接管，
+   这里不能再写死 width / max-height（否则会和拖出来的实际尺寸打架） */
 .viewer-dialog {
-  background: transparent; /* 底色由 surfaceStyle(主题) 提供 */
-  border-radius: 16px;
-  padding: 20px 22px;
-  width: min(720px, 94vw);
-  max-height: 86vh;
+  padding: 16px 18px 18px;
   display: flex;
   flex-direction: column;
 }
@@ -1006,6 +1028,7 @@ body.theme-dark .pg-action-msg {
   align-items: center;
   gap: 10px;
   margin-bottom: 12px;
+  padding: 0 2px;
 }
 .viewer-title { font-size: 17px; font-weight: 700; }
 .viewer-count { font-size: 13px; opacity: 0.7; }
@@ -1014,6 +1037,10 @@ body.theme-dark .pg-action-msg {
 .viewer-error { color: var(--color-danger); }
 .viewer-grid {
   overflow-y: auto;
+  /* FEAT-096（R3）：窗口可缩放后网格必须自己撑满剩余高度并在内部滚动，
+     否则窗口拉高时网格仍只占原高度，底部留一大片空白 */
+  flex: 1;
+  min-height: 0;
   display: grid;
   /* 格子尺寸由 PhotoZoomBar 的 v-model 驱动（style 绑定在模板上），此处只给兜底值 */
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));

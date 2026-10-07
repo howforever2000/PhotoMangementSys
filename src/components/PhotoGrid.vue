@@ -14,6 +14,7 @@ import PhotoLightbox from "./PhotoLightbox.vue";
 import ContextMenu from "./ContextMenu.vue";
 import type { ContextMenuEntry } from "./ContextMenu.vue";
 import PhotoDeleteDialog, { type DeleteMode } from "./PhotoDeleteDialog.vue";
+import SelectAllCheckbox from "./SelectAllCheckbox.vue";
 import PhotoZoomBar from "./PhotoZoomBar.vue";
 import { usePhotoActions } from "../composables/usePhotoActions";
 import type { PhotoMarkState } from "../types/photo";
@@ -506,10 +507,17 @@ const allSelected = computed(
   () => visiblePhotos.value.length > 0 && visiblePhotos.value.every((p) => selectedPaths.value.has(p.path))
 );
 
-function toggleSelectAll() {
-  selectedPaths.value = allSelected.value
-    ? new Set()
-    : new Set(visiblePhotos.value.map((p) => p.path));
+/**
+ * 全选 / 取消全选
+ *
+ * @param selectAll `true` = 全选；`false` = 取消全选
+ *   （SelectAllCheckbox 已算好「本次点击意图」，这里不再自己判断 allSelected ——
+ *    之前两处各判一次导致复选框点了没反应）
+ */
+function toggleSelectAll(selectAll = !allSelected.value) {
+  selectedPaths.value = selectAll
+    ? new Set(visiblePhotos.value.map((p) => p.path))
+    : new Set();
 }
 
 /** 打开二次确认弹窗（当前勾选的照片，两种删除模式） */
@@ -828,9 +836,12 @@ function onKey(e: KeyboardEvent) {
 
     <!-- 多选模式操作条 -->
     <div v-if="selectMode" class="pg-select-bar">
-      <label class="pg-select-all">
-        <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" /> 全选
-      </label>
+      <!-- FEAT-096：全选复选框（三态：空圈 / 横杠 / 打勾；全选后再点即取消） -->
+      <SelectAllCheckbox
+        :selected-count="selectedPaths.size"
+        :total-count="visiblePhotos.length"
+        @toggle="toggleSelectAll"
+      />
       <span class="pg-selected-count">已选 {{ selectedPaths.size }} 张</span>
       <span class="pg-select-tip">
         点击照片勾选 · <kbd>Esc</kbd> 退出 · <kbd>Ctrl+A</kbd> 全选 · <kbd>Delete</kbd> 删记录

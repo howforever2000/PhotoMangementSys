@@ -1251,6 +1251,64 @@ impl Database {
     }
 
     // ---------------- FEAT-095：归档 / 隐藏标记 ----------------
+    /// 按照片路径解析其归属相册 ID（FEAT-096：EXIF 补全时定 album_id）
+    ///
+    /// 优先级：
+    /// 1. `photo_content_scan` 已有行的 `album_id`（**必须优先沿用** ——
+    ///    `upsert_one` 里 `album_id=excluded.album_id` 是无条件覆盖的，
+    ///    传 NULL 会把已有的相册归属抹掉，之后相册详情页就查不到这张照片了）；
+    /// 2. 无记录时按相册目录前缀匹配，取**最具体**（最长）的那个，
+    ///    与 `count_scanned_by_prefix` 的前缀规范保持一致（补上分隔符避免 `/alb1` 命中 `/alb11`）。
+    ///
+    /// 虚拟相册（`__virtual__://*`）直接跳过：哨兵 path 不是真实目录，前缀匹配无意义。
+    pub fn resolve_album_id_for_path(
+        &self,
+        user_id: i64,
+        path: &str,
+    ) -> Result<Option<i64>, DbError> {
+        let existing: Option<Option<i64>> = self
+            .conn
+            .query_row(
+                "SELECT album_id FROM photo_content_scan
+                 WHERE user_id = ?1 AND path = ?2 LIMIT 1",
+                params![user_id, path],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, path FROM albums
+                 WHERE user_id = ?1 AND kind = 'normal' AND path IS NOT NULL",
+            )
+            .map_err(DbError::Sqlite)?;
+        let rows = stmt
+            .query_map(params![user_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(DbError::Sqlite)?;
+        let mut best: Option<(i64, usize)> = None;
+        for row in rows {
+            let (id, album_path) = row.map_err(DbError::Sqlite)?;
+            if album_path.starts_with("__virtual__://") || album_path.is_empty() {
+                continue;
+            }
+            let trimmed = album_path.trim_end_matches(['\\', '/']);
+            let sep = if album_path.contains('/') { '/' } else { '\\' };
+            let prefix_len = trimmed.len() + sep.len_utf8();
+            if !path.starts_with(&format!("{trimmed}{sep}")) {
+                continue;
+            }
+            // 取最长前缀 = 最具体的相册（嵌套相册时外层不该抢走内层的照片）
+            if best.map(|(_, len)| prefix_len > len).unwrap_or(true) {
+                best = Some((id, prefix_len));
+            }
+        }
+        Ok(best.map(|(id, _)| id))
+    }
 
     /// 惰性创建当前用户的两个虚拟相册（归档 / 隐藏）
     ///
@@ -1751,6 +1809,88 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FEAT-096：`resolve_album_id_for_path` 的三条关键约束
+    ///
+    /// 这条函数被 EXIF 后台补全用来决定 `photo_content_scan.album_id` 写什么值，
+    /// 而 `upsert_one` 对该列是**无条件覆盖**的 —— 解析错一次，
+    /// 照片就从相册详情页里"消失"了（查不到 album_id）。所以必须覆盖：
+    /// 1. 已有行优先沿用（哪怕是 NULL 也要原样保留，不能被前缀匹配覆盖）；
+    /// 2. 无记录时取**最长**前缀（嵌套相册里内层该赢）；
+    /// 3. 前缀匹配带分隔符（`/alb1` 不能命中 `/alb11`）且跳过虚拟相册。
+    #[test]
+    fn resolve_album_id_for_path_preserves_and_picks_specific() {
+        let conn = Connection::open_in_memory().unwrap();
+        let db = Database { conn };
+        db.init_schema().unwrap();
+
+        let now = 1000i64;
+        // 两个相册：/alb1 与其嵌套的 /alb1/sub；另建一个哨兵虚拟相册
+        for (name, path, kind) in [
+            ("外层", "/alb1", ALBUM_KIND_NORMAL),
+            ("内层", "/alb1/sub", ALBUM_KIND_NORMAL),
+            ("归档", VIRTUAL_PATH_ARCHIVE, ALBUM_KIND_ARCHIVED),
+        ] {
+            db.conn
+                .execute(
+                    "INSERT INTO albums (name, path, created_at, updated_at, user_id, kind)
+                     VALUES (?1, ?2, ?3, ?3, 1, ?4)",
+                    params![name, path, now, kind],
+                )
+                .unwrap();
+        }
+
+        // 1. 无记录 → 取最长前缀：/alb1/sub/x.jpg 归内层相册
+        let inner: i64 = db
+            .conn
+            .query_row("SELECT id FROM albums WHERE name='内层'", [], |r| r.get(0))
+            .unwrap();
+        let outer: i64 = db
+            .conn
+            .query_row("SELECT id FROM albums WHERE name='外层'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(db.resolve_album_id_for_path(1, "/alb1/sub/x.jpg").unwrap(), Some(inner));
+        assert_eq!(db.resolve_album_id_for_path(1, "/alb1/y.jpg").unwrap(), Some(outer));
+
+        // 2. 分隔符规范：/alb11/... 不得命中 /alb1（无分隔符前缀误匹配）
+        assert_eq!(db.resolve_album_id_for_path(1, "/alb11/z.jpg").unwrap(), None);
+
+        // 3. 已有行优先沿用：把 /alb1/y.jpg 显式归到内层后再查，应返回内层而非外层
+        db.conn
+            .execute(
+                "INSERT INTO photo_content_scan (photo_hash, path, parent_dir, album_id, user_id, scanned_at)
+                 VALUES ('h1', '/alb1/y.jpg', '/alb1', ?1, 1, 1)",
+                params![inner],
+            )
+            .unwrap();
+        assert_eq!(db.resolve_album_id_for_path(1, "/alb1/y.jpg").unwrap(), Some(inner));
+
+        // 4. 已有行是 NULL 时也原样保留（不擅自改归属）
+        db.conn
+            .execute(
+                "INSERT INTO photo_content_scan (photo_hash, path, parent_dir, album_id, user_id, scanned_at)
+                 VALUES ('h2', '/alb1/w.jpg', '/alb1', NULL, 1, 1)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(db.resolve_album_id_for_path(1, "/alb1/w.jpg").unwrap(), None);
+
+        // 5. 虚拟相册（哨兵 path）不参与前缀匹配
+        assert_eq!(
+            db.resolve_album_id_for_path(1, &format!("{VIRTUAL_PATH_ARCHIVE}/x.jpg")).unwrap(),
+            None
+        );
+
+        // 6. 其他用户的数据不可见
+        db.conn
+            .execute(
+                "INSERT INTO albums (name, path, created_at, updated_at, user_id, kind)
+                 VALUES ('别人的', '/other', 1, 1, 2, 'normal')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(db.resolve_album_id_for_path(1, "/other/x.jpg").unwrap(), None);
+    }
 
     /// album_stats 变更探测：file_count 读写一致（新方案核心）
     #[test]
