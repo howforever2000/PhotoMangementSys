@@ -100,8 +100,17 @@ export const useThemeStore = defineStore("theme", () => {
   const compAlpha = ref(saved.compAlpha);
   /** FEAT-087：全局饱和度缩放（1 = 原始色）——统一风格的总闸门 */
   const saturation = ref(saved.saturation);
-  /** Q3：色温（-1 冷 ↔ 0 中性 ↔ +1 暖）——只染审美色，语义色族一律不接 */
-  const temperature = ref(saved.temperature);
+  /* Q3 色温：**模块已停用**（色相调节交给调色盘，滑块功能重叠且只能走单一暖冷轴）。
+     连同 applyTemperature 的九个接入点一起保留，只把值钉死为 0。
+
+     为什么不能连字段一起删：老安装的 localStorage 里可能已写入 temperature，
+     若从 Prefs 结构里拿掉它，normalizePrefs 会把整套偏好打回默认
+     （背景图、预设选择全丢，且不可逆）。字段留着、值恒 0 ⇒ 外观逐像素不变。
+
+     为什么保留管线：将来若要把色温做成调色盘预设（如「暖光/冷光/中性」三档），
+     只需改 temp() 的入参，其余接入点无需改动。applyTemperature 在 t=0 时严格
+     返回原色（color.test.ts 已对全站在用的每个色值断言过），所以停用状态
+     零开销、零视觉变化。 */
   /** FEAT-086：玻璃材质（磨砂/液态），预设一律磨砂 */
   const material = ref<Material>(saved.material);
   const bgStyle = ref<BackgroundStyle>(saved.bgStyle);
@@ -128,7 +137,7 @@ export const useThemeStore = defineStore("theme", () => {
       compColor: compColor.value,
       compAlpha: compAlpha.value,
       saturation: saturation.value,
-      temperature: temperature.value,
+      temperature: 0, /* 色温模块停用：永远写 0，旧值不再被读回（见上方说明） */
       material: material.value,
       bgStyle: bgStyle.value,
       bgColor: bgColor.value,
@@ -189,7 +198,6 @@ export const useThemeStore = defineStore("theme", () => {
     compColor.value = DEFAULTS.compColor;
     compAlpha.value = DEFAULTS.compAlpha;
     saturation.value = DEFAULTS.saturation;
-    temperature.value = DEFAULTS.temperature;
     material.value = DEFAULTS.material;
     bgStyle.value = DEFAULTS.bgStyle;
     bgColor.value = DEFAULTS.bgColor;
@@ -210,14 +218,19 @@ export const useThemeStore = defineStore("theme", () => {
      品牌色/语义色族另在 applyAccentVars 里下发（含组件里已注册的 var 引用）。 */
   const sat = (hex: string) => saturateColor(hex, saturation.value);
 
-  /* ---------- Q3：色温管线 ----------
-     与饱和度的**关键区别**：色温只作用于「审美色」（背景三色标 / 组件色调 /
-     品牌金 / candy 色板），**语义色族一概不接**。
-     原因：色温是沿色相轴推的，危险红 #d13438 往暖推就变成橙红、成功绿往冷推
-     就变成青绿 —— 状态色的含义会被染色改掉，这是不可接受的。
-     饱和度没有这个问题（红还是红，只是更浓/更淡），所以它可以统辖全色板。
-     顺序：**先饱和后色温**，两者都锁 WCAG 亮度，串联后亮度仍然不变。 */
-  const temp = (hex: string) => applyTemperature(sat(hex), temperature.value);
+  /* ---------- Q3：色温管线（已停用，见下） ----------
+     色温滑块已按用户决定移除（色相调节交给调色盘，滑块功能重叠且只能走单一轴）。
+     但**管线本身刻意保留**，只把值钉死为 0：
+
+     为什么不能连字段一起删：老安装的 localStorage 里可能已写入 temperature，
+     若从 Prefs 结构里拿掉它，normalizePrefs 会把整套偏好打回默认
+     （背景图、预设选择全丢，且不可逆）。字段留着、值恒 0 ⇒ 外观逐像素不变。
+
+     为什么保留 applyTemperature 的调用点：将来若要把色温做成调色盘预设
+     （比如「暖光/冷光/中性」三档），只需改这一行的入参，其余九个接入点无需改动。
+     applyTemperature 在 temperature=0 时严格返回原色（color.test.ts 已断言），
+     所以停用状态零开销、零视觉变化。 */
+  const temp = (hex: string) => applyTemperature(sat(hex), DEFAULTS.temperature);
   /* 经色温后的四个背景/组件入口。中间层不再是 compColorEff 这类「只过饱和度」的
      访问器 —— 保留它们会让两条管线并存、下游随时可能取错一条（那正是本次要消除的）。 */
   const compColorTemp = computed(() => temp(compColor.value));
@@ -534,7 +547,8 @@ export const useThemeStore = defineStore("theme", () => {
        浅底固定金相、在亮度轴上扫到首个达标色（utils/color.ts 的 linkOnGlass）。 */
     body.style.setProperty("--color-link", sat(linkOnGlass(rgbToHex(glassRgb.value))));
   }
-  watch([saturation, temperature, isDark, glassRgb], applyAccentVars, { immediate: true });
+  // temperature 已钉死为 0（色温模块停用），不再作为依赖 —— 少一个 watch 触发源
+  watch([saturation, isDark, glassRgb], applyAccentVars, { immediate: true });
 
   /** 组件色调按透明度渲染：容器 / 次级面板 / 弹层（液态经 fillColor 提亮，见上） */
   function compFill(alpha: number) {
@@ -620,7 +634,6 @@ export const useThemeStore = defineStore("theme", () => {
     compColor,
     compAlpha,
     saturation,
-    temperature,
     material,
     bgStyle,
     bgColor,

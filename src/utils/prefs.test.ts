@@ -61,16 +61,26 @@ test("FEAT-087 saturation：越界被夹到 0.4~1.5，坏值回落 1", () => {
   assert.equal(normalizePrefs({ saturation: 1.35 }).saturation, 1.35);
 });
 
-test("Q3 temperature：默认 0（老用户零位移）、越界被夹到 ±1、坏值回落 0", () => {
+test("Q3 temperature：字段保留但模块已停用 —— 界面实际只可能取到 0", () => {
   assert.equal(DEFAULTS.temperature, 0);
-  // 老 localStorage 里没有这个字段 → 补 0 ⇒ 外观逐像素不变（这是「不迁移」的技术依据）
+  // 老 localStorage 里没有这个字段 → 补 0 ⇒ 外观逐像素不变
   assert.equal(normalizePrefs({}).temperature, 0);
-  assert.equal(normalizePrefs({ compColor: "#123456" }).temperature, 0);
-  assert.equal(normalizePrefs({ temperature: 0.35 }).temperature, 0.35);
-  assert.equal(normalizePrefs({ temperature: -9 }).temperature, -1);
-  assert.equal(normalizePrefs({ temperature: 9 }).temperature, 1);
-  assert.equal(normalizePrefs({ temperature: "warm" }).temperature, 0);
-  assert.equal(normalizePrefs({ temperature: NaN }).temperature, 0);
+
+  /* 停用后**不再**对读入的值做归一化（theme store 的 temperature 是常量 0，
+     prefsSnapshot 也恒写 0）。这里只锁两条与「不丢数据」直接相关的不变量：
+     ① 字段仍在结构里（否则 normalizePrefs 会把老 localStorage 打回默认，
+        背景图/预设全丢且不可逆）；
+     ② 值合法（否则将来若恢复功能，一个坏值会直接进管线）。 */
+  assert.ok("temperature" in DEFAULTS, "Prefs 结构必须保留 temperature 字段");
+  assert.ok("temperature" in normalizePrefs({}), "归一化结果必须仍带该字段");
+  // 字段类型/量纲：即便停用，读进来的值仍应落在 [-1, 1] 这个既定区间内
+  for (const raw of [{ temperature: 0.35 }, { temperature: -9 }, { temperature: 9 }, { temperature: "warm" }]) {
+    const t = normalizePrefs(raw).temperature;
+    assert.ok(
+      typeof t === "number" && Number.isFinite(t) && t >= -1 && t <= 1,
+      `temperature=${JSON.stringify(raw.temperature)} 归一化后越界/非数: ${t}`,
+    );
+  }
 });
 
 test("旧结构（FEAT-084 时代）→ 补出 gradMid 中点 + 默认 compAlpha/material", () => {

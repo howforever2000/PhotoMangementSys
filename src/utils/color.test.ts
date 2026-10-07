@@ -190,6 +190,24 @@ test("applyTemperature：t=0 原样返回（老用户零位移，外观逐像素
   }
 });
 
+/* 色温模块已停用（Q3）：theme store 的 temp() 恒以 t=0 调用，
+   所以「t=0 是严格恒等」这条性质从「设计意图」升级成了「停用正确性的依赖」——
+   它保证停用后九个接入点逐像素零变化。这条测试是停用状态的安全网。 */
+test("色温停用：applyTemperature(x, 0) 对全站实际用到的每个色值都严格恒等", () => {
+  const IN_USE = [
+    // 背景三色标 / 组件色调
+    "#f1eee9", "#c6bba9", "#5d503c", "#ededed", "#2a2630", "#1a1428", "#3b2b52", "#120e1c",
+    // 品牌金与 candy 六色（applyAccentVars 里走 temp() 的那批）
+    "#e8a33d", "#f2b355", "#ffd9a0",
+    "#fffcbd", "#f075c7", "#65d5f9", "#fb6d9b", "#505fdd", "#3a36e4",
+    // 经典组预设色（老用户 localStorage 可能正命中它们）
+    "#ffd7d7", "#7e9963", "#195e53", "#d37aa0", "#3f507d", "#6ab9b3",
+  ];
+  for (const hex of IN_USE) {
+    assert.equal(applyTemperature(hex, 0), normalizeHex(hex), `${hex} 未保持恒等（停用会引入视觉变化）`);
+  }
+});
+
 test("applyTemperature：暖推与冷推方向相反，且**WCAG 亮度锁定**", () => {
   for (const hex of ["#e8a33d", "#7e9963", "#92acbf", "#505fdd"]) {
     const [h0, s0] = rgbToHsl(hexToRgb(hex));

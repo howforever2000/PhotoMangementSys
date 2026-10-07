@@ -187,8 +187,21 @@ export function presetPrefs(p: Preset): Partial<Prefs> {
   };
 }
 
+/**
+ * 命中判定**只读这 6 个字段**，所以入参类型是 Pick<Prefs, ...> 而非整个 Prefs。
+ *
+ * 为什么收窄：预设命中与否，与饱和度/色温/材质/背景模式都无关。
+ * 若要求传整个 Prefs，调用方就得把 store 的全部状态摊平传进来 ——
+ * 一旦某个字段从 store 里消失（色温模块停用就发生过），
+ * 类型就会因为「少一个不相关的字段」而报错，把无关的耦合暴露成编译错误。
+ */
+export type PresetMatchFields = Pick<
+  Prefs,
+  "bgStyle" | "gradFrom" | "gradMid" | "gradTo" | "compColor" | "compAlpha"
+>;
+
 /** 当前偏好是否命中该预设（决定选中态高亮） */
-export function matchesPreset(p: Preset, prefs: Prefs): boolean {
+export function matchesPreset(p: Preset, prefs: PresetMatchFields): boolean {
   return (
     prefs.bgStyle === "gradient" &&
     prefs.gradFrom === p.colors[0] &&

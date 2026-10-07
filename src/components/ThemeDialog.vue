@@ -36,11 +36,21 @@ function applyPreset(p: (typeof ALL_PRESETS)[number]) {
   theme.applyPreset(p);
 }
 
-/** 当前偏好命中的预设 id（跨两组查，决定选中态高亮） */
+/** 当前偏好命中的预设 id（跨两组查，决定选中态高亮）。
+ *  matchesPreset 的入参已收窄为 Pick<Prefs, 6 个字段>，这里只摊平它真正读的字段，
+ *  不必把 store 整个 $state 传进去。 */
 const activePresetId = computed(() => {
-  const cur = theme.$state;
   const all = PRESET_GROUPS.flatMap((g) => g.items);
-  const hit = all.find((p) => matchesPreset(p, { ...cur, mode: theme.mode }));
+  const hit = all.find((p) =>
+    matchesPreset(p, {
+      bgStyle: theme.bgStyle,
+      gradFrom: theme.gradFrom,
+      gradMid: theme.gradMid,
+      gradTo: theme.gradTo,
+      compColor: theme.compColor,
+      compAlpha: theme.compAlpha,
+    }),
+  );
   return hit?.id ?? "";
 });
 
@@ -348,33 +358,15 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
             <p class="pm-hint" style="margin: 6px 0 0">
               统一调色：背景 / 组件色调 / 按钮与状态色同时生效，只改浓淡不改明暗（100% = 原始色）
             </p>
+            <!--
+              Q3 的「色温」滑块已移除（用户决定）：色相调节交给上面的调色盘，
+              滑块与色盘功能重叠，且滑块只能沿单一暖冷轴走、表达力反而更窄。
 
-            <!-- Q3 色温：在饱和度旁边，同属「一处调全局」的旋钮。
-                 与饱和度的分工写在 hint 里 —— 语义色（成功/危险/警示）**不接色温**，
-                 这是刻意的：色温沿色相轴推，危险红推暖就成橙红，语义会失效。 -->
-            <label class="pm-range">
-              <span>色温</span>
-              <input
-                type="range"
-                v-model.number="theme.temperature"
-                min="-1"
-                max="1"
-                step="0.05"
-                aria-label="色温：冷到暖"
-                @change="theme.persist()"
-              />
-              <b>{{ Math.round(theme.temperature * 100) > 0 ? "+" : "" }}{{ Math.round(theme.temperature * 100) }}%</b>
-            </label>
-            <div class="pm-temp-scale" aria-hidden="true">
-              <span>冷</span>
-              <i class="pm-temp-dot pm-temp-cool"></i>
-              <i class="pm-temp-dot pm-temp-warm"></i>
-              <span>暖</span>
-            </div>
-            <p class="pm-hint" style="margin: 2px 0 0">
-              只改色温不改明暗（对比度不漂移）；背景 / 组件色调 / 强调色同步生效，
-              <b>状态色（成功·危险·警示）刻意不参与</b> —— 染色温会让「危险」变成橙红
-            </p>
+              但 utils/prefs.ts 的 temperature 字段与 utils/color.ts 的 applyTemperature
+              **刻意保留**：老安装的 localStorage 里可能已写了这个字段，
+              若从 Prefs 结构里删掉它，normalizePrefs 会把整套偏好打回默认
+              （背景图、预设选择全丢，不可逆）。保留字段、值恒为 0 才是零风险做法。
+            -->
           </div>
 
           <div class="pm-section">
