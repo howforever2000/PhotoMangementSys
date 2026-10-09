@@ -104,3 +104,15 @@ python/bench/*_log.txt
 
 # edit-verify 独立验证壳的构建产物（它有自己的 target/）
 src-tauri/tools/*/target
+
+# ---- 私有备份瘦身（2026-10）----
+# 评审截图：AI 评审工具的过程产物（对比度审计截图、各轮 before/after 视觉快照）。
+# 零构建引用、零运行时引用，只在 feature-notes.json 里作为历史记录的文字被提到。
+# 单独剔除这一项就把仓库从 61MB 降到 26MB，是本次瘦身的主要来源。
+.impeccable/
+
+# 零引用的预览/遗留图。保留 icons/（tauri.conf.json 构建必需）、
+# design/app-icon.png（图标母版）、test_fixture_photos/（Rust 单测依赖）
+# 与 covers 里 README 引用的封面 —— 那三类是构建与测试的骨头，删不得。
+covers/cover-legacy.png
+covers/login-preview.png
