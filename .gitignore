@@ -101,3 +101,6 @@ python/bench/*_log.txt
 
 # 发布产物：model.zip（361 MB）等打包产物不入库，一律走 GitHub Release 附件
 /*.zip
+
+# edit-verify 独立验证壳的构建产物（它有自己的 target/）
+src-tauri/tools/*/target

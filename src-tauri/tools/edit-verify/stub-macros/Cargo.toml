@@ -1,0 +1,15 @@
+# `edit-verify` 的 proc-macro 桩
+# 只提供 `#[tauri::command]` 这一个**恒等**属性宏与 `generate_handler!`，
+# 让 `commands.rs`（真源码）能被独立编译检查。
+#
+# 为什么不直接把 commands.rs 从验证壳里排除：那是唯一一层「把算法接到
+# Tauri IPC 上」的代码，参数搬运出错（比如字段名与前端不一致、借用跨 await）
+# 是最常见的集成 bug，而它恰好是最难靠肉眼发现的一类。
+[package]
+name = "tauri-stub-macros"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+proc-macro = true

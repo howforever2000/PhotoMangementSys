@@ -44,16 +44,23 @@ const widgets = [
     ready: true,
   },
   {
+    id: "tone",
+    title: "基准调色",
+    desc: "Lightroom 式基本面：曝光 / 对比度 / 高光 / 阴影 / 白色 / 黑色 / 色温 / 色调 / 曲线 / 裁剪拉直 / 饱和度 / 锐化。非破坏编辑，方案随照片存为 sidecar，可导入导出",
+    icon: "🎚️",
+    ready: true,
+  },
+  {
     id: "placeholder",
     title: "更多小组件",
-    desc: "裁剪旋转 / 局部调色 / 贴纸文字……（规划中，逐步上线）",
+    desc: "局部调色（画笔遮罩）/ 贴纸文字……（规划中，逐步上线）",
     icon: "🧩",
     ready: false,
   },
 ] as const;
 
 /** 当前打开的小组件 id（null = 仅卡片列表；带照片进来时直接进图像处理） */
-const activeWidget = ref<string | null>(initialPhoto ? "image-process" : null);
+const activeWidget = ref<string | null>(initialPhoto ? "tone" : null);
 
 function openWidget(w: (typeof widgets)[number]) {
   if (!w.ready) return;
@@ -84,7 +91,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="workshop-page">
+  <div class="workshop-page" :class="{ 'wide-mode': activeWidget === 'tone' }">
     <div class="workshop-content">
       <header class="workshop-header">
         <button class="back-btn" type="button" @click="goBack">← 返回</button>
@@ -120,6 +127,11 @@ onMounted(() => {
       <template v-else-if="activeWidget === 'image-process'">
         <WorkshopImageProcess :initial-path="initialPhoto" />
       </template>
+
+      <!-- 基准调色（FEAT-099）：纯 Rust 引擎，无微服务依赖 -->
+      <template v-else-if="activeWidget === 'tone'">
+        <PhotoEditor :initial-path="initialPhoto" />
+      </template>
     </div>
   </div>
 </template>
@@ -127,7 +139,8 @@ onMounted(() => {
 <script lang="ts">
 // 工坊小组件按需引入（放在独立 script 块，保持 setup 块聚焦布局逻辑）
 import WorkshopImageProcess from "../components/workshop/WorkshopImageProcess.vue";
-export default { components: { WorkshopImageProcess } };
+import PhotoEditor from "../components/workshop/editor/PhotoEditor.vue";
+export default { components: { WorkshopImageProcess, PhotoEditor } };
 </script>
 
 <style scoped>
@@ -142,6 +155,14 @@ export default { components: { WorkshopImageProcess } };
   max-width: 1080px;
   margin: 0 auto;
   padding: 40px 24px 64px;
+}
+
+/* FEAT-099 基准调色：编辑器是「直方图 + 画布 + 面板」三栏，
+   卡片列表那种 1080px 窄容器会把画布压到不足 400px。
+   打开编辑器时让容器铺满，只保留左右最小边距。 */
+.workshop-page.wide-mode .workshop-content {
+  max-width: none;
+  padding: 20px 16px 20px;
 }
 
 .workshop-header {

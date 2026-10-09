@@ -1,0 +1,24 @@
+# Tauri API 的最小桩（`edit-verify` 专用）
+# ==================================================================
+# crate 名就叫 `tauri`，这样 `commands.rs` 里的 `use tauri::State` 与
+# `#[tauri::command]` 会**原样**解析到本桩，不需要改任何真源码。
+#
+# 桩的语义刻意贴近真 Tauri：
+# - `State<'a, T>` 用 Deref 到 `&T`，且 `T: Send + Sync + 'static`，
+#   于是「State 借用跨 await」「闭包捕获非 Send 值」会在编译期暴露；
+# - `spawn_blocking` 返回 `Send` 的 future（真 tokio 亦然）。
+#
+# **它不模拟运行时行为**：真 crate 里的 `State` 由框架注入、
+# `spawn_blocking` 真的开线程。这里只需要类型约束正确。
+[package]
+name = "tauri"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "tauri"
+path = "src/lib.rs"
+
+[dependencies]
+tauri-stub-macros = { path = "../stub-macros" }

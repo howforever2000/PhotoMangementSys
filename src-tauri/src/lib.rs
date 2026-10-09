@@ -22,6 +22,7 @@ mod crypto;
 mod db;
 mod devdata;
 mod devtools;
+mod edit;
 mod folder;
 mod geo_index;
 mod logger;
@@ -326,6 +327,9 @@ pub fn run() {
                     app.manage(test_scan_job::ScanJobState::default());
                 }
             }
+            // FEAT-099 非破坏图像编辑引擎：编辑会话表（预览平面 + 工作区缓存）
+            // 与 app 生命周期同长，打开图片时惰性填充，关闭编辑器时整体释放
+            app.manage(edit::commands::EditState::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -472,6 +476,23 @@ pub fn run() {
             // 创意工坊（FEAT-063）：Python 微服务生命周期 + 结果落盘
             studio::studio_ensure,
             studio::studio_save_result,
+            // FEAT-099：非破坏图像编辑引擎（Lightroom 基准调色）
+            edit::commands::edit_schema,
+            edit::commands::edit_open,
+            edit::commands::edit_close,
+            edit::commands::edit_close_all,
+            edit::commands::edit_render,
+            edit::commands::edit_histogram,
+            edit::commands::edit_autotune,
+            edit::commands::edit_save_recipe,
+            edit::commands::edit_load_recipe,
+            edit::commands::edit_reset_recipe,
+            edit::commands::edit_recipe_to_text,
+            edit::commands::edit_recipe_from_text,
+            edit::commands::edit_encode,
+            edit::commands::edit_output_size,
+            edit::commands::edit_write_file,
+            edit::commands::edit_session_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,0 +1,34 @@
+# edit-verify：edit 模块的独立验证壳
+# ==================================================================
+# 为什么存在这个 crate：`src-tauri` 依赖 Tauri，而 Tauri 在 Linux 上
+# 需要 webkit2gtk-4.1 等系统开发包。在没有这些包的机器上无法
+# `cargo test --package photo-management-sys`，但算法层是纯 Rust。
+#
+# 本 crate 通过 `#[path]` 直接引用 `src-tauri/src/edit/**` 的**同一批文件**
+# （不是拷贝！），因此：
+#   - 在本 crate 里跑测试 = 在主 crate 里跑同样的测试，零漂移；
+#   - 主 crate 只多了 `commands.rs`（Tauri 壳）与 `mod.rs` 的 Tauri 无关部分。
+#
+# `commands.rs` 也被纳入：它靠一个同名的 `tauri` 桩 crate 解析
+# `use tauri::State` / `#[tauri::command]`，因此真源码一行都不用改。
+# 这一层是「把算法接到 IPC 上」的接线代码 —— 字段名错、`State` 借用跨
+# `await`、闭包捕获非 `Send` 值，都是只在编译时才暴露的错误类型。
+#
+# 另附 `tauri-stub/`（crate 名就叫 tauri）与 `stub-macros/`（恒等属性宏）。
+[package]
+name = "edit-verify"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Tauri 的最小桩：只为让 `commands.rs`（真源码）能被独立编译检查
+tauri = { path = "tauri-stub" }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+jpeg-decoder = "0.3"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
