@@ -76,6 +76,29 @@ pub struct AlbumScan {
     pub first_image: Option<PathBuf>,
 }
 
+/// 判断 walkdir 条目是否应被当作「文件」计入（BUG-2026-1010-002）
+///
+/// 背景：遍历一律用 `follow_links(false)`（防止软链成环导致无限递归），
+/// 但该模式下符号链接的 `file_type()` 是 `symlink` 而非 `file`，
+/// 于是 `file_type().is_file()` 会把**所有**软链图片判掉 —— 表现为
+/// 「相册明明有照片却显示无照片」。桌面环境（尤其 Deepin 的
+/// /usr/share/wallpapers 软链）是重灾区。
+///
+/// 判定：普通文件直接算；符号链接则用 `metadata()`（跟随链接）确认
+/// 其最终指向一个真实文件才算，从而在「不跟随链接递归」与「软链图片可见」
+/// 之间取得平衡。断链（指向已删除目标）仍会被正确排除。
+pub fn entry_is_file(entry: &walkdir::DirEntry) -> bool {
+    let ft = entry.file_type();
+    if ft.is_file() {
+        return true;
+    }
+    if ft.is_symlink() {
+        // metadata() 跟随符号链接；目标不存在时返回 Err，断链自然被排除。
+        return entry.path().metadata().map(|m| m.is_file()).unwrap_or(false);
+    }
+    false
+}
+
 /// 单次遍历统计相册目录：图片数量 + 总大小 + 第一张图片
 ///
 /// 递归遍历目录（含子目录），跳过隐藏目录/文件。
@@ -94,7 +117,7 @@ pub fn count_files_recursive(dir: &Path) -> u64 {
         .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
     {
         let Ok(e) = entry else { continue };
-        if e.file_type().is_file() {
+        if entry_is_file(&e) {
             count += 1;
         }
     }
@@ -116,7 +139,7 @@ pub fn scan_album_dir(dir: &Path) -> AlbumScan {
         .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
     {
         let Ok(e) = entry else { continue };
-        if !e.file_type().is_file() {
+        if !entry_is_file(&e) {
             continue;
         }
         // 大小：累加所有文件（不限于图片，保持与旧 folder_size 语义一致）
@@ -525,7 +548,7 @@ pub fn list_album_images(dir: &Path) -> Vec<String> {
         .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
     {
         let Ok(e) = entry else { continue };
-        if !e.file_type().is_file() {
+        if !entry_is_file(&e) {
             continue;
         }
         let name = e.file_name().to_string_lossy().to_string();

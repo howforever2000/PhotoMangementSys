@@ -574,7 +574,7 @@ pub fn walk_image_paths(dir: &str) -> Result<Vec<std::path::PathBuf>, String> {
         .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
     {
         let Ok(e) = entry else { continue };
-        if !e.file_type().is_file() {
+        if !crate::thumbnail::entry_is_file(&e) {
             continue;
         }
         let name = e.file_name().to_string_lossy().to_string();

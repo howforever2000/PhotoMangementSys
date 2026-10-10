@@ -112,7 +112,7 @@ pub fn collect_image_files(
             .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
         {
             let Ok(e) = entry else { continue };
-            if e.file_type().is_file() {
+            if crate::thumbnail::entry_is_file(&e) {
                 push(e.into_path(), &mut files);
             }
         }

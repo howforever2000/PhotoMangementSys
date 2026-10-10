@@ -471,10 +471,16 @@ onBeforeUnmount(() => {
      （同样带 backdrop-filter、且 DOM 在后）盖住，看不见也点不到 */
   position: relative;
   z-index: 20;
+  /* BUG-2026-1010-001：窗口收窄时标题把 user-box 顶出视口（退出登录被裁掉）。
+     允许换行 + 标题可压缩收缩，user-box 整块换到下一行而不是被挤出屏幕。 */
+  flex-wrap: wrap;
 }
 
 .header-text {
   text-align: left;
+  /* 标题是弹性项里的可变长内容：允许收缩（min-width:0），
+     否则它会拒绝收缩并把 user-box 挤出容器（BUG-2026-1010-001） */
+  min-width: 0;
 }
 
 .app-title {
@@ -678,6 +684,11 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.2s, border-color 0.2s;
+  /* BUG-2026-1010-001：窗口非全屏时 header 变窄，本按钮是 user-box 里
+     唯一可压缩的项，被挤成竖排单字（「退/出/登/录」）并溢出视口。
+     flex-shrink:0 保住自身宽度，nowrap 禁止换行。 */
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .logout-btn:hover {
