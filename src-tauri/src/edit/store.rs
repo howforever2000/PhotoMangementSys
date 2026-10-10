@@ -42,6 +42,57 @@ pub fn sidecar_path(source: &Path) -> PathBuf {
     source.with_file_name(name)
 }
 
+/// 蒙版 sidecar 扩展名。
+pub const MASK_EXT: &str = "pmmask.png";
+
+/// 由原图路径推出蒙版路径：`a.jpg` → `a.jpg.pmmask.png`。
+///
+/// 与配方同构（原名 + 扩展名），因此 `a.jpg` 与 `a.png` 的蒙版可以共存，
+/// 且用户在资源管理器里能一眼看出「这个蒙版属于哪张照片」。
+pub fn mask_path(source: &Path) -> PathBuf {
+    let mut name = source
+        .file_name()
+        .map(|s| s.to_os_string())
+        .unwrap_or_default();
+    name.push(".");
+    name.push(MASK_EXT);
+    source.with_file_name(name)
+}
+
+/// 蒙版文件是否存在。
+pub fn mask_exists(source: &Path) -> bool {
+    mask_path(source).is_file()
+}
+
+/// 删除蒙版文件（「清除蒙版」）。找不到不算错误（幂等）。
+pub fn remove_mask(source: &Path) -> Result<(), StoreError> {
+    let p = mask_path(source);
+    if !p.exists() {
+        return Ok(());
+    }
+    std::fs::remove_file(&p).map_err(|e| StoreError::Io(e.to_string()))
+}
+
+/// 原子写入任意字节（配方与蒙版共用）。
+///
+/// 蒙版 PNG 走同一条「临时文件 → fsync → rename」的路：它同样是用户资产，
+/// 半截 PNG 会让这张图下次打开时蒙版直接失效。
+fn atomic_write(target: &Path, bytes: &[u8]) -> Result<PathBuf, StoreError> {
+    let tmp = temp_path_for(target);
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp).map_err(|e| StoreError::Io(e.to_string()))?;
+        f.write_all(bytes).map_err(|e| StoreError::Io(e.to_string()))?;
+        f.sync_all().map_err(|e| StoreError::Io(e.to_string()))?;
+    }
+    std::fs::rename(&tmp, target).map_err(|e| {
+        // 失败时清掉临时文件，否则目录里会留一堆 .tmp 垃圾
+        let _ = std::fs::remove_file(&tmp);
+        StoreError::Io(e.to_string())
+    })?;
+    Ok(target.to_path_buf())
+}
+
 /// 同目录的临时文件名（原子写的中转站）。
 ///
 /// 必须是 `Path::with_extension` 之外的字符串拼接：`with_extension` 会替换
@@ -95,26 +146,27 @@ pub fn load(source: &Path) -> Result<Option<AdjustmentRecipe>, StoreError> {
 pub fn save(source: &Path, recipe: &AdjustmentRecipe) -> Result<PathBuf, StoreError> {
     let target = sidecar_path(source);
     let json = recipe.to_json().map_err(StoreError::Format)?;
+    atomic_write(&target, json.as_bytes())
+}
 
-    // 同目录的临时文件：必须与目标同文件系统，rename 才是原子的。
-    let tmp = temp_path_for(&target);
+/// 原子写入蒙版 PNG。
+pub fn save_mask(source: &Path, png: &[u8]) -> Result<PathBuf, StoreError> {
+    atomic_write(&mask_path(source), png)
+}
 
-    // 写入 + fsync：确保数据真正落盘后才 rename。
-    // 少了 fsync 的话，rename 可能先于数据落盘，断电后仍会得到空文件。
-    {
-        use std::io::Write;
-        let mut f = std::fs::File::create(&tmp).map_err(|e| StoreError::Io(e.to_string()))?;
-        f.write_all(json.as_bytes())
-            .map_err(|e| StoreError::Io(e.to_string()))?;
-        f.sync_all().map_err(|e| StoreError::Io(e.to_string()))?;
+/// 读取并解码蒙版。没有文件时返回 `Ok(None)`。
+///
+/// 刻意**不缓存解码结果**：一次 PNG 解码约 20~50ms（长边 1600 的灰度图），
+/// 而每次打开图片只会走这条路径一次，不值得引入缓存失效逻辑。
+pub fn load_mask(source: &Path) -> Result<Option<super::mask::MaskImage>, StoreError> {
+    let p = mask_path(source);
+    if !p.is_file() {
+        return Ok(None);
     }
-
-    std::fs::rename(&tmp, &target).map_err(|e| {
-        // 失败时清掉临时文件，否则目录里会留一堆 .tmp 垃圾
-        let _ = std::fs::remove_file(&tmp);
-        StoreError::Io(e.to_string())
-    })?;
-    Ok(target)
+    let png = std::fs::read(&p).map_err(|e| StoreError::Io(e.to_string()))?;
+    super::mask::MaskImage::from_png(&png)
+        .map(Some)
+        .map_err(StoreError::Format)
 }
 
 /// 删除 sidecar（「重置为原图」= 删掉配方文件）。

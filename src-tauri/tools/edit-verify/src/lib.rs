@@ -22,6 +22,9 @@ pub mod curve;
 #[path = "../../../src/edit/geometry.rs"]
 pub mod geometry;
 
+#[path = "../../../src/edit/mask.rs"]
+pub mod mask;
+
 #[path = "../../../src/edit/pipeline.rs"]
 pub mod pipeline;
 

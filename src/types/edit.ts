@@ -79,6 +79,52 @@ export interface CropSpec {
   enabled: boolean;
 }
 
+/**
+ * 一条算子步骤（与 `src-tauri/src/edit/recipe.rs` 的 `OpStep` 对应）。
+ *
+ * 语义是「记录在图像上的处理」：重开这张照片、重新导出，得到的都是
+ * 同一串步骤的结果。因此步骤进 sidecar，而不是只活在内存里。
+ */
+export interface OpStep {
+  /** 算子 id（对应 `/api/ops` 的 `id`，如 `blur-gaussian`） */
+  op: string;
+  /** 算子参数，原样透传给 `/api/apply` */
+  params: Record<string, number | string | boolean>;
+  /** 关掉保留步骤与参数，可临时跳过而不删 */
+  enabled: boolean;
+}
+
+/**
+ * 局部蒙版参数（与 `src-tauri/src/edit/recipe.rs` 的 `MaskSpec` 对应）。
+ *
+ * 蒙版**像素不在配方里**：灰度位图动辄几 MB，塞进 JSON 会让 sidecar
+ * 变成不可用的庞然大物。配方只存参数与「有没有蒙版」这一个事实，
+ * 像素存在同目录的 `<文件名>.pmmask.png`。
+ */
+export interface MaskSpec {
+  /** 是否启用局部调整。关掉时整图套用。 */
+  enabled: boolean;
+  /** 羽化半径，单位是蒙版自身的像素，缩放时同比例放大 */
+  featherPx: number;
+  /** 整体强度 0..1（在羽化之后缩放权重） */
+  strength: number;
+  /** 反相：选中区与未选中区互换 */
+  invert: boolean;
+  /** 磁盘上是否存在蒙版文件 */
+  hasImage: boolean;
+}
+
+/** 蒙版操作的返回信息。 */
+export interface MaskInfo {
+  /** 蒙版自身宽高（通常等于预览分辨率） */
+  width: number;
+  height: number;
+  /** 选中区域占比 0..1 */
+  coverage: number;
+  /** 落盘路径 */
+  path: string;
+}
+
 /** 一张图的全部编辑状态。 */
 export interface AdjustmentRecipe {
   version: number;
@@ -90,6 +136,15 @@ export interface AdjustmentRecipe {
   curveLuma: ToneCurve;
   sharpen: SharpenAdjustments;
   crop: CropSpec;
+  /** 局部蒙版参数（像素不在配方里，见 MaskSpec 注释） */
+  mask: MaskSpec;
+  /**
+   * 算子步骤（按顺序作用在调色结果之上）。
+   *
+   * 进 sidecar，因此重开照片 / 重新导出都会复现同一串处理 ——
+   * 这就是「每一步记录在图像上」的落地。
+   */
+  ops: OpStep[];
 }
 
 /** 空配方：所有字段为中性值。与 Rust 的 `AdjustmentRecipe::default()` 逐项对应。 */
@@ -111,8 +166,18 @@ export function emptyRecipe(): AdjustmentRecipe {
     curveLuma: { points: [] },
     sharpen: { amount: 0, radius: 0.5, detail: 0.25, masking: 0.25 },
     crop: { x: 0, y: 0, w: 1, h: 1, angle: 0, enabled: false },
+    mask: { enabled: false, featherPx: 0, strength: 1, invert: false, hasImage: false },
+    ops: [],
   };
 }
+
+/** 读数值，非有限数（含 NaN / Infinity）一律回落。 */
+const num = (v: unknown, fallback: number): number =>
+  typeof v === "number" && Number.isFinite(v) ? v : fallback;
+
+/** 读对象，非对象（含 null / 数组 / 字符串）一律回落成空对象。 */
+const obj = (v: unknown): Record<string, unknown> =>
+  v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 
 /**
  * 把任意（可能来自旧版本后端 / 用户粘贴的）对象收敛成完整配方。
@@ -125,11 +190,6 @@ export function normalizeRecipe(input: unknown): AdjustmentRecipe {
   const base = emptyRecipe();
   if (!input || typeof input !== "object") return base;
   const o = input as Record<string, unknown>;
-
-  const num = (v: unknown, fallback: number): number =>
-    typeof v === "number" && Number.isFinite(v) ? v : fallback;
-  const obj = (v: unknown): Record<string, unknown> =>
-    v && typeof v === "object" ? (v as Record<string, unknown>) : {};
 
   const b = obj(o.basic);
   const c = obj(o.color);
@@ -180,12 +240,64 @@ export function normalizeRecipe(input: unknown): AdjustmentRecipe {
       angle: num(cr.angle, 0),
       enabled: cr.enabled === true,
     },
+    mask: normalizeMask(o.mask ?? o.maskSpec, base.mask),
+    ops: normalizeOps(o.ops),
+  };
+}
+
+/**
+ * 收敛算子步骤数组。
+ *
+ * **不校验 `op` 是否存在** —— 算子注册表在 Python 侧，前端拿不到权威列表，
+ * 猜一个 id 就会把「服务暂时不可用」误判成「配方损坏」。无效 id 交给
+ * `/api/apply` 去拒绝，那里有明确的错误文案与支持列表。
+ *
+ * 只过滤结构上不成立的条目（不是对象、缺 op 字段）。
+ */
+function normalizeOps(input: unknown): OpStep[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
+    .filter((s) => typeof s.op === "string" && s.op.length > 0)
+    .map((s) => ({
+      op: s.op as string,
+      // params 必须是普通对象：null / 数组 / 数字透传给后端会被 json.loads 拒
+      params: (obj(s.params) as Record<string, number | string | boolean>) ?? {},
+      // 缺 enabled 视为启用：老配方没有这个字段
+      enabled: s.enabled !== false,
+    }));
+}
+
+/**
+ * 收敛蒙版字段。
+ *
+ * `hasImage` 与 `enabled` 的关系必须在这里也维护一次：没有蒙版像素时
+ * 强制关掉 `enabled`，否则 UI 会显示「局部调整已开」而渲染按整图走。
+ * 后端 `sanitize` 也会做同样的事，前端做一遍是为了让**当前这一帧**
+ * 的显示就与实际一致，不必等下一轮往返。
+ */
+function normalizeMask(input: unknown, base: MaskSpec): MaskSpec {
+  const m = obj(input);
+  const hasImage = m.hasImage === true;
+  return {
+    enabled: hasImage && m.enabled === true,
+    featherPx: num(m.featherPx ?? m.feather_px, base.featherPx),
+    strength: num(m.strength, base.strength),
+    invert: m.invert === true,
+    hasImage,
   };
 }
 
 /** 配方是否等于空配方（用于「是否已修改」提示）。 */
 export function isPristineRecipe(r: AdjustmentRecipe): boolean {
   return JSON.stringify(r) === JSON.stringify(emptyRecipe());
+}
+
+/** 蒙版的客观事实（是否存在、多大）。 */
+export interface EditMaskInfo {
+  exists: boolean;
+  width: number;
+  height: number;
 }
 
 /** 打开图片的返回值。 */
@@ -199,6 +311,8 @@ export interface EditOpenResult {
   recipe: AdjustmentRecipe;
   hasRecipe: boolean;
   decodeMs: number;
+  /** 磁盘上是否已有蒙版 */
+  mask: EditMaskInfo;
 }
 
 /** 渲染元信息。 */
@@ -301,5 +415,28 @@ export function cloneRecipe(r: AdjustmentRecipe): AdjustmentRecipe {
     curveLuma: { points: r.curveLuma.points.map((p) => ({ ...p })) },
     sharpen: { ...r.sharpen },
     crop: { ...r.crop },
+    mask: { ...r.mask },
+    // 步骤数组：每步含一个 params 对象，必须逐层拷贝，否则撤销栈里的
+    // 快照会与当前配方共享同一个 params 引用，改一步就污染所有历史。
+    ops: r.ops.map((s) => ({ ...s, params: { ...s.params } })),
+  };
+}
+
+/**
+ * 「零调整」配方：**保留几何、抹掉一切修饰**。
+ *
+ * 用于对比视图的左格（调整前）。刻意保留 `crop`：左右两格必须同取景，
+ * 否则并排看的是两幅不同构图的东西，对比就失去意义。
+ *
+ * `mask` 也一并关掉 —— 蒙版只是「限制调整范围」，零调整时它无处施加。
+ */
+export function withoutAdjustments(r: AdjustmentRecipe): AdjustmentRecipe {
+  const e = emptyRecipe();
+  return {
+    ...e,
+    crop: { ...r.crop },
+    // hasImage 跟着保留，否则后端会认为磁盘上没蒙版而回落到无蒙版渲染 ——
+    // 那正好是我们要的（零调整 + 有无蒙版渲染结果相同），但保持字段真实更不易误解。
+    mask: { ...e.mask, hasImage: r.mask.hasImage },
   };
 }

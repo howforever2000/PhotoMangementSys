@@ -28,6 +28,13 @@ impl<'a, T: Send + Sync + 'static> Deref for State<'a, T> {
 }
 
 /// 裸二进制 IPC 返回体（真 Tauri 同样用裸字节而非 base64）。
+///
+/// ⚠️ 本桩**不**模拟真 Tauri 的 `IpcResponse` trait 约束（真 Tauri 里
+/// `Response` 与所有 `Serialize` 类型都满足它，但**元组不满足** —— v1 的
+/// `impl_tuple!` 在 v2 已移除）。因此本桩对返回类型一律放行，
+/// 「返回 `(Response, Meta)`」这类错误在验证壳里查不出来，
+/// 只会在真 crate 编译时暴露为 E0599 `async_kind`。
+/// 这是桩与真 API 的已知差异，改桩需一并处理 `stub-macros` 的恒等宏。
 #[derive(Debug)]
 pub struct Response {
     #[allow(dead_code)]

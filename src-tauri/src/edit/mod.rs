@@ -37,9 +37,10 @@
 //!   sharpen.rs   带边缘蒙版的 USM 锐化
 //!   geometry.rs  裁剪与拉直（纯坐标数学）
 //!   pipeline.rs  阶段编排 + 工作区（缓冲复用）
+//!   mask.rs      局部蒙版（羽化 / 反相 / 按权重混合）
 //!   source.rs    解码与预览分级加载
-//!   store.rs     sidecar 原子存盘 / 导入导出
-//!   session.rs   编辑会话（跨命令共享源图与工作区）
+//!   store.rs     sidecar 原子存盘 / 导入导出 / 蒙版 PNG
+//!   session.rs   编辑会话（跨命令共享源图、工作区与蒙版）
 //!   commands.rs  Tauri 命令薄壳
 //! ```
 
@@ -47,6 +48,7 @@ pub mod color;
 pub mod commands;
 pub mod curve;
 pub mod geometry;
+pub mod mask;
 pub mod pipeline;
 pub mod recipe;
 pub mod saturation;
@@ -57,8 +59,9 @@ pub mod source;
 pub mod store;
 pub mod tone;
 
-pub use recipe::AdjustmentRecipe;
-pub use session::{EditSession, SessionStore};
+// 无 re-export：`mod edit` 在 lib.rs 里是私有模块，这些名字在 crate 外不可见，
+// 各调用点一律走 `super::recipe::AdjustmentRecipe` 这样的完整路径。
+// 之前导出了 `pub use`，只会收到「never used」警告而无实际用处。
 
 /// 便捷重导出：渲染一帧到 JPEG 字节（供 `commands.rs` 与单测共用）。
 ///

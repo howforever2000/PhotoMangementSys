@@ -271,6 +271,54 @@ impl CropSpec {
     }
 }
 
+/// 局部蒙版参数。
+///
+/// 蒙版**像素不在配方里** —— 灰度位图动辄几 MB，塞进 JSON 会让
+/// sidecar 变成不可用的庞然大物，且每次微调滑块都要重写整个文件。
+/// 配方只存参数与「有没有蒙版」这一个事实，像素存在同目录的
+/// `<文件名>.pmmask.png`（见 `store.rs`）。因此导入导出配方文本时
+/// 蒙版像素不会跟着走 —— 这是有意的取舍：文本搬运的是「方案」，
+/// 不是「方案 + 位图」。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MaskSpec {
+    /// 是否启用局部调整。关掉时整图套用（等价于无蒙版的旧行为）。
+    pub enabled: bool,
+    /// 羽化半径，单位是**蒙版自身的像素**，缩放时同比例放大。
+    pub feather_px: f32,
+    /// 整体强度 0..=1（在羽化之后缩放权重）。
+    pub strength: f32,
+    /// 反相：选中区与未选中区互换。
+    pub invert: bool,
+    /// 磁盘上是否存在蒙版文件。
+    ///
+    /// 单独记一个「文件在不在」而不是靠 `enabled` 推断，是因为两者
+    /// 语义不同：`enabled` 是用户的**意图**，`has_image` 是**事实**。
+    /// 用户可以「保留蒙版但临时关掉」，此时 `enabled=false` 而
+    /// `has_image=true`；文件被外部删除时则 `enabled=true` 而
+    /// `has_image=false`（此时应静默按整图处理，不是报错）。
+    pub has_image: bool,
+}
+
+impl Default for MaskSpec {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            feather_px: 0.0,
+            strength: 1.0,
+            invert: false,
+            has_image: false,
+        }
+    }
+}
+
+impl MaskSpec {
+    /// 是否会产生局部效果（启用 + 有像素）。
+    pub fn is_active(&self) -> bool {
+        self.enabled && self.has_image
+    }
+}
+
 /// 完整配方 = 各面板之和。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -284,6 +332,50 @@ pub struct AdjustmentRecipe {
     pub curve_luma: Curve,
     pub sharpen: SharpenAdjustments,
     pub crop: CropSpec,
+    /// 局部蒙版（参数；像素见 `store::mask_path`）
+    pub mask: MaskSpec,
+    /// 图像处理算子步骤（按顺序作用在调色结果之上）
+    ///
+    /// ## 为什么存在这里
+    ///
+    /// 用户要的语义是「每一步处理都记录在图像上」：重开这张照片、重新
+    /// 导出，得到的必须是同一串处理的结果。若算子步骤只活在前端内存里，
+    /// 关掉应用就丢了 —— 那就退回了「烘焙」模型。
+    ///
+    /// ## 为什么 Rust 只当存储、不执行
+    ///
+    /// 算子跑在 Python 微服务里（OpenCV 的均衡化与四种模糊）。Rust 侧
+    /// 把 `params` **原样透传**，不解析、不校验字段 —— 算子的参数 schema
+    /// 由 `/api/ops` 单点定义，在这里复制一份必然漂移。Rust 只负责：
+    ///
+    /// - 持久化（进 sidecar / 出 sidecar / 导入导出文本）；
+    /// - 执行时按顺序把每一步交给前端编排（见 `commands.rs` 的注释）。
+    ///
+    /// `params` 用 `serde_json::Value` 而非结构体，正是为了「不解析」。
+    pub ops: Vec<OpStep>,
+}
+
+/// 一条算子步骤。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpStep {
+    /// 算子 id（对应 `/api/ops` 的 `id`，如 `blur-gaussian`）。
+    /// 空串会被 `sanitize` 剔除 —— 未知 id 由 Python 侧拒绝并给出提示。
+    pub op: String,
+    /// 算子参数，原样透传给 `POST /api/apply` 的 `params` 字段。
+    pub params: serde_json::Value,
+    /// 是否启用。关掉保留步骤与参数，可临时跳过而不用删。
+    pub enabled: bool,
+}
+
+impl Default for OpStep {
+    fn default() -> Self {
+        Self {
+            op: String::new(),
+            params: serde_json::Value::Null,
+            enabled: true,
+        }
+    }
 }
 
 impl Default for AdjustmentRecipe {
@@ -296,6 +388,8 @@ impl Default for AdjustmentRecipe {
             curve_luma: Curve::default(),
             sharpen: SharpenAdjustments::default(),
             crop: CropSpec::default(),
+            mask: MaskSpec::default(),
+            ops: Vec::new(),
         }
     }
 }
@@ -329,6 +423,19 @@ impl AdjustmentRecipe {
         self.sharpen.radius = clamp(self.sharpen.radius, 0.0, 1.0);
         self.sharpen.detail = clamp(self.sharpen.detail, 0.0, 1.0);
         self.sharpen.masking = clamp(self.sharpen.masking, 0.0, 1.0);
+
+        // 算子步骤只剔除「没有算子 id」的条目（那是无效数据，不是可恢复的意图）。
+        // 参数**不校验**：schema 在 Python 侧，改参数范围不该导致旧配方打不开。
+        self.ops.retain(|s| !s.op.trim().is_empty());
+
+        let m = &mut self.mask;
+        m.feather_px = clamp(m.feather_px, 0.0, super::mask::MAX_FEATHER_PX);
+        m.strength = clamp(m.strength, 0.0, 1.0);
+        // 没有蒙版文件时强制关闭：否则 UI 会显示「局部调整已开」，
+        // 而渲染按整图处理 —— 用户看到的效果与开关状态不符。
+        if !m.has_image {
+            m.enabled = false;
+        }
 
         let c = &mut self.crop;
         c.angle = clamp(c.angle, -45.0, 45.0);
@@ -395,6 +502,89 @@ mod tests {
     #[test]
     fn untouched_recipe_produces_identical_output() {
         assert_eq!(AdjustmentRecipe::default(), AdjustmentRecipe::default());
+    }
+
+    /// 算子步骤的往返：这是「每一步记录在图像上」的地基。
+    ///
+    /// 若步骤不能无损往返，用户保存方案后重开就丢了处理记录 ——
+    /// 那正是融合前「烘焙」模型的老问题。
+    #[test]
+    fn op_steps_roundtrip_through_json() {
+        let mut r = AdjustmentRecipe::default();
+        r.ops.push(OpStep {
+            op: "region-equalize".into(),
+            params: serde_json::json!({ "mode": "clahe", "strength": 0.8, "mask": true }),
+            enabled: true,
+        });
+        r.ops.push(OpStep {
+            op: "blur-gaussian".into(),
+            params: serde_json::json!({ "radius": 12, "mask": false }),
+            enabled: false,
+        });
+
+        let back = AdjustmentRecipe::from_json(&r.to_json().unwrap()).unwrap();
+        assert_eq!(back.ops.len(), 2, "步骤数应保持");
+        assert_eq!(back.ops[0].op, "region-equalize");
+        assert_eq!(back.ops[0].params["mode"], "clahe");
+        assert_eq!(back.ops[0].enabled, true);
+        // 禁用的步骤必须连同参数一起留住：跳过不等于删除
+        assert_eq!(back.ops[1].op, "blur-gaussian");
+        assert_eq!(back.ops[1].enabled, false);
+        assert_eq!(back.ops[1].params["radius"], 12);
+        assert_eq!(back.ops[1].params["mask"], false);
+    }
+
+    /// 旧配方（没有 `ops` 字段）必须能打开，且步骤为空。
+    ///
+    /// 这是 `#[serde(default)]` 的兼容性承诺：新增可选字段不能让人
+    /// 十年前的配方打不开。
+    #[test]
+    fn legacy_recipe_without_ops_still_loads() {
+        let legacy = r#"{
+          "version": 1,
+          "basic": { "exposure": 1.25 },
+          "crop": { "x": 0.1, "y": 0.1, "w": 0.8, "h": 0.8, "angle": 0, "enabled": true }
+        }"#;
+        let r = AdjustmentRecipe::from_json(legacy).unwrap();
+        assert!(r.ops.is_empty(), "缺字段应回落为空步骤，而非报错");
+        assert_eq!(r.basic.exposure, 1.25, "其余字段应正常读出");
+    }
+
+    /// 空 `op` id 的步骤是无效数据，`sanitize` 剔除；
+    /// **不**因未知算子 id 而剔除（那是 Python 侧的判断）。
+    #[test]
+    fn sanitize_drops_blank_op_ids_but_keeps_unknown_ones() {
+        let mut r = AdjustmentRecipe::default();
+        r.ops.push(OpStep::default()); // op = ""
+        r.ops.push(OpStep {
+            op: "future-op-from-newer-version".into(),
+            params: serde_json::Value::Null,
+            enabled: true,
+        });
+
+        r.sanitize();
+        assert_eq!(r.ops.len(), 1, "空 id 应被剔除");
+        assert_eq!(
+            r.ops[0].op, "future-op-from-newer-version",
+            "未知 id 必须保留：老版本不该因为不认识新算子就丢掉用户的处理记录"
+        );
+    }
+
+    /// 步骤里的参数**不做钳制**：schema 在 Python 侧。
+    #[test]
+    fn sanitize_leaves_op_params_untouched() {
+        let mut r = AdjustmentRecipe::default();
+        r.ops.push(OpStep {
+            op: "blur-gaussian".into(),
+            // 半径 9999 远超 Python 侧的 schema 上限
+            params: serde_json::json!({ "radius": 9999 }),
+            enabled: true,
+        });
+        r.sanitize();
+        assert_eq!(
+            r.ops[0].params["radius"], 9999,
+            "参数范围由 /api/apply 整流，Rust 不复制一份 schema（复制必然漂移）"
+        );
     }
 
     /// 空 JSON = 空配方，而不是错误。

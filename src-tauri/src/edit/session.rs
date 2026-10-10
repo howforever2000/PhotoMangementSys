@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use super::mask::MaskImage;
 use super::pipeline::Workspace;
 use super::recipe::AdjustmentRecipe;
 use super::source::SourceImage;
@@ -51,6 +52,8 @@ pub struct EditSession {
     last_used: AtomicU64,
     /// 上一帧的直方图（避免每次渲染都重算给前端）
     pub last_histogram: Mutex<Option<HistogramData>>,
+    /// 已解码的蒙版像素（跨帧复用，避免每帧重解 PNG）
+    pub mask: Mutex<MaskImage>,
 }
 
 /// 一帧的直方图数据。
@@ -77,6 +80,19 @@ impl EditSession {
             render_seq: AtomicU64::new(0),
             last_used: AtomicU64::new(now_millis()),
             last_histogram: Mutex::new(None),
+            mask: Mutex::new(MaskImage::empty()),
+        }
+    }
+
+    /// 取一份蒙版快照供渲染用（跨帧复用解码结果）。
+    pub fn mask_snapshot(&self) -> MaskImage {
+        self.mask.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// 替换会话内的蒙版像素。
+    pub fn set_mask(&self, mask: MaskImage) {
+        if let Ok(mut g) = self.mask.lock() {
+            *g = mask;
         }
     }
 
@@ -135,10 +151,31 @@ impl EditSession {
 }
 
 /// 会话表：id → 会话。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SessionStore {
     inner: Mutex<HashMap<u64, Arc<EditSession>>>,
     next_id: AtomicU64,
+}
+
+/// `next_id` 从 **1** 起，而不是 `#[derive(Default)]` 给的 0。
+///
+/// 前端用 `sessionId !== 0` 表示「当前没有打开图片」（见
+/// `stores/edit.ts` 的 `hasImage`），因此 0 必须是保留的「无会话」值。
+///
+/// 若这里从 0 起，**第一张打开的图会拿到 id 0**，`hasImage` 判定为
+/// 「没打开图」→ 编辑器停在空状态：不显示照片、工具条与算子控件全部禁用。
+/// 症状是「打开照片后界面没反应」，但后端日志里 `edit_open` 明明成功、
+/// 会话也确实建好了 —— 排查起来极其误导。
+///
+/// 顺带说明：这不是前端该改的地方。前端拿 0 当哨兵是合理约定，
+/// 让后端避开保留值比让每个调用点都记得「0 是假的」更可靠。
+impl Default for SessionStore {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+            next_id: AtomicU64::new(1),
+        }
+    }
 }
 
 /// 最多同时保留的会话数。
@@ -373,5 +410,56 @@ mod tests {
         fn assert_ss<T: Send + Sync>() {}
         assert_ss::<EditSession>();
         assert_ss::<SessionStore>();
+    }
+
+    /// 第一个会话的 id 必须**非 0**。
+    ///
+    /// 前端用 `sessionId !== 0` 当「没有打开图片」的哨兵
+    /// （`stores/edit.ts` 的 `hasImage`）。若后端从 0 开始发号，
+    /// 第一张打开的图会拿到 id 0 → `hasImage` 为假 → 编辑器停在空状态：
+    /// 照片不显示、工具条与算子下拉全部禁用，而后端日志里 `edit_open`
+    /// 却是成功的。这类症状与真正的「没打开图」无法从界面上区分。
+    #[test]
+    fn first_session_id_is_reserved_zero() {
+        let store = SessionStore::new();
+        let id = store.insert(make_session("a.jpg"));
+        assert_ne!(id, 0, "id 0 是保留的「无会话」值，第一个会话不能占用它");
+        assert!(store.get(id).is_some());
+    }
+
+    /// 连开发号必须唯一且递增 —— 前端按 id 取会话，重复会导致串图。
+    #[test]
+    fn session_ids_are_unique_and_increasing() {
+        let store = SessionStore::new();
+        let a = store.insert(make_session("a.jpg"));
+        let b = store.insert(make_session("b.jpg"));
+        let c = store.insert(make_session("c.jpg"));
+        assert!(a < b && b < c, "id 应递增：{a}, {b}, {c}");
+        assert_eq!(store.len(), 3);
+        // 每个 id 取回的都必须是当初放进去的那张
+        assert_eq!(
+            store.with(a, |s| s.source_path.clone()),
+            Some(std::path::PathBuf::from("a.jpg"))
+        );
+        assert_eq!(
+            store.with(c, |s| s.source_path.clone()),
+            Some(std::path::PathBuf::from("c.jpg"))
+        );
+    }
+
+    /// 造一个最小可用会话（不碰磁盘）。
+    fn make_session(name: &str) -> EditSession {
+        let img = RgbImage::new(2, 2);
+        let decoded = SourceImage {
+            pixels: img,
+            original_width: 2,
+            original_height: 2,
+            subsampled: false,
+        };
+        EditSession::new(
+            std::path::PathBuf::from(name),
+            decoded,
+            super::super::recipe::AdjustmentRecipe::default(),
+        )
     }
 }

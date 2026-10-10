@@ -491,6 +491,10 @@ pub fn run() {
             edit::commands::edit_recipe_from_text,
             edit::commands::edit_encode,
             edit::commands::edit_output_size,
+            // 局部蒙版（FEAT-099 扩展）
+            edit::commands::edit_mask_set,
+            edit::commands::edit_mask_get,
+            edit::commands::edit_mask_clear,
             edit::commands::edit_write_file,
             edit::commands::edit_session_stats,
         ])

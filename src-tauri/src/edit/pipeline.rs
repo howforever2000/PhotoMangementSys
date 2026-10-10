@@ -47,6 +47,7 @@
 use super::color::{clip01_linear, linear_to_srgb, luma, srgb_to_linear};
 use super::curve::{apply_luma_curve, apply_rgb_curve, compile as compile_curves, Curves};
 use super::geometry::{compute as compute_geometry, resample_plane, CropGeometry};
+use super::mask::MaskImage;
 use super::recipe::AdjustmentRecipe;
 use super::saturation::{clip_preserving_hue, SaturationParams};
 use super::sharpen::{sharpen_in_place, SharpenPlan};
@@ -105,6 +106,8 @@ pub struct Workspace {
     luma_b: Plane,
     /// u8 输出（展平，长度 = w*h*3）
     out_rgb: Vec<u8>,
+    /// 蒙版权重平面暂存（局部调整时按输出尺寸重算，不缓存）
+    mask_scratch: Plane,
 }
 
 impl Workspace {
@@ -117,6 +120,10 @@ impl Workspace {
     pub fn estimate_bytes(w: u32, h: u32) -> usize {
         let px = w as usize * h as usize;
         // work + geom 各 3*f32/px；luma_a/b 各 f32/px；out_rgb 3*u8/px
+        //
+        // 不含 `mask_scratch`：它只在启用局部调整时才被 `ensure` 分配，
+        // 属于按需开销而非常驻。计入会让「没画蒙版的用户」也按蒙版的
+        // 内存量级做降档决策。
         (3 * 4 * px) * 2 + (4 * px) * 2 + 3 * px
     }
 
@@ -127,6 +134,7 @@ impl Workspace {
         self.luma_a = Plane::default();
         self.luma_b = Plane::default();
         self.out_rgb = Vec::new();
+        self.mask_scratch = Plane::default();
     }
 
     /// 工作区当前占用的字节数。
@@ -153,8 +161,37 @@ pub struct RenderPlan {
     pub sharpen: Option<SharpenPlan>,
     /// 几何按目标尺寸相关（σ 依赖短边），故在编译时按尺寸传入。
     geometry: CropGeometry,
+    /// 局部蒙版（像素 + 参数）。`None` 表示整图套用。
+    ///
+    /// 放在计划里而不是渲染时现传：蒙版像素要跨帧复用（每帧重新从
+    /// PNG 解码要 20~50ms），而计划本来就是「渲染所需的一切输入」的载体。
+    pub mask: Option<MaskPlan>,
     /// 是否全链路无操作
     pub identity: bool,
+}
+
+/// 编译好的蒙版：像素与参数打包，供渲染阶段直接使用。
+#[derive(Debug, Clone)]
+pub struct MaskPlan {
+    pub image: super::mask::MaskImage,
+    pub spec: super::recipe::MaskSpec,
+}
+
+impl MaskPlan {
+    /// 空的蒙版计划（启用但没有像素时返回 `None`）。
+    pub fn new(
+        image: super::mask::MaskImage,
+        spec: &super::recipe::MaskSpec,
+    ) -> Option<Self> {
+        if image.is_empty() || !spec.is_active() {
+            None
+        } else {
+            Some(Self {
+                image,
+                spec: *spec,
+            })
+        }
+    }
 }
 
 impl RenderPlan {
@@ -165,6 +202,7 @@ impl RenderPlan {
         src_h: u32,
         out_w: u32,
         out_h: u32,
+        mask_image: super::mask::MaskImage,
     ) -> Self {
         let tone_lut = ToneLut::compile(&recipe.basic);
         let tone = prepare_tone(&recipe.basic, tone_lut.as_ref());
@@ -172,7 +210,11 @@ impl RenderPlan {
         let saturation = SaturationParams::from(&recipe.color);
         let sharpen = SharpenPlan::plan(&recipe.sharpen, out_w, out_h);
         let geometry = compute_geometry(&recipe.crop, src_w, src_h);
+        let mask = MaskPlan::new(mask_image, &recipe.mask);
 
+        // 注意：蒙版**不参与** identity 判定。启用局部调整但配方为空时，
+        // 管线里确实无事可做，但语义上「选区外显示原图」仍需成立 ——
+        // 而 identity 短路返回的正是原图，所以两者一致，不判反而少一次混合。
         let identity = tone.is_noop()
             && curves.is_noop()
             && saturation.is_noop()
@@ -186,6 +228,7 @@ impl RenderPlan {
             saturation,
             sharpen,
             geometry,
+            mask,
             identity,
         }
     }
@@ -217,10 +260,27 @@ pub fn render_u8_to_u8(
     max_long_edge: u32,
     ws: &mut Workspace,
 ) -> (u32, u32, Vec<u8>) {
-    let mut plan = RenderPlan::compile(recipe, src_w, src_h, 1, 1);
+    render_u8_to_u8_masked(src, src_w, src_h, recipe, max_long_edge, &MaskImage::empty(), ws)
+}
+
+/// 同 [`render_u8_to_u8`]，但带蒙版。
+///
+/// 拆成两个函数而不是给原函数加默认参数：Rust 没有默认参数，而给
+/// 现有的每一个调用点塞一个 `&MaskImage::empty()` 会让「这里本来该有
+/// 蒙版吗」的疑问出现在每一行。未接蒙版的算法层单测继续用短名版本。
+pub fn render_u8_to_u8_masked(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    recipe: &AdjustmentRecipe,
+    max_long_edge: u32,
+    mask_image: &MaskImage,
+    ws: &mut Workspace,
+) -> (u32, u32, Vec<u8>) {
+    let mut plan = RenderPlan::compile(recipe, src_w, src_h, 1, 1, mask_image.clone());
     let (out_w, out_h) = plan.output_size(max_long_edge);
     // σ 依赖输出短边，需在确定尺寸后重编译锐化计划
-    plan = RenderPlan::compile(recipe, src_w, src_h, out_w, out_h);
+    plan = RenderPlan::compile(recipe, src_w, src_h, out_w, out_h, mask_image.clone());
 
     render_with_plan(src, src_w, src_h, &plan, out_w, out_h, ws)
 }
@@ -260,6 +320,14 @@ pub fn render_with_plan(
         let geom_plane = &mut ws.geom;
         stage_geometry(src, src_w, src_h, plan, out_w, out_h, dst, work, geom_plane);
     }
+
+    // ---- 局部调整：先留一份「只有几何」的底图 ----
+    // 必须在恒等短路**之前**取：蒙版 + 空配方时，选区外要显示原图，
+    // 而 adjusted 恰好等于 base —— 混合后处处是 base，语义正确。
+    let mask_base: Option<Vec<u8>> = plan
+        .mask
+        .as_ref()
+        .map(|_| ws.out_rgb[..need].to_vec());
 
     // ---- 恒等配方：到此为止 ----
     if plan.identity {
@@ -302,6 +370,25 @@ pub fn render_with_plan(
         // Rust 的 NLL 会把 work 的借用延长到 pack_u8 调用结束，
         // 因此这里必须先 pack 再 release —— 见下面的 drop。
         pack_u8(work, out_w, out_h, &mut ws.out_rgb[..need]);
+    }
+
+    // ---- 阶段 11：局部混合 ----
+    // 把「只有几何的底图」与「完整管线结果」按蒙版权重混合。
+    // 放在管线最末而非某个阶段中间：蒙版的语义是「调整只作用于选区」，
+    // 因此连锐化、曲线这些后段也必须被限制在选区内。
+    if let (Some(base), Some(mask)) = (mask_base, plan.mask.as_ref()) {
+        // 先把权重写进暂存平面再混合：返回所有权的新 Plane 会与
+        // 对 ws 的可变借用冲突（见 mask::write_weight_plane 的说明）。
+        let active = super::mask::write_weight_plane(
+            &mask.image,
+            &mask.spec,
+            out_w,
+            out_h,
+            &mut ws.mask_scratch,
+        );
+        if active {
+            super::mask::blend_in_place(&base, &mut ws.out_rgb[..need], ws.mask_scratch.as_slice());
+        }
     }
 
     let dst = &ws.out_rgb[..need];
@@ -1064,18 +1151,18 @@ mod tests {
     #[test]
     fn render_plan_detects_identity() {
         let (w, h) = (10u32, 10u32);
-        assert!(RenderPlan::compile(&AdjustmentRecipe::default(), w, h, w, h).identity);
+        assert!(RenderPlan::compile(&AdjustmentRecipe::default(), w, h, w, h, MaskImage::empty()).identity);
 
         let mut r = AdjustmentRecipe::default();
         r.basic.exposure = 0.5;
-        assert!(!RenderPlan::compile(&r, w, h, w, h).identity);
+        assert!(!RenderPlan::compile(&r, w, h, w, h, MaskImage::empty()).identity);
 
         let mut r = AdjustmentRecipe::default();
         r.crop.enabled = true;
         r.crop.w = 0.5;
         r.crop.h = 0.5;
         assert!(
-            !RenderPlan::compile(&r, w, h, w, h).identity,
+            !RenderPlan::compile(&r, w, h, w, h, MaskImage::empty()).identity,
             "裁剪也破坏恒等"
         );
 
@@ -1083,17 +1170,17 @@ mod tests {
         r.crop.enabled = true;
         r.crop.angle = 3.0;
         assert!(
-            !RenderPlan::compile(&r, w, h, w, h).identity,
+            !RenderPlan::compile(&r, w, h, w, h, MaskImage::empty()).identity,
             "拉直也破坏恒等"
         );
 
         let mut r = AdjustmentRecipe::default();
         r.color.saturation = 0.5;
-        assert!(!RenderPlan::compile(&r, w, h, w, h).identity);
+        assert!(!RenderPlan::compile(&r, w, h, w, h, MaskImage::empty()).identity);
 
         let mut r = AdjustmentRecipe::default();
         r.sharpen.amount = 0.5;
-        assert!(!RenderPlan::compile(&r, w, h, w, h).identity);
+        assert!(!RenderPlan::compile(&r, w, h, w, h, MaskImage::empty()).identity);
     }
 
     #[test]
@@ -1106,5 +1193,146 @@ mod tests {
         assert_eq!(p.len(), 100, "请求更小时不应收缩");
         p.ensure(200);
         assert_eq!(p.len(), 200);
+    }
+
+    // ---------- 局部蒙版（与 pipeline 的接线） ----------
+
+    /// 造一张左右亮度不同的图：左半 40、右半 200。
+    fn two_tone(w: u32, h: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; (w * h * 3) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let v = if x < w / 2 { 40u8 } else { 200u8 };
+                let i = ((y * w + x) * 3) as usize;
+                buf[i] = v;
+                buf[i + 1] = v;
+                buf[i + 2] = v;
+            }
+        }
+        buf
+    }
+
+    /// 只选右半的蒙版（`MaskImage` 字段私有，故用 from_png 走一遍真实路径）。
+    fn right_half_mask(w: u32, h: u32) -> super::super::mask::MaskImage {
+        let mut img = image::GrayImage::from_pixel(w, h, image::Luma([0u8]));
+        for y in 0..h {
+            for x in w / 2..w {
+                img.put_pixel(x, y, image::Luma([255u8]));
+            }
+        }
+        let mut png = Vec::new();
+        image::DynamicImage::ImageLuma8(img)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        super::super::mask::MaskImage::from_png(&png).unwrap()
+    }
+
+    /// 局部调整的核心契约：选区内吃到调整，选区外**逐字节**等于未调整。
+    ///
+    /// 这条守的是「渲染两遍再混合」接线是否正确。若底图取错（比如取成
+    /// 调整后的结果），选区外会残留调整效果 —— 局部调整就变成了全局调整，
+    /// 而这在单看「选区里有效果」时是发现不了的。
+    #[test]
+    fn mask_limits_adjustment_to_selection() {
+        let (w, h) = (32u32, 16u32);
+        let src = two_tone(w, h);
+
+        let mut r = AdjustmentRecipe::default();
+        r.basic.exposure = 2.0; // 明显提亮
+
+        // 无蒙版：整图都该变亮
+        let mut ws = Workspace::new();
+        let (_, _, full) = render_u8_to_u8(&src, w, h, &r, 0, &mut ws);
+        assert!(full[0] > two_tone(w, h)[0], "无蒙版时左半也应被提亮");
+
+        // 只选右半：左半必须逐字节等于原图
+        let mask = right_half_mask(w, h);
+        let mut r2 = r.clone();
+        r2.mask = super::super::recipe::MaskSpec {
+            enabled: true,
+            has_image: true,
+            ..Default::default()
+        };
+        let mut ws2 = Workspace::new();
+        let (_, _, masked) = render_u8_to_u8_masked(&src, w, h, &r2, 0, &mask, &mut ws2);
+
+        let orig = two_tone(w, h);
+        let mid = (w / 2) as usize;
+        // 左半逐字节还原
+        for y in 0..h as usize {
+            for x in 0..mid {
+                let i = (y * w as usize + x) * 3;
+                assert_eq!(
+                    &masked[i..i + 3],
+                    &orig[i..i + 3],
+                    "选区外 ({x},{y}) 应逐字节等于原图"
+                );
+            }
+        }
+        // 右半吃到调整（比无蒙版时更接近「全图提亮」的同档结果）
+        assert!(masked[mid * 3] > orig[mid * 3], "选区内应被提亮");
+    }
+
+    /// 蒙版存在但未启用 → 整图套用（与无蒙版完全一致）。
+    #[test]
+    fn disabled_mask_behaves_like_no_mask() {
+        let (w, h) = (16u32, 8u32);
+        let src = two_tone(w, h);
+        let mut r = AdjustmentRecipe::default();
+        r.basic.exposure = 1.5;
+
+        let mask = right_half_mask(w, h);
+        let mut r2 = r.clone();
+        r2.mask = super::super::recipe::MaskSpec {
+            enabled: false, // 有像素但关掉
+            has_image: true,
+            ..Default::default()
+        };
+
+        let mut ws1 = Workspace::new();
+        let mut ws2 = Workspace::new();
+        let (_, _, plain) = render_u8_to_u8(&src, w, h, &r, 0, &mut ws1);
+        let (_, _, off) = render_u8_to_u8_masked(&src, w, h, &r2, 0, &mask, &mut ws2);
+        assert_eq!(plain, off, "未启用蒙版时应与无蒙版逐字节一致");
+    }
+
+    /// 羽化越大，选区边界外的像素越被调整影响（过渡带更宽）。
+    #[test]
+    fn feather_widens_the_local_adjustment() {
+        let (w, h) = (64u32, 16u32);
+        let src = two_tone(w, h);
+        let mask = right_half_mask(w, h);
+
+        let mut r = AdjustmentRecipe::default();
+        r.basic.exposure = 2.0;
+
+        let mut sharp = r.clone();
+        sharp.mask = super::super::recipe::MaskSpec {
+            enabled: true,
+            has_image: true,
+            feather_px: 0.0,
+            ..Default::default()
+        };
+        let mut soft = r.clone();
+        soft.mask = super::super::recipe::MaskSpec {
+            enabled: true,
+            has_image: true,
+            feather_px: 10.0,
+            ..Default::default()
+        };
+
+        let mut ws1 = Workspace::new();
+        let mut ws2 = Workspace::new();
+        let (_, _, a) = render_u8_to_u8_masked(&src, w, h, &sharp, 0, &mask, &mut ws1);
+        let (_, _, b) = render_u8_to_u8_masked(&src, w, h, &soft, 0, &mask, &mut ws2);
+
+        let orig = two_tone(w, h);
+        // 紧贴边界外侧的像素：硬边时不受影响，羽化后被轻微影响
+        let probe = ((w / 2) as usize - 2) * 3;
+        assert_eq!(a[probe], orig[probe], "硬边时边界外侧应完全不受影响");
+        assert!(
+            b[probe] > orig[probe],
+            "羽化后边界外侧应被轻微影响（过渡带更宽）"
+        );
     }
 }

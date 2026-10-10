@@ -1,0 +1,20 @@
+# Linux 开发环境的 VCR 运行时依赖
+#
+# 与 requirements.txt 的差异只有一处：onnxruntime 选 CPU 版而非 DirectML 版。
+# onnxruntime-directml 只提供 Windows 的 DmlExecutionProvider（DX12），Linux 上
+# 装不了也没有对应后端，必须换回同名同 import 名的 onnxruntime（CPUExecutionProvider）。
+# 其余依赖与 Windows 完全一致（requirements.txt 里 directml 的替代写法）。
+#
+# 安装：
+#   python/.venv-vcr/bin/pip install -r python/requirements-linux.txt \
+#       -i https://pypi.tuna.tsinghua.edu.cn/simple
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+# Linux 上只有 CPU 后端（GPU 加速在 Windows 侧走 DirectML）
+onnxruntime>=1.17
+Pillow>=10.0
+numpy>=1.26
+opencv-python>=4.8
+tokenizers>=0.19
+onnx>=1.15

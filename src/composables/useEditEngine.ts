@@ -5,6 +5,7 @@ import type {
   EditOpenResult,
   EditRenderMeta,
   EditSchema,
+  MaskInfo,
 } from "../types/edit";
 import { normalizeRecipe } from "../types/edit";
 
@@ -20,7 +21,31 @@ import { normalizeRecipe } from "../types/edit";
  * 后端的渲染/编码结果走 `tauri::ipc::Response`（裸字节），在 JS 侧是
  * `ArrayBuffer`。这里统一转成 `Blob` + `objectURL`，由调用方负责
  * `URL.revokeObjectURL` —— 见 `stores/edit.ts` 的 `render`。
+ *
+ * ## 为什么需要 unpackFrame
+ *
+ * Tauri v2 的 `IpcResponse` 只有 `Serialize` 与 `Response` 两个 impl，
+ * **没有元组的 impl**（v1 的 `impl_tuple!` 在 v2 移除了）。所以 Rust 侧
+ * 无法返回 `(Response, Meta)` 这种「裸字节 + 结构体」的组合 —— 那样编译
+ * 不过（E0599）。后端因此把元信息与字节打包进同一个响应体，帧格式：
+ *
+ * ```text
+ * [0..4)      u32 LE = meta JSON 字节长度 L
+ * [4..4+L)    meta 的 UTF-8 JSON
+ * [4+L..)     图片字节
+ * ```
+ *
+ * 对端实现见 `src-tauri/src/edit/commands.rs` 的 `pack_frame`，
+ * 两处必须同步修改。
  */
+
+/** 拆开后端 `pack_frame` 打包的帧，返回 `[图片字节, 元信息]`。 */
+function unpackFrame<M>(buf: ArrayBuffer): [Uint8Array, M] {
+  const metaLen = new DataView(buf).getUint32(0, true);
+  const metaJson = new Uint8Array(buf, 4, metaLen);
+  const meta = JSON.parse(new TextDecoder().decode(metaJson)) as M;
+  return [new Uint8Array(buf, 4 + metaLen), meta];
+}
 
 /** 拉取参数表（面板渲染的唯一依据）。 */
 export async function fetchSchema(): Promise<EditSchema> {
@@ -61,11 +86,12 @@ export async function renderFrame(
   recipe: AdjustmentRecipe,
   draft: boolean,
 ): Promise<[Blob, EditRenderMeta]> {
-  const [bytes, meta] = await invoke<[ArrayBuffer, EditRenderMeta]>("edit_render", {
+  const buf = await invoke<ArrayBuffer>("edit_render", {
     sessionId,
     recipe,
     draft,
   });
+  const [bytes, meta] = unpackFrame<EditRenderMeta>(buf);
   return [new Blob([bytes], { type: "image/jpeg" }), meta];
 }
 
@@ -125,17 +151,18 @@ export async function encodeExport(
   recipe: AdjustmentRecipe,
   opts: ExportOptions,
 ): Promise<[Blob, number, number]> {
-  const [bytes, w, h] = await invoke<[ArrayBuffer, number, number]>("edit_encode", {
+  const buf = await invoke<ArrayBuffer>("edit_encode", {
     sessionId,
     recipe,
     format: opts.format,
     quality: opts.quality,
     maxLongEdge: opts.maxLongEdge,
   });
+  const [bytes, meta] = unpackFrame<{ width: number; height: number }>(buf);
   return [
     new Blob([bytes], { type: opts.format === "png" ? "image/png" : "image/jpeg" }),
-    w,
-    h,
+    meta.width,
+    meta.height,
   ];
 }
 
@@ -167,4 +194,49 @@ export async function recipeFromText(text: string): Promise<AdjustmentRecipe> {
 /** 会话内存统计（排错用）。 */
 export async function sessionStats(): Promise<{ sessions: number; bytes: number; maxSessions: number }> {
   return await invoke<{ sessions: number; bytes: number; maxSessions: number }>("edit_session_stats");
+}
+
+/* ================================================================
+ * 局部蒙版
+ * ================================================================
+ *
+ * 蒙版像素**不进配方**：配方是可读可搬运的 JSON，而蒙版是位图。
+ * 像素走独立的三个命令（存 / 取 / 清），配方里只留参数与
+ * 「有没有蒙版」这一个事实。
+ */
+
+/**
+ * 上传蒙版 PNG（覆盖既有蒙版）。
+ *
+ * 蒙版应画在**预览分辨率**上：这样文件不随原图尺寸膨胀，导出时
+ * 由后端按需缩放（最近邻，见 `mask.rs`）。
+ */
+export async function setMask(sessionId: number, png: ArrayBuffer): Promise<MaskInfo> {
+  return await invoke<MaskInfo>("edit_mask_set", {
+    sessionId,
+    png: Array.from(new Uint8Array(png)),
+  });
+}
+
+/**
+ * 取回当前蒙版的 PNG 字节与信息（重新打开图片后恢复画布用）。
+ *
+ * 后端用 `pack_frame` 打包（`[长度][JSON][PNG]`）：蒙版 PNG 约 2.5MB，
+ * 若走 JSON 字节数组会膨胀到 10MB 且解析极慢。
+ *
+ * 没有蒙版时返回 `{ info: null, png: null }` —— 「还没蒙版」是正常状态。
+ */
+export async function getMask(
+  sessionId: number,
+): Promise<{ info: MaskInfo | null; png: ArrayBuffer | null }> {
+  const buf = await invoke<ArrayBuffer>("edit_mask_get", { sessionId });
+  const [payload, meta] = unpackFrame<MaskInfo>(buf);
+  // width=0 是后端给的「无蒙版」哨兵
+  if (!meta || meta.width === 0) return { info: null, png: null };
+  return { info: meta, png: payload.buffer as ArrayBuffer };
+}
+
+/** 清除蒙版（删文件 + 清会话缓存）。幂等。 */
+export async function clearMask(sessionId: number): Promise<void> {
+  await invoke<void>("edit_mask_clear", { sessionId });
 }

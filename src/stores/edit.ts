@@ -7,8 +7,15 @@ import type {
   EditHistogram,
   EditRenderMeta,
   EditSchema,
+  MaskInfo,
 } from "../types/edit";
-import { cloneRecipe, emptyRecipe, isPristineRecipe, normalizeRecipe } from "../types/edit";
+import {
+  cloneRecipe,
+  emptyRecipe,
+  isPristineRecipe,
+  normalizeRecipe,
+  withoutAdjustments,
+} from "../types/edit";
 
 /**
  * 创意工坊 · 基准调色的状态中枢（FEAT-099）
@@ -75,6 +82,16 @@ export const useEditStore = defineStore("workshopEdit", () => {
   const recipe = ref<AdjustmentRecipe>(emptyRecipe());
   const undoStack = ref<AdjustmentRecipe[]>([]);
   const redoStack = ref<AdjustmentRecipe[]>([]);
+  /**
+   * 配方变化回调（FEAT-099 融合）。
+   *
+   * 调色参数一变，Python 算子链的输入就变了 → 结果作废。store 不该知道
+   * 算子的存在（那是前端编排的事），因此用回调让宿主决定要不要重跑。
+   *
+   * 只在「提交后」触发（commit=true）：拖动中的每一帧都重跑整条链不可行
+   * ——一次算子 100~300ms，拖一次滑块就是几十次调用。
+   */
+  const onRecipeCommitted = ref<(() => void) | null>(null);
   /** 正在拖动的滑块：拖动期间不往撤销栈塞快照（否则一次拖动 = 50 步撤销） */
   const interacting = ref(false);
 
@@ -88,13 +105,82 @@ export const useEditStore = defineStore("workshopEdit", () => {
   const quality = ref<RenderQuality>("preview");
 
   /* ---------------- 对比 ---------------- */
-  /** 对比模式：编辑 / 原图（整幅显示原图）/ 分屏 */
-  const compareMode = ref<"off" | "original" | "split">("off");
+  /** 对比模式：编辑 / 原图（整幅显示原图）/ 并排 / 分屏 */
+  const compareMode = ref<"off" | "original" | "side" | "split">("off");
   /** 分屏位置 0..1 */
   const splitX = ref(0.5);
 
+  /**
+   * 「零调整」渲染结果（对比视图的左格）。
+   *
+   * 懒加载 + 缓存：它只取决于**图像本身和裁剪框**，与调色/算子无关，
+   * 所以同一张图最多渲染一次。放在打开照片时渲染是浪费 —— 大部分人
+   * 根本不会点对比（实测这一帧要 1s 上下）。
+   *
+   * 不走 `drainPending*`：那套会写 `previewUrl`、抢 `renderToken`，
+   * 对比用的这帧是旁路数据，串进去会把主预览顶掉。
+   */
+  const originalUrl = ref("");
+  const originalBusy = ref(false);
+  /** 缓存这份「零调整」时的裁剪签名，裁剪一变就得重渲染 */
+  let originalCropSig = "";
+  /** 丢弃在飞的「零调整」渲染 */
+  let originalToken = 0;
+
+  function dropOriginal(): void {
+    originalToken++;
+    originalBusy.value = false;
+    originalCropSig = "";
+    if (originalUrl.value) URL.revokeObjectURL(originalUrl.value);
+    originalUrl.value = "";
+  }
+
+  /** 取「零调整」帧；没有就渲染一帧并缓存。返回 object URL（可能为空串）。 */
+  async function ensureOriginal(): Promise<string> {
+    if (!hasImage.value || disposed) return "";
+    const sig = JSON.stringify(recipe.value.crop);
+    if (originalUrl.value && originalCropSig === sig) return originalUrl.value;
+    if (originalBusy.value) return originalUrl.value;
+
+    originalBusy.value = true;
+    const token = ++originalToken;
+    try {
+      const [blob] = await engine.renderFrame(
+        sessionId.value,
+        withoutAdjustments(recipe.value),
+        false,
+      );
+      // 期间换图 / 又发起一次：作废，别把上一张的帧贴到这一张上
+      if (token !== originalToken || disposed || !hasImage.value) return "";
+      dropOriginalUrlOnly();
+      originalUrl.value = URL.createObjectURL(blob);
+      originalCropSig = sig;
+      return originalUrl.value;
+    } catch {
+      // 对比是辅助功能，取不到就退回普通视图，不该弹错误打断编辑
+      return "";
+    } finally {
+      if (token === originalToken) originalBusy.value = false;
+    }
+  }
+
+  /** 只回收 URL，不动 token/签名（新帧即将填上）。 */
+  function dropOriginalUrlOnly(): void {
+    if (originalUrl.value) URL.revokeObjectURL(originalUrl.value);
+    originalUrl.value = "";
+  }
+
   /* ---------------- 裁剪交互 ---------------- */
   const cropping = ref(false);
+
+  /* ---------------- 局部蒙版 ---------------- */
+  /** 是否处于蒙版绘制模式（与裁剪模式互斥：两者都要独占画布手势） */
+  const masking = ref(false);
+  /** 蒙版是否存在（与 recipe.mask.hasImage 同步的便捷镜像） */
+  const hasMask = computed(() => recipe.value.mask.hasImage);
+  /** 蒙版参数改动中（拖动羽化/强度时不记撤销） */
+  const maskInfo = ref<MaskInfo | null>(null);
+  const maskError = ref("");
 
   /* ---------------- 直方图 ---------------- */
   const histogram = ref<EditHistogram | null>(null);
@@ -161,9 +247,13 @@ export const useEditStore = defineStore("workshopEdit", () => {
       redoStack.value = [];
       compareMode.value = "off";
       cropping.value = false;
+      masking.value = false;
       histogram.value = null;
+      maskError.value = "";
       await renderNow("preview");
       await refreshHistogram();
+      // 蒙版单独取：它在 sidecar 之外（独立 PNG），不进配方
+      await loadMaskInfo();
       return true;
     } catch (e) {
       renderError.value = String((e as Error)?.message ?? e);
@@ -190,6 +280,7 @@ export const useEditStore = defineStore("workshopEdit", () => {
     if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
     previewUrl.value = "";
     previewBlob.value = null;
+    dropOriginal();
     if (sessionId.value !== 0) {
       const id = sessionId.value;
       sessionId.value = 0;
@@ -314,7 +405,17 @@ export const useEditStore = defineStore("workshopEdit", () => {
         void scheduleRender("preview");
         void scheduleHistogram();
       }, SETTLE_DELAY_MS);
+      // 通知宿主：算子链的输入变了，结果应作废并（静默期后）重跑
+      onRecipeCommitted.value?.();
     }
+  }
+
+  /** 注册「配方提交后」回调（宿主用它触发算子链重跑）。返回取消函数。 */
+  function onCommit(fn: () => void): () => void {
+    onRecipeCommitted.value = fn;
+    return () => {
+      if (onRecipeCommitted.value === fn) onRecipeCommitted.value = null;
+    };
   }
 
   /** 拖动开始：冻结历史记录。 */
@@ -443,6 +544,93 @@ export const useEditStore = defineStore("workshopEdit", () => {
   }
 
   /* ================================================================
+   * 局部蒙版
+   * ================================================================ */
+
+  /**
+   * 提交一份蒙版 PNG。
+   *
+   * 先落盘/入库再改配方：反过来的话，一旦渲染失败，配方里已经标了
+   * `hasImage` 却拿不到像素，选区会静默消失。
+   *
+   * @param png 预览分辨率的灰度 PNG
+   * @param keepDisabled 清除后仍保持「有蒙版」语义（内部用）
+   */
+  async function commitMask(png: ArrayBuffer): Promise<void> {
+    if (!hasImage.value) return;
+    maskError.value = "";
+    try {
+      const info = await engine.setMask(sessionId.value, png);
+      maskInfo.value = info;
+      const prev = cloneRecipe(recipe.value);
+      const next = cloneRecipe(recipe.value);
+      next.mask = { ...next.mask, hasImage: true, enabled: true };
+      recipe.value = next;
+      pushHistory(prev);
+      redoStack.value = [];
+      await renderNow("preview");
+      void scheduleHistogram();
+    } catch (e) {
+      maskError.value = String((e as Error)?.message ?? e);
+    }
+  }
+
+  /** 清除蒙版（删文件 + 退回整图）。 */
+  async function clearMask(): Promise<void> {
+    if (!hasImage.value) return;
+    maskError.value = "";
+    try {
+      await engine.clearMask(sessionId.value);
+      maskInfo.value = null;
+      const prev = cloneRecipe(recipe.value);
+      const next = cloneRecipe(recipe.value);
+      next.mask = { ...next.mask, hasImage: false, enabled: false };
+      recipe.value = next;
+      pushHistory(prev);
+      redoStack.value = [];
+      await renderNow("preview");
+      void scheduleHistogram();
+    } catch (e) {
+      maskError.value = String((e as Error)?.message ?? e);
+    }
+  }
+
+  /**
+   * 改蒙版参数（羽化 / 强度 / 反相 / 开关）。
+   *
+   * 与滑块同一套约定：`commit=false` 表示拖动中（不记撤销、走低画质）。
+   */
+  async function applyMaskParams(patch: Partial<AdjustmentRecipe["mask"]>, commit: boolean): Promise<void> {
+    if (!hasImage.value) return;
+    const prev = recipe.value;
+    const next = cloneRecipe(recipe.value);
+    next.mask = { ...next.mask, ...patch };
+    recipe.value = next;
+    if (commit) {
+      if (!interacting.value) pushHistory(prev);
+      redoStack.value = [];
+      interacting.value = false;
+    }
+    await scheduleRender(commit ? "preview" : "draft");
+    if (commit) void scheduleHistogram();
+  }
+
+  /** 打开图片后把已有蒙版取回来（供画布恢复）。 */
+  /** 从磁盘读回的蒙版 PNG 字节，供画布恢复。没有则 null。 */
+  const maskPng = ref<ArrayBuffer | null>(null);
+
+  async function loadMaskInfo(): Promise<void> {
+    if (!hasImage.value) {
+      maskInfo.value = null;
+      maskPng.value = null;
+      return;
+    }
+    const r = await engine.getMask(sessionId.value);
+    maskInfo.value = r.info;
+    maskPng.value = r.png;
+  }
+
+  /* ================================================================
    * 生命周期
    * ================================================================ */
 
@@ -488,6 +676,7 @@ export const useEditStore = defineStore("workshopEdit", () => {
     previewSize,
     // 配方
     recipe,
+    onCommit,
     // 渲染
     loading,
     rendering,
@@ -499,7 +688,20 @@ export const useEditStore = defineStore("workshopEdit", () => {
     // 对比
     compareMode,
     splitX,
+    originalUrl,
+    originalBusy,
+    ensureOriginal,
     cropping,
+    // 局部蒙版
+    masking,
+    hasMask,
+    maskInfo,
+    maskPng,
+    maskError,
+    commitMask,
+    clearMask,
+    applyMaskParams,
+    loadMaskInfo,
     // 直方图
     histogram,
     // 动作

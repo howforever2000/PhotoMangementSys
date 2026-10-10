@@ -18,6 +18,12 @@
 //! 一张 1600px 的 JPEG 约 200KB，base64 会膨胀到 270KB 且多一次
 //! 编解码；Tauri v2 的 `Response` 直接传 `ArrayBuffer`，前端零拷贝构造 Blob。
 //!
+//! ⚠️ 但 Tauri v2 的 `IpcResponse` 只有 `Serialize` 与 `Response` 两个 impl，
+//! **没有元组的 impl**（v1 的 `impl_tuple!` 已移除），因此
+//! `Result<(Response, RenderMeta), String>` 编译不过（E0599 `async_kind`）。
+//! 解法是 `pack_frame`：元信息与字节拼成**同一个**裸字节体再返回，
+//! 前端按固定帧格式拆开。帧格式见该函数注释，两端必须同步修改。
+//!
 //! ## 命令清单（薄壳一览）
 //!
 //! | 命令 | 作用 | 重活 |
@@ -40,7 +46,8 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 
-use super::pipeline::{histogram, render_u8_to_u8, RenderPlan, Workspace};
+use super::mask::MaskImage;
+use super::pipeline::{histogram, render_u8_to_u8, render_u8_to_u8_masked, RenderPlan, Workspace};
 use super::recipe::AdjustmentRecipe;
 use super::schema;
 use super::session::{EditSession, SessionStore};
@@ -73,6 +80,8 @@ pub struct OpenResult {
     pub has_recipe: bool,
     /// 解码耗时（毫秒），用于显示加载性能
     pub decode_ms: u64,
+    /// 蒙版的客观事实（是否存在、多大）
+    pub mask: MaskInfo,
 }
 
 /// 直方图（前端面板渲染用）。
@@ -98,6 +107,102 @@ pub struct RenderMeta {
     pub elapsed_ms: u64,
     /// 是否因为「有更新的请求」而被丢弃
     pub stale: bool,
+}
+
+/// 导出编码的返回元信息（与二进制返回体配套）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncodeMeta {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// 蒙版操作的返回信息。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaskResult {
+    /// 蒙版自身的宽高（通常等于预览分辨率）
+    pub width: u32,
+    pub height: u32,
+    /// 选中区域占比 0..=1（UI 提示「选中了多少」）
+    pub coverage: f32,
+    /// 落盘路径
+    pub path: String,
+}
+
+impl MaskResult {
+    /// 「没有蒙版」的哨兵值。
+    ///
+    /// 单独给一个构造器而不是让调用方手填四个 0：漏填某一个字段
+    /// 会让前端把「没有蒙版」误判成「有蒙版」。
+    fn empty() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            coverage: 0.0,
+            path: String::new(),
+        }
+    }
+
+    /// 蒙版是否真实存在（以宽度为准，与 `MaskImage::is_empty` 同口径）。
+    pub fn exists(&self) -> bool {
+        self.width > 0 && self.height > 0
+    }
+}
+
+/// 蒙版的存在性与尺寸（`edit_open` 返回用，比 `MaskResult` 轻）。
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaskInfo {
+    pub exists: bool,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// `edit_open` 阻塞任务的产物。
+struct DecodedOpen {
+    img: source::SourceImage,
+    recipe: AdjustmentRecipe,
+    has_recipe: bool,
+    decode_ms: u64,
+    mask_image: MaskImage,
+    mask_info: MaskInfo,
+}
+
+/// 把「元信息 + 二进制」打包成单个裸字节 IPC 响应体。
+///
+/// # 帧格式
+///
+/// ```text
+/// [0..4)      u32 LE = meta JSON 的字节长度 L
+/// [4..4+L)    meta 的 UTF-8 JSON
+/// [4+L..)     图片字节
+/// ```
+///
+/// # 为什么必须自己打包
+///
+/// Tauri v2 的 `IpcResponse` 只有 `Serialize` 与 `Response` 两个 impl，
+/// **没有元组的 impl**（v1 的 `impl_tuple!` 已在 v2 移除），所以
+/// `Result<(Response, RenderMeta), String>` 编译不过，报 E0599
+/// 「`async_kind` 的 trait bounds 未满足」。
+///
+/// 可选方案只有三个，本函数是唯一不违背模块设计前提的那个：
+/// - base64 编进 JSON：体积 +33%、多一次编解码，与本模块「裸字节、
+///   前端零拷贝构造 Blob」的前提直接冲突；
+/// - 拆成两次 IPC：多一次往返，且元信息与字节可能来自不同帧（seq 对不上）；
+/// - 单响应打包（本函数）：一次往返、体积不变。
+///
+/// 前端拆包见 `src/composables/useEditEngine.ts` 的 `unpackFrame`。
+/// 两端帧格式必须同步修改。
+pub fn pack_frame<M: Serialize>(meta: &M, payload: Vec<u8>) -> tauri::ipc::Response {
+    // 元信息是固定的小结构，序列化失败只可能是编码器 bug；
+    // 退化成空对象仍然返回图片字节，好过让整帧渲染白做。
+    let json = serde_json::to_vec(meta).unwrap_or_default();
+    let mut out = Vec::with_capacity(4 + json.len() + payload.len());
+    out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    out.extend_from_slice(&json);
+    out.extend_from_slice(&payload);
+    tauri::ipc::Response::new(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +245,7 @@ pub async fn edit_open(
     // 解码与 sidecar 读取都在阻塞线程池里做（会占用几百毫秒）。
     // 会话插入留在 async 侧 —— SessionStore 自身不是 Clone，
     // 无法带进 'static 的阻塞任务；它内部是 Mutex，插入本身是微秒级操作。
-    let decoded: Result<(source::SourceImage, AdjustmentRecipe, bool, u64), String> =
+    let decoded: Result<DecodedOpen, String> =
         tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
             let t0 = std::time::Instant::now();
             let img = source::load(&source_path, target).map_err(|e| e.to_string())?;
@@ -149,7 +254,7 @@ pub async fn edit_open(
             // 已有 sidecar 就带出来。sidecar 损坏时不阻断打开：
             // 给空配方继续编辑，但**不覆盖原文件**，用户仍可另存。
             let has_recipe = store::exists(&source_path);
-            let recipe = match store::load(&source_path) {
+            let mut recipe = match store::load(&source_path) {
                 Ok(Some(r)) => r,
                 Ok(None) => AdjustmentRecipe::default(),
                 Err(e) => {
@@ -159,16 +264,48 @@ pub async fn edit_open(
                     AdjustmentRecipe::default()
                 }
             };
-            Ok((img, recipe, has_recipe, decode_ms))
+
+            // 蒙版同 sidecar：文件坏了就当没有（降级为整图调整），
+            // 但把 recipe.mask 里的事实纠正过来，避免 UI 显示「已启用」
+            // 而渲染按整图走 —— 那种不一致比丢一个蒙版更让人困惑。
+            let mask_image = match store::load_mask(&source_path) {
+                Ok(Some(m)) => m,
+                Ok(None) => MaskImage::empty(),
+                Err(e) => {
+                    crate::logger::log_warn(&format!("edit_open | 蒙版读取失败，已忽略：{e}"));
+                    MaskImage::empty()
+                }
+            };
+            let info = MaskInfo {
+                exists: !mask_image.is_empty(),
+                width: mask_image.width(),
+                height: mask_image.height(),
+            };
+            if recipe.mask.has_image != info.exists {
+                recipe.mask.has_image = info.exists;
+                if !info.exists {
+                    recipe.mask.enabled = false;
+                }
+            }
+
+            Ok(DecodedOpen {
+                img,
+                recipe,
+                has_recipe,
+                decode_ms,
+                mask_image,
+                mask_info: info,
+            })
         })
         .await
         .map_err(|e| format!("打开图片任务失败: {e}"))?;
 
-    let result = decoded.map(|(img, recipe, has_recipe, decode_ms)| {
-        let (pw, ph) = (img.decoded_width(), img.decoded_height());
-        let (ow, oh) = (img.original_width, img.original_height);
-        let subsampled = img.subsampled;
-        let session = EditSession::new(session_path.clone(), img, recipe.clone());
+    let result = decoded.map(|d| {
+        let (pw, ph) = (d.img.decoded_width(), d.img.decoded_height());
+        let (ow, oh) = (d.img.original_width, d.img.original_height);
+        let subsampled = d.img.subsampled;
+        let session = EditSession::new(session_path.clone(), d.img, d.recipe.clone());
+        session.set_mask(d.mask_image);
         let session_id = states.insert(session);
         OpenResult {
             session_id,
@@ -177,9 +314,10 @@ pub async fn edit_open(
             preview_width: pw,
             preview_height: ph,
             subsampled,
-            recipe,
-            has_recipe,
-            decode_ms,
+            recipe: d.recipe,
+            has_recipe: d.has_recipe,
+            decode_ms: d.decode_ms,
+            mask: d.mask_info,
         }
     });
 
@@ -225,7 +363,7 @@ pub async fn edit_close_all(states: State<'_, EditState>) -> Result<usize, Strin
 // 渲染
 // ---------------------------------------------------------------------------
 
-/// 渲染一帧并返回 JPEG 字节 + 元信息。
+/// 渲染一帧并返回 JPEG 字节 + 元信息（打包成单个裸字节体，见 `pack_frame`）。
 ///
 /// `draft = true` 用草稿档（长边 800），供拖动滑块过程中的实时预览；
 /// `false` 用正常档（长边 1600）。草稿档像素数只有 1/4，耗时随之降到
@@ -239,7 +377,7 @@ pub async fn edit_render(
     session_id: u64,
     recipe: AdjustmentRecipe,
     draft: Option<bool>,
-) -> Result<(tauri::ipc::Response, RenderMeta), String> {
+) -> Result<tauri::ipc::Response, String> {
     let t0 = std::time::Instant::now();
     let draft = draft.unwrap_or(false);
     let _t = crate::logger::log_call_start(
@@ -263,7 +401,7 @@ pub async fn edit_render(
 
     if meta.stale {
         crate::logger::log_call_end_with("edit_render", _t, "STALE | 被更新的请求取代");
-        return Ok((tauri::ipc::Response::new(jpeg), meta));
+        return Ok(pack_frame(&meta, jpeg));
     }
 
     let mut meta = meta;
@@ -276,7 +414,7 @@ pub async fn edit_render(
             meta.width, meta.height, meta.elapsed_ms
         ),
     );
-    Ok((tauri::ipc::Response::new(jpeg), meta))
+    Ok(pack_frame(&meta, jpeg))
 }
 
 /// 同步渲染（供 `edit_render` / `edit_histogram` / `edit_encode` 复用）。
@@ -312,17 +450,22 @@ fn render_frame(
         source::PREVIEW_LONG_EDGE
     };
 
+    // 蒙版在锁外取快照：解码结果跨帧复用，取一次即可；
+    // 放在锁内会让「等锁」的时间也算进渲染耗时。
+    let mask = session.mask_snapshot();
+
     let (sw, sh) = session.preview_size();
     let mut ws = session
         .workspace
         .lock()
         .map_err(|_| "工作区锁被占用（另一帧正在渲染）".to_string())?;
-    let (w, h, pixels) = render_u8_to_u8(
+    let (w, h, pixels) = render_u8_to_u8_masked(
         session.source.pixels.as_raw(),
         sw,
         sh,
         &r,
         max_long,
+        &mask,
         &mut ws,
     );
 
@@ -374,12 +517,13 @@ pub async fn edit_histogram(
         let mut r = recipe;
         r.sanitize();
         let (sw, sh) = s.preview_size();
+        let mask = s.mask_snapshot();
         let (w, h, pixels) = {
             let mut ws = s
                 .workspace
                 .lock()
                 .map_err(|_| "工作区锁被占用".to_string())?;
-            render_u8_to_u8(s.source.pixels.as_raw(), sw, sh, &r, 0, &mut ws)
+            render_u8_to_u8_masked(s.source.pixels.as_raw(), sw, sh, &r, 0, &mask, &mut ws)
         };
         let (rgb, luma, low, high) = histogram(&pixels, w, h);
         Ok(HistogramResult {
@@ -501,6 +645,99 @@ pub fn edit_recipe_from_text(text: String) -> Result<AdjustmentRecipe, String> {
 }
 
 // ---------------------------------------------------------------------------
+// 局部蒙版
+// ---------------------------------------------------------------------------
+
+/// 上传蒙版 PNG（覆盖既有蒙版）。
+///
+/// 前端把蒙版画在**预览分辨率**的离屏 canvas 上再导出为 PNG 上传，
+/// 这样蒙版文件不会随原图尺寸膨胀，导出时按需缩放（见 `mask.rs`）。
+///
+/// PNG 同时落盘到 sidecar —— 用户中途关掉应用再打开，蒙版还在。
+///
+/// # Errors
+/// 会话失效、PNG 解码失败、或写盘失败时返回错误。
+#[tauri::command]
+pub async fn edit_mask_set(
+    states: State<'_, EditState>,
+    session_id: u64,
+    png: Vec<u8>,
+) -> Result<MaskResult, String> {
+    let session = states
+        .get(session_id)
+        .ok_or_else(|| format!("编辑会话 {session_id} 已失效"))?;
+    let image = MaskImage::from_png(&png)?;
+    let path = store::save_mask(&session.source_path, &png).map_err(|e| e.to_string())?;
+    crate::logger::log_info(&format!(
+        "edit_mask_set | {}x{} | {}KB | {}",
+        image.width(),
+        image.height(),
+        png.len() / 1024,
+        path.display()
+    ));
+    session.set_mask(image.clone());
+    Ok(MaskResult {
+        width: image.width(),
+        height: image.height(),
+        coverage: image.coverage(),
+        path: path.to_string_lossy().into_owned(),
+    })
+}
+
+/// 清除蒙版（删文件 + 清会话缓存）。
+///
+/// 幂等：没有蒙版时也返回 `Ok`，前端可以无条件调用。
+///
+/// # Errors
+/// 会话失效或删文件失败时返回错误。
+#[tauri::command]
+pub async fn edit_mask_clear(states: State<'_, EditState>, session_id: u64) -> Result<(), String> {
+    let session = states
+        .get(session_id)
+        .ok_or_else(|| format!("编辑会话 {session_id} 已失效"))?;
+    store::remove_mask(&session.source_path).map_err(|e| e.to_string())?;
+    session.set_mask(MaskImage::empty());
+    crate::logger::log_info("edit_mask_clear | 蒙版已清除");
+    Ok(())
+}
+
+/// 取回当前蒙版的 PNG 字节（重新打开图片后恢复前端画布用）。
+///
+/// 用 `pack_frame` 打包（`[长度][JSON][PNG]`），而不是 JSON 里塞字节数组：
+/// 一张长边 1600 的灰度 PNG 约 2.5MB，转成 JSON 数字数组会膨胀到 10MB
+/// 且解析极慢。裸字节走 IPC 是 O(1) 的。
+///
+/// 没有蒙版时返回 `width=0` 的帧（而非报错）：「这张图还没蒙版」
+/// 是正常状态，不是异常。
+///
+/// # Errors
+/// 会话失效或读盘失败时返回错误。
+#[tauri::command]
+pub async fn edit_mask_get(
+    states: State<'_, EditState>,
+    session_id: u64,
+) -> Result<tauri::ipc::Response, String> {
+    let session = states
+        .get(session_id)
+        .ok_or_else(|| format!("编辑会话 {session_id} 已失效"))?;
+    let p = store::mask_path(&session.source_path);
+    if !p.is_file() {
+        return Ok(pack_frame(&MaskResult::empty(), Vec::new()));
+    }
+    let png = std::fs::read(&p).map_err(|e| format!("读取蒙版失败：{e}"))?;
+    let image = MaskImage::from_png(&png)?;
+    Ok(pack_frame(
+        &MaskResult {
+            width: image.width(),
+            height: image.height(),
+            coverage: image.coverage(),
+            path: p.to_string_lossy().into_owned(),
+        },
+        png,
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // 导出
 // ---------------------------------------------------------------------------
 
@@ -519,7 +756,7 @@ pub async fn edit_encode(
     format: Option<String>,
     quality: Option<u8>,
     max_long_edge: Option<u32>,
-) -> Result<(tauri::ipc::Response, u32, u32), String> {
+) -> Result<tauri::ipc::Response, String> {
     let _t = crate::logger::log_call_start("edit_encode", &format!("session={session_id}"));
     let session = states
         .get(session_id)
@@ -545,7 +782,13 @@ pub async fn edit_encode(
         _t,
         &format!("OK | {w}x{h} | {}KB | {fmt_for_log}", bytes.len() / 1024),
     );
-    Ok((tauri::ipc::Response::new(bytes), w, h))
+    Ok(pack_frame(
+        &EncodeMeta {
+            width: w,
+            height: h,
+        },
+        bytes,
+    ))
 }
 
 /// 全分辨率渲染 + 编码。
@@ -562,17 +805,19 @@ fn render_and_encode(
 ) -> Result<(Vec<u8>, u32, u32), String> {
     let full = source::load(&session.source_path, 0).map_err(|e| e.to_string())?;
     let (sw, sh) = (full.decoded_width(), full.decoded_height());
+    let mask = session.mask_snapshot();
 
     // 几何决定输出尺寸。先编译一次拿到尺寸，渲染管线内部会再编译一次
     // （因为锐化 σ 依赖输出短边）—— 两次编译各约 0.3ms，可接受。
-    let (ow, oh) = RenderPlan::compile(recipe, sw, sh, sw, sh).output_size(max_long_edge);
+    let (ow, oh) =
+        RenderPlan::compile(recipe, sw, sh, sw, sh, mask.clone()).output_size(max_long_edge);
     if ow == 0 || oh == 0 {
         return Err("导出尺寸计算失败".into());
     }
 
     let mut ws = Workspace::new();
     let (rw, rh, pixels) =
-        render_u8_to_u8(full.pixels.as_raw(), sw, sh, recipe, max_long_edge, &mut ws);
+        render_u8_to_u8_masked(full.pixels.as_raw(), sw, sh, recipe, max_long_edge, &mask, &mut ws);
 
     let bytes = match format {
         "png" => super::encode_png(&pixels, rw, rh)?,
@@ -596,7 +841,8 @@ pub async fn edit_output_size(
         .get(session_id)
         .ok_or_else(|| format!("编辑会话 {session_id} 已失效"))?;
     let (sw, sh) = session.preview_size();
-    Ok(RenderPlan::compile(&recipe, sw, sh, sw, sh).output_size(max_long_edge.unwrap_or(0)))
+    Ok(RenderPlan::compile(&recipe, sw, sh, sw, sh, MaskImage::empty())
+        .output_size(max_long_edge.unwrap_or(0)))
 }
 
 /// 把字节写到指定路径（前端保存对话框给出的绝对路径）。
@@ -645,11 +891,18 @@ mod tests {
             recipe: AdjustmentRecipe::default(),
             has_recipe: false,
             decode_ms: 123,
+            mask: MaskInfo {
+                exists: true,
+                width: 1600,
+                height: 1067,
+            },
         };
         let j = serde_json::to_value(&r).unwrap();
         assert_eq!(j["previewWidth"], 1600);
         assert_eq!(j["hasRecipe"], false);
         assert_eq!(j["decodeMs"], 123);
+        assert_eq!(j["mask"]["exists"], true);
+        assert_eq!(j["mask"]["width"], 1600);
         assert!(j.get("preview_width").is_none(), "字段名应为 camelCase");
     }
 
@@ -680,6 +933,69 @@ mod tests {
         let j = serde_json::to_value(&m).unwrap();
         assert_eq!(j["stale"], true);
         assert_eq!(j["elapsedMs"], 0);
+    }
+
+    /// 拆包侧的等价实现。Rust 单测够不到前端，这里保证帧格式的
+    /// 「头部 → JSON → 载荷」三段布局与 `unpackFrame` 的解析逻辑一致。
+    fn unpack_frame(buf: &[u8]) -> (serde_json::Value, Vec<u8>) {
+        let meta_len = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
+        let meta: serde_json::Value =
+            serde_json::from_slice(&buf[4..4 + meta_len]).expect("头部应是合法 JSON");
+        (meta, buf[4 + meta_len..].to_vec())
+    }
+
+    /// 帧格式的回归护栏：长度前缀 + JSON + 载荷，顺序与边界都不能错。
+    ///
+    /// 这条测试守着 BUG 的根因：真 Tauri v2 的 `IpcResponse` 没有元组 impl，
+    /// 「元信息 + 字节」只能靠本模块自定的帧格式一起传。前端
+    /// `unpackFrame` 依赖同一约定，任一侧改动都必须让本测试仍通过。
+    #[test]
+    fn pack_frame_roundtrips_meta_and_payload() {
+        let meta = RenderMeta {
+            width: 1600,
+            height: 1067,
+            elapsed_ms: 42,
+            stale: false,
+        };
+        let payload = vec![0xFFu8, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+        let r = pack_frame(&meta, payload.clone());
+        let (back, bytes) = unpack_frame(&r.body);
+
+        assert_eq!(back["width"], 1600);
+        assert_eq!(back["height"], 1067);
+        assert_eq!(back["elapsedMs"], 42);
+        assert_eq!(back["stale"], false);
+        assert_eq!(bytes, payload, "载荷应逐字节还原");
+    }
+
+    /// 载荷里出现看起来像头部的东西也不能被误切 ——
+    /// 长度前缀在前，解析只认前 4 字节，载荷内容不应影响切分。
+    #[test]
+    fn pack_frame_survives_payload_that_looks_like_a_header() {
+        let meta = EncodeMeta { width: 4, height: 4 };
+        // 前 4 字节故意做成一个「看起来很大」的长度前缀
+        let payload = vec![0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x02];
+        let r = pack_frame(&meta, payload.clone());
+        let (back, bytes) = unpack_frame(&r.body);
+
+        assert_eq!(back["width"], 4);
+        assert_eq!(bytes, payload, "载荷含伪头部时仍应完整还原");
+    }
+
+    /// 空载荷（stale 帧走的就是这条路）不能 panic，长度也要对。
+    #[test]
+    fn pack_frame_handles_empty_payload() {
+        let meta = RenderMeta {
+            width: 0,
+            height: 0,
+            elapsed_ms: 0,
+            stale: true,
+        };
+        let r = pack_frame(&meta, Vec::new());
+        let (back, bytes) = unpack_frame(&r.body);
+
+        assert_eq!(back["stale"], true);
+        assert!(bytes.is_empty(), "stale 帧载荷应为空");
     }
 
     #[test]
@@ -733,5 +1049,64 @@ mod tests {
         });
         assert_eq!(j["sessions"], 0);
         assert_eq!(j["maxSessions"], 8);
+    }
+
+    /// 端到端：`edit_render` 产出的帧，前端拆包后必须是一张**可解码**的 JPEG，
+    /// 且 meta 里的尺寸与真实像素一致。
+    ///
+    /// 这条比 `pack_frame_roundtrips_meta_and_payload` 更强：它走真实的
+    /// 解码 → 渲染 → 编码链路，因此能同时守住帧格式与渲染产物。
+    /// 缺了它，「帧头对但里面是坏字节」这类问题只能等用户在编辑器里看到
+    /// 一张裂图才发现。
+    #[test]
+    fn edit_render_frame_unpacks_to_decodable_jpeg() {
+        let (w, h) = (64u32, 48u32);
+        let src = (0..(w * h * 3) as usize)
+            .map(|i| ((i * 7 + (i / 3) * 13) % 251) as u8)
+            .collect::<Vec<u8>>();
+        let path = write_temp_jpeg(&src, w, h);
+
+        let decoded = source::load(&path, 0).expect("测试图应能解码");
+        let session = EditSession::new(
+            path.clone(),
+            decoded,
+            AdjustmentRecipe::default(),
+        );
+        let mut r = AdjustmentRecipe::default();
+        r.basic.exposure = 0.4;
+
+        let (jpeg, meta) = render_frame(&session, &r, false, None).expect("渲染不应失败");
+        assert!(!meta.stale);
+        // 对的是「解码后的预览平面尺寸」而非磁盘上的原图尺寸：
+        // JPEG 走 DCT 降采样解码，小图会被降到 1/8 档（见 source.rs）。
+        let (pw, ph) = session.preview_size();
+        assert_eq!((meta.width, meta.height), (pw, ph), "meta 尺寸应等于预览平面尺寸");
+
+        let framed = pack_frame(&meta, jpeg);
+        let (back, bytes) = unpack_frame(&framed.body);
+
+        assert_eq!(back["width"], meta.width);
+        assert_eq!(back["height"], meta.height);
+        assert_eq!(back["elapsedMs"], 0, "meta 未过 elapsed_ms 覆写时为 0");
+        assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "拆出的字节应以 JPEG SOI 开头");
+        let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg)
+            .expect("拆包后的字节必须是可解码的 JPEG");
+        assert_eq!(
+            (img.width(), img.height()),
+            (pw, ph),
+            "解出的像素尺寸应与 meta 一致"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 把 RGB 写成临时 JPEG，供上面的端到端测试当输入。
+    fn write_temp_jpeg(rgb: &[u8], w: u32, h: u32) -> PathBuf {
+        let dir = std::env::temp_dir().join("edit-verify-frame");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("in_{w}x{h}_{}.jpg", rgb.len()));
+        let bytes = super::super::encode_jpeg(rgb, w, h, 92).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        path
     }
 }

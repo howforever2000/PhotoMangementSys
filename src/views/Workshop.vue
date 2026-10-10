@@ -34,33 +34,37 @@ const badgeStyle = computed(() => ({
   border: `1px solid ${theme.cardBorder}`,
 }));
 
-/** 工坊小组件清单 */
+/**
+ * 工坊小组件清单。
+ *
+ * FEAT-099 融合后的形态：**一个编辑器页面**，右侧并列两个组件 ——
+ * 「基准调色」（Rust 进程内管线）与「传统图像处理」（Python 微服务算子）。
+ *
+ * 两者不是二选一，而是**叠加**：调色出底图，算子按顺序作用在底图上，
+ * 每一步都记进配方（`recipe.ops`），因此重开、导出都能复现同一串处理。
+ *
+ * 后端仍是分离的：调色要逐帧实时预览（微服务往返做不到），算子参数少、
+ * 不追求逐帧（OpenCV 的边界处理不必重写）。
+ */
 const widgets = [
   {
-    id: "image-process",
-    title: "传统图像处理",
-    desc: "区域直方图均衡化（全局均衡 / CLAHE）与高斯·方框·中值·双边四种模糊；可框选或画蒙版只处理局部，支持羽化与强度调节，亮度通道处理不偏色",
-    icon: "🌗",
-    ready: true,
-  },
-  {
-    id: "tone",
-    title: "基准调色",
-    desc: "Lightroom 式基本面：曝光 / 对比度 / 高光 / 阴影 / 白色 / 黑色 / 色温 / 色调 / 曲线 / 裁剪拉直 / 饱和度 / 锐化。非破坏编辑，方案随照片存为 sidecar，可导入导出",
+    id: "studio",
+    title: "照片编辑",
+    desc: "基准调色（曝光 / 对比度 / 高光阴影 / 色温色调 / 曲线 / 裁剪拉直 / 饱和度 / 锐化）与图像处理算子（区域直方图均衡化 / 高斯·方框·中值·双边模糊）叠加使用。每一步都记录在方案里，随照片存为 sidecar，可撤销或删掉某一步",
     icon: "🎚️",
     ready: true,
   },
   {
     id: "placeholder",
     title: "更多小组件",
-    desc: "局部调色（画笔遮罩）/ 贴纸文字……（规划中，逐步上线）",
+    desc: "贴纸文字 / 批量处理……（规划中，逐步上线）",
     icon: "🧩",
     ready: false,
   },
 ] as const;
 
-/** 当前打开的小组件 id（null = 仅卡片列表；带照片进来时直接进图像处理） */
-const activeWidget = ref<string | null>(initialPhoto ? "tone" : null);
+/** 当前打开的小组件 id（null = 仅卡片列表；带照片进来时直接进编辑器） */
+const activeWidget = ref<string | null>(initialPhoto ? "studio" : null);
 
 function openWidget(w: (typeof widgets)[number]) {
   if (!w.ready) return;
@@ -91,7 +95,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="workshop-page" :class="{ 'wide-mode': activeWidget === 'tone' }">
+  <div class="workshop-page" :class="{ 'wide-mode': activeWidget === 'studio' }">
     <div class="workshop-content">
       <header class="workshop-header">
         <button class="back-btn" type="button" @click="goBack">← 返回</button>
@@ -123,24 +127,16 @@ onMounted(() => {
         </article>
       </main>
 
-      <!-- 传统图像处理小组件（FEAT-066）；FEAT-065：支持带图直达 -->
-      <template v-else-if="activeWidget === 'image-process'">
-        <WorkshopImageProcess :initial-path="initialPhoto" />
-      </template>
-
-      <!-- 基准调色（FEAT-099）：纯 Rust 引擎，无微服务依赖 -->
-      <template v-else-if="activeWidget === 'tone'">
-        <PhotoEditor :initial-path="initialPhoto" />
-      </template>
+      <!-- 照片编辑器：调色 + 算子叠加同处一屏，共享一个图片会话 -->
+      <PhotoEditor v-if="activeWidget === 'studio'" :initial-path="initialPhoto" />
     </div>
   </div>
 </template>
 
 <script lang="ts">
 // 工坊小组件按需引入（放在独立 script 块，保持 setup 块聚焦布局逻辑）
-import WorkshopImageProcess from "../components/workshop/WorkshopImageProcess.vue";
 import PhotoEditor from "../components/workshop/editor/PhotoEditor.vue";
-export default { components: { WorkshopImageProcess, PhotoEditor } };
+export default { components: { PhotoEditor } };
 </script>
 
 <style scoped>
