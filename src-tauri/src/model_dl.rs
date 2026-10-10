@@ -58,6 +58,16 @@ struct DlSpec {
 }
 
 impl DlSpec {
+    /// 官方地址去掉 `{path}` 后剩下的前缀（即 `.../resolve/main/`）。
+    ///
+    /// **仅供测试**：只有 `clip_specs_are_self_consistent` 会拿它校验
+    /// `official() == base_url + repo_file`（BUG-2026-0921-001 回归防线）；
+    /// 生产路径一律走 `official()` / `mirror()`。
+    ///
+    /// 用 `allow(dead_code)` 而非 `#[cfg(test)]`：`kind` 字段目前只被本方法读取，
+    /// 一旦按测试裁剪，`kind` 立刻变成"从不读取"的新告警。保留编译让 `kind`
+    /// 仍有读取点，一次消掉两个告警而不引入第三个。
+    #[allow(dead_code)]
     fn base_url(&self) -> String {
         // hf-mirror 已是国内加速镜像（huggingface.co 直连超时），不再二次套 ghfast
         // FEAT-061：不再硬编码单一 hf-mirror；取候选源模板的第一个前缀
@@ -552,7 +562,11 @@ fn fill_source(tpl: &str, repo: &str, path: &str) -> String {
     tpl.replace("{repo}", repo).replace("{path}", path)
 }
 
-/// 取模板前缀（用于 base_url：去掉 {path} 尾巴，保留 resolve/main/ 前缀）
+/// 取模板前缀（供 `DlSpec::base_url`：去掉 {path} 尾巴，保留 resolve/main/）
+///
+/// 与 `base_url` 同为测试专用（生产只用 `official()` / `mirror()`），
+/// 同样用 `allow(dead_code)` 而非 `cfg(test)`，理由见 `base_url` 注释。
+#[allow(dead_code)]
 fn source_prefix(repo: &str) -> String {
     let tpls = source_templates();
     fill_source(&tpls[0], repo, "")

@@ -120,6 +120,11 @@ fn pid_alive(pid: u32) -> bool {
 /// `QQ.exe                       20240 Console                   13    154,320 K`
 /// 无匹配时 Windows 打印 `信息: 没有运行的任务匹配指定标准。`（英文系统为 `INFO: …`），
 /// 这类提示行不是数据行，必须排除——否则会把「进程不存在」误读成映像名。
+///
+/// 仅 Windows 使用（`pid_image_name` 的 `cfg(windows)` 支路 + 同文件单测）。
+/// 非 Windows 编译时若不加此门控，会因无调用点而报 `never used` —— 那只是
+/// 平台差异，函数本身是活的，故用 cfg 而不是 allow(dead_code) 掩盖。
+#[cfg(any(target_os = "windows", test))]
 fn parse_tasklist_image(out: &str) -> Option<String> {
     for line in out.lines() {
         let line = line.trim();
