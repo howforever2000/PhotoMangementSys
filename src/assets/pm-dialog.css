@@ -317,6 +317,29 @@ body.theme-dark .pm-dialog input:disabled {
   background-position: center;
   height: 84px;
 }
+/* 预设组（C10）：标题用弱化文字 + 顶部细分隔线，**不加背景块** ——
+   弹窗本身已是玻璃面板，再套一层有底色的分组容器会变成「卡片套卡片」，
+   在素化目标下这是纯层级噪点。分隔线 + 小字标题足够分组。 */
+.pm-preset-group + .pm-preset-group {
+  margin-top: 18px;
+}
+.pm-preset-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-top: 12px;
+  margin-bottom: 10px;
+  border-top: 1px solid var(--pm-soft-border);
+}
+.pm-preset-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--pm-text);
+}
+.pm-preset-group-note {
+  font-size: 11px;
+  color: var(--pm-hint);
+}
 .pm-presets {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

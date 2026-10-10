@@ -1,4 +1,21 @@
 <script setup lang="ts">
+/**
+ * 通用右键上下文菜单 —— 替换原生 contextmenu
+ *
+ * 关闭语义对齐 Windows 资源管理器（BUG-2026-1007-001 的修复要点）：
+ * | 操作 | 行为 |
+ * |------|------|
+ * | 左键点菜单外任意处 | 关闭 |
+ * | **右键点菜单外任意处** | **关闭旧菜单，并在新位置弹出新菜单**（Windows 原生行为） |
+ * | 点菜单项 | 执行动作后关闭（动作抛异常也必须关闭） |
+ * | 点菜单自身空白处 | 关闭 |
+ * | <kbd>Esc</kbd> | 关闭 |
+ *
+ * 修复前的两个具体缺陷：
+ * 1. 全屏遮罩写 `@click.stop` → 点外面永远到不了关闭分支，菜单「关不掉」；
+ * 2. 遮罩写 `@contextmenu.prevent.stop` → 右键别处既不关闭、又被 preventDefault
+ *    吃掉浏览器原生菜单，导致「右键打开新菜单」这个动作彻底做不到（菜单锁死）。
+ */
 import { onBeforeUnmount, onMounted, ref } from "vue";
 
 export interface ContextMenuItem {
@@ -28,6 +45,7 @@ const emit = defineEmits<{
 }>();
 
 const menuRef = ref<HTMLElement | null>(null);
+const overlayRef = ref<HTMLElement | null>(null);
 
 onMounted(() => {
   // 边界修正：菜单超出视口时调整位置
@@ -41,44 +59,93 @@ onMounted(() => {
       menu.style.top = `${props.y - rect.height}px`;
     }
   }
-  // 点击外部关闭
-  document.addEventListener("click", onDocClick);
-  document.addEventListener("contextmenu", onDocRightClick);
+  // Esc 关闭：document 级监听（div 不获焦无法捕获）
+  document.addEventListener("keydown", onKey);
 });
 
 onBeforeUnmount(() => {
-  document.removeEventListener("click", onDocClick);
-  document.removeEventListener("contextmenu", onDocRightClick);
+  document.removeEventListener("keydown", onKey);
 });
 
-function onDocClick() {
+function onKey(e: KeyboardEvent) {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();
+    emit("close");
+  }
+}
+
+/** 左键/右键点到菜单外：统一走关闭（菜单内子元素已 @click.stop，不会冒泡到这里） */
+function onOverlayPointerDown(e: PointerEvent) {
+  // 只处理主键与右键；中键等保持浏览器默认
+  if (e.button !== 0 && e.button !== 2) return;
   emit("close");
 }
 
-function onDocRightClick(e: MouseEvent) {
-  // 如果右键点击在菜单内，不关闭
-  if (menuRef.value?.contains(e.target as Node)) return;
+/**
+ * 右键点到菜单外：关闭旧菜单 + 在新位置重开（Windows 语义）
+ *
+ * 遮罩是 fixed 全屏，会挡住 `elementFromPoint`，所以先临时关掉它的
+ * `pointer-events` 拿到真实目标元素，再合成一个 contextmenu 事件投递过去 ——
+ * 由目标元素自己的 handler 决定弹出什么菜单（画廊的格子 / 相册卡片 / 缩略图…）。
+ */
+function onOverlayContextMenu(e: MouseEvent) {
+  e.preventDefault();
+  const x = e.clientX;
+  const y = e.clientY;
   emit("close");
+  // 等 Vue 把菜单卸载后再取，否则 elementFromPoint 仍命中自己
+  requestAnimationFrame(() => {
+    const overlay = overlayRef.value;
+    const prev = overlay?.style.pointerEvents ?? "";
+    if (overlay) overlay.style.pointerEvents = "none";
+    const target = document.elementFromPoint(x, y);
+    if (overlay) overlay.style.pointerEvents = prev;
+    if (!target) return;
+    target.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        clientX: x,
+        clientY: y,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  });
 }
 
+/**
+ * 菜单项点击：先执行动作，再关闭
+ *
+ * 用 try/finally —— 修复前若 `onClick` 抛异常，`emit("close")` 会被跳过，
+ * 菜单永久卡在屏幕上且无法用任何方式关掉（点哪都没反应）。
+ */
 function onItemClick(item: ContextMenuItem) {
   if (item.disabled) return;
-  item.onClick();
-  emit("close");
+  try {
+    item.onClick();
+  } finally {
+    emit("close");
+  }
 }
 </script>
 
 <template>
   <Teleport to="body">
+    <!--
+      遮罩：透明全屏，只负责「点外面关闭 / 右键别处重开」的命中判定。
+      注意不能再加 .stop —— 那会让 document 层的关闭分支永远收不到事件。
+    -->
     <div
+      ref="overlayRef"
       class="ctx-overlay"
-      @click.stop
-      @contextmenu.prevent.stop
+      @pointerdown="onOverlayPointerDown"
+      @contextmenu="onOverlayContextMenu"
     >
       <div
         ref="menuRef"
         class="ctx-menu"
         :style="{ left: `${x}px`, top: `${y}px` }"
+        @pointerdown.stop
         @click.stop
       >
         <template v-for="(item, i) in items" :key="i">

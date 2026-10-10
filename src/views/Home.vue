@@ -5,11 +5,16 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAuthStore } from "../stores/auth";
 import { useThemeStore } from "../stores/theme";
+import { useAlbumStore } from "../stores/album";
+import { useVaultStore } from "../stores/vault";
 import ThemeDialog from "../components/ThemeDialog.vue";
 
 const router = useRouter();
 const auth = useAuthStore();
 const theme = useThemeStore();
+const albumStore = useAlbumStore();
+/** FEAT-095：隐藏相册解锁态（会话内存，不落 localStorage） */
+const vault = useVaultStore();
 
 /**
  * 弹窗面板主题样式（--pm-* 变量包）：由 theme store 统一下发（FEAT-086 上收），
@@ -29,12 +34,14 @@ const badgeStyle = computed(() => ({
   border: `1px solid ${theme.cardBorder}`,
 }));
 
-/** 退出登录并回到登录页 */
+/** 退出登录并回到登录页（同时清空隐藏相册解锁态，见 vault.reset 注释） */
 async function handleLogout() {
   try {
     await auth.logout();
   } catch (e) {
     console.error("退出登录失败:", e);
+  } finally {
+    vault.reset();
   }
   router.replace("/login");
 }
@@ -133,7 +140,45 @@ function openProfile() {
   profileForm.current_password = "";
   profileError.value = "";
   profileSuccess.value = "";
+  vaultPassword.value = "";
+  vaultError.value = "";
   profileOpen.value = true;
+}
+
+/* ---------------- FEAT-095：解锁隐藏相册（密码 = 登录密码） ---------------- */
+
+/** 隐藏相册解锁输入框（与「当前密码」独立，避免误把它当成修改密码的凭证） */
+const vaultPassword = ref("");
+const vaultError = ref("");
+/** 隐藏相册里有照片时提示「解锁后可见 N 张」，未解锁时不暴露具体张数以外的信息 */
+const hiddenPhotoCount = computed(() => {
+  const hidden = albumStore.rawAlbums.find((a) => a.kind === "hidden");
+  return hidden?.photo_count ?? 0;
+});
+
+/** 输入登录密码解锁隐藏相册；解锁成功后列表立即可见（决策 D3：本次会话一直可见） */
+async function unlockHiddenAlbum() {
+  vaultError.value = "";
+  if (!vaultPassword.value) return (vaultError.value = "请输入登录密码");
+  try {
+    const ok = await albumStore.unlockHiddenAlbum(vaultPassword.value);
+    if (ok) {
+      vaultPassword.value = "";
+      vaultError.value = "";
+    } else {
+      vaultError.value = "密码不正确，请重新输入";
+    }
+  } catch (e) {
+    vaultError.value = String(e);
+  }
+}
+
+/** 主动上锁（隐藏相册重新隐藏） */
+function lockHiddenAlbum() {
+  vault.lock();
+  vaultPassword.value = "";
+  vaultError.value = "";
+  void albumStore.fetchAlbums();
 }
 
 async function submitProfile() {
@@ -353,6 +398,35 @@ onBeforeUnmount(() => {
               <label>当前密码</label>
               <input v-model="profileForm.current_password" type="password" placeholder="验证身份后才能修改" />
             </div>
+            <!--
+              FEAT-095：隐藏相册解锁
+              与「当前密码」刻意分成两块 —— 前者解锁只读视图，后者是修改资料的凭证，
+              混在一处会让人以为解锁也需要改资料。
+            -->
+            <div class="pm-field pm-field-vault">
+              <label>🔒 隐藏相册</label>
+              <div v-if="vault.hiddenUnlocked" class="vault-unlocked">
+                <span>已解锁，本次会话内「隐藏」相册在相册管理中可见。</span>
+                <button class="pm-btn" type="button" @click="lockHiddenAlbum">重新隐藏</button>
+              </div>
+              <div v-else class="vault-locked">
+                <span class="vault-hint">
+                  相册管理中存在一个密码保护的「隐藏」相册<template v-if="hiddenPhotoCount > 0">（共 {{ hiddenPhotoCount }} 张）</template>。输入登录密码解锁后即可查看。
+                </span>
+                <div class="vault-row">
+                  <input
+                    v-model="vaultPassword"
+                    type="password"
+                    placeholder="输入登录密码"
+                    @keydown.enter.prevent="unlockHiddenAlbum"
+                  />
+                  <button class="pm-btn pm-btn-primary" type="button" :disabled="vault.unlocking" @click="unlockHiddenAlbum">
+                    {{ vault.unlocking ? "校验中…" : "解锁" }}
+                  </button>
+                </div>
+              </div>
+              <p v-if="vaultError" class="pm-error">{{ vaultError }}</p>
+            </div>
             <p v-if="profileError" class="pm-error">{{ profileError }}</p>
             <p v-if="profileSuccess" class="pm-ok">{{ profileSuccess }}</p>
             <div class="pm-actions">
@@ -457,6 +531,36 @@ onBeforeUnmount(() => {
   object-fit: cover;
   display: block;
 }
+/* FEAT-095：隐藏相册解锁区 */
+.pm-field-vault {
+  border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  padding-top: 12px;
+}
+.vault-hint {
+  display: block;
+  font-size: 12px;
+  opacity: 0.72;
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+.vault-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.vault-row input {
+  flex: 1;
+  min-width: 0;
+}
+.vault-unlocked {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
 .avatar-edit {
   display: flex;
   align-items: center;
@@ -600,7 +704,10 @@ onBeforeUnmount(() => {
 
 .module-card:hover {
   box-shadow: var(--card-shadow);
-  border-color: rgba(140, 180, 255, 0.45);
+  /* 素化 C8：原来写死蓝描边 rgba(140,180,255,.45) —— 在粉绿背景上是**第三套色相**
+     （金强调 + 粉/绿背景 + 蓝描边）。改用中性描边 + 一点强调色，
+     悬停态的"被选中"感交给阴影与位移承担，不靠描边换色。 */
+  border-color: color-mix(in srgb, var(--color-primary) 38%, var(--color-border));
 }
 
 .module-ready:hover {
@@ -619,7 +726,12 @@ onBeforeUnmount(() => {
 .module-icon {
   font-size: 34px;
   flex-shrink: 0;
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.4));
+  /* C11：emoji 保留（用户决定），但把四个高饱和色块统一降浓。
+     📁黄 / 🔍蓝红 / 🎨彩虹 / 🧠粉 —— 四个色相是整屏最跳的元素，
+     saturate(.72) + 一点点提亮让它们退回「素色卡面上的图标」，
+     而不是「贴在卡面上的贴纸」。比换成 SVG 更划算：不引依赖、不改模板、
+     也不必重画四枚图标（重画还要保证三端一致，而 emoji 反而三端都"认识"）。 */
+  filter: saturate(0.72) brightness(1.04) drop-shadow(0 2px 6px rgba(0, 0, 0, 0.4));
 }
 
 .module-body {

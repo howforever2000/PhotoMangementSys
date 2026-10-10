@@ -30,6 +30,7 @@ mod model_dl;
 mod photo_info;
 mod photo_scan;
 mod persons;
+mod photo_mark;
 mod scan_perf;
 mod scan_timing;
 mod session;
@@ -85,6 +86,7 @@ use auth::commands::{
     register,
     reset_password,
     update_profile,
+    verify_current_password,
 };
 use avatar::commands::{
     clear_user_avatar,
@@ -121,6 +123,7 @@ use persons::commands::{
     rename_person,
 };
 use photo_info::commands::{get_photo_info};
+use photo_mark::{get_photo_mark_states, list_marked_photos, set_photo_marks};
 use photo_scan::commands::{scan_album_photos, scan_album_photos_local_place, scan_album_photos_with_place};
 use photos::{
     clear_recently_deleted,
@@ -409,6 +412,11 @@ pub fn run() {
             clear_recently_deleted,
             set_photo_rating,
             get_photo_ratings,
+            // FEAT-095：照片归档 / 隐藏标记（虚拟相册数据源）
+            set_photo_marks,
+            list_marked_photos,
+            get_photo_mark_states,
+            verify_current_password,
             move_photos_to_album,
             classify_album,
             list_persons,
@@ -427,6 +435,9 @@ pub fn run() {
             content::commands::read_album_content,
             content::commands::search_photo_content,
             content::commands::ensure_photo_scanned,
+            content::commands::get_photo_content_by_path,
+            // FEAT-096：单张 EXIF 后台补全（纯本地 IO，不依赖 AI 服务）
+            content::commands::backfill_photo_exif,
             content::commands::search_photo_content_with_filters,
             content::commands::list_timeline,
             content::commands::list_content_categories,

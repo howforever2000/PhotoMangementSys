@@ -156,6 +156,11 @@ pub struct AlbumContentRow {
     pub shutter_speed: Option<String>,
     pub focal_length: Option<String>,
     pub shoot_time: Option<String>,
+    /// FEAT-095：反查地名（省 / 市级）；无 GPS 或未命中为 None
+    pub location: Option<String>,
+    /// FEAT-095：GPS 十进制度（信息页「地点」可据此给地图链接）
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
     // EXIF 数值版（供前端范围展示）
     pub iso_num: Option<u32>,
     pub focal_num: Option<f64>,
@@ -173,6 +178,55 @@ pub struct AlbumContentRow {
     pub top3_json: Option<String>,
     pub person_ids: Vec<String>,
     pub person_count: i64,
+}
+
+/// `AlbumContentRow` 读取统一列清单
+///
+/// `read_album_content` / `get_content_by_path` / `search_photo_content_with_filters` /
+/// `read_content_by_paths`（FEAT-095 归档 / 隐藏相册）共用，列序与 `map_album_content_row` 严格对应。
+const ALBUM_CONTENT_COLS: &str = "p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
+                p.iso, p.aperture, p.shutter_speed, p.focal_length, p.shoot_time,
+                p.location, p.lat, p.lon,
+                p.iso_num, p.focal_num, p.aperture_num, p.shutter_num,
+                p.tone_type, p.avg_luma,
+                p.content, p.category, p.sub_category, p.label, p.confidence,
+                p.top3_json, p.person_ids, p.person_count";
+
+/// `AlbumContentRow` 统一行映射（列序与 `ALBUM_CONTENT_COLS` 严格对应）
+fn map_album_content_row(r: &rusqlite::Row) -> rusqlite::Result<AlbumContentRow> {
+    Ok(AlbumContentRow {
+        id: r.get(0)?,
+        path: r.get(1)?,
+        parent_dir: r.get(2)?,
+        album_id: r.get(3)?,
+        album_name: r.get(4)?,
+        album_path: r.get(5)?,
+        iso: r.get(6)?,
+        aperture: r.get(7)?,
+        shutter_speed: r.get(8)?,
+        focal_length: r.get(9)?,
+        shoot_time: r.get(10)?,
+        location: r.get(11)?,
+        lat: r.get(12)?,
+        lon: r.get(13)?,
+        iso_num: r.get(14)?,
+        focal_num: r.get(15)?,
+        aperture_num: r.get(16)?,
+        shutter_num: r.get(17)?,
+        tone_type: r.get(18)?,
+        avg_luma: r.get(19)?,
+        content: r.get::<_, Option<String>>(20)?.unwrap_or_default(),
+        category: r.get(21)?,
+        sub_category: r.get(22)?,
+        label: r.get(23)?,
+        confidence: r.get(24)?,
+        top3_json: r.get(25)?,
+        person_ids: r
+            .get::<_, Option<String>>(26)?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
+        person_count: r.get(27)?,
+    })
 }
 
 /// FEAT-067：描述向量的原始素材（一次读出全部参与拼接的字段）
@@ -925,58 +979,66 @@ impl Database {
         }
     }
 
+    /// 按路径查单张照片的扫描记录（FEAT-095：信息页「拍摄时间 / 地点」兜底数据源）
     pub fn get_photo_content_by_path(
         &self,
         path: &str,
         user_id: i64,
     ) -> Result<Option<AlbumContentRow>, DbError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
-                    p.iso, p.aperture, p.shutter_speed, p.focal_length, p.shoot_time,
-                    p.iso_num, p.focal_num, p.aperture_num, p.shutter_num,
-                    p.tone_type, p.avg_luma,
-                    p.content, p.category, p.sub_category, p.label, p.confidence,
-                    p.top3_json, p.person_ids, p.person_count
-             FROM photo_content_scan p
+        let sql = format!(
+            "SELECT {} FROM photo_content_scan p
              LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
              WHERE p.user_id = ?1 AND p.path = ?2
              LIMIT 1",
-        )?;
-        let mut rows = stmt.query_map(params![user_id, path], |r| {
-            Ok(AlbumContentRow {
-                id: r.get(0)?,
-                path: r.get(1)?,
-                parent_dir: r.get(2)?,
-                album_id: r.get(3)?,
-                album_name: r.get(4)?,
-                album_path: r.get(5)?,
-                iso: r.get(6)?,
-                aperture: r.get(7)?,
-                shutter_speed: r.get(8)?,
-                focal_length: r.get(9)?,
-                shoot_time: r.get(10)?,
-                iso_num: r.get(11)?,
-                focal_num: r.get(12)?,
-                aperture_num: r.get(13)?,
-                shutter_num: r.get(14)?,
-                tone_type: r.get(15)?,
-                avg_luma: r.get(16)?,
-                content: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
-                category: r.get(18)?,
-                sub_category: r.get(19)?,
-                label: r.get(20)?,
-                confidence: r.get(21)?,
-                top3_json: r.get(22)?,
-                person_ids: r.get::<_, Option<String>>(23)?
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or_default(),
-                person_count: r.get(24)?,
-            })
-        })?;
+            ALBUM_CONTENT_COLS
+        );
+        let mut stmt = self.conn.prepare(&sql).map_err(DbError::Sqlite)?;
+        let mut rows = stmt
+            .query_map(params![user_id, path], map_album_content_row)
+            .map_err(DbError::Sqlite)?;
         match rows.next() {
             Some(row) => Ok(Some(row.map_err(DbError::Sqlite)?)),
             None => Ok(None),
         }
+    }
+
+    /// FEAT-095：按一批路径读扫描记录（归档 / 隐藏虚拟相册的数据源）
+    ///
+    /// 归档 / 隐藏相册里的照片 `album_id` 仍指向原相册，因此不能走
+    /// `read_album_content` 的 `WHERE album_id = ?`。这里改为按 `path IN (...)` 读，
+    /// 分批（每批 500）规避 SQLite 变量上限 999。
+    pub fn read_content_by_paths(
+        &self,
+        user_id: i64,
+        paths: &[String],
+    ) -> Result<Vec<AlbumContentRow>, DbError> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = format!(
+            "SELECT {} FROM photo_content_scan p
+             LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
+             WHERE p.user_id = ? AND p.path IN ({})",
+            ALBUM_CONTENT_COLS,
+            vec!["?"; 500].join(",")
+        );
+        let mut out: Vec<AlbumContentRow> = Vec::with_capacity(paths.len());
+        for chunk in paths.chunks(500) {
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(chunk.len() + 1);
+            params.push(Box::new(user_id));
+            for p in chunk {
+                params.push(Box::new(p.clone()));
+            }
+            let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+            let mut stmt = self.conn.prepare(&sql).map_err(DbError::Sqlite)?;
+            let rows = stmt
+                .query_map(refs.as_slice(), map_album_content_row)
+                .map_err(DbError::Sqlite)?;
+            for row in rows {
+                out.push(row.map_err(DbError::Sqlite)?);
+            }
+        }
+        Ok(out)
     }
 
     // ---- FEAT-026：统一读表 + 条件搜索（数值 EXIF + 影调）----
@@ -997,48 +1059,21 @@ impl Database {
             |r| r.get(0),
         )?;
         let offset = (page - 1) * page_size;
-        let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
-                    p.iso, p.aperture, p.shutter_speed, p.focal_length, p.shoot_time,
-                    p.iso_num, p.focal_num, p.aperture_num, p.shutter_num,
-                    p.tone_type, p.avg_luma,
-                    p.content, p.category, p.sub_category, p.label, p.confidence,
-                    p.top3_json, p.person_ids, p.person_count
-             FROM photo_content_scan p
+        let sql = format!(
+            "SELECT {} FROM photo_content_scan p
              LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
              WHERE p.user_id = ?1 AND p.album_id = ?2
              ORDER BY p.scanned_at DESC, p.path ASC
              LIMIT ?3 OFFSET ?4",
-        )?;
-        let rows = stmt.query_map(params![user_id, album_id, page_size, offset], |r| {
-            Ok(AlbumContentRow {
-                id: r.get(0)?,
-                path: r.get(1)?,
-                parent_dir: r.get(2)?,
-                album_id: r.get(3)?,
-                album_name: r.get(4)?,
-                album_path: r.get(5)?,
-                iso: r.get(6)?,
-                aperture: r.get(7)?,
-                shutter_speed: r.get(8)?,
-                focal_length: r.get(9)?,
-                shoot_time: r.get(10)?,
-                iso_num: r.get(11)?,
-                focal_num: r.get(12)?,
-                aperture_num: r.get(13)?,
-                shutter_num: r.get(14)?,
-                tone_type: r.get(15)?,
-                avg_luma: r.get(16)?,
-                content: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
-                category: r.get(18)?,
-                sub_category: r.get(19)?,
-                label: r.get(20)?,
-                confidence: r.get(21)?,
-                top3_json: r.get(22)?,
-                person_ids: r.get::<_, Option<String>>(23)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
-                person_count: r.get(24)?,
-            })
-        })?;
+            ALBUM_CONTENT_COLS
+        );
+        let mut stmt = self.conn.prepare(&sql).map_err(DbError::Sqlite)?;
+        let rows = stmt
+            .query_map(
+                params![user_id, album_id, page_size, offset],
+                map_album_content_row,
+            )
+            .map_err(DbError::Sqlite)?;
         Ok((
             rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)?,
             total,
@@ -1245,14 +1280,8 @@ impl Database {
         } else {
             Some(format!("%{}%", keyword.trim()))
         };
-        let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
-                    p.iso, p.aperture, p.shutter_speed, p.focal_length, p.shoot_time,
-                    p.iso_num, p.focal_num, p.aperture_num, p.shutter_num,
-                    p.tone_type, p.avg_luma,
-                    p.content, p.category, p.sub_category, p.label, p.confidence,
-                    p.top3_json, p.person_ids, p.person_count
-             FROM photo_content_scan p
+        let sql = format!(
+            "SELECT {} FROM photo_content_scan p
              LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
              WHERE p.user_id = ?1
                AND (?2 IS NULL OR p.album_id = ?2)
@@ -1267,53 +1296,29 @@ impl Database {
                AND (?11 IS NULL OR p.focal_num <= ?11)
                AND (?12 IS NULL OR p.tone_type = ?12)
              ORDER BY p.scanned_at DESC, p.path ASC",
-        )?;
+            ALBUM_CONTENT_COLS
+        );
+        let mut stmt = self.conn.prepare(&sql).map_err(DbError::Sqlite)?;
         let tone_filter = filters.tone_type.clone();
-        let rows = stmt.query_map(
-            params![
-                user_id,
-                album_id,
-                kw,
-                filters.iso_min,
-                filters.iso_max,
-                filters.shutter_min,
-                filters.shutter_max,
-                filters.aperture_min,
-                filters.aperture_max,
-                filters.focal_min,
-                filters.focal_max,
-                tone_filter.as_deref(),
-            ],
-            |r| {
-                Ok(AlbumContentRow {
-                    id: r.get(0)?,
-                    path: r.get(1)?,
-                    parent_dir: r.get(2)?,
-                    album_id: r.get(3)?,
-                    album_name: r.get(4)?,
-                    album_path: r.get(5)?,
-                    iso: r.get(6)?,
-                    aperture: r.get(7)?,
-                    shutter_speed: r.get(8)?,
-                    focal_length: r.get(9)?,
-                    shoot_time: r.get(10)?,
-                    iso_num: r.get(11)?,
-                    focal_num: r.get(12)?,
-                    aperture_num: r.get(13)?,
-                    shutter_num: r.get(14)?,
-                    tone_type: r.get(15)?,
-                    avg_luma: r.get(16)?,
-                    content: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
-                    category: r.get(18)?,
-                    sub_category: r.get(19)?,
-                    label: r.get(20)?,
-                    confidence: r.get(21)?,
-                    top3_json: r.get(22)?,
-                    person_ids: r.get::<_, Option<String>>(23)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
-                    person_count: r.get(24)?,
-                })
-            },
-        )?;
+        let rows = stmt
+            .query_map(
+                params![
+                    user_id,
+                    album_id,
+                    kw,
+                    filters.iso_min,
+                    filters.iso_max,
+                    filters.shutter_min,
+                    filters.shutter_max,
+                    filters.aperture_min,
+                    filters.aperture_max,
+                    filters.focal_min,
+                    filters.focal_max,
+                    tone_filter.as_deref(),
+                ],
+                map_album_content_row,
+            )
+            .map_err(DbError::Sqlite)?;
         rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
     }
 

@@ -3185,7 +3185,235 @@
       ],
       "created_at": "2026-09-30T23:55:00+08:00",
       "updated_at": "2026-09-30T23:55:00+08:00"
+    },
+    {
+      "id": "FEAT-095",
+      "name": "照片预览器改造（信息侧栏不遮挡 + 拍摄时间/地点 + 删除/归档/隐藏）+ 归档/隐藏虚拟相册（密码解锁）+ 缩略图矩阵缩放 + 缩略图右键菜单全站对齐",
+      "module": "src-tauri/src/photo_mark.rs（新增）\nsrc-tauri/src/db/mod.rs（albums.kind 列 + photo_marks 表 + 虚拟相册惰性建档 + 8 个标记方法 + ProtectedAlbum 错误）\nsrc-tauri/src/db/content.rs（AlbumContentRow 补 location/lat/lon + 统一列清单/行映射 + read_content_by_paths）\nsrc-tauri/src/album.rs（fill_album_stats 分流 + list_album_photos 虚拟分支 + 过滤标记照片）\nsrc-tauri/src/content.rs（read_album_content 虚拟分支 + get_photo_content_by_path 命令）\nsrc-tauri/src/auth.rs（verify_current_password）\nsrc-tauri/src/lib.rs（mod photo_mark + 4 个命令注册）\nsrc/components/PhotoLightbox.vue、PhotoActionMenu.vue（新增）、PhotoDeleteDialog.vue（新增）、PhotoZoomBar.vue（新增）\nsrc/components/PhotoGrid.vue、PersonGallery.vue、CategoryGallery.vue、LocationGallery.vue\nsrc/composables/usePhotoActions.ts（新增）、src/stores/vault.ts（新增）、src/stores/album.ts\nsrc/views/AlbumDetail.vue、AlbumList.vue、Home.vue\nsrc/types/album.ts、content.ts、photo.ts",
+      "purpose": "用户提 4 类问题：①智慧相册→按人物分类→点头像出的照片矩阵框不能放大缩小；②照片预览框的信息页浮在照片上把小图挡死，且信息里没有拍摄地点；③照片预览下缺少 删除/归档/隐藏 三个动作（删除要二次确认且分两种模式；归档要在相册管理出现一个名为「归档」的相册；隐藏相册要在个人信息输密码解锁后才出现）；④所有照片的缩略图右键菜单与原图预览的功能不对齐（分类/地点画廊甚至只有删除，没有打分/标签）。同时要求编码原子性、复用组件。",
+      "implementation": {
+        "数据模型": [
+          "albums 加一列 kind TEXT NOT NULL DEFAULT 'normal'（normal | archived | hidden）；历史行 ALTER 迁移后统一回填 normal，row_to_album 对 NULL/'' 兜底",
+          "新增 photo_marks 表 (user_id, path, state, updated_at)，主键 (user_id, path) 保证幂等去重；建 idx_photo_marks_state(user_id, state)",
+          "虚拟相册惰性建档：ensure_virtual_albums 用哨兵 path（__virtual__://archive / __virtual__//hidden）+ INSERT OR IGNORE + albums.path 的 UNIQUE 约束保证只建一次",
+          "DbError 新增 ProtectedAlbum(i64)：delete_album 对 kind != normal 直接拒删（Db 层硬约束，不依赖前端隐藏按钮）",
+          "标记行与照片文件解耦：只写 photo_marks，不动文件系统 —— EXIF/评分/标签/人物关联/缩略图缓存全部原样保留"
+        ],
+        "后端分流点": [
+          "fill_album_stats 新增 fill_virtual_album_stats 分支：photo_count 用 count_photo_marks_alive（只数磁盘文件还在的），封面取第一张存活照片的缩略图，size_bytes 保持 0 不谎报",
+          "list_album_photos：kind 为虚拟时查 photo_marks 返回路径（零 walkdir）并过滤文件已删的行；普通相册额外过滤 list_all_marked_paths —— 这就是「归档后从原相册消失」的实现点",
+          "fill_scanned_counts 跳过虚拟相册（哨兵 path 做前缀统计必为 0，省一次全表查询）",
+          "read_album_content：虚拟相册走 read_content_by_paths（归档照片的 album_id 仍指向原相册，WHERE album_id=? 查不到）",
+          "AlbumContentRow 补 location/lat/lon —— 这三个字段原本只在 ContentSearchHit 上有，read_album_content 取不到，导致信息页无法显示地点",
+          "新增 get_photo_content_by_path 命令：智慧相册的人物/分类/地点画廊打开 Lightbox 时不传 meta，靠它兜底查时间与地点",
+          "set_photo_marks / list_marked_photos / get_photo_mark_states / verify_current_password 四个命令均带 log_call 出入口日志；密码只记 password=***，只回 bool"
+        ],
+        "预览器改造": [
+          "R2 不遮挡：信息面板从 absolute 浮层改成 .lb-layout(flex) 下「左图片区 + 右侧并列栏」，图片区 max-width 100% 填满剩余空间；侧栏可折叠（metaCollapsed），折叠后只剩 44px 标题条",
+          "翻页箭头与缩放提示条改挂在 .lb-stage（position:relative）内，原来相对整个遮罩定位会压到信息栏上",
+          "R3 信息补全：拍摄时间提到基本信息区首位并对「未记录」给明确占位（原实现无值时整行消失，用户看不出是没记录还是没显示）；地点优先 meta.location，其次 get_photo_content_by_path 兜底，无地名但有 GPS 坐标时降级显示坐标",
+          "R4 工具栏新增 📦 归档 / 🔒 隐藏（取消归档 / 取消隐藏随状态切文案），归档隐藏逻辑在组件内不落地 —— 只 emit 给父视图，由父视图决定刷新哪份列表",
+          "新增 metaCollapsed / placeInfo / placeLoading / mapUrl 状态，全部在既有 watch + initForCurrentPhoto 里加载，保持原有的「不用 immediate watch」TDZ 规避写法"
+        ],
+        "复用层（原子性）": [
+          "usePhotoActions.ts：归档/隐藏/取消的单一实现（apply/archive/unarchive/hide/unhide + markStates 缓存 + loadMarkStates 静默失败降级 + openInWorkshop）。四处 Gallery 全走它，语义只有一份",
+          "PhotoActionMenu.vue：缩略图右键菜单的唯一实现，内聚 菜单条目 + 快速打分 + 快速标签 + 删除双模式四个弹窗。CategoryGallery / LocationGallery / PersonGallery 三处原本各写一份只含删除项的菜单，现全部换成它",
+          "PhotoDeleteDialog.vue：删除双模式二次确认的唯一实现。原先散落 3 份（PhotoGrid 用 ConfirmDialog、PersonGallery/CategoryGallery/LocationGallery 各有 del-mask 弹窗），语义还各不相同",
+          "PhotoZoomBar.vue：缩略图尺寸缩放条。PhotoGrid 与 PersonGallery 共用；尺寸上限 320px 的理由写在组件注释里（缩略图缓存只有 256px，再大只是糊图）",
+          "filterVisibleAlbums（types/album.ts）+ vault store：隐藏相册门禁只在 album store 的 fetchAlbums 一处收口，页面无需各自判断",
+          "AlbumContentRow 的三处重复 SELECT + 手工行映射收敛为 ALBUM_CONTENT_COLS 常量 + map_album_content_row 函数"
+        ],
+        "隐藏相册密码门禁": [
+          "vault store：hiddenUnlocked 只放内存不落 localStorage —— 落盘等于任何能打开应用的人都能绕过密码看到隐藏相册",
+          "解锁入口在 Home 的「个人信息」弹窗内，与「当前密码」分成两块（前者只读视图凭证，后者是改资料凭证，混在一起会误解）",
+          "unlockHiddenAlbum 动作把「解锁」与「列表可见」绑成一步（散开写迟早出现漏刷新的分支）",
+          "双层拦截：列表过滤（未解锁不在 store.albums 里）+ AlbumDetail 的 vaultDenied（防止把 id 写进地址栏绕过）",
+          "登出时 vault.reset()，解锁态不跨会话也不跨账号",
+          "归档/隐藏相册 0 张时不出现在相册管理（否则一进来就杵两个空壳卡片）"
+        ],
+        "相册管理呈现": [
+          "虚拟相册不进时间/地点分组（没有真实文件夹与拍摄时间），抽成顶部固定的「系统相册」区块",
+          "openAlbumPath 对 __virtual__:// 前缀给出「系统内置相册，没有对应本地文件夹」提示，不再把哨兵路径丢给 open_folder",
+          "右键菜单对虚拟相册隐藏「重命名 / 删除」；AlbumDetail 同样不提供删除相册入口"
+        ],
+        "交互细节": [
+          "四个地点的 PhotoLightbox 都接上了 archive/hide 事件，删除按钮统一走各自的二次确认链路 —— 分类/地点画廊原本只有右键能删，大图里删不了",
+          "PhotoGrid 大图删除时先自动选中当前照片，复用网格右键的老链路，撤销 Toast 行为与右键完全一致",
+          "归档/隐藏相册内的删除：record 模式的「撤销」改为取消归档/隐藏（虚拟相册没有「原相册」可恢复）",
+          "缩略图新增归档/隐藏角标（📦/🔒），与评分星标左右对称，避免互相遮挡",
+          "所有提交类按钮加 busy 禁用（deleting / photoActions.busy），防重复提交"
+        ]
+      },
+      "highlights": [
+        "「归档」的实现选型：给 albums 加 kind 列 + 哨兵 path 做虚拟相册，而不是前端拼一个假 Album 对象。前者让 get_album / list_album_photos / read_album_content / 缩略图缓存 / 相册卡片全部复用既有链路，代价只有 4 个分流点；后者要改 AlbumDetail、PhotoGrid、面包屑等多处",
+        "「归档后从原相册消失」复用了 list_album_photos 的既有过滤集合（album_photo_excluded），再并入 photo_marks 一层，没有为归档另造一套排除机制",
+        "只打标记不移动文件：用户的归档/隐藏需求本质是「视图隔离」而非「文件搬家」，移动文件会破坏相册目录结构、已扫 EXIF、缩略图缓存命名与人物 faces 表的 photo_path 关联",
+        "person.rs 的 faces 表按 photo_path 关联照片 —— 物理移动文件会让已有人脸记录失效，这是「归档/隐藏不移动文件」的硬约束（也是需求里没说清但必须这么实现的原因）",
+        "PersonGallery 的矩阵缩放上限定 320px：缩略图缓存固定 256px，PhotoZoomBar 里把这个上限和理由写进注释，避免后人调到 600px 认为是「高清」",
+        "右键菜单从 4 份不一致的实现收敛为 1 个组件：CategoryGallery / LocationGallery 此前连打分和标签都没有，用户说的「右键也要支持原图预览下面的功能」其实是补齐了三处功能缺失",
+        "verify_current_password 复用 auth::verify_password（argon2），日志只写 password=*** 与 matched/mismatched，不落任何密码数据"
+      ],
+      "tests": [
+        "cargo check 0 error（含 ALBUM_COLS 关联常量、Box<dyn ToSql> 分批 IN 查询、unchecked_transaction 借用规则）",
+        "cargo test 158 passed / 0 failed / 3 ignored（相册 / 人物 / 扫描 / 缩略图等既有单测全绿，新增迁移与标记逻辑未回归）",
+        "npx vue-tsc --noEmit exit 0（本次新增/改动的 15 个前端文件全部通过；ThemeDialog.vue 的既有 PRESETS 未定义报错为他人未提交改动，非本次引入）",
+        "npx vite build exit 0，产物正常分块（PhotoLightbox 独立 chunk 16.49 kB / gzip 6.89 kB）",
+        "npm test 59/59 全绿"
+      ],
+      "related_files": [
+        "src-tauri/src/photo_mark.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/album.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/auth.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/PhotoLightbox.vue",
+        "src/components/PhotoActionMenu.vue",
+        "src/components/PhotoDeleteDialog.vue",
+        "src/components/PhotoZoomBar.vue",
+        "src/components/PhotoGrid.vue",
+        "src/components/PersonGallery.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/LocationGallery.vue",
+        "src/composables/usePhotoActions.ts",
+        "src/stores/vault.ts",
+        "src/stores/album.ts",
+        "src/views/AlbumDetail.vue",
+        "src/views/AlbumList.vue",
+        "src/views/Home.vue",
+        "src/types/album.ts",
+        "src/types/content.ts",
+        "src/types/photo.ts"
+      ],
+      "keywords": [
+        "归档",
+        "隐藏",
+        "虚拟相册",
+        "password",
+        "album.kind",
+        "photo_marks",
+        "lightbox",
+        "缩放",
+        "右键菜单",
+        "缩略图",
+        "拍摄时间",
+        "地点",
+        "删除二次确认",
+        "回收站",
+        "component reuse"
+      ],
+      "created_at": "2026-10-07T00:00:00+08:00",
+      "updated_at": "2026-10-07T00:00:00+08:00"
+    },
+    {
+      "id": "FEAT-096",
+      "name": "右键菜单 Windows 语义 + 三态全选复选框 + 窗口式可拖边缩放/全屏 + EXIF 后台补全（修复信息页无时间地点）",
+      "module": "src/components/ContextMenu.vue（重写关闭语义）\nsrc/components/SelectAllCheckbox.vue（新增）\nsrc/components/ResizableDialog.vue（新增）\nsrc/composables/useResizableDialog.ts（新增）\nsrc/components/PhotoLightbox.vue（窗口框 + 信息栏左置 + 后台补全）\nsrc/components/PersonGallery.vue、PhotoGrid.vue、CategoryGallery.vue、LocationGallery.vue\nsrc-tauri/src/content.rs（backfill_photo_exif 命令）\nsrc-tauri/src/db/mod.rs（resolve_album_id_for_path + 单测）\nsrc-tauri/src/lib.rs（命令注册）",
+      "purpose": "用户报 4 个问题：①照片右键菜单出现后点不动、点别处也不消失（不像 Windows）；②全选照片后再点「全选」取消不掉，且按钮应是空圈圈不是按钮；③所有照片预览框（点人物头像等弹出的子图）应能像 Windows 软件框那样拖动边界缩放；④原图预览界面不能全屏、不能拖边缩放，信息面板要放左侧偏小让照片占大部分、可显示可收起，缺失字段应在预览时后台计算入库，且「EXIF 查表有数据却显示无时间无地点」。",
+      "implementation": {
+        "① 右键菜单（ContextMenu.vue）": [
+          "根因 1：全屏遮罩 .ctx-overlay 写了 @click.stop → 点外面永远到不了 document 层的关闭分支，菜单「关不掉」",
+          "根因 2：遮罩写了 @contextmenu.prevent.stop → 右键别处既不关闭、又被 preventDefault 吃掉浏览器原生菜单，导致「右键打开新菜单」这个动作彻底做不到（菜单锁死）",
+          "根因 3：onItemClick 里 item.onClick() 抛错会跳过 emit('close')，菜单永久卡死",
+          "修法：遮罩改 @pointerdown 关闭（左键+右键）/@contextmenu 关闭并**重开**；移除 .stop 与 document 级冗余监听（单一机制）",
+          "右键别处重开的实现：先 emit('close')，再 requestAnimationFrame 等菜单卸载 → 临时把遮罩 pointer-events 置 none → document.elementFromPoint 拿到真实目标 → 合成 MouseEvent('contextmenu') 投递过去，由目标自身 handler 决定弹什么（画廊格子/相册卡片/缩略图…）",
+          "onItemClick 改 try { onClick() } finally { emit('close') }",
+          "补 Esc 关闭（document 级监听，div 不获焦捕获不到）"
+        ],
+        "② 全选复选框（SelectAllCheckbox.vue）": [
+          "根因：CategoryGallery / LocationGallery / PersonGallery 用的是「全选」+ 独立「取消全选」两个按钮，没有「再点一次取消」的语义；PhotoGrid 是原生 <input type=checkbox>，只有 2 态无半选，且外观随系统主题",
+          "修法：抽一个三态组件 —— 空圈（未选）→ 横杠（部分选中，indeterminate）→ 打勾（全选）；点击语义：已全选则取消，否则全选",
+          "CSS 画指示圈而非原生 checkbox，保证「空圈圈/打勾」在各系统主题下一致",
+          "emit 的是「本次点击意图」(selectAll: boolean) 而非让父组件自己再判一次 allSelected —— 之前两处各判一次正是点了没反应的原因",
+          "四个画廊统一接入，删掉冗余的「取消全选」按钮"
+        ],
+        "③ 窗口式缩放（useResizableDialog.ts + ResizableDialog.vue）": [
+          "useResizableDialog：x/y/width/height/fullscreen/dragging 状态 + 8 向几何计算 + 最小尺寸 + 视口收拢",
+          "几何关键点：n/nw/ne 要保持对边（bottom）不动并反向补偿左上角偏移，否则拖动中窗口会「越拖越跑」；全屏态下拖任意边 = 退出全屏并落到指针位置，避免松手后窗口跳回原处",
+          "尺寸约束：minWidth 420 / minHeight 260 / minHeight 取视口 30%，最大不超过视口 -16px（窗口不能被拖出屏幕找不回来）",
+          "双击标题栏 = 最大化/还原；拖标题栏 = 移动窗口（标题栏上的 button 用 closest('button') 排除，不触发拖动）",
+          "ResizableDialog 组件封装 8 个把手 + 标题栏 slot，四处弹窗共用（复制四份必然出现「有的能拖有的不能拖」）",
+          "Q4 决策：尺寸写在 composable 的闭包里，切走再回来不变、退出应用不持久化（持久化会让用户被上次窗口大小困住）"
+        ],
+        "④ 原图预览器（PhotoLightbox.vue）": [
+          "布局改为窗口框：标题栏（文件名 + 序号 + 信息切换 + 全屏 + 关闭）+ 内容区（左侧信息面板 280px + 右侧图片区）",
+          "信息面板从右侧移到左侧并从 340px 收窄到 280px，照片占绝大部分；面板内容超高时自身滚动，不挤走照片区",
+          "metaCollapsed 改成标题栏的显式「ℹ 显示信息 / ℹ 收起信息」按钮（原来藏在面板内部，收起后点不到）",
+          "新增 F11 快捷键全屏/还原（preventDefault 拦掉浏览器自身全屏，否则全屏后窗口边框消失没法还原）",
+          "lb-body 底部留 54px 给工具栏，工具栏 max-width 改 calc(100% - 60px)（跟随窗口宽度而非视口宽度）"
+        ],
+        "④ EXIF 后台补全（根因修复）": [
+          "根因 1：PhotoLightbox.tryEnsureScanned() 在 albumId == null 时直接 return —— 智慧相册的人物/分类/地点画廊全部命中，所以这些页面**从来没扫描过**，表里其实也没有 EXIF（不是显示问题，是数据问题）",
+          "根因 2：ensure_photo_scanned 依赖 vision::classify_single（AI 服务），服务没启动整条命令失败 —— 而 EXIF 读取（read_exif_paths）与地名反查（geo_index::find_region）都是纯本地 IO / 离线索引，**根本不需要 AI**",
+          "修法：新增 backfill_photo_exif(path) 命令，纯本地路径 —— read_photo_exif + resolve_location + upsert",
+          "owns = { ai:false, exif:true, tone:false } → upsert_one 的 CASE/COALESCE 只写 EXIF 字段，已扫好的 AI 分类 / 影调 / 人脸不被覆盖",
+          "album_id 由 resolve_album_id_for_path 解析（详见下），这是本次最危险的点",
+          "前端加载顺序改为：先 ensureExif（快、拿到时间地点 + album_id）→ 再 tryEnsureScanned（慢、且可能因 AI 服务未运行而失败）",
+          "tryEnsureScanned 的 albumId 取值放宽为 photo.albumId ?? backfilled.album_id，画廊场景因此也能跑 AI 分类",
+          "补全期间信息栏显示「⏳ 正在读取 EXIF…」，静默失败（C2：补全是锦上添花，绝不能让预览卡住）",
+          "C4：后端在 shoot_time 与 location 都齐全时直接 SKIP 不读盘，前端也只在 needsExifBackfill 为真时才发请求"
+        ],
+        "album_id 归属保护（最高风险点）": [
+          "upsert_one 里 `album_id=excluded.album_id` 是**无条件覆盖**的 —— EXIF 补全若传 NULL，会把已有归属抹成 NULL，之后相册详情页就查不到这张照片了",
+          "新增 resolve_album_id_for_path(user_id, path)：① photo_content_scan 已有行的 album_id 优先原样沿用（哪怕是 NULL）→ ② 无记录时按相册目录前缀匹配取**最长**（嵌套相册里内层该赢）→ ③ 跳过虚拟相册哨兵 path",
+          "前缀匹配沿用 count_scanned_by_prefix 的分隔符规范（补 sep），避免 /alb1 命中 /alb11",
+          "配套单测 resolve_album_id_for_path_preserves_and_picks_specific 覆盖 6 个场景：最长前缀 / 分隔符规范 / 已有行优先 / NULL 保留 / 跳过虚拟相册 / 多用户隔离"
+        ]
+      },
+      "highlights": [
+        "用户报的「EXIF 显示无时间无地点」查表发现根本不是显示问题 —— 是这些页面从未扫描过，数据压根不在库里。定位这类「看起来是 UI bug」的问题，先分清是「没数据」还是「没显示」能省掉大量无效 UI 改动",
+        "「AI 服务没启动导致 EXIF 也读不出来」是耦合错误：把纯本地 IO（EXIF 解析 + 离线地名词典）挂在需要 GPU 服务的链路上，AI 一停整条信息链就断。拆出 backfill_photo_exif 后，两者可独立失败",
+        "右键菜单「关不掉」的根因是遮罩上的 @click.stop 把 document 级关闭分支的冒泡掐断了 —— 这类 bug 表现为「点了没反应」，但真因在事件传播而非点击逻辑",
+        "全选复选框之前点了没反应，是「子组件算一次意图、父组件再算一次状态」的双重判断导致的状态不同步；改成子组件 emit 意图、父组件只执行，职责才干净",
+        "album_id 无条件覆盖这条是本次最大的坑：一次 EXIF 补全就能让照片从相册详情页消失。resolve_album_id_for_path 的 6 个单测场景（尤其「已有行是 NULL 也原样保留」）就是为这个写的",
+        "窗口化改造把「拖边缩放」抽成 composable + 组件两层：逻辑（8 向几何、约束、视口收拢）与视觉（把手、标题栏）分离，四处弹窗复用同一套，不可能出现「人物弹窗能拖、地点弹窗不能拖」"
+      ],
+      "tests": [
+        "cargo check 0 error",
+        "cargo test 159 passed / 0 failed / 3 ignored（新增 resolve_album_id_for_path_preserves_and_picks_specific 单测 1 条）",
+        "npx vue-tsc --noEmit exit 0",
+        "npm run build（vue-tsc + vite build）exit 0",
+        "npm test 61/61"
+      ],
+      "related_files": [
+        "src/components/ContextMenu.vue",
+        "src/components/SelectAllCheckbox.vue",
+        "src/components/ResizableDialog.vue",
+        "src/composables/useResizableDialog.ts",
+        "src/components/PhotoLightbox.vue",
+        "src/components/PersonGallery.vue",
+        "src/components/PhotoGrid.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/LocationGallery.vue",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/lib.rs"
+      ],
+      "keywords": [
+        "右键菜单",
+        "contextmenu",
+        "ContextMenu",
+        "Windows 语义",
+        "全选",
+        "indeterminate",
+        "三态",
+        "复选框",
+        "resize",
+        "拖边缩放",
+        "全屏",
+        "F11",
+        "窗口框",
+        "EXIF",
+        "backfill",
+        "拍摄时间",
+        "地点",
+        "album_id",
+        "时间线一致性"
+      ],
+      "created_at": "2026-10-07T02:00:00+08:00",
+      "updated_at": "2026-10-07T02:00:00+08:00"
     }
   ],
-  "updated": "2026-09-30T23:55:00+08:00"
+  "updated": "2026-10-07T02:00:00+08:00"
 }
