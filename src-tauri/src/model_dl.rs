@@ -167,11 +167,10 @@ fn models_dir() -> PathBuf {
             return PathBuf::from(v);
         }
     }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .parent()
-        .map(|p| p.join("python").join("models"))
-        .unwrap_or_else(|| manifest.join("python").join("models"))
+    // 兜底：仅开发态（无 AppHandle 时 setup 未跑）才允许指向源码目录。
+    // 收口到 devpath —— release 下返回空路径，不含构建机绝对路径（BUG-2026-1013-001）。
+    let project = crate::devpath::dev_project_dir();
+    project.join("python").join("models")
 }
 
 /// 下载过程日志（走 stderr，与 vision 微服务日志同渠道，宿主副窗口可见）

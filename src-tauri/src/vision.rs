@@ -1208,7 +1208,18 @@ pub fn resolve_model_dir(app: &tauri::AppHandle) -> PathBuf {
             return bundled;
         }
     }
-    project_python_dir().join("models")
+    // 兜底：app_data 下的可写模型目录。
+    //
+    // 【此处曾回落 project_python_dir()，即编译期源码路径】—— `env!("CARGO_MANIFEST_DIR")`
+    // 在编译期展开为构建机绝对路径并写进二进制，装到别人机器上时「开发者视角 →
+    // 数据与路径」会直接显示 `D:\YUAN HAO\Documents\PersonalIdeaProject\...`，
+    // 暴露作者本机用户名与目录（BUG-2026-1013-001）。安装包未内置模型时尤其高频命中。
+    //
+    // 现在一律落到 app_data：既是真实可用的位置，也不含任何构建机信息。
+    app.path()
+        .app_data_dir()
+        .map(|d| d.join("vcr-models"))
+        .unwrap_or_else(|_| PathBuf::from("vcr-models"))
 }
 
 /// CLIP 模型文件是否已下载（未下载则不预热服务，避免无谓进程与等待）
@@ -1615,9 +1626,14 @@ fn spawn_server(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
         cmd.env("VCR_DATA_DIR", &data_dir);
     } else {
         // 开发版：python server.py
+        // 同 studio.rs：缺内置组件时不得把编译期源码路径（构建机用户名）报给用户
+        // （BUG-2026-1013-001）。
         let server_script = project_python_dir().join("server.py");
         if !server_script.is_file() {
-            return Err(format!("识别服务脚本不存在: {}", server_script.display()));
+            return Err(crate::devpath::dev_component_missing_err(
+                "识别服务脚本",
+                "vcr/vcr-server.exe",
+            ));
         }
         let py_dir = project_python_dir();
         workdir = py_dir.clone();
@@ -2204,11 +2220,9 @@ async fn http_client() -> Result<reqwest::Client, String> {
 
 /// Python 微服务目录（项目根/python）
 fn project_python_dir() -> std::path::PathBuf {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .parent()
-        .map(|p| p.join("python"))
-        .unwrap_or_else(|| manifest.join("python"))
+    // 收口到 devpath：release 下返回空路径，绝不把构建机绝对路径带进二进制
+    // （BUG-2026-1013-001，详见 devpath.rs 模块文档）。
+    crate::devpath::dev_project_dir().join("python")
 }
 
 /// 将微服务返回的单条结果解析为 VisionResult（兼容成功/失败两种形态）

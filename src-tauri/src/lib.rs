@@ -21,6 +21,7 @@ mod content;
 mod crypto;
 mod db;
 mod devdata;
+mod devpath;
 mod devtools;
 mod edit;
 mod folder;

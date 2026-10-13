@@ -139,10 +139,13 @@ pub fn persons_db_path(_app: &AppHandle) -> PathBuf {
         _ => PathBuf::new(),
     };
     if dir.as_os_str().is_empty() {
-        // setup 未跑（理论不可达）：回落项目目录，语义与旧口径一致
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let project = manifest.parent().unwrap_or(manifest);
-        return project.join("python").join("data").join("persons.db");
+        // setup 未跑（理论不可达）：回落项目目录，语义与旧口径一致。
+        // 收口到 devpath —— release 下返回空路径，不显示构建机绝对路径
+        // （BUG-2026-1013-001）。
+        return crate::devpath::dev_project_dir()
+            .join("python")
+            .join("data")
+            .join("persons.db");
     }
     dir.join("persons.db")
 }
@@ -181,12 +184,15 @@ pub fn paths(app: &AppHandle) -> Result<Vec<PathEntry>, String> {
         persons.clone(),
         "人脸特征与人物命名/合并（VCR 写、人物页直读，同一份）。目录取自 VCR_DATA_DIR，统一在 app_data 下",
     ));
-    // 旧口径遗留（只读提示，方便解释“为什么换机后看不到人物”）
-    let legacy = {
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let project = manifest.parent().unwrap_or(manifest);
-        project.join("python").join("data").join("persons.db")
-    };
+    // 旧口径遗留（只读提示，方便解释"为什么换机后看不到人物"）。
+    //
+    // ⚠️ 这条路径按定义就是「编译期项目目录下的产物」，对安装用户毫无意义；
+    // release 下 dev_project_dir() 为空，legacy 也为空 → 该条目自然不出现，
+    // 面板也就无从泄露构建机用户名（BUG-2026-1013-001）。
+    let legacy = crate::devpath::dev_project_dir()
+        .join("python")
+        .join("data")
+        .join("persons.db");
     if legacy.is_file() && legacy != persons {
         out.push(file_entry(
             "persons_db_legacy",
@@ -232,7 +238,7 @@ pub fn paths(app: &AppHandle) -> Result<Vec<PathEntry>, String> {
             "安装包内置目录只读（MSI 装到 Program Files）→ 已启用 app_data 下的可写硬链接副本，语义拆图/档位/下载都写这里（BUG-2026-0916-004）"
         }
         Some(_) => "安装包内置目录且可写（NSIS 按用户安装），直接使用",
-        None => "开发态：源码目录 python/models",
+        None => "未找到安装包内置模型目录 → 回落应用数据目录 app_data/vcr-models（开发态为源码目录 python/models）。模型可在此按需下载",
     };
     out.push(dir_entry(
         "model_dir",

@@ -41,9 +41,12 @@ fn data_dir() -> PathBuf {
             return PathBuf::from(v);
         }
     }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let project = manifest.parent().unwrap_or(manifest);
-    project.join("python").join("data")
+    // 兜底：仅开发态（bench / 单测未跑 setup）指向源码目录。
+    // 收口到 devpath —— release 下返回空路径，不把构建机绝对路径写进二进制
+    // （BUG-2026-1013-001）。
+    crate::devpath::dev_project_dir()
+        .join("python")
+        .join("data")
 }
 
 /// persons.db 路径（data_dir 下的 persons.db）

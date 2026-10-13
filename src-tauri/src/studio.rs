@@ -224,14 +224,17 @@ fn spawn_studio(app: &tauri::AppHandle, port: u16) -> Result<(u32, Child), Strin
         }
     } else {
         // 开发版：<解析出的解释器> python-studio/server.py
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let py_dir = manifest
-            .parent()
-            .map(|p| p.join("python-studio"))
-            .unwrap_or_else(|| manifest.join("python-studio"));
+        //
+        // ⚠️ 走到这里说明安装包缺内置 studio-server.exe。报错文案**绝不能**带绝对路径：
+        // 早期版本用编译期 CARGO_MANIFEST_DIR 拼路径，等于把构建机用户名
+        // （D:\YUAN HAO\...）显示给每一位安装失败的用户（BUG-2026-1013-001）。
+        let py_dir = crate::devpath::dev_project_dir().join("python-studio");
         let script = py_dir.join("server.py");
         if !script.is_file() {
-            return Err(format!("创意工坊服务脚本不存在: {}", script.display()));
+            return Err(crate::devpath::dev_component_missing_err(
+                "创意工坊服务脚本",
+                "studio/studio-server.exe",
+            ));
         }
         workdir = py_dir;
         let interp = crate::vision::resolve_python_interpreter()?;
