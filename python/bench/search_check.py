@@ -14,7 +14,7 @@ import numpy as np
 sys.stdout.reconfigure(encoding="utf-8")
 HERE = os.path.dirname(os.path.abspath(__file__))
 MD = os.path.join(HERE, "..", "models", "chinese-clip-vit-b-16")
-DB = os.path.join(os.environ["APPDATA"], "com.haoyuan.photo-management-sys", "photos.db")
+DB = os.path.join(os.environ["APPDATA"], "com.photomanagementsys.app", "photos.db")
 
 QUERIES = ["海边日落", "一只猫", "城市夜景", "朋友聚餐", "人物自拍特写",
            "樱花盛开", "文件文档截图", "小狗", "街道行人", "雪山风景"]

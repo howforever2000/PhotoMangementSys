@@ -31,7 +31,7 @@ from PIL import Image  # noqa: E402
 from vcr import config  # noqa: E402
 from vcr.services.embed_service import get_embed_service  # noqa: E402
 
-DB = os.path.expandvars(r"%APPDATA%\com.haoyuan.photo-management-sys\photos.db")
+DB = os.path.expandvars(r"%APPDATA%\com.photomanagementsys.app\photos.db")
 # 与 src-tauri/src/category.rs::NEUTRAL_PROMPTS 严格一致
 NEUTRAL = ["一张照片", "一张图片", "一张普通的照片", "随手拍的照片",
            "日常生活照片", "一张图片素材", "相册里的一张图"]

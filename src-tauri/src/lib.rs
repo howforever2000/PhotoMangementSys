@@ -236,13 +236,24 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 数据库文件存放于 Tauri 的 app_data_dir
-            // Windows: %APPDATA%/com.haoyuan.photo-management-sys/photos.db
+            // Windows: %APPDATA%/com.photomanagementsys.app/photos.db
             let data_dir = app
                 .path()
                 .app_data_dir()
                 .expect("无法获取应用数据目录");
+            // 一次性迁移：标识符由 com.haoyuan.* 改为中性名后，老用户的
+            // photos.db / thumbs / vcr-data / **app.key** 会留在旧目录，
+            // 应用照常启动但相册为空、加密字段无法解密（BUG-2026-1014-001）。
+            //
+            // 必须早于 logger::init 与一切 app_data_dir 消费：否则日志写进新目录、
+            // 数据还在旧目录，排障时两边对不上。
+            let migrate_note = devpath::migrate_legacy_data_dir(
+                data_dir.parent().unwrap_or(&data_dir),
+                &data_dir,
+            );
             // 初始化日志组件（保留 3 天 = 4320 分钟）
             logger::init(&data_dir, 4320);
+            logger::log_info(&format!("数据目录迁移: {migrate_note}"));
             // panic 落盘：任何线程崩溃（含白屏类 WebView 异常之外的原生崩溃）都可在日志追溯
             logger::install_panic_hook();
             logger::log_info(&format!(

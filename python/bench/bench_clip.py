@@ -20,7 +20,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(HERE, "..", "models", "chinese-clip-vit-b-16")
-THUMB_DIR = os.path.join(os.environ["APPDATA"], "com.haoyuan.photo-management-sys", "thumbs")
+THUMB_DIR = os.path.join(os.environ["APPDATA"], "com.photomanagementsys.app", "thumbs")
 N_SAMPLE = 400          # 预处理 + 各配置采样池
 N_CPU_SAMPLE = 200      # CPU b=1 样本数
 CLIP_MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
