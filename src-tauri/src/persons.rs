@@ -527,6 +527,12 @@ pub fn crop_avatar_local(pid: &str, cache_path: &Path) -> Result<(), String> {
         .unwrap_or_default();
     let is_jpeg = name.ends_with(".jpg") || name.ends_with(".jpeg");
 
+    // BUG-2026-1014-002：bbox 来自 Python 检测侧，那边已按 EXIF 转正，故 bbox
+    // 处于**显示坐标系**。此处若不解码后同样转正，就会「拿转正后的坐标去裁躺倒的
+    // 像素」，裁出背景或半张脸。故这里先读 Orientation，JPEG 降采样按**转正后**
+    // 的目标尺寸请求（省内存），解码后再转正，最后裁剪。
+    let orientation = crate::exif_orient::read_orientation(Path::new(&photo_path));
+
     let dynamic_img = if is_jpeg {
         // 分级降采样：从 1/8 起找「裁剪框缩放后仍 ≥160px」的最大降采样档（最快），
         // 都不够清晰则退回全分辨率（1/1）
@@ -543,9 +549,11 @@ pub fn crop_avatar_local(pid: &str, cache_path: &Path) -> Result<(), String> {
         let _ = head.read_info();
         let info = head.info().ok_or("无法读取图片头信息")?;
         let (w0, h0) = (info.width as u32, info.height as u32);
-        // 按选定档位请求目标尺寸（jpeg-decoder 会取不超过请求的最近 2 的幂档）
-        let tw = ((w0 + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
-        let th = ((h0 + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
+        // bbox 在显示坐标系 → 降采样目标尺寸也按转正后的宽高来请求，
+        // 否则 6/8 方向会向解码器要错的长宽比（拿到的是错轴的缩放图）。
+        let (ori_w, ori_h) = crate::exif_orient::oriented_dims(w0, h0, orientation);
+        let tw = ((ori_w + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
+        let th = ((ori_h + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
         let file2 = std::fs::File::open(&photo_path).map_err(|e| format!("打开原图失败: {e}"))?;
         let mut dec2 = jpeg_decoder::Decoder::new(std::io::BufReader::new(file2));
         let _ = dec2.scale(tw, th);
@@ -553,18 +561,25 @@ pub fn crop_avatar_local(pid: &str, cache_path: &Path) -> Result<(), String> {
         let info2 = dec2.info().ok_or("无法读取解码信息")?;
         let aw = (info2.width as u32).max(1);
         let ah = (info2.height as u32).max(1);
-        let sw = aw as f64 / w0.max(1) as f64; // 实际缩放比（解码图/原图）
-        let sh = ah as f64 / h0.max(1) as f64;
+        // 解码 → 按 EXIF 转正（在小图上转，省 CPU/内存）
+        let decoded = crate::exif_orient::apply_orientation(
+            image::DynamicImage::ImageRgb8(
+                image::RgbImage::from_raw(aw, ah, pixels).ok_or("像素数据长度不符")?,
+            ),
+            orientation,
+        );
+        // 转正后的实际尺寸，用于把 bbox（显示坐标系）映射到解码图
+        let (fw, fh) = (decoded.width().max(1), decoded.height().max(1));
+        let sw = fw as f64 / ori_w.max(1) as f64;
+        let sh = fh as f64 / ori_h.max(1) as f64;
         let cx = (((x1 - dx).max(0)) as f64 * sw) as u32;
         let cy = (((y1 - dy).max(0)) as f64 * sh) as u32;
-        let cw = ((bw + 2 * dx) as f64 * sw).min((aw - cx.min(aw)) as f64).max(1.0) as u32;
-        let ch = ((bh + 2 * dy) as f64 * sh).min((ah - cy.min(ah)) as f64).max(1.0) as u32;
-        image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_raw(aw, ah, pixels).ok_or("像素数据长度不符")?,
-        )
-        .crop_imm(cx.min(aw), cy.min(ah), cw, ch)
+        let cw = ((bw + 2 * dx) as f64 * sw).min((fw - cx.min(fw)) as f64).max(1.0) as u32;
+        let ch = ((bh + 2 * dy) as f64 * sh).min((fh - cy.min(fh)) as f64).max(1.0) as u32;
+        decoded.crop_imm(cx.min(fw), cy.min(fh), cw, ch)
     } else {
         let img = image::open(&photo_path).map_err(|e| format!("图片解码失败: {e}"))?;
+        let img = crate::exif_orient::apply_orientation(img, orientation);
         let cx1 = (x1 - dx).max(0) as u32;
         let cy1 = (y1 - dy).max(0) as u32;
         img.crop_imm(

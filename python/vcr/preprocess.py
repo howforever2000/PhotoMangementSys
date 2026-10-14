@@ -9,7 +9,7 @@ from typing import NamedTuple
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 from . import config
 
@@ -27,9 +27,33 @@ ARC_DST = np.array(
 
 
 def open_image(path: str) -> Image.Image | None:
+    """解码并**按 EXIF Orientation 转正**。
+
+    # 为什么必须显式转正（BUG-2026-1014-002）
+
+    相机传感器横向固定，竖持拍摄时像素是躺倒的，文件里靠 EXIF Orientation
+    标签声明「看图时请顺时针转 90°」。**JPEG 自己不会转** —— Orientation 只是给
+    读取方的一条指令，而各读取方是否执行并不统一：
+
+        看图软件 / Chrome 81+   ✅ 自动转正
+        Pillow（默认）          ❌ 不转，需显式 ImageOps.exif_transpose()
+        Rust image crate        ❌ 不转
+
+    因此横拍照片会以「侧脸」进入检测模型：ArcFace/SCRFD 的训练集全是正脸，
+    它判据是眼-鼻-嘴的上下空间关系，转 90° 后该关系彻底颠倒 → 置信度极低 →
+    被阈值过滤 → 明明有人却报「未检测到人脸」。同一入口的分类/OCR/影调/语义向量
+    同样受损（它们都从本函数取图）。
+
+    转正后，bbox 处于**显示坐标系**（与浏览器看原图的朝向一致）；Rust 侧裁头像
+    与生成缩略图也必须转正到同一坐标系，否则会按「转正后的坐标」去裁「躺倒的
+    图」，裁出背景 —— 见 src-tauri/src/exif_orient.rs。
+
+    注意 exif_transpose 会**删除** Orientation 标签（避免下游二次转正），并交换
+    宽高；无 EXIF 或 Orientation=1 时是零成本的恒等操作。
+    """
     try:
         with Image.open(path) as img:
-            return img.convert("RGB")
+            return ImageOps.exif_transpose(img).convert("RGB")
     except Exception:
         return None
 

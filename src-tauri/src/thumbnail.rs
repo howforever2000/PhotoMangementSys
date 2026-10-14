@@ -161,6 +161,12 @@ pub fn scan_album_dir(dir: &Path) -> AlbumScan {
 /// 网格缩略图缓存子目录（与封面缩略图隔离，避免 cleanup_album_auto_thumbs 误删）
 const GRID_THUMBS_SUBDIR: &str = "grid";
 
+/// 缩略图渲染算法版本（参与 `thumb_photo_hash` 缓存键）。
+///
+/// 语义：**只影响像素内容**的改动才需要 bump。v2 = 按 EXIF Orientation 转正
+/// （BUG-2026-1014-002）；v1 = 初始实现。
+const THUMB_RENDER_VERSION: u32 = 2;
+
 /// FEAT-044：计算与 `photo_content_scan.photo_hash` 同源的指纹
 ///
 /// 与 `content::photo_hash` 逻辑一致（路径+大小+mtime 纳秒的 FNV-1a 64），
@@ -169,7 +175,10 @@ const GRID_THUMBS_SUBDIR: &str = "grid";
 /// 跨模块一致性靠**集成测试**保证（见 `tests_thumb_cache_consistency`）。
 pub fn thumb_photo_hash(path: &Path, len: u64, mtime_ns: u128) -> String {
     let path_str = path.to_string_lossy();
-    let input = format!("{len}|{mtime_ns}|{path_str}");
+    // 掺入渲染算法版本：缩略图**像素内容**变了（BUG-2026-1014-002 起按 EXIF 转正），
+    // 但键原本只由「路径+大小+mtime」决定 → 老用户会直接命中缓存里的**躺倒**旧图，
+    // 表现为「代码改了却毫无变化」。任何影响像素的渲染改动都必须 bump 此版本。
+    let input = format!("{len}|{mtime_ns}|{path_str}|v{THUMB_RENDER_VERSION}");
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in input.as_bytes() {
         h ^= *b as u64;
@@ -750,6 +759,9 @@ fn fnv1a64(data: &[u8]) -> u64 {
 /// 用户替换/修改照片后指纹必然变化，缓存自动失效并换名（旧文件随后被清理）。
 fn file_fingerprint(path: &Path) -> String {
     let mut fp = String::new();
+    // 同 THUMB_RENDER_VERSION 的理由：指纹决定**磁盘文件名**，转正后像素变了，
+    // 旧名对应的躺倒 WebP 若继续命中，同样是「改了没变化」。
+    fp.push_str(&format!("v{THUMB_RENDER_VERSION}_"));
     if let Ok(meta) = path.metadata() {
         fp.push_str(&meta.len().to_string());
         if let Ok(m) = meta.modified() {
@@ -922,6 +934,17 @@ fn decode_jpeg_scaled(source: &Path, target_px: u32) -> Result<image::RgbImage, 
 /// P1 WebP 优化：256px 缩略图统一存为 WebP（质量 85，比 JPEG 小 30~50%）
 /// - JPEG 源图走 DCT 降采样快速路径；其他格式全尺寸解码
 fn save_thumbnail(source: &Path, thumb_path: &Path) -> Result<(), ThumbError> {
+    // BUG-2026-1014-002：缩略图必须按 EXIF Orientation 转正，否则网格里横拍照片
+    // 躺着显示（WebP 不携带 EXIF，浏览器无从补救）。
+    //
+    // 顺序要点：**先转正、再缩放**。`thumbnail()` 按「当前长边」等比缩放，
+    // 若先缩放，转置类方向（6/8）会把躺倒的那条长边当成基准，得到的构图与
+    // 正置图不同。旋转不改变长边长度，故在降采样图上转是等价且省 CPU 的。
+    let orientation = crate::exif_orient::read_orientation(source);
+    let oriented = |img: image::DynamicImage| -> image::DynamicImage {
+        crate::exif_orient::apply_orientation(img, orientation)
+    };
+
     let thumb = if is_jpeg_path(
         source
             .file_name()
@@ -930,12 +953,13 @@ fn save_thumbnail(source: &Path, thumb_path: &Path) -> Result<(), ThumbError> {
             .as_str(),
     ) {
         match decode_jpeg_scaled(source, THUMB_SIZE) {
-            Ok(img) => image::DynamicImage::ImageRgb8(img).thumbnail(THUMB_SIZE, THUMB_SIZE),
+            Ok(img) => oriented(image::DynamicImage::ImageRgb8(img))
+                .thumbnail(THUMB_SIZE, THUMB_SIZE),
             // 降采样失败（异常 JPEG）降级为全尺寸解码，保证可用性
-            Err(_) => image::open(source)?.thumbnail(THUMB_SIZE, THUMB_SIZE),
+            Err(_) => oriented(image::open(source)?).thumbnail(THUMB_SIZE, THUMB_SIZE),
         }
     } else {
-        image::open(source)?.thumbnail(THUMB_SIZE, THUMB_SIZE)
+        oriented(image::open(source)?).thumbnail(THUMB_SIZE, THUMB_SIZE)
     };
     if let Some(parent) = thumb_path.parent() {
         std::fs::create_dir_all(parent)?;

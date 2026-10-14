@@ -23,6 +23,7 @@ mod db;
 mod devdata;
 mod devpath;
 mod devtools;
+mod exif_orient;
 mod edit;
 mod folder;
 mod geo_index;
