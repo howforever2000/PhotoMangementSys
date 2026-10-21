@@ -252,9 +252,18 @@ pub fn run() {
                 data_dir.parent().unwrap_or(&data_dir),
                 &data_dir,
             );
+            // 迁移只搬文件，不搬库里的绝对路径：`albums.cover_path` /
+            // `photo_thumb_cache.thumb_path` 仍然写着旧标识符目录，目录一改名就全部变成死链
+            // （症状：**所有相册封面碎图**，而相册名/张数一切正常，BUG-2026-1021-005）。
+            // 必须同样早于数据库被应用打开。
+            let path_note = devpath::repair_legacy_data_paths(
+                data_dir.parent().unwrap_or(&data_dir),
+                &data_dir,
+            );
             // 初始化日志组件（保留 3 天 = 4320 分钟）
             logger::init(&data_dir, 4320);
             logger::log_info(&format!("数据目录迁移: {migrate_note}"));
+            logger::log_info(&format!("旧路径修复: {path_note}"));
             // panic 落盘：任何线程崩溃（含白屏类 WebView 异常之外的原生崩溃）都可在日志追溯
             logger::install_panic_hook();
             logger::log_info(&format!(

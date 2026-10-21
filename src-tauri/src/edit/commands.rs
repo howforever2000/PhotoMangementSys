@@ -195,14 +195,23 @@ struct DecodedOpen {
 /// 前端拆包见 `src/composables/useEditEngine.ts` 的 `unpackFrame`。
 /// 两端帧格式必须同步修改。
 pub fn pack_frame<M: Serialize>(meta: &M, payload: Vec<u8>) -> tauri::ipc::Response {
+    tauri::ipc::Response::new(pack_frame_bytes(meta, &payload))
+}
+
+/// 组帧（纯字节版）：长度前缀 + JSON + 载荷。
+///
+/// 单独拆出来是为了让单元测试能拿到字节 —— tauri 2.11 把 `ipc::Response` 的
+/// `body` 字段收成了私有，测试再也无法从 Response 里读回来（旧版能 `r.body`）。
+/// 组帧逻辑只此一份，`pack_frame` 只是给它套一层 IPC 返回类型。
+pub fn pack_frame_bytes<M: Serialize>(meta: &M, payload: &[u8]) -> Vec<u8> {
     // 元信息是固定的小结构，序列化失败只可能是编码器 bug；
     // 退化成空对象仍然返回图片字节，好过让整帧渲染白做。
     let json = serde_json::to_vec(meta).unwrap_or_default();
     let mut out = Vec::with_capacity(4 + json.len() + payload.len());
     out.extend_from_slice(&(json.len() as u32).to_le_bytes());
     out.extend_from_slice(&json);
-    out.extend_from_slice(&payload);
-    tauri::ipc::Response::new(out)
+    out.extend_from_slice(payload);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -958,8 +967,8 @@ mod tests {
             stale: false,
         };
         let payload = vec![0xFFu8, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
-        let r = pack_frame(&meta, payload.clone());
-        let (back, bytes) = unpack_frame(&r.body);
+        let r = pack_frame_bytes(&meta, &payload);
+        let (back, bytes) = unpack_frame(&r);
 
         assert_eq!(back["width"], 1600);
         assert_eq!(back["height"], 1067);
@@ -975,8 +984,8 @@ mod tests {
         let meta = EncodeMeta { width: 4, height: 4 };
         // 前 4 字节故意做成一个「看起来很大」的长度前缀
         let payload = vec![0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x02];
-        let r = pack_frame(&meta, payload.clone());
-        let (back, bytes) = unpack_frame(&r.body);
+        let r = pack_frame_bytes(&meta, &payload);
+        let (back, bytes) = unpack_frame(&r);
 
         assert_eq!(back["width"], 4);
         assert_eq!(bytes, payload, "载荷含伪头部时仍应完整还原");
@@ -991,8 +1000,8 @@ mod tests {
             elapsed_ms: 0,
             stale: true,
         };
-        let r = pack_frame(&meta, Vec::new());
-        let (back, bytes) = unpack_frame(&r.body);
+        let r = pack_frame_bytes(&meta, &[]);
+        let (back, bytes) = unpack_frame(&r);
 
         assert_eq!(back["stale"], true);
         assert!(bytes.is_empty(), "stale 帧载荷应为空");
@@ -1045,7 +1054,7 @@ mod tests {
         let j = serde_json::json!({
             "sessions": store.len(),
             "bytes": store.memory_bytes(),
-            "maxSessions": crate::session::MAX_SESSIONS,
+            "maxSessions": crate::edit::session::MAX_SESSIONS,
         });
         assert_eq!(j["sessions"], 0);
         assert_eq!(j["maxSessions"], 8);
@@ -1082,8 +1091,8 @@ mod tests {
         let (pw, ph) = session.preview_size();
         assert_eq!((meta.width, meta.height), (pw, ph), "meta 尺寸应等于预览平面尺寸");
 
-        let framed = pack_frame(&meta, jpeg);
-        let (back, bytes) = unpack_frame(&framed.body);
+        let framed = pack_frame_bytes(&meta, &jpeg);
+        let (back, bytes) = unpack_frame(&framed);
 
         assert_eq!(back["width"], meta.width);
         assert_eq!(back["height"], meta.height);

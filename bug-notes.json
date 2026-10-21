@@ -3625,6 +3625,59 @@
       "log_hint": "纯样式缺失，无运行时报错",
       "created_at": "2026-10-21T15:10:00+08:00",
       "fixed_at": "2026-10-21T15:10:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1021-005",
+      "date": "2026-10-21",
+      "status": "fixed",
+      "severity": "high",
+      "title": "改应用标识符后所有相册封面碎图：迁移只搬了文件，没搬库里的绝对路径",
+      "module": "数据迁移 / src-tauri/src/devpath.rs、src-tauri/src/lib.rs",
+      "symptom": [
+        "相册列表每张卡片的封面位置只剩碎图图标 + alt 文字「封面」，版式正常、卡片高度正确",
+        "相册名、路径、张数、容量、日期全部正常，扫描状态「已入库」也在——看起来完全不像数据丢了",
+        "album detail 里的网格缩略图同样全部失效（同一类绝对路径）"
+      ],
+      "root_cause": "28035a4 把标识符从 com.haoyuan.photo-management-sys 改成 com.photomanagementsys.app，app_data_dir 随之改变，migrate_legacy_data_dir() 把整个目录 rename 到新路径——但库里的 albums.cover_path 与 photo_thumb_cache.thumb_path 存的是**绝对路径**。目录一改名，25054 行字符串原地变成死链：文件就在新目录里完好无损，前端 convertFileSrc() 拿到的却是一个不存在的路径。实测 com.haoyuan 前缀：albums 130 行 + photo_thumb_cache 24924 行，把前缀替换成新目录后 130/130 封面文件全部存在，证实是纯路径问题、零文件丢失。",
+      "fix": "devpath.rs 新增 repair_legacy_data_paths()，在 setup 里紧跟 migrate_legacy_data_dir 之后调用（同样早于数据库被打开）：先用 albums.cover_path / photo_thumb_cache.thumb_path 做两行 SQL 的便宜探针，命中才做全库扫描（跳过 virtual table），对每张表的每个文本列做一次前缀 replace；顺手把 batch_calibration.json 里记的标定路径也改掉。必须每次启动都跑而不是只在迁移分支里跑——已经装过旧版的用户「目录已迁完」那一刻就再不会进迁移分支了。幂等：修完再探就查不到旧前缀。",
+      "related_files": [
+        "src-tauri/src/devpath.rs",
+        "src-tauri/src/lib.rs"
+      ],
+      "evidence_log": [
+        "sqlite 实测：SELECT COUNT(*) WHERE cover_path LIKE '%com.haoyuan.photo-management-sys%' → albums 130、photo_thumb_cache 24924",
+        "前缀改写后逐行 os.path.exists()：130/130 封面文件存在，缺失 0 → 文件没丢，只是字符串过期",
+        "本地一次性修复脚本已执行（备份 photos.db.bak-20261021-201235）：改写 25054 行，修复后旧前缀 0 行，封面 130/130 可打开",
+        "cargo test --lib devpath::tests 通过（新建临时库验证改写+幂等）；cargo test --lib 407 passed / 0 failed"
+      ],
+      "log_hint": "启动日志「旧路径修复: 」一行会打印改写了哪些表列与行数；若显示「无需修复」说明前缀已对齐",
+      "created_at": "2026-10-21T20:12:00+08:00",
+      "fixed_at": "2026-10-21T20:12:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1021-006",
+      "date": "2026-10-21",
+      "status": "fixed",
+      "severity": "high",
+      "title": "dev 分支 Rust 侧编译不过：tauri 2.11 把 ipc::Response.body 收成私有 + 一处模块路径写错",
+      "module": "编辑引擎 / src-tauri/src/edit/commands.rs",
+      "symptom": [
+        "cargo build / cargo test 直接失败，5 个 error，与任何业务代码无关",
+        "error[E0616]: field \body of struct \tauri::ipc::Response is private（4 处，全在 #[cfg(test)] 里）",
+        "error[E0425]: cannot find value MAX_SESSIONS in module crate::session（1 处）"
+      ],
+      "root_cause": "FEAT-099 的编辑引擎写在 tauri 2.11 之前：那时 ipc::Response 的 body 是 pub 字段，测试靠 r.body 取回组好的帧；2.11 改成私有字段 + Response::new()，测试就取不回来了。另一处是模块路径写成 crate::session::MAX_SESSIONS，而常量实际在 crate::edit::session 里（同文件另一处写的是正确的 super::session::MAX_SESSIONS）。",
+      "fix": "把组帧逻辑拆成纯字节函数 pack_frame_bytes(meta, &payload) -> Vec<u8>，pack_frame 只负责 Response::new() 包一层；3 条帧格式测试改用 pack_frame_bytes 拿字节，语义与断言完全不变。MAX_SESSIONS 路径改为 crate::edit::session::MAX_SESSIONS。",
+      "related_files": [
+        "src-tauri/src/edit/commands.rs"
+      ],
+      "evidence_log": [
+        "cargo test --lib：407 passed / 0 failed / 3 ignored（修复前是 5 个编译错误，测试根本跑不起来）",
+        "帧格式三条测试（meta+载荷往返、载荷含伪头部、空载荷）仍全部通过，前后端帧约定未变"
+      ],
+      "log_hint": "编译期问题，日志里看不到；升级 tauri 小版本后优先跑一次 cargo check",
+      "created_at": "2026-10-21T20:12:00+08:00",
+      "fixed_at": "2026-10-21T20:12:00+08:00"
     }
   ]
 }

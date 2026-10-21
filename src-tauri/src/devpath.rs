@@ -135,6 +135,156 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// 旧标识符绝对路径修复（BUG-2026-1021-005）
+// ---------------------------------------------------------------------------
+
+/// 把 `photos.db` 里仍指向**旧标识符目录**的绝对路径改写到新目录，
+/// 并顺手修 `batch_calibration.json` 里记的标定路径。
+///
+/// # 为什么光迁目录不够
+///
+/// `migrate_legacy_data_dir` 只搬运文件。但库里存的是**绝对路径**：
+/// `albums.cover_path`、`photo_thumb_cache.thumb_path`（实测 130 + 24924 行）。
+/// 目录改名之后这些字符串原地变成死链 —— 文件就在新目录里好好的，
+/// 前端 `convertFileSrc()` 却拿到一个不存在的路径，结果就是**所有相册封面全部碎图**
+/// （alt=「封面」+ 碎图标），而相册名/张数/容量一切正常，很容易被当成“缩略图功能坏了”。
+///
+/// # 为什么必须在每次启动都跑（而不是只在迁移分支里跑）
+///
+/// 已经装过旧版的用户，“目录已迁完”那一刻就再也不会进迁移分支了，
+/// 而库里那些绝对路径还是旧的。所以本函数：
+/// 1. 先用两张已知路径列做**便宜探针**（两行 SQL，常见情况微秒级返回）；
+/// 2. 命中才做全库扫描（跳过 virtual table）。
+/// 结果是幂等的：修过一次之后再探就查不到旧前缀，只剩下那次探针开销。
+///
+/// 必须在应用自己打开 `photos.db` 之前调用（同 `migrate_legacy_data_dir` 的位置）。
+pub fn repair_legacy_data_paths(app_data_root: &Path, new_dir: &Path) -> String {
+    let db_path = new_dir.join("photos.db");
+    if !db_path.is_file() {
+        return "无 photos.db，跳过旧路径修复".to_string();
+    }
+    let legacy_roots: Vec<PathBuf> = LEGACY_APP_DIRS
+        .iter()
+        .map(|name| app_data_root.join(name))
+        .filter(|p| p != new_dir)
+        .collect();
+    if legacy_roots.is_empty() {
+        return "无需修复旧路径".to_string();
+    }
+
+    let conn = match rusqlite::Connection::open(&db_path) {
+        Ok(c) => c,
+        Err(e) => return format!("旧路径修复跳过：无法打开 photos.db（{e}）"),
+    };
+
+    // 1) 便宜探针：只有这两列存绝对路径。连表/列不存在也是可能的（全新库），全部容错。
+    let mut hit = false;
+    'probe: for (table, column) in [("albums", "cover_path"), ("photo_thumb_cache", "thumb_path")] {
+        for old in &legacy_roots {
+            let sql = format!("SELECT 1 FROM \"{table}\" WHERE \"{column}\" LIKE ?1 LIMIT 1");
+            if let Ok(mut stmt) = conn.prepare(&sql) {
+                let pattern = format!("%{}%", old.display());
+                if stmt.exists(rusqlite::params![pattern]).unwrap_or(false) {
+                    hit = true;
+                    break 'probe;
+                }
+            }
+        }
+    }
+    if !hit {
+        // 标定文件独立于库，单独处理（不存在/不可写都静默跳过）
+        let cal = repair_calibration_path(new_dir, &legacy_roots);
+        return match cal {
+            Some(n) => n,
+            None => "旧数据目录路径已全部对齐（无需修复）".to_string(),
+        };
+    }
+
+    // 2) 全库扫描：对每张表的每个文本列做一次前缀替换。
+    //    不用手写表名列清单 —— 将来新增一张带路径的表也不需要回来改这里。
+    let new_root = new_dir.display().to_string();
+    let mut total = 0usize;
+    let mut detail: Vec<String> = Vec::new();
+
+    let mut tables: Vec<(String, String)> = Vec::new();
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT name, COALESCE(sql, '') FROM sqlite_master WHERE type = 'table'")
+    {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+            tables.extend(rows.flatten());
+        }
+    }
+
+    for (table, sql) in tables {
+        // FTS 等虚表不能直接 UPDATE，且它们存的是文本副本、不含路径
+        if sql.to_uppercase().contains("VIRTUAL TABLE") {
+            continue;
+        }
+        let mut columns: Vec<String> = Vec::new();
+        if let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info(\"{table}\")")) {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(1)) {
+                columns.extend(rows.flatten());
+            }
+        }
+        for column in columns {
+            for old in &legacy_roots {
+                let old_root = old.display().to_string();
+                let sql = format!(
+                    "UPDATE \"{table}\" SET \"{column}\" = replace(\"{column}\", ?1, ?2) \
+                     WHERE \"{column}\" LIKE ?3"
+                );
+                let Ok(mut stmt) = conn.prepare(&sql) else {
+                    continue;
+                };
+                let pattern = format!("%{old_root}%");
+                match stmt.execute(rusqlite::params![old_root, new_root, pattern]) {
+                    Ok(n) if n > 0 => {
+                        total += n;
+                        detail.push(format!("{table}.{column}:{n}"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let mut note = if total == 0 {
+        "旧数据目录路径已全部对齐（无需修复）".to_string()
+    } else {
+        format!("已修复 {total} 行指向旧数据目录的绝对路径（{}）", detail.join("、"))
+    };
+    if let Some(cal) = repair_calibration_path(new_dir, &legacy_roots) {
+        note.push_str("；");
+        note.push_str(&cal);
+    }
+    note
+}
+
+/// 修 `batch_calibration.json` 里记的标定样本目录（纯文本前缀替换）。
+///
+/// 该文件只记录“本次标定用的缩略图目录”，路径失效不影响启动；
+/// 但留着旧路径会让人误以为标定还对着一个新跑过的目录，所以一并抹干净。
+fn repair_calibration_path(new_dir: &Path, legacy_roots: &[PathBuf]) -> Option<String> {
+    let path = new_dir.join("batch_calibration.json");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let mut fixed = text.clone();
+    for old in legacy_roots {
+        // JSON 里的反斜杠是转义的，两种写法都替一遍
+        let old_raw = old.display().to_string();
+        fixed = fixed.replace(&old_raw, &new_dir.display().to_string());
+        let old_json = old_raw.replace('\\', "\\\\");
+        if old_json != old_raw {
+            fixed = fixed.replace(&old_json, &new_dir.display().to_string().replace('\\', "\\\\"));
+        }
+    }
+    if fixed == text {
+        return None;
+    }
+    std::fs::write(&path, fixed).ok()?;
+    Some("batch_calibration.json 的标定路径已改写".to_string())
+}
+
 /// 源码项目根目录（`src-tauri` 的上一级）。
 ///
 /// - **debug 构建**：构建机上的源码根，正是开发期需要的位置；
@@ -175,5 +325,95 @@ pub fn dev_component_missing_err(component: &str, install_subpath: &str) -> Stri
         format!("{component} 不存在: {}", p.display())
     } else {
         format!("未找到内置组件（{install_subpath}），请重新安装完整安装包")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 旧标识符目录改名后，库里的绝对路径要跟着改到新目录，而且改完必须真能打开。
+    #[test]
+    fn repair_legacy_data_paths_rewrites_db_and_calibration() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("pm-devpath-{}-{stamp}", std::process::id()));
+        let new_dir = root.join("com.photomanagementsys.app");
+        let legacy_dir = root.join("com.haoyuan.photo-management-sys");
+        std::fs::create_dir_all(new_dir.join("thumbs")).unwrap();
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+
+        // 文件已经在**新**目录，库里却还写着**旧**绝对路径
+        let thumb = new_dir.join("thumbs").join("a.webp");
+        std::fs::write(&thumb, b"x").unwrap();
+        let old_thumb = legacy_dir.join("thumbs").join("a.webp").display().to_string();
+
+        let db = new_dir.join("photos.db");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE albums(id INTEGER PRIMARY KEY, cover_path TEXT);
+                 CREATE TABLE photo_thumb_cache(thumb_path TEXT);
+                 CREATE TABLE unrelated(txt TEXT);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO albums(cover_path) VALUES (?1)",
+                rusqlite::params![old_thumb],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO photo_thumb_cache(thumb_path) VALUES (?1)",
+                rusqlite::params![old_thumb],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO unrelated(txt) VALUES ('hello')", [])
+                .unwrap();
+        }
+        std::fs::write(
+            new_dir.join("batch_calibration.json"),
+            format!("{{\"path\": {old_thumb:?}}}"),
+        )
+        .unwrap();
+
+        let note = repair_legacy_data_paths(&root, &new_dir);
+        assert!(note.contains("albums.cover_path:1"), "note = {note}");
+        assert!(
+            note.contains("photo_thumb_cache.thumb_path:1"),
+            "note = {note}"
+        );
+
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let p: String = conn
+            .query_row("SELECT cover_path FROM albums", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(p, thumb.display().to_string());
+        assert!(
+            std::path::Path::new(&p).exists(),
+            "改写后必须指向真实存在的文件: {p}"
+        );
+        let hit: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM photo_thumb_cache WHERE thumb_path LIKE '%com.haoyuan%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hit, 0, "缩略图缓存表也要改干净");
+        drop(conn);
+
+        let cal = std::fs::read_to_string(new_dir.join("batch_calibration.json")).unwrap();
+        assert!(
+            cal.contains("com.photomanagementsys.app"),
+            "标定文件路径未改写: {cal}"
+        );
+
+        // 幂等：再跑一次不应再命中任何行
+        let note2 = repair_legacy_data_paths(&root, &new_dir);
+        assert!(note2.contains("无需修复"), "note2 = {note2}");
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }
