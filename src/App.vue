@@ -18,31 +18,13 @@ const store = useAlbumStore();
 const theme = useThemeStore();
 const router = useRouter();
 
-/**
- * 液态材质追光（FEAT-086 表面光学）：一次事件委托，全站卡片生效
- *  —— 把光标在卡片内的坐标写入 --mx/--my，::after 追光层只动 opacity，不重排。
- *  类路径（.glass-surface/.glass-card）与内联路径（cardStyle + 补挂 .glass-card）都命中。
- *  rAF 合帧：pointermove 每帧最多写一次，避免高频 style 写入。
- */
-let lightRaf = 0;
-let lightEv: PointerEvent | null = null;
-function onPointerLight(e: PointerEvent) {
-  // 普通卡片下 ::after 追光层不存在，直接短路，零写入
-  if (!document.body.classList.contains("mat-liquid")) return;
-  lightEv = e;
-  if (lightRaf) return;
-  lightRaf = requestAnimationFrame(() => {
-    lightRaf = 0;
-    const ev = lightEv;
-    lightEv = null;
-    if (!ev) return;
-    const card = (ev.target as HTMLElement | null)?.closest?.(".glass-card, .glass-surface") as HTMLElement | null;
-    if (!card) return;
-    const r = card.getBoundingClientRect();
-    card.style.setProperty("--mx", `${ev.clientX - r.left}px`);
-    card.style.setProperty("--my", `${ev.clientY - r.top}px`);
-  });
-}
+/* FEAT-101：液态材质不再「追光」。
+   旧实现挂了一个全局 pointermove 委托，把光标坐标写进每张卡片的 --mx/--my，
+   再由 ::before 的游标亮斑 × 边缘环 mask 画出「光跟着鼠标走」的折射。三条劝退理由：
+     ① 物理方向反了 —— 亮斑峰值落在卡片**内部**，那是光穿过玻璃，而不是被玻璃边缘折射；
+     ② 全站每帧读一次 getBoundingClientRect 再写自定义属性，卡片被持续拉进样式重算；
+     ③ 材质应该是卡片的静态属性，不该随鼠标位置变 —— 一条全局动效把「玻璃」变成「魔法布」。
+   现在液态光学全部静态（固定主光源左上 135°），见 main.css 的 M3 段。 */
 
 /**
  * FEAT-ESC：全局 ESC 行为
@@ -82,13 +64,9 @@ onMounted(async () => {
     store.fetchAlbums().catch(() => {});
   }
   window.addEventListener("keydown", onGlobalEsc);
-  // 液态追光：passive 监听，只写自定义属性（普通卡片下 ::after 不命中，零视觉开销）
-  window.addEventListener("pointermove", onPointerLight, { passive: true });
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onGlobalEsc);
-  window.removeEventListener("pointermove", onPointerLight);
-  if (lightRaf) cancelAnimationFrame(lightRaf);
 });
 </script>
 

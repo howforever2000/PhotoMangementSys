@@ -533,11 +533,11 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   max-width: 100%;
   padding: 6px 12px;
-  /* BUG-2026-1021-001：.glass-card 的 container-type: inline-size 会触发
-     内联轴尺寸 containment —— 本元素作为 flex 子项时固有宽度按 0 计算，
-     整块只剩左右内边距（实测 24px），头像/用户名/图标/退出登录全部溢出框外：
-     非全屏时「退出登录」被顶到视口右侧裁掉，用户名等被挤成竖排单字。
-     这个小药丸不需要容器查询（只有液态高光用它算半径），恢复普通容器类型。 */
+  /* BUG-2026-1021-001：.glass-card 曾声明 container-type: inline-size（为液态游标亮斑算
+     cqw 半径），inline-size 尺寸 containment 会让本元素作为 flex 子项时固有宽度按 0 计算，
+     整块只剩左右内边距（实测 24px），头像/用户名/图标/退出登录全部溢出框外。
+     M3 已从 .glass-card 删掉 container-type，这里仍显式写回 normal：
+     它能保证以后任何人重新加上 containment 时，这颗药丸不会静默塌陷。 */
   container-type: normal;
   /* blur 半径过大（12-16px）会让文字下方的背景"糊一片"，反而发雾。
      改为 6px，仍保留玻璃质感但不再拖累文字。 */
@@ -546,16 +546,8 @@ onBeforeUnmount(() => {
   border-radius: 999px;
 }
 
-/* 失去尺寸容器后，液态高光里的 cqw/cqh 会退回视口单位（42vw），
-   在小药丸上糊成一大片白。这里换成本地 px 半径（与 main.css 的 cqw 兜底同口径）。 */
-body.mat-liquid .user-box::before {
-  background: radial-gradient(
-    120px 60px at var(--mx, -30rem) var(--my, -30rem),
-    rgba(255, 255, 255, 0.5) 0%,
-    rgba(255, 255, 255, 0.18) 40%,
-    rgba(255, 255, 255, 0) 72%
-  );
-}
+/* 液态不再有 :before 图层（M3 把壁厚全部收进 inset 阴影，且 inset 自动跟圆角，
+   在小药丸上不需要任何尺寸补偿）。 */
 
 .user-chip {
   display: inline-flex;

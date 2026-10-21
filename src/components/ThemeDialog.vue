@@ -286,7 +286,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
               </button>
             </div>
             <p class="pm-hint" style="margin: 6px 0 0">
-              普通：无模糊、无纹理的卡片 · 液态：低模糊 + 流体高光（全局生效）
+              普通：无模糊、无纹理的卡片 · 液态：边缘折射 + 壁厚高光（全局生效）
             </p>
           </div>
 

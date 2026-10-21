@@ -3489,7 +3489,74 @@
       ],
       "created_at": "2026-10-21T15:20:00+08:00",
       "updated_at": "2026-10-21T16:10:00+08:00"
+    },
+    {
+      "id": "FEAT-101",
+      "name": "液态玻璃重做：取消游标追光，改为静态光学 + 实体壁厚",
+      "module": "UI 材质 / src/assets/main.css、src/stores/theme.ts、src/App.vue、src/views/Home.vue、src/components/ThemeDialog.vue",
+      "purpose": "用户反馈「液态玻璃跟着鼠标动的光影」不对，要求改为玻璃的透明度质感与厚度。原实现把光标坐标写入每张卡片的 --mx/--my，由 ::before 的游标亮斑 × 边缘环画出折射：亮斑落在卡片内部（光穿过玻璃而不是被边缘折射，方向反了）、全站每帧读一次 getBoundingClientRect 再写自定义属性、材质随鼠标变化与「材质是卡片静态属性」矛盾。M3 改为固定主光源（左上 135°）下的纯静态光学。",
+      "implementation": {
+        "① 拆除游标追光": [
+          "删除 App.vue 里全局 pointermove 委托、rAF 合帧与 --mx/--my 写入（全站少一个常驻全局监听）",
+          "删除 main.css 中 body.mat-liquid .glass-surface/.glass-card::before 的游标亮斑 + 径向环 mask 规则，以及 @supports not (width:1cqw) 的 px 半径兜底",
+          "删除 Home.vue 里 .user-box::before 的 px 半径覆盖"
+        ],
+        "② 厚度改用 inset 阴影（px 偏移 + blur 衰减，自动跟圆角）": [
+          "--shadow-1（液态）重写为一条自上而下的光路：上缘 1px 镜面 → 12px 亮雾（光透入介质）→ 焦散亮线（贴下缘内侧，inset 0 -3px 6px -4px，厚度核心读数）→ 底缘暗壁 1px → 壁体内影 16px",
+          "移除原来的零偏移暗角 inset 0 0 24px / 0 0 6px —— 零偏移只能整体压灰，说不出玻璃有多厚",
+          "为什么不继续用伪元素环带：伪元素是满卡尺寸，180deg 渐变的百分比按整张卡解算，5px 的环只截到色标 0~4%，实测带内 #796F7F → 带外 #615467 一步跳，整卡看着像包了塑料边（像素探针记录）"
+        ],
+        "③ 棱环单向化": [
+          "共享棱环的第二层是 135° 双角反光（左上 + 右下各一条 0.26/0.28），右下那条把焦散抹成均匀白边",
+          "液态单独覆盖 ::after 背景为 160deg 单光源：左上受光 0.46 → 中段收干 → 右下 0.34 暗壁；.candy-surface 用 :not() 排除，彩虹卡保持原棱环"
+        ],
+        "④ 透明度质感": [
+          "液态掺白 20% → 12%：掺白是奶雾感来源，20% 时卡面偏奶白、看不出背后在透",
+          "新增材质透明度偏移 effectiveAlpha：液态名义 alpha − 0.12（默认 0.64 → 0.52），并从同一出口喂给 compFill / glassRgb / readability，保证上屏底与计算底一致",
+          "带安全阀：先算 base 与 dropped 两档的文字对比，只有「降完仍 ≥4.5」才真的降；原本就不达标的组合取两者中更好的那档 —— 否则浅壁纸 + 暗组件色会被推进中灰死区（黑白两种文字都上不了 4.5）",
+          "模糊 10 → 12px、饱和 1.15 → 1.08：液态要「清」不要「艳」，模糊再大就变磨砂"
+        ],
+        "⑤ 连带清理": [
+          "删除 .glass-surface/.glass-card 的 container-type: inline-size —— 它只服务游标亮斑的 cqw 半径，且会触发内联轴尺寸 containment，让 flex 子项的固有宽度按 0 计算（BUG-2026-1021-001 的根因）；全仓已无 @container / cqw 查询",
+          "Home.vue 的 user-box 仍显式写回 container-type: normal 作为防回归护栏"
+        ]
+      },
+      "highlights": [
+        "光标移动不再触发任何卡片样式写入（原实现每帧一次 getBoundingClientRect + 两次 setProperty）",
+        "液态比 M2 少一层合成（::before 整层取消），壁厚改由 inset 阴影承担",
+        "168 组对比度矩阵（8 背景 × 3 组件色 × 7 档透明度）：新液态 <4.5 的样本 13 组，旧液态 18 组，普通卡片 24 组；最低值 3.75 → 3.97",
+        "同一矩阵中 150/168 组实际降了透明度（玻璃更透）；被列为「比普通卡片差」的 91 组多为 14.5:1 掉到 13.9:1 这类无意义下降",
+        "像素探针：上缘 #C7C2C8 单像素镜面 → 13px 平滑衰减，无断带；下缘 焦散 #594F5F → 暗壁 #453F48 → 卡外 #25152E",
+        "浅色/深色、亮壁纸/暗壁纸下文字取向由 glassTone 统一决定，无硬编码"
+      ],
+      "tests": [
+        "npm test 78/78 通过",
+        "npx vue-tsc --noEmit 退出码 0",
+        "Headless Chromium 1280×760 截图（液态 M3 vs 旧 M2 并排），逐像素探针核对上/下/右缘的亮度曲线",
+        "node --experimental-strip-types 跑 168 组 alpha × 背景 × 组件色 的对比度 A/B 矩阵（脚本临时，结论已记入本条目）"
+      ],
+      "related_files": [
+        "src/assets/main.css",
+        "src/stores/theme.ts",
+        "src/App.vue",
+        "src/views/Home.vue",
+        "src/components/ThemeDialog.vue"
+      ],
+      "keywords": [
+        "液态玻璃",
+        "liquid glass",
+        "材质",
+        "游标追光",
+        "壁厚",
+        "焦散",
+        "透明度",
+        "对比度",
+        "container-type",
+        "BUG-2026-1021-001"
+      ],
+      "created_at": "2026-10-21T17:40:00+08:00",
+      "updated_at": "2026-10-21T17:40:00+08:00"
     }
   ],
-  "updated": "2026-10-21T15:20:00+08:00"
+  "updated": "2026-10-21T17:40:00+08:00"
 }

@@ -88,14 +88,15 @@
   --glass-bg: var(--color-surface);    /* 容器填充：由 theme store 按组件色调下发 */
   --glass-border: var(--color-border); /* 玻璃边缘内高光 1px */
   --liquid-bg: var(--color-surface-2); /* 液态控件填充（透明度下限 45%） */
-  /* 液态高光（素化 C2/M2）：0.45 → 0.20，且衰减段**大幅拉短**——
-     液态的招牌是「窄而快衰减」的一束反光（22% 处就基本收干净），
-     旧值拖到 58% 是一整片糊白，卡面因此发闷发艳。 */
+  /* 液态高光（素化 C2 / M3）：0.45 → 0.20，且衰减段**大幅拉短**——
+     液态的招牌是「窄而快衰减」的一束反光（40% 处就基本收干净），
+     旧值拖到 58% 是一整片糊白，卡面因此发闷发艳。
+     M3：这束光是**静态**的 —— 全应用唯一的固定光源方向（左上 135°），不跟鼠标。 */
   --liquid-highlight: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.16) 0%,
-    rgba(255, 255, 255, 0.04) 20%,
-    rgba(255, 255, 255, 0) 38%
+    rgba(255, 255, 255, 0.2) 0%,
+    rgba(255, 255, 255, 0.05) 22%,
+    rgba(255, 255, 255, 0) 40%
   );
   /* 公共表面光影：双向倒角（顶部白亮棱 + 底部暗色玻璃壁）+ 单柔光投影。
      素化 C5：删掉原来的第二层硬投影 `0 2px 4px .16` —— 那道 4px 的近距离黑影
@@ -196,23 +197,34 @@ body.mat-plain {
 }
 
 body.mat-liquid {
-  /* M2：saturate 1.6 → 1.15。1.6 是全应用最大的「艳」来源 ——
-     它把背后壁纸/渐变的彩度直接放大 60%，整屏跟着变艳。
-     液态仍需一点彩度增益（湿玻璃会聚光），所以留 1.15 而不是 1.0。 */
-  --glass-blur: 10px;
-  --glass-saturate: 1.15;
-  /* 液态倒角：两种材质中对比最强（折射面两侧亮度差最大）；
-     末尾两道 inset 暗角是液态的招牌之一（见 M2）—— 内侧压暗，透镜才有「厚」。
+  /* M3：saturate 1.15 → 1.08，模糊 10 → 12px。
+     液态要的是「清」，不是「艳」；模糊再大就变成磨砂（磨砂是另一种材质，
+     会把背光壁纸糊成一片灰雾，反而看不出玻璃在「透」）。 */
+  --glass-blur: 12px;
+  --glass-saturate: 1.08;
+  /* 液态厚度（M3）：全部由 inset 阴影读出，px 偏移 + blur 衰减 + 自动跟圆角。
+     自上而下一条光路：上缘镜面 → 透入介质后的亮雾 → 焦散（贴下缘内侧的亮线）
+     → 底缘暗壁（1px 硬边）→ 壁体内影（向上压进卡内）。
+     旧的 `inset 0 0 24px` 是零偏移暗角：只给卡面压了一层灰，说不出玻璃多厚。
      放在令牌里而不是规则里，是为了内联 cardStyle 路径也拿到同一份（内联会盖规则）。 */
   --shadow-1:
-    inset 0 1.5px 1px rgba(255, 255, 255, 0.52),
-    inset 0 -1.5px 2px rgba(0, 0, 0, 0.26),
-    inset 1.5px 0 1px rgba(255, 255, 255, 0.11),
-    inset -1.5px 0 1px rgba(0, 0, 0, 0.13),
-    inset 0 0 24px rgba(0, 0, 0, 0.16),
-    inset 0 0 6px rgba(0, 0, 0, 0.1),
-    0 1px 3px rgba(0, 0, 0, 0.1),
-    0 22px 48px -14px rgba(0, 0, 0, 0.48);
+    /* ① 上缘 1px 镜面（硬且短） */
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    /* ② 光透入上缘后的亮雾：宽而弱，12px 内衰完 */
+    inset 0 12px 18px -14px rgba(255, 255, 255, 0.3),
+    /* ③ 焦散：贴着下缘内侧的一道亮线（光在路上被弯折一次才出来）——
+       这是「厚度」的核心读数。必须排在暗壁/壁内影之前，否则会被压掉。 */
+    inset 0 -3px 6px -4px rgba(255, 255, 255, 0.5),
+    /* ④ 底缘暗壁（1px 硬边：透过厚壁看到背面暗部） */
+    inset 0 -1px 0 rgba(0, 0, 0, 0.32),
+    /* ⑤ 壁体内影：软、向上压 16px */
+    inset 0 -16px 26px -18px rgba(0, 0, 0, 0.5),
+    /* ⑥ 左右薄边 */
+    inset 1px 0 0 rgba(255, 255, 255, 0.07),
+    inset -1px 0 0 rgba(0, 0, 0, 0.1),
+    /* ⑦ 环境影 + 悬浮柔光 */
+    0 2px 6px rgba(0, 0, 0, 0.12),
+    0 24px 48px -16px rgba(0, 0, 0, 0.48);
 }
 
 /* ==========================================================================
@@ -223,15 +235,11 @@ body.mat-liquid {
 .glass-surface,
 .glass-card {
   position: relative; /* 伪元素定位前提（卡片已有 backdrop-filter，包含块行为无增量变化） */
-  /* 液态折射环的游标亮斑半径用 cqw/cqh（相对卡片尺寸），需要本元素是容器。
-     刻意用 inline-size 而非 size：size 会让容器高度脱离内容计算，
-     实测把 96px 高的卡片压成 34px（布局塌陷，见 liquid-fix-compare.html 的 B 列）。
-     inline-size 只锁宽度、不影响高度，正是这里需要的。
-     注意（BUG-2026-1021-001）：inline-size containment 会让本元素的固有宽度按 0 计算。
-     作为 grid 子项被拉伸时无感；但作为 flex 子项、宽度为 auto 时会直接塌成内边距宽度
-     （Home 的 user-box 实测 24px，子项全部溢出）。这类小控件请在组件内覆盖
-     container-type: normal，并给液态高光伪元素补 px 半径。 */
-  container-type: inline-size;
+  /* M3：container-type 已删除。它当初只为液态游标亮斑的 cqw/cqh 半径而存在，
+     而 inline-size containment 会把本元素的**固有宽度按 0 计算** ——
+     作为 grid 子项被拉伸时无感，但作为 flex 子项、宽度 auto 时会直接塌成内边距宽度
+     （Home 的 user-box 实测 24px，子项全部溢出，BUG-2026-1021-001）。
+     游标亮斑取消后全仓再无 @container / cqw 查询，留着只是白背一个坑。 */
   background-color: var(--glass-bg); /* 普通/液态两条路径共用填充 */
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -257,76 +265,24 @@ body.mat-plain .glass-card::after {
   display: none;
 }
 
-/* —— 液态 M2：招牌动作 = **光标边缘折射** ——
-   图层分工（两种材质里唯一需要额外一层的）：
-     · 卡片元素自身（background-image / box-shadow）：静态光学 ——
-       135° 高光带 + 两处内部光池 + 内侧暗角；
-     · ::before：折射环（静态边缘环 mask × 游标亮斑 background）；
-     · ::after：棱环（与普通卡片共用）。
+/* —— 液态 M3（FEAT-101）：静态光学 = **边缘折射 + 实体壁厚** ——
+   旧版（M2）让一束亮斑跟着光标跑，做「游标边缘折射」。三个问题：
+   亮斑峰值落在卡片**内部**、折射方向与真实光路相反；全站每帧都在写自定义属性；
+   而且材质随鼠标变，与「材质是卡片的静态属性」这个产品语义矛盾。
 
-   ① 内侧暗角（元素自身）：液态的灵魂是「边缘把光折进来、内部反而更暗」，
-      只有光池没有暗角的话，整张卡从中心往外一路变亮 —— 那是发光的塑料板，
-      不是透镜。暗角与 135° 高光形成方向反差。
+   现在的图层分工（光只来自一个固定主光源：左上 135°）：
+     · 元素自身 background-image：湿边水光 + 底部透光 + 两处内部光池 + 135° 镜面带；
+     · 元素自身 box-shadow（--shadow-1）：壁厚的全部读数（见 body.mat-liquid 段）；
+     · ::after：1.5px 外棱环，液态换成单向 160°（见下方棱环段）。
 
-   ② 折射环（::before）= **静态边缘环（mask） × 游标亮斑（background）**
-      两个因子缺一不可：
-        · mask 是静态的径向环（中心透明 → 边缘不透明），峰值**精确落在边缘** ——
-          这才是折射该发生的位置。卡片中央恒定不变形。
-        · background 是跟着光标走的亮斑（App.vue 的一次性事件委托写入
-          --mx/--my），两者相乘 = 光标附近的边缘更亮。
-      若只用游标亮斑（不带环 mask），峰值会落在光标处（卡片内部）而边缘最暗 ——
-      折射方向是反的（实测过，见 .impeccable/liquid-fix-compare.html 的 C1 列）。
-
-   ⚠️ 这里**不能**用「padding + content-box mask」裁环（那正是悬停横杠的成因）：
-      CSS 百分比 padding 恒相对**宽度**解析，不相对短边。实测 279px 宽的卡片上
-      `padding: 12%` 算出 33px、466px 宽的算出 55.7px，content-box 高度被压到
-      9px / 7.6px —— 环退化成上下两条横杠。静态径向环没有这个问题：
-      `closest-side` 由浏览器按实际尺寸解算，零百分比陷阱。 */
-body.mat-liquid .glass-surface::before,
-body.mat-liquid .glass-card::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  /* 游标亮斑：半径用容器单位，随卡片尺寸自适应。
-     container-type: inline-size 在下方 .glass-surface/.glass-card 规则里声明
-     （它必须是容器自身才能被伪元素查询到）。 */
-  background: radial-gradient(
-    42cqw 42cqh at var(--mx, -30rem) var(--my, -30rem),
-    rgba(255, 255, 255, 0.42) 0%,
-    rgba(255, 255, 255, 0.15) 40%,
-    rgba(255, 255, 255, 0) 72%
-  );
-  background-repeat: no-repeat;
-  /* 静态边缘环：中心 60% 完全透明 → 边缘全不透明 */
-  -webkit-mask: radial-gradient(
-    closest-side circle at 50% 50%,
-    rgba(0, 0, 0, 0) 60%,
-    rgba(0, 0, 0, 0.5) 84%,
-    #000 100%
-  );
-  mask: radial-gradient(
-    closest-side circle at 50% 50%,
-    rgba(0, 0, 0, 0) 60%,
-    rgba(0, 0, 0, 0.5) 84%,
-    #000 100%
-  );
-}
-/* 容器查询单位兜底：极老引擎不支持 cqw/cqh 时整层 background 会失效
-   （mask 仍在 ⇒ 边缘环照常显示，只是没有游标亮斑）。用 @supports 显式声明 px 半径，
-   不靠「不支持就丢弃」——那会让边缘环彻底消失。 */
-@supports not (width: 1cqw) {
-  body.mat-liquid .glass-surface::before,
-  body.mat-liquid .glass-card::before {
-    background: radial-gradient(
-      180px 180px at var(--mx, -30rem) var(--my, -30rem),
-      rgba(255, 255, 255, 0.42) 0%,
-      rgba(255, 255, 255, 0.15) 40%,
-      rgba(255, 255, 255, 0) 72%
-    );
-  }
-}
+   为什么液态不再要 ::before：
+     前一版用「padding + content-box mask」在 ::before 上裁出一圈 5px 的折射带。
+     问题在渐变坐标系 —— 伪元素是满卡尺寸，180deg 渐变的百分比按**整张卡**
+     解算，环只截到最外 5px 那一小段（实测只用到 0~4% 的色标）。
+     于是那条带几乎恒亮、内边界又硬，整张卡看着像包了一圈塑料边（像素探针：
+     带内 #796F7F → 带外 #615467 一步跳）。
+     改成 box-shadow 的 inset 系列：px 偏移 + blur 衰减 + 自动跟 border-radius，
+     没有百分比陷阱，也不占额外图层（液态比 M2 少一层合成）。 */
 
 /* ==========================================================================
    糖果釉面（彩虹 hero / 入口卡 / 故事卡共享材质层）
@@ -390,6 +346,24 @@ body.mat-liquid .glass-card::before {
   mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   mask-composite: exclude;
   pointer-events: none;
+}
+
+/* —— 液态的棱环只认一个光源方向（M3 补充）——
+   共享棱环的第二层是 135° 双角反光：左上与**右下**各一条 0.26/0.28 的白。
+   普通卡片无感，但液态卡片的右下角额外要承担「厚壁 + 焦散」，
+   那条右下白光把焦散抹成了一圈均匀白边（“贴纸”感的最后一块拼图）。
+   这里只换掉背景：单一 160° 渐变 —— 左上受光 → 中段收干 → 右下背光变暗，
+   底缘保持暗壁，于是「亮在上、暗在下」这条光路才真正闭住。 */
+body.mat-liquid .glass-surface:not(.candy-surface)::after,
+body.mat-liquid .glass-card::after {
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.46) 0%,
+    rgba(255, 255, 255, 0.1) 26%,
+    rgba(255, 255, 255, 0) 46%,
+    rgba(0, 0, 0, 0.12) 64%,
+    rgba(0, 0, 0, 0.34) 100%
+  );
 }
 
 /* 统一盒模型：避免组件内 width+padding 溢出 */
@@ -638,12 +612,16 @@ body.theme-dark kbd {
    ========================================================================== */
 body.mat-liquid .glass-surface,
 body.mat-liquid .glass-card {
-  /* 静态光学全部落在元素自身（见 M2 图层分工说明）：
-     两处内部光池叠在 135° 高光带之上；内侧暗角在 --shadow-1 令牌里
-     （不能放这里 —— 内联 cardStyle 的 boxShadow 会盖掉本规则）。 */
+  /* 静态光学全部落在元素自身（见 M3 图层分工）：
+     ① 上缘湿边水光（一道极窄亮带：玻璃刚被擦过的湿感）
+     ② 底部透光焦散（光从底缘穿进厚壁后向上散开 —— 「透明」的主要证据）
+     ③ 两处内部光池 ④ 135° 静态高光带
+     壁厚内影在 --shadow-1 令牌里（不能放这里 —— 内联 cardStyle 的 boxShadow 会盖掉本规则）。 */
   background-image:
-    radial-gradient(120% 90% at 18% 0%, rgba(255, 255, 255, 0.14), transparent 45%),
-    radial-gradient(100% 80% at 85% 100%, rgba(255, 255, 255, 0.07), transparent 40%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0, rgba(255, 255, 255, 0) 10%),
+    linear-gradient(0deg, rgba(255, 255, 255, 0.13) 0, rgba(255, 255, 255, 0) 17%),
+    radial-gradient(120% 90% at 18% 0%, rgba(255, 255, 255, 0.12), transparent 45%),
+    radial-gradient(100% 80% at 85% 100%, rgba(255, 255, 255, 0.05), transparent 40%),
     var(--liquid-highlight);
   background-color: var(--glass-bg);
   background-repeat: no-repeat;

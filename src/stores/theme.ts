@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 import {
   componentTone,
+  contrastRatio,
   glassBandContrast,
   gradientAverage,
   hexToRgb,
@@ -365,25 +366,65 @@ export const useThemeStore = defineStore("theme", () => {
   });
 
   /**
-   * 液态填充色（FEAT-086 表面光学）：向白提亮 20% 呈现「湿玻璃」。
+   * 液态填充色（FEAT-086 表面光学 / FEAT-101 M3）：向白提亮 12% 呈现「湿玻璃」。
    * 普通卡片维持组件原色。
+   *
+   * M3：20% → 12%。掺白是「奶雾感」的来源，掺到 20% 时卡面偏奶白、
+   * 看不出背后在透——「玻璃」变成了「上漆的板」。降到 12% 保住湿感，
+   * 把透明度还给玻璃；文字对比由 glassRgb 同步重算，不需另调。
+   *
    * 在 compFill 入口收口（而非只改 cardBg）：--color-surface/--glass-bg（类路径）与
    * cardStyle（内联路径）同一出口，文字对比计算 glassRgb 也用它，三处永远一致。
    * 注：不采用方案里的 color-mix(...white) —— 它会把 alpha 从 0.42 推到 0.536，
-   * 用户调的 compAlpha 滑块被材质嘴改；这里只提亮色相、alpha 恒由滑块决定。
+   * 用户调的 compAlpha 滑块被材质嘴改；这里只提亮色相，
+   * alpha 只由滑块 + 材质偏移（effectiveAlpha）决定，不让“掺白”顺手把透明度也改了。
    */
   const fillColor = computed(() =>
     material.value === "liquid"
-      ? rgbToHex(mixRgb(hexToRgb(compColorTemp.value), [255, 255, 255], 0.2))
+      ? rgbToHex(mixRgb(hexToRgb(compColorTemp.value), [255, 255, 255], 0.12))
       : compColorTemp.value,
   );
 
-  /** 玻璃等效底色：组件色调以 **compAlpha**（FEAT-086 可调）叠在**实际页面背景**上。
+  /**
+   * M3：**液态的名义透明度比普通卡片低一档**（默认 0.64 → 0.52），但带安全阀。
+   *
+   * 为什么必须在这里改而不是用 CSS 的 color-mix 偷偷降 alpha：
+   * glassRgb / readability / glassTone 全部拿同一个 alpha 算文字对比，
+   * 只让 CSS 变透 = “上屏的底比算过的底更透”，文字取向可能错边
+   * （亮壁纸透上来 → 实际是浅底，却按深底配了白字）。
+   * 从这里下发，三处（类路径 / 内联路径 / 对比计算）永远同値。
+   *
+   * 安全阀（素材）：更透明 = 卡面更接近背景色，极端组合（浅壁纸 + 暗组件色）
+   * 会把玻璃推到中灰死区：黑白两种文字都上不了 4.5:1。
+   * 实测 144 组（8 背景 × 3 色 × 6 档透明度）里，无条件降一档会让达标样本从
+   * 129 降到 121。所以只在**降完仍达标**时才真的降；原本就不达标的组合
+   * 反而取两者中更好的那个（反正不达标，不如换通透）。
+   * 不抢滑块：它是一个可回退的固定材质偏移，滑块拉到底液态也拉到底。
+   */
+  const LIQUID_ALPHA_DROP = 0.12;
+  const effectiveAlpha = computed(() => {
+    const base = compAlpha.value;
+    if (material.value !== "liquid") return base;
+    const dropped = Math.max(0.12, base - LIQUID_ALPHA_DROP);
+    if (Math.abs(dropped - base) < 1e-6) return base;
+    const fill = hexToRgb(fillColor.value);
+    const ratioAt = (a: number) => {
+      const glass = mixRgb(effectiveBg.value, fill, a);
+      const tone = componentTone(rgbToHex(glass));
+      return contrastRatio(relLum(hexToRgb(tone.text)), relLum(glass));
+    };
+    const baseRatio = ratioAt(base);
+    const droppedRatio = ratioAt(dropped);
+    if (baseRatio < 4.5) return droppedRatio >= baseRatio ? dropped : base;
+    return droppedRatio >= 4.5 ? dropped : base;
+  });
+
+  /** 玻璃等效底色：组件色调以 **有效 alpha**（滑块 + 材质偏移）叠在**实际页面背景**上。
    *  文字对比必须对着这个等效色算——玻璃是半透明的，只拿色调原色判断会误判
    *  （深墨绿玻璃叠在白背景上其实是中灰，该配深色字而不是浅色字）。
    *  fillColor 参与：液态掺白后等效底色变浅，文字取向必须跟着变。 */
   const glassRgb = computed(() =>
-    mixRgb(effectiveBg.value, hexToRgb(fillColor.value), compAlpha.value),
+    mixRgb(effectiveBg.value, hexToRgb(fillColor.value), effectiveAlpha.value),
   );
   const glassTone = computed(() => componentTone(rgbToHex(glassRgb.value)));
 
@@ -451,17 +492,17 @@ export const useThemeStore = defineStore("theme", () => {
   watch(material, applyMaterial);
 
   /* ---------- 组件色调下发（FEAT-084/085/086）：容器 = 玻璃 ----------
-     玻璃底色 = 组件色调以 compAlpha（可调）叠在页面背景上（Q2-A），
+     玻璃底色 = 组件色调以 effectiveAlpha（滑块 + 材质偏移）叠在页面背景上（Q2-A），
      文字色对**玻璃等效底色**取对比更高的一侧；所有值常驻下发，
      换背景色/背景图/组件色调/透明度/材质都会重新推导。 */
 
-  /** 玻璃分层透明度（由可调 compAlpha 派生）：
-   *  容器 = compAlpha（默认 0.42）/ 次级面板 +0.24 / 弹层 +0.36，封顶 0.95。
+  /** 玻璃分层透明度（由滑块 compAlpha + 材质偏移派生）：
+   *  容器 = effectiveAlpha / 次级面板 +0.24 / 弹层 +0.36，封顶 0.95。
    *  必须声明在 applyCompColor 的 immediate watch 之前（TDZ：否则首帧就抛
    *  Cannot access 'containerAlpha' before initialization —— 冒烟实测踩过）。 */
-  const containerAlpha = computed(() => compAlpha.value);
-  const panelAlpha = computed(() => Math.min(0.95, compAlpha.value + 0.24));
-  const dialogAlpha = computed(() => Math.min(0.95, compAlpha.value + 0.36));
+  const containerAlpha = computed(() => effectiveAlpha.value);
+  const panelAlpha = computed(() => Math.min(0.95, effectiveAlpha.value + 0.24));
+  const dialogAlpha = computed(() => Math.min(0.95, effectiveAlpha.value + 0.36));
 
   function applyCompColor() {
     if (typeof document === "undefined") return;
@@ -479,7 +520,7 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--liquid-bg", compFill(panelAlpha.value));
     body.style.setProperty("--glass-border", tone.border);
   }
-  watch([compColor, compAlpha, effectiveBg], applyCompColor, { immediate: true });
+  watch([compColor, compAlpha, effectiveBg, material], applyCompColor, { immediate: true });
 
   /* ---------- FEAT-087：品牌色 / 语义色族下发 ----------
      组件里已把硬编码色值注册成 var(--color-*)（codemod 扫描替换），
@@ -633,7 +674,7 @@ export const useThemeStore = defineStore("theme", () => {
         : bgStyle.value === "image"
           ? mixRgb(effectiveBg.value, hexToRgb(scrim), SCRIM_MEAN_ALPHA)
           : effectiveBg.value;
-    return glassBandContrast(bands, avg, fillColor.value, compAlpha.value);
+    return glassBandContrast(bands, avg, fillColor.value, effectiveAlpha.value);
   });
 
   return {
