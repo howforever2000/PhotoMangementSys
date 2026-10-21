@@ -19,7 +19,7 @@ import ManualSort from "./ManualSort.vue";
 import AlbumCard from "../components/AlbumCard.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import ImportErrorsDialog from "../components/ImportErrorsDialog.vue";
-import BreadcrumbNav from "../components/BreadcrumbNav.vue";
+import EmptyState from "../components/EmptyState.vue";
 import { useNotify } from "../composables/useNotify";
 import type { ImportResult } from "../stores/album";
 
@@ -51,9 +51,6 @@ const showBackToTop = computed(() => scrollTop.value > 300);
 function scrollToTop() {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
-
-/** P1 面包屑导航：仅一级「主页→相册列表」 */
-const breadcrumbs = [{ label: "主页", to: "/home" }, { label: "相册列表" }];
 
 /** 将本地文件路径转为前端可访问的 URL（Tauri asset 协议） */
 function fileUrl(path: string | null): string {
@@ -1146,8 +1143,6 @@ function onKey(e: KeyboardEvent) {
       <div class="toolbar-left">
         <button class="btn btn-back" @click="router.push('/home')">← 主页</button>
         <h1 class="page-title">我的相册</h1>
-        <!-- P1 面包屑导航 -->
-        <BreadcrumbNav :crumbs="breadcrumbs" />
       </div>
       <div class="toolbar-actions">
         <!-- 非勾选模式：排序控件 + 批量导入 / 管理 / 新建 -->
@@ -1524,11 +1519,14 @@ function onKey(e: KeyboardEvent) {
     </main>
 
     <!-- 空状态引导（需求 §2.1，手动模式不显示） -->
-    <div v-if="!store.isLoading && store.albums.length === 0 && sortMode !== 'manual'" class="empty-state">
-      <div class="empty-icon">📁</div>
-      <p>还没有相册</p>
-      <button class="btn btn-primary" @click="openCreateDialog">创建第一个相册</button>
-    </div>
+    <EmptyState
+      v-if="!store.isLoading && store.albums.length === 0 && sortMode !== 'manual'"
+      icon="📁"
+      title="还没有相册"
+      description="创建第一个相册，把硬盘里的照片收进来。"
+      action-label="创建第一个相册"
+      @action="openCreateDialog"
+    />
 
     <!-- 右键菜单 -->
     <div
@@ -2311,17 +2309,6 @@ function onKey(e: KeyboardEvent) {
   gap: 20px;
 }
 
-.empty-state {
-  text-align: center;
-  padding: 80px 0;
-  color: var(--muted);
-}
-
-.empty-icon {
-  font-size: 56px;
-  margin-bottom: 12px;
-}
-
 /* 右键菜单 */
 .context-menu {
   position: fixed;
@@ -2845,7 +2832,11 @@ function onKey(e: KeyboardEvent) {
   }
 
   .toolbar-left {
-    justify-content: space-between;
+    /* 去掉重复面包屑后只剩「返回 + 标题」两项，space-between 会把标题推到最右，
+       与返回按钮断开。改为左对齐并允许换行，标题紧跟返回按钮。 */
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 12px;
   }
 
   .toolbar-actions {

@@ -111,7 +111,7 @@ export const useThemeStore = defineStore("theme", () => {
      只需改 temp() 的入参，其余接入点无需改动。applyTemperature 在 t=0 时严格
      返回原色（color.test.ts 已对全站在用的每个色值断言过），所以停用状态
      零开销、零视觉变化。 */
-  /** FEAT-086：玻璃材质（磨砂/液态），预设一律磨砂 */
+  /** FEAT-086：卡片材质（普通/液态），预设一律普通卡片 */
   const material = ref<Material>(saved.material);
   const bgStyle = ref<BackgroundStyle>(saved.bgStyle);
   const bgColor = ref(saved.bgColor);
@@ -157,7 +157,7 @@ export const useThemeStore = defineStore("theme", () => {
     }
   }
 
-  /** FEAT-086：一键套用预定义效果（整套联动：三段渐变 + 组件色 + 透明度 + 磨砂） */
+  /** FEAT-086：一键套用预定义效果（整套联动：三段渐变 + 组件色 + 透明度 + 普通卡片） */
   function applyPreset(p: Preset) {
     const patch = presetPrefs(p);
     bgStyle.value = patch.bgStyle!;
@@ -365,8 +365,8 @@ export const useThemeStore = defineStore("theme", () => {
   });
 
   /**
-   * 液态/釉瓷填充色（FEAT-086 表面光学 + 釉瓷扩展）：向白提亮呈现「湿玻璃/瓷面」。
-   * 液态掺白 20%；釉瓷掺白 30%（瓷面更亮更硬挺）。磨砂维持组件原色。
+   * 液态填充色（FEAT-086 表面光学）：向白提亮 20% 呈现「湿玻璃」。
+   * 普通卡片维持组件原色。
    * 在 compFill 入口收口（而非只改 cardBg）：--color-surface/--glass-bg（类路径）与
    * cardStyle（内联路径）同一出口，文字对比计算 glassRgb 也用它，三处永远一致。
    * 注：不采用方案里的 color-mix(...white) —— 它会把 alpha 从 0.42 推到 0.536，
@@ -375,9 +375,7 @@ export const useThemeStore = defineStore("theme", () => {
   const fillColor = computed(() =>
     material.value === "liquid"
       ? rgbToHex(mixRgb(hexToRgb(compColorTemp.value), [255, 255, 255], 0.2))
-      : material.value === "glazed"
-        ? rgbToHex(mixRgb(hexToRgb(compColorTemp.value), [255, 255, 255], 0.3))
-        : compColorTemp.value,
+      : compColorTemp.value,
   );
 
   /** 玻璃等效底色：组件色调以 **compAlpha**（FEAT-086 可调）叠在**实际页面背景**上。
@@ -440,14 +438,14 @@ export const useThemeStore = defineStore("theme", () => {
   applyBodyTheme(mode.value === "dark");
   watch(mode, (m) => applyBodyTheme(m === "dark"));
 
-  /* ---------- 玻璃材质切换（FEAT-086）：磨砂 frosted / 液态 liquid ----------
+  /* ---------- 卡片材质切换（FEAT-086 / FEAT-100）：普通 plain / 液态 liquid ----------
      body 挂 mat-* 类，main.css 据此覆写 --glass-blur / --glass-saturate / 高光层；
-     卡片（cardStyle 内联）与 .glass-surface（类）两条消费路径同时生效（全局 Q3）。 */
+     卡片（cardStyle 内联）与 .glass-surface（类）两条消费路径同时生效（全局 Q3）。
+     旧版本的 frosted / glazed 已在 prefs.normalizePrefs 里回落为 plain。 */
   function applyMaterial(m: Material) {
     if (typeof document === "undefined") return;
-    document.body.classList.toggle("mat-frosted", m === "frosted");
+    document.body.classList.toggle("mat-plain", m === "plain");
     document.body.classList.toggle("mat-liquid", m === "liquid");
-    document.body.classList.toggle("mat-glazed", m === "glazed");
   }
   applyMaterial(material.value);
   watch(material, applyMaterial);
@@ -562,25 +560,34 @@ export const useThemeStore = defineStore("theme", () => {
   const cardBg = computed(() => compFill(containerAlpha.value));
   /** 卡片描边（颜色值）：玻璃边缘内高光，方向随等效底色明暗 */
   const cardBorder = computed(() => glassTone.value.border);
-  /** 卡片/容器整套样式（内联 style 直接消费）：玻璃材质三件套。
-   *  三种材质的高光/光池/暗角全部引用全局令牌（--liquid-highlight 等 + ::before/::after 层），
+  /** 普通卡片关闭 backdrop-filter；液态保留模糊 + 饱和。
+   *  内联 cardStyle 会覆盖 CSS 规则，所以这里必须与材质同步下发 "none"。 */
+  const glassBackdrop = computed(() =>
+    material.value === "plain"
+      ? "none"
+      : "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
+  );
+
+  /** 卡片/容器整套样式（内联 style 直接消费）：材质两件套。
+   *  液态的高光/光池/暗角全部引用全局令牌（--liquid-highlight 等 + ::before/::after 层），
    *  这里只下发「内联路径独有的那一部分」：模糊与填充。
    *  —— 材质层的元素级 mask/滤镜走伪元素，cardStyle 不重复它们，
    *  避免同一样式在类路径与内联路径下画出两套不同的光学。 */
   const cardStyle = computed(() => ({
     backgroundColor: cardBg.value,
-    border: `1px solid ${cardBorder.value}`,
+    /* 描边/阴影不再内联：内联 border/box-shadow 会盖掉 :hover 的 border-color 与
+       var(--shadow-2)。所有 cardStyle 消费方都挂了 .glass-card，统一由类规则下发。 */
     /* 修补：内联路径此前缺 -webkit- 前缀，Safari/WebView 下零模糊 */
-    WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
-    backdropFilter: "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
-    boxShadow: "var(--shadow-1)",
+    WebkitBackdropFilter: glassBackdrop.value,
+    backdropFilter: glassBackdrop.value,
   }));
 
   /** 弹窗面板变量包（--pm-*）：Home 基本信息弹窗与 ThemeDialog 共用（FEAT-086）。
    *  弹层 = 玻璃 + 高模糊 + 三级深阴影；颜色随组件色调/材质实时重推。 */
   const dialogVarStyle = computed(() => ({
     background: dialogFill.value,
-    backdropFilter: "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
+    WebkitBackdropFilter: glassBackdrop.value,
+    backdropFilter: glassBackdrop.value,
     boxShadow: "var(--shadow-3)",
     border: `1px solid ${cardBorder.value}`,
     color: textColor.value,

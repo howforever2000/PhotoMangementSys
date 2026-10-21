@@ -153,7 +153,8 @@ test("非法输入不抛错：authGlass / authScrimBackground 走安全回落", 
   const g = authGlass("not-a-color");
   assert.equal(g.length, 3);
   for (const v of g) assert.ok(Number.isFinite(v) && v >= 0 && v <= 255, `分量越界: ${v}`);
-  const scrim = authScrimBackground({ ...AUTH_SCRIM, color: "坏值" });
+  // 故意传非法色值验证运行时回落；这里绕过 AUTH_SCRIM 的字面量类型（测试目标正是坏值）
+  const scrim = authScrimBackground({ ...AUTH_SCRIM, color: "坏值" } as unknown as typeof AUTH_SCRIM);
   assert.ok(scrim.startsWith("radial-gradient"), "坏色值应回落而不是产出 undefined");
   assert.ok(!scrim.includes("undefined") && !scrim.includes("NaN"));
 });

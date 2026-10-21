@@ -21,6 +21,7 @@ import { useNotify } from "../composables/useNotify";
 import type { ContentSearchHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
+import EmptyState from "../components/EmptyState.vue";
 
 const router = useRouter();
 const store = useAlbumStore();
@@ -345,7 +346,7 @@ function goAlbumFromLightbox(albumId: number) {
     <!-- 顶部返回 -->
     <button class="btn mem-back" @click="router.push('/home')">← 主页</button>
 
-    <!-- Hero：彩虹横幅（按需求保留）；自带 45% 暗纱保证白字 ≥4.5:1 -->
+    <!-- Hero：彩虹横幅（按需求保留）；糖果浅底配墨色字，避免白字对比度不足 -->
     <section
       class="mem-hero glass-surface candy-surface"
       :style="{
@@ -354,7 +355,6 @@ function goAlbumFromLightbox(albumId: number) {
       }"
     >
       <div class="mem-hero-content">
-        <div class="mem-hero-eyebrow">SMART MEMORIES</div>
         <h1 class="mem-hero-title">回忆</h1>
         <p class="mem-hero-sub">把每一段时光重新翻出来 —— 按月 / 按年 / 按人物。</p>
         <div class="mem-stats">
@@ -390,18 +390,25 @@ function goAlbumFromLightbox(albumId: number) {
     </div>
 
     <!-- 错误 -->
-    <div v-else-if="error" class="mem-empty">
-      <div class="mem-empty-icon">⚠️</div>
-      <p>加载失败：{{ error }}</p>
-    </div>
+    <EmptyState
+      v-else-if="error"
+      icon="⚠️"
+      title="加载失败"
+      :description="error"
+      action-label="返回主页"
+      tone="error"
+      @action="router.push('/home')"
+    />
 
     <!-- 空数据 -->
-    <div v-else-if="!rows.length" class="mem-empty">
-      <div class="mem-empty-icon">🌅</div>
-      <p class="mem-empty-title">还没有可展示的回忆</p>
-      <p class="mem-empty-text">请先在相册详情页执行「综合扫描」，将照片的拍摄时间 / 地点 / 人物信息写入数据库。</p>
-      <button class="btn" @click="router.push('/albums')">去相册扫描</button>
-    </div>
+    <EmptyState
+      v-else-if="!rows.length"
+      icon="🌅"
+      title="还没有可展示的回忆"
+      description="请先在相册详情页执行「综合扫描」，把照片的拍摄时间、地点和人物信息写入数据库。"
+      action-label="去相册扫描"
+      @action="router.push('/albums')"
+    />
 
     <!-- 故事卡：按月聚合，水平滚动 -->
     <section v-else class="mem-section">
@@ -602,7 +609,11 @@ function goAlbumFromLightbox(albumId: number) {
 /* ---- Hero：糖果彩虹横幅（与下方故事卡同一色族 · 用户色卡） ---- */
 .mem-hero {
   position: relative;
-  height: 220px;
+  /* BUG-2026-1021-002：固定高度 + overflow:hidden 在 420px 以下会把
+     换行后的「本月新增」统计切掉（实测内容 221px > 横幅 200px）。
+     改为 min-height + 内容自适应。 */
+  min-height: 220px;
+  height: auto;
   border-radius: var(--radius-card);
   overflow: hidden;
   margin-bottom: 28px;
@@ -615,30 +626,22 @@ function goAlbumFromLightbox(albumId: number) {
 }
 .mem-hero-content {
   position: relative;
-  height: 100%;
+  min-height: 220px;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 0 36px;
-}
-.mem-hero-eyebrow {
-  font-size: 12px;
-  letter-spacing: 3px;
-  font-weight: 600;
-  /* 糖果底上的角标：墨色加重量 */
-  color: #17202e;
-  margin-bottom: 6px;
+  padding: 22px 36px;
 }
 .mem-hero-title {
-  font-size: 38px;
+  font-size: 30px;
   margin: 0;
   font-weight: 800;
-  letter-spacing: 4px;
+  letter-spacing: 0;
   text-shadow: none;
   color: #1f2733;
 }
 .mem-hero-sub {
-  margin: 6px 0 18px;
+  margin: 6px 0 16px;
   font-size: 14px;
   /* 去掉 opacity，用实色：渐变过渡区上副标题不再发虚 */
   color: #2a3547;
@@ -647,6 +650,7 @@ function goAlbumFromLightbox(albumId: number) {
   display: flex;
   align-items: center;
   gap: 18px;
+  row-gap: 12px;
   flex-wrap: wrap;
 }
 .stat-cell {
@@ -984,28 +988,6 @@ function goAlbumFromLightbox(albumId: number) {
 @keyframes skpulse {
   50% { opacity: 0.4; }
 }
-.mem-empty {
-  text-align: center;
-  padding: 80px 20px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-}
-.mem-empty-icon {
-  font-size: 52px;
-}
-.mem-empty-title {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0;
-}
-.mem-empty-text {
-  opacity: 0.7;
-  max-width: 460px;
-  line-height: 1.6;
-  margin: 0;
-}
 
 /* ---- 月度浏览框（参考相册详情页「缩略图浏览」框） ---- */
 .mb-mask {
@@ -1202,9 +1184,9 @@ function goAlbumFromLightbox(albumId: number) {
 
 @media (max-width: 640px) {
   .memories-page { padding: 12px; }
-  .mem-hero { height: 200px; }
-  .mem-hero-content { padding: 0 22px; }
-  .mem-hero-title { font-size: 30px; }
+  .mem-hero { min-height: 0; height: auto; }
+  .mem-hero-content { min-height: 0; padding: 18px 22px; }
+  .mem-hero-title { font-size: 28px; }
   .mem-story { flex: 0 0 180px; height: 240px; }
   .mem-year { flex: 0 0 260px; height: 170px; }
   .mem-person { flex: 0 0 80px; }
@@ -1212,5 +1194,8 @@ function goAlbumFromLightbox(albumId: number) {
   .mb-panel { max-height: calc(100vh - 20px); }
   .mb-head { padding: 12px 14px; }
   .mb-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+  /* 手机两行统计时，行尾的分隔线会悬空；改为纯间距分隔 */
+  .stat-divider { display: none; }
+  .mem-stats { column-gap: 24px; }
 }
 </style>

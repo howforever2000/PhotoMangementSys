@@ -3413,7 +3413,83 @@
       ],
       "created_at": "2026-10-07T02:00:00+08:00",
       "updated_at": "2026-10-07T02:00:00+08:00"
+    },
+    {
+      "id": "FEAT-100",
+      "name": "impeccable 前端显示精修 v2：窄窗横幅自适应 + 页面头部收敛 + 共享空状态 + 材质收敛为普通/液态",
+      "module": "UI 精修 / Home、AlbumList、SmartAlbum、ScanHub、Memories、Timeline、EmptyState、main.css、auth.css",
+      "purpose": "按 impeccable polish 流程做一次保真精修：保留落日玻璃与糖果横幅，修掉响应式裁切、重复信息、缺失的按钮/焦点/空状态规范；并按用户决定把三种玻璃材质收敛为「普通卡片 / 液态玻璃」两套，减少选择负担与维护面。",
+      "implementation": {
+        "① 窄窗横幅（SmartAlbum/ScanHub/Memories）": [
+          "固定 height + overflow:hidden 改为 min-height + height:auto，内容区用 min-height + padding 撑开",
+          "统计行补 row-gap；≤640px 隐藏行尾悬空分隔线，改用 column-gap",
+          "删除 SMART ALBUM / SCAN HUB / SMART MEMORIES 三个装饰性英文 kicker（craft-floor 禁止项）"
+        ],
+        "② 页面头部与按钮": [
+          "相册列表去掉与「← 主页」重复的面包屑「主页 › 相册列表」；窄窗工具栏改为左对齐，标题紧跟返回按钮",
+          "main.css 补全局 .btn 基础样式：34px 命中区、8px 圆角、中性玻璃底、focus-visible 金色焦点环",
+          "EmptyState.vue 新增：52px 图标 / 18px 标题 / 13.5px 说明 / 38px 金底墨字主按钮；替换相册、时间线、回忆三页的空态/错误态（共 5 个状态）"
+        ],
+        "③ 首页": [
+          "四张模块卡的 emoji 放进 46px 中性玻璃图标槽；副标题与四段描述改为更具体的动作语言",
+          "「进入 →」改为每卡明确动作（打开相册 / 开始扫描 / 打开工坊 / 浏览相册）",
+          "卡片补 role=link、tabindex、Enter/Space、focus-visible；图标按钮 32→36px 并补 aria-label",
+          "hover 位移 4px→2px，transition 改 180ms 指数缓出；全局补 prefers-reduced-motion"
+        ],
+        "④ 材质收敛为两套": [
+          "Material 类型改为 plain | liquid；DEFAULTS.material=plain；旧 localStorage 的 frosted/glazed 在 normalizePrefs 里回落为 plain",
+          "删除磨砂/釉瓷的 token、纹理贴图与伪元素规则；主题弹窗只保留「普通卡片 / 液态玻璃」两个按钮，预设徽标改为「普通 · X%」",
+          "普通卡片：cardStyle 与对话框同步下发 backdropFilter:none，隐藏材质伪元素，改用 1px 描边 + 轻投影（hover 也不再出现玻璃倒角）",
+          "液态：保留 135° 高光、两处内部光池、游标边缘折射；删除覆盖光池的后置重复规则，高光与环强度收窄一档",
+          "登录卡在液态下单独只保留压缩高光，不叠内部光池，保证亮壁纸上的文字对比度"
+        ]
+      },
+      "highlights": [
+        "1660/1280/900/641/640/560/420/360 八档宽度：无横幅裁切、无横向滚动",
+        "普通/液态 × 深/浅两套背景：模块标题最低 6.10:1、正文最低 5.75:1、箭头最低 6.04:1；智慧相册副标题 4.53:1",
+        "登录页标题最低 9.35:1、副标题 8.65:1",
+        "旧值 frosted/glazed 实测自动落到 mat-plain，卡片 backdropFilter=none；liquid 保留 blur(10px) saturate(1.15)",
+        "首页 4 张卡片均可 Tab 聚焦并 Enter 进入；EmptyState 主按钮统一为 38px 金底墨字"
+      ],
+      "tests": [
+        "npm run build（vue-tsc --noEmit + vite build）通过",
+        "npm test 77/77 通过",
+        "impeccable detect --json（13 个改动目标）返回 []，无新增反模式",
+        "Playwright 多宽度/多材质截图走查（Home/Albums/Smart/Timeline/Memories/Scan/Workshop/Login）"
+      ],
+      "related_files": [
+        "src/assets/main.css",
+        "src/assets/auth.css",
+        "src/components/EmptyState.vue",
+        "src/components/ThemeDialog.vue",
+        "src/stores/theme.ts",
+        "src/utils/prefs.ts",
+        "src/utils/presets.ts",
+        "src/views/Home.vue",
+        "src/views/AlbumList.vue",
+        "src/views/SmartAlbum.vue",
+        "src/views/ScanHub.vue",
+        "src/views/Memories.vue",
+        "src/views/Timeline.vue",
+        "src/utils/prefs.test.ts",
+        "src/utils/presets.test.ts",
+        "src/utils/loginTheme.test.ts"
+      ],
+      "keywords": [
+        "impeccable",
+        "polish",
+        "空状态",
+        "材质",
+        "普通卡片",
+        "液态玻璃",
+        "响应式",
+        "焦点态",
+        "对比度",
+        "材质迁移"
+      ],
+      "created_at": "2026-10-21T15:20:00+08:00",
+      "updated_at": "2026-10-21T16:10:00+08:00"
     }
   ],
-  "updated": "2026-10-07T02:00:00+08:00"
+  "updated": "2026-10-21T15:20:00+08:00"
 }

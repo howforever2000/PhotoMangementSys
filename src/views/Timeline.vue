@@ -5,6 +5,7 @@ import { useRoute, useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
+import EmptyState from "../components/EmptyState.vue";
 import type { ContentSearchHit } from "../types/content";
 
 /**
@@ -268,21 +269,25 @@ function goAlbumFromLightbox(albumId: number) {
     </div>
 
     <!-- 错误态 -->
-    <div v-else-if="error" class="tl-empty">
-      <div class="tl-empty-icon">⚠️</div>
-      <p class="tl-empty-text">加载失败：{{ error }}</p>
-      <button class="btn" @click="router.push('/home')">返回主页</button>
-    </div>
+    <EmptyState
+      v-else-if="error"
+      icon="⚠️"
+      title="加载失败"
+      :description="error"
+      action-label="返回主页"
+      tone="error"
+      @action="router.push('/home')"
+    />
 
     <!-- 空态 -->
-    <div v-else-if="rows.length === 0" class="tl-empty">
-      <div class="tl-empty-icon">🌅</div>
-      <p class="tl-empty-title">还没有可展示的时间线</p>
-      <p class="tl-empty-text">
-        请先在相册详情页执行「组合扫描」/「内容扫描”，将照片的拍摄时间写入数据库后再来查看跨相册时间线。
-      </p>
-      <button class="btn" @click="router.push('/albums')">去相册扫描</button>
-    </div>
+    <EmptyState
+      v-else-if="rows.length === 0"
+      icon="🌅"
+      title="还没有可展示的时间线"
+      description="请先在相册详情页执行「组合扫描」或「内容扫描」，把照片的拍摄时间写入数据库，再回来查看跨相册时间线。"
+      action-label="去相册扫描"
+      @action="router.push('/albums')"
+    />
 
     <!-- 时间线分组 -->
     <div v-else class="tl-content">
@@ -494,28 +499,6 @@ function goAlbumFromLightbox(albumId: number) {
   height: 22px;
   cursor: pointer;
   flex-shrink: 0;
-}
-.tl-empty {
-  text-align: center;
-  padding: 80px 20px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-}
-.tl-empty-icon {
-  font-size: 52px;
-}
-.tl-empty-title {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0;
-}
-.tl-empty-text {
-  opacity: 0.7;
-  max-width: 460px;
-  line-height: 1.6;
-  margin: 0;
 }
 .tl-skeleton {
   margin-top: 10px;

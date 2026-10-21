@@ -4,8 +4,8 @@
  *
  * 双页签结构：
  *  - 预定义效果：5 套三段渐变预设（源自设计图），一键整套联动
- *    （渐变三色标 + 配套组件色 + 组件透明度 + 磨砂材质）；
- *  - 自定义效果：原主题弹窗全部能力迁入 + 组件透明度滑块 + 液态/磨砂材质二选一。
+ *    （渐变三色标 + 配套组件色 + 组件透明度 + 普通卡片材质）；
+ *  - 自定义效果：原主题弹窗全部能力迁入 + 组件透明度滑块 + 普通/液态材质二选一。
  *
  * 由 Home.vue 渲染并 teleport 到 body；样式走全局 .pm-*（pm-dialog.css）。
  */
@@ -230,7 +230,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
                 ></span>
                 <span class="pm-preset-name">
                   <span>{{ p.name }}</span>
-                  <span class="pm-preset-badge">磨砂 · {{ Math.round(p.compAlpha * 100) }}%</span>
+                  <span class="pm-preset-badge">普通 · {{ Math.round(p.compAlpha * 100) }}%</span>
                 </span>
                 <span class="pm-preset-dots">
                   <i v-for="c in p.colors" :key="c" :style="{ background: c }"></i>
@@ -268,14 +268,14 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
           aria-labelledby="tab-custom"
         >
           <div class="pm-section">
-            <div class="pm-section-title">玻璃材质</div>
+            <div class="pm-section-title">卡片材质</div>
             <div class="pm-seg">
               <button
                 type="button"
-                :class="{ on: theme.material === 'frosted' }"
-                @click="theme.material = 'frosted'; theme.persist()"
+                :class="{ on: theme.material === 'plain' }"
+                @click="theme.material = 'plain'; theme.persist()"
               >
-                磨砂玻璃
+                普通卡片
               </button>
               <button
                 type="button"
@@ -284,16 +284,9 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
               >
                 液态玻璃
               </button>
-              <button
-                type="button"
-                :class="{ on: theme.material === 'glazed' }"
-                @click="theme.material = 'glazed'; theme.persist()"
-              >
-                釉瓷玻璃
-              </button>
             </div>
             <p class="pm-hint" style="margin: 6px 0 0">
-              磨砂：高模糊 + 粗颗粒喷砂 · 液态：低模糊 + 流体高光 · 釉瓷：陶瓷釉面开片 + 镜面天光（全局生效）
+              普通：无模糊、无纹理的卡片 · 液态：低模糊 + 流体高光（全局生效）
             </p>
           </div>
 

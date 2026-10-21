@@ -8,7 +8,7 @@
  * FEAT-086 新增字段：
  *   - gradMid：三段渐变中段色标（旧数据缺失 → 由首尾两色插值补出）；
  *   - compAlpha：组件玻璃填充不透明度（旧数据缺失 → 沿用 0.42 默认）；
- *   - material：玻璃材质（磨砂 frosted / 液态 liquid），预设一律磨砂。
+ *   - material：卡片材质（普通 plain / 液态 liquid），预设一律普通卡片。
  *
  * FEAT-087 新增字段：
  *   - saturation：全局饱和度缩放（1 = 原始色，白字/背景/品牌色/语义色统一乘）
@@ -23,8 +23,8 @@ import { hexToRgb, mixRgb, normalizeHex, rgbToHex } from "./color.ts";
 
 export type ThemeMode = "light" | "dark";
 export type BackgroundStyle = "image" | "gradient" | "color";
-/** 玻璃材质预设：磨砂（高模糊）/ 液态（低模糊 + 高光流体）/ 釉瓷（缎面 + 镜面天光带） */
-export type Material = "frosted" | "liquid" | "glazed";
+/** 卡片材质：普通（无模糊/无纹理）/ 液态（低模糊 + 流体高光） */
+export type Material = "plain" | "liquid";
 
 export interface Prefs {
   mode: ThemeMode;
@@ -63,7 +63,7 @@ export const DEFAULTS: Prefs = {
   saturation: 1,
   /* Q3 色温默认 0 = 零位移 ⇒ 老用户（localStorage 里没有这个字段）的外观逐像素不变 */
   temperature: 0,
-  material: "frosted",
+  material: "plain",
   bgStyle: "image",
   /* 图片层下方的底色：紫夜色 —— 壁纸是暖粉紫，底下若仍是墨绿会把画面染脏 */
   bgColor: "#1a1428",
@@ -100,7 +100,8 @@ export function isDefaultLook(prefs: Prefs, hasCustomImage: boolean): boolean {
 }
 
 const BG_STYLES: BackgroundStyle[] = ["image", "gradient", "color"];
-const MATERIALS: Material[] = ["frosted", "liquid", "glazed"];
+/* 旧版本写入的 frosted / glazed 会在 normalizePrefs 里回落为 plain —— 两种材质收敛为「普通卡片」。 */
+const MATERIALS: Material[] = ["plain", "liquid"];
 
 function str(v: unknown, fallback: string): string {
   return typeof v === "string" ? v : fallback;

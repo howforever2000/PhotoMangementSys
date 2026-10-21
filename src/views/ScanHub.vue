@@ -173,7 +173,7 @@ function onTabClick(t: ScanTab) {
   <div class="scan-page" :style="{ color: theme.textColor }">
     <button class="btn scan-back" @click="router.push('/home')">← 返回主页</button>
 
-    <!-- Hero：彩虹横幅（按需求保留）；自带 45% 暗纱保证白字 ≥4.5:1 -->
+    <!-- Hero：彩虹横幅（按需求保留）；糖果浅底配墨色字，避免白字对比度不足 -->
     <section
       class="scan-hero glass-surface candy-surface"
       :style="{
@@ -182,11 +182,8 @@ function onTabClick(t: ScanTab) {
       }"
     >
       <div class="scan-hero-content">
-        <div class="scan-hero-eyebrow">SCAN HUB</div>
         <h1 class="scan-hero-title">🔍 图片扫描</h1>
-        <p class="scan-hero-sub">
-          聚合照片扫描相关子功能：批量扫描入库、按年·地点浏览、重复清理与相册扫描分组
-        </p>
+        <p class="scan-hero-sub">批量扫描入库，按年·地点整理，重复清理与相册分组</p>
         <div class="scan-stats">
           <div class="stat">
             <span class="stat-num">{{ totalAlbums }}</span>
@@ -288,7 +285,9 @@ function onTabClick(t: ScanTab) {
 /* ---- Hero：糖果彩虹横幅（与下方子模块卡同一色族 · 用户色卡） ---- */
 .scan-hero {
   position: relative;
-  height: 220px;
+  /* 与 SmartAlbum 同一修法：min-height + 内容自适应，统计行换行不裁切 */
+  min-height: 220px;
+  height: auto;
   border-radius: var(--radius-card);
   overflow: hidden;
   margin-bottom: 22px;
@@ -301,31 +300,23 @@ function onTabClick(t: ScanTab) {
 }
 .scan-hero-content {
   position: relative;
-  height: 100%;
+  min-height: 220px;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 0 32px;
-}
-.scan-hero-eyebrow {
-  font-size: 12px;
-  letter-spacing: 3px;
-  font-weight: 600;
-  /* 糖果底上的角标：墨色加重量，小字距排不发散 */
-  color: #17202e;
-  margin-bottom: 6px;
+  padding: 22px 32px;
 }
 .scan-hero-title {
   font-size: 30px;
   margin: 0 0 6px;
   font-weight: 800;
-  letter-spacing: 2px;
+  letter-spacing: 0;
   text-shadow: none;
   color: #1f2733;
 }
 .scan-hero-sub {
   margin: 0 0 16px;
-  font-size: 13.5px;
+  font-size: 14px;
   /* 去掉 opacity，用实色：渐变过渡区上副标题不再发虚 */
   color: #2a3547;
 }
@@ -334,6 +325,7 @@ function onTabClick(t: ScanTab) {
   align-items: center;
   gap: 14px;
   column-gap: 20px;
+  row-gap: 12px;
   flex-wrap: wrap;
 }
 .stat {
@@ -487,9 +479,11 @@ function onTabClick(t: ScanTab) {
 
 @media (max-width: 640px) {
   .scan-page { padding: 16px 12px 32px; }
-  .scan-hero { height: auto; padding: 18px 0; }
-  .scan-hero-content { padding: 0 18px; }
-  .scan-hero-title { font-size: 24px; }
+  .scan-hero { min-height: 0; height: auto; padding: 0; }
+  .scan-hero-content { min-height: 0; padding: 18px; }
+  .scan-hero-title { font-size: 26px; }
   .scan-subcard { padding: 12px 14px; }
+  .stat-divider { display: none; }
+  .scan-stats { column-gap: 24px; }
 }
 </style>

@@ -15,7 +15,7 @@
  *   ③ **组件色是真中性灰（S=0，r=g=b）**：卡片底色不带任何色相，层次完全由明度 L
  *      承担，于是背景那一个色相不会被卡片"再添一个"。
  *
- * 每套联动：三段渐变 + 组件色调 + 组件玻璃透明度 + 磨砂材质（预设一律磨砂）。
+ * 每套联动：三段渐变 + 组件色调 + 组件玻璃透明度 + 卡片材质（预设一律普通卡片）。
  * 派生文字/链接对比度由 presets.test.ts 断言 ≥ 4.5:1。
  */
 import type { Prefs } from "./prefs.ts";
@@ -31,8 +31,8 @@ export interface Preset {
   compColor: string;
   /** 配套组件玻璃透明度 */
   compAlpha: number;
-  /** 预设材质：一律磨砂 */
-  material: "frosted";
+  /** 预设材质：一律普通卡片（普通/液态两套材质里的默认项） */
+  material: "plain";
 }
 
 /** 分组 id：主题弹窗据此渲染两个分组标题（C10） */
@@ -47,7 +47,7 @@ export const PRESETS: Preset[] = [
     angle: 180,
     compColor: "#f2f9f4",
     compAlpha: 0.55,
-    material: "frosted",
+    material: "plain",
   },
   {
     id: "cream-violet",
@@ -56,7 +56,7 @@ export const PRESETS: Preset[] = [
     angle: 180,
     compColor: "#fcf5f8",
     compAlpha: 0.56,
-    material: "frosted",
+    material: "plain",
   },
   {
     id: "mint-indigo",
@@ -65,7 +65,7 @@ export const PRESETS: Preset[] = [
     angle: 180,
     compColor: "#f4f8f6",
     compAlpha: 0.55,
-    material: "frosted",
+    material: "plain",
   },
   {
     id: "butter-plum",
@@ -74,7 +74,7 @@ export const PRESETS: Preset[] = [
     angle: 180,
     compColor: "#f7f8fd",
     compAlpha: 0.54,
-    material: "frosted",
+    material: "plain",
   },
   {
     id: "lemon-teal",
@@ -83,7 +83,7 @@ export const PRESETS: Preset[] = [
     angle: 180,
     compColor: "#f4fbfa",
     compAlpha: 0.55,
-    material: "frosted",
+    material: "plain",
   },
 ];
 
@@ -111,7 +111,7 @@ export const MUTED_PRESETS: Preset[] = [
     angle: 180,
     compColor: "#ededed",
     compAlpha: 0.62,
-    material: "frosted",
+    material: "plain",
   },
   {
     id: "clay-warm",
@@ -120,7 +120,7 @@ export const MUTED_PRESETS: Preset[] = [
     angle: 180,
     compColor: "#ededed",
     compAlpha: 0.62,
-    material: "frosted",
+    material: "plain",
   },
   {
     id: "amber-warm",
@@ -129,7 +129,7 @@ export const MUTED_PRESETS: Preset[] = [
     angle: 180,
     compColor: "#ededed",
     compAlpha: 0.62,
-    material: "frosted",
+    material: "plain",
   },
   {
     id: "ink-cool",
@@ -138,7 +138,7 @@ export const MUTED_PRESETS: Preset[] = [
     angle: 180,
     compColor: "#ececec",
     compAlpha: 0.62,
-    material: "frosted",
+    material: "plain",
   },
   {
     id: "slate-cool",
@@ -147,7 +147,7 @@ export const MUTED_PRESETS: Preset[] = [
     angle: 180,
     compColor: "#ececec",
     compAlpha: 0.62,
-    material: "frosted",
+    material: "plain",
   },
 ];
 

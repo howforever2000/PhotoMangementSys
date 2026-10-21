@@ -52,6 +52,7 @@ const modules = [
     id: "albums",
     title: "相册管理",
     desc: "创建相册、绑定本地文件夹、设置封面",
+    action: "打开相册",
     icon: "📁",
     path: "/albums",
     ready: true,
@@ -59,7 +60,8 @@ const modules = [
   {
     id: "scan",
     title: "图片扫描",
-    desc: "勾选相册批量扫描入库（EXIF/影调/AI），或扫描文件夹按年·地点组织移动",
+    desc: "批量扫描入库（EXIF / 影调 / AI），支持按年·地点整理",
+    action: "开始扫描",
     icon: "🔍",
     path: "/scan",
     ready: true,
@@ -67,7 +69,8 @@ const modules = [
   {
     id: "workshop",
     title: "创意工坊",
-    desc: "图片编辑小组件：区域直方图均衡化（框选 / 画蒙版）等",
+    desc: "区域直方图均衡化、基准调色与图像处理算子",
+    action: "打开工坊",
     icon: "🎨",
     path: "/workshop",
     ready: true,
@@ -75,7 +78,8 @@ const modules = [
   {
     id: "smart",
     title: "智慧相册",
-    desc: "照片时间线 · 智能搜索 · 批量整理，人物总览，聚合智慧功能（含回忆）",
+    desc: "时间线、智能搜索、人物总览与回忆",
+    action: "浏览相册",
     icon: "🧠",
     path: "/smart",
     ready: true,
@@ -265,22 +269,29 @@ onBeforeUnmount(() => {
       <header class="home-header">
         <div class="header-text">
           <h1 class="app-title">本地相册管理</h1>
-          <p class="app-subtitle">轻量级本地相册管理系统</p>
+          <p class="app-subtitle">照片留在本机，按时间、人物与地点重新翻出来</p>
         </div>
         <div class="user-box glass-card" :style="cardStyle">
-          <button class="user-chip" type="button" @click="openProfile" :title="'修改基本信息'">
+          <button
+            class="user-chip"
+            type="button"
+            aria-label="修改基本信息"
+            title="修改基本信息"
+            @click="openProfile"
+          >
             <img
               v-if="auth.user?.avatar"
               :src="avatarUrl(auth.user.avatar)"
               class="avatar avatar-img"
               alt=""
             />
-            <span v-else class="avatar">👤</span>
+            <span v-else class="avatar" aria-hidden="true">👤</span>
             <span class="user-name">{{ username() }}</span>
           </button>
           <button
             class="icon-btn"
             type="button"
+            aria-label="主题 / 皮肤设置"
             title="主题 / 皮肤设置"
             @click="openTheme"
           >
@@ -290,6 +301,9 @@ onBeforeUnmount(() => {
             <button
               class="icon-btn"
               type="button"
+              aria-label="设置"
+              aria-haspopup="menu"
+              :aria-expanded="settingsOpen"
               title="设置"
               @click="settingsOpen = !settingsOpen"
             >
@@ -333,9 +347,16 @@ onBeforeUnmount(() => {
           class="module-card glass-card"
           :class="{ 'module-ready': m.ready, 'module-pending': !m.ready }"
           :style="cardStyle"
+          :role="m.ready ? 'link' : undefined"
+          :tabindex="m.ready ? 0 : undefined"
+          :aria-disabled="m.ready ? undefined : 'true'"
           @click="openModule(m)"
+          @keydown.enter.prevent="openModule(m)"
+          @keydown.space.prevent="openModule(m)"
         >
-          <div class="module-icon">{{ m.icon }}</div>
+          <div class="module-icon" aria-hidden="true">
+            <span class="module-emoji">{{ m.icon }}</span>
+          </div>
           <div class="module-body">
             <h2 class="module-title">
               {{ m.title }}
@@ -343,8 +364,8 @@ onBeforeUnmount(() => {
             </h2>
             <p class="module-desc">{{ m.desc }}</p>
           </div>
-          <div class="module-arrow">
-            {{ m.ready ? "进入 →" : "🔒" }}
+          <div class="module-arrow" aria-hidden="true">
+            {{ m.ready ? `${m.action} →` : "🔒" }}
           </div>
         </article>
       </main>
@@ -487,7 +508,7 @@ onBeforeUnmount(() => {
   font-size: 32px;
   font-weight: 700;
   margin: 0 0 8px;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
   /* 不靠模糊/阴影"假装通透"，靠字重 + 字距 + 颜色对比 */
   /* BUG-2026-0919-004：标题直接落在页面背景上，用 on-bg 对比色（深色模式+浅背景也可读） */
   color: var(--color-on-bg, var(--color-text));
@@ -495,7 +516,9 @@ onBeforeUnmount(() => {
 
 .app-subtitle {
   margin: 0;
-  font-size: 15px;
+  max-width: 46ch;
+  font-size: 14px;
+  line-height: 1.65;
   color: var(--color-on-bg-2, var(--color-text-2));
 }
 
@@ -504,12 +527,34 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
+  /* 窗口极窄时：先整块换到下一行（.home-header 的 flex-wrap），
+     仍放不下才在药丸内部换行，而不是把子项压成竖排单字/顶出视口 */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
   padding: 6px 12px;
+  /* BUG-2026-1021-001：.glass-card 的 container-type: inline-size 会触发
+     内联轴尺寸 containment —— 本元素作为 flex 子项时固有宽度按 0 计算，
+     整块只剩左右内边距（实测 24px），头像/用户名/图标/退出登录全部溢出框外：
+     非全屏时「退出登录」被顶到视口右侧裁掉，用户名等被挤成竖排单字。
+     这个小药丸不需要容器查询（只有液态高光用它算半径），恢复普通容器类型。 */
+  container-type: normal;
   /* blur 半径过大（12-16px）会让文字下方的背景"糊一片"，反而发雾。
      改为 6px，仍保留玻璃质感但不再拖累文字。 */
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   border-radius: 999px;
+}
+
+/* 失去尺寸容器后，液态高光里的 cqw/cqh 会退回视口单位（42vw），
+   在小药丸上糊成一大片白。这里换成本地 px 半径（与 main.css 的 cqw 兜底同口径）。 */
+body.mat-liquid .user-box::before {
+  background: radial-gradient(
+    120px 60px at var(--mx, -30rem) var(--my, -30rem),
+    rgba(255, 255, 255, 0.5) 0%,
+    rgba(255, 255, 255, 0.18) 40%,
+    rgba(255, 255, 255, 0) 72%
+  );
 }
 
 .user-chip {
@@ -521,6 +566,15 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 8px;
   cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.user-chip:focus-visible,
+.icon-btn:focus-visible,
+.logout-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 70%, transparent);
+  outline-offset: 2px;
 }
 
 .avatar {
@@ -590,20 +644,22 @@ onBeforeUnmount(() => {
   font-size: 14px;
   font-weight: 600;
   color: var(--color-text);
+  /* 用户名永远单行：空间不足时整块换行，不逐字竖排 */
+  white-space: nowrap;
 }
 
 .icon-btn {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 15px;
+  font-size: 16px;
   background: transparent;
   border: none;
-  border-radius: 8px;
+  border-radius: 9px;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background 0.18s;
   color: var(--color-text);
 }
 
@@ -674,7 +730,7 @@ onBeforeUnmount(() => {
 }
 
 .logout-btn {
-  height: 30px;
+  height: 32px;
   padding: 0 14px;
   font-size: 13px;
   font-weight: 500;
@@ -709,8 +765,15 @@ onBeforeUnmount(() => {
   padding: 22px 20px;
   /* 玻璃材质（模糊/高光/阴影）由 :style="cardStyle" 下发，不再写死 blur */
   border-radius: var(--radius-card);
-  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s, background 0.2s;
+  transition: transform 0.18s cubic-bezier(0.2, 0.7, 0.2, 1), box-shadow 0.18s,
+    border-color 0.18s, background 0.18s;
   cursor: pointer;
+  text-align: left;
+}
+
+.module-card:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 70%, transparent);
+  outline-offset: 3px;
 }
 
 .module-card:hover {
@@ -722,7 +785,7 @@ onBeforeUnmount(() => {
 }
 
 .module-ready:hover {
-  transform: translateY(-4px);
+  transform: translateY(-2px);
 }
 
 .module-pending {
@@ -735,14 +798,28 @@ onBeforeUnmount(() => {
 }
 
 .module-icon {
-  font-size: 34px;
+  width: 46px;
+  height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+  border-radius: 12px;
+  /* 中性玻璃图标槽：让四枚 emoji 从「浮在卡上的贴纸」变成卡内对齐的图标单元 */
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-text) 12%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 14%, transparent);
+}
+
+.module-emoji {
+  font-size: 26px;
+  line-height: 1;
   /* C11：emoji 保留（用户决定），但把四个高饱和色块统一降浓。
      📁黄 / 🔍蓝红 / 🎨彩虹 / 🧠粉 —— 四个色相是整屏最跳的元素，
      saturate(.72) + 一点点提亮让它们退回「素色卡面上的图标」，
      而不是「贴在卡面上的贴纸」。比换成 SVG 更划算：不引依赖、不改模板、
      也不必重画四枚图标（重画还要保证三端一致，而 emoji 反而三端都"认识"）。 */
-  filter: saturate(0.72) brightness(1.04) drop-shadow(0 2px 6px rgba(0, 0, 0, 0.4));
+  filter: saturate(0.72) brightness(1.04) drop-shadow(0 2px 6px rgba(0, 0, 0, 0.3));
 }
 
 .module-body {
@@ -750,16 +827,18 @@ onBeforeUnmount(() => {
 }
 
 .module-title {
-  margin: 0 0 6px;
+  margin: 0 0 5px;
   font-size: 18px;
   font-weight: 600;
+  letter-spacing: 0;
   color: var(--color-text);
 }
 
 .module-desc {
   margin: 0;
+  max-width: 44ch;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--color-text-2);
 }
 
@@ -774,12 +853,14 @@ onBeforeUnmount(() => {
 }
 
 .module-arrow {
-  font-size: 14px;
+  margin-left: auto;
+  font-size: 13px;
   flex-shrink: 0;
   white-space: nowrap;
   /* 链接色 + 加重：灰色箭头在深绿玻璃上存在感太弱，行动入口应该一眼可见 */
   color: var(--color-link);
   font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 @media (max-width: 640px) {

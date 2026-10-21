@@ -10,9 +10,9 @@
  * 颜色一律走 var(--auth-*)：色值由 utils/loginTheme.ts 算出来、在 .auth-page 上
  * 内联下发（单一事实来源，对比度断言断的就是那一套），本文件只管布局与状态。
  *
- * 「默认效果」接法：卡片挂 .glass-surface，材质属性（模糊/饱和/材质高光/玻璃棱环）
- * 全部由 main.css 的 body.mat-frosted|mat-liquid|mat-glazed 提供 —— 用户在主题弹窗里
- * 换材质，登录卡跟着换；这里只把玻璃填充色 --glass-bg 在卡片上**就地重指向**成
+ * 「默认效果」接法：卡片挂 .glass-surface，材质属性（模糊/饱和/高光/棱环）
+ * 全部由 main.css 的 body.mat-plain|mat-liquid 提供 —— 用户在主题弹窗里
+ * 换材质，登录卡跟着换；这里只把填充色 --glass-bg 在卡片上**就地重指向**成
  * 登录页配色（变量重指向，不与 main.css 抢 background-color 的特异性）。
  *
  * 换启动壁纸：改下面 .auth-cover 的 url() 一行即可（旧图 covers/cover.jpg 仍保留）。
@@ -58,35 +58,28 @@
      取色，于是「材质机制照旧、配色换成落日紫金」，无需与全局规则比特异性 */
   --glass-bg: var(--auth-card-bg);
   --glass-border: var(--auth-card-border);
-  /* 材质高光强度在本卡上压到全局的 ~28%（全局值见 main.css :root）：
+  /* 液态高光在本卡上压到全局的 ~28%：
      全局高光按「深底白字 ~15:1」的余量设计，而登录卡压在最亮的粉带上余量薄得多
-     —— 按全局强度实测：磨砂顶部 24px 标题只有 4.0:1、13px 副标题 4.16:1；
-     液态/釉瓷高光更强（实测副标题降到 3.91:1），因此三种材质统一按同一比例压缩。
-     高光的**种类**仍由 body.mat-* 决定（磨砂顶部天光 / 液态 135° 流体 / 釉瓷镜面天光带），
-     只减强度；数值与 .impeccable/verify-auth.cjs 的渲染像素实测配套（三材质全 0 不达标）。 */
-  --frosted-highlight: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.08) 0%,
-    rgba(255, 255, 255, 0.025) 14%,
-    rgba(255, 255, 255, 0) 30%
-  );
+     —— 按全局强度实测，13px 副标题会降到 4.5:1 以下；这里只减强度，
+     高光的**种类**仍由 body.mat-liquid 决定（135° 流体）。
+     普通卡片不命中液态规则，登录卡只保留实心填充 + 1px 描边 + 阴影。 */
   --liquid-highlight: linear-gradient(
     135deg,
     rgba(255, 255, 255, 0.12) 0%,
     rgba(255, 255, 255, 0.03) 38%,
     rgba(255, 255, 255, 0) 58%
   );
-  --glazed-highlight: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.13) 0%,
-    rgba(255, 255, 255, 0.04) 16%,
-    rgba(255, 255, 255, 0) 34%
-  );
   border: 1px solid var(--auth-card-border);
   border-radius: 18px;
   box-shadow: var(--shadow-1), 0 18px 48px -12px rgba(8, 6, 16, 0.62);
   padding: 36px 32px 28px;
   color: var(--auth-title);
+}
+
+/* 液态材质的「内部光池」只面向深底卡片；登录卡压在亮壁纸/粉带上，
+   按本卡既有的 ~28% 高光口径，不叠加这两层白光，避免标题/副标题对比度掉线。 */
+body.mat-liquid .auth-card.glass-surface {
+  background-image: var(--liquid-highlight);
 }
 
 .auth-header {

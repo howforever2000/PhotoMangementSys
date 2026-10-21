@@ -152,7 +152,7 @@ function openSub(m: SubModule) {
   <div class="smart-page" :style="{ color: theme.textColor }">
     <button class="btn smart-back" @click="router.push('/home')">← 返回主页</button>
 
-    <!-- Hero：彩虹横幅（按需求保留）；自带 45% 暗纱保证白字 ≥4.5:1 -->
+    <!-- Hero：彩虹横幅（按需求保留）；糖果浅底配墨色字，避免白字对比度不足 -->
     <section
       class="smart-hero glass-surface candy-surface"
       :style="{
@@ -161,7 +161,6 @@ function openSub(m: SubModule) {
       }"
     >
       <div class="smart-hero-content">
-        <div class="smart-hero-eyebrow">SMART ALBUM</div>
         <h1 class="smart-hero-title">🧠 智慧相册</h1>
         <p class="smart-hero-sub">人物 · 回忆 · 时间线 · 智能搜索，让你的照片库自己讲述过去</p>
         <div class="smart-stats">
@@ -253,7 +252,11 @@ function openSub(m: SubModule) {
 /* ---- Hero：糖果彩虹横幅（与下方子模块卡同一色族 · 用户色卡） ---- */
 .smart-hero {
   position: relative;
-  height: 210px;
+  /* BUG-2026-1021-002：固定高度 + overflow:hidden 在窄窗口会把换行后的
+     统计行直接裁掉（≤641px 实测内容 219px > 横幅 210px）。
+     改为 min-height + 内容自适应：桌面观感不变，窄窗口按内容长高。 */
+  min-height: 210px;
+  height: auto;
   border-radius: var(--radius-card);
   overflow: hidden;
   margin-bottom: 22px;
@@ -266,31 +269,23 @@ function openSub(m: SubModule) {
 }
 .smart-hero-content {
   position: relative;
-  height: 100%;
+  min-height: 210px;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 0 32px;
-}
-.smart-hero-eyebrow {
-  font-size: 12px;
-  letter-spacing: 3px;
-  font-weight: 600;
-  /* 糖果底上的角标：墨色加重量，小字距排不发散 */
-  color: #17202e;
-  margin-bottom: 6px;
+  padding: 22px 32px;
 }
 .smart-hero-title {
   font-size: 30px;
   margin: 0 0 6px;
   font-weight: 800;
-  letter-spacing: 2px;
+  letter-spacing: 0;
   text-shadow: none;
   color: #1f2733;
 }
 .smart-hero-sub {
   margin: 0 0 16px;
-  font-size: 13.5px;
+  font-size: 14px;
   /* 去掉 opacity，用实色：渐变过渡区上副标题不再发虚 */
   color: #2a3547;
 }
@@ -299,6 +294,7 @@ function openSub(m: SubModule) {
   align-items: center;
   gap: 14px;
   column-gap: 20px;
+  row-gap: 12px;
   flex-wrap: wrap;
 }
 .stat {
@@ -434,9 +430,12 @@ function openSub(m: SubModule) {
 
 @media (max-width: 640px) {
   .smart-page { padding: 16px 12px 32px; }
-  .smart-hero { height: 180px; }
-  .smart-hero-content { padding: 0 18px; }
-  .smart-hero-title { font-size: 24px; }
+  .smart-hero { min-height: 0; height: auto; }
+  .smart-hero-content { min-height: 0; padding: 18px; }
+  .smart-hero-title { font-size: 26px; }
   .smart-subcard { padding: 12px 14px; }
+  /* 手机两行统计时，行尾的分隔线会悬空；改为纯间距分隔 */
+  .stat-divider { display: none; }
+  .smart-stats { column-gap: 24px; }
 }
 </style>

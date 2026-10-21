@@ -3512,6 +3512,119 @@
       "log_hint": "无专用日志；效果看人物页簇规模分布（单脸簇数量）与 P111 类簇是否消失",
       "created_at": "2026-10-01T03:00:00+08:00",
       "fixed_at": "2026-10-01T03:00:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1021-001",
+      "date": "2026-10-21",
+      "status": "fixed",
+      "severity": "high",
+      "title": "主页右上角用户小框（user-box）塌成 24px：头像/图标/退出登录溢出框外，非全屏时退出登录被裁到视口外、用户名被压成竖排",
+      "module": "主页 UI / src/views/Home.vue",
+      "symptom": [
+        "登录后主页右上角的小药丸只包住头像附近一小块，🎨/⚙️/退出登录浮在框外（玻璃底没有包住它们）",
+        "窗口非全屏时整块控件被推到视口右侧：退出登录完全看不见，用户名/按钮出现逐字竖排、显示不全",
+        "页面出现横向滚动，窗口越窄越明显"
+      ],
+      "root_cause": {
+        "summary": ".user-box 同时带 .glass-card，而 .glass-card 声明了 container-type: inline-size（为液态材质伪元素提供 cqw/cqh 半径）。inline-size 尺寸 containment 阻止子项向父元素贡献固有宽度：user-box 作为 flex 子项自动宽度按 0 计算，实际只剩左右内边距 24px；子项全部溢出框外，溢出方向朝右，非全屏时越过视口被裁。此前 BUG-2026-1010-001 只给 .logout-btn 加 flex-shrink:0/nowrap，只阻止按钮自身被压扁，没有修复容器宽度塌陷，所以问题复现。",
+        "detail": [
+          "最小复现（Chrome/Playwright，1280 宽）：修复前 .user-box 实测 x=1092 width=24，logout 按钮 right=1338 > viewport 1280，document.scrollWidth=1338；把 container-type 改为 normal 后 width=265、right=1104、scrollWidth=1280",
+          "同一 .glass-card 用在 module-card 上不会塌：它是 grid 子项，被 minmax(0,1fr) 强制拉伸；只有 flex 自动宽度的 user-box 暴露该问题"
+        ]
+      },
+      "fix": "① .user-box 增加 container-type: normal，恢复按内容撑开；② 液态材质的 ::before 高光原本用 42cqw/cqh，失去尺寸容器后会退回 42vw 在药丸上糊成大块白斑，故为 body.mat-liquid .user-box::before 单独指定 120px×60px 的 px 半径（与 main.css 的 cqw @supports 兜底同口径）；③ 补充 flex-wrap/justify-content:flex-end/max-width:100%（极窄窗口药丸内部换行而非溢出），user-chip 与 user-name 加 flex-shrink:0 + white-space:nowrap，杜绝逐字竖排。",
+      "related_files": [
+        "src/views/Home.vue"
+      ],
+      "evidence_log": [
+        "Playwright 实测 1660/1280/700/420 四档宽度：user-box 均为 268px 且完整包住所有子项，logout 右侧均在视口内，document.scrollWidth == viewport width",
+        "桌面截图：药丸完整包住 👤 test 🎨 ⚙️ 退出登录；420px 下标题与药丸分两行且不溢出",
+        "npm run build（vue-tsc + vite build）通过"
+      ],
+      "log_hint": "纯布局问题，运行日志无报错；用 getBoundingClientRect + document.scrollWidth 与视口宽度对比可判定",
+      "created_at": "2026-10-21T13:45:00+08:00",
+      "fixed_at": "2026-10-21T13:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1021-002",
+      "date": "2026-10-21",
+      "status": "fixed",
+      "severity": "high",
+      "title": "智慧相册 / 回忆页横幅固定高度：窄窗口换行后的统计行被 overflow:hidden 裁掉",
+      "module": "智慧相册 / 回忆 / 扫描中心 Hero / SmartAlbum.vue、Memories.vue、ScanHub.vue",
+      "symptom": [
+        "智慧相册窗口 ≤641px 时，第二行统计被横幅底边切掉（真实数据数字更长会更早触发）",
+        "回忆页窗口 ≤420px 时，「本月新增」整行被裁掉",
+        "扫描中心此前已用 height:auto 规避，三个 Hub 的响应式行为不一致"
+      ],
+      "root_cause": "三个 Hero 用固定 height（210/220/200px）+ overflow:hidden，统计行是 flex-wrap；窄窗口文字换行后内容高度超过固定高度，超出的部分直接被裁掉，而不是让横幅长高。",
+      "fix": "SmartAlbum/ScanHub/Memories 的 Hero 改为 min-height + height:auto，内容区用 min-height + padding 撑开；统计行补 row-gap；手机端隐藏行尾悬空的分隔线并改用 column-gap。",
+      "related_files": [
+        "src/views/SmartAlbum.vue",
+        "src/views/ScanHub.vue",
+        "src/views/Memories.vue"
+      ],
+      "evidence_log": [
+        "Playwright 修复前：Smart 641px 内容 219px > 横幅 210px；Memories 420px 内容 221px > 横幅 200px",
+        "修复后 1660/1280/900/641/640/560/420/360 八档宽度全部 overflow=false，无横向滚动"
+      ],
+      "log_hint": "纯布局问题，运行日志无报错；用 firstElementChild.scrollHeight 与 hero.clientHeight 对比即可判定",
+      "created_at": "2026-10-21T15:10:00+08:00",
+      "fixed_at": "2026-10-21T15:10:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1021-003",
+      "date": "2026-10-21",
+      "status": "fixed",
+      "severity": "medium",
+      "title": "液态玻璃的内部光池被后置重复规则覆盖，材质差异退化成只有高光强弱",
+      "module": "全局玻璃材质 / src/assets/main.css",
+      "symptom": [
+        "液态玻璃看起来只是「更亮的磨砂」，缺少湿玻璃应有的上下两处内部光池",
+        "切换三种材质时只感知到模糊半径/亮度差，液态的招牌光学没有出现"
+      ],
+      "root_cause": "main.css 里存在两条 body.mat-liquid .glass-surface/.glass-card 规则。前一条定义了「两处内部光池 + 135° 高光带」三层 background-image；后一条（没有注释说明其用途）只写 background-image: var(--liquid-highlight)，同特异性且更靠后，把前一条的三层光池整体覆盖成单一高光。",
+      "fix": "删除后置重复规则，恢复三层静态光学；同时把 135° 高光带与游标折射环强度收窄一档（0.20→0.16、环中心 56%→60%），避免恢复光池后发白；登录卡压在亮壁纸上，单独用 body.mat-liquid .auth-card.glass-surface 只保留压缩高光，不叠光池。后续按用户决定把材质收敛为「普通/液态」两套，磨砂/釉瓷的纹理与 token 一并移除，旧值在 normalizePrefs 回落为 plain。",
+      "related_files": [
+        "src/assets/main.css",
+        "src/assets/auth.css"
+      ],
+      "evidence_log": [
+        "getComputedStyle(module-card).backgroundImage 修复前只剩 var(--liquid-highlight) 对应的一层",
+        "修复后为两层 radial-gradient + 135° 高光三层；深/浅两套预设下标题对比度最低 6.10:1，正文 5.75:1",
+        "登录页 liquid 标题 6.78:1、副标题 7.03:1"
+      ],
+      "log_hint": "纯 CSS 层叠问题；对比 background-image 的计算值与规则顺序可定位",
+      "created_at": "2026-10-21T15:10:00+08:00",
+      "fixed_at": "2026-10-21T15:10:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1021-004",
+      "date": "2026-10-21",
+      "status": "fixed",
+      "severity": "medium",
+      "title": "全局 .btn 缺少基础样式：时间线/回忆/三个 Hub 的返回与空状态按钮文字贴边，像纯文本",
+      "module": "全局按钮 / src/assets/main.css",
+      "symptom": [
+        "时间线与回忆页的「← 返回主页」「去相册扫描」只有深色模式给的背景色，没有 padding/边框/圆角",
+        "空状态动作按钮命中区偏小，和相册列表里有完整 .btn 基础样式的按钮不一致"
+      ],
+      "root_cause": "main.css 只声明了 body.theme-dark .btn 的颜色兜底，没有 .btn 的 padding/border/radius/焦点态；各页面自带 scoped .btn 的地方正常，没带的页面就退化成裸按钮。",
+      "fix": "在全局 button reset 后补一套中性玻璃 .btn 基础样式（34px 命中区、8px 圆角、1px 中性描边、focus-visible 金色焦点环），各页 scoped .btn 仍按更高特异性覆盖。",
+      "related_files": [
+        "src/assets/main.css",
+        "src/views/Timeline.vue",
+        "src/views/Memories.vue",
+        "src/views/SmartAlbum.vue",
+        "src/views/ScanHub.vue"
+      ],
+      "evidence_log": [
+        "Playwright 实测返回按钮 34px 高、padding 0 14px、圆角 8px；空状态主按钮 38px 高",
+        "时间线/回忆空状态动作按钮改用共享 EmptyState，统一为金底墨字"
+      ],
+      "log_hint": "纯样式缺失，无运行时报错",
+      "created_at": "2026-10-21T15:10:00+08:00",
+      "fixed_at": "2026-10-21T15:10:00+08:00"
     }
   ]
 }

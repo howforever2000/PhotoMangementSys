@@ -4,7 +4,7 @@
  * 钉死三条不变量：
  *   1. 每套预设的「玻璃等效底色」上派生文字对比 ≥ 4.5:1（组件可读性硬指标）；
  *   2. 每套预设的「等效页面背景」上页面文字对比 ≥ 4.5:1（onBgText 黑白兜底后）；
- *   3. 预设一律磨砂材质；matchesPreset 对自身命中、对扰动不命中。
+ *   3. 预设一律普通卡片材质；matchesPreset 对自身命中、对扰动不命中。
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -174,9 +174,9 @@ test("文字取向遵守两级规则：首选可用则用首选，否则取更�
   }
 });
 
-test("全部 10 套预设一律磨砂材质 + 三段渐变角度 180", () => {
+test("全部 10 套预设一律普通卡片材质 + 三段渐变角度 180", () => {
   for (const p of ALL_PRESETS) {
-    assert.equal(p.material, "frosted", `${p.name} 应为磨砂`);
+    assert.equal(p.material, "plain", `${p.name} 应为普通卡片`);
     assert.equal(p.angle, 180);
     assert.equal(p.colors.length, 3);
     assert.equal(presetGradient(p).startsWith("linear-gradient(180deg"), true);

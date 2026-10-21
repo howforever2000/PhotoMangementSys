@@ -27,7 +27,7 @@ const router = useRouter();
 let lightRaf = 0;
 let lightEv: PointerEvent | null = null;
 function onPointerLight(e: PointerEvent) {
-  // 磨砂材质下 ::after 追光层不存在，直接短路，零写入
+  // 普通卡片下 ::after 追光层不存在，直接短路，零写入
   if (!document.body.classList.contains("mat-liquid")) return;
   lightEv = e;
   if (lightRaf) return;
@@ -82,7 +82,7 @@ onMounted(async () => {
     store.fetchAlbums().catch(() => {});
   }
   window.addEventListener("keydown", onGlobalEsc);
-  // 液态追光：passive 监听，只写自定义属性（磨砂材质下 ::after 不命中，零视觉开销）
+  // 液态追光：passive 监听，只写自定义属性（普通卡片下 ::after 不命中，零视觉开销）
   window.addEventListener("pointermove", onPointerLight, { passive: true });
 });
 onBeforeUnmount(() => {

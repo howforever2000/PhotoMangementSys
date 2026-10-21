@@ -25,7 +25,7 @@ test("FEAT-094 默认外观 = 启动封面（壁纸 + 落日紫金）", () => {
   }
   assert.equal(DEFAULTS.compAlpha, 0.64);
   assert.equal(DEFAULTS.bgOpacity, 0.55);
-  assert.equal(DEFAULTS.material, "frosted");
+  assert.equal(DEFAULTS.material, "plain");
 });
 
 test("FEAT-094 isDefaultLook：空输入归一化后命中默认，任一可调项被改即掉高亮", () => {
@@ -98,11 +98,18 @@ test("旧结构（FEAT-084 时代）→ 补出 gradMid 中点 + 默认 compAlpha
   // 中点 = mix(black, white, 0.5) = #808080
   assert.equal(p.gradMid, "#808080");
   assert.equal(p.compAlpha, DEFAULTS.compAlpha);
-  assert.equal(p.material, "frosted");
+  assert.equal(p.material, "plain");
   // FEAT-087：旧结构无 saturation → 补 1（饱和度管线默认不干预旧外观）
   assert.equal(p.saturation, 1);
   assert.equal(p.compColor, "#123456");
   assert.equal(p.gradAngle, 90);
+});
+
+test("FEAT-100 材质收敛：旧版 frosted / glazed 迁移为 plain，liquid 保留", () => {
+  assert.equal(normalizePrefs({ material: "frosted" }).material, "plain");
+  assert.equal(normalizePrefs({ material: "glazed" }).material, "plain");
+  assert.equal(normalizePrefs({ material: "liquid" }).material, "liquid");
+  assert.equal(normalizePrefs({ material: "plain" }).material, "plain");
 });
 
 test("空对象 / null / 坏 JSON 字段 → 全量回落默认，不抛错", () => {
