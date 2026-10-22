@@ -3678,6 +3678,224 @@
       "log_hint": "编译期问题，日志里看不到；升级 tauri 小版本后优先跑一次 cargo check",
       "created_at": "2026-10-21T20:12:00+08:00",
       "fixed_at": "2026-10-21T20:12:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1007-001",
+      "date": "2026-10-07",
+      "status": "fixed",
+      "severity": "high",
+      "title": "照片右键菜单打开后点不动、点别处也不消失（遮罩 .stop 掐断 document 关闭分支）",
+      "module": "右键菜单 / src/components/ContextMenu.vue",
+      "symptom": [
+        "右键菜单弹出后，点菜单以外的任意位置菜单不关闭",
+        "右键另一张照片：既不关闭旧菜单，浏览器原生菜单也被 preventDefault 吃掉，等于菜单彻底锁死",
+        "菜单项 onClick 抛错时菜单永久卡死（后续所有点击都无效）"
+      ],
+      "root_cause": "三个叠加原因：① 全屏遮罩 .ctx-overlay 写了 @click.stop，点击永远不会冒泡到 document 上的关闭分支；② 遮罩写 @contextmenu.prevent.stop，右键别处既不关闭也不放行原生菜单；③ onItemClick 里 item.onClick() 抛错会跳过 emit('close')。这类 bug 表现为「点了没反应」，真因在事件传播而非点击逻辑本身。",
+      "fix": "遮罩改 @pointerdown（左右键都关）+ @contextmenu（关闭并在新位置重开），移除 .stop 与 document 级冗余监听（只保留单一机制）；右键别处的重开实现是——先 emit('close')，requestAnimationFrame 等菜单卸载，临时把遮罩 pointer-events 置 none，document.elementFromPoint 取真实目标，再合成 MouseEvent('contextmenu') 投递过去，由目标自身 handler 决定弹什么；onItemClick 改 try { onClick() } finally { emit('close') }；补 Esc 关闭（div 不获焦，必须挂 document）。",
+      "related_files": [
+        "src/components/ContextMenu.vue"
+      ],
+      "evidence_log": [
+        "点遮罩关闭、右键别处重开、菜单项抛错仍关闭、Esc 关闭四项行为逐条实测通过",
+        "npm test 61/61；vue-tsc 通过"
+      ],
+      "log_hint": "前端交互类问题无后端日志，靠 Playwright 行为断言复现",
+      "created_at": "2026-10-22T22:25:00+08:00",
+      "fixed_at": "2026-10-22T22:25:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1007-002",
+      "date": "2026-10-07",
+      "status": "fixed",
+      "severity": "medium",
+      "title": "全选照片后点「全选」取消不掉（子组件算意图、父组件再算状态，双重判断不同步）",
+      "module": "全选复选框 / src/components/SelectAllCheckbox.vue 及四个画廊",
+      "symptom": [
+        "全选后再次点击「全选」无法取消选择",
+        "PhotoGrid 用的是原生 <input type=checkbox>，只有 2 态没有半选，外观还随系统主题变",
+        "分类 / 地点 / 人物画廊各有一个「全选」按钮加一个独立「取消全选」按钮，语义别扭"
+      ],
+      "root_cause": "三处实现各不相同且都不满足「再点一次取消」：PhotoGrid 用原生 checkbox；另外三处用两个按钮拼语义。更深一层是职责错位——子组件自己算一次「是不是已全选」，父组件拿到事件后又算一次，两次判断基于不同时机的状态，于是「点了没反应」。",
+      "fix": "抽三态组件 SelectAllCheckbox：空圈（未选）→ 横杠（indeterminate 半选）→ 打勾（全选）；点击语义为「已全选则取消，否则全选」；CSS 画指示圈而非原生 checkbox（保证各系统主题下外观一致）；子组件 emit 的是本次点击意图 selectAll: boolean，父组件只执行不再二次判断；四个画廊统一接入并删掉冗余的「取消全选」按钮。",
+      "related_files": [
+        "src/components/SelectAllCheckbox.vue",
+        "src/components/PersonGallery.vue",
+        "src/components/PhotoGrid.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/LocationGallery.vue"
+      ],
+      "evidence_log": [
+        "四个画廊逐一点击实测：空圈 → 打勾 → 再点回空圈；部分选中显示横杠"
+      ],
+      "log_hint": "无后端日志",
+      "created_at": "2026-10-22T22:25:00+08:00",
+      "fixed_at": "2026-10-22T22:25:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1007-004",
+      "date": "2026-10-07",
+      "status": "fixed",
+      "severity": "high",
+      "title": "预览信息页「无拍摄时间 / 无地点」——不是显示问题，是这些页面从来没扫描过 EXIF",
+      "module": "原图预览 / src/components/PhotoLightbox.vue、src-tauri/src/content.rs",
+      "symptom": [
+        "智慧相册（人物 / 分类 / 地点画廊）打开大图，信息栏永远没有拍摄时间与地点",
+        "相册详情页的照片有部分有时有、有时没有，用户以为是显示 bug",
+        "查 photos 表发现 AI 分类也没有 —— 不是「有数据没显示」，是数据压根不在库里"
+      ],
+      "root_cause": "两条耦合错误叠加：① tryEnsureScanned() 在 albumId == null 时直接 return，而人物 / 分类 / 地点画廊全部命中，这些页面从未触发扫描；② ensure_photo_scanned 依赖 vision::classify_single（AI 服务），服务没启动整条命令失败——可 EXIF 读取与地名反查都是纯本地 IO / 离线索引，根本不需要 AI。把纯本地 IO 挂在需要 GPU 服务的链路上，AI 一停整条信息链就断。",
+      "fix": "新增 backfill_photo_exif(path) 命令：只走 read_photo_exif + resolve_location + upsert，纯本地路径；owns = { ai:false, exif:true, tone:false }，upsert 的 CASE/COALESCE 只写 EXIF 字段，不覆盖已扫好的 AI 分类 / 影调 / 人脸；前端加载顺序改为「先 ensureExif（快，拿到时间地点）→ 再 tryEnsureScanned（慢，可能因 AI 未运行失败）」，补全期间显示「⏳ 正在读取 EXIF…」并静默失败（补全是锦上添花，不能让预览卡住）。同时后端在时间与地点都齐全时直接 SKIP 不读盘。",
+      "related_files": [
+        "src/components/PhotoLightbox.vue",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/lib.rs"
+      ],
+      "evidence_log": [
+        "补全前后对同一张照片调用 get_photo_content_by_path：shoot_time / location 由 NULL 变为实际值",
+        "cargo test 159 passed；album_id 归属保护单测 resolve_album_id_for_path_preserves_and_picks_specific 通过"
+      ],
+      "log_hint": "log_call 出入口日志：backfill_photo_exif CALLED / SKIP / COMMITTED",
+      "created_at": "2026-10-22T22:25:00+08:00",
+      "fixed_at": "2026-10-22T22:25:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1010-001",
+      "date": "2026-10-10",
+      "status": "fixed",
+      "severity": "medium",
+      "title": "右上角「退出登录」被压成竖排单字，非全屏时溢出视口",
+      "module": "首页头部 / src/views/Home.vue",
+      "symptom": [
+        "user-box 里的退出登录按钮被压缩到 43px，中文按字断行成一竖排",
+        "窗口非全屏时整个 user-box 被挤出视口，按钮点不到",
+        "用户名被压成竖排"
+      ],
+      "root_cause": "user-box 带 .glass-card，其 container-type: inline-size 触发内联轴尺寸 containment，子项不再贡献固有宽度，于是 .logout-btn 被 flex 压到 43px、中文逐字断行。根因是 container-type 而非退出按钮本身（该属性本为 FEAT-101 游标亮斑的 cqw 半径服务，已在 FEAT-101 中全局拆除）。",
+      "fix": ".logout-btn 加 flex-shrink:0 + white-space:nowrap（实测恢复 82px）；.home-header 加 flex-wrap、.header-text 加 min-width:0，窗口收窄时 user-box 整块换行而不是被挤出屏幕。FEAT-101 又补了 Home.vue 的 container-type: normal 作为防回归护栏。",
+      "related_files": [
+        "src/views/Home.vue",
+        "src/assets/main.css"
+      ],
+      "evidence_log": [
+        "浏览器实测按钮宽度 43px → 82px；1280 / 900 / 640 三档宽度无溢出"
+      ],
+      "log_hint": "无后端日志",
+      "created_at": "2026-10-22T22:25:00+08:00",
+      "fixed_at": "2026-10-22T22:25:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1010-002",
+      "date": "2026-10-10",
+      "status": "fixed",
+      "severity": "medium",
+      "title": "导入的相册有照片却显示「无照片」：walkdir follow_links(false) 把软链图片全判掉",
+      "module": "扫描遍历 / src-tauri/src/thumbnail.rs、vision.rs、test_scan.rs",
+      "symptom": [
+        "某相册（Wallpapers）本地明明有 34 张图，应用内计数为 0、页面显示无照片",
+        "文件本身可正常打开，路径也正确"
+      ],
+      "root_cause": "目录遍历用 walkdir 且 follow_links(false)，该模式下符号链接的 file_type() 返回 symlink 而非 file，`file_type().is_file()` 把所有软链图片全部判掉（Wallpapers 相册 34 张全是软链 → 计数 0）。",
+      "fix": "新增 thumbnail::entry_is_file()：符号链接用 metadata() 确认最终指向真实文件才计入（断链仍排除，兼顾防递归成环）；替换 thumbnail.rs 三处、vision.rs walk_image_paths、test_scan.rs 三处遍历过滤。",
+      "related_files": [
+        "src-tauri/src/thumbnail.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/test_scan.rs"
+      ],
+      "evidence_log": [
+        "实测 ~/Pictures/Wallpapers：0 → 34 张，且断链不误计"
+      ],
+      "log_hint": "扫描日志里该相册 file_count 由 0 变 34",
+      "created_at": "2026-10-22T22:25:00+08:00",
+      "fixed_at": "2026-10-22T22:25:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1013-001",
+      "date": "2026-10-13",
+      "status": "fixed",
+      "severity": "high",
+      "title": "构建机绝对路径被烘进 release 二进制，安装后「数据与路径」直接暴露本机用户名",
+      "module": "隐私 / src-tauri/src/devpath.rs（新增）、vision.rs、studio.rs、devdata.rs",
+      "symptom": [
+        "安装包发给同事后，「⚙ 开发者视角 → 数据与路径」显示 VCR 模型目录 = D:\\YUAN HAO\\Documents\\PersonalIdeaProject\\PhotoMangementSys\\python\\models",
+        "安装不完整时错误信息里弹出「创意工坊服务脚本不存在: D:\\YUAN HAO\\...\\python-studio\\server.py」"
+      ],
+      "root_cause": "env!(\"CARGO_MANIFEST_DIR\") 是编译期宏，cargo build 时展开为构建机绝对路径并写进可执行文件；release 里有 5 处生产代码引用它，其中 vision::resolve_model_dir 的最后一行回落正指向它（安装包未内置模型时高频命中）。另两处 studio.rs / vision.rs 的「开发版」分支用的是运行时判断而非 cfg 门控，安装不完整时会走进分支并把该路径拼进用户可见的错误信息。",
+      "fix": "新增 devpath.rs 作为全仓唯一允许出现该宏的位置，且必须置于 #[cfg(debug_assertions)] 属性块内（属性在宏展开前剥离代码，release 根本不展开 → 字符串不进二进制；不可写成 if cfg!(debug_assertions)，那只是运行时布尔，env! 照样编译期展开）；resolve_model_dir 的最终回落改为 app_data_dir/vcr-models；dev 分支缺失组件时改走 devpath::dev_component_missing_err()，release 输出「未找到内置组件，请重新安装」。",
+      "related_files": [
+        "src-tauri/src/devpath.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/studio.rs",
+        "src-tauri/src/devdata.rs",
+        "src-tauri/src/lib.rs"
+      ],
+      "evidence_log": [
+        "最小复刻工程实测：修复前 release 二进制含构建机路径 1 次，修复后 0 次；二进制内已无任何项目绝对路径",
+        "devpath.rs 脱离 Tauri 双模式编译通过，release rlib 中该路径裸字符串消失"
+      ],
+      "log_hint": "二进制取证用 strings/Select-String 搜项目绝对路径即可复现",
+      "created_at": "2026-10-22T22:25:00+08:00",
+      "fixed_at": "2026-10-22T22:25:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1014-001",
+      "date": "2026-10-14",
+      "status": "fixed",
+      "severity": "critical",
+      "title": "应用标识符改中性名会让老用户数据目录变更——相册库、缩略图、加密密钥「集体丢失」",
+      "module": "数据目录迁移 / src-tauri/src/devpath.rs::migrate_legacy_data_dir、lib.rs::setup",
+      "symptom": [
+        "标识符从 com.haoyuan.photo-management-sys 改为 com.photomanagementsys.app 后，app_data_dir 随之改变",
+        "老用户升级后打开应用：相册全空、人物库为空，看起来像数据被删了",
+        "更严重的是 app.key 不在新目录 —— 密钥缺失不只丢相册，历史加密字段会永久无法解密"
+      ],
+      "root_cause": "标识符会随安装落到每台用户机的 %APPDATA% 目录名里（等于把作者真实姓名带给所有使用者，与 BUG-2026-1013-001 同源的隐私问题）。改名本身正确，但 app_data_dir 的物理路径随标识符变化，必须一次性迁移，否则等同数据丢失。",
+      "fix": "新增 devpath::migrate_legacy_data_dir()，在 lib.rs::setup 中调用，且**早于 logger::init 与一切 app_data_dir 消费**（否则日志写进新目录、数据还在旧目录，排障时两边对不上）。迁移策略安全优先：① 新目录已存在且非空 → 完全不动，仅提示旧目录位置；② 新目录不存在/为空 → 优先 rename（同卷原子且瞬时）；③ rename 失败（跨卷/占用）→ 退化为递归复制；④ 仅在复制成功后才删旧目录，失败则原样保留并给人工处理指引。app.key 与 photos.db 同批迁移。",
+      "related_files": [
+        "src-tauri/src/devpath.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/tauri.conf.json",
+        "docs/功能技术文档.md"
+      ],
+      "evidence_log": [
+        "6 个真实目录树场景实测：首次迁移（5 文件到位、app.key 字节一致）/ 新目录已有数据（两边都保留）/ 全新安装（不误建）/ 新目录为空（续迁）/ 深层嵌套（thumbs/grid/deep、logs/a 完整）/ 重复调用（幂等无损）",
+        "cargo test 465/465；npm test 77/77"
+      ],
+      "log_hint": "setup 阶段迁移日志：新目录已有数据时会打印旧目录位置提示",
+      "created_at": "2026-10-22T22:25:00+08:00",
+      "fixed_at": "2026-10-22T22:25:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1014-002",
+      "date": "2026-10-14",
+      "status": "fixed",
+      "severity": "high",
+      "title": "竖持拍摄（EXIF Orientation=6）的照片：人脸检测判「不是人物」、缩略图躺倒、分类/OCR/语义向量全错",
+      "module": "图像解码 / python/vcr/preprocess.py、src-tauri/src/exif_orient.rs（新增）、persons.rs、thumbnail.rs",
+      "symptom": [
+        "横置拍摄的照片明明有人，却判定「不是人物」（置信度塌到阈值以下）",
+        "网格缩略图躺着显示（WebP 不携带 EXIF，浏览器无从补救）",
+        "共用同一解码入口的 AI 分类 / OCR / 影调 / 语义向量对躺倒照片全部算错"
+      ],
+      "root_cause": "JPEG 文件本身不旋转，EXIF Orientation=6 只是「看图请顺时针转 90°」的指令，而各读取方执行与否并不统一：看图软件 / Chrome 81+ 自动转正，Pillow（默认）与 Rust image crate 都不转。于是躺倒的像素进入 ArcFace/SCRFD，判据（眼-鼻-嘴上下关系）被颠倒 → 置信度塌掉。更隐蔽的是坐标系契约：Python 侧转正后检测框处于「显示坐标系」，而该 bbox 的唯一消费者 persons.rs 在**原始文件**上裁 96×96 头像 —— 只改 Python 会裁到背景，看起来像新引入的 bug。",
+      "fix": "preprocess.py::open_image 单点套 ImageOps.exif_transpose()（全通道生效）；新增 exif_orient.rs（读 Orientation + 8 种方向转正）；persons.rs 按转正后目标尺寸向 JPEG 降采样器请求（否则 6/8 会要错长宽比）、解码后先转正再裁剪；thumbnail.rs 先转正再 thumbnail()（先缩放会让 6/8 拿躺倒的长边当基准）；thumb_photo_hash 与 file_fingerprint 掺入 THUMB_RENDER_VERSION=2（这两处原本只由路径+大小+mtime 决定，与像素内容无关 → 不改会让老用户直接命中缓存里躺倒的旧图，表现为「代码改了却毫无变化」）。",
+      "related_files": [
+        "python/vcr/preprocess.py",
+        "src-tauri/src/exif_orient.rs",
+        "src-tauri/src/persons.rs",
+        "src-tauri/src/thumbnail.rs"
+      ],
+      "evidence_log": [
+        "8 种 Orientation 与 Pillow exif_transpose 逐字节比对 8/8 一致（差异 0 字节）；期间实测抓出并修正 5/7 对角镜像的错误组合",
+        "exif_orient.rs 9 个单测通过（含伪造越界 Orientation 不得乱转）",
+        "端到端坐标契约：Orientation=6 真实 JPEG，bbox 落在显示坐标系时裁到人脸肤色 (155,125,110)；反证「Rust 不转正」则裁到背景 (105,87,78)",
+        "Python 侧 open_image 确认转正（尺寸 (80,40)→(40,80)）"
+      ],
+      "log_hint": "人脸通道日志里这些照片的检测置信度会从「低于阈值」变为正常值；历史已入库的人脸 / 向量仍需重建人物库才生效",
+      "created_at": "2026-10-22T22:25:00+08:00",
+      "fixed_at": "2026-10-22T22:25:00+08:00"
     }
-  ]
+  ],
+  "updated": "2026-10-22T22:25:00+08:00"
 }

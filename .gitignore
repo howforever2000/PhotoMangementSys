@@ -41,6 +41,8 @@ python/models/current_clip.json
 python/models/current_threads.json
 # 旧版遗留运行态（v5 已不写；保留忽略以免历史文件误入库）
 python/models/current_cls.json
+# 运行态：用户当前选择的人脸模型档位（⚙ 性能设置里可切，随机器不同，FEAT-091）
+python/models/current_face.json
 # 语义模型（Chinese-CLIP 子目录，共 >1.9GB：应用内下载 / download_models.py 获取，不入库）
 python/models/chinese-clip/
 python/models/chinese-clip-fp32/

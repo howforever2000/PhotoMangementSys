@@ -162,13 +162,14 @@ python/
 
 ### 6.1 安装
 
-- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新稳定版 **v0.3.1**，约 460MB，内含 VCR 微服务与运行必需的全部 AI 模型；**v0.4.0-beta** 预发布已提供**无语义模型 MSI**，137MB——语义模型装后在「⚙ 性能设置 → 📥 模型下载」获取，改进内容见「十一、版本历史」）：
-  - v0.4.0-beta（预发布）：[`PhotoManagementSys_0.4.0-beta_x64_en-US-nomodel.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.0-beta/PhotoManagementSys_0.4.0-beta_x64_en-US-nomodel.msi)（MSI，无语义模型版）
-  - [`PhotoManagementSys_0.3.1_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64-setup.exe)（NSIS，按用户安装到 `%LOCALAPPDATA%`，无需管理员权限，推荐）
-  - 或 [`PhotoManagementSys_0.3.1_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64_en-US.msi)（MSI，按机器安装到 `Program Files`，需管理员权限）
+- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新稳定版 **v0.4.3**，约 108MB，内含 VCR 微服务但**不含 AI 模型**——模型与 v0.4.2 完全一致，见下方「模型放置说明」与「十一、版本历史」）：
+  - [`PhotoManagementSys_0.4.3_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.3/PhotoManagementSys_0.4.3_x64-setup.exe)（NSIS，按用户安装到 `%LOCALAPPDATA%`，无需管理员权限，推荐）
+  - 或 [`PhotoManagementSys_0.4.3_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.3/PhotoManagementSys_0.4.3_x64_en-US.msi)（MSI，按机器安装到 `Program Files`，需管理员权限）
+  - 模型（**本版未更新，沿用 v0.4.2**）：[`model.zip`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.2/model.zip)（528.9MB），右键解压到安装根目录即可；已装过 v0.4.2 的用户无需重新下载
   - 从旧版升级：建议先卸载旧版再安装（两种安装范围不同，否则会同时存在两份）
-  - 历史版本（v0.3.0 / v0.2.0 / v0.1.0）见 [Releases](https://github.com/howforever2000/PhotoMangementSys/releases)
-- 安装包默认内置 AI 模型（详见「七、构建与发布」）。若安装包不含模型，请按「模型放置说明」将模型文件放入模型目录后再启动。
+  - 历史版本（v0.4.2 / v0.4.1 / v0.4.0-beta / v0.3.x / v0.2.0 / v0.1.0）见 [Releases](https://github.com/howforever2000/PhotoMangementSys/releases)
+- ⚠ **v0.4.3 起应用标识符改为 `com.photomanagementsys.app`**（原 `com.haoyuan.photo-management-sys` 会把作者姓名带进每台用户机的 `%APPDATA%` 目录名）。数据目录随之变化，首次启动会自动把 `photos.db` / `thumbs` / `vcr-data` / `app.key` 一次性迁移到新目录（优先 rename，失败则复制，**仅在复制成功后删旧目录**；新目录已有数据则不覆盖、只提示旧目录位置）。
+- 安装包不含 AI 模型（详见「七、构建与发布」）。请按「模型放置说明」将模型文件放入模型目录后再启动，否则识别与语义搜索不可用（看图 / 相册管理 / 调色编辑不受影响）。
 
 ### 6.2 首次使用
 
@@ -321,6 +322,17 @@ PhotoMangementSys/
 ---
 
 ## 十一、版本历史
+
+### v0.4.3（2026-10-22）— 创意工坊调色台：非破坏编辑引擎 / 预览器与归档隐藏相册 / 界面材质收敛 / 隐私与数据目录修正
+
+> 本版完整变更见 Release 说明与 `feature-notes.json`（新增登记 **FEAT-099 / FEAT-102**，`bug-notes.json` 补登记 BUG-2026-1007-001/002/004、1010-001/002、1013-001、1014-001/002）；此处只列主线与「用户第一眼能看到 / 必须知道」的部分。
+
+> ⚠ **升级须知（两条）**：① **应用标识符由 `com.haoyuan.photo-management-sys` 改为 `com.photomanagementsys.app`**（原标识符会随安装落到每台用户机的 `%APPDATA%` 目录名里，等于把作者姓名带给所有使用者），数据目录随之变化，首次启动会把 `photos.db` / `thumbs` / `vcr-data` / **`app.key`** 一次性迁移到新目录（优先 rename，跨卷则复制，**仅复制成功才删旧目录**；新目录已有数据则完全不覆盖、只提示旧目录位置）。② 横拍照片（EXIF Orientation=6/8）此前是**漏检**的（躺倒像素进人脸模型，判据颠倒），想让这些人也出现，需在「智慧相册 → 人物 → 重建人物库」重建一次（⚠ 会清空人物命名与合并结果）。
+
+- **创意工坊：基准调色（FEAT-099，本版最大交付）**：从「一组算子」升级为 **Lightroom 式非破坏调色台** —— 曝光 · 对比度 · 高光/阴影/白色/黑色 · 色温/色调 · 饱和度/自然饱和度 · RGB 与亮度曲线 · 裁剪拉直（±45°）· 锐化 · **局部蒙版（画笔/径向/线性渐变）** · 一键 Auto · 前后对比。**纯 Rust、零新依赖**（不用 Python/OpenCV 微服务）：拖滑块是每帧重算，进程内 1600px 预览 **10~40 ms** 对比 HTTP + cv2 的 100~300 ms，分工是「调色在 Rust（要实时）、算子滤镜仍在 Python（要边界处理）」；拖动档用长边 800 出草稿（像素数 1/4），松手后 140 ms 静默期出高清图。原图永不改动，状态存同目录 sidecar（`a.jpg.pmrecipe.json`，临时文件 → fsync → rename 原子写）；原「传统图像处理」面板并入编辑器、算子步骤进配方（关掉应用再打开还在），且算子作用在**已调色**的画面上。Rust 侧 **403 个测试**、前端 60 个，另建独立验证壳 `src-tauri/tools/edit-verify`（`#[path]` 引用同一批源文件，无 Tauri 依赖也能跑）。
+- **照片预览器与相册管理（FEAT-095/096）**：预览器从「浮层盖图」改为**窗口框**（标题栏 + 280px 可收起信息栏 + 图片区），F11 全屏、双击标题栏最大化、拖任意边缩放（8 向几何 + 视口收拢，窗口不会被拖出屏幕找不回来），四处弹窗共用同一套缩放逻辑 · **拍摄时间与地点能显示了** —— 查证发现不是显示问题：人物/分类/地点画廊**从未触发过扫描**，且原扫描命令依赖 AI 服务（AI 一停连纯本地 EXIF 也读不出来），本版拆出纯本地补全命令，只写 EXIF 字段、不覆盖已扫好的 AI 分类/人脸 · **删除（两种模式）/ 归档 / 隐藏**三个动作齐了，归档与隐藏在相册管理里呈现为系统相册，隐藏相册需**输当前密码解锁**且解锁态**只放内存不落盘**、登出即失效；三者都**只打标记不移动文件**（移动会破坏目录结构、缩略图缓存命名与人物关联）· 四个画廊共用缩略图缩放条（上限 320px —— 缓存只有 256px）· 右键菜单收敛为一个组件并改 Windows 语义（右键别处**关闭并在新位置重开**、Esc 关闭、菜单项抛错也一定关闭）· 三态全选复选框（空圈/横杠/打勾，再点即取消；此前「全选后取消不掉」的真因是子组件算意图、父组件又算状态）· 相册归属保护（EXIF 回填会写库，原实现无条件覆盖会让照片从相册详情页「消失」，现按目录前缀最长匹配 + 6 个场景单测）。
+- **界面与材质（FEAT-100/101）**：材质**从三套收敛为两套**（普通卡片 / 液态玻璃，删掉磨砂与釉瓷），旧偏好里的 `frosted`/`glazed` 自动回落为普通卡片 · **液态玻璃重做为静态光学 + 实体壁厚** —— 原实现把光标坐标写进每张卡片、用游标亮斑模拟光影，**方向是反的**（亮斑落在卡片内部，而光应被边缘折射），且全站每帧读一次 `getBoundingClientRect`；现改为固定主光源（左上 135°）的纯静态光学，厚度用 inset 阴影表达（上缘镜面 → 12px 亮雾 → 贴下缘内侧的焦散亮线 → 底缘暗壁 → 壁体内影），并带**对比度安全阀**（先算两档文字对比，只有降完仍 ≥4.5:1 才真的降）。168 组「背景 × 组件色 × 透明度」矩阵实测：低于 4.5:1 的样本 **13 组**（旧 18 组、普通卡片 24 组），最低值 3.75 → **3.97**，同时全站少一个常驻 `pointermove` 监听 · **保真精修**：1660/1280/900/641/640/560/420/360 八档宽度无横幅裁切与横向滚动，去掉重复面包屑与装饰性英文 kicker，新增共享空状态组件，补齐按钮焦点环、卡片键盘可达（Tab + Enter/Space）、图标按钮 `aria-label`、`prefers-reduced-motion` 降级（对比度最低 6.10:1 / 正文 5.75:1）。
+- **隐私与修复**：安装包里的「数据与路径」不再显示 `D:\YUAN HAO\...`（BUG-2026-1013-001，编译期宏 `env!("CARGO_MANIFEST_DIR")` 收敛到唯一位置并放进 `#[cfg(debug_assertions)]` 属性块，实测二进制内该路径出现次数 1 → 0）· 标识符改名配套数据迁移（BUG-2026-1014-001，实测 6 个真实目录树场景）· 横拍照片不再「没有人物」（BUG-2026-1014-002，8 种方向与 Pillow `exif_transpose` 逐字节 8/8 一致，并修掉「检测框在转正后坐标系、头像裁剪在原始文件」的坐标系契约问题；缩略图指纹掺入渲染版本号，避免老用户命中缓存里躺倒的旧图）· 改名后相册封面不再全碎图（BUG-2026-1021-005）· 退出登录按钮不再被压成竖排（BUG-2026-1010-001，43px → 82px）· 软链照片不再显示「无照片」（BUG-2026-1010-002，某相册 0 → 34 张，断链不误计）· dev 分支 Rust 编译修复（BUG-2026-1021-006，tauri 2.11 把 `ipc::Response.body` 收成私有）。
 
 ### v0.4.2（2026-09-30）— 视觉与识人双线：界面玻璃质感重做 / 人脸换档与质量闸门 / 页面交互优化
 

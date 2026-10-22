@@ -3556,7 +3556,142 @@
       ],
       "created_at": "2026-10-21T17:40:00+08:00",
       "updated_at": "2026-10-21T17:40:00+08:00"
+    },
+    {
+      "id": "FEAT-099",
+      "name": "基准调色（非破坏图像编辑引擎）：Lightroom 式三栏 + 局部蒙版 + 算子融合",
+      "module": "src-tauri/src/edit/**（mod/recipe/schema/color/tone/curve/saturation/sharpen/geometry/mask/pipeline/source/store/session/commands）\nsrc-tauri/tools/edit-verify（独立验证壳）\nsrc/components/workshop/editor/**、src/composables/useEditEngine.ts、src/stores/edit.ts、src/types/edit.ts\nsrc/views/Workshop.vue、docs/FEAT-099-基准调色-技术文档.md",
+      "purpose": "用户反馈「创意工坊下面的图像编辑太不好用了」——原工坊只有一组算子（直方图均衡 + 四种模糊），没有摄影调色的基本盘。本功能交付一条完整的非破坏调色链路：曝光 / 对比度 / 高光阴影 / 白黑色阶 / 色温色调 / 饱和度自然饱和度 / RGB 与亮度曲线 / 裁剪拉直 / 锐化 / 局部蒙版，并把原算子面板融合进来。",
+      "implementation": {
+        "放在哪一端": [
+          "整套放 Rust 端、纯 Rust 实现，**零新依赖**（只用仓库已有的 image / jpeg-decoder / rayon / serde），不沿用 python-studio 微服务：拖滑块是每帧重算，进程内 10~40 ms 对比 HTTP + 上传 + cv2 的 100~300 ms，微服务恰好最不擅长这个场景；而算子形态的滤镜（参数少、不追求逐帧）继续留在 Python + OpenCV"
+        ],
+        "处理管线（顺序即正确性）": [
+          "几何（裁剪/拉直/缩放）→ sRGB 解码到线性（转换点唯一）→ 白平衡 → 曝光+黑色（同一公式）→ 对比度（18% 中灰支点）→ 影调分带（高光/阴影/白/黑，必须在对比度之后）→ 保色相裁剪 + 线性转 sRGB → 饱和度/自然饱和度 → 曲线 → 锐化（显示参考亮度 USM，在曲线之后、缩放之前）→ 保色相裁剪 + 量化到 u8",
+          "依据逐条可查：白平衡先行（DNG 规范）、曝光与黑色共享公式（darktable basicadj）、曲线叠加在影调控件之上（Adobe Camera Raw）、锐化在重采样之前（Adobe 官方答复）"
+        ],
+        "性能（实测）": [
+          "预览解码：jpeg-decoder DCT 降采样（只支持 1/1、1/2、1/4、1/8，且在任一轴满足时就降档，实测请求 1600px 会拿到 3000×2000）→ 先向解码器要「目标 × 1.3」再面积平均缩到目标，稳定落档且不丢高频；6000×4000 → 1600px 首次约 280 ms，之后常驻会话缓存",
+          "影调五阶段融合成一趟遍历（20 MB 平面只读写一次）；影调控件用 1024 项 LUT（9 次 exp() → 1 次查表，编译约 0.3 ms）",
+          "拖动档位：长边 800 出草稿（像素数 1/4，约 1/3 耗时），松手后 140 ms 静默期出高清图；Workspace 缓冲复用，拖动期间零分配",
+          "内存护栏：长边上限 12000；会话表上限 8 张 + 30 分钟空闲回收（每张 24MP 约 45MB）"
+        ],
+        "非破坏与持久化": [
+          "原图永不改动，全部状态在 AdjustmentRecipe 一个结构体里（它同时是算法输入、存盘格式、导入导出内容与撤销栈快照类型 —— 四个用途共用一个类型，就不会出现「存盘的字段」与「算法读的字段」不一致）",
+          "sidecar 存盘 D:\\Pics\\a.jpg → D:\\Pics\\a.jpg.pmrecipe.json：可移植、不侵入 photos.db 迁移链、冲突天然可见；用「原名 + 扩展名」而非替换扩展名，a.jpg 与 a.png 的配方才能共存",
+          "原子写：临时文件 → fsync → rename（rename 同文件系统内原子，少 fsync 会出现「rename 早于数据落盘」；sidecar 是用户资产，写坏这张图就打不开了）",
+          "损坏的 sidecar 报错而不是静默当成「没调过」——静默吞掉会让用户以为调好的东西丢了",
+          "配方兼容性：#[serde(default)] + 绝不用 deny_unknown_fields + 绝不删字段（废弃字段保留为 Option<f32>），新增参数不升版本"
+        ],
+        "前端交互": [
+          "Lightroom 三栏：左直方图（必须与画布同时可见，否则无法边看分布边调曝光）+ 中预览画布与裁剪层 + 右调整面板（基本/曲线/颜色/细节/裁剪，由后端 schema 驱动渲染）",
+          "渲染调度：同一时刻只允许一个 invoke 在飞，飞行期间的请求合并成「飞行结束后立刻补一帧」，结果回来用 renderToken 校验、过期即丢 —— 同时挡住请求堆积与旧结果覆盖新结果（后端另有一层序号校验）",
+          "撤销栈：一次拖动 = 一步（begin/update/commit 三段式）而不是 50 步，栈深 60；Auto 只做保守的曝光修正（≤±1.5EV）与截断保护，完全不动阴影/黑色/对比度/饱和度/锐化",
+          "局部蒙版：画笔 + 径向 + 线性渐变，权重平面在管线内与调色参数一起参与（mask.rs + MaskOverlay.vue），蒙版随配方存进 sidecar",
+          "算子融合：原「传统图像处理」面板并入编辑器，算子步骤进配方（recipe.ops），编排为「Rust 管线（含蒙版）出底图 → Python 按序加工」——算子作用在**已调色**的画面上，与用户眼前的预览一致，避免「预览有效果、导出没有」"
+        ],
+        "可验证性": [
+          "新增 src-tauri/tools/edit-verify：用 #[path] 直接引用 src/edit/** 的同一批文件（不是拷贝），在无 Tauri 依赖下跑同样的测试；另配同名 tauri 桩 crate + 恒等属性宏，让 commands.rs 也被完整类型检查。桩的签名必须与真 Tauri 严格一致 —— 第一版把 spawn_blocking 写成返回 R 而非 Result<R, JoinError>，调用点少写一个 ? 也能通过，桩与真 API 一旦不同整套编译检查就失去意义"
+        ],
+        "已知边界（诚实标注）": [
+          "不含 90° 整转（CropSpec 只表达 ±45° 拉直，故前端不提供 90° 按钮 —— 提供半吊子功能比不提供更糟）",
+          "锐化在输出尺寸上做（6000×4000 全尺寸 USM 约 1.5 s，缩到输出尺寸后 15 ms；需要无损全尺寸时导出选「原始尺寸」）"
+        ]
+      },
+      "highlights": [
+        "Rust 侧 403 个测试（算法单测 + 跨模块集成 + 命令层编译检查），前端 60 个测试（含配方结构 / 归一化 / 深拷贝 19 个）",
+        "开发过程中被测试抓到的真实 bug 节选：高光被压时整幅图亮 4 倍（影调 LUT 写成 Σ w·2^offset，未启用带各贡献 1.0）· 色温滑块方向反了（tint 没作用在绿通道）· 灰调照片「自然饱和度 +100」无响应（写成 1 - delta.powf(v) 应取绝对值）· RGB 曲线把 [0.5,0.9,0.1] 排序搞乱（order3 六路 if 链写反一支）· 裁剪预览整体偏移半个裁剪框（归一化坐标漏 +0.5）· 旋转后画面偏移 (canvas−image)/2（逆映射把画布中心当成了旋转轴）· 界面永远不出图（next_render_seq 返回 fetch_add 的旧值）",
+        "坐标系最容易错的地方单独成文件：geometry.rs 只做坐标换算不碰像素，「换错坐标系」一眼可见",
+        "新增依赖为零 —— 不使用 OpenCV / Python 微服务，也不引入任何图像处理库"
+      ],
+      "tests": [
+        "edit-verify cargo test 465/465（含算法单测、集成测试、命令层编译检查）",
+        "npm test 77/77；npx vue-tsc --noEmit 退出码 0；npm run build 通过",
+        "src-tauri/tools/edit-verify 可在无 GTK 系统库的机器上独立验证算法层",
+        "已知环境问题（与代码无关）：本机 glibc 2.28 下 vite build 曾报 GLIBC_2.29 not found，绕过方式记录在 docs 中，package.json 未改动"
+      ],
+      "related_files": [
+        "src-tauri/src/edit/mod.rs",
+        "src-tauri/src/edit/recipe.rs",
+        "src-tauri/src/edit/schema.rs",
+        "src-tauri/src/edit/pipeline.rs",
+        "src-tauri/src/edit/mask.rs",
+        "src-tauri/src/edit/session.rs",
+        "src-tauri/src/edit/commands.rs",
+        "src-tauri/tools/edit-verify",
+        "src/components/workshop/editor/PhotoEditor.vue",
+        "src/components/workshop/editor/StudioOpsPanel.vue",
+        "src/composables/useEditEngine.ts",
+        "src/stores/edit.ts",
+        "src/types/edit.ts",
+        "src/views/Workshop.vue",
+        "docs/FEAT-099-基准调色-技术文档.md"
+      ],
+      "keywords": [
+        "调色",
+        "Lightroom",
+        "非破坏编辑",
+        "sidecar",
+        "pmrecipe",
+        "蒙版",
+        "曲线",
+        "直方图",
+        "裁剪",
+        "拉直",
+        "USM",
+        "锐化",
+        "白平衡",
+        "LUT",
+        "edit-verify",
+        "算子融合",
+        "AdjustmentRecipe",
+        "撤销栈"
+      ],
+      "created_at": "2026-10-13T00:00:00+08:00",
+      "updated_at": "2026-10-22T22:25:00+08:00"
+    },
+    {
+      "id": "FEAT-102",
+      "name": "应用标识符改中性名（com.photomanagementsys.app）+ 老用户数据目录一次性迁移",
+      "module": "src-tauri/tauri.conf.json、src-tauri/src/devpath.rs、src-tauri/src/lib.rs、docs/功能技术文档.md",
+      "purpose": "原标识符 com.haoyuan.photo-management-sys 会随安装落到每台用户机的 %APPDATA% 目录名里，等于把作者真实姓名带给所有使用者（与 BUG-2026-1013-001 同源的隐私问题：前者是构建机路径硬编码进二进制，后者是标识符直接可见）。改名必须配套一次性数据迁移，否则老用户升级后等同数据丢失。",
+      "implementation": {
+        "标识符": [
+          "tauri.conf.json identifier → com.photomanagementsys.app（只有基础 conf 声明它，3 个 release 变体均不覆盖，无需同步）"
+        ],
+        "迁移": [
+          "新增 devpath::migrate_legacy_data_dir()，在 lib.rs::setup 调用，且**早于 logger::init 与一切 app_data_dir 消费**（否则日志写进新目录、数据还在旧目录，排障时两边对不上）",
+          "策略：新目录已存在且非空 → 完全不动，仅提示旧目录位置；新目录不存在/为空 → 优先 rename（同卷原子瞬时）；rename 失败 → 递归复制；**仅复制成功才删旧目录**",
+          "app.key（敏感字段加密密钥）与 photos.db 同批迁移 —— 密钥缺失不只丢相册，还会让历史加密字段永久无法解密"
+        ],
+        "顺带修正": [
+          "docs/功能技术文档.md 与 python/bench/ 下 3 处硬编码路径同步更新"
+        ]
+      },
+      "highlights": [
+        "实测 6 个真实目录树场景：首次迁移（5 文件到位、app.key 字节一致）/ 新目录已有数据（两边都保留，不覆盖不删除）/ 全新安装（不误建目录）/ 新目录为空（上次中断后可续迁）/ 深层嵌套完整保留 / 重复调用幂等无损",
+        "任何一步都不允许出现「数据既没迁走又被删掉」——这是「安全优先」策略的验收红线"
+      ],
+      "tests": [
+        "cargo test 465/465；npm test 77/77；vue-tsc 通过；npm run build 通过",
+        "devpath.rs 脱离 Tauri 双模式编译通过"
+      ],
+      "related_files": [
+        "src-tauri/tauri.conf.json",
+        "src-tauri/src/devpath.rs",
+        "src-tauri/src/lib.rs"
+      ],
+      "keywords": [
+        "identifier",
+        "app_data_dir",
+        "迁移",
+        "隐私",
+        "app.key",
+        "APPDATA"
+      ],
+      "created_at": "2026-10-22T22:25:00+08:00",
+      "updated_at": "2026-10-22T22:25:00+08:00"
     }
   ],
-  "updated": "2026-10-21T17:40:00+08:00"
+  "updated": "2026-10-22T22:25:00+08:00"
 }
