@@ -3895,7 +3895,53 @@
       "log_hint": "人脸通道日志里这些照片的检测置信度会从「低于阈值」变为正常值；历史已入库的人脸 / 向量仍需重建人物库才生效",
       "created_at": "2026-10-22T22:25:00+08:00",
       "fixed_at": "2026-10-22T22:25:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1023-009",
+      "date": "2026-10-23",
+      "status": "resolved",
+      "title": "点开时间线后进程直接退出（0xC00000FD 栈溢出）：v2 缩略图指纹让全库缓存一次性失效 + 129 路并发请求 + 后端每路再开 8 线程",
+      "module": "缩略图 (thumbnail) / 时间线 (Timeline) / 跨页面缩略图请求",
+      "symptom": [
+        "运行中点开时间线/相册，进程瞬间消失；cargo 报 `thread '<unknown>' (23492) has overflowed its stack` + `exit code: 0xc00000fd (STATUS_STACK_OVERFLOW)`",
+        "app.log 停在最后一条 get_photo_thumbs 上：没有 panic、没有堆栈、没有 ERROR 行",
+        "同一会话里 get_photo_thumbs 几乎全是 `hit=0 generated=1~2`，单次耗时 1.6~29.6s",
+        "thumbs/grid 目录留下 20 个 0 字节缩略图，时间戳正好在两次死亡的时刻（第一次 17 个 @19:28:50-52，第二次 3 个 @19:29:37）",
+        "v0.4.2 没有这个问题"
+      ],
+      "root_cause": {
+        "summary": "fcfbaf7（BUG-2026-1014-002，随 v0.4.3 发布）把缩略图渲染版本升到 v2 并掺进两个缓存键（thumb_photo_hash 的表主键 + file_fingerprint 的磁盘文件名），于是升级后全库 2.5 万张缩略图『一次性全部失效』；而时间线页 loadThumbs() 又是『按相册分组后 Promise.all 一次性要全量』，冷缓存下变成几百路并发解码，后端每路再 thread::scope 开 min(核数,8) 线程，最终把进程资源打穿，Windows 把线程栈提交失败报成 0xC00000FD（名字叫栈溢出，实际是资源耗尽）。",
+        "detail": [
+          "v0.4.2 不炸不等于代码更安全：那时缓存是热的，99% 请求 hit，现场生成的只有一两张；v2 一升级全部变 miss，同一个『并发 + 每路再开 8 线程』的放大器才第一次被真正推满",
+          "实测（PMS_LOG_LEVEL=debug）：点开时间线一次性发出 129 个 get_photo_thumbs（每个相册一路），单相册最多 2876 条路径、全库 24990 张；后端 129 × 8 ≈ 1000 线程同时解码大 JPEG",
+          "实测进程指标：线程数峰值 732、私有内存 1.2GB（缓存已热的情况下）；冷缓存还要叠加每张 2000 万像素 JPEG 的解码峰值",
+          "0 字节文件证明『多线程同时写同一个缩略图路径』：时间线/回忆/相册详情各自按 album 分组取同一张照片，save_with_format 直接写目标文件，一个线程刚 File::create 截断、另一个还在写，进程一 abort 就留下空文件；而 is_thumb_file_alive 只判 is_file()，这些 0 字节文件会被当成永久『命中』，那一格永远是碎图",
+          "退出码 0xC00000FD 容易被误读成『递归/栈溢出 bug』，本案里没有任何递归——是线程栈无法继续提交"
+        ]
+      },
+      "fix": "三层限流 + 原子落盘：①后端 thumbnail.rs 加进程级生成闸门 acquire_gen_permit()（上限 min(核数,4)，卡在 save_thumbnail 解码前），无论多少请求叠加，同时解码的线程数恒定；②ensure_grid_thumbs_with_lookup 去掉 thread::scope 二次开线程（并行只留给显式扫描路径 ensure_grid_thumbs_missing_parallel），交互式懒加载一律串行；③save_thumbnail 改『同目录临时文件 + rename』原子落盘，is_thumb_file_alive 要求 size>0，杜绝 0 字节残骸被当命中；④前端新增 utils/thumbQueue.ts 全局队列（在飞 ≤3、单批 ≤60、按 path 去重、结果缓存），把 8 处直接 invoke('get_photo_thumbs') 全部收口；⑤Timeline.vue 由『一次要全量』改为 IntersectionObserver 按视口惰性入队（rootMargin 600px、每批 60、待入队上限 300），滚动时渐进补齐",
+      "evidence_log": "修复前：点开时间线 → 129 路并发 / 线程 732 / 私有内存 1.2GB → 进程 0xC00000FD 退出。修复后（同机同库，滚动十余屏）：get_photo_thumbs 共 20 次（paths 最大 56、平均 13）、线程峰值 38、私有内存 33MB、无 panic、无 0 字节文件、缩略图正常渲染；cargo test --lib thumbnail:: 12 项全过（含新增 gen_gate_caps_concurrent_generation、concurrent_same_source_writes_atomically）；npx vue-tsc --noEmit 0 error；node --test 78 项全过",
+      "lessons": [
+        "改『影响像素』的渲染逻辑可以，但同时 bump 缓存键 = 全库冷缓存，必须当成一次『冷启动压测』来评估并发路径",
+        "任何『按相册分组 → Promise.all』的批量请求模式都要先问：分组数 × 每组分片数 × 后端每请求线程数 是多少？本案是 129 × 8 ≈ 1000 线程",
+        "STATUS_STACK_OVERFLOW 不等于递归：先看进程线程数/内存曲线，再看代码里有没有递归",
+        "并发写同一个缓存文件必须原子写（临时文件 + rename），否则崩溃/断电会留下 0 字节或半截文件，而『exists 即命中』的判据会让它永久生效"
+      ],
+      "related_files": [
+        "src-tauri/src/thumbnail.rs",
+        "src/utils/thumbQueue.ts",
+        "src/views/Timeline.vue",
+        "src/stores/album.ts",
+        "src/views/Memories.vue",
+        "src/views/SmartSearch.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/LocationGallery.vue",
+        "src/components/CategoryManager.vue",
+        "src/components/PhotoGrid.vue"
+      ],
+      "created_at": "2026-10-23T18:30:00+08:00",
+      "fixed_at": "2026-10-23T20:35:00+08:00"
     }
   ],
-  "updated": "2026-10-22T22:25:00+08:00"
+  "updated": "2026-10-23T20:35:00+08:00"
 }

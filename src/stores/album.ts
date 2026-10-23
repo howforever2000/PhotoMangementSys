@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import type { Album, CreateAlbumInput, UpdateAlbumInput, BatchAlbumOutcome, MergeAlbumOutcome } from "../types/album";
+import { getThumbs } from "../utils/thumbQueue";
 import { filterVisibleAlbums } from "../types/album";
 import { useVaultStore } from "./vault";
 import type {
@@ -95,10 +96,16 @@ export const useAlbumStore = defineStore("album", {
       return await invoke<string[]>("list_album_photos", { albumId });
     },
 
-    /** 批量生成/复用照片网格缩略图，返回 [(原图路径, 缩略图路径)] */
+    /**
+     * 批量生成/复用照片网格缩略图，返回 [(原图路径, 缩略图路径)]
+     *
+     * 一律走 `utils/thumbQueue` 的全局队列（在飞 ≤3、单批 ≤60、按 path 去重），
+     * 不再直连 invoke：BUG-2026-1023-009 的根因之一就是「任何页面都能随时
+     * 向后端追加一路缩略图请求」，多个页面叠在一起就把进程打死了。
+     */
     async getPhotoThumbs(albumId: number, paths: string[]): Promise<[string, string][]> {
       if (!paths.length) return [];
-      return await invoke<[string, string][]>("get_photo_thumbs", { albumId, paths });
+      return await getThumbs(albumId, paths);
     },
 
     /** 读取单张照片信息（分辨率/文件大小/RGB 直方图，按需实时读，不落库） */

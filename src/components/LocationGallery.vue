@@ -14,6 +14,7 @@ import { computed, onMounted, ref } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
+import { getThumbs } from "../utils/thumbQueue";
 import PhotoLightbox from "./PhotoLightbox.vue";
 import PhotoActionMenu from "./PhotoActionMenu.vue";
 import PhotoDeleteDialog, { type DeleteMode } from "./PhotoDeleteDialog.vue";
@@ -60,7 +61,7 @@ async function loadCoverThumbs() {
   await Promise.all(
     [...byAlbum.entries()].map(async ([aid, paths]) => {
       try {
-        const pairs = await invoke<[string, string][]>("get_photo_thumbs", { albumId: aid, paths });
+        const pairs = await getThumbs(aid, paths);
         for (const [path, thumb] of pairs) if (!thumbMap.value[path]) thumbMap.value[path] = thumb;
       } catch {
         /* 封面缺图不阻塞 */
@@ -106,7 +107,7 @@ async function loadGridThumbs() {
   await Promise.all(
     [...byAlbum.entries()].map(async ([aid, paths]) => {
       try {
-        const pairs = await invoke<[string, string][]>("get_photo_thumbs", { albumId: aid, paths });
+        const pairs = await getThumbs(aid, paths);
         for (const [path, thumb] of pairs) if (!thumbMap.value[path]) thumbMap.value[path] = thumb;
       } catch {
         /* 单相册失败不阻塞 */

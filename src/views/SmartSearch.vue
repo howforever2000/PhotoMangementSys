@@ -8,6 +8,7 @@ import { useNotify } from "../composables/useNotify";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
 import type { SmartHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
+import { getThumbs } from "../utils/thumbQueue";
 
 /**
  * 智能搜索（FEAT-034）—— 半自然语言 + 多维筛选
@@ -230,7 +231,7 @@ async function loadThumbs() {
       const paths = byAlbum.get(aid)!;
       if (!paths.length) return;
       try {
-        const pairs = await invoke<[string, string][]>("get_photo_thumbs", { albumId: aid, paths });
+        const pairs = await getThumbs(aid, paths);
         for (const [path, thumb] of pairs) if (!thumbMap.value[path]) thumbMap.value[path] = thumb;
       } catch {
         /* 单相册失败不阻塞 */

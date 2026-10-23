@@ -7,12 +7,16 @@ import { useNotify } from "../composables/useNotify";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
 import EmptyState from "../components/EmptyState.vue";
 import type { ContentSearchHit } from "../types/content";
+import { getThumbs } from "../utils/thumbQueue";
 
 /**
  * 照片时间线（FEAT-033）—— 跨相册按拍摄时间聚合浏览
  *
  * 数据源：`photo_content_scan`（组合扫描入库），含 path / album_id / shoot_time / location。
- * 缩略图：按 album_id 分组调用 `get_photo_thumbs`（复用指纹缓存），懒加载填充。
+ * 缩略图：**只对进入视口的卡片入队**（IntersectionObserver），按 album_id 分批 60 条
+ * 交给全局队列 `utils/thumbQueue`（在飞 ≤3）。不再一次性把每个相册的全部照片都要
+ * 一遍 —— 那正是 BUG-2026-1023-009（升级后全库缓存失效 + 129 路并发 → 线程 732 /
+ * 内存 1.2GB → 0xC00000FD 进程退出）的引火线。
  * 分组：年 → 月，未记录拍摄时间的归入「未记录」。
  *
  * FEAT-E：回忆页面跳转定位
@@ -86,29 +90,94 @@ function fileUrl(p: string): string {
   return p ? convertFileSrc(p) : "";
 }
 
-/** 按 album_id 分组批量取缩略图 */
-async function loadThumbs() {
-  const byAlbum = new Map<number, string[]>();
-  for (const r of rows.value) {
-    const aid = r.album_id ?? 0;
-    if (!byAlbum.has(aid)) byAlbum.set(aid, []);
-    if (!thumbMap.value[r.path]) byAlbum.get(aid)!.push(r.path);
+/**
+ * 缩略图惰性填充（BUG-2026-1023-009 修复）
+ *
+ * 旧实现：`rows` 全量按 album 分组后 `Promise.all` —— 一次点开时间线就发出
+ * 129 路 `get_photo_thumbs`（单相册最多 2876 条），后端每路再开 8 线程解码，
+ * 冷缓存时直接把进程打死。
+ *
+ * 新实现：每个卡片自己声明「我进视口了」，按 album 分组、每批 60 条交给
+ * `thumbQueue`（全局在飞 ≤3）。首屏只命中几十张，滚动时渐进补齐，与相册网格
+ * （PhotoGrid）同一套惰性语义。
+ */
+const pendingThumbs = new Map<string, number>(); // path → albumId
+const FLUSH_BATCH = 60;
+/**
+ * 待入队上限：快速滚动时会一次刷过几百上千张卡，若全排进生成队列，
+ * “滑到底” 等于把整条时间线都排进去（虽然是限流的，但也没必要）。
+ * 只保留最近的这批；被丢弃的卡片没被 unobserve，滚回来时
+ * IntersectionObserver 会重新触发。
+ */
+const MAX_PENDING = 300;
+let cardObserver: IntersectionObserver | null = null;
+let flushing = false;
+
+function getCardObserver(): IntersectionObserver | null {
+  if (cardObserver) return cardObserver;
+  if (typeof IntersectionObserver === "undefined") return null;
+  cardObserver = new IntersectionObserver(onCardsIntersect, { rootMargin: "600px 0px" });
+  return cardObserver;
+}
+
+/** 模板函数 ref：卡片挂载时登记；已有缩略图的直接跳过 */
+function registerCard(el: unknown, path: string, albumId: number) {
+  const node = el as HTMLElement | null;
+  if (!node) return; // 卸载
+  if (!path || thumbMap.value[path]) return;
+  node.dataset.path = path;
+  node.dataset.album = String(albumId);
+  getCardObserver()?.observe(node);
+}
+
+function onCardsIntersect(entries: IntersectionObserverEntry[]) {
+  let added = false;
+  for (const en of entries) {
+    if (!en.isIntersecting) continue;
+    const node = en.target as HTMLElement;
+    const path = node.dataset.path;
+    // 不 unobserve：已生成过的靠 thumbMap 跳过，被排队上限丢弃的靠
+    // “滚出去再滚回来” 重新触发，卡片最终都能自愈。
+    if (!path || thumbMap.value[path] || pendingThumbs.has(path)) continue;
+    pendingThumbs.set(path, Number(node.dataset.album ?? 0));
+    added = true;
   }
-  const albumIds = [...byAlbum.keys()];
-  await Promise.all(
-    albumIds.map(async (aid) => {
-      const paths = byAlbum.get(aid)!;
-      if (!paths.length) return;
-      try {
-        const pairs = await invoke<[string, string][]>("get_photo_thumbs", { albumId: aid, paths });
-        for (const [path, thumb] of pairs) {
-          if (!thumbMap.value[path]) thumbMap.value[path] = thumb;
-        }
-      } catch {
-        // 单相册失败不阻塞：缺图卡片回退占位
+  if (added) void flushPending();
+}
+
+/** 后台队列冲刷：按相册分组、每批 60 条，队列内部还有全局限流 */
+async function flushPending() {
+  if (flushing) return;
+  flushing = true;
+  try {
+    while (pendingThumbs.size > 0) {
+      // 超出上限时丢掉最早那批（通常是已经被滑过去的卡）
+      if (pendingThumbs.size > MAX_PENDING) {
+        const keys = [...pendingThumbs.keys()];
+        for (const k of keys.slice(0, pendingThumbs.size - MAX_PENDING)) pendingThumbs.delete(k);
       }
-    }),
-  );
+      const byAlbum = new Map<number, string[]>();
+      for (const [path, aid] of pendingThumbs) {
+        if (!byAlbum.has(aid)) byAlbum.set(aid, []);
+        byAlbum.get(aid)!.push(path);
+      }
+      pendingThumbs.clear();
+      for (const [aid, paths] of byAlbum) {
+        for (let i = 0; i < paths.length; i += FLUSH_BATCH) {
+          try {
+            const pairs = await getThumbs(aid, paths.slice(i, i + FLUSH_BATCH));
+            for (const [path, thumb] of pairs) {
+              if (!thumbMap.value[path]) thumbMap.value[path] = thumb;
+            }
+          } catch {
+            // 单批失败不阻塞：缺图卡片回退占位，滚出再滚回会重新入队
+          }
+        }
+      }
+    }
+  } finally {
+    flushing = false;
+  }
 }
 
 /* ---- 回到顶部：时间线跨年/跨月很长，滚下去后一键回顶 ---- */
@@ -133,6 +202,9 @@ onBeforeUnmount(() => {
   window.removeEventListener("scroll", onWinScroll);
   if (scrollRaf != null) cancelAnimationFrame(scrollRaf);
   scrollRaf = null;
+  cardObserver?.disconnect();
+  cardObserver = null;
+  pendingThumbs.clear();
 });
 
 /* ---- FEAT-034-B：内部大图查看器 ---- */
@@ -189,7 +261,8 @@ function onYearFilter() {
 onMounted(async () => {
   try {
     rows.value = await invoke<ContentSearchHit[]>("list_timeline");
-    await loadThumbs();
+    // 缩略图不再预先全量拉取：由每个卡片的 IntersectionObserver 按视口惰性入队
+    // （见 registerCard / flushPending）。
     // FEAT-E：根据 query 跳转到目标年 / 月（Memories 跳过来时使用）
     applyJumpQuery();
   } catch (e) {
@@ -314,6 +387,7 @@ function goAlbumFromLightbox(albumId: number) {
             <figure
               v-for="r in mg.items"
               :key="r.id"
+              :ref="(el) => registerCard(el, r.path, r.album_id ?? 0)"
               class="tl-card"
               :title="[r.label, r.location, r.album_name].filter(Boolean).join(' · ')"
               @click="openCard(r)"

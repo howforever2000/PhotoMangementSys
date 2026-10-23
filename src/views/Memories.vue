@@ -15,6 +15,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { getThumbs } from "../utils/thumbQueue";
 import { useAlbumStore } from "../stores/album";
 import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
@@ -156,12 +157,9 @@ async function loadThumbs(items: ContentSearchHit[]) {
     [...byAlbum.entries()].map(async ([aid, paths]) => {
       if (!paths.length) return;
       try {
-        // 分批（300/批）：单次 IPC 载荷可控，大批量月也能边滚边补
+        // 分批（路由到全局队列：单批 ≤60、在飞 ≤3，避免一次拖全月硬干）
         for (let i = 0; i < paths.length; i += 300) {
-          const pairs = await invoke<[string, string][]>("get_photo_thumbs", {
-            albumId: aid,
-            paths: paths.slice(i, i + 300),
-          });
+          const pairs = await getThumbs(aid, paths.slice(i, i + 300));
           for (const [path, thumb] of pairs) if (!thumbMap.value[path]) thumbMap.value[path] = thumb;
         }
       } catch {
