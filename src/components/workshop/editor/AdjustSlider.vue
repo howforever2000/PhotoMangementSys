@@ -341,7 +341,7 @@ function clamp01(v: number): number {
   border-radius: 2px;
   background: var(--color-primary, rgba(140, 175, 235, 0.95));
   pointer-events: none;
-  transition: width 0.05s linear, left 0.05s linear;
+  transition: width var(--dur-1) linear, left var(--dur-1) linear;
 }
 .adj-row.is-dragging .adj-track-fill {
   transition: none;
@@ -368,7 +368,7 @@ function clamp01(v: number): number {
   border: 1px solid rgba(0, 0, 0, 0.28);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   pointer-events: none;
-  transition: left 0.05s linear;
+  transition: left var(--dur-1) linear;
 }
 .adj-row.is-dragging .adj-thumb {
   transition: none;

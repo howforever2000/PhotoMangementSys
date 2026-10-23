@@ -143,7 +143,7 @@ function cancelDl(name: string) {
 .dl-fill {
   height: 100%;
   background: linear-gradient(90deg, var(--color-primary), #5a8ce8);
-  transition: width 0.25s ease;
+  transition: width var(--dur-3) ease;
 }
 .hint {
   margin: 0;

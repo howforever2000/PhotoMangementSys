@@ -8,6 +8,7 @@ import { useNotify } from "../composables/useNotify";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
 import type { SmartHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
+import AppHeader from "../components/ui/AppHeader.vue";
 
 /**
  * 智能搜索（FEAT-034）—— 半自然语言 + 多维筛选
@@ -395,8 +396,8 @@ function showTag(r: SmartHit): string {
 
 <template>
   <div class="ss-page" :style="{ color: theme.textColor }">
+    <AppHeader title="智能搜索" />
     <header class="ss-header">
-      <button class="btn" @click="router.push('/home')">← 返回主页</button>
       <h1 class="ss-title">🔎 智能搜索</h1>
       <p class="ss-subtitle">自然语言 + 多维筛选，跨相册检索照片（AI 扫描入库）</p>
     </header>
@@ -596,7 +597,7 @@ function showTag(r: SmartHit): string {
   border: 1px solid color-mix(in srgb, var(--color-warn-solid) 45%, transparent);
   border-radius: 999px;
   cursor: pointer;
-  transition: background 0.15s, opacity 0.15s;
+  transition: background var(--dur-2), opacity var(--dur-2);
 }
 .ss-retry:hover:not(:disabled) {
   background: color-mix(in srgb, var(--color-warn-solid) 20%, transparent);
@@ -761,7 +762,7 @@ function showTag(r: SmartHit): string {
   overflow: hidden;
   cursor: pointer;
   background: rgba(127, 127, 127, 0.1);
-  transition: transform 0.12s;
+  transition: transform var(--dur-1);
 }
 .ss-card:hover {
   transform: translateY(-2px);

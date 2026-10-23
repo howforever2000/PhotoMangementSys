@@ -66,7 +66,7 @@
   border: 1px solid var(--pm-input-border);
   border-radius: 10px;
   outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color var(--dur-2), box-shadow var(--dur-2);
 }
 .pm-field input:focus {
   border-color: var(--color-primary);
@@ -102,7 +102,7 @@
   border: 1px solid var(--pm-soft-border);
   border-radius: 10px;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background var(--dur-2);
 }
 .pm-btn:hover {
   background: var(--pm-btn-hover);
@@ -151,7 +151,7 @@
   border: 1px solid var(--pm-input-border);
   border-radius: 10px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--dur-2);
 }
 .pm-seg button:hover {
   border-color: var(--color-primary);
@@ -197,7 +197,7 @@
   border: 1px solid var(--pm-input-border);
   border-radius: 10px;
   outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color var(--dur-2), box-shadow var(--dur-2);
 }
 .pm-hex:focus {
   border-color: var(--color-primary);
@@ -293,7 +293,7 @@ body.theme-dark .pm-dialog input:disabled {
   border: none;
   border-radius: 9px;
   cursor: pointer;
-  transition: background 0.18s, color 0.18s, box-shadow 0.18s;
+  transition: background var(--dur-2), color var(--dur-2), box-shadow var(--dur-2);
 }
 .pm-tab:hover {
   color: var(--pm-text);
@@ -354,7 +354,7 @@ body.theme-dark .pm-dialog input:disabled {
   border: 1px solid var(--pm-input-border);
   border-radius: 12px;
   cursor: pointer;
-  transition: border-color 0.18s, transform 0.18s, box-shadow 0.18s;
+  transition: border-color var(--dur-2), transform var(--dur-2), box-shadow var(--dur-2);
 }
 .pm-preset:hover {
   border-color: var(--color-primary);
@@ -422,7 +422,7 @@ body.theme-dark .pm-dialog input:disabled {
 /* ---------- 页签切换过渡 ---------- */
 .pm-panel-enter-active,
 .pm-panel-leave-active {
-  transition: opacity 0.18s ease, transform 0.18s ease;
+  transition: opacity var(--dur-2) ease, transform var(--dur-2) ease;
 }
 .pm-panel-enter-from,
 .pm-panel-leave-to {
@@ -432,11 +432,11 @@ body.theme-dark .pm-dialog input:disabled {
 
 .modal-enter-active,
 .modal-leave-active {
-  transition: opacity 0.22s ease;
+  transition: opacity var(--dur-2) ease;
 }
 .modal-enter-active .pm-dialog,
 .modal-leave-active .pm-dialog {
-  transition: transform 0.22s ease, opacity 0.22s ease;
+  transition: transform var(--dur-2) ease, opacity var(--dur-2) ease;
 }
 .modal-enter-from,
 .modal-leave-to {
@@ -446,4 +446,43 @@ body.theme-dark .pm-dialog input:disabled {
 .modal-leave-to .pm-dialog {
   transform: translateY(14px) scale(0.98);
   opacity: 0;
+}
+
+/* ==========================================================================
+   FEAT-103：深浅模式切换（预设列表上方的第一决策）
+   ========================================================================== */
+.pm-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 14px;
+}
+.pm-mode-label {
+  font-size: 12px;
+  color: var(--pm-hint);
+  flex-shrink: 0;
+}
+.pm-mode-seg {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--pm-soft-bg, rgba(255, 255, 255, 0.06));
+  box-shadow: inset 0 0 0 1px var(--pm-soft-border);
+}
+.pm-mode-btn {
+  min-height: 26px;
+  padding: 0 16px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--pm-hint);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out);
+}
+.pm-mode-btn.on {
+  background: var(--color-primary, #e8a33d);
+  color: var(--color-on-primary, #2a1a08);
+  font-weight: 560;
 }

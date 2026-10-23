@@ -228,7 +228,7 @@ function onCropCommit(c: AdjustmentRecipe["crop"]): void {
   width: 12px;
   height: 12px;
   color: var(--pm-hint, var(--color-text-2));
-  transition: transform 0.15s;
+  transition: transform var(--dur-2);
   flex-shrink: 0;
 }
 .ep-chev.open {
@@ -238,7 +238,7 @@ function onCropCommit(c: AdjustmentRecipe["crop"]): void {
   font-size: 13px;
   font-weight: 600;
   color: var(--pm-label, var(--color-text-2));
-  transition: color 0.15s;
+  transition: color var(--dur-2);
 }
 .ep-dirty {
   width: 6px;

@@ -198,7 +198,7 @@ function onItemClick(item: ContextMenuItem) {
   font-size: 13.5px;
   color: #2c3e50;
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background var(--dur-1);
 }
 
 .ctx-item:hover:not(.disabled) {

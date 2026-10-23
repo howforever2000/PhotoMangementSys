@@ -22,6 +22,7 @@ import type { ContentSearchHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
 import EmptyState from "../components/EmptyState.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
 
 const router = useRouter();
 const store = useAlbumStore();
@@ -343,8 +344,9 @@ function goAlbumFromLightbox(albumId: number) {
 
 <template>
   <div class="memories-page" :style="{ color: theme.textColor }">
+    <!-- FEAT-103：回忆页是沉浸式海报，顶栏用紧凑高度，不抢故事卡的空间 -->
+    <AppHeader title="回忆" compact />
     <!-- 顶部返回 -->
-    <button class="btn mem-back" @click="router.push('/home')">← 主页</button>
 
     <!-- Hero：彩虹横幅（按需求保留）；糖果浅底配墨色字，避免白字对比度不足 -->
     <section
@@ -723,7 +725,7 @@ function goAlbumFromLightbox(albumId: number) {
   color: #fff;
   /* 材质升级：糖果釉面的方向棱线 + 更实的落影（原 0.15 浮而不定） */
   box-shadow: var(--shadow-1);
-  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  transition: transform var(--dur-2) ease, box-shadow var(--dur-2) ease;
 }
 .mem-story:hover {
   transform: translateY(-3px);
@@ -787,7 +789,7 @@ function goAlbumFromLightbox(albumId: number) {
   border: 1px solid rgba(255, 255, 255, 0.45);
   border-radius: 999px;
   backdrop-filter: blur(4px);
-  transition: background 0.15s;
+  transition: background var(--dur-2);
 }
 .mem-story:hover .mem-story-cta {
   background: rgba(255, 255, 255, 0.3);
@@ -807,7 +809,7 @@ function goAlbumFromLightbox(albumId: number) {
   overflow: hidden;
   cursor: pointer;
   background: rgba(127, 127, 127, 0.1);
-  transition: transform 0.12s ease;
+  transition: transform var(--dur-1) ease;
 }
 .mem-photo:hover {
   transform: translateY(-2px);
@@ -864,7 +866,7 @@ function goAlbumFromLightbox(albumId: number) {
   color: #fff;
   cursor: pointer;
   box-shadow: var(--shadow-1);
-  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  transition: transform var(--dur-2) ease, box-shadow var(--dur-2) ease;
 }
 .mem-year:hover {
   transform: translateY(-3px);
@@ -1061,7 +1063,7 @@ function goAlbumFromLightbox(albumId: number) {
   color: inherit;
   cursor: pointer;
   font-size: 13px;
-  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  transition: border-color var(--dur-2), color var(--dur-2), background var(--dur-2);
 }
 .mb-btn:hover {
   border-color: var(--color-link, var(--color-primary));
@@ -1097,7 +1099,7 @@ function goAlbumFromLightbox(albumId: number) {
   overflow: hidden;
   cursor: pointer;
   background: rgba(127, 127, 127, 0.12);
-  transition: transform 0.12s ease;
+  transition: transform var(--dur-1) ease;
 }
 .mb-cell:hover {
   transform: translateY(-2px);
@@ -1161,7 +1163,7 @@ function goAlbumFromLightbox(albumId: number) {
   font-size: 17px;
   cursor: pointer;
   box-shadow: 0 4px 14px color-mix(in srgb, var(--color-primary) 45%, transparent);
-  transition: transform 0.15s, background 0.15s;
+  transition: transform var(--dur-2), background var(--dur-2);
 }
 .mb-top-btn:hover {
   background: var(--color-primary-hover);
@@ -1169,7 +1171,7 @@ function goAlbumFromLightbox(albumId: number) {
 }
 .mb-top-enter-active,
 .mb-top-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity var(--dur-2) ease;
 }
 .mb-top-enter-from,
 .mb-top-leave-to {

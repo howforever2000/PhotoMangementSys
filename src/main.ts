@@ -1,6 +1,11 @@
 import { createApp } from "vue";
 import { createPinia } from "pinia";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+/* FEAT-103 P0：设计令牌必须最先加载 —— main.css 里的组件规则与各页面的
+   scoped 样式都可能引用 --fs-* / --sp-* / --dur-* ；放在 main.css 之后会让
+   首帧拿不到值（令牌是 CSS 变量，解析顺序不影响生效，但可读性与覆盖关系要清晰）。
+   tokens.css 只新增命名空间、不改任何现有变量，所以引入它本身视觉零变化。 */
+import "./assets/tokens.css";
 import "./assets/main.css";
 import "./assets/pm-dialog.css"; /* FEAT-086：共享弹窗样式（.pm-*） */
 import "./assets/auth.css"; /* FEAT-093：三张鉴权页共用样式（.auth-*） */

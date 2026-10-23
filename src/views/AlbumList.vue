@@ -17,6 +17,8 @@ import { groupByTime, seasonName, MONTH_NAMES } from "../utils/timeGroup";
 import type { YearGroup } from "../utils/timeGroup";
 import ManualSort from "./ManualSort.vue";
 import AlbumCard from "../components/AlbumCard.vue";
+import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import ImportErrorsDialog from "../components/ImportErrorsDialog.vue";
 import EmptyState from "../components/EmptyState.vue";
@@ -855,6 +857,42 @@ const collapsed = ref<Set<string>>(new Set());
 /** 时间分组的相册树（FEAT-095：排除归档 / 隐藏虚拟相册，它们单独成块展示） */
 const groupedYears = computed<YearGroup[]>(() => groupByTime(normalAlbums.value));
 
+/**
+ * FEAT-103：顶部统计数据带（替代原来的「无统计」空白页头）
+ *
+ * 这一页之前**没有任何聚合读数** —— 用户看到的是一堆卡片，但不知道
+ * "总量多少 / 多少已入库 / 多少还没扫 / 占多大空间"。这些恰恰是相册管理
+ * 最该先回答的问题，所以数据带放在页头正下方，先于任何分组。
+ *
+ * 读数的取舍依据：
+ *   · 相册 / 照片 —— 最基础的两个量级
+ *   · 已入库 / 待入库 —— 直接指向"下一步该做什么"（待入库非 0 就该去扫）
+ *   · 占用 —— 本机存储压力，笔记本用户关心
+ *   ← 组级/卡片级已有"每相册张数、拍摄年、路径"，不重复上移
+ */
+const statItems = computed<StatItem[]>(() => {
+  const all = normalAlbums.value;
+  const totalPhotos = all.reduce((n, a) => n + (a.photo_count || 0), 0);
+  const scannedAlbums = all.filter((a) => (a.scanned_photo_count || 0) > 0).length;
+  const pending = all.length - scannedAlbums;
+  const scannedPhotos = all.reduce((n, a) => n + (a.scanned_photo_count || 0), 0);
+  const totalBytes = all.reduce((n, a) => n + (a.size_bytes || 0), 0);
+  const gb = totalBytes / 1024 / 1024 / 1024;
+
+  return [
+    { label: "相册", value: all.length, delta: virtualAlbums.value.length ? `+${virtualAlbums.value.length} 系统` : "" },
+    { label: "照片", value: totalPhotos },
+    { label: "已入库", value: scannedPhotos, delta: `${scannedAlbums} 个相册`, tone: scannedAlbums ? "up" : "mute" },
+    {
+      label: "待入库",
+      value: pending,
+      delta: pending ? "需要扫描" : "全部已扫",
+      tone: pending ? "up" : "mute",
+    },
+    { label: "占用", value: gb >= 100 ? Math.round(gb) : gb.toFixed(1), unit: "GB" },
+  ];
+});
+
 /** 是否折叠某分组 */
 function isCollapsed(key: string): boolean {
   return collapsed.value.has(key);
@@ -1138,10 +1176,12 @@ function onKey(e: KeyboardEvent) {
       '--danger-bg': theme.onBgDark ? 'color-mix(in srgb, var(--color-danger) 12%, transparent)' : 'color-mix(in srgb, var(--color-danger) 15%, transparent)',
     }"
   >
+    <!-- FEAT-103：全站统一顶栏（取代页面自制的「← 主页」） -->
+    <AppHeader title="相册" />
+
     <!-- 顶部工具栏（需求 §5.3） -->
     <header class="toolbar">
       <div class="toolbar-left">
-        <button class="btn btn-back" @click="router.push('/home')">← 主页</button>
         <h1 class="page-title">我的相册</h1>
       </div>
       <div class="toolbar-actions">
@@ -1242,6 +1282,9 @@ function onKey(e: KeyboardEvent) {
         </template>
       </div>
     </header>
+
+    <!-- FEAT-103：统计数据带（页头正下方，先于任何分组） -->
+    <StatBand :items="statItems" class="album-stats" />
 
     <!-- 搜索栏 -->
     <div class="search-bar">
@@ -1409,7 +1452,7 @@ function onKey(e: KeyboardEvent) {
                 <span class="group-title">未分类</span>
               </h3>
               <div v-show="!isCollapsed(`${yearKey(yg.year)}-uc`)" class="group-body">
-                <div class="album-grid">
+                <div class="album-grid is-tile">
                   <AlbumCard
                     v-for="album in yg.uncategorized"
                     :key="album.id"
@@ -1454,11 +1497,12 @@ function onKey(e: KeyboardEvent) {
                     <span class="group-count">{{ mg.albums.length }} 个相册</span>
                   </h4>
                   <div v-show="!isCollapsed(monthKey(yg.year, sg.season, mg.month))" class="group-body">
-                    <div class="album-grid">
+                    <div class="album-grid is-tile">
                       <AlbumCard
                         v-for="album in mg.albums"
                         :key="album.id"
                         :album="album"
+                        variant="tile"
                         :select-mode="isSelectMode"
                         :selected="selectedIds.has(album.id)"
                         @click="isSelectMode ? toggleSelect(album.id) : router.push(`/album/${album.id}`)"
@@ -2002,7 +2046,7 @@ function onKey(e: KeyboardEvent) {
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 4px;
-  transition: background 0.2s, color 0.2s;
+  transition: background var(--dur-2), color var(--dur-2);
 }
 
 .bc-link:hover {
@@ -2039,7 +2083,7 @@ function onKey(e: KeyboardEvent) {
   box-sizing: border-box;
   color: var(--text);
   background: var(--input-bg);
-  transition: border-color 0.2s;
+  transition: border-color var(--dur-2);
 }
 
 .search-input::placeholder {
@@ -2104,7 +2148,7 @@ function onKey(e: KeyboardEvent) {
   padding: 8px 10px;
   border-radius: 8px;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background var(--dur-2);
 }
 
 .search-result-item:hover {
@@ -2168,7 +2212,7 @@ function onKey(e: KeyboardEvent) {
   padding: 2px 8px;
   border-radius: 10px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--dur-2);
 }
 
 .result-jump:hover {
@@ -2238,7 +2282,7 @@ function onKey(e: KeyboardEvent) {
   margin: 0;
   cursor: pointer;
   user-select: none;
-  transition: background 0.2s;
+  transition: background var(--dur-2);
 }
 
 .group-head:hover {
@@ -2309,6 +2353,31 @@ function onKey(e: KeyboardEvent) {
   gap: 20px;
 }
 
+/* ===== FEAT-103：统计带与 tile 网格 ===== */
+
+/* 统计带贴齐页面左右留白。
+   用负 margin 抵消父级 padding，而不是改父级 ——
+   .album-page 的内边距还被搜索栏/时间路线图/分组头共用，
+   单独为数据带改它会让其他区块一起移位。 */
+.album-stats {
+  margin: 0 0 4px;
+}
+
+/* tile 网格：比 card 网格更密（封面不需要内边距，可以排到 216px）。
+   小图密排是相册浏览的正确密度：一屏多看到 3~4 张，扫视成本更低。
+   auto-fill + minmax 保证窄窗自动降列，不用写断点。 */
+.album-grid.is-tile {
+  grid-template-columns: repeat(auto-fill, minmax(216px, 1fr));
+  gap: 30px 26px;
+}
+
+@media (max-width: 900px) {
+  .album-grid.is-tile {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 22px 18px;
+  }
+}
+
 /* 右键菜单 */
 .context-menu {
   position: fixed;
@@ -2330,7 +2399,7 @@ function onKey(e: KeyboardEvent) {
   font-size: 14px;
   color: var(--text);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--dur-2);
 }
 
 .context-menu-item:hover {
@@ -2357,7 +2426,7 @@ function onKey(e: KeyboardEvent) {
   background: var(--card-bg);
   cursor: pointer;
   font-size: 14px;
-  transition: all 0.2s;
+  transition: all var(--dur-2);
 }
 
 .btn:hover {
@@ -2483,7 +2552,7 @@ function onKey(e: KeyboardEvent) {
   height: 100%;
   background: var(--color-primary);
   border-radius: 4px;
-  transition: width 0.3s ease;
+  transition: width var(--dur-3) ease;
 }
 
 .import-status {
@@ -2679,7 +2748,7 @@ function onKey(e: KeyboardEvent) {
   border: 1px solid var(--input-border, #d0d5dd);
   border-radius: 6px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
   color: var(--text, inherit);
 }
 .combo-check:hover {
@@ -2761,7 +2830,7 @@ function onKey(e: KeyboardEvent) {
   font-size: 14px;
   color: inherit;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--dur-2);
 }
 .folder-item:hover {
   background: rgba(120, 120, 140, 0.1);
@@ -2784,7 +2853,7 @@ function onKey(e: KeyboardEvent) {
   background: var(--card-bg);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
 }
 .bmode.active {
   background: color-mix(in srgb, var(--color-primary) 12%, transparent);
@@ -2806,7 +2875,7 @@ function onKey(e: KeyboardEvent) {
   font-size: 20px;
   color: var(--color-primary-text);
   cursor: pointer;
-  transition: opacity 0.3s ease, transform 0.3s ease, background 0.2s;
+  transition: opacity var(--dur-3) ease, transform var(--dur-3) ease, background var(--dur-2);
   z-index: 150;
   display: flex;
   align-items: center;

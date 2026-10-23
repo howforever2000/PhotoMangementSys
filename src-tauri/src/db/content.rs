@@ -294,6 +294,16 @@ pub struct LocationGroupRow {
     pub count: i64,
     pub cover_path: Option<String>,
     pub cover_album_id: Option<i64>,
+    /// FEAT-103：该聚合组的**位置中心点**（组内所有照片 lat/lon 的算术均值）。
+    /// 前端地图按它点亮城市；`None` 表示组内无一张照片带 GPS
+    /// （典型是「未记录地点」组，或老数据只有地名没存坐标）。
+    ///
+    /// 为什么是均值而不是取第一张：一个城市组里照片可能散布在辖区各处，
+    /// 取第一张会让点位随机偏向某一张照片的拍摄点；均值更接近"这个组的位置"。
+    /// 为什么不在前端算：前端拿不到全量 lat/lon（地点列表接口只回聚合行），
+    /// 要算就得再拉一遍全量照片，代价远高于在 SQL 聚合时顺手累加。
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
 }
 
 /// 内容命中行统一列清单（list_timeline / list_photos_by_category 共用，
@@ -771,9 +781,15 @@ impl Database {
             })?
             .collect::<Result<_, _>>()?;
 
-        // 聚合：key = Some(地名) / None(未记录)；值 = (count, best_conf, cover, cover_album)
-        let mut agg: HashMap<Option<String>, (i64, Option<f64>, Option<String>, Option<i64>)> =
-            HashMap::new();
+        // 聚合：key = Some(地名) / None(未记录)
+        // 值 = (count, best_conf, cover, cover_album, lat_sum, lon_sum, gps_count)
+        //
+        // FEAT-103：累加 lat/lon 是为了给前端地图算「组中心点」。
+        // 用求和 + 计数而不是平均值累计（后者无法增量更新）。
+        // gps_count 与 count 分开计：一个城市组里可能有部分照片没 GPS
+        // （老数据只有地名），中心点只应按"有坐标的那些"平均。
+        type Agg = (i64, Option<f64>, Option<String>, Option<i64>, f64, f64, i64);
+        let mut agg: HashMap<Option<String>, Agg> = HashMap::new();
         let mut to_write: Vec<(String, String)> = Vec::new();
         for r in &rows {
             let mut name = r.location.clone().filter(|s| !s.trim().is_empty());
@@ -785,8 +801,13 @@ impl Database {
                     }
                 }
             }
-            let e = agg.entry(name).or_insert((0, None, None, None));
+            let e = agg.entry(name).or_insert((0, None, None, None, 0.0, 0.0, 0));
             e.0 += 1;
+            if let (Some(lat), Some(lon)) = (r.lat, r.lon) {
+                e.4 += lat;
+                e.5 += lon;
+                e.6 += 1;
+            }
             let conf = r.confidence.unwrap_or(-1.0);
             if e.1.map(|c| conf > c).unwrap_or(true) {
                 e.1 = Some(conf);
@@ -810,12 +831,20 @@ impl Database {
 
         let mut named: Vec<LocationGroupRow> = Vec::new();
         let mut unknown: Option<LocationGroupRow> = None;
-        for (name, (count, _conf, cover, album)) in agg {
+        for (name, (count, _conf, cover, album, lat_sum, lon_sum, gps_count)) in agg {
+            // 中心点只在有坐标时给出；否则保持 None，前端据此不在地图上打点
+            let (lat, lon) = if gps_count > 0 {
+                (Some(lat_sum / gps_count as f64), Some(lon_sum / gps_count as f64))
+            } else {
+                (None, None)
+            };
             let row = LocationGroupRow {
                 location: name,
                 count,
                 cover_path: cover,
                 cover_album_id: album,
+                lat,
+                lon,
             };
             match row.location {
                 Some(_) => named.push(row),

@@ -165,7 +165,7 @@ watch(
   border-radius: 8px;
   border: 1px solid var(--cd-btn-border, #ddd);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
 }
 
 .btn-cancel {
@@ -207,12 +207,12 @@ watch(
 /* 过渡动画 */
 .confirm-fade-enter-active,
 .confirm-fade-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity var(--dur-2) ease;
 }
 
 .confirm-fade-enter-active .confirm-dialog,
 .confirm-fade-leave-active .confirm-dialog {
-  transition: transform 0.2s ease;
+  transition: transform var(--dur-2) ease;
 }
 
 .confirm-fade-enter-from,

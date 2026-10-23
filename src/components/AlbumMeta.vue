@@ -386,7 +386,7 @@ const saveTags = trace("saveTags", async () => {
   color: #fff;
   font-size: 14px;
   opacity: 0;
-  transition: opacity 0.2s;
+  transition: opacity var(--dur-2);
 }
 
 .cover-clickable:hover .cover-overlay {
@@ -425,7 +425,7 @@ const saveTags = trace("saveTags", async () => {
 .name-edit-hint {
   font-size: 16px;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity var(--dur-2);
 }
 
 .detail-name-wrap:hover .name-edit-hint {
@@ -483,7 +483,7 @@ const saveTags = trace("saveTags", async () => {
   font-size: 11px;
   color: var(--color-primary-text);
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity var(--dur-2);
 }
 
 .detail-desc-wrap:hover .desc-edit-hint {
@@ -558,7 +558,7 @@ const saveTags = trace("saveTags", async () => {
 
 .stat-clickable {
   cursor: pointer;
-  transition: background 0.12s;
+  transition: background var(--dur-1);
 }
 
 .stat-clickable:hover {
@@ -690,7 +690,7 @@ const saveTags = trace("saveTags", async () => {
   background: var(--color-surface);
   cursor: pointer;
   font-size: 14px;
-  transition: all 0.2s;
+  transition: all var(--dur-2);
   color: var(--color-text);
 }
 
