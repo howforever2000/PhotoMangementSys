@@ -118,3 +118,7 @@ src-tauri/tools/*/target
 # 与 covers 里 README 引用的封面 —— 那三类是构建与测试的骨头，删不得。
 covers/cover-legacy.png
 covers/login-preview.png
+
+# FEAT-103：视觉基线截图（体积大、机器相关，不入库）
+.visual/shots/
+.visual/baseline/
