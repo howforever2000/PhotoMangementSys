@@ -64,11 +64,15 @@ export interface Preset {
 export type PresetGroup = "dark" | "light";
 
 /**
- * 深色组（3 套）
+ * 深色组（4 套）
  *
- * 色相分工：紫（品牌）/ 中性冷（专业感）/ 暖褐（亲和感）。
- * 三套的 compColor 都是**近中性灰**（S < 0.08）——卡片底不再带背景的色相，
+ * 色相分工：紫（品牌）/ 中性冷（专业感）/ 暖褐（亲和感）/ 深空石墨（最省心）。
+ * 四套的 compColor 都是**近中性灰**（S < 0.08）——卡片底不再带背景的色相，
  * 层次完全交给明度。这是"素"的来源：一屏只有一个色相。
+ *
+ * 为什么四套都要留（而不是砍掉近似项）：预设是"用户自己的外观"，
+ * 砍掉任何一套都会让用它的老用户开屏变样。数量与质感不矛盾 —— 质感来自
+ * 每套内部的**明度跨度**，不是来自"套数少"。
  */
 export const DARK_PRESETS: Preset[] = [
   {
@@ -104,10 +108,22 @@ export const DARK_PRESETS: Preset[] = [
     compAlpha: 0.62,
     material: "plain",
   },
+  {
+    id: "deep-graphite",
+    name: "深空石墨",
+    mode: "dark",
+    // 比墨色石板再深一档、再冷一档：明度跨度 23→20，色相偏蓝 4°。
+    // 用在照片多的页面最省心 —— 底越深，封面自己的色彩越跳得出来。
+    colors: ["#1d2833", "#131b24", "#080c11"],
+    angle: 165,
+    compColor: "#1f2429",  // 通道极差 10（冷中性，在“素”的阀值内）
+    compAlpha: 0.62,
+    material: "plain",
+  },
 ];
 
 /**
- * 浅色组（3 套）
+ * 浅色组（4 套）
  *
  * 浅色的透明度必须**高于**深色（0.72 vs 0.62）：
  * 同样的 alpha 在浅底上得到的对比度远低于深底（实测 26% 黑在 #faf8f5 上
@@ -146,6 +162,18 @@ export const LIGHT_PRESETS: Preset[] = [
     compAlpha: 0.72,
     material: "plain",
   },
+  {
+    id: "celadon-light",
+    name: "晨雾青瓷",
+    mode: "light",
+    // 浅色里唯一的冷绿：树/水/草占比高的库用暖白或冷灰都会把绿色压成灰绿。
+    // 明度跨度 17（#eaf1ee→#b6cbc2），比纸白（12）更立体，仍属于“素”的范围。
+    colors: ["#eaf1ee", "#d8e5df", "#b6cbc2"],
+    angle: 165,
+    compColor: "#eef4f1",  // S=0.025（近中性，微绿）
+    compAlpha: 0.72,
+    material: "plain",
+  },
 ];
 
 /**
@@ -160,13 +188,13 @@ export const PRESET_GROUPS: { group: PresetGroup; title: string; note: string; i
   {
     group: "dark",
     title: "深色",
-    note: "紫夜 / 石板 / 余烬 · 适合暗环境浏览",
+    note: "紫夜 / 石墨 / 石板 / 余烬 · 适合暗环境浏览",
     items: DARK_PRESETS,
   },
   {
     group: "light",
     title: "浅色",
-    note: "亚麻 / 雾光 / 纸白 · 适合日间与打印前校对",
+    note: "亚麻 / 雾光 / 纸白 / 青瓷 · 适合日间与打印前校对",
     items: LIGHT_PRESETS,
   },
 ];
