@@ -3895,7 +3895,139 @@
       "log_hint": "人脸通道日志里这些照片的检测置信度会从「低于阈值」变为正常值；历史已入库的人脸 / 向量仍需重建人物库才生效",
       "created_at": "2026-10-22T22:25:00+08:00",
       "fixed_at": "2026-10-22T22:25:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1023-001",
+      "date": "2026-10-23",
+      "status": "resolved",
+      "title": "地点地图组件读取底图时崩溃：number 117.35 is not iterable（图层级写错）",
+      "module": "FEAT-103 地点地图",
+      "symptom": [
+        "地图区域空白，控制台反复报 \"number 117.35 is not iterable\""
+      ],
+      "root_cause": {
+        "summary": "TS 类型按 GeoJSON MultiPolygon 的 4 层写（provs→poly→ring→point），但 gen_map_lite.py 输出的是展平后的 3 层（provs→ring→point）",
+        "detail": [
+          "GeoJSON 结构是 MultiPolygon[Polygon[Ring[Point]]]，生成脚本把洞环也当普通环写入，于是少一层嵌套",
+          "组件里 for (poly of p.r) for (ring of poly) 把 [lon,lat] 当成环去遍历，取到 number 就报错",
+          "类型声明写的是 number[][][][]，TS 不会报错（因为类型是我自己写的，与真实数据无关）"
+        ]
+      },
+      "fix": "MapLiteProvince.r 改为 number[][][] 并在注释里锁死层级；component 去掉多余的一层循环。教训：生成的 JSON 必须与消费端类型一起验证，不能只靠肉眼比对结构",
+      "related_files": [
+        "src/utils/mapProjection.ts",
+        "src/components/ui/LocationMap.vue",
+        "python/gen_map_lite.py"
+      ],
+      "created_at": "2026-10-23T17:07:34+08:00",
+      "fixed_at": "2026-10-23T17:07:34+08:00"
+    },
+    {
+      "id": "BUG-2026-1023-002",
+      "date": "2026-10-23",
+      "status": "resolved",
+      "title": "地图被南海诸岛插图框拉长 35%，主图只占画布上方三分之二",
+      "module": "FEAT-103 地点地图 / 底图生成",
+      "symptom": [
+        "地图下方有约 300px 空白海域",
+        "中国主陆显得又扁又小"
+      ],
+      "root_cause": {
+        "summary": "阿里 DataV 的全国数据把南海诸岛作为独立要素（名称字段为空），其 bbox 到 3.4°N，把纬度范围从 18°N 拉到 3.4°N",
+        "detail": [
+          "该要素与传统地图右下角的插图框对应，是\"制图惯例\"而非真实地理范围",
+          "同时海南省自身也包含三沙岛礁，其 bbox 下界也是 3.8°N",
+          "116 个碎环合计只占 550 个点（4.5%），却决定了整个画布的纬度跨度"
+        ]
+      },
+      "fix": "生成端三重过滤：①按\"面积最大环的中心纬度\"剔除插图框（用 bbox 会误删海南，两者都含三沙）；②面积 <0.09°² 的碎环剔除；③纬度 <17.5° 的环剔除（捕到剩下那个 0.11°² 的永暑礁环）。最终纬度范围 18.14~53.56",
+      "evidence_log": [
+        "首版：纬度 3.83~53.56 / 253 环",
+        "最终：纬度 18.14~53.56 / 35 环 / 161KB"
+      ],
+      "related_files": [
+        "python/gen_map_lite.py",
+        "src/utils/mapProjection.ts"
+      ],
+      "created_at": "2026-10-23T17:07:34+08:00",
+      "fixed_at": "2026-10-23T17:07:34+08:00"
+    },
+    {
+      "id": "BUG-2026-1023-003",
+      "date": "2026-10-23",
+      "status": "resolved",
+      "title": "设计令牌初版直接取自效果图，深/浅两套对比度全部不达标（fg-3 低至 1.95:1）",
+      "module": "FEAT-103 设计令牌 / 无障碍",
+      "symptom": [
+        "浅色模式下统计标签几乎看不见",
+        "深色模式下小字号标签发虚"
+      ],
+      "root_cause": {
+        "summary": "效果图上的 46%/26% 透明度是按视觉观感取的，未做对比度校验；直接上屏后深色 fg-3 = 2.09:1、浅色 fg-3 = 1.95:1",
+        "detail": [
+          "rgba 透明度本身没有对比度，必须叠在具体底色上算合成色再比",
+          "同一 alpha 在深底与浅底上结果完全不同：26% 白在 #0a090d 上 2.09:1，26% 黑在 #faf8f5 上 1.95:1",
+          "浅色强调色 #9a6f2a 实测 4.23:1，也差 0.27"
+        ]
+      },
+      "fix": "写 assets/tokens.test.ts（13 项断言）反向逼出取值：fg-2=5.0:1、fg-3=3.2:1（仅装饰单位）、浅色强调色改 #7d571a(6.1:1)。并确立规则：需要\"读\"的 label 一律 fg-2，fg-3 只留单位后缀",
+      "related_files": [
+        "src/assets/tokens.css",
+        "src/assets/tokens.test.ts",
+        "src/components/ui/StatBand.vue"
+      ],
+      "created_at": "2026-10-23T17:07:34+08:00",
+      "fixed_at": "2026-10-23T17:07:34+08:00"
+    },
+    {
+      "id": "BUG-2026-1023-004",
+      "date": "2026-10-23",
+      "status": "resolved",
+      "title": "长三角城市点标签互相重叠（上海与杭州糊成一团）",
+      "module": "FEAT-103 地点地图 / 标签布局",
+      "symptom": [
+        "地图上\"上海 142\"与\"杭州 61\"文字叠死，两个都读不出"
+      ],
+      "root_cause": {
+        "summary": "每个 ≥10 张的点都无条件画右侧标签，未做碰撞检测；长三角城市在地图上相隔不到 20px",
+        "detail": [
+          "地图按固定 bbox 投影，城市间距是客观的，无法通过缩放避开",
+          "标签宽度随文字长度变化（\"乌鲁木齐 15\" vs \"上海 142\"）"
+        ]
+      },
+      "fix": "加包围盒避让：按张数降序依次计算标签盒，与已有盒相交则跳过（张数少的让位）。被让掉的点悬停时仍显示。这比\"永远不画小标签\"好——稀疏区的小城名一样可见",
+      "related_files": [
+        "src/components/ui/LocationMap.vue"
+      ],
+      "created_at": "2026-10-23T17:07:34+08:00",
+      "fixed_at": "2026-10-23T17:07:34+08:00"
+    },
+    {
+      "id": "BUG-2026-1023-005",
+      "date": "2026-10-23",
+      "status": "resolved",
+      "title": "覆写 src/utils/trace.ts 破坏了项目已有的 AOP 日志装饰器",
+      "module": "FEAT-103 / CS2 编码纪律",
+      "symptom": [
+        "构建报错：\"trace\" is not exported by \"src/utils/trace.ts\"",
+        "ManualSort/AlbumDetail/ScanPanel/AlbumMeta 四个组件导入失败"
+      ],
+      "root_cause": {
+        "summary": "我在 P1 阶段新建 trace.ts 时未先检查文件是否已存在，直接把项目已有的公共日志组件覆盖掉了",
+        "detail": [
+          "项目原本就有 utils/trace.ts（AOP 风格装饰器 trace(name, fn)），CS2 要求的\"公共日志组件\"已存在",
+          "我误以为缺失，写了另一个 API（traceStart/traceEnd），并按\"新建文件\"的方式写入",
+          "build 立刻暴露：4 个组件的 import { trace } 找不到导出"
+        ]
+      },
+      "fix": "git checkout 恢复原文件，改用已有 trace(name, fn) API 接入 LocationGallery.load。教训：CS2 说\"复用项目已有的公共日志组件\"，第一步必须是找，不是写",
+      "related_files": [
+        "src/utils/trace.ts",
+        "src/components/LocationGallery.vue"
+      ],
+      "created_at": "2026-10-23T17:07:34+08:00",
+      "fixed_at": "2026-10-23T17:07:34+08:00"
     }
   ],
-  "updated": "2026-10-22T22:25:00+08:00"
+  "updated": "2026-10-23T17:07:34+08:00"
 }
