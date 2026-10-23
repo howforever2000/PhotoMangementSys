@@ -3739,7 +3739,45 @@
       ],
       "created_at": "2026-10-23T17:06:56+08:00",
       "updated_at": "2026-10-23T17:44:34+08:00"
+    },
+    {
+      "id": "FEAT-105",
+      "name": "界面质感改造：预设 8 套 + 纸片材质 + 一级导航扁平化 + 密排墙面",
+      "status": "done",
+      "description": "在 FEAT-103 基础上继续推进，只动前端。① 预设 6→8 套：深色加深空石墨（#1d2833/#131b24/#080c11，比墨色石板更深更冷），浅色加晨雾青瓷（#eaf1ee/#d8e5df/#b6cbc2，浅色里唯一的冷绿）；两套沿用各自 compAlpha 与 plain 材质，compColor 通道极差 ≤12 通过既有\"素\"阀值。② 新增纸片材质令牌 --slip-*（fill/top/shadow，深浅各一套）+ .slip 类；与 --glass-* 分工并存：玻璃仍只用于浮层（真模糊），纸片躺在内容中（不模糊、不采样背景，只靠明度差与极轻投影读厚度）。液态玻璃未做任何删减。③ 一级导航由 5 项改为 4 个产品级模块（相册管理/智慧相册/创意工坊/扫描入库），与 Home 四张卡一一对应；新增 BELONGS 归属映射使 /timeline /memories /search /album/:id /scan/test 各自高亮到所属模块，URL 与路由全部不变。④ 相册 tile 网格 216→208、gap 30/26→12/12、加 dense；人物网格 220→176、gap 16→12、加 dense（同屏 5 列 → 7 列）。所有主界面统计带（StatBand）结构未动，统计信息全部保留。",
+      "related_files": [
+        "src/utils/presets.ts",
+        "src/utils/presets.test.ts",
+        "src/assets/tokens.css",
+        "src/components/ui/AppHeader.vue",
+        "src/views/AlbumList.vue",
+        "src/components/PersonGallery.vue",
+        "design/preview/README.md"
+      ],
+      "keywords": [
+        "预设",
+        "presets",
+        "纸片",
+        "slip",
+        "液态玻璃",
+        "glass",
+        "导航",
+        "AppHeader",
+        "BELONGS",
+        "密排",
+        "dense",
+        "质感",
+        "深空石墨",
+        "晨雾青瓷"
+      ],
+      "notes": [
+        "套数 6→8 而非砍到 4：预设是用户自己的外观，砍任何一套都会让用它的老用户开屏变样；质感来自每套内部的明度跨度，不来自套数少。",
+        "效果图里\"每 5 张一张 2×2 重点瓦片\"未落地：需把封面高度从固定 160px 改为随行高、标题移入封面浮层，等于重写 AlbumCard 版式，按\"前端不要太重\"先不做。",
+        "后端（src-tauri）本次零改动。"
+      ],
+      "created_at": "2026-10-23T18:41:14+08:00",
+      "updated_at": "2026-10-23T18:41:14+08:00"
     }
   ],
-  "updated": "2026-10-23T17:44:34+08:00"
+  "updated": "2026-10-23T18:41:14+08:00"
 }

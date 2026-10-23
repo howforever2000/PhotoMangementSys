@@ -122,3 +122,7 @@ covers/login-preview.png
 # FEAT-103：视觉基线截图（体积大、机器相关，不入库）
 .visual/shots/
 .visual/baseline/
+
+# FEAT-105：界面效果图与素材（体积大、可重现：node design/preview/shoot-all.cjs）
+design/preview/*.png
+design/preview/assets/
