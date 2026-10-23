@@ -4027,7 +4027,81 @@
       ],
       "created_at": "2026-10-23T17:07:34+08:00",
       "fixed_at": "2026-10-23T17:07:34+08:00"
+    },
+    {
+      "id": "BUG-2026-1023-006",
+      "date": "2026-10-23",
+      "status": "resolved",
+      "title": "相册瓦片封面高度塌成 0px（aspect-ratio + flex 收缩 + img 循环依赖）",
+      "module": "FEAT-103 P2 AlbumCard tile",
+      "symptom": [
+        "瓦片只显示两行文字，封面完全不可见",
+        "getBoundingClientRect 实测高度 24px（应为 154px）"
+      ],
+      "root_cause": {
+        "summary": "`.tile-cover` 用 aspect-ratio:16/10 定高，但两种情况都会塌：①封面为空时占位符是绝对定位，不撑高，父级 flex column 的 flex-shrink 把算出的高度收缩掉；②有 img 时 img 用 height:100%，与父级 aspect-ratio 形成循环依赖",
+        "detail": [
+          "真实相册经常没有封面（新建相册、封面文件被移走），所以这不是极端情况",
+          "加 flex-shrink:0 只解决了情况 ①，②仍然塌"
+        ]
+      },
+      "fix": "改用 padding-bottom: 62.5%（宽度百分比在任何包含块里都能解算，不依赖子项）+ 图片 absolute inset:0 铺满。代价是不能用 var 参数化比例，但该组件只需要一种比例",
+      "related_files": [
+        "src/components/AlbumCard.vue"
+      ],
+      "created_at": "2026-10-23T17:44:34+08:00",
+      "fixed_at": "2026-10-23T17:44:34+08:00"
+    },
+    {
+      "id": "BUG-2026-1023-007",
+      "date": "2026-10-23",
+      "status": "resolved",
+      "title": "追加的 scoped CSS 全部未生效 —— 落在了文件里第一个 </style> 之外",
+      "module": "FEAT-103 P2 / Vue SFC 结构",
+      "symptom": [
+        "改了样式但页面毫无变化",
+        "vite 编译产物里 grep 不到 .tile-cover 规则",
+        "Playwright 遍历 document.styleSheets 显示「无匹配规则」"
+      ],
+      "root_cause": {
+        "summary": "用 cat >> 往 AlbumCard.vue 末尾追加 CSS，但该文件末尾（第 453 行）已有一个 </style>；追加内容落在它之后，成为 SFC 之外的普通文本，Vue 编译器直接丢弃且不报错",
+        "detail": [
+          "构建完全通过（vue-tsc 不检查模板外的文本）",
+          "浏览器里元素存在、class 正确、只是没有任何样式命中",
+          "判断用了三步：diag 脚本读 computedStyle（paddingBottom=0）→ 遍历 styleSheets（无匹配）→ curl 编译产物（grep 不到）"
+        ]
+      },
+      "fix": "把游离的 171 行 CSS 移到正确的 </style> 之前，删除多余的闭合标签。教训：用 shell 追加到 .vue 文件前必须先确认 <style> 块的边界，SFC 不是普通 CSS 文件",
+      "related_files": [
+        "src/components/AlbumCard.vue"
+      ],
+      "created_at": "2026-10-23T17:44:34+08:00",
+      "fixed_at": "2026-10-23T17:44:34+08:00"
+    },
+    {
+      "id": "BUG-2026-1023-008",
+      "date": "2026-10-23",
+      "status": "resolved",
+      "title": "Timeline 统计数据带 TDZ：局部变量 years 遮蔽了外层 years computed",
+      "module": "FEAT-103 P2 Timeline",
+      "symptom": [
+        "TS7022: 'years' implicitly has type any",
+        "TS2448: Block-scoped variable 'years' used before its declaration"
+      ],
+      "root_cause": {
+        "summary": "timelineStats 内部写了 `const years = years.value.length` —— 局部同名声明遮蔽了外层 computed，于是 years.value 变成访问自己",
+        "detail": [
+          "错误信息指向的是外层 years 的声明行（第 68 行），看起来像\"定义顺序问题\"，实际是内层遮蔽",
+          "第一次误判为声明顺序，把 Computed 搬了一次位置，错误依旧"
+        ]
+      },
+      "fix": "局部变量改名 yearCount。教训：TS 的 implicit-any + used-before-declaration 组合报错，先怀疑同名遮蔽再怀疑顺序",
+      "related_files": [
+        "src/views/Timeline.vue"
+      ],
+      "created_at": "2026-10-23T17:44:34+08:00",
+      "fixed_at": "2026-10-23T17:44:34+08:00"
     }
   ],
-  "updated": "2026-10-23T17:07:34+08:00"
+  "updated": "2026-10-23T17:44:34+08:00"
 }
