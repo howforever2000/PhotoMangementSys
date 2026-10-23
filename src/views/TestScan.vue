@@ -633,7 +633,7 @@ const phaseLabel = computed(() => {
   border: 1px solid var(--ts-btn-border);
   border-radius: 8px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
   user-select: none;
 }
 .recursive-toggle:hover:not(.locked) {
@@ -719,7 +719,7 @@ const phaseLabel = computed(() => {
   height: 100%;
   background: linear-gradient(90deg, var(--color-primary), #5a8ce8);
   border-radius: 4px;
-  transition: width 0.25s ease;
+  transition: width var(--dur-3) ease;
 }
 .progress-fill.fill-done {
   background: linear-gradient(90deg, var(--color-ok-vivid), #22c55e);
@@ -771,7 +771,7 @@ const phaseLabel = computed(() => {
   color: var(--ts-text);
   cursor: pointer;
   font-size: 13px;
-  transition: all 0.2s;
+  transition: all var(--dur-2);
 }
 /* 排除带自身语义色的按钮，避免悬停态覆盖它们的主色 */
 .btn:hover:not(.btn-primary):not(.btn-danger):not(.btn-stop):not(.btn-active) {

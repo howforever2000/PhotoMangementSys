@@ -93,7 +93,7 @@ const emit = defineEmits<{ action: [] }>();
   font-size: 13.5px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.18s, transform 0.1s;
+  transition: background var(--dur-2), transform var(--dur-1);
 }
 
 .empty-action:hover {

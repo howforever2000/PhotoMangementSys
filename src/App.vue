@@ -100,12 +100,12 @@ onBeforeUnmount(() => {
 }
 
 .app-bg-base {
-  transition: background 0.3s ease;
+  transition: background var(--dur-3) ease;
 }
 
 .app-bg-img {
   background-repeat: no-repeat;
-  transition: opacity 0.3s ease;
+  transition: opacity var(--dur-3) ease;
 }
 
 /* 内容层：在背景之上 */

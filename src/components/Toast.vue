@@ -107,7 +107,7 @@ function onLeave() {
   padding: 12px 14px 12px 12px;
   border-radius: 12px;
   overflow: hidden;
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  transition: opacity var(--dur-2) ease, transform var(--dur-2) ease;
 }
 .toast-icon {
   flex-shrink: 0;
@@ -146,7 +146,7 @@ function onLeave() {
   border-radius: 7px;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: opacity 0.15s;
+  transition: opacity var(--dur-2);
 }
 .toast-btn:hover {
   opacity: 0.85;

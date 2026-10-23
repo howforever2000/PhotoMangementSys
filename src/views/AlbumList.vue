@@ -2002,7 +2002,7 @@ function onKey(e: KeyboardEvent) {
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 4px;
-  transition: background 0.2s, color 0.2s;
+  transition: background var(--dur-2), color var(--dur-2);
 }
 
 .bc-link:hover {
@@ -2039,7 +2039,7 @@ function onKey(e: KeyboardEvent) {
   box-sizing: border-box;
   color: var(--text);
   background: var(--input-bg);
-  transition: border-color 0.2s;
+  transition: border-color var(--dur-2);
 }
 
 .search-input::placeholder {
@@ -2104,7 +2104,7 @@ function onKey(e: KeyboardEvent) {
   padding: 8px 10px;
   border-radius: 8px;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background var(--dur-2);
 }
 
 .search-result-item:hover {
@@ -2168,7 +2168,7 @@ function onKey(e: KeyboardEvent) {
   padding: 2px 8px;
   border-radius: 10px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--dur-2);
 }
 
 .result-jump:hover {
@@ -2238,7 +2238,7 @@ function onKey(e: KeyboardEvent) {
   margin: 0;
   cursor: pointer;
   user-select: none;
-  transition: background 0.2s;
+  transition: background var(--dur-2);
 }
 
 .group-head:hover {
@@ -2330,7 +2330,7 @@ function onKey(e: KeyboardEvent) {
   font-size: 14px;
   color: var(--text);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--dur-2);
 }
 
 .context-menu-item:hover {
@@ -2357,7 +2357,7 @@ function onKey(e: KeyboardEvent) {
   background: var(--card-bg);
   cursor: pointer;
   font-size: 14px;
-  transition: all 0.2s;
+  transition: all var(--dur-2);
 }
 
 .btn:hover {
@@ -2483,7 +2483,7 @@ function onKey(e: KeyboardEvent) {
   height: 100%;
   background: var(--color-primary);
   border-radius: 4px;
-  transition: width 0.3s ease;
+  transition: width var(--dur-3) ease;
 }
 
 .import-status {
@@ -2679,7 +2679,7 @@ function onKey(e: KeyboardEvent) {
   border: 1px solid var(--input-border, #d0d5dd);
   border-radius: 6px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
   color: var(--text, inherit);
 }
 .combo-check:hover {
@@ -2761,7 +2761,7 @@ function onKey(e: KeyboardEvent) {
   font-size: 14px;
   color: inherit;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--dur-2);
 }
 .folder-item:hover {
   background: rgba(120, 120, 140, 0.1);
@@ -2784,7 +2784,7 @@ function onKey(e: KeyboardEvent) {
   background: var(--card-bg);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
 }
 .bmode.active {
   background: color-mix(in srgb, var(--color-primary) 12%, transparent);
@@ -2806,7 +2806,7 @@ function onKey(e: KeyboardEvent) {
   font-size: 20px;
   color: var(--color-primary-text);
   cursor: pointer;
-  transition: opacity 0.3s ease, transform 0.3s ease, background 0.2s;
+  transition: opacity var(--dur-3) ease, transform var(--dur-3) ease, background var(--dur-2);
   z-index: 150;
   display: flex;
   align-items: center;

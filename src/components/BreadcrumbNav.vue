@@ -74,7 +74,7 @@ function navigate(to?: string) {
   cursor: pointer;
   padding: 1px 3px;
   border-radius: 4px;
-  transition: background 0.12s, color 0.12s;
+  transition: background var(--dur-1), color var(--dur-1);
 }
 
 .breadcrumb-link:hover {

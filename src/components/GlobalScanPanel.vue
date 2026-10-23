@@ -462,7 +462,7 @@ onMounted(() => {
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
-  transition: background 0.2s, border-color 0.2s, color 0.2s, box-shadow 0.12s, transform 0.1s;
+  transition: background var(--dur-2), border-color var(--dur-2), color var(--dur-2), box-shadow var(--dur-1), transform var(--dur-1);
 }
 .btn:hover:not(:disabled) { border-color: var(--color-link); color: var(--color-link); box-shadow: 0 2px 8px rgba(16, 24, 40, 0.08); }
 .btn:active:not(:disabled) { transform: translateY(1px); }
@@ -551,7 +551,7 @@ onMounted(() => {
   padding: 7px 10px;
   border-bottom: 1px solid var(--color-border);
   cursor: pointer;
-  transition: background 0.12s;
+  transition: background var(--dur-1);
   font-size: 13px;
 }
 .gs-album-row:last-child { border-bottom: none; }
@@ -616,7 +616,7 @@ onMounted(() => {
   border: 1px solid var(--color-border);
   border-radius: 6px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
   background: transparent;
 }
 .gs-check:hover { border-color: var(--color-link); background: var(--color-soft-accent); }
@@ -657,7 +657,7 @@ onMounted(() => {
 .gs-fill {
   height: 100%;
   background: linear-gradient(90deg, var(--color-primary), var(--color-primary));
-  transition: width 0.3s;
+  transition: width var(--dur-3);
   border-radius: 4px;
 }
 .gs-track-inner { height: 6px; margin-top: 6px; }

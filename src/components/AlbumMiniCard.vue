@@ -73,7 +73,7 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
   cursor: grab;
   background: var(--color-surface, #fff);
   border: 1px solid var(--color-border, #f0f0f0);
-  transition: all 0.2s;
+  transition: all var(--dur-2);
   color: var(--color-text);
 }
 
@@ -142,7 +142,7 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
   align-items: center;
   justify-content: center;
   z-index: 2;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
 }
 
 .mini-check.checked {

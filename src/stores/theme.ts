@@ -386,26 +386,27 @@ export const useThemeStore = defineStore("theme", () => {
   );
 
   /**
-   * M3：**液态的名义透明度比普通卡片低一档**（默认 0.64 → 0.52），但带安全阀。
+   * FEAT-103 P0：液态的名义透明度**不再大幅下调**（0.12 → 0.04），且加 0.58 下限。
    *
-   * 为什么必须在这里改而不是用 CSS 的 color-mix 偷偷降 alpha：
-   * glassRgb / readability / glassTone 全部拿同一个 alpha 算文字对比，
-   * 只让 CSS 变透 = “上屏的底比算过的底更透”，文字取向可能错边
-   * （亮壁纸透上来 → 实际是浅底，却按深底配了白字）。
-   * 从这里下发，三处（类路径 / 内联路径 / 对比计算）永远同値。
+   * 改动理由（与 M3 的取舍不同，不是推翻它，而是补一条它没看到的约束）：
+   * M3 想要「更通透」，但那时卡片还是**全屏铺开的主要容器** —— 降通退 −0.12 后，
+   * 背景壁纸的光会从卡片下半部透上来，把数据区（图表、柱阵）压成一层灰。
+   * 本次重设计之后玻璃只用于**浮层**（搜索、抽屉、灯箱工具条、弹窗），
+   * 这些层的后面是**内容（照片/页面）而不是纯壁纸**，于是：
+   *   · 降 0.12 会让照片的颜色直接涌进搜索胶囊里，胶囊内的字看不清；
+   *   · 降 0.04 既能保住一点点「透」，又不会让底层照片影响可读性。
+   * 0.58 下限：低于此值时，大面积深色照片后面的浮层会变成中灰死区
+   * （黑白两种文字都上不了 4.5:1），这是实测过的。
    *
-   * 安全阀（素材）：更透明 = 卡面更接近背景色，极端组合（浅壁纸 + 暗组件色）
-   * 会把玻璃推到中灰死区：黑白两种文字都上不了 4.5:1。
-   * 实测 144 组（8 背景 × 3 色 × 6 档透明度）里，无条件降一档会让达标样本从
-   * 129 降到 121。所以只在**降完仍达标**时才真的降；原本就不达标的组合
-   * 反而取两者中更好的那个（反正不达标，不如换通透）。
-   * 不抢滑块：它是一个可回退的固定材质偏移，滑块拉到底液态也拉到底。
+   * 安全阀逻辑完整保留 —— 它才是真正做判断的地方，上面的 0.04 只是把「意愿」调小。
    */
-  const LIQUID_ALPHA_DROP = 0.12;
+  const LIQUID_ALPHA_DROP = 0.04;
+  const LIQUID_ALPHA_FLOOR = 0.58;
   const effectiveAlpha = computed(() => {
     const base = compAlpha.value;
     if (material.value !== "liquid") return base;
-    const dropped = Math.max(0.12, base - LIQUID_ALPHA_DROP);
+    // floor 只抬底、不压顶：用户把滑块拉得很高（>0.62）时不应被“降回来”
+    const dropped = Math.max(LIQUID_ALPHA_FLOOR, base - LIQUID_ALPHA_DROP);
     if (Math.abs(dropped - base) < 1e-6) return base;
     const fill = hexToRgb(fillColor.value);
     const ratioAt = (a: number) => {

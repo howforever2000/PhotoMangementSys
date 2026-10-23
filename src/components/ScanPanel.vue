@@ -421,7 +421,7 @@ const openImage = trace("openImage", async (path: string) => {
   background: #fff;
   cursor: pointer;
   font-size: 14px;
-  transition: all 0.2s;
+  transition: all var(--dur-2);
 }
 .btn:hover { border-color: var(--color-link); color: var(--color-link); }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
@@ -438,7 +438,7 @@ const openImage = trace("openImage", async (path: string) => {
 .combo-area { margin-bottom: 24px; }
 .combo-controls { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 14px; background: var(--color-surface-2); border-radius: 6px; margin-bottom: 12px; }
 .combo-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; flex: 1; min-width: 0; }
-.combo-check { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px; cursor: pointer; transition: all 0.15s; }
+.combo-check { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px; cursor: pointer; transition: all var(--dur-2); }
 .combo-check:hover { border-color: var(--color-link); background: var(--color-soft-accent); }
 .combo-check.active { border-color: var(--color-link); background: var(--color-soft-accent); }
 .combo-check input[type="checkbox"] { margin-right: 2px; }
@@ -454,7 +454,7 @@ const openImage = trace("openImage", async (path: string) => {
 /* 进度条 */
 .combo-progress { padding: 8px 14px; }
 .progress-track { height: 6px; background: var(--color-border); border-radius: 3px; overflow: hidden; }
-.progress-fill { height: 100%; background: var(--color-link); transition: width 0.3s; border-radius: 3px; }
+.progress-fill { height: 100%; background: var(--color-link); transition: width var(--dur-3); border-radius: 3px; }
 .progress-text { font-size: 11px; color: var(--color-text-3); margin: 4px 0 0; }
 
 /* 影调徽标（组合表用） */

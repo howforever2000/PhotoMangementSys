@@ -130,7 +130,7 @@ body.mat-liquid .auth-card.glass-surface {
   border: 1px solid var(--auth-field-border);
   border-radius: 8px;
   outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color var(--dur-2), box-shadow var(--dur-2);
 }
 
 .field-input::placeholder {
@@ -187,7 +187,7 @@ body.mat-liquid .auth-card.glass-surface {
   border: none;
   border-radius: 8px;
   cursor: pointer;
-  transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
+  transition: background var(--dur-2), transform var(--dur-1), box-shadow var(--dur-2);
 }
 
 .btn-primary:hover:not(:disabled) {

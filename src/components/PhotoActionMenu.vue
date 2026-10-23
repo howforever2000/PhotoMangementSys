@@ -342,7 +342,7 @@ const items = computed<ContextMenuEntry[]>(() => {
   font-size: 32px;
   line-height: 1;
   cursor: pointer;
-  transition: color 0.12s, transform 0.1s;
+  transition: color var(--dur-1), transform var(--dur-1);
 }
 .pam-star.on { color: #ffce3a; }
 .pam-star:hover { transform: scale(1.12); }

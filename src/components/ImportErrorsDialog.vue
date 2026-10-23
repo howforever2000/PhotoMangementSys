@@ -540,7 +540,7 @@ body.theme-dark .ier-advice-exists {
   border-radius: 8px;
   border: 1px solid rgba(127, 127, 127, 0.3);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
 }
 .btn-cancel { background: transparent; }
 .btn-cancel:hover { background: rgba(127, 127, 127, 0.1); }
@@ -560,11 +560,11 @@ body.theme-dark .ier-advice-exists {
 /* 过渡 */
 .import-err-fade-enter-active,
 .import-err-fade-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity var(--dur-2) ease;
 }
 .import-err-fade-enter-active .ier-dialog,
 .import-err-fade-leave-active .ier-dialog {
-  transition: transform 0.2s ease;
+  transition: transform var(--dur-2) ease;
 }
 .import-err-fade-enter-from,
 .import-err-fade-leave-to { opacity: 0; }

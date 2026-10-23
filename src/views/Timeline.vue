@@ -396,7 +396,7 @@ function goAlbumFromLightbox(albumId: number) {
   border-radius: 12px;
   padding: 16px 16px 4px;
   margin-bottom: 18px;
-  transition: background 0.4s, box-shadow 0.4s;
+  transition: background var(--dur-3), box-shadow var(--dur-3);
 }
 /* FEAT-E：跳定位高亮（query 定位 + 滚动后亮色边框 1.8s 淡出） */
 .tl-year.tl-highlight,
@@ -443,7 +443,7 @@ function goAlbumFromLightbox(albumId: number) {
   overflow: hidden;
   cursor: pointer;
   background: rgba(127, 127, 127, 0.1);
-  transition: transform 0.12s;
+  transition: transform var(--dur-1);
 }
 .tl-card:hover {
   transform: translateY(-2px);
@@ -549,7 +549,7 @@ function goAlbumFromLightbox(albumId: number) {
   align-items: center;
   justify-content: center;
   user-select: none;
-  transition: transform 0.2s ease, background 0.2s;
+  transition: transform var(--dur-2) ease, background var(--dur-2);
 }
 .tl-top-btn:hover {
   background: var(--color-soft-accent, color-mix(in srgb, var(--color-primary) 12%, transparent));
@@ -560,7 +560,7 @@ function goAlbumFromLightbox(albumId: number) {
 }
 .tl-top-enter-active,
 .tl-top-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  transition: opacity var(--dur-2) ease, transform var(--dur-2) ease;
 }
 .tl-top-enter-from,
 .tl-top-leave-to {

@@ -91,7 +91,7 @@ function toggle() {
   padding: 14px 18px;
   cursor: pointer;
   user-select: none;
-  transition: background 0.15s;
+  transition: background var(--dur-2);
 }
 
 .cs-head:hover {
@@ -103,7 +103,7 @@ function toggle() {
   height: 16px;
   color: var(--color-text-2, #6a7690);
   flex-shrink: 0;
-  transition: transform 0.2s ease;
+  transition: transform var(--dur-2) ease;
 }
 
 .cs-chevron.open {

@@ -286,7 +286,7 @@ const vaultDenied = computed(
   color: var(--detail-text);
   cursor: pointer;
   font-size: 14px;
-  transition: all 0.2s;
+  transition: all var(--dur-2);
 }
 
 /* 悬停态只作用于「普通按钮」：若直接写 `.btn:hover`，其选择符权重与

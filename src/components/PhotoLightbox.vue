@@ -1001,7 +1001,7 @@ function openInWorkshop() {
   max-height: 100%;
   object-fit: contain;
   display: block;
-  transition: transform 0.12s ease-out;
+  transition: transform var(--dur-1) ease-out;
   will-change: transform;
   transform-origin: center center;
   user-select: none;
@@ -1120,7 +1120,7 @@ function openInWorkshop() {
   padding: 3px 10px;
   font-size: 12px;
   cursor: pointer;
-  transition: background 0.15s, transform 0.1s;
+  transition: background var(--dur-2), transform var(--dur-1);
 }
 .lb-retry-btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.22);
@@ -1161,7 +1161,7 @@ function openInWorkshop() {
   line-height: 1;
   cursor: pointer;
   padding: 0 1px;
-  transition: color 0.12s, transform 0.1s;
+  transition: color var(--dur-1), transform var(--dur-1);
 }
 .lb-star:hover {
   transform: scale(1.15);
@@ -1188,7 +1188,7 @@ function openInWorkshop() {
   cursor: pointer;
   padding: 4px 8px;
   border-radius: 8px;
-  transition: background 0.15s;
+  transition: background var(--dur-2);
 }
 .lb-tb-btn:hover {
   background: rgba(255, 255, 255, 0.14);

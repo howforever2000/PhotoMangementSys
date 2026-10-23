@@ -177,7 +177,7 @@ export default { components: { PhotoEditor } };
   border: 1px solid rgba(120, 120, 130, 0.22);
   border-radius: 8px;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background var(--dur-2);
 }
 
 .back-btn:hover {
@@ -216,7 +216,7 @@ export default { components: { PhotoEditor } };
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   border-radius: var(--radius-lg, 16px);
-  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+  transition: transform var(--dur-2), box-shadow var(--dur-2), border-color var(--dur-2);
 }
 
 .widget-ready {

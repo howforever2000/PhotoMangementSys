@@ -123,7 +123,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   overflow: hidden;
   box-shadow: var(--shadow-1);
   cursor: pointer;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition: transform var(--dur-2), box-shadow var(--dur-2);
 }
 .album-card:focus-visible {
   outline: none;
@@ -266,7 +266,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   font-size: 13px;
   color: transparent;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--dur-2);
 }
 
 .checkmark.checked {

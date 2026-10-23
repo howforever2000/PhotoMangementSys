@@ -377,7 +377,7 @@ function onTabClick(t: ScanTab) {
   border: 1px solid rgba(255, 255, 255, 0.3);
   /* 糖果色底 → 墨色字（浅色渐变上白字不达标） */
   color: #1f2733;
-  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  transition: transform var(--dur-2) ease, box-shadow var(--dur-2) ease;
   box-shadow: var(--shadow-1);
 }
 .scan-subcard:hover:not(.scan-subcard-disabled) {
@@ -445,7 +445,7 @@ function onTabClick(t: ScanTab) {
   cursor: pointer;
   color: inherit;
   opacity: 0.85;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
 }
 .tab-item:hover:not(.disabled) { border-color: var(--color-primary); color: var(--color-primary-text); opacity: 1; }
 .tab-item.active {
