@@ -162,11 +162,20 @@ pub fn scan_album_dir(dir: &Path) -> AlbumScan {
 /// 网格缩略图缓存子目录（与封面缩略图隔离，避免 cleanup_album_auto_thumbs 误删）
 const GRID_THUMBS_SUBDIR: &str = "grid";
 
-/// 缩略图渲染算法版本（参与 `thumb_photo_hash` 缓存键）。
+/// 缩略图渲染算法版本（**只参与磁盘文件名**，不参与表主键）。
 ///
 /// 语义：**只影响像素内容**的改动才需要 bump。v2 = 按 EXIF Orientation 转正
 /// （BUG-2026-1014-002）；v1 = 初始实现。
-const THUMB_RENDER_VERSION: u32 = 2;
+///
+/// ⚠️ BUG-2026-1023-009 的教训：本版本号曾经被同时掺进 `thumb_photo_hash`
+/// （`photo_thumb_cache` 的主键），一次 bump 就把 2.5 万行缓存记录和扫描侧的
+/// `photo_content_scan.photo_hash` 撕成两套键空间——扫描侧 `count_scanned_without_thumb`
+/// 仍然能对得上旧行、认为「全都有缩略图所以不必预热」，而懒加载侧查新键又一条不中，
+/// 于是升级后第一次浏览变成全库重生成。
+///
+/// 现约定：**主键只由 path+size+mtime 决定（与 `content::photo_hash` 完全同源）；
+/// 渲染版本只进文件名**。这样 bump 只让旧**文件**失效，表行可原地重订键复用。
+pub(crate) const THUMB_RENDER_VERSION: u32 = 2;
 
 /// FEAT-044：计算与 `photo_content_scan.photo_hash` 同源的指纹
 ///
@@ -174,12 +183,27 @@ const THUMB_RENDER_VERSION: u32 = 2;
 /// 之所以在 thumbnail.rs 中复制实现，是为了让“仅调用缩略图模块”的场景不依赖
 /// content 模块（如别处动态生成缩略图但不入库）。
 /// 跨模块一致性靠**集成测试**保证（见 `tests_thumb_cache_consistency`）。
+///
+/// ❗ 不要再往 input 里掺渲染版本 —— 那会把两套键空间拆开（BUG-2026-1023-009）。
 pub fn thumb_photo_hash(path: &Path, len: u64, mtime_ns: u128) -> String {
     let path_str = path.to_string_lossy();
-    // 掺入渲染算法版本：缩略图**像素内容**变了（BUG-2026-1014-002 起按 EXIF 转正），
-    // 但键原本只由「路径+大小+mtime」决定 → 老用户会直接命中缓存里的**躺倒**旧图，
-    // 表现为「代码改了却毫无变化」。任何影响像素的渲染改动都必须 bump 此版本。
-    let input = format!("{len}|{mtime_ns}|{path_str}|v{THUMB_RENDER_VERSION}");
+    let input = format!("{len}|{mtime_ns}|{path_str}");
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in input.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// 历史 v1 键（**掺了渲染版本**），仅供一次性迁移把老行认回来。
+///
+/// BUG-2026-1023-009：v1→v2 升级时主键掺了 `|v2`，老库里那 2.4 万行用的就是
+/// 这个函数算出的键。迁移时用同样的算法才算得到它们，否则永远找不回旧行。
+/// **新代码不要调用它**（新键见 [`thumb_photo_hash`]）。
+pub fn thumb_photo_hash_v1(path: &Path, len: u64, mtime_ns: u128, version: u32) -> String {
+    let path_str = path.to_string_lossy();
+    let input = format!("{len}|{mtime_ns}|{path_str}|v{version}");
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in input.as_bytes() {
         h ^= *b as u64;
@@ -765,6 +789,14 @@ fn file_fingerprint(path: &Path) -> String {
     fp.push('_');
     fp.push_str(&fnv1a64(&head[..n]).to_string());
     fp
+}
+
+/// 供迁移复用：暴露文件名指纹（`file_fingerprint` 是私有的）
+///
+/// 命名规则必须与 `ensure_grid_thumb` 内部一致，否则迁移改出来的名字
+/// 跟懒加载算出来的名字对不上，白忙一场。
+pub fn thumbnail_fingerprint(source: &Path) -> String {
+    file_fingerprint(source)
 }
 
 /// P1 WebP 优化：按指纹前 2 位分目录（避免单目录文件过多）
@@ -1534,6 +1566,59 @@ mod tests {
         assert_eq!(unix_secs_to_date(1_767_139_200), (2025, 12, 31));
         // 2026-01-01
         assert_eq!(unix_secs_to_date(1_767_225_600), (2026, 1, 1));
+    }
+
+    // -----------------------------------------------------------------
+    // BUG-2026-1023-009：键空间约定（表主键与扫描侧同源，版本只进文件名）
+    // -----------------------------------------------------------------
+
+    /// 表主键必须与 `content::photo_hash` **逐字同源**。
+    ///
+    /// 事故：曾经把渲染版本掺进表主键 → `photo_thumb_cache` 与
+    /// `photo_content_scan` 的 join（`count_scanned_without_thumb`）永远对不上，
+    /// 系统认为「全都有缩略图」而不预热，懒加载侧又全 miss。
+    #[test]
+    fn table_key_matches_content_photo_hash() {
+        let path = Path::new("D:/photos/IMG_0001.jpg");
+        let (len, mtime) = (1_234_567u64, 1_700_000_000_123_456_789u128);
+        assert_eq!(
+            thumb_photo_hash(path, len, mtime),
+            crate::content::photo_hash(&path.to_string_lossy(), len, mtime),
+            "表主键必须与扫描侧 photo_hash 完全一致（不得掺渲染版本）"
+        );
+    }
+
+    /// 渲染版本必须只影响**文件名**，不影响表主键。
+    /// bump 版本时这个测试会提醒：表行可以原地复用，只是文件名换了。
+    #[test]
+    fn render_version_only_in_file_name() {
+        let tmp = std::env::temp_dir().join(format!("ver_split_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let img_path = tmp.join("a.jpg");
+        image::RgbImage::new(32, 32).save(&img_path).unwrap();
+
+        let (len, mtime) = read_file_meta(&img_path).unwrap();
+        let key = thumb_photo_hash(&img_path, len, mtime);
+        assert_eq!(key, crate::content::photo_hash(&img_path.to_string_lossy(), len, mtime));
+
+        let fp = file_fingerprint(&img_path);
+        assert!(
+            fp.starts_with(&format!("v{THUMB_RENDER_VERSION}_")),
+            "文件名指纹应带渲染版本前缀，实际: {fp}"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 旧键函数：能算出 v2 时代的键（迁移靠它把老行认回来）
+    #[test]
+    fn legacy_hash_differs_from_current_hash() {
+        let path = Path::new("D:/photos/IMG_0002.jpg");
+        let (len, mtime) = (999u64, 42u128);
+        let new_key = thumb_photo_hash(path, len, mtime);
+        let old_key = thumb_photo_hash_v1(path, len, mtime, THUMB_RENDER_VERSION);
+        assert_ne!(new_key, old_key, "旧键掺了版本号，必须与新键不同");
+        assert_eq!(old_key.len(), 16);
     }
 
     /// 生成测试图片并验证扫描与缩略图

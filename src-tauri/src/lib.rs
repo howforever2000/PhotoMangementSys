@@ -40,6 +40,7 @@ mod studio;
 mod test_scan;
 mod test_scan_job;
 mod textdesc;
+mod thumb_migrate;
 mod thumbnail;
 mod tone;
 mod vision;
@@ -355,6 +356,39 @@ pub fn run() {
             // FEAT-099 非破坏图像编辑引擎：编辑会话表（预览平面 + 工作区缓存）
             // 与 app 生命周期同长，打开图片时惰性填充，关闭编辑器时整体释放
             app.manage(edit::commands::EditState::new());
+            // BUG-2026-1023-009 收尾：缩略图缓存键空间解耦后的**一次性迁移**
+            // （重订键复用旧文件 + 回收孤儿），必须早于用户开始浏览；
+            // 放后台线程跑，不阻塞窗口首帧；幂等（settings 标记控制）。
+            {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    let Ok(thumbs) = thumbs_dir(&h) else {
+                        logger::log_warn("取缩略图目录失败，跳过迁移");
+                        return;
+                    };
+                    let st = h.state::<AppState>();
+                    let report = {
+                        let db = match st.0.lock() {
+                            Ok(db) => db,
+                            Err(e) => {
+                                logger::log_error(
+                                    "thumb_migrate",
+                                    &format!("数据库锁中毒，跳过迁移: {e}"),
+                                );
+                                return;
+                            }
+                        };
+                        thumb_migrate::migrate_if_needed(&db, &thumbs)
+                    };
+                    if report.ran {
+                        logger::log_info(&format!(
+                            "[thumb] 缓存迁移已执行：复用 {} 行 / 回收 {:.1} MB",
+                            report.migrated_rows,
+                            report.freed_bytes as f64 / (1024.0 * 1024.0)
+                        ));
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

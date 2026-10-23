@@ -18,6 +18,7 @@ pub use content::{
 };
 pub use embedding::EmbeddingVersion;
 pub use thumb_cache::ThumbCacheRecord;
+pub use thumb_cache::ThumbCacheRow;
 
 use crate::photos::RecentlyExcludedItem;
 

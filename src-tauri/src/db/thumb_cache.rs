@@ -1,5 +1,13 @@
 //! 缩略图反向索引表 `photo_thumb_cache` 持久层（FEAT-044）
 //!
+//! ## 键空间约定（BUG-2026-1023-009 后）
+//!
+//! `photo_hash` **只由「路径 + 文件大小 + mtime 纳秒」决定**，与
+//! `photo_content_scan.photo_hash`（`content::photo_hash`）**完全同源**。
+//! 渲染版本（`THUMB_RENDER_VERSION`）**只进磁盘文件名**，不进主键——
+//! 否则一 bump 就把本表与扫描表撕成两套键空间，`count_scanned_without_thumb`
+//! 会永远认为「都有缩略图」而懒加载又如何都查不到。
+//!
 //! ## 背景
 //!
 //! 智慧相册相关页面（时间线 / 回忆 / 智能搜索）的数据源是 `photo_content_scan`，
@@ -204,7 +212,69 @@ impl Database {
         Ok(n)
     }
 
-    /// 按相册 id 批量删除记录（删除相册时调用）
+    /// 列出该用户全部缩略图缓存行（迁移/清理用，不是热路径）    ///
+    /// FEAT-1023：v2 渲染版本升级后需要一次性重订键、重建映射，
+    /// 故需要全量行；按 user_id 过滤保持多用户隔离。
+    pub fn list_all_thumb_caches(&self, user_id: i64) -> Result<Vec<ThumbCacheRow>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT photo_hash, source_path, thumb_path, album_id, user_id,
+                    size_bytes, mtime_ns
+               FROM photo_thumb_cache WHERE user_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![user_id], |r| {
+            Ok(ThumbCacheRow {
+                photo_hash: r.get(0)?,
+                source_path: r.get(1)?,
+                thumb_path: r.get(2)?,
+                album_id: r.get(3)?,
+                user_id: r.get(4)?,
+                size_bytes: r.get::<_, i64>(5)? as u64,
+                mtime_ns: r.get::<_, i64>(6)? as u128,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// 列出 `photo_thumb_cache` 中出现过的所有 user_id（迁移是库级别的，需要遍历全部用户）
+    pub fn list_thumb_cache_user_ids(&self) -> Result<Vec<i64>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT user_id FROM photo_thumb_cache ORDER BY user_id")?;
+        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// 删掉一批 `photo_hash`（重订键时清理旧行）
+    pub fn delete_thumb_caches_by_hashes(&self, hashes: &[String]) -> Result<usize, DbError> {
+        if hashes.is_empty() {
+            return Ok(0);
+        }
+        let mut total = 0usize;
+        for chunk in hashes.chunks(500) {
+            let placeholders = std::iter::repeat("?")
+                .take(chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("DELETE FROM photo_thumb_cache WHERE photo_hash IN ({})", placeholders);
+            let params_vec: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|h| h as &dyn rusqlite::ToSql).collect();
+            total += self
+                .conn
+                .execute(&sql, params_vec.as_slice())
+                .map_err(DbError::Sqlite)?;
+        }
+        Ok(total)
+    }
+
+    /// 按 album_id 批量删除记录（删除相册时调用）
     ///
     /// 返回删除的行数。注意：实际文件清理（缩略图磁盘）由调用方负责，
     /// 这里只清表。本模块**不**触碰文件系统，保持职责单一。
@@ -247,6 +317,33 @@ impl Database {
                 .map_err(DbError::Sqlite)?;
         }
         Ok(total)
+    }
+}
+
+/// 缩略图缓存行（迁移/清理用；与 [`ThumbCacheRecord`] 区别：这个是**读出来**的整行）
+#[derive(Debug, Clone)]
+pub struct ThumbCacheRow {
+    pub photo_hash: String,
+    pub source_path: String,
+    pub thumb_path: String,
+    pub album_id: Option<i64>,
+    pub user_id: i64,
+    pub size_bytes: u64,
+    pub mtime_ns: u128,
+}
+
+impl ThumbCacheRow {
+    /// 转回可写入的记录（用于重订键后 upsert 新行）
+    pub fn to_record(&self, photo_hash: String, thumb_path: String) -> ThumbCacheRecord {
+        ThumbCacheRecord {
+            photo_hash,
+            source_path: self.source_path.clone(),
+            thumb_path,
+            album_id: self.album_id,
+            user_id: self.user_id,
+            size_bytes: self.size_bytes,
+            mtime_ns: self.mtime_ns,
+        }
     }
 }
 

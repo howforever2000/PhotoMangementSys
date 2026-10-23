@@ -3941,7 +3941,49 @@
       ],
       "created_at": "2026-10-23T18:30:00+08:00",
       "fixed_at": "2026-10-23T20:35:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1023-010",
+      "date": "2026-10-23",
+      "status": "resolved",
+      "title": "缩略图「一次生成永久保存」被一次版本号改动打破：键空间解耦 + 27,550 行旧缓存原地复用 + 回收 1.4GB",
+      "module": "缩略图缓存 (thumbnail / photo_thumb_cache) / 版本升级迁移",
+      "symptom": [
+        "升级到 v0.4.3 后，全库 2.5 万张缩略图全部重新生成（日志里 hit=0 generated=2 连续刷屏）",
+        "明明之前都生成过、扫描也预热过，磁盘上 25,777 个旧缩略图（1.45GB）还在，却一个都不命中",
+        "扫描中心/覆盖率提示认为「照片都有缩略图」，从不触发预热",
+        "与 BUG-2026-1023-009 同源：冷缓存放大了并发风暴，把进程打死"
+      ],
+      "root_cause": {
+        "summary": "v0.4.3 的 fcfbaf7 为了 EXIF 转正把渲染版本 v2 掺进了两个缓存键：表主键 thumb_photo_hash（多了 |v2）与文件名 file_fingerprint（多了 v2_ 前缀），但没有配套迁移。于是 24,924 行表记录 + 25,777 个磁盘文件同时变成不可达；而扫描侧 photo_content_scan.photo_hash（content::photo_hash）没有掺版本，两套键空间从此错开——扫描侧 LEFT JOIN 仍能对上旧行、判定『都有缩略图不必预热』，懒加载侧用新键又一条都查不到，表现为『升级后全量重生成』。",
+        "detail": [
+          "缓存本来就是「一次生成、永久保存」两层结构：photo_thumb_cache 表（键 photo_hash）+ thumbs/grid/album_<id>_photo_<指纹>.jpg；扫描（ensure_grid_thumbs_missing_parallel / prewarm_thumbs）会预生成并写表 —— 机制本身没问题，坏在键被换了",
+          "表主键与文件名是两把独立的钥匙，v2 同时换了两把，且 reuse_legacy_thumb 的候选名也是用新指纹拼的，连『复用旧文件』的兜底路径一起断掉",
+          "实测（迁移前）：表 27,984 行（旧键 24,924 / 新 v2 键 3,060）；grid 35,707 个文件（旧 25,777 = 1.45GB / 新 v2 9,930）；扫描 24,990 行里 24,923 能与旧行对齐 → 扫描侧认为『缺图 0』",
+          "400 张抽样读 EXIF：orientation=1 占 97.8%（391/400），8 占 1.8%，6 占 0.5%。v2 的改动是『先按 EXIF 转正、再缩放』，orientation=1 时转正是恒等变换 → 这些照片的 v1 与 v2 输出逐字节相同，本可零解码复用",
+          "反过来 orientation≠1 的旧图是『躺倒』的，改名冒充 v2 产物会把 BUG-2026-1014-002 种回去，必须排除"
+        ]
+      },
+      "fix": "A 键空间解耦：thumb_photo_hash 不再掺渲染版本，与 content::photo_hash 逐字同源（主键只管『哪张照片』），渲染版本只进文件名（THUMB_RENDER_VERSION 只被 file_fingerprint 使用）；history 键函数 thumb_photo_hash_v1 保留仅供迁移认领老行。B 一次性迁移（新增 src-tauri/src/thumb_migrate.rs，启动后台线程、settings 标记幂等）：逐行用旧键算回老行 → 校验源图与旧 thumb 均可用 → 读源图 EXIF orientation，仅 ==1 允许把旧文件 rename（失败则 copy）成新指纹名并重写行（零解码）；≠1 计为 needs_regen 交给懒加载。C 垃圾回收：删旧键死行 + 删除表里无任何行引用的孤儿 grid 文件。配套 5 条测试（表键与 content::photo_hash 同源 / 版本只进文件名 / 旧键与新键不同 / 迁移主流程端到端 / 源图缺失保守跳过）。",
+      "evidence_log": "真机真库（2.8 万行）实测：迁移 64 秒，扫描 27,984 行 → 重订键复用 27,550 行（98.4%）、旧图缺失 50、躺倒需重生成 384、源图缺失 0、删旧键死行 3,060、删孤儿文件 1,067、回收 59.9MB。迁移后：grid 文件 35,707 → 24,949（旧命名 25,777 → 382，0 字节文件 0 个）；表 27,984 → 24,924 行，其中 24,504 行已是 v2 文件名；扫描侧『缺缩略图』从 0（假象）变成 67（真实待生成量）。cargo test --lib 414 passed / 3 ignored；npx vue-tsc --noEmit 0 error。",
+      "lessons": [
+        "缓存键 = 契约。任何参与缓存键的常量（渲染版本/算法版本）都要先问：它属于『身份』还是『产物』？身份键（哪张照片）必须与扫描侧/其他表同源，产物版本只该进产物名",
+        "bump 缓存版本 = 全库冷启动，必须同时交付迁移路径，否则等于把用户的『永久缓存』静默清零",
+        "改像素的升级要按 orientation 分类：恒等变换的那部分（本例 97.8%）可以改名复用，不必重解码",
+        "反向也要防：不能为了复用把需要变的旧产物直接冒充新产物（orientation≠1 会把已修的横拍躺倒 bug 种回去）",
+        "迁移要幂等 + 单条失败不中断（源图被删/文件被占用都要 continue），并留 settings 标记防止每次启动重跑"
+      ],
+      "related_files": [
+        "src-tauri/src/thumbnail.rs",
+        "src-tauri/src/thumb_migrate.rs",
+        "src-tauri/src/db/thumb_cache.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/content.rs"
+      ],
+      "created_at": "2026-10-23T21:10:00+08:00",
+      "fixed_at": "2026-10-23T21:45:00+08:00"
     }
   ],
-  "updated": "2026-10-23T20:35:00+08:00"
+  "updated": "2026-10-23T21:45:00+08:00"
 }
