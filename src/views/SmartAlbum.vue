@@ -9,6 +9,7 @@ import CategoryGallery from "../components/CategoryGallery.vue";
 import LocationGallery from "../components/LocationGallery.vue";
 import type { ContentSearchHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
+import AppHeader from "../components/ui/AppHeader.vue";
 
 /**
  * 智慧相册 Hub —— 顶部 Hero（渐变 + 关键统计） + 4 大子模块入口卡
@@ -150,7 +151,7 @@ function openSub(m: SubModule) {
 
 <template>
   <div class="smart-page" :style="{ color: theme.textColor }">
-    <button class="btn smart-back" @click="router.push('/home')">← 返回主页</button>
+    <AppHeader title="智慧相册" />
 
     <!-- Hero：彩虹横幅（按需求保留）；糖果浅底配墨色字，避免白字对比度不足 -->
     <section

@@ -23,6 +23,7 @@ import { useThemeStore } from "../stores/theme";
 import { useScanTaskStore } from "../stores/scanTask";
 import { useNotify } from "../composables/useNotify";
 import ScanPerfSettings from "../components/ScanPerfSettings.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
 
 const router = useRouter();
 const theme = useThemeStore();
@@ -336,6 +337,9 @@ const phaseLabel = computed(() => {
 
 <template>
   <div class="scan-page" :style="tsVars">
+    <!-- FEAT-103：全站统一顶栏。注意本页保留「← 返回图片扫描」——
+         它是二级功能页（/scan/test），回的是 /scan 而非首页，属于上下文返回。 -->
+    <AppHeader title="扫描分组工具" compact />
     <header class="page-header">
       <button class="btn" @click="router.push('/scan')">← 返回图片扫描</button>
       <div class="header-text">

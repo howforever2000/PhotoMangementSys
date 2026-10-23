@@ -19,6 +19,7 @@ import { useThemeStore } from "../stores/theme";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import GlobalScanPanel from "../components/GlobalScanPanel.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
 
 const router = useRouter();
 const theme = useThemeStore();
@@ -171,7 +172,7 @@ function onTabClick(t: ScanTab) {
 
 <template>
   <div class="scan-page" :style="{ color: theme.textColor }">
-    <button class="btn scan-back" @click="router.push('/home')">← 返回主页</button>
+    <AppHeader title="扫描" />
 
     <!-- Hero：彩虹横幅（按需求保留）；糖果浅底配墨色字，避免白字对比度不足 -->
     <section

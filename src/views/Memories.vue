@@ -22,6 +22,7 @@ import type { ContentSearchHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
 import EmptyState from "../components/EmptyState.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
 
 const router = useRouter();
 const store = useAlbumStore();
@@ -343,8 +344,9 @@ function goAlbumFromLightbox(albumId: number) {
 
 <template>
   <div class="memories-page" :style="{ color: theme.textColor }">
+    <!-- FEAT-103：回忆页是沉浸式海报，顶栏用紧凑高度，不抢故事卡的空间 -->
+    <AppHeader title="回忆" compact />
     <!-- 顶部返回 -->
-    <button class="btn mem-back" @click="router.push('/home')">← 主页</button>
 
     <!-- Hero：彩虹横幅（按需求保留）；糖果浅底配墨色字，避免白字对比度不足 -->
     <section

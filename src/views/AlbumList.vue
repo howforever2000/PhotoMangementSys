@@ -18,6 +18,7 @@ import type { YearGroup } from "../utils/timeGroup";
 import ManualSort from "./ManualSort.vue";
 import AlbumCard from "../components/AlbumCard.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import ImportErrorsDialog from "../components/ImportErrorsDialog.vue";
 import EmptyState from "../components/EmptyState.vue";
@@ -1175,10 +1176,12 @@ function onKey(e: KeyboardEvent) {
       '--danger-bg': theme.onBgDark ? 'color-mix(in srgb, var(--color-danger) 12%, transparent)' : 'color-mix(in srgb, var(--color-danger) 15%, transparent)',
     }"
   >
+    <!-- FEAT-103：全站统一顶栏（取代页面自制的「← 主页」） -->
+    <AppHeader title="相册" />
+
     <!-- 顶部工具栏（需求 §5.3） -->
     <header class="toolbar">
       <div class="toolbar-left">
-        <button class="btn btn-back" @click="router.push('/home')">← 主页</button>
         <h1 class="page-title">我的相册</h1>
       </div>
       <div class="toolbar-actions">

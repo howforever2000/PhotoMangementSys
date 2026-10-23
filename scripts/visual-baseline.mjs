@@ -31,6 +31,7 @@ const TARGETS = [
   { name: "probe", path: "/.visual/ui-probe.html" },
   { name: "map", path: "/.visual/map-probe.html" },
   { name: "pages", path: "/.visual/pages-probe.html" },
+  { name: "header", path: "/.visual/header-probe.html" },
 ];
 
 /** 视口矩阵：宽屏 / 中窗 / 窄窗 × 深浅 */

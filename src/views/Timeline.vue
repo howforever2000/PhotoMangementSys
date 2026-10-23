@@ -8,6 +8,7 @@ import PhotoLightbox from "../components/PhotoLightbox.vue";
 import EmptyState from "../components/EmptyState.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 import GroupStat from "../components/ui/GroupStat.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
 import type { ContentSearchHit } from "../types/content";
 
 /**
@@ -322,10 +323,11 @@ function goAlbumFromLightbox(albumId: number) {
 
 <template>
   <div class="tl-page" :style="{ color: theme.textColor }">
+    <!-- FEAT-103：全站统一顶栏（取代页面自制的「← 返回主页」） -->
+    <AppHeader title="时间线" />
     <header class="tl-header">
-      <button class="btn" @click="router.push('/home')">← 返回主页</button>
-      <h1 class="tl-title">📅 照片时间线</h1>
-      <p class="tl-subtitle">跨相册按拍摄时间聚合浏览（AI 扫描入库的照片）</p>
+      <h1 class="tl-title">照片时间线</h1>
+      <p class="tl-subtitle">跨相册按拍摄时间聚合浏览</p>
     </header>
 
     <!-- 工具条：年份过滤 + 总数 -->
