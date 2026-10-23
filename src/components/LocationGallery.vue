@@ -18,7 +18,10 @@ import PhotoLightbox from "./PhotoLightbox.vue";
 import PhotoActionMenu from "./PhotoActionMenu.vue";
 import PhotoDeleteDialog, { type DeleteMode } from "./PhotoDeleteDialog.vue";
 import SelectAllCheckbox from "./SelectAllCheckbox.vue";
+import LocationMap from "./ui/LocationMap.vue";
+import StatBand, { type StatItem } from "./ui/StatBand.vue";
 import { usePhotoActions } from "../composables/usePhotoActions";
+import { trace } from "../utils/trace";
 import type { ContentSearchHit, LocationGroupRow } from "../types/content";
 
 const theme = useThemeStore();
@@ -36,12 +39,81 @@ const thumbMap = ref<Record<string, string>>({});
 const namedGroups = computed(() => groups.value.filter((g) => g.location !== null));
 const unknownGroup = computed(() => groups.value.find((g) => g.location === null) ?? null);
 
+/**
+ * FEAT-103：地点页视图切换（地图 / 卡片）
+ *
+ * 为什么默认地图：地点数据的价值在于「空间分布」，而卡片网格只能回答
+ * "有多少个城市"，回答不了"它们在哪、有多密集"。地图一眼能看出
+ * "我的照片集中在一两个城市" 或 "遍布全国" —— 这是卡片做不到的。
+ * 但卡片视图保留（切换）：找具体某个城市的照片时，列表比在地图上瞄准更快。
+ */
+type LocView = "map" | "list";
+const view = ref<LocView>("map");
+/** 地图上被点击的城市名（用于同步高亮卡片、以及打开详情） */
+const mapActive = ref<string | null>(null);
+
+/** 有 GPS 坐标的城市组（地图能用得上的那些） */
+const mappedGroups = computed(() => namedGroups.value.filter((g) => g.lat != null && g.lon != null));
+
+/** 无坐标的城市数（有地名但没存坐标 —— 老数据/手工填的地点） */
+const noCoordCount = computed(() => namedGroups.value.length - mappedGroups.value.length);
+
+/**
+ * 顶部统计数据带（FEAT-103：统计不删，只去壳）
+ * 这几项是"地点功能是否在工作"的唯一可读证据：
+ *   有地点城市 / GPS 覆盖 / 未记录 / 最大聚集
+ * 尤其是 **GPS 覆盖** —— UX 评审指出用户看到"0 个城市"时分不清
+ * 是"照片没 GPS"还是"功能坏了"。给出百分比一眼可判。
+ */
+const statItems = computed<StatItem[]>(() => {
+  const total = groups.value.reduce((n, g) => n + g.count, 0);
+  const unknown = unknownGroup.value?.count ?? 0;
+  const covered = total - unknown;
+  const pct = total > 0 ? (covered / total) * 100 : 0;
+  const max = mappedGroups.value.reduce<(typeof mappedGroups.value)[number] | null>(
+    (best, g) => (best === null || g.count > best.count ? g : best),
+    null,
+  );
+  return [
+    { label: "有地点城市", value: mappedGroups.value.length, delta: mappedGroups.value.length ? "已点亮" : "无坐标" },
+    {
+      label: "GPS 覆盖",
+      value: pct.toFixed(1),
+      unit: "%",
+      delta: `${covered} / ${total}`,
+      tone: pct > 0 ? "up" : "mute",
+    },
+    { label: "未记录", value: unknown, delta: "无定位", tone: "mute" },
+    ...(max
+      ? [
+          {
+            label: "最大聚集",
+            value: max.count,
+            unit: "张",
+            delta: (max.location ?? "").replace(/[省市]$/, ""),
+          },
+        ]
+      : []),
+  ];
+});
+
+/** 地图点位点击：直接打开该城市的照片网格（与卡片点击同一路径） */
+function onMapPick(g: { location: string | null }) {
+  mapActive.value = g.location;
+  const hit = namedGroups.value.find((x) => x.location === g.location);
+  if (hit) openGroup(hit);
+}
+
 async function load() {
   loading.value = true;
   error.value = "";
-  try {
+  // CS2：关键数据入口带出入口日志（含耗时与错误）
+  const done = trace("LocationGallery.load", async () => {
     groups.value = await invoke<LocationGroupRow[]>("list_photo_locations");
     await loadCoverThumbs();
+  });
+  try {
+    await done();
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -286,10 +358,53 @@ onMounted(load);
       </div>
 
       <template v-else>
-        <p class="lg-hint">
-          依据照片 EXIF GPS 离线解析（省 / 市级）；无定位的照片（截图 / 文档类常见）归入「{{ UNKNOWN_LABEL }}」。
-        </p>
-        <div class="loc-grid">
+        <!-- FEAT-103：统计带（统计不删，只去壳）—— 含 GPS 覆盖率，
+             让"0 个城市"能区分开"照片没定位"与"功能坏了" -->
+        <StatBand :items="statItems" class="lg-stats" />
+
+        <!-- 视图切换：地图 / 卡片。
+             地图回答"在哪、多密"，卡片回答"有哪些" —— 两种问题都要能回答 -->
+        <div class="lg-viewbar">
+          <div class="lg-seg" role="group" aria-label="地点视图">
+            <button
+              class="lg-seg-btn"
+              :class="{ on: view === 'map' }"
+              type="button"
+              :aria-pressed="view === 'map'"
+              @click="view = 'map'"
+            >
+              地图
+            </button>
+            <button
+              class="lg-seg-btn"
+              :class="{ on: view === 'list' }"
+              type="button"
+              :aria-pressed="view === 'list'"
+              @click="view = 'list'"
+            >
+              卡片
+            </button>
+          </div>
+          <p class="lg-hint lg-hint-inline">
+            依据照片 EXIF GPS 离线解析（省 / 市级）
+            <template v-if="noCoordCount > 0">；{{ noCoordCount }} 个地点无坐标，无法上图</template>
+          </p>
+        </div>
+
+        <!-- —— 地图视图 ——
+             空即信息：没有点的地方就留空，不画占位、不画假点。
+             这正是让"未覆盖"可见的方式（UX 评审：空转必须有解释）。 -->
+        <div v-if="view === 'map'" class="lg-map-wrap">
+          <LocationMap
+            :groups="groups"
+            :width="820"
+            :active-name="mapActive"
+            @pick="onMapPick"
+          />
+        </div>
+
+        <!-- —— 卡片视图 —— -->
+        <div v-else class="loc-grid">
           <article
             v-for="g in namedGroups"
             :key="g.location ?? 'unknown'"
@@ -308,7 +423,8 @@ onMounted(load);
             </div>
           </article>
         </div>
-        <!-- 未记录地点：弱化卡片，固定排最后 -->
+
+        <!-- 未记录地点：两种视图都展示（它是真实存在的照片，不是错误） -->
         <div v-if="unknownGroup" class="loc-unknown-row">
           <button class="loc-unknown glass-card" :style="theme.cardStyle" @click="openGroup(unknownGroup)">
             <span class="loc-unknown-icon">🗺️</span>
@@ -429,9 +545,71 @@ onMounted(load);
   margin: 0;
 }
 .lg-hint {
-  font-size: 12px;
-  opacity: 0.6;
+  font-size: var(--fs-meta);
+  color: var(--c-fg-2);
   margin: 0 0 12px;
+  letter-spacing: var(--ls-meta);
+}
+
+/* ===== FEAT-103：地点页新骨架（数据带 + 视图切换 + 地图） ===== */
+
+/* 统计带：贴齐页面左右留白（--sp-8），但负 margin 抵消父级 padding。
+   这里不用 .lg-wrap 直接改 padding —— 它被 CategoryGallery 等其他视图复用同构样式，
+   改父级会连带影响它们。 */
+.lg-stats {
+  margin: 0 calc(var(--sp-8) * -1) 4px;
+}
+
+.lg-viewbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin: var(--sp-3) 0 var(--sp-4);
+  flex-wrap: wrap;
+}
+
+/* 分段控件：两选项。用 1px 内描边 + 选中金底，
+   不做"滑块跟随"动画 —— 两段的位移暗示在这里没必要，反而显得吵。 */
+.lg-seg {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px var(--c-rule);
+}
+.lg-seg-btn {
+  min-height: 26px;
+  padding: 0 14px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-body);
+  color: var(--c-fg-2);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out);
+}
+.lg-seg-btn.on {
+  background: var(--c-accent);
+  color: #1a1206;
+  font-weight: var(--fw-em);
+}
+
+.lg-hint-inline {
+  margin: 0;
+}
+
+.lg-map-wrap {
+  display: flex;
+  justify-content: center;
+  padding: var(--sp-2) 0 var(--sp-5);
+}
+
+body:not(.theme-dark) .lg-seg {
+  background: rgba(23, 22, 26, 0.04);
+}
+body:not(.theme-dark) .lg-seg-btn.on {
+  color: #fff;
 }
 
 .sk-grid {
