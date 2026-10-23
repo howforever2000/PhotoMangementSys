@@ -14,6 +14,7 @@
  * 玻璃：整个应用里玻璃只出现在浮层。这里顶栏**不是**玻璃 ——
  *   它是结构性元素，用纯色 + 底部发丝线。滚动时也不变成玻璃
  *   （滚动玻璃会让页面内容从半透明的导航下透过去，是"好看但读不清"的典型）。
+ *   顶栏里唯一的玻璃是右侧搜索胶囊（它确实浮在内容之上）。
  */
 import { computed } from "vue";
 import { useRouter, useRoute } from "vue-router";
@@ -35,38 +36,58 @@ const router = useRouter();
 const route = useRoute();
 const auth = useAuthStore();
 
-/** 主导航项：只放 5 个高频入口。
- *  为什么是这 5 个：相册/时间线/人物/地点/语义 覆盖了"找照片"的全部主路径。
- *  归档、隐藏、扫描、工坊、设置都是低频（每周一次以下），收进头像菜单。
+/** 主导航项：一级导航 = **产品级功能**，不是页面。
  *
- *  ⚠️ tab key 必须与 SmartAlbum.vue 的 tabs 定义一致（face / category / location），
- *  否则高亮永远落在"人物"上（默认回退值）。 */
+ * FEAT-105 改动：旧 NAV 是 [相册, 时间线, 人物, 地点, 语义]，后四项其实全是
+ * `/smart` 一个模块里的 tab —— 结果相册管理 / 创意工坊 / 扫描入库三个模块根本
+ * 没有一级入口，而"时间线"却和"相册"平起平坐。这是层级错位。
+ *
+ * 现在四项 = Home 上那四张卡，一一对应，用户建立的空间感与入口处一致：
+ *   相册管理 /albums · 智慧相册 /smart · 创意工坊 /workshop · 扫描入库 /scan
+ *
+ * 判据：一级项数 == 产品级功能数。凡"点进去只是同一页里的另一块"，一律下沉为二级。
+ * 二级（人物/时间线/回忆/地点/语义/搜索）仍各自保留独立路由，只是不再占一级位。
+ */
 const NAV = [
-  { label: "相册", path: "/albums", tab: null },
-  { label: "时间线", path: "/timeline", tab: null },
-  { label: "人物", path: "/smart", tab: "face" },
-  { label: "地点", path: "/smart", tab: "location" },
-  { label: "语义", path: "/smart", tab: "category" },
+  { label: "相册管理", path: "/albums" },
+  { label: "智慧相册", path: "/smart" },
+  { label: "创意工坊", path: "/workshop" },
+  { label: "扫描入库", path: "/scan" },
 ] as const;
 
-/** 导航项的完整 href（/smart 需要带 query） */
-function hrefOf(item: (typeof NAV)[number]): string {
-  return item.tab ? `${item.path}?tab=${item.tab}` : item.path;
+/** 归属映射：子页 → 它所属的一级模块。
+ *
+ * 为什么用映射而不是改路由：`/timeline`、`/memories`、`/search` 是平级路由
+ * （各有自己的页面组件与刷新行为），把它们改成 `/smart/timeline` 会动到 URL、
+ * 深链接与已存的浏览历史。层级归属本来就是"展示概念"，用一张表就够了。
+ *
+ * 效果：停在 /timeline 时一级高亮落在「智慧相册」，而不是五项都不亮。
+ */
+const BELONGS: Record<string, string> = {
+  "/timeline": "/smart",
+  "/memories": "/smart",
+  "/search": "/smart",
+  "/scan/test": "/scan",
+  "/album/:id": "/albums",
+};
+
+/** 把当前路由归一化到一级模块路径（匹配不到就返回原路径） */
+function moduleOf(path: string): string {
+  if (BELONGS[path]) return BELONGS[path];
+  // 前缀类：/album/12 → /albums，/scan/test → /scan
+  if (path.startsWith("/album/")) return "/albums";
+  if (path.startsWith("/scan/")) return "/scan";
+  return path;
 }
 
-/** 当前激活项：按 path + tab 匹配（/album/3 也算"相册"） */
+/** 导航项的完整 href（四项都是平路径，保留函数以便日后二级项复用） */
+function hrefOf(item: (typeof NAV)[number]): string {
+  return item.path;
+}
+
+/** 当前激活项：先归一到一级模块再比，避免子页让导航全灭 */
 function isActive(item: (typeof NAV)[number]): boolean {
-  if (item.path === "/albums") {
-    return route.path === "/albums" || route.path.startsWith("/album/");
-  }
-  if (item.path === "/timeline") return route.path === "/timeline";
-  if (item.path === "/smart") {
-    if (route.path !== "/smart") return false;
-    return (route.query.tab ?? "face") === item.tab;
-  }
-  // 前面的分支已穷尽 NAV 的所有 path；这里保留一个显式 fallback
-  // 而不写 `return route.path === item.path` —— TS 会把 item 收窄为 never
-  return false;
+  return moduleOf(route.path) === item.path;
 }
 
 const username = computed(() => auth.user?.username ?? "");
