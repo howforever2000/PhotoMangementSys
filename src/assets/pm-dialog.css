@@ -447,3 +447,42 @@ body.theme-dark .pm-dialog input:disabled {
   transform: translateY(14px) scale(0.98);
   opacity: 0;
 }
+
+/* ==========================================================================
+   FEAT-103：深浅模式切换（预设列表上方的第一决策）
+   ========================================================================== */
+.pm-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 14px;
+}
+.pm-mode-label {
+  font-size: 12px;
+  color: var(--pm-hint);
+  flex-shrink: 0;
+}
+.pm-mode-seg {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--pm-soft-bg, rgba(255, 255, 255, 0.06));
+  box-shadow: inset 0 0 0 1px var(--pm-soft-border);
+}
+.pm-mode-btn {
+  min-height: 26px;
+  padding: 0 16px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--pm-hint);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out);
+}
+.pm-mode-btn.on {
+  background: var(--color-primary, #e8a33d);
+  color: var(--color-on-primary, #2a1a08);
+  font-weight: 560;
+}

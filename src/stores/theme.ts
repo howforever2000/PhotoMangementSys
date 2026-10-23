@@ -169,6 +169,16 @@ export const useThemeStore = defineStore("theme", () => {
     compColor.value = patch.compColor!;
     compAlpha.value = patch.compAlpha!;
     material.value = patch.material!;
+    /* FEAT-103：预设现在自带深浅模式（深浅配对）。
+       必须走 setMode 而不是直接 mode.value = ...，因为 setMode 还负责
+       "把纯色背景从另一模式的默认值同步过去"（避免深色模式 + 浅色纯底色
+       这种不可读组合）。直接赋值会让用户切到浅色预设后，如果之前用的是
+       纯色背景，仍停在深色底上。
+       顺序：先设定预设色值（上面），再切模式 —— 切模式时 bgColor 的判断
+       不依赖 gradFrom/gradTo（它只管纯色），两者不冲突。 */
+    if (patch.mode && patch.mode !== mode.value) {
+      setMode(patch.mode);
+    }
     persist();
   }
 

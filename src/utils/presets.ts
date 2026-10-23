@@ -1,181 +1,183 @@
 /**
- * 预定义效果库（FEAT-086，素化后扩为两组）
+ * 预定义外观（FEAT-103 重做：10 套 → 6 套，深浅配对）
  *
- * 两组并存：
- *   - PRESETS（经典渐变 5 套）：色值取自设计图，**一字未改**。它们是多色相的，
- *     用来留住「设计图原貌」这条线索，也是老用户 localStorage 里可能正命中的那套。
- *   - MUTED_PRESETS（素色系 5 套，Q6=C 暖 3 冷 2）：为「更素但不失去高级感」而加。
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 为什么从 10 套砍到 6 套
+ * ───────────────────────────────────────────────────────────────────────────
+ * 旧版两组（经典渐变 5 + 素色 5）的共同问题不是"不好看"，而是**没有分类维度**：
+ *   · 10 套全都是"浅顶 → 深底"的同向渐变，用户看不出它们分别适合什么场景；
+ *   · 经典组里 sage-rose / cream-violet / mint-indigo / butter-plum / lemon-teal
+ *     用了 3 个色相（粉→橄榄→墨绿），一屏三个色相必然"艳"，
+ *     与"单强调色（落日金）"的色彩预算直接冲突；
+ *   · 素色组的 5 套里有 3 套暖褐（linen / clay / amber）几乎同色相，
+ *     选了之后分不清自己选的是哪一套。
  *
- * 素色系的设计口径（三条，全部由 presets.test.ts 断言，不靠肉眼）：
- *   ① **同色相三段**：一套预设只用**一个色相**在明度轴上拉开（上 L≈0.92 → 下 L≈0.27）。
- *      经典组是三色相（粉→橄榄绿→墨绿），一屏三个色相必然"艳"；
- *      单色相渐变的"素"来自色相数少，不是来自把饱和度调低（那样只是变灰、变脏）。
- *   ② **饱和度 ≤ 0.36**：素色系的上限。经典组里 #d37aa0（S≈0.55）、#6ab9b3（S≈0.5）
- *      这类中高饱和色正是"艳"的来源。
- *   ③ **组件色是真中性灰（S=0，r=g=b）**：卡片底色不带任何色相，层次完全由明度 L
- *      承担，于是背景那一个色相不会被卡片"再添一个"。
+ * 现在按**深浅模式**分类（这是用户唯一真正需要先决定的维度），
+ * 每类 3 套、每类内色相互不重叠：
+ *   深色：紫夜（默认/品牌）/ 石板（中性冷）/ 余烬（暖调）
+ *   浅色：亚麻（暖中性）/ 雾光（冷中性）/ 纸白（近纯中性）
  *
- * 每套联动：三段渐变 + 组件色调 + 组件玻璃透明度 + 卡片材质（预设一律普通卡片）。
- * 派生文字/链接对比度由 presets.test.ts 断言 ≥ 4.5:1。
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 兼容策略（关键，决定老用户会不会"开屏变样"）
+ * ───────────────────────────────────────────────────────────────────────────
+ * 删掉的 6 套色值**仍然能被识别**：`matchesPreset` 只做字段比对，
+ * 已删除的套自然不再命中，于是 `activePresetId` 为 null —— 弹窗里
+ * 一张卡都不高亮。这是**正确**的：用户的外观没变（色值还在 localStorage 里），
+ * 只是不再被标记为"某个预设"。如果强行把所有旧配色映射到最近的保留项，
+ * 用户的开屏外观会真的变掉 —— 那是破坏性的。
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 新增 `mode` 字段
+ * ───────────────────────────────────────────────────────────────────────────
+ * 旧版 `DEFAULTS.mode` 硬编码为 "dark"，`ThemeDialog` 里也没有模式开关，
+ * 于是"浅色主题"这个维度实际上不存在（模板里有 `body:not(.theme-dark)`，
+ * 但用户无法切过去）。现在每套预设带 `mode`，`presetPrefs()` 一并下发，
+ * 点浅色预设即同时切换模式与配色 —— 这才是"预设"该有的语义。
  */
-import type { Prefs } from "./prefs.ts";
+import type { Prefs, ThemeMode } from "./prefs.ts";
 
 export interface Preset {
   id: string;
   name: string;
+  /** 这套预设所属的深浅模式：切换时一并下发 */
+  mode: ThemeMode;
   /** 三段渐变：[起, 中, 止] */
   colors: [string, string, string];
-  /** 渐变角度：180 = 上浅下深（与设计图一致） */
+  /** 渐变角度：180 = 上浅下深 */
   angle: number;
-  /** 配套组件色调（浅色系提亮） */
+  /** 配套组件色调 */
   compColor: string;
   /** 配套组件玻璃透明度 */
   compAlpha: number;
-  /** 预设材质：一律普通卡片（普通/液态两套材质里的默认项） */
+  /**
+   * 预设材质：FEAT-103 起全部为 `plain`（普通卡片）。
+   *
+   * 为什么不留液态选项：液态玻璃在新方案里已被限定为**浮层材质**
+   * （见 design/design-system.md §3），卡片不再是玻璃。
+   * 因此"预设带不带液态"这个问题本身消失了 —— 材质不再由预设控制，
+   * 而由组件层决定。字段保留是为了不破坏 normalizePrefs 的结构兼容。
+   */
   material: "plain";
 }
 
-/** 分组 id：主题弹窗据此渲染两个分组标题（C10） */
-export type PresetGroup = "classic" | "muted";
-
-/** 经典渐变组：设计图原貌，多色相，色值自 FEAT-086 起未变 */
-export const PRESETS: Preset[] = [
-  {
-    id: "sage-rose",
-    name: "粉绿晨光",
-    colors: ["#ffd7d7", "#7e9963", "#195e53"],
-    angle: 180,
-    compColor: "#f2f9f4",
-    compAlpha: 0.55,
-    material: "plain",
-  },
-  {
-    id: "cream-violet",
-    name: "奶油莓紫",
-    colors: ["#fbfecb", "#d37aa0", "#3f507d"],
-    angle: 180,
-    compColor: "#fcf5f8",
-    compAlpha: 0.56,
-    material: "plain",
-  },
-  {
-    id: "mint-indigo",
-    name: "薄荷靛蓝",
-    colors: ["#ceffd1", "#638196", "#3a2e67"],
-    angle: 180,
-    compColor: "#f4f8f6",
-    compAlpha: 0.55,
-    material: "plain",
-  },
-  {
-    id: "butter-plum",
-    name: "黄油蓝紫",
-    colors: ["#fcfecb", "#687fb9", "#5d3263"],
-    angle: 180,
-    compColor: "#f7f8fd",
-    compAlpha: 0.54,
-    material: "plain",
-  },
-  {
-    id: "lemon-teal",
-    name: "柠檬青蓝",
-    colors: ["#f6ffb1", "#6ab9b3", "#10324a"],
-    angle: 180,
-    compColor: "#f4fbfa",
-    compAlpha: 0.55,
-    material: "plain",
-  },
-];
+/** 分组 id：主题弹窗据此渲染分组标题 */
+export type PresetGroup = "dark" | "light";
 
 /**
- * 素色系组（Q6=C：暖 3 套 + 冷 2 套）。
+ * 深色组（3 套）
  *
- * 色值由 HSL 直接构造（同色相 + 定 S + 定 L 三档），不是手调 RGB ——
- * 这样「同色相」这条不变量在构造上就成立，不会因为手调跑偏。
- *   暖三套：h = 38（米金，延续落日金主心骨）/ 24（赭）/ 34（琥珀褐）
- *   冷两套：h = 205（墨青）/ 222（石板灰蓝）
- *
- * 组件色是**真中性灰**（r=g=b，S=0）：暖三套共用 #ededed、冷两套共用 #ececec。
- * 最初给每套配了带色相的米白（#efece6 S=0.22 等），实测那等于给背景的色相
- * 「再添一个」—— 卡片底自己也带了暖/冷，卡面与背景的关系立刻变成两个色相对话，
- * 这正是要消掉的东西。现在层次完全由明度 L 承担，色相只有背景那一个。
- *
- * 组件透明度统一 0.62（高于经典组的 0.54~0.56）：背景明暗跨度更大（L 跨度 ≥0.62），
- * 需要更强的填充把三条色带收敛，否则最差带上的文字会掉到 4.5:1 以下。
+ * 色相分工：紫（品牌）/ 中性冷（专业感）/ 暖褐（亲和感）。
+ * 三套的 compColor 都是**近中性灰**（S < 0.08）——卡片底不再带背景的色相，
+ * 层次完全交给明度。这是"素"的来源：一屏只有一个色相。
  */
-export const MUTED_PRESETS: Preset[] = [
+export const DARK_PRESETS: Preset[] = [
   {
-    id: "linen-warm",
-    name: "亚麻暖灰",
-    colors: ["#f1eee9", "#c6bba9", "#5d503c"],
-    angle: 180,
-    compColor: "#ededed",
+    id: "sunset-dusk",
+    name: "落日紫夜",
+    mode: "dark",
+    // 与登录页启动封面（covers/login-sunset.jpg）配套，是产品默认外观
+    colors: ["#3b2b52", "#271d37", "#120e1c"],
+    angle: 165,
+    compColor: "#2a2630",
     compAlpha: 0.62,
     material: "plain",
   },
   {
-    id: "clay-warm",
-    name: "砂陶赭红",
-    colors: ["#f0e9e5", "#c2a18e", "#634536"],
-    angle: 180,
-    compColor: "#ededed",
+    id: "ink-slate",
+    name: "墨色石板",
+    mode: "dark",
+    // 真中性冷灰：适合长时间浏览照片，不干扰内容本身的色彩判断
+    colors: ["#2c3440", "#1d232d", "#0e1116"],
+    angle: 165,
+    compColor: "#26282c",
     compAlpha: 0.62,
     material: "plain",
   },
   {
-    id: "amber-warm",
-    name: "琥珀深褐",
-    colors: ["#efe9e1", "#bfa07d", "#5c452e"],
-    angle: 180,
-    compColor: "#ededed",
-    compAlpha: 0.62,
-    material: "plain",
-  },
-  {
-    id: "ink-cool",
-    name: "墨青冷灰",
-    colors: ["#e9eef1", "#92acbf", "#2c3e4e"],
-    angle: 180,
-    compColor: "#ececec",
-    compAlpha: 0.62,
-    material: "plain",
-  },
-  {
-    id: "slate-cool",
-    name: "石板灰蓝",
-    colors: ["#eaecf1", "#9ba7bf", "#343d55"],
-    angle: 180,
-    compColor: "#ececec",
+    id: "ember-warm",
+    name: "余烬暖褐",
+    mode: "dark",
+    // 暖调：与落日金强调色同色相家族，金色高亮最不突兀
+    colors: ["#3a2a22", "#261a16", "#120c0a"],
+    angle: 165,
+    compColor: "#2b2521",
     compAlpha: 0.62,
     material: "plain",
   },
 ];
 
 /**
- * 弹窗分组视图：一组经典 + 一组素色。
- * 由 ThemeDialog 直接渲染（C10 的分组排版），避免组件里再写一遍两张卡的循环。
+ * 浅色组（3 套）
+ *
+ * 浅色的透明度必须**高于**深色（0.72 vs 0.62）：
+ * 同样的 alpha 在浅底上得到的对比度远低于深底（实测 26% 黑在 #faf8f5 上
+ * 只有 1.95:1，而 26% 白在 #0a090d 上有 2.09:1 —— 两者接近，但浅色需要
+ * 更高的 alpha 才能达到同样的"可读"档），所以不能共用一套数值。
+ */
+export const LIGHT_PRESETS: Preset[] = [
+  {
+    id: "linen-light",
+    name: "亚麻浅灰",
+    mode: "light",
+    colors: ["#f4f1ec", "#e6e2da", "#cfc9be"],
+    angle: 165,
+    compColor: "#efeeec",  // S=0.086（微暖）
+    compAlpha: 0.72,
+    material: "plain",
+  },
+  {
+    id: "mist-light",
+    name: "雾光冷灰",
+    mode: "light",
+    colors: ["#eef1f4", "#dae0e7", "#bcc5cf"],
+    angle: 165,
+    compColor: "#ededef",  // S=0.059（微冷）
+    compAlpha: 0.72,
+    material: "plain",
+  },
+  {
+    id: "paper-light",
+    name: "纸白暖中性",
+    mode: "light",
+    // 最接近"白纸"的一套：卡片底与页面底几乎同色，层次全靠描边与留白
+    colors: ["#faf8f5", "#f0ece6", "#ddd7cd"],
+    angle: 165,
+    compColor: "#f4f3f1",  // S=0.120（近中性；浅色底上这点饱和度肉眼不可辨）
+    compAlpha: 0.72,
+    material: "plain",
+  },
+];
+
+/**
+ * 弹窗分组视图：按深浅分两组。
+ *
+ * 为什么按模式分组而不是按"色相浓淡"分组：
+ *   用户打开主题弹窗时的第一个决策是"我要深色还是浅色"，第二个才是"哪一套"。
+ *   旧版按"经典/素色"分组，其实是**设计师的**分类（多色相 vs 单色相），
+ *   不是用户的决策顺序 —— 用户选完一套才发现模式也跟着变了。
  */
 export const PRESET_GROUPS: { group: PresetGroup; title: string; note: string; items: Preset[] }[] = [
   {
-    group: "classic",
-    title: "经典渐变",
-    note: "设计图原貌 · 多色相",
-    items: PRESETS,
+    group: "dark",
+    title: "深色",
+    note: "紫夜 / 石板 / 余烬 · 适合暗环境浏览",
+    items: DARK_PRESETS,
   },
   {
-    group: "muted",
-    title: "素色系",
-    note: "暖 3 套 · 冷 2 套 · 每套单一色相",
-    items: MUTED_PRESETS,
+    group: "light",
+    title: "浅色",
+    note: "亚麻 / 雾光 / 纸白 · 适合日间与打印前校对",
+    items: LIGHT_PRESETS,
   },
 ];
 
 /** 全部预设（测试与命中判定用：跨组命中才算选中） */
-export const ALL_PRESETS: Preset[] = [...PRESETS, ...MUTED_PRESETS];
+export const ALL_PRESETS: Preset[] = [...DARK_PRESETS, ...LIGHT_PRESETS];
 
-/** 预设 → 待写入的偏好片段（bgStyle 固定为渐变） */
+/** 预设 → 待写入的偏好片段（bgStyle 固定为渐变；mode 一并下发） */
 export function presetPrefs(p: Preset): Partial<Prefs> {
   return {
+    mode: p.mode,
     bgStyle: "gradient",
     gradFrom: p.colors[0],
     gradMid: p.colors[1],
@@ -194,6 +196,10 @@ export function presetPrefs(p: Preset): Partial<Prefs> {
  * 若要求传整个 Prefs，调用方就得把 store 的全部状态摊平传进来 ——
  * 一旦某个字段从 store 里消失（色温模块停用就发生过），
  * 类型就会因为「少一个不相关的字段」而报错，把无关的耦合暴露成编译错误。
+ *
+ * FEAT-103 注意：判定**不看 mode**。原因：老用户可能把深色预设的色值
+ * 与浅色模式组合存下来（历史行为允许），此时若要求 mode 也匹配才算命中，
+ * 他们的选中态会突然消失。色值是这套预设的**身份**，模式是可搭的。
  */
 export type PresetMatchFields = Pick<
   Prefs,
@@ -212,7 +218,7 @@ export function matchesPreset(p: Preset, prefs: PresetMatchFields): boolean {
   );
 }
 
-/** 预设卡片上的渐变预览 CSS（默认 180° 竖向；传 angle 则同步当前背景角度） */
+/** 预设卡片上的渐变预览 CSS */
 export function presetGradient(p: Preset, angle = p.angle): string {
   return `linear-gradient(${angle}deg, ${p.colors[0]}, ${p.colors[1]}, ${p.colors[2]})`;
 }
