@@ -30,6 +30,7 @@ const BASE_DIR = ".visual/baseline";
 const TARGETS = [
   { name: "probe", path: "/.visual/ui-probe.html" },
   { name: "map", path: "/.visual/map-probe.html" },
+  { name: "pages", path: "/.visual/pages-probe.html" },
 ];
 
 /** 视口矩阵：宽屏 / 中窗 / 窄窗 × 深浅 */
