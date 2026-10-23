@@ -2365,16 +2365,23 @@ function onKey(e: KeyboardEvent) {
 
 /* tile 网格：比 card 网格更密（封面不需要内边距，可以排到 216px）。
    小图密排是相册浏览的正确密度：一屏多看到 3~4 张，扫视成本更低。
-   auto-fill + minmax 保证窄窗自动降列，不用写断点。 */
+   auto-fill + minmax 保证窄窗自动降列，不用写断点。
+
+   FEAT-105：gap 30/26 → 12/12，并加 grid-auto-flow: dense。
+   为什么只动间距不动瓦片尺寸：一屏的信息量由"列数 × 行距"决定，
+   而封面本身已经是内容，不需要再加底、加框、加影（加了就成了"贴纸墙"）。
+   间距收窄后同宽度下每行能多容纳一列，视觉上就是"更密但不更乱"。
+   dense 负责把被展开分组撑剩的尾位填满，避免折叠分组后留下空洞。 */
 .album-grid.is-tile {
-  grid-template-columns: repeat(auto-fill, minmax(216px, 1fr));
-  gap: 30px 26px;
+  grid-template-columns: repeat(auto-fill, minmax(208px, 1fr));
+  grid-auto-flow: dense;
+  gap: 12px;
 }
 
 @media (max-width: 900px) {
   .album-grid.is-tile {
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    gap: 22px 18px;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
   }
 }
 

@@ -858,10 +858,14 @@ body.theme-dark .pg-action-msg {
   margin-top: 8px;
 }
 
+/* FEAT-105：220/16 → 176/12。人物是"一屏扫人脸"的场景，比相册更需要密度：
+   同一屏从 5 列变 7 列，扫到目标人脸的概率明显上升。卡片内部结构不动
+   （头像 + 名字 + 张数仍是横排），只靠列宽与间距变密。 */
 .person-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  grid-auto-flow: dense;
+  gap: 12px;
 }
 
 .person-card {
