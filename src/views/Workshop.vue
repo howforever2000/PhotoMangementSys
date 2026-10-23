@@ -96,9 +96,9 @@ onMounted(() => {
 
 <template>
   <div class="workshop-page" :class="{ 'wide-mode': activeWidget === 'studio' }">
+    <AppHeader title="创意工坊" />
     <div class="workshop-content">
       <header class="workshop-header">
-        <button class="back-btn" type="button" @click="goBack">← 返回</button>
         <div class="header-text">
           <h1 class="page-title">创意工坊</h1>
           <p class="page-subtitle">图片编辑小组件 · 打开即用，处理都在本机完成</p>
@@ -128,7 +128,12 @@ onMounted(() => {
       </main>
 
       <!-- 照片编辑器：调色 + 算子叠加同处一屏，共享一个图片会话 -->
-      <PhotoEditor v-if="activeWidget === 'studio'" :initial-path="initialPhoto" />
+      <template v-if="activeWidget === 'studio'">
+        <!-- FEAT-103：编辑器是全屏沉浸布局，回列表需要显式入口
+             （顶栏的"创意工坊"点是回首页，与"回小组件列表"是两件事）。 -->
+        <button class="editor-back" type="button" @click="goBack">← 返回小组件</button>
+        <PhotoEditor :initial-path="initialPhoto" />
+      </template>
     </div>
   </div>
 </template>
@@ -136,6 +141,7 @@ onMounted(() => {
 <script lang="ts">
 // 工坊小组件按需引入（放在独立 script 块，保持 setup 块聚焦布局逻辑）
 import PhotoEditor from "../components/workshop/editor/PhotoEditor.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
 export default { components: { PhotoEditor } };
 </script>
 
@@ -177,7 +183,7 @@ export default { components: { PhotoEditor } };
   border: 1px solid rgba(120, 120, 130, 0.22);
   border-radius: 8px;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background var(--dur-2);
 }
 
 .back-btn:hover {
@@ -216,7 +222,7 @@ export default { components: { PhotoEditor } };
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   border-radius: var(--radius-lg, 16px);
-  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+  transition: transform var(--dur-2), box-shadow var(--dur-2), border-color var(--dur-2);
 }
 
 .widget-ready {
@@ -286,5 +292,25 @@ export default { components: { PhotoEditor } };
   .widget-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* FEAT-103：编辑器回列表按钮（不与全站顶栏的"品牌→首页"混淆） */
+.editor-back {
+  align-self: flex-start;
+  margin: 8px 0 4px;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-meta);
+  color: var(--c-fg-2);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--c-rule);
+  cursor: pointer;
+  transition:
+    color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+.editor-back:hover {
+  color: var(--c-fg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-accent) 45%, transparent);
 }
 </style>

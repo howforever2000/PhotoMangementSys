@@ -462,7 +462,7 @@ const calibMaxRate = computed(() =>
   height: 100%;
   border-radius: 4px;
   background: linear-gradient(90deg, var(--color-primary), #5a8ce8);
-  transition: width 0.3s ease;
+  transition: width var(--dur-3) ease;
 }
 .sps-calib-rate {
   color: var(--ts-muted, #888);

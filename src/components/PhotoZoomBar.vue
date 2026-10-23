@@ -107,7 +107,7 @@ defineExpose({ step, normalize });
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.15s;
+  transition: background var(--dur-2);
 }
 .pzb-btn:hover:not(:disabled) {
   background: color-mix(in srgb, var(--color-primary) 16%, transparent);

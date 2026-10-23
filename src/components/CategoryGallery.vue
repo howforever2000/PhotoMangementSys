@@ -729,7 +729,7 @@ onMounted(load);
   border-radius: 14px;
   overflow: hidden;
   cursor: pointer;
-  transition: transform 0.16s ease, box-shadow 0.16s ease;
+  transition: transform var(--dur-2) ease, box-shadow var(--dur-2) ease;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
 }
 .cat-card:hover {
@@ -816,7 +816,7 @@ onMounted(load);
   background: transparent;
   color: inherit;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background var(--dur-2), border-color var(--dur-2);
 }
 .chip:hover {
   border-color: rgba(106, 141, 240, 0.7);
@@ -846,7 +846,7 @@ onMounted(load);
   overflow: hidden;
   cursor: zoom-in;
   background: rgba(127, 127, 127, 0.12);
-  transition: transform 0.12s ease;
+  transition: transform var(--dur-1) ease;
 }
 .photo-cell:hover {
   transform: translateY(-2px);

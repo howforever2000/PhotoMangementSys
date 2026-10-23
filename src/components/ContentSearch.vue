@@ -538,7 +538,7 @@ const toneLabelMap: Record<string, string> = {
   border-radius: 6px;
   font-size: 13px;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--dur-2);
   background: var(--color-surface, #fff);
   color: var(--color-text);
 }
@@ -578,7 +578,7 @@ const toneLabelMap: Record<string, string> = {
   padding: 6px 10px;
   border-radius: 4px;
   cursor: pointer;
-  transition: background 0.12s;
+  transition: background var(--dur-1);
 }
 
 .content-hit-item:hover {
@@ -739,7 +739,7 @@ const toneLabelMap: Record<string, string> = {
   font-size: 13px;
   color: var(--color-text, #2c3e50);
   cursor: pointer;
-  transition: background 0.12s;
+  transition: background var(--dur-1);
 }
 .suggestion-item:hover { background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
 

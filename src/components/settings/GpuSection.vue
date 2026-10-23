@@ -150,7 +150,7 @@ function providerLabel(p: string): string {
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  transition: background var(--dur-2), border-color var(--dur-2), color var(--dur-2);
 }
 .btn:hover:not(:disabled) {
   border-color: var(--color-primary);

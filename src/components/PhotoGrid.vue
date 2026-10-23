@@ -1107,7 +1107,7 @@ function onKey(e: KeyboardEvent) {
   font-size: 17px;
   cursor: pointer;
   box-shadow: 0 4px 14px color-mix(in srgb, var(--color-primary) 45%, transparent);
-  transition: transform 0.15s, background 0.15s;
+  transition: transform var(--dur-2), background var(--dur-2);
 }
 .pg-top-btn:hover {
   background: var(--color-primary-hover);
@@ -1116,7 +1116,7 @@ function onKey(e: KeyboardEvent) {
 
 .pg-top-enter-active,
 .pg-top-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity var(--dur-2) ease;
 }
 .pg-top-enter-from,
 .pg-top-leave-to {
@@ -1152,7 +1152,7 @@ function onKey(e: KeyboardEvent) {
   background: #f0f5ff;
   color: var(--color-primary-hover);
   box-shadow: 0 1px 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
-  transition: background 0.15s, transform 0.1s, box-shadow 0.15s, border-color 0.15s;
+  transition: background var(--dur-2), transform var(--dur-1), box-shadow var(--dur-2), border-color var(--dur-2);
 }
 .pg-action:hover:not(:disabled) {
   background: #e0ebff;
@@ -1217,7 +1217,7 @@ function onKey(e: KeyboardEvent) {
   padding: 3px 12px;
   font-size: 12px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
 }
 .chip:hover { border-color: var(--color-primary); color: var(--color-primary-text); }
 .chip.active { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
@@ -1243,7 +1243,7 @@ function onKey(e: KeyboardEvent) {
   cursor: pointer;
   background: #f2f4f7;
   border: 1px solid #eceef2;
-  transition: transform 0.12s, box-shadow 0.12s;
+  transition: transform var(--dur-1), box-shadow var(--dur-1);
 }
 .pg-cell:hover {
   transform: translateY(-2px);
@@ -1483,7 +1483,7 @@ function onKey(e: KeyboardEvent) {
   outline: 3px solid #ff9f1a;
   outline-offset: -3px;
   box-shadow: 0 0 0 6px rgba(255, 159, 26, 0.18);
-  transition: box-shadow 0.6s ease-out;
+  transition: box-shadow var(--dur-3) ease-out;
 }
 .pg-check {
   position: absolute;
@@ -1556,7 +1556,7 @@ function onKey(e: KeyboardEvent) {
   padding: 8px 12px;
   cursor: pointer;
   text-align: left;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
 }
 .pg-target-item:hover { border-color: var(--color-primary); }
 .pg-target-item.active { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
@@ -1572,7 +1572,7 @@ function onKey(e: KeyboardEvent) {
   font-size: 30px;
   color: #d3d7df;
   cursor: pointer;
-  transition: color 0.12s, transform 0.12s;
+  transition: color var(--dur-1), transform var(--dur-1);
 }
 .pg-star.on { color: #ffd43b; }
 .pg-star:hover { transform: scale(1.12); }

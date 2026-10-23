@@ -31,7 +31,7 @@ const toastStore = useToastStore();
 }
 .toast-enter-active,
 .toast-leave-active {
-  transition: opacity 0.22s ease, transform 0.22s ease;
+  transition: opacity var(--dur-2) ease, transform var(--dur-2) ease;
 }
 .toast-enter-from,
 .toast-leave-to {

@@ -6,6 +6,9 @@ import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
 import EmptyState from "../components/EmptyState.vue";
+import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
+import GroupStat from "../components/ui/GroupStat.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
 import type { ContentSearchHit } from "../types/content";
 import { getThumbs } from "../utils/thumbQueue";
 
@@ -44,6 +47,56 @@ const years = computed(() => {
     if (y) set.add(y);
   }
   return [...set].sort();
+});
+
+/**
+ * FEAT-103：时间线专属统计数据带
+ *
+ * 之前这里只有一个“共 N 张” + 年份下拉。而时间线最需要回答的
+ * 是**时间维度的健康度** —— UX 评审里已经点名了两个真实问题：
+ *   · “31 张照片无拍摄时间”—— 但界面上看不出来这是多严重
+ *   · “地点 653/653 全为 NULL”—— 时间线甚至不展示这个���
+ * 把这两项做成读数后，“空转”从“安静的空态”变成“可见的数字”。
+ *
+ * “时间跨度”取月数而不是天数：相册的尺度是月/年，日粒度无意义。
+ */
+const timelineStats = computed<StatItem[]>(() => {
+  const all = rows.value;
+  const noTime = all.filter((r) => !r.shoot_time).length;
+  const noLoc = all.filter((r) => !r.location).length;
+
+  // 时间跨度：按实际出现过的年月计数。
+  // ⚠️ 局部变量不能叫 years —— 会遮蔽外层的 years computed，
+  // 于是 `years.value` 就变成在访问自己（TS7022/TS2448）。首版踩过。
+  const ym = new Set<string>();
+  for (const r of all) {
+    if (r.shoot_time && r.shoot_time.length >= 7) ym.add(r.shoot_time.slice(0, 7));
+  }
+  const yearCount = years.value.length;
+
+  const items: StatItem[] = [
+    { label: "照片", value: all.length },
+    {
+      label: "时间跨度",
+      value: yearCount,
+      unit: yearCount ? `年 / ${ym.size} 个月` : "无数据",
+    },
+    {
+      label: "无拍摄时间",
+      value: noTime,
+      delta: all.length ? `${Math.round((noTime / all.length) * 100)}%` : "",
+      tone: noTime > 0 ? "up" : "mute",
+    },
+    {
+      label: "地点覆盖",
+      value: all.length ? Math.round(((all.length - noLoc) / all.length) * 100) : 0,
+      unit: "%",
+      // 这是“照片没 GPS”与“功能坏了”的唯一区分依据，因此 0% 时给出明确提示
+      delta: noLoc === all.length ? "未记录 GPS" : `${noLoc} 张无定位`,
+      tone: noLoc === all.length ? "mute" : "up",
+    },
+  ];
+  return items;
 });
 
 /** 按年→月分组（拍摄时间升序） */
@@ -85,6 +138,33 @@ const groups = computed<YearGroup[]>(() => {
 });
 
 const totalFiltered = computed(() => groups.value.reduce((n, g) => n + g.months.reduce((k, mg) => k + mg.items.length, 0), 0));
+
+/** 每个年组的统计（月数 / 张数 / 月均）+ 月度分布迷你柱 */
+interface YearStat {
+  monthCount: number;
+  photoCount: number;
+  avg: number;
+  dist: number[];
+  distHighlight: number;
+}
+function yearStat(g: YearGroup): YearStat {
+  const monthCount = g.months.filter((m) => m.month).length;
+  const photoCount = g.months.reduce((n, mg) => n + mg.items.length, 0);
+  // 月度分布：按 1~12 月对齐（缺月补 0），这样不同年份的柱子可直接横向对比
+  const dist = Array.from({ length: 12 }, () => 0);
+  for (const mg of g.months) {
+    const idx = Number(mg.month);
+    if (idx >= 1 && idx <= 12) dist[idx - 1] = mg.items.length;
+  }
+  const maxIdx = dist.indexOf(Math.max(...dist));
+  return {
+    monthCount,
+    photoCount,
+    avg: monthCount ? Math.round(photoCount / monthCount) : 0,
+    dist,
+    distHighlight: dist[maxIdx] > 0 ? maxIdx : -1,
+  };
+}
 
 function fileUrl(p: string): string {
   return p ? convertFileSrc(p) : "";
@@ -316,10 +396,11 @@ function goAlbumFromLightbox(albumId: number) {
 
 <template>
   <div class="tl-page" :style="{ color: theme.textColor }">
+    <!-- FEAT-103：全站统一顶栏（取代页面自制的「← 返回主页」） -->
+    <AppHeader title="时间线" />
     <header class="tl-header">
-      <button class="btn" @click="router.push('/home')">← 返回主页</button>
-      <h1 class="tl-title">📅 照片时间线</h1>
-      <p class="tl-subtitle">跨相册按拍摄时间聚合浏览（AI 扫描入库的照片）</p>
+      <h1 class="tl-title">照片时间线</h1>
+      <p class="tl-subtitle">跨相册按拍摄时间聚合浏览</p>
     </header>
 
     <!-- 工具条：年份过滤 + 总数 -->
@@ -330,6 +411,9 @@ function goAlbumFromLightbox(albumId: number) {
         <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
       </select>
     </div>
+
+    <!-- FEAT-103：时间维度统计数据带（无拍摄时间 / 地点覆盖在这里可见） -->
+    <StatBand v-if="!loading && !error && rows.length" :items="timelineStats" class="tl-stats" />
 
     <!-- 加载骨架 -->
     <div v-if="loading" class="tl-skeleton">
@@ -373,7 +457,19 @@ function goAlbumFromLightbox(albumId: number) {
       >
         <h2 class="tl-year-title">
           {{ g.year === "未记录" ? "🕐 未记录拍摄时间" : `🗓️ ${g.year} 年` }}
-          <span class="tl-year-count">{{ g.months.reduce((n, mg) => n + mg.items.length, 0) }} 张</span>
+          <span class="tl-year-count">{{ yearStat(g).photoCount }} 张</span>
+          <!-- FEAT-103：组级统计（月数 / 张数 / 月均）+ 月度分布迷你柱。
+               放在年标题同一行、字号降一档 —— 贴着标题读，不打断浏览流。 -->
+          <GroupStat
+            v-if="g.year !== '未记录'"
+            class="tl-year-stat"
+            :items="[
+              { value: yearStat(g).monthCount, label: '个月' },
+              { value: yearStat(g).avg, label: '平均/月' },
+            ]"
+            :dist="yearStat(g).dist"
+            :dist-highlight="yearStat(g).distHighlight"
+          />
         </h2>
         <div
           v-for="mg in g.months"
@@ -470,7 +566,7 @@ function goAlbumFromLightbox(albumId: number) {
   border-radius: 12px;
   padding: 16px 16px 4px;
   margin-bottom: 18px;
-  transition: background 0.4s, box-shadow 0.4s;
+  transition: background var(--dur-3), box-shadow var(--dur-3);
 }
 /* FEAT-E：跳定位高亮（query 定位 + 滚动后亮色边框 1.8s 淡出） */
 .tl-year.tl-highlight,
@@ -517,7 +613,7 @@ function goAlbumFromLightbox(albumId: number) {
   overflow: hidden;
   cursor: pointer;
   background: rgba(127, 127, 127, 0.1);
-  transition: transform 0.12s;
+  transition: transform var(--dur-1);
 }
 .tl-card:hover {
   transform: translateY(-2px);
@@ -623,7 +719,7 @@ function goAlbumFromLightbox(albumId: number) {
   align-items: center;
   justify-content: center;
   user-select: none;
-  transition: transform 0.2s ease, background 0.2s;
+  transition: transform var(--dur-2) ease, background var(--dur-2);
 }
 .tl-top-btn:hover {
   background: var(--color-soft-accent, color-mix(in srgb, var(--color-primary) 12%, transparent));
@@ -634,7 +730,7 @@ function goAlbumFromLightbox(albumId: number) {
 }
 .tl-top-enter-active,
 .tl-top-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  transition: opacity var(--dur-2) ease, transform var(--dur-2) ease;
 }
 .tl-top-enter-from,
 .tl-top-leave-to {
@@ -654,3 +750,21 @@ function goAlbumFromLightbox(albumId: number) {
   }
 }
 </style>
+
+/* ===== FEAT-103：统计数据带 + 年组统计 ===== */
+.tl-stats {
+  margin: 0 0 18px;
+  /* 数据带自带 --sp-8 左右内边距；时间线容器已给了页面留白，
+     这里用负 margin 抵消，让数据带的左侧文字与年份标题左对齐。 */
+  margin-left: calc(var(--sp-8) * -1);
+  margin-right: calc(var(--sp-8) * -1);
+}
+
+/* 年组统计：跟在"X 张"后面，与标题同基线但不抢视觉重量。
+   加一条分隔竖线把它与标题区隔开 —— 否则"2026 年 388 张 5个月 平均78/月"
+   会读成一串同权重的文字。 */
+.tl-year-stat {
+  padding-left: 12px;
+  border-left: 1px solid var(--c-rule);
+  font-weight: 400;
+}

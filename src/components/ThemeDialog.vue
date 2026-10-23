@@ -31,7 +31,7 @@ function onTabKey(e: KeyboardEvent) {
   activeTab.value = activeTab.value === "preset" ? "custom" : "preset";
 }
 
-/* ---------------- 预定义效果（两组：经典渐变 / 素色系） ---------------- */
+/* ---------------- 预定义效果（两组：深色 / 浅色） ---------------- */
 function applyPreset(p: (typeof ALL_PRESETS)[number]) {
   theme.applyPreset(p);
 }
@@ -174,8 +174,37 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
           aria-labelledby="tab-preset"
         >
           <p class="pm-hint" style="margin: -4px 0 12px">
-            默认外观 = 启动封面（与登录页同一张壁纸 + 落日紫金）；下面 5 套是设计渐变，点击整套应用
+            默认外观 = 启动封面（与登录页同一张壁纸 + 落日紫金）；下面 6 套按**深浅分组**，
+            点一下整套应用（渐变 + 组件色 + 模式）
           </p>
+
+          <!-- FEAT-103：深/浅模式切换。
+               以前 ThemeDialog 里没有这个开关 —— DEFAULTS.mode 写死 dark，
+               模板里虽有 body:not(.theme-dark) 分支，但用户根本切不过去。
+               现在放在预设列表上方：它是点预设前的第一个决策。 -->
+          <div class="pm-mode-row">
+            <span class="pm-mode-label">模式</span>
+            <div class="pm-mode-seg" role="group" aria-label="深浅模式">
+              <button
+                type="button"
+                class="pm-mode-btn"
+                :class="{ on: theme.mode === 'dark' }"
+                :aria-pressed="theme.mode === 'dark'"
+                @click="theme.setMode('dark')"
+              >
+                深色
+              </button>
+              <button
+                type="button"
+                class="pm-mode-btn"
+                :class="{ on: theme.mode === 'light' }"
+                :aria-pressed="theme.mode === 'light'"
+                @click="theme.setMode('light')"
+              >
+                浅色
+              </button>
+            </div>
+          </div>
 
           <!-- 默认卡（FEAT-094）：点一下回到「启动封面 + 落日紫金」，与底部的「恢复默认」等价。
                以前重置后 5 张预设卡会全部掉高亮（选中态判据只认渐变），这里把默认态补成一张卡。 -->
@@ -230,7 +259,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
                 ></span>
                 <span class="pm-preset-name">
                   <span>{{ p.name }}</span>
-                  <span class="pm-preset-badge">普通 · {{ Math.round(p.compAlpha * 100) }}%</span>
+                  <span class="pm-preset-badge">{{ p.mode === 'dark' ? '深色' : '浅色' }} · {{ Math.round(p.compAlpha * 100) }}%</span>
                 </span>
                 <span class="pm-preset-dots">
                   <i v-for="c in p.colors" :key="c" :style="{ background: c }"></i>

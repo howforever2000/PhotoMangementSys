@@ -3691,7 +3691,55 @@
       ],
       "created_at": "2026-10-22T22:25:00+08:00",
       "updated_at": "2026-10-22T22:25:00+08:00"
+    },
+    {
+      "id": "FEAT-103",
+      "name": "Canvas 极简重设计：令牌层 + 数据带 + 相册瓦片 + 地点地图 + 预设精简",
+      "status": "done",
+      "description": "P0 令牌层（84 个令牌：字阶7档/间距8基数/圆角3档/动效3×2/z-index/色彩预算，深浅两套）P1 核心组件（StatBand/AlbumTile/GroupStat/Sparkline + 13 项对比度测试 + 视觉基线脚本）P2 相册列表与时间线换皮（AlbumCard 新增 tile 变体 + 双向数据带 + 组级统计）P3 地点地图（后端 LocationGroupRow 加 lat/lon + 161KB 本地底图 + 等距圆柱投影 + 城市点亮 + 标签避让）P4 预设 10→6 套深浅配对 + 模式切换 + 兼容策略P5 全站统一顶栏 AppHeader + 移除 8 处自制返回按钮。全站 131 处 transition 已映射到 3 档；硬编码时长清零。",
+      "related_files": [
+        ".pi/plan.md",
+        "design/design-system.md",
+        "public/china-provinces-lite.json",
+        "python/gen_map_lite.py",
+        "scripts/visual-baseline.mjs",
+        "src-tauri/src/db/content.rs",
+        "src/assets/tokens.css",
+        "src/assets/tokens.test.ts",
+        "src/components/AlbumCard.vue",
+        "src/components/LocationGallery.vue",
+        "src/components/ThemeDialog.vue",
+        "src/components/ui/AlbumTile.vue",
+        "src/components/ui/AppHeader.vue",
+        "src/components/ui/GroupStat.vue",
+        "src/components/ui/LocationMap.vue",
+        "src/components/ui/Sparkline.vue",
+        "src/components/ui/StatBand.vue",
+        "src/stores/theme.ts",
+        "src/utils/mapProjection.ts",
+        "src/utils/presets.ts",
+        "src/utils/sparkline.ts",
+        "src/views/AlbumList.vue",
+        "src/views/Timeline.vue"
+      ],
+      "keywords": [
+        "design-system",
+        "tokens",
+        "statband",
+        "albumtile",
+        "map",
+        "location",
+        "presets",
+        "深色",
+        "浅色",
+        "地图",
+        "令牌",
+        "设计系统",
+        "地点"
+      ],
+      "created_at": "2026-10-23T17:06:56+08:00",
+      "updated_at": "2026-10-23T17:44:34+08:00"
     }
   ],
-  "updated": "2026-10-22T22:25:00+08:00"
+  "updated": "2026-10-23T17:44:34+08:00"
 }

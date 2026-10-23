@@ -13,6 +13,7 @@ import ScanPanel from "../components/ScanPanel.vue";
 import PhotoGrid from "../components/PhotoGrid.vue";
 import { useNotify } from "../composables/useNotify";
 import { useVaultStore } from "../stores/vault";
+import AppHeader from "../components/ui/AppHeader.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -79,10 +80,6 @@ function goBack() {
   } else {
     router.push("/albums");
   }
-}
-
-function goHome() {
-  router.push("/home");
 }
 
 /** 面包屑导航：根据当前相册状态构建路径 */
@@ -156,11 +153,11 @@ const vaultDenied = computed(
 
 <template>
   <div class="detail-page" :style="detailVars">
+    <!-- FEAT-103：全站统一顶栏（取代本页的「← 返回 / 🏠 主页」两个按钮） -->
+    <AppHeader title="相册" />
     <!-- 顶部导航栏 -->
     <nav class="detail-nav">
       <div class="nav-left">
-        <button class="btn" @click="goBack" title="返回上一级">← 返回</button>
-        <button class="btn btn-home" @click="goHome" title="回到主页">🏠 主页</button>
         <!-- P1 面包屑导航 -->
         <BreadcrumbNav :crumbs="breadcrumbs" />
       </div>
@@ -286,7 +283,7 @@ const vaultDenied = computed(
   color: var(--detail-text);
   cursor: pointer;
   font-size: 14px;
-  transition: all 0.2s;
+  transition: all var(--dur-2);
 }
 
 /* 悬停态只作用于「普通按钮」：若直接写 `.btn:hover`，其选择符权重与

@@ -6,15 +6,33 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Album } from "../types/album";
 import { formatSize } from "../types/album";
 
-const props = defineProps<{
-  album: Album;
-  /** 是否处于勾选管理模式 */
-  selectMode: boolean;
-  /** 当前卡片是否被勾选 */
-  selected: boolean;
-  /** 是否显示地点徽标（地点排序视图用） */
-  showLocation?: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    album: Album;
+    /** 是否处于勾选管理模式 */
+    selectMode: boolean;
+    /** 当前卡片是否被勾选 */
+    selected: boolean;
+    /** 是否显示地点徽标（地点排序视图用） */
+    showLocation?: boolean;
+    /**
+     * FEAT-103：渲染变体
+     *  - `"card"`（默认）：旧卡片形——带背景/阴影/内边距的全信息卡
+     *  - `"tile"`：裸封面 + 两行图注（Canvas 极简版）
+     *
+     * 为什么用变体而不是新建一个组件：
+     *   这张卡上挂着多选、右键菜单、封面来源、合并来源链接、已入库徽标、
+     *   路径点击等 6 类业务交互（见 emit 列表）。新建组件就得把这些全部
+     *   再实现一遍，或者在外面套一层代理——两种都比加一个 prop 风险高。
+     *   而 tile 需要的只是**不同的展示骨架**，交互层完全一样。
+     *
+     *   同时这也让 AlbumList 的切换可以逐视图推进（日期视图先用 tile，
+     *   地点/手动视图暂时还是 card），不必一次改完 2883 行。
+     */
+    variant?: "card" | "tile";
+  }>(),
+  { showLocation: false, variant: "card" },
+);
 
 const emit = defineEmits<{
   (e: "click"): void;
@@ -27,6 +45,35 @@ const emit = defineEmits<{
 
 /** FEAT-036：该相册是否已入库（只要有一张照片被内容扫描识别入库即视为已入库） */
 const isScanned = computed(() => (props.album.scanned_photo_count || 0) > 0);
+
+const isTile = computed(() => props.variant === "tile");
+
+/**
+ * tile 变体的图注右侧元信息。
+ *
+ * 组装顺序有讲究：先给"有多少张"，再给"什么时候"——
+ * 用户在扫视相册网格时第一眼找的是"这个相册多大/是不是我要的那个"，
+ * 时间只是辅助。用 ` · ` 分隔，保持一行。
+ *
+ * 为什么不带 size_bytes：在极简版面上，体积对相册浏览几乎无决策价值
+ * （用户不会因为某个相册 200MB 而改变行为），但张数会。体积仍保留在
+ * tile 的 title 里（悬停可见），不占主视觉。
+ */
+const tileMeta = computed(() => {
+  const parts: string[] = [`${props.album.photo_count} 张`];
+  if (props.album.shoot_time) parts.push(props.album.shoot_time.slice(0, 4));
+  if (props.showLocation && props.album.location) parts.push(props.album.location);
+  return parts.join(" · ");
+});
+
+/** tile 的 title：把 card 里有但 tile 省掉的字段补回来（悬停可查） */
+const tileTitle = computed(() => {
+  const lines = [props.album.name, `${props.album.photo_count} 张 · ${formatSize(props.album.size_bytes)}`];
+  if (props.album.shoot_time) lines.push(`拍摄：${props.album.shoot_time}`);
+  if (props.album.location) lines.push(`地点：${props.album.location}`);
+  lines.push(props.album.path);
+  return lines.join("\n");
+});
 
 /** 将本地文件路径转为前端可访问的 URL（Tauri asset 协议） */
 function fileUrl(path: string | null): string {
@@ -41,7 +88,55 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 </script>
 
 <template>
+  <!-- ══════════════ FEAT-103：tile 变体（Canvas 极简） ══════════════
+       裸封面 + 两行图注。没有卡片背景、没有阴影、没有内边距 ——
+       层级由留白建立，不靠边框。但交互与 card 完全一致（多选/右键/键盘）。
+       注意：勾选框仍保留（批量管理是刚需），只是把它从"卡片内左上"
+       改成贴在封面上的圆点，避免裸封面上突然出现一个方块。 -->
   <article
+    v-if="isTile"
+    class="album-tile"
+    :class="{ 'tile-selected': selected, 'tile-manage': selectMode }"
+    :tabindex="0"
+    role="button"
+    :aria-pressed="selectMode ? selected : undefined"
+    :title="tileTitle"
+    @click="emit('click')"
+    @contextmenu="(e) => emit('contextmenu', e)"
+    @keydown.enter.space.prevent="emit('click')"
+  >
+    <div class="tile-cover">
+      <img v-if="album.cover_path" :src="fileUrl(album.cover_path)" alt="" loading="lazy" decoding="async" />
+      <div v-else class="tile-placeholder">📷</div>
+
+      <!-- 已入库角标：从 pill 降为纯文字（封面本身就是底色，不需要 pill 兜底） -->
+      <span
+        v-if="!isScanned"
+        class="tile-badge"
+        title="尚未扫描入库，可在详情页执行综合扫描"
+      >未入库</span>
+
+      <!-- 勾选圆点：管理模式下常驻；否则仅选中时显示 -->
+      <span
+        v-if="selectMode || selected"
+        class="tile-check"
+        :class="{ on: selected }"
+        role="checkbox"
+        :aria-checked="selected"
+        :aria-label="`勾选 ${album.name}`"
+        @click.stop="emit('toggle-select', $event)"
+      >{{ selected ? "✓" : "" }}</span>
+    </div>
+
+    <div class="tile-cap">
+      <b class="tile-name">{{ album.name }}</b>
+      <span class="tile-meta">{{ tileMeta }}</span>
+    </div>
+  </article>
+
+  <!-- ══════════════ 原有 card 变体（保持不变） ══════════════ -->
+  <article
+    v-else
     class="album-card glass-surface"
     :class="{ 'card-selected': selected, 'card-manage': selectMode }"
     :tabindex="0"
@@ -123,7 +218,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   overflow: hidden;
   box-shadow: var(--shadow-1);
   cursor: pointer;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition: transform var(--dur-2), box-shadow var(--dur-2);
 }
 .album-card:focus-visible {
   outline: none;
@@ -266,7 +361,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   font-size: 13px;
   color: transparent;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--dur-2);
 }
 
 .checkmark.checked {
@@ -354,5 +449,196 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 }
 .merged-path:hover {
   color: #6f4800;
+}
+/* ══════════════════════════════════════════════════════════════════════════
+   FEAT-103：tile 变体 —— 裸封面 + 两行图注
+   ──────────────────────────────────────────────────────────────────────────
+   为什么没有卡片容器：
+     深色底上，卡片边框是一圈 1px 灰线。10 张卡并按时，这些线彼此平行、
+     等距、无层级差异，视觉上形成"网格噪声"—— 用户看到的是"一堆框"，
+     而不是"一堆照片"。裸封面时照片自己的边缘就是边界，且每张照片的
+     明暗不同，天然产生分隔。
+   唯一保留的"框"是 1px 内描边：不是装饰，是防止封面亮部与页面背景糊在
+   一起的必要边界（见 tokens.css 的 --cover-inset）。
+   ══════════════════════════════════════════════════════════════════════════ */
+.album-tile {
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  /* 悬停只改亮度与描边，不做位移/加阴影：
+     密集网格里任何位移都会让邻格"抖"，而阴影会把裸封面重新变回卡片。 */
+  transition:
+    filter var(--dur-2) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
+}
+
+.tile-cover {
+  position: relative;
+  width: 100%;
+  /* ⚠️ 不用 aspect-ratio。实测（Playwright 截图）它在两种情况下都会塔成 0：
+       ① 封面为空（占位符绝对定位，不撑高）
+       ② 有 <img> 但 img 用 height:100% —— 图片高度依赖父级，
+          父级高度又依赖图片（aspect-ratio 需要至少一个已定尺寸的子项）
+     改用经典的 padding-bottom 百分比（16/10 = 62.5%）：
+       百分比宽度在**任何**包含块里都能解算，不依赖子项，也不依赖 flex 算法。
+     代价是不能直接用 var 参数化比例（百分比 padding 无法读自定义属性），
+     但这个组件只需要一种比例，直接写死更可靠。 */
+  height: 0;
+  padding-bottom: 62.5%;
+  flex-shrink: 0;
+  border-radius: var(--r-cover);
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: var(--cover-inset), var(--cover-topline);
+  transition: box-shadow var(--dur-2) var(--ease-out);
+}
+
+.tile-cover img {
+  /* 与 height:0 + padding-bottom 的占位盒配合：
+     图片必须绝对定位铺满，否则它会参与流布局，把 padding-bottom 撑出的
+     空间再顶高一层（变成双重高度）。 */
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.tile-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  opacity: 0.32;
+}
+
+/* 角标：纯文字 + 文字阴影（不再用 pill）。
+   裸封面上叠一个半透明药丸会变成"贴纸"，而 9px 大写文字压在照片上
+   已经足够可读 —— 因为照片底部本来就有暗角。 */
+.tile-badge {
+  position: absolute;
+  top: 9px;
+  left: 9px;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: var(--fw-strong);
+  color: rgba(255, 255, 255, 0.86);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+/* 勾选圆点：22px，与封面的 5px 圆角形成对比但不突兀 */
+.tile-check {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(10, 13, 19, 0.42);
+  box-shadow:
+    inset 0 0 0 1.5px rgba(255, 255, 255, 0.75),
+    0 2px 6px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  transition:
+    background var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+.tile-check.on {
+  background: var(--c-accent);
+  color: #1a1206;
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.9);
+}
+
+/* 选中：封面外环 + 图注提亮（不模糊、不对整个卡片做滤镜） */
+.tile-selected .tile-cover {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+    0 0 0 2px var(--c-accent);
+}
+
+.tile-cap {
+  padding-top: 11px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tile-name {
+  font-size: var(--fs-title);
+  font-weight: var(--fw-em);
+  letter-spacing: var(--ls-title);
+  color: var(--c-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.tile-meta {
+  font-size: var(--fs-meta);
+  color: var(--c-fg-2);
+  letter-spacing: var(--ls-meta);
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.album-tile:hover .tile-cover {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+    var(--cover-topline);
+}
+.album-tile:hover {
+  filter: brightness(1.06);
+}
+
+.album-tile:active {
+  transform: scale(0.985);
+  transition-duration: var(--dur-1);
+}
+
+.album-tile:focus-visible {
+  outline: none;
+}
+.album-tile:focus-visible .tile-cover {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+    0 0 0 1.5px var(--c-accent),
+    0 0 0 3.5px transparent;
+}
+
+/* 浅色模式：占位底与描边换成暗色系 */
+body:not(.theme-dark) .tile-cover {
+  background: rgba(23, 22, 26, 0.05);
+}
+
+/* 角标在浅色下的可读性：
+   角标原本是"白字 + 黑文字阴影"，专为"压在照片上"设计 —— 照片总有暗部。
+   但**没有封面的相册**（新建/封面文件被移走）底是浅灰，白字直接消失。
+   这里给无封面场景一个实底：用 backdrop-filter 取不可靠（浅灰上无意义），
+   直接给一个半透黑药丸 + 纯白字。 */
+body:not(.theme-dark) .tile-cover:not(:has(img)) .tile-badge {
+  color: #fff;
+  background: rgba(23, 22, 26, 0.55);
+  padding: 2px 7px;
+  border-radius: 4px;
+  text-shadow: none;
+}
+/* 深色下同样处理：深灰占位底上白字尚可读，但加一层薄底更稳 */
+body.theme-dark .tile-cover:not(:has(img)) .tile-badge {
+  background: rgba(255, 255, 255, 0.12);
+  padding: 2px 7px;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.92);
 }
 </style>

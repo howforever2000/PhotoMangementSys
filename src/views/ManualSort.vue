@@ -840,7 +840,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 4px;
-  transition: background 0.2s, color 0.2s;
+  transition: background var(--dur-2), color var(--dur-2);
 }
 
 .manual-nav-item:hover {

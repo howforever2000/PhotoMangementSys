@@ -651,7 +651,7 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 9px;
   cursor: pointer;
-  transition: background 0.18s;
+  transition: background var(--dur-2);
   color: var(--color-text);
 }
 
@@ -695,7 +695,7 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 9px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--dur-2);
 }
 
 .settings-item:hover {
@@ -731,7 +731,7 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(120, 120, 130, 0.22);
   border-radius: 8px;
   cursor: pointer;
-  transition: background 0.2s, border-color 0.2s;
+  transition: background var(--dur-2), border-color var(--dur-2);
   /* BUG-2026-1010-001：窗口非全屏时 header 变窄，本按钮是 user-box 里
      唯一可压缩的项，被挤成竖排单字（「退/出/登/录」）并溢出视口。
      flex-shrink:0 保住自身宽度，nowrap 禁止换行。 */
@@ -757,8 +757,8 @@ onBeforeUnmount(() => {
   padding: 22px 20px;
   /* 玻璃材质（模糊/高光/阴影）由 :style="cardStyle" 下发，不再写死 blur */
   border-radius: var(--radius-card);
-  transition: transform 0.18s cubic-bezier(0.2, 0.7, 0.2, 1), box-shadow 0.18s,
-    border-color 0.18s, background 0.18s;
+  transition: transform var(--dur-2) cubic-bezier(0.2, 0.7, 0.2, 1), box-shadow var(--dur-2),
+    border-color var(--dur-2), background var(--dur-2);
   cursor: pointer;
   text-align: left;
 }

@@ -212,6 +212,13 @@ export interface LocationGroupRow {
   count: number;
   cover_path: string | null;
   cover_album_id: number | null;
+  /**
+   * FEAT-103：该聚合组的**位置中心点**（组内所有带 GPS 照片的坐标均值）。
+   * `null` 表示组内无一张照片带坐标——典型是「未记录地点」组，
+   * 或只有地名没存坐标的老数据。地图据此决定要不要打点。
+   */
+  lat: number | null;
+  lon: number | null;
 }
 
 /**

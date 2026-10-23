@@ -86,7 +86,7 @@ function onClick() {
   color: inherit;
   font-size: 12px;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background var(--dur-2), border-color var(--dur-2);
 }
 .sac:hover:not(:disabled) {
   background: color-mix(in srgb, var(--color-primary) 10%, transparent);
@@ -111,7 +111,7 @@ function onClick() {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: background 0.12s;
+  transition: background var(--dur-1);
 }
 .sac.checked .sac-box {
   background: var(--color-primary);

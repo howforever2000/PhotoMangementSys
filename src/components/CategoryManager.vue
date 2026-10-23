@@ -772,7 +772,7 @@ function rawScore(v: number): string {
   color: inherit;
   font-size: 12.5px;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color var(--dur-2), background var(--dur-2);
 }
 .cm-btn:hover:not(:disabled) {
   border-color: rgba(106, 141, 240, 0.75);

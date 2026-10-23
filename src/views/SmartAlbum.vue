@@ -9,6 +9,7 @@ import CategoryGallery from "../components/CategoryGallery.vue";
 import LocationGallery from "../components/LocationGallery.vue";
 import type { ContentSearchHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
+import AppHeader from "../components/ui/AppHeader.vue";
 
 /**
  * 智慧相册 Hub —— 顶部 Hero（渐变 + 关键统计） + 4 大子模块入口卡
@@ -150,7 +151,7 @@ function openSub(m: SubModule) {
 
 <template>
   <div class="smart-page" :style="{ color: theme.textColor }">
-    <button class="btn smart-back" @click="router.push('/home')">← 返回主页</button>
+    <AppHeader title="智慧相册" />
 
     <!-- Hero：彩虹横幅（按需求保留）；糖果浅底配墨色字，避免白字对比度不足 -->
     <section
@@ -343,7 +344,7 @@ function openSub(m: SubModule) {
   border: 1px solid rgba(255, 255, 255, 0.3);
   /* 糖果色底 → 墨色字（浅色渐变上白字不达标） */
   color: #1f2733;
-  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  transition: transform var(--dur-2) ease, box-shadow var(--dur-2) ease;
   box-shadow: var(--shadow-1);
 }
 .smart-subcard:hover {
@@ -401,7 +402,7 @@ function openSub(m: SubModule) {
   cursor: pointer;
   color: inherit;
   opacity: 0.85;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
 }
 .tab-item:hover:not(.disabled) { border-color: var(--color-primary); color: var(--color-primary-text); opacity: 1; }
 .tab-item.active {

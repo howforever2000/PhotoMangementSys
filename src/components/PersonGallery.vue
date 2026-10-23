@@ -871,7 +871,7 @@ body.theme-dark .pg-action-msg {
   display: flex;
   align-items: center;
   gap: 14px;
-  transition: transform 0.15s, box-shadow 0.15s;
+  transition: transform var(--dur-2), box-shadow var(--dur-2);
 }
 .person-card:hover {
   transform: translateY(-2px);
@@ -936,7 +936,7 @@ body.theme-dark .pg-action-msg {
   padding: 2px 7px;
   cursor: pointer;
   color: inherit;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
   flex-shrink: 0;
 }
 .mini-btn:hover { border-color: var(--color-link); color: var(--color-link); }
@@ -985,7 +985,7 @@ body.theme-dark .pg-action-msg {
   padding: 8px 12px;
   cursor: pointer;
   text-align: left;
-  transition: all 0.15s;
+  transition: all var(--dur-2);
 }
 .merge-item:hover { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 6%, transparent); }
 .merge-avatar {
@@ -1138,7 +1138,7 @@ body.theme-dark .viewer-pick-hint { color: var(--color-link); }
   border-radius: 6px;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity var(--dur-2);
 }
 .viewer-cell:hover .viewer-set-avatar,
 .viewer-set-avatar:focus-visible,
@@ -1155,7 +1155,7 @@ body.theme-dark .viewer-pick-hint { color: var(--color-link); }
   object-fit: cover;
   border-radius: 8px;
   cursor: zoom-in;
-  transition: transform 0.15s;
+  transition: transform var(--dur-2);
   display: block;
   /* FEAT-095：格子可放大到 320px（> 缓存 256px）时不再放大，避免二次糊化 */
   image-rendering: auto;
