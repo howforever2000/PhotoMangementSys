@@ -398,7 +398,6 @@ onMounted(load);
         <div v-if="view === 'map'" class="lg-map-wrap">
           <LocationMap
             :groups="groups"
-            :width="820"
             :active-name="mapActive"
             @pick="onMapPick"
           />

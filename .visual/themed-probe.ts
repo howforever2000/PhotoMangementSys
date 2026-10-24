@@ -50,6 +50,29 @@ const ALBUMS = [
 const stub = async (cmd: string) => {
   if (cmd === "get_albums" || cmd === "list_albums" || cmd === "get_albums_with_stats") return ALBUMS;
   if (cmd === "list_timeline" || cmd === "list_persons") return [];
+  /*
+   * 地点页需要真实点位才能验证「Ctrl+滚轮缩放」。
+   * 字段严格按 LocationGroupRow：lat/lon 是**聚合组中心点**（FEAT-103 加的后端字段），
+   * null 表示该组无坐标 → 地图不打点。未记录组固定排最后。
+   */
+  if (cmd === "list_photo_locations") {
+    return [
+      { location: "四川省·达州", count: 1751, lat: 31.209, lon: 107.468, cover_path: null, cover_album_id: 1 },
+      { location: "四川省·成都", count: 631, lat: 30.572, lon: 104.066, cover_path: null, cover_album_id: 2 },
+      { location: "贵州省·贵阳", count: 475, lat: 26.647, lon: 106.630, cover_path: null, cover_album_id: 3 },
+      { location: "浙江省·杭州", count: 375, lat: 30.274, lon: 120.155, cover_path: null, cover_album_id: 4 },
+      { location: "重庆市", count: 402, lat: 29.563, lon: 106.551, cover_path: null, cover_album_id: 5 },
+      { location: "广东省·深圳", count: 81, lat: 22.543, lon: 114.058, cover_path: null, cover_album_id: 6 },
+      { location: "上海市", count: 63, lat: 31.230, lon: 121.474, cover_path: null, cover_album_id: 7 },
+      { location: "北京市", count: 44, lat: 39.904, lon: 116.407, cover_path: null, cover_album_id: 8 },
+      { location: "陕西省·西安", count: 38, lat: 34.341, lon: 108.940, cover_path: null, cover_album_id: 9 },
+      { location: "云南省·昆明", count: 27, lat: 25.038, lon: 102.718, cover_path: null, cover_album_id: 10 },
+      { location: "黑龙江省·哈尔滨", count: 19, lat: 45.803, lon: 126.535, cover_path: null, cover_album_id: 11 },
+      { location: "新疆维吾尔自治区·乌鲁木齐", count: 12, lat: 43.826, lon: 87.617, cover_path: null, cover_album_id: 12 },
+      { location: null, count: 14999, lat: null, lon: null, cover_path: null, cover_album_id: null },
+    ];
+  }
+  if (cmd === "search_photo_content" || cmd === "search_albums") return [];
   return null;
 };
 (window as any).__TAURI_INTERNALS__ = {
