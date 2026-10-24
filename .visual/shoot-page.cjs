@@ -4,13 +4,14 @@ const { chromium } = require("playwright");
 
 const page_ = process.argv[2] || "AlbumList";
 const modes = process.argv.slice(3).length ? process.argv.slice(3) : ["dark", "light"];
+const PORT = process.env.VITE_PORT || "1420";
 
 (async () => {
   const b = await chromium.launch({ channel: "msedge" });
   for (const mode of modes) {
     const p = await b.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
     p.on("pageerror", (e) => console.log(`[${mode}] 错误`, String(e).split("\n")[0]));
-    await p.goto(`http://localhost:5173/.visual/themed-probe.html#${mode}/${page_}`, { waitUntil: "load" });
+    await p.goto(`http://localhost:${PORT}/.visual/themed-probe.html#${mode}/${page_}`, { waitUntil: "load" });
     await p.waitForFunction(() => window.__PROBE_READY__ === true, { timeout: 25000 }).catch(() => {});
     await p.evaluate(() => document.fonts.ready);
     await p.waitForTimeout(900);

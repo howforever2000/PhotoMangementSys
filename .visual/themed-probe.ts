@@ -69,6 +69,7 @@ const ROUTES = [
 ].map((path) => ({ path, component: { render: () => null } }));
 
 const PAGE_PATH: Record<string, string> = {
+  Home: "/home",
   AlbumList: "/albums",
   SmartAlbum: "/smart",
   ScanHub: "/scan",
