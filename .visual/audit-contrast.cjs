@@ -44,8 +44,16 @@ const AUDIT = () => {
     if (!hasText) continue;
     const cs = getComputedStyle(el);
     if (cs.visibility === "hidden" || cs.display === "none" || +cs.opacity === 0) continue;
-    // emoji / 封面占位 / 覆盖在封面上的徽标：不按页面底算对比度
-    if (el.className?.toString().match(/emoji|mh-emo|mh-dot|tile-placeholder|tile-badge|tile-check|smart-subicon|scan-subicon/)) continue;
+    // emoji / 封面占位 / 覆盖在封面上的文字：不按页面底算对比度
+    // （它们实际叠在图片或黑色渐变遮罩上，底色不是页面底）
+    if (
+      el.className?.toString().match(
+        /emoji|mh-emo|mh-dot|tile-placeholder|tile-badge|tile-check|tile-time|tile-cap|smart-subicon|scan-subicon/,
+      )
+    )
+      continue;
+    // 祖先里有 .tile-cap（自带黑色渐变遮罩）的元素同样跳过
+    if (el.closest(".tile-cap")) continue;
     const fg = parse(cs.color);
     if (!fg) continue;
     const bg = bgAt(el);

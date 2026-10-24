@@ -30,8 +30,11 @@ const props = withDefaults(
      *   地点/手动视图暂时还是 card），不必一次改完 2883 行。
      */
     variant?: "card" | "tile";
+    /** FEAT-105：mosaic = 参与跨格错落排布的大瓦片。
+     *  封面填满格子，图注压在封面底部（海报落款），而不是封面下方。 */
+    mosaic?: boolean;
   }>(),
-  { showLocation: false, variant: "card" },
+  { showLocation: false, variant: "card", mosaic: false },
 );
 
 const emit = defineEmits<{
@@ -51,17 +54,28 @@ const isTile = computed(() => props.variant === "tile");
 /**
  * tile 变体的图注右侧元信息。
  *
- * 组装顺序有讲究：先给"有多少张"，再给"什么时候"——
- * 用户在扫视相册网格时第一眼找的是"这个相册多大/是不是我要的那个"，
- * 时间只是辅助。用 ` · ` 分隔，保持一行。
+ * 组装顺序有讲究：先给"有多少张"——用户在扫视相册网格时第一眼找的是
+ * "这个相册多大/是不是我要的那个"。时间已移到封面左下角（FEAT-105），
+ * 不再重复出现在图注里。
  *
  * 为什么不带 size_bytes：在极简版面上，体积对相册浏览几乎无决策价值
  * （用户不会因为某个相册 200MB 而改变行为），但张数会。体积仍保留在
  * tile 的 title 里（悬停可见），不占主视觉。
  */
+/** 封面左下角的时间标签：年 + 月（"2024年6月"），日太细不占位 */
+const tileTime = computed(() => {
+  const t = props.album.shoot_time;
+  if (!t) return "";
+  const y = t.slice(0, 4);
+  const m = t.slice(5, 7);
+  return m ? `${y}年${Number(m)}月` : `${y}年`;
+});
+
 const tileMeta = computed(() => {
   const parts: string[] = [`${props.album.photo_count} 张`];
-  if (props.album.shoot_time) parts.push(props.album.shoot_time.slice(0, 4));
+  // mosaic 大瓦片：时间标签被图注遮罩盖住（它叠在封面左下角），
+  // 所以时间改到图注里；小瓦片的时间在封面左下角，图注不再重复。
+  if (props.mosaic && props.album.shoot_time) parts.push(tileTime.value);
   if (props.showLocation && props.album.location) parts.push(props.album.location);
   return parts.join(" · ");
 });
@@ -96,7 +110,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   <article
     v-if="isTile"
     class="album-tile"
-    :class="{ 'tile-selected': selected, 'tile-manage': selectMode }"
+    :class="{ 'tile-selected': selected, 'tile-manage': selectMode, 'tile-mosaic': mosaic }"
     :tabindex="0"
     role="button"
     :aria-pressed="selectMode ? selected : undefined"
@@ -115,6 +129,13 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
         class="tile-badge"
         title="尚未扫描入库，可在详情页执行综合扫描"
       >未入库</span>
+
+      <!-- FEAT-105：拍摄时间移到封面**左下角**，叠在封面上。
+           为什么从图注里拿出来：图注在封面下方，位置随卡片排列跳动，
+           扫视时找不到；而时间叠在封面左下角，每张卡片自己带着自己的时间，
+           眼睛只需要扫一条水平线。参考图也是这个位置。
+           底下加一层 scrim 保证浅色封面上的白字可读。 -->
+      <span v-if="album.shoot_time" class="tile-time">{{ tileTime }}</span>
 
       <!-- 勾选圆点：管理模式下常驻；否则仅选中时显示 -->
       <span
@@ -530,6 +551,23 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   pointer-events: none;
 }
 
+/* FEAT-105：拍摄时间标签（封面左下角）
+   —— 叠在封面上，位置固定，不再随图注跳动。
+   一层从下往上的黑 scrim + 白色字：浅色封面（雪、天空）上也能读。
+   不用 backdrop-filter —— 一屏几十张，每张都模糊背景会拖垮滚动。 */
+.tile-time {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  padding: 10px 9px 7px;
+  font-size: 10.5px;
+  font-weight: var(--fw-em);
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.92);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0));
+  pointer-events: none;
+}
+
 /* 勾选圆点：22px，与封面的 5px 圆角形成对比但不突兀 */
 .tile-check {
   position: absolute;
@@ -571,6 +609,46 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
+}
+
+/* FEAT-105：mosaic 变体（跨格的大瓦片）
+   默认 .tile-cover 用 padding-bottom:62.5% 定一个固定宽高比，
+   在跨 2×2 的大格子里只会占住上方一块，底下留白 —— 看起来像"图没铺满"。
+   这里在大格子里改成：封面填满剩余高度（flex:1），
+   图注压在封面**底部**（绝对定位 + 渐变遮罩），像海报的落款。 */
+.album-tile.tile-mosaic {
+  position: relative; /* 图注的 absolute 定位锚 —— 封面是 relative 但它是兄弟节点，
+                          所以图注需要卡片自己当锚，否则会相对整行定位（宽度变 1440px） */
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.album-tile.tile-mosaic .tile-cover {
+  /* 覆盖 62.5% 的 padding-bottom 方案：改用 flex 填满 */
+  height: auto;
+  padding-bottom: 0;
+  flex: 1;
+  min-height: 0;
+}
+.album-tile.tile-mosaic .tile-cap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 24px 11px 9px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.74), rgba(0, 0, 0, 0));
+  pointer-events: none;
+}
+.album-tile.tile-mosaic .tile-name {
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.album-tile.tile-mosaic .tile-meta {
+  color: rgba(255, 255, 255, 0.84);
+}
+/* 大格子里不再显示封面左下角的独立时间标签（时间已在图注里） */
+.album-tile.tile-mosaic .tile-time {
+  display: none;
 }
 
 .tile-name {

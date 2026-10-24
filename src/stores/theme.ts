@@ -33,6 +33,12 @@ const KEY_IMAGE = "pm-theme-image";
 /** 深色模式对应的默认纯色背景（setMode 在亮/暗之间同步底色时用） */
 const DARK_BG = "#1a1428";
 
+/** 浅色模式的默认渐变三色（纸白暖中性）。
+ *  DEFAULTS 里只有深色档（因为默认外观是启动封面），
+ *  这里补上浅色档，供 setMode 切模式时同步渐变用（FEAT-105）。
+ *  取值与浅色预设「纸白暖中性」一致，避免"切模式后渐变和预设对不上"。 */
+const LIGHT_GRAD: [string, string, string] = ["#faf8f5", "#f0ece6", "#ddd7cd"];
+
 /** 默认背景图（启动封面）的构建产物 URL */
 export const DEFAULT_WALLPAPER = defaultWallpaper;
 
@@ -194,11 +200,35 @@ export const useThemeStore = defineStore("theme", () => {
   }
 
   /** 切换亮暗模式：若纯色背景仍是另一模式的默认值（用户未自定义），则同步换成对应色调，
-   *  避免「深色模式 + 浅色背景」这种不可读组合 */
+   *  避免「深色模式 + 浅色背景」这种不可读组合。
+   *
+   *  FEAT-105 修：原来只管了**纯色底**（bgColor），漏了**渐变底**三色标。
+   *  于是出现这个错配态：用户在浅色预设（纸白 #faf8f5/#f0ece6/#ddd7cd）下点「深色」，
+   *  mode 变成 dark → body 挂 theme-dark → tokens.css 的 --c-* 切到深色档（白字），
+   *  而页面底仍是浅色渐变 —— 白字落在浅底上，1.03:1，完全看不见。
+   *  （这正是用户截图里"浅色背景 + 白色文字"的成因。）
+   *
+   *  现在：渐变三色若还是本模式的默认值（用户没手动调过），一并换成目标模式的默认渐变。
+   *  用户手动改过渐变则**不动** —— 那是他明确选的配色，不该被模式切换覆盖。
+   */
   function setMode(next: ThemeMode) {
     const pairDefault = next === "dark" ? DEFAULTS.bgColor : DARK_BG;
     if (bgColor.value === pairDefault || bgColor.value === DEFAULTS.bgColor || bgColor.value === DARK_BG) {
       bgColor.value = next === "dark" ? DARK_BG : DEFAULTS.bgColor;
+    }
+    /* 渐变三色：仅当还是**当前模式**的默认值时跟随切换。
+       判据用“当前模式默认值”或“目标模式默认值”两种 —— 覆盖“从预设切到模式”
+       与“从模式切到预设”两条路径。 */
+    const darkGrad = [DEFAULTS.gradFrom!, DEFAULTS.gradMid!, DEFAULTS.gradTo!];
+    const lightGrad = LIGHT_GRAD;
+    const cur = isDark.value ? darkGrad : lightGrad;
+    const target = next === "dark" ? darkGrad : lightGrad;
+    const isDefaultGrad =
+      gradFrom.value === cur[0] || gradFrom.value === target[0] || gradFrom.value === DEFAULTS.gradFrom!;
+    if (isDefaultGrad && bgStyle.value === "gradient") {
+      gradFrom.value = target[0];
+      gradMid.value = target[1];
+      gradTo.value = target[2];
     }
     mode.value = next;
     persist();
@@ -464,6 +494,24 @@ export const useThemeStore = defineStore("theme", () => {
     const body = document.body;
     body.style.setProperty("--color-on-bg", onBgColor.value);
     body.style.setProperty("--color-on-bg-2", onBgSubColor.value);
+    /* FEAT-105：--c-* 改为跟随**实际页面背景**下发，而不是靠 body.theme-dark 类选。
+       原来的做法（tokens.css 里 :root 深色 + body:not(.theme-dark) 浅色）假设
+       "模式 == 背景明度"，这个假设在「深色模式 + 浅色预设」这类错配下不成立，
+       结果就是浅色底上出现白字（用户截图：1.03:1）。
+       这里按**实际背景的明度**决定 fg 档位，错配状态自然消失；
+       body 类只留给 main.css 的 --color-* 家族使用。
+
+       ⚠️ 判据用 effectiveBg（背景本身）的明度，**不是** isDarkText(onBgColor) ——
+          后者判断的是「文字色深浅」，而这里要判断的是「背景深浅」，语义相反
+          （浅底 + 深字 时它会返回 true，害我把白字发给浅底）。 */
+    const bgLum = relLum(effectiveBg.value);
+    const cOnDark = bgLum < 0.5; // 背景是深的 → 用浅色文字
+    body.style.setProperty("--c-fg", cOnDark ? "#f2f0f4" : "#17161a");
+    body.style.setProperty("--c-fg-2", cOnDark ? "rgba(242,240,244,.58)" : "rgba(23,22,26,.66)");
+    body.style.setProperty("--c-fg-3", cOnDark ? "rgba(242,240,244,.44)" : "rgba(23,22,26,.52)");
+    body.style.setProperty("--c-rule", cOnDark ? "rgba(255,255,255,.075)" : "rgba(23,22,26,.085)");
+    body.style.setProperty("--c-accent", cOnDark ? "#d4a24a" : "#7d571a");
+    body.style.setProperty("--c-danger", cOnDark ? "#d96a6a" : "#b4453f");
     // 背景上的链接色：body.theme-dark 的 --color-link 恒为浅金（玻璃卡语境），
     // 落在页面背景上的链接需要另一套 —— 浅背景→深金，深背景→浅金
     body.style.setProperty("--color-link-on-bg", sat(onBgDark.value ? "#8a5a12" : "#ffd9a0"));
@@ -477,7 +525,9 @@ export const useThemeStore = defineStore("theme", () => {
         : "0 1px 3px rgba(0,0,0,.38)",
     );
   }
-  watch([onBgColor, onBgDark, bgStyle, bgImageEff], applyTextVars, { immediate: true });
+  /* watch 依赖：onBgColor 已含实际背景信息（含 compColor/compAlpha 的影响），
+     再加上 mode —— 切模式时即便背景没变，fg 档位也要跟着重算。 */
+  watch([onBgColor, onBgDark, bgStyle, bgImageEff, mode], applyTextVars, { immediate: true });
 
   /* ---------- 把深/浅色模式同步到 body ----------
      这样 main.css 中的 `body.theme-dark { --color-text: ... }` 才能覆盖全局，

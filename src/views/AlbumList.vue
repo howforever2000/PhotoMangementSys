@@ -13,7 +13,7 @@ import { isVirtualAlbum } from "../types/album";
 import { useVaultStore } from "../stores/vault";
 import type { Folder, ManualTree } from "../types/folder";
 import type { ContentSearchHit } from "../types/content";
-import { groupByTime, seasonName, MONTH_NAMES } from "../utils/timeGroup";
+import { groupByTime } from "../utils/timeGroup";
 import type { YearGroup } from "../utils/timeGroup";
 import ManualSort from "./ManualSort.vue";
 import AlbumCard from "../components/AlbumCard.vue";
@@ -863,6 +863,13 @@ const visibleAlbums = computed(() => {
   let list = normalAlbums.value;
   if (scanFilter.value === "in") list = list.filter((a) => (a.scanned_photo_count || 0) > 0);
   if (scanFilter.value === "out") list = list.filter((a) => !a.scanned_photo_count);
+  // 年份筛选：扁平密排后没有分組标题可跳，所以直接在这里收窄集合
+  if (yearFilter.value !== null) {
+    list = list.filter((a) => {
+      const y = a.shoot_time ? Number(String(a.shoot_time).slice(0, 4)) || 0 : 0;
+      return y === yearFilter.value;
+    });
+  }
   return list;
 });
 
@@ -905,14 +912,21 @@ const groupedYears = computed<YearGroup[]>(() => {
   return groups.filter((g) => g.year === yearFilter.value);
 });
 
-/** 年份筛选下的可见相册数（左栏右上角那个“12 个相册 · 653 张”用它） */
-const visibleCount = computed(() => {
-  if (yearFilter.value === null) return visibleAlbums.value.length;
-  return visibleAlbums.value.filter((a) => {
-    const y = a.shoot_time ? Number(String(a.shoot_time).slice(0, 4)) || 0 : 0;
-    return y === yearFilter.value;
-  }).length;
-});
+/** 年份筛选下的可见相册数（左栏右上角那个"12 个相册 · 653 张"用它） */
+const visibleCount = computed(() => visibleAlbums.value.length);
+
+/** FEAT-105：日期模式的扁平列表 —— 按拍摄时间倒序（新的在前）。
+ *  原来靠 年→季→月 三层嵌套表达时间，现在改成一条时间线：
+ *  时间信息在每张卡片自己的封面左下角，读起来是"扫过一条时间线"，
+ *  而不是"翻一本按月份分好组的目录"。 */
+const dateOrderedAlbums = computed(() =>
+  [...visibleAlbums.value].sort((a, b) => {
+    const ta = a.shoot_time ?? "";
+    const tb = b.shoot_time ?? "";
+    if (ta === tb) return (b.photo_count || 0) - (a.photo_count || 0);
+    return tb.localeCompare(ta);
+  }),
+);
 
 /**
  * FEAT-103：顶部统计数据带（替代原来的「无统计」空白页头）
@@ -994,24 +1008,8 @@ function locationKey(location: string | null): string {
   return `loc-${location ?? "__none__"}`;
 }
 
-/** 路线图点击：滚动到对应年分组并展开 */
-function jumpToYear(year: number) {
-  // 展开该年分组
-  const key = yearKey(year);
-  if (collapsed.value.has(key)) {
-    const next = new Set(collapsed.value);
-    next.delete(key);
-    collapsed.value = next;
-  }
-  // 滚动到对应分组
-  const el = document.getElementById(`year-${year}`);
-  if (el) {
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
-    // 高亮提示
-    el.classList.add("year-highlight");
-    setTimeout(() => el.classList.remove("year-highlight"), 1500);
-  }
-}
+/* FEAT-105：删掉 jumpToYear —— 「时间路线图」横条已删除（年份筛选改由左栏承担），
+   没有滚动目标了。 */
 
 /** 展开 / 折叠全部（日期 / 地点模式） */
 function toggleAllGroups() {
@@ -1519,19 +1517,9 @@ function onKey(e: KeyboardEvent) {
       </template>
     </div>
 
-    <!-- 日期模式：年 → 季节 → 月 路线图（点击年份可跳转） -->
-    <div v-if="!isSelectMode && sortMode === 'date'" class="view-bar">
-      <span class="view-bar-label">时间路线图</span>
-      <span v-if="groupedYears.length === 0" class="bc-empty">暂无相册</span>
-      <template v-for="yg in groupedYears" :key="yg.year">
-        <span class="bc-sep">›</span>
-        <span
-          class="bc-item bc-link"
-          :title="`跳转到 ${yg.year === 0 ? '未分类' : yg.year + '年'}`"
-          @click="jumpToYear(yg.year)"
-        >{{ yg.year === 0 ? "未分类" : `${yg.year}年` }}</span>
-      </template>
-    </div>
+    <!-- FEAT-105：删掉"时间路线图"横条 —— 左栏已有年份导航（可点击筛选），
+         这里再列一遍年份是重复；而且它把年份排成一行等距文字，
+         与"错落"的诉求相反。年份筛选改由左栏承担。 -->
 
     <!-- 地点模式：提示栏 -->
     <div v-if="!isSelectMode && sortMode === 'location'" class="view-bar">
@@ -1582,96 +1570,34 @@ function onKey(e: KeyboardEvent) {
     </section>
 
     <!-- 日期模式：时间分组视图（年 → 季节 → 月，可折叠） -->
+    <!-- FEAT-105：日期模式改为**扁平密排**（不再年→季→月三层嵌套）
+         理由：左栏已有年份导航，年份再当一层大标题就是重复；
+         季、月三层折叠头把一屏切成十几条横带，看起来像"表格"而不是"相册墙"。
+         现在：所有相册按拍摄时间倒序平铺在一个 dense 网格里，
+         时间信息移到封面左下角（AlbumCard 的 .tile-time），
+         网格用 grid-auto-rows + 行高错落制造"密排但不死板"的节奏。 -->
     <main v-if="sortMode === 'date'" class="timeline-view">
-      <template v-for="yg in groupedYears" :key="yg.year">
-        <!-- 年分组 -->
-        <section
-          :id="`year-${yg.year}`"
-          class="year-group"
-          :class="{ collapsed: isCollapsed(yearKey(yg.year)) }"
+      <div class="album-grid is-tile is-mosaic">
+        <div
+          v-for="(album, i) in dateOrderedAlbums"
+          :key="album.id"
+          class="mosaic-cell"
+          :class="{ 'is-big': i % 5 === 0 }"
         >
-          <h2 class="group-head group-year" @click="toggleCollapse(yearKey(yg.year))">
-            <span class="fold-arrow">{{ isCollapsed(yearKey(yg.year)) ? "▸" : "▾" }}</span>
-            <span class="group-title">{{ yg.year === 0 ? "未分类" : `${yg.year} 年` }}</span>
-            <span class="group-count">
-              {{ yg.seasons.reduce((n, s) => n + s.months.reduce((m, mo) => m + mo.albums.length, 0), 0) + yg.uncategorized.length }} 个相册
-            </span>
-          </h2>
-          <div v-show="!isCollapsed(yearKey(yg.year))" class="group-body">
-            <!-- 未分类相册 -->
-            <div v-if="yg.uncategorized.length > 0" class="season-group">
-              <h3 class="group-head group-season" @click="toggleCollapse(`${yearKey(yg.year)}-uc`)">
-                <span class="fold-arrow">{{ isCollapsed(`${yearKey(yg.year)}-uc`) ? "▸" : "▾" }}</span>
-                <span class="group-title">未分类</span>
-              </h3>
-              <div v-show="!isCollapsed(`${yearKey(yg.year)}-uc`)" class="group-body">
-                <div class="album-grid is-tile">
-                  <AlbumCard
-                    v-for="album in yg.uncategorized"
-                    :key="album.id"
-                    :album="album"
-                    :select-mode="isSelectMode"
-                    :selected="selectedIds.has(album.id)"
-                    @click="isSelectMode ? toggleSelect(album.id) : router.push(`/album/${album.id}`)"
-                    @contextmenu="onRightClick(album.id, $event)"
-                    @toggle-select="toggleSelect(album.id, $event)"
-                    @open-path="openAlbumPath(album.path, $event)"
-                    @open-source-path="openSourcePath($event)"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <!-- 季节分组 -->
-            <section
-              v-for="sg in yg.seasons"
-              :key="seasonKey(yg.year, sg.season)"
-              class="season-group"
-              :class="{ collapsed: isCollapsed(seasonKey(yg.year, sg.season)) }"
-            >
-              <h3 class="group-head group-season" @click="toggleCollapse(seasonKey(yg.year, sg.season))">
-                <span class="fold-arrow">{{ isCollapsed(seasonKey(yg.year, sg.season)) ? "▸" : "▾" }}</span>
-                <span class="group-title">{{ seasonName(sg.season) }}</span>
-                <span class="group-bc">{{ yg.year }} 年 › {{ seasonName(sg.season) }}</span>
-                <span class="group-count">{{ sg.months.reduce((n, m) => n + m.albums.length, 0) }} 个相册</span>
-              </h3>
-              <div v-show="!isCollapsed(seasonKey(yg.year, sg.season))" class="group-body">
-                <!-- 月分组 -->
-                <section
-                  v-for="mg in sg.months"
-                  :key="monthKey(yg.year, sg.season, mg.month)"
-                  class="month-group"
-                  :class="{ collapsed: isCollapsed(monthKey(yg.year, sg.season, mg.month)) }"
-                >
-                  <h4 class="group-head group-month" @click="toggleCollapse(monthKey(yg.year, sg.season, mg.month))">
-                    <span class="fold-arrow">{{ isCollapsed(monthKey(yg.year, sg.season, mg.month)) ? "▸" : "▾" }}</span>
-                    <span class="group-title">{{ MONTH_NAMES[mg.month - 1] }}</span>
-                    <span class="group-bc">{{ yg.year }} 年 › {{ seasonName(sg.season) }} › {{ MONTH_NAMES[mg.month - 1] }}</span>
-                    <span class="group-count">{{ mg.albums.length }} 个相册</span>
-                  </h4>
-                  <div v-show="!isCollapsed(monthKey(yg.year, sg.season, mg.month))" class="group-body">
-                    <div class="album-grid is-tile">
-                      <AlbumCard
-                        v-for="album in mg.albums"
-                        :key="album.id"
-                        :album="album"
-                        variant="tile"
-                        :select-mode="isSelectMode"
-                        :selected="selectedIds.has(album.id)"
-                        @click="isSelectMode ? toggleSelect(album.id) : router.push(`/album/${album.id}`)"
-                        @contextmenu="onRightClick(album.id, $event)"
-                        @toggle-select="toggleSelect(album.id, $event)"
-                        @open-path="openAlbumPath(album.path, $event)"
-                        @open-source-path="openSourcePath($event)"
-                      />
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </section>
-          </div>
-        </section>
-      </template>
+          <AlbumCard
+            :album="album"
+            variant="tile"
+            :mosaic="i % 5 === 0"
+            :select-mode="isSelectMode"
+            :selected="selectedIds.has(album.id)"
+            @click="isSelectMode ? toggleSelect(album.id) : router.push(`/album/${album.id}`)"
+            @contextmenu="onRightClick(album.id, $event)"
+            @toggle-select="toggleSelect(album.id, $event)"
+            @open-path="openAlbumPath(album.path, $event)"
+            @open-source-path="openSourcePath($event)"
+          />
+        </div>
+      </div>
     </main>
 
     <!-- 地点模式：按地点分组（A-Z 顺序，可折叠） -->
@@ -2694,10 +2620,54 @@ function onKey(e: KeyboardEvent) {
   gap: 12px;
 }
 
+/* FEAT-105：mosaic 网格 —— 统一瓦片，但**每 5 张让 1 张跨 2×2**。
+   错落感来自**尺寸差**，而不是把封面随机排布（那会乱到读不出墙）。
+   规则：外层 .mosaic-cell.is-big 跨两行两列，其余单格；
+   grid-auto-flow: dense 会把后面的小片填进它腾出的空洞，
+   所以整面墙仍然"密"，但每隔几块就有一个大块打断节奏。
+
+   为什么是 2×2 而不是大小随机：随机 = 每次刷新的布局都不一样，
+   用户找不到"上次那个相册在哪"。周期性的错落是可预期的。 */
+.album-grid.is-mosaic {
+  grid-auto-rows: 104px;
+}
+.album-grid.is-mosaic > .mosaic-cell {
+  grid-row: span 2;
+  min-width: 0;
+}
+/* 每 5 张的第一个跨 2 列 2 行 —— 封面更大 = 视觉重心 */
+.album-grid.is-mosaic > .mosaic-cell.is-big {
+  grid-column: span 2;
+  grid-row: span 4;
+}
+/* 格子内的卡片要撑满格子（否则封面不会跟着行高走）。
+   .mosaic-cell 是 flex 容器，卡片作为子项 height:100% 才有效
+   （普通块级布局下子项的百分比高度需要一个已定高度的父级）。 */
+.album-grid.is-mosaic > .mosaic-cell {
+  display: flex;
+  min-width: 0;
+}
+.album-grid.is-mosaic > .mosaic-cell > * {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
 @media (max-width: 900px) {
   .album-grid.is-tile {
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 10px;
+  }
+  /* 窄窗不跨格：2×2 的封面在 3 列屏上会占掉大半个屏 */
+  .album-grid.is-mosaic {
+    grid-auto-rows: auto;
+  }
+  .album-grid.is-mosaic > .mosaic-cell {
+    grid-row: span 1;
+  }
+  .album-grid.is-mosaic > .mosaic-cell.is-big {
+    grid-column: span 1;
+    grid-row: span 1;
   }
 }
 
@@ -3280,3 +3250,4 @@ function onKey(e: KeyboardEvent) {
   }
 }
 </style>
+
