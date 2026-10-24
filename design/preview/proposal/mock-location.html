@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>提案 v2 · 地点（无卡片）</title>
+<link rel="stylesheet" href="./mock.css" />
+<style>
+  /* ══════════════════════════════════════════════════════════════
+     修「第二张截图」：9 块同尺寸灰板平均铺（4+4+1）→ 一行文本列
+     ──────────────────────────────────────────────────────────────
+     五个读数里真正有决策价值的只有两个：一眼看到「照片在哪」与
+     「有多少没定位」。其余三个是诊断读数，缩小到同一行的最小字号。
+     ══════════════════════════════════════════════════════════════ */
+
+  .map-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 250px;
+    gap: 26px;
+    padding: 16px var(--gutter) 0;
+    align-items: start;
+  }
+
+  /* 地图：不再是一块「填满下半个屏幕的灰板」，只保留形状与光点 */
+  .map { position: relative; height: 470px; }
+  .map svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* 读数行（替代地图左下角那句说明） */
+  .map-foot {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    display: flex; align-items: baseline; gap: 14px;
+    font-size: 10.5px; color: var(--fg-3);
+  }
+  .map-foot b { color: var(--fg-2); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .map-foot .right { margin-left: auto; }
+
+  /* 视图切换：一个极小的文字切换，不是分段控件（分段控件会抢注意力） */
+  .views { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .views .v { font-size: 12px; color: var(--fg-3); }
+  .views .v.on { color: var(--fg); font-weight: 600; }
+  .views .sep { width: 1px; height: 11px; background: var(--rule); }
+  .views .hint { margin-left: auto; font-size: 10.5px; color: var(--fg-3); }
+
+  /* ══ 右侧地点榜：一行一个城市，绝对没有卡片 ══════════════════════
+     为什么不铺卡片墙：24 个城市铺卡片要 6 行 × 180px ≈ 1080px，
+     而且每张卡 85% 面积是同一张封面（都是"某个城市的街景"），
+     信息密度极低。榜单一行 30px，24 行 = 720px，密度高 4 倍，
+     而且「排名」这个信息是卡片表达不出来的。
+     ══════════════════════════════════════════════════════════════ */
+  .rank-h {
+    display: flex; align-items: baseline; gap: 8px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--rule);
+    font-size: 9.5px; letter-spacing: 0.15em; text-transform: uppercase;
+    font-weight: 600; color: var(--fg-3);
+  }
+  .rank-h em {
+    margin-left: auto; font-style: normal; letter-spacing: 0;
+    text-transform: none; font-size: 10.5px;
+  }
+  .rank { display: flex; flex-direction: column; }
+  .rank-row {
+    display: flex; align-items: center; gap: 9px;
+    height: 30px;
+    border-bottom: 1px solid var(--rule);
+    font-size: 12px;
+  }
+  .rank-row:last-child { border-bottom: none; }
+  .rank-row .i { width: 13px; flex-shrink: 0; font-size: 9.5px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+  .rank-row .city { color: var(--fg-2); flex-shrink: 0; }
+  .rank-row .prov { font-size: 10px; color: var(--fg-3); flex-shrink: 0; }
+  /* 条形：3px，长度=真实比例，位置固定在最右侧 —— 一列对齐才读得出大小 */
+  .rank-row .bar { margin-left: auto; height: 2px; border-radius: 2px; background: var(--fg-3); opacity: 0.45; flex-shrink: 0; }
+  .rank-row .num {
+    width: 32px; text-align: right; flex-shrink: 0;
+    font-size: 11px; color: var(--fg-3); font-variant-numeric: tabular-nums;
+  }
+  .rank-row.top .city { color: var(--fg); font-weight: 620; }
+  .rank-row.top .bar { background: var(--accent); opacity: 0.95; }
+  .rank-row.top .num { color: var(--fg-2); }
+  .rank-foot { padding-top: 9px; font-size: 10.5px; color: var(--fg-3); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="tb-back">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+      <path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    主页
+  </span>
+  <span class="tb-name">
+    <span class="tb-emo">🧠</span>
+    <span class="tb-title">智慧相册</span>
+    <span class="tb-meta">933 位人物 · 130 个相册</span>
+  </span>
+  <nav class="tb-nav">
+    <span>内容分类</span>
+    <span>人物 <em>933</em></span>
+    <span class="on">地点</span>
+    <span>回忆</span>
+    <span>时间线</span>
+    <span>智能搜索</span>
+  </nav>
+  <span class="tb-sp"></span>
+  <span class="tb-search">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+      <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2.2"/>
+      <path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+    </svg>
+    <b>搜索照片</b>
+    <em>全库</em>
+  </span>
+  <span class="tb-user">👤</span>
+</div>
+
+<!-- 五个读数：一行，竖线分隔。诊断读数用最小字号，不和大读数抢 -->
+<div class="band">
+  <div class="stat w-2">
+    <span class="stat-label">地点城市</span>
+    <span class="stat-val"><span class="stat-num">24</span><span class="stat-unit">个</span></span>
+    <span class="stat-note">覆盖 7 省</span>
+  </div>
+  <div class="stat w-2">
+    <span class="stat-label">GPS 覆盖</span>
+    <span class="stat-val"><span class="stat-num">40.0</span><span class="stat-unit">%</span></span>
+    <span class="stat-line"><i style="width:40%"></i></span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">无定位</span>
+    <span class="stat-val"><span class="stat-num">14999</span><span class="stat-unit">张</span></span>
+    <span class="stat-note">未记录</span>
+  </div>
+  <div class="stat w-2">
+    <span class="stat-label">最大聚集</span>
+    <span class="stat-val"><span class="stat-num">6399</span><span class="stat-unit">张</span></span>
+    <span class="stat-note">四川省 · 达州</span>
+  </div>
+</div>
+
+<div class="map-layout">
+  <div>
+    <div class="views">
+      <span class="v on">地图</span>
+      <span class="sep"></span>
+      <span class="v">卡片</span>
+      <span class="hint">依据照片 EXIF GPS 离线解析（省 / 市级）</span>
+    </div>
+
+    <div class="map">
+      <svg viewBox="0 0 800 470" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <radialGradient id="g1"><stop offset="0%" stop-color="#d7a750" stop-opacity="0.5"/><stop offset="100%" stop-color="#d7a750" stop-opacity="0"/></radialGradient>
+          <radialGradient id="g2"><stop offset="0%" stop-color="#d7a750" stop-opacity="0.32"/><stop offset="100%" stop-color="#d7a750" stop-opacity="0"/></radialGradient>
+        </defs>
+
+        <!-- 轮廓：只一根极淡的线，不填色块 -->
+        <path d="M150 152 L200 118 L262 106 L318 94 L372 80 L420 72 L470 80
+                 L516 74 L560 88 L596 82 L632 102 L664 126 L690 158 L706 194
+                 L698 230 L716 260 L700 294 L668 318 L640 346 L596 360
+                 L552 378 L512 394 L470 402 L430 394 L392 378 L356 364
+                 L318 356 L280 342 L246 320 L216 294 L188 266 L170 234
+                 L158 202 L146 178 Z"
+              fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+
+        <!-- 省界：只在有数据的地方出现（空省不画线，整张图更干净） -->
+        <g fill="none" stroke="rgba(255,255,255,0.075)" stroke-width="1">
+          <path d="M356 364 L372 318 L392 290 L430 286"/>
+          <path d="M316 298 L360 294 L392 290"/>
+          <path d="M470 298 L512 294 L552 300"/>
+          <path d="M512 350 L520 318 L552 300"/>
+          <path d="M246 320 L280 290 L316 298"/>
+        </g>
+
+        <!-- 光点：只两层（远光晕 + 实心），不用三种半径 -->
+        <circle cx="404" cy="328" r="70" fill="url(#g1)"/>
+        <circle cx="404" cy="328" r="11" fill="#d7a750" opacity="0.95"/>
+        <circle cx="420" cy="366" r="34" fill="url(#g2)"/>
+        <circle cx="420" cy="366" r="7" fill="#d7a750" opacity="0.85"/>
+        <circle cx="390" cy="350" r="22" fill="url(#g2)"/>
+        <circle cx="390" cy="350" r="5" fill="#d7a750" opacity="0.8"/>
+        <circle cx="548" cy="330" r="26" fill="url(#g2)"/>
+        <circle cx="548" cy="330" r="6" fill="#d7a750" opacity="0.82"/>
+        <circle cx="556" cy="402" r="16" fill="url(#g2)"/>
+        <circle cx="556" cy="402" r="4" fill="#d7a750" opacity="0.7"/>
+
+        <!-- 标签：只给前 3 名（十几条标签会盖住地图） -->
+        <g font-size="11.5">
+          <text x="422" y="324" fill="rgba(240,238,243,0.95)">四川省 · 达州</text>
+          <text x="422" y="338" font-size="10" fill="rgba(240,238,243,0.5)">1751 张</text>
+
+          <text x="438" y="364" fill="rgba(240,238,243,0.86)">四川省 · 成都</text>
+          <text x="438" y="378" font-size="10" fill="rgba(240,238,243,0.45)">631 张</text>
+
+          <text x="566" y="328" fill="rgba(240,238,243,0.86)">浙江省 · 杭州</text>
+          <text x="566" y="342" font-size="10" fill="rgba(240,238,243,0.45)">375 张</text>
+
+          <text x="574" y="400" fill="rgba(240,238,243,0.72)">广东省 · 深圳</text>
+          <text x="574" y="414" font-size="10" fill="rgba(240,238,243,0.4)">81 张</text>
+        </g>
+      </svg>
+
+      <div class="map-foot">
+        <span><b>24</b> 城市</span>
+        <span><b>7</b> 省</span>
+        <span><b>40.0</b>% 有定位</span>
+        <span class="right">点击任一光点进入照片网格</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 地点榜 ══ -->
+  <div>
+    <div class="rank-h">按张数排名 <em>24 个城市</em></div>
+    <div class="rank">
+      <div class="rank-row top"><span class="i">1</span><span class="city">达州</span><span class="prov">四川</span><span class="bar" style="width:88px"></span><span class="num">1751</span></div>
+      <div class="rank-row top"><span class="i">2</span><span class="city">成都</span><span class="prov">四川</span><span class="bar" style="width:48px"></span><span class="num">631</span></div>
+      <div class="rank-row top"><span class="i">3</span><span class="city">贵阳</span><span class="prov">贵州</span><span class="bar" style="width:38px"></span><span class="num">475</span></div>
+      <div class="rank-row top"><span class="i">4</span><span class="city">杭州</span><span class="prov">浙江</span><span class="bar" style="width:31px"></span><span class="num">375</span></div>
+      <div class="rank-row"><span class="i">5</span><span class="city">深圳</span><span class="prov">广东</span><span class="bar" style="width:10px"></span><span class="num">81</span></div>
+      <div class="rank-row"><span class="i">6</span><span class="city">重庆</span><span class="prov">重庆</span><span class="bar" style="width:8px"></span><span class="num">63</span></div>
+      <div class="rank-row"><span class="i">7</span><span class="city">西安</span><span class="prov">陕西</span><span class="bar" style="width:6px"></span><span class="num">44</span></div>
+      <div class="rank-row"><span class="i">8</span><span class="city">昆明</span><span class="prov">云南</span><span class="bar" style="width:5px"></span><span class="num">38</span></div>
+      <div class="rank-row"><span class="i">9</span><span class="city">上海</span><span class="prov">上海</span><span class="bar" style="width:4px"></span><span class="num">31</span></div>
+      <div class="rank-row"><span class="i">10</span><span class="city">北京</span><span class="prov">北京</span><span class="bar" style="width:3px"></span><span class="num">27</span></div>
+      <div class="rank-row"><span class="i">11</span><span class="city">苏州</span><span class="prov">江苏</span><span class="bar" style="width:2px"></span><span class="num">19</span></div>
+      <div class="rank-row"><span class="i">12</span><span class="city">厦门</span><span class="prov">福建</span><span class="bar" style="width:2px"></span><span class="num">12</span></div>
+    </div>
+    <div class="rank-foot">还有 12 个城市 · 点击任一行进入照片网格</div>
+  </div>
+</div>
+
+</body>
+</html>

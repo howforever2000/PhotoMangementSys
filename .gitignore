@@ -126,3 +126,7 @@ covers/login-preview.png
 # FEAT-105：界面效果图与素材（体积大、可重现：node design/preview/shoot-all.cjs）
 design/preview/*.png
 design/preview/assets/
+
+# 视觉优化提案的效果图（同样体积大、可重现：
+# node design/preview/proposal/shoot.cjs）。HTML/CSS 源码入库，截图不入库。
+design/preview/proposal/*.png
