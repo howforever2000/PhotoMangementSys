@@ -3796,7 +3796,9 @@
         "ModuleTabs.isOn 必须同时比 path 与 to 里的 query —— /smart、/smart?tab=category、/smart?tab=location 的 path 完全一样，只比 path 会让三个 tab 同时高亮。已 6/6 渲染实测。",
         "结构探针踩坑：多页共用一个 router，后一次 push 会污染前一页的 route，出现两个 tab 同时高亮；每页必须独立 app + 独立 router。",
         "效果图里「每 5 张一张 2×2 重点瓦片」仍未做：需把封面高度从固定 160px 改为随行高、标题移入封面浮层，等于重写 AlbumCard 版式，按「前端不要太重」先不做。",
-        "后端（src-tauri）本次零改动。"
+        "后端（src-tauri）本次零改动。",
+        "【2026-10-24 回退】FEAT-106 期间给 Home 加的「仪表数据带 + 12 栅格宽窄入口卡」已整体回退到 6c63d79 版本（大标题 + 2×2 等宽玻璃入口卡 + 1000px 内容宽）。相册墙/数据带/顶栏的仪表化改造保留不动，只回退 Home 一页。回退依据：用户明确要「主界面回到原本的感觉」。",
+        "【2026-10-24 回退】Home 旧版依赖的 .glass-card / theme.cardStyle / --radius-card / --shadow-2 / --color-on-bg* / --color-link 全部仍然有效（已逐项核对存在），所以回退是纯文件级 git checkout，不需要改依赖层。"
       ],
       "created_at": "2026-10-23T18:41:14+08:00",
       "updated_at": "2026-10-24T02:40:03+08:00"
