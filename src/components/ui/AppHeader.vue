@@ -241,7 +241,12 @@ const username = computed(() => auth.user?.username ?? "");
   background: var(--c-accent);
 }
 .mh-nav-item.off {
-  color: var(--c-fg-3);
+  /* FEAT-105 实测：置灰项用 --c-fg-3 在浅色预设上仅 3.58:1。
+     置灰的目的是“看似不可用”，不是“读不出来” —— 用户得先看清这个词
+     才知道这块功能叫什么，再去 hover 读 why。
+     改用 --c-fg-2 + opacity .75：既弱于可点项（--c-fg），又保底可读。 */
+  color: var(--c-fg-2);
+  opacity: 0.75;
   cursor: not-allowed;
 }
 .mh-nav-item.off:hover {

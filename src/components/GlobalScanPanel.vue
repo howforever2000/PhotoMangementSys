@@ -595,8 +595,13 @@ onMounted(() => {
   white-space: nowrap;
 }
 .gs-badge-plain { background: var(--color-neutral-soft); color: var(--color-text-3); }
+/* FEAT-105 实测：--color-ok / --color-warn 是按“页面底”标定的，落在同色系的
+   soft 底（半透明绿/橙）上只有 4.4:1，差一点到 AA。这里浅色下换成深一档的实色，
+   深色不动（深色底上反而需要亮色）。 */
 .gs-badge-ok { background: var(--color-ok-soft); color: var(--color-ok); }
 .gs-badge-todo { background: var(--color-warn-soft); color: var(--color-warn); }
+body:not(.theme-dark) .gs-badge-ok { color: #146c34; }
+body:not(.theme-dark) .gs-badge-todo { color: #8a4306; }
 
 /* ---- 扫描设置 ---- */
 .gs-controls {

@@ -2092,7 +2092,9 @@ function onKey(e: KeyboardEvent) {
   letter-spacing: var(--ls-label);
   text-transform: uppercase;
   font-weight: var(--fw-strong);
-  color: var(--c-fg-3);
+  /* FEAT-105 实测：--c-fg-3 在浅色预设三段渐变上仅 3.15:1（9.5px 不够读）。
+     分组标题是"这一栏是什么"的唯一标识，属于要读的文字，不能当装饰处理。 */
+  color: var(--c-fg-2);
 }
 
 /* 筛选项：整行可点，选中用左侧 2px 金条 + 文字提亮 ——
@@ -2140,7 +2142,8 @@ function onKey(e: KeyboardEvent) {
 }
 .side-n {
   font-size: 10px;
-  color: var(--c-fg-3);
+  /* 实测：--c-fg-3 → 3.13:1。计数是用户判断"该组多少个"的依据，用 fg-2（约 5:1） */
+  color: var(--c-fg-2);
   font-variant-numeric: tabular-nums;
 }
 .side-item.on .side-n {
@@ -2618,20 +2621,30 @@ function onKey(e: KeyboardEvent) {
 
 .group-count {
   font-size: 12px;
-  color: var(--muted);
+  /* FEAT-105：--muted（浅色下仅 2.96:1）→ --sub-text。
+     12px 的"N 个相册"是要读的（用户靠它判断该组多大），不是装饰，
+     所以不应用 muted 档。 */
+  color: var(--sub-text);
   font-weight: normal;
 }
 
 .group-bc {
   font-size: 12px;
-  color: var(--color-link);
-  background: var(--color-soft-accent);
+  /* FEAT-105 实测：原来用 --color-link-on-bg（浅金），在浅色预设的暗端仍只有
+     4.13:1；而这个胶囊底是半透明白，叠在暗端反而更暗，两者叠加后不稳定。
+     现在文字用 --c-fg-2（已按最暗端标定），胶囊只做“这是一个范围标记”的形状，
+     不靠颜色区分含义。 */
+  color: var(--c-fg-2);
+  background: var(--slip-fill);
+  box-shadow: inset 0 0 0 1px var(--c-rule);
   border-radius: 4px;
   padding: 1px 8px;
 }
 
 .fold-arrow {
-  color: var(--muted);
+  /* FEAT-105：--muted → --sub-text。折叠箭头是 13px 的可点击区域，
+     它不只是装饰（用户得看到有这个开关），浅色下 muted 仅 2.96:1。 */
+  color: var(--sub-text);
   font-size: 13px;
   width: 14px;
   text-align: center;
@@ -2831,6 +2844,13 @@ function onKey(e: KeyboardEvent) {
   margin-bottom: 28px;
   padding-bottom: 20px;
   border-bottom: 1px solid var(--color-border, rgba(128, 138, 158, 0.24));
+}
+/* FEAT-105：系统相册通常只有 1~2 张卡，用 auto-fill 会在右边留下一大片空白。
+   这里改成定宽列（不拉伸），卡片保持封面该有的尺寸，空白留在右侧 ——
+   比让卡片被拉到 700px 宽要合理（一张卡片比一栋楼还宽，认不出那是封面）。 */
+.virtual-albums .album-grid {
+  grid-template-columns: repeat(auto-fill, 260px);
+  gap: 16px;
 }
 .virtual-hint {
   margin: 10px 0 0;
