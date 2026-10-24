@@ -416,11 +416,26 @@ onMounted(() => {
 /* ---- 区域容器（与 ScanPanel 白底卡片风格一致） ---- */
 /* BUG-2026-0921-005：与 ScanPanel 同源问题——浅色背景硬编码 + var(--color-text)
    深色下翻浅，文字落在白底上不可读。全部改为主题变量。 */
+/* 扫描主面板（FEAT-106）：从「组件色调玻璃」改为「墙板玻璃」。
+   旧版用 --color-surface（组件色调半透明）—— 那是一块**发紫的板**，
+   叠在青绿色壁纸上与页头/数据带的白色磨砂板不是同一种材质，
+   一屏里出现了两套“玻璃”。现在与页头、数据带、侧栏、入口卡同一套。 */
 .gs-area {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  background: var(--color-surface);
+  border: 1px solid var(--panel-glass-edge);
+  border-radius: var(--panel-glass-radius);
   overflow: hidden;
+}
+/* 直接用墙板变量覆盖 .glass-surface 的底色与模糊。
+   ⚠️ 特异性必须压过 main.css 的 `body.theme-dark .glass-surface`（0,2,1）：
+      光写 `.gs-area.glass-surface` 只有（0,2,0），会被它抢掉，
+      结果是“代码改了但面板还是旧的紫调玻璃”（实测过）。
+      加上 body 前缀后是（0,3,1），两套模式都稳定生效。 */
+body .gs-area.glass-surface {
+  background-color: var(--panel-glass-fill);
+  -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  box-shadow: var(--panel-glass-shadow);
+  color: var(--c-fg);
 }
 
 .gs-toolbar {
@@ -452,25 +467,34 @@ onMounted(() => {
    成因：① .btn-ghost 是「透明底 + 1px 描边」，在白底面板上等于没有底色；
         ② 禁用态用整体 opacity:.55（按钮变虚，而非真正的禁用底色）。
    处置：中性/幽灵按钮改实底浅色；禁用态改实心灰，不再用整体透明度。 */
+/* 按钮（FEAT-106）：改用令牌而不是硬编码的浅色底。
+   旧版写死了 background:#fff / color:#1f2733，在深色预设里是一块**发光的白块**，
+   而且 hover 时 color: var(--color-link)（浅金）在白底上只有 2.3:1。 */
 .btn {
-  min-height: 36px;
-  padding: 8px 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 13px;
   border-radius: 8px;
-  border: 1px solid #d5dbe6;
-  background: #fff;
-  color: #1f2733;
+  border: 1px solid var(--c-rule);
+  background: color-mix(in srgb, var(--c-fg) 5%, transparent);
+  color: var(--c-fg-2);
   cursor: pointer;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-em);
   transition: background var(--dur-2), border-color var(--dur-2), color var(--dur-2), box-shadow var(--dur-1), transform var(--dur-1);
 }
-.btn:hover:not(:disabled) { border-color: var(--color-link); color: var(--color-link); box-shadow: 0 2px 8px rgba(16, 24, 40, 0.08); }
+.btn:hover:not(:disabled) {
+  color: var(--c-fg);
+  border-color: color-mix(in srgb, var(--c-fg) 22%, transparent);
+  background: color-mix(in srgb, var(--c-fg) 9%, transparent);
+  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.08);
+}
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:focus-visible { outline: 2px solid color-mix(in srgb, var(--color-primary) 55%, transparent); outline-offset: 2px; }
 .btn:disabled {
-  background: #eef1f6;
-  border-color: #dfe4ec;
-  color: #98a2b3;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 .gs-btn-primary { background: var(--color-primary); color: var(--color-on-primary); border-color: var(--color-primary); }
@@ -479,19 +503,41 @@ onMounted(() => {
 .gs-btn-danger { background: var(--color-danger); color: #fff; border-color: var(--color-danger); }
 .gs-btn-danger:hover:not(:disabled) { background: var(--color-danger-hover); border-color: var(--color-danger-hover); color: #fff; }
 .gs-btn-danger:disabled { background: #f0b3b5; border-color: #f0b3b5; color: #fff; cursor: not-allowed; }
-.btn-ghost { background: color-mix(in srgb, var(--color-primary) 16%, transparent); color: var(--color-primary-text); border-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }
-.btn-ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--color-primary) 26%, transparent); border-color: var(--color-primary); color: var(--color-primary-text); }
-.btn-ghost:disabled { background: #f2f4f8; border-color: #e3e7ee; color: #9aa4b4; cursor: not-allowed; }
-.btn-mini { padding: 2px 8px; font-size: 11px; border: 1px solid var(--color-border); border-radius: 3px; background: var(--color-surface-2); color: inherit; cursor: pointer; }
-.btn-mini:hover { border-color: var(--color-link); color: var(--color-link); }
-.btn-mini:disabled { background: var(--color-neutral-soft); color: var(--color-text-3); cursor: not-allowed; }
+/* 幽灵按钮（金强调档）：
+   ⚠️ 不能用 --color-primary-text 当字色 —— 它是浅金 #ffd9a0，
+   那是为**深色玻璃**准备的一档；在浅色预设下落在 16% 金底上只有 1.1:1（实测）。
+   改用按底色明度分档的 --c-accent-bright（深底提亮 / 浅底压暗，方向相反）。 */
+.btn-ghost {
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  color: var(--c-accent-bright, var(--c-accent));
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary) 26%, transparent);
+  border-color: var(--color-primary);
+  color: var(--c-accent-bright, var(--c-accent));
+}
+/* 禁用态：用 --c-fg 的低透明档（两套模式都成立），不再写死浅灰底 + 浅灰字 */
+.btn-ghost:disabled {
+  background: color-mix(in srgb, var(--c-fg) 6%, transparent);
+  border-color: var(--c-rule);
+  color: var(--c-fg-3);
+  cursor: not-allowed;
+}
+.btn-mini { padding: 2px 8px; font-size: 11px; border: 1px solid var(--c-rule); border-radius: 4px; background: color-mix(in srgb, var(--c-fg) 6%, transparent); color: var(--c-fg); cursor: pointer; }
+.btn-mini:hover:not(:disabled) { border-color: color-mix(in srgb, var(--c-fg) 26%, transparent); color: var(--c-fg); }
+.btn-mini:disabled { background: color-mix(in srgb, var(--c-fg) 4%, transparent); color: var(--c-fg-3); cursor: not-allowed; }
 
 /* ---- 相册勾选区 ---- */
 .gs-select-block {
   margin: 0 14px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: var(--color-surface-2);
+  /* FEAT-106：内层块也从“组件色调玻璃”改为**深一档的墙板内衬**。
+     旧值 --color-surface-2 是 rgba(42,38,48,.86) —— 一块近乎不透明的紫板，
+     盖在外层白玻璃上，两者不是同一材质，大块区域就会“发紫”。
+     现在用 --c-fg 的低透明档，与壁纸色温一致。 */
+  border: 1px solid var(--c-rule);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--c-fg) 4%, transparent);
 }
 
 .gs-select-head {
@@ -523,8 +569,11 @@ onMounted(() => {
   height: 28px;
   padding: 0 8px;
   font-size: 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border: 1px solid var(--c-rule);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--c-fg) 6%, transparent);
+  color: var(--c-fg);
+  outline: none;
   background: var(--color-surface-2);
   color: inherit;
   outline: none;
@@ -598,10 +647,22 @@ onMounted(() => {
 /* FEAT-105 实测：--color-ok / --color-warn 是按“页面底”标定的，落在同色系的
    soft 底（半透明绿/橙）上只有 4.4:1，差一点到 AA。这里浅色下换成深一档的实色，
    深色不动（深色底上反而需要亮色）。 */
-.gs-badge-ok { background: var(--color-ok-soft); color: var(--color-ok); }
-.gs-badge-todo { background: var(--color-warn-soft); color: var(--color-warn); }
-body:not(.theme-dark) .gs-badge-ok { color: #146c34; }
-body:not(.theme-dark) .gs-badge-todo { color: #8a4306; }
+/* FEAT-106：徽标改成“实底 + 白字”。
+   为什么不用“同色系淡底 + 同色系文字”：那个组合的对比度取决于
+   底下那层板有多亮 —— 板一变（墙板提亮/换预设）就往下掉，
+   实测从 4.4 掉到 3.76，怎么调都是追着跑。
+   实底就固定了：--color-ok-solid（#15803d）+ 白字 = 5.1:1；
+   --color-warn-solid（#b45309）+ 白字 = 4.9:1。两套模式都成立。 */
+.gs-badge-ok {
+  background: var(--color-ok-solid);
+  color: #fff;
+  font-weight: var(--fw-em);
+}
+.gs-badge-todo {
+  background: var(--color-warn-solid);
+  color: #fff;
+  font-weight: var(--fw-em);
+}
 
 /* ---- 扫描设置 ---- */
 .gs-controls {

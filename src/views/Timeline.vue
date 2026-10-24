@@ -34,10 +34,11 @@ const notify = useNotify();
 const loading = ref(true);
 const rows = ref<ContentSearchHit[]>([]);
 
-/** 二级导航：时间线属于智慧相册模块，与人物/回忆/搜索同级 */
+/** 二级导航：时间线属于智慧相册模块，与内容分类/人物/回忆/搜索同级。
+ *  顺序必须与 SmartAlbum 一致（内容分类在第一个），否则页间跳转时 tab 会跳位。 */
 const moduleTabs: HeaderTab[] = [
-  { label: "人物", to: "/smart" },
   { label: "内容分类", to: "/smart?tab=category" },
+  { label: "人物", to: "/smart?tab=face" },
   { label: "地点", to: "/smart?tab=location" },
   { label: "回忆", to: "/memories" },
   { label: "时间线", to: "/timeline" },
@@ -96,6 +97,8 @@ const timelineStats = computed<StatItem[]>(() => {
       value: noTime,
       delta: all.length ? `${Math.round((noTime / all.length) * 100)}%` : "",
       tone: noTime > 0 ? "up" : "mute",
+      // 有拍摄时间的占比（进度条 = 已完成的部分，倒过来读更好懂）
+      progress: all.length ? (all.length - noTime) / all.length : 0,
     },
     {
       label: "地点覆盖",
@@ -104,6 +107,8 @@ const timelineStats = computed<StatItem[]>(() => {
       // 这是“照片没 GPS”与“功能坏了”的唯一区分依据，因此 0% 时给出明确提示
       delta: noLoc === all.length ? "未记录 GPS" : `${noLoc} 张无定位`,
       tone: noLoc === all.length ? "mute" : "up",
+      progress: all.length ? (all.length - noLoc) / all.length : 0,
+      progressTone: noLoc === all.length ? "muted" : "accent",
     },
   ];
   return items;
@@ -420,7 +425,7 @@ function goAlbumFromLightbox(albumId: number) {
     <!-- 工具条：年份过滤 + 总数 -->
     <div class="tl-toolbar">
       <label class="tl-count">共 {{ totalFiltered }} 张</label>
-      <select v-model="yearFilter" class="tl-year" @change="onYearFilter">
+      <select v-model="yearFilter" class="tl-year-select" @change="onYearFilter">
         <option value="all">全部年份</option>
         <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
       </select>
@@ -538,32 +543,37 @@ function goAlbumFromLightbox(albumId: number) {
 </template>
 
 <style scoped>
+/* 页面壳（FEAT-106）：与顶栏、数据带用同一套左右留白。
+   旧版 max-width:1200 + padding:20 是居中缩窄的版式 ——
+   而顶栏是**全宽玻璃板**（它在 --sp-8 处起止），两者对不齐，
+   宽屏下会出现"顶栏贴窗口、内容居中"的错位。 */
 .tl-page {
-  padding: 20px;
-  max-width: 1200px;
-  margin: 0 auto;
+  padding: 0 var(--sp-8) 48px;
   min-height: 100vh;
   box-sizing: border-box;
 }
+
+/* 页内标题降一档：顶栏已经有「智慧相册 · 时间线」，
+   这里只需要说明"这页看的是什么"，不需要再来一个 22px 大标题抢主视觉 */
 .tl-header {
   display: flex;
-  align-items: center;
-  gap: 14px;
+  align-items: baseline;
+  gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
+  margin: 16px 0 10px;
 }
 .tl-title {
-  font-size: 22px;
+  font-size: var(--fs-head);
   margin: 0;
-  font-weight: 700;
+  font-weight: var(--fw-em);
+  letter-spacing: -0.2px;
   /* 页面背景上的标题：on-bg 对比色（BUG-2026-0919-004） */
   color: var(--color-on-bg, inherit);
 }
 .tl-subtitle {
   margin: 0;
-  opacity: 0.7;
-  font-size: 13px;
-  color: var(--color-on-bg-2, inherit);
+  font-size: var(--fs-meta);
+  color: var(--c-fg-2);
 }
 .tl-toolbar {
   display: flex;
@@ -575,6 +585,31 @@ function goAlbumFromLightbox(albumId: number) {
   font-size: 14px;
   opacity: 0.8;
 }
+/* 年份筛选下拉（FEAT-106）：
+   ⚠️ 这里修的是一个**类名碰撞**：旧版下拉与年份卡片都叫 .tl-year，
+   于是下拉吃到了卡片的 background: var(--card-bg) + padding: 16px，
+   在浅色预设下变成“浅底 + 浅字”（实测 1.33:1，基本看不见）。
+   现在下拉用自己的类名，并按玻璃控件口径给完整的字色/底色。 */
+.tl-year-select {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--c-rule);
+  background: color-mix(in srgb, var(--c-fg) 6%, transparent);
+  color: var(--c-fg);
+  font-size: var(--fs-body);
+  cursor: pointer;
+  outline: none;
+}
+.tl-year-select:focus {
+  border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
+}
+.tl-year-select option {
+  /* 下拉选项由系统绘制，必须给明确的实底与字色，否则跟随系统主题可能变成白底白字 */
+  background: #1e1b22;
+  color: #f2f0f4;
+}
+
 .tl-year {
   background: var(--card-bg, rgba(127, 127, 127, 0.05));
   border-radius: 12px;
@@ -754,7 +789,7 @@ function goAlbumFromLightbox(albumId: number) {
 
 @media (max-width: 640px) {
   .tl-page {
-    padding: 12px;
+    padding: 0 var(--sp-5) 40px;
   }
   .tl-grid {
     grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));

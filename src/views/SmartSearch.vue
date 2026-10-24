@@ -33,10 +33,11 @@ const router = useRouter();
 const theme = useThemeStore();
 const notify = useNotify();
 
-/** 二级导航：智能搜索属于智慧相册模块，与人物/时间线/回忆同级 */
+/** 二级导航：智能搜索属于智慧相册模块，与内容分类/人物/时间线/回忆同级。
+ *  顺序必须与 SmartAlbum 一致（内容分类在第一个），否则页间跳转时 tab 会跳位。 */
 const moduleTabs: HeaderTab[] = [
-  { label: "人物", to: "/smart" },
   { label: "内容分类", to: "/smart?tab=category" },
+  { label: "人物", to: "/smart?tab=face" },
   { label: "地点", to: "/smart?tab=location" },
   { label: "回忆", to: "/memories" },
   { label: "时间线", to: "/timeline" },
@@ -617,24 +618,26 @@ function showTag(r: SmartHit): string {
   opacity: 0.55;
   cursor: default;
 }
+/* 页面壳（FEAT-106）：与顶栏、数据带同一套左右留白。
+   旧版 max-width:1200 + padding:20 是居中缩窄的版式，与全宽玻璃顶栏对不齐。 */
 .ss-page {
-  padding: 20px;
-  max-width: 1200px;
-  margin: 0 auto;
+  padding: 0 var(--sp-8) 48px;
   min-height: 100vh;
   box-sizing: border-box;
 }
+/* 页内标题降一档（顶栏已给出组件名与分区） */
 .ss-header {
   display: flex;
-  align-items: center;
-  gap: 14px;
+  align-items: baseline;
+  gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 16px;
+  margin: 16px 0 12px;
 }
 .ss-title {
-  font-size: 22px;
+  font-size: var(--fs-head);
   margin: 0;
-  font-weight: 700;
+  font-weight: var(--fw-em);
+  letter-spacing: -0.2px;
   /* 页面背景上的标题：on-bg 对比色（BUG-2026-0919-004） */
   color: var(--color-on-bg, inherit);
 }

@@ -136,13 +136,23 @@ const statItems = computed<StatItem[]>(() => [
   { label: "照片", value: stats.value.total, unit: "张" },
   { label: "人物", value: stats.value.personTotal, unit: "位" },
   { label: "相册", value: stats.value.albumTotal, unit: "个" },
-  { label: "本月新增", value: stats.value.thisMonthTotal, unit: "张", tone: "mute" },
+  {
+    label: "本月新增",
+    value: stats.value.thisMonthTotal,
+    unit: "张",
+    tone: "mute",
+    // 本月新增占总照片的比例（今年这个月出了多少）
+    progress: stats.value.total ? stats.value.thisMonthTotal / stats.value.total : 0,
+    progressTone: "muted",
+  },
 ]);
 
-/** 组件内部分区：回忆是「智慧相册」下的分区，与人物/时间线/搜索同级 */
+/** 组件内部分区：回忆是「智慧相册」下的分区，与内容分类/人物/时间线/搜索同级。
+ *  顺序必须与 SmartAlbum 一致（内容分类在第一个）——
+ *  否则在页间跳转时同一排 tab 会“跳位”，用户得重新找。 */
 const moduleTabs: HeaderTab[] = [
-  { label: "人物", to: "/smart" },
   { label: "内容分类", to: "/smart?tab=category" },
+  { label: "人物", to: "/smart?tab=face" },
   { label: "地点", to: "/smart?tab=location" },
   { label: "回忆", to: "/memories" },
   { label: "时间线", to: "/timeline" },
@@ -578,8 +588,9 @@ function goAlbumFromLightbox(albumId: number) {
   margin-bottom: 14px;
 }
 
-/* ---- 数据带（FEAT-105：取代原彩虹 Hero 的统计格）---- */
-.mem-stats { margin: 14px 0 20px; }
+/* ---- 数据带（FEAT-105：取代原彩虹 Hero 的统计格）----
+   FEAT-106：顶栏改成浮起的玻璃板后，数据带与板之间留 16px 空气。 */
+.mem-stats { margin: 16px 0 20px; }
 
 
 /* ---- Section 通用 ----

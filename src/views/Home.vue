@@ -8,6 +8,7 @@ import { useThemeStore } from "../stores/theme";
 import { useAlbumStore } from "../stores/album";
 import { useVaultStore } from "../stores/vault";
 import ThemeDialog from "../components/ThemeDialog.vue";
+import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 
 const router = useRouter();
 const auth = useAuthStore();
@@ -91,6 +92,45 @@ function openModule(m: (typeof modules)[number]) {
     router.push(m.path);
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FEAT-106：主页从"四张入口卡"改为"控制台首页"
+   ────────────────────────────────────────────────────────────────────────
+   旧版：一个大标题 + 2×2 四张同尺寸卡片，下面一片空白 ——
+   它只回答"有哪些模块"，不回答"我的库现在是什么状态"。
+   新版（参考图的仪表盘形态）：
+     · 一条**仪表数据带**（照片 / 相册 / 占用 / 已入库）—— 开机即看到库的规模；
+     · 四张**墙板卡片**，宽窄交替（7/5 与 5/7 的 12 栅格）——
+       错落的尺寸本身就是参考图里"大面板 + 小面板"的节奏。
+   数据来源：albumStore（App.vue 启动时已预拉一次，这里只做聚合）。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** 主页仪表带：整库的规模读数 */
+const statItems = computed<StatItem[]>(() => {
+  const list = albumStore.albums;
+  const totalPhotos = list.reduce((n, a) => n + (a.photo_count || 0), 0);
+  const totalBytes = list.reduce((n, a) => n + (a.size_bytes || 0), 0);
+  const scannedIn = list.reduce((n, a) => n + (a.scanned_photo_count || 0), 0);
+  const gb = totalBytes / 1024 / 1024 / 1024;
+  return [
+    { label: "照片", value: totalPhotos },
+    { label: "相册", value: list.length, unit: "个" },
+    {
+      label: "占用",
+      value: gb >= 100 ? Math.round(gb) : gb.toFixed(1),
+      unit: "GB",
+      // 相对 100GB 的占比：本地库最常见的容量焦虑就这一条
+      progress: Math.min(1, gb / 100),
+      progressTone: "muted",
+    },
+    {
+      label: "已入库",
+      value: scannedIn,
+      unit: "张",
+      progress: totalPhotos ? scannedIn / totalPhotos : 0,
+    },
+  ];
+});
 
 /* ---------------- 基本信息修改（需先验证当前密码） ---------------- */
 const profileOpen = ref(false);
@@ -252,6 +292,9 @@ function onGlobalKey(e: KeyboardEvent) {
 }
 onMounted(() => {
   document.addEventListener("keydown", onGlobalKey);
+  // FEAT-106：主页的仪表带需要相册数据。App.vue 启动时会拉一次，
+  // 但直接刷新/深链进 /home 时可能还没回来 —— 这里是幂等的兵底拉取。
+  if (!albumStore.albums.length) albumStore.fetchAlbums().catch(() => {});
 });
 onBeforeUnmount(() => {
   document.removeEventListener("keydown", onGlobalKey);
@@ -340,13 +383,15 @@ onBeforeUnmount(() => {
       -->
       <div v-if="settingsOpen" class="settings-mask" @click="settingsOpen = false"></div>
 
+      <!-- 仪表数据带：开机即看到库的规模 -->
+      <StatBand :items="statItems" class="home-stats" />
+
       <main class="module-grid">
         <article
-          v-for="m in modules"
+          v-for="(m, i) in modules"
           :key="m.id"
-          class="module-card glass-card"
-          :class="{ 'module-ready': m.ready, 'module-pending': !m.ready }"
-          :style="cardStyle"
+          class="module-card"
+          :class="[`module-card-${i}`, { 'module-ready': m.ready, 'module-pending': !m.ready }]"
           :role="m.ready ? 'link' : undefined"
           :tabindex="m.ready ? 0 : undefined"
           :aria-disabled="m.ready ? undefined : 'true'"
@@ -475,9 +520,9 @@ onBeforeUnmount(() => {
 .home-content {
   position: relative;
   z-index: 2;
-  max-width: 1000px;
-  margin: 0 auto;
-  padding: 48px 24px 64px;
+  /* FEAT-106：不再锁 1000px —— 与顶栏、数据带用同一套左右留白。
+     主页没有 AppHeader（它是各模块的"外墙"），所以顶部自己留 28px。 */
+  padding: 28px var(--sp-8) 64px;
   min-height: 100vh;
 }
 
@@ -486,7 +531,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 48px;
+  margin-bottom: 18px;
   /* 抬到主内容之上（BUG-2026-0918-005）：user-box 带 backdrop-filter，
      自成层叠上下文；若 header 不抬层，⚙ 下拉菜单会被后面的 module-card
      （同样带 backdrop-filter、且 DOM 在后）盖住，看不见也点不到 */
@@ -505,45 +550,43 @@ onBeforeUnmount(() => {
 }
 
 .app-title {
-  font-size: 32px;
-  font-weight: 700;
-  margin: 0 0 8px;
-  letter-spacing: 0;
-  /* 不靠模糊/阴影"假装通透"，靠字重 + 字距 + 颜色对比 */
-  /* BUG-2026-0919-004：标题直接落在页面背景上，用 on-bg 对比色（深色模式+浅背景也可读） */
-  color: var(--color-on-bg, var(--color-text));
+  font-size: 30px;
+  font-weight: var(--fw-strong);
+  margin: 0 0 6px;
+  letter-spacing: -0.5px;
+  /* 标题直接落在壁纸上：用根据实际背景明度下发的 --c-fg */
+  color: var(--c-fg);
 }
 
 .app-subtitle {
   margin: 0;
   max-width: 46ch;
-  font-size: 14px;
+  font-size: var(--fs-body);
   line-height: 1.65;
-  color: var(--color-on-bg-2, var(--color-text-2));
+  color: var(--c-fg-2);
 }
 
+/* 用户区：与墙板同材质（白玻璃 + 亮边），不再是“另一套紫色玻璃”。
+   FEAT-106：旧实现靠 :style="cardStyle"（组件色调半透明），
+   在页头这种直揥压在壁纸上的位置读起来是一块**第三种材质** ——
+   页面上已经有墙板玻璃（白）与浮层玻璃（--glass-*），
+   再混一个组件色调的卡牌就叫“三个体系”。 */
 .user-box {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-shrink: 0;
-  /* 窗口极窄时：先整块换到下一行（.home-header 的 flex-wrap），
-     仍放不下才在药丸内部换行，而不是把子项压成竖排单字/顶出视口 */
   flex-wrap: wrap;
   justify-content: flex-end;
   max-width: 100%;
-  padding: 6px 12px;
-  /* BUG-2026-1021-001：.glass-card 曾声明 container-type: inline-size（为液态游标亮斑算
-     cqw 半径），inline-size 尺寸 containment 会让本元素作为 flex 子项时固有宽度按 0 计算，
-     整块只剩左右内边距（实测 24px），头像/用户名/图标/退出登录全部溢出框外。
-     M3 已从 .glass-card 删掉 container-type，这里仍显式写回 normal：
-     它能保证以后任何人重新加上 containment 时，这颗药丸不会静默塌陷。 */
+  padding: 6px 10px 6px 8px;
   container-type: normal;
-  /* blur 半径过大（12-16px）会让文字下方的背景"糊一片"，反而发雾。
-     改为 6px，仍保留玻璃质感但不再拖累文字。 */
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
+  background-color: var(--panel-glass-fill);
+  -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  border: 1px solid var(--panel-glass-edge);
+  box-shadow: var(--panel-glass-shadow);
 }
 
 /* 液态不再有 :before 图层（M3 把壁厚全部收进 inset 阴影，且 inset 自动跟圆角，
@@ -570,9 +613,9 @@ onBeforeUnmount(() => {
 }
 
 .avatar {
-  font-size: 16px;
-  /* 黑色回退字形（无 emoji 字体时）在深色玻璃上不可读 */
-  color: var(--color-text);
+  font-size: 15px;
+  /* 无 emoji 字体时的回退字形：用实际背景明度决定的 --c-fg，而不是旧的 --color-text */
+  color: var(--c-fg);
 }
 
 /* FEAT-045：用户头像（user-chip 圆形小图 + 弹窗预览） */
@@ -633,23 +676,23 @@ onBeforeUnmount(() => {
 }
 
 .user-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-text);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-em);
+  color: var(--c-fg);
   /* 用户名永远单行：空间不足时整块换行，不逐字竖排 */
   white-space: nowrap;
 }
 
 .icon-btn {
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: 14px;
   background: transparent;
   border: none;
-  border-radius: 9px;
+  border-radius: 8px;
   cursor: pointer;
   transition: background var(--dur-2);
   color: var(--color-text);
@@ -722,14 +765,14 @@ onBeforeUnmount(() => {
 }
 
 .logout-btn {
-  height: 32px;
-  padding: 0 14px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-text);
-  background: rgba(120, 120, 130, 0.12);
-  border: 1px solid rgba(120, 120, 130, 0.22);
-  border-radius: 8px;
+  height: 28px;
+  padding: 0 12px;
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-em);
+  color: var(--c-fg);
+  background: color-mix(in srgb, var(--c-fg) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-fg) 16%, transparent);
+  border-radius: 7px;
   cursor: pointer;
   transition: background var(--dur-2), border-color var(--dur-2);
   /* BUG-2026-1010-001：窗口非全屏时 header 变窄，本按钮是 user-box 里
@@ -744,23 +787,64 @@ onBeforeUnmount(() => {
   border-color: rgba(255, 120, 120, 0.5);
 }
 
-.module-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
+/* 数据带：与内容同一左右留白（它自己已经带 padding，这里只控制纵向节奏） */
+.home-stats {
+  padding: 0 !important;
+  margin: 0 0 14px;
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   入口卡 = 墙板面板（FEAT-106）
+   ──────────────────────────────────────────────────────────
+   旧版是 2×2 等宽玻璃卡 + 大片空白。现在改成 12 栅格里宽窄交替
+   （7/5 与 5/7），错落的尺寸本身就是参考图里“大面板 + 小面板”的节奏。
+   ═══════════════════════════════════════════════════════════════ */
+.module-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 10px;
+}
+.module-card-0 { grid-column: span 7; }
+.module-card-1 { grid-column: span 5; }
+.module-card-2 { grid-column: span 5; }
+.module-card-3 { grid-column: span 7; }
+
 .module-card {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 22px 20px;
-  /* 玻璃材质（模糊/高光/阴影）由 :style="cardStyle" 下发，不再写死 blur */
-  border-radius: var(--radius-card);
-  transition: transform var(--dur-2) cubic-bezier(0.2, 0.7, 0.2, 1), box-shadow var(--dur-2),
-    border-color var(--dur-2), background var(--dur-2);
+  gap: 14px;
+  min-height: 104px;
+  padding: 18px 18px;
+  border-radius: var(--panel-glass-radius);
+  /* 墙板玻璃（与数据带/侧栏同一材质）*/
+  background-color: var(--panel-glass-fill);
+  -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  box-shadow: var(--panel-glass-shadow);
+  border: 1px solid var(--panel-glass-edge);
+  transition:
+    transform var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out);
   cursor: pointer;
   text-align: left;
+  overflow: hidden;
+}
+
+/* 板顶镜面高光（固定光源：左上 135°） */
+.module-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.13) 0%,
+    rgba(255, 255, 255, 0.035) 20%,
+    rgba(255, 255, 255, 0) 44%
+  );
 }
 
 .module-card:focus-visible {
@@ -769,11 +853,8 @@ onBeforeUnmount(() => {
 }
 
 .module-card:hover {
-  box-shadow: var(--card-shadow);
-  /* 素化 C8：原来写死蓝描边 rgba(140,180,255,.45) —— 在粉绿背景上是**第三套色相**
-     （金强调 + 粉/绿背景 + 蓝描边）。改用中性描边 + 一点强调色，
-     悬停态的"被选中"感交给阴影与位移承担，不靠描边换色。 */
-  border-color: color-mix(in srgb, var(--color-primary) 38%, var(--color-border));
+  box-shadow: var(--panel-glass-shadow), 0 18px 40px -22px rgba(0, 0, 0, 0.8);
+  border-color: color-mix(in srgb, var(--c-accent) 34%, var(--panel-glass-edge));
 }
 
 .module-ready:hover {
@@ -790,16 +871,16 @@ onBeforeUnmount(() => {
 }
 
 .module-icon {
-  width: 46px;
-  height: 46px;
+  width: 44px;
+  height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  border-radius: 12px;
-  /* 中性玻璃图标槽：让四枚 emoji 从「浮在卡上的贴纸」变成卡内对齐的图标单元 */
-  background: color-mix(in srgb, var(--color-text) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-text) 12%, transparent);
+  border-radius: 11px;
+  /* 中性玻璃图标槽：让四枚 emoji 从"浮在卡上的贴纸"变成卡内对齐的图标单元 */
+  background: color-mix(in srgb, var(--c-fg) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-fg) 12%, transparent);
   box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 14%, transparent);
 }
 
@@ -816,22 +897,23 @@ onBeforeUnmount(() => {
 
 .module-body {
   flex: 1;
+  min-width: 0;
 }
 
 .module-title {
   margin: 0 0 5px;
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: 0;
-  color: var(--color-text);
+  font-size: var(--fs-head);
+  font-weight: var(--fw-em);
+  letter-spacing: -0.2px;
+  color: var(--c-fg);
 }
 
 .module-desc {
   margin: 0;
   max-width: 44ch;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--color-text-2);
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+  color: var(--c-fg-2);
 }
 
 .pending-badge {
@@ -846,21 +928,42 @@ onBeforeUnmount(() => {
 
 .module-arrow {
   margin-left: auto;
-  font-size: 13px;
+  font-size: var(--fs-body);
   flex-shrink: 0;
   white-space: nowrap;
-  /* 链接色 + 加重：灰色箭头在深绿玻璃上存在感太弱，行动入口应该一眼可见 */
-  color: var(--color-link);
-  font-weight: 600;
+  /* 链接色 + 加重：灰色箭头在深色玻璃上存在感太弱，行动入口应该一眼可见 */
+  color: var(--c-accent-bright, var(--c-accent));
+  font-weight: var(--fw-em);
   letter-spacing: 0.02em;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 1080px) {
+  /* 窄屏：恢得等宽两列（12 栅格的宽窄交替在窄屏上会变成一列半） */
+  .module-card-0, .module-card-1, .module-card-2, .module-card-3 {
+    grid-column: span 6;
+  }
+}
+
+@media (max-width: 720px) {
   .module-grid {
     grid-template-columns: 1fr;
   }
+  .module-card-0, .module-card-1, .module-card-2, .module-card-3 {
+    grid-column: span 1;
+  }
   .home-content {
-    padding: 32px 16px 48px;
+    padding: 20px var(--sp-5) 48px;
+  }
+  .home-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+}
+
+@media (max-width: 640px) {
+  .home-content {
+    padding: 16px var(--sp-2) 40px;
   }
   .home-header {
     flex-direction: column;

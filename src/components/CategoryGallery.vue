@@ -633,11 +633,13 @@ onMounted(load);
 }
 .cg-index {
   font-size: 12.5px;
-  opacity: 0.7;
+  /* 用 fg-2 而不是 opacity .7：opacity 会把已经弱化的文字再乘一次，
+     在磨砂玻璃底上很容易掉到 3.3:1 以下（审计实测）。 */
+  color: var(--c-fg-2);
 }
 .cg-index.warn {
-  color: var(--color-warn-solid, var(--color-warn-solid));
-  opacity: 1;
+  color: var(--color-warn-text, var(--color-warn));
+  font-weight: var(--fw-em);
 }
 .cg-total {
   font-size: 12.5px;

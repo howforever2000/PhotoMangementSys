@@ -114,8 +114,19 @@ const statItems = computed<StatItem[]>(() => {
   return [
     { label: "相册", value: totalAlbums.value, unit: "个" },
     { label: "照片", value: totalPhotos.value, unit: "张" },
-    { label: "已入库相册", value: scannedAlbums.value, unit: "个" },
-    { label: "已入库照片", value: scannedIn.value, unit: "张" },
+    {
+      label: "已入库相册",
+      value: scannedAlbums.value,
+      unit: "个",
+      progress: totalAlbums.value ? scannedAlbums.value / totalAlbums.value : 0,
+      progressTone: "muted",
+    },
+    {
+      label: "已入库照片",
+      value: scannedIn.value,
+      unit: "张",
+      progress: totalPhotos.value ? scannedIn.value / totalPhotos.value : 0,
+    },
     {
       label: "全局扫描任务",
       value: jobValue,
@@ -197,8 +208,8 @@ onMounted(async () => {
   padding-bottom: 48px;
 }
 
-/* 数据带：与二级 tab 同一条信息轴，贴紧 */
-.scan-stats { margin: 14px 0 18px; }
+/* 数据带：与顶栏保持 16px（板底缘与内容之间要留空气，否则读不出板的厚度） */
+.scan-stats { margin: 16px 0 18px; }
 
 /* 内容区左右留白与页头/数据带对齐（--sp-8 = 52px） */
 .scan-active-area { padding: 0 var(--sp-8); }

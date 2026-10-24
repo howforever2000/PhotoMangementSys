@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
 import { useAlbumStore } from "../stores/album";
 import PersonGallery from "../components/PersonGallery.vue";
@@ -24,25 +24,30 @@ import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
  *   现在：一条模块页头（你在哪） + 一条数据带（有多少） + 一条二级 tab（看哪块）
  *        + 内容。小功能回到 tab 里，页头承担"这是智慧相册"。
  *
- * 人物仍是默认 tab；内容分类 / 地点是状态型切页；回忆 / 时间线 / 搜索 / 以图搜图
- * 是路由型（各有独立页面），统一挂在 ModuleTabs 上 —— 用户不必记住"哪些是跳转、
- * 哪些是切页"，视觉上它们就是同一排 tab。
+ * 默认 tab 是**内容分类**（FEAT-106）：
+ *   用户进入智慧相册时最想看到的是"按内容找照片"（美food / 风景 / 夜景…），
+ *   而不是一堆还没命名的人脸聚类（P001 / P094）。人脸墙要逐个改名才可用，
+ *   放在入口第一个位置等于把"未完成的事"当主入口。
+ *   所以顺序改为：内容分类 → 人物 → 地点 → 回忆 → 时间线 → 智能搜索。
+ *   人物仍可从 tab 或回忆页「近期人物」直达（深链 /smart?tab=face&person={pid}）。
  */
 const route = useRoute();
+const router = useRouter();
 const theme = useThemeStore();
 const store = useAlbumStore();
 
 /** FEAT-046：深链定位的人物 id（/smart?tab=face&person={pid}） */
 const focusPid = ref<string | null>(null);
 
-/** 状态型 tab：只有这三个在本页内切换 */
+/** 状态型 tab：只有这三个在本页内切换。
+ *  顺序即展示顺序 —— 内容分类在第一个（它是本模块的主入口）。 */
 const tabs = [
-  { key: "face", label: "人物", enabled: true },
   { key: "category", label: "内容分类", enabled: true },
+  { key: "face", label: "人物", enabled: true },
   { key: "location", label: "地点", enabled: true },
 ] as const;
 
-const activeTab = ref<string>("face");
+const activeTab = ref<string>("category");
 const activeDef = computed(() => tabs.find((t) => t.key === activeTab.value));
 
 /* -------- 统计：总照片 / 占存储 / 相册 / 已入库 / 已扫描 / 人物 -------- */
@@ -97,15 +102,28 @@ watch(
 const statItems = computed<StatItem[]>(() => [
   { label: "张照片", value: totalPhotos.value, unit: "张" },
   { label: "占用存储", value: fmtSize(totalBytes.value) },
-  { label: "相册", value: totalAlbums.value, unit: "个" },
-  { label: "已入库", value: scannedIn.value, unit: "张" },
+  {
+    label: "相册",
+    value: totalAlbums.value,
+    unit: "个",
+    // 入库进度 = 已扫描照片 / 总照片（与下一格的“已入库”同一项目径）
+    progress: totalPhotos.value ? scannedIn.value / totalPhotos.value : 0,
+    progressTone: "muted",
+  },
+  {
+    label: "已入库",
+    value: scannedIn.value,
+    unit: "张",
+    progress: totalPhotos.value ? scannedIn.value / totalPhotos.value : 0,
+  },
   { label: "人物", value: totalPersons.value, unit: "位" },
 ]);
 
-/** 组件内部分区导航：全部属于「智慧相册」这个大组件 */
+/** 组件内部分区导航：全部属于「智慧相册」这个大组件。
+ *  顺序与 tabs 一致：内容分类在第一个。 */
 const moduleTabs = computed<HeaderTab[]>(() => [
-  { key: "face", label: "人物", count: totalPersons.value || undefined },
   { key: "category", label: "内容分类" },
+  { key: "face", label: "人物", count: totalPersons.value || undefined },
   { key: "location", label: "地点" },
   { label: "回忆", to: "/memories" },
   { label: "时间线", to: "/timeline" },
@@ -126,29 +144,50 @@ onMounted(() => {
   const tab = String(route.query.tab ?? "");
   if (tab && tabs.some((t) => t.key === tab && t.enabled)) {
     activeTab.value = tab;
+  } else {
+    // 没带 tab（或带了非法值）→ 落到默认的内容分类上，
+    // 并把 URL 补齐：这样页头那一排 tab 能正确高亮"当前在哪一块"，
+    // 刷新/分享链接也能回到同一块（而不是又跌回默认）。
+    syncTabQuery(activeTab.value);
   }
   const person = String(route.query.person ?? "").trim();
   if (person) focusPid.value = person;
 });
+
+/** 切换本页分区：状态 + URL 一起改（URL 是真源，刷新后不丢） */
+function pickTab(key: string) {
+  activeTab.value = key;
+  syncTabQuery(key);
+}
+
+function syncTabQuery(key: string) {
+  const cur = String(route.query.tab ?? "");
+  if (cur === key) return;
+  // replace 而不是 push：切 tab 不该往历史里塞十几条记录，
+  // 否则从智慧相册按返回键要按十几次才回得到 Home。
+  router.replace({ path: route.path, query: { ...route.query, tab: key } }).catch(() => {});
+}
 </script>
 
 <template>
   <div class="smart-page" :style="{ color: theme.textColor }">
-    <!-- 大组件页头：组件名 + 本组件内部分区（人物/内容分类/地点/回忆/时间线/搜索） -->
+    <!-- 大组件页头：组件名 + 本组件内部分区（内容分类/人物/地点/回忆/时间线/搜索） -->
     <AppHeader
       title="智慧相册"
       icon="🧠"
       :meta="headerMeta"
       :tabs="moduleTabs"
       :active="activeTab"
-      @pick="(k) => (activeTab = k)"
+      @pick="pickTab"
     />
 
     <!-- 数据带：统计信息保留，但不做成彩虹横幅 -->
     <StatBand :items="statItems" class="smart-stats" />
 
-    <PersonGallery v-if="activeTab === 'face'" :focus-pid="focusPid" />
-    <CategoryGallery v-else-if="activeTab === 'category'" />
+    <!-- 默认内容分类：按内容找照片（美food / 风景 / 夜景…）是这页的主入口。
+         人物墙放在第二个 —— 未命名的人脸聚类需要逐个改名才可用，不适合当首屏。 -->
+    <CategoryGallery v-if="activeTab === 'category'" />
+    <PersonGallery v-else-if="activeTab === 'face'" :focus-pid="focusPid" />
     <LocationGallery v-else-if="activeTab === 'location'" />
     <div v-else class="smart-placeholder">
       「{{ activeDef?.label }}」分类展示即将上线 —— 完成对应扫描后即可在此浏览。
@@ -168,7 +207,7 @@ onMounted(() => {
    数据带和 tab 是"同一条信息轴"（先看在哪，再看有多少，再看哪块），
    贴得近才读得成一件事。 */
 .smart-stats {
-  margin: 14px 0 18px;
+  margin: 16px 0 18px;
 }
 
 /* 内容区左右留白与页头/数据带对齐（--sp-8 = 52px）。
