@@ -33,8 +33,20 @@ const props = withDefaults(
     /** FEAT-105：mosaic = 参与跨格错落排布的大瓦片。
      *  封面填满格子，图注压在封面底部（海报落款），而不是封面下方。 */
     mosaic?: boolean;
+    /**
+     * FEAT-106：wall = 行式密排里的瓦片。
+     *
+     * 与 mosaic 的区别：
+     *   mosaic 是「封面填满格子 + 图注叠在封面里」（海报落款）
+     *   wall   是「封面高度由所在行决定 + 图注在下方的玻璃条里」
+     *
+     * 行式密排要求**同一行内所有瓦片严格等高**（否则图注会错位），
+     * 所以封面高度不能由 aspect-ratio 决定，必须由外层行传下来 ——
+     * 这就是 --cover-h 这个 CSS 变量的作用。
+     */
+    wall?: boolean;
   }>(),
-  { showLocation: false, variant: "card", mosaic: false },
+  { showLocation: false, variant: "card", mosaic: false, wall: false },
 );
 
 const emit = defineEmits<{
@@ -73,9 +85,9 @@ const tileTime = computed(() => {
 
 const tileMeta = computed(() => {
   const parts: string[] = [`${props.album.photo_count} 张`];
-  // mosaic 大瓦片：时间标签被图注遮罩盖住（它叠在封面左下角），
-  // 所以时间改到图注里；小瓦片的时间在封面左下角，图注不再重复。
-  if (props.mosaic && props.album.shoot_time) parts.push(tileTime.value);
+  // FEAT-106：行式密排的图注胶囊很窄，名字已经占位。
+  // 时间改为压在封面左下角的独立胶囊里（.tile-time），这里只留张数；
+  // 地点（仅地点视图有意义）跟在张数后面。
   if (props.showLocation && props.album.location) parts.push(props.album.location);
   return parts.join(" · ");
 });
@@ -110,7 +122,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   <article
     v-if="isTile"
     class="album-tile"
-    :class="{ 'tile-selected': selected, 'tile-manage': selectMode, 'tile-mosaic': mosaic }"
+    :class="{ 'tile-selected': selected, 'tile-manage': selectMode, 'tile-mosaic': mosaic, 'tile-wall': wall }"
     :tabindex="0"
     role="button"
     :aria-pressed="selectMode ? selected : undefined"
@@ -130,12 +142,24 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
         title="尚未扫描入库，可在详情页执行综合扫描"
       >未入库</span>
 
-      <!-- FEAT-105：拍摄时间移到封面**左下角**，叠在封面上。
-           为什么从图注里拿出来：图注在封面下方，位置随卡片排列跳动，
-           扫视时找不到；而时间叠在封面左下角，每张卡片自己带着自己的时间，
-           眼睛只需要扫一条水平线。参考图也是这个位置。
-           底下加一层 scrim 保证浅色封面上的白字可读。 -->
+      <!-- FEAT-106：拍摄时间胶囊（压在封面左上角的下一行）。
+           时间与图注胶囊垂直错开：图注在左下角（bottom 8px），
+           时间在它上方（bottom 40px），两条水平线不重叠。 -->
       <span v-if="album.shoot_time" class="tile-time">{{ tileTime }}</span>
+
+      <!-- FEAT-106：图注胶囊（压在封面左下角）。
+           放在 .tile-cover 内部而不是外面 —— 它是**压在照片上**的标签，
+           absolute 定位需要一个 relative 的包含块，.tile-cover 正好是。
+           为什么压在照片里而不是封面下方：
+             · 下方那条横带会把整墙切成一道道横带（像表格），不是“墙”；
+             · 参考图里每块照片面板的标签就是压在面板内部的一个小块；
+             · 胶囊宽度随内容变化 → 自然错落，不会一排等宽的“占位块”。 -->
+      <span class="tile-cap">
+        <span class="tile-cap-in">
+          <b class="tile-name">{{ album.name }}</b>
+          <span class="tile-meta">{{ tileMeta }}</span>
+        </span>
+      </span>
 
       <!-- 勾选圆点：管理模式下常驻；否则仅选中时显示 -->
       <span
@@ -147,11 +171,6 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
         :aria-label="`勾选 ${album.name}`"
         @click.stop="emit('toggle-select', $event)"
       >{{ selected ? "✓" : "" }}</span>
-    </div>
-
-    <div class="tile-cap">
-      <b class="tile-name">{{ album.name }}</b>
-      <span class="tile-meta">{{ tileMeta }}</span>
     </div>
   </article>
 
@@ -538,36 +557,48 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   opacity: 0.32;
 }
 
-/* 角标：纯文字 + 文字阴影（不再用 pill）。
-   裸封面上叠一个半透明药丸会变成"贴纸"，而 9px 大写文字压在照片上
-   已经足够可读 —— 因为照片底部本来就有暗角。 */
+/* 「未入库」角标：同样收成小胶囊（压在封面左上角）。
+   之前是纯文字（无底），压在浅色封面上会消失 —— 改成半透深底小胶囊。 */
 .tile-badge {
   position: absolute;
-  top: 9px;
-  left: 9px;
+  top: 8px;
+  left: 8px;
+  padding: 2px 7px;
+  border-radius: 4px;
   font-size: 9px;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   font-weight: var(--fw-strong);
-  color: rgba(255, 255, 255, 0.86);
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(8, 10, 14, 0.46);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
   pointer-events: none;
 }
 
 /* FEAT-105：拍摄时间标签（封面左下角）
    —— 叠在封面上，位置固定，不再随图注跳动。
    一层从下往上的黑 scrim + 白色字：浅色封面（雪、天空）上也能读。
-   不用 backdrop-filter —— 一屏几十张，每张都模糊背景会拖垮滚动。 */
+   不用 backdrop-filter —— 一屏几十张，每张都模糊背景会拖垮滚动。
+
+   FEAT-106：改为**小胶囊**（而不是整条渐变）。
+   原因：整条渐变在 272px 宽的封面上会吃掉 1/4 高度，看上去像“封面上贴了一条黑带”；
+   而小胶囊只占封面左下角一小块，照片本体才是主体。
+   渐变 scrim 改为**胶囊自身的半透底**（更轻），只在浅色封面上加一点文字阴影。
+
+   位置：压在**左下角**，但比图注胶囊**高一行**（bottom: 44px）——
+   两个胶囊垂直错开，不重叠。 */
 .tile-time {
   position: absolute;
-  left: 0;
-  bottom: 0;
-  padding: 10px 9px 7px;
-  font-size: 10.5px;
+  left: 8px;
+  bottom: 44px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 9.5px;
   font-weight: var(--fw-em);
   letter-spacing: 0.02em;
-  color: rgba(255, 255, 255, 0.92);
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0));
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(8, 10, 14, 0.46);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
   pointer-events: none;
 }
 
@@ -606,26 +637,37 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
     0 0 0 2px var(--c-accent);
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   图注（tile-cap）—— FEAT-106 统一为“压在封面上的胶囊”
+   ──────────────────────────────────────────────────────────────────────────
+   结构变更（影响全站的 tile，包括地点/手动视图）：
+     旧：.tile-cap 在 .tile-cover **外面**，是一块贴在封面下方的玻璃条
+     新：.tile-cap 在 .tile-cover **里面**，是压在封面左下角的一个胶囊
+   为什么这么改：
+     ① 下方那条玻璃条贯穿整格宽 → 一排排横带把墙切成“表格”；
+     ② 胶囊宽度随内容变化 → 自然错落，每格的标签长度不同；
+     ③ 标签压在照片上，与参考图里“每块面板内部有一个小标签块”一致。
+   代价：.tile-cap 的样式从“块级布局”变成“绝对定位的胶囊”，
+   所以它不再参与 .album-tile 的纵向 flex 流 —— .tile-cover 变成唯一的流内元素。
+   ══════════════════════════════════════════════════════════════════════════ */
 .tile-cap {
-  padding-top: 11px;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 16px);
+  pointer-events: none;
 }
 
-/* FEAT-105：小瓦片的图注区也做成玻璃（封面下那一条）。
-   参考图里每块面板的下方都有一条独立的磨砂条（标签 + 微型图表）。 */
-.album-tile:not(.tile-mosaic) .tile-cap {
-  margin: 0 -1px -1px;
-  padding: 9px 10px 8px;
-  border-radius: 0 0 var(--r-cover) var(--r-cover);
-  background-color: var(--panel-glass-fill);
-  -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
-  backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.30);
+/* 胶囊本体：半透深底 + 圆角（压在**照片**上，所以深浅两个预设都是深底白字） */
+.tile-cap-in {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border-radius: 5px;
+  background: rgba(8, 10, 14, 0.52);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
 }
 
 /* FEAT-105：mosaic 变体（跨格的大瓦片）
@@ -686,20 +728,58 @@ body:not(.theme-dark) .album-tile.tile-mosaic .tile-time {
   display: none;
 }
 
+/* ── FEAT-106：wall 变体（行式密排）────────────────────────────────────
+   与 mosaic 的结构差异：
+     mosaic：封面填满格子（flex:1）
+     wall  ：封面高度 = 所在行的高度（--cover-h 由外层传入，px 值）
+   两者都是 .album-tile.tile-* 修饰类，特异性相同（0,2,0），
+   所以靠**声明顺序**定胜负 —— 本段写在 mosaic 段之后。
+
+   图注胶囊的样式在基础 .tile-cap 里已经定好了（全站统一），
+   这里不重复定义 —— 只处理 wall 特有的结构差异。 */
+.album-tile.tile-wall {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.album-tile.tile-wall .tile-cover {
+  /* 覆盖 62.5% 的 padding-bottom 方案：高度由行决定 */
+  height: var(--cover-h, 160px);
+  padding-bottom: 0;
+  flex: none;
+}
+
+/* 胶囊本体与文字颜色：基础 .tile-cap-in / .tile-name / .tile-meta 已定义，
+   这里不重复 —— 全站 tile（地点/手动/墙）都是同一套“裸封面 + 压在封面上的胶囊”。 */
+
+/* ── 悬停：整块瓦片抬亮，封面边缘亮起 ── */
+.album-tile.tile-wall:hover .tile-cover {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+    var(--cover-topline);
+}
+
 .tile-name {
   font-size: var(--fs-title);
   font-weight: var(--fw-em);
   letter-spacing: var(--ls-title);
-  color: var(--c-fg);
+  /* 胶囊压在**照片**上 → 白字（深浅两个预设都一样）。
+     为什么不用 --c-fg：那是页面文字色，浅色预设下会变成深字，
+     压在浅色照片（雪、天空）上会看不见。 */
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  flex: 0 1 auto;
 }
 
 .tile-meta {
   font-size: var(--fs-meta);
-  color: var(--c-fg-2);
+  /* 胶囊压在照片上 → 浅色文字（深浅预设一致） */
+  color: rgba(255, 255, 255, 0.74);
   letter-spacing: var(--ls-meta);
   white-space: nowrap;
   flex-shrink: 0;

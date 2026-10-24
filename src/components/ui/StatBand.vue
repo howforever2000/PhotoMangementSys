@@ -1,26 +1,37 @@
 <script setup lang="ts">
 /**
- * StatBand —— 统计数据带（FEAT-103 · P1）
+ * StatBand —— 仪表数据带（FEAT-106）
  *
- * 替代原来的「统计卡片阵列」。核心区别不是样式，而是**信息结构**：
- *   卡片：标签 + 数字（占 96px 高、一张卡的横向面积）
- *   数据带：标签 + 数字 + sparkline（占同样的高度，横向压在一起，多出趋势）
- * 也就是说：同样的屏幕面积，数据带能多读一条"变化方向"。
+ * ══════════════════════════════════════════════════════════════════════════
+ * 它是什么
+ * ──────────────────────────────────────────────────────────────────────────
+ * 页面顶部的一排**仪表小面板**：每块面板里有
+ *   · 顶部一行微标签（9.5px 大写）
+ *   · 一个大读数（30px）+ 可选单位 / 变化值
+ *   · 底部一条**进度条**（不是环）—— 表达"占比 / 完成度"
+ * 面板与面板之间留缝，缝里露出壁纸 —— 这是参考图里仪表盘区的读感。
  *
- * 为什么不用卡片容器：
- *   极简版面上，卡片边框的作用是"分组"。但当 5 张卡横向排列时，5 条边框
- *   反而切碎了本来连成一片的读数区——眼睛要在 5 个框之间跳。改用发丝竖线后，
- *   读数区是一条连续的带，只在需要停顿的地方有一道线。
+ * ══════════════════════════════════════════════════════════════════════════
+ * 为什么改掉了环形仪表（FEAT-105 曾经是环）
+ * ──────────────────────────────────────────────────────────────────────────
+ * 两个理由，第一个是布局，第二个是语义：
  *
- * 分隔线用 ::before 而不是 border：border 会参与盒模型，让相邻格子的内容
- * 出现 1px 的不一致；绝对定位的伪元素不影响布局。
+ * ① 布局：环是**绝对定位**在面板右下角的，宽度固定 20px。
+ *    当面板里的 delta 文本（如"需要扫描"）换行到第二行、
+ *    或者面板被压窄到 128px 以下时，读数就会压到环上 ——
+ *    这就是用户截图里"数字和环叠在一起"的成因。
+ *    改成**底部进度条**后，仪表有了自己的行（flex 布局里的一块），
+ *    不可能再和文字重叠：宁可把面板加高，也不允许叠字。
+ *
+ * ② 语义：环读的是"完成度"，和 sparkline 读"趋势"本来就是两件事。
+ *    但在这个数据带里，所有读数都是**静态快照**（此刻有多少），
+ *    没有时间维度 —— 用进度条表达"这一项占总量的多少"更诚实，
+ *    而且进度条比环更容易读数（长度 vs 角度）。
  */
-import Sparkline from "./Sparkline.vue";
-
 export interface StatItem {
   /** 标签（9.5px 大写灰） */
   label: string;
-  /** 主读数（25px） */
+  /** 主读数（30px） */
   value: string | number;
   /** 读数后的单位（10.5px，弱化） */
   unit?: string;
@@ -30,23 +41,36 @@ export interface StatItem {
   tone?: "up" | "mute" | "down";
   /** 趋势序列（缺省则不画 sparkline） */
   spark?: number[];
-  /** 可选的第二行说明（出现在读数下方、sparkline 之上，10px 弱化） */
+  /** 可选的第二行说明（出现在读数下方、进度条之上，10px 弱化） */
   note?: string;
   /**
-   * FEAT-105：环形进度（0~1）。Rainmeter 皮肤里数据面板下挂的就是这种环。
+   * 进度（0~1）。缺省则不画进度条。
    * 与 spark 的区别：spark 表示**趋势**（一段时间的序列），
-   * 环表示**占比**（完成度）。两者不可互换。
+   * 进度条表示**占比**（完成度）。两者不可互换。
    */
-  ring?: number;
+  progress?: number;
+  /** 进度条颜色语义：accent = 强调色 / muted = 弱化（默认） */
+  progressTone?: "accent" | "muted";
+  /**
+   * FEAT-106：面板底部的迷你柱阵。
+   *
+   * 为什么需要它：数据带的面板高 96px，而“标签 + 数字 + 进度条”只占 ~70px，
+   * 剩下 26px 是空的 —— 面板读起来像一个装着大数字的空盒子。
+   * 参考图里每块仪表面板的底部都有一条微型数据带（柱阵 / 环），
+   * 那不是装饰，它填满了面板并给出“这一项有波动”的暗示。
+   *
+   * 数据来源由使用方提供（各页自己算），组件只负责画形状。
+   */
+  bars?: number[];
 }
 
 withDefaults(
   defineProps<{
     items: StatItem[];
-    /** 带区高度（默认 86，与设计稿一致） */
+    /** 带区高度（默认 96，与设计稿一致） */
     height?: number;
   }>(),
-  { height: 86 },
+  { height: 96 },
 );
 </script>
 
@@ -54,22 +78,42 @@ withDefaults(
   <div class="u-statband" :style="{ minHeight: `${height}px` }">
     <div v-for="(it, i) in items" :key="it.label + i" class="u-stat">
       <span class="u-stat-label">{{ it.label }}</span>
+
+      <!-- 读数行：数字 + 单位 + 变化值。
+           flex-wrap 允许变化值换行到下一行，而不是被压缩成竖排单字；
+           因为下方有进度条独立占行，读数换行也不会撞到任何东西。 -->
       <div class="u-stat-value">
         <span class="num">{{ it.value }}</span>
         <span v-if="it.unit" class="unit">{{ it.unit }}</span>
         <span v-if="it.delta" class="delta" :class="it.tone ?? 'up'">{{ it.delta }}</span>
       </div>
-      <p v-if="it.note" class="u-stat-note">{{ it.note }}</p>
-      <Sparkline v-if="it.spark?.length" :data="it.spark" :highlight="it.spark.length - 1" />
 
-      <!-- FEAT-105：环形进度（Rainmeter 皮肤的数据面板标配）。
-           纯 CSS conic-gradient，不用 SVG/图表库。 -->
+      <p v-if="it.note" class="u-stat-note">{{ it.note }}</p>
+
+      <!-- 微型柱阵：占据面板底部，把剩下的竖向空间填满。
+           与 sparkline 的区别：sparkline 是独立一行的趋势图；
+           这里的柱阵是面板的**底饰**（短、高、密），读作仪表的一部分。 -->
+      <span v-if="it.bars?.length" class="u-stat-bars" aria-hidden="true">
+        <i
+          v-for="(h, bi) in it.bars"
+          :key="bi"
+          :style="{ height: `${Math.max(6, Math.min(100, h))}%` }"
+          :class="{ on: bi === it.bars.length - 1 }"
+        ></i>
+      </span>
+
+      <!-- 进度条：占据面板底部一整行（不是绝对定位），因此永不与文字重叠。
+           轨道用 --c-gauge-track（纯图形色），填充用强调色。 -->
       <span
-        v-if="it.ring !== undefined"
-        class="u-stat-ring"
-        :style="{ '--ring-pct': `${Math.round(Math.min(1, Math.max(0, it.ring)) * 100)}%` }"
-        aria-hidden="true"
-      ></span>
+        v-if="it.progress !== undefined"
+        class="u-stat-gauge"
+        :class="it.progressTone ?? 'accent'"
+        :style="{ '--pct': `${Math.round(Math.min(1, Math.max(0, it.progress)) * 100)}%` }"
+        role="img"
+        :aria-label="`${it.label} 完成度 ${Math.round(Math.min(1, Math.max(0, it.progress)) * 100)}%`"
+      >
+        <i></i>
+      </span>
     </div>
 
     <!-- 右侧内联区（月度节奏柱阵等）：由使用方塞 slot -->
@@ -80,16 +124,16 @@ withDefaults(
 </template>
 
 <style scoped>
-/* FEAT-105：Rainmeter 皮肤化 —— 每一格读数变成一块**独立玻璃小面板**。
-   参考图里数据区的每一块都是一个小玻璃面板：大数字占主体，
-   标签压在顶部左侧，下面挂一个微型图表，板与板之间留缝露出壁纸。
-
-   为什么数据带是玻璃的最优先位置：
-     它是整页唯一“每块都有数字”的区域，正好对应参考图的仪表盘；
-     而且格子数少（5~6 块），backdrop-filter 的性能代价可接受。
-
-   尺寸：数字 25px → 30px（面板给了更大的视觉预算），
-   标签仍是 9.5px 但提到面板顶部（参考图就是压在顶上的）。 */
+/* ══════════════════════════════════════════════════════════════════════════
+   数据带 = 一排独立的磨砂玻璃小面板
+   ──────────────────────────────────────────────────────────────────────────
+   与参考图的对应关系：
+     · 参考图里仪表区的每一格都是一块小面板，格与格之间是**缝**（露出壁纸）；
+     · 面板顶部压着微标签，下方是大数字，最底下挂一个微型仪表；
+     · 数字是整块面板的视觉主体（30px），标签只做定位。
+   为什么是玻璃而不是纸片：数据带是每页**唯一**"每块都有数字"的区域，
+   正好对应参考图的仪表盘区；格子数少（5~6 块），backdrop-filter 的代价可接受。
+   ══════════════════════════════════════════════════════════════════════════ */
 .u-statband {
   display: flex;
   align-items: stretch;
@@ -102,19 +146,17 @@ withDefaults(
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 6px;
+  gap: 7px;
   min-width: 0;
-  /* FEAT-105：面板给一个**紧凑但有底**的宽度。
-     参考图的仪表块是"窄而高"（一个数 + 一个环），不是"宽而扁"。
-     flex 用 0 1 auto：面板按内容宽度分配，但不超过 200px；
-     剩下的空间用 flex 推到右侧（u-stat-inline 那一列），
-     这样一排数据面板不会拉成一整条。 */
-  flex: 0 1 auto;
-  min-width: 128px;
-  max-width: 200px;
-  padding: 12px 14px 10px;
+  /* 面板按**等分**铺满整行（参考图里仪表区的那排面板就是占满宽度的）。
+     旧版是 flex: 0 1 auto + max-width 210 —— 5 块面板只占到 1050px，
+     右侧留下一条空白，读起来像"表格只写了一半"。
+     现在 flex: 1 1 0 让它们平分可用宽度，max-width 只防极端宽屏下单独一块被拉得太长。 */
+  flex: 1 1 0;
+  min-width: 132px;
+  max-width: 320px;
+  padding: 13px 15px 14px;
   border-radius: var(--panel-glass-radius);
-  /* 玻璃板 */
   background-color: var(--panel-glass-fill);
   -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
   backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
@@ -137,18 +179,16 @@ withDefaults(
   );
 }
 
-/* 发丝分隔线删掉：参考图里格与格之间是**缝**（露出壁纸），不是线。 */
-
+/* 微标签：压在面板顶部，是"这个数字是什么"的唯一标识 —— 要读，所以用 fg-2 */
 .u-stat-label {
   font-size: var(--fs-label);
   letter-spacing: var(--ls-label);
   text-transform: uppercase;
-  /* label 是**要读**的（用户靠它判断这个数字是什么），所以用 fg-2 而不是 fg-3。
-     初稿曾用 fg-3（设计稿的 26% 白），实测 2.09:1 —— 9.5px 的标签在这个对比度下
-     基本看不见。只靠小字号 + 字距 + 大写建立层次，不靠低对比。 */
   color: var(--c-fg-2);
   font-weight: var(--fw-strong);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .u-stat-value {
@@ -156,10 +196,12 @@ withDefaults(
   align-items: baseline;
   gap: 7px;
   line-height: 1;
+  /* 变化值过长时换行到下一行，而不是把数字挤扁 */
+  flex-wrap: wrap;
 }
 
 .num {
-  /* FEAT-105：25px → 30px。参考图里数据面板的��字是整块的视觉主体，
+  /* 30px：参考图里数据面板的数字是整块的视觉主体，
      25px 在玻璃面板上偏小，30px 才像"仪表读数"。 */
   font-size: 30px;
   font-weight: var(--fw-em);
@@ -172,9 +214,8 @@ withDefaults(
 .unit {
   font-size: 10.5px;
   font-weight: 500;
-  /* FEAT-105 实测：--c-fg-3 在浅色预设三段渐变上只有 3.16:1。
-     单位的含义虽已由前面的数字 + 标签给出，但 10.5px + 3.16:1 在浅底上
-     已接近"看不见"，而它占的横向空间几乎为零 —— 提到 fg-2 不损失密度。 */
+  /* 单位的含义虽已由前面的数字 + 标签给出，但 10.5px 的弱化文字
+     在浅底上接近"看不见"，而它占的横向空间几乎为零 —— 提到 fg-2 不损失密度。 */
   color: var(--c-fg-2);
 }
 
@@ -184,9 +225,8 @@ withDefaults(
   letter-spacing: 0;
 }
 .delta.up {
-  /* FEAT-105：玻璃板把底提亮了，金色在亮底上会变淡（3.97:1 → 2.28:1）。
-     正确做法是**反向**处理：深色底上提亮金色，浅色底上压暗金色。
-     用 color-mix 跟着预设走（不改色相，只改明度）。 */
+  /* 玻璃板把底提亮了，金色在亮底上会变淡。
+     用 --c-accent-bright（深底提亮 / 浅底压暗，方向相反）。 */
   color: var(--c-accent-bright, var(--c-accent));
 }
 .delta.mute {
@@ -203,29 +243,52 @@ withDefaults(
   letter-spacing: var(--ls-meta);
 }
 
-/* 环形进度：22px 的小圆环，贴在面板右下角。
-   conic-gradient 直接画 —— 不引 SVG 也不用图表库（全项目零图表依赖）。
-   环内留空（只画弧），中心透出玻璃底，与参考图的空心环一致。 */
-.u-stat-ring {
-  position: absolute;
-  right: 11px;
-  bottom: 11px;
-  width: 20px;
+/* ── 微型柱阵（面板底饰）──────────────────────────────────────────────
+   短、高、密：读作仪表的一部分，而不是一条独立趋势图。
+   最后一根用强调色（“最新”），其余用弱化色 —— 与全站的 sparkline 语言一致。 */
+.u-stat-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
   height: 20px;
-  border-radius: 50%;
-  background: conic-gradient(
-    var(--c-accent) 0 var(--ring-pct, 0%),
-    color-mix(in srgb, var(--c-fg-3) 26%, transparent) var(--ring-pct, 0%) 100%
-  );
-  /* 挖空成环 */
-  -webkit-mask: radial-gradient(circle, transparent 0 5px, #000 5.5px);
-  mask: radial-gradient(circle, transparent 0 5px, #000 5.5px);
-  pointer-events: none;
+  margin-top: auto;
+}
+.u-stat-bars i {
+  display: block;
+  flex: 1 1 0;
+  min-width: 2px;
+  border-radius: 1px 1px 0 0;
+  background: var(--c-gauge-track);
+}
+.u-stat-bars i.on {
+  background: var(--c-accent);
 }
 
-/* 面板右侧给环留位：数字 + delta 不能被环压住 */
-.u-stat-value {
-  padding-right: 24px;
+/* ── 进度条（FEAT-106 取代环形仪表）────────────────────────────────────
+   独占面板底部一整行，因此在流里不可能与读数重叠 ——
+   这正是用户截图里"数字压在环上"的那个问题的根治办法：
+   不是靠调 z-index 或加间距，而是**根本不让它们共处一行**。 */
+.u-stat-gauge {
+  display: block;
+  height: 3px;
+  margin-top: 6px;
+  border-radius: 2px;
+  background: var(--c-gauge-track);
+  overflow: hidden;
+}
+.u-stat-gauge i {
+  display: block;
+  height: 100%;
+  width: var(--pct, 0%);
+  border-radius: 2px;
+  background: var(--c-accent);
+  transition: width var(--dur-3) var(--ease-out);
+}
+.u-stat-gauge.muted i {
+  /* 弱化进度：用前景色的低透明档而不是 --c-fg-2。
+     --c-fg-2 是**文字**色（浅色下是深灰 0.66），直接画 3px 粗线在浅底上
+     会显得像一条黑线；color-mix 到 42% 才是"仪表轨道"该有的强度。 */
+  background: color-mix(in srgb, var(--c-fg) 42%, transparent);
 }
 
 .u-stat-inline {
@@ -249,7 +312,7 @@ withDefaults(
   }
   .u-stat {
     flex: 0 0 auto;
-    min-width: 118px;
+    min-width: 122px;
   }
 }
 </style>

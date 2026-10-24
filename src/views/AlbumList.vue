@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
@@ -15,6 +15,7 @@ import type { Folder, ManualTree } from "../types/folder";
 import type { ContentSearchHit } from "../types/content";
 import { groupByTime } from "../utils/timeGroup";
 import type { YearGroup } from "../utils/timeGroup";
+import { justifyRows, type JustifiedRow } from "../utils/justifiedRows";
 import ManualSort from "./ManualSort.vue";
 import AlbumCard from "../components/AlbumCard.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
@@ -941,6 +942,24 @@ const dateOrderedAlbums = computed(() =>
  *   · 占用 —— 本机存储压力，笔记本用户关心
  *   ← 组级/卡片级已有"每相册张数、拍摄年、路径"，不重复上移
  */
+/**
+ * 数据带的微型柱阵（FEAT-106）：按年份分布的相册数。
+ *
+ * 为什么这个数据有意义：它是“照片墙上方的一眼概览”——
+ * 哪个年份的相册多，一眼看到。而不用点开左栏的年份列表。
+ */
+const yearBars = computed(() => {
+  const map = new Map<number, number>();
+  for (const a of normalAlbums.value) {
+    const y = a.shoot_time ? Number(String(a.shoot_time).slice(0, 4)) || 0 : 0;
+    map.set(y, (map.get(y) ?? 0) + 1);
+  }
+  const years = [...map.entries()].sort((a, b) => a[0] - b[0]);
+  if (!years.length) return [];
+  const max = Math.max(...years.map(([, n]) => n));
+  return years.map(([, n]) => (n / max) * 100);
+});
+
 const statItems = computed<StatItem[]>(() => {
   const all = normalAlbums.value;
   const totalPhotos = all.reduce((n, a) => n + (a.photo_count || 0), 0);
@@ -955,29 +974,43 @@ const statItems = computed<StatItem[]>(() => {
       label: "相册",
       value: all.length,
       delta: virtualAlbums.value.length ? `+${virtualAlbums.value.length} 系统` : "",
+      // 相册数占「全部相册」的比例：1（即 100%），意味着没有待新建的
+      progress: all.length ? 1 : 0,
+      progressTone: "muted",
+      // 年度分布柱阵：一眼看出哪个年份的相册多
+      bars: yearBars.value,
     },
-    { label: "照片", value: totalPhotos },
+    {
+      label: "照片",
+      value: totalPhotos,
+      // 照片数没有天然上限，用「已入库比例」作为它的进度（与「已入库」格呼应）
+      progress: totalPhotos ? scannedPhotos / totalPhotos : 0,
+      progressTone: "muted",
+    },
     {
       label: "已入库",
       value: scannedPhotos,
       delta: `${scannedAlbums} 个相册`,
       tone: scannedAlbums ? "up" : "mute",
-      // FEAT-105：环形进度 = 入库完成度（已入库照片 / 总照片）
-      ring: totalPhotos ? scannedPhotos / totalPhotos : 0,
+      // FEAT-106：进度条 = 入库完成度（已入库照片 / 总照片）
+      progress: totalPhotos ? scannedPhotos / totalPhotos : 0,
     },
     {
       label: "待入库",
       value: pending,
       delta: pending ? "需要扫描" : "全部已扫",
       tone: pending ? "up" : "mute",
-      ring: totalPhotos ? scannedPhotos / totalPhotos : 0,
+      // 待入库：显示的是「还差多少」的补数进度，用弱化色（不抢"已入库"的强调色）
+      progress: totalPhotos ? 1 - scannedPhotos / totalPhotos : 0,
+      progressTone: "muted",
     },
     {
       label: "占用",
       value: gb >= 100 ? Math.round(gb) : gb.toFixed(1),
       unit: "GB",
-      // 占用：相对 100GB 的比例，给个“占满本地空间”的直觉
-      ring: Math.min(1, gb / 100),
+      // 占用：相对 100GB 的比例，给个"占满本地空间"的直觉
+      progress: Math.min(1, gb / 100),
+      progressTone: "muted",
     },
   ];
 });
@@ -987,6 +1020,115 @@ const headerMeta = computed(() => {
   const n = normalAlbums.value.length;
   const v = virtualAlbums.value.length;
   return v ? `${n} 个相册 · ${v} 个系统相册` : `${n} 个相册`;
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FEAT-106：行式密排（justified rows）
+   ──────────────────────────────────────────────────────────────────────────
+   旧实现用 CSS grid 的 `auto-fill` + `grid-auto-flow: dense` + 大瓦片跨 2×4，
+   靠 dense 回填制造错落。实测两个硬伤：
+     ① 行尾出现无法回填的**空洞**（dense 需要连续空位，跨列大瓦片上方
+        那两列已被占满，剩下的空位是奇数格，回填不上）；
+     ② dense 的回填顺序依赖元素流 —— 筛选/滚动后同一个相册会"跳位置"。
+   现在改成行式密排（见 utils/justifiedRows.ts）：每行是一个 flex 容器，
+   瓦片宽度按整数比例分配、行宽精确铺满容器，没有空洞也没有回填。
+
+   容器宽度靠 ResizeObserver 量（而不是写死）：左右栏宽度会随窗口变，
+   写死的行宽会在窄窗下溢出。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** 密排容器的宽度（px）：0 = 还没量到（首帧或容器隐藏） */
+const wallWidth = ref(0);
+/** 密排容器元素 */
+const wallEl = ref<HTMLElement | null>(null);
+let wallRO: ResizeObserver | null = null;
+
+/** 相册墙的行式密排结果 */
+const wallRows = computed<JustifiedRow[]>(() =>
+  justifyRows({
+    count: dateOrderedAlbums.value.length,
+    containerWidth: wallWidth.value,
+    gap: 12,
+    captionH: 30,
+    // 名义高度 232：实际封面高由缩放决定（≤ 232）。
+    // 基础比例 1.28（约 5:4）比 4:3 更方 —— 参考图里的照片面板接近正方形，
+    // 而不是扁扁的横幅。1.28 × 232 ≈ 297px 宽（行内 3~4 块），
+    // 封面高约 232px，接近方形。
+    nominalHeight: 232,
+    baseAspect: 1.28,
+    wideEvery: 5,
+    // 宽幅 = 窄幅的 1.8 倍宽（5:4 → 2.25:1），足够读出"这块不一样"
+    wideFactor: 1.8,
+    minCoverH: 130,
+    maxCoverH: 260,
+  }),
+);
+
+/** 行分组：渲染时按行输出 flex 容器 */
+const wallRowGroups = computed(() =>
+  wallRows.value.map((row) => ({
+    row,
+    items: row.cells.map((cell) => ({ cell, album: dateOrderedAlbums.value[cell.index] })),
+  })),
+);
+
+/** 量容器宽度；用 requestAnimationFrame 节流，避免 resize 风暴时反复重排 */
+function measureWall() {
+  const el = wallEl.value;
+  if (!el) return;
+  const w = el.clientWidth;
+  if (w > 0 && Math.abs(w - wallWidth.value) > 1) wallWidth.value = w;
+}
+
+/** 观察容器尺寸变化（窗口缩放 / 左栏折叠 / 字体加载导致的回流） */
+function observeWall(el: HTMLElement | null) {
+  wallRO?.disconnect();
+  wallRO = null;
+  wallEl.value = el;
+  if (!el) return;
+  measureWall();
+  if (typeof ResizeObserver !== "undefined") {
+    wallRO = new ResizeObserver(() => {
+      if (rafWallId != null) return;
+      rafWallId = requestAnimationFrame(() => {
+        rafWallId = null;
+        measureWall();
+      });
+    });
+    wallRO.observe(el);
+  }
+}
+
+let rafWallId: number | null = null;
+
+onMounted(() => {
+  window.addEventListener("resize", measureWall, { passive: true });
+  // 挂载后建立尺寸观察（模板 ref 此时才拿到元素）
+  observeWall(wallEl.value);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", measureWall);
+  wallRO?.disconnect();
+  wallRO = null;
+  if (rafWallId != null) cancelAnimationFrame(rafWallId);
+});
+
+/** 数据变化（筛选/排序）后重算一次行宽 */
+watch(dateOrderedAlbums, () => {
+  // 等 DOM 更新后再量：瓦片数量变了但容器宽度没变时，其实不需要重算，
+  // 但重算一次最省心（算法是纯函数，幂等）。
+  requestAnimationFrame(measureWall);
+});
+
+/** 切换排序模式：日期模式的墙板元素会重新挂载，需要重新建立尺寸观察。
+ *  否则从「按地点」切回「按时间」时墙板宽度停在 0，页面会一片空白。 */
+watch(sortMode, (mode) => {
+  if (mode !== "date") {
+    wallRO?.disconnect();
+    wallRO = null;
+    return;
+  }
+  requestAnimationFrame(() => observeWall(wallEl.value));
 });
 
 /* 本模块不加二级 tab：相册管理只有一块内容（时间分组 + 系统相册区块），
@@ -1595,25 +1737,32 @@ function onKey(e: KeyboardEvent) {
          时间信息移到封面左下角（AlbumCard 的 .tile-time），
          网格用 grid-auto-rows + 行高错落制造"密排但不死板"的节奏。 -->
     <main v-if="sortMode === 'date'" class="timeline-view">
-      <div class="album-grid is-tile is-mosaic">
-        <div
-          v-for="(album, i) in dateOrderedAlbums"
-          :key="album.id"
-          class="mosaic-cell"
-          :class="{ 'is-big': i % 5 === 0 }"
-        >
-          <AlbumCard
-            :album="album"
-            variant="tile"
-            :mosaic="i % 5 === 0"
-            :select-mode="isSelectMode"
-            :selected="selectedIds.has(album.id)"
-            @click="isSelectMode ? toggleSelect(album.id) : router.push(`/album/${album.id}`)"
-            @contextmenu="onRightClick(album.id, $event)"
-            @toggle-select="toggleSelect(album.id, $event)"
-            @open-path="openAlbumPath(album.path, $event)"
-            @open-source-path="openSourcePath($event)"
-          />
+      <!-- FEAT-106：行式密排。
+           每一行是一个 flex 容器（display:flex），瓦片宽度由算法算好，
+           行宽精确等于容器宽度 —— 不会有空洞。
+           gap 是唯一的面板缝隙，缝里露出壁纸。 -->
+      <div ref="wallEl" class="album-wall" :style="{ '--wall-gap': '12px' }">
+        <div v-for="(g, ri) in wallRowGroups" :key="ri" class="album-wall-row" :style="{ height: `${g.row.height}px` }">
+          <div
+            v-for="item in g.items"
+            :key="item.album.id"
+            class="album-wall-cell"
+            :style="{ width: `${item.cell.width}px`, '--cover-h': `${item.cell.coverH}px` }"
+          >
+            <AlbumCard
+              :album="item.album"
+              variant="tile"
+              wall
+              :mosaic="item.cell.wide"
+              :select-mode="isSelectMode"
+              :selected="selectedIds.has(item.album.id)"
+              @click="isSelectMode ? toggleSelect(item.album.id) : router.push(`/album/${item.album.id}`)"
+              @contextmenu="onRightClick(item.album.id, $event)"
+              @toggle-select="toggleSelect(item.album.id, $event)"
+              @open-path="openAlbumPath(item.album.path, $event)"
+              @open-source-path="openSourcePath($event)"
+            />
+          </div>
         </div>
       </div>
     </main>
@@ -2003,7 +2152,10 @@ function onKey(e: KeyboardEvent) {
 <style scoped>
 /* 页面壳（FEAT-105）：不再锁 max-width、不再自带左右 padding。
    旧版 max-width:1200 + padding:24 会让顶栏（52px 内边距、全宽）与内容各算各的，
-   宽屏下顶栏贴着窗口、内容却居中缩窄。左右留白统一由 --sp-8 提供。 */
+   宽屏下顶栏贴着窗口、内容却居中缩窄。左右留白统一由 --sp-8 提供。
+
+   FEAT-106：顶栏改成一块**浮起的玻璃板**后，它下面需要一段空气
+   （否则板底缘与第一行内容贴在一起，板的厚度读数就没了）。 */
 .album-page {
   min-height: 100vh;
   padding-bottom: 48px;
@@ -2020,20 +2172,89 @@ function onKey(e: KeyboardEvent) {
   align-items: start;
 }
 
-/* 左栏吸顶：滚长列表时筛选始终可改，不用先滚回顶部 */
+/* 左栏吸顶：滚长列表时筛选始终可改，不用先滚回顶部。
+   top 值要避开顶栏（56px）+ 数据带高度（96px）+ 间距，
+   否则左栏会吸在数据带上面，把数据带遮住（与数据带重叠的另一半成因）。 */
 .album-side {
   position: sticky;
-  top: 72px;
+  top: 168px;
   padding-top: 4px;
 }
 
-/* FEAT-105：左栏本身也是一块磨砂玻璃板（Rainmeter 皮肤里侧栏同样是板）。
-   内部每个筛选项不单独给底色 —— 否则 13 个小玻璃块套一个大玻璃块，
-   变成"玻璃里的玻璃"，层次全糊。 */
+/* ══════════════════════════════════════════════════════════════════════════
+   FEAT-106：行式密排（justified rows）—— 相册墙
+   ──────────────────────────────────────────────────────────────────────────
+   结构：
+     .album-wall        容器（只用来量宽度）
+       .album-wall-row  一行（flex 容器，宽度 = 100%）
+         .album-wall-cell  一格（宽度由算法算好）
+
+   为什么不用 grid：
+     grid 的 auto-fill 每行等宽，dense 回填又会留下空洞（见 utils/justifiedRows.ts
+     的注释）。行式密排是 flex：瓦片宽度是 inline style（算法给的整数 px），
+     整行宽度 = Σ宽 + gap×(n−1) = 容器宽度，**精确铺满**。
+
+   行高由行容器的 height 定（inline style），格内的封面用 --cover-h 拿同一个值，
+   于是「封面 + 34px 图注」在整行内严格对齐。
+   ══════════════════════════════════════════════════════════════════════════ */
+.album-wall {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wall-gap, 12px);
+  min-width: 0;
+}
+
+.album-wall-row {
+  display: flex;
+  gap: var(--wall-gap, 12px);
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+}
+
+.album-wall-cell {
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+/* 封面高度由算法给出（内联 --cover-h），行容器给出总高（封面 + 34px 图注）。
+   两者都在 px 上，行内所有瓦片严格对齐。 */
+
+/* 窄窗：墙板不再分宽幅（3 列屏上宽幅瓦片会占掉大半个屏），
+   改为等宽平铺 —— 由容器宽度自然决定瓦片数。 */
+@media (max-width: 900px) {
+  .album-wall-row {
+    flex-wrap: wrap;
+    height: auto !important;
+  }
+  .album-wall-cell {
+    flex: 1 1 calc(50% - (var(--wall-gap, 12px) / 2));
+    width: auto !important;
+  }
+  .album-wall-cell .tile-cover {
+    height: auto !important;
+    aspect-ratio: 3 / 2;
+  }
+  .album-wall-cell .tile-cap {
+    height: 34px;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FEAT-106：左栏与数据带不再重叠
+   ──────────────────────────────────────────────────────────────────────────
+   旧实现：左栏玻璃板用 `inset: -10px -12px -12px -14px` 上探 10px，
+   而数据带就在左栏上方 4px 处 —— 玻璃板的上探部分**压住了数据带的面板下沿**，
+   两者叠在一起（用户截图里左上角那一坨叠影）。
+   现在：
+     ① 左栏玻璃板不再上探（inset 改为 0 -10px -10px -12px，只向左下扩一点）；
+     ② 数据带与左栏之间留出 --sp-4 的间距；
+     ③ 左栏吸顶位置下移，避开数据带的高度。
+   ══════════════════════════════════════════════════════════════════════════ */
 .album-side::before {
   content: "";
   position: absolute;
-  inset: -10px -12px -12px -14px;
+  inset: 0 -10px -10px -12px;
   border-radius: var(--panel-glass-radius);
   background-color: var(--panel-glass-fill);
   -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
@@ -2321,9 +2542,10 @@ function onKey(e: KeyboardEvent) {
   color: var(--color-on-primary);
 }
 
-/* 搜索栏 */
+/* 搜索框：做成与顶栏搜索同一套“玻璃胶囊”，而不是一个填满宽度的黑条 */
 .search-bar {
-  margin-bottom: 16px;
+  margin-bottom: 14px;
+  max-width: 420px;
 }
 
 .search-input-wrap {
@@ -2335,30 +2557,33 @@ function onKey(e: KeyboardEvent) {
 .search-icon {
   position: absolute;
   left: 12px;
-  font-size: 14px;
-  color: var(--muted);
+  font-size: 12px;
+  /* 装饰图标但也要看得见：用 fg-2（≈5:1）而不是 fg-3（≈3.5:1） */
+  color: var(--c-fg-2);
   pointer-events: none;
 }
 
 .search-input {
   width: 100%;
-  padding: 10px 36px 10px 36px;
-  border: 1px solid var(--input-border);
-  border-radius: 8px;
-  font-size: 14px;
+  height: 34px;
+  padding: 0 34px 0 32px;
+  border: 1px solid var(--c-rule);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-body);
   outline: none;
   box-sizing: border-box;
-  color: var(--text);
-  background: var(--input-bg);
-  transition: border-color var(--dur-2);
+  color: var(--c-fg);
+  background: color-mix(in srgb, var(--c-fg) 5%, transparent);
+  transition: border-color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
 }
 
 .search-input::placeholder {
-  color: var(--muted);
+  color: var(--c-fg-3);
 }
 
 .search-input:focus {
-  border-color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--c-fg) 8%, transparent);
 }
 
 .search-clear {
@@ -2366,14 +2591,14 @@ function onKey(e: KeyboardEvent) {
   right: 10px;
   border: none;
   background: none;
-  color: var(--muted);
-  font-size: 18px;
+  color: var(--c-fg-3);
+  font-size: 16px;
   cursor: pointer;
   line-height: 1;
 }
 
 .search-clear:hover {
-  color: var(--text);
+  color: var(--c-fg);
 }
 
 /* 搜索结果面板 */
@@ -2638,7 +2863,7 @@ function onKey(e: KeyboardEvent) {
    单独为数据带改它会让其他区块一起移位。 */
 .album-stats {
   padding: 0 var(--sp-8);
-  margin: 0 0 4px;
+  margin: 16px 0 4px;
 }
 
 /* tile 网格：比 card 网格更密（封面不需要内边距，可以排到 216px）。
@@ -2656,54 +2881,19 @@ function onKey(e: KeyboardEvent) {
   gap: 12px;
 }
 
-/* FEAT-105：mosaic 网格 —— 统一瓦片，但**每 5 张让 1 张跨 2×2**。
-   错落感来自**尺寸差**，而不是把封面随机排布（那会乱到读不出墙）。
-   规则：外层 .mosaic-cell.is-big 跨两行两列，其余单格；
-   grid-auto-flow: dense 会把后面的小片填进它腾出的空洞，
-   所以整面墙仍然"密"，但每隔几块就有一个大块打断节奏。
-
-   为什么是 2×2 而不是大小随机：随机 = 每次刷新的布局都不一样，
-   用户找不到"上次那个相册在哪"。周期性的错落是可预期的。 */
-.album-grid.is-mosaic {
-  grid-auto-rows: 104px;
-}
-.album-grid.is-mosaic > .mosaic-cell {
-  grid-row: span 2;
-  min-width: 0;
-}
-/* 每 5 张的第一个跨 2 列 2 行 —— 封面更大 = 视觉重心 */
-.album-grid.is-mosaic > .mosaic-cell.is-big {
-  grid-column: span 2;
-  grid-row: span 4;
-}
-/* 格子内的卡片要撑满格子（否则封面不会跟着行高走）。
-   .mosaic-cell 是 flex 容器，卡片作为子项 height:100% 才有效
-   （普通块级布局下子项的百分比高度需要一个已定高度的父级）。 */
-.album-grid.is-mosaic > .mosaic-cell {
-  display: flex;
-  min-width: 0;
-}
-.album-grid.is-mosaic > .mosaic-cell > * {
-  flex: 1;
-  min-width: 0;
-  height: 100%;
+/* FEAT-106：旧的 mosaic 网格样式已删除。
+   dense 回填会造成行尾空洞，且位置不稳定 —— 改用行式密排（.album-wall）。
+   保留 .album-grid.is-tile（地点/手动视图仍用普通网格）。 */
+.album-grid.is-tile {
+  grid-template-columns: repeat(auto-fill, minmax(208px, 1fr));
+  grid-auto-flow: dense;
+  gap: 12px;
 }
 
 @media (max-width: 900px) {
   .album-grid.is-tile {
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 10px;
-  }
-  /* 窄窗不跨格：2×2 的封面在 3 列屏上会占掉大半个屏 */
-  .album-grid.is-mosaic {
-    grid-auto-rows: auto;
-  }
-  .album-grid.is-mosaic > .mosaic-cell {
-    grid-row: span 1;
-  }
-  .album-grid.is-mosaic > .mosaic-cell.is-big {
-    grid-column: span 1;
-    grid-row: span 1;
   }
 }
 
@@ -2747,35 +2937,52 @@ function onKey(e: KeyboardEvent) {
   font-size: 14px;
 }
 
-/* 通用按钮 */
+/* 通用按钮（FEAT-106）：与顶栏/数据带同一套“玻璃面板上的控件”语言。
+   旧版是 border 1px + 实心底（card-bg）—— 在一墙磨砂玻璃面板里
+   那是一块块“深色描边盒子”，看得见的只有边框。
+   现在：透明底 + 发丝描边 + 悬停时才出现一点点提亮。 */
 .btn {
-  padding: 8px 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 13px;
   border-radius: 8px;
-  border: 1px solid var(--input-border);
-  background: var(--card-bg);
+  border: 1px solid var(--c-rule);
+  background: color-mix(in srgb, var(--c-fg) 5%, transparent);
+  color: var(--c-fg-2);
   cursor: pointer;
-  font-size: 14px;
-  transition: all var(--dur-2);
+  font-size: var(--fs-body);
+  letter-spacing: var(--ls-body);
+  transition: color var(--dur-2) var(--ease-out), border-color var(--dur-2) var(--ease-out),
+    background var(--dur-2) var(--ease-out);
 }
 
-.btn:hover {
-  border-color: var(--color-primary);
-  color: var(--color-primary-text);
+.btn:hover:not(:disabled) {
+  color: var(--c-fg);
+  border-color: color-mix(in srgb, var(--c-fg) 22%, transparent);
+  background: color-mix(in srgb, var(--c-fg) 9%, transparent);
 }
 
 .btn-primary {
+  /* 主按钮固定用“亮金 + 墨字”这一对 —— 不要用 --c-accent。
+     --c-accent 在浅色预设下是**深棕**（#7d571a，为的是在浅底上当文字用），
+     拿它做填充底色 + 墨字 = 2.71:1，实测已经被审计拓到过。
+     --color-primary / --color-on-primary 是全局定好的“金底墨字”配对，两套模式都达标。 */
   background: var(--color-primary);
   color: var(--color-on-primary);
   border-color: var(--color-primary);
+  font-weight: var(--fw-em);
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   background: var(--color-primary-hover);
-  color: #fff;
+  color: var(--color-on-primary);
+  border-color: var(--color-primary-hover);
 }
 
 .btn:disabled {
-  opacity: 0.6;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
