@@ -951,16 +951,34 @@ const statItems = computed<StatItem[]>(() => {
   const gb = totalBytes / 1024 / 1024 / 1024;
 
   return [
-    { label: "相册", value: all.length, delta: virtualAlbums.value.length ? `+${virtualAlbums.value.length} 系统` : "" },
+    {
+      label: "相册",
+      value: all.length,
+      delta: virtualAlbums.value.length ? `+${virtualAlbums.value.length} 系统` : "",
+    },
     { label: "照片", value: totalPhotos },
-    { label: "已入库", value: scannedPhotos, delta: `${scannedAlbums} 个相册`, tone: scannedAlbums ? "up" : "mute" },
+    {
+      label: "已入库",
+      value: scannedPhotos,
+      delta: `${scannedAlbums} 个相册`,
+      tone: scannedAlbums ? "up" : "mute",
+      // FEAT-105：环形进度 = 入库完成度（已入库照片 / 总照片）
+      ring: totalPhotos ? scannedPhotos / totalPhotos : 0,
+    },
     {
       label: "待入库",
       value: pending,
       delta: pending ? "需要扫描" : "全部已扫",
       tone: pending ? "up" : "mute",
+      ring: totalPhotos ? scannedPhotos / totalPhotos : 0,
     },
-    { label: "占用", value: gb >= 100 ? Math.round(gb) : gb.toFixed(1), unit: "GB" },
+    {
+      label: "占用",
+      value: gb >= 100 ? Math.round(gb) : gb.toFixed(1),
+      unit: "GB",
+      // 占用：相对 100GB 的比例，给个“占满本地空间”的直觉
+      ring: Math.min(1, gb / 100),
+    },
   ];
 });
 
@@ -2009,6 +2027,23 @@ function onKey(e: KeyboardEvent) {
   padding-top: 4px;
 }
 
+/* FEAT-105：左栏本身也是一块磨砂玻璃板（Rainmeter 皮肤里侧栏同样是板）。
+   内部每个筛选项不单独给底色 —— 否则 13 个小玻璃块套一个大玻璃块，
+   变成"玻璃里的玻璃"，层次全糊。 */
+.album-side::before {
+  content: "";
+  position: absolute;
+  inset: -10px -12px -12px -14px;
+  border-radius: var(--panel-glass-radius);
+  background-color: var(--panel-glass-fill);
+  -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  box-shadow: var(--panel-glass-shadow);
+  border: 1px solid var(--panel-glass-edge);
+  pointer-events: none;
+  z-index: -1;
+}
+
 .side-group + .side-group {
   margin-top: 18px;
 }
@@ -2024,7 +2059,7 @@ function onKey(e: KeyboardEvent) {
 }
 
 /* 筛选项：整行可点，选中用左侧 2px 金条 + 文字提亮 ——
-   不用背景块填充：一栏里 15 个带背景的格子会变成“标签云”，读不出层级。 */
+   不用背景块填充：一栏里 15 个带背景的格子会变成"标签云"，读不出层级。 */
 .side-item {
   position: relative;
   display: flex;
@@ -2051,8 +2086,7 @@ function onKey(e: KeyboardEvent) {
   color: var(--c-fg);
   font-weight: var(--fw-em);
   background: var(--hover, rgba(255, 255, 255, 0.045));
-}
-.side-item.on::before {
+}.side-item.on::before {
   content: "";
   position: absolute;
   left: 0;
@@ -2073,7 +2107,9 @@ function onKey(e: KeyboardEvent) {
   font-variant-numeric: tabular-nums;
 }
 .side-item.on .side-n {
-  color: var(--c-accent);
+  /* FEAT-105：金色在玻璃板底上不够（深色底 3.97:1），
+     用玻璃板专用的强调色（深底提亮 / 浅底压暗，方向相反）。 */
+  color: var(--c-accent-bright, var(--c-accent));
 }
 
 /* 右栏内容头部：左计数 + 右操作，同一行

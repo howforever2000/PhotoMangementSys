@@ -32,6 +32,12 @@ export interface StatItem {
   spark?: number[];
   /** 可选的第二行说明（出现在读数下方、sparkline 之上，10px 弱化） */
   note?: string;
+  /**
+   * FEAT-105：环形进度（0~1）。Rainmeter 皮肤里数据面板下挂的就是这种环。
+   * 与 spark 的区别：spark 表示**趋势**（一段时间的序列），
+   * 环表示**占比**（完成度）。两者不可互换。
+   */
+  ring?: number;
 }
 
 withDefaults(
@@ -55,6 +61,15 @@ withDefaults(
       </div>
       <p v-if="it.note" class="u-stat-note">{{ it.note }}</p>
       <Sparkline v-if="it.spark?.length" :data="it.spark" :highlight="it.spark.length - 1" />
+
+      <!-- FEAT-105：环形进度（Rainmeter 皮肤的数据面板标配）。
+           纯 CSS conic-gradient，不用 SVG/图表库。 -->
+      <span
+        v-if="it.ring !== undefined"
+        class="u-stat-ring"
+        :style="{ '--ring-pct': `${Math.round(Math.min(1, Math.max(0, it.ring)) * 100)}%` }"
+        aria-hidden="true"
+      ></span>
     </div>
 
     <!-- 右侧内联区（月度节奏柱阵等）：由使用方塞 slot -->
@@ -65,9 +80,20 @@ withDefaults(
 </template>
 
 <style scoped>
+/* FEAT-105：Rainmeter 皮肤化 —— 每一格读数变成一块**独立玻璃小面板**。
+   参考图里数据区的每一块都是一个小玻璃面板：大数字占主体，
+   标签压在顶部左侧，下面挂一个微型图表，板与板之间留缝露出壁纸。
+
+   为什么数据带是玻璃的最优先位置：
+     它是整页唯一“每块都有数字”的区域，正好对应参考图的仪表盘；
+     而且格子数少（5~6 块），backdrop-filter 的性能代价可接受。
+
+   尺寸：数字 25px → 30px（面板给了更大的视觉预算），
+   标签仍是 9.5px 但提到面板顶部（参考图就是压在顶上的）。 */
 .u-statband {
   display: flex;
   align-items: stretch;
+  gap: 10px;
   padding: 0 var(--sp-8);
 }
 
@@ -76,22 +102,42 @@ withDefaults(
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 7px;
-  padding-right: var(--sp-5);
-  margin-right: var(--sp-5);
+  gap: 6px;
+  min-width: 0;
+  /* FEAT-105：面板给一个**紧凑但有底**的宽度。
+     参考图的仪表块是"窄而高"（一个数 + 一个环），不是"宽而扁"。
+     flex 用 0 1 auto：面板按内容宽度分配，但不超过 200px；
+     剩下的空间用 flex 推到右侧（u-stat-inline 那一列），
+     这样一排数据面板不会拉成一整条。 */
+  flex: 0 1 auto;
+  min-width: 128px;
+  max-width: 200px;
+  padding: 12px 14px 10px;
+  border-radius: var(--panel-glass-radius);
+  /* 玻璃板 */
+  background-color: var(--panel-glass-fill);
+  -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  box-shadow: var(--panel-glass-shadow);
+  border: 1px solid var(--panel-glass-edge);
 }
 
-/* 发丝分隔：绝对定位，不参与布局，不影响各格内容的对齐 */
-.u-stat + .u-stat::before {
+/* 板顶镜面高光：与 .panel-glass 同一道光，但这里更窄（数据格小） */
+.u-stat::before {
   content: "";
   position: absolute;
-  left: calc(var(--sp-5) * -1);
-  top: 50%;
-  transform: translateY(-50%);
-  width: 1px;
-  height: 38px;
-  background: var(--c-rule);
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.13) 0%,
+    rgba(255, 255, 255, 0.035) 20%,
+    rgba(255, 255, 255, 0) 42%
+  );
 }
+
+/* 发丝分隔线删掉：参考图里格与格之间是**缝**（露出壁纸），不是线。 */
 
 .u-stat-label {
   font-size: var(--fs-label);
@@ -113,11 +159,14 @@ withDefaults(
 }
 
 .num {
-  font-size: var(--fs-metric);
+  /* FEAT-105：25px → 30px。参考图里数据面板的��字是整块的视觉主体，
+     25px 在玻璃面板上偏小，30px 才像"仪表读数"。 */
+  font-size: 30px;
   font-weight: var(--fw-em);
   letter-spacing: var(--ls-metric);
   color: var(--c-fg);
   font-variant-numeric: tabular-nums;
+  line-height: 1.05;
 }
 
 .unit {
@@ -135,7 +184,10 @@ withDefaults(
   letter-spacing: 0;
 }
 .delta.up {
-  color: var(--c-accent);
+  /* FEAT-105：玻璃板把底提亮了，金色在亮底上会变淡（3.97:1 → 2.28:1）。
+     正确做法是**反向**处理：深色底上提亮金色，浅色底上压暗金色。
+     用 color-mix 跟着预设走（不改色相，只改明度）。 */
+  color: var(--c-accent-bright, var(--c-accent));
 }
 .delta.mute {
   color: var(--c-fg-2);
@@ -149,6 +201,31 @@ withDefaults(
   font-size: 10px;
   color: var(--c-fg-2);
   letter-spacing: var(--ls-meta);
+}
+
+/* 环形进度：22px 的小圆环，贴在面板右下角。
+   conic-gradient 直接画 —— 不引 SVG 也不用图表库（全项目零图表依赖）。
+   环内留空（只画弧），中心透出玻璃底，与参考图的空心环一致。 */
+.u-stat-ring {
+  position: absolute;
+  right: 11px;
+  bottom: 11px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--c-accent) 0 var(--ring-pct, 0%),
+    color-mix(in srgb, var(--c-fg-3) 26%, transparent) var(--ring-pct, 0%) 100%
+  );
+  /* 挖空成环 */
+  -webkit-mask: radial-gradient(circle, transparent 0 5px, #000 5.5px);
+  mask: radial-gradient(circle, transparent 0 5px, #000 5.5px);
+  pointer-events: none;
+}
+
+/* 面板右侧给环留位：数字 + delta 不能被环压住 */
+.u-stat-value {
+  padding-right: 24px;
 }
 
 .u-stat-inline {
@@ -172,6 +249,7 @@ withDefaults(
   }
   .u-stat {
     flex: 0 0 auto;
+    min-width: 118px;
   }
 }
 </style>

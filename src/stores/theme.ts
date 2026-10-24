@@ -507,10 +507,21 @@ export const useThemeStore = defineStore("theme", () => {
     const bgLum = relLum(effectiveBg.value);
     const cOnDark = bgLum < 0.5; // 背景是深的 → 用浅色文字
     body.style.setProperty("--c-fg", cOnDark ? "#f2f0f4" : "#17161a");
-    body.style.setProperty("--c-fg-2", cOnDark ? "rgba(242,240,244,.58)" : "rgba(23,22,26,.66)");
-    body.style.setProperty("--c-fg-3", cOnDark ? "rgba(242,240,244,.44)" : "rgba(23,22,26,.52)");
+    /* FEAT-105：墙板玻璃把底**提亮**了（白玻璃叠在深底上，板底从 #271d37
+       变成 rgb(76,68,89)）。所以玻璃板上的次级文字需要比页面上的更亮：
+       .58 白在那个底上只有 3.94:1（低于 AA）。
+       这里给玻璃板单独一档更亮的次级色 —— 不是全局改 --c-fg-2，
+       因为页面上的次级文字（不在玻璃上）不需要那么亮。 */
+    body.style.setProperty("--c-fg-2", cOnDark ? "rgba(242,240,244,.68)" : "rgba(23,22,26,.66)");
+    body.style.setProperty("--c-fg-3", cOnDark ? "rgba(242,240,244,.56)" : "rgba(23,22,26,.52)");
     body.style.setProperty("--c-rule", cOnDark ? "rgba(255,255,255,.075)" : "rgba(23,22,26,.085)");
     body.style.setProperty("--c-accent", cOnDark ? "#d4a24a" : "#7d571a");
+    /* FEAT-105：玻璃板专用强调色。
+       玻璃板把底**提亮**了（深色预设：#271d37 → rgb(76,68,89)），
+       原本的 #d4a24a 金在那个底上只有 3.97:1。
+       深色底上要**提亮**金色，浅色底上要**压暗**金色 —— 方向相反，
+       所以不能写成固定值，得按底色明度分两档下发。 */
+    body.style.setProperty("--c-accent-bright", cOnDark ? "#f0bd6a" : "#6b4a12");
     body.style.setProperty("--c-danger", cOnDark ? "#d96a6a" : "#b4453f");
     // 背景上的链接色：body.theme-dark 的 --color-link 恒为浅金（玻璃卡语境），
     // 落在页面背景上的链接需要另一套 —— 浅背景→深金，深背景→浅金
@@ -580,6 +591,24 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--glass-bg", compFill(containerAlpha.value));
     body.style.setProperty("--liquid-bg", compFill(panelAlpha.value));
     body.style.setProperty("--glass-border", tone.border);
+    /* FEAT-105：墙板玻璃的填充。
+       关键认知：**玻璃板不是“组件色的半透明”，而是“白玻璃”**。
+       参考图里每一块板都是浅灰发白、半透明、能透出壁纸 ——
+       这是真玻璃的样子（无色，只折射/散射光）。
+       如果用组件色（深色系）做半透明，得到的是“深色塑料片”：
+       在深色底上糊成一片，壁纸的光完全透不出来。
+
+       所以：填充 = 白 + 极淡的组件色调（保留一点主题色相），
+       alpha 跟着**底色明度**走：底越深，白玻璃越明显（透出壁纸）；底越亮，白玻璃越淡
+       （否则白玻璃 + 白底 = 没有板，只有“脏”）。 */
+    const panelTone = rgbToHex(
+      mixRgb(hexToRgb(compColorTemp.value), [255, 255, 255], 0.86),
+    );
+    const panelAlphaValue = isDark.value ? 0.2 : 0.5;
+    body.style.setProperty(
+      "--panel-glass-fill",
+      `rgba(${hexToRgb(panelTone).map((v) => Math.round(v)).join(",")},${panelAlphaValue})`,
+    );
   }
   watch([compColor, compAlpha, effectiveBg, material], applyCompColor, { immediate: true });
 

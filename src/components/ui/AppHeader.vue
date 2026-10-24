@@ -128,13 +128,21 @@ const username = computed(() => auth.user?.username ?? "");
   gap: 16px;
   height: 56px;
   padding: 0 var(--sp-8);
-  /* 结构层：页面底色 + 底部发丝线；吸顶时内容从下方滚过，实底遮住 */
-  background: var(--c-bg);
-  border-bottom: 1px solid var(--c-rule);
+  /* FEAT-105：顶栏也做成一块**磨砂玻璃板**（Rainmeter 皮肤的顶栏就是一块玻璃）。
+     之前是纯页面底色 + 发丝线，吸顶时内容从下方滚过会糊在一起；
+     玻璃板则能透出下方内容（模糊后），板与页面之间有明确的厚度差。
+     模糊要**克制**（18px）—— 顶栏后面滚过的是正文，糊得看不清就失去了导航的可读性。
+     填充 .30 与墙板一致（同一面墙的材质必须统一）。 */
+  background-color: var(--panel-glass-fill);
+  -webkit-backdrop-filter: blur(18px) saturate(var(--panel-glass-saturate));
+  backdrop-filter: blur(18px) saturate(var(--panel-glass-saturate));
+  box-shadow:
+    inset 0 -1px 0 var(--c-rule),
+    0 6px 18px -12px rgba(0, 0, 0, 0.5);
+  border-bottom: 1px solid var(--panel-glass-edge);
   position: sticky;
   top: 0;
   z-index: var(--z-sticky);
-  backdrop-filter: none;
 }
 
 .mh-compact {

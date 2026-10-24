@@ -486,8 +486,11 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   display: flex;
   flex-direction: column;
   cursor: pointer;
-  /* 悬停只改亮度与描边，不做位移/加阴影：
-     密集网格里任何位移都会让邻格"抖"，而阴影会把裸封面重新变回卡片。 */
+  /* FEAT-105：Rainmeter 皮肤化 —— 瓦片也是一块磨砂玻璃板。
+     但**封面本身不透明**（照片是内容，不能透），所以玻璃效果落在：
+       · 封面下方的图注区（真正的玻璃，能透出壁纸）
+       · 板边缘的亮边与投影（让每块读起来是"浮在壁纸上的一块板"）
+     封面保持不透明是必须的：照片透出壁纸会变成鬼影。 */
   transition:
     filter var(--dur-2) var(--ease-out),
     transform var(--dur-1) var(--ease-out);
@@ -611,6 +614,20 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   gap: 10px;
 }
 
+/* FEAT-105：小瓦片的图注区也做成玻璃（封面下那一条）。
+   参考图里每块面板的下方都有一条独立的磨砂条（标签 + 微型图表）。 */
+.album-tile:not(.tile-mosaic) .tile-cap {
+  margin: 0 -1px -1px;
+  padding: 9px 10px 8px;
+  border-radius: 0 0 var(--r-cover) var(--r-cover);
+  background-color: var(--panel-glass-fill);
+  -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.30);
+}
+
 /* FEAT-105：mosaic 变体（跨格的大瓦片）
    默认 .tile-cover 用 padding-bottom:62.5% 定一个固定宽高比，
    在跨 2×2 的大格子里只会占住上方一块，底下留白 —— 看起来像"图没铺满"。
@@ -636,6 +653,9 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   right: 0;
   bottom: 0;
   padding: 24px 11px 9px;
+  /* 遮罩是**深色**渐变，所以图注文字必须是**浅色**（深色底上白字）。
+     浅色预设下这块板底很亮，深色遮罩 + 深色字会糊成一片 ——
+     所以浅色下改用浅色遮罩 + 深色字。 */
   background: linear-gradient(to top, rgba(0, 0, 0, 0.74), rgba(0, 0, 0, 0));
   pointer-events: none;
 }
@@ -645,6 +665,21 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 }
 .album-tile.tile-mosaic .tile-meta {
   color: rgba(255, 255, 255, 0.84);
+}
+/* 浅色预设：板底亮 → 遮罩与文字都反过来 */
+body:not(.theme-dark) .album-tile.tile-mosaic .tile-cap {
+  background: linear-gradient(to top, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0));
+}
+body:not(.theme-dark) .album-tile.tile-mosaic .tile-name {
+  color: #17161a;
+  text-shadow: none;
+}
+body:not(.theme-dark) .album-tile.tile-mosaic .tile-meta {
+  color: rgba(23, 22, 26, 0.7);
+}
+/* 浅色下封面左下角的时间标签也得反过来（它原本叠在深色遮罩上） */
+body:not(.theme-dark) .album-tile.tile-mosaic .tile-time {
+  display: none;
 }
 /* 大格子里不再显示封面左下角的独立时间标签（时间已在图注里） */
 .album-tile.tile-mosaic .tile-time {

@@ -84,7 +84,42 @@
   --glass-bg: var(--color-surface);    /* 容器填充：由 theme store 按组件色调下发 */
   --glass-border: var(--color-border); /* 玻璃边缘内高光 1px */
   --liquid-bg: var(--color-surface-2); /* 液态控件填充（透明度下限 45%） */
-  /* 液态高光（素化 C2 / M3）：0.45 → 0.20，且衰减段**大幅拉短**——
+
+  /* ══════════════════════════════════════════════════════════════════════
+     FEAT-105：墙板玻璃（Rainmeter 皮肤质感）
+     ──────────────────────────────────────────────────────────────────────
+     目标：一面墙 = 若干块**独立磨砂玻璃板**，板与板之间露出背景壁纸。
+     参考图的玻璃特征（逐条对应到数值）：
+       ① 板能透出背后的壁纸 —— 填充必须**更透明**（不然只是一块灰板）
+       ② 板边缘有一圈亮边 —— 1px 内高光 + 一圈很窄的外发光
+       ③ 板与板之间留缝 —— 靠 grid gap，不靠描边
+
+     为什么单独一套令牌而不改 --glass-*：
+       --glass-* 服务于**浮层**（弹窗/灯箱/搜索胶囊），它们浮在内容之上，
+       需要"看得清内容"优先 —— 填充必须够实（.58 下限）。
+       墙板是**结构**（一屏几十块），要的是"整墙像一张壁纸"——
+       填充更透、模糊更强、亮边更明显。
+       两者诉求相反，混成一套必然一边不满足。
+
+     数值怎么定（不是拍脑袋）：
+       填充 .30 — 比浮层的 .58 透明一截，但保底仍能压住壁纸的细节噪声；
+       模糊 26px — 比浮层的 16px 强，让壁纸变成色块而不是"能看清的图"；
+       饱和 1.25 — 玻璃后的颜色要**更饱和**（液晶屏玻璃的招牌），
+                     浮层用 1.05 是因为浮层里要读字，墙板里没有正文。
+     ══════════════════════════════════════════════════════════════════════ */
+  --panel-glass-fill: var(--panel-glass-fill, transparent);
+  --panel-glass-blur: 26px;
+  --panel-glass-saturate: 1.25;
+  --panel-glass-edge: rgba(255, 255, 255, 0.22);   /* 板缘亮边（深色） */
+  --panel-glass-glow: rgba(255, 255, 255, 0.07);   /* 板外一圈很窄的辉光 */
+  --panel-glass-shadow:
+    /* 上缘镜面：板顶受光 */
+    inset 0 1px 0 rgba(255, 255, 255, 0.30),
+    /* 下缘暗壁：板厚读数 */
+    inset 0 -1px 0 rgba(0, 0, 0, 0.42),
+    /* 悬浮：板浮在壁纸之上 */
+    0 8px 20px -10px rgba(0, 0, 0, 0.55);
+  --panel-glass-radius: 12px;  /* 液态高光（素化 C2 / M3）：0.45 → 0.20，且衰减段**大幅拉短**——
      液态的招牌是「窄而快衰减」的一束反光（40% 处就基本收干净），
      旧值拖到 58% 是一整片糊白，卡面因此发闷发艳。
      M3：这束光是**静态**的 —— 全应用唯一的固定光源方向（左上 135°），不跟鼠标。 */
@@ -315,8 +350,7 @@ body {
      不再写死深色，修复此前 body 永远是 #2c3e50 导致深色模式全局文字隐身的 Bug。 */
   color: var(--color-text);
   background: var(--color-bg);
-  line-height: 1.55;
-  /* 字体渲染三件套：抗锯齿 + 字距/连字/标点优化 + 现代 OpenType 特性。
+  line-height: 1.55;  /* 字体渲染三件套：抗锯齿 + 字距/连字/标点优化 + 现代 OpenType 特性。
      optimizeLegibility 是字体"通透感"提升最关键的一项。 */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -555,6 +589,64 @@ body.mat-liquid .glass-card {
     var(--liquid-highlight);
   background-color: var(--glass-bg);
   background-repeat: no-repeat;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   FEAT-105：墙板玻璃（Rainmeter 皮肤质感）
+   ──────────────────────────────────────────────────────────────────────
+   一面墙 = 若干块**独立磨砂玻璃板**，板与板之间露出背景壁纸。
+   与 .glass-surface（浮层）的区别：这里填充更透、模糊更强、饱和更高，
+   因为墙板是结构（一屏几十块），要的是"整墙像一张壁纸"；
+   浮层里要读字，填充必须够实。两者诉求相反，所以分两套。
+
+   为什么填充用 color-mix 而不是固定 rgba：
+     墙板要透出**当前预设的壁纸**，所以填充色必须跟着主题走；
+     但直接用 --color-surface（不透明组件底）就失去了通透感。
+     这里取组件色调 + 30% 白（提亮色相，与液态材质同法），
+     再以 .30 的 alpha 叠在模糊后的壁纸上 —— 壁纸的颜色能透出来。
+
+   边缘亮边用两层：
+     内层 1px 镜面（box-shadow inset）—— 板顶受光
+     外层 1px 描边（border）—— 板与背景的分界
+   两者缺一不可：只有内层，板会"融"进壁纸；只有外层，板没有厚度。
+   ══════════════════════════════════════════════════════════════════════ */
+.panel-glass {
+  position: relative;
+  border-radius: var(--panel-glass-radius);
+  background-color: var(--panel-glass-fill);
+  -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  box-shadow: var(--panel-glass-shadow);
+  border: 1px solid var(--panel-glass-edge);
+  overflow: hidden;
+}
+
+/* 板顶高光：一道很窄的斜向反光带。
+   为什么用 135°（左上）：玻璃的光源方向是固定的，不跟鼠标 ——
+   跟鼠标的"液态"效果在密集墙板上会变成一片乱闪的噪点。 */
+.panel-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.14) 0%,
+    rgba(255, 255, 255, 0.04) 18%,
+    rgba(255, 255, 255, 0) 38%
+  );
+}
+
+/* 浅色下：板是"白玻璃"—— 填充更白、边缘是暗线而不是亮线。
+   参考图的浅色版（第二张）也是这样：白板 + 深色边框 + 板下投影。 */
+body:not(.theme-dark) {
+  --panel-glass-fill: rgba(255, 255, 255, 0.42);
+  --panel-glass-edge: rgba(23, 22, 26, 0.10);
+  --panel-glass-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -1px 0 rgba(23, 22, 26, 0.10),
+    0 6px 18px -10px rgba(23, 22, 26, 0.28);
 }
 
 /* 全局尊重系统的「减少动态效果」设置。
