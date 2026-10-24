@@ -2857,13 +2857,14 @@ function onKey(e: KeyboardEvent) {
 
 /* ===== FEAT-103：统计带与 tile 网格 ===== */
 
-/* 统计带贴齐页面左右留白。
-   用负 margin 抵消父级 padding，而不是改父级 ——
-   .album-page 的内边距还被搜索栏/时间路线图/分组头共用，
-   单独为数据带改它会让其他区块一起移位。 */
+/* 数据带（FEAT-107）：它自带 padding: 18px var(--gutter) 16px + 下缘发丝线，
+   所以外层只控制上下节奏。
+
+   ⚠️ 这里**不能**写 padding: 0 —— scoped 属性选择器与组件内部规则同特异性，
+   靠声明顺序取胜，写一层 padding: 0 会把组件自己的左右内边距一并抹掉，
+   第一列直接贴在窗口左边缘（实测踩过）。 */
 .album-stats {
-  padding: 0 var(--sp-8);
-  margin: 16px 0 4px;
+  margin: 20px 0 4px;
 }
 
 /* tile 网格：比 card 网格更密（封面不需要内边距，可以排到 216px）。

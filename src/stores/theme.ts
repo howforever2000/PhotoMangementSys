@@ -523,6 +523,25 @@ export const useThemeStore = defineStore("theme", () => {
        所以不能写成固定值，得按底色明度分两档下发。 */
     body.style.setProperty("--c-accent-bright", cOnDark ? "#f0bd6a" : "#6b4a12");
     body.style.setProperty("--c-danger", cOnDark ? "#d96a6a" : "#b4453f");
+
+    /* FEAT-107：无容器阅读层（--fg / --fg-2 / --fg-3 / --rule / --hover / --ctrl-line）
+       这组值是给**直接压在壁纸上的文字**用的（数据带 / 左栏 / 图注 / 组头），
+       与 --c-* 并行存在而不是替代它 —— --c-* 是按“承载面等效底色”标定的，
+       承载面被删掉后那套值的标定基准就不成立了。
+
+       为什么在这里下发而不是写在 tokens.css 的 :root / body:not(.theme-dark)：
+         tokens.css 的两档靠 body 类选，而 body 类只能表达“用户选了哪个模式”；
+         真正决定文字的应该是**背景的实际明度**（深色模式 + 浅色预设会错配）。
+         这里跟 --c-* 用同一个 cOnDark 判据，两套值永远同向。 */
+    body.style.setProperty("--fg", cOnDark ? "#f0eef3" : "#16151a");
+    body.style.setProperty("--fg-2", cOnDark ? "rgba(240,238,243,.60)" : "rgba(22,21,26,.66)");
+    body.style.setProperty("--fg-3", cOnDark ? "rgba(240,238,243,.38)" : "rgba(22,21,26,.44)");
+    body.style.setProperty("--rule", cOnDark ? "rgba(255,255,255,.085)" : "rgba(22,21,26,.10)");
+    body.style.setProperty("--hover", cOnDark ? "rgba(255,255,255,.055)" : "rgba(22,21,26,.05)");
+    body.style.setProperty(
+      "--ctrl-line",
+      cOnDark ? "rgba(255,255,255,.115)" : "rgba(22,21,26,.14)",
+    );
     // 背景上的链接色：body.theme-dark 的 --color-link 恒为浅金（玻璃卡语境），
     // 落在页面背景上的链接需要另一套 —— 浅背景→深金，深背景→浅金
     body.style.setProperty("--color-link-on-bg", sat(onBgDark.value ? "#8a5a12" : "#ffd9a0"));

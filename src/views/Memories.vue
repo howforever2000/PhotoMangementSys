@@ -590,7 +590,8 @@ function goAlbumFromLightbox(albumId: number) {
 
 /* ---- 数据带（FEAT-105：取代原彩虹 Hero 的统计格）----
    FEAT-106：顶栏改成浮起的玻璃板后，数据带与板之间留 16px 空气。 */
-.mem-stats { margin: 16px 0 20px; }
+/* 数据带（FEAT-107）自带 padding + 下缘发丝线，外层只控纵向节奏。 */
+.mem-stats { margin: 0 0 18px; }
 
 
 /* ---- Section 通用 ----

@@ -1,98 +1,134 @@
 <script setup lang="ts">
 /**
- * StatBand —— 仪表数据带（FEAT-106）
+ * StatBand —— 数据带（FEAT-107 重写：从「一排玻璃板」改为「文本列」）
  *
  * ══════════════════════════════════════════════════════════════════════════
- * 它是什么
+ * 为什么又改了一次（FEAT-103 建、FEAT-106 改、本轮再改）
  * ──────────────────────────────────────────────────────────────────────────
- * 页面顶部的一排**仪表小面板**：每块面板里有
- *   · 顶部一行微标签（9.5px 大写）
- *   · 一个大读数（30px）+ 可选单位 / 变化值
- *   · 底部一条**进度条**（不是环）—— 表达"占比 / 完成度"
- * 面板与面板之间留缝，缝里露出壁纸 —— 这是参考图里仪表盘区的读感。
+ * FEAT-106 把它做成一排独立的磨砂玻璃小面板，对应参考图的仪表盘区。
+ * 在真实数据下暴露两个硬问题：
+ *
+ * ① **折行是算术必然，不是意外。**
+ *    `.u-stat { flex: 1 1 0; min-width: 132px }` —— 5 块刚好（132×5+8×4=692），
+ *    但地点页有 9 块：132×9 + 10×8 = 1268px > 内容宽。
+ *    flex 只能换行；换行后每块被 `flex: 1` 拉到**更大的宽度**，
+ *    于是两行的板尺寸不一致 —— 眼睛读成"表格第二行只剩了一格"。
+ *    这不是调 min-width 能解决的：只要项数随数据变化，就没有安全值。
+ *
+ * ② **金色预算被一次用光。**
+ *    tokens.css §2.7 明明写着"强调色只允许出现在当前导航项 / 变化值 / 图表高亮
+ *    三处"，但每块板都挂了一条金色进度条 —— 一屏 9 处强调 = 没有强调。
+ *
+ * 现在的做法：**容器归零**。
+ *   一列 = 标签（9.5px 大写弱色）+ 读数（30px 细字重）+ 注释（10.5px 弱色），
+ *   列与列之间一根 12px 高的发丝竖线，**没有底板、没有亮边、没有投影**。
+ *   宽度按信息量加权（w-1 / w-2），所以任意项数都恒为一行。
  *
  * ══════════════════════════════════════════════════════════════════════════
- * 为什么改掉了环形仪表（FEAT-105 曾经是环）
+ * 为什么读数用字重 340 而不是 560
  * ──────────────────────────────────────────────────────────────────────────
- * 两个理由，第一个是布局，第二个是语义：
+ * 大字号 + 粗字重 = PPT 图表（每一块都在喊"看我"）；
+ * 大字号 + 细字重 = 排印（读数是被"摆"在那里的，不需要喊）。
+ * 一屏里有 5 个读数，全部加粗就等于全部没有重点。
  *
- * ① 布局：环是**绝对定位**在面板右下角的，宽度固定 20px。
- *    当面板里的 delta 文本（如"需要扫描"）换行到第二行、
- *    或者面板被压窄到 128px 以下时，读数就会压到环上 ——
- *    这就是用户截图里"数字和环叠在一起"的成因。
- *    改成**底部进度条**后，仪表有了自己的行（flex 布局里的一块），
- *    不可能再和文字重叠：宁可把面板加高，也不允许叠字。
- *
- * ② 语义：环读的是"完成度"，和 sparkline 读"趋势"本来就是两件事。
- *    但在这个数据带里，所有读数都是**静态快照**（此刻有多少），
- *    没有时间维度 —— 用进度条表达"这一项占总量的多少"更诚实，
- *    而且进度条比环更容易读数（长度 vs 角度）。
+ * ══════════════════════════════════════════════════════════════════════════
+ * 与旧版 props 的关系：**完全兼容**，一个字段都没删
+ * ──────────────────────────────────────────────────────────────────────────
+ * 6 个消费页（AlbumList / Memories / ScanHub / SmartAlbum / Timeline /
+ * LocationGallery）不用改一行。`bars` 与 `progress` 都保留：
+ *   · progress → 底部 2px 占比线（默认弱色，`progressTone:'accent'` 才用金色）
+ *   · bars     → 底部微型柱阵（只建议给"分布"真正有意义的那一列）
+ * 旧的 `delta` 不再跟读数挤同一行，而是移到标签行右侧（见下方 .u-stat-aux）：
+ *   delta 是"标签的解释"，不是"数字的同伴"。
  */
 export interface StatItem {
-  /** 标签（9.5px 大写灰） */
+  /** 标签（9.5px 大写弱色） */
   label: string;
-  /** 主读数（30px） */
+  /** 主读数（30px 细字重） */
   value: string | number;
-  /** 读数后的单位（10.5px，弱化） */
+  /** 读数后的单位（11px 弱色） */
   unit?: string;
-  /** 变化值（如 "+28" / "↓31%"） */
+  /** 变化值 / 补充说明（如 "+28" / "128 / 129"），落在**标签行右侧** */
   delta?: string;
   /** 变化值语气：up = 强调色 / mute = 弱化 / down = 危险色 */
   tone?: "up" | "mute" | "down";
   /** 趋势序列（缺省则不画 sparkline） */
   spark?: number[];
-  /** 可选的第二行说明（出现在读数下方、进度条之上，10px 弱化） */
+  /** 可选的说明行（出现在读数下方，10.5px 弱色） */
   note?: string;
   /**
-   * 进度（0~1）。缺省则不画进度条。
+   * 进度（0~1）。缺省则不画占比线。
    * 与 spark 的区别：spark 表示**趋势**（一段时间的序列），
-   * 进度条表示**占比**（完成度）。两者不可互换。
+   * 占比线表示**占比**（完成度）。两者不可互换。
    */
   progress?: number;
-  /** 进度条颜色语义：accent = 强调色 / muted = 弱化（默认） */
-  progressTone?: "accent" | "muted";
   /**
-   * FEAT-106：面板底部的迷你柱阵。
-   *
-   * 为什么需要它：数据带的面板高 96px，而“标签 + 数字 + 进度条”只占 ~70px，
-   * 剩下 26px 是空的 —— 面板读起来像一个装着大数字的空盒子。
-   * 参考图里每块仪表面板的底部都有一条微型数据带（柱阵 / 环），
-   * 那不是装饰，它填满了面板并给出“这一项有波动”的暗示。
-   *
-   * 数据来源由使用方提供（各页自己算），组件只负责画形状。
+   * 占比线颜色语义：`muted`（默认，弱色）/ `accent`（强调色）。
+   * ⚠️ 一屏只应有一处 `accent` —— 这是金色预算的落地点。
    */
+  progressTone?: "accent" | "muted";
+  /** 面板底部的迷你柱阵（建议只给"分布"真正有意义的那一列） */
   bars?: number[];
 }
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     items: StatItem[];
-    /** 带区高度（默认 96，与设计稿一致） */
+    /**
+     * 带区最小高度（默认 96）。保留是为了兼容旧调用方；
+     * 新版只把它当作 `min-height` —— 内容更多时由内容撑开，不裁剪。
+     */
     height?: number;
   }>(),
   { height: 96 },
 );
+
+/**
+ * 一列占多少横向预算。
+ *
+ * 为什么不是等分：读数长度天然不等（"129" vs "25078"），
+ * 等分会让短读数两边空出一大片、长读数几乎贴线。
+ * 这里按「数字位数 + 是否有注释」给一个粗档：
+ *   · 有 bars / 有较长 note / 数字 ≥5 位 → 1.5 档
+ *   · 其余 → 1 档
+ * 刻意只做两档：三档以上就开始像"按内容排版"，反而不整齐。
+ */
+function widthClass(it: StatItem): string {
+  const len = String(it.value).length;
+  const heavy = (it.bars?.length ?? 0) > 0 || len >= 5;
+  return heavy ? "w-2" : "w-1";
+}
+
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 </script>
 
 <template>
-  <div class="u-statband" :style="{ minHeight: `${height}px` }">
-    <div v-for="(it, i) in items" :key="it.label + i" class="u-stat">
-      <span class="u-stat-label">{{ it.label }}</span>
+  <div class="u-statband" :style="{ minHeight: `${props.height}px` }">
+    <div
+      v-for="(it, i) in items"
+      :key="it.label + i"
+      class="u-stat"
+      :class="widthClass(it)"
+    >
+      <!-- 标签行：标签 + delta（delta 靠右，是标签的解释而不是数字的同伴） -->
+      <div class="u-stat-head">
+        <span class="u-stat-label">{{ it.label }}</span>
+        <span
+          v-if="it.delta"
+          class="u-stat-aux"
+          :class="[it.tone ?? 'up', { dim: !it.tone || it.tone === 'mute' }]"
+        >{{ it.delta }}</span>
+      </div>
 
-      <!-- 读数行：数字 + 单位 + 变化值。
-           flex-wrap 允许变化值换行到下一行，而不是被压缩成竖排单字；
-           因为下方有进度条独立占行，读数换行也不会撞到任何东西。 -->
+      <!-- 读数行：只有数字 + 单位，不再塞 delta -->
       <div class="u-stat-value">
         <span class="num">{{ it.value }}</span>
         <span v-if="it.unit" class="unit">{{ it.unit }}</span>
-        <span v-if="it.delta" class="delta" :class="it.tone ?? 'up'">{{ it.delta }}</span>
       </div>
 
       <p v-if="it.note" class="u-stat-note">{{ it.note }}</p>
 
-      <!-- 微型柱阵：占据面板底部，把剩下的竖向空间填满。
-           与 sparkline 的区别：sparkline 是独立一行的趋势图；
-           这里的柱阵是面板的**底饰**（短、高、密），读作仪表的一部分。 -->
+      <!-- 微型柱阵：只占据「没有占比线也没有注释」时的底部空间 -->
       <span v-if="it.bars?.length" class="u-stat-bars" aria-hidden="true">
         <i
           v-for="(h, bi) in it.bars"
@@ -102,15 +138,14 @@ withDefaults(
         ></i>
       </span>
 
-      <!-- 进度条：占据面板底部一整行（不是绝对定位），因此永不与文字重叠。
-           轨道用 --c-gauge-track（纯图形色），填充用强调色。 -->
+      <!-- 占比线：2px，长度即真实比例。默认弱色 —— 金色留给 progressTone:'accent' -->
       <span
         v-if="it.progress !== undefined"
-        class="u-stat-gauge"
-        :class="it.progressTone ?? 'accent'"
-        :style="{ '--pct': `${Math.round(Math.min(1, Math.max(0, it.progress)) * 100)}%` }"
+        class="u-stat-line"
+        :class="it.progressTone === 'accent' ? 'hot' : ''"
+        :style="{ '--pct': `${Math.round(clamp01(it.progress) * 100)}%` }"
         role="img"
-        :aria-label="`${it.label} 完成度 ${Math.round(Math.min(1, Math.max(0, it.progress)) * 100)}%`"
+        :aria-label="`${it.label} 占比 ${Math.round(clamp01(it.progress) * 100)}%`"
       >
         <i></i>
       </span>
@@ -125,170 +160,167 @@ withDefaults(
 
 <style scoped>
 /* ══════════════════════════════════════════════════════════════════════════
-   数据带 = 一排独立的磨砂玻璃小面板
+   数据带 = 一排文本列（无容器）
    ──────────────────────────────────────────────────────────────────────────
-   与参考图的对应关系：
-     · 参考图里仪表区的每一格都是一块小面板，格与格之间是**缝**（露出壁纸）；
-     · 面板顶部压着微标签，下方是大数字，最底下挂一个微型仪表；
-     · 数字是整块面板的视觉主体（30px），标签只做定位。
-   为什么是玻璃而不是纸片：数据带是每页**唯一**"每块都有数字"的区域，
-   正好对应参考图的仪表盘区；格子数少（5~6 块），backdrop-filter 的代价可接受。
+   读成一件事的顺序：**标签（这列是什么）→ 读数（多少）→ 注释（补充）**。
+   三行同基线，横向一眼扫完。
+
+   为什么发丝线只画在「列与列之间」而不是「每列都有」：
+   每列都画框就是表格；只有间隙才是"分组"。第一列左侧刻意不画线 ——
+   它贴着内容左边缘，画了会多出一条与页面留白平行的线。
    ══════════════════════════════════════════════════════════════════════════ */
 .u-statband {
   display: flex;
   align-items: stretch;
-  gap: 10px;
-  padding: 0 var(--sp-8);
+  /* 左右留白与页面同一套（--gutter）。旧版用 --sp-8(52px)，
+     比页面其他元素宽 4px，长屏下能看出一条错位。 */
+  padding: 18px var(--gutter) 16px;
+  border-bottom: 1px solid var(--rule);
 }
 
 .u-stat {
-  position: relative;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 7px;
+  gap: 3px;
   min-width: 0;
-  /* 面板按**等分**铺满整行（参考图里仪表区的那排面板就是占满宽度的）。
-     旧版是 flex: 0 1 auto + max-width 210 —— 5 块面板只占到 1050px，
-     右侧留下一条空白，读起来像"表格只写了一半"。
-     现在 flex: 1 1 0 让它们平分可用宽度，max-width 只防极端宽屏下单独一块被拉得太长。 */
-  flex: 1 1 0;
-  min-width: 132px;
-  max-width: 320px;
-  padding: 13px 15px 14px;
-  border-radius: var(--panel-glass-radius);
-  background-color: var(--panel-glass-fill);
-  -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
-  backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
-  box-shadow: var(--panel-glass-shadow);
-  border: 1px solid var(--panel-glass-edge);
 }
+.u-stat.w-1 { flex: 1 1 0; }
+.u-stat.w-2 { flex: 1.5 1 0; }
 
-/* 板顶镜面高光：与 .panel-glass 同一道光，但这里更窄（数据格小） */
-.u-stat::before {
+/* 列间隙 = 26px 空白 + 1px 发丝线。线只在列的左边缘，所以只给非首列 */
+.u-stat + .u-stat {
+  position: relative;
+  padding-left: 26px;
+  margin-left: 26px;
+}
+.u-stat + .u-stat::before {
   content: "";
   position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.13) 0%,
-    rgba(255, 255, 255, 0.035) 20%,
-    rgba(255, 255, 255, 0) 42%
-  );
+  left: 0;
+  top: 3px;
+  bottom: 3px;
+  width: 1px;
+  background: var(--rule);
 }
 
-/* 微标签：压在面板顶部，是"这个数字是什么"的唯一标识 —— 要读，所以用 fg-2 */
+/* 标签行：标签在左、delta 靠右，同一基线 */
+.u-stat-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 微标签：9.5px 大写 + .15em 字距 —— 与左栏分组头、组头读数**同一套字阶**。
+   三处用同一档字，是"整页对齐"的隐性来源。 */
 .u-stat-label {
-  font-size: var(--fs-label);
-  letter-spacing: var(--ls-label);
+  font-size: 9.5px;
+  letter-spacing: 0.15em;
   text-transform: uppercase;
-  color: var(--c-fg-2);
-  font-weight: var(--fw-strong);
+  font-weight: 600;
+  color: var(--fg-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/* delta：标签的解释，落在标签行右侧。默认弱色，只有 up/down 才上色 */
+.u-stat-aux {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+.u-stat-aux.dim { color: var(--fg-3); }
+.u-stat-aux.up {
+  color: var(--c-accent-bright, var(--c-accent));
+  font-weight: 600;
+}
+.u-stat-aux.down { color: var(--c-danger); }
+
 .u-stat-value {
   display: flex;
   align-items: baseline;
-  gap: 7px;
+  gap: 5px;
   line-height: 1;
-  /* 变化值过长时换行到下一行，而不是把数字挤扁 */
-  flex-wrap: wrap;
 }
 
 .num {
-  /* 30px：参考图里数据面板的数字是整块的视觉主体，
-     25px 在玻璃面板上偏小，30px 才像"仪表读数"。 */
+  /* 30px / 字重 340：大字号 + 细字重才是排印（见文件头说明）。
+     tabular-nums 保证多列之间数字宽度一致，小数点能竖着对齐。 */
   font-size: 30px;
-  font-weight: var(--fw-em);
-  letter-spacing: var(--ls-metric);
-  color: var(--c-fg);
+  font-weight: 340;
+  letter-spacing: -0.7px;
+  color: var(--fg);
   font-variant-numeric: tabular-nums;
-  line-height: 1.05;
+  line-height: 1.04;
 }
 
 .unit {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 500;
-  /* 单位的含义虽已由前面的数字 + 标签给出，但 10.5px 的弱化文字
-     在浅底上接近"看不见"，而它占的横向空间几乎为零 —— 提到 fg-2 不损失密度。 */
-  color: var(--c-fg-2);
-}
-
-.delta {
-  font-size: 10px;
-  font-weight: var(--fw-strong);
-  letter-spacing: 0;
-}
-.delta.up {
-  /* 玻璃板把底提亮了，金色在亮底上会变淡。
-     用 --c-accent-bright（深底提亮 / 浅底压暗，方向相反）。 */
-  color: var(--c-accent-bright, var(--c-accent));
-}
-.delta.mute {
-  color: var(--c-fg-2);
-}
-.delta.down {
-  color: var(--c-danger);
+  color: var(--fg-3);
 }
 
 .u-stat-note {
   margin: 0;
-  font-size: 10px;
-  color: var(--c-fg-2);
-  letter-spacing: var(--ls-meta);
+  font-size: 10.5px;
+  color: var(--fg-3);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* ── 微型柱阵（面板底饰）──────────────────────────────────────────────
-   短、高、密：读作仪表的一部分，而不是一条独立趋势图。
-   最后一根用强调色（“最新”），其余用弱化色 —— 与全站的 sparkline 语言一致。 */
+/* ── 微型柱阵（底部）────────────────────────────────────────────────────
+   短、高、密：读作这段文字的收尾，而不是一条独立趋势图。
+   最后一根用强调色（"最新"），其余用发丝线色 —— 与全站 sparkline 同语言。 */
 .u-stat-bars {
   display: flex;
   align-items: flex-end;
   gap: 2px;
   height: 20px;
   margin-top: auto;
+  padding-top: 6px;
 }
 .u-stat-bars i {
   display: block;
   flex: 1 1 0;
   min-width: 2px;
   border-radius: 1px 1px 0 0;
-  background: var(--c-gauge-track);
+  background: var(--fg-3);
+  opacity: 0.5;
 }
 .u-stat-bars i.on {
   background: var(--c-accent);
+  opacity: 1;
 }
 
-/* ── 进度条（FEAT-106 取代环形仪表）────────────────────────────────────
-   独占面板底部一整行，因此在流里不可能与读数重叠 ——
-   这正是用户截图里"数字压在环上"的那个问题的根治办法：
-   不是靠调 z-index 或加间距，而是**根本不让它们共处一行**。 */
-.u-stat-gauge {
+/* ── 占比线（2px）──────────────────────────────────────────────────────
+   ⚠️ 默认**不用金色**：只要有一条满格金线，同排其余四列就全部变成
+   "没被选中的"。金色只给 progressTone:'accent' —— 即调用方明确
+   指出的那一个"这一项是重点"。 */
+.u-stat-line {
   display: block;
-  height: 3px;
-  margin-top: 6px;
+  margin-top: 4px;
+  height: 2px;
   border-radius: 2px;
-  background: var(--c-gauge-track);
+  background: var(--rule);
+  position: relative;
   overflow: hidden;
 }
-.u-stat-gauge i {
-  display: block;
-  height: 100%;
+.u-stat-line i {
+  position: absolute;
+  inset: 0 auto 0 0;
   width: var(--pct, 0%);
   border-radius: 2px;
-  background: var(--c-accent);
+  background: var(--fg-3);
   transition: width var(--dur-3) var(--ease-out);
 }
-.u-stat-gauge.muted i {
-  /* 弱化进度：用前景色的低透明档而不是 --c-fg-2。
-     --c-fg-2 是**文字**色（浅色下是深灰 0.66），直接画 3px 粗线在浅底上
-     会显得像一条黑线；color-mix 到 42% 才是"仪表轨道"该有的强度。 */
-  background: color-mix(in srgb, var(--c-fg) 42%, transparent);
+.u-stat-line.hot i {
+  background: linear-gradient(90deg, rgba(212, 162, 74, 0.5), var(--c-accent));
 }
 
 .u-stat-inline {
@@ -298,21 +330,28 @@ withDefaults(
   padding-bottom: 2px;
 }
 
-/* 窄窗：数据带允许横向滚动而不是换行挤压。
-   为什么不换行：换行后分隔竖线会落在"行首"，读起来像新分组，语义错。
-   也不隐藏：统计信息是这一页的核心内容，隐藏等于删除。 */
-@media (max-width: 900px) {
+/* 窄窗：允许横向滚动，**绝不换行**。
+   为什么不换行：换行后发丝竖线会落在"行首"，读起来像新分组，语义错；
+   而且第二行的列会被拉到更宽，两行尺寸不一致（这正是旧版的问题）。
+   也不隐藏：统计是这一屏的核心内容，隐藏等于删除。 */
+@media (max-width: 980px) {
   .u-statband {
     overflow-x: auto;
-    padding: 0 var(--sp-5);
+    padding: 16px var(--sp-5) 14px;
     scrollbar-width: none;
+    /* 滚动到底时最后一条线不该贴边消失，留一点余量 */
+    scroll-padding-right: var(--sp-5);
   }
   .u-statband::-webkit-scrollbar {
     display: none;
   }
   .u-stat {
     flex: 0 0 auto;
-    min-width: 122px;
+    min-width: 118px;
+  }
+  .u-stat.w-2 { min-width: 150px; }
+  .num {
+    font-size: 26px;
   }
 }
 </style>

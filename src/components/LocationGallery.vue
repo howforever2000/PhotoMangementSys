@@ -554,11 +554,11 @@ onMounted(load);
 
 /* ===== FEAT-103：地点页新骨架（数据带 + 视图切换 + 地图） ===== */
 
-/* 统计带：贴齐页面左右留白（--sp-8），但负 margin 抵消父级 padding。
-   这里不用 .lg-wrap 直接改 padding —— 它被 CategoryGallery 等其他视图复用同构样式，
-   改父级会连带影响它们。 */
+/* 数据带（FEAT-107）：它自带 padding: 18px var(--gutter) 16px + 下缘发丝线。
+   父级 .lg-wrap 不再给左右 padding（否则会双倍），
+   所以这里只用负 margin 抵消外层已经给的那份。 */
 .lg-stats {
-  margin: 0 calc(var(--sp-8) * -1) 4px;
+  margin: 0 calc(var(--gutter) * -1) 4px;
 }
 
 .lg-viewbar {

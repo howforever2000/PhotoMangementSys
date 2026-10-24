@@ -203,11 +203,10 @@ function syncTabQuery(key: string) {
   padding-bottom: 48px;
 }
 
-/* 数据带紧贴二级 tab 下方，与页头留 14px：
-   数据带和 tab 是"同一条信息轴"（先看在哪，再看有多少，再看哪块），
-   贴得近才读得成一件事。 */
+/* 数据带（FEAT-107）：自带 padding 与下缘发丝线，与页头留 12px。
+   数据带和 tab 是"同一条信息轴"（先看在哪，再看有多少，再看哪块）。 */
 .smart-stats {
-  margin: 16px 0 18px;
+  margin: 12px 0 16px;
 }
 
 /* 内容区左右留白与页头/数据带对齐（--sp-8 = 52px）。

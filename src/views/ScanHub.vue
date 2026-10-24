@@ -209,7 +209,8 @@ onMounted(async () => {
 }
 
 /* 数据带：与顶栏保持 16px（板底缘与内容之间要留空气，否则读不出板的厚度） */
-.scan-stats { margin: 16px 0 18px; }
+/* 数据带（FEAT-107）自带 padding + 下缘发丝线，外层只控纵向节奏。 */
+.scan-stats { margin: 0 0 16px; }
 
 /* 内容区左右留白与页头/数据带对齐（--sp-8 = 52px） */
 .scan-active-area { padding: 0 var(--sp-8); }

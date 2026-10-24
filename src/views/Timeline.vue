@@ -800,13 +800,13 @@ function goAlbumFromLightbox(albumId: number) {
 }
 </style>
 
-/* ===== FEAT-103：统计数据带 + 年组统计 ===== */
+/* ===== FEAT-107：统计数据带（自带 padding + 下缘发丝线）===== */
 .tl-stats {
-  margin: 0 0 18px;
-  /* 数据带自带 --sp-8 左右内边距；时间线容器已给了页面留白，
+  margin: 0 0 16px;
+  /* 数据带自带 var(--gutter) 左右内边距；时间线容器已给了页面留白，
      这里用负 margin 抵消，让数据带的左侧文字与年份标题左对齐。 */
-  margin-left: calc(var(--sp-8) * -1);
-  margin-right: calc(var(--sp-8) * -1);
+  margin-left: calc(var(--gutter) * -1);
+  margin-right: calc(var(--gutter) * -1);
 }
 
 /* 年组统计：跟在"X 张"后面，与标题同基线但不抢视觉重量。
