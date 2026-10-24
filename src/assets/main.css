@@ -37,15 +37,11 @@
   --color-danger-text: #c92a2a;
   --color-warn-text: #b45309;
 
-  /* 糖果彩虹色板（FEAT-087）：hero 横幅 / 入口卡 / 回忆故事卡的渐变基色，
-     六个取用户色卡。组件（含 script 里拼的渐变串）统一引用这几个令牌，
-     由 theme store 的饱和度管线一起下发浓淡；此处为兜底基值。 */
-  --candy-cream: #fffcbd;
-  --candy-pink: #f075c7;
-  --candy-blue: #65d5f9;
-  --candy-rose: #fb6d9b;
-  --candy-indigo: #505fdd;
-  --candy-violet: #3a36e4;
+  /* FEAT-105：糖果彩虹色板（--candy-*）已删除。
+     它只服务 hero 横幅 / 入口卡 / 回忆故事卡的渐变底，那三处均已改为
+     模块页头 + 数据带 + 裸照片卡，没有任何 --candy-* 消费者了。
+     主题 store 仍会下发同名变量（theme.ts），但不再被引用；
+     下一轮清理可直接从 theme.ts 里一并移除。 */
 
   /* 文字色阶 —— 浅色模式
      整体加深一档，确保小字号（11–12px）在白底上也能达到 WCAG AA。
@@ -110,7 +106,8 @@
     0 1px 2px rgba(0, 0, 0, 0.08),
     0 20px 44px -16px rgba(0, 0, 0, 0.4);
 
-  /* 粗颗粒：低频率噪声 = 更大颗粒。现在只由糖果釉面（.candy-surface）消费，
+  /* 粗颗粒：低频率噪声 = 更大颗粒。现在由 .glass-surface / .glass-card 消费
+     （原来糖果釉面的那份消费方已随 FEAT-105 删除）。
      给彩虹横幅一层糖霜纸感；普通卡片不再叠噪点。 */
   --grain-coarse: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.45' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.28'/%3E%3C/svg%3E");
   /* 文字令牌（单一事实来源仍是 --color-text*，这里只做方案命名收口） */
@@ -240,20 +237,19 @@ body.mat-liquid {
   box-shadow: var(--shadow-1);
 }
 /* cardStyle 的内联描边已上收到这里：内联 border-color 会盖掉悬停态换色。
-   只给 .glass-card：glass-surface 家族多数组件自带描边（auth/scan/candy 等）。 */
+   只给 .glass-card：glass-surface 家族多数组件自带描边（auth/scan 等）。 */
 .glass-card {
   border: 1px solid var(--glass-border);
 }
 
-/* —— 普通卡片：关闭 backdrop-filter，去掉玻璃棱环/材质纹理（糖果横幅除外）——
-   .candy-surface 的彩虹 hero 仍是独立强调层，保留自身颗粒与棱线。 */
+/* —— 普通卡片：关闭 backdrop-filter，去掉玻璃棱环/材质纹理 —— */
 body.mat-plain .glass-surface,
 body.mat-plain .glass-card {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-body.mat-plain .glass-surface:not(.candy-surface)::before,
-body.mat-plain .glass-surface:not(.candy-surface)::after,
+body.mat-plain .glass-surface::before,
+body.mat-plain .glass-surface::after,
 body.mat-plain .glass-card::before,
 body.mat-plain .glass-card::after {
   display: none;
@@ -279,79 +275,16 @@ body.mat-plain .glass-card::after {
      没有百分比陷阱，也不占额外图层（液态比 M2 少一层合成）。 */
 
 /* ==========================================================================
-   糖果釉面（彩虹 hero / 入口卡 / 故事卡共享材质层）
-   渐变底色仍由各组件内联 background 提供，这里只叠两层：
-   ① soft-light 噪点颗粒 + 纵向明暗 —— 纸感颗粒，破「平涂渐变」的塑料感；
-   ② 顶部镜面高光带 + 四边方向棱线 —— 糖果表面那道受光反射。
-   组件模板加 .candy-surface 类即可，渐变色值不动。
+   FEAT-105：糖果釉面（.candy-surface）已整块删除。
+   它曾给三处彩虹渐变容器（智慧相册 hero / 扫描 hero / 回忆故事卡）叠颗粒与棱环。
+   这三处的渐变底本身已被换成"模块页头 + 数据带 + 裸照片卡"，没有消费者了；
+   留着死样式会让后来者以为还有对象在用。--candy-* 六个色值一并删除。
    ========================================================================== */
-.candy-surface {
-  position: relative;
-}
-.candy-surface::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  /* 糖果卡沿用粗颗粒：糖霜砂感，与全应用颗粒尺度一致 */
-  background-image: var(--grain-coarse),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(0, 0, 0, 0.08));
-  background-size: 160px 160px, 100% 100%;
-  mix-blend-mode: soft-light;
-  opacity: 0.8;
-}
-/* —— 玻璃边缘：双色调渐变棱环（厚度感 + 双向光泽）——
-   两层背景沿 1.5px 棱环分布：
-   ① 180°：顶部白色镜面高光 → 中段收暗 → 底部暗色玻璃壁（浅色背景下「厚度」靠暗壁读出）；
-   ② 135°：左上/右下两角的额外角部反光（玻璃棱边对光源/环境的反射）。
-   素化 C3：顶部白 0.9 → 0.5、底部暗壁 0.26 → 0.34。**厚度改由暗壁读出**——
-   1.5px 上刷到 0.9 的纯白描边是「贴纸边缘」（贴纸的白边是硬的、均匀的），
-   而真实玻璃的厚度来自「上缘受光 / 下缘透出背后暗色」这一对色差。
-   白棱压到 0.5、暗壁加深，卡面立刻从贴纸变回玻璃。
-   mask-composite 只保留边缘 1.5px，内部零遮挡；随 border-radius 自适应。
-   三类容器共享：.glass-surface / .glass-card / .candy-surface（彩虹卡） */
-.glass-surface::after,
-.glass-card::after,
-.candy-surface::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1px; /* 环宽 = 玻璃厚度（FEAT-103：1.5px → 1px）
-                  1.5px 的纯白描边在深色底上就是「贴纸边」——贴纸的白边是硬的、均匀的、
-                  且永远一样宽；而真实玻璃的边是「上缘受一点光、下缘透出背后暗色」的色差。
-                  收窄到 1px 后再把上/下光的差值拉开，才读得出「一层薄玻璃」。 */
-  background:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.5) 0%,
-      rgba(255, 255, 255, 0.16) 20%,
-      rgba(255, 255, 255, 0) 44%,
-      rgba(0, 0, 0, 0) 56%,
-      rgba(12, 22, 20, 0.34) 100%
-    ),
-    linear-gradient(
-      135deg,
-      rgba(255, 255, 255, 0.26) 0%,
-      rgba(255, 255, 255, 0) 30%,
-      rgba(255, 255, 255, 0) 68%,
-      rgba(255, 255, 255, 0.28) 100%
-    );
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  mask-composite: exclude;
-  pointer-events: none;
-}
 
 /* —— 液态的棱环只认一个光源方向（M3 补充）——
    共享棱环的第二层是 135° 双角反光：左上与**右下**各一条 0.26/0.28 的白。
-   普通卡片无感，但液态卡片的右下角额外要承担「厚壁 + 焦散」，
-   那条右下白光把焦散抹成了一圈均匀白边（“贴纸”感的最后一块拼图）。
-   这里只换掉背景：单一 160° 渐变 —— 左上受光 → 中段收干 → 右下背光变暗，
    底缘保持暗壁，于是「亮在上、暗在下」这条光路才真正闭住。 */
-body.mat-liquid .glass-surface:not(.candy-surface)::after,
+body.mat-liquid .glass-surface::after,
 body.mat-liquid .glass-card::after {
   background: linear-gradient(
     160deg,

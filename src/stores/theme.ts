@@ -581,15 +581,10 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--color-ok-text", sat(isDark.value ? "#6ed27a" : "#2f9e44"));
     body.style.setProperty("--color-danger-text", sat(isDark.value ? "#f87171" : "#c92a2a"));
     body.style.setProperty("--color-warn-text", sat(isDark.value ? "#f59e0b" : "#b45309"));
-    /* 糖果彩虹色板：hero 横幅 / 入口卡 / 回忆故事卡的渐变基色。
-       这些渐变串在 <script> 里拼装（内联 :style），所以必须注册成令牌才能被
-       饱和度 + 色温统一带动（否则滑块只影响按钮/背景，糖果卡原地不动）。 */
-    body.style.setProperty("--candy-cream", temp("#fffcbd"));
-    body.style.setProperty("--candy-pink", temp("#f075c7"));
-    body.style.setProperty("--candy-blue", temp("#65d5f9"));
-    body.style.setProperty("--candy-rose", temp("#fb6d9b"));
-    body.style.setProperty("--candy-indigo", temp("#505fdd"));
-    body.style.setProperty("--candy-violet", temp("#3a36e4"));
+    /* FEAT-105：糖果彩虹色板（--candy-*）六个令牌已不再下发 ——
+       唯一消费者是 hero 横幅 / 入口卡 / 回忆故事卡的渐变底，那三处已改成
+       模块页头 + 数据带 + 裸照片卡。主题滑块从此只影响还在用的色族，
+       不会再推一批没人读的变量（每帧 6 次 setProperty）。 */
     /* 玻璃卡语境的链接色（Q5=A 的 Bug 修复）：**按玻璃等效底色现算**，不再用 isDark 二分。
        旧写法给一个固定深金（LINK_LIGHT #8a5a12），但链接实际落在玻璃上 —— 浅玻璃 +
        恒定 dark mode 正好是最差组合，实测 5 套预设只有 2.20~2.64:1（AA 需 4.5:1），

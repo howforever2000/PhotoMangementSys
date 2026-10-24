@@ -10,6 +10,7 @@ import type { SmartHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import { getThumbs } from "../utils/thumbQueue";
 import AppHeader from "../components/ui/AppHeader.vue";
+import ModuleTabs, { type ModuleTab } from "../components/ui/ModuleTabs.vue";
 
 /**
  * 智能搜索（FEAT-034）—— 半自然语言 + 多维筛选
@@ -32,6 +33,16 @@ import AppHeader from "../components/ui/AppHeader.vue";
 const router = useRouter();
 const theme = useThemeStore();
 const notify = useNotify();
+
+/** 二级导航：智能搜索属于智慧相册模块，与人物/时间线/回忆同级 */
+const moduleTabs: ModuleTab[] = [
+  { label: "人物", to: "/smart" },
+  { label: "内容分类", to: "/smart?tab=category" },
+  { label: "地点", to: "/smart?tab=location" },
+  { label: "回忆", to: "/memories" },
+  { label: "时间线", to: "/timeline" },
+  { label: "智能搜索", to: "/search" },
+];
 
 const keyword = ref("");
 const searching = ref(false);
@@ -397,7 +408,8 @@ function showTag(r: SmartHit): string {
 
 <template>
   <div class="ss-page" :style="{ color: theme.textColor }">
-    <AppHeader title="智能搜索" />
+    <AppHeader title="智能搜索" icon="🔎" />
+    <ModuleTabs :tabs="moduleTabs" />
     <header class="ss-header">
       <h1 class="ss-title">🔎 智能搜索</h1>
       <p class="ss-subtitle">自然语言 + 多维筛选，跨相册检索照片（AI 扫描入库）</p>

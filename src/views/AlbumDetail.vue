@@ -153,8 +153,9 @@ const vaultDenied = computed(
 
 <template>
   <div class="detail-page" :style="detailVars">
-    <!-- FEAT-103：全站统一顶栏（取代本页的「← 返回 / 🏠 主页」两个按钮） -->
-    <AppHeader title="相册" />
+    <!-- FEAT-105：相册详情属于相册管理模块。模块页头 + 面包屑（三级）：
+         相册管理 › 当前相册。面包屑就是这一级的导航，不再另加 tab。 -->
+    <AppHeader title="相册管理" icon="📁" :meta="store.currentAlbum?.name || ''" />
     <!-- 顶部导航栏 -->
     <nav class="detail-nav">
       <div class="nav-left">

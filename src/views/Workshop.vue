@@ -66,6 +66,11 @@ const widgets = [
 /** 当前打开的小组件 id（null = 仅卡片列表；带照片进来时直接进编辑器） */
 const activeWidget = ref<string | null>(initialPhoto ? "studio" : null);
 
+/** 页头读数：在工坊首页说"有几个小组件"，进去后说"在哪个小组件" */
+const activeWidgetTitle = computed(
+  () => widgets.find((w) => w.id === activeWidget.value)?.title ?? "",
+);
+
 function openWidget(w: (typeof widgets)[number]) {
   if (!w.ready) return;
   activeWidget.value = w.id;
@@ -96,7 +101,7 @@ onMounted(() => {
 
 <template>
   <div class="workshop-page" :class="{ 'wide-mode': activeWidget === 'studio' }">
-    <AppHeader title="创意工坊" />
+    <AppHeader title="创意工坊" icon="🎨" :meta="activeWidget ? activeWidgetTitle : `${widgets.length} 个小组件`" />
     <div class="workshop-content">
       <header class="workshop-header">
         <div class="header-text">

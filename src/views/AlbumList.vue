@@ -893,6 +893,17 @@ const statItems = computed<StatItem[]>(() => {
   ];
 });
 
+/** 页头读数：一行说清这页装了多少（取代旧工具栏里的"我的相册"大标题） */
+const headerMeta = computed(() => {
+  const n = normalAlbums.value.length;
+  const v = virtualAlbums.value.length;
+  return v ? `${n} 个相册 · ${v} 个系统相册` : `${n} 个相册`;
+});
+
+/* 本模块不加二级 tab：相册管理只有一块内容（时间分组 + 系统相册区块），
+   没有"可以切过去的另一块"。链一个指向 /scan/test 的 tab 更是错的 ——
+   那是扫描入库模块的东西。二级 tab 只在真有同级功能时才加。 */
+
 /** 是否折叠某分组 */
 function isCollapsed(key: string): boolean {
   return collapsed.value.has(key);
@@ -1176,14 +1187,12 @@ function onKey(e: KeyboardEvent) {
       '--danger-bg': theme.onBgDark ? 'color-mix(in srgb, var(--color-danger) 12%, transparent)' : 'color-mix(in srgb, var(--color-danger) 15%, transparent)',
     }"
   >
-    <!-- FEAT-103：全站统一顶栏（取代页面自制的「← 主页」） -->
-    <AppHeader title="相册" />
+    <AppHeader title="相册管理" icon="📁" :meta="headerMeta" />
 
-    <!-- 顶部工具栏（需求 §5.3） -->
+    <!-- 顶部工具栏（需求 §5.3）。FEAT-105：去掉重复的「我的相册」标题 ——
+         模块名已由页头承担，这里再写一遍就是同一个 h1 出现两次。 -->
     <header class="toolbar">
-      <div class="toolbar-left">
-        <h1 class="page-title">我的相册</h1>
-      </div>
+      <div class="toolbar-left"></div>
       <div class="toolbar-actions">
         <!-- 非勾选模式：排序控件 + 批量导入 / 管理 / 新建 -->
         <template v-if="!isSelectMode">

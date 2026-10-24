@@ -24,6 +24,8 @@ import type { PersonInfo } from "../types/photo";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
 import EmptyState from "../components/EmptyState.vue";
 import AppHeader from "../components/ui/AppHeader.vue";
+import ModuleTabs, { type ModuleTab } from "../components/ui/ModuleTabs.vue";
+import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 
 const router = useRouter();
 const store = useAlbumStore();
@@ -130,6 +132,25 @@ const stats = computed(() => {
   return { total, personTotal, albumTotal, thisMonthTotal };
 });
 
+/** 数据带：沿用原统计格的四个读数（不删任何一项） */
+const statItems = computed<StatItem[]>(() => [
+  { label: "照片", value: stats.value.total, unit: "张" },
+  { label: "人物", value: stats.value.personTotal, unit: "位" },
+  { label: "相册", value: stats.value.albumTotal, unit: "个" },
+  { label: "本月新增", value: stats.value.thisMonthTotal, unit: "张", tone: "mute" },
+]);
+
+/** 二级导航：回忆是智慧相册内部子页，这里列出同级的其他功能。
+ *  当前页（回忆）用 to 指向自己的路由，ModuleTabs 会自动高亮它。 */
+const moduleTabs = computed<ModuleTab[]>(() => [
+  { label: "人物", to: "/smart" },
+  { label: "内容分类", to: "/smart?tab=category" },
+  { label: "地点", to: "/smart?tab=location" },
+  { label: "回忆", to: "/memories" },
+  { label: "时间线", to: "/timeline" },
+  { label: "智能搜索", to: "/search" },
+]);
+
 /** 故事卡封面挑选：含人脸(>0) → 有地点 → 时间居中（取中位附近） */
 function pickHero(items: ContentSearchHit[]): ContentSearchHit | null {
   if (!items.length) return null;
@@ -198,24 +219,11 @@ function gotoPerson(p: PersonInfo) {
   router.push({ path: "/smart", query: { tab: "face", person: p.id } });
 }
 
-/* -------------------- 故事/年度卡底色（鲜艳彩虹 · 用户色卡） --------------------
-   六个基色来自用户提供的色卡：var(--candy-cream) / var(--candy-pink) / var(--candy-blue) / var(--candy-rose) / var(--candy-indigo) / var(--candy-violet)；
-   文字是白字，底部靠 .mem-story-fade / .mem-year-fade 的黑色 scrim 保对比度。 */
-const PALETTE = [
-  "linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-pink) 100%)",
-  "linear-gradient(135deg, var(--candy-blue) 0%, var(--candy-rose) 100%)",
-  "linear-gradient(135deg, var(--candy-pink) 0%, var(--candy-indigo) 100%)",
-  "linear-gradient(135deg, var(--candy-rose) 0%, var(--candy-violet) 100%)",
-  "linear-gradient(135deg, var(--candy-blue) 0%, var(--candy-pink) 100%)",
-  "linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-blue) 100%)",
-  "linear-gradient(135deg, var(--candy-rose) 0%, var(--candy-indigo) 100%)",
-  "linear-gradient(135deg, var(--candy-indigo) 0%, var(--candy-violet) 100%)",
-];
-function paletteFor(key: string): string {
-  let h = 0;
-  for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) | 0;
-  return PALETTE[Math.abs(h) % PALETTE.length];
-}
+/* -------------------- 故事 / 年度卡底色（FEAT-105 已删） --------------------
+   原来这里有一张 8 色的糖果渐变表（paletteFor 按 key 哈希取色），给每月/每年故事卡
+   上不同底色。删掉的理由：卡片本身已经是一张照片，再叠一层与照片无关的强饱和底色，
+   等于让底色和内容抢注意力；而且 8 个色相落在一屏上，整页没有主色。
+   现在卡片是裸照片 + 底部 scrim，层次来自尺寸与留白，与全站主张一致。 */
 
 /* -------------------- 看图器 -------------------- */
 const lightboxOpen = ref(false);
@@ -342,44 +350,12 @@ function goAlbumFromLightbox(albumId: number) {
 
 <template>
   <div class="memories-page" :style="{ color: theme.textColor }">
-    <!-- FEAT-103：回忆页是沉浸式海报，顶栏用紧凑高度，不抢故事卡的空间 -->
-    <AppHeader title="回忆" compact />
-    <!-- 顶部返回 -->
+    <!-- FEAT-105：回忆是智慧相册模块内的子页，页头紧凑、带模块内二级导航 -->
+    <AppHeader title="回忆" icon="🌟" compact />
+    <ModuleTabs :tabs="moduleTabs" />
 
-    <!-- Hero：彩虹横幅（按需求保留）；糖果浅底配墨色字，避免白字对比度不足 -->
-    <section
-      class="mem-hero glass-surface candy-surface"
-      :style="{
-        background:
-          'linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-blue) 55%, var(--candy-pink) 100%)',
-      }"
-    >
-      <div class="mem-hero-content">
-        <h1 class="mem-hero-title">回忆</h1>
-        <p class="mem-hero-sub">把每一段时光重新翻出来 —— 按月 / 按年 / 按人物。</p>
-        <div class="mem-stats">
-          <div class="stat-cell">
-            <span class="stat-num">{{ stats.total }}</span>
-            <span class="stat-label">张照片</span>
-          </div>
-          <div class="stat-divider"></div>
-          <div class="stat-cell">
-            <span class="stat-num">{{ stats.personTotal }}</span>
-            <span class="stat-label">位人物</span>
-          </div>
-          <div class="stat-divider"></div>
-          <div class="stat-cell">
-            <span class="stat-num">{{ stats.albumTotal }}</span>
-            <span class="stat-label">个相册</span>
-          </div>
-          <div class="stat-divider"></div>
-          <div class="stat-cell">
-            <span class="stat-num">{{ stats.thisMonthTotal }}</span>
-            <span class="stat-label">本月新增</span>
-          </div>
-        </div>
-      </div>
-    </section>
+    <!-- 数据带：取代原彩虹 Hero 的统计格（统计信息一条不少） -->
+    <StatBand :items="statItems" class="mem-stats" />
 
     <!-- 加载 -->
     <div v-if="loading" class="mem-loading">
@@ -420,8 +396,7 @@ function goAlbumFromLightbox(albumId: number) {
         <article
           v-for="m in monthGroups"
           :key="m.key"
-          class="mem-story candy-surface"
-          :style="{ background: paletteFor(m.key) }"
+          class="mem-story"
           @click="openMonthBox(m)"
         >
           <div class="mem-story-photo">
@@ -480,8 +455,7 @@ function goAlbumFromLightbox(albumId: number) {
         <article
           v-for="y in yearGroups"
           :key="y.year"
-          class="mem-year candy-surface"
-          :style="{ background: paletteFor(String(y.year)) }"
+          class="mem-year"
           @click="gotoYear(y)"
         >
           <div class="mem-year-photo">
@@ -606,73 +580,9 @@ function goAlbumFromLightbox(albumId: number) {
   margin-bottom: 14px;
 }
 
-/* ---- Hero：糖果彩虹横幅（与下方故事卡同一色族 · 用户色卡） ---- */
-.mem-hero {
-  position: relative;
-  /* BUG-2026-1021-002：固定高度 + overflow:hidden 在 420px 以下会把
-     换行后的「本月新增」统计切掉（实测内容 221px > 横幅 200px）。
-     改为 min-height + 内容自适应。 */
-  min-height: 220px;
-  height: auto;
-  border-radius: var(--radius-card);
-  overflow: hidden;
-  margin-bottom: 28px;
-  background: var(--glass-bg); /* 未内联渐变时的玻璃回退 */
-  /* 描边只做兜底：边缘光泽由 ::after 渐变棱环主导（左上亮→右下反光） */
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  /* 糖果浅底 → 墨色字（与故事卡色族一致） */
-  color: #1f2733;
-  box-shadow: var(--shadow-2);
-}
-.mem-hero-content {
-  position: relative;
-  min-height: 220px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 22px 36px;
-}
-.mem-hero-title {
-  font-size: 30px;
-  margin: 0;
-  font-weight: 800;
-  letter-spacing: 0;
-  text-shadow: none;
-  color: #1f2733;
-}
-.mem-hero-sub {
-  margin: 6px 0 16px;
-  font-size: 14px;
-  /* 去掉 opacity，用实色：渐变过渡区上副标题不再发虚 */
-  color: #2a3547;
-}
-.mem-stats {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  row-gap: 12px;
-  flex-wrap: wrap;
-}
-.stat-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 64px;
-}
-.stat-num {
-  font-size: 22px;
-  font-weight: 700;
-  text-shadow: none;
-}
-.stat-label {
-  font-size: 12px;
-  opacity: 0.9;
-}
-.stat-divider {
-  width: 1px;
-  height: 28px;
-  background: rgba(31, 39, 51, 0.28);
-}
+/* ---- 数据带（FEAT-105：取代原彩虹 Hero 的统计格）---- */
+.mem-stats { margin: 14px 0 20px; }
+
 
 /* ---- Section 通用 ---- */
 .mem-section {
@@ -1184,9 +1094,6 @@ function goAlbumFromLightbox(albumId: number) {
 
 @media (max-width: 640px) {
   .memories-page { padding: 12px; }
-  .mem-hero { min-height: 0; height: auto; }
-  .mem-hero-content { min-height: 0; padding: 18px 22px; }
-  .mem-hero-title { font-size: 28px; }
   .mem-story { flex: 0 0 180px; height: 240px; }
   .mem-year { flex: 0 0 260px; height: 170px; }
   .mem-person { flex: 0 0 80px; }
@@ -1194,8 +1101,5 @@ function goAlbumFromLightbox(albumId: number) {
   .mb-panel { max-height: calc(100vh - 20px); }
   .mb-head { padding: 12px 14px; }
   .mb-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
-  /* 手机两行统计时，行尾的分隔线会悬空；改为纯间距分隔 */
-  .stat-divider { display: none; }
-  .mem-stats { column-gap: 24px; }
 }
 </style>
