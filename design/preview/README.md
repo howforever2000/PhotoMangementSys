@@ -198,6 +198,43 @@ node .visual/audit-contrast.cjs Home       # 指定页面
 node .visual/probe-wall.cjs
 ```
 
+### ⚠️ 不要把 1420 端口的服务留在后台
+
+1420 是 `tauri dev` 的固定端口（`strictPort: true`）。截图时如果自己起了一个
+`npx vite` 占着它，下次 `npm run tauri dev` 会直接失败：
+
+```
+Error: Port 1420 is already in use
+Error The "beforeDevCommand" terminated with a non-zero status code.
+```
+
+而且**已经打开的旧窗口会变成纯白** —— 它连的 dev server 已经不在了，
+WebView2 连不上就只画一片白（连启动看门狗都不会触发，因为脚本根本没加载）。
+白屏排查顺序：① 端口上还有服务吗；② 窗口是不是旧窗口（关掉重开）。
+
+正确做法：截图前先看 1420 是谁的；若只是要截图，用独立端口：
+
+```bash
+npx vite --port 1519 --strictPort &
+node .visual/shoot-page.cjs AlbumList dark      # 默认 1420
+$env:VITE_PORT=1519; node .visual/shoot-page.cjs AlbumList dark   # 指定端口
+```
+
+### 白屏诊断探针
+
+`.visual/app-probe.html` 走**完整启动链路**（真实 `App.vue` + 真实 router +
+真实 store + Tauri 桩），把 console.error / window.onerror / 未捕获 Promise
+直接打到页面上。与 `themed-probe` 的分工：
+
+| 探针 | 拷什么 | 适合排查 |
+|---|---|---|
+| `themed-probe.html` | 单个页面组件 | 某页的版式/颜色 |
+| `app-probe.html` | 真实 App + 路由 + store | **白屏**（路由守卫 / store 初始化 / 全局组件） |
+
+```bash
+node .visual/run-app-probe.cjs    # 需先起 dev server（改脚本里的端口或设 VITE_PORT）
+```
+
 - `.visual/themed-probe.ts` 直接挂**真实页面组件**，用桩 invoke 喂 12 个相册；
   页面清单在 `PAGE_PATH` 里加（Home / AlbumList / SmartAlbum / ScanHub /
   Memories / Timeline / Workshop）。
