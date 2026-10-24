@@ -80,16 +80,19 @@ const route = useRoute();
  *
  * 必须同时比 path **和** to 里写的 query —— 因为 /smart、/smart?tab=category、
  * /smart?tab=location 的 path 完全一样，只比 path 会让三个 tab 同时高亮。
- * 比 query 时只看 to 里出现的键（允许其他无关 query 共存，如 ?focus=xxx）。
  *
- * 父路径（/albums）不吃子路径（/album/3）：子页的高亮由面包屑承担。 */
+ * 父路径（/albums）不吃子路径（/album/3）：子页的高亮由面包屑承担。
+ *
+ * 「/smart」这类不带 query 的自指项特别处理：它只在 path 匹配**且完全没有 query 指向
+ * 本模块其他 tab** 时亮。否则当用户从 /search 回到 /smart 时，若残留 ?tab=xxx
+ * 会出现两项同时亮（渲染实测见过）。 */
 function isOn(t: ModuleTab): boolean {
   if (!t.to) return !!t.key && t.key === (props.active || "");
 
   const [path, search = ""] = t.to.split("?");
   if (route.path !== path) return false;
   if (!search) {
-    // to 不带 query：当前也不该带同名 tab 参数，否则会和带 query 的同 path 项撞车
+    // 不带 query 的项：只有当当前路由也没带 tab 参数时才亮（tab 参数代表另一个同级 tab）
     return !route.query.tab;
   }
   const want = new URLSearchParams(search);

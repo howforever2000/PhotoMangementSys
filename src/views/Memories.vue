@@ -569,11 +569,13 @@ function goAlbumFromLightbox(albumId: number) {
 </template>
 
 <style scoped>
+/* 页面壳：不改宽度（FEAT-105）。
+   旧版 max-width:1200 + padding:20 会让页头/二级 tab 跟内容对不齐：
+   页头是 52px 内边距、内容是 20px + 居中偏 1200 —— 两者各算各的。
+   现在壳只管底边距，左右留白由页头/数据带/内容各自用 --sp-8 统一。 */
 .memories-page {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 20px;
   min-height: 100vh;
+  padding-bottom: 40px;
   box-sizing: border-box;
 }
 .mem-back {
@@ -584,8 +586,11 @@ function goAlbumFromLightbox(albumId: number) {
 .mem-stats { margin: 14px 0 20px; }
 
 
-/* ---- Section 通用 ---- */
+/* ---- Section 通用 ----
+   FEAT-105：左右留白从页面壳搬到这里 —— 页头/二级 tab/数据带都自己带 --sp-8，
+   内容必须用同一个值，否则会像上一版那样整体往里缩 32px。 */
 .mem-section {
+  padding: 0 var(--sp-8);
   margin-bottom: 30px;
 }
 .mem-section-head {
@@ -875,7 +880,7 @@ function goAlbumFromLightbox(albumId: number) {
 
 /* ---- 加载 / 空态 ---- */
 .mem-loading {
-  padding: 20px 0;
+  padding: 20px var(--sp-8);
 }
 .sk-hero,
 .sk-card {
