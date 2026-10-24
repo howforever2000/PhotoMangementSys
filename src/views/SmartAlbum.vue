@@ -9,8 +9,7 @@ import CategoryGallery from "../components/CategoryGallery.vue";
 import LocationGallery from "../components/LocationGallery.vue";
 import type { ContentSearchHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
-import AppHeader from "../components/ui/AppHeader.vue";
-import ModuleTabs, { type ModuleTab } from "../components/ui/ModuleTabs.vue";
+import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 
 /**
@@ -103,15 +102,14 @@ const statItems = computed<StatItem[]>(() => [
   { label: "人物", value: totalPersons.value, unit: "位" },
 ]);
 
-/** 二级导航：状态型 3 项 + 路由型 4 项，全部属于本模块 */
-const moduleTabs = computed<ModuleTab[]>(() => [
+/** 组件内部分区导航：全部属于「智慧相册」这个大组件 */
+const moduleTabs = computed<HeaderTab[]>(() => [
   { key: "face", label: "人物", count: totalPersons.value || undefined },
   { key: "category", label: "内容分类" },
   { key: "location", label: "地点" },
   { label: "回忆", to: "/memories" },
   { label: "时间线", to: "/timeline" },
   { label: "智能搜索", to: "/search" },
-  { label: "以图搜图", to: "/search?mode=image" },
 ]);
 
 /** 页头读数：一行说清这页装了什么，替代已被删掉的 hero 副标题 */
@@ -136,11 +134,15 @@ onMounted(() => {
 
 <template>
   <div class="smart-page" :style="{ color: theme.textColor }">
-    <!-- 模块页头：退出 + 你在哪个模块 + 全局动作（不含任何跨模块导航） -->
-    <AppHeader title="智慧相册" icon="🧠" :meta="headerMeta" />
-
-    <!-- 二级导航：本模块内部的小功能，全部在这一排 -->
-    <ModuleTabs :tabs="moduleTabs" :active="activeTab" @pick="(k) => (activeTab = k)" />
+    <!-- 大组件页头：组件名 + 本组件内部分区（人物/内容分类/地点/回忆/时间线/搜索） -->
+    <AppHeader
+      title="智慧相册"
+      icon="🧠"
+      :meta="headerMeta"
+      :tabs="moduleTabs"
+      :active="activeTab"
+      @pick="(k) => (activeTab = k)"
+    />
 
     <!-- 数据带：统计信息保留，但不做成彩虹横幅 -->
     <StatBand :items="statItems" class="smart-stats" />

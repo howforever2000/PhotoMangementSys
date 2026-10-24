@@ -23,8 +23,7 @@ import type { ContentSearchHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
 import EmptyState from "../components/EmptyState.vue";
-import AppHeader from "../components/ui/AppHeader.vue";
-import ModuleTabs, { type ModuleTab } from "../components/ui/ModuleTabs.vue";
+import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 
 const router = useRouter();
@@ -140,16 +139,15 @@ const statItems = computed<StatItem[]>(() => [
   { label: "本月新增", value: stats.value.thisMonthTotal, unit: "张", tone: "mute" },
 ]);
 
-/** 二级导航：回忆是智慧相册内部子页，这里列出同级的其他功能。
- *  当前页（回忆）用 to 指向自己的路由，ModuleTabs 会自动高亮它。 */
-const moduleTabs = computed<ModuleTab[]>(() => [
+/** 组件内部分区：回忆是「智慧相册」下的分区，与人物/时间线/搜索同级 */
+const moduleTabs: HeaderTab[] = [
   { label: "人物", to: "/smart" },
   { label: "内容分类", to: "/smart?tab=category" },
   { label: "地点", to: "/smart?tab=location" },
   { label: "回忆", to: "/memories" },
   { label: "时间线", to: "/timeline" },
   { label: "智能搜索", to: "/search" },
-]);
+];
 
 /** 故事卡封面挑选：含人脸(>0) → 有地点 → 时间居中（取中位附近） */
 function pickHero(items: ContentSearchHit[]): ContentSearchHit | null {
@@ -350,9 +348,7 @@ function goAlbumFromLightbox(albumId: number) {
 
 <template>
   <div class="memories-page" :style="{ color: theme.textColor }">
-    <!-- FEAT-105：回忆是智慧相册模块内的子页，页头紧凑、带模块内二级导航 -->
-    <AppHeader title="回忆" icon="🌟" compact />
-    <ModuleTabs :tabs="moduleTabs" />
+    <AppHeader title="智慧相册" icon="🌟" meta="回忆" compact :tabs="moduleTabs" />
 
     <!-- 数据带：取代原彩虹 Hero 的统计格（统计信息一条不少） -->
     <StatBand :items="statItems" class="mem-stats" />

@@ -8,8 +8,7 @@ import PhotoLightbox from "../components/PhotoLightbox.vue";
 import EmptyState from "../components/EmptyState.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 import GroupStat from "../components/ui/GroupStat.vue";
-import AppHeader from "../components/ui/AppHeader.vue";
-import ModuleTabs, { type ModuleTab } from "../components/ui/ModuleTabs.vue";
+import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
 import type { ContentSearchHit } from "../types/content";
 import { getThumbs } from "../utils/thumbQueue";
 
@@ -36,7 +35,7 @@ const loading = ref(true);
 const rows = ref<ContentSearchHit[]>([]);
 
 /** 二级导航：时间线属于智慧相册模块，与人物/回忆/搜索同级 */
-const moduleTabs: ModuleTab[] = [
+const moduleTabs: HeaderTab[] = [
   { label: "人物", to: "/smart" },
   { label: "内容分类", to: "/smart?tab=category" },
   { label: "地点", to: "/smart?tab=location" },
@@ -407,9 +406,12 @@ function goAlbumFromLightbox(albumId: number) {
 
 <template>
   <div class="tl-page" :style="{ color: theme.textColor }">
-    <!-- FEAT-105：时间线是智慧相册模块的子页，页头 + 模块内二级导航 -->
-    <AppHeader title="时间线" icon="📅" :meta="`${rows.length} 张已入库照片`" />
-    <ModuleTabs :tabs="moduleTabs" />
+    <AppHeader
+      title="智慧相册"
+      icon="📅"
+      :meta="`${rows.length} 张已入库照片`"
+      :tabs="moduleTabs"
+    />
     <header class="tl-header">
       <h1 class="tl-title">照片时间线</h1>
       <p class="tl-subtitle">跨相册按拍摄时间聚合浏览</p>

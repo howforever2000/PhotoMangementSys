@@ -23,19 +23,18 @@ import { useThemeStore } from "../stores/theme";
 import { useScanTaskStore } from "../stores/scanTask";
 import { useNotify } from "../composables/useNotify";
 import ScanPerfSettings from "../components/ScanPerfSettings.vue";
-import AppHeader from "../components/ui/AppHeader.vue";
-import ModuleTabs, { type ModuleTab } from "../components/ui/ModuleTabs.vue";
+import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
 
 const router = useRouter();
 const theme = useThemeStore();
 const notify = useNotify();
 const task = useScanTaskStore();
 
-/** 二级导航：扫描分组工具属于扫描入库模块，与全局扫描同级 */
-const moduleTabs: ModuleTab[] = [
-  { label: "全局扫描入库", to: "/scan" },
-  { label: "按年·地点", disabled: true, key: "by-time-place", why: "功能待开发" },
-  { label: "重复清理", disabled: true, key: "dedupe", why: "功能待开发" },
+/** 组件内部分区：扫描分组工具是「扫描入库」下的分区 */
+const moduleTabs: HeaderTab[] = [
+  { label: "全局扫描", to: "/scan" },
+  { label: "按年·地点", key: "by-time-place", disabled: true, why: "功能待开发" },
+  { label: "重复清理", key: "dedupe", disabled: true, why: "功能待开发" },
   { label: "扫描分组工具", to: "/scan/test" },
 ];
 
@@ -346,11 +345,7 @@ const phaseLabel = computed(() => {
 
 <template>
   <div class="scan-page" :style="tsVars">
-    <!-- FEAT-105：扫描分组工具是扫描入库模块的子页。
-         页头用 showHome=false + 下方自带的「← 返回扫描入库」——
-         回的是父页而非首页，上下文返回比全局返回更准确。 -->
-    <AppHeader title="扫描入库" icon="📥" meta="扫描分组工具" :show-home="false" compact />
-    <ModuleTabs :tabs="moduleTabs" />
+    <AppHeader title="扫描入库" icon="📥" meta="扫描分组工具" :tabs="moduleTabs" compact />
     <header class="page-header">
       <button class="btn" @click="router.push('/scan')">← 返回图片扫描</button>
       <div class="header-text">

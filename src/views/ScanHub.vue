@@ -20,8 +20,7 @@ import { useThemeStore } from "../stores/theme";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import GlobalScanPanel from "../components/GlobalScanPanel.vue";
-import AppHeader from "../components/ui/AppHeader.vue";
-import ModuleTabs, { type ModuleTab } from "../components/ui/ModuleTabs.vue";
+import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 
 const router = useRouter();
@@ -126,11 +125,11 @@ const statItems = computed<StatItem[]>(() => {
   ];
 });
 
-/** 二级导航：四项全在本模块内；未开发的置灰并写清原因（不隐藏） */
-const moduleTabs = computed<ModuleTab[]>(() =>
+/** 组件内部分区：四项全属于「扫描入库」 */
+const moduleTabs = computed<HeaderTab[]>(() =>
   tabs.map((t) => ({
     key: t.key,
-    label: t.label,
+    label: t.label.replace("全局照片扫描入库", "全局扫描"),
     to: t.inline ? undefined : t.path,
     disabled: !t.enabled,
     why: t.enabled ? undefined : "功能待开发：扫描写库后即可用",
@@ -158,11 +157,15 @@ onMounted(async () => {
 
 <template>
   <div class="scan-page" :style="{ color: theme.textColor }">
-    <!-- 模块页头（FEAT-105）：删掉彩虹渐变 hero，读数改由数据带承担 -->
-    <AppHeader title="扫描入库" icon="📥" :meta="headerMeta" />
-
-    <!-- 二级导航：本模块内部的四项（前两项待开发，置灰但讲原因） -->
-    <ModuleTabs :tabs="moduleTabs" :active="activeTab" @pick="(k) => (activeTab = k)" />
+    <!-- 大组件页头：组件名 + 本组件内部分区（全局扫描 / 按年·地点 / 重复清理 / 分组工具） -->
+    <AppHeader
+      title="扫描入库"
+      icon="📥"
+      :meta="headerMeta"
+      :tabs="moduleTabs"
+      :active="activeTab"
+      @pick="(k) => (activeTab = k)"
+    />
 
     <!-- 数据带：相册 / 照片 / 已入库 / 任务状态 -->
     <StatBand :items="statItems" class="scan-stats" />

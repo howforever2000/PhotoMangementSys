@@ -836,9 +836,50 @@ function setSortMode(mode: "date" | "location" | "manual") {
 /** 手动排序组件实例引用（用于调用其全部折叠/展开） */
 const manualSortRef = ref<InstanceType<typeof ManualSort> | null>(null);
 
+/* -------------------- 左侧栏筛选（FEAT-105） --------------------
+   左栏是**模块内部件**，不是导航：它只收窄当前页的可见集合。
+   三项互不冲突，可叠加：年份（date 模式可用的时间维度） × 入库状态 × 搜索词。
+   选择写 localStorage：用户改过的视图要能留住（与 sortMode 一致的做法）。 */
+
+/** 入库状态筛选：all=全部 · in=已入库 · out=未入库 */
+const scanFilter = ref<"all" | "in" | "out">(
+  (localStorage.getItem("album-scan-filter") as "all" | "in" | "out") ?? "all",
+);
+function setScanFilter(v: "all" | "in" | "out") {
+  scanFilter.value = v;
+  localStorage.setItem("album-scan-filter", v);
+}
+
+/** 年份筛选：null = 全部年份（0 代表"未分类"这一组，与 groupByTime 的口径一致） */
+const yearFilter = ref<number | null>(null);
+function setYearFilter(y: number | null) {
+  yearFilter.value = y;
+  // 切换年份时展开全部，否则用户点了年份却看到全是折叠的
+  collapsed.value = new Set();
+}
+
+/** 当前可见相册：左栏筛选叠在普通相册上（虚拟相册单独成块，不受这里影响） */
+const visibleAlbums = computed(() => {
+  let list = normalAlbums.value;
+  if (scanFilter.value === "in") list = list.filter((a) => (a.scanned_photo_count || 0) > 0);
+  if (scanFilter.value === "out") list = list.filter((a) => !a.scanned_photo_count);
+  return list;
+});
+
+/** 左栏"年份"区：从全量普通相册统计，不随年份筛选变化（否则选完就只剩一行） */
+const yearBuckets = computed<Array<{ year: number; count: number }>>(() => {
+  const map = new Map<number, number>();
+  for (const a of normalAlbums.value) {
+    const y = a.shoot_time ? Number(String(a.shoot_time).slice(0, 4)) || 0 : 0;
+    map.set(y, (map.get(y) ?? 0) + 1);
+  }
+  return [...map.entries()]
+    .map(([year, count]) => ({ year, count }))
+    .sort((a, b) => (a.year === 0 ? 1 : b.year === 0 ? -1 : b.year - a.year));
+});
+
 /** 地点分组：按地点名分组（保持 A-Z 顺序，无地点排最后） */
-const locationGroups = computed<Array<{ location: string | null; albums: Album[] }>>(() => {
-  const groups: Array<{ location: string | null; albums: Album[] }> = [];
+const locationGroups = computed<Array<{ location: string | null; albums: Album[] }>>(() => {  const groups: Array<{ location: string | null; albums: Album[] }> = [];
   const map = new Map<string | null, Album[]>();
   for (const a of locationSortedAlbums.value) {
     const loc = a.location ?? null;
@@ -854,8 +895,24 @@ const locationGroups = computed<Array<{ location: string | null; albums: Album[]
 /** 折叠状态：key 为分组的唯一标识 */
 const collapsed = ref<Set<string>>(new Set());
 
-/** 时间分组的相册树（FEAT-095：排除归档 / 隐藏虚拟相册，它们单独成块展示） */
-const groupedYears = computed<YearGroup[]>(() => groupByTime(normalAlbums.value));
+/** 时间分组的相册树（FEAT-095：排除归档 / 隐藏虚拟相册，它们单独成块展示）
+ *  FEAT-105：改成喂 visibleAlbums（左栏的入库状态筛选），再按年份收窄。
+ *  两步分开写的理由：groupByTime 内部已做年/季/月三层聚簇，
+ *  把年份过滤塞进去会多一次遍历；先铺后筛只跑一遍。 */
+const groupedYears = computed<YearGroup[]>(() => {
+  const groups = groupByTime(visibleAlbums.value);
+  if (yearFilter.value === null) return groups;
+  return groups.filter((g) => g.year === yearFilter.value);
+});
+
+/** 年份筛选下的可见相册数（左栏右上角那个“12 个相册 · 653 张”用它） */
+const visibleCount = computed(() => {
+  if (yearFilter.value === null) return visibleAlbums.value.length;
+  return visibleAlbums.value.filter((a) => {
+    const y = a.shoot_time ? Number(String(a.shoot_time).slice(0, 4)) || 0 : 0;
+    return y === yearFilter.value;
+  }).length;
+});
 
 /**
  * FEAT-103：顶部统计数据带（替代原来的「无统计」空白页头）
@@ -1187,21 +1244,111 @@ function onKey(e: KeyboardEvent) {
       '--danger-bg': theme.onBgDark ? 'color-mix(in srgb, var(--color-danger) 12%, transparent)' : 'color-mix(in srgb, var(--color-danger) 15%, transparent)',
     }"
   >
-    <AppHeader title="相册管理" icon="📁" :meta="headerMeta" />
+    <AppHeader title="相册管理" icon="📁" :meta="headerMeta" compact />
 
-    <!-- 顶部工具栏（需求 §5.3）。FEAT-105：去掉重复的「我的相册」标题 ——
-         模块名已由页头承担，这里再写一遍就是同一个 h1 出现两次。 -->
-    <header class="toolbar">
-      <div class="toolbar-left"></div>
+    <!-- FEAT-103：统计数据带（页头正下方，先于任何分组） -->
+    <StatBand :items="statItems" class="album-stats" />
+
+
+    <!--
+      FEAT-105：双栏布局 —— 左栏是**组件内部的筛选器**（不是导航），
+      右栏是内容。参考效果图：左侧“排序 / 入库 / 年份”负责收窄当前视图，
+      顶部那条栏只负责“本组件内部的分区”，两者职责不重叠。
+
+      为什么筛选放左栏而不是顶栏：顶栏只有 56px，塞不下“按时间/按地点/按入库 +
+      8 个年份”两百多个可点区域；硬塞会让顶栏变成设置面板。
+    -->
+    <div class="album-layout">
+      <!-- 左栏：本页内部筛选 -->
+      <aside class="album-side" aria-label="相册筛选">
+        <div class="side-group">
+          <h3 class="side-h">排序</h3>
+          <button
+            v-for="opt in [
+              { v: 'date', label: '按时间' },
+              { v: 'location', label: '按地点' },
+              { v: 'manual', label: '手动排序' },
+            ]"
+            :key="opt.v"
+            class="side-item"
+            :class="{ on: sortMode === opt.v }"
+            @click="setSortMode(opt.v as 'date' | 'location' | 'manual')"
+          >{{ opt.label }}</button>
+        </div>
+
+        <div class="side-group">
+          <h3 class="side-h">入库</h3>
+          <button
+            v-for="opt in [
+              { v: 'all', label: '全部' },
+              { v: 'in', label: '已入库' },
+              { v: 'out', label: '未入库' },
+            ]"
+            :key="opt.v"
+            class="side-item"
+            :class="{ on: scanFilter === opt.v }"
+            @click="setScanFilter(opt.v as 'all' | 'in' | 'out')"
+          >
+            {{ opt.label }}
+            <span class="side-n">{{
+              opt.v === "all"
+                ? normalAlbums.length
+                : opt.v === "in"
+                  ? normalAlbums.filter((a) => (a.scanned_photo_count || 0) > 0).length
+                  : normalAlbums.filter((a) => !a.scanned_photo_count).length
+            }}</span>
+          </button>
+        </div>
+
+        <div class="side-group">
+          <h3 class="side-h">年份</h3>
+          <button class="side-item" :class="{ on: yearFilter === null }" @click="setYearFilter(null)">
+            全部年份
+            <span class="side-n">{{ normalAlbums.length }}</span>
+          </button>
+          <button
+            v-for="b in yearBuckets"
+            :key="b.year"
+            class="side-item"
+            :class="{ on: yearFilter === b.year }"
+            @click="setYearFilter(b.year)"
+          >
+            {{ b.year === 0 ? "未分类" : `${b.year} 年` }}
+            <span class="side-n">{{ b.count }}</span>
+          </button>
+        </div>
+
+        <div class="side-group">
+          <h3 class="side-h">快捷</h3>
+          <button class="side-item" @click="onToggleAll">
+            {{ allCollapsed ? "全部展开" : "全部折叠" }}
+          </button>
+          <button class="side-item" :disabled="!store.albums.length" @click="enterSelectMode">
+            批量管理
+          </button>
+        </div>
+      </aside>
+
+      <!-- 右栏：内容 -->
+      <div class="album-main">
+        <!-- 内容区头部：只说"当前看的是什么范围"，不重复组件名（页头已有） -->
+        <div class="main-head">
+          <span class="main-sub">
+            {{ visibleCount }} 个相册
+            <template v-if="yearFilter !== null">
+              · {{ yearFilter === 0 ? "未分类" : `${yearFilter} 年` }}
+            </template>
+            <template v-if="scanFilter !== 'all'">
+              · {{ scanFilter === "in" ? "已入库" : "未入库" }}
+            </template>
+            <template v-if="yearFilter !== null || scanFilter !== 'all'">
+              · <button class="main-reset" @click="setYearFilter(null); setScanFilter('all')">清除筛选</button>
+            </template>
+          </span>
+          <div class="main-actions">
       <div class="toolbar-actions">
-        <!-- 非勾选模式：排序控件 + 批量导入 / 管理 / 新建 -->
+        <!-- 非勾选模式：批量导入 / 管理 / 新建 -->
         <template v-if="!isSelectMode">
-          <!-- 排序方式 -->
-          <select class="select" :value="sortMode" @change="(e) => setSortMode((e.target as HTMLSelectElement).value as 'date' | 'location' | 'manual')">
-            <option value="date">按日期</option>
-            <option value="location">按地点</option>
-            <option value="manual">手动排序</option>
-          </select>
           <button class="btn" @click="onToggleAll">
             {{ allCollapsed ? "全部展开" : "全部折叠" }}
           </button>
@@ -1290,14 +1437,12 @@ function onKey(e: KeyboardEvent) {
           </div>
         </template>
       </div>
-    </header>
 
-    <!-- FEAT-103：统计数据带（页头正下方，先于任何分组） -->
-    <StatBand :items="statItems" class="album-stats" />
+          </div>
+        </div>
 
     <!-- 搜索栏 -->
-    <div class="search-bar">
-      <div class="search-input-wrap">
+    <div class="search-bar">      <div class="search-input-wrap">
         <span class="search-icon">🔍</span>
         <input
           v-model="searchKeyword"
@@ -1409,7 +1554,6 @@ function onKey(e: KeyboardEvent) {
         点击卡片勾选 · <kbd>Esc</kbd> 退出 · <kbd>Ctrl+A</kbd> 全选当前可见 · <kbd>Del</kbd> 删除（仅删记录）
       </span>
     </div>
-
     <!--
       FEAT-095：归档 / 隐藏相册固定区块
       不参与时间 / 地点 / 手动排序（没有真实文件夹与拍摄时间），始终置顶展示。
@@ -1580,6 +1724,10 @@ function onKey(e: KeyboardEvent) {
       action-label="创建第一个相册"
       @action="openCreateDialog"
     />
+      </div>
+      <!-- /右栏 album-main -->
+    </div>
+    <!-- /双栏 album-layout -->
 
     <!-- 右键菜单 -->
     <div
@@ -1909,18 +2057,163 @@ function onKey(e: KeyboardEvent) {
 </template>
 
 <style scoped>
+/* 页面壳（FEAT-105）：不再锁 max-width、不再自带左右 padding。
+   旧版 max-width:1200 + padding:24 会让顶栏（52px 内边距、全宽）与内容各算各的，
+   宽屏下顶栏贴着窗口、内容却居中缩窄。左右留白统一由 --sp-8 提供。 */
 .album-page {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 24px;
   min-height: 100vh;
+  padding-bottom: 48px;
 }
 
+/* ---- 双栏：左筛选（188px 固定） + 右内容（自适应） ----
+   为何固定宽度而不百分比：左栏是“分组标签 + 计数”，宽度由最长标签（“全部年份”）
+   决定，与窗口无关；用百分比会让它在大屏上宽到能再放下一列，反而不像筛选器。 */
+.album-layout {
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  gap: 28px;
+  padding: 0 var(--sp-8);
+  align-items: start;
+}
+
+/* 左栏吸顶：滚长列表时筛选始终可改，不用先滚回顶部 */
+.album-side {
+  position: sticky;
+  top: 72px;
+  padding-top: 4px;
+}
+
+.side-group + .side-group {
+  margin-top: 18px;
+}
+.side-h {
+  margin: 0 0 6px;
+  font-size: var(--fs-label);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  font-weight: var(--fw-strong);
+  color: var(--c-fg-3);
+}
+
+/* 筛选项：整行可点，选中用左侧 2px 金条 + 文字提亮 ——
+   不用背景块填充：一栏里 15 个带背景的格子会变成“标签云”，读不出层级。 */
+.side-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  font-size: var(--fs-body);
+  color: var(--c-fg-2);
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
+}
+.side-item:hover {
+  color: var(--c-fg);
+  background: var(--hover, rgba(255, 255, 255, 0.04));
+}
+.side-item.on {
+  color: var(--c-fg);
+  font-weight: var(--fw-em);
+  background: var(--hover, rgba(255, 255, 255, 0.045));
+}
+.side-item.on::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 5px;
+  bottom: 5px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--c-accent);
+}
+.side-item:disabled {
+  color: var(--c-fg-3);
+  cursor: not-allowed;
+}
+.side-n {
+  font-size: 10px;
+  color: var(--c-fg-3);
+  font-variant-numeric: tabular-nums;
+}
+.side-item.on .side-n {
+  color: var(--c-accent);
+}
+
+/* 右栏内容头部：左计数 + 右操作，同一行
+   （原来 toolbar 独占一行且贴窗口右边，跟内容对不齐） */
+.main-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.main-sub {
+  font-size: var(--fs-meta);
+  color: var(--c-fg-2);
+}
+.main-actions {
+  margin-left: auto;
+}
+.main-actions > :deep(.toolbar-actions) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.main-reset {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: inherit;
+  color: var(--c-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* 窄窗：左栏从固定宽度变为顶部横向条 —— 手机上竖向侧栏会把内容挤到 200px 宽。 */
+@media (max-width: 900px) {
+  .album-layout {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding: 0 var(--sp-5);
+  }
+  .album-side {
+    position: static;
+    display: flex;
+    gap: 16px;
+    overflow-x: auto;
+    padding-bottom: 6px;
+    scrollbar-width: none;
+  }
+  .album-side::-webkit-scrollbar {
+    display: none;
+  }
+  .side-group + .side-group {
+    margin-top: 0;
+  }
+  .side-group {
+    flex: 0 0 auto;
+  }
+  .side-item {
+    height: 24px;
+  }
+}
+
+/* 工具栏：与页头/数据带同一侧边留白（--sp-8） */
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 24px;
+  padding: 0 var(--sp-8);
+  margin-bottom: 14px;
 }
 
 .toolbar-left {
@@ -2369,6 +2662,7 @@ function onKey(e: KeyboardEvent) {
    .album-page 的内边距还被搜索栏/时间路线图/分组头共用，
    单独为数据带改它会让其他区块一起移位。 */
 .album-stats {
+  padding: 0 var(--sp-8);
   margin: 0 0 4px;
 }
 
