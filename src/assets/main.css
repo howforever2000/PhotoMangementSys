@@ -277,9 +277,18 @@ body.mat-liquid {
   box-shadow: var(--shadow-1);
 }
 /* cardStyle 的内联描边已上收到这里：内联 border-color 会盖掉悬停态换色。
-   只给 .glass-card：glass-surface 家族多数组件自带描边（auth/scan 等）。 */
+   只给 .glass-card：glass-surface 家族多数组件自带描边（auth/scan 等）。
+
+   FEAT-113 轻量化：从「四边各 1px 同亮度实线」改为「上亮下暗的立体边」。
+   原因：一屏十几个卡片时，一圈完整硬线会彼此连成网格，把内容压在下面；
+   而真实的玻璃/金属卡片，上缘受光、下缘背光，四边本就不是一个亮度。
+   边框保留（带透明度的颜色），但把**下缘压暗、上缘提亮**，视觉重量降一半，
+   立体感反而更可信。 --glass-border 仍可被主题覆盖（颜色语义不变）。 */
 .glass-card {
-  border: 1px solid var(--glass-border);
+  border-top: 1px solid color-mix(in srgb, var(--glass-border) 55%, #fff);
+  border-left: 1px solid var(--glass-border);
+  border-right: 1px solid var(--glass-border);
+  border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 70%, #000);
 }
 
 /* —— 普通卡片：关闭 backdrop-filter，去掉玻璃棱环/材质纹理 —— */

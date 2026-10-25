@@ -16,8 +16,8 @@
 
 :root {
   /* 几何 */
-  --w-radius: 18px;
-  --w-radius-inner: 12px;
+  --w-radius: 14px;
+  --w-radius-inner: 10px;
   --w-gap: 14px;
   --w-pad: 15px 16px;
   --w-row-h: 86px;
@@ -36,8 +36,19 @@
        外侧一圈暗环 → 亮色背景上靠它读出“板浮在壁纸之上”
      两层叠加后，任意底色下边界都成立，且都不需要把线做得刺眼。 */
   --w-line: rgba(255, 255, 255, 0.07);      /* 玻璃边微光（不再承担可见性） */
-  --w-inner-line: rgba(255, 255, 255, 0.50); /* 板内侧 1px 亮边（实测 11% 时只有 2.2:1） */
-  --w-outer-line: rgba(0, 0, 0, 0.55);      /* 板外侧 1px 暗环（亮壁纸上靠它读出浮起） */
+  /* ── 轻量化（FEAT-113）：从「各向同性硬线」改为「上亮下暗的立体边」────
+     之前是 inset 0 0 0 1px（四边同亮 50%）+ 0 0 0 1px（四边同暗 55%），
+     两圈完整实线叠在一起，一屏十几块就是一张硬网格 —— 这正是
+     「边线太重」的来源。真实玻璃板不是四边同亮的：上缘受光最亮、
+     下缘最暗、左右只是极淡的转折。改成四向分别给值后，一圈完整的
+     硬线消失，立体感反而更可信。
+     边界可见性不靠这条线：板面 vs 背景实测 3.07~3.65:1（已单独达标），
+     线只做“修边”，不必再独扛 3:1。 */
+  --w-edge-hi: rgba(255, 255, 255, 0.40);   /* 上缘受光 */
+  --w-edge-lo: rgba(0, 0, 0, 0.24);         /* 下缘背光 */
+  --w-edge-side: rgba(255, 255, 255, 0.10); /* 左右转折（极淡） */
+  --w-inner-line: rgba(255, 255, 255, 0.30); /* 兼容旧引用（已不用于四边环） */
+  --w-outer-line: rgba(0, 0, 0, 0.28);      /* 外侧暗环改为轻环（原 55%） */
   --w-divider: rgba(255, 255, 255, 0.55);   /* 板内结构分隔线（实测 11% 时只有 1.24:1） */
   --w-divider-dark: rgba(0, 0, 0, 0.50);    /* 分隔线的暗侧（刻线效果） */
   --w-dot: rgba(255, 255, 255, 0.26);       /* 点阵 / 装饰点 */
@@ -49,13 +60,18 @@
   --w-edge-bottom: rgba(0, 0, 0, 0.28);
   --w-shadow:
     inset 0 1px 0 var(--w-edge-top),
-    inset 0 0 0 1px var(--w-inner-line),
+    /* 立体边：四向分给 —— 不再是一圈同亮硬线 */
+    inset 0 1px 0 var(--w-edge-hi),
+    inset 1px 0 0 var(--w-edge-side),
+    inset -1px 0 0 var(--w-edge-side),
+    inset 0 -1px 0 var(--w-edge-lo),
     0 0 0 1px var(--w-outer-line),
     /* 接触阴影：不靠负 spread 的“大虚影”，而是贴近板缘的一圈实影 ——
        玻璃板悬在背景上，靠这圈实影读出“浮着”。亮壁纸下这是**唯一**有效的
-       边界信号（板面本身也是亮的，靠明度差读不出来）。 */
-    0 3px 9px -1px rgba(0, 0, 0, 0.55),
-    0 16px 36px -14px rgba(0, 0, 0, 0.62);
+       边界信号（板面本身也是亮的，靠明度差读不出来）。
+       轻量化后把这一层加重一点：线轻了，浮起感要由影接手。 */
+    0 2px 6px -1px rgba(0, 0, 0, 0.42),
+    0 14px 32px -14px rgba(0, 0, 0, 0.58);
   /* 棱边镜面光（沿上缘快速收干的两道窄高光） */
   --w-sheen:
     linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 24%),
@@ -71,21 +87,24 @@ body:not(.theme-dark) {
   --w-accent-soft: rgba(138, 90, 18, 0.12);
   /* 浅色底上的角色对调：板是白玻璃，内侧用暗线、外侧用白环 */
   --w-line: rgba(23, 22, 26, 0.08);
-  --w-inner-line: rgba(23, 22, 26, 0.20);
-  --w-outer-line: rgba(255, 255, 255, 0.92);
-  --w-divider: rgba(23, 22, 26, 0.22);
-  --w-divider-dark: rgba(255, 255, 255, 0.75);
-  --w-dot: rgba(23, 22, 26, 0.16);
-  --w-cover-line: rgba(23, 22, 26, 0.13);
-  --w-edge-top: rgba(255, 255, 255, 0.85);
-  --w-edge-bottom: rgba(120, 105, 88, 0.12);
+  --w-ink-hi: rgba(23, 22, 26, 0.14);
+  --w-ink-lo: rgba(23, 22, 26, 0.05);
+  --w-edge-hi: rgba(255, 255, 255, 0.72);
+  --w-edge-lo: rgba(23, 22, 26, 0.10);
+  --w-edge-side: rgba(23, 22, 26, 0.05);
+  --w-inner-line: rgba(23, 22, 26, 0.14);
+  --w-outer-line: rgba(255, 255, 255, 0.72);
+  --w-edge-top: rgba(255, 255, 255, 0.78);
+  --w-edge-bottom: rgba(120, 105, 88, 0.10);
   --w-shadow:
     inset 0 1px 0 var(--w-edge-top),
-    inset 0 0 0 1px var(--w-inner-line),
+    inset 0 -1px 0 var(--w-edge-lo),
+    inset 1px 0 0 var(--w-edge-side),
+    inset -1px 0 0 var(--w-edge-side),
     0 0 0 1px var(--w-outer-line),
     /* 浅色下接触阴影是边界的**主**信号（明度差做不出 3:1） */
-    0 2px 8px -1px rgba(23, 22, 26, 0.16),
-    0 18px 36px -22px rgba(23, 22, 26, 0.5);
+    0 2px 6px -1px rgba(23, 22, 26, 0.14),
+    0 16px 32px -20px rgba(23, 22, 26, 0.46);
   --w-sheen:
     linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 26%);
   --w-track: rgba(23, 22, 26, 0.15);
@@ -139,7 +158,7 @@ body:not(.theme-dark) .ui-widget--glass {
   display: flex;
   flex-direction: column;
   padding: var(--w-pad);
-  border-radius: var(--w-radius);;
+  border-radius: var(--w-radius);
   color: var(--color-text);
   overflow: hidden;
   isolation: isolate;
@@ -175,31 +194,35 @@ body:not(.theme-dark) .ui-widget--glass {
   );
   -webkit-backdrop-filter: blur(24px) saturate(1.3);
   backdrop-filter: blur(24px) saturate(1.3);
-  border: 1px solid var(--w-line);
+  /* 轻量化：不再写 border（原来 1px 四边实线是「边线太重」的主要来源），
+     边界全部交给 --w-shadow 里的「上亮下暗立体边 + 轻外环 + 接触影」。 */
   box-shadow: var(--w-shadow);
 }
 .ui-widget--glass::before {
   background: var(--w-sheen);
 }
 
-/* 普通材质：近实心 tint 板，零模糊、无镜面光，厚度只靠一道顶亮与轻投影 */
+/* 普通材质：近实心 tint 板，零模糊、无镜面光，厚度只靠顶亮 + 底暗 + 轻投影 */
 .ui-widget--plain {
   background: var(--color-surface-2);
-  border: 1px solid var(--w-line);
   box-shadow:
-    inset 0 1px 0 var(--w-edge-top),
-    inset 0 0 0 1px var(--w-inner-line),
+    inset 0 1px 0 var(--w-edge-hi),
+    inset 1px 0 0 var(--w-edge-side),
+    inset -1px 0 0 var(--w-edge-side),
+    inset 0 -1px 0 var(--w-edge-lo),
     0 0 0 1px var(--w-outer-line),
-    0 1px 2px rgba(0, 0, 0, 0.2),
-    0 16px 34px -26px rgba(0, 0, 0, 0.6);
+    0 2px 6px -1px rgba(0, 0, 0, 0.18),
+    0 14px 32px -24px rgba(0, 0, 0, 0.56);
 }
 body:not(.theme-dark) .ui-widget--plain {
   box-shadow:
-    inset 0 1px 0 var(--w-edge-top),
-    inset 0 0 0 1px var(--w-inner-line),
+    inset 0 1px 0 var(--w-edge-hi),
+    inset 1px 0 0 var(--w-edge-side),
+    inset -1px 0 0 var(--w-edge-side),
+    inset 0 -1px 0 var(--w-edge-lo),
     0 0 0 1px var(--w-outer-line),
-    0 1px 2px rgba(23, 22, 26, 0.05),
-    0 16px 34px -26px rgba(23, 22, 26, 0.4);
+    0 2px 6px -1px rgba(23, 22, 26, 0.06),
+    0 14px 32px -24px rgba(23, 22, 26, 0.4);
 }
 
 /* 可点击的整块 widget：按压缩放（与 tokens §3.2 同一手感） */
