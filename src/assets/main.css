@@ -79,10 +79,15 @@
      缩略图=实色蒙层，弹层=三级深阴影。
      组件只引用令牌，不硬编码具体数值。
      FEAT-100：磨砂 / 釉瓷已收敛掉，旧值在 prefs.normalizePrefs 回落为 plain。 */
-  --glass-blur: 18px;                  /* 容器模糊半径（方案 16~24px） */
+  --glass-blur: 18px;                  /* 容器模糊**半径**（长度） */
   --glass-saturate: 1.05;              /* 玻璃后背景饱和度（素化 C1：1.3 → 1.05） */
   --glass-bg: var(--color-surface);    /* 容器填充：由 theme store 按组件色调下发 */
-  --glass-border: var(--color-border); /* 玻璃边缘内高光 1px */
+  /* ⚠️ FEAT-108：本令牌是**纯颜色**（不是完整 border）。
+     曾与 tokens.css 的「完整 border」同名，而使用方写 `border: var(--glass-border)`
+     —— 只给颜色是**合法简写**，宽度会默认成 medium(3px)，静默变粗。
+     所有使用方必须写全：`border: 1px solid var(--glass-border)`。
+     浮层玻璃的生套值在 tokens.css 的 --float-*（不共用命名空间）。 */
+  --glass-border: var(--color-border); /* 玻璃边缘内高光 1px（颜色） */
   --liquid-bg: var(--color-surface-2); /* 液态控件填充（透明度下限 45%） */
 
   /* ══════════════════════════════════════════════════════════════════════

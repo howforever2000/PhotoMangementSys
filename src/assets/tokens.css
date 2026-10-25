@@ -289,20 +289,55 @@ body:not(.theme-dark) {
    **卡片不许用**。玻璃好看的前提是稀缺：全站 34 处 backdrop-filter 等于没有玻璃。
    ========================================================================== */
 :root {
-  --glass-fill: rgba(30, 27, 34, 0.62);
-  --glass-border: 1px solid rgba(255, 255, 255, 0.10);
-  --glass-blur: blur(16px) saturate(1.1);
-  --glass-shadow:
+  /* ══════════════════════════════════════════════════════════════════════
+     FEAT-108：浮层玻璃令牌改名 --glass-* → --float-*
+     ──────────────────────────────────────────────────────────────────
+     为什么必须改名（这是一个真实生效的 bug，不是洁癖）：
+
+       `--glass-blur` 在 main.css 里是**长度**（18px / 16px / 0px），
+       在本文件里却是**完整 filter 值**（blur(16px) saturate(1.1)）。
+       main.ts 先引 tokens.css 再引 main.css → main.css 后加载、覆盖生效。
+       于是：
+         · main.css 的 `blur(var(--glass-blur))` → `blur(18px)` ✓ 正常
+         · AppHeader 的 `var(--glass-blur) saturate(...)` → `18px saturate(...)`
+           —— 无效值，**整条 backdrop-filter 被丢弃**
+       实测 `.mh-inner` 的 computed backdropFilter = "none"：
+       顶栏从头到尾就是一块不透明度 0.62 的实心色，
+       全靠着填充足够实掩盖了“模糊根本没生效”。
+       这也解释了为什么 --glass-fill 的下限被压到 .58 —— 填充太实，
+       是因为模糊根本没在工作。
+
+       `--glass-border` 同理：main.css / theme.ts / auth.css 都给「纯颜色」，
+       只有本文件给「完整 border」。而 `border: <颜色>` 是合法简写，
+       宽度会默认成 medium(3px) —— 静默地从 1px 变成 3px。
+
+     为什么选「改名」而不是「合并成一套」：
+       两者关注的量根本不同：卡片要的是「模糊半径」（长度）+ 饱和倍率（数字），
+       浮层要的是「整套 filter」（要可换成一条 SVG 滤镜）。
+       硬合并就会重蹈覆车。
+
+     命名分工（改完后的唯一事实）：
+       --glass-blur / --glass-saturate : 长度 + 数字，给卡片（main.css）
+       --glass-border                  : 纯颜色，给卡片描边（main.css/theme.ts/auth.css）
+       --float-blur / --float-saturate : 长度 + 数字，给浮层（本文件）
+       --float-border                  : 纯颜色，给浮层描边
+     ══════════════════════════════════════════════════════════════ */
+  --float-fill: rgba(30, 27, 34, 0.62);
+  --float-blur: 16px;
+  --float-saturate: 1.1;
+  --float-border: rgba(255, 255, 255, 0.10);
+  --float-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.34),
     inset 0 -1px 0 rgba(0, 0, 0, 0.36),
     0 10px 24px -14px rgba(0, 0, 0, 0.70);
 }
 
 body:not(.theme-dark) {
-  --glass-fill: rgba(255, 255, 255, 0.72);
-  --glass-border: 1px solid rgba(255, 255, 255, 0.95);
-  --glass-blur: blur(16px) saturate(1.15);
-  --glass-shadow:
+  --float-fill: rgba(255, 255, 255, 0.72);
+  --float-blur: 16px;
+  --float-saturate: 1.15;
+  --float-border: rgba(255, 255, 255, 0.95);
+  --float-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 1),
     inset 0 -1px 0 rgba(120, 105, 88, 0.14),
     0 10px 22px -14px rgba(110, 88, 60, 0.42);
@@ -312,11 +347,12 @@ body:not(.theme-dark) {
    §3.1 浮层玻璃的可复用类（P1 起由新组件消费；P0 只登记，不改任何现有元素）
    ========================================================================== */
 .glass-float {
-  background: var(--glass-fill);
-  border: var(--glass-border);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  box-shadow: var(--glass-shadow);
+  background: var(--float-fill);
+  /* 必须写全 1px solid：`border: <颜色>` 是合法简写，宽度会默认成 medium(3px) */
+  border: 1px solid var(--float-border);
+  -webkit-backdrop-filter: blur(var(--float-blur)) saturate(var(--float-saturate));
+  backdrop-filter: blur(var(--float-blur)) saturate(var(--float-saturate));
+  box-shadow: var(--float-shadow);
 }
 
 /* ==========================================================================

@@ -190,10 +190,15 @@ function isTabOn(to?: string): boolean {
   height: 52px;
   padding: 0 16px 0 12px;
   border-radius: var(--panel-glass-radius);
-  background-color: var(--glass-fill);
-  -webkit-backdrop-filter: var(--glass-blur) saturate(var(--panel-glass-saturate));
-  backdrop-filter: var(--glass-blur) saturate(var(--panel-glass-saturate));
-  border: var(--glass-border);
+  /* FEAT-108：改用浮层专用令牌 --float-*。
+     旧写法 `var(--glass-blur)` 期望它是完整 filter 值，
+     但 main.css 把同名令牌定义成长度并后加载覆盖 → `18px saturate(...)`
+     是无效值，**整条 backdrop-filter 被丢弃**（实测 computed = "none"）。
+     边框同理：`border: var(--glass-border)` 拿到纯颜色，宽度默认成 3px。 */
+  background-color: var(--float-fill);
+  -webkit-backdrop-filter: blur(var(--float-blur)) saturate(var(--float-saturate));
+  backdrop-filter: blur(var(--float-blur)) saturate(var(--float-saturate));
+  border: 1px solid var(--float-border);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.30),
     inset 0 -1px 0 rgba(0, 0, 0, 0.34),
