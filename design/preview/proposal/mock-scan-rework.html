@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>扫描入库 · 界面重排效果图</title>
+<link rel="stylesheet" href="mock-widgets.css" />
+<style>
+/* ══════════════════════════════════════════════════════════════════════
+   ④ 扫描入库界面重排（FEAT-113 效果图，不进产品代码）
+   ──────────────────────────────────────────────────────────────────────
+   现状问题（对应代码 GlobalScanPanel.vue）：
+     · 一整个 .gs-area 从上到下堆：说明文字 → 按钮 → 勾选区 → 扫描项 → 进度
+       → 汇总 → 逐相册状态表，全在同一视觉层级，越往下越长
+     · 两段长说明占据首屏最贵的位置，而用户来这页只做一件事：选相册→开始
+     · 扫描中，"选中了哪些相册"与"扫到哪了"分居页面上下两端，要来回滚
+   重排原则：按**任务阶段**分区，不按功能堆叠 ——
+     ① 顶部状态条：在不在跑、跑到哪、能不能停（常驻，不随内容滚走）
+     ② 左：选择区（过滤 + 全选/反选 + 已选计数 + 相册行）
+     ③ 右：任务区（扫描项 → 总进度 → 当前相册 → 汇总 → 逐相册状态）
+   功能一个不少，只是归位。
+
+   ★ 本页只引 mock-widgets.css，令牌用那套命名（--fg/--accent/--rule…），
+     不是产品的 --color-* / --w-*。写错命名空间会让整条声明静默失效。
+   ══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* 效果图缺的令牌，就地补 */
+  --track: rgba(255, 255, 255, 0.13);          /* 进度槽 */
+  --danger: #e08585;
+}
+
+.w-page { padding: 0 52px 56px; }
+
+/* 背景写 html（不能 fixed）：全页截图时 fixed 只画一屏，下半部会变白底白字 */
+html {
+  background:
+    radial-gradient(60% 46% at 12% -8%, var(--wash-a), transparent 62%),
+    radial-gradient(52% 40% at 94% 2%, var(--wash-b), transparent 66%),
+    radial-gradient(48% 38% at 80% 112%, var(--wash-c), transparent 62%),
+    linear-gradient(165deg, var(--bg-1) 0%, var(--bg-2) 48%, var(--bg-3) 100%);
+  min-height: 100%;
+}
+body { background: transparent; color: var(--fg); }
+
+/* 卡片语言：照抄产品的玻璃配方（rgba(tint,.38) + 顶部 7% 白渐层），
+   但去掉 1px 实描边 —— 靠「板面压暗背景」+ 内侧上光 + 柔影读边界，
+   这正是 ③「边线太重」要验证的方向。 */
+.soft {
+  border-radius: 14px;
+  background-color: rgba(var(--tint), 0.38);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 26%);
+  -webkit-backdrop-filter: blur(24px) saturate(1.32);
+  backdrop-filter: blur(24px) saturate(1.32);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.20),
+    0 0 0 1px rgba(0, 0, 0, 0.10),
+    0 10px 26px -16px rgba(0, 0, 0, 0.66);
+}
+
+/* ── 模块页头（真实产品由 AppHeader 承担，这里只表达位置）────────── */
+.mock-header {
+  display: flex; align-items: center; gap: 11px;
+  height: 52px; padding: 0 16px 0 12px; border-radius: 14px; margin-bottom: 14px;
+  background-color: rgba(var(--tint), 0.38);
+  background-image: linear-gradient(180deg, rgba(255,255,255,.07), transparent 30%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.20), 0 0 0 1px rgba(0,0,0,.10), 0 12px 30px -18px rgba(0,0,0,.7);
+}
+.mh-back {
+  display: inline-flex; align-items: center; height: 26px; padding: 0 10px 0 8px;
+  border-radius: 7px; font-size: 11.5px; color: var(--fg-2);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.16);
+}
+.mh-title { font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
+.mh-meta { font-size: 11px; color: var(--fg-3); }
+.mh-nav { display: flex; gap: 2px; padding-left: 13px; margin-left: 3px;
+  border-left: 1px solid rgba(255,255,255,.12); }
+.mh-nav span { padding: 5px 11px; border-radius: 7px; font-size: 12px; color: var(--fg-2); }
+.mh-nav span.on { color: var(--fg); font-weight: 600; background: rgba(255,255,255,.11); }
+
+/* ── ① 状态条：常驻 ──────────────────────────────────────────────── */
+.status-bar {
+  display: flex; align-items: center; gap: 14px;
+  padding: 13px 18px; border-radius: 14px; margin-bottom: 14px;
+  background-color: rgba(var(--tint), 0.44);
+  background-image: linear-gradient(180deg, rgba(255,255,255,.09), transparent 40%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 0 0 1px rgba(0,0,0,.12), 0 12px 30px -18px rgba(0,0,0,.75);
+}
+.sb-dot { width: 9px; height: 9px; border-radius: 50%; flex: none;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+.sb-main { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.sb-main b { font-size: 13px; font-weight: 650; white-space: nowrap; }
+.sb-main small { font-size: 11px; color: var(--fg-3); white-space: nowrap; }
+.sb-bar { flex: 1; max-width: 300px; height: 5px; border-radius: 4px;
+  background: var(--track); overflow: hidden; }
+.sb-bar i { display: block; height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.sb-pct { font-size: 12px; font-weight: 650; color: var(--accent-bright);
+  font-variant-numeric: tabular-nums; flex: none; }
+.sb-actions { margin-left: auto; display: flex; gap: 8px; flex: none; }
+.btn-soft { height: 30px; padding: 0 14px; border-radius: 9px; font-size: 11.5px;
+  cursor: pointer; border: none; color: var(--fg);
+  background: rgba(255,255,255,.10); box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
+.btn-primary { height: 30px; padding: 0 16px; border-radius: 9px; font-size: 11.5px;
+  font-weight: 700; cursor: pointer; border: none; color: #20160a;
+  background: linear-gradient(135deg, var(--accent-bright), var(--accent-2));
+  box-shadow: 0 4px 14px -6px var(--accent); }
+
+/* ── ②③ 两栏 ────────────────────────────────────────────────────── */
+.two-col { display: flex; gap: 14px; align-items: stretch; }
+.col-left { flex: 0 0 45%; min-width: 0; display: flex; flex-direction: column; }
+.col-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+
+.panel { padding: 14px 16px; }
+.panel-head { display: flex; align-items: center; gap: 8px; margin-bottom: 11px; flex: none; }
+/* 左栏面板要能内滚动：头/工具行/底栏固定，中间相册列表弹性 */
+.col-left .panel { display: flex; flex-direction: column; }
+.panel-title { font-size: 10.5px; font-weight: 650; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--fg-2); }
+.panel-sub { font-size: 10.5px; color: var(--fg-3); }
+
+/* 选择区工具行 */
+.sel-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; flex: none; }
+.sel-count { font-size: 11px; color: var(--fg-3); }
+.sel-count b { color: var(--accent-bright); font-size: 12px; }
+.filter {
+  margin-left: auto; height: 28px; width: 172px; padding: 0 10px; border-radius: 8px;
+  border: none; background: rgba(255,255,255,.09); color: var(--fg);
+  font-size: 11px; outline: none; box-shadow: inset 0 0 0 1px rgba(255,255,255,.10);
+}
+.filter::placeholder { color: var(--fg-3); }
+
+/* 相册行 */
+.album-list { flex: 1; min-height: 0; display: flex; flex-direction: column;
+  overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
+
+/* 左栏底部固定动作区：选完直接开始，不用回到顶栏找按钮 */
+.sel-foot { display: flex; align-items: center; gap: 12px; margin-top: 10px; flex: none;
+  padding-top: 12px; border-top: 1px solid rgba(255,255,255,.09); }
+.sel-foot .tip { font-size: 11px; color: var(--fg-3); line-height: 1.5; }
+.sel-foot .tip b { color: var(--fg-2); }
+.sel-foot .go { margin-left: auto; flex: none; }
+.album-row {
+  display: flex; align-items: center; gap: 10px; padding: 7px 9px;
+  border-radius: 9px; font-size: 12px;
+}
+.album-row.on { background: rgba(var(--tint), 0.0); box-shadow: inset 0 0 0 1px rgba(255,255,255,.09); }
+.chk { width: 15px; height: 15px; border-radius: 4.5px; flex: none; display: grid; place-items: center;
+  font-size: 10px; font-weight: 800; color: #20160a;
+  box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.34); }
+.album-row.on .chk, .sel-tools .chk { background: var(--accent); box-shadow: none; }
+.album-row .nm { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.album-row .pth { font-size: 10px; color: var(--fg-3); flex: 0 0 40%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge { font-size: 9.5px; padding: 1.5px 7px; border-radius: 999px; flex: none;
+  background: rgba(255,255,255,.10); color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.badge.ok { background: rgba(111,212,224,.16); color: var(--ok); }
+.badge.todo { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent-bright); }
+
+/* 扫描项：两列网格 */
+.opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.opt {
+  display: flex; align-items: flex-start; gap: 9px; padding: 9px 11px; border-radius: 10px;
+  background: rgba(255,255,255,.055); box-shadow: inset 0 0 0 1px rgba(255,255,255,.07);
+}
+.opt.on { background: color-mix(in srgb, var(--accent) 15%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent); }
+.opt .box { width: 14px; height: 14px; border-radius: 4px; flex: none; margin-top: 1px;
+  display: grid; place-items: center; font-size: 9.5px; font-weight: 800; color: #20160a;
+  box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.34); }
+.opt.on .box { background: var(--accent); box-shadow: none; }
+.opt .tx { min-width: 0; }
+.opt .tx b { display: block; font-size: 11.5px; font-weight: 600; }
+.opt .tx span { font-size: 9.5px; color: var(--fg-3); }
+
+/* 进度 */
+.prog-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 7px; }
+.prog-head b { font-size: 12px; font-weight: 600; }
+.prog-head small { font-size: 10.5px; color: var(--fg-3); }
+.prog-head .pct { margin-left: auto; font-size: 12px; font-weight: 650;
+  color: var(--accent-bright); font-variant-numeric: tabular-nums; }
+.track { height: 5px; border-radius: 4px; background: var(--track); overflow: hidden; }
+.track i { display: block; height: 100%; border-radius: 4px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.track.sub { height: 3px; }
+.track.sub i { background: linear-gradient(90deg, var(--ok), var(--accent-2)); }
+
+/* 逐相册状态 */
+.tbl { width: 100%; border-collapse: collapse; font-size: 11px; }
+.tbl th { text-align: left; font-weight: 500; color: var(--fg-3);
+  font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase;
+  padding: 0 8px 7px; border-bottom: 1px solid rgba(255,255,255,.10); }
+.tbl td { padding: 6.5px 8px; border-bottom: 1px solid rgba(255,255,255,.06); }
+.tbl tr:last-child td { border-bottom: none; }
+.tbl tr.cur { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.tbl .idx { color: var(--fg-3); width: 24px; font-variant-numeric: tabular-nums; }
+.tbl .num { text-align: right; width: 52px; font-variant-numeric: tabular-nums; }
+.tbl .num.f { color: var(--danger); }
+.st { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; }
+.st::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.st.done { color: var(--ok); }
+.st.run { color: var(--accent-bright); }
+.st.wait { color: var(--fg-3); }
+
+.summary { font-size: 11.5px; color: var(--fg-2); line-height: 1.7; }
+.summary b { color: var(--fg); }
+.summary .ok { color: var(--ok); }
+
+.note { font-size: 11px; color: var(--fg-3); margin: 26px 0 10px; }
+</style>
+</head>
+<body data-theme="dusk">
+
+<div class="w-page">
+
+  <!-- 模块页头 -->
+  <div class="mock-header">
+    <span class="mh-back">‹ 主页</span>
+    <span style="font-size:15px">📥</span>
+    <span class="mh-title">扫描入库</span>
+    <span class="mh-meta">5 个相册已入库 · 后台扫描中</span>
+    <nav class="mh-nav">
+      <span class="on">全局扫描</span>
+      <span>按年·地点</span>
+      <span>重复清理</span>
+      <span>分组工具</span>
+    </nav>
+    <span style="margin-left:auto;font-size:11px;color:var(--fg-3)">🔍 搜索照片</span>
+  </div>
+
+  <!-- ① 状态条 -->
+  <div class="status-bar">
+    <span class="sb-dot"></span>
+    <div class="sb-main">
+      <b>正在扫描 3 个相册</b>
+      <small>当前：毕业旅行 · 128 / 206 张</small>
+    </div>
+    <div class="sb-bar"><i style="width:62%"></i></div>
+    <span class="sb-pct">62%</span>
+    <div class="sb-actions">
+      <button class="btn-soft">⚙ 性能设置</button>
+      <button class="btn-soft">停止</button>
+    </div>
+  </div>
+
+  <div class="two-col">
+    <!-- ② 选择区 -->
+    <div class="col-left soft panel">
+      <div class="panel-head">
+        <span class="panel-title">选择相册</span>
+        <span class="panel-sub">勾选后批量入库</span>
+      </div>
+      <div class="sel-tools">
+        <span class="chk">✓</span>
+        <span class="sel-count">已选 <b>3</b> / 12 个</span>
+        <button class="btn-soft" style="height:24px;padding:0 10px;font-size:10.5px">反选</button>
+        <input class="filter" placeholder="按名称 / 路径过滤…" />
+      </div>
+      <div class="album-list">
+        <div class="album-row on"><span class="chk">✓</span><span class="nm">毕业旅行</span><span class="pth">D:/Photos/毕业旅行</span><span class="badge">206 张</span><span class="badge todo">待入库</span></div>
+        <div class="album-row on"><span class="chk">✓</span><span class="nm">聚会合影</span><span class="pth">D:/Photos/聚会合影</span><span class="badge">109 张</span><span class="badge todo">待入库</span></div>
+        <div class="album-row on"><span class="chk">✓</span><span class="nm">美食</span><span class="pth">D:/Photos/美食</span><span class="badge">57 张</span><span class="badge todo">待入库</span></div>
+        <div class="album-row"><span class="chk"></span><span class="nm">森林徒步</span><span class="pth">D:/Photos/森林徒步</span><span class="badge">42 张</span><span class="badge ok">已入库 42</span></div>
+        <div class="album-row"><span class="chk"></span><span class="nm">自然风景</span><span class="pth">D:/Photos/自然风景</span><span class="badge">36 张</span><span class="badge ok">已入库 36</span></div>
+        <div class="album-row"><span class="chk"></span><span class="nm">夜空</span><span class="pth">D:/Photos/夜空</span><span class="badge">31 张</span><span class="badge todo">待入库</span></div>
+        <div class="album-row"><span class="chk"></span><span class="nm">日落晚霞</span><span class="pth">D:/Photos/日落晚霞</span><span class="badge">25 张</span><span class="badge todo">待入库</span></div>
+        <div class="album-row"><span class="chk"></span><span class="nm">人像</span><span class="pth">D:/Photos/人像</span><span class="badge">24 张</span><span class="badge ok">已入库 24</span></div>
+        <div class="album-row"><span class="chk"></span><span class="nm">晨曦</span><span class="pth">D:/Photos/晨曦</span><span class="badge">22 张</span><span class="badge ok">已入库 22</span></div>
+        <div class="album-row"><span class="chk"></span><span class="nm">城市夜景</span><span class="pth">D:/Photos/城市夜景</span><span class="badge">18 张</span><span class="badge todo">待入库</span></div>
+        <div class="album-row"><span class="chk"></span><span class="nm">花</span><span class="pth">D:/Photos/花</span><span class="badge">16 张</span><span class="badge ok">已入库 16</span></div>
+      </div>
+      <div class="sel-foot">
+        <span class="tip">已选 <b>3</b> 个相册 · <b>372</b> 张照片<br />预计 4～6 分钟</span>
+        <button class="btn-primary go">开始扫描入库</button>
+      </div>
+    </div>
+
+    <!-- ③ 任务区 -->
+    <div class="col-right">
+      <div class="soft panel">
+        <div class="panel-head">
+          <span class="panel-title">扫描内容</span>
+          <span class="panel-sub">与相册详情「组合扫描」同一套能力</span>
+        </div>
+        <div class="opt-grid">
+          <div class="opt on"><span class="box">✓</span><div class="tx"><b>EXIF 基础</b><span>ISO / 焦段 / 光圈 / 快门</span></div></div>
+          <div class="opt on"><span class="box">✓</span><div class="tx"><b>影调分析</b><span>低调 / 中间调 / 高调</span></div></div>
+          <div class="opt on"><span class="box">✓</span><div class="tx"><b>人物 · 文档识别</b><span>人脸标号 / 夜景 / 文档</span></div></div>
+          <div class="opt"><span class="box"></span><div class="tx"><b>语义向量</b><span>自然语言搜图 · 需 CLIP</span></div></div>
+        </div>
+      </div>
+
+      <div class="soft panel">
+        <div class="panel-head">
+          <span class="panel-title">本次任务</span>
+          <span class="panel-sub">后台执行，离开页面不中断</span>
+        </div>
+        <div class="prog-head">
+          <b>总进度</b><small>8 / 12 个相册完成</small><span class="pct">62%</span>
+        </div>
+        <div class="track"><i style="width:62%"></i></div>
+        <div class="prog-head" style="margin-top:13px">
+          <b>📁 毕业旅行</b><small>128 / 206 张 · 成功 126 · 失败 2</small>
+        </div>
+        <div class="track sub"><i style="width:62%"></i></div>
+
+        <p class="summary" style="margin:15px 0 0">
+          <span class="ok">✅ 已完成 8 个相册</span> · 累计入库 <b>412</b> 张
+          · 跳过 <b>38</b> 张（已是最新） · 失败 <b>2</b> 张
+        </p>
+
+        <table class="tbl" style="margin-top:11px">
+          <thead><tr><th class="idx">#</th><th>相册</th><th style="width:70px">状态</th><th class="num">入库</th><th class="num">失败</th></tr></thead>
+          <tbody>
+            <tr><td class="idx">1</td><td>美食</td><td><span class="st done">完成</span></td><td class="num">57</td><td class="num">0</td></tr>
+            <tr><td class="idx">2</td><td>聚会合影</td><td><span class="st done">完成</span></td><td class="num">109</td><td class="num">0</td></tr>
+            <tr class="cur"><td class="idx">3</td><td>毕业旅行</td><td><span class="st run">进行中</span></td><td class="num">126</td><td class="num f">2</td></tr>
+            <tr><td class="idx">4</td><td>夜空</td><td><span class="st wait">等待</span></td><td class="num">—</td><td class="num">—</td></tr>
+            <tr><td class="idx">5</td><td>日落晚霞</td><td><span class="st wait">等待</span></td><td class="num">—</td><td class="num">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <p class="note">↓ 空闲态：扫描结束后同一条状态条的变化 —— 位置不动，只换内容（开始按钮在左栏底部，不重复）</p>
+  <div class="status-bar" style="margin-bottom:0">
+    <span class="sb-dot" style="background:var(--ok);box-shadow:0 0 10px var(--ok)"></span>
+    <div class="sb-main">
+      <b>上次扫描：成功 8 个相册</b>
+      <small>累计入库 412 张 · 2 张失败 · 12 分钟前</small>
+    </div>
+    <div class="sb-actions">
+      <button class="btn-soft">查看本次明细</button>
+      <button class="btn-soft">⚙ 性能设置</button>
+    </div>
+  </div>
+
+  <p style="text-align:center;font-size:10.5px;color:var(--fg-3);margin-top:28px">
+    扫描入库重排效果图 · 暮紫/玻璃 · 功能与现有 GlobalScanPanel 一一对应
+  </p>
+</div>
+
+<script>
+  const q = new URLSearchParams(location.search).get("v") || "";
+  if (q.includes("pine")) document.body.dataset.theme = "pine";
+  if (q.includes("light")) document.body.dataset.theme = "light";
+</script>
+</body>
+</html>
