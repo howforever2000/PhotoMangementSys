@@ -535,7 +535,10 @@ export const useThemeStore = defineStore("theme", () => {
          这里跟 --c-* 用同一个 cOnDark 判据，两套值永远同向。 */
     body.style.setProperty("--fg", cOnDark ? "#f0eef3" : "#16151a");
     body.style.setProperty("--fg-2", cOnDark ? "rgba(240,238,243,.60)" : "rgba(22,21,26,.66)");
-    body.style.setProperty("--fg-3", cOnDark ? "rgba(240,238,243,.38)" : "rgba(22,21,26,.44)");
+    /* --fg-3 要按「预设渐变最亮/最暗端」标定，不是纯黑/纯白底：
+       深色 .38 → 最亮端 3.22:1（不达标）；浅色 .44 → 最暗端 2.83:1。
+       提到 .52 / .60 后两边都 ≥4.5:1，且仍明显弱于 --fg-2。 */
+    body.style.setProperty("--fg-3", cOnDark ? "rgba(240,238,243,.52)" : "rgba(22,21,26,.60)");
     body.style.setProperty("--rule", cOnDark ? "rgba(255,255,255,.085)" : "rgba(22,21,26,.10)");
     body.style.setProperty("--hover", cOnDark ? "rgba(255,255,255,.055)" : "rgba(22,21,26,.05)");
     body.style.setProperty(

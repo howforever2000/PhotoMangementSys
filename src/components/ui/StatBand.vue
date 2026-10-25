@@ -212,19 +212,25 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 }
 
 /* 微标签：9.5px 大写 + .15em 字距 —— 与左栏分组头、组头读数**同一套字阶**。
-   三处用同一档字，是"整页对齐"的隐性来源。 */
+
+   ⚠️ 颜色用 --fg-2 而不是 --fg-3。
+   初版为了“弱化”用了 --fg-3，实测深色 3.22:1 / 浅色 2.83:1 —— 两个都不达标。
+   判断依据：标签是“这个数字是什么”的唯一标识，没有它数字没有意义；
+   它属于**要读的文字**，不是单位后缀那种装饰元素。
+   9.5px 字号下只要 3:1 就是硬伤，何况 2.83。 */
 .u-stat-label {
   font-size: 9.5px;
   letter-spacing: 0.15em;
   text-transform: uppercase;
   font-weight: 600;
-  color: var(--fg-3);
+  color: var(--fg-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* delta：标签的解释，落在标签行右侧。默认弱色，只有 up/down 才上色 */
+/* delta：标签的解释，落在标签行右侧。
+   up / down 才上色（强调/危险），其余用 --fg-2。 */
 .u-stat-aux {
   margin-left: auto;
   flex-shrink: 0;
@@ -233,7 +239,6 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
   color: var(--fg-2);
   white-space: nowrap;
 }
-.u-stat-aux.dim { color: var(--fg-3); }
 .u-stat-aux.up {
   color: var(--c-accent-bright, var(--c-accent));
   font-weight: 600;
@@ -261,13 +266,17 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 .unit {
   font-size: 11px;
   font-weight: 500;
-  color: var(--fg-3);
+  /* 单位是纯装饰（信息已由前面的数字 + 标签承载），可以用弱色；
+     但 --fg-3 在浅色实测 2.83:1，太接近“看不见”。
+     单位实际是**帮读**的（“7.8” 还是 “7.8 GB” 差别很大），所以用 --fg-2。 */
+  color: var(--fg-2);
 }
 
 .u-stat-note {
   margin: 0;
   font-size: 10.5px;
-  color: var(--fg-3);
+  /* 注释行同样是要读的文字（“需要扫描”“已聚类”是状态信息），用 --fg-2 */
+  color: var(--fg-2);
   letter-spacing: 0.01em;
   white-space: nowrap;
   overflow: hidden;
@@ -290,8 +299,8 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
   flex: 1 1 0;
   min-width: 2px;
   border-radius: 1px 1px 0 0;
-  background: var(--fg-3);
-  opacity: 0.5;
+  background: var(--fg-2);
+  opacity: 0.45;
 }
 .u-stat-bars i.on {
   background: var(--c-accent);
@@ -316,7 +325,9 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
   inset: 0 auto 0 0;
   width: var(--pct, 0%);
   border-radius: 2px;
-  background: var(--fg-3);
+  /* 占比线是**图形**不是文字，不受 4.5:1 约束，但仍需可见
+     （--f-3 在浅底上只有 2.83:1，2px 细线会看不太清）。 */
+  background: var(--fg-2);
   transition: width var(--dur-3) var(--ease-out);
 }
 .u-stat-line.hot i {

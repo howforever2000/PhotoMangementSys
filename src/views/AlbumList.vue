@@ -12,7 +12,6 @@ import type { Album, CreateAlbumInput } from "../types/album";
 import { isVirtualAlbum } from "../types/album";
 import { useVaultStore } from "../stores/vault";
 import type { Folder, ManualTree } from "../types/folder";
-import type { ContentSearchHit } from "../types/content";
 import { groupByTime } from "../utils/timeGroup";
 import type { YearGroup } from "../utils/timeGroup";
 import { justifyRows, type JustifiedRow } from "../utils/justifiedRows";
@@ -1223,43 +1222,59 @@ interface SearchHit {
 }
 const searchKeyword = ref("");
 const searchResults = ref<SearchHit[]>([]);
-/** 全局照片内容搜索命中（群相册搜索：跨全部相册的照片内容） */
-const contentHits = ref<ContentSearchHit[]>([]);
 const isSearching = ref(false);
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** 搜索框输入（防抖）：同时搜相册 + 全局照片内容 */
+/* ══════════════════════════════════════════════════════════════════════════
+   FEAT-107：相册管理的搜索**只搜相册名**（功能边界隔离）
+   ────────────────────────────────────────────────────────────────────────
+   改之前：这里用 Promise.all 同时跑 search_albums + searchPhotoContent，
+   于是一个 placeholder 写着「搜索相册名称…」的框，实际在做**全库照片内容检索**，
+   结果面板里还会多出一组「照片内容」。
+
+   为什么这是缺陷而不是“功能更强大”：
+     · 相册管理和智慧相册→智能搜索是**两个大组件**。用户对“搜索”的期待
+       取决于他在哪个组件里：在相册管理里想找“哪个相册”，在智能搜索里
+       想找“哪张照片”。同一个框同时干两件事，两边都说不清在搜什么。
+     · 内容检索要走 content_scan 的内容库（可能没扫描过），而相册名检索
+       是纯 SQL。两者成本、命中语义、失败原因完全不同，混在一个
+       loading 态里会让“为什么没结果”无法归因。
+
+   现在：只走 search_albums；相册名搜不到时给一句**明确出口**
+   （去智能搜索），而不是默默换一种检索方式。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** 搜索框输入（防抖）：只检索相册名 + 分组名 */
 function onSearchInput() {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(async () => {
     const kw = searchKeyword.value.trim();
     if (!kw) {
       searchResults.value = [];
-      contentHits.value = [];
       return;
     }
     isSearching.value = true;
     try {
-      const [albums, contents] = await Promise.all([
-        invoke<Array<{ album: Album; folder_id: number | null; folder_path: string }>>(
-          "search_albums",
-          { keyword: kw }
-        ),
-        contentStore.searchPhotoContent(kw), // album_id=null → 全局群相册内容搜索
-      ]);
+      const albums = await invoke<
+        Array<{ album: Album; folder_id: number | null; folder_path: string }>
+      >("search_albums", { keyword: kw });
       searchResults.value = albums.map((r) => ({
         album: r.album,
         folder_id: r.folder_id,
         folder_path: r.folder_path,
       }));
-      contentHits.value = contents;
     } catch {
       searchResults.value = [];
-      contentHits.value = [];
     } finally {
       isSearching.value = false;
     }
   }, 300);
+}
+
+/** 跳去智慧相册的智能搜索（照片内容检索的唯一入口） */
+function gotoSmartSearch() {
+  const kw = searchKeyword.value.trim();
+  router.push({ path: "/search", query: kw ? { q: kw } : undefined });
 }
 
 /** 是否处于搜索状态（有输入关键词） */
@@ -1269,22 +1284,6 @@ const isSearchingActive = computed(() => searchKeyword.value.trim().length > 0);
 function clearSearch() {
   searchKeyword.value = "";
   searchResults.value = [];
-  contentHits.value = [];
-}
-
-/** 点击照片内容命中：跳转到所属相册（无相册则打开所在文件夹） */
-async function gotoContentHit(hit: ContentSearchHit) {
-  if (hit.album_id != null) {
-    router.push(`/album/${hit.album_id}`);
-    return;
-  }
-  if (hit.album_path) {
-    try {
-      await invoke("open_folder", { path: hit.album_path });
-    } catch (e) {
-      notify.error("无法打开文件夹", String(e));
-    }
-  }
 }
 
 /** 手动排序模式下待跳转的分组 id（搜索结果点击分组路径触发） */
@@ -1599,8 +1598,11 @@ function onKey(e: KeyboardEvent) {
           </div>
         </div>
 
-    <!-- 搜索栏 -->
-    <div class="search-bar">      <div class="search-input-wrap">
+    <!-- 搜索栏：只检索相册名（FEAT-107 功能边界隔离）
+         右侧常驻「不检索照片内容」+ 一个去智能搜索的出口 ——
+         范围写在框里，而不是靠用户点进去试。 -->
+    <div class="search-bar">
+      <div class="search-input-wrap">
         <span class="search-icon">🔍</span>
         <input
           v-model="searchKeyword"
@@ -1609,16 +1611,25 @@ function onKey(e: KeyboardEvent) {
           @input="onSearchInput"
         />
         <button v-if="searchKeyword" class="search-clear" @click="clearSearch">×</button>
+        <span class="search-scope">不检索照片内容</span>
       </div>
+      <button
+        class="search-elsewhere"
+        type="button"
+        :title="searchKeyword ? `去智能搜索「${searchKeyword}」` : '去智能搜索（按内容 / 人物 / 地点找照片）'"
+        @click="gotoSmartSearch"
+      >
+        找照片内容？去智能搜索 →
+      </button>
     </div>
 
-    <!-- 搜索结果面板：相册 + 照片内容（全局智能搜索） -->
+    <!-- 搜索结果面板：只有「相册」一组（内容检索已移到智能搜索） -->
     <div v-if="isSearchingActive" class="search-results">
       <div v-if="isSearching" class="search-status">正在搜索…</div>
       <template v-else>
         <!-- 相册匹配 -->
         <div v-if="searchResults.length" class="search-section">
-          <div class="search-section-title">相册</div>
+          <div class="search-section-title">相册（{{ searchResults.length }}）</div>
           <div class="search-result-list">
             <div
               v-for="hit in searchResults"
@@ -1645,34 +1656,12 @@ function onKey(e: KeyboardEvent) {
             </div>
           </div>
         </div>
-        <!-- 照片内容匹配（智能搜索，跨全部相册） -->
-        <div v-if="contentHits.length" class="search-section">
-          <div class="search-section-title">照片内容（{{ contentHits.length }}）</div>
-          <div class="search-result-list">
-            <div
-              v-for="hit in contentHits"
-              :key="'c' + hit.id"
-              class="search-result-item"
-              title="点击跳转到所属相册"
-              @click="gotoContentHit(hit)"
-            >
-              <div class="result-cover result-placeholder">🖼</div>
-              <div class="result-info">
-                <span class="result-name">{{ hit.label || hit.category || "照片" }}</span>
-                <div class="result-meta">
-                  <span class="result-path">{{ hit.album_name || hit.parent_dir }}</span>
-                  <span v-if="hit.location" class="result-path">{{ hit.location }}</span>
-                </div>
-                <div class="result-meta" v-if="hit.person_ids.length || hit.shoot_time">
-                  <span class="result-path">{{ [hit.person_ids.join(" "), hit.shoot_time].filter(Boolean).join(" · ") }}</span>
-                </div>
-              </div>
-              <span class="result-arrow">→</span>
-            </div>
-          </div>
-        </div>
-        <div v-if="!searchResults.length && !contentHits.length" class="search-status">
-          未找到匹配的相册或照片内容
+        <!-- 空态：说清「只搜了名字」，并给出另一条路 -->
+        <div v-else class="search-status">
+          没有名称匹配的相册。
+          <button class="search-status-link" type="button" @click="gotoSmartSearch">
+            按照片内容在智能搜索里找 →
+          </button>
         </div>
       </template>
     </div>
@@ -2161,24 +2150,29 @@ function onKey(e: KeyboardEvent) {
   padding-bottom: 48px;
 }
 
-/* ---- 双栏：左筛选（188px 固定） + 右内容（自适应） ----
+/* ---- 双栏：左筛选（176px 固定） + 右内容（自适应） ----
    为何固定宽度而不百分比：左栏是“分组标签 + 计数”，宽度由最长标签（“全部年份”）
-   决定，与窗口无关；用百分比会让它在大屏上宽到能再放下一列，反而不像筛选器。 */
+   决定，与窗口无关；用百分比会让它在大屏上宽到能再放下一列，反而不像筛选器。
+
+   FEAT-107：间距 28 → 30，左栏 188 → 176。
+   左栏不再有玻璃板后，188px 的内容框看起來会比实际宽一截（四周没东西了），
+   176 才是“一列文字”该有的宽度。 */
 .album-layout {
   display: grid;
-  grid-template-columns: 188px minmax(0, 1fr);
-  gap: 28px;
-  padding: 0 var(--sp-8);
+  grid-template-columns: 176px minmax(0, 1fr);
+  gap: 30px;
+  padding: 16px var(--gutter) 0;
   align-items: start;
 }
 
 /* 左栏吸顶：滚长列表时筛选始终可改，不用先滚回顶部。
-   top 值要避开顶栏（56px）+ 数据带高度（96px）+ 间距，
-   否则左栏会吸在数据带上面，把数据带遮住（与数据带重叠的另一半成因）。 */
+   top 值要避开顶栏 + 数据带 + 间距。
+   FEAT-107：旧版 168px 是按“顶栏 56 + 数据带 96 + 间距”算的，
+   数据带改成文本列后变矮了（~112），不用下移这么多。 */
 .album-side {
   position: sticky;
-  top: 168px;
-  padding-top: 4px;
+  top: 150px;
+  padding-top: 2px;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -2236,47 +2230,38 @@ function onKey(e: KeyboardEvent) {
     aspect-ratio: 3 / 2;
   }
   .album-wall-cell .tile-cap {
-    height: 34px;
+    height: 30px;
   }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   FEAT-106：左栏与数据带不再重叠
+   FEAT-107：左栏不再是一块玻璃板
    ──────────────────────────────────────────────────────────────────────────
-   旧实现：左栏玻璃板用 `inset: -10px -12px -12px -14px` 上探 10px，
-   而数据带就在左栏上方 4px 处 —— 玻璃板的上探部分**压住了数据带的面板下沿**，
-   两者叠在一起（用户截图里左上角那一坨叠影）。
-   现在：
-     ① 左栏玻璃板不再上探（inset 改为 0 -10px -10px -12px，只向左下扩一点）；
-     ② 数据带与左栏之间留出 --sp-4 的间距；
-     ③ 左栏吸顶位置下移，避开数据带的高度。
+   旧实现用 ::before 画一整块玻璃（inset: 0 -10px -10px -12px）。
+   两个问题：
+     ① 左栏是板、右栏内容又是一片 —— 两栏之间一条暗缝，
+        读起来是“两个抽屉并列”，不是一个页面的两栏；
+     ② inset 向外扩 10-12px，左栏的实际边界比它的内容框大，
+        与右栏的起始线永远对不齐（这也是这条侧栏无论怎么调都“看着别扭”的原因）。
+
+   现在：整块 ::before 删除 —— 左栏承载的是文字列表，
+   文字自己会形成一列，不需要底板。分组标题用 9.5px 大写 + .15em 字距，
+   与数据带标签用**同一套字阶**（左右两处的分组标题以前是两套字号）。
    ══════════════════════════════════════════════════════════════════════════ */
-.album-side::before {
-  content: "";
-  position: absolute;
-  inset: 0 -10px -10px -12px;
-  border-radius: var(--panel-glass-radius);
-  background-color: var(--panel-glass-fill);
-  -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
-  backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
-  box-shadow: var(--panel-glass-shadow);
-  border: 1px solid var(--panel-glass-edge);
-  pointer-events: none;
-  z-index: -1;
-}
 
 .side-group + .side-group {
   margin-top: 18px;
 }
 .side-h {
   margin: 0 0 6px;
-  font-size: var(--fs-label);
-  letter-spacing: var(--ls-label);
+  /* 与数据带标签、组头读数同一套字阶（FEAT-107） */
+  font-size: 9.5px;
+  letter-spacing: 0.15em;
   text-transform: uppercase;
-  font-weight: var(--fw-strong);
-  /* FEAT-105 实测：--c-fg-3 在浅色预设三段渐变上仅 3.15:1（9.5px 不够读）。
-     分组标题是"这一栏是什么"的唯一标识，属于要读的文字，不能当装饰处理。 */
-  color: var(--c-fg-2);
+  font-weight: 600;
+  /* 分组标题是“这一栏是什么”的唯一标识，属于要读的文字。
+     之前用 --c-fg-3（3.15:1）不达标；现在用 --fg-2（≥5:1）。 */
+  color: var(--fg-2);
 }
 
 /* 筛选项：整行可点，选中用左侧 2px 金条 + 文字提亮 ——
@@ -2288,49 +2273,51 @@ function onKey(e: KeyboardEvent) {
   justify-content: space-between;
   gap: 8px;
   width: 100%;
-  height: 26px;
-  padding: 0 8px;
+  height: 27px;
+  padding: 0 7px 0 9px;
   border: none;
   border-radius: 5px;
   background: none;
-  font-size: var(--fs-body);
-  color: var(--c-fg-2);
+  font-size: 12.5px;
+  color: var(--fg-2);
   text-align: left;
   cursor: pointer;
   transition: color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
 }
 .side-item:hover {
-  color: var(--c-fg);
-  background: var(--hover, rgba(255, 255, 255, 0.04));
+  color: var(--fg);
+  background: var(--hover);
 }
+/* 选中 = 左侧 2px 竖条 + 文字提亮；底只给 --hover（≈5% 白，几乎不可见）。
+   不用“整块高亮”：一列十几项，每项都有一块底就是十几个小卡片。 */
 .side-item.on {
-  color: var(--c-fg);
-  font-weight: var(--fw-em);
-  background: var(--hover, rgba(255, 255, 255, 0.045));
-}.side-item.on::before {
+  color: var(--fg);
+  font-weight: 600;
+  background: var(--hover);
+}
+.side-item.on::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 5px;
-  bottom: 5px;
+  top: 7px;
+  bottom: 7px;
   width: 2px;
   border-radius: 2px;
   background: var(--c-accent);
 }
 .side-item:disabled {
-  color: var(--c-fg-3);
+  color: var(--fg-3);
   cursor: not-allowed;
 }
 .side-n {
-  font-size: 10px;
-  /* 实测：--c-fg-3 → 3.13:1。计数是用户判断"该组多少个"的依据，用 fg-2（约 5:1） */
-  color: var(--c-fg-2);
+  font-size: 10.5px;
+  /* 计数是用户判断"该组多少个"的依据 —— 要读，用 --fg-3（已提到 ≥4.5:1） */
+  color: var(--fg-3);
   font-variant-numeric: tabular-nums;
 }
 .side-item.on .side-n {
-  /* FEAT-105：金色在玻璃板底上不够（深色底 3.97:1），
-     用玻璃板专用的强调色（深底提亮 / 浅底压暗，方向相反）。 */
-  color: var(--c-accent-bright, var(--c-accent));
+  /* 选中项的计数跟着提亮一档（仍在弱色系，不再用金色 —— 金色留给竖条） */
+  color: var(--fg-2);
 }
 
 /* 右栏内容头部：左计数 + 右操作，同一行
@@ -2542,16 +2529,25 @@ function onKey(e: KeyboardEvent) {
   color: var(--color-on-primary);
 }
 
-/* 搜索框：做成与顶栏搜索同一套“玻璃胶囊”，而不是一个填满宽度的黑条 */
+/* 搜索行（FEAT-107）：输入框 + 范围后缀 + 去智能搜索的出口。
+
+   为什么搜索框不能只写个 placeholder：
+     placeholder 在**开始输入后就消失**，恰好是用户最需要知道
+     “我在搜什么范围”的那一刻。所以范围得是框内一个常驻的灰字。 */
 .search-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   margin-bottom: 14px;
-  max-width: 420px;
 }
 
 .search-input-wrap {
   position: relative;
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
+  max-width: 460px;
+  min-width: 0;
 }
 
 .search-icon {
@@ -2566,7 +2562,8 @@ function onKey(e: KeyboardEvent) {
 .search-input {
   width: 100%;
   height: 34px;
-  padding: 0 34px 0 32px;
+  /* 右侧要同时容纳「清除 ×」与「范围后缀」，所以留较宽的内边距 */
+  padding: 0 118px 0 32px;
   border: 1px solid var(--c-rule);
   border-radius: var(--r-pill);
   font-size: var(--fs-body);
@@ -2575,6 +2572,52 @@ function onKey(e: KeyboardEvent) {
   color: var(--c-fg);
   background: color-mix(in srgb, var(--c-fg) 5%, transparent);
   transition: border-color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
+}
+
+/* 范围后缀：框内右侧、常驻、不可交互 —— 它是“边界说明”而不是控件。
+   用一根发丝竖线与输入区分开（否则会读成填好的内容）。
+
+   ⚠️ 颜色用 --fg-2 而不是 --fg-3：这句“不检索照片内容”是**功能边界**，
+   它存在的全部意义就是被读到；用弱色（实测浅色 3.54:1）等于白写。 */
+.search-scope {
+  position: absolute;
+  right: 12px;
+  padding-left: 11px;
+  border-left: 1px solid var(--c-rule);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  color: var(--c-fg-2);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 出口：把「内容检索」明确指到智能搜索，而不是在这个框里默借实现 */
+.search-elsewhere {
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 11.5px;
+  color: var(--c-fg-2);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--dur-2) var(--ease-out);
+}
+.search-elsewhere:hover {
+  color: var(--c-accent-bright, var(--c-accent));
+}
+
+/* 空态里的同行链接（不单独占行） */
+.search-status-link {
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: inherit;
+  color: var(--c-accent-bright, var(--c-accent));
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .search-input::placeholder {
@@ -2588,7 +2631,7 @@ function onKey(e: KeyboardEvent) {
 
 .search-clear {
   position: absolute;
-  right: 10px;
+  right: 92px;
   border: none;
   background: none;
   color: var(--c-fg-3);

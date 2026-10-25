@@ -115,7 +115,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 
 <template>
   <!-- ══════════════ FEAT-103：tile 变体（Canvas 极简） ══════════════
-       裸封面 + 两行图注。没有卡片背景、没有阴影、没有内边距 ——
+       裸封面 + 下方一行裸文字图注。没有卡片背景、没有阴影、没有内边距 ——
        层级由留白建立，不靠边框。但交互与 card 完全一致（多选/右键/键盘）。
        注意：勾选框仍保留（批量管理是刚需），只是把它从"卡片内左上"
        改成贴在封面上的圆点，避免裸封面上突然出现一个方块。 -->
@@ -135,31 +135,16 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
       <img v-if="album.cover_path" :src="fileUrl(album.cover_path)" alt="" loading="lazy" decoding="async" />
       <div v-else class="tile-placeholder">📷</div>
 
-      <!-- 已入库角标：从 pill 降为纯文字（封面本身就是底色，不需要 pill 兜底） -->
+      <!-- 已入库角标：裸文字 + 文字阴影，不用深色底块 -->
       <span
         v-if="!isScanned"
         class="tile-badge"
         title="尚未扫描入库，可在详情页执行综合扫描"
       >未入库</span>
 
-      <!-- FEAT-106：拍摄时间胶囊（压在封面左上角的下一行）。
-           时间与图注胶囊垂直错开：图注在左下角（bottom 8px），
-           时间在它上方（bottom 40px），两条水平线不重叠。 -->
+      <!-- 拍摄时间：压在封面左下角的**裸文字**（不是胶囊）。
+           底下一层 34px 高的极淡渐变保证浅色照片上也能读（见 CSS）。 -->
       <span v-if="album.shoot_time" class="tile-time">{{ tileTime }}</span>
-
-      <!-- FEAT-106：图注胶囊（压在封面左下角）。
-           放在 .tile-cover 内部而不是外面 —— 它是**压在照片上**的标签，
-           absolute 定位需要一个 relative 的包含块，.tile-cover 正好是。
-           为什么压在照片里而不是封面下方：
-             · 下方那条横带会把整墙切成一道道横带（像表格），不是“墙”；
-             · 参考图里每块照片面板的标签就是压在面板内部的一个小块；
-             · 胶囊宽度随内容变化 → 自然错落，不会一排等宽的“占位块”。 -->
-      <span class="tile-cap">
-        <span class="tile-cap-in">
-          <b class="tile-name">{{ album.name }}</b>
-          <span class="tile-meta">{{ tileMeta }}</span>
-        </span>
-      </span>
 
       <!-- 勾选圆点：管理模式下常驻；否则仅选中时显示 -->
       <span
@@ -171,6 +156,22 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
         :aria-label="`勾选 ${album.name}`"
         @click.stop="emit('toggle-select', $event)"
       >{{ selected ? "✓" : "" }}</span>
+    </div>
+
+    <!--
+      FEAT-107：图注从「压在封面上的胶囊」改到「封面下方一行裸文字」。
+
+      为什么改回来：胶囊方案是给「一屏几十块」的密排墙设计的（那时文字
+      必须有个底才读得出来）。现在一行只有 3~5 块，**封面本身就是足够大的
+      对比面**，胶囊反而变成贴在照片上的黑色贴纸，而且两个胶囊垂直堆叠
+      （bottom 8 / bottom 44）在 186px 高的封面上占了 74px。
+
+      名字与张数连成一串（不是左右分推）：瓦片宽度不同，推到最右会让
+      每一行的张数落在不同的 x 位置，读起来像两栏表格而不是一句描述。
+    -->
+    <div class="tile-cap">
+      <b class="tile-name">{{ album.name }}</b>
+      <span class="tile-meta">{{ tileMeta }}</span>
     </div>
   </article>
 
@@ -557,49 +558,62 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   opacity: 0.32;
 }
 
-/* 「未入库」角标：同样收成小胶囊（压在封面左上角）。
-   之前是纯文字（无底），压在浅色封面上会消失 —— 改成半透深底小胶囊。 */
+/* 「未入库」角标：**裸文字**（FEAT-107）。
+   之前是深色胶囊 —— 胶囊压在照片上就等于盖掉一块画面，
+   而这里一行只有 3~5 块，照片本身才是主体。
+   配色判据见下方《封面上裸文字的配色》一段。 */
 .tile-badge {
   position: absolute;
   top: 8px;
-  left: 8px;
-  padding: 2px 7px;
-  border-radius: 4px;
+  right: 10px;
+  z-index: 1;
   font-size: 9px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  font-weight: var(--fw-strong);
-  color: rgba(255, 255, 255, 0.92);
-  background: rgba(8, 10, 14, 0.46);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  font-weight: 650;
+  /* 默认 = 占位情景：跟随主题文字色 */
+  color: var(--fg-2);
+  pointer-events: none;
+}
+/* 真封面（照片）上才用白字 + 文字阴影 */
+.tile-cover:has(img) .tile-badge {
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7), 0 0 6px rgba(0, 0, 0, 0.4);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   封面上裸文字的配色（FEAT-107）
+   ──────────────────────────────────────────────────────────────────────────
+   为什么不能拿 `body:not(.theme-dark)` 当判据：
+   那个类表达的是「用户选了浅色模式」，与「封面底色是深是浅」无关；
+   而且探针/内嵌情景下该类可能根本没挂上，于是“浅色分支”
+   在深色界面里静默生效（实测踩到：光探针里的日期字变成深色）。
+
+   正确判据是**封面自己有没有照片**：
+     · 有 <img> → 照片总有暗部 → 白字 + 文字阴影
+     · 无 <img> → 占位底跟着主题走 → 用 --fg 系列（深底白字 / 浅底深字）
+   这个判据不依赖任何全局类，也不可能错配。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── 角标（未入库）：默认占位情景 ── */
+/* ── 日期：默认占位情景 ── */
+.tile-time {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  z-index: 1;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg-2);
   pointer-events: none;
 }
 
-/* FEAT-105：拍摄时间标签（封面左下角）
-   —— 叠在封面上，位置固定，不再随图注跳动。
-   一层从下往上的黑 scrim + 白色字：浅色封面（雪、天空）上也能读。
-   不用 backdrop-filter —— 一屏几十张，每张都模糊背景会拖垮滚动。
-
-   FEAT-106：改为**小胶囊**（而不是整条渐变）。
-   原因：整条渐变在 272px 宽的封面上会吃掉 1/4 高度，看上去像“封面上贴了一条黑带”；
-   而小胶囊只占封面左下角一小块，照片本体才是主体。
-   渐变 scrim 改为**胶囊自身的半透底**（更轻），只在浅色封面上加一点文字阴影。
-
-   位置：压在**左下角**，但比图注胶囊**高一行**（bottom: 44px）——
-   两个胶囊垂直错开，不重叠。 */
-.tile-time {
-  position: absolute;
-  left: 8px;
-  bottom: 44px;
-  padding: 2px 7px;
-  border-radius: 4px;
-  font-size: 9.5px;
-  font-weight: var(--fw-em);
-  letter-spacing: 0.02em;
-  color: rgba(255, 255, 255, 0.9);
-  background: rgba(8, 10, 14, 0.46);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-  pointer-events: none;
+/* 有真封面（照片）：白字 + 文字阴影。
+   照片总有暗部，所以白字总是安全的 —— 不需要额外遮罩层。 */
+.tile-cover:has(img) .tile-time {
+  color: rgba(255, 255, 255, 0.90);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
 }
 
 /* 勾选圆点：22px，与封面的 5px 圆角形成对比但不突兀 */
@@ -637,47 +651,48 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
     0 0 0 2px var(--c-accent);
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   图注（tile-cap）—— FEAT-106 统一为“压在封面上的胶囊”
-   ──────────────────────────────────────────────────────────────────────────
-   结构变更（影响全站的 tile，包括地点/手动视图）：
-     旧：.tile-cap 在 .tile-cover **外面**，是一块贴在封面下方的玻璃条
-     新：.tile-cap 在 .tile-cover **里面**，是压在封面左下角的一个胶囊
-   为什么这么改：
-     ① 下方那条玻璃条贯穿整格宽 → 一排排横带把墙切成“表格”；
-     ② 胶囊宽度随内容变化 → 自然错落，每格的标签长度不同；
-     ③ 标签压在照片上，与参考图里“每块面板内部有一个小标签块”一致。
-   代价：.tile-cap 的样式从“块级布局”变成“绝对定位的胶囊”，
-   所以它不再参与 .album-tile 的纵向 flex 流 —— .tile-cover 变成唯一的流内元素。
-   ══════════════════════════════════════════════════════════════════════════ */
-.tile-cap {
+/* 封面底部极淡渐变：只为了让左下角的日期裸文字在浅色照片上也能读。
+   34px 高、最深 0.30 —— 两个值都是实测边界：
+   浅了在雪景/天空上白字消失，深了就是“压在照片上的黑带”。
+   ⚠️ 只给**有真封面**的瓦片；占位底不需要它（占位底本身就很平，
+   而且占位情景下日期用的是主题文字色，不需要遮罩）。 */
+.tile-cover:has(img)::after {
+  content: "";
   position: absolute;
-  left: 8px;
-  bottom: 8px;
-  max-width: calc(100% - 16px);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 34px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.30), rgba(0, 0, 0, 0));
   pointer-events: none;
 }
 
-/* 胶囊本体：半透深底 + 圆角（压在**照片**上，所以深浅两个预设都是深底白字） */
-.tile-cap-in {
-  display: inline-flex;
+/* ── 图注：封面下方一行裸文字（FEAT-107）──────────────────────────
+   结构：名字（13px 主色） + 张数（10.5px 弱色），同基线、连成一串。
+   没有底、没有框、没有描边 —— 它直接落在背景上。
+
+   为什么不能 margin-left:auto 把张数推到最右：
+   瓦片宽度不同，推到右边会让每一行的张数落在不同的 x 位置，
+   读起来像两栏表格而不是一句描述。
+   ────────────────────────────────────────────────────────────── */
+.tile-cap {
+  display: flex;
   align-items: baseline;
   gap: 7px;
-  max-width: 100%;
-  padding: 3px 9px;
-  border-radius: 5px;
-  background: rgba(8, 10, 14, 0.52);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  min-width: 0;
+  /* 固定行高：不同字数的名字不能让下一行的封面错位 */
+  line-height: 18px;
+  padding-top: 7px;
 }
 
 /* FEAT-105：mosaic 变体（跨格的大瓦片）
    默认 .tile-cover 用 padding-bottom:62.5% 定一个固定宽高比，
    在跨 2×2 的大格子里只会占住上方一块，底下留白 —— 看起来像"图没铺满"。
-   这里在大格子里改成：封面填满剩余高度（flex:1），
-   图注压在封面**底部**（绝对定位 + 渐变遮罩），像海报的落款。 */
+   这里在大格子里改成：封面填满剩余高度（flex:1）。
+
+   FEAT-107：图注也从“压封面底部”改到“封面下方一行”——
+   与普通瓦片一致，整墙只有**一种**图注形式，不再两种并存。 */
 .album-tile.tile-mosaic {
-  position: relative; /* 图注的 absolute 定位锚 —— 封面是 relative 但它是兄弟节点，
-                          所以图注需要卡片自己当锚，否则会相对整行定位（宽度变 1440px） */
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -689,54 +704,21 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   flex: 1;
   min-height: 0;
 }
-.album-tile.tile-mosaic .tile-cap {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 24px 11px 9px;
-  /* 遮罩是**深色**渐变，所以图注文字必须是**浅色**（深色底上白字）。
-     浅色预设下这块板底很亮，深色遮罩 + 深色字会糊成一片 ——
-     所以浅色下改用浅色遮罩 + 深色字。 */
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.74), rgba(0, 0, 0, 0));
-  pointer-events: none;
-}
-.album-tile.tile-mosaic .tile-name {
-  color: #fff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
-}
-.album-tile.tile-mosaic .tile-meta {
-  color: rgba(255, 255, 255, 0.84);
-}
-/* 浅色预设：板底亮 → 遮罩与文字都反过来 */
-body:not(.theme-dark) .album-tile.tile-mosaic .tile-cap {
-  background: linear-gradient(to top, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0));
-}
-body:not(.theme-dark) .album-tile.tile-mosaic .tile-name {
-  color: #17161a;
-  text-shadow: none;
-}
-body:not(.theme-dark) .album-tile.tile-mosaic .tile-meta {
-  color: rgba(23, 22, 26, 0.7);
-}
-/* 浅色下封面左下角的时间标签也得反过来（它原本叠在深色遮罩上） */
-body:not(.theme-dark) .album-tile.tile-mosaic .tile-time {
-  display: none;
-}
-/* 大格子里不再显示封面左下角的独立时间标签（时间已在图注里） */
 .album-tile.tile-mosaic .tile-time {
+  /* 大瓦片不再显示日期：行高由算法定，日期没有固定处可贴 */
   display: none;
 }
 
-/* ── FEAT-106：wall 变体（行式密排）────────────────────────────────────
+/* ── FEAT-106/107：wall 变体（行式密排）──────────────────────────────
    与 mosaic 的结构差异：
      mosaic：封面填满格子（flex:1）
      wall  ：封面高度 = 所在行的高度（--cover-h 由外层传入，px 值）
    两者都是 .album-tile.tile-* 修饰类，特异性相同（0,2,0），
    所以靠**声明顺序**定胜负 —— 本段写在 mosaic 段之后。
 
-   图注胶囊的样式在基础 .tile-cap 里已经定好了（全站统一），
-   这里不重复定义 —— 只处理 wall 特有的结构差异。 */
+   ⚠️ FEAT-107：图注从封面内部搬到封面下方后，
+   `.album-tile.tile-wall { height: 100% }` 会把图注挤出去（整行高度固定）。
+   现在行高 = coverH + captionH(30)，所以这里让封面 flex:none、图注占剩下的 30px。 */
 .album-tile.tile-wall {
   height: 100%;
   display: flex;
@@ -747,6 +729,14 @@ body:not(.theme-dark) .album-tile.tile-mosaic .tile-time {
   /* 覆盖 62.5% 的 padding-bottom 方案：高度由行决定 */
   height: var(--cover-h, 160px);
   padding-bottom: 0;
+  flex: none;
+}
+
+/* wall 的图注高度固定 30px（与 justifiedRows 的 captionH 一致），
+   否则不同字数的名字会让下一行的封面错位。 */
+.album-tile.tile-wall .tile-cap {
+  height: 30px;
+  padding-top: 7px;
   flex: none;
 }
 
@@ -761,14 +751,12 @@ body:not(.theme-dark) .album-tile.tile-mosaic .tile-time {
 }
 
 .tile-name {
-  font-size: var(--fs-title);
-  font-weight: var(--fw-em);
-  letter-spacing: var(--ls-title);
-  /* 胶囊压在**照片**上 → 白字（深浅两个预设都一样）。
-     为什么不用 --c-fg：那是页面文字色，浅色预设下会变成深字，
-     压在浅色照片（雪、天空）上会看不见。 */
-  color: rgba(255, 255, 255, 0.95);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.008em;
+  /* 图注现在落在**背景**上（不是照片上），所以用主题文字色 ——
+     不再是写死的白字（浅色预设下白字直接消失）。 */
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -777,13 +765,24 @@ body:not(.theme-dark) .album-tile.tile-mosaic .tile-time {
 }
 
 .tile-meta {
-  font-size: var(--fs-meta);
-  /* 胶囊压在照片上 → 浅色文字（深浅预设一致） */
-  color: rgba(255, 255, 255, 0.74);
-  letter-spacing: var(--ls-meta);
+  font-size: 10.5px;
+  /* 张数弱化一档：它是名字的补充，不是并列信息 */
+  color: var(--fg-3);
+  letter-spacing: 0.01em;
   white-space: nowrap;
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
+}
+
+/* 无封面相册（新建/封面文件被移走）的角标：占位底是浅灰，白字会消失。
+   这种情况下给角标一个半透黑底 —— 这是**唯一**仍需要底的地方，
+   因为它落在的不是照片，而是空占位。 */
+.album-tile .tile-cover:not(:has(img)) .tile-badge {
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(23, 22, 26, 0.55);
+  padding: 2px 7px;
+  border-radius: 4px;
+  text-shadow: none;
 }
 
 .album-tile:hover .tile-cover {
@@ -810,28 +809,11 @@ body:not(.theme-dark) .album-tile.tile-mosaic .tile-time {
     0 0 0 3.5px transparent;
 }
 
-/* 浅色模式：占位底与描边换成暗色系 */
+/* 浅色模式：占位底换成暗色系 */
 body:not(.theme-dark) .tile-cover {
   background: rgba(23, 22, 26, 0.05);
 }
 
-/* 角标在浅色下的可读性：
-   角标原本是"白字 + 黑文字阴影"，专为"压在照片上"设计 —— 照片总有暗部。
-   但**没有封面的相册**（新建/封面文件被移走）底是浅灰，白字直接消失。
-   这里给无封面场景一个实底：用 backdrop-filter 取不可靠（浅灰上无意义），
-   直接给一个半透黑药丸 + 纯白字。 */
-body:not(.theme-dark) .tile-cover:not(:has(img)) .tile-badge {
-  color: #fff;
-  background: rgba(23, 22, 26, 0.55);
-  padding: 2px 7px;
-  border-radius: 4px;
-  text-shadow: none;
-}
-/* 深色下同样处理：深灰占位底上白字尚可读，但加一层薄底更稳 */
-body.theme-dark .tile-cover:not(:has(img)) .tile-badge {
-  background: rgba(255, 255, 255, 0.12);
-  padding: 2px 7px;
-  border-radius: 4px;
-  color: rgba(255, 255, 255, 0.92);
-}
+/* 无封面的占位情景：角标用主题文字色（已在基础规则里），这里不再写
+   body.theme-dark 分支 —— 那个类作为判据不成立（见上方说明）。 */
 </style>
