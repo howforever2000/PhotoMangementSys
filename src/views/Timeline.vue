@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useRoute, useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
@@ -11,6 +11,7 @@ import GroupStat from "../components/ui/GroupStat.vue";
 import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
 import type { ContentSearchHit } from "../types/content";
 import { getThumbs } from "../utils/thumbQueue";
+import { justifyRows } from "../utils/justifiedRows";
 
 /**
  * 照片时间线（FEAT-033）—— 跨相册按拍摄时间聚合浏览
@@ -125,6 +126,112 @@ interface YearGroup {
   year: string;
   months: MonthGroup[];
 }
+/* ── 左侧时间栏的扁平节列表（FEAT-113 ③-3）──────────────────────────
+   为什么要「扁平」：左栏要把年和月放在同一根竖线上（年粗、月细），
+   如果按 groups 嵌套渲染，年与月之间的那条竖线会被行盒切断。
+   拍平成 [{kind:'year'},{kind:'month'}...] 后用一个 flex column 绘制，
+   每个节点自带左侧圆点，竖线就是容器上的 background 直线 —— 不断。 */
+interface RailNode {
+  kind: "year" | "month";
+  /** 锚点 id，与右侧分区一致（点一下就滚过去） */
+  id: string;
+  label: string;
+  count: number;
+}
+const railNodes = computed<RailNode[]>(() => {
+  const out: RailNode[] = [];
+  for (const g of groups.value) {
+    const yCount = g.months.reduce((n, mg) => n + mg.items.length, 0);
+    out.push({
+      kind: "year",
+      id: `y-${g.year}`,
+      label: g.year === "未记录" ? "未记录" : `${g.year}`,
+      count: yCount,
+    });
+    for (const mg of g.months) {
+      if (!mg.month) continue; /* 未记录时间的月份不占位，否则一年只有一个月却多一行 */
+      out.push({
+        kind: "month",
+        id: `y-${g.year}-m-${mg.month}`,
+        label: `${Number(mg.month)} 月`,
+        count: mg.items.length,
+      });
+    }
+  }
+  return out;
+});
+
+/** 左栏当前高亮的锚点（随滚动自动跟随，点击时立即设） */
+const railActive = ref<string>("");
+
+/** 左栏点击：滚到对应分区（用 scrollIntoView 而非改 hash，避免污染路由） */
+function railGo(id: string) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  railActive.value = id;
+  el.scrollIntoView({ behavior: "smooth", block: "start" });
+  /* 滚过去后闪一下高亮，告诉用户“就是这一块”（与 query 定位同一套视觉） */
+  const key = id.replace(/^y-/, "y-");
+  highlightKey.value = key;
+  window.setTimeout(() => {
+    if (highlightKey.value === key) highlightKey.value = null;
+  }, 1800);
+}
+
+/* ── 右侧照片错落密排（FEAT-113 ③-3）──────────────────────────────
+   复用相册墙的 justifyRows（行式密排），而不是另写一套：
+   两者目标完全一致（每行铺满、宽度按宽高比分配、位置稳定可预期）。
+   与相册墙的差别只有参数：时间线是小图浏览，名义高度低、缝更小、
+   不放假宽幅（宽幅会把某个月的一行拉成一条横幅，月份多时显得碎）。 */
+const boardW = ref(0);
+let boardRO: ResizeObserver | null = null;
+const boardEl = ref<HTMLElement | null>(null);
+
+/**
+ * 量容器宽。
+ * ⚠️ 坑：不能靠 document.getElementById 在 onMounted 里量。
+ *    #tl-board 在 v-else（loading 结束后）才渲染，onMounted 时它还没进 DOM，
+ *    于是 boardW 一直停在回退值 1000 → 所有行按 1000px 算宽，
+ *    实际容器 1322px → 每行右侧留一大块空白（实测 0/18 行铺满）。
+ *    用模板 ref + watch 监听元素出现才是正确时机。
+ */
+function measureBoard() {
+  const el = boardEl.value;
+  if (!el) return;
+  const w = Math.round(el.clientWidth);
+  if (w > 0 && Math.abs(w - boardW.value) > 1) boardW.value = w;
+  if (!boardRO && typeof ResizeObserver !== "undefined") {
+    boardRO = new ResizeObserver((ents) => {
+      const nw = Math.round(ents[0]?.contentRect.width ?? 0);
+      if (nw > 0 && Math.abs(nw - boardW.value) > 1) boardW.value = nw;
+    });
+    boardRO.observe(el);
+  }
+}
+
+watch(boardEl, (el) => {
+  if (el) nextTick(measureBoard);
+});
+
+/** 按月份把该月照片切成行（纯函数，同一输入必然同一输出） */
+function monthRows(mg: MonthGroup) {
+  return justifyRows({
+    count: mg.items.length,
+    containerWidth: boardW.value || 1000,
+    gap: 8,
+    captionH: 0, /* 图注是叠在封面上的，不占额外高度 */
+    nominalHeight: 165,
+    baseAspect: 1.4,
+    wideEvery: 0, /* 不放假宽幅 */
+    /* 高度区间刻意做窄（140~196，跨度 56px 而非 120px）。
+       之前给 104~232 时，同一个月的两行会出现 240 与 143 相邻 ——
+       一大一小并排更像“排错了”，不像“错落”。
+       错落感应该来自**每行卡片数不同（宽度不同）**，而不是行高忽高忽低。 */
+    minCoverH: 140,
+    maxCoverH: 196,
+  });
+}
+
 const groups = computed<YearGroup[]>(() => {
   const map = new Map<string, Map<string, ContentSearchHit[]>>();
   for (const r of rows.value) {
@@ -285,9 +392,43 @@ function onWinScroll() {
   if (scrollRaf != null) return;
   scrollRaf = requestAnimationFrame(() => {
     showBackToTop.value = window.scrollY > 300;
+    syncRailActive();
     scrollRaf = null;
   });
 }
+
+/**
+ * 左栏高亮跟随滚动。
+ *
+ * 做法：取所有锚点元素，找出「顶部已过判断线、且最靠上」的那一个。
+ * 为什么不用 IntersectionObserver：
+ *   观察器只能告诉你“进入了/离开了”，但月份高度差异很大（一个月能跨好几屏），
+ *   会出现「两个锚点同时可见」的情况，观察器无法回答“现在到底在哪个里”。
+ *   按位置排序找最后一个越过判断线的，语义明确且不受高度影响。
+ * 判断线取视口 35% 处：这样标题刚滑到屏幕中上方就切换，符合阅读时眼位。
+ */
+function syncRailActive() {
+  if (!railNodes.value.length) return;
+  const line = window.innerHeight * 0.35;
+  let cur = railNodes.value[0].id;
+  for (const n of railNodes.value) {
+    const el = document.getElementById(n.id);
+    if (!el) continue;
+    if (el.getBoundingClientRect().top <= line) cur = n.id;
+    else break; /* 节点按文档顺序排列，一旦有节点在判断线下方，后面的更加靠下 */
+  }
+  railActive.value = cur;
+}
+
+/* 首次渲染完就要给左栏一个初始高亮，否则停在顶部时左栏一个都不亮。
+   watch groups：数据到达 → 分区渲染 → nextTick 后锚点已存在。 */
+watch(
+  groups,
+  () => {
+    nextTick(() => requestAnimationFrame(() => syncRailActive()));
+  },
+  { immediate: true },
+);
 
 function scrollToTop() {
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -298,6 +439,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("scroll", onWinScroll);
   if (scrollRaf != null) cancelAnimationFrame(scrollRaf);
   scrollRaf = null;
+  boardRO?.disconnect();
+  boardRO = null;
   cardObserver?.disconnect();
   cardObserver = null;
   pendingThumbs.clear();
@@ -466,59 +609,90 @@ function goAlbumFromLightbox(albumId: number) {
       @action="router.push('/albums')"
     />
 
-    <!-- 时间线分组 -->
-    <div v-else class="tl-content">
-      <section
-        v-for="g in groups"
-        :key="g.year"
-        :id="`y-${g.year}`"
-        class="tl-year"
-        :class="{ 'tl-highlight': highlightKey === `y-${g.year}` }"
-      >
-        <h2 class="tl-year-title">
-          {{ g.year === "未记录" ? "🕐 未记录拍摄时间" : `🗓️ ${g.year} 年` }}
-          <span class="tl-year-count">{{ yearStat(g).photoCount }} 张</span>
-          <!-- FEAT-103：组级统计（月数 / 张数 / 月均）+ 月度分布迷你柱。
-               放在年标题同一行、字号降一档 —— 贴着标题读，不打断浏览流。 -->
-          <GroupStat
-            v-if="g.year !== '未记录'"
-            class="tl-year-stat"
-            :items="[
-              { value: yearStat(g).monthCount, label: '个月' },
-              { value: yearStat(g).avg, label: '平均/月' },
-            ]"
-            :dist="yearStat(g).dist"
-            :dist-highlight="yearStat(g).distHighlight"
-          />
-        </h2>
-        <div
-          v-for="mg in g.months"
-          :key="mg.month"
-          :id="mg.month ? `y-${g.year}-m-${mg.month}` : `y-${g.year}-m-none`"
-          class="tl-month"
-          :class="{ 'tl-highlight': highlightKey === `y-${g.year}-m-${mg.month}` }"
-        >
-          <h3 class="tl-month-title">{{ mg.label }} <span>{{ mg.items.length }}</span></h3>
-          <div class="tl-grid">
-            <figure
-              v-for="r in mg.items"
-              :key="r.id"
-              :ref="(el) => registerCard(el, r.path, r.album_id ?? 0)"
-              class="tl-card"
-              :title="[r.label, r.location, r.album_name].filter(Boolean).join(' · ')"
-              @click="openCard(r)"
-            >
-              <img v-if="thumbMap[r.path]" :src="fileUrl(thumbMap[r.path])" loading="lazy" class="tl-thumb" alt="" />
-              <div v-else class="tl-thumb tl-thumb-ph">🖼️</div>
-              <figcaption class="tl-cap">
-                <span v-if="r.label" class="tl-label">{{ r.label }}</span>
-                <span v-if="r.location" class="tl-loc">📍 {{ r.location }}</span>
-                <button class="tl-open" title="跳转到该照片所在相册" @click.stop="gotoAlbum(r)">↗</button>
-              </figcaption>
-            </figure>
-          </div>
+    <!-- 时间线分组（FEAT-113 ③-3）：左侧吸顶时间栏 + 右侧照片错落密排 -->
+    <div v-else class="tl-shell">
+      <!-- 左栏：年/月两级节点，当前视口所在月份高亮 -->
+      <aside class="tl-rail" aria-label="时间导航">
+        <div class="tl-rail-inner">
+          <button
+            v-for="n in railNodes"
+            :key="n.id"
+            class="tl-rail-node"
+            :class="[`is-${n.kind}`, { on: railActive === n.id }]"
+            @click="railGo(n.id)"
+          >
+            <span class="tl-rail-dot" />
+            <span class="tl-rail-label">{{ n.label }}</span>
+            <span class="tl-rail-count">{{ n.count }}</span>
+          </button>
         </div>
-      </section>
+      </aside>
+
+      <!-- 右侧：年分组 → 月分组 → 行式密排 -->
+      <div ref="boardEl" id="tl-board" class="tl-board">
+        <section
+          v-for="g in groups"
+          :key="g.year"
+          :id="`y-${g.year}`"
+          class="tl-year"
+          :class="{ 'tl-highlight': highlightKey === `y-${g.year}` }"
+        >
+          <h2 class="tl-year-title">
+            {{ g.year === "未记录" ? "🕐 未记录拍摄时间" : `🗓️ ${g.year} 年` }}
+            <span class="tl-year-count">{{ yearStat(g).photoCount }} 张</span>
+            <GroupStat
+              v-if="g.year !== '未记录'"
+              class="tl-year-stat"
+              :items="[
+                { value: yearStat(g).monthCount, label: '个月' },
+                { value: yearStat(g).avg, label: '平均/月' },
+              ]"
+              :dist="yearStat(g).dist"
+              :dist-highlight="yearStat(g).distHighlight"
+            />
+          </h2>
+          <div
+            v-for="mg in g.months"
+            :key="mg.month"
+            :id="mg.month ? `y-${g.year}-m-${mg.month}` : `y-${g.year}-m-none`"
+            class="tl-month"
+            :class="{ 'tl-highlight': highlightKey === `y-${g.year}-m-${mg.month}` }"
+          >
+            <h3 class="tl-month-title">{{ mg.label }} <span>{{ mg.items.length }}</span></h3>
+            <!-- 逐行渲染：每行宽度铺满容器，行高由 justifyRows 反算（与相册墙同一套算法） -->
+            <div
+              v-for="(row, ri) in monthRows(mg)"
+              :key="ri"
+              class="tl-row"
+              :style="{ height: row.height + 'px' }"
+            >
+              <figure
+                v-for="cell in row.cells"
+                :key="mg.items[cell.index].id"
+                :ref="(el) => registerCard(el, mg.items[cell.index].path, mg.items[cell.index].album_id ?? 0)"
+                class="tl-card"
+                :style="{ width: cell.width + 'px' }"
+                :title="[mg.items[cell.index].label, mg.items[cell.index].location, mg.items[cell.index].album_name].filter(Boolean).join(' · ')"
+                @click="openCard(mg.items[cell.index])"
+              >
+                <img
+                  v-if="thumbMap[mg.items[cell.index].path]"
+                  :src="fileUrl(thumbMap[mg.items[cell.index].path])"
+                  loading="lazy"
+                  class="tl-thumb"
+                  alt=""
+                />
+                <div v-else class="tl-thumb tl-thumb-ph">🖼️</div>
+                <figcaption class="tl-cap">
+                  <span v-if="mg.items[cell.index].label" class="tl-label">{{ mg.items[cell.index].label }}</span>
+                  <span v-if="mg.items[cell.index].location" class="tl-loc">📍 {{ mg.items[cell.index].location }}</span>
+                  <button class="tl-open" title="跳转到该照片所在相册" @click.stop="gotoAlbum(mg.items[cell.index])">↗</button>
+                </figcaption>
+              </figure>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
 
     <!-- 回到顶部箭头：滚动超过一屏后出现，点击平滑回顶 -->
@@ -611,11 +785,13 @@ function goAlbumFromLightbox(albumId: number) {
   color: #f2f0f4;
 }
 
+/* 年分组：FEAT-113 ③-3 后不再包一层卡片背景。
+   左栏已经在充当“结构”了，右栏再套一层圆角底色就是双重容器 ——
+   而且这层底会吃掉相片周围的留白，让密排看起来像被关在盒子里。
+   现在只靠标题的全行分隔与间距分层。 */
 .tl-year {
-  background: var(--card-bg, rgba(127, 127, 127, 0.05));
-  border-radius: 12px;
-  padding: 16px 16px 4px;
-  margin-bottom: 18px;
+  padding: 0;
+  margin-bottom: 26px;
   transition: background var(--dur-3), box-shadow var(--dur-3);
 }
 /* FEAT-E：跳定位高亮（query 定位 + 滚动后亮色边框 1.8s 淡出） */
@@ -627,10 +803,13 @@ function goAlbumFromLightbox(albumId: number) {
 }
 .tl-year-title {
   font-size: 17px;
-  margin: 0 0 10px;
+  margin: 0 0 14px;
   display: flex;
   align-items: center;
   gap: 10px;
+  padding-bottom: 9px;
+  /* 标题下的细分隔线：把年与年之间分开，代替原来的卡片底 */
+  border-bottom: 1px solid color-mix(in srgb, var(--c-fg) 12%, transparent);
 }
 .tl-year-count {
   font-size: 12px;
@@ -638,12 +817,14 @@ function goAlbumFromLightbox(albumId: number) {
   font-weight: 500;
 }
 .tl-month {
-  margin-bottom: 14px;
+  margin-bottom: 20px;
 }
 .tl-month-title {
-  font-size: 14px;
-  margin: 0 0 8px;
-  opacity: 0.85;
+  font-size: 13px;
+  margin: 0 0 9px;
+  opacity: 0.8;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 .tl-month-title span {
   font-size: 12px;
@@ -655,15 +836,194 @@ function goAlbumFromLightbox(albumId: number) {
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 10px;
 }
+
+/* ══ FEAT-113 ③-3：左时间栏 + 行式密排 ══════════════════════════════ */
+
+/* 两栏壳：左栏定宽、右栏吃剩余。左栏自身不滚，靠 sticky 内层跟随。 */
+.tl-shell {
+  display: flex;
+  gap: 26px;
+  align-items: flex-start;
+}
+.tl-rail {
+  flex: 0 0 148px;
+  /* 顶栏（52px）之下，留一点呼吸 */
+  position: sticky;
+  top: 68px;
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  /* 滚动时不要出现滚动条把它挤窄 */
+  scrollbar-width: thin;
+}
+.tl-rail-inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  /* 竖线：不靠 border 画在每个节点上（那样年/月之间的缝会断开），
+     而是容器上一条统一直线，节点圆点压在它上面 */
+  background: linear-gradient(
+    to right,
+    transparent 6.5px,
+    color-mix(in srgb, var(--c-fg) 16%, transparent) 6.5px,
+    color-mix(in srgb, var(--c-fg) 16%, transparent) 7.5px,
+    transparent 7.5px
+  );
+  padding: 4px 0;
+}
+.tl-rail-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 6px 3px 0;
+  border: 0;
+  background: none;
+  color: var(--c-fg-2);
+  cursor: pointer;
+  text-align: left;
+  border-radius: 6px;
+  transition: color var(--dur-1) ease, background var(--dur-1) ease;
+}
+.tl-rail-node:hover {
+  color: var(--c-fg);
+  background: color-mix(in srgb, var(--c-fg) 6%, transparent);
+}
+.tl-rail-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-left: 3.5px;
+  /* 圆点必须不透明才能“盖断”竖线；底色用页面底色对应的表面色 */
+  background: var(--c-bg-solid, var(--color-bg));
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--c-fg) 30%, transparent);
+  transition: background var(--dur-1) ease, box-shadow var(--dur-1) ease;
+}
+.tl-rail-label {
+  font-size: 12px;
+  white-space: nowrap;
+  /* 不加 margin-right：靠 count 的 margin-left:auto 推开；
+     但 textContent 会读成 "202413" —— 那是探针取值问题，不是布局问题。
+     真正需要保证的是视觉上有间距：count 自身左内边距给足。 */
+}
+.tl-rail-count {
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 10.5px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+/* 年节点：粗一号、前上方留空，形成层级 */
+.tl-rail-node.is-year {
+  margin-top: 9px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.tl-rail-node.is-year:first-child {
+  margin-top: 0;
+}
+.tl-rail-node.is-year .tl-rail-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--c-fg);
+  letter-spacing: -0.01em;
+}
+.tl-rail-node.is-year .tl-rail-dot {
+  width: 9px;
+  height: 9px;
+  margin-left: 2.5px;
+}
+/* 月节点：缩进、字号降一档 */
+.tl-rail-node.is-month .tl-rail-label {
+  font-size: 11.5px;
+}
+.tl-rail-node.is-month {
+  padding-left: 8px;
+}
+/* 当前项：强调色圆点 + 文字提亮 */
+.tl-rail-node.on {
+  color: var(--c-fg);
+}
+.tl-rail-node.on .tl-rail-dot {
+  background: var(--c-accent);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--c-accent) 70%, transparent),
+    0 0 10px color-mix(in srgb, var(--c-accent) 45%, transparent);
+}
+.tl-rail-node.on .tl-rail-label {
+  font-weight: 650;
+}
+
+.tl-board {
+  flex: 1;
+  min-width: 0; /* flex 子项不设会导致内部 nowrap 内容把容器撑宽 */
+}
+
+/* 行式密排：一行一个 flex，宽度由 justifyRows 算好（行宽精确=容器宽） */
+.tl-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+/* 窄屏：左栏收起成横向滚动条（sticky 竖向占用太贵） */
+@media (max-width: 1080px) {
+  .tl-shell {
+    display: block;
+  }
+  .tl-rail {
+    position: sticky;
+    top: 56px;
+    z-index: 5;
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex: none;
+    margin-bottom: 14px;
+    padding: 6px 0;
+    background: color-mix(in srgb, var(--c-bg-solid, var(--color-bg)) 88%, transparent);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    border-radius: 10px;
+  }
+  .tl-rail-inner {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    background: none;
+    padding: 0 6px;
+  }
+  .tl-rail-node,
+  .tl-rail-node.is-year,
+  .tl-rail-node.is-month {
+    margin-top: 0;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--c-fg) 6%, transparent);
+    flex: none;
+  }
+  .tl-rail-node.on {
+    background: color-mix(in srgb, var(--c-accent) 22%, transparent);
+  }
+  .tl-rail-dot {
+    display: none;
+  }
+  .tl-rail-node.is-year .tl-rail-label,
+  .tl-rail-node.is-month .tl-rail-label {
+    font-size: 12px;
+  }
+}
 .tl-card {
   margin: 0;
   position: relative;
-  aspect-ratio: 1 / 1;
+  /* 高宽由行式密排给（:style 上的 width + 行的 height），不再固定 1:1 */
+  height: 100%;
   border-radius: 10px;
   overflow: hidden;
   cursor: pointer;
   background: rgba(127, 127, 127, 0.1);
   transition: transform var(--dur-1);
+  flex: none;
 }
 .tl-card:hover {
   transform: translateY(-2px);

@@ -99,6 +99,22 @@ function toneFg(c: CategoryCard): string {
   return categoryTone(c.slug || "other").fg;
 }
 
+/* 分类卡封面高度（FEAT-113 ③-2）
+   目标：多张卡排在一起时看不出“规律”，但仍要**稳定**（刷新不能跳）。
+   做法：对 id 做整数哈希取模，而不是 nth-child 周期。
+     · nth-child(6n+k) 的周期是 6，列数却是 5/4/3 —— 5 列时同一列里
+       相邻两张卡的索引相差 5，5 与 6 互质会让“看起来还行”，但每列
+       **开头**几张卡会拿到同一批高度，列头整齐 → 整屏仍像网格。
+     · id 哈希与位置无关，增删分类也不会引起成片跳位。
+   高度区间 176~256（步长 8），跨度 80px：足够看出错落，又不至于
+   让一张卡把整列顶得太长。 */
+const CAT_H = [176, 208, 240, 192, 224, 256, 200, 232];
+function catH(c: CategoryCard): number {
+  /* 简单混合：knuth 乘数取低位，避免小 id 序列线性可预测 */
+  const h = (c.id * 2654435761) >>> 0;
+  return CAT_H[h % CAT_H.length];
+}
+
 /** 语义索引是否为空（分类极可能空 → 优先提示建索引） */
 const indexEmpty = computed(() => (stats.value?.indexed ?? 0) === 0);
 /** 换过语义档位（旧档向量还在 → 提示重建索引） */
@@ -487,7 +503,10 @@ onMounted(load);
           :title="`${t.name} · ${t.count} 张`"
           @click="openCategory(t)"
         >
-          <div class="cat-cover" :style="{ background: toneBg(t), '--tone-fg': toneFg(t) }">
+          <div
+            class="cat-cover"
+            :style="{ background: toneBg(t), '--tone-fg': toneFg(t), '--h': catH(t) + 'px' }"
+          >
             <img v-if="t.cover && thumbMap[t.cover]" :src="fileUrl(thumbMap[t.cover])" loading="lazy" alt="" />
             <span v-else class="cat-cover-ph">{{ t.icon || t.name.slice(0, 1) }}</span>
             <span class="cat-count">{{ t.count }} 张</span>
@@ -764,12 +783,16 @@ onMounted(load);
   display: flex;
   align-items: center;
   justify-content: center;
+  /* 高度由组件按 id 哈希挂到 --h 上（见 catH()）。
+     ⚠️ 为何不用 nth-child 周期：
+       旧写法 nth-child(6n+k) 的周期是 6，而列数是 5/4/3 ——
+       5 列时第 1/3/5 列的索引序列完全相同（0,5,10… ≡ 0,2,4 mod 6
+       → 实际每列开头分别是 238/210/190），第 2/4 列同理。
+       结果就是“每列头部错落、列内部完全对齐”，所以仍然像一个网格。
+       改成按 id 哈希后，相邻卡的高度取值不再跟位置绑定，
+       任何列数下都不会重建规律。 */
+  height: var(--h, 200px);
 }
-.cat-card:nth-child(6n + 1) .cat-cover { height: 238px; }
-.cat-card:nth-child(6n + 2) .cat-cover { height: 176px; }
-.cat-card:nth-child(6n + 3) .cat-cover { height: 210px; }
-.cat-card:nth-child(6n + 4) .cat-cover { height: 256px; }
-.cat-card:nth-child(6n + 5) .cat-cover { height: 190px; }
 
 .cat-cover img {
   position: absolute;
