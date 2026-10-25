@@ -36,6 +36,9 @@ function catH(id: number) {
   const h = (id * 2654435761) >>> 0;
   return CAT_H[h % CAT_H.length];
 }
+function isWideCat(i: number) {
+  return i % 5 === 4;
+}
 
 /* 与 CategoryGallery.vue 的 toneBg / toneFg 保持一致的近似：
    类目无色封面时用调色盘纯色，字色按底色明暗取深/浅。 */
@@ -57,18 +60,20 @@ body { background: #1b1530; color: #f0eef3; font-family: "Segoe UI", "Microsoft 
 .page { padding: 24px 52px 60px; }
 
 /* ===== 以下规则抄自 CategoryGallery.vue，改产品时同步 ===== */
-.cat-grid { column-count: 5; column-gap: 14px; }
-@media (max-width: 1280px) { .cat-grid { column-count: 4; } }
-@media (max-width: 1024px) { .cat-grid { column-count: 3; } }
-@media (max-width: 640px)  { .cat-grid { column-count: 2; } }
+.cat-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); grid-auto-rows: 186px;
+  grid-auto-flow: dense; gap: 14px;
+}
+@media (max-width: 1280px) { .cat-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 900px)  { .cat-grid { grid-template-columns: repeat(2, 1fr); } }
 
 .cat-card {
-  display: block; break-inside: avoid; margin: 0 0 14px;
-  border-radius: 14px; overflow: hidden; cursor: pointer;
+  display: block; margin: 0; border-radius: 14px; overflow: hidden; cursor: pointer;
   box-shadow: 0 4px 14px rgba(0,0,0,.1);
 }
+.cat-card.is-wide { grid-column: span 2; }
 .cat-cover {
-  position: relative; width: 100%; height: var(--h, 200px); overflow: hidden;
+  position: relative; width: 100%; height: 100%; overflow: hidden;
   display: flex; align-items: center; justify-content: center;
 }
 
@@ -101,14 +106,14 @@ createApp({
         h(
           "div",
           { class: "cat-grid" },
-          cards.map((t) =>
+          cards.map((t, ti) =>
             h(
               "article",
-              { key: t.id, class: "cat-card" },
+              { key: t.id, class: ["cat-card", { "is-wide": isWideCat(ti) }] },
               [
                 h(
                   "div",
-                  { class: "cat-cover", style: { background: toneBg(t.color), "--tone-fg": toneFg(t.color), "--h": catH(t.id) + "px" } },
+                  { class: "cat-cover", style: { background: toneBg(t.color), "--tone-fg": toneFg(t.color) } },
                   [
                     h("span", { class: "cat-cover-ph" }, t.icon || t.name.slice(0, 1)),
                     h("span", { class: "cat-count" }, `${t.count} 张`),

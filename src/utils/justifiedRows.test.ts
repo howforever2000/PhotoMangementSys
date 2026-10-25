@@ -132,3 +132,49 @@ test("容器宽度极小时不产生 0 宽或负宽的瓦片", () => {
     }
   }
 });
+
+/* ── breakPoints（FEAT-113）：强制断行，用于“月份标题要插在月与月之间”的场景 ── */
+test("breakPoints：行不会跨越断点", () => {
+  const counts = [13, 9, 4, 3, 6, 5];
+  const breaks: number[] = [];
+  let acc = 0;
+  for (const c of counts) {
+    if (acc > 0) breaks.push(acc);
+    acc += c;
+  }
+  const rows = justifyRows({ ...OPTS, count: acc, breakPoints: breaks });
+  /* 把每行的原始下标展开，检查每个断点都恰好落在“行首” */
+  let cursor = 0;
+  const starts = new Set<number>();
+  for (const r of rows) {
+    starts.add(cursor);
+    cursor += r.cells.length;
+  }
+  assert.equal(cursor, acc, "行内块数之和应等于总数");
+  for (const b of breaks) {
+    assert.ok(starts.has(b), `断点 ${b} 没有成为行首`);
+  }
+});
+
+test("breakPoints：每行仍精确铺满容器宽", () => {
+  const rows = justifyRows({ ...OPTS, count: 30, breakPoints: [7, 15, 24] });
+  for (const r of rows) {
+    const used = r.cells.reduce((s, c) => s + c.width, 0) + OPTS.gap * (r.cells.length - 1);
+    assert.equal(used, OPTS.containerWidth, `行宽 ${used} 未铺满 ${OPTS.containerWidth}`);
+  }
+});
+
+test("breakPoints：空数组或不传时行为不变", () => {
+  const a = justifyRows({ ...OPTS, count: 12 });
+  const b = justifyRows({ ...OPTS, count: 12, breakPoints: [] });
+  assert.deepEqual(
+    a.map((r) => r.cells.map((c) => c.width)),
+    b.map((r) => r.cells.map((c) => c.width)),
+  );
+});
+
+test("breakPoints：越界与非法值被忽略", () => {
+  const rows = justifyRows({ ...OPTS, count: 6, breakPoints: [0, 6, 99, -1, 2.5] });
+  const total = rows.reduce((n, r) => n + r.cells.length, 0);
+  assert.equal(total, 6);
+});

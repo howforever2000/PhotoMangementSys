@@ -213,24 +213,78 @@ watch(boardEl, (el) => {
   if (el) nextTick(measureBoard);
 });
 
-/** 按月份把该月照片切成行（纯函数，同一输入必然同一输出） */
-function monthRows(mg: MonthGroup) {
+/** 密排参数：与**相册管理墙完全一致**（AlbumList.wallRows）
+    用户要的就是“参考相册管理界面”，不要另造一套。
+    错落来自**宽度**（每 5 张一张 1.8 倍宽横幅），不是行高抳动：
+    行内上下严格对齐，行与行左右也齐，只有“一大两小”的节奏变化。 */
+const JUSTIFY_OPTS = {
+  gap: 8,
+  captionH: 0, /* 图注是叠在封面上的，不占额外高度 */
+  /* 名义高 200：与相册墙用同一套公式，但比它的 232 低一档 ——
+     时间线是“小图快浏览”，行太高会让一个月占满好几屏。
+     实测 1322px 容器：H0=200 → 每行 2~4 块、行高在 200~260 浮动；
+     H0=232 → 每行 1~4 块、且行高被顶到上限 260（偏大）。 */
+  nominalHeight: 200,
+  baseAspect: 1.28,
+  wideEvery: 5,
+  wideFactor: 1.8,
+  minCoverH: 130,
+  maxCoverH: 260,
+} as const;
+
+/** 每个月的起始下标（在整个时间线序列里的位置）—— 用作强制断行点 */
+const monthStarts = computed<number[]>(() => {
+  const out: number[] = [];
+  let i = 0;
+  for (const g of groups.value)
+    for (const mg of g.months) {
+      if (i > 0) out.push(i);
+      i += mg.items.length;
+    }
+  return out;
+});
+
+/** 全局序列（与 monthStarts 同一顺序） */
+const flatItems = computed<Array<{ item: ContentSearchHit; mg: MonthGroup; g: YearGroup }>>(() => {
+  const flat: Array<{ item: ContentSearchHit; mg: MonthGroup; g: YearGroup }> = [];
+  for (const g of groups.value)
+    for (const mg of g.months) for (const it of mg.items) flat.push({ item: it, mg, g });
+  return flat;
+});
+
+/**
+ * 整条时间线一次算密排，但在月份边界强制断开。
+ *
+ * 这是“参考相册管理界面”的关键：相册管理是整面墙一次算，所以行高只有
+ * 254/201 两种、规律交替；而按月各算时会有 147~260 五种，跳得厉害。
+ * 传 breakPoints 后两者兼得：共用一份预算（行高接近相册墙），
+ * 又保证行不跨月（月份标题能正常插入）。
+ */
+const lineRows = computed(() => {
+  if (!flatItems.value.length) return [];
   return justifyRows({
-    count: mg.items.length,
+    count: flatItems.value.length,
     containerWidth: boardW.value || 1000,
-    gap: 8,
-    captionH: 0, /* 图注是叠在封面上的，不占额外高度 */
-    nominalHeight: 165,
-    baseAspect: 1.4,
-    wideEvery: 0, /* 不放假宽幅 */
-    /* 高度区间刻意做窄（140~196，跨度 56px 而非 120px）。
-       之前给 104~232 时，同一个月的两行会出现 240 与 143 相邻 ——
-       一大一小并排更像“排错了”，不像“错落”。
-       错落感应该来自**每行卡片数不同（宽度不同）**，而不是行高忽高忽低。 */
-    minCoverH: 140,
-    maxCoverH: 196,
-  });
-}
+    ...JUSTIFY_OPTS,
+    breakPoints: monthStarts.value,
+  }).map((row) => ({
+    height: row.height,
+    cells: row.cells.map((c) => ({ ...c, ...flatItems.value[c.index] })),
+  }));
+});
+
+/** 把行按月份归档：断点保证了每行只属于一个月，这里直接分桶即可 */
+const monthRowMap = computed<Record<string, Array<{ height: number; cells: Array<Record<string, any>> }>>>(() => {
+  const map: Record<string, Array<{ height: number; cells: Array<Record<string, any>> }>> = {};
+  for (const row of lineRows.value) {
+    const first = row.cells[0];
+    if (!first) continue;
+    const k = String(first.g.year) + "|" + String(first.mg.month);
+    if (!map[k]) map[k] = [];
+    map[k].push({ height: row.height, cells: row.cells });
+  }
+  return map;
+});
 
 const groups = computed<YearGroup[]>(() => {
   const map = new Map<string, Map<string, ContentSearchHit[]>>();
@@ -659,34 +713,34 @@ function goAlbumFromLightbox(albumId: number) {
             :class="{ 'tl-highlight': highlightKey === `y-${g.year}-m-${mg.month}` }"
           >
             <h3 class="tl-month-title">{{ mg.label }} <span>{{ mg.items.length }}</span></h3>
-            <!-- 逐行渲染：每行宽度铺满容器，行高由 justifyRows 反算（与相册墙同一套算法） -->
+            <!-- 逐行渲染：整条线共用一份预算，行高接近，不跨月 -->
             <div
-              v-for="(row, ri) in monthRows(mg)"
+              v-for="(row, ri) in monthRowMap[g.year + '|' + mg.month] ?? []"
               :key="ri"
               class="tl-row"
               :style="{ height: row.height + 'px' }"
             >
               <figure
                 v-for="cell in row.cells"
-                :key="mg.items[cell.index].id"
-                :ref="(el) => registerCard(el, mg.items[cell.index].path, mg.items[cell.index].album_id ?? 0)"
+                :key="cell.item.id"
+                :ref="(el) => registerCard(el, cell.item.path, cell.item.album_id ?? 0)"
                 class="tl-card"
                 :style="{ width: cell.width + 'px' }"
-                :title="[mg.items[cell.index].label, mg.items[cell.index].location, mg.items[cell.index].album_name].filter(Boolean).join(' · ')"
-                @click="openCard(mg.items[cell.index])"
+                :title="[cell.item.label, cell.item.location, cell.item.album_name].filter(Boolean).join(' · ')"
+                @click="openCard(cell.item)"
               >
                 <img
-                  v-if="thumbMap[mg.items[cell.index].path]"
-                  :src="fileUrl(thumbMap[mg.items[cell.index].path])"
+                  v-if="thumbMap[cell.item.path]"
+                  :src="fileUrl(thumbMap[cell.item.path])"
                   loading="lazy"
                   class="tl-thumb"
                   alt=""
                 />
                 <div v-else class="tl-thumb tl-thumb-ph">🖼️</div>
                 <figcaption class="tl-cap">
-                  <span v-if="mg.items[cell.index].label" class="tl-label">{{ mg.items[cell.index].label }}</span>
-                  <span v-if="mg.items[cell.index].location" class="tl-loc">📍 {{ mg.items[cell.index].location }}</span>
-                  <button class="tl-open" title="跳转到该照片所在相册" @click.stop="gotoAlbum(mg.items[cell.index])">↗</button>
+                  <span v-if="cell.item.label" class="tl-label">{{ cell.item.label }}</span>
+                  <span v-if="cell.item.location" class="tl-loc">📍 {{ cell.item.location }}</span>
+                  <button class="tl-open" title="跳转到该照片所在相册" @click.stop="gotoAlbum(cell.item)">↗</button>
                 </figcaption>
               </figure>
             </div>

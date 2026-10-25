@@ -99,20 +99,13 @@ function toneFg(c: CategoryCard): string {
   return categoryTone(c.slug || "other").fg;
 }
 
-/* 分类卡封面高度（FEAT-113 ③-2）
-   目标：多张卡排在一起时看不出“规律”，但仍要**稳定**（刷新不能跳）。
-   做法：对 id 做整数哈希取模，而不是 nth-child 周期。
-     · nth-child(6n+k) 的周期是 6，列数却是 5/4/3 —— 5 列时同一列里
-       相邻两张卡的索引相差 5，5 与 6 互质会让“看起来还行”，但每列
-       **开头**几张卡会拿到同一批高度，列头整齐 → 整屏仍像网格。
-     · id 哈希与位置无关，增删分类也不会引起成片跳位。
-   高度区间 176~256（步长 8），跨度 80px：足够看出错落，又不至于
-   让一张卡把整列顶得太长。 */
-const CAT_H = [176, 208, 240, 192, 224, 256, 200, 232];
-function catH(c: CategoryCard): number {
-  /* 简单混合：knuth 乘数取低位，避免小 id 序列线性可预测 */
-  const h = (c.id * 2654435761) >>> 0;
-  return CAT_H[h % CAT_H.length];
+/* 分类卡宽度错落（FEAT-113 修订）：每第 5 张占两列，成为一个“大图”。
+   与相册墙 wideEvery:5 同一节奏 —— 用户要求“参考相册管理界面”，
+   所以这里刻意不另调一个数字。
+   为何按 index 而不是 id：宽度是**排布**属性，只与位置有关；
+   用 id 会让同一张分类在增删时忽大忽小。 */
+function isWideCat(i: number): boolean {
+  return i % 5 === 4;
 }
 
 /** 语义索引是否为空（分类极可能空 → 优先提示建索引） */
@@ -496,17 +489,15 @@ onMounted(load);
       <!-- 分类卡片网格 -->
       <div v-else class="cat-grid">
         <article
-          v-for="t in cards"
+          v-for="(t, ti) in cards"
           :key="t.id"
           class="cat-card glass-card"
+          :class="{ 'is-wide': isWideCat(ti) }"
           :style="theme.cardStyle"
           :title="`${t.name} · ${t.count} 张`"
           @click="openCategory(t)"
         >
-          <div
-            class="cat-cover"
-            :style="{ background: toneBg(t), '--tone-fg': toneFg(t), '--h': catH(t) + 'px' }"
-          >
+          <div class="cat-cover" :style="{ background: toneBg(t), '--tone-fg': toneFg(t) }">
             <img v-if="t.cover && thumbMap[t.cover]" :src="fileUrl(thumbMap[t.cover])" loading="lazy" alt="" />
             <span v-else class="cat-cover-ph">{{ t.icon || t.name.slice(0, 1) }}</span>
             <span class="cat-count">{{ t.count }} 张</span>
@@ -745,53 +736,60 @@ onMounted(load);
   50% { opacity: 0.4; }
 }
 
-/* ---- 分类卡片：瀑布流错落（顶对齐、底部长短不一）----
-   用 CSS multicol 而不是 grid：grid 只能切齐整的行，瀑布流要求卡片
-   顺着列往下排、高度各自不同。break-inside:avoid 保证卡片不被列切断。
-   顺序按列填充（与网格略有差异），但排序（规则在前 + 命中数）仍保留。 */
+/* ── 分类卡网格（FEAT-113 修订）：对齐优先，宽度错落 ────────────────
+   用户明确：“错落不是瀑布这种，还是要对齐，但可以是一个大图和两个小图
+   的宽度和长度对齐，参考相册管理界面。”
+
+   所以这里不用 multicol 瀑布流（高度各自不同、底边不齐），改**行对齐网格**：
+   · 每一行内卡片高度严格相等（上下齐）
+   · 错落来自**宽度**：周期地让某一张占 2 列（大图），其余 1 列（小图）
+   · 行宽铺满，左右也齐，依赖 CSS grid 自带的列对齐
+
+   为何不用 justifyRows：分类卡数量少、内容就是“封面 + 角落名字”，
+   不需要按真实宽高比反算；grid 的直接列号定位就够，且增删分类不会引起
+   大规模重排（justifyRows 会影响后续所有行）。 */
 .cat-grid {
-  column-count: 5;
-  column-gap: 14px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-auto-rows: 186px;
+  /* grid-auto-flow: dense 是“大图占两列后留下的空位用小卡回填”的关键。
+     不用它时，大图后面的那个空位会空着，出现洞。 */
+  grid-auto-flow: dense;
+  gap: 14px;
 }
-@media (max-width: 1280px) { .cat-grid { column-count: 4; } }
-@media (max-width: 1024px) { .cat-grid { column-count: 3; } }
-@media (max-width: 640px)  { .cat-grid { column-count: 2; } }
+@media (max-width: 1280px) { .cat-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 900px)  { .cat-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px)  { .cat-grid { grid-template-columns: 1fr; } }
 
 .cat-card {
   display: block;
-  /* 瀑布流：不跨列断行 + 列间垂直间距 */
-  break-inside: avoid;
-  margin: 0 0 14px;
+  margin: 0;
   border-radius: 14px;
   overflow: hidden;
   cursor: pointer;
   transition: transform var(--dur-2) ease, box-shadow var(--dur-2) ease;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
 }
+/* 每第 5 张占两列（与相册墙 wideEvery:5 同一个节奏），
+   且占两行 —— 于是它是一块“大图”，周围是小图，四边都对齐。 */
+.cat-card.is-wide {
+  grid-column: span 2;
+}
 .cat-card:hover {
   transform: translateY(-3px);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
 }
 
-/* 封面填满整张卡片（不再有下方文字条）；高度用固定调色盘按位置周期变化，
-   形成可预期的错落（随机高度每次刷新会跳位）。 */
+/* 封面填满整张卡片（不再有下方文字条）。
+   高度 100% 跟随网格行高 —— 行内/列内均严格对齐，不再按 id 哈希取不同高度。 */
 .cat-cover {
   position: relative;
   width: 100%;
-  height: 200px;
+  height: 100%;
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
-  /* 高度由组件按 id 哈希挂到 --h 上（见 catH()）。
-     ⚠️ 为何不用 nth-child 周期：
-       旧写法 nth-child(6n+k) 的周期是 6，而列数是 5/4/3 ——
-       5 列时第 1/3/5 列的索引序列完全相同（0,5,10… ≡ 0,2,4 mod 6
-       → 实际每列开头分别是 238/210/190），第 2/4 列同理。
-       结果就是“每列头部错落、列内部完全对齐”，所以仍然像一个网格。
-       改成按 id 哈希后，相邻卡的高度取值不再跟位置绑定，
-       任何列数下都不会重建规律。 */
-  height: var(--h, 200px);
 }
 
 .cat-cover img {

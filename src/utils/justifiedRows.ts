@@ -93,6 +93,17 @@ export interface JustifyOptions {
    * 1.5 = 只宽 1.5 倍（2.25:1，更克制）。
    */
   wideFactor?: number;
+  /**
+   * 强制断行位置（原始序列下标数组）：紧**在**这些下标之前必须另起一行。
+   *
+   * 用于“按月份分组的连续墙”：时间线要把月份标题插在月与月之间，
+   * 所以行不能跨月。但如果每个月各算一次，每月的行高会各算一套：
+   * 3 张那个月整行高 260，10 张那个月 174，跨月看像换了一套版式。
+   * 传入断点后，整条线仍**共用一份预算**（行高彼此接近），只在断点处分行。
+   *
+   * 缺省不传时行为完全不变（向后兼容）。
+   */
+  breakPoints?: number[];
 }
 
 const DEFAULTS = {
@@ -124,6 +135,13 @@ export function justifyRows(opts: JustifyOptions): JustifiedRow[] {
   const minCoverH = opts.minCoverH ?? DEFAULTS.minCoverH;
   const maxCoverH = opts.maxCoverH ?? DEFAULTS.maxCoverH;
   const n = opts.count;
+
+  /* 强制断点：“紧在这些下标之前另起一行”。
+     转成集合后 splitEvenly 里直接查（O(1)），并做合法性过滤：
+     0 无意义（本来就是首行），≥n 越界。 */
+  const breaks = new Set(
+    (opts.breakPoints ?? []).filter((b) => Number.isInteger(b) && b > 0 && b < n),
+  );
 
   const rows: JustifiedRow[] = [];
   if (n <= 0) return rows;
@@ -180,6 +198,9 @@ export function justifyRows(opts: JustifyOptions): JustifiedRow[] {
       const itemsLeft = n - i;
       while (i < n) {
         const a = aspects[i];
+        /* 断点优先于一切：到了断点就必须收行，哪怕这一行还很矮。
+           这是“不跨月”的硬约束 —— 月份标题要插在这里。 */
+        if (row.length > 0 && breaks.has(i)) break;
         // 每行最多拿 min(itemsLeft, ...) 块，必须给后面的行留至少 2 块
         const mustKeep = Math.max(0, (rowsLeft - 1) * 2);
         if (row.length > 0 && itemsLeft - row.length <= mustKeep) break;
@@ -226,8 +247,43 @@ export function justifyRows(opts: JustifyOptions): JustifiedRow[] {
 
   const groups = best?.groups ?? [[...Array(n).keys()]];
 
+  /* ── 断点存在时：上面那套「先枚举行数再均摊」会失效 ─────────────
+     原因：它假设行可以自由分，但断点把序列切成若干**固定段**，
+     每段能用几行是由段的长度决定的，不能为了凑名义高度而少用/多用。
+     实测：按均摊算完之后只在断点处强行收行，末行会吞下 18 块
+     （应该 3~7 块），行高也在 130~260 之间乱跳。
+     正确做法：**逐段独立切行**（段内贪心装到“这行够高”就换行），
+     这样每段都能铺满行宽，且不会跨过断点。 */
+  const finalGroups: number[][] = [];
+  if (breaks.size) {
+    const cuts = [0, ...[...breaks].sort((a, b) => a - b), n];
+    for (let s = 0; s < cuts.length - 1; s++) {
+      const from = cuts[s];
+      const to = cuts[s + 1];
+      let i = from;
+      while (i < to) {
+        const row: number[] = [];
+        let sumA = 0;
+        while (i < to) {
+          /* 试着加入下一块：只要加入后这一行的高度**仍不低于名义高 H0**，
+             就说明还没装满，继续加；一旦低于 H0 就收行。
+             （h = (W − gap·(k−1)) / ΣA，块越多 ΣA 越大 → h 越小。） */
+          const k = row.length + 1;
+          const hAfter = (W - gap * (k - 1)) / (sumA + aspects[i]);
+          if (row.length > 0 && hAfter < H0) break;
+          row.push(i);
+          sumA += aspects[i];
+          i += 1;
+        }
+        if (row.length) finalGroups.push(row);
+      }
+    }
+  } else {
+    for (const g of groups) finalGroups.push(g);
+  }
+
   // ── 2. 生成行（宽度按比例分配，行宽精确 = W）────────────────────────
-  for (const row of groups) {
+  for (const row of finalGroups) {
     const k = row.length;
     if (!k) continue;
     const avail = W - gap * (k - 1);
