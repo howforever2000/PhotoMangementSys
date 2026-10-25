@@ -3,6 +3,73 @@
   "description": "重点功能记录档案：记录功能的目的、实现方式和技术亮点，供项目发展与参考",
   "features": [
     {
+      "id": "FEAT-113",
+      "name": "界面质感重构：卡片轻量化 + 分类瀑布流错落 + 时间线左栏导航 + 人物竖排大卡（+ 扫描入库重排效果图）",
+      "module": "src/assets/widget.css、src/assets/main.css、src/components/CategoryGallery.vue、src/views/Timeline.vue、src/components/PersonGallery.vue、design/preview/proposal/mock-scan-rework.html",
+      "status": "done",
+      "purpose": "用户对视觉的四条不满（③ 卡片边线太重 / 内容分类缺错落感 / 时间线要像相册管理的左侧时间栏 + 照片错落；⑦ 人物页名字显示不全），加上 ④ 扫描入库界面需重排（要求先出效果图）。本条目覆盖 ③/⑦ 的落地与 ④ 的效果图交付；④ 的代码实施待用户确认效果图后进行。",
+      "implementation": {
+        "③-1 卡片轻量化": "去掉「四边同亮 50% 内环 + 四边同暗 55% 外环」两圈完整实线 —— 一屏十几块时它们会彼此连成硬网格。改为立面逻辑（真实玻璃板四边本就不同亮）：--w-edge-hi 上缘 40%、--w-edge-lo 下缘 24%、--w-edge-side 左右 10%、外环降到 28%，接触影加重以补偿浮起感；圆角 18→14，删掉 border。全局 .glass-card 同样改为上亮下暗四向分别给值。",
+        "③-2 分类错落": "根因不是「没用瀑布流」（本来就是 multicol），而是**高度周期与列数互质错位**：nth-child(6n+k) 周期 6，列数 5/4/3；5 列时第 1/3/5 列开头恰好拿到同一批高度 → 列头错落、列内完全对齐，整屏仍像网格。改按 id 哈希（CAT_H 8 档 176~256）取高度，与位置彻底解耦，任意列数下都不会重建规律；刷新也不跳位。",
+        "③-3 时间线": "左侧新增 sticky 时间栏：年/月两级拍平成单列（竖线画在容器 background 上，避免被行盒切断），当前视口所在项金点高亮 + 自动跟随滚动，点击 scrollIntoView 跳转；右侧照片改行式密排，**复用 utils/justifiedRows**（与相册墙同一算法，行宽精确铺满容器）。年分组去掉外层卡片底与内边距（左栏已在表达结构，右栏再套一层是双重容器），改标题下分隔线。窄屏 ≤1080px 左栏转横向吸顶条。",
+        "⑦ 人物卡": "根因不是省略号写法，而是横排布局把名字空间吃光了：176px − 头像 64 − 间距 14 − 内边距 32 = 只剩 66px，后面还挤着「✎」。加宽也没用（名字拿的是剩余空间）。改竖排：头像 64→86px 居中、卡宽 176→196、名字拿整卡宽并折两行（line-clamp:2 + overflow-wrap:anywhere，不用 ellipsis）、张数徽标压头像下沿、合并按钮占满行宽、重命名按钮改为悬停才现。",
+        "④ 扫描入库效果图": "design/preview/proposal/mock-scan-rework.html（+ shoot-scan.cjs，暮紫/松绿两变体）。按**任务阶段**分区而非按功能堆叠：① 顶部常驻状态条（在不在跑/跑到哪/能不能停）② 左：选择区（过滤+全选反选+已选计数+相册状态徽标）+ 底部主 CTA ③ 右：任务区（扫描项 2 列 → 总进度 → 当前相册 → 汇总 → 逐相册状态）。功能与现有 GlobalScanPanel 一一对应，未增删能力。"
+      },
+      "highlights": [
+        "「太重」的量化判据：两圈完整 1px 实线叠加 = 每块卡贡献 2 条高对比边；一屏 12 块就有 24 条线互相竞争。改成四向不同强度后，一圈完整的线消失，但立体感更强 —— 视觉重量来自「完整闭环」，不是线条本身。",
+        "板面 vs 背景的对比要靠**填充**，不是靠线：实测轻量化前后板面对比完全一致（dusk/pine 均 18/22 不达标，逐卡数值相同），说明边界本就不是那条线在承担。",
+        "周期与列数互质是小陷阱：nth-child 周期 6 配 5 列，看起来「每个都不同」，实际同一列的开头几张拿到同一批值 —— 判据要看**同列相邻**是否重复，不是看整体是否有重复。",
+        "「错落」应由宽度变化承担，不该由行高忽高忽低承担：行高在 104~232 时相邻行 240 与 143 并排，观感是「排错了」而非「错落」。收到 140~196 后才是错落。",
+        "布局类失效往往错在「什么时候量」而不是「怎么算」：#tl-board 在 v-else 里，onMounted 时还没进 DOM，量到的是回退值 1000 而非真实 1322，导致 0/18 行铺满。模板 ref + watch 元素出现才是正确时机。",
+        "名字截断的根因常在容器分配（横排剩余空间），不在文本溢出声明；先算一遍「可用宽 = 卡宽 − 内边距 − 头像 − 间距」比调 text-overflow 有效得多。",
+        "探针取样点必须落在**真正被点击的元素**上：点 <g> 的 bbox 中心会落到标签空处（bbox 含文字），一度把已修好的地图点击误判为 FAIL。",
+        "效果图自己会骗自己：① 全页截图下 body 的 background fixed 只画一屏，下半部变白底白字 —— 背景要写 html；② 效果图页只引 mock-widgets.css 没有 tokens.css，var(--sp-8) 未定义会让整条 padding 被丢弃；③ 令牌命名空间写错（--color-*/--w-* vs --fg/--accent）会让进度条、主按钮整条声明静默失效。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 133/133 全绿",
+        "npx vite build exit 0",
+        ".visual/probe-board-contrast.cjs（新建）：板面 vs 板外背景对比，带 SELFTEST 17:1 自检；轻量化前后 dusk/pine 均 18/22，逐卡数值完全一致 → 未削弱边界",
+        ".visual/probe-timeline.cjs（新建）：15/15 行精确铺满容器宽、行高 4 档取值、滚动跟随 ✓、点击跳转 ✓",
+        ".visual/probe-person.cjs（新建）：12 个长短名字压测，scrollW/H vs clientW/H 判定被裁切 0/12",
+        "视觉核对：dusk/pine/plain/wall/light 五变体前后截图逐张比对"
+      ],
+      "related_files": [
+        "src/assets/widget.css",
+        "src/assets/main.css",
+        "src/components/CategoryGallery.vue",
+        "src/views/Timeline.vue",
+        "src/components/PersonGallery.vue",
+        "design/preview/proposal/mock-scan-rework.html",
+        "design/preview/proposal/shoot-scan.cjs",
+        ".visual/probe-board-contrast.cjs",
+        ".visual/probe-timeline.cjs",
+        ".visual/probe-person.cjs",
+        ".visual/timeline-probe.ts",
+        ".visual/person-probe.ts",
+        ".visual/cat-probe.ts"
+      ],
+      "keywords": [
+        "卡片轻量化",
+        "边框太重",
+        "上亮下暗",
+        "瀑布流错落",
+        "nth-child 周期",
+        "id 哈希",
+        "时间线左栏",
+        "sticky",
+        "justifiedRows",
+        "行式密排",
+        "人物卡竖排",
+        "名字截断",
+        "扫描入库重排",
+        "ResizeObserver",
+        "v-else 量宽"
+      ],
+      "created_at": "2026-10-25T21:20:00+08:00",
+      "updated_at": "2026-10-25T21:20:00+08:00"
+    },
+    {
       "id": "FEAT-112",
       "name": "预设体系收敛（删重叠/浅色扩到 6）+ 概览统计缓存 + 地图放大点击失效 + 人物跳转失效",
       "module": "src/utils/presets.ts、src/utils/presets.test.ts、src/components/ThemeDialog.vue、src/stores/overview.ts、src/components/OverviewPane.vue、src/stores/album.ts、src/stores/content.ts、src/components/ui/LocationMap.vue、src/views/SmartAlbum.vue、design/preview/proposal/mock-layout-rework.html",
@@ -4154,5 +4221,5 @@
       "updated_at": "2026-10-25T00:00:00+08:00"
     }
   ],
-  "updated": "2026-10-25T19:40:00+08:00"
+  "updated": "2026-10-25T21:20:00+08:00"
 }
