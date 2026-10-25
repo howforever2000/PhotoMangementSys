@@ -1,0 +1,281 @@
+/* ==========================================================================
+   Widget 仪表墙（FEAT-110）—— 智慧相册「全局概览」专用
+   ══════════════════════════════════════════════════════════════════════════
+   设计原则（与 tokens.css §3 的材质铁律一致）：
+     · widget 是**仪表盘层**：数量少（一屏约 12 块）、面积大，可以上玻璃；
+       相册墙 / 照片网格等内容层不许用（一屏几十块 backdrop-filter 必掉帧）。
+     · 命名空间独立（--w-* / .ui-widget*）：不覆盖 --color-*、--glass-*、--slip-*，
+       删掉本文件不影响任何现有界面。
+     · 玻璃填充不自己配色：用 color-mix 取现有 --color-surface（compColor 经
+       主题管线算出的容器色），所以选任何预设，板的 tint 都自动跟着主题走。
+     · 文字一律用 --color-text* 三档（store 已按玻璃等效底色做 WCAG 标定），
+       强调只用 --w-accent / --w-accent-2（预设可覆盖，默认落日金）。
+   性能：blur 固定 24px、无动画滤镜；feDisplacementMap 折射只留给浮层，
+   这里绝不引用 url(#liquid-lens)（核显本一屏十几块位移滤镜撑不住）。
+   ========================================================================== */
+
+:root {
+  /* 几何 */
+  --w-radius: 18px;
+  --w-radius-inner: 12px;
+  --w-gap: 14px;
+  --w-pad: 15px 16px;
+  --w-row-h: 86px;
+
+  /* 强调渐变（默认落日金；松绿等彩色预设由 theme store 覆盖 --w-accent*） */
+  --w-accent: #f0bd6a;
+  --w-accent-2: #e8a33d;
+  --w-accent-soft: rgba(232, 163, 61, 0.16);
+
+  /* 玻璃壁厚 */
+  --w-line: rgba(255, 255, 255, 0.11);
+  --w-edge-top: rgba(255, 255, 255, 0.26);
+  --w-edge-bottom: rgba(0, 0, 0, 0.28);
+  --w-shadow:
+    inset 0 1px 0 var(--w-edge-top),
+    inset 0 -1px 0 var(--w-edge-bottom),
+    0 10px 26px -16px rgba(0, 0, 0, 0.66);
+  /* 棱边镜面光（沿上缘快速收干的两道窄高光） */
+  --w-sheen:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 24%),
+    linear-gradient(132deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.04) 18%, rgba(255, 255, 255, 0) 36%);
+
+  /* 图形轨道（环 / 柱 / 进度条的未填充部分） */
+  --w-track: rgba(255, 255, 255, 0.14);
+}
+
+body:not(.theme-dark) {
+  --w-accent: #8a5a12;
+  --w-accent-2: #b07a22;
+  --w-accent-soft: rgba(138, 90, 18, 0.12);
+  --w-line: rgba(23, 22, 26, 0.10);
+  --w-edge-top: rgba(255, 255, 255, 0.85);
+  --w-edge-bottom: rgba(120, 105, 88, 0.12);
+  --w-shadow:
+    inset 0 1px 0 var(--w-edge-top),
+    0 1px 2px rgba(23, 22, 26, 0.06),
+    0 18px 36px -26px rgba(23, 22, 26, 0.5);
+  --w-sheen:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 26%);
+  --w-track: rgba(23, 22, 26, 0.12);
+}
+
+/* ── 栅格 ─────────────────────────────────────────────────────────────── */
+.ui-widget-grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  grid-auto-rows: var(--w-row-h);
+  gap: var(--w-gap);
+}
+.ui-widget.span-3 { grid-column: span 3; }
+.ui-widget.span-4 { grid-column: span 4; }
+.ui-widget.span-6 { grid-column: span 6; }
+.ui-widget.span-8 { grid-column: span 8; }
+.ui-widget.span-12 { grid-column: span 12; }
+.ui-widget.rows-1 { grid-row: span 1; }
+.ui-widget.rows-2 { grid-row: span 2; }
+
+/* 窄屏：全部降为整行，高度交给内容（仪表墙只在桌面端并排，移动端纵向排） */
+@media (max-width: 1000px) {
+  .ui-widget-grid { grid-auto-rows: auto; }
+  .ui-widget {
+    grid-column: span 12 !important;
+    grid-row: auto !important;
+    min-height: 132px;
+  }
+}
+
+/* ── 基类 ─────────────────────────────────────────────────────────────── */
+.ui-widget {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: var(--w-pad);
+  border-radius: var(--w-radius);;
+  color: var(--color-text);
+  overflow: hidden;
+  isolation: isolate;
+}
+.ui-widget::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+}
+.ui-widget > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* 玻璃材质：主题容器色取 56%（≈效果图 .38 实感）+ 强模糊饱和 + 棱边镜面 */
+.ui-widget--glass {
+  background: color-mix(in srgb, var(--color-surface) 62%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+  backdrop-filter: blur(24px) saturate(1.3);
+  border: 1px solid var(--w-line);
+  box-shadow: var(--w-shadow);
+}
+.ui-widget--glass::before {
+  background: var(--w-sheen);
+}
+
+/* 普通材质：近实心 tint 板，零模糊、无镜面光，厚度只靠一道顶亮与轻投影 */
+.ui-widget--plain {
+  background: var(--color-surface-2);
+  border: 1px solid var(--w-line);
+  box-shadow:
+    inset 0 1px 0 var(--w-edge-top),
+    0 1px 2px rgba(0, 0, 0, 0.18),
+    0 16px 34px -26px rgba(0, 0, 0, 0.6);
+}
+body:not(.theme-dark) .ui-widget--plain {
+  box-shadow:
+    inset 0 1px 0 var(--w-edge-top),
+    0 1px 2px rgba(23, 22, 26, 0.05),
+    0 16px 34px -26px rgba(23, 22, 26, 0.4);
+}
+
+/* 可点击的整块 widget：按压缩放（与 tokens §3.2 同一手感） */
+.ui-widget--link {
+  cursor: pointer;
+  transition: transform var(--dur-1) ease, border-color var(--dur-2) ease;
+}
+.ui-widget--link:hover {
+  border-color: color-mix(in srgb, var(--w-accent) 45%, var(--w-line));
+}
+.ui-widget--link:active {
+  transform: scale(0.99);
+}
+
+/* ── 头部 / 正文槽 ───────────────────────────────────────────────────── */
+.ui-widget-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ui-widget-label {
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--color-text-2);
+}
+.ui-widget-label-cn {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: var(--ls-meta);
+  color: var(--color-text-2);
+}
+.ui-widget-head-right {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--color-text-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ui-widget-link {
+  color: var(--w-accent);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+}
+.ui-widget-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ui-widget-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Core 通用件（各 *Core 组件共用，避免每个 SFC 重复一份） ──────────── */
+.w-stat-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 10px;
+}
+.w-stat-num {
+  font-size: 36px;
+  font-weight: 320;
+  letter-spacing: -1.1px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.w-stat-num.sm { font-size: 26px; }
+.w-stat-unit { font-size: 11.5px; color: var(--color-text-2); }
+.w-stat-delta { font-size: 10.5px; font-weight: 600; margin-left: auto; }
+.w-stat-delta.up { color: var(--w-accent); }
+.w-stat-delta.mute { color: var(--color-text-3); font-weight: 400; }
+.w-stat-note { font-size: 10.5px; color: var(--color-text-3); margin-top: 7px; }
+.w-stat-note .hot { color: var(--w-accent); }
+
+.w-pbar {
+  margin-top: auto;
+  height: 4px;
+  border-radius: 4px;
+  background: var(--w-track);
+  overflow: hidden;
+}
+.w-pbar.lg { height: 5px; }
+.w-pbar > i {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--w-accent), var(--w-accent-2));
+}
+
+/* 封面（CoversCore 用） */
+.w-cv {
+  position: relative;
+  border-radius: 10px;
+  overflow: hidden;
+  min-height: 0;
+  box-shadow: var(--cover-inset);
+  background: rgba(128, 128, 128, 0.18);
+}
+.w-cv img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.w-cv-ph {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  color: var(--color-text-3);
+  background: color-mix(in srgb, var(--color-surface-2) 70%, transparent);
+}
+.w-cv::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.38), transparent 46%);
+}
+.w-cv-name {
+  position: absolute;
+  left: 7px;
+  bottom: 6px;
+  z-index: 2;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+  max-width: calc(100% - 14px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

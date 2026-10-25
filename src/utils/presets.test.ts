@@ -166,13 +166,13 @@ test("全部预设一律普通卡片材质（液态已限定为浮层材质，�
 
 /* ═══════════════════ C. 深浅配对（FEAT-103 新增） ═══════════════════ */
 
-/* 套数从 6 → 8（FEAT-105）：深浅各加一套冷端。
+/* 套数 6 → 8（FEAT-105）→ 9（FEAT-110 加深色「松绿混色」彩色档）。
    为什么不再按“少而精”砍近似项：预设是用户自己的外观，
    砍掉任何一套都会让用它的人开屏变样。质感来自每套内部的**明度跨度**，
    不来自套数少 —— 这条约束才是不变量，套数本身不是。 */
-test("恰好 8 套：深 4 + 浅 4", () => {
-  assert.equal(ALL_PRESETS.length, 8, "预设总数应为 8");
-  assert.equal(DARK_PRESETS.length, 4, "深色组应为 4 套");
+test("恰好 9 套：深 5 + 浅 4", () => {
+  assert.equal(ALL_PRESETS.length, 9, "预设总数应为 9");
+  assert.equal(DARK_PRESETS.length, 5, "深色组应为 5 套");
   assert.equal(LIGHT_PRESETS.length, 4, "浅色组应为 4 套");
 });
 

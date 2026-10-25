@@ -3,6 +3,88 @@
   "description": "重点功能记录档案：记录功能的目的、实现方式和技术亮点，供项目发展与参考",
   "features": [
     {
+      "id": "FEAT-110",
+      "name": "智慧相册「全局概览」玻璃仪表墙 + 松绿混色预设 + 玻璃/普通双材质 widget 组件库",
+      "module": "src/assets/widget.css、src/utils/presets.ts、src/utils/prefs.ts、src/stores/theme.ts、src/components/ui/widget/*、src/components/OverviewPane.vue、src/views/SmartAlbum.vue、src/components/ui/AppHeader.vue、src/components/ThemeDialog.vue",
+      "status": "done",
+      "purpose": "用户要求：① 支持配色预设，可把炭黑主题切到松绿；② 组件区分玻璃/普通两种材质；③ 先做 Home 仪表墙效果图，后改主意——Home 保持原样（简约四卡），仪表墙落到智慧相册的「全局概览」分区并去掉快捷入口；④ 编码满足原子性、组件可复用。交付一套可复用的玻璃 widget 原子组件库与概览页，零后端改动、零破坏现有界面。",
+      "implementation": {
+        "① 独立命名空间（不碰现有材质体系）": "新增 src/assets/widget.css（--w-* 令牌 + .ui-widget* 类）。玻璃填充不自己配色，用 color-mix(in srgb,var(--color-surface) 62%,transparent) 取主题容器色，任何预设下板的 tint 自动跟随；文字一律用 store 已做 WCAG 标定的 --color-text-2/3。不覆盖 --color-*、--float-*、--slip-*，删掉本文件不影响任何现有界面。",
+        "② 玻璃/普通双材质": "UiWidget 的 material 切面：glass=tint 半透+blur24/saturate1.3+棱边镜面（沿上缘两道窄高光）+壁厚 inset 阴影；plain=var(--color-surface-2) 近实心 tint、零 backdrop-filter、无镜面光。材质来源 theme.widgetMaterial（独立于全站卡片 material），可被 prop 单次覆盖。偏好新增 Prefs.widgetMaterial(glass|plain)，normalizePrefs 老配置回落 glass；body 挂 w-mat-glass/w-mat-plain 类。",
+        "③ 松绿混色预设": "presets.ts 新增深色第 5 套 pine-night「松绿混色」：预设渐变本身仍守全站「单一色相+明度跨度≥0.08+组件色通道极差≤12」铁律（否则 presets.test 挂），真正的混色由新增可选字段 washes（翡翠青/青蓝/柠光三团径向光晕）+ accent/accent2（翡翠绿 #5fd8a4 → 青 #46c2d2 异色渐变）承担。store.activePreset 用与 ThemeDialog 同一个 matchesPreset 命中预设后下发 --w-accent/--w-accent-2（非彩色预设 removeProperty 回落落日金），widgetWash 提供光晕背景，仅 SmartAlbum 概览分区激活期间挂 .smart-wash fixed 层，切走即移除，不污染其他页面。",
+        "④ 原子组件库": "src/components/ui/widget/：WidgetGrid（12 列/86px 行/14 gutter，≤1000px 全降整行）+ UiWidget 基类（只管材质/span/rows/圆角壁厚/head 槽与可选 to/clickable）+ 8 个互不嵌套的内容芯 StatCore/GaugeCore/BarsCore/CoversCore/FacesCore/GeoPinsCore/RankBarsCore/MemoryCore。Core 全部纯展示、数据由父级传入，可跨页复用。",
+        "⑤ 全局概览分区": "SmartAlbum tabs 头部插入「全局概览」作为第一项并设为默认（状态 tabs 加 overview；空 query 高亮从 category 改为 overview，AppHeader.isTabOn 同步）。新建 OverviewPane.vue 接入现有命令（零新增后端）：get_albums/list_timeline/list_persons/get_person_avatars_bulk/list_photo_locations/list_categories/category_index_stats/get_photo_thumbs。11 块 widget：XL 照片库总览（总张数/GB/年份跨度/相册数+入库进度+今年月度柱阵）、语义索引环、那年今日速览、相册封面拼贴、人物头像簇、地点散点、内容分类、人脸照片覆盖环+GPS 覆盖环+Top 城市排行、最近导入封面条、那年今日大卡。概览激活时隐藏重复的 StatBand。widget 全部可点跳对应分区/页。Memories/Timeline/SmartSearch 三处 moduleTabs 同步在第一项加「全局概览→/smart」。",
+        "⑥ ThemeDialog": "预设页加「仪表墙 液态玻璃/普通材质」分段开关（写 theme.widgetMaterial+persist）；预设卡 dots 对带 accent 的预设多渲染一个强调色点；说明文案点出松绿等彩色预设会改概览墙强调色与光晕。"
+      },
+      "highlights": [
+        "最大设计约束：现有主题系统的预设铁律（单一色相/明度跨度/组件色近中性）是可读性保证，不能为「混色」破坏它——解法是把混色挪到可选 washes 光晕层 + accent 异色渐变，预设渐变本体仍合规。混色感来自光而非多段彩色背景。",
+        "块注释里写 CSS 令牌（如 --color-* 后紧跟 /--glass-*）时，星号斜杠会被当成注释结束符，产生一串诡异 TS1127/TS1109；块注释中永远不要出现连续的 */。",
+        "材质偏好必须与全站 material 分离（新 widgetMaterial），否则一个仪表墙开关会改动全站卡片，违背零破坏。",
+        "GeoPinsCore 不追求精确地图（精确地图用 LocationMap，全宽 177KB 省界），小卡里只做经纬度等距投影散点表达分布密度；常驻地名标签只给 Top1（Top2 在四川盆地区域会和 Top1 重叠），地名要按 · 取城市名（四川省·成都→成都）。",
+        "BarsCore 高度 0 的未来月份不画柱（is-zero 透明），否则最小高度 min-height:4px 会让 11/12 月出现假数据柱。",
+        "探针不经过 App.vue/main.ts：需手动引 widget.css、挂 GlassFilters、把 theme.layerBase 铺到 body，否则样式/折射/背景全缺（曾误判成产品 bug）。",
+        "模板里 span=\"8\" 是字符串，传给联合字面量 number 类型会 tsc 报错，要写成 :span=\"8\"。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 133/133 全绿（presets.test 断言更新为 9 套：深 5 浅 4）",
+        "npx vite build exit 0",
+        "Playwright 概览探针三变体（暮紫玻璃/松绿玻璃/暮紫普通）真实数据渲染：玻璃 vs 普通差异清晰、松绿绿→青渐变与三团光晕生效、当月柱高亮/未来月空柱、Top 城市名正确、封面与头像走真实缩略图管线；空数据（themed-probe 补 list_categories 等 5 个命令 stub）概览优雅降级不报错"
+      ],
+      "related_files": [
+        "src/assets/widget.css",
+        "src/main.ts",
+        "src/utils/presets.ts",
+        "src/utils/presets.test.ts",
+        "src/utils/prefs.ts",
+        "src/stores/theme.ts",
+        "src/components/ui/widget/WidgetGrid.vue",
+        "src/components/ui/widget/UiWidget.vue",
+        "src/components/ui/widget/StatCore.vue",
+        "src/components/ui/widget/GaugeCore.vue",
+        "src/components/ui/widget/BarsCore.vue",
+        "src/components/ui/widget/CoversCore.vue",
+        "src/components/ui/widget/FacesCore.vue",
+        "src/components/ui/widget/GeoPinsCore.vue",
+        "src/components/ui/widget/RankBarsCore.vue",
+        "src/components/ui/widget/MemoryCore.vue",
+        "src/components/OverviewPane.vue",
+        "src/views/SmartAlbum.vue",
+        "src/components/ui/AppHeader.vue",
+        "src/components/ThemeDialog.vue",
+        "src/views/Memories.vue",
+        "src/views/Timeline.vue",
+        "src/views/SmartSearch.vue",
+        ".visual/overview-probe.ts",
+        ".visual/overview-probe.html",
+        ".visual/shoot-overview.cjs",
+        ".visual/themed-probe.ts"
+      ],
+      "keywords": [
+        "全局概览",
+        "仪表墙",
+        "widget",
+        "玻璃材质",
+        "普通材质",
+        "松绿",
+        "混色",
+        "光晕",
+        "accent渐变",
+        "原子组件",
+        "UiWidget",
+        "Core",
+        "智慧相册",
+        "预设",
+        "widgetMaterial",
+        "color-mix",
+        "GeoPins",
+        "覆盖率",
+        "那年今日"
+      ],
+      "created_at": "2026-10-25T15:30:00+08:00",
+      "updated_at": "2026-10-25T15:30:00+08:00"
+    },
+    {
       "id": "FEAT-001",
       "name": "相册管理核心",
       "module": "相册 CRUD / SQLite 持久化",
@@ -3945,5 +4027,5 @@
       "updated_at": "2026-10-25T00:00:00+08:00"
     }
   ],
-  "updated": "2026-10-25T00:00:00+08:00"
+  "updated": "2026-10-25T15:30:00+08:00"
 }

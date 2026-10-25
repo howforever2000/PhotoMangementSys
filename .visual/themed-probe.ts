@@ -2,6 +2,7 @@ import { createApp, h, nextTick } from "vue";
 import { createRouter, createWebHashHistory } from "vue-router";
 import { createPinia, setActivePinia } from "pinia";
 import "../src/assets/tokens.css";
+import "../src/assets/widget.css"; /* FEAT-110：概览 widget 墙样式（探针不经过 main.ts，需手动引） */
 import "../src/assets/main.css";
 import { useThemeStore } from "../src/stores/theme";
 import { presetPrefs, DARK_PRESETS, LIGHT_PRESETS } from "../src/utils/presets";
@@ -50,6 +51,12 @@ const ALBUMS = [
 const stub = async (cmd: string) => {
   if (cmd === "get_albums" || cmd === "list_albums" || cmd === "get_albums_with_stats") return ALBUMS;
   if (cmd === "list_timeline" || cmd === "list_persons") return [];
+  /* FEAT-110：全局概览新增的统计命令（探针无数据，返回空/零，概览应走空态而非报错） */
+  if (cmd === "list_categories") return [];
+  if (cmd === "category_index_stats")
+    return { indexed: 0, stale: 0, known: 0, model: "", semantic_categories: 0 };
+  if (cmd === "get_person_avatars_bulk") return [];
+  if (cmd === "get_photo_thumbs") return [];
   /*
    * 地点页需要真实点位才能验证「Ctrl+滚轮缩放」。
    * 字段严格按 LocationGroupRow：lat/lon 是**聚合组中心点**（FEAT-103 加的后端字段），

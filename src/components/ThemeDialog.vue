@@ -174,8 +174,9 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
           aria-labelledby="tab-preset"
         >
           <p class="pm-hint" style="margin: -4px 0 12px">
-            默认外观 = 启动封面（与登录页同一张壁纸 + 落日紫金）；下面 6 套按**深浅分组**，
-            点一下整套应用（渐变 + 组件色 + 模式）
+            默认外观 = 启动封面（与登录页同一张壁纸 + 落日紫金）；下面预设按**深浅分组**，
+            点一下整套应用（渐变 + 组件色 + 模式）。「松绿混色」等彩色预设还会改变
+            智慧相册「全局概览」仪表墙的强调色与光晕。
           </p>
 
           <!-- FEAT-103：深/浅模式切换。
@@ -202,6 +203,32 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
                 @click="theme.setMode('light')"
               >
                 浅色
+              </button>
+            </div>
+          </div>
+
+          <!-- FEAT-110：仪表墙材质（只作用于智慧相册「全局概览」的 widget 墙，
+               不影响全站卡片） -->
+          <div class="pm-mode-row">
+            <span class="pm-mode-label">仪表墙</span>
+            <div class="pm-mode-seg" role="group" aria-label="仪表墙 widget 材质">
+              <button
+                type="button"
+                class="pm-mode-btn"
+                :class="{ on: theme.widgetMaterial === 'glass' }"
+                :aria-pressed="theme.widgetMaterial === 'glass'"
+                @click="theme.widgetMaterial = 'glass'; theme.persist()"
+              >
+                液态玻璃
+              </button>
+              <button
+                type="button"
+                class="pm-mode-btn"
+                :class="{ on: theme.widgetMaterial === 'plain' }"
+                :aria-pressed="theme.widgetMaterial === 'plain'"
+                @click="theme.widgetMaterial = 'plain'; theme.persist()"
+              >
+                普通材质
               </button>
             </div>
           </div>
@@ -264,6 +291,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
                 <span class="pm-preset-dots">
                   <i v-for="c in p.colors" :key="c" :style="{ background: c }"></i>
                   <i :style="{ background: p.compColor }" title="组件色"></i>
+                  <i v-if="p.accent" :style="{ background: p.accent }" title="仪表墙强调色"></i>
                 </span>
                 <span v-if="activePresetId === p.id" class="pm-preset-check" aria-hidden="true">✓</span>
               </button>

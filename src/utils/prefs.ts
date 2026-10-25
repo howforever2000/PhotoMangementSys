@@ -25,6 +25,9 @@ export type ThemeMode = "light" | "dark";
 export type BackgroundStyle = "image" | "gradient" | "color";
 /** 卡片材质：普通（无模糊/无纹理）/ 液态（低模糊 + 流体高光） */
 export type Material = "plain" | "liquid";
+/** FEAT-110：仪表墙 widget 材质（只作用于智慧相册「全局概览」等 widget 墙，
+ *  与全站卡片材质 Material 互不影响）：玻璃（半透模糊）/ 普通（实心 tint） */
+export type WidgetMaterial = "glass" | "plain";
 
 export interface Prefs {
   mode: ThemeMode;
@@ -38,6 +41,8 @@ export interface Prefs {
   temperature: number;
   /** 玻璃材质 */
   material: Material;
+  /** FEAT-110：仪表墙 widget 材质（独立于全站卡片材质，缺省玻璃） */
+  widgetMaterial: WidgetMaterial;
   bgStyle: BackgroundStyle;
   bgColor: string;
   gradFrom: string;
@@ -64,6 +69,7 @@ export const DEFAULTS: Prefs = {
   /* Q3 色温默认 0 = 零位移 ⇒ 老用户（localStorage 里没有这个字段）的外观逐像素不变 */
   temperature: 0,
   material: "plain",
+  widgetMaterial: "glass",
   bgStyle: "image",
   /* 图片层下方的底色：紫夜色 —— 壁纸是暖粉紫，底下若仍是墨绿会把画面染脏 */
   bgColor: "#1a1428",
@@ -95,13 +101,15 @@ export function isDefaultLook(prefs: Prefs, hasCustomImage: boolean): boolean {
     prefs.compColor === DEFAULTS.compColor &&
     Math.abs(prefs.compAlpha - DEFAULTS.compAlpha) < 0.001 &&
     Math.abs(prefs.bgOpacity - DEFAULTS.bgOpacity) < 0.001 &&
-    prefs.material === DEFAULTS.material
+    prefs.material === DEFAULTS.material &&
+    prefs.widgetMaterial === DEFAULTS.widgetMaterial
   );
 }
 
 const BG_STYLES: BackgroundStyle[] = ["image", "gradient", "color"];
 /* 旧版本写入的 frosted / glazed 会在 normalizePrefs 里回落为 plain —— 两种材质收敛为「普通卡片」。 */
 const MATERIALS: Material[] = ["plain", "liquid"];
+const WIDGET_MATERIALS: WidgetMaterial[] = ["glass", "plain"];
 
 function str(v: unknown, fallback: string): string {
   return typeof v === "string" ? v : fallback;
@@ -137,6 +145,7 @@ export function normalizePrefs(raw: unknown): Prefs {
     saturation: num(r.saturation, DEFAULTS.saturation, 0.4, 1.5),
     temperature: num(r.temperature, DEFAULTS.temperature, -1, 1),
     material: oneOf(r.material, MATERIALS, DEFAULTS.material),
+    widgetMaterial: oneOf(r.widgetMaterial, WIDGET_MATERIALS, DEFAULTS.widgetMaterial),
     bgStyle: oneOf(r.bgStyle, BG_STYLES, DEFAULTS.bgStyle),
     bgColor: normalizeHex(str(r.bgColor, DEFAULTS.bgColor), DEFAULTS.bgColor),
     gradFrom,

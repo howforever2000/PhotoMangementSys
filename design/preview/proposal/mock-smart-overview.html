@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>智慧相册 · 全局概览 · 效果图</title>
+<link rel="stylesheet" href="mock-widgets.css" />
+<style>
+/* ── 智慧相册外壳：悬浮玻璃 AppHeader + 分段 tabs（仿真实产品） ── */
+.wrap { padding: 0 0 40px; }
+.appheader {
+  position: sticky; top: 12px; z-index: 20; margin: 12px 52px 0;
+  border-radius: 18px; padding: 10px 12px 8px;
+  background-color: rgba(var(--float-tint), .55);
+  -webkit-backdrop-filter: blur(16px) saturate(1.25);
+  backdrop-filter: blur(16px) saturate(1.25);
+  border: 1px solid rgba(255,255,255,.10);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -1px 0 rgba(0,0,0,.30),
+    0 10px 28px -16px rgba(0,0,0,.7);
+  position: sticky; overflow: hidden;
+}
+.appheader::before { content:""; position:absolute; inset:0; pointer-events:none;
+  background: linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,255,255,.03) 26%, transparent 44%); }
+.ah-row { display: flex; align-items: center; gap: 12px; position: relative; z-index: 1; }
+.ah-back { display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px;
+  border-radius: 10px; font-size: 12px; color: var(--fg-2); cursor: pointer;
+  border: 1px solid rgba(255,255,255,.08); background: rgba(0,0,0,.14); text-decoration: none; }
+.ah-back:hover { color: var(--fg); }
+.ah-title { display: flex; align-items: center; gap: 9px; }
+.ah-ico { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-size: 17px;
+  background: var(--accent-soft); }
+.ah-title b { font-size: 15px; font-weight: 650; letter-spacing: -.01em; display: block; }
+.ah-title small { font-size: 10px; color: var(--fg-3); }
+.ah-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.ah-status { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--fg-2);
+  padding: 0 10px; height: 32px; border-radius: 999px; border: 1px solid var(--rule); background: rgba(0,0,0,.14); }
+.ah-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.ah-btn { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
+  border: 1px solid rgba(255,255,255,.08); background: rgba(0,0,0,.14); font-size: 14px; cursor: pointer; }
+
+/* 分段玻璃 tabs：激活项是浮起的实色 pill */
+.ah-tabs { display: flex; gap: 3px; margin-top: 9px; padding: 3px; position: relative; z-index: 1;
+  border-radius: 12px; background: rgba(0,0,0,.18); border: 1px solid rgba(255,255,255,.06); width: fit-content; }
+.ah-tabs a { padding: 6px 15px; border-radius: 9px; font-size: 12px; color: var(--fg-2);
+  text-decoration: none; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.ah-tabs a .ti { font-size: 13px; opacity: .85; }
+.ah-tabs a.active { color: var(--fg); font-weight: 600;
+  background: linear-gradient(180deg, rgba(var(--tint), .95), rgba(var(--tint), .78));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 3px 10px -4px rgba(0,0,0,.6); }
+.ah-tabs a.active .td { color: var(--accent-bright); font-weight: 600; }
+.td { font-size: 9.5px; color: var(--fg-3); margin-left: 1px; }
+
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; margin: 22px 52px 14px; }
+.ph-title { font-size: 20px; font-weight: 650; letter-spacing: -.02em; }
+.ph-sub { font-size: 11.5px; color: var(--fg-2); margin-top: 3px; }
+.grid { margin: 0 52px; }
+</style>
+</head>
+<body data-theme="dusk" data-mat="glass">
+
+<!-- 全局 SVG 渐变定义（gauge 环共用） -->
+<svg style="position:absolute;width:0;height:0"><defs>
+  <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="var(--accent)"/><stop offset="1" stop-color="var(--accent-2)"/>
+  </linearGradient>
+</defs></svg>
+
+<div class="wrap">
+
+  <header class="appheader">
+    <div class="ah-row">
+      <a class="ah-back">← 主页</a>
+      <div class="ah-title">
+        <div class="ah-ico">🧠</div>
+        <div><b>智慧相册</b><small>24,980 张已索引 · 24,108 人脸 · 9,988 地点</small></div>
+      </div>
+      <div class="ah-actions">
+        <span class="ah-status"><i></i>语义服务在线</span>
+        <button class="ah-btn" title="刷新">↻</button>
+        <button class="ah-btn" title="索引设置">⚙</button>
+      </div>
+    </div>
+    <nav class="ah-tabs">
+      <a class="active"><span class="ti">◎</span>全局概览</a>
+      <a><span class="ti">🏷</span>内容分类<span class="td">36</span></a>
+      <a><span class="ti">👤</span>人物<span class="td">933</span></a>
+      <a><span class="ti">📍</span>地点<span class="td">24</span></a>
+      <a><span class="ti">✨</span>回忆</a>
+      <a><span class="ti">⏱</span>时间线</a>
+      <a><span class="ti">🔍</span>智能搜索</a>
+    </nav>
+  </header>
+
+  <div class="page-head">
+    <div>
+      <div class="ph-title">全局概览</div>
+      <div class="ph-sub">照片库的识别、索引与聚集情况，一眼看全</div>
+    </div>
+  </div>
+
+  <main class="grid">
+
+    <!-- XL：照片库总览 -->
+    <section class="widget c8 r2" data-mat="glass">
+      <div class="w-head">
+        <span class="w-label-cn">照片库总览</span>
+        <span class="w-right">2026 ▾</span>
+      </div>
+      <div class="overview">
+        <div class="ov-left">
+          <div class="stat-row"><span class="stat-num">25,071</span><span class="stat-unit">张照片</span></div>
+          <div class="ov-chips">
+            <span class="chip">💾 81.3 GB</span>
+            <span class="chip">📅 2017 – 2026</span>
+            <span class="chip">📁 129 个相册</span>
+          </div>
+          <div class="ov-bar-row">
+            <div class="ov-bar-label"><span>已入库</span><b>24,980 / 25,071 · 99.6%</b></div>
+            <div class="pbar lg"><i style="width:99.6%"></i></div>
+          </div>
+        </div>
+        <div class="ov-right">
+          <div class="ov-bar-label"><span>2026 月度新增</span><b>20 张</b></div>
+          <div class="bars">
+            <i style="height:22%"></i><i style="height:30%"></i><i style="height:18%"></i>
+            <i style="height:40%"></i><i style="height:34%"></i><i style="height:52%"></i>
+            <i style="height:46%"></i><i style="height:64%"></i><i style="height:58%"></i>
+            <i style="height:88%" class="on"></i>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 语义索引 -->
+    <section class="widget c4 r1" data-mat="glass">
+      <div class="w-head"><span class="w-label">语义索引</span><span class="w-right w-link">重建</span></div>
+      <div class="w-body">
+        <div class="gauge-wrap">
+          <div class="gauge" style="width:62px;height:62px">
+            <svg width="62" height="62" viewBox="0 0 78 78">
+              <circle cx="39" cy="39" r="32" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="7"/>
+              <circle cx="39" cy="39" r="32" fill="none" stroke="var(--ok)" stroke-width="7"
+                stroke-linecap="round" stroke-dasharray="201" stroke-dashoffset="8"/>
+            </svg>
+            <div class="g-val"><div><b style="font-size:13px">99.6%</b></div></div>
+          </div>
+          <div class="gauge-meta"><b>24,895</b> 张已建索引<br><span style="color:var(--accent-bright)">9 张</span>属其他模型档</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 本月回忆 -->
+    <section class="widget c4 r1" data-mat="glass">
+      <div class="w-head"><span class="w-label">本月回忆</span><span class="w-right w-link">去看看</span></div>
+      <div class="w-body" style="justify-content:center">
+        <div class="stat-row"><span class="stat-num sm">6</span><span class="stat-unit">组那年今日</span></div>
+        <div class="stat-note">横跨 2019 – 2025 · 共 184 张</div>
+      </div>
+    </section>
+
+    <!-- 相册 -->
+    <section class="widget c4 r2" data-mat="glass">
+      <div class="w-head"><span class="w-label-cn">相册</span><span class="w-right"><b>129</b>&nbsp;个</span></div>
+      <div class="covers2">
+        <div class="cv"><div class="ph ph-2"></div><span class="cv-n">日落晚霞</span></div>
+        <div class="cv"><div class="ph ph-3"></div></div>
+        <div class="cv"><div class="ph ph-4"></div></div>
+      </div>
+      <div class="stat-note" style="margin-top:9px">128 已入库 · <span class="hot">1 未入库</span></div>
+    </section>
+
+    <!-- 人物 -->
+    <section class="widget c4 r2" data-mat="glass">
+      <div class="w-head"><span class="w-label-cn">人物</span><span class="w-right"><b>933</b>&nbsp;位</span></div>
+      <div class="faces">
+        <div class="face" style="background:linear-gradient(135deg,#e8a36f,#b85a4a)">👨</div>
+        <div class="face" style="background:linear-gradient(135deg,#7fa8d8,#4a6aa8)">👩</div>
+        <div class="face" style="background:linear-gradient(135deg,#9b8ad8,#5a4aa8)">👧</div>
+        <div class="face" style="background:linear-gradient(135deg,#d8b07f,#a87a4a)">👴</div>
+        <div class="face" style="background:linear-gradient(135deg,#7fd0a6,#3f8f6b)">👦</div>
+        <div class="face" style="background:rgba(0,0,0,.25);color:var(--fg-2);font-size:13px">+928</div>
+      </div>
+      <div class="stat-note" style="margin-top:auto">按出现次数排序 · 人脸 24,108</div>
+    </section>
+
+    <!-- 地点 -->
+    <section class="widget c4 r2" data-mat="glass">
+      <div class="w-head"><span class="w-label-cn">地点</span><span class="w-right"><b>24</b>&nbsp;城</span></div>
+      <div class="geopins">
+        <div class="pin hot" style="width:13px;height:13px;left:46%;top:58%"><small>成都 6399</small></div>
+        <div class="pin" style="width:9px;height:9px;left:34%;top:66%"></div>
+        <div class="pin" style="width:8px;height:8px;left:62%;top:62%"><small>重庆 402</small></div>
+        <div class="pin" style="width:7px;height:7px;left:72%;top:48%"></div>
+        <div class="pin" style="width:7px;height:7px;left:40%;top:40%"></div>
+        <div class="pin" style="width:6px;height:6px;left:56%;top:34%"></div>
+        <div class="pin" style="width:6px;height:6px;left:80%;top:30%"><small>杭州 375</small></div>
+        <div class="pin" style="width:5px;height:5px;left:24%;top:30%"></div>
+        <div class="pin" style="width:5px;height:5px;left:84%;top:20%"></div>
+        <div class="pin" style="width:5px;height:5px;left:30%;top:16%"></div>
+        <div class="pin" style="width:4px;height:4px;left:18%;top:48%"></div>
+      </div>
+      <div class="stat-note" style="margin-top:auto">GPS 覆盖 <b style="color:var(--fg)">40.0%</b> · 9,988 张有定位</div>
+    </section>
+
+    <!-- 内容分类 -->
+    <section class="widget c4 r2" data-mat="glass">
+      <div class="w-head"><span class="w-label">内容分类</span><span class="w-right w-link">详情</span></div>
+      <div class="w-body" style="justify-content:center">
+        <div class="stat-row"><span class="stat-num">36</span><span class="stat-unit">个语义分类</span></div>
+        <div class="stat-note">夜空 · 美食 · 森林 · 自然风景 · 合影 …</div>
+        <div class="pbar" style="margin-top:12px"><i style="width:96%"></i></div>
+        <div class="stat-note">24,102 张已归类 · 969 张待识别</div>
+      </div>
+    </section>
+
+    <!-- 人脸覆盖 gauge -->
+    <section class="widget c4 r2" data-mat="glass">
+      <div class="w-head"><span class="w-label">人脸识别覆盖</span></div>
+      <div class="gauge-wrap">
+        <div class="gauge">
+          <svg width="78" height="78" viewBox="0 0 78 78">
+            <circle cx="39" cy="39" r="32" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="6"/>
+            <circle cx="39" cy="39" r="32" fill="none" stroke="url(#ringGrad)" stroke-width="6"
+              stroke-linecap="round" stroke-dasharray="201" stroke-dashoffset="8"/>
+          </svg>
+          <div class="g-val"><div><b>96.2%</b></div></div>
+        </div>
+        <div class="gauge-meta"><b>24,108</b> 张检出人脸<br>归并为 <b>933</b> 位人物<br><span style="color:var(--fg-3)">963 张未检出</span></div>
+      </div>
+    </section>
+
+    <!-- GPS 覆盖 gauge -->
+    <section class="widget c4 r2" data-mat="glass">
+      <div class="w-head"><span class="w-label">地点定位覆盖</span></div>
+      <div class="gauge-wrap">
+        <div class="gauge">
+          <svg width="78" height="78" viewBox="0 0 78 78">
+            <circle cx="39" cy="39" r="32" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="6"/>
+            <circle cx="39" cy="39" r="32" fill="none" stroke="url(#ringGrad)" stroke-width="6"
+              stroke-linecap="round" stroke-dasharray="201" stroke-dashoffset="121"/>
+          </svg>
+          <div class="g-val"><div><b>40.0%</b></div></div>
+        </div>
+        <div class="gauge-meta"><b>9,988</b> 张带 GPS<br>聚为 <b>24</b> 城 / 多地点<br><span style="color:var(--fg-3)">15,083 张无定位</span></div>
+      </div>
+    </section>
+
+    <!-- 最近导入 -->
+    <section class="widget c8 r2" data-mat="glass">
+      <div class="w-head"><span class="w-label-cn">最近导入</span><span class="w-right w-link">查看全部 →</span></div>
+      <div class="coverstrip">
+        <div class="cv"><div class="ph ph-5"></div><span class="cv-n">夜空 · 31</span></div>
+        <div class="cv"><div class="ph ph-6"></div><span class="cv-n">美食 · 57</span></div>
+        <div class="cv"><div class="ph ph-4"></div><span class="cv-n">森林徒步 · 42</span></div>
+        <div class="cv"><div class="ph ph-3"></div><span class="cv-n">自然风景 · 36</span></div>
+        <div class="cv"><div class="ph ph-1"></div><span class="cv-n">聚会合影 · 109</span></div>
+        <div class="cv"><div class="ph ph-8"></div><span class="cv-n">花 · 9</span></div>
+      </div>
+    </section>
+
+    <!-- 那年今日（MemoryCore） -->
+    <section class="widget c4 r2" data-mat="glass">
+      <div class="w-head"><span class="w-label-cn">那年今日</span><span class="w-right w-link">全部回忆</span></div>
+      <div class="memory-cv">
+        <div class="ph ph-6"></div>
+        <div class="mc-meta">
+          <b>3 年前的今天</b>
+          <span>2023 · 成都 · 美食合集 57 张</span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <p class="foot-note" id="foot">智慧相册 · 全局概览 / 暮紫 · 玻璃</p>
+</div>
+
+<script>
+  // ?v=glass | plain | pine | pine-plain
+  const v = new URLSearchParams(location.search).get("v") || "glass";
+  const foot = document.getElementById("foot");
+  if (v.includes("pine")) document.body.dataset.theme = "pine";
+  if (v.includes("plain")) document.body.dataset.mat = "plain";
+  // 普通材质对照：仅把 widget 墙降为实板；顶部浮层永远保持液态玻璃。
+  if (v.includes("plain")) document.querySelectorAll(".widget").forEach((el) => { el.dataset.mat = "plain"; });
+  foot.textContent = "智慧相册 · 全局概览 / " +
+    (v.includes("pine") ? "松绿（混色渐变）" : "暮紫") + " · " +
+    (v.includes("plain") ? "普通材质" : "玻璃");
+</script>
+</body>
+</html>

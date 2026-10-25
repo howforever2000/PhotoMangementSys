@@ -33,9 +33,10 @@ const router = useRouter();
 const theme = useThemeStore();
 const notify = useNotify();
 
-/** 二级导航：智能搜索属于智慧相册模块，与内容分类/人物/时间线/回忆同级。
- *  顺序必须与 SmartAlbum 一致（内容分类在第一个），否则页间跳转时 tab 会跳位。 */
+/** 二级导航：智能搜索属于智慧相册模块，与全局概览/内容分类/人物/时间线/回忆同级。
+ *  顺序必须与 SmartAlbum 一致（全局概览在第一个），否则页间跳转时 tab 会跳位。 */
 const moduleTabs: HeaderTab[] = [
+  { label: "全局概览", to: "/smart" },
   { label: "内容分类", to: "/smart?tab=category" },
   { label: "人物", to: "/smart?tab=face" },
   { label: "地点", to: "/smart?tab=location" },

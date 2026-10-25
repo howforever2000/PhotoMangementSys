@@ -7,6 +7,7 @@ import { useAlbumStore } from "../stores/album";
 import PersonGallery from "../components/PersonGallery.vue";
 import CategoryGallery from "../components/CategoryGallery.vue";
 import LocationGallery from "../components/LocationGallery.vue";
+import OverviewPane from "../components/OverviewPane.vue";
 import type { ContentSearchHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
@@ -39,15 +40,16 @@ const store = useAlbumStore();
 /** FEAT-046：深链定位的人物 id（/smart?tab=face&person={pid}） */
 const focusPid = ref<string | null>(null);
 
-/** 状态型 tab：只有这三个在本页内切换。
- *  顺序即展示顺序 —— 内容分类在第一个（它是本模块的主入口）。 */
+/** 状态型 tab：全局概览为模块落地首屏（仪表墙），其余三个在本页内切换。
+ *  顺序即展示顺序 —— 概览在第一个（它是本模块的总入口）。 */
 const tabs = [
+  { key: "overview", label: "全局概览", enabled: true },
   { key: "category", label: "内容分类", enabled: true },
   { key: "face", label: "人物", enabled: true },
   { key: "location", label: "地点", enabled: true },
 ] as const;
 
-const activeTab = ref<string>("category");
+const activeTab = ref<string>("overview");
 const activeDef = computed(() => tabs.find((t) => t.key === activeTab.value));
 
 /* -------- 统计：总照片 / 占存储 / 相册 / 已入库 / 已扫描 / 人物 -------- */
@@ -120,8 +122,9 @@ const statItems = computed<StatItem[]>(() => [
 ]);
 
 /** 组件内部分区导航：全部属于「智慧相册」这个大组件。
- *  顺序与 tabs 一致：内容分类在第一个。 */
+ *  顺序与 tabs 一致：全局概览在第一个。 */
 const moduleTabs = computed<HeaderTab[]>(() => [
+  { key: "overview", label: "全局概览" },
   { key: "category", label: "内容分类" },
   { key: "face", label: "人物", count: totalPersons.value || undefined },
   { key: "location", label: "地点" },
@@ -171,7 +174,11 @@ function syncTabQuery(key: string) {
 
 <template>
   <div class="smart-page" :style="{ color: theme.textColor }">
-    <!-- 大组件页头：组件名 + 本组件内部分区（内容分类/人物/地点/回忆/时间线/搜索） -->
+    <!-- FEAT-110：混色光晕层。仅当前预设自带 washes（如松绿混色）时有值；
+         概览分区激活期间铺在背景之上、内容之下，切走即移除（不污染其他页面）。 -->
+    <div v-if="activeTab === 'overview' && theme.widgetWash" class="smart-wash" :style="theme.widgetWash"></div>
+
+    <!-- 大组件页头：组件名 + 本组件内部分区（概览/内容分类/人物/地点/回忆/时间线/搜索） -->
     <AppHeader
       title="智慧相册"
       icon="🧠"
@@ -181,12 +188,15 @@ function syncTabQuery(key: string) {
       @pick="pickTab"
     />
 
-    <!-- 数据带：统计信息保留，但不做成彩虹横幅 -->
-    <StatBand :items="statItems" class="smart-stats" />
+    <!-- 数据带：概览仪表墙已自带统计，概览分区下不再重复一条 -->
+    <StatBand v-if="activeTab !== 'overview'" :items="statItems" class="smart-stats" />
 
-    <!-- 默认内容分类：按内容找照片（美food / 风景 / 夜景…）是这页的主入口。
-         人物墙放在第二个 —— 未命名的人脸聚类需要逐个改名才可用，不适合当首屏。 -->
-    <CategoryGallery v-if="activeTab === 'category'" />
+    <!-- FEAT-110：全局概览仪表墙（模块落地首屏） -->
+    <OverviewPane v-if="activeTab === 'overview'" />
+
+    <!-- 内容分类：按内容找照片（美食 / 风景 / 夜景…）。
+         人物墙在第三个 —— 未命名的人脸聚类需要逐个改名才可用。 -->
+    <CategoryGallery v-else-if="activeTab === 'category'" />
     <PersonGallery v-else-if="activeTab === 'face'" :focus-pid="focusPid" />
     <LocationGallery v-else-if="activeTab === 'location'" />
     <div v-else class="smart-placeholder">
@@ -201,6 +211,18 @@ function syncTabQuery(key: string) {
 .smart-page {
   min-height: 100vh;
   padding-bottom: 48px;
+}
+
+/* 混色光晕层：位于全局背景之上、页面内容之下（.app-content 已建 stacking context） */
+.smart-wash {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.smart-page > :not(.smart-wash) {
+  position: relative;
+  z-index: 1;
 }
 
 /* 数据带（FEAT-107）：自带 padding 与下缘发丝线，与页头留 12px。

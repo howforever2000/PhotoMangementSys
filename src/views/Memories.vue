@@ -147,10 +147,11 @@ const statItems = computed<StatItem[]>(() => [
   },
 ]);
 
-/** 组件内部分区：回忆是「智慧相册」下的分区，与内容分类/人物/时间线/搜索同级。
- *  顺序必须与 SmartAlbum 一致（内容分类在第一个）——
+/** 组件内部分区：回忆是「智慧相册」下的分区，与全局概览/内容分类/人物/时间线/搜索同级。
+ *  顺序必须与 SmartAlbum 一致（全局概览在第一个）——
  *  否则在页间跳转时同一排 tab 会“跳位”，用户得重新找。 */
 const moduleTabs: HeaderTab[] = [
+  { label: "全局概览", to: "/smart" },
   { label: "内容分类", to: "/smart?tab=category" },
   { label: "人物", to: "/smart?tab=face" },
   { label: "地点", to: "/smart?tab=location" },

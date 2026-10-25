@@ -17,8 +17,8 @@ import {
   saturateColor,
   type Rgb,
 } from "../utils/color";
-import { DEFAULTS, isDefaultLook, normalizePrefs, type BackgroundStyle, type Material, type Prefs, type ThemeMode } from "../utils/prefs";
-import { presetPrefs, type Preset } from "../utils/presets";
+import { DEFAULTS, isDefaultLook, normalizePrefs, type BackgroundStyle, type Material, type Prefs, type ThemeMode, type WidgetMaterial } from "../utils/prefs";
+import { ALL_PRESETS, matchesPreset, presetPrefs, type Preset } from "../utils/presets";
 /* FEAT-094：默认背景图 = 登录页那张启动封面。作为构建产物里的内置资源引用
    （Vite 会给出带哈希的 URL），**不写 localStorage** —— 否则 176KB 的 data URL
    很容易撞上存储配额，进而把整套偏好保存都拖掉（本文件开头的键分离就是这么来的）。 */
@@ -120,6 +120,8 @@ export const useThemeStore = defineStore("theme", () => {
      零开销、零视觉变化。 */
   /** FEAT-086：卡片材质（普通/液态），预设一律普通卡片 */
   const material = ref<Material>(saved.material);
+  /** FEAT-110：仪表墙 widget 材质（玻璃/普通），只作用于 widget 墙，独立于全站卡片材质 */
+  const widgetMaterial = ref<WidgetMaterial>(saved.widgetMaterial);
   const bgStyle = ref<BackgroundStyle>(saved.bgStyle);
   const bgColor = ref(saved.bgColor);
   const gradFrom = ref(saved.gradFrom);
@@ -146,6 +148,7 @@ export const useThemeStore = defineStore("theme", () => {
       saturation: saturation.value,
       temperature: 0, /* 色温模块停用：永远写 0，旧值不再被读回（见上方说明） */
       material: material.value,
+      widgetMaterial: widgetMaterial.value,
       bgStyle: bgStyle.value,
       bgColor: bgColor.value,
       gradFrom: gradFrom.value,
@@ -240,6 +243,7 @@ export const useThemeStore = defineStore("theme", () => {
     compAlpha.value = DEFAULTS.compAlpha;
     saturation.value = DEFAULTS.saturation;
     material.value = DEFAULTS.material;
+    widgetMaterial.value = DEFAULTS.widgetMaterial;
     bgStyle.value = DEFAULTS.bgStyle;
     bgColor.value = DEFAULTS.bgColor;
     gradFrom.value = DEFAULTS.gradFrom;
@@ -585,6 +589,64 @@ export const useThemeStore = defineStore("theme", () => {
   applyMaterial(material.value);
   watch(material, applyMaterial);
 
+  /* ---------- FEAT-110：仪表墙 widget 材质（玻璃/普通） ----------
+     与上面的全站卡片材质**完全独立**：只挂 body.w-mat-* 类，
+     widget.css 按这个类选 .ui-widget--glass / --plain。
+     老用户 localStorage 无此字段 → normalizePrefs 回落 glass。 */
+  function applyWidgetMaterial(m: WidgetMaterial) {
+    if (typeof document === "undefined") return;
+    document.body.classList.toggle("w-mat-glass", m === "glass");
+    document.body.classList.toggle("w-mat-plain", m === "plain");
+  }
+  applyWidgetMaterial(widgetMaterial.value);
+  watch(widgetMaterial, applyWidgetMaterial);
+
+  /* ---------- FEAT-110：widget 强调色（预设可覆盖） ----------
+     默认落日金；松绿混色等预设自带 accent/accent2 时，命中该预设就下发。
+     只写 --w-accent* 两个令牌，不动 --c-accent / --color-primary。
+     判据用与 ThemeDialog 同一个 matchesPreset，保证“弹窗里高亮哪套，
+     widget 就用哪套的强调色”，不会出现两处不一致。 */
+  const activePreset = computed<Preset | null>(() => {
+    const hit = ALL_PRESETS.find((p) =>
+      matchesPreset(p, {
+        bgStyle: bgStyle.value,
+        gradFrom: gradFrom.value,
+        gradMid: gradMid.value,
+        gradTo: gradTo.value,
+        compColor: compColor.value,
+        compAlpha: compAlpha.value,
+      }),
+    );
+    return hit ?? null;
+  });
+
+  /** 概览页专用：命中预设的三团有色光晕（无则 null，不渲染该层） */
+  const widgetWash = computed<Record<string, string> | null>(() => {
+    const w = activePreset.value?.washes;
+    if (!w) return null;
+    return {
+      backgroundImage: [
+        `radial-gradient(60% 46% at 12% -8%, ${w[0]}, transparent 62%)`,
+        `radial-gradient(52% 40% at 94% 2%, ${w[1]}, transparent 66%)`,
+        `radial-gradient(48% 38% at 80% 112%, ${w[2]}, transparent 62%)`,
+      ].join(","),
+    };
+  });
+
+  function applyWidgetAccent() {
+    if (typeof document === "undefined") return;
+    const p = activePreset.value;
+    const set = (name: string, v?: string) => {
+      if (v) document.body.style.setProperty(name, v);
+      else document.body.style.removeProperty(name);
+    };
+    /* 不命中彩色预设时移除 inline 值 → 回落到 widget.css 的 :root/浅色档默认 */
+    set("--w-accent", p?.accent);
+    set("--w-accent-2", p?.accent2);
+  }
+  watch([bgStyle, gradFrom, gradMid, gradTo, compColor, compAlpha], applyWidgetAccent,
+    { immediate: true });
+
   /* ---------- 组件色调下发（FEAT-084/085/086）：容器 = 玻璃 ----------
      玻璃底色 = 组件色调以 effectiveAlpha（滑块 + 材质偏移）叠在页面背景上（Q2-A），
      文字色对**玻璃等效底色**取对比更高的一侧；所有值常驻下发，
@@ -790,6 +852,8 @@ export const useThemeStore = defineStore("theme", () => {
     compAlpha,
     saturation,
     material,
+    widgetMaterial,
+    widgetWash,
     bgStyle,
     bgColor,
     gradFrom,

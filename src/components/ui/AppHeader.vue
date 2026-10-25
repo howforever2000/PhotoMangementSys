@@ -82,7 +82,7 @@ const username = computed(() => auth.user?.username ?? "");
  *   结果就是这两个 tab 永远不高亮（用户不知道自己在哪一块）。
  *
  * 现在：分别比较 path 与 tab query；
- *   缺省 tab 视为该页的**第一个** tab（/smart 默认就是内容分类）——
+ *   缺省 tab 视为该页的**第一个** tab（/smart 默认就是全局概览，FEAT-110）——
  *   否则从 Home 直接进 /smart 时导航栏会一个高亮都没有。
  */
 function isTabOn(to?: string): boolean {
@@ -92,8 +92,8 @@ function isTabOn(to?: string): boolean {
   const want = target.query.tab;
   const cur = route.query.tab;
   if (want === undefined) return cur === undefined || cur === "";
-  // /smart 不带 tab 时默认落在内容分类上
-  if (cur === undefined || cur === "") return want === "category";
+  // /smart 不带 tab 时默认落在全局概览上
+  if (cur === undefined || cur === "") return want === "overview";
   return cur === want;
 }
 </script>
