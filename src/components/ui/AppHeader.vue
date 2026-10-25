@@ -196,8 +196,17 @@ function isTabOn(to?: string): boolean {
      是无效值，**整条 backdrop-filter 被丢弃**（实测 computed = "none"）。
      边框同理：`border: var(--glass-border)` 拿到纯颜色，宽度默认成 3px。 */
   background-color: var(--float-fill);
-  -webkit-backdrop-filter: blur(var(--float-blur)) saturate(var(--float-saturate));
-  backdrop-filter: blur(var(--float-blur)) saturate(var(--float-saturate));
+  /* FEAT-108：浮层玻璃 = 真实边缘折射 + 轻模糊。
+     `url(#liquid-lens)` 引用 GlassFilters.vue（挂在 App 根）里定义的 SVG 滤镜，
+     它用 feDisplacementMap 把**背后的内容**沿噪声场弯折 —— 这才是“厚度”的来源，
+     而不是靠 1px 高光假装。
+
+     ⚠️ 滤镜顺序：url() 必须写在 blur() **前面**。
+     反过来的话 Chromium 会先模糊再把糊掉的图去位移，弯折完全不明显（实测）。
+
+     ⚠️ 只给浮层（顶栏/弹窗/菜单）。一屏几十张卡片每张都跑位移 = 直接掉帧。 */
+  -webkit-backdrop-filter: url(#liquid-lens) blur(var(--float-blur)) saturate(var(--float-saturate));
+  backdrop-filter: url(#liquid-lens) blur(var(--float-blur)) saturate(var(--float-saturate));
   border: 1px solid var(--float-border);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.30),

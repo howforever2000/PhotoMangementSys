@@ -5,6 +5,7 @@ import { useAlbumStore } from "./stores/album";
 import { useAuthStore } from "./stores/auth";
 import { useThemeStore } from "./stores/theme";
 import ToastContainer from "./components/ToastContainer.vue";
+import GlassFilters from "./components/ui/GlassFilters.vue";
 
 // 应用根组件：渲染全局背景层 + 路由出口 + 全局 Toast 容器
 // 启动流程：
@@ -72,6 +73,15 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="app-shell">
+    <!--
+      FEAT-108：液态玻璃的 SVG 滤镜定义。
+      必须挂在根节点（而不是各个消费方）——
+      CSS 的 url(#id) 是全文档作用域的，但被引用的 <svg> 必须在同一个
+      document 里，且不能 display:none。放根节点 = 全应用一份，
+      且不会随页面切换被销毁（否则切页后顶栏的折射会突然消失）。
+    -->
+    <GlassFilters />
+
     <div class="app-bg-base" :style="theme.layerBase"></div>
     <div v-if="theme.layerImage" class="app-bg-img" :style="theme.layerImage"></div>
     <!-- FEAT-094：背景图上的遮罩（上重下轻）——页头/面包屑等直掽压在壁纸亮部上的文字靠它达标 -->

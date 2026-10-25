@@ -323,7 +323,12 @@ body:not(.theme-dark) {
        --float-border                  : 纯颜色，给浮层描边
      ══════════════════════════════════════════════════════════════ */
   --float-fill: rgba(30, 27, 34, 0.62);
-  --float-blur: 16px;
+  /* FEAT-108：浮层的 blur 从 16px 降到 8px。
+     原因：加了真实折射（feDisplacementMap）后，背景已经被“弯折”过了，
+     它本身就是很强的”不透明信号“；再配 16px 强模糊就把弯折抹平了，
+     而且强模糊 + 位移一起跑会让边缘变成一团糊。
+     8px 保留“背景不可读”的同时让折射的形状留下来（与 skill 的 blur(2dp) 同向）。 */
+  --float-blur: 8px;
   --float-saturate: 1.1;
   --float-border: rgba(255, 255, 255, 0.10);
   --float-shadow:
@@ -334,7 +339,7 @@ body:not(.theme-dark) {
 
 body:not(.theme-dark) {
   --float-fill: rgba(255, 255, 255, 0.72);
-  --float-blur: 16px;
+  --float-blur: 8px;
   --float-saturate: 1.15;
   --float-border: rgba(255, 255, 255, 0.95);
   --float-shadow:
@@ -350,8 +355,10 @@ body:not(.theme-dark) {
   background: var(--float-fill);
   /* 必须写全 1px solid：`border: <颜色>` 是合法简写，宽度会默认成 medium(3px) */
   border: 1px solid var(--float-border);
-  -webkit-backdrop-filter: blur(var(--float-blur)) saturate(var(--float-saturate));
-  backdrop-filter: blur(var(--float-blur)) saturate(var(--float-saturate));
+  /* FEAT-108：与顶栏同一套——真实边缘折射在前、模糊在后。
+     url(#liquid-lens) 由 App.vue 里的 <GlassFilters /> 定义（全文档一份）。 */
+  -webkit-backdrop-filter: url(#liquid-lens) blur(var(--float-blur)) saturate(var(--float-saturate));
+  backdrop-filter: url(#liquid-lens) blur(var(--float-blur)) saturate(var(--float-saturate));
   box-shadow: var(--float-shadow);
 }
 

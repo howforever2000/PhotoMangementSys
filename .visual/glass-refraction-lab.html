@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>液态玻璃折射对照 · FEAT-108</title>
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   液态玻璃对照页（隔离环境，不影响主界面）
+   ──────────────────────────────────────────────────────────────────
+   目的：把「普通模糊 / 加边缘折射 / 加色散」三档并排放在**同一张真实壁纸**上，
+   并给出每档的帧耗时。只有这样才能判断：
+     · 折射看起来是不是真的像玻璃（而不是"糊一块"）
+     · displacement map 的代价能不能上到浮层（顶栏/弹窗）
+   ══════════════════════════════════════════════════════════════════ */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  font-family: "Segoe UI Variable Display", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+}
+
+body {
+  min-height: 100vh;
+  color: #f0eef3;
+  /* 真实启动封面（项目自带的落日紫金壁纸）—— 玻璃必须压在真实照片上才能判好坏 */
+  background: url("/covers/login-sunset.jpg") center / cover no-repeat fixed,
+              linear-gradient(165deg, #3b2b52, #120e1c);
+}
+
+/* 顶部一层暗角，让壁纸既有亮部（右上暖光）也有暗部（左下），
+   这样玻璃的"折射"才有东西可折 —— 纯平的背景看不出折射。 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(18, 14, 28, 0.28), rgba(18, 14, 28, 0.62));
+  pointer-events: none;
+}
+
+.wrap { position: relative; padding: 34px 48px 60px; }
+
+.head { margin-bottom: 22px; }
+.head h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.02em; }
+.head p { margin-top: 6px; font-size: 12px; color: rgba(240, 238, 243, 0.62); line-height: 1.7; }
+
+/* ── 三档并排 ───────────────────────────────────────────────── */
+.row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-bottom: 26px; }
+
+.cell { display: flex; flex-direction: column; gap: 10px; }
+.cap { display: flex; align-items: baseline; gap: 8px; }
+.cap b { font-size: 12.5px; font-weight: 600; }
+.cap span { font-size: 10.5px; color: rgba(240, 238, 243, 0.55); }
+.cap em {
+  margin-left: auto; font-style: normal;
+  font-size: 10px; color: rgba(240, 238, 243, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 玻璃本体：所有档位共用同一几何与填充，只有滤镜不同 */
+.glass {
+  position: relative;
+  height: 168px;
+  border-radius: 14px;
+  background-color: rgba(255, 255, 255, 0.09);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.20),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.30),
+    0 12px 28px -18px rgba(0, 0, 0, 0.75);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+.glass::after {
+  /* 板顶镜面高光：固定光源左上 135° */
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(255,255,255,0.13) 0%, rgba(255,255,255,0.03) 20%, rgba(255,255,255,0) 44%);
+}
+.glass .tag {
+  position: relative; z-index: 1;
+  font-size: 11.5px; letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* ① 普通模糊（当前生产用的就是这个） */
+#g1 { backdrop-filter: blur(16px) saturate(1.15); }
+
+/* ② 加边缘折射：SVG feDisplacementMap，位移量 = 16px */
+#g2 { backdrop-filter: url(#lens) blur(3px) saturate(1.15); }
+
+/* ③ 加色散：三层位移（R/G/B 通道彼此错开约 3px）后叠合 */
+#g3 { backdrop-filter: url(#lensDisperse) blur(3px) saturate(1.2); }
+
+/* ── 说明区 ───────────────────────────────────────────────── */
+.notes {
+  max-width: 980px;
+  font-size: 12px; line-height: 1.85;
+  color: rgba(240, 238, 243, 0.66);
+}
+.notes h2 { font-size: 12px; font-weight: 600; color: rgba(240, 238, 243, 0.86); margin: 18px 0 6px; }
+.notes code {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px; padding: 1px 5px; border-radius: 4px;
+  background: rgba(255, 255, 255, 0.07);
+}
+.notes ul { padding-left: 18px; }
+.notes li { margin: 3px 0; }
+
+/* 顶栏实拍：把折射接到真实顶栏尺寸上，看它像不像"一块浮起的玻璃" */
+.topbar-demo {
+  position: relative;
+  height: 52px;
+  border-radius: 12px;
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px 0 12px;
+  margin-bottom: 26px;
+  background-color: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.26), inset 0 -1px 0 rgba(0,0,0,0.32), 0 10px 26px -16px rgba(0,0,0,0.7);
+  overflow: hidden;
+}
+.tb-back {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 9px 0 7px; border-radius: 7px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12);
+  font-size: 11.5px; color: rgba(240,238,243,0.72);
+}
+.tb-title { font-size: 15.5px; font-weight: 600; }
+.tb-meta { font-size: 11px; color: rgba(240,238,243,0.5); }
+.tb-nav { display: flex; gap: 2px; padding-left: 12px; border-left: 1px solid rgba(255,255,255,0.1); }
+.tb-nav span { padding: 0 10px; font-size: 12.5px; color: rgba(240,238,243,0.62); }
+.tb-nav span.on { color: #f0eef3; font-weight: 600; }
+.tb-sp { flex: 1; }
+.tb-search {
+  height: 29px; padding: 0 12px; border-radius: 999px;
+  display: inline-flex; align-items: center;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12);
+  font-size: 12px; color: rgba(240,238,243,0.6);
+}
+#tb-refract { backdrop-filter: url(#lens) blur(6px) saturate(1.2); }
+
+/* 表格 */
+table { border-collapse: collapse; margin-top: 8px; font-size: 11.5px; }
+th, td { text-align: left; padding: 5px 14px 5px 0; border-bottom: 1px solid rgba(255,255,255,0.07); }
+th { font-weight: 600; color: rgba(240,238,243,0.8); }
+td { color: rgba(240,238,243,0.62); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+
+<!-- ═══ 滤镜定义 ═══ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <!--
+      边缘折射（lens）：
+        ① feGaussianBlur 先把背景轻微统一 —— 真实玻璃不是把背景"放大"，
+           而是轻微失焦 + 边缘偏折；
+        ② feDisplacementMap 用噪声做位移场，把背景**朝边缘方向**扭折；
+           scale=16 约等于 16px 的偏移量（对齐 skill 里的 lens(12dp, 24dp) 量级）。
+        注意：feTurbulence 的噪声是随机的、不是"径向"的 ——
+        所以这里的折射方向不是完美的中心对称，但对"玻璃边缘把背景弯折"这个
+        视觉目标足够；改成严格的径向位移需要 feImage + 自绘位移图，代价大得多。
+    -->
+    <filter id="lens" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.012 0.016" numOctaves="2" seed="7" result="noise"/>
+      <feGaussianBlur in="noise" stdDeviation="2" result="softNoise"/>
+      <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="16"
+                         xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+
+    <!--
+      色散（chromaticAberration）：
+        真实玻璃对不同波长折射率不同 → 边缘会出现轻微彩虹分离。
+        做法：拆 R / G / B 三个通道，各用**不同 scale** 的位移，再相加。
+        三个 scale 差 5px 就是"刚好能看见"的量级（再大就变成故障艺术）。
+    -->
+    <filter id="lensDisperse" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.012 0.016" numOctaves="2" seed="7" result="noise"/>
+      <feGaussianBlur in="noise" stdDeviation="2" result="softNoise"/>
+
+      <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="11"
+                         xChannelSelector="R" yChannelSelector="G" result="dispR"/>
+      <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="16"
+                         xChannelSelector="R" yChannelSelector="G" result="dispG"/>
+      <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="21"
+                         xChannelSelector="R" yChannelSelector="G" result="dispB"/>
+
+      <!-- 各取单通道 -->
+      <feColorMatrix in="dispR" type="matrix" result="onlyR"
+        values="1 0 0 0 0
+                0 0 0 0 0
+                0 0 0 0 0
+                0 0 0 1 0"/>
+      <feColorMatrix in="dispG" type="matrix" result="onlyG"
+        values="0 0 0 0 0
+                0 1 0 0 0
+                0 0 0 0 0
+                0 0 0 1 0"/>
+      <feColorMatrix in="dispB" type="matrix" result="onlyB"
+        values="0 0 0 0 0
+                0 0 0 0 0
+                0 0 1 0 0
+                0 0 0 1 0"/>
+
+      <!-- 相加还原 -->
+      <feComposite in="onlyR" in2="onlyG" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="rg"/>
+      <feComposite in="rg" in2="onlyB" operator="arithmetic" k1="0" k2="1" k3="1" k4="0"/>
+    </filter>
+  </defs>
+</svg>
+
+<div class="wrap">
+  <div class="head">
+    <h1>液态玻璃折射对照</h1>
+    <p>
+      三档玻璃压在**同一张真实启动封面**上（不是纯色底，否则看不出折射）。
+      填充/边框/阴影三档完全一致，只有 <code>backdrop-filter</code> 不同。
+    </p>
+  </div>
+
+  <div class="row">
+    <div class="cell">
+      <div class="cap"><b>① 普通模糊</b><span>当前生产用法</span><em id="t1">—</em></div>
+      <div class="glass" id="g1"><span class="tag">blur(16px) saturate(1.15)</span></div>
+    </div>
+    <div class="cell">
+      <div class="cap"><b>② 边缘折射</b><span>+ feDisplacementMap 16px</span><em id="t2">—</em></div>
+      <div class="glass" id="g2"><span class="tag">blur(3px) + lens 16px</span></div>
+    </div>
+    <div class="cell">
+      <div class="cap"><b>③ 折射 + 色散</b><span>RGB 三通道错开 5px</span><em id="t3">—</em></div>
+      <div class="glass" id="g3"><span class="tag">blur(3px) + lens + dispersion</span></div>
+    </div>
+  </div>
+
+  <div class="head" style="margin-top:6px">
+    <h1>接到真实顶栏尺寸上（28% 玻璃面积）</h1>
+    <p>顶栏是最该用折射的地方：它常驻、面积小、后面永远滚过照片。</p>
+  </div>
+
+  <div class="topbar-demo" id="tb-refract">
+    <span class="tb-back">‹ 主页</span>
+    <span class="tb-title">📁 相册管理</span>
+    <span class="tb-meta">129 个相册</span>
+    <span class="tb-nav"><span class="on">全部相册</span><span>按时间</span><span>按地点</span></span>
+    <span class="tb-sp"></span>
+    <span class="tb-search">搜索照片</span>
+  </div>
+
+  <div class="notes">
+    <h2>怎么看这三档</h2>
+    <ul>
+      <li>① 玻璃边缘是**一条硬线**（1px 亮边），背景在边界处直接切断 —— 像贴了张半透明纸。</li>
+      <li>② 边界处的背景被**弯折**，条纹/光斑会顺着边缘方向偏一点 —— 这是"厚度"的真正来源。</li>
+      <li>③ 在②的基础上，边缘出现极淡的暖冷分离（橙青），即色散。</li>
+    </ul>
+
+    <h2>性能</h2>
+    <p>右上角的数字是该档 <code>backdrop-filter</code> 每次重绘的实测耗时（见下方脚本）。
+       判据：一帧 16.6ms，玻璃本身不该超过 4ms。</p>
+    <table id="perf">
+      <tr><th>档位</th><th>滤镜</th><th>单次重绘</th></tr>
+      <tr><td>① 普通模糊</td><td>blur 16px</td><td id="p1">—</td></tr>
+      <tr><td>② 边缘折射</td><td>blur 3px + displace 16px</td><td id="p2">—</td></tr>
+      <tr><td>③ 折射+色散</td><td>blur 3px + 3×displace</td><td id="p3">—</td></tr>
+    </table>
+
+    <h2>已知边界</h2>
+    <ul>
+      <li><code>feTurbulence</code> 是随机噪声，不是径向位移图 —— 所以折射方向不完全中心对称。
+          要做到 skill 里那种严格沿边缘的折射，需要自绘位移图（<code>feImage</code> + 生成径向渐变 PNG），代价明显更高。</li>
+      <li><code>backdrop-filter: url(...)</code> 在 Chromium/WebView2 可用；Firefox 不支持 filter 引用。</li>
+      <li>整页每帧都跑 displacement map 会掉帧，所以**只能给浮层**（顶栏/弹窗/菜单），不能给一屏几十张的卡片。</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+// 用 rAF 量"带该滤镜的元素"的重绘耗时：粗但足够判断数量级。
+// 做法：每帧强制读一次 layout/style，再持续触发滤镜所在区域的样式重算。
+(() => {
+  const targets = [
+    ["g1", "t1", "p1"],
+    ["g2", "t2", "p2"],
+    ["g3", "t3", "p3"],
+  ];
+  const samples = { g1: [], g2: [], g3: [] };
+
+  let frame = 0;
+  const N = 90;
+  function loop() {
+    frame++;
+    for (const [id] of targets) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const t0 = performance.now();
+      // 强制一次样式/绘制管线：改一个会触发该元素重绘的属性再读回来
+      el.style.setProperty("--probe", String(frame % 2));
+      void el.offsetHeight;
+      const t1 = performance.now();
+      samples[id].push(t1 - t0);
+    }
+    if (frame < N) requestAnimationFrame(loop);
+    else report();
+  }
+
+  function report() {
+    for (const [id, tagEl, perfEl] of targets) {
+      const arr = samples[id].slice(10).sort((a, b) => a - b);
+      const med = arr[Math.floor(arr.length / 2)] ?? 0;
+      const tag = document.getElementById(tagEl);
+      const row = document.getElementById(perfEl);
+      if (tag) tag.textContent = `${med.toFixed(2)} ms`;
+      if (row) row.textContent = `${med.toFixed(2)} ms`;
+    }
+    window.__GLASS_PROBE_READY__ = true;
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

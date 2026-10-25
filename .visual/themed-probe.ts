@@ -113,6 +113,18 @@ const PAGE_PATH: Record<string, string> = {
   host.id = `probe-${mode}`;
   document.body.appendChild(host);
 
+  /*
+   * FEAT-108：液态玻璃的 SVG 滤镜定义必须挂到探针页上。
+   * 真实应用里它由 App.vue 根的 <GlassFilters /> 提供，
+   * 但探针页只挂单个页面组件（不经过 App.vue）——
+   * 不补这一步的话，顶栏的 `backdrop-filter: url(#liquid-lens)`
+   * 引不到任何滤镜，折射会静默失效（实测：与纯模糊像素差 0）。
+   */
+  const filterHost = document.createElement("div");
+  document.body.appendChild(filterHost);
+  const { default: GlassFilters } = await import("/src/components/ui/GlassFilters.vue");
+  createApp({ render: () => h(GlassFilters) }).mount(filterHost);
+
   const router = createRouter({
     history: createWebHashHistory(),
     routes: [...ROUTES, { path: "/:pathMatch(.*)*", component: { render: () => null } }],
