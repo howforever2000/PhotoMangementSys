@@ -3,6 +3,71 @@
   "description": "重点功能记录档案：记录功能的目的、实现方式和技术亮点，供项目发展与参考",
   "features": [
     {
+      "id": "FEAT-111",
+      "name": "深色模式线条看不见：widget 玻璃填充失效的根因修复 + 边界可见性实测体系",
+      "module": "src/assets/widget.css、src/stores/theme.ts、src/components/OverviewPane.vue、src/components/ui/widget/GeoPinsCore.vue、.visual/probe-line-visibility.cjs、.visual/probe-widget-bg.cjs、.visual/overview-probe.ts",
+      "status": "done",
+      "purpose": "用户反馈「现在深色模式会有线条看不见的问题」。这是一类**看不见就说不清**的缺陷：可能是描边太淡、可能是分隔线太淡、也可能是整个板子根本没画出来。做法是先建**像素级测量体系**（自写 PNG 解码器 + 采样真实渲染像素 + 算 WCAG 对比度），把「看不见」量化成具体数值，再逐项归因，而不是凭观感调参。",
+      "implementation": {
+        "① 测量体系（.visual/probe-line-visibility.cjs）": "自写最小 PNG 解码器（8bit RGB/RGBA，非隔行，含 5 种 filter 反算），Playwright 截整页后在页面内给每条候选线定位**真实像素坐标**，再逐点采样算对比度。内置自检项（SELFTEST）：取一块已知高对比参照的 9×9 盒内极值差，若它都测不出高对比就说明解码/取样坏了，后续数据不可信（第一版就靠它确认过解码链路没问题）。",
+        "② 真根因：`background` 简写里颜色只能有一个": "widget 玻璃层写成 `background: color-mix(...), color-mix(...)` —— **background 简写里颜色只能有一个**，第二个 color-mix 让**整条声明失效**（实测 computed backgroundColor = rgba(0,0,0,0)、backgroundImage = none）。于是板子根本没有填充，只剩 backdrop 模糊与描边 → 壁纸上等于透明，线自然看不见。修法：拆成 background-color（色调层）+ background-image（linear-gradient 包一层承载白玻璃层），两者可各自独立。",
+        "③ 玻璃配方改成「白玻璃 + 主题色调」两层": "深色档：色调层 color-mix(surface 62%) + 白玻璃层（比例由 store 按背景明度下发）。物理依据：白玻璃叠在暗背景上会被光提亮，板才读得出来；0% 白则板与背景同明度（实测 1.00~1.01:1）。浅色档**反过来**：白玻璃叠白底等于没画（实测板面 vs 背景仅 1.18:1），改为「30% 暗层 + 14% 白层」的微暗磨砂（iOS 浅色玻璃的做法），并加强接触阴影 —— 浅色下明度差做不出 3:1，边界靠「微暗面 + 接触阴影 + 内侧暗边」三重。",
+        "④ 白玻璃层比例由 store 按背景实际明度下发": "新增 --w-glass-white：壁纸取亮端分位（P95）折算透明度/底色/遮罩后的亮度，≥0.22 给 30%（亮壁纸），否则 16%（深色渐变）。这是「CSS 猜不出背后明度、而 store 知道」的典型场景；token 是 widget 专用，不碰全站 --color- 与 --float- 令牌，老用户外观不受影响。",
+        "⑤ 双色描边 + 双刻线": "板边界改为「内侧 1px 亮边 + 外侧 1px 暗环」：深色背景靠亮边读出抬起，亮壁纸靠暗环读出浮起（单层半透白描边在两种底色下都只有 1.1~2.0:1）。板内结构分隔线改**双刻线**（亮侧 + 暗侧各 1px，iOS/macOS 的 etched 做法）：单层白线在亮板上只有 1.5:1，双刻线任何底色下总有一侧可见。",
+        "⑥ 配套修正": "GeoPins 点阵色从 --color-text-3（实测 1.01:1，整片看不见）改为专用 --w-dot；封面内描边改用 --w-cover-line；轨道 --w-track 11%→20%；那年今日速览卡（86px 薄板）脚注溢出 → 改为 Δ 位同行 + 脚注 nowrap/ellipsis 保护。"
+      },
+      "highlights": [
+        "「看不见」的缺陷必须先量化再改：本次靠像素测量把「线看不见」定位成「板子整个没画出来」，而不是「描边太淡」——如果直接调描边透明度，会在错的层面调半天。",
+        "CSS background 简写里颜色只能有一个：多个 color-mix 写在 background 里会**静默丢弃整条声明**（不报错、无警告）。background-color + background-image 分写是唯一可靠解。",
+        "白玻璃与暗玻璃的配方方向相反：深色底要「提亮」（白玻璃），浅色底要「压深」（微暗磨砂）——同一套数值不可能同时成立，必须按背景明度分档，而判据只能由 store 给。",
+        "描边在 1px 宽度下天然难到 3:1（它分隔的是板与板面，不是板与背景）；真正决定「看不看得见板」的是**板面与背景的明度差**。所以度量指标要选对，否则会把力气花在错误的参数上。",
+        "测量工具必须自带自检：没有自检项时，探针自己的坐标/解码错误会被当成产品缺陷（本次首轮 many 项 1:1 的假数据就是这样暴露的）。",
+        "块注释里出现连续的星号斜杠会提前闭合注释（今天在同一批改动里踩了两次，第二次直接让 vite 500）。写令牌名时别把 --color- 与 --float- 直接相邻。",
+        "探针不经过 App.vue 时必须补齐 App 提供的层：本次缺背景遮罩（scrim）导致壁纸比真实上屏更亮，一度把 22% 误判为不够用。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 133/133 全绿",
+        "npx vite build exit 0",
+        "线可见性实测（板面 vs 背景，阈值 3:1）：暮紫渐变 3.07:1 · 松绿 3.06:1 · 启动封面壁纸 3.65:1 · 普通材质 3.26:1 · AppHeader 浮层 3.26~3.47:1",
+        "浅色档：板面 vs 背景 1.49:1 + 接触阴影 1.28:1 + 内侧暗边 1.29:1（白底上浅色玻璃的明度差有物理上限，靠三重信号读边界而非单一明度比）",
+        "Playwright 截图走查四态：暮紫玻璃 / 松绿玻璃 / 暮紫普通 / 浅色玻璃 —— 板面、圆角、描边、分隔线、层级均可读"
+      ],
+      "related_files": [
+        "src/assets/widget.css",
+        "src/stores/theme.ts",
+        "src/components/OverviewPane.vue",
+        "src/components/ui/widget/GeoPinsCore.vue",
+        "src/components/ui/widget/StatCore.vue",
+        ".visual/probe-line-visibility.cjs",
+        ".visual/probe-widget-bg.cjs",
+        ".visual/overview-probe.ts",
+        ".visual/shoot-overview.cjs"
+      ],
+      "keywords": [
+        "线条看不见",
+        "可见性",
+        "对比度",
+        "WCAG",
+        "1.4.11",
+        "深色模式",
+        "玻璃",
+        "白玻璃",
+        "双色描边",
+        "双刻线",
+        "etched",
+        "color-mix",
+        "background简写",
+        "像素测量",
+        "PNG解码",
+        "自检",
+        "光晕",
+        "松绿"
+      ],
+      "created_at": "2026-10-25T17:20:00+08:00",
+      "updated_at": "2026-10-25T17:20:00+08:00"
+    },
+    {
       "id": "FEAT-110",
       "name": "智慧相册「全局概览」玻璃仪表墙 + 松绿混色预设 + 玻璃/普通双材质 widget 组件库",
       "module": "src/assets/widget.css、src/utils/presets.ts、src/utils/prefs.ts、src/stores/theme.ts、src/components/ui/widget/*、src/components/OverviewPane.vue、src/views/SmartAlbum.vue、src/components/ui/AppHeader.vue、src/components/ThemeDialog.vue",
@@ -4027,5 +4092,5 @@
       "updated_at": "2026-10-25T00:00:00+08:00"
     }
   ],
-  "updated": "2026-10-25T15:30:00+08:00"
+  "updated": "2026-10-25T17:20:00+08:00"
 }

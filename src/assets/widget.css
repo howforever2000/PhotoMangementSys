@@ -27,37 +27,85 @@
   --w-accent-2: #e8a33d;
   --w-accent-soft: rgba(232, 163, 61, 0.16);
 
-  /* 玻璃壁厚 */
-  --w-line: rgba(255, 255, 255, 0.11);
+  /* 玻璃壁厚
+     ⚠️ 可见性实测（.visual/probe-line-visibility.cjs）：
+       旧的单层半透白描边（11% 白）在松绿深底上只有 1.42~2.0:1，
+       在启动封面亮部只有 1.1~1.38:1 —— 板直接融进背景，“线条看不见”。
+     改成**双色描边**（玻璃板在真实世界里的画法）：
+       内侧一圈亮边 → 深色背景上靠它读出“板是抬起的”
+       外侧一圈暗环 → 亮色背景上靠它读出“板浮在壁纸之上”
+     两层叠加后，任意底色下边界都成立，且都不需要把线做得刺眼。 */
+  --w-line: rgba(255, 255, 255, 0.07);      /* 玻璃边微光（不再承担可见性） */
+  --w-inner-line: rgba(255, 255, 255, 0.50); /* 板内侧 1px 亮边（实测 11% 时只有 2.2:1） */
+  --w-outer-line: rgba(0, 0, 0, 0.55);      /* 板外侧 1px 暗环（亮壁纸上靠它读出浮起） */
+  --w-divider: rgba(255, 255, 255, 0.55);   /* 板内结构分隔线（实测 11% 时只有 1.24:1） */
+  --w-divider-dark: rgba(0, 0, 0, 0.50);    /* 分隔线的暗侧（刻线效果） */
+  --w-dot: rgba(255, 255, 255, 0.26);       /* 点阵 / 装饰点 */
+  --w-cover-line: rgba(255, 255, 255, 0.20); /* 封面内描边 */
+  /* 白玻璃层比例：由 theme store 按**背景实际明度**下发（深底 22% / 亮底 34%）。
+     CSS 猜不出背后是壁纸亮部还是深色渐变，这层比例必须由 store 给。 */
+  --w-glass-white: 22%;
   --w-edge-top: rgba(255, 255, 255, 0.26);
   --w-edge-bottom: rgba(0, 0, 0, 0.28);
   --w-shadow:
     inset 0 1px 0 var(--w-edge-top),
-    inset 0 -1px 0 var(--w-edge-bottom),
-    0 10px 26px -16px rgba(0, 0, 0, 0.66);
+    inset 0 0 0 1px var(--w-inner-line),
+    0 0 0 1px var(--w-outer-line),
+    /* 接触阴影：不靠负 spread 的“大虚影”，而是贴近板缘的一圈实影 ——
+       玻璃板悬在背景上，靠这圈实影读出“浮着”。亮壁纸下这是**唯一**有效的
+       边界信号（板面本身也是亮的，靠明度差读不出来）。 */
+    0 3px 9px -1px rgba(0, 0, 0, 0.55),
+    0 16px 36px -14px rgba(0, 0, 0, 0.62);
   /* 棱边镜面光（沿上缘快速收干的两道窄高光） */
   --w-sheen:
     linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 24%),
     linear-gradient(132deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.04) 18%, rgba(255, 255, 255, 0) 36%);
 
   /* 图形轨道（环 / 柱 / 进度条的未填充部分） */
-  --w-track: rgba(255, 255, 255, 0.14);
+  --w-track: rgba(255, 255, 255, 0.20);
 }
 
 body:not(.theme-dark) {
   --w-accent: #8a5a12;
   --w-accent-2: #b07a22;
   --w-accent-soft: rgba(138, 90, 18, 0.12);
-  --w-line: rgba(23, 22, 26, 0.10);
+  /* 浅色底上的角色对调：板是白玻璃，内侧用暗线、外侧用白环 */
+  --w-line: rgba(23, 22, 26, 0.08);
+  --w-inner-line: rgba(23, 22, 26, 0.20);
+  --w-outer-line: rgba(255, 255, 255, 0.92);
+  --w-divider: rgba(23, 22, 26, 0.22);
+  --w-divider-dark: rgba(255, 255, 255, 0.75);
+  --w-dot: rgba(23, 22, 26, 0.16);
+  --w-cover-line: rgba(23, 22, 26, 0.13);
   --w-edge-top: rgba(255, 255, 255, 0.85);
   --w-edge-bottom: rgba(120, 105, 88, 0.12);
   --w-shadow:
     inset 0 1px 0 var(--w-edge-top),
-    0 1px 2px rgba(23, 22, 26, 0.06),
-    0 18px 36px -26px rgba(23, 22, 26, 0.5);
+    inset 0 0 0 1px var(--w-inner-line),
+    0 0 0 1px var(--w-outer-line),
+    /* 浅色下接触阴影是边界的**主**信号（明度差做不出 3:1） */
+    0 2px 8px -1px rgba(23, 22, 26, 0.16),
+    0 18px 36px -22px rgba(23, 22, 26, 0.5);
   --w-sheen:
     linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 26%);
-  --w-track: rgba(23, 22, 26, 0.12);
+  --w-track: rgba(23, 22, 26, 0.15);
+}
+
+/* ── 浅色下的玻璃板：必须**压深**而不是提亮 ─────────────────────────
+   实测（.visual/probe-line-visibility.cjs，浅色变体）：
+     板面 vs 背景只有 1.17~1.18:1 —— 白玻璃叠在白底上，板完全读不出来；
+     而 34% 白层会把 20% 暗层冲掉（两者相消，白测了）。
+   浅色玻璃（iOS/macOS 的做法）不是“更白”，而是**一层微暗的磨砂**：
+   板比底略暗 → 边界成立；透亮感靠模糊与底本身的亮，不靠把底染白。
+   数值：暗层 30% + 白层 14%（相消后净暗），配合接触阴影读出浮起。
+   注：明度差达不到 3:1 是**物理限制**（白底上的浅色玻璃就是很淡），
+   浅色玻璃的边界靠「微暗面 + 接触阴影 + 内侧暗边」三重，不靠明度差。 */
+body:not(.theme-dark) .ui-widget--glass {
+  background-color: color-mix(in srgb, #101218 30%, transparent);
+  background-image: linear-gradient(
+    color-mix(in srgb, #ffffff 14%, transparent),
+    color-mix(in srgb, #ffffff 14%, transparent)
+  );
 }
 
 /* ── 栅格 ─────────────────────────────────────────────────────────────── */
@@ -109,9 +157,22 @@ body:not(.theme-dark) {
   z-index: 1;
 }
 
-/* 玻璃材质：主题容器色取 56%（≈效果图 .38 实感）+ 强模糊饱和 + 棱边镜面 */
+/* 玻璃材质：白玻璃 + 主题色调两层。
+   ⚠️ 可见性实测（.visual/probe-line-visibility.cjs）查出的真根因：
+     之前的写法是 `background: color-mix(...), color-mix(...)` ——
+     **background 简写里颜色只能有一个**，第二个 color-mix 让**整条声明失效**
+     （实测 computed backgroundColor = rgba(0,0,0,0)、backgroundImage = none），
+     于是板根本没有填充，只剩 backdrop 模糊与描边 → “线看不见”。
+     现在拆开写：色调层用 background-color，白玻璃层用 background-image
+     （linear-gradient 包一层，让它能当 image 叠在 color 之上）。 */
 .ui-widget--glass {
-  background: color-mix(in srgb, var(--color-surface) 62%, transparent);
+  /* 配比：色调层给足（板才有主题色），白层只做“被光提亮”的量（22%）。
+     30% 白会把松绿洗成脏灰；0% 白板又与深背景同色（1:1，看不见）。 */
+  background-color: color-mix(in srgb, var(--color-surface) 62%, transparent);
+  background-image: linear-gradient(
+    color-mix(in srgb, #ffffff var(--w-glass-white), transparent),
+    color-mix(in srgb, #ffffff var(--w-glass-white), transparent)
+  );
   -webkit-backdrop-filter: blur(24px) saturate(1.3);
   backdrop-filter: blur(24px) saturate(1.3);
   border: 1px solid var(--w-line);
@@ -127,12 +188,16 @@ body:not(.theme-dark) {
   border: 1px solid var(--w-line);
   box-shadow:
     inset 0 1px 0 var(--w-edge-top),
-    0 1px 2px rgba(0, 0, 0, 0.18),
+    inset 0 0 0 1px var(--w-inner-line),
+    0 0 0 1px var(--w-outer-line),
+    0 1px 2px rgba(0, 0, 0, 0.2),
     0 16px 34px -26px rgba(0, 0, 0, 0.6);
 }
 body:not(.theme-dark) .ui-widget--plain {
   box-shadow:
     inset 0 1px 0 var(--w-edge-top),
+    inset 0 0 0 1px var(--w-inner-line),
+    0 0 0 1px var(--w-outer-line),
     0 1px 2px rgba(23, 22, 26, 0.05),
     0 16px 34px -26px rgba(23, 22, 26, 0.4);
 }
@@ -143,10 +208,24 @@ body:not(.theme-dark) .ui-widget--plain {
   transition: transform var(--dur-1) ease, border-color var(--dur-2) ease;
 }
 .ui-widget--link:hover {
-  border-color: color-mix(in srgb, var(--w-accent) 45%, var(--w-line));
+  border-color: color-mix(in srgb, var(--w-accent) 55%, transparent);
 }
 .ui-widget--link:active {
   transform: scale(0.99);
+}
+
+/* ── 板内分隔线：双刻线（etched）─────────────────────────────────────
+   为什么不用单层半透线：单层线在**亮底**上必然弱（实测白线 0.38 在亮板上
+   只有 1.54:1），在**暗底**上又太抢。双刻线是 iOS/macOS 的经典做法：
+     亮侧 1px + 暗侧 1px 紧贴 → 读成一道“凹槽”，任何底色下总有一侧可见。
+   用法：给容器加 .w-divider-v（竖）或 .w-divider-h（横）。 */
+.w-divider-v {
+  border-left: 1px solid var(--w-divider);
+  box-shadow: -1px 0 0 var(--w-divider-dark);
+}
+.w-divider-h {
+  border-top: 1px solid var(--w-divider);
+  box-shadow: 0 -1px 0 var(--w-divider-dark);
 }
 
 /* ── 头部 / 正文槽 ───────────────────────────────────────────────────── */
@@ -211,10 +290,18 @@ body:not(.theme-dark) .ui-widget--plain {
 }
 .w-stat-num.sm { font-size: 26px; }
 .w-stat-unit { font-size: 11.5px; color: var(--color-text-2); }
-.w-stat-delta { font-size: 10.5px; font-weight: 600; margin-left: auto; }
+.w-stat-delta { font-size: 10.5px; font-weight: 600; margin-left: auto; white-space: nowrap; }
 .w-stat-delta.up { color: var(--w-accent); }
 .w-stat-delta.mute { color: var(--color-text-3); font-weight: 400; }
-.w-stat-note { font-size: 10.5px; color: var(--color-text-3); margin-top: 7px; }
+.w-stat-note {
+  font-size: 10.5px;
+  color: var(--color-text-3);
+  margin-top: 7px;
+  /* 1px 行高保护：86px 高的薄板里，脚注不换行也不溢出 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .w-stat-note .hot { color: var(--w-accent); }
 
 .w-pbar {
@@ -232,13 +319,14 @@ body:not(.theme-dark) .ui-widget--plain {
   background: linear-gradient(90deg, var(--w-accent), var(--w-accent-2));
 }
 
-/* 封面（CoversCore 用） */
+/* 封面（CoversCore 用）：内描边用 widget 专用值（比全站 --cover-inset 深，
+   否则亮照片上封面边界消失） */
 .w-cv {
   position: relative;
   border-radius: 10px;
   overflow: hidden;
   min-height: 0;
-  box-shadow: var(--cover-inset);
+  box-shadow: inset 0 0 0 1px var(--w-cover-line);
   background: rgba(128, 128, 128, 0.18);
 }
 .w-cv img {

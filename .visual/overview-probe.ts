@@ -5,7 +5,9 @@ import "../src/assets/tokens.css";
 import "../src/assets/widget.css";
 import "../src/assets/main.css";
 import { useThemeStore } from "../src/stores/theme";
-import { DARK_PRESETS } from "../src/utils/presets";
+import { DARK_PRESETS, LIGHT_PRESETS } from "../src/utils/presets";
+/* 默认外观的启动封面（真实用户深色模式看到的就是它，不是渐变） */
+import wallpaperUrl from "../covers/login-sunset.jpg";
 
 /**
  * FEAT-110 全局概览探针
@@ -201,6 +203,17 @@ const ROUTES = [
   host.id = `probe-${variant}`;
   document.body.appendChild(host);
 
+  /* FEAT-094 的背景遮罩层（scrim）：真实应用由 App.vue 的 .app-bg-scrim 提供。
+     不补这一层，探针里的壁纸会比真实上屏**更亮**（缺了上重下轻的压暗），
+     于是“白玻璃层要多少”的测量会偏保守 —— 上一轮就因此把 22% 误当成不够用。 */
+  if (variant === "wall") {
+    const scrim = document.createElement("div");
+    scrim.style.cssText =
+      "position:fixed;inset:0;z-index:0;pointer-events:none;" +
+      "background-image:linear-gradient(180deg, rgba(10,8,20,.52) 0%, rgba(10,8,20,.34) 34%, rgba(10,8,20,.26) 66%, rgba(10,8,20,.38) 100%)";
+    document.body.insertBefore(scrim, host);
+  }
+
   const filterHost = document.createElement("div");
   document.body.appendChild(filterHost);
   const { default: GlassFilters } = await import("/src/components/ui/GlassFilters.vue");
@@ -218,11 +231,26 @@ const ROUTES = [
 
   const theme = useThemeStore();
   const pine = DARK_PRESETS.find((p) => p.id === "pine-night")!;
-  theme.applyPreset(variant === "pine" ? pine : DARK_PRESETS[0]);
+  if (variant === "light") {
+    theme.applyPreset(LIGHT_PRESETS[2]);
+  } else if (variant === "wall") {
+    /* 默认外观：启动封面壁纸 + 落日紫金组件色（用户深色模式的真实样子） */
+    theme.reset();
+    theme.bgStyle = "image";
+    theme.bgImage = wallpaperUrl;
+    theme.bgOpacity = 0.55;
+    theme.persist();
+  } else {
+    theme.applyPreset(variant === "pine" ? pine : DARK_PRESETS[0]);
+  }
   if (variant === "plain") theme.widgetMaterial = "plain";
-  /* 探针不挂 App.vue：手动把主题底层渐变铺到 body（真实应用由 .app-bg-base 提供） */
+  /* 探针不挂 App.vue：手动把主题底层背景铺到 body（真实应用由 .app-bg-base 提供） */
   await nextTick();
-  document.body.style.background = (theme.layerBase as any).background;
+  if (variant === "wall") {
+    document.body.style.background = `linear-gradient(rgba(26,20,40,.45),rgba(26,20,40,.45)), url(${wallpaperUrl}) center/cover`;
+  } else {
+    document.body.style.background = (theme.layerBase as any).background;
+  }
   document.body.style.minHeight = "100vh";
 
   await router.isReady();

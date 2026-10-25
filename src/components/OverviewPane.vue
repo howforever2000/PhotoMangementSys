@@ -292,8 +292,10 @@ function onGeoPick() {
       <UiWidget :span="4" :rows="1" label="那年今日" :to="'/memories'">
         <StatCore
           :value="onThisDay.length"
+          unit="组"
           small
-          :note="memoryYears ? `横跨 ${memoryYears} 个年份 · 去回忆里翻看` : '今天暂无往年同日照片'"
+          :delta="memoryYears ? `${memoryYears} 个年份` : ''"
+          delta-tone="mute"
         />
       </UiWidget>
 
@@ -397,7 +399,9 @@ function onGeoPick() {
   flex-direction: column;
   min-width: 0;
   padding-left: 20px;
-  border-left: 1px solid var(--w-line);
+  /* 结构分隔线：双刻线（亮侧 + 暗侧）。实测单层 11% 白只有 1.24:1，亮底上更只有 1.5:1。 */
+  border-left: 1px solid var(--w-divider);
+  box-shadow: -1px 0 0 var(--w-divider-dark);
 }
 .ov-chips {
   display: flex;

@@ -693,8 +693,33 @@ export const useThemeStore = defineStore("theme", () => {
       "--panel-glass-fill",
       `rgba(${hexToRgb(panelTone).map((v) => Math.round(v)).join(",")},${panelAlphaValue})`,
     );
+
+    /* FEAT-110：widget 玻璃的“白玻璃层”比例 —— **按背景实际明度给，不写死**。
+       实测（.visual/probe-line-visibility.cjs）：
+         深背景（松绿/深色渐变）下白层 30% 会把主题色洗成脏灰，22% 才既保留松绿又 ≥3:1；
+         亮背景（启动封面）下 22% 不够，板面只有 2.54:1，需要 34% 才回到 ≥3:1。
+       这就是“CSS 猜不出背后明度、而 store 知道”的典型场景。
+       判据：**背景图取亮端分位（P95）**，其余取均值 —— 壁纸是渐变的（落日图天空
+       亮部远高于均值），widget 板要能在最亮的那片上也被看清。
+       这是 widget 专用令牌，不碰全局的 --color- 与 --float- 令牌，老用户外观不受影响。 */
+    let bgLumW: number;
+    if (bgStyle.value === "image" && bgImageBands.value?.length) {
+      /* 壁纸亮度要按**上屏后的呈现**算：图片 → 透明度（bgOpacity）→ 底色 → 遮罩。
+         遮罩（FEAT-094，上重下轻）会把亮部压下去，不折算就高估了背景亮度。
+         取最亮的一档（P95）—— widget 板要能在壁纸最亮那片上也被看清。 */
+      const scrim = SCRIM_RGB;
+      const base = hexToRgb(bgColorTemp.value);
+      const bands = bgImageBands.value.map((b) =>
+        mixRgb(mixRgb(b, base, 1 - bgOpacity.value), scrim, SCRIM_MEAN_ALPHA),
+      );
+      bgLumW = relLum(bands[bands.length - 1]);
+    } else {
+      bgLumW = relLum(effectiveBg.value);
+    }
+    body.style.setProperty("--w-glass-white", bgLumW < 0.22 ? "16%" : "30%");
   }
-  watch([compColor, compAlpha, effectiveBg, material], applyCompColor, { immediate: true });
+  /* effectiveBg / bgImageBands 已在依赖里（背景明度变化会重算白玻璃层比例） */
+  watch([compColor, compAlpha, effectiveBg, material, bgImageBands], applyCompColor, { immediate: true });
 
   /* ---------- FEAT-087：品牌色 / 语义色族下发 ----------
      组件里已把硬编码色值注册成 var(--color-*)（codemod 扫描替换），

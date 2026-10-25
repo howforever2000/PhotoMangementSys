@@ -97,8 +97,9 @@ function shortName(n: string | null): string {
   width: 100%;
   height: 100%;
   display: block;
-  color: var(--color-text-3);
-  opacity: 0.92;
+  /* 点阵用 widget 专用点色（实测旧值 11% 白在深底上 1.01:1，整片看不见） */
+  color: var(--w-dot);
+  opacity: 1;
 }
 .w-geo-pin {
   cursor: pointer;
