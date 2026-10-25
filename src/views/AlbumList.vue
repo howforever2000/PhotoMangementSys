@@ -12,8 +12,6 @@ import type { Album, CreateAlbumInput } from "../types/album";
 import { isVirtualAlbum } from "../types/album";
 import { useVaultStore } from "../stores/vault";
 import type { Folder, ManualTree } from "../types/folder";
-import { groupByTime } from "../utils/timeGroup";
-import type { YearGroup } from "../utils/timeGroup";
 import { justifyRows, type JustifiedRow } from "../utils/justifiedRows";
 import ManualSort from "./ManualSort.vue";
 import AlbumCard from "../components/AlbumCard.vue";
@@ -307,20 +305,8 @@ const currentVisibleAlbumIds = computed<number[]>(() => {
     }
     return ids;
   }
-  // date mode
-  const ids: number[] = [];
-  for (const yg of groupedYears.value) {
-    if (isCollapsed(yearKey(yg.year))) continue;
-    for (const a of yg.uncategorized) ids.push(a.id);
-    for (const sg of yg.seasons) {
-      if (isCollapsed(seasonKey(yg.year, sg.season))) continue;
-      for (const mg of sg.months) {
-        if (isCollapsed(monthKey(yg.year, sg.season, mg.month))) continue;
-        for (const a of mg.albums) ids.push(a.id);
-      }
-    }
-  }
-  return ids;
+  // date 模式：整墙扁平密排，没有可折叠分组，所有相册恒可见
+  return dateOrderedAlbums.value.map((a) => a.id);
 });
 
 /** 退出勾选管理模式，清空所有选择 */
@@ -899,18 +885,8 @@ const locationGroups = computed<Array<{ location: string | null; albums: Album[]
   return groups;
 });
 
-/** 折叠状态：key 为分组的唯一标识 */
+/** 折叠状态：key 为地点分组的唯一标识（日期墙是扁平密排，没有折叠分组） */
 const collapsed = ref<Set<string>>(new Set());
-
-/** 时间分组的相册树（FEAT-095：排除归档 / 隐藏虚拟相册，它们单独成块展示）
- *  FEAT-105：改成喂 visibleAlbums（左栏的入库状态筛选），再按年份收窄。
- *  两步分开写的理由：groupByTime 内部已做年/季/月三层聚簇，
- *  把年份过滤塞进去会多一次遍历；先铺后筛只跑一遍。 */
-const groupedYears = computed<YearGroup[]>(() => {
-  const groups = groupByTime(visibleAlbums.value);
-  if (yearFilter.value === null) return groups;
-  return groups.filter((g) => g.year === yearFilter.value);
-});
 
 /** 年份筛选下的可见相册数（左栏右上角那个"12 个相册 · 653 张"用它） */
 const visibleCount = computed(() => visibleAlbums.value.length);
@@ -1048,7 +1024,8 @@ const wallRows = computed<JustifiedRow[]>(() =>
     count: dateOrderedAlbums.value.length,
     containerWidth: wallWidth.value,
     gap: 12,
-    captionH: 30,
+    // 图注已嵌入封面内部（左下角落款），行高 = 封面高，不再预留图注条
+    captionH: 0,
     // 名义高度 232：实际封面高由缩放决定（≤ 232）。
     // 基础比例 1.28（约 5:4）比 4:3 更方 —— 参考图里的照片面板接近正方形，
     // 而不是扁扁的横幅。1.28 × 232 ≈ 297px 宽（行内 3~4 块），
@@ -1150,18 +1127,6 @@ function toggleCollapse(key: string) {
   collapsed.value = next;
 }
 
-/** 年份折叠 key */
-function yearKey(year: number): string {
-  return `y-${year}`;
-}
-/** 季节折叠 key */
-function seasonKey(year: number, season: string): string {
-  return `s-${year}-${season}`;
-}
-/** 月份折叠 key */
-function monthKey(year: number, season: string, month: number): string {
-  return `m-${year}-${season}-${month}`;
-}
 /** 地点折叠 key */
 function locationKey(location: string | null): string {
   return `loc-${location ?? "__none__"}`;
@@ -1170,38 +1135,26 @@ function locationKey(location: string | null): string {
 /* FEAT-105：删掉 jumpToYear —— 「时间路线图」横条已删除（年份筛选改由左栏承担），
    没有滚动目标了。 */
 
-/** 展开 / 折叠全部（日期 / 地点模式） */
+/** 折叠 / 展开全部地点分组（日期墙无分组，此函数仅在地点模式调用） */
 function toggleAllGroups() {
-  // 收集当前模式下的所有分组 key
-  const keys: string[] = [];
-  if (sortMode.value === "location") {
-    for (const g of locationGroups.value) {
-      keys.push(locationKey(g.location));
-    }
-  } else {
-    for (const yg of groupedYears.value) {
-      keys.push(yearKey(yg.year));
-      for (const sg of yg.seasons) {
-        keys.push(seasonKey(yg.year, sg.season));
-        for (const mg of sg.months) {
-          keys.push(monthKey(yg.year, sg.season, mg.month));
-        }
-      }
-    }
-  }
+  const keys = locationGroups.value.map((g) => locationKey(g.location));
   if (collapsed.value.size > 0) {
-    collapsed.value = new Set(); // 全部展开
+    collapsed.value = new Set(); // 已有折叠（含部分折叠）→ 全部展开
   } else {
     collapsed.value = new Set(keys); // 全部折叠
   }
 }
 
-/** 当前模式是否处于"全部折叠"状态（用于按钮文字） */
+/** 当前模式是否处于“全部折叠”状态（用于按钮文字）。
+ *  地点模式要求**每个**分组都折叠才算（部分折叠时按钮仍给“全部折叠”）。 */
 const allCollapsed = computed(() => {
   if (sortMode.value === "manual") {
     return manualSortRef.value?.isAllCollapsed ?? false;
   }
-  return collapsed.value.size > 0;
+  return (
+    locationGroups.value.length > 0 &&
+    locationGroups.value.every((g) => collapsed.value.has(locationKey(g.location)))
+  );
 });
 
 /** 工具栏"全部折叠 / 展开"按钮：按当前模式分发 */
@@ -1474,16 +1427,6 @@ function onKey(e: KeyboardEvent) {
             <span class="side-n">{{ b.count }}</span>
           </button>
         </div>
-
-        <div class="side-group">
-          <h3 class="side-h">快捷</h3>
-          <button class="side-item" @click="onToggleAll">
-            {{ allCollapsed ? "全部展开" : "全部折叠" }}
-          </button>
-          <button class="side-item" :disabled="!store.albums.length" @click="enterSelectMode">
-            批量管理
-          </button>
-        </div>
       </aside>
 
       <!-- 右栏：内容 -->
@@ -1506,7 +1449,7 @@ function onKey(e: KeyboardEvent) {
       <div class="toolbar-actions">
         <!-- 非勾选模式：批量导入 / 管理 / 新建 -->
         <template v-if="!isSelectMode">
-          <button class="btn" @click="onToggleAll">
+          <button v-if="sortMode !== 'date'" class="btn" @click="onToggleAll">
             {{ allCollapsed ? "全部展开" : "全部折叠" }}
           </button>
           <button class="btn" :disabled="isImporting" @click="batchImport">
@@ -1723,7 +1666,7 @@ function onKey(e: KeyboardEvent) {
          理由：左栏已有年份导航，年份再当一层大标题就是重复；
          季、月三层折叠头把一屏切成十几条横带，看起来像"表格"而不是"相册墙"。
          现在：所有相册按拍摄时间倒序平铺在一个 dense 网格里，
-         时间信息移到封面左下角（AlbumCard 的 .tile-time），
+         时间信息移到封面左下角的落款里（AlbumCard 的 .tile-seal），
          网格用 grid-auto-rows + 行高错落制造"密排但不死板"的节奏。 -->
     <main v-if="sortMode === 'date'" class="timeline-view">
       <!-- FEAT-106：行式密排。
@@ -2189,7 +2132,7 @@ function onKey(e: KeyboardEvent) {
      整行宽度 = Σ宽 + gap×(n−1) = 容器宽度，**精确铺满**。
 
    行高由行容器的 height 定（inline style），格内的封面用 --cover-h 拿同一个值，
-   于是「封面 + 34px 图注」在整行内严格对齐。
+   于是整行封面严格对齐（图注已嵌入封面内部，不再占额外行高）。
    ══════════════════════════════════════════════════════════════════════════ */
 .album-wall {
   display: flex;
@@ -2211,7 +2154,7 @@ function onKey(e: KeyboardEvent) {
   flex: 0 0 auto;
 }
 
-/* 封面高度由算法给出（内联 --cover-h），行容器给出总高（封面 + 34px 图注）。
+/* 封面高度由算法给出（内联 --cover-h），行容器给出总高（= 封面高）。
    两者都在 px 上，行内所有瓦片严格对齐。 */
 
 /* 窄窗：墙板不再分宽幅（3 列屏上宽幅瓦片会占掉大半个屏），
@@ -2228,9 +2171,6 @@ function onKey(e: KeyboardEvent) {
   .album-wall-cell .tile-cover {
     height: auto !important;
     aspect-ratio: 3 / 2;
-  }
-  .album-wall-cell .tile-cap {
-    height: 30px;
   }
 }
 

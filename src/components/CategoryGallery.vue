@@ -94,6 +94,10 @@ const totalHits = computed(() => cards.value.reduce((n, c) => n + c.count, 0));
 function toneBg(c: CategoryCard): string {
   return categoryTone(c.slug || "other").bg;
 }
+/** 卡片无封面时色底上的落款字色（色卡自带对比色，浅底深字 / 夜景底浅字） */
+function toneFg(c: CategoryCard): string {
+  return categoryTone(c.slug || "other").fg;
+}
 
 /** 语义索引是否为空（分类极可能空 → 优先提示建索引） */
 const indexEmpty = computed(() => (stats.value?.indexed ?? 0) === 0);
@@ -483,17 +487,18 @@ onMounted(load);
           :title="`${t.name} · ${t.count} 张`"
           @click="openCategory(t)"
         >
-          <div class="cat-cover" :style="{ background: toneBg(t) }">
+          <div class="cat-cover" :style="{ background: toneBg(t), '--tone-fg': toneFg(t) }">
             <img v-if="t.cover && thumbMap[t.cover]" :src="fileUrl(thumbMap[t.cover])" loading="lazy" alt="" />
             <span v-else class="cat-cover-ph">{{ t.icon || t.name.slice(0, 1) }}</span>
             <span class="cat-count">{{ t.count }} 张</span>
             <span v-if="t.source === 'builtin'" class="cat-tag">规则</span>
-          </div>
-          <div class="cat-body">
-            <h3 class="cat-name">{{ t.icon }} {{ t.name }}</h3>
-            <span v-if="t.keywords.length" class="cat-sub-hint">
-              {{ t.keywords.length }} 词 · 匹配度 {{ relToMatch(t.threshold) }}
-            </span>
+            <!-- 名称嵌入封面左下角（落款）：有照片白字+渐变，无色底用主题字色 -->
+            <div class="cat-seal">
+              <h3 class="cat-name">{{ t.icon }} {{ t.name }}</h3>
+              <span v-if="t.keywords.length" class="cat-sub">
+                {{ t.keywords.length }} 词 · 匹配度 {{ relToMatch(t.threshold) }}
+              </span>
+            </div>
           </div>
         </article>
       </div>
@@ -721,13 +726,23 @@ onMounted(load);
   50% { opacity: 0.4; }
 }
 
-/* ---- 分类卡片网格 ---- */
+/* ---- 分类卡片：瀑布流错落（顶对齐、底部长短不一）----
+   用 CSS multicol 而不是 grid：grid 只能切齐整的行，瀑布流要求卡片
+   顺着列往下排、高度各自不同。break-inside:avoid 保证卡片不被列切断。
+   顺序按列填充（与网格略有差异），但排序（规则在前 + 命中数）仍保留。 */
 .cat-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 16px;
+  column-count: 5;
+  column-gap: 14px;
 }
+@media (max-width: 1280px) { .cat-grid { column-count: 4; } }
+@media (max-width: 1024px) { .cat-grid { column-count: 3; } }
+@media (max-width: 640px)  { .cat-grid { column-count: 2; } }
+
 .cat-card {
+  display: block;
+  /* 瀑布流：不跨列断行 + 列间垂直间距 */
+  break-inside: avoid;
+  margin: 0 0 14px;
   border-radius: 14px;
   overflow: hidden;
   cursor: pointer;
@@ -738,15 +753,27 @@ onMounted(load);
   transform: translateY(-3px);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
 }
+
+/* 封面填满整张卡片（不再有下方文字条）；高度用固定调色盘按位置周期变化，
+   形成可预期的错落（随机高度每次刷新会跳位）。 */
 .cat-cover {
   position: relative;
-  aspect-ratio: 4 / 3;
+  width: 100%;
+  height: 200px;
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
 }
+.cat-card:nth-child(6n + 1) .cat-cover { height: 238px; }
+.cat-card:nth-child(6n + 2) .cat-cover { height: 176px; }
+.cat-card:nth-child(6n + 3) .cat-cover { height: 210px; }
+.cat-card:nth-child(6n + 4) .cat-cover { height: 256px; }
+.cat-card:nth-child(6n + 5) .cat-cover { height: 190px; }
+
 .cat-cover img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -761,6 +788,7 @@ onMounted(load);
   position: absolute;
   right: 8px;
   top: 8px;
+  z-index: 2;
   padding: 2px 9px;
   font-size: 11.5px;
   color: #fff;
@@ -768,22 +796,56 @@ onMounted(load);
   border-radius: 999px;
   backdrop-filter: blur(3px);
 }
-.cat-body {
-  padding: 10px 12px 12px;
+
+/* 名称落款：嵌入封面左下角。
+   判据与 AlbumCard 一致 —— 看封面自己有没有照片：
+   · 无照片（类目纯色底，绝大多数是浅色）：用字卡自带的对比字色 --tone-fg，
+     不压黑渐变（黑渐变在浅底上会变成一块灰板）；
+   · 有照片：底部黑渐变 + 白字（见下方 :has(img) 分支）。 */
+.cat-seal {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  padding: 26px 12px 10px;
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  background: transparent;
+  pointer-events: none;
 }
 .cat-name {
   margin: 0;
+  max-width: 100%;
   font-size: 15px;
   font-weight: 700;
-}
-.cat-sub-hint {
-  font-size: 11.5px;
-  opacity: 0.6;
+  color: var(--tone-fg, #475569);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cat-sub {
+  max-width: 100%;
+  font-size: 11px;
+  color: var(--tone-fg, #475569);
+  opacity: 0.72;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 有真封面：底部黑渐变 + 白字（照片总有暗部） */
+.cat-cover:has(img) .cat-seal {
+  padding-top: 30px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0));
+}
+.cat-cover:has(img) .cat-name,
+.cat-cover:has(img) .cat-sub {
+  color: #fff;
+  opacity: 1;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.72);
 }
 
 /* ---- 二级头部 + chips ---- */
@@ -883,7 +945,6 @@ onMounted(load);
 }
 
 @media (max-width: 640px) {
-  .cat-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
   .photo-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
 }
 

@@ -83,11 +83,14 @@ const tileTime = computed(() => {
   return m ? `${y}年${Number(m)}月` : `${y}年`;
 });
 
+/**
+ * 封面左下角落款的元信息行：张数 · 时间（· 地点）。
+ * 图注已嵌入封面内部（海报落款），时间不再单独占一个胶囊。
+ */
 const tileMeta = computed(() => {
   const parts: string[] = [`${props.album.photo_count} 张`];
-  // FEAT-106：行式密排的图注胶囊很窄，名字已经占位。
-  // 时间改为压在封面左下角的独立胶囊里（.tile-time），这里只留张数；
-  // 地点（仅地点视图有意义）跟在张数后面。
+  if (tileTime.value) parts.push(tileTime.value);
+  // 地点（仅地点视图有意义）跟在时间后面
   if (props.showLocation && props.album.location) parts.push(props.album.location);
   return parts.join(" · ");
 });
@@ -142,10 +145,6 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
         title="尚未扫描入库，可在详情页执行综合扫描"
       >未入库</span>
 
-      <!-- 拍摄时间：压在封面左下角的**裸文字**（不是胶囊）。
-           底下一层 34px 高的极淡渐变保证浅色照片上也能读（见 CSS）。 -->
-      <span v-if="album.shoot_time" class="tile-time">{{ tileTime }}</span>
-
       <!-- 勾选圆点：管理模式下常驻；否则仅选中时显示 -->
       <span
         v-if="selectMode || selected"
@@ -156,22 +155,16 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
         :aria-label="`勾选 ${album.name}`"
         @click.stop="emit('toggle-select', $event)"
       >{{ selected ? "✓" : "" }}</span>
-    </div>
 
-    <!--
-      FEAT-107：图注从「压在封面上的胶囊」改到「封面下方一行裸文字」。
-
-      为什么改回来：胶囊方案是给「一屏几十块」的密排墙设计的（那时文字
-      必须有个底才读得出来）。现在一行只有 3~5 块，**封面本身就是足够大的
-      对比面**，胶囊反而变成贴在照片上的黑色贴纸，而且两个胶囊垂直堆叠
-      （bottom 8 / bottom 44）在 186px 高的封面上占了 74px。
-
-      名字与张数连成一串（不是左右分推）：瓦片宽度不同，推到最右会让
-      每一行的张数落在不同的 x 位置，读起来像两栏表格而不是一句描述。
-    -->
-    <div class="tile-cap">
-      <b class="tile-name">{{ album.name }}</b>
-      <span class="tile-meta">{{ tileMeta }}</span>
+      <!--
+        图注（落款）嵌入封面左下角：名字一行 + 张数·时间一行。
+        白色裸文字 + 文字阴影，底部一层渐变保证浅色照片上可读（见 CSS）。
+        整块 pointer-events:none，不挡卡片点击 / 勾选。
+      -->
+      <div class="tile-seal">
+        <b class="tile-name">{{ album.name }}</b>
+        <span class="tile-meta">{{ tileMeta }}</span>
+      </div>
     </div>
   </article>
 
@@ -595,25 +588,51 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
    这个判据不依赖任何全局类，也不可能错配。
    ══════════════════════════════════════════════════════════════════════════ */
 
-/* ── 角标（未入库）：默认占位情景 ── */
-/* ── 日期：默认占位情景 ── */
-.tile-time {
+/* ── 图注落款：嵌入封面左下角（名字一行 + 张数·时间一行）──────────────
+   无照片（占位底）时跟随主题文字色；有照片时切白字（见下条）。
+   整块 pointer-events:none，不拦截卡片点击 / 勾选圆点。 */
+.tile-seal {
   position: absolute;
   left: 10px;
-  bottom: 8px;
-  z-index: 1;
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--fg-2);
+  right: 10px;
+  bottom: 9px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
   pointer-events: none;
 }
+.tile-seal .tile-name {
+  max-width: 100%;
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile-seal .tile-meta {
+  max-width: 100%;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-/* 有真封面（照片）：白字 + 文字阴影。
-   照片总有暗部，所以白字总是安全的 —— 不需要额外遮罩层。 */
-.tile-cover:has(img) .tile-time {
-  color: rgba(255, 255, 255, 0.90);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+/* 有真封面（照片）：白字 + 投影。可读性由底部渐变兜底（见 ::after），
+   照片总有暗部，白字 + 投影在绝大多数封面上安全。 */
+.tile-cover:has(img) .tile-seal .tile-name,
+.tile-cover:has(img) .tile-seal .tile-meta {
+  color: rgba(255, 255, 255, 0.94);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.78), 0 0 9px rgba(0, 0, 0, 0.4);
 }
 
 /* 勾选圆点：22px，与封面的 5px 圆角形成对比但不突兀 */
@@ -651,47 +670,23 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
     0 0 0 2px var(--c-accent);
 }
 
-/* 封面底部极淡渐变：只为了让左下角的日期裸文字在浅色照片上也能读。
-   34px 高、最深 0.30 —— 两个值都是实测边界：
-   浅了在雪景/天空上白字消失，深了就是“压在照片上的黑带”。
-   ⚠️ 只给**有真封面**的瓦片；占位底不需要它（占位底本身就很平，
-   而且占位情景下日期用的是主题文字色，不需要遮罩）。 */
+/* 封面底部渐变：为左下角两行落款兜底（名字 + 张数·时间）。
+   54px 高、最深 0.42 —— 单行时 34px/0.30 够用，两行在雪景/天空上会发虚。
+   ⚠️ 只给**有真封面**的瓦片（同旧规则）。 */
 .tile-cover:has(img)::after {
   content: "";
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
-  height: 34px;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.30), rgba(0, 0, 0, 0));
+  height: 54px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0));
   pointer-events: none;
 }
-
-/* ── 图注：封面下方一行裸文字（FEAT-107）──────────────────────────
-   结构：名字（13px 主色） + 张数（10.5px 弱色），同基线、连成一串。
-   没有底、没有框、没有描边 —— 它直接落在背景上。
-
-   为什么不能 margin-left:auto 把张数推到最右：
-   瓦片宽度不同，推到右边会让每一行的张数落在不同的 x 位置，
-   读起来像两栏表格而不是一句描述。
-   ────────────────────────────────────────────────────────────── */
-.tile-cap {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  min-width: 0;
-  /* 固定行高：不同字数的名字不能让下一行的封面错位 */
-  line-height: 18px;
-  padding-top: 7px;
-}
-
 /* FEAT-105：mosaic 变体（跨格的大瓦片）
    默认 .tile-cover 用 padding-bottom:62.5% 定一个固定宽高比，
    在跨 2×2 的大格子里只会占住上方一块，底下留白 —— 看起来像"图没铺满"。
-   这里在大格子里改成：封面填满剩余高度（flex:1）。
-
-   FEAT-107：图注也从“压封面底部”改到“封面下方一行”——
-   与普通瓦片一致，整墙只有**一种**图注形式，不再两种并存。 */
+   这里在大格子里改成：封面填满剩余高度（flex:1），落款随封面内嵌。 */
 .album-tile.tile-mosaic {
   display: flex;
   flex-direction: column;
@@ -703,10 +698,6 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   padding-bottom: 0;
   flex: 1;
   min-height: 0;
-}
-.album-tile.tile-mosaic .tile-time {
-  /* 大瓦片不再显示日期：行高由算法定，日期没有固定处可贴 */
-  display: none;
 }
 
 /* ── FEAT-106/107：wall 变体（行式密排）──────────────────────────────
@@ -732,46 +723,11 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   flex: none;
 }
 
-/* wall 的图注高度固定 30px（与 justifiedRows 的 captionH 一致），
-   否则不同字数的名字会让下一行的封面错位。 */
-.album-tile.tile-wall .tile-cap {
-  height: 30px;
-  padding-top: 7px;
-  flex: none;
-}
-
-/* 胶囊本体与文字颜色：基础 .tile-cap-in / .tile-name / .tile-meta 已定义，
-   这里不重复 —— 全站 tile（地点/手动/墙）都是同一套“裸封面 + 压在封面上的胶囊”。 */
-
 /* ── 悬停：整块瓦片抬亮，封面边缘亮起 ── */
 .album-tile.tile-wall:hover .tile-cover {
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.16),
     var(--cover-topline);
-}
-
-.tile-name {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: -0.008em;
-  /* 图注现在落在**背景**上（不是照片上），所以用主题文字色 ——
-     不再是写死的白字（浅色预设下白字直接消失）。 */
-  color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-  flex: 0 1 auto;
-}
-
-.tile-meta {
-  font-size: 10.5px;
-  /* 张数弱化一档：它是名字的补充，不是并列信息 */
-  color: var(--fg-3);
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-  flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
 }
 
 /* 无封面相册（新建/封面文件被移走）的角标：占位底是浅灰，白字会消失。

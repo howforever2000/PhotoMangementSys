@@ -553,11 +553,14 @@ onMounted(load);
 
 /* ===== FEAT-103：地点页新骨架（数据带 + 视图切换 + 地图） ===== */
 
-/* 数据带（FEAT-107）：它自带 padding: 18px var(--gutter) 16px + 下缘发丝线。
-   父级 .lg-wrap 不再给左右 padding（否则会双倍），
-   所以这里只用负 margin 抵消外层已经给的那份。 */
+/* 数据带（FEAT-107）：与主数据带（SmartAlbum 顶部那条）左右对齐 ——
+   它作为 .lg-wrap 的直接子元素，已由 SmartAlbum 的 :deep(.lg-wrap > *) 给了
+   52px 沟槽 padding。
+   ⚠️ 旧写法用 margin:0 calc(var(--gutter)*-1) 想“抵消外层 padding 全出血”，
+   实测会把整盒拉到视口外（left:-52 / right:1492），首列标签与末列 delta
+   直接贴边被裁切。这里不再出血，两条带同一条左轴。 */
 .lg-stats {
-  margin: 0 calc(var(--gutter) * -1) 4px;
+  margin: 0 0 6px;
 }
 
 .lg-viewbar {

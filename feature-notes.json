@@ -3896,7 +3896,54 @@
         "性能实测的三次失败已记入 BUG-2026-1024-009：rAF 间隔 / 内部元素重绘 / 截图吞吐 都测不准，最终改用图元数作为可跨环境依据"
       ],
       "updated_at": "2026-10-25T01:10:00+08:00"
+    },
+    {
+      "id": "FEAT-109",
+      "name": "相册管理/智慧相册四处体验修复：去重快捷项 + 折叠按钮生效 + 图注嵌入封面 + 数据带不裁切",
+      "module": "src/views/AlbumList.vue、src/components/AlbumCard.vue、src/components/CategoryGallery.vue、src/components/LocationGallery.vue",
+      "status": "done",
+      "purpose": "用户连续反馈四处问题：①相册管理左栏底部「快捷」组（全部折叠/批量管理）与右上横栏重复，要求去掉；②「全部折叠」按钮点击无效果；③相册墙图注应嵌入封面左下角，内容分类卡也要错落感且文字嵌入式；④智慧相册上下两条数据带左右文字显示不全（被裁切）。",
+      "implementation": {
+        "① 去重": "删除 AlbumList 左栏整个「快捷」side-group（全部折叠/批量管理）——这两项右上 main-head 横栏都有，保留一处入口（横栏）。",
+        "② 折叠按钮生效": "根因：FEAT-106 日期模式已改为扁平行式密排墙，模板里不再有任何年/季/月折叠分组，但 onToggleAll→toggleAllGroups 仍在收集已废弃的 groupedYears 折叠 key，collapsed 变了却没有任何 DOM 绑定它，所以按时间模式点按钮毫无反应。修法：A) 清理死代码——删除 groupedYears/groupByTime/YearGroup 导入与 yearKey/seasonKey/monthKey，currentVisibleAlbums 的 date 分支直接返回 dateOrderedAlbums；B) 折叠只服务真有分组的视图：工具栏「全部折叠」按钮加 v-if=sortMode!=='date'（按时间无分组可折，不放假按钮）；地点模式 allCollapsed 改为「每个地点分组都折叠」才为真（旧逻辑 collapsed.size>0 在部分折叠时也显示「全部展开」是错的），toggleAllGroups 收敛为只处理地点分组。手动排序模式仍走 ManualSort 暴露的 toggleAll/isAllCollapsed，不变。",
+        "③ 图注嵌入 + 错落": "AlbumCard tile/wall 变体：删除封面下方的 .tile-cap 图注条与独立的 .tile-time 胶囊，新增封面内左下角 .tile-seal（相册名一行 + 「张数 · 年月份[·地点]」一行）；有真封面(:has(img))白字+文字阴影+底部 54px 黑渐变(0.42)，无封面占位用主题字色不加遮罩；justifiedRows 调用 captionH 30→0，行高=封面高（旧行高=封面+30 图注，会留白条）。CategoryGallery 分类卡：删除封面下方 .cat-body，名称+「词数·匹配度」做成封面左下角 .cat-seal；网格 grid 改 CSS multicol 瀑布流（column-count 5/4/3/2 响应式 + break-inside:avoid），封面高按 nth-child(6n) 周期取 238/176/210/256/190/200，形成顶对齐、底部高低错落；无封面类目纯色底用 categoryTone 自带对比字色 --tone-fg（浅底深字、夜景底浅字）不压黑渐变，有真封面才用黑渐变+白字（与 AlbumCard 同一 :has(img) 判据）。",
+        "④ 数据带裁切": "根因：LocationGallery 的 .lg-stats 用 margin:0 calc(var(--gutter)*-1) 想全出血抵消父级 52px padding，实测整盒被拉到 left:-52/right:1492（视口外），首列标签「有地点城市」贴左缘、末列 delta「四川省·达州」贴右缘均被裁切。修法：去掉负 margin，改为 margin:0 0 6px，让地点数据带与 SmartAlbum 顶部主数据带共用同一条 52px 沟槽左轴，两带左右对齐、文字完整。"
+      },
+      "highlights": [
+        "「点了没反应」类 bug 先区分「没有绑定该状态的 DOM」与「状态没改」——本次 collapsed 确实变了，只是日期扁平墙没有任何元素读它，属于重构后遗留的死状态。",
+        "封面嵌入式文字一律用 :has(img) 判据分流（照片=白字+黑渐变，纯色/占位底=主题/色卡对比字色），不靠全局暗色类——纯色色底上恒压黑渐变会变成一块灰板。",
+        "瀑布流用固定 nth-child 周期高度而非随机：随机高度每次刷新跳位，周期错落可预期且纯函数。",
+        "StatBand 自带 52px gutter padding，任何消费方都不该再用负 margin 把它拉出沟槽；负 margin 出血在它身上=整盒移出视口。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 133/133 全绿（含 justifiedRows 14 条）",
+        "npx vite build exit 0",
+        "Playwright 探针：date 工具栏无折叠按钮 / location 点「全部折叠」组体 v-show=false 且文案变「全部展开」、再点恢复 / 相册墙深浅两套落款清晰 / 分类卡 12 张高低错落且浅色底名称深字 / 地点页双数据带左右同轴、delta 完整"
+      ],
+      "related_files": [
+        "src/views/AlbumList.vue",
+        "src/components/AlbumCard.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/LocationGallery.vue"
+      ],
+      "keywords": [
+        "全部折叠",
+        "图注嵌入",
+        "落款",
+        "瀑布流",
+        "错落",
+        "数据带",
+        "StatBand",
+        "负margin裁切",
+        "死代码",
+        "行式密排",
+        "captionH",
+        ":has(img)"
+      ],
+      "created_at": "2026-10-25T00:00:00+08:00",
+      "updated_at": "2026-10-25T00:00:00+08:00"
     }
   ],
-  "updated": "2026-10-25T01:10:00+08:00"
+  "updated": "2026-10-25T00:00:00+08:00"
 }
