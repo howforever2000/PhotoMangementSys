@@ -3865,7 +3865,38 @@
         "themed-probe 已补 list_photo_locations 桩数据（13 个城市含 1 个无坐标组）：原来返回 null，地点页渲染不出地图，探针无法验证"
       ],
       "updated_at": "2026-10-24T23:59:00+08:00"
+    },
+    {
+      "id": "FEAT-108",
+      "name": "液态玻璃：令牌冲突修复 + 真实边缘折射",
+      "module": "全局材质系统 / 浮层玻璃 / 顶栏",
+      "status": "done",
+      "purpose": "对着 skill-liquid-glass（Android/Compose backdrop 库）的光学模型检查本项目实现，修掉三处“名义上有液态玻璃、实际不生效”的缺陷，并把 Web 端能做的真实折射接上",
+      "implementation": {
+        "frontend": "Vue3 + CSS。新增 GlassFilters.vue（全应用一份的 SVG 滤镜定义，挂 App 根）；浮层玻璃改为 backdrop-filter: url(#liquid-lens) blur(8px) saturate(...)；令牌拆为 --glass-*（卡片：长度+数字）与 --float-*（浮层：长度+数字+纯颜色描边）",
+        "key_points": [
+          "Web 端确实能做真实折射：backdrop-filter: url(#svgfilter) 在 Chromium/WebView2 可用，feDisplacementMap 会把背景真正扭折（已像素级实测，不是推测）",
+          "url() 必须写在 blur() 前面：反过来的话先模糊再把糊掉的图去位移，弯折完全看不出来",
+          "滤镜定义必须挂 App 根且不能 display:none：url(#id) 是全文档作用域，display:none 里的滤镜部分实现不解析；探针页不经过 App.vue 时要单独挂，否则静默失效（与纯模糊像素差 0）",
+          "折射只给浮层（顶栏/.glass-float），不给卡片：一屏几十张卡片每张都跑位移 = 直接掉帧",
+          "加了折射后 --float-blur 从 16px 降到 8px：折射本身就是强“不透明信号”，再配 16px 强模糊会把弯折抹平",
+          "色散（chromaticAberration）未进生产：需拆 RGB 三通道分别位移再叠合，约 11 个滤镜图元（3 倍工作量），当前壁纸密度下肉眼收益极小；定义留在对照页 #lensDisperse",
+          "与原生 RuntimeShader 的本质差距：噪声位移场是随机的，不是严格沿边缘径向；缓解靠 baseFrequency 取很低（0.012）让位移场大尺度缓变"
+        ],
+        "verification": [
+          ".visual/probe-glass-refraction.cjs 像素差判定：折射 vs 纯模糊 MAE 2.03，纯模糊 vs 无滤镜 MAE 27.13",
+          ".visual/probe-glass-tokens.cjs：computed backdropFilter = url(#liquid-lens) blur(8px) saturate(1.1) · border 1px",
+          "npm test 133/133 · vue-tsc 干净 · vite build 成功",
+          "对比度审计 7 页 × 深浅 = 12 组全部 0 处不合格"
+        ]
+      },
+      "notes": [
+        "令牌冲突修复 = ff0e38e，折射接入 = 94dc94f",
+        "对照页：node .visual/shoot-glass-lab.cjs（需 dev server），三档玻璃并排 + 接真实顶栏尺寸",
+        "性能实测的三次失败已记入 BUG-2026-1024-009：rAF 间隔 / 内部元素重绘 / 截图吞吐 都测不准，最终改用图元数作为可跨环境依据"
+      ],
+      "updated_at": "2026-10-25T01:10:00+08:00"
     }
   ],
-  "updated": "2026-10-24T23:59:00+08:00"
+  "updated": "2026-10-25T01:10:00+08:00"
 }

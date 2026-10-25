@@ -4401,7 +4401,62 @@
         "getScreenCTM() 的范围容易搞错：它只到 svg 根坐标系，transform 过的 <g> 不在内",
         "交互类改动必须写探针断言，不能只靠截图：截图看不出「拖拽速度是 6 倍」"
       ]
+    },
+    {
+      "id": "BUG-2026-1024-009",
+      "date": "2026-10-24",
+      "status": "resolved",
+      "title": "“液态玻璃”名义存在但不生效：令牌同名冲突 + 默认预设关闭 + 一套样式零消费者",
+      "module": "tokens.css / main.css / theme.ts / presets.ts / AppHeader.vue",
+      "symptom": [
+        "顶栏 compputed backdropFilter 实测为 none（从头到尾就是一块不透明度 0.62 的实心色）",
+        "顶栏 borderTopWidth 实测 0px（语法要求 1px）",
+        "README 写着三种玻璃各司其职，实际第四种（cardStyle 内联）也在场，四套透明度各不相同",
+        ".glass-float 这个类全仓 0 个消费者",
+        "用户问“是否已经优化了液态玻璃材质” —— 答案是不但没优化，连名字对应的效果本身也没有真正生效"
+      ],
+      "root_cause": {
+        "summary": "三个独立问题叠在一起：① --glass-blur 同名不同义（tokens.css 给完整 filter 值、main.css 给长度，后者后加载胜出）→ AppHeader 算得 `18px saturate(...)` → 无效值整条丢弃；② --glass-border 同理，导致 `border: <颜色>` 这种合法简写把宽度默认成 3px 或 border-style 变 none；③ 8 套预设全部 material:plain，而 body.mat-plain 显式把 backdrop-filter 设为 none",
+        "why_missed": "”看不出来“—— 填充不透明度高到 0.62，实心色和“模糊后的背景”在深色壁纸上差异很小。反而让人误以为模糊在正常工作，于是又去调填充值（.58 下限就是这么来的），在错误的方向上持续加固"
+      },
+      "fix": [
+        "改名而不是合并：--float-blur/--float-saturate/--float-border/--float-fill/--float-shadow 给浮层，--glass-* 只管卡片（模糊半径+饱和倍率+描边颜色）",
+        "所有 border 使用方写全 `1px solid var(--glass-border)`（tokens.css / AppHeader 已改，main.css 加注释约束）",
+        "探针 .visual/probe-glass-tokens.cjs 用 computed 值钉死：backdropFilter 必须包含 url(#liquid-lens) 与 blur(..px)，border 必须 1px"
+      ],
+      "lessons": [
+        "同一句 CSS 自定义属性名在两个文件里含义不同时，后加载的会**静默**覆盖前一个。CSS 变量没有类型检查，坏值只会让整条声明被丢弃，控制台一声不响",
+        "“看着差不多”是本项目最大的敌人：填充 0.62 的实心色与真模糊在深色壁纸上几乎不可分，导致一个完全失效的材质被当成“效果已实现”过了好几轮",
+        "引入一个材质前先问三个问题：它的令牌有没有同名冲突？默认预设里它是不是被关掉了？它有真实消费者吗？（本例三题全中）",
+        "截图不能证明“效果生效”，只有 computed 值 / 像素差能证明"
+      ]
+    },
+    {
+      "id": "BUG-2026-1024-010",
+      "date": "2026-10-24",
+      "status": "resolved",
+      "title": "性能探针三次都测出假数：rAF 间隔 / 局部重绘 / 截图吞吐都摸不到 backdrop-filter 的真实代价",
+      "module": ".visual/probe-glass-fps.cjs",
+      "symptom": [
+        "第一版：三档玻璃测出全是 5ms（连裸背景也是 5ms）",
+        "第二版：改了背景动画，三档仍然全是 5ms / 200fps",
+        "第三版：连续截图测吞吐，算出“加玻璃反而更快 -27ms”这种荒谬结果"
+      ],
+      "root_cause": {
+        "summary": "① 第一版只改玻璃**内部**元素 → backdrop-filter 采样的是玻璃**背后**，不触发重新光栅化；② 第二版只看 rAF 间隔 → 无头 Edge 下 rAF 被节流到 200fps，且合成器光栅代价**不进入 JS 的 rAF 间隔**；③ 第三版 PNG 编码抖动（±30ms）远大于滤镜本身（~1-3ms），信噪比不足",
+        "why_missed": "“测出一个数字”本身就是陷阱——三版都有一个看似合理的数字输出，不追问“这个数受什么控制”就会把它当真"
+      },
+      "fix": [
+        "放弃“测时间”，改用**图元数**作为可跨环境的判断依据：② 边缘折射 ≈ 3 图元，③ 折射+色散 ≈ 11 图元（约 3 倍）",
+        "probe-glass-fps.cjs 降级为“渲染是否正确”的检查器，文件头明写不要引用它的耗时数字",
+        "把三版失败原因写进文件头 —— 防止后来者再走一遍"
+      ],
+      "lessons": [
+        "backdrop-filter 的成本全在光栅化，而光栅化对 JS 不可见：rAF 间隔测不到它",
+        "强制完整光栅化的手段（截图）代价本身就和被测物同量级，信噪比不足",
+        "当一个指标连续多版都给出差不多相同的数时，先怀疑指标本身不敏感，而不是得出结论"
+      ]
     }
   ],
-  "updated": "2026-10-24T23:59:00+08:00"
+  "updated": "2026-10-25T01:10:00+08:00"
 }
