@@ -1,0 +1,105 @@
+[2m20:17:52[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Transform failed with 1 error:
+D:/YUAN HAO/Documents/PersonalIdeaProject/PhotoMangementSys/src/stores/theme.ts:704:61: ERROR: Unexpected "*"
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/YUAN HAO/Documents/PersonalIdeaProject/PhotoMangementSys/src/stores/theme.ts[39m:704:61
+[33m  
+  [33mUnexpected "*"[33m
+  703|         亮部远高于均值），widget 板要能在最亮的那片上也被看清。
+  704|         这是 widget 专用令牌，不碰 --color-*/--float-*，老用户外观不受影响。 */
+  705|      let bgLumW: number;
+     |    ^
+  706|      if (bgStyle.value === "image" && bgImageBands.value?.length) {
+  707|        /* 壁纸亮度要按**上屏后的呈现**算：图片 → 透明度（bgOpacity）→ 底色 → 遮罩。
+  [39m
+[2m20:17:52[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+D:/YUAN HAO/Documents/PersonalIdeaProject/PhotoMangementSys/src/stores/theme.ts:704:61: ERROR: Unexpected "*"[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/YUAN HAO/Documents/PersonalIdeaProject/PhotoMangementSys/src/stores/theme.ts[39m:704:61
+[33m  
+  [33mUnexpected "*"[33m
+  703|         亮部远高于均值），widget 板要能在最亮的那片上也被看清。
+  704|         这是 widget 专用令牌，不碰 --color-*/--float-*，老用户外观不受影响。 */
+  705|      let bgLumW: number;
+     |    ^
+  706|      if (bgStyle.value === "image" && bgImageBands.value?.length) {
+  707|        /* 壁纸亮度要按**上屏后的呈现**算：图片 → 透明度（bgOpacity）→ 底色 → 遮罩。
+  [39m
+      at failureErrorWithLog (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:1467:15)
+      at D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:736:50
+      at responseCallbacks.<computed> (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:603:9)
+      at handleIncomingPacket (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:658:12)
+      at Socket.readFromStdout (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:581:7)
+      at Socket.emit (node:events:514:28)
+      at addChunk (node:internal/streams/readable:568:12)
+      at readableAddChunkPushByteMode (node:internal/streams/readable:519:3)
+      at Readable.push (node:internal/streams/readable:399:5)
+      at Pipe.onStreamRead (node:internal/stream_base_commons:189:23)
+[2m20:18:24[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+D:/YUAN HAO/Documents/PersonalIdeaProject/PhotoMangementSys/src/stores/theme.ts:704:61: ERROR: Unexpected "*"[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/YUAN HAO/Documents/PersonalIdeaProject/PhotoMangementSys/src/stores/theme.ts[39m:704:61
+[33m  
+  [33mUnexpected "*"[33m
+  703|         亮部远高于均值），widget 板要能在最亮的那片上也被看清。
+  704|         这是 widget 专用令牌，不碰 --color-*/--float-*，老用户外观不受影响。 */
+  705|      let bgLumW: number;
+     |    ^
+  706|      if (bgStyle.value === "image" && bgImageBands.value?.length) {
+  707|        /* 壁纸亮度要按**上屏后的呈现**算：图片 → 透明度（bgOpacity）→ 底色 → 遮罩。
+  [39m
+      at failureErrorWithLog (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:1467:15)
+      at D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:736:50
+      at responseCallbacks.<computed> (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:603:9)
+      at handleIncomingPacket (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:658:12)
+      at Socket.readFromStdout (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:581:7)
+      at Socket.emit (node:events:514:28)
+      at addChunk (node:internal/streams/readable:568:12)
+      at readableAddChunkPushByteMode (node:internal/streams/readable:519:3)
+      at Readable.push (node:internal/streams/readable:399:5)
+      at Pipe.onStreamRead (node:internal/stream_base_commons:189:23)
+[2m20:19:15[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+D:/YUAN HAO/Documents/PersonalIdeaProject/PhotoMangementSys/src/stores/theme.ts:704:61: ERROR: Unexpected "*"[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/YUAN HAO/Documents/PersonalIdeaProject/PhotoMangementSys/src/stores/theme.ts[39m:704:61
+[33m  
+  [33mUnexpected "*"[33m
+  703|         亮部远高于均值），widget 板要能在最亮的那片上也被看清。
+  704|         这是 widget 专用令牌，不碰 --color-*/--float-*，老用户外观不受影响。 */
+  705|      let bgLumW: number;
+     |    ^
+  706|      if (bgStyle.value === "image" && bgImageBands.value?.length) {
+  707|        /* 壁纸亮度要按**上屏后的呈现**算：图片 → 透明度（bgOpacity）→ 底色 → 遮罩。
+  [39m
+      at failureErrorWithLog (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:1467:15)
+      at D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:736:50
+      at responseCallbacks.<computed> (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:603:9)
+      at handleIncomingPacket (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:658:12)
+      at Socket.readFromStdout (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:581:7)
+      at Socket.emit (node:events:514:28)
+      at addChunk (node:internal/streams/readable:568:12)
+      at readableAddChunkPushByteMode (node:internal/streams/readable:519:3)
+      at Readable.push (node:internal/streams/readable:399:5)
+      at Pipe.onStreamRead (node:internal/stream_base_commons:189:23)
+[2m20:20:06[22m [31m[1m[vite][22m[39m [31mInternal server error: Transform failed with 1 error:
+D:/YUAN HAO/Documents/PersonalIdeaProject/PhotoMangementSys/src/stores/theme.ts:704:61: ERROR: Unexpected "*"[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/YUAN HAO/Documents/PersonalIdeaProject/PhotoMangementSys/src/stores/theme.ts[39m:704:61
+[33m  
+  [33mUnexpected "*"[33m
+  703|         亮部远高于均值），widget 板要能在最亮的那片上也被看清。
+  704|         这是 widget 专用令牌，不碰 --color-*/--float-*，老用户外观不受影响。 */
+  705|      let bgLumW: number;
+     |    ^
+  706|      if (bgStyle.value === "image" && bgImageBands.value?.length) {
+  707|        /* 壁纸亮度要按**上屏后的呈现**算：图片 → 透明度（bgOpacity）→ 底色 → 遮罩。
+  [39m
+      at failureErrorWithLog (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:1467:15)
+      at D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:736:50
+      at responseCallbacks.<computed> (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:603:9)
+      at handleIncomingPacket (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:658:12)
+      at Socket.readFromStdout (D:\YUAN HAO\Documents\PersonalIdeaProject\PhotoMangementSys\node_modules\esbuild\lib\main.js:581:7)
+      at Socket.emit (node:events:514:28)
+      at addChunk (node:internal/streams/readable:568:12)
+      at readableAddChunkPushByteMode (node:internal/streams/readable:519:3)
+      at Readable.push (node:internal/streams/readable:399:5)
+      at Pipe.onStreamRead (node:internal/stream_base_commons:189:23)

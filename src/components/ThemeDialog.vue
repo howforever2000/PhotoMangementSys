@@ -179,33 +179,9 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
             智慧相册「全局概览」仪表墙的强调色与光晕。
           </p>
 
-          <!-- FEAT-103：深/浅模式切换。
-               以前 ThemeDialog 里没有这个开关 —— DEFAULTS.mode 写死 dark，
-               模板里虽有 body:not(.theme-dark) 分支，但用户根本切不过去。
-               现在放在预设列表上方：它是点预设前的第一个决策。 -->
-          <div class="pm-mode-row">
-            <span class="pm-mode-label">模式</span>
-            <div class="pm-mode-seg" role="group" aria-label="深浅模式">
-              <button
-                type="button"
-                class="pm-mode-btn"
-                :class="{ on: theme.mode === 'dark' }"
-                :aria-pressed="theme.mode === 'dark'"
-                @click="theme.setMode('dark')"
-              >
-                深色
-              </button>
-              <button
-                type="button"
-                class="pm-mode-btn"
-                :class="{ on: theme.mode === 'light' }"
-                :aria-pressed="theme.mode === 'light'"
-                @click="theme.setMode('light')"
-              >
-                浅色
-              </button>
-            </div>
-          </div>
+          <!-- FEAT-112：深浅模式开关已移除（用户反馈“深色/浅色切换没用”——
+               实际上预设自身已携带 mode，单独一个开关只会造出“深色模式 + 浅色预设”
+               这种错配态；要换到浅色直接点浅色组里的预设即可）。 -->
 
           <!-- FEAT-110：仪表墙材质（只作用于智慧相册「全局概览」的 widget 墙，
                不影响全站卡片） -->

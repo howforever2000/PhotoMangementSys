@@ -80,12 +80,13 @@ export interface Preset {
 export type PresetGroup = "dark" | "light";
 
 /**
- * 深色组（5 套）
+ * 深色组（4 套）
  *
- * 色相分工：紫（品牌）/ 中性冷（专业感）/ 暖褐（亲和感）/ 深空石墨（最省心）
- * / 松绿混色（FEAT-110，仪表墙的彩色档）。
- * 前五套的 compColor 都是**近中性灰**（S < 0.08）——卡片底不带背景色相，
- * 层次全交明度，一屏只有一个色相。松绿是唯一的彩色强调档（强调绿→青）。
+ * 色相分工：紫（品牌）/ 中性冷（专业感）/ 暖褐（亲和感）/ 松绿混色（仪表墙彩色档）。
+ *
+ * FEAT-112：删掉「深空石墨」—— 它与「墨色石板」同为中性冷、只差 4° 色相与 3% 明度，
+ * 实测两张预设卡肉眼几乎同色，用户选不出来，等于白占一个位置。
+ * （取舍：保留范围更通用的「石板」，它覆盖“专业 / 不干扰照片色”这个常见需求。）
  */
 export const DARK_PRESETS: Preset[] = [
   {
@@ -118,18 +119,6 @@ export const DARK_PRESETS: Preset[] = [
     colors: ["#3a2a22", "#261a16", "#120c0a"],
     angle: 165,
     compColor: "#2b2521",
-    compAlpha: 0.62,
-    material: "plain",
-  },
-  {
-    id: "deep-graphite",
-    name: "深空石墨",
-    mode: "dark",
-    // 比墨色石板再深一档、再冷一档：明度跨度 23→20，色相偏蓝 4°。
-    // 用在照片多的页面最省心 —— 底越深，封面自己的色彩越跳得出来。
-    colors: ["#1d2833", "#131b24", "#080c11"],
-    angle: 165,
-    compColor: "#1f2429",  // 通道极差 10（冷中性，在“素”的阀值内）
     compAlpha: 0.62,
     material: "plain",
   },
@@ -209,27 +198,52 @@ export const LIGHT_PRESETS: Preset[] = [
     compAlpha: 0.72,
     material: "plain",
   },
+  {
+    id: "lilac-light",
+    name: "菊芋淡紫",
+    mode: "light",
+    // FEAT-112 新增：浅色组原本四套全落在“中性/暖/冷/绿”，没有任何彩度高的色相，
+    // 于是用户在浅色里选来选去都是“差不多的白”。这套补一个紫调 ——
+    // 与深色默认「落日紫夜」同色相家族，但没有它的重量。
+    // 明度跨度 0.14（#f3eef7 → #c9bede），色相跨度 <3°。
+    colors: ["#f3eef7", "#e4dcef", "#c9bede"],
+    angle: 165,
+    compColor: "#f1eef4",  // 通道极差 6（近中性，微紫）
+    compAlpha: 0.72,
+    material: "plain",
+  },
+  {
+    id: "clay-light",
+    name: "陶土暖砂",
+    mode: "light",
+    // FEAT-112 新增：与「亚麻」同为暖中性但明度差大得多（亚麻 0.14 / 陶土 0.20），
+    // 一看就是两套；适合衣服 / 食物 / 室内这类暖色主体占多的库。
+    colors: ["#f7f0e8", "#eddccb", "#d8bda2"],
+    angle: 165,
+    compColor: "#f4f0ea",  // 通道极差 10（近中性，微暖）
+    compAlpha: 0.72,
+    material: "plain",
+  },
 ];
 
 /**
  * 弹窗分组视图：按深浅分两组。
  *
- * 为什么按模式分组而不是按"色相浓淡"分组：
- *   用户打开主题弹窗时的第一个决策是"我要深色还是浅色"，第二个才是"哪一套"。
- *   旧版按"经典/素色"分组，其实是**设计师的**分类（多色相 vs 单色相），
- *   不是用户的决策顺序 —— 用户选完一套才发现模式也跟着变了。
+ * FEAT-112：深浅模式开关已从弹窗移除（用户反馈“深色/浅色切换没用”），
+ * 分组标题仍保留，因为两者视觉体系相反（深度对比 vs 轻盈明亮），
+ * 放在一起反而难浏览；但**模式不再由用户单独选**，而是跟预设走。
  */
 export const PRESET_GROUPS: { group: PresetGroup; title: string; note: string; items: Preset[] }[] = [
   {
     group: "dark",
     title: "深色",
-    note: "紫夜 / 石墨 / 石板 / 余烬 / 松绿混色 · 适合暗环境浏览",
+    note: "紫夜 / 石板 / 余烬 / 松绿混色 · 适合暗环境浏览",
     items: DARK_PRESETS,
   },
   {
     group: "light",
     title: "浅色",
-    note: "亚麻 / 雾光 / 纸白 / 青瓷 · 适合日间与打印前校对",
+    note: "亚麻 / 雾光 / 陶土 / 纸白 / 青瓷 / 菊芋 · 适合日间与打印前校对",
     items: LIGHT_PRESETS,
   },
 ];

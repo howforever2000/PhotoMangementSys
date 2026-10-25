@@ -163,6 +163,37 @@ function pickTab(key: string) {
   syncTabQuery(key);
 }
 
+/**
+ * FEAT-112：响应 URL query 变化（不只是 onMounted）。
+ *
+ * 修的是真 bug：概览页的 widget 用 `router.push({ path: "/smart", query: { tab: "face" } })`
+ * 跳转 —— 但当时已经在 /smart 上，vue-router 不会重挂组件，
+ * 而 activeTab 只在 onMounted 里读过一次 → **点了人物没反应**。
+ * （同理还有地点/分类几个 widget 的跳转。）
+ *
+ * 用 watch 而不是把 activeTab 改成 computed(route)：
+ * 切 tab 需要“状态先变、URL 后同步”（replace 不往历史塞记录），
+ * 纯 computed 会陷入“点 tab → URL 变 → computed 变”的往返，
+ * 还会在 replace 失败的瞬间回弹。这是**双向同步**，不是单向派生。
+ */
+watch(
+  () => route.query.tab,
+  (tab) => {
+    const key = String(tab ?? "");
+    if (!key || !tabs.some((t) => t.key === key && t.enabled)) return;
+    if (key !== activeTab.value) activeTab.value = key;
+  },
+);
+
+/** 深链里的人物定位（回忆页「近期人物」直达）；同样要响应 query 变化 */
+watch(
+  () => route.query.person,
+  (pid) => {
+    const v = String(pid ?? "").trim();
+    if (v) focusPid.value = v;
+  },
+);
+
 function syncTabQuery(key: string) {
   const cur = String(route.query.tab ?? "");
   if (cur === key) return;

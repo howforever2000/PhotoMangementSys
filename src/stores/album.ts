@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
+import { useOverviewStore } from "./overview";
 import type { Album, CreateAlbumInput, UpdateAlbumInput, BatchAlbumOutcome, MergeAlbumOutcome } from "../types/album";
 import { getThumbs } from "../utils/thumbQueue";
 import { filterVisibleAlbums } from "../types/album";
@@ -115,12 +116,17 @@ export const useAlbumStore = defineStore("album", {
 
     /** 批量「相册记录删除」：从网格浏览中移除+清扫描记录，本地文件保留（可恢复） */
     async deletePhotoRecords(albumId: number, paths: string[]): Promise<PhotoDeleteOutcome> {
-      return await invoke<PhotoDeleteOutcome>("delete_photo_records", { albumId, paths });
+      const r = await invoke<PhotoDeleteOutcome>("delete_photo_records", { albumId, paths });
+      /* FEAT-112：删照片会改变总张数/入库数/覆盖率 → 概览缓存失效 */
+      useOverviewStore().invalidate();
+      return r;
     },
 
     /** 批量「本地文件删除」：删磁盘文件并级联清理记录与缩略图缓存（不可恢复） */
     async deletePhotoFiles(albumId: number, paths: string[]): Promise<PhotoDeleteOutcome> {
-      return await invoke<PhotoDeleteOutcome>("delete_photo_files", { albumId, paths });
+      const r = await invoke<PhotoDeleteOutcome>("delete_photo_files", { albumId, paths });
+      useOverviewStore().invalidate();
+      return r;
     },
 
     /** 恢复已「记录删除」的照片（撤销删除）：从 album_photo_excluded 移除，恢复网格显示 */
@@ -242,6 +248,8 @@ export const useAlbumStore = defineStore("album", {
         rootPath,
       });
       await this.fetchAlbums();
+      /* FEAT-112：导入新相册后概览统计（相册数/总张数/存储）变了，失效缓存 */
+      useOverviewStore().invalidate();
       return result;
     },
 

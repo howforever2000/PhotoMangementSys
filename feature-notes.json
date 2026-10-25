@@ -3,6 +3,68 @@
   "description": "重点功能记录档案：记录功能的目的、实现方式和技术亮点，供项目发展与参考",
   "features": [
     {
+      "id": "FEAT-112",
+      "name": "预设体系收敛（删重叠/浅色扩到 6）+ 概览统计缓存 + 地图放大点击失效 + 人物跳转失效",
+      "module": "src/utils/presets.ts、src/utils/presets.test.ts、src/components/ThemeDialog.vue、src/stores/overview.ts、src/components/OverviewPane.vue、src/stores/album.ts、src/stores/content.ts、src/components/ui/LocationMap.vue、src/views/SmartAlbum.vue、design/preview/proposal/mock-layout-rework.html",
+      "status": "in_progress",
+      "purpose": "用户一次性提出 7 条：①删除无区分度的深空石墨、浅色扩到 6 套、文字卡片适配深浅预设、去掉无用的深浅模式开关；②概览每次实时计算延迟高，改为导入/扫描后更新；③卡片边线太重、内容分类无错落感、时间线要左侧时间栏+照片错落；④扫描入库界面重排（先出效果图）；⑤地图放大后点击不跳转；⑥概览点人物不跳转；⑦人物页名字显示不全。本条目覆盖其中已完成部分（①②⑤⑥），③④⑦的布局重排已出效果图待确认。",
+      "implementation": {
+        "① 预设收敛": "删掉「深空石墨」（与「墨色石板」同为中性冷、只差 4° 色相与 3% 明度，肉眼几乎同色）；浅色 4→6，新增「菊芋淡紫」（#f3eef7→#c9bede，紫调，与深色默认同色相家族）与「陶土暖砂」（#f7f0e8→#d8bda2，明度跨度 0.20，与亚麻 0.14 一眼可分）。深浅模式开关从 ThemeDialog 移除 —— 预设自带 mode，单独开关只会造出「深色模式 + 浅色预设」错配态；要浅色直接点浅色组。presets.test 断言同步为深 4 + 浅 6 = 10。",
+        "② 概览统计缓存": "新增 stores/overview.ts：快照 + dirty 标记 + inflight 去重。缓存策略是「变动即失效」而不是按时间过期 —— 显式在 import_albums 成功、scan_album_combined 成功、scanAlbumsCombined 有成功项、rebuild_categories、delete_photo_records/files 后调 invalidate()。刻意不监听 albumStore.albums：fetchAlbums 在启动时也会调，那样等于每次启动都失效，缓存失去意义。OverviewPane 改为 computed 读快照，切回概览零 IPC；骨架屏只在「从未算过」时出现，避免有缓存也闪一下白块。",
+        "⑤ 地图放大后点击失效": "根因是 Pointer Events 规范：pointerdown 立刻 setPointerCapture(svg)，捕获期间**后续 click 也被重定向到 svg**，<g class=u-point> 上的 @click 永远收不到。修法改为拖拽阈值提升（DRAG_THRESHOLD=4px）：按下只记 pressing，移动超过 4px 才 setPointerCapture 并进入拖拽，否则保持不捕获，让 click 正常落到光点。点与拖被彻底分开，不依赖时序。",
+        "⑥ 概览点人物不跳转": "根因：goFace() 用 router.push('/smart?tab=face')，但当时已在 /smart 上，vue-router 不会重挂组件，而 activeTab 只在 onMounted 里读过一次 → 点了没反应。修法是 watch(() => route.query.tab)，用双向同步而不是 computed(route)：切 tab 需要「状态先变、URL 后同步（replace 不塞历史）」，纯 computed 会往返回弹。同时补 watch(query.person) 让深链人物定位也跟着变。",
+        "③④⑦ 效果图": "新增 design/preview/proposal/mock-layout-rework.html（+ shoot-layout.cjs），一页覆盖四项：卡片轻量化前后对比（无描边 + 14px 圆角）、内容分类 4 列瀑布流错落、时间线左侧吸顶时间栏 + 照片混合宽高比错落、扫描入库「状态条 + 左相册多选 + 右任务日志」三块结构、人物竖排大卡（名字最多两行不截断）。出图命令 node design/preview/proposal/shoot-layout.cjs。"
+      },
+      "highlights": [
+        "「排除法」也要有依据：深空石墨该不该删，判据不是「我觉得像」，而是实测两张预设卡的色相差 4°、明度差 3% —— 低于肉眼可辨阈值就等于白占一个位置。",
+        "缓存的失效信号必须由**变更动作**显式触发，不能挂在「数据被重新拉取」上：fetchAlbums 在启动路径里也会跑，用它当信号等于缓存永不命中。",
+        "pointer capture 会连 click 一起改派 —— 这是「放大后点不动、不放大却正常」这类非对称 bug 的典型根因；拖拽/点击互斥必须用移动阈值，而不是在 pointerdown 就抢捕获。",
+        "同一组件内 router.push 只改 query 时组件不会重挂，onMounted 读一次参数的写法必然失效；要么 watch query，要么把状态做成 URL 派生。",
+        "效果图阶段踩到两个「效果图自己骗自己」的坑：①全页截图下 body 的 background-attachment:fixed 只画一屏，下半部变白底白字 —— 背景要写在 html 上；②效果图页只引 mock-widgets.css、没有 tokens.css，var(--sp-8) 未定义会让整条 padding 被丢弃，页面贴边。",
+        "探针取样点要选**真正被点击的元素**：点 <g> 的 bbox 中心会落在文字标签的空白处（bbox 含标签），一度把已修好的地图点击误判为 FAIL。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 133/133 全绿（presets.test 已同步为 10 套：深 4 + 浅 6）",
+        "npx vite build exit 0",
+        ".visual/probe-feat112.cjs 三项回归：① 地图放大后点击 PASS（clicks=[0]、详情视图出现）② 概览点人物 PASS（hash 变 #/smart?tab=face 且人物画廊渲染）③ 二次进入概览 list_timeline 调用 0 次（缓存生效）"
+      ],
+      "related_files": [
+        "src/utils/presets.ts",
+        "src/utils/presets.test.ts",
+        "src/components/ThemeDialog.vue",
+        "src/stores/overview.ts",
+        "src/components/OverviewPane.vue",
+        "src/stores/album.ts",
+        "src/stores/content.ts",
+        "src/components/ui/LocationMap.vue",
+        "src/views/SmartAlbum.vue",
+        "design/preview/proposal/mock-layout-rework.html",
+        "design/preview/proposal/shoot-layout.cjs",
+        ".visual/probe-feat112.cjs",
+        ".visual/overview-probe.ts"
+      ],
+      "keywords": [
+        "预设",
+        "深空石墨",
+        "菊芋淡紫",
+        "陶土暖砂",
+        "深浅模式开关",
+        "概览缓存",
+        "失效时机",
+        "pointercapture",
+        "地图点击",
+        "query watch",
+        "人物跳转",
+        "瀑布流",
+        "时间栏",
+        "扫描入库重排",
+        "人物卡"
+      ],
+      "created_at": "2026-10-25T19:40:00+08:00",
+      "updated_at": "2026-10-25T19:40:00+08:00"
+    },
+    {
       "id": "FEAT-111",
       "name": "深色模式线条看不见：widget 玻璃填充失效的根因修复 + 边界可见性实测体系",
       "module": "src/assets/widget.css、src/stores/theme.ts、src/components/OverviewPane.vue、src/components/ui/widget/GeoPinsCore.vue、.visual/probe-line-visibility.cjs、.visual/probe-widget-bg.cjs、.visual/overview-probe.ts",
@@ -4092,5 +4154,5 @@
       "updated_at": "2026-10-25T00:00:00+08:00"
     }
   ],
-  "updated": "2026-10-25T17:20:00+08:00"
+  "updated": "2026-10-25T19:40:00+08:00"
 }

@@ -174,6 +174,15 @@ const stub = async (cmd: string, args?: any) => {
     });
   if (cmd === "get_photo_thumbs")
     return (args?.paths ?? []).map((p: string) => [p, assetForPath(p)]);
+  /* FEAT-112 探针补充：地点二级视图需要这个命令，否则点城市后是空态，无法验证跳转 */
+  if (cmd === "list_photos_by_location") {
+    const loc = String(args?.location ?? "");
+    return timeline
+      .filter((r) => r.location === loc)
+      .slice(0, 24)
+      .map((r) => ({ ...r, matched_keyword: "", score: 1, category_id: 0, category_name: "" }));
+  }
+  if (cmd === "list_category_photos") return [];
   return null;
 };
 (window as any).__TAURI_INTERNALS__ = {

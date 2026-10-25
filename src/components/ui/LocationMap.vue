@@ -211,20 +211,39 @@ function onWheel(e: WheelEvent) {
   clampPan();
 }
 
-/* ── 拖拽平移：只有放大之后才启用（1 倍时拖动无意义，还会与点击冲突） ── */
+/* ── 拖拽平移：只有放大之后才启用（1 倍时拖动无意义，还会与点击冲突）──
+   ⚠️ 曾经的真 bug（用户报「地图放大之后点击就不跳转了」）：
+     pointerdown 立刻 setPointerCapture(svg) → **click 事件也被重定向到 svg**
+     （按 Pointer Events 规范，捕获期间指针事件及其后续 click 都发给捕获元素），
+     于是 <g class="u-point"> 上的 @click 永远收不到 → 点城市没反应。
+   修法：不在 pointerdown 就捕获，而是**移动超过阈值才算拖拽**：
+     · 移动 < DRAG_THRESHOLD：不捕获、不使能 dragging → 让 click 正常落到光点上
+     · 移动 ≥ 阈值：此时才 setPointerCapture 并进入拖拽
+   这样“点一下”与“拖一下”被彻底分开，不依赖任何时序巧合。 */
+const DRAG_THRESHOLD = 4;
 const dragging = ref(false);
 let dragStart = { x: 0, y: 0, tx: 0, ty: 0 };
+/** 已按下但还没确定是“点”还是“拖” */
+let pressing = false;
+let pressStart = { x: 0, y: 0 };
 
 function onPointerDown(e: PointerEvent) {
   if (!isZoomed.value) return;
   if (e.button !== 0) return;
-  dragging.value = true;
+  pressing = true;
+  pressStart = { x: e.clientX, y: e.clientY };
   dragStart = { x: e.clientX, y: e.clientY, tx: tx.value, ty: ty.value };
-  (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
 }
 
 function onPointerMove(e: PointerEvent) {
-  if (!dragging.value) return;
+  if (!pressing && !dragging.value) return;
+  /* 超过阈值才升级为拖拽（并把指针捕获到 svg 上，保证拖出边界也能继续） */
+  if (!dragging.value) {
+    const dist = Math.hypot(e.clientX - pressStart.x, e.clientY - pressStart.y);
+    if (dist < DRAG_THRESHOLD) return;
+    dragging.value = true;
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  }
   const svg = svgEl.value;
   if (!svg) return;
   const ctm = svg.getScreenCTM();
@@ -239,6 +258,7 @@ function onPointerMove(e: PointerEvent) {
 }
 
 function onPointerUp(e: PointerEvent) {
+  pressing = false;
   if (!dragging.value) return;
   dragging.value = false;
   (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);

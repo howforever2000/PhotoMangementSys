@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ClassifyProgress } from "../types/photo";
 import { useAlbumStore } from "./album";
+import { useOverviewStore } from "./overview";
 import type {
   AlbumContentRow,
   CategoryIndexStats,
@@ -324,6 +325,8 @@ export const useContentStore = defineStore("content", {
     async rebuildCategories(id?: number): Promise<CategoryRebuildReport> {
       const rep = await invoke<CategoryRebuildReport>("rebuild_categories", { id: id ?? null });
       this.lastCategoryRebuild = rep;
+      /* FEAT-112：分类重算会改变「内容分类 / 已归类张数」，概览缓存失效 */
+      useOverviewStore().invalidate();
       return rep;
     },
 
@@ -430,6 +433,8 @@ export const useContentStore = defineStore("content", {
         });
         this.combinedRows = outcome.rows;
         this.lastReport = { report: outcome.report, results: [] };
+        /* FEAT-112：入库完成后概览统计（已入库/月度/人脸/GPS）全变了，失效缓存 */
+        useOverviewStore().invalidate();
         return outcome;
       } finally {
         this.isScanning = false;
@@ -635,6 +640,8 @@ export const useContentStore = defineStore("content", {
         done += 1;
         onProgress?.(done, total, albumId);
       }
+      /* FEAT-112：整批扫描结束（无论部分失败）—— 已入库数/月度/人脸/GPS 都可能变了 */
+      if (result.scanned > 0) useOverviewStore().invalidate();
       return result;
     },
 

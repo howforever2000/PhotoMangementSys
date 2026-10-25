@@ -16,9 +16,8 @@ import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useAlbumStore } from "../stores/album";
+import { useOverviewStore } from "../stores/overview";
 import { getThumbs } from "../utils/thumbQueue";
-import type { ContentSearchHit, CategoryOverview, CategoryIndexStats, LocationGroupRow } from "../types/content";
-import type { PersonInfo } from "../types/photo";
 import WidgetGrid from "./ui/widget/WidgetGrid.vue";
 import UiWidget from "./ui/widget/UiWidget.vue";
 import StatCore from "./ui/widget/StatCore.vue";
@@ -32,15 +31,18 @@ import MemoryCore from "./ui/widget/MemoryCore.vue";
 
 const router = useRouter();
 const store = useAlbumStore();
+const overview = useOverviewStore();
 
 const loading = ref(true);
 const error = ref("");
 
-const timeline = ref<ContentSearchHit[]>([]);
-const persons = ref<PersonInfo[]>([]);
-const locations = ref<LocationGroupRow[]>([]);
-const categories = ref<CategoryOverview[]>([]);
-const catStats = ref<CategoryIndexStats | null>(null);
+/* 数据全部来自 overview store（按「变动即失效」缓存，见 stores/overview.ts）。
+   这里用 computed 读快照，切回概览时是**零 IPC** 直接渲染。 */
+const timeline = computed(() => overview.snapshot?.timeline ?? []);
+const persons = computed(() => overview.snapshot?.persons ?? []);
+const locations = computed(() => overview.snapshot?.locations ?? []);
+const categories = computed(() => overview.snapshot?.categories ?? []);
+const catStats = computed(() => overview.snapshot?.catStats ?? null);
 
 /** path → 缩略图可渲染 URL（时间线照片走缩略图管线；相册封面直转） */
 const thumbMap = ref<Record<string, string>>({});
@@ -174,34 +176,23 @@ async function load() {
   error.value = "";
   try {
     if (!store.albums.length) await store.fetchAlbums();
-    const [tl, pl, ll, cl] = await Promise.all([
-      invoke<ContentSearchHit[]>("list_timeline"),
-      invoke<PersonInfo[]>("list_persons"),
-      invoke<LocationGroupRow[]>("list_photo_locations"),
-      invoke<CategoryOverview[]>("list_categories"),
-    ]);
-    timeline.value = tl;
-    persons.value = pl;
-    locations.value = ll;
-    categories.value = cl;
-    try {
-      catStats.value = await invoke<CategoryIndexStats>("category_index_stats");
-    } catch {
-      catStats.value = null;
-    }
+    await overview.load();
 
-    /* 人物头像（bulk，一次往返） */
+    /* 人物头像（bulk，一次往返）。头像单独拿、不并进快照：
+       它依赖人物列表而且在裁剪缓存里，重算成本低，但没必要每次重算统计都重拉。 */
     try {
-      const top = [...pl].sort((a, b) => b.face_count - a.face_count).slice(0, 6).map((p) => p.id);
-      const paths = await invoke<(string | null)[]>("get_person_avatars_bulk", { pids: top });
-      top.forEach((pid, i) => {
-        if (paths[i]) faceMap.value[pid] = convertFileSrc(paths[i]!);
-      });
+      const top = [...persons.value].sort((a, b) => b.face_count - a.face_count).slice(0, 6).map((p) => p.id);
+      if (top.length) {
+        const paths = await invoke<(string | null)[]>("get_person_avatars_bulk", { pids: top });
+        top.forEach((pid, i) => {
+          if (paths[i]) faceMap.value[pid] = convertFileSrc(paths[i]!);
+        });
+      }
     } catch {
       /* 无头像则显示姓名首字 */
     }
 
-    /* 缩略图：最近 6 张 + 那年今日封面 */
+    /* 缩略图：最近 6 张 + 那年今日封面（thumbQueue 内部已有 path 级缓存，重复调用无 IPC） */
     const need = [...recent.value, ...(memoryHero.value ? [memoryHero.value] : [])]
       .filter((r) => r.album_id != null)
       .map((r) => ({ albumId: r.album_id!, path: r.path }));
@@ -211,6 +202,12 @@ async function load() {
   } finally {
     loading.value = false;
   }
+}
+
+/** 手动刷新（强制重算，忽略缓存） */
+async function refresh() {
+  overview.invalidate();
+  await load();
 }
 
 onMounted(load);
@@ -235,15 +232,16 @@ function onGeoPick() {
 
 <template>
   <div class="overview">
-    <!-- 加载骨架 -->
-    <div v-if="loading" class="ov-skel" aria-label="正在汇总照片库">
+    <!-- 骨架：仅首次构建（无任何缓存快照）时出现；
+         之后再进概览直接渲染缓存，不会闪一下白块。 -->
+    <div v-if="loading && !overview.snapshot" class="ov-skel" aria-label="正在汇总照片库">
       <span v-for="i in 9" :key="i" class="ov-skel-card"></span>
     </div>
 
     <!-- 失败：不阻塞智慧相册其他分区，给重试 -->
     <div v-else-if="error" class="ov-error">
       <p>全局概览加载失败：{{ error }}</p>
-      <button type="button" @click="load">重试</button>
+      <button type="button" @click="refresh">重试</button>
     </div>
 
     <WidgetGrid v-else>
