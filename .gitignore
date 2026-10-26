@@ -123,10 +123,13 @@ covers/login-preview.png
 .visual/shots/
 .visual/baseline/
 
-# FEAT-105：界面效果图与素材（体积大、可重现：node design/preview/shoot-all.cjs）
-design/preview/*.png
-design/preview/assets/
+# FEAT-105 / FEAT-113：效果图目录整体不入库。
+# 原先是“HTML/CSS 源码入库、截图不入库”，但效果图属于过程产物：
+#   ① 它不进构建（vite 只处理 src/ 与 public/），入库对产物零影响；
+#   ② 每轮改版就多一套 mock-*.html，仓里会积一堆过期稿；
+#   ③ 真值在 feature-notes 的结论里，不在中间稿里。
+# 需要看效果图时在本地 design/preview/ 下跑脚本重生成即可（文件仍在工作区）。
+design/preview/
 
-# 视觉优化提案的效果图（同样体积大、可重现：
-# node design/preview/proposal/shoot.cjs）。HTML/CSS 源码入库，截图不入库。
-design/preview/proposal/*.png
+# FEAT-116：实拍对照输出（shoot-now / app-shoot / shoot-dialog 的产物）
+.visual/out/

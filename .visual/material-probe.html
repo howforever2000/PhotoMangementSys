@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <title>material probe</title>
+  <link rel="stylesheet" href="/src/assets/tokens.css" />
+  <link rel="stylesheet" href="/src/assets/main.css" />
+  <style>
+    html, body { height: 100%; }
+    body { margin: 0; }
+    #stage {
+      min-height: 100vh;
+      padding: 40px;
+      display: grid;
+      grid-template-columns: repeat(3, 220px);
+      gap: 24px;
+      background: linear-gradient(135deg, #1b1626 0%, #2b2340 48%, #3a2c4a 100%);
+    }
+    .card {
+      height: 160px;
+      border-radius: 14px;
+      padding: 16px;
+      color: #f5f7ff;
+      font: 13px/1.5 system-ui, sans-serif;
+    }
+  </style>
+</head>
+<body class="theme-dark mat-liquid">
+  <div id="stage">
+    <div class="card glass-card" id="c1">glass-card（内联 cardStyle 路径）</div>
+    <div class="card glass-surface" id="c2">glass-surface（类路径）</div>
+    <div class="card glass-card glass-surface" id="c3">两者都挂</div>
+  </div>
+</body>
+</html>

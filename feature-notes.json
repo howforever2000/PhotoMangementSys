@@ -4288,7 +4288,79 @@
       ],
       "created_at": "2026-10-26T12:00:00+08:00",
       "updated_at": "2026-10-26T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-116",
+      "name": "界面质感第三轮：仪表墙拆两个声部（裸读数 + 玻璃板）+ 统计去重 + 浅色预设一轴一套 + 液态玻璃统一壁厚",
+      "module": "src/components/OverviewPane.vue、src/components/ui/widget/UiWidget.vue、src/components/ui/widget/GeoPinsCore.vue、src/assets/widget.css、src/assets/tokens.css、src/assets/main.css、src/utils/presets.ts、src/components/ThemeDialog.vue、src/views/Memories.vue、src/stores/theme.ts",
+      "status": "done",
+      "purpose": "用户第四轮视觉反馈：简约但有质感 / 只保留有必要的统计 / 文字嵌入背景与卡片 / 卡片错落但整体整齐 / 风格统一 / 浅色预设几组差不多要有不同侧重 / 优化液态玻璃。约束：首页保持原样（Home.vue 零改动）。",
+      "implementation": {
+        "两个声部": "UiWidget 新增 variant=bare：纯读数（照片库总览 / 今年月度）不套板，文字直接压在页面背景上；有内容（相册/人物/地点/最近导入/那年今日）才用玻璃板。板从 11 块降到 5 块 —— 此前十一块同材质同权重，层级只能靠字号硬撑，读起来像贴满便利贴的墙。",
+        "媒体排布": "新增 bleed（照片铺到板的下/左/右三边，标题仍在板上）与 cover（整块板就是一张照片，标题浮在照片上 + 上缘渐变压暗）。解决『一块板里同时有板边和照片边』的双层边界：出血后照片自己就是板的形状。",
+        "错落与整齐": "列宽节奏 7/5 → 4/4/4 → 8/4；整齐由三条共享基线承担：标题行固定 18px、每块末元素 margin-top:auto 贴底、数字一律 tabular-nums。行高 86→116 让三行铺满 900px 视口。",
+        "统计去重": "删掉 5 个重复块：语义索引并入照片库总览右栏（发丝竖线分隔）、内容分类并入右栏一行、人物覆盖率并入人物块脚注、GPS 覆盖率与 Top 城市并入地点块脚注、那年今日小卡删除只留满幅大卡。金色收敛到 2 处（已入库占比线 / 当月柱）。",
+        "液态玻璃": "浅色删掉 30% 暗罩改白霜（58~64% 白 + blur 30 + saturate 1.45）+ 贴边实影；深色删掉 0 0 0 1px 四边暗环（FEAT-113 只删了亮环），边界改由『上缘 1px 受光 + 下缘 1px 背光 + 贴边实影 + 环境柔光』承担。.panel-glass 与 .ui-widget--glass 统一到同一套壁厚语言（同样去掉 border）。悬停从改描边改为板面提亮 8%。",
+        "预设分层": "浅色六套按 色相×彩度 分工（暖中性 36°/纯中性/冷中性 214°/绿 150°/陶土 27° 高彩/紫 283°），顶段 L 从 0.95~0.97 压深到 0.90~0.95 —— 上一版顶段几乎纯白，白玻璃板叠在白底上只能靠描边存在。每套新增 role（弹窗显示侧重，替代『浅色 · 72%』）与 accent/accent2（只作用于仪表墙强调色）。",
+        "预设模式 bug": "theme.ts 把 mode 钉死为 dark（Q4-A 时代决定），而预设色值与 mode 成对写入 → 冷启动后 body 仍挂 theme-dark，--float-*/--slip-* 给深色值，顶栏变成压在浅色页面上的深灰玻璃。改为读回 saved.mode。",
+        "vite watch": "原子保存产生的 .xxx.tmpdir/ 被 chokidar 追到后 EBUSY 直接杀死 dev server；vite.config.ts 的 watch.ignored 补上 tmpdir/.visual/dist。"
+      },
+      "highlights": [
+        "『质感』的瓶颈通常不是颜色，是**声部数量**：一屏十一块同材质容器，无论怎么调色都读成『贴满便利贴的墙』。把纯读数从板上摘下来之后，板才重新被读成『承载内容的物件』。",
+        "浅色的白玻璃在白底上没有明度差可用 —— 正确解法是**把页面底压深**（顶段 L 0.95→0.90），而不是给板加灰罩或描边；给板加灰罩只会把整屏变成灰塑料。",
+        "四边同亮的描边是网格感的来源，暗环比亮环更隐蔽：FEAT-113 删了亮环，`0 0 0 1px` 的暗环还在，板与板之间那道『缝』就是它。",
+        "`<router-link>` 渲染成 <a> 后浏览器默认给所有文字加下划线 —— 整块可点的卡片上会多出一条横线，实测被误读成设计元素（『2,507』下面那条线）。",
+        "整块可点的提示不必做成胶囊按钮：回忆页六个『查看全部』胶囊是纯重复的第二层框，改成悬停浮出的箭头后卡片干净一半。",
+        "预设『差不多』要量化：顶段色相 30°±5、明度差 <0.03 的三套在白底上就是同一套。判据应是『任取两套，Δ色相 ≥20° 或 Δ彩度 ≥0.12』，并把这条写进测试。",
+        "主题偏好里 mode 与色值是**一对**：只钉死其中一个，冷启动就会进入『深色令牌 + 浅色色值』的错版态，且只在重启后出现（运行时切预设是对的），最难复现。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 140/140 全绿（新增 role 唯一、浅色反撞车、浅色 accent 三组用例）",
+        "npx vite build exit 0",
+        ".visual/app-shoot.cjs（新建）：真实 App + 路由 + Tauri 桩数据，任意预设 × 任意路由截图，含白屏自动重试",
+        ".visual/shoot-dialog.cjs（新建）：预设弹窗截图（验证 role 与六套浅色的可分辨性）",
+        "视觉核对：仪表墙 dusk/pine/mist；相册/时间线/回忆/扫描/预设弹窗 × 深浅"
+      ],
+      "related_files": [
+        "src/components/OverviewPane.vue",
+        "src/components/ui/widget/UiWidget.vue",
+        "src/components/ui/widget/GeoPinsCore.vue",
+        "src/assets/widget.css",
+        "src/assets/tokens.css",
+        "src/assets/main.css",
+        "src/assets/pm-dialog.css",
+        "src/utils/presets.ts",
+        "src/utils/presets.test.ts",
+        "src/assets/tokens.test.ts",
+        "src/components/ThemeDialog.vue",
+        "src/views/Memories.vue",
+        "src/stores/theme.ts",
+        "vite.config.ts",
+        ".visual/app-shoot.cjs",
+        ".visual/shoot-dialog.cjs",
+        ".visual/shoot-now.cjs"
+      ],
+      "keywords": [
+        "仪表墙",
+        "bare 变体",
+        "两个声部",
+        "下出血",
+        "满幅封面",
+        "统计去重",
+        "金色预算",
+        "浅色白霜玻璃",
+        "壁厚语言",
+        "预设侧重",
+        "role",
+        "预设模式冷启动",
+        "theme-dark",
+        "vite watch EBUSY",
+        "router-link 下划线"
+      ],
+      "created_at": "2026-10-26T23:10:00+08:00",
+      "updated_at": "2026-10-26T23:10:00+08:00"
     }
   ],
-  "updated": "2026-10-26T12:00:00+08:00"
+  "updated": "2026-10-26T23:10:00+08:00"
 }
