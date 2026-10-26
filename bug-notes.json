@@ -4484,7 +4484,42 @@
         "「退避」只对会自愈的失败有意义；文件缺失应该直接转成用户可执行的下一步（下载），而不是等待。",
         "排查这类日志先确认实际在跑的后端来自哪个目录 —— 旧进程占用固定端口时，新版前端会连到旧模型目录。"
       ]
+    },
+    {
+      "id": "BUG-2026-1026-002",
+      "date": "2026-10-26",
+      "status": "resolved",
+      "title": "启动即崩：attempt to write a readonly database / unable to open database file（实为进程对数据目录无写权限）",
+      "module": "src-tauri/src/lib.rs（启动流程）、src-tauri/src/db/mod.rs（Database::open）",
+      "symptom": [
+        "`cargo run` 起应用，日志停在「数据库初始化中...」，随后 panic：`数据库初始化失败: Sqlite(SqliteFailure(Error { code: ReadOnly, extended_code: 8 }, Some(\"attempt to write a readonly database\")))`",
+        "同一份代码/库，换个时机再跑变成 `code: CannotOpen, extended_code: 14, \"unable to open database file\"` —— 两次报错不一致，进一步误导方向",
+        "日志里看不出是哪个文件、哪一步失败（`Database::open` 内部先 CREATE TABLE IF NOT EXISTS，报错点离权限问题很远）"
+      ],
+      "root_cause": {
+        "summary": "进程对 `%APPDATA%\\com.photomanagementsys.app` 没有写权限，SQLite 因此无法创建 `photos.db-wal` / `-shm`。WAL 文件存在时表现为 ReadOnly（打开成功、恢复失败），WAL 被清掉后表现为 CannotOpen（连主库带 sidecar 一起失败）——同因异果。权限来自运行环境：从受限会话启动时，工作区内的可执行文件被限制为只能写工作区。",
+        "evidence": [
+          "同一个 exe 拷到 %TEMP% 启动 → 日志正常出现「数据库初始化完成」，恢复登录，get_albums 返回 131 个相册，窗口标题正常",
+          "rusqlite 同样版本的最小探针（src-tauri/examples/db_probe.rs）：在工作区运行 `std::fs::write` → `拒绝访问 (os error 5)`；把同一个 exe 拷到 %TEMP% 再跑 → 写入 OK、`PRAGMA journal_mode=WAL` OK、DDL OK",
+          "anaconda 的 sqlite3.exe（不在工作区）在同一目录建库/写入正常 → 目录 ACL 与文件本身都没问题",
+          "`PRAGMA quick_check` = ok；`C:\\...\\photos.db` 的所有者/ACL 均为 Administrator:(F)，非只读属性"
+        ],
+        "why_missed": "SQLite 把 OS 层的 ACCESS_DENIED 折算成 CANTOPEN/READONLY，两个错误码都不带路径与 Win32 码；而 `Database::open` 的 expect 只打印 rusqlite 错误，于是「权限」被读成「库坏了」。"
+      },
+      "fix": [
+        "启动自检 `ensure_dir_writable(data_dir)`：建目录 + 写 `.write_probe` + 删除，失败即 `fatal_data_dir()` 输出「数据目录不可写：<路径> / 原因 / 三条排查」并 exit(1)，不再 panic",
+        "`Database::open` 的 expect 改为 match：失败时打印库路径 + 「占用 / 损坏（可用同目录 *.bak-* 替换）」两类排查，exit(1)",
+        "新增 `PMS_DATA_DIR` 环境变量覆盖数据目录（便携部署 / 受限环境 / 排障），指定时跳过旧目录迁移；默认行为不变",
+        "新增 `src-tauri/examples/db_probe.rs`：一条命令区分「权限问题」与「库损坏」（写盘 / 打开 / WAL / DDL 四项）"
+      ],
+      "lessons": [
+        "SQLite 的 ReadOnly / CannotOpen 几乎总是「目录或 sidecar 写不进去」，不是库损坏；先测目录可写，再看库。",
+        "最快的归因实验是**同一个 exe 换个路径跑**：可写位置能起、不可写位置崩 → 环境权限；两边都崩 → 才是代码/库。",
+        "ReadOnly(8) 与 CannotOpen(14) 可以是同一个根因的两种表现：取决于失败瞬间 WAL 是否还在 —— 别扭地解释成两个 bug。",
+        "启动失败要给「能行动的话」（路径 + 原因 + 下一步），panic 调用栈对用户零信息量。",
+        "自己发起的长任务（tauri dev / 构建）会留下 WAL：非正常结束的下一次启动会把「环境权限」伪装成「库只读」。"
+      ]
     }
   ],
-  "updated": "2026-10-26T12:00:00+08:00"
+  "updated": "2026-10-26T23:25:00+08:00"
 }
