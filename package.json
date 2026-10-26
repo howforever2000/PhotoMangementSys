@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:outside": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-outside.ps1",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "node --experimental-strip-types --test \"src/**/*.test.ts\"",
