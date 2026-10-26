@@ -39,7 +39,10 @@ const points = computed(() => {
   return named.map((g) => {
     const x = PAD + ((g.lon! - LON_MIN) / W) * W;
     const y = PAD + (1 - (g.lat! - LAT_MIN) / H) * H;
-    const r = 1.1 + Math.sqrt(g.count / max) * 2.6;
+    /* FEAT-116：半径上调（1.1+2.6 → 1.4+3.1）。
+       在 4 列宽的板里，72 宽的 viewBox 被缩到 ~380px，原来的点只有 6~8px，
+       一屏看过去像"板上有灰"。现在最大聚点 ~14px，散点也能一眼看见密度。 */
+    const r = 1.4 + Math.sqrt(g.count / max) * 3.1;
     return { g, x, y, r, hot: g.count === max, showLabel: labelNames.has(g.location) };
   });
 });
@@ -59,7 +62,7 @@ function shortName(n: string | null): string {
           <circle cx="0.6" cy="0.6" r="0.3" fill="currentColor" />
         </pattern>
       </defs>
-      <rect width="100%" height="100%" fill="url(#w-geo-dots)" />
+      <g class="w-geo-field"><rect width="100%" height="100%" fill="url(#w-geo-dots)" /></g>
       <g v-for="(p, i) in points" :key="i" class="w-geo-pin" @click="emit('pick', p.g)">
         <circle
           :cx="p.x"
@@ -100,6 +103,12 @@ function shortName(n: string | null): string {
   /* 点阵用 widget 专用点色（实测旧值 11% 白在深底上 1.01:1，整片看不见） */
   color: var(--w-dot);
   opacity: 1;
+}
+/* FEAT-116：点阵原本铺满整块矩形，读起来是"一块有纹理的灰底"而不是"一张图"。
+   遮罩只加在**点阵层**上（不是整个 svg）—— 否则贴边的点会被一起淡掉。 */
+.w-geo-field {
+  -webkit-mask-image: radial-gradient(118% 96% at 50% 48%, #000 42%, rgba(0, 0, 0, 0.35) 78%, transparent 100%);
+  mask-image: radial-gradient(118% 96% at 50% 48%, #000 42%, rgba(0, 0, 0, 0.35) 78%, transparent 100%);
 }
 .w-geo-pin {
   cursor: pointer;

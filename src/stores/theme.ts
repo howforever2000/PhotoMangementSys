@@ -98,9 +98,15 @@ function loadImage(): string {
  */
 export const useThemeStore = defineStore("theme", () => {
   const saved = loadPrefs();
-  /* 基础色调入口已移除 + 整体转暗（Q4-A）：模式固定为默认值。
-     否则旧 localStorage 里的 light 会让新视觉世界对老安装不生效。 */
-  const mode = ref<ThemeMode>(DEFAULTS.mode);
+  /* FEAT-116：模式改回**跟随已保存的偏好**（此前固定为 dark）。
+     Q4-A 时代固定 dark 的理由是"旧 localStorage 里的 light 会让新视觉世界
+     对老安装不生效"—— 但那时浅色只是一个孤立开关；现在 `mode` 是**预设的一部分**
+     （presetPrefs 一并下发，见 utils/presets.ts），固定成 dark 会造出一个坏状态：
+     冷启动后背景/文字是浅色预设的，而 body.theme-dark 还在 →
+     tokens.css 里 `body:not(.theme-dark)` 那一档（--float-* / --slip-* / --wash-*）
+     仍给深色值，于是顶栏变成一条深灰玻璃、压在浅色页面上（截图可复现）。
+     预设色值与模式本来就是同一份偏好里成对写入的，读回来也必须成对生效。 */
+  const mode = ref<ThemeMode>(saved.mode);
   // 归一化：保证始终是合法小写 hex / 合法数值（坏值回落默认，FEAT-086 走 normalizePrefs）
   const compColor = ref(saved.compColor);
   /** FEAT-086：组件玻璃不透明度（容器基准；面板/弹层按固定偏移派生） */

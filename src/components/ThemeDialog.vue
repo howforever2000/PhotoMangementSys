@@ -264,8 +264,11 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
                 ></span>
                 <span class="pm-preset-name">
                   <span>{{ p.name }}</span>
-                  <span class="pm-preset-badge">{{ p.mode === 'dark' ? '深色' : '浅色' }} · {{ Math.round(p.compAlpha * 100) }}%</span>
                 </span>
+                <!-- FEAT-116：徽标从「深色 · 62%」改为**侧重**。
+                     用户选预设要回答的是"这套适合什么"，不是"它是第几号 / 多少不透明度"；
+                     62% 是开发者参数，占着卡片上最贵的一行字。 -->
+                <span class="pm-preset-role">{{ p.role }}</span>
                 <span class="pm-preset-dots">
                   <i v-for="c in p.colors" :key="c" :style="{ background: c }"></i>
                   <i :style="{ background: p.compColor }" title="组件色"></i>

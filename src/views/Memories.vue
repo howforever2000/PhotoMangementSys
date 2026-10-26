@@ -422,7 +422,9 @@ function goAlbumFromLightbox(albumId: number) {
               <span>{{ m.items.length }} 张</span>
               <span v-if="m.topLocation">· 📍 {{ m.topLocation }}</span>
             </p>
-            <span class="mem-story-cta">查看全部 →</span>
+            <!-- FEAT-116：整卡本来就可点，"查看全部"胶囊是多余的第二层框。
+                 改成悬停时右下角浮出一个箭头：无容器、不遮照片、不占一行。 -->
+            <span class="mem-story-go" aria-hidden="true">→</span>
           </div>
         </article>
       </div>
@@ -696,25 +698,30 @@ function goAlbumFromLightbox(albumId: number) {
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 .mem-story-meta {
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 12.5px;
   opacity: 0.92;
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
 }
-.mem-story-cta {
-  display: inline-block;
-  font-size: 12px;
-  padding: 4px 10px;
-  background: rgba(255, 255, 255, 0.18);
-  border: 1px solid rgba(255, 255, 255, 0.45);
-  border-radius: 999px;
-  backdrop-filter: blur(4px);
-  transition: background var(--dur-2);
+/* 悬停箭头：整卡可点的提示，不必做成按钮 */
+.mem-story-go {
+  position: absolute;
+  right: 15px;
+  bottom: 16px;
+  font-size: 14px;
+  line-height: 1;
+  color: #fff;
+  opacity: 0;
+  transform: translateX(-5px);
+  transition: opacity var(--dur-2) ease, transform var(--dur-2) ease;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
 }
-.mem-story:hover .mem-story-cta {
-  background: rgba(255, 255, 255, 0.3);
+.mem-story:hover .mem-story-go,
+.mem-story:focus-visible .mem-story-go {
+  opacity: 0.92;
+  transform: none;
 }
 
 /* ---- 本月精选 网格 ---- */

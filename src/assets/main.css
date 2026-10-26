@@ -113,18 +113,21 @@
                      浮层用 1.05 是因为浮层里要读字，墙板里没有正文。
      ══════════════════════════════════════════════════════════════════════ */
   --panel-glass-fill: var(--panel-glass-fill, transparent);
-  --panel-glass-blur: 26px;
-  --panel-glass-saturate: 1.25;
-  --panel-glass-edge: rgba(255, 255, 255, 0.22);   /* 板缘亮边（深色） */
+  --panel-glass-blur: 30px;
+  --panel-glass-saturate: 1.4;
+  --panel-glass-edge: rgba(255, 255, 255, 0.22);   /* 仅浅色/兜底路径使用（深色已改为上亮下暗） */
   --panel-glass-glow: rgba(255, 255, 255, 0.07);   /* 板外一圈很窄的辉光 */
+  /* FEAT-116：与仪表墙 widget 板统一成同一套"壁厚语言" ——
+       上缘 1px 受光 / 下缘 1px 背光 / 贴边实影 / 环境柔光。
+     删掉四边同亮的 `border: 1px solid`（原来 .22 白环）：
+     一屏几块板时，这些环首尾相接就成了一张网格，和 FEAT-113 修卡片时同一个毛病。
+     边界改由"上亮下暗的 1px 断面 + 贴边影"表达，板反而更像玻璃、更薄。 */
   --panel-glass-shadow:
-    /* 上缘镜面：板顶受光 */
     inset 0 1px 0 rgba(255, 255, 255, 0.30),
-    /* 下缘暗壁：板厚读数 */
-    inset 0 -1px 0 rgba(0, 0, 0, 0.42),
-    /* 悬浮：板浮在壁纸之上 */
-    0 8px 20px -10px rgba(0, 0, 0, 0.55);
-  --panel-glass-radius: 12px;  /* 液态高光（素化 C2 / M3）：0.45 → 0.20，且衰减段**大幅拉短**——
+    inset 0 -1px 0 rgba(0, 0, 0, 0.38),
+    0 1px 3px rgba(0, 0, 0, 0.28),
+    0 18px 40px -26px rgba(0, 0, 0, 0.60);
+  --panel-glass-radius: 14px;  /* 液态高光（素化 C2 / M3）：0.45 → 0.20，且衰减段**大幅拉短**——
      液态的招牌是「窄而快衰减」的一束反光（40% 处就基本收干净），
      旧值拖到 58% 是一整片糊白，卡面因此发闷发艳。
      M3：这束光是**静态**的 —— 全应用唯一的固定光源方向（左上 135°），不跟鼠标。 */
@@ -631,7 +634,8 @@ body.mat-liquid .glass-card {
   -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
   backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
   box-shadow: var(--panel-glass-shadow);
-  border: 1px solid var(--panel-glass-edge);
+  /* FEAT-116：不再写 border —— 壁厚全部由 --panel-glass-shadow 的上亮下暗承担，
+     与 .ui-widget--glass 用同一套语言（见 tokens/widget 的注释）。 */
   overflow: hidden;
 }
 
@@ -655,12 +659,15 @@ body.mat-liquid .glass-card {
 /* 浅色下：板是"白玻璃"—— 填充更白、边缘是暗线而不是亮线。
    参考图的浅色版（第二张）也是这样：白板 + 深色边框 + 板下投影。 */
 body:not(.theme-dark) {
-  --panel-glass-fill: rgba(255, 255, 255, 0.42);
+  --panel-glass-fill: rgba(255, 255, 255, 0.46);
   --panel-glass-edge: rgba(23, 22, 26, 0.10);
+  /* 与仪表墙的白霜同一套：上缘纯白 1px（受光断面）+ 下缘灰线（背光断面）
+     + 贴边实影。白玻璃在浅底上的边界靠影，不靠把板压深。 */
   --panel-glass-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    inset 0 -1px 0 rgba(23, 22, 26, 0.10),
-    0 6px 18px -10px rgba(23, 22, 26, 0.28);
+    inset 0 -1px 0 rgba(23, 22, 26, 0.08),
+    0 1px 3px rgba(60, 48, 36, 0.12),
+    0 18px 38px -26px rgba(60, 48, 36, 0.44);
 }
 
 /* 全局尊重系统的「减少动态效果」设置。

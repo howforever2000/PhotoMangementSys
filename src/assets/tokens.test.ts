@@ -45,8 +45,8 @@ function blend(fg: Rgb, alpha: number, bg: Rgb): Rgb {
 const DARK = {
   bg: [0x0a, 0x09, 0x0d] as Rgb,
   fg: [0xf2, 0xf0, 0xf4] as Rgb,
-  fg2Alpha: 0.51,
-  fg3Alpha: 0.38,
+  fg2Alpha: 0.58,
+  fg3Alpha: 0.44,
   accent: [0xd4, 0xa2, 0x4a] as Rgb,
   danger: [0xd9, 0x6a, 0x6a] as Rgb,
 };
@@ -54,8 +54,10 @@ const DARK = {
 const LIGHT = {
   bg: [0xfa, 0xf8, 0xf5] as Rgb,
   fg: [0x17, 0x16, 0x1a] as Rgb,
-  fg2Alpha: 0.62,
-  fg3Alpha: 0.48,
+  /* FEAT-116：预设重排后最暗的浅色端降到 #d5af8a（陶土），
+     .62 在该底上只有 3.9:1 —— 提到 .70 才回到 5.0:1 一档。 */
+  fg2Alpha: 0.70,
+  fg3Alpha: 0.60,
   accent: [0x7d, 0x57, 0x1a] as Rgb,
   danger: [0xb4, 0x45, 0x3f] as Rgb,
 };

@@ -182,6 +182,46 @@ test("每套预设的 mode 与所属分组一致", () => {
   for (const p of LIGHT_PRESETS) assert.equal(p.mode, "light", `${p.id} mode 应为 light`);
 });
 
+test("每套预设都写明「侧重」（role），且互不重复", () => {
+  // FEAT-116：预设卡的名称下要有一句"这套适合什么"，
+  // 否则用户在六套浅色之间只能靠色卡猜。空 role 或多套共用同一句都算退化。
+  const roles = ALL_PRESETS.map((p) => p.role);
+  for (const p of ALL_PRESETS) {
+    assert.ok(p.role && p.role.trim().length >= 4, `${p.id} 缺少 role`);
+  }
+  assert.equal(new Set(roles).size, roles.length, "存在重复 role");
+});
+
+test("浅色组两两之间必须在「色相」或「彩度」上明显分开（FEAT-116 反撞车）", () => {
+  /* 上一轮的问题不是"浅色不好看"，而是 linen / paper / clay 三套都落在
+     30°±5、彩度 0.2~0.3 的暖白带里 —— 在 96×56 的预设卡上读不出差别。
+     判据：任取两套，要么色相相距 ≥20°，要么平均彩度差 ≥0.12。
+     两者都不满足 = 用户眼里"又是差不多的白"。 */
+  const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const of = (p: (typeof LIGHT_PRESETS)[number]) => {
+    const hsl = p.colors.map((c) => rgbToHsl(hexToRgb(c)));
+    return { hue: avg(hsl.map((h) => h[0])), sat: avg(hsl.map((h) => h[1])) };
+  };
+  for (let i = 0; i < LIGHT_PRESETS.length; i++) {
+    for (let j = i + 1; j < LIGHT_PRESETS.length; j++) {
+      const a = of(LIGHT_PRESETS[i]);
+      const b = of(LIGHT_PRESETS[j]);
+      const dHue = hueArc(a.hue, b.hue);
+      const dSat = Math.abs(a.sat - b.sat);
+      assert.ok(
+        dHue >= 20 || dSat >= 0.12,
+        `${LIGHT_PRESETS[i].name} 与 ${LIGHT_PRESETS[j].name} 太像：Δ色相 ${dHue.toFixed(1)}°、Δ彩度 ${dSat.toFixed(2)}`,
+      );
+    }
+  }
+});
+
+test("浅色组每套都给了仪表墙强调色（accent / accent2 成对出现）", () => {
+  for (const p of LIGHT_PRESETS) {
+    assert.ok(p.accent && p.accent2, `${p.id} 缺少 accent/accent2`);
+  }
+});
+
 test("presetPrefs 会下发 mode（否则点浅色预设不会真的切到浅色）", () => {
   for (const p of ALL_PRESETS) {
     const prefs = presetPrefs(p);

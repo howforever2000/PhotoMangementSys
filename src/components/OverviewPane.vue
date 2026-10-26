@@ -1,6 +1,27 @@
 <script setup lang="ts">
 /**
- * OverviewPane —— 智慧相册「全局概览」仪表墙（FEAT-110）
+ * OverviewPane —— 智慧相册「全局概览」仪表墙（FEAT-110 建 / FEAT-116 重排）
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * FEAT-116 改了什么，为什么（对着截图指认）
+ * ──────────────────────────────────────────────────────────────────────────
+ * ① **11 块玻璃板 = 11 个同重量的矩形。**
+ *    层级只能靠字号硬撑，读起来像贴满便利贴的墙。现在拆成两个声部：
+ *      · 裸（bare）   —— 照片库总览 / 今年月度：纯读数，文字直接压在页面上
+ *      · 板（panel）  —— 相册 / 人物 / 地点 / 最近导入 / 那年今日：有内容才配板
+ *    板从 11 块降到 5 块，剩下的 2 块裸读数反而把"这一屏说的是我的照片库"立住了。
+ *
+ * ② **同一件事被数了三遍。**
+ *    旧版：GPS 覆盖 39.5% 出现在「地点」widget 的脚注 + 「地点定位覆盖」的环 + 环内文字；
+ *    人物 12 位出现在页头 meta、tab 计数、人物 widget、人物覆盖环。
+ *    现在每项**只出现一次**，且落在它真正被需要的那一块里（见各块注释）。
+ *    删掉的块：语义索引（并入照片库总览的一行）、内容分类（并入人物/相册的脚注）、
+ *    人物照片覆盖 / 地点定位覆盖（并入对应块的脚注）。信息一条没少，只是不再重复。
+ *
+ * ③ **金色用光了。**
+ *    旧版 4 条金色进度条 + 金色环 + 金色排名条同屏。现在金色只出现在两处：
+ *    「已入库」占比线（回答"库建好了吗"）与「今年月度」的当月柱（回答"这个月怎么样"）。
+ *    其余一律 --w-fg2 弱色 —— 这是 tokens.css §2.7 的色彩预算第一次真正落地。
  *
  * 数据源全部为现有命令，零新增后端：
  *   list_timeline（跨相册已扫描照片，含 shoot_time/location/person_ids）
@@ -8,9 +29,6 @@
  *   list_photo_locations（GPS 聚合）
  *   list_categories + category_index_stats（语义分类与索引覆盖）
  *   album store（照片总数 / 存储 / 相册封面）
- *
- * 布局：12 列 widget 墙（4 个行带）。widget 基类只管材质与占位，
- * 内容全部由 *Core 原子芯承载，芯子在其他页面可直接复用。
  */
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
@@ -20,13 +38,10 @@ import { useOverviewStore } from "../stores/overview";
 import { getThumbs } from "../utils/thumbQueue";
 import WidgetGrid from "./ui/widget/WidgetGrid.vue";
 import UiWidget from "./ui/widget/UiWidget.vue";
-import StatCore from "./ui/widget/StatCore.vue";
-import GaugeCore from "./ui/widget/GaugeCore.vue";
 import BarsCore from "./ui/widget/BarsCore.vue";
 import CoversCore from "./ui/widget/CoversCore.vue";
 import FacesCore from "./ui/widget/FacesCore.vue";
 import GeoPinsCore from "./ui/widget/GeoPinsCore.vue";
-import RankBarsCore from "./ui/widget/RankBarsCore.vue";
 import MemoryCore from "./ui/widget/MemoryCore.vue";
 
 const router = useRouter();
@@ -63,18 +78,16 @@ const totalPhotos = computed(() => store.albums.reduce((n, a) => n + (a.photo_co
 const totalBytes = computed(() => store.albums.reduce((n, a) => n + (a.size_bytes || 0), 0));
 const totalAlbums = computed(() => store.albums.length);
 const scanned = computed(() => timeline.value.length);
+const knownRatio = computed(() => (totalPhotos.value ? scanned.value / totalPhotos.value : 0));
 const indexedRatio = computed(() =>
   catStats.value && catStats.value.known > 0 ? catStats.value.indexed / catStats.value.known : 0,
 );
-const knownRatio = computed(() => (totalPhotos.value ? scanned.value / totalPhotos.value : 0));
 
 /** 年份跨度 */
 const years = computed(() => {
   const ys = timeline.value.map((r) => Number(r.shoot_time?.slice(0, 4))).filter((y) => y > 1900);
   return ys.length ? { min: Math.min(...ys), max: Math.max(...ys) } : null;
 });
-const yearSpan = computed(() => (years.value ? years.value.max - years.value.min + 1 : 0));
-void yearSpan; /* 年份跨度预留：当前模板用 years.min/max，后续“时间跨度”卡可直接用 */
 
 /** 今年月度柱阵（10 月之前填实，未来月不画柱；高亮当月） */
 const now = new Date();
@@ -89,6 +102,12 @@ const monthBars = computed(() => {
   const max = Math.max(1, ...counts);
   return { values: counts.map((c) => c / max), active: now.getMonth(), counts };
 });
+/** 今年总数与月均（只统计已经过去的月份，否则"月均"会被未来月份稀释） */
+const yearTotal = computed(() => monthBars.value.counts.reduce((n, c) => n + c, 0));
+const yearMonthlyAvg = computed(() => {
+  const passed = Math.min(12, now.getMonth() + 1);
+  return passed ? Math.round(yearTotal.value / passed) : 0;
+});
 
 /** 人物照片覆盖（timeline 行里带 person_ids 的比例） */
 const faceRatio = computed(() => {
@@ -102,16 +121,13 @@ const facePhotos = computed(() =>
 
 /** GPS 覆盖与 Top 城市 */
 const namedLoc = computed(() => locations.value.filter((g) => g.location !== null));
-const gpsRatio = computed(() => (scanned.value ? namedLoc.value.reduce((n, g) => n + g.count, 0) / scanned.value : 0));
-const topCities = computed(() => {
-  const rows = [...namedLoc.value].sort((a, b) => b.count - a.count).slice(0, 3);
-  const max = rows[0]?.count || 1;
-  return rows.map((g) => ({
-    /* 地名形如 “四川省·成都” / “重庆市”：优先取 · 后的城市名，再去行政后缀 */
-    label: (g.location ?? "").split("·").pop()!.replace(/[省市]$/, "").slice(0, 4),
-    value: g.count,
-    ratio: g.count / max,
-  }));
+const geoPhotos = computed(() => namedLoc.value.reduce((n, g) => n + g.count, 0));
+const gpsRatio = computed(() => (scanned.value ? geoPhotos.value / scanned.value : 0));
+const topCity = computed(() => {
+  const row = [...namedLoc.value].sort((a, b) => b.count - a.count)[0];
+  return row
+    ? { label: (row.location ?? "").split("·").pop()!.replace(/[省市]$/, ""), count: row.count }
+    : null;
 });
 
 /** 最近导入：时间线倒序前 6 张 */
@@ -128,6 +144,7 @@ const albumMosaic = computed(() =>
     .slice(0, 3)
     .map((a) => ({ src: fileUrl(a.cover_path), name: a.name })),
 );
+const avgPerAlbum = computed(() => (totalAlbums.value ? Math.round(totalPhotos.value / totalAlbums.value) : 0));
 
 /** 人物：face_count 前 6（折叠由 FacesCore 处理） */
 const topPersons = computed(() => [...persons.value].sort((a, b) => b.face_count - a.face_count).slice(0, 6));
@@ -135,11 +152,11 @@ const faceItems = computed(() =>
   topPersons.value.map((p) => ({ src: faceMap.value[p.id] || "", text: (p.name || "?").slice(0, 1) })),
 );
 
-/** 分类：启用的语义分类与计数 */
+/** 分类：启用的语义分类与计数（只用于「照片库总览」的一行元信息） */
 const enabledCats = computed(() => categories.value.filter((c) => c.enabled));
 const catCount = computed(() => catStats.value?.semantic_categories ?? enabledCats.value.length);
-const catPhotoCount = computed(() => enabledCats.value.reduce((n, c) => n + (c.count || 0), 0));
-const catNames = computed(() => enabledCats.value.slice(0, 5).map((c) => c.name).join(" · "));
+const catIndexed = computed(() => catStats.value?.indexed ?? scanned.value);
+const catStale = computed(() => catStats.value?.stale ?? 0);
 
 /** 那年今日（过去年份同月同日） */
 const mm = String(now.getMonth() + 1).padStart(2, "0");
@@ -151,7 +168,9 @@ const onThisDay = computed(() =>
 );
 const memoryHero = computed(() => [...onThisDay.value].reverse()[0] ?? null);
 const memoryCover = computed(() => (memoryHero.value ? thumbMap.value[memoryHero.value.path] || "" : ""));
-const memoryYears = computed(() => new Set(onThisDay.value.map((r) => r.shoot_time!.slice(0, 4))).size);
+const memoryYearsAgo = computed(() =>
+  memoryHero.value ? year - Number(memoryHero.value.shoot_time!.slice(0, 4)) : 0,
+);
 
 async function loadThumb(paths: { albumId: number; path: string }[]) {
   const byAlbum = new Map<number, string[]>();
@@ -219,9 +238,6 @@ function goFace(pid?: string) {
 function goLocation() {
   router.push({ path: "/smart", query: { tab: "location" } });
 }
-function goCategory() {
-  router.push({ path: "/smart", query: { tab: "category" } });
-}
 function goAlbum(id?: number | null) {
   if (id != null) router.push(`/album/${id}`);
 }
@@ -235,7 +251,7 @@ function onGeoPick() {
     <!-- 骨架：仅首次构建（无任何缓存快照）时出现；
          之后再进概览直接渲染缓存，不会闪一下白块。 -->
     <div v-if="loading && !overview.snapshot" class="ov-skel" aria-label="正在汇总照片库">
-      <span v-for="i in 9" :key="i" class="ov-skel-card"></span>
+      <span v-for="i in 7" :key="i" class="ov-skel-card"></span>
     </div>
 
     <!-- 失败：不阻塞智慧相册其他分区，给重试 -->
@@ -245,111 +261,92 @@ function onGeoPick() {
     </div>
 
     <WidgetGrid v-else>
-      <!-- ── XL：照片库总览 ── -->
-      <UiWidget :span="8" :rows="2" label-cn="照片库总览">
-        <template #right><span>{{ year }}</span></template>
+      <!-- ══ 行 1｜声部 A：纯读数（无板） ══════════════════════════════════
+           「我的库有多大、建到什么程度」—— 这页要回答的第一个问题。
+           数字直接印在背景上：没有板，它就不是"一个卡片"，而是版面本身。 -->
+      <UiWidget :span="7" :rows="2" variant="bare" label-cn="照片库" :to="'/albums'">
         <div class="ov-hero">
-          <div class="ov-hero-l">
-            <div class="w-stat-row">
-              <span class="w-stat-num">{{ totalPhotos.toLocaleString() }}</span>
+          <div class="ov-hero-main">
+            <div class="ov-figure">
+              <span class="w-num-xl">{{ totalPhotos.toLocaleString() }}</span>
               <span class="w-stat-unit">张照片</span>
             </div>
-            <div class="ov-chips">
-              <span class="ov-chip">💾 {{ fmtSize(totalBytes) }}</span>
-              <span class="ov-chip" v-if="years">📅 {{ years.min }} – {{ years.max }}</span>
-              <span class="ov-chip">📁 {{ totalAlbums }} 个相册</span>
+            <!-- 年份跨度放在元信息行，而不是标题右侧：
+                 标题行右侧紧挨着右边那一块的标题（间距只有 14px），
+                 两个右对齐的小字会被读成同一行。 -->
+            <div class="w-meta-row ov-hero-meta">
+              <span>{{ fmtSize(totalBytes) }}</span>
+              <span>{{ totalAlbums }} 个相册</span>
+              <span v-if="years">{{ years.min }} – {{ years.max }}</span>
             </div>
-            <div class="ov-hero-bar">
-              <div class="ov-bar-label">
-                <span>已入库</span>
-                <b>{{ scanned.toLocaleString() }} / {{ totalPhotos.toLocaleString() }} · {{ (knownRatio * 100).toFixed(1) }}%</b>
-              </div>
-              <div class="w-pbar lg"><i :style="{ width: `${knownRatio * 100}%` }"></i></div>
+            <!-- 入库完成度：金色预算第 1 处。整屏只有这条线和下面的当月柱是金色。 -->
+            <div class="ov-ingest">
+              <span class="ov-ingest-label">已入库 <b>{{ scanned.toLocaleString() }}</b> / {{ totalPhotos.toLocaleString() }}</span>
+              <span class="ov-ingest-pct">{{ (knownRatio * 100).toFixed(1) }}%</span>
             </div>
+            <div class="w-pbar hot"><i :style="{ width: `${Math.min(100, knownRatio * 100)}%` }"></i></div>
           </div>
-          <div class="ov-hero-r">
-            <div class="ov-bar-label"><span>{{ year }} 月度新增</span><b>{{ monthBars.counts[now.getMonth()] }} 张</b></div>
-            <BarsCore :values="monthBars.values" :active-indexes="[monthBars.active]" />
-          </div>
+
+          <!-- 右栏：语义索引。它回答"我现在能搜到多少"，与"库有多大"是同一件事的两面，
+               所以留在同一块里，用一根发丝竖线分开 —— 而不是再开一块 widget。
+               这块同时也把 A 的右半边填满：7 列宽的读数块如果只有左半边有字，
+               视觉重量会全压在左边，和右边 5 列的柱阵失衡。 -->
+          <aside class="ov-hero-side">
+            <span class="ov-side-label">语义索引</span>
+            <div class="ov-side-num">{{ (indexedRatio * 100).toFixed(1) }}<em>%</em></div>
+            <p class="ov-side-note">{{ catIndexed.toLocaleString() }} 张已建索引 · {{ catCount }} 个分类</p>
+            <p v-if="catStale > 0" class="ov-side-note">
+              <span class="hot">{{ catStale }} 张</span> 属其他模型档
+            </p>
+            <p v-else class="ov-side-note">索引完整</p>
+          </aside>
         </div>
       </UiWidget>
 
-      <!-- ── 语义索引 ── -->
-      <UiWidget :span="4" :rows="1" label="语义索引">
-        <template #right><button class="ui-widget-link" @click="goCategory">详情</button></template>
-        <GaugeCore :ratio="indexedRatio" :size="58" variant="ok">
-          <b>{{ catStats?.indexed.toLocaleString() ?? scanned.toLocaleString() }}</b> 张已建索引<br />
-          <template v-if="(catStats?.stale ?? 0) > 0">
-            <span class="hot">{{ catStats!.stale }} 张</span> 属其他模型档
-          </template>
-          <template v-else>索引完整</template>
-        </GaugeCore>
+      <!-- 「今年怎么样」——柱阵是"节奏"，不是"占比"，所以用柱不用线 -->
+      <UiWidget :span="5" :rows="2" variant="bare" label-cn="今年月度" :to="'/timeline'">
+        <template #right>{{ year }} · 当月 {{ monthBars.counts[now.getMonth()] }} 张</template>
+        <div class="ov-months">
+          <BarsCore :values="monthBars.values" :active-indexes="[monthBars.active]" />
+        </div>
+        <div class="w-meta-row ov-months-meta">
+          <span>全年 {{ yearTotal.toLocaleString() }} 张</span>
+          <span>月均 {{ yearMonthlyAvg }} 张</span>
+        </div>
       </UiWidget>
 
-      <!-- ── 那年今日速览 ── -->
-      <UiWidget :span="4" :rows="1" label="那年今日" :to="'/memories'">
-        <StatCore
-          :value="onThisDay.length"
-          unit="组"
-          small
-          :delta="memoryYears ? `${memoryYears} 个年份` : ''"
-          delta-tone="mute"
-        />
-      </UiWidget>
+      <!-- ══ 行 2｜声部 B：有内容才配板 ═══════════════════════════════════ -->
 
-      <!-- ── 相册 ── -->
+      <!-- 相册：拼贴是"内容"，需要承载面 -->
       <UiWidget :span="4" :rows="2" label-cn="相册" clickable @click="router.push('/albums')">
-        <template #right><b>{{ totalAlbums }}</b>&nbsp;个</template>
+        <template #right>{{ totalAlbums }} 个</template>
         <CoversCore v-if="albumMosaic.length" :items="albumMosaic" variant="mosaic" @pick="() => router.push('/albums')" />
         <div v-else class="ov-empty">还没有相册</div>
-        <p class="w-stat-note" style="margin-top:9px">点击进入相册管理</p>
+        <p class="w-stat-note ov-foot">共 {{ totalPhotos.toLocaleString() }} 张 · 平均 {{ avgPerAlbum }} 张/册</p>
       </UiWidget>
 
-      <!-- ── 人物 ── -->
+      <!-- 人物：覆盖率先在这块说清，别处不再重复 -->
       <UiWidget :span="4" :rows="2" label-cn="人物" clickable @click="goFace()">
-        <template #right><b>{{ persons.length }}</b>&nbsp;位</template>
+        <template #right>{{ persons.length }} 位</template>
         <FacesCore v-if="faceItems.length" :items="faceItems" :max="5" @pick="(i: number) => goFace(topPersons[i]?.id)" />
         <div v-else class="ov-empty">尚未识别出人物</div>
-        <p class="w-stat-note" style="margin-top:auto">按出现次数排序 · {{ facePhotos.toLocaleString() }} 张照片含人物</p>
+        <p class="w-stat-note ov-foot">{{ (faceRatio * 100).toFixed(1) }}% 的照片含人物 · {{ facePhotos.toLocaleString() }} 张</p>
       </UiWidget>
 
-      <!-- ── 地点 ── -->
+      <!-- 地点：同一逻辑 —— GPS 覆盖率只在这里出现一次 -->
       <UiWidget :span="4" :rows="2" label-cn="地点" clickable @click="goLocation()">
-        <template #right><b>{{ namedLoc.length }}</b>&nbsp;城</template>
+        <template #right>{{ namedLoc.length }} 城</template>
         <GeoPinsCore v-if="namedLoc.length" :groups="locations" @pick="onGeoPick" />
         <div v-else class="ov-empty">照片里还没有定位信息</div>
-        <p class="w-stat-note" style="margin-top:auto">
-          GPS 覆盖 <b>{{ (gpsRatio * 100).toFixed(1) }}%</b> · {{ namedLoc.reduce((n, g) => n + g.count, 0).toLocaleString() }} 张有定位
+        <p class="w-stat-note ov-foot">{{ (gpsRatio * 100).toFixed(1) }}% 带 GPS · {{ geoPhotos.toLocaleString() }} 张<template v-if="topCity">，最多在 {{ topCity.label }}</template>
         </p>
       </UiWidget>
 
-      <!-- ── 内容分类 ── -->
-      <UiWidget :span="4" :rows="2" label="内容分类" clickable @click="goCategory()">
-        <StatCore :value="catCount" unit="个语义分类">
-          <template #note>{{ catNames || '扫描语义向量后自动归类' }}</template>
-        </StatCore>
-        <div class="w-pbar" style="margin-top:12px"><i :style="{ width: `${Math.min(100, indexedRatio * 100)}%` }"></i></div>
-        <p class="w-stat-note">{{ catPhotoCount.toLocaleString() }} 张已归类</p>
-      </UiWidget>
+      <!-- ══ 行 3｜内容为主的两块 ════════════════════════════════════════ -->
 
-      <!-- ── 人物照片覆盖 ── -->
-      <UiWidget :span="4" :rows="2" label="人物照片覆盖" clickable @click="goFace()">
-        <GaugeCore :ratio="faceRatio" :size="76">
-          <b>{{ facePhotos.toLocaleString() }}</b> 张照片含人物<br />归并为 <b>{{ persons.length }}</b> 位
-        </GaugeCore>
-      </UiWidget>
-
-      <!-- ── GPS 覆盖 ── -->
-      <UiWidget :span="4" :rows="2" label="地点定位覆盖" clickable @click="goLocation()">
-        <GaugeCore :ratio="gpsRatio" :size="76">
-          <b>{{ namedLoc.reduce((n, g) => n + g.count, 0).toLocaleString() }}</b> 张带 GPS<br />聚为 <b>{{ namedLoc.length }}</b> 个地点
-        </GaugeCore>
-        <RankBarsCore v-if="topCities.length" :items="topCities" />
-      </UiWidget>
-
-      <!-- ── 最近导入 ── -->
-      <UiWidget :span="8" :rows="2" label-cn="最近导入" :to="'/timeline'">
-        <template #right><span class="ui-widget-link">时间线 →</span></template>
+      <!-- 最近导入：照片下出血铺到板缘 —— 板是相框，不是"贴着照片的纸" -->
+      <UiWidget :span="8" :rows="2" label-cn="最近导入" bleed class="ov-film" :to="'/timeline'">
+        <template #right>时间线 →</template>
         <CoversCore
           v-if="recentCovers.length"
           :items="recentCovers"
@@ -359,13 +356,14 @@ function onGeoPick() {
         <div v-else class="ov-empty">还没有已入库的照片</div>
       </UiWidget>
 
-      <!-- ── 那年今日大卡 ── -->
-      <UiWidget :span="4" :rows="2" label-cn="那年今日" :to="'/memories'">
+      <!-- 那年今日：整块就是一张照片，标题浮在照片上（头部只留标题，不再重复"x 年前"） -->
+      <UiWidget :span="4" :rows="2" label-cn="那年今日" cover :to="'/memories'">
         <MemoryCore
           v-if="memoryHero"
           :src="memoryCover"
-          :title="`${year - Number(memoryHero.shoot_time!.slice(0, 4))} 年前的今天`"
+          :title="`${memoryYearsAgo} 年前的今天`"
           :subtitle="`${memoryHero.shoot_time!.slice(0, 4)}${memoryHero.location ? ' · ' + memoryHero.location : ''}`"
+          @activate="router.push('/memories')"
         />
         <div v-else class="ov-empty ov-empty-mem">往年今天的照片会出现在这里</div>
       </UiWidget>
@@ -375,71 +373,127 @@ function onGeoPick() {
 
 <style scoped>
 .overview {
-  padding: 4px var(--sp-8) 48px;
+  padding: 6px var(--sp-8) 48px;
 }
 
-/* XL 总览：左右分栏 */
+/* ── 照片库总览（裸读数）─────────────────────────────────────────────
+   左栏纵向节奏：大数字 → 元信息 → 入库行 → 占比线；
+   右栏是一条发丝竖线隔开的「语义索引」小读数块。
+   入库行与占比线贴底（margin-top:auto），于是它和右边「今年月度」的
+   柱阵脚注落在同一条底线上 —— 这是"错落但整齐"里"整齐"的那一半。 */
 .ov-hero {
   flex: 1;
   display: flex;
-  gap: 22px;
-  margin-top: 8px;
+  align-items: stretch;
+  gap: 24px;
   min-height: 0;
+  padding-top: 6px;
 }
-.ov-hero-l {
-  width: 46%;
-  display: flex;
-  flex-direction: column;
-}
-.ov-hero-r {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+.ov-hero-main {
+  flex: 1 1 auto;
   min-width: 0;
-  padding-left: 20px;
-  /* 结构分隔线：双刻线（亮侧 + 暗侧）。实测单层 11% 白只有 1.24:1，亮底上更只有 1.5:1。 */
-  border-left: 1px solid var(--w-divider);
-  box-shadow: -1px 0 0 var(--w-divider-dark);
-}
-.ov-chips {
   display: flex;
-  gap: 6px;
-  margin-top: 9px;
-  flex-wrap: wrap;
+  flex-direction: column;
 }
-.ov-chip {
-  font-size: 10px;
-  color: var(--color-text-2);
-  padding: 3px 9px;
-  border-radius: 999px;
-  border: 1px solid var(--w-line);
-  background: rgba(128, 128, 128, 0.08);
-}
-.ov-hero-bar {
-  margin-top: auto;
-}
-.ov-bar-label {
+.ov-figure {
   display: flex;
-  justify-content: space-between;
-  font-size: 10px;
-  color: var(--color-text-2);
-  margin-bottom: 6px;
+  align-items: baseline;
+  gap: 8px;
 }
-.ov-bar-label b {
-  color: var(--color-text);
+.ov-hero-meta {
+  margin-top: 10px;
+}
+
+/* 右栏：唯一的一根竖发丝线（不做成第二条数据带，避免"两条统计轴"） */
+.ov-hero-side {
+  flex: 0 0 172px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 22px;
+  border-left: 1px solid var(--rule);
+  min-width: 0;
+}
+.ov-side-label {
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-2);
   font-weight: 600;
 }
-.hot {
+.ov-side-num {
+  margin-top: 4px;
+  font-size: 34px;
+  font-weight: 300;
+  letter-spacing: -1.3px;
+  line-height: 1;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.ov-side-num em {
+  font-style: normal;
+  font-size: 15px;
+  letter-spacing: 0;
+  color: var(--fg-2);
+  margin-left: 1px;
+}
+.ov-side-note {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+.ov-side-note:first-of-type {
+  margin-top: 8px;
+}
+.ov-side-note .hot {
+  /* 跟随**当前预设的仪表墙强调色**，而不是全站的落日金：
+     松绿/陶土/青瓷这几套的墙色已经换过，这里若仍用金色，
+     会出现"整块墙是薄荷绿、只有这一行是金色"的串色。 */
   color: var(--w-accent);
 }
 
-/* 空态 / 骨架 / 错误 */
+.ov-ingest {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 14px;
+  font-size: 10.5px;
+  color: var(--fg-2);
+}
+.ov-ingest b {
+  color: var(--fg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ov-ingest-pct {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.ov-ingest + .w-pbar {
+  margin-top: 7px;
+}
+
+/* ── 今年月度 ───────────────────────────────────────────────────────── */
+.ov-months {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  padding: 14px 0 12px;
+}
+.ov-months-meta {
+  margin-top: auto;
+}
+
+/* ── 空态 / 骨架 / 错误 ─────────────────────────────────────────────── */
 .ov-empty {
   flex: 1;
   display: grid;
   place-items: center;
   font-size: 11px;
-  color: var(--color-text-3);
+  color: var(--w-fg2, var(--color-text-2));
   text-align: center;
 }
 .ov-empty-mem {
@@ -450,22 +504,21 @@ function onGeoPick() {
 .ov-skel {
   display: grid;
   grid-template-columns: repeat(12, 1fr);
-  grid-auto-rows: 86px;
+  grid-auto-rows: 84px;
   gap: 14px;
-  padding: 4px var(--sp-8);
+  padding: 6px var(--sp-8);
 }
 .ov-skel-card {
   grid-column: span 4;
   grid-row: span 2;
   border-radius: var(--w-radius);
-  background: linear-gradient(100deg, rgba(128, 128, 128, 0.10) 30%, rgba(128, 128, 128, 0.2) 50%, rgba(128, 128, 128, 0.10) 70%);
+  background: linear-gradient(100deg, rgba(128, 128, 128, 0.1) 30%, rgba(128, 128, 128, 0.2) 50%, rgba(128, 128, 128, 0.1) 70%);
   background-size: 200% 100%;
   animation: ov-shimmer 1.3s infinite;
 }
-.ov-skel-card:nth-child(1),
-.ov-skel-card:nth-child(8) {
-  grid-column: span 8;
-}
+.ov-skel-card:nth-child(1) { grid-column: span 7; }
+.ov-skel-card:nth-child(2) { grid-column: span 5; }
+.ov-skel-card:nth-child(6) { grid-column: span 8; }
 @keyframes ov-shimmer {
   from { background-position: 200% 0; }
   to { background-position: -200% 0; }
@@ -473,7 +526,7 @@ function onGeoPick() {
 .ov-error {
   padding: 40px var(--sp-8);
   text-align: center;
-  color: var(--color-text-2);
+  color: var(--fg-2);
   font-size: 12px;
 }
 .ov-error button {
@@ -486,20 +539,43 @@ function onGeoPick() {
   cursor: pointer;
 }
 
+/* 面板脚注统一贴底：三块面板的同一行文字因此落在同一条基线上 */
+.overview .ov-foot {
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+/* 最近导入：出血后封面不再有独立圆角，整条读作"一条胶片" */
+.ov-film :deep(.w-covers.strip) {
+  margin-top: 0;
+  gap: 2px;
+}
+.ov-film :deep(.w-cv) {
+  border-radius: 0;
+  box-shadow: none;
+}
+/* 那年今日：整块是照片，取消芯子自己的圆角与外边距（板已经给了圆角） */
+.overview :deep(.ui-widget--cover .w-memory) {
+  margin-top: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 @media (max-width: 1000px) {
   .overview {
     padding: 4px var(--sp-5) 40px;
   }
+  /* 窄屏：右栏落到大数字下面，竖发丝线改为横线（竖线在窄屏上会切断阅读） */
   .ov-hero {
     flex-direction: column;
-    gap: 14px;
+    gap: 16px;
   }
-  .ov-hero-l {
-    width: 100%;
-  }
-  .ov-hero-r {
+  .ov-hero-side {
+    flex: none;
     padding-left: 0;
+    padding-top: 12px;
     border-left: none;
+    border-top: 1px solid var(--rule);
   }
 }
 </style>

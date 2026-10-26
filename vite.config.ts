@@ -26,7 +26,10 @@ export default defineConfig(async () => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 4. 编辑器保存时会先写「同目录临时文件 → 原子替换」，临时目录（`.xxx.tmpdir/`）
+      //    在 Windows 上被 chokidar 追到时偶发 EBUSY 并让 dev server 整个退出。
+      //    这类目录与构建无关，忽略即可（.visual 下的大截图同样不值得追）。
+      ignored: ["**/src-tauri/**", "**/*.tmpdir/**", "**/.visual/**", "**/dist/**"],
     },
   },
 }));

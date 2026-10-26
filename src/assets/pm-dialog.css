@@ -509,3 +509,18 @@ body.theme-dark .pm-dialog input:disabled {
   color: var(--color-on-primary, #2a1a08);
   font-weight: 560;
 }
+
+/* FEAT-116：卡片第二行 = 这套预设的「侧重」（暖中性 · 日间浏览 / 绿调 · 自然植物…）。
+   比原来的「浅色 · 72%」有用：六套浅色的差别本来就不是不透明度，
+   用户需要的是"我该在什么场景选它"。 */
+.pm-preset-role {
+  display: block;
+  margin-top: 3px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--pm-hint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
