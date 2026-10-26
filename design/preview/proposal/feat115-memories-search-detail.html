@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>FEAT-115 · 回忆 / 智能搜索 / 相册详情</title>
+<link rel="stylesheet" href="./feat115.css" />
+<style>
+.mem-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap: 10px; }
+.mem-grid .cover { aspect-ratio: 1; }
+.mem-grid figcaption { font-size: 10.5px; color: var(--fg-3); margin-top: 5px; display: flex; gap: 6px; }
+.ss-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap: 10px; }
+</style>
+</head>
+<body data-theme="pine-soft">
+
+<div class="topbar">
+  <span class="tb-back">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    主页
+  </span>
+  <span class="tb-name">
+    <span class="tb-title">🌟 智慧相册</span>
+    <span class="tb-meta">回忆</span>
+  </span>
+  <nav class="tb-nav">
+    <span>全局概览</span><span>内容分类</span><span>人物</span><span>地点</span><span class="on">回忆</span><span>时间线</span><span>智能搜索</span>
+  </nav>
+  <span class="tb-sp"></span>
+  <span class="tb-search">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2.2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    <b>搜索照片</b>
+  </span>
+  <span class="tb-user">y</span>
+</div>
+
+<div class="band">
+  <div class="stat w-1">
+    <span class="stat-label">照片</span>
+    <span class="stat-val"><span class="stat-num">93</span><span class="stat-unit">张</span></span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">人物</span>
+    <span class="stat-val"><span class="stat-num">14</span><span class="stat-unit">位</span></span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">相册</span>
+    <span class="stat-val"><span class="stat-num">9</span><span class="stat-unit">个</span></span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">本月新增</span>
+    <span class="stat-val"><span class="stat-num">14</span><span class="stat-unit">张</span></span>
+    <span class="stat-line"><i style="width:15%"></i></span>
+  </div>
+</div>
+
+<!-- ══════ 故事 · 按月：横向滚动，封面 + 落款（无卡）═════════ -->
+<div class="shell" style="padding-top:20px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:14px">
+    <span style="font-size:22px;font-weight:620;letter-spacing:-.5px">故事 · 按月</span>
+    <span style="font-size:11px;color:var(--fg-3)">横向滚动查看所有月份</span>
+  </div>
+  <div class="story-row" id="stories"></div>
+</div>
+
+<!-- ══════ 本月精选 ══════ -->
+<div class="shell" style="padding-top:30px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:14px;padding-top:20px;border-top:1px solid var(--rule)">
+    <span style="font-size:22px;font-weight:620;letter-spacing:-.5px">本月精选</span>
+    <span style="font-size:11px;color:var(--fg-3)">2026 年 10 月 · 14 张</span>
+  </div>
+  <div class="mem-grid" id="thisMonth"></div>
+</div>
+
+<!-- ══════ 近期人物 ══════ -->
+<div class="shell" style="padding-top:30px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px;padding-top:20px;border-top:1px solid var(--rule)">
+    <span style="font-size:22px;font-weight:620;letter-spacing:-.5px">近期人物</span>
+    <span style="font-size:11px;color:var(--fg-3)">出现次数 top 8</span>
+  </div>
+  <div style="display:flex;gap:22px;flex-wrap:wrap" id="recentPersons"></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     智能搜索（同页第二屏）
+     ──────────────────────────────────────────────────────────────────
+     现状：页内大标题「🔎 智能搜索」+ 副标题（与顶栏 tab 重复）
+           + 一排输入框 + 一排结构化筛选芯片（6 组）+ 空态大图标
+     改法：标题不重复（顶栏已高亮「智能搜索」）；
+           搜索框与筛选合并为一行工具条；
+           空态从"一个大图标 + 两行字"改为"一行引导 + 几个可点示例"。
+     ══════════════════════════════════════════════════════════════════ -->
+<div style="margin-top:44px;padding-top:20px;border-top:1px solid var(--rule)">
+  <div class="page-head" style="padding-left:0;padding-right:0">
+    <span class="page-title">智能搜索</span>
+    <span class="page-sub">自然语言 + 多维筛选，跨相册检索照片（AI 扫描入库）</span>
+  </div>
+
+  <div class="shell" style="padding:14px 0 0">
+    <div style="display:flex;align-items:center;gap:10px">
+      <div class="search-box" style="flex:1;height:38px">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="opacity:.55;flex-shrink:0"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2.2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        <span>试试「海边日落」/「一只猫」/「2023 年的聚会」/「成都 人像」</span>
+        <span class="scope" style="color:var(--accent)">全库</span>
+      </div>
+      <button class="btn" type="button">✨ 智能解析</button>
+      <button class="btn btn-primary" type="button">搜索</button>
+      <button class="btn" type="button">🖼 以图搜图</button>
+    </div>
+
+    <div class="filters">
+      <span class="f-item">日期<input class="f-ctl" type="date" style="width:130px" /> 至 <input class="f-ctl" type="date" style="width:130px" /></span>
+      <span class="f-item">地点<input class="f-ctl" placeholder="如 成都" style="width:96px" /></span>
+      <span class="f-item">类别<input class="f-ctl" placeholder="portrait / street" style="width:130px" /></span>
+      <span class="f-item">标签<input class="f-ctl" placeholder="如 猫" style="width:96px" /></span>
+      <span class="f-item">人物<select class="f-ctl"><option>人物不限</option></select></span>
+      <span class="f-item">影调<select class="f-ctl"><option>影调不限</option></select></span>
+      <button class="btn" type="button">清空</button>
+    </div>
+
+    <!-- 空态：一行引导 + 可点示例，不是一个大图标 -->
+    <div class="empty" style="padding:52px 0 30px">
+      <p class="empty-title">输入关键词开始检索</p>
+      <p class="empty-text" style="margin-top:10px">
+        也可以先用结构化筛选收窄范围，再补一个关键词。
+      </p>
+      <div style="display:flex;gap:8px;justify-content:center;margin-top:18px;flex-wrap:wrap">
+        <span class="chip">2023 年的猫</span>
+        <span class="chip">成都 人像</span>
+        <span class="chip">去年春天</span>
+        <span class="chip">暗调</span>
+      </div>
+      <p class="empty-text" style="margin-top:22px;font-size:10.5px">
+        想用「海边日落」这类自然语言搜图？去<u style="text-decoration:none;color:var(--accent)"> 扫描中心 </u>勾选「语义向量」构建索引（需先下载 CLIP 模型）。
+      </p>
+    </div>
+
+    <!-- 有结果时的形态（示意）-->
+    <div style="margin-top:8px;padding-top:18px;border-top:1px solid var(--rule)">
+      <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">
+        <span style="font-size:11.5px;color:var(--fg-2)">搜到 <b style="color:var(--fg);font-weight:600">18</b> 张 · 按相关度</span>
+      </div>
+      <div class="ss-results" id="ssResults"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     相册详情（同页第三屏）
+     ──────────────────────────────────────────────────────────────────
+     现状：max-width:1200 + padding:24 居中（与全站 --sp-8 不对齐）
+           + 面包屑独占一行 + AlbumMeta 一张大卡 + 三个 CollapseSection 各一块板
+     改法：① 去 1200 居中，改 --sp-8 左轴
+           ② 面包屑并入顶栏（顶栏已显示「相册管理 · 2026 毕业季」）
+           ③ 相册信息一行读完（张数/大小/时间/地点/标签），不再一张大卡
+           ④ 三个功能区改「折纸行」：标题 + 副标题 + 右侧状态，展开才出内容
+     ══════════════════════════════════════════════════════════════════ -->
+<div style="margin-top:44px;padding-top:20px;border-top:1px solid var(--rule)">
+  <div class="page-head" style="padding-left:0;padding-right:0">
+    <span class="page-title">相册详情</span>
+    <span class="page-sub">相册管理 › 2026 毕业季</span>
+    <span class="right"><button class="btn" type="button" style="color:var(--c-danger,#c96b6b)">删除相册</button></span>
+  </div>
+
+  <div class="shell" style="padding:16px 0 0">
+    <!-- 信息一行 -->
+    <div style="display:flex;align-items:flex-start;gap:18px;padding-bottom:18px;border-bottom:1px solid var(--rule)">
+      <div class="cover c1" style="width:88px;aspect-ratio:1;flex-shrink:0">
+        <img id="detail-cover" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" />
+      </div>
+      <div style="min-width:0;flex:1">
+        <h2 style="font-size:20px;font-weight:620;letter-spacing:-.3px">2026 毕业季</h2>
+        <p style="font-size:11.5px;color:var(--fg-3);margin-top:4px">C:/photos/2026毕业季</p>
+        <p style="font-size:12px;color:var(--fg-2);margin-top:6px">六月拍的那批</p>
+        <div class="meta-row" style="margin-top:12px">
+          <span>📍 <b>北京市</b></span>
+          <span>照片数量 <b>108 张</b></span>
+          <span>相册大小 <b>432.6 MB</b></span>
+          <span>拍摄时间 <b>2026-06-15</b></span>
+          <span>已入库 <b>108 / 108</b></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:12px">
+          <span style="font-size:10.5px;color:var(--fg-3)">相册标签</span>
+          <span class="chip" style="height:22px;font-size:10.5px">毕业</span>
+          <button class="btn" type="button" style="height:22px;font-size:10.5px">编辑标签</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 三个功能区：折纸行 -->
+    <div class="fold">
+      <div class="fold-head">
+        <span>🔍</span>
+        <span class="fold-title">照片搜索</span>
+        <span class="fold-sub">相册内关键词</span>
+        <span class="right">已展开 ▾</span>
+      </div>
+      <div class="fold-body">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="search-box" style="flex:1;max-width:420px">
+            <span>搜索本相册照片…</span>
+            <span class="scope">仅本相册</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="fold">
+      <div class="fold-head">
+        <span>🧩</span>
+        <span class="fold-title">组合扫描</span>
+        <span class="fold-sub">EXIF / 影调 / AI 统一入口 · 后台执行 · 退出页面不中断</span>
+        <span class="right">点击展开 ▸</span>
+      </div>
+    </div>
+
+    <div class="fold">
+      <div class="fold-head">
+        <span>🖼️</span>
+        <span class="fold-title">缩略图浏览</span>
+        <span class="fold-sub">108 张</span>
+        <span class="right">点击展开 ▸</span>
+      </div>
+      <div class="fold-body">
+        <div class="thumb-grid" id="thumbs"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="note" style="margin-top:30px">
+  本页三件事各自独立：搜索只搜本相册、扫描只写入本相册、浏览只看本相册。
+  跨相册的检索在「智能搜索」，不在这里。
+</p>
+
+<script src="./feat115-data.js"></script>
+<script>
+document.getElementById("detail-cover").src = photo(1, 160, 160);
+
+/* 故事卡 */
+const months = {};
+for (const r of ROWS) (months[r.year + "-" + r.month] ??= []).push(r);
+const mKeys = Object.keys(months).sort().reverse();
+document.getElementById("stories").innerHTML = mKeys.map((k) => {
+  const items = months[k];
+  const [y, m] = k.split("-");
+  return `<article class="story">
+    <div class="cover c${(items[0].seed % 9) + 1}">
+      <img src="${photo(items[0].seed, 240, 180)}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" />
+    </div>
+    <h3 class="story-title">${y} 年 ${m} 月</h3>
+    <p class="story-meta">${items.length} 张 · 📍 ${items.find((r) => r.location)?.location ?? "无定位"}</p>
+  </article>`;
+}).join("");
+
+/* 本月精选 */
+document.getElementById("thisMonth").innerHTML = ROWS.slice(0, 10).map((r) =>
+  `<figure>
+    <div class="cover c${(r.seed % 9) + 1}">
+      <img src="${photo(r.seed, 200, 200)}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" />
+    </div>
+    <figcaption>${r.label ?? ""}${r.location ? " 📍" + r.location : ""}</figcaption>
+  </figure>`).join("");
+
+/* 近期人物 */
+document.getElementById("recentPersons").innerHTML = PERSONS.map((p) =>
+  `<div class="person" style="width:64px">
+    <div class="person-av" style="width:52px;height:52px;font-size:18px;background:linear-gradient(150deg,hsl(${p.id.charCodeAt(1) * 37 % 360},42%,58%),hsl(${(p.id.charCodeAt(1) * 37 + 40) % 360},38%,32%))">
+      ${p.name ? p.name.slice(0, 1) : "?"}
+    </div>
+    <div class="person-name" style="font-size:11px">${p.name ?? p.id}</div>
+    <div class="person-count">${p.n} 次</div>
+  </div>`).join("");
+
+/* 智能搜索结果示意 */
+document.getElementById("ssResults").innerHTML = ROWS.slice(0, 12).map((r) =>
+  `<div class="cover c${(r.seed % 9) + 1}" style="aspect-ratio:1">
+    <img src="${photo(r.seed, 200, 200)}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" />
+  </div>`).join("");
+
+/* 详情缩略图 */
+document.getElementById("thumbs").innerHTML = Array.from({ length: 18 }, (_, i) =>
+  `<div class="cover c${(i % 9) + 1}">
+    <img src="${photo(i + 40, 160, 160)}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" />
+  </div>`).join("");
+</script>
+</body>
+</html>
