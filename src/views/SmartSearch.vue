@@ -10,6 +10,7 @@ import type { SmartHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import { getThumbs } from "../utils/thumbQueue";
 import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
+import ModelMissingDialog from "../components/settings/ModelMissingDialog.vue";
 
 /**
  * 智能搜索（FEAT-034）—— 半自然语言 + 多维筛选
@@ -113,6 +114,9 @@ interface SemanticStatus {
 
 const semStatus = ref<SemanticStatus | null>(null);
 const semRetrying = ref(false);
+/** FEAT-114：模型缺失弹窗（语义模型未下载时自动弹一次，之后由按钮手动打开） */
+const modelDialogOpen = ref(false);
+let autoPrompted = false;
 /** 退避到期后自动重探的定时器（离开页面必须清掉，否则切页后仍会触发） */
 let semRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -129,6 +133,12 @@ async function refreshSemanticStatus() {
   try {
     const s = await invoke<SemanticStatus>("semantic_status");
     semStatus.value = s;
+    // FEAT-114：确认「模型没下载」→ 自动弹一次下载窗（每个页面实例只弹一次，
+    // 用户关掉后不再打扰；后续可点提示条里的「下载模型」重新打开）
+    if (!s.ready && s.code === "model_missing" && !autoPrompted) {
+      autoPrompted = true;
+      modelDialogOpen.value = true;
+    }
     // 退避是**有时限**的：到期自动重探，服务恢复后无需用户任何操作即回归
     if (!s.ready && s.code === "backoff" && s.backoff_remaining_ms > 0) {
       semRetryTimer = setTimeout(() => {
@@ -484,7 +494,8 @@ function showTag(r: SmartHit): string {
     <p v-if="semStatus && !semStatus.ready" class="ss-warn">
       ⚠ {{ semStatus.message }}
       <span v-if="semStatus.code === 'model_missing'">
-        前往
+        <button class="ss-retry ss-download" @click="modelDialogOpen = true">⬇ 下载模型</button>
+        或前往
         <router-link to="/scan" class="ss-link">扫描中心 → ⚙ 性能设置</router-link>
       </span>
       <span v-else-if="semStatus.code === 'index_model_mismatch'">
@@ -563,6 +574,13 @@ function showTag(r: SmartHit): string {
       @close="lightboxOpen = false"
       @open-album="goAlbumFromLightbox"
     />
+
+    <!-- FEAT-114：模型缺失 → 当场下载（与设置页共用同一份列表） -->
+    <ModelMissingDialog
+      :visible="modelDialogOpen"
+      reason="semantic"
+      @close="modelDialogOpen = false; refreshSemanticStatus()"
+    />
   </div>
 </template>
 
@@ -618,6 +636,18 @@ function showTag(r: SmartHit): string {
 .ss-retry:disabled {
   opacity: 0.55;
   cursor: default;
+}
+/* FEAT-114：模型缺失时的主行动按钮（比「重试」更该被点） */
+.ss-download {
+  margin-left: 0;
+  margin-right: 6px;
+  font-weight: 600;
+  color: var(--color-on-primary, #2a1a08);
+  background: var(--color-primary, #e8a33d);
+  border-color: transparent;
+}
+.ss-download:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary, #e8a33d) 82%, #fff);
 }
 /* 页面壳（FEAT-106）：与顶栏、数据带同一套左右留白。
    旧版 max-width:1200 + padding:20 是居中缩窄的版式，与全宽玻璃顶栏对不齐。 */

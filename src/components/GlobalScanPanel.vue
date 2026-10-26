@@ -8,12 +8,13 @@
  * - 支持启动 / 停止；两级进度条（相册级总进度 + 当前相册照片级进度）
  * - 后台执行：任务状态存于 Pinia store，离开页面扫描不中断，回来恢复显示
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import type { GlobalScanItem, GlobalScanItemStatus } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
 import PerfSettingsDialog from "./settings/PerfSettingsDialog.vue";
+import ModelMissingDialog from "./settings/ModelMissingDialog.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import { SCAN_MODE_TITLE, SCAN_MODE_TIP } from "../utils/scanModeTip";
 import { scanItemNote, type ScanItemNote } from "../utils/scanItemNote";
@@ -30,6 +31,25 @@ const job = computed(() => contentStore.globalScanJob);
 const running = computed(() => job.value.running);
 const stopping = computed(() => job.value.stopping);
 const items = computed(() => job.value.items);
+
+/* FEAT-114：扫描报「缺少模型文件」时自动弹下载窗（人脸通道预检失败的原话见
+   vision::ensure_face_channel_ready）。同一段报错只弹一次，避免 watcher 反复触发。 */
+const modelDialogOpen = ref(false);
+const modelDialogReason = ref<"face" | "ocr">("face");
+const modelMissingFiles = ref<string[]>([]);
+let lastPromptKey = "";
+const MODEL_MISSING_RE = /缺少模型文件|模型未下载|模型缺失|模型文件不完整|未找到模型/;
+
+watch(
+  () => [job.value.error, ...items.value.map((i) => i.error)].join("\n"),
+  (text) => {
+    if (!text || !MODEL_MISSING_RE.test(text) || text === lastPromptKey) return;
+    lastPromptKey = text;
+    modelDialogReason.value = /paddleocr|ocr/i.test(text) ? "ocr" : "face";
+    modelMissingFiles.value = [...new Set(text.match(/[\w.-]+\.onnx/gi) ?? [])];
+    modelDialogOpen.value = true;
+  },
+);
 
 // ---- 相册勾选 ----
 const albums = computed(() => albumStore.albums);
@@ -396,6 +416,14 @@ onMounted(() => {
 
   <!-- FEAT-051：性能设置弹窗（⚙ 性能设置 / 📦 模型管理，与相册扫描共用） -->
   <PerfSettingsDialog v-model="perfOpen" />
+
+  <!-- FEAT-114：人脸/OCR 模型缺失时当场下载 -->
+  <ModelMissingDialog
+    :visible="modelDialogOpen"
+    :reason="modelDialogReason"
+    :missing-files="modelMissingFiles"
+    @close="modelDialogOpen = false"
+  />
 
   <!-- FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） -->
   <ConfirmDialog

@@ -19,119 +19,206 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-#[derive(Clone, PartialEq)]
-enum DlKind {
-    /// Chinese-CLIP fp16 ONNX（Xenova 转换，hf-mirror 直链）：
-    /// 单文件双塔（首次使用时服务端自动拆）+ tokenizer.json/vocab.txt，无导出步骤；
-    /// 固定 CPU 推理——DML 对 fp16 图存在算子级数值 bug（BUG-2026-0910-006）
-    ClipOnnx,
+/// 一个待下载文件（FEAT-114：从「单主文件」扩展为多文件）
+///
+/// 人脸/OCR 模型是**多个独立 onnx 落在模型根目录**（不是 CLIP 的 `<root>/onnx/` 结构），
+/// 因此下载单元必须下沉到「文件」而不是「模型」。
+struct DlFile {
+    /// HF 仓库内相对路径（repo 非空且 abs_url 为空时使用）
+    remote: &'static str,
+    /// 本地落位路径（相对 python/models）
+    local: &'static str,
+    /// 非 HF 的绝对 URL（modelscope 等）；Some 时忽略 repo/remote
+    abs_url: Option<&'static str>,
+    /// FEAT-061：体积下限（字节）——识别 HTML 错误页 / 半包文件
+    expect_min: u64,
 }
 
 /// 模型注册表白名单
 ///
-/// 目录约定（与 python/vcr/config.py::CLIP_MODEL_META 严格一致）：
+/// 目录约定（与 python/vcr/config.py 严格一致）：
 ///
-/// 档位清单 = b16（fp16，默认）+ b16-fp32（可走 DirectML）。
-/// L/14-336 已于 2026-09-21 实测否决并下架（低于 B/16 13pp 且慢 3.5~10×，
-/// 见 design/clip-accuracy-comparison.md），故不在下载表中。
-/// ```text
-/// python/models/<root>/onnx/<onnx>     ← 双塔整图（首次使用时服务端自动拆成 clip_vision/clip_text）
-/// python/models/<root>/tokenizer.json  ← 附带文件落「模型根目录」，不是 onnx/ 子目录
-/// python/models/<root>/vocab.txt
-/// ```
-/// ⚠️ tokenizer.json / vocab.txt 必须在 `<root>` 而不是 `<root>/onnx`：
-/// CLIP_TOKENIZER_JSON/CLIP_VOCAB 都按模型根目录解析（BUG-2026-0920-002）。
+/// - CLIP 两档：`chinese-clip*/onnx/<onnx>` + 根目录 `tokenizer.json` / `vocab.txt`
+///   （tokenizer 必须在模型根目录，见 BUG-2026-0920-002）
+/// - 人脸两档：`det_*.onnx` + `w600k_*.onnx` 直接落 `python/models/`
+/// - OCR：`paddleocr-det.onnx` 直接落 `python/models/`
+///
+/// CLIP 档位清单 = b16（fp16，默认）+ b16-fp32（可走 DirectML）。L/14-336 已于
+/// 2026-09-21 实测否决并下架，故不在下载表中。
 struct DlSpec {
     name: &'static str,
-    /// HF 仓库（hf-mirror 直链前缀）
+    /// UI 展示名（如「语义 · B/16 fp16（推荐）」）
+    label: &'static str,
+    /// UI 副标题：体积 / 用途 / 取舍
+    note: &'static str,
+    /// HF 仓库；空字符串 = 全部走文件的绝对 URL
     repo: &'static str,
-    /// 模型根目录（相对 python/models）
-    root: &'static str,
-    /// onnx 文件名（位于 <root>/onnx/ 下）：model_fp16.onnx / model.onnx
-    onnx: &'static str,
-    /// 附带文件（落 <root>/ 下）
-    extra: &'static [&'static str],
-    kind: DlKind,
+    files: &'static [DlFile],
     required: bool,
-    /// FEAT-061：下载文件体积下限（字节）——用于识别 HTML 错误页 / 半包文件
-    expect_min: u64,
+    /// 预计总字节（仅用于进度分母；实际以落盘为准）
+    expect_bytes: u64,
 }
 
 impl DlSpec {
-    /// 官方地址去掉 `{path}` 后剩下的前缀（即 `.../resolve/main/`）。
-    ///
-    /// **仅供测试**：只有 `clip_specs_are_self_consistent` 会拿它校验
-    /// `official() == base_url + repo_file`（BUG-2026-0921-001 回归防线）；
-    /// 生产路径一律走 `official()` / `mirror()`。
-    ///
-    /// 用 `allow(dead_code)` 而非 `#[cfg(test)]`：`kind` 字段目前只被本方法读取，
-    /// 一旦按测试裁剪，`kind` 立刻变成"从不读取"的新告警。保留编译让 `kind`
-    /// 仍有读取点，一次消掉两个告警而不引入第三个。
-    #[allow(dead_code)]
-    fn base_url(&self) -> String {
-        // hf-mirror 已是国内加速镜像（huggingface.co 直连超时），不再二次套 ghfast
-        // FEAT-061：不再硬编码单一 hf-mirror；取候选源模板的第一个前缀
-        //（其余候选由 download_first_wins 的 official/mirror 双路竞速覆盖）
-        match self.kind {
-            DlKind::ClipOnnx => source_prefix(self.repo),
-        }
+    fn main_file(&self) -> &'static DlFile {
+        &self.files[0]
     }
-    /// 整图**本地**相对路径（相对 python/models；存在即视为已下载）
+    /// 主文件**本地**相对路径（相对 python/models；存在即视为已下载）
     fn rel_file(&self) -> String {
-        format!("{}/onnx/{}", self.root, self.onnx)
+        self.main_file().local.to_string()
     }
-    /// 整图在**仓库内**的相对路径（用于拼下载 URL）—— 只有 `onnx/<file>`，
-    /// **绝不能带本地落位目录名**（root 是本机的目录约定，仓库里没有这一层）。
-    /// 这里曾误用 rel_file() 拼 URL，导致应用内点「下载」全部 404（BUG-2026-0921-001）：
-    ///   错：.../resolve/main/chinese-clip-l14/onnx/model_fp16.onnx → 404
-    ///   对：.../resolve/main/onnx/model_fp16.onnx                 → 200
+    /// 主文件在**仓库内**的相对路径（用于拼下载 URL），绝不含本地落位目录名。
+    /// 回归 BUG-2026-0921-001：曾误用 rel_file 拼 URL，应用内点下载全部 404。
+    #[cfg(test)]
     fn repo_file(&self) -> String {
-        format!("onnx/{}", self.onnx)
+        self.main_file().remote.to_string()
     }
-    /// 官方下载地址（仓库路径，不带本地目录）
+    /// 某文件的全部候选地址（HF 走内置多源；绝对 URL 单源）
+    fn file_urls(&self, f: &DlFile) -> Vec<String> {
+        if let Some(u) = f.abs_url {
+            return vec![u.to_string()];
+        }
+        source_templates()
+            .iter()
+            .map(|t| fill_source(t, self.repo, f.remote))
+            .collect()
+    }
+    /// 主文件官方地址（测试与自检用）
+    #[cfg(test)]
     fn official(&self) -> String {
-        let tpls = source_templates();
-        fill_source(&tpls[0], self.repo, &self.repo_file())
-    }
-    /// 镜像地址（单源直链：download_first_wins 对同 URL 自动降为单路）
-    fn mirror(&self) -> String {
-        let tpls = source_templates();
-        let idx = if tpls.len() > 1 { 1 } else { 0 };
-        fill_source(&tpls[idx], self.repo, &self.repo_file())
-    }
-    /// 下载临时文件的扩展名（导出环节依赖正确扩展名）
-    fn tmp_ext(&self) -> &'static str {
-        "onnx"
+        self.file_urls(self.main_file())[0].clone()
     }
 }
 
+/// 模型注册表（FEAT-114：补齐此前只能通过 model.zip 获取的人脸 / OCR 模型）
+///
+/// 所有源均为国内可直连：HF 走 hf-mirror / aifasthub 双路竞速，
+/// OCR 走阿里 ModelScope。体积取自各源 Content-Range 实测。
 fn specs() -> Vec<DlSpec> {
+    const CLIP_FP16: &[DlFile] = &[
+        DlFile {
+            remote: "onnx/model_fp16.onnx",
+            local: "chinese-clip/onnx/model_fp16.onnx",
+            abs_url: None,
+            expect_min: 100_000_000,
+        },
+        DlFile {
+            remote: "tokenizer.json",
+            local: "chinese-clip/tokenizer.json",
+            abs_url: None,
+            expect_min: 1_000,
+        },
+        DlFile {
+            remote: "vocab.txt",
+            local: "chinese-clip/vocab.txt",
+            abs_url: None,
+            expect_min: 100,
+        },
+    ];
+    const CLIP_FP32: &[DlFile] = &[
+        DlFile {
+            remote: "onnx/model.onnx",
+            local: "chinese-clip-fp32/onnx/model.onnx",
+            abs_url: None,
+            expect_min: 100_000_000,
+        },
+        DlFile {
+            remote: "tokenizer.json",
+            local: "chinese-clip-fp32/tokenizer.json",
+            abs_url: None,
+            expect_min: 1_000,
+        },
+        DlFile {
+            remote: "vocab.txt",
+            local: "chinese-clip-fp32/vocab.txt",
+            abs_url: None,
+            expect_min: 100,
+        },
+    ];
+    // buffalo_l 仓内是 detection/model.onnx + recognition/model.onnx，
+    // 落位时必须改回 insightface 的原始文件名（python 侧按 det_10g/w600k_r50 找）。
+    const FACE_PRECISE: &[DlFile] = &[
+        DlFile {
+            remote: "detection/model.onnx",
+            local: "det_10g.onnx",
+            abs_url: None,
+            expect_min: 8_000_000,
+        },
+        DlFile {
+            remote: "recognition/model.onnx",
+            local: "w600k_r50.onnx",
+            abs_url: None,
+            expect_min: 50_000_000,
+        },
+    ];
+    const FACE_LIGHT: &[DlFile] = &[
+        DlFile {
+            remote: "det_500m.onnx",
+            local: "det_500m.onnx",
+            abs_url: None,
+            expect_min: 1_000_000,
+        },
+        DlFile {
+            remote: "w600k_mbf.onnx",
+            local: "w600k_mbf.onnx",
+            abs_url: None,
+            expect_min: 5_000_000,
+        },
+    ];
+    const OCR: &[DlFile] = &[DlFile {
+        remote: "",
+        local: "paddleocr-det.onnx",
+        abs_url: Some(
+            "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx",
+        ),
+        expect_min: 3_000_000,
+    }];
+
     vec![
         DlSpec {
-            // 语义默认档 B/16 fp16（512 维，377MB，固定 CPU 推理）
             name: "chinese-clip",
+            label: "语义 · B/16 fp16（推荐）",
+            note: "377MB · 零样本检索默认档，固定 CPU 推理；核显本首选",
             repo: "Xenova/chinese-clip-vit-base-patch16",
-            root: "chinese-clip",
-            onnx: "model_fp16.onnx",
-            extra: &["tokenizer.json", "vocab.txt"],
-            kind: DlKind::ClipOnnx,
-            // FEAT-061：体积下限（fp16 档实测 ~377MB；取 100MB 兜底，容忍仓库更新）
-            expect_min: 100_000_000,
+            files: CLIP_FP16,
             required: false,
+            expect_bytes: 377_377_730 + 439_124 + 109_540,
         },
         DlSpec {
-            // B/16 fp32（512 维，719MB）：体积换精度 + 可走 DirectML（Phase 0 实测 37.9ms/张
-            // vs CPU 91ms）；fp16 在 DML 上有算子级数值 bug，故 GPU 只能在 fp32 档追求。
-            // 独立档位 = 独立 model id（向量空间与 fp16 微差，绝不混用）。
             name: "chinese-clip-fp32",
+            label: "语义 · B/16 fp32（GPU）",
+            note: "754MB · 体积换精度，可走 DirectML 加速",
             repo: "Xenova/chinese-clip-vit-base-patch16",
-            root: "chinese-clip-fp32",
-            onnx: "model.onnx",
-            extra: &["tokenizer.json", "vocab.txt"],
-            kind: DlKind::ClipOnnx,
-            // FEAT-061：体积下限（fp32 档实测 ~754MB；取 100MB 兜底）
-            expect_min: 100_000_000,
+            files: CLIP_FP32,
             required: false,
+            expect_bytes: 753_665_706 + 439_124 + 109_540,
+        },
+        DlSpec {
+            name: "face-precise",
+            label: "人脸 · 高精度",
+            note: "191MB · det_10g + w600k_r50，误检/错挂最少（推荐）",
+            repo: "immich-app/buffalo_l",
+            files: FACE_PRECISE,
+            required: false,
+            expect_bytes: 16_923_827 + 174_383_860,
+        },
+        DlSpec {
+            name: "face-light",
+            label: "人脸 · 轻量",
+            note: "16MB · det_500m + w600k_mbf，快 6~7 倍但误检更多",
+            repo: "WePrompt/buffalo_sc",
+            files: FACE_LIGHT,
+            required: false,
+            expect_bytes: 2_524_817 + 13_616_099,
+        },
+        DlSpec {
+            name: "ocr",
+            label: "文字 · OCR 检测",
+            note: "4.7MB · PaddleOCR v4 det（ModelScope 国内源）",
+            repo: "",
+            files: OCR,
+            required: false,
+            expect_bytes: 4_745_517,
         },
     ]
 }
@@ -141,7 +228,14 @@ fn specs() -> Vec<DlSpec> {
 #[serde(rename_all = "camelCase")]
 pub struct ModelDlStatus {
     pub name: String,
+    /// UI 展示名（FEAT-114）
+    pub label: String,
+    /// UI 副标题：体积 / 用途 / 取舍
+    pub note: String,
+    /// 主文件本地相对路径（兼容旧字段）
     pub file: String,
+    /// 该模型需要的全部文件（相对 python/models；下载弹窗据此列出缺口）
+    pub files: Vec<String>,
     pub required: bool,
     pub running: bool,
     pub done: bool,
@@ -149,6 +243,25 @@ pub struct ModelDlStatus {
     pub bytes: u64,
     pub total: u64,
     pub error: Option<String>,
+}
+
+impl ModelDlStatus {
+    fn skeleton(spec: &DlSpec) -> Self {
+        Self {
+            name: spec.name.to_string(),
+            label: spec.label.to_string(),
+            note: spec.note.to_string(),
+            file: spec.rel_file(),
+            files: spec.files.iter().map(|f| f.local.to_string()).collect(),
+            required: spec.required,
+            running: false,
+            done: false,
+            stage: "idle".into(),
+            bytes: 0,
+            total: spec.expect_bytes,
+            error: None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -200,9 +313,12 @@ pub async fn start(app: &AppHandle, name: &str) -> Result<(), String> {
         return Err(format!("未知模型: {name}"));
     };
     let dir = models_dir();
-    let rel = spec.rel_file();
-    if dir.join(&rel).is_file() {
-        return Err(format!("{rel} 已存在"));
+    if spec
+        .files
+        .iter()
+        .all(|f| dir.join(f.local).is_file())
+    {
+        return Err(format!("{} 已全部存在", spec.label));
     }
     {
         let mut st = STORE.lock().map_err(|e| e.to_string())?;
@@ -214,15 +330,9 @@ pub async fn start(app: &AppHandle, name: &str) -> Result<(), String> {
     set_status(
         app,
         ModelDlStatus {
-            name: name.to_string(),
-            file: spec.rel_file(),
-            required: spec.required,
             running: true,
-            done: false,
             stage: "downloading".into(),
-            bytes: 0,
-            total: 0,
-            error: None,
+            ..ModelDlStatus::skeleton(&spec)
         },
     );
 
@@ -275,157 +385,137 @@ pub fn list() -> Vec<ModelDlStatus> {
     specs()
         .into_iter()
         .map(|s| {
-            let exists = dir.join(s.rel_file()).is_file();
+            let exists = s.files.iter().all(|f| dir.join(f.local).is_file());
             st.status.get(s.name).cloned().unwrap_or_else(|| ModelDlStatus {
-                name: s.name.to_string(),
-                file: s.rel_file(),
-                required: s.required,
-                running: false,
                 done: exists,
                 stage: if exists { "done".into() } else { "idle".into() },
-                bytes: 0,
-                total: 0,
-                error: None,
+                total: s.expect_bytes,
+                ..ModelDlStatus::skeleton(&s)
             })
         })
         .collect()
 }
 
-/// 一次完整流程：下载主文件 → 落位 → 拉附带文件（tokenizer/vocab）
+/// 一次完整流程：逐个文件下载 → 校验 → 落位（已存在的文件跳过，支持断点续传）
 async fn run(app: &AppHandle, spec: &DlSpec) -> Result<(), String> {
     let dir = models_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建模型目录失败: {e}"))?;
 
-    // 模型根目录：tokenizer.json / vocab.txt 落这里（不是 onnx/ 子目录）
-    let final_dir = dir.join(spec.root);
-    let onnx_dir = final_dir.join("onnx");
-    let final_path = onnx_dir.join(spec.onnx);
-    std::fs::create_dir_all(&onnx_dir).map_err(|e| format!("创建语义模型目录失败: {e}"))?;
-
-    // 1. 主文件（单源直链；download_first_wins 对同 URL 自动降为单路）
-    emit_status(app, spec, "downloading", 0, 0, false);
-    let winner = download_first_wins(app, spec, &dir).await?;
-    // FEAT-061：落地前做基本校验（服务端可能返回 HTML 错误页 / 半包文件）
-    if let Err(e) = validate_model_file(&winner, spec.expect_min) {
-        let _ = std::fs::remove_file(&winner);
-        // 坏文件对应的分片不能留（否则下次续传会接着拼坏字节）
-        cleanup_partials(&dir, spec.name);
-        return Err(e);
-    }
-    std::fs::rename(&winner, &final_path).map_err(|e| format!("落位失败: {e}"))?;
-    // FEAT-062：落位成功后清掉残留分片与元数据
-    cleanup_partials(&dir, spec.name);
-
-    // 2. 附带文件（tokenizer.json / vocab.txt）
-    let client = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(Duration::from_secs(600))
-        .read_timeout(READ_TIMEOUT)
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-    for f in spec.extra {
-        let dest = final_dir.join(f);
-        if dest.is_file() {
-            continue;
-        }
-        // 小文件同样受 hf-mirror 瞬时 403 影响；整图已下完却因 tokenizer 失败而整体报错
-        // 代价太大（但 tokenizer 缺失会让 CLIP 直接不可用），故同样做有限重试。
-        let mut last = String::new();
-        for attempt in 0..3u32 {
-            if attempt > 0 {
-                tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
-            }
-            // FEAT-061：附带文件同样按源轮换（tokenizer.json / vocab.txt 缺失会让 CLIP 直接不可用）
-            let tpls = source_templates();
-            let tpl = tpls[(attempt as usize) % tpls.len()].clone();
-            match download_one(
-                app.clone(),
-                spec.name.to_string(),
-                fill_source(&tpl, spec.repo, f),
-                dest.clone(),
-                client.clone(),
-            )
-            .await
-            {
-                Ok(()) => {
-                    last.clear();
-                    break;
-                }
-                Err(e) => last = format!("{e} @ {tpl}"),
-            }
-        }
-        if !last.is_empty() {
-            return Err(format!("{f} 下载失败: {last}"));
-        }
-    }
-
-    // FEAT-SEM：模型就位后立即解除语义退避（下载完即可用，不必等 TTL）
-    crate::vision::clear_semantic_down();
-    // 首次使用前需拆双塔：服务端自动拆（幂等），此处不阻塞下载完成
-    Ok(())
-}
-
-fn emit_status(app: &AppHandle, spec: &DlSpec, stage: &str, bytes: u64, total: u64, done: bool) {
-    set_status(
-        app,
-        ModelDlStatus {
-            name: spec.name.to_string(),
-            file: spec.rel_file(),
-            required: spec.required,
-            running: !done,
-            done,
-            stage: stage.into(),
-            bytes,
-            total,
-            error: None,
-        },
-    );
-}
-
-/// 两路并行下载，先完成者赢；返回赢家临时文件路径（带正确扩展名）
-async fn download_first_wins(app: &AppHandle, spec: &DlSpec, dir: &Path) -> Result<PathBuf, String> {
     let client = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(3600))
         .read_timeout(READ_TIMEOUT)
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-    let d0 = dir.join(format!(".dl_{}_0.{}", spec.name, spec.tmp_ext()));
-    let d1 = dir.join(format!(".dl_{}_1.{}", spec.name, spec.tmp_ext()));
-    let official = spec.official();
-    let mirror = spec.mirror();
-    let name = spec.name.to_string();
+
+    let mut completed = 0u64;
+    for (idx, file) in spec.files.iter().enumerate() {
+        let dest = dir.join(file.local);
+        if dest.is_file() {
+            completed += std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建模型目录失败: {e}"))?;
+        }
+
+        emit_status(app, spec, "downloading", completed, spec.expect_bytes, false);
+        let winner =
+            download_first_wins(app, spec, idx, file, &dir, &client, completed).await?;
+        // FEAT-061：落地前做基本校验（服务端可能返回 HTML 错误页 / 半包文件）
+        if let Err(e) = validate_model_file(&winner, file.expect_min) {
+            let _ = std::fs::remove_file(&winner);
+            // 坏文件对应的分片不能留（否则下次续传会接着拼坏字节）
+            cleanup_partials(&dir, &part_key(spec.name, idx));
+            return Err(e);
+        }
+        std::fs::rename(&winner, &dest).map_err(|e| format!("落位失败: {e}"))?;
+        // FEAT-062：落位成功后清掉残留分片与元数据
+        cleanup_partials(&dir, &part_key(spec.name, idx));
+        completed += std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+    }
+
+    emit_status(app, spec, "downloading", completed, spec.expect_bytes, false);
+
+    // FEAT-SEM：模型就位后立即解除语义退避（下载完即可用，不必等 TTL）
+    crate::vision::clear_semantic_down();
+    // CLIP 首次使用前需拆双塔：服务端自动拆（幂等），此处不阻塞下载完成
+    Ok(())
+}
+
+/// 分片文件名的模型键（每个文件独立续传/取消/清理）
+fn part_key(name: &str, idx: usize) -> String {
+    format!("{name}_{idx}")
+}
+
+fn emit_status(app: &AppHandle, spec: &DlSpec, stage: &str, bytes: u64, total: u64, done: bool) {
+    set_status(
+        app,
+        ModelDlStatus {
+            running: !done,
+            done,
+            stage: stage.into(),
+            bytes,
+            total,
+            error: None,
+            ..ModelDlStatus::skeleton(spec)
+        },
+    );
+}
+
+/// 两路并行下载，先完成者赢；返回赢家临时文件路径（带正确扩展名）
+async fn download_first_wins(
+    app: &AppHandle,
+    spec: &DlSpec,
+    idx: usize,
+    file: &DlFile,
+    dir: &Path,
+    client: &reqwest::Client,
+    base_bytes: u64,
+) -> Result<PathBuf, String> {
+    let key = part_key(spec.name, idx);
+    let ext = Path::new(file.local)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("bin");
+    let d0 = dir.join(format!(".dl_{key}_0.{ext}"));
+    let d1 = dir.join(format!(".dl_{key}_1.{ext}"));
+    let urls = spec.file_urls(file);
+    let url0 = urls[0].clone();
+    let url1 = urls.get(1).cloned().unwrap_or_else(|| url0.clone());
 
     // hf-mirror 对同一来源的密集请求会瞬时 403（实测：连续 HEAD/Range/GET 后 403，稍候恢复），
-    // 而这里是 400MB~800MB 的大文件 —— 失败即白下，故加有限重试（3 次，退避 2s/4s）。
+    // 而这里是 16MB~800MB 的大文件 —— 失败即白下，故加有限重试（3 次，退避 2s/4s）。
     let mut last_err = String::from("下载失败");
     for attempt in 0..3u32 {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
             logger_info(&format!(
-                "[model_dl] 重试第 {attempt} 次下载 {}（上次：{last_err}）",
-                spec.name
+                "[model_dl] 重试第 {attempt} 次下载 {}（{}，上次：{last_err}）",
+                spec.name, file.local
             ));
         }
         let f0 = download_one(
             app.clone(),
-            name.clone(),
-            official.clone(),
+            spec,
+            base_bytes,
+            url0.clone(),
             d0.clone(),
-            client.clone(),
-        );
-        let f1 = download_one(
-            app.clone(),
-            name.clone(),
-            mirror.clone(),
-            d1.clone(),
             client.clone(),
         );
         // 先完成者赢：tokio::select 返回第一个完成的 future，对位的另一路被取消；
         // 单源直链（官方 == 镜像）降为单路，避免同 URL 双倍流量
-        let r = if official == mirror {
+        let r = if url0 == url1 {
             f0.await.map(|_| 0u8)
         } else {
+            let f1 = download_one(
+                app.clone(),
+                spec,
+                base_bytes,
+                url1.clone(),
+                d1.clone(),
+                client.clone(),
+            );
             tokio::select! {
                 r0 = f0 => r0.map(|_| 0u8),
                 r1 = f1 => r1.map(|_| 1u8),
@@ -444,7 +534,7 @@ async fn download_first_wins(app: &AppHandle, spec: &DlSpec, dir: &Path) -> Resu
                 last_err = e;
                 // FEAT-062：失败/中断不再删分片——本轮重试与下次点击都能续传；
                 // 真正的坏文件（错误页/半包）由 validate_model_file 落地前拦截并清理。
-                if is_cancelled(&name) {
+                if is_cancelled(spec.name) {
                     return Err("已取消（已保留断点，可再次点击下载续传）".into());
                 }
             }
@@ -456,7 +546,8 @@ async fn download_first_wins(app: &AppHandle, spec: &DlSpec, dir: &Path) -> Resu
 /// 单路流式下载（带进度 + 可取消）
 async fn download_one(
     app: AppHandle,
-    name: String,
+    spec: &DlSpec,
+    base_bytes: u64,
     url: String,
     dest: PathBuf,
     client: reqwest::Client,
@@ -510,10 +601,10 @@ async fn download_one(
     };
     write_part_meta(&dest, &url, total);
     // 起手先报一次进度：续传时 UI 立刻能看到「从 X MB 继续」
-    emit_progress(&app, &name, bytes, total);
+    emit_progress(&app, spec, base_bytes + bytes);
     let mut last_emit = Instant::now();
     while let Some(chunk) = stream.next().await {
-        if is_cancelled(&name) {
+        if is_cancelled(spec.name) {
             // FEAT-062：取消保留已下分片（下次点击「下载」从断点续传）
             let _ = f.sync_all();
             return Err("已取消（已保留断点，可再次点击下载续传）".into());
@@ -523,7 +614,7 @@ async fn download_one(
         bytes += c.len() as u64;
         if last_emit.elapsed() >= Duration::from_millis(150) {
             last_emit = Instant::now();
-            emit_progress(&app, &name, bytes, total);
+            emit_progress(&app, spec, base_bytes + bytes);
         }
     }
     let _ = f.sync_all();
@@ -561,11 +652,8 @@ fn fill_source(tpl: &str, repo: &str, path: &str) -> String {
     tpl.replace("{repo}", repo).replace("{path}", path)
 }
 
-/// 取模板前缀（供 `DlSpec::base_url`：去掉 {path} 尾巴，保留 resolve/main/）
-///
-/// 与 `base_url` 同为测试专用（生产只用 `official()` / `mirror()`），
-/// 同样用 `allow(dead_code)` 而非 `cfg(test)`，理由见 `base_url` 注释。
-#[allow(dead_code)]
+/// 取模板前缀（供测试校验 URL 形状；生产只用 `file_urls()`）
+#[cfg(test)]
 fn source_prefix(repo: &str) -> String {
     let tpls = source_templates();
     fill_source(&tpls[0], repo, "")
@@ -691,18 +779,28 @@ pub async fn probe_sources(name: &str) -> Result<Vec<SourceProbe>, String> {
     let Some(spec) = specs().into_iter().find(|s| s.name == name) else {
         return Err(format!("未知模型: {name}"));
     };
-    let path = spec.repo_file();
+    let file = spec.main_file();
     let client = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(PROBE_TIMEOUT)
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-    let custom = load_custom_sources();
+    // 绝对 URL（ModelScope 等）没有镜像模板，单源探测；HF 走内置 + 自定义模板
+    let probes: Vec<(String, bool)> = if file.abs_url.is_some() {
+        vec![(file.abs_url.unwrap().to_string(), true)]
+    } else {
+        let custom = load_custom_sources();
+        source_templates()
+            .into_iter()
+            .map(|tpl| {
+                let builtin = !custom.contains(&tpl);
+                (fill_source(&tpl, spec.repo, file.remote), builtin)
+            })
+            .collect()
+    };
     let mut out = Vec::new();
-    for tpl in source_templates() {
-        let url = fill_source(&tpl, spec.repo, &path);
+    for (url, builtin) in probes {
         let host = url_host(&url);
-        let builtin = !custom.contains(&tpl);
         let started = Instant::now();
         match client.get(&url).header("Range", "bytes=0-1").send().await {
             Ok(resp) => {
@@ -790,19 +888,14 @@ fn parse_content_range_total(v: &str) -> Option<u64> {
 }
 
 /// 统一的下载进度上报（续传起点与流式写入共用）
-fn emit_progress(app: &AppHandle, name: &str, bytes: u64, total: u64) {
+fn emit_progress(app: &AppHandle, spec: &DlSpec, bytes: u64) {
     let _ = app.emit(
         "model-dl-progress",
         &ModelDlStatus {
-            name: name.to_string(),
-            file: String::new(),
-            required: false,
             running: true,
-            done: false,
             stage: "downloading".into(),
             bytes,
-            total,
-            error: None,
+            ..ModelDlStatus::skeleton(spec)
         },
     );
 }
@@ -895,51 +988,52 @@ mod tests {
             .collect()
     }
 
-    /// 下载落位必须与 python/vcr/config.py::CLIP_MODEL_META 严格一致：
-    /// 三种档位（b16 / b16-fp32 / l14）×（模型根目录 + onnx 文件名）一一对应，
-    /// 且 tokenizer.json / vocab.txt 落在**模型根目录**（不是 onnx/ 子目录，
-    /// 见 BUG-2026-0920-002）。
-    #[test]
-    fn clip_specs_match_python_tier_table() {
+    fn config_py() -> String {
         let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
             .join("python")
             .join("vcr")
             .join("config.py");
-        let text = std::fs::read_to_string(&config_path).expect("应能读取 python/vcr/config.py");
+        std::fs::read_to_string(&config_path).expect("应能读取 python/vcr/config.py")
+    }
 
+    /// CLIP 落位必须与 python/vcr/config.py::CLIP_MODEL_META 严格一致：
+    /// （模型根目录 + onnx 文件名）一一对应，且 tokenizer.json / vocab.txt 落在
+    /// **模型根目录**（不是 onnx/ 子目录，见 BUG-2026-0920-002）。
+    #[test]
+    fn clip_specs_match_python_tier_table() {
+        let text = config_py();
         let py_dirs = quoted_values(&text, "dir");
         let py_onnx = quoted_values(&text, "onnx");
-        // 档位数由 Python 档位表决定（不硬编码：L/14 已实测否决下架，未来档位还会增减）
         assert!(!py_dirs.is_empty(), "档位表不能为空");
         assert_eq!(py_dirs.len(), py_onnx.len(), "每档必须声明 onnx 文件名：{py_onnx:?}");
 
         let py_repos = quoted_values(&text, "repo");
-        let specs = specs();
-        assert_eq!(specs.len(), py_dirs.len(), "Rust 下载表与 Python 档位表数量必须一致");
-        // 仓库名也必须一致（URL 的另一半），且三个 onnx 文件名对应的 URL 均为可下载形态
-        for spec in &specs {
+        let all = specs();
+        let clip: Vec<&DlSpec> = all
+            .iter()
+            .filter(|s| s.name.starts_with("chinese-clip"))
+            .collect();
+        assert_eq!(clip.len(), py_dirs.len(), "Rust 下载表与 Python 档位表数量必须一致");
+        for spec in &clip {
             assert!(
                 py_repos.contains(&spec.repo.to_string()),
                 "Rust 下载表的仓库 {} 不在 Python 档位表中",
                 spec.repo
             );
-            assert!(spec.official().ends_with(&format!("/onnx/{}", spec.onnx)));
         }
         for (dir, onnx) in py_dirs.iter().zip(py_onnx.iter()) {
-            let hit = specs
+            let hit = clip
                 .iter()
-                .find(|s| s.root == dir)
-                .unwrap_or_else(|| panic!("Rust 下载表缺少档位目录 {dir}"));
-            assert_eq!(&hit.onnx, onnx, "档位 {dir} 的 onnx 文件名不一致");
-            assert_eq!(hit.rel_file(), format!("{dir}/onnx/{onnx}"));
+                .find(|s| s.main_file().local == format!("{dir}/onnx/{onnx}"))
+                .unwrap_or_else(|| panic!("Rust 下载表缺少档位 {dir}/onnx/{onnx}"));
             // 下载 URL 必须是**仓库内**路径：onnx/<file>（不带本地落位目录名）
             // —— 回归 BUG-2026-0921-001：应用内点下载 404
             assert_eq!(hit.repo_file(), format!("onnx/{onnx}"));
             assert_eq!(
                 hit.official(),
-                format!("{}{}", hit.base_url(), format!("onnx/{onnx}")),
+                format!("{}{}", source_prefix(hit.repo), format!("onnx/{onnx}")),
                 "下载 URL 必须按仓库路径拼接"
             );
             assert!(
@@ -947,71 +1041,108 @@ mod tests {
                 "下载 URL 不得包含本地落位目录名 {dir}：{}",
                 hit.official()
             );
-            // 附带文件必须落模型根目录（修复前落在 onnx/ 子目录 → tokenizer 找不到）
+            // tokenizer / vocab 必须落模型根目录（修复前落在 onnx/ 子目录 → 找不到）
+            let locals: Vec<&str> = hit.files.iter().map(|f| f.local).collect();
+            let tok = format!("{dir}/tokenizer.json");
+            let voc = format!("{dir}/vocab.txt");
             assert!(
-                hit.extra.contains(&"tokenizer.json") && hit.extra.contains(&"vocab.txt"),
-                "档位 {dir} 必须附带 tokenizer.json + vocab.txt"
+                locals.contains(&tok.as_str()) && locals.contains(&voc.as_str()),
+                "档位 {dir} 的 tokenizer/vocab 必须落模型根目录：{locals:?}"
             );
         }
     }
 
-    /// 下载条目自洽性：命名唯一、目录唯一、URL 指向同一仓库内路径、内置源为多镜像。
-    ///
-    /// 注意：FEAT-061 起内置源从一个（hf-mirror）扩为多个，`official()` / `mirror()`
-    /// 分别取候选列表的第 1 / 第 2 个 —— 因此**不再断言两者相等**
-    /// （旧断言「hf-mirror 为单源直链，镜像应等于官方地址」已随单源下线而过期）。
+    /// 人脸 / OCR 落位必须与 python/vcr/config.py 的档位表一致：
+    /// 文件名错了会「下载成功但通道仍显示未下载」。
     #[test]
-    fn clip_specs_are_self_consistent() {
+    fn face_and_ocr_specs_match_python_config() {
+        let text = config_py();
+        let mut expect: Vec<String> = quoted_values(&text, "det");
+        expect.extend(quoted_values(&text, "rec"));
+        assert!(text.contains("OCR_MODEL = \"paddleocr-det.onnx\""));
+        expect.push("paddleocr-det.onnx".into());
+
+        let all = specs();
+        let locals: Vec<String> = all
+            .iter()
+            .flat_map(|s| s.files.iter().map(|f| f.local.to_string()))
+            .collect();
+        for name in expect {
+            assert!(
+                locals.iter().any(|l| l == &name),
+                "Rust 下载表缺少本地文件 {name}；现有 {locals:?}"
+            );
+        }
+    }
+
+    /// 下载条目自洽性：命名/落位唯一、HF 文件走多镜像、绝对 URL 单源、体积下限合理。
+    #[test]
+    fn download_specs_are_self_consistent() {
         let all = specs();
         let names: Vec<&str> = all.iter().map(|s| s.name).collect();
-        let roots: Vec<&str> = all.iter().map(|s| s.root).collect();
-        for (label, list) in [("name", &names), ("root", &roots)] {
-            let mut uniq = list.clone();
-            uniq.sort_unstable();
-            uniq.dedup();
-            assert_eq!(uniq.len(), list.len(), "{label} 必须唯一：{list:?}");
-        }
-        // 已知档位必须都在表里（按目录判定，避免把"名字"当契约）
-        for dir in ["chinese-clip", "chinese-clip-fp32"] {
-            assert!(roots.contains(&dir), "缺少档位目录 {dir}；现有 {roots:?}");
-        }
-        // 内置源：至少两个且互不重复（FEAT-061 明确下线了单源方案）
-        assert!(
-            BUILTIN_SOURCES.len() >= 2,
-            "内置源应至少两个，实际 {}",
-            BUILTIN_SOURCES.len()
-        );
-        let mut uniq_src: Vec<&str> = BUILTIN_SOURCES.to_vec();
-        uniq_src.sort_unstable();
-        uniq_src.dedup();
-        assert_eq!(
-            uniq_src.len(),
-            BUILTIN_SOURCES.len(),
-            "内置源模板不得重复：{:?}",
-            BUILTIN_SOURCES
-        );
+        let mut uniq_names = names.clone();
+        uniq_names.sort_unstable();
+        uniq_names.dedup();
+        assert_eq!(uniq_names.len(), names.len(), "name 必须唯一：{names:?}");
+
+        let mut locals: Vec<&str> = all
+            .iter()
+            .flat_map(|s| s.files.iter().map(|f| f.local))
+            .collect();
+        let total = locals.len();
+        locals.sort_unstable();
+        locals.dedup();
+        assert_eq!(locals.len(), total, "本地落位路径不得重复：{locals:?}");
+
         for spec in &all {
-            // 无论走哪个源，都必须指向同一仓库内路径（否则下错文件）
-            for (label, url) in [("official", spec.official()), ("mirror", spec.mirror())] {
-                assert!(url.starts_with("http"), "{label} 应为 http 地址：{url}");
+            assert!(!spec.label.is_empty() && !spec.note.is_empty(), "{} 缺少 UI 文案", spec.name);
+            assert!(spec.expect_bytes > 0, "{} 缺少预计体积", spec.name);
+            for file in spec.files {
+                assert!(file.expect_min > 0, "{} 的体积下限必须为正", spec.name);
                 assert!(
-                    url.contains(&spec.repo_file()),
-                    "{label} 应包含仓库内相对路径 {}：{url}",
-                    spec.repo_file()
+                    file.expect_min <= spec.expect_bytes,
+                    "{} 的单文件下限不应超过模型总体积",
+                    spec.name
                 );
-                assert!(
-                    !url.contains(&format!("/{}/", spec.root)),
-                    "{label} 不得包含本地落位目录名 {}：{url}",
-                    spec.root
-                );
+                let urls = spec.file_urls(file);
+                assert!(!urls.is_empty(), "{} 没有可用下载地址", spec.name);
+                for url in &urls {
+                    assert!(url.starts_with("http"), "地址必须是 http：{url}");
+                }
+                match file.abs_url {
+                    Some(u) => {
+                        assert_eq!(urls.len(), 1, "绝对 URL 不应再套镜像模板：{u}");
+                        assert_eq!(urls[0], u);
+                    }
+                    None => {
+                        assert!(spec.repo.contains('/'), "{} 缺少 HF 仓库名", spec.name);
+                        // FEAT-061：HF 源至少两个，且都指向同一仓库内路径
+                        assert!(urls.len() >= 2, "HF 文件应至少两个镜像源：{urls:?}");
+                        for url in &urls {
+                            assert!(
+                                url.contains(file.remote),
+                                "URL 应包含仓库内路径 {}：{url}",
+                                file.remote
+                            );
+                        }
+                        assert_ne!(urls[0], urls[1], "多源下两个地址不应相同");
+                    }
+                }
             }
-            // 多源候选下 official / mirror 不应相同
-            assert_ne!(
-                spec.official(),
-                spec.mirror(),
-                "多源下 official 与 mirror 不应相同（{}）",
-                spec.name
-            );
+        }
+    }
+
+    /// 内置源：至少两个、互不重复，且都是国内可连的镜像模板。
+    #[test]
+    fn builtin_sources_are_sane() {
+        assert!(BUILTIN_SOURCES.len() >= 2);
+        let mut uniq: Vec<&str> = BUILTIN_SOURCES.to_vec();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq.len(), BUILTIN_SOURCES.len(), "内置源模板不得重复");
+        for tpl in BUILTIN_SOURCES {
+            assert!(tpl.starts_with("https://"), "内置源必须是 https：{tpl}");
+            assert!(tpl.contains("{repo}") && tpl.contains("{path}"), "模板缺占位符：{tpl}");
         }
     }
 }

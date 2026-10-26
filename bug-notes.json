@@ -4456,7 +4456,35 @@
         "强制完整光栅化的手段（截图）代价本身就和被测物同量级，信噪比不足",
         "当一个指标连续多版都给出差不多相同的数时，先怀疑指标本身不敏感，而不是得出结论"
       ]
+    },
+    {
+      "id": "BUG-2026-1026-001",
+      "date": "2026-10-26",
+      "status": "resolved",
+      "title": "CLIP 模型缺失时按 1s/2s/4s 反复「未就绪」重试，白等 7 秒并刷屏日志",
+      "module": "src-tauri/src/vision.rs、src-tauri/src/content.rs、src/views/SmartSearch.vue",
+      "symptom": [
+        "日志：`[embed] embed_text_batch HTTP 503` → `CLIP 未就绪: 整图缺失: .../python/models/chinese-clip/onnx/model_fp16.onnx`",
+        "随后按 1000ms / 2000ms / 4000ms 连续重试，整个 warmup 耗时约 7150ms 才失败",
+        "每次进入搜索页或重试都重复一遍；用户看到的是「一直转圈 + 一直未就绪」，却没有任何下载入口"
+      ],
+      "root_cause": {
+        "summary": "is_not_ready 把「HTTP 503」一律视为可自愈的「服务未就绪」，而 Python 侧在模型文件缺失时同样返回 503；错误体里的「整图缺失」被后置的 503 规则吞掉，于是确定性失败进入了 1s/2s/4s 退避重试。semantic_status 又把 backoff 判断放在 model_missing 之前，导致即便前端知道缺模型也要等退避窗口结束才提示。",
+        "why_missed": "503 在 CLIP 冷加载时确实常见，最初为修「重启后首次搜索报未就绪」把 503 整体归为可重试；没有把「加载中」与「文件不存在」两种 503 分开。"
+      },
+      "fix": [
+        "新增 is_model_missing_detail：错误体含「整图缺失 / 模型缺失 / 文件缺失 / 未下载 / 未找到模型 / no such file / not found / missing model / model file / does not exist」时，is_not_ready 直接返回 false",
+        "post_json_with_retry 因此立即返回确定性错误（仍进入退避，避免每次搜索都去撞），不再空转 7 秒",
+        "semantic_status 把 clip_model_present 判断提到 backoff 之前，返回 code=model_missing",
+        "clip_model_present 改为 fp16 / fp32 任一档 + tokenizer 就绪即可，修复只下 fp32 被误判未下载",
+        "SmartSearch 检测到 model_missing 自动弹 ModelMissingDialog；扫描链路把人脸/OCR 缺模型错误也接到同一弹窗"
+      ],
+      "lessons": [
+        "同一状态码可能对应完全不同的可恢复性：判断重试前先读错误体，别只看 503。",
+        "「退避」只对会自愈的失败有意义；文件缺失应该直接转成用户可执行的下一步（下载），而不是等待。",
+        "排查这类日志先确认实际在跑的后端来自哪个目录 —— 旧进程占用固定端口时，新版前端会连到旧模型目录。"
+      ]
     }
   ],
-  "updated": "2026-10-25T01:10:00+08:00"
+  "updated": "2026-10-26T12:00:00+08:00"
 }

@@ -4219,7 +4219,76 @@
       ],
       "created_at": "2026-10-25T00:00:00+08:00",
       "updated_at": "2026-10-25T00:00:00+08:00"
+    },
+    {
+      "id": "FEAT-114",
+      "name": "模型下载全覆盖 + 缺模型弹窗 + 材质归位 + 取色器历史色限 5 可删",
+      "module": "src-tauri/src/model_dl.rs、src-tauri/src/vision.rs、src/components/settings/ModelDownloadRows.vue、src/components/settings/ModelMissingDialog.vue、src/components/ui/PmColorPicker.vue、src/components/ThemeDialog.vue",
+      "status": "done",
+      "purpose": "用户三条反馈：① 预定义效果里的「仪表墙材质」应去掉，材质归自定义页；② CLIP 模型未下载时后台反复「未就绪」重试 1s/2s/4s，且应用内只能下载部分模型 —— 要求检测到缺失就弹窗、每个模型都有国内下载地址，并给出 GitHub model.zip 兜底；③ 主题取色弹窗的历史颜色越选越长，要求默认最多 5 个、悬停出现 × 可删除。",
+      "implementation": {
+        "① 材质归位": "删除 ThemeDialog 预定义页的 pm-mode-row（theme.widgetMaterial），把「仪表墙 液态玻璃/普通材质」移进自定义页「卡片材质」下方并补一条作用域说明。两个材质维度（全站卡片 theme.material / 仪表墙 theme.widgetMaterial）仍独立，不会随预设一起换。",
+        "② 缺失模型不再空转": "vision::is_model_missing_detail 先匹配「整图缺失 / 模型缺失 / 文件缺失 / 未下载 / no such file / not found」等确定性标记，命中则 is_not_ready=false，post_json_with_retry 立即返回而不是 1s/2s/4s 三次重试；semantic_status 把 model_missing 判断提到 backoff 之前（缺文件不会自愈，退避期也要如实告知）。clip_model_present 改为 fp16 / fp32 任一档就绪即可，避免只下 fp32 被误判未下载。",
+        "③ 下载表扩全": "DlSpec 从「单主文件 + extra」泛化为 files: [{remote, local, abs_url, expect_min}]，支持多文件与绝对 URL；新增 face-precise（immich-app/buffalo_l：detection/model.onnx→det_10g.onnx、recognition/model.onnx→w600k_r50.onnx）、face-light（WePrompt/buffalo_sc：det_500m.onnx、w600k_mbf.onnx）、ocr（ModelScope RapidOCR ch_PP-OCRv4_det_mobile→paddleocr-det.onnx）。HF 文件走 hf-mirror / aifasthub 双路竞速，OCR 走 ModelScope；逐文件续传/校验/落位，进度按模型总体积聚合。",
+        "④ 缺模型弹窗": "新增 ModelDownloadRows（设置页与弹窗共用的下载列表：展示 label/note、已下载/下载中/失败重试、一键下载全部缺失）与 ModelMissingDialog。SmartSearch 在 semantic_status=model_missing 时自动弹一次（之后可点提示条「⬇ 下载模型」重开）；ScanPanel / GlobalScanPanel 听到「缺少模型文件」时按人脸或 OCR 分类弹出，并从报错里提取 .onnx 文件名展示。弹窗与设置页都提供 model.zip（v0.4.2，528.9MB）跳转与解压路径说明。",
+        "⑤ 取色器": "新增 PmColorPicker 替代全部 <input type=\"color\">（组件色调 / 纯色背景 / 渐变三色标）。色板 8 列 × 5 行 + 最近使用；localStorage pms.colorPicker.recent 去重、上限 5、最新在前；每个最近色块悬停/聚焦时右上角出现 ×，点击即删除；点「选择」才提交，Esc 只关取色器不连带关主题弹窗。"
+      },
+      "highlights": [
+        "系统/Chromium 取色弹窗的历史色由浏览器自己维护，应用无法限制数量或删除 —— 要满足「最多 5 个 + 可删」只能自绘取色器。",
+        "503 不全是可重试：模型文件缺失也返回 503，但重试不会自愈；必须先用错误体里的「缺失」语义把它从「加载中」里择出来。",
+        "HF 仓库内路径 ≠ 本地文件名：buffalo_l 的 detection/model.onnx 落位必须改回 det_10g.onnx，否则下载成功但 Python 仍报缺模型。",
+        "下载单元下沉到文件后，多文件模型才能共用同一套续传/校验/取消逻辑；进度用模型总体积做分母，避免每换一个文件进度条回 0。",
+        "排查时确认：用户日志里的 18765 端口属于仍在运行的 -dev 旧后端（没有 CLIP），当前仓库 python/models 实际已齐；旧进程不关会持续把新版请求带到旧模型目录。"
+      ],
+      "tests": [
+        "npm test 137/137 全绿",
+        "npx vue-tsc --noEmit exit 0",
+        "npx vite build exit 0",
+        "cargo test --no-default-features：417 passed / 0 failed（新增 missing_model_503_is_not_retryable、face_and_ocr_specs_match_python_config 等）",
+        "Playwright 探针：预定义页无材质行 / 自定义页两行材质 / 取色器连选 10 次仍只保留 5 个最近色、悬停出现 × / 缺模型弹窗 5 行模型与一键下载布局正常"
+      ],
+      "related_files": [
+        "src/components/ThemeDialog.vue",
+        "src/components/ui/PmColorPicker.vue",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/content.rs",
+        "src/components/settings/ModelDownloadRows.vue",
+        "src/components/settings/ModelDownloadsSection.vue",
+        "src/components/settings/ModelMissingDialog.vue",
+        "src/components/settings/PerfSettingsDialog.vue",
+        "src/components/ScanPanel.vue",
+        "src/components/GlobalScanPanel.vue",
+        "src/views/SmartSearch.vue",
+        "src/types/content.ts",
+        "src/assets/pm-dialog.css"
+      ],
+      "keywords": [
+        "模型下载",
+        "CLIP",
+        "buffalo_l",
+        "buffalo_sc",
+        "PaddleOCR",
+        "model.zip",
+        "hf-mirror",
+        "aifasthub",
+        "ModelScope",
+        "断点续传",
+        "多文件",
+        "model_missing",
+        "503",
+        "退避",
+        "取色器",
+        "最近使用",
+        "历史颜色",
+        "色块删除",
+        "PmColorPicker",
+        "仪表墙材质",
+        "预定义效果"
+      ],
+      "created_at": "2026-10-26T12:00:00+08:00",
+      "updated_at": "2026-10-26T12:00:00+08:00"
     }
   ],
-  "updated": "2026-10-25T21:20:00+08:00"
+  "updated": "2026-10-26T12:00:00+08:00"
 }

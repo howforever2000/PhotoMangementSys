@@ -3,9 +3,12 @@
  * 主题 / 皮肤设置弹窗（FEAT-086 重构）
  *
  * 双页签结构：
- *  - 预定义效果：5 套三段渐变预设（源自设计图），一键整套联动
- *    （渐变三色标 + 配套组件色 + 组件透明度 + 普通卡片材质）；
- *  - 自定义效果：原主题弹窗全部能力迁入 + 组件透明度滑块 + 普通/液态材质二选一。
+ *  - 预定义效果：三段渐变预设（源自设计图），一键整套联动
+ *    （渐变三色标 + 配套组件色 + 组件透明度 + 材质）；材质选项本身已移到自定义页；
+ *  - 自定义效果：原主题弹窗全部能力迁入 + 组件透明度滑块 + 卡片/仪表墙材质。
+ *
+ * 取色统一走 PmColorPicker（自绘）：最近使用固定 5 格、悬停可删，
+ * 避免系统取色弹窗的历史颜色无限堆积。
  *
  * 由 Home.vue 渲染并 teleport 到 body；样式走全局 .pm-*（pm-dialog.css）。
  */
@@ -13,6 +16,7 @@ import { onBeforeUnmount, onMounted, ref, computed } from "vue";
 import { DEFAULT_WALLPAPER, useThemeStore } from "../stores/theme";
 import { normalizeHex } from "../utils/color";
 import { ALL_PRESETS, PRESET_GROUPS, matchesPreset, presetGradient } from "../utils/presets";
+import PmColorPicker from "./ui/PmColorPicker.vue";
 
 const emit = defineEmits<{ close: [] }>();
 const theme = useThemeStore();
@@ -56,6 +60,23 @@ const activePresetId = computed(() => {
 
 /** 角度滑块可用性：背景必须处于渐变态（纯色/背景图下改角度无可见效果 → 禁用） */
 const angleEnabled = computed(() => theme.bgStyle === "gradient");
+
+/* ---------------- 取色器（自绘，替代系统弹窗的无限历史色） ----------------
+ * `<input type="color">` 会把历史颜色交给系统/浏览器维护：选得越多越长，
+ * 既不能限制为 5 个也不能删。改用 PmColorPicker（最近 5 个、悬停可删）。 */
+type ColorField = "compColor" | "bgColor" | "gradFrom" | "gradMid" | "gradTo";
+const colorTarget = ref<{ field: ColorField; title: string } | null>(null);
+const colorValue = computed(() => (colorTarget.value ? theme[colorTarget.value.field] : "#ffffff"));
+
+function openColor(field: ColorField, title: string) {
+  colorTarget.value = { field, title };
+}
+
+function commitColor(v: string) {
+  if (!colorTarget.value) return;
+  theme[colorTarget.value.field] = v;
+  theme.persist();
+}
 
 /* ---------------- 自定义效果（原弹窗能力迁入） ---------------- */
 const bgFileInput = ref<HTMLInputElement | null>(null);
@@ -129,6 +150,9 @@ function chooseBgImage() {
 /* ---------------- Esc 关闭（组件自持，Home 只管自己另外两个弹窗） ---------------- */
 function onKey(e: KeyboardEvent) {
   if (e.key === "Escape") {
+    // 取色器叠在本弹窗之上：Esc 先关它（PmColorPicker 自己处理），
+    // 这里必须让行，否则一次 Esc 会把两层一起关掉。
+    if (colorTarget.value) return;
     e.preventDefault();
     e.stopPropagation();
     emit("close");
@@ -183,31 +207,9 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
                实际上预设自身已携带 mode，单独一个开关只会造出“深色模式 + 浅色预设”
                这种错配态；要换到浅色直接点浅色组里的预设即可）。 -->
 
-          <!-- FEAT-110：仪表墙材质（只作用于智慧相册「全局概览」的 widget 墙，
-               不影响全站卡片） -->
-          <div class="pm-mode-row">
-            <span class="pm-mode-label">仪表墙</span>
-            <div class="pm-mode-seg" role="group" aria-label="仪表墙 widget 材质">
-              <button
-                type="button"
-                class="pm-mode-btn"
-                :class="{ on: theme.widgetMaterial === 'glass' }"
-                :aria-pressed="theme.widgetMaterial === 'glass'"
-                @click="theme.widgetMaterial = 'glass'; theme.persist()"
-              >
-                液态玻璃
-              </button>
-              <button
-                type="button"
-                class="pm-mode-btn"
-                :class="{ on: theme.widgetMaterial === 'plain' }"
-                :aria-pressed="theme.widgetMaterial === 'plain'"
-                @click="theme.widgetMaterial = 'plain'; theme.persist()"
-              >
-                普通材质
-              </button>
-            </div>
-          </div>
+          <!-- 材质选项已从预定义页移除（用户反馈：预定义只负责配色/氛围，
+               材质属于「自定义效果」的个人口味；且两者的材质语义不同，
+               放在预设页容易让人以为会随预设一起换）。见自定义页「卡片材质」。 -->
 
           <!-- 默认卡（FEAT-094）：点一下回到「启动封面 + 落日紫金」，与底部的「恢复默认」等价。
                以前重置后 5 张预设卡会全部掉高亮（选中态判据只认渐变），这里把默认态补成一张卡。 -->
@@ -321,18 +323,49 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
             <p class="pm-hint" style="margin: 6px 0 0">
               普通：无模糊、无纹理的卡片 · 液态：边缘折射 + 壁厚高光（全局生效）
             </p>
+            <!-- 仪表墙材质（FEAT-110）：只作用于智慧相册「全局概览」的 widget 墙。
+                 从预定义页迁到这里 —— 材质属于自定义口味，且与上面的卡片材质是
+                 两个独立维度，放一起才不会被误认为「随预设一起换」。 -->
+            <div class="pm-mode-row" style="margin: 12px 0 0">
+              <span class="pm-mode-label">仪表墙</span>
+              <div class="pm-mode-seg" role="group" aria-label="仪表墙 widget 材质">
+                <button
+                  type="button"
+                  class="pm-mode-btn"
+                  :class="{ on: theme.widgetMaterial === 'glass' }"
+                  :aria-pressed="theme.widgetMaterial === 'glass'"
+                  @click="theme.widgetMaterial = 'glass'; theme.persist()"
+                >
+                  液态玻璃
+                </button>
+                <button
+                  type="button"
+                  class="pm-mode-btn"
+                  :class="{ on: theme.widgetMaterial === 'plain' }"
+                  :aria-pressed="theme.widgetMaterial === 'plain'"
+                  @click="theme.widgetMaterial = 'plain'; theme.persist()"
+                >
+                  普通材质
+                </button>
+              </div>
+            </div>
+            <p class="pm-hint" style="margin: 0">
+              仪表墙 = 智慧相册「全局概览」的统计卡片，与上面的全站卡片材质互不影响
+            </p>
           </div>
 
           <div class="pm-section">
             <div class="pm-section-title">组件色调</div>
             <p class="pm-hint pm-comp-hint">卡片 / 面板等组件的底色 · 默认白色</p>
             <div class="pm-color-row">
-              <input
-                type="color"
-                v-model="theme.compColor"
-                @change="theme.persist()"
+              <button
+                class="pm-swatch-btn"
+                type="button"
+                :style="{ background: theme.compColor }"
                 aria-label="组件色调色块（点击打开调色盘）"
-              />
+                title="点击选择颜色"
+                @click="openColor('compColor', '组件色调')"
+              ></button>
               <input
                 class="pm-hex pm-mono"
                 type="text"
@@ -417,7 +450,14 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
           <div v-if="theme.bgStyle === 'color'" class="pm-section">
             <label class="pm-section-title">选择颜色</label>
             <div class="pm-color-row">
-              <input type="color" v-model="theme.bgColor" @change="theme.persist()" />
+              <button
+                class="pm-swatch-btn"
+                type="button"
+                :style="{ background: theme.bgColor }"
+                aria-label="背景纯色（点击打开调色盘）"
+                title="点击选择颜色"
+                @click="openColor('bgColor', '背景颜色')"
+              ></button>
               <span class="pm-mono">{{ theme.bgColor }}</span>
             </div>
           </div>
@@ -425,9 +465,30 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
           <div v-else-if="theme.bgStyle === 'gradient'" class="pm-section">
             <div class="pm-section-title">渐变配色（三段）</div>
             <div class="pm-grade">
-              <input type="color" v-model="theme.gradFrom" @change="theme.persist()" aria-label="渐变起始色" />
-              <input type="color" v-model="theme.gradMid" @change="theme.persist()" aria-label="渐变中段色" />
-              <input type="color" v-model="theme.gradTo" @change="theme.persist()" aria-label="渐变结束色" />
+              <button
+                class="pm-swatch-btn"
+                type="button"
+                :style="{ background: theme.gradFrom }"
+                aria-label="渐变起始色（点击打开调色盘）"
+                title="起始色"
+                @click="openColor('gradFrom', '渐变起始色')"
+              ></button>
+              <button
+                class="pm-swatch-btn"
+                type="button"
+                :style="{ background: theme.gradMid }"
+                aria-label="渐变中段色（点击打开调色盘）"
+                title="中段色"
+                @click="openColor('gradMid', '渐变中段色')"
+              ></button>
+              <button
+                class="pm-swatch-btn"
+                type="button"
+                :style="{ background: theme.gradTo }"
+                aria-label="渐变结束色（点击打开调色盘）"
+                title="结束色"
+                @click="openColor('gradTo', '渐变结束色')"
+              ></button>
             </div>
             <label class="pm-range">
               <span>角度</span>
@@ -467,5 +528,13 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
         </div>
       </div>
     </div>
+
+    <PmColorPicker
+      :visible="!!colorTarget"
+      :model-value="colorValue"
+      :title="colorTarget?.title"
+      @update:model-value="commitColor"
+      @close="colorTarget = null"
+    />
   </teleport>
 </template>

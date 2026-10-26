@@ -1091,12 +1091,39 @@ fn extract_detail(body: &str) -> String {
     }
 }
 
+/// 错误详情是否明确指出**模型文件缺失**
+///
+/// 与「加载中」的关键区别：文件不在磁盘上，重试一万次也不会自愈（BUG-2026-1026-001：
+/// 旧实现把 503 一律当「未就绪」，模型缺失时后台反复 1s/2s/4s 重试并刷日志）。
+fn is_model_missing_detail(detail: &str) -> bool {
+    let d = detail.to_lowercase();
+    const MARKERS: [&str; 12] = [
+        "整图缺失",
+        "模型缺失",
+        "文件缺失",
+        "未下载",
+        "未找到模型",
+        "no such file",
+        "not found",
+        "missing model",
+        "model file missing",
+        "model file not found",
+        "does not exist",
+        "cannot find",
+    ];
+    MARKERS.iter().any(|m| d.contains(m))
+}
+
 /// 该失败是否属于「服务未就绪 / 模型加载中」这类可自愈的失败
 ///
 /// 判据：503（服务暂不可用）本身即视为可重试；其余状态码需错误体里有明确的加载
 /// 语义（中英文）才按可重试处理——避免把「模型缺失」这类确定性错误也当成抖动，
 /// 否则会陷入「每次搜索都白等 7 秒」的反向坑。
 fn is_not_ready(status: reqwest::StatusCode, detail: &str) -> bool {
+    // 模型文件缺失是确定性失败：先于「未就绪/加载中」判定，否则 503 会把它吞掉
+    if is_model_missing_detail(detail) {
+        return false;
+    }
     let d = detail.to_lowercase();
     let loading = d.contains("未就绪")
         || d.contains("加载中")
@@ -1230,8 +1257,13 @@ pub fn clip_model_present() -> bool {
     let dir = std::env::var("VCR_MODEL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| project_python_dir().join("models"));
-    dir.join("chinese-clip").join("onnx").join("model_fp16.onnx").is_file()
-        && dir.join("chinese-clip").join("tokenizer.json").is_file()
+    // 两档任一就绪即可（FEAT-114 修：旧实现只认 fp16 档，用户只下 fp32 时会被
+    // 误判成「未下载」而拒绝预热）。tokenizer 必须在模型根目录（BUG-2026-0920-002）。
+    let ready = |root: &str, onnx: &str| {
+        dir.join(root).join("onnx").join(onnx).is_file()
+            && dir.join(root).join("tokenizer.json").is_file()
+    };
+    ready("chinese-clip", "model_fp16.onnx") || ready("chinese-clip-fp32", "model.onnx")
 }
 
 /// FEAT-SEM：语义服务预热 —— 拉起服务并触发 CLIP 懒加载（搜索页进入时后台调用）
@@ -2452,12 +2484,28 @@ mod semantic_backoff_tests {
         // 端口不通（连接层失败）不带可重试前缀 → 进退避
         let conn = "调用 embedding 服务失败: error sending request for url";
         assert!(should_enter_backoff(conn));
-
         clear_semantic_down();
         note_semantic_failure(&missing);
         assert!(semantic_backoff_active(), "确定性失败必须进退避");
         assert!(semantic_backoff_remaining().is_some());
         clear_semantic_down();
+    }
+
+    /// 回归 BUG-2026-1026-001：503「整图缺失」不是加载中，绝不能按 1s/2s/4s 反复重试
+    ///
+    /// 模型文件不在磁盘上时重试不会自愈；必须立即返回确定性错误，让前端弹「下载模型」。
+    #[test]
+    fn missing_model_503_is_not_retryable() {
+        let detail = "CLIP 未就绪: 整图缺失: C:/vcr/models/chinese-clip/onnx/model_fp16.onnx";
+        assert!(is_model_missing_detail(detail));
+        let err = http_failure_err(reqwest::StatusCode::SERVICE_UNAVAILABLE, detail);
+        assert!(!is_retryable_err(&err), "模型缺失不得标为可重试: {err}");
+        assert!(should_enter_backoff(&err));
+        assert!(!is_not_ready(reqwest::StatusCode::SERVICE_UNAVAILABLE, detail));
+
+        // 真正的「加载中」仍必须可重试（不能一刀切把 503 全判死）
+        assert!(is_not_ready(reqwest::StatusCode::SERVICE_UNAVAILABLE, "CLIP 模型加载中"));
+        assert!(!is_model_missing_detail("CLIP 模型加载中"));
     }
 
     /// 退避窗口必须足够短：服务恢复后自动回归，而不是让用户干等数分钟

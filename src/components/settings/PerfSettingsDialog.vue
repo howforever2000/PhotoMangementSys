@@ -25,9 +25,12 @@ const store = useContentStore();
 type Tab = "perf" | "model";
 const tab = ref<Tab>("perf");
 
-/** 有必需模型未下载 → 在「模型管理」页签上给个可视提示，避免用户不知道要下 */
+/** 有「默认链路」需要的模型未下载 → 在「模型管理」页签上给个可视提示。
+ *  FEAT-114：下载表扩到人脸/OCR 后不再用 required（两个模型档位互斥，标哪个都不对），
+ *  只对默认链路（语义 fp16 + 人脸高精度）提示。 */
+const ESSENTIAL_MODELS = new Set(["chinese-clip", "face-precise"]);
 const dlPending = computed(() =>
-  store.modelDownloads.some((d) => d.required && !d.done),
+  store.modelDownloads.some((d) => ESSENTIAL_MODELS.has(d.name) && !d.done),
 );
 
 function onKey(e: KeyboardEvent) {

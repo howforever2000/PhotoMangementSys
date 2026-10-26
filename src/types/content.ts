@@ -382,7 +382,13 @@ export interface VcrBenchmarkResult {
 /** FEAT-052：模型下载状态 —— 对应 Rust `model_dl::ModelDlStatus` */
 export interface ModelDlStatus {
   name: string;
+  /** UI 展示名（FEAT-114） */
+  label: string;
+  /** UI 副标题：体积 / 用途 / 取舍 */
+  note: string;
   file: string;
+  /** 该模型需要的全部文件（相对模型目录） */
+  files: string[];
   required: boolean;
   running: boolean;
   done: boolean;
