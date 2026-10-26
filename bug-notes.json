@@ -4510,7 +4510,8 @@
         "启动自检 `ensure_dir_writable(data_dir)`：建目录 + 写 `.write_probe` + 删除，失败即 `fatal_data_dir()` 输出「数据目录不可写：<路径> / 原因 / 三条排查」并 exit(1)，不再 panic",
         "`Database::open` 的 expect 改为 match：失败时打印库路径 + 「占用 / 损坏（可用同目录 *.bak-* 替换）」两类排查，exit(1)",
         "新增 `PMS_DATA_DIR` 环境变量覆盖数据目录（便携部署 / 受限环境 / 排障），指定时跳过旧目录迁移；默认行为不变",
-        "新增 `src-tauri/examples/db_probe.rs`：一条命令区分「权限问题」与「库损坏」（写盘 / 打开 / WAL / DDL 四项）"
+        "新增 `src-tauri/examples/db_probe.rs`：一条命令区分「权限问题」与「库损坏」（写盘 / 打开 / WAL / DDL 四项）",
+        "新增 `scripts/dev-outside.ps1` + `npm run dev:outside`：前端仍走 1420 的 vite（热更新照旧），构建后把 exe 拷到 `%LOCALAPPDATA%\\pms-run` 再启动 —— 镜像在工作区外即不受该限制，实测正常加载 131 个相册"
       ],
       "lessons": [
         "SQLite 的 ReadOnly / CannotOpen 几乎总是「目录或 sidecar 写不进去」，不是库损坏；先测目录可写，再看库。",
