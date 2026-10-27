@@ -12,6 +12,7 @@ v5（语义分类）：**分类模型（yolov8*-cls / Places365 / 花朵 / 食�
 """
 import json
 import os
+import struct
 import sys
 
 
@@ -259,6 +260,34 @@ def set_active_clip(name: str) -> None:
 # 推理参数
 # ---------------------------------------------------------------------------
 DET_SIZE = 640
+
+# ---------------------------------------------------------------------------
+# 解码降采样（P-DEC1：2026-10-27）
+#
+# 背景：AI 腿每张图的 CPU 大头不是推理，是**为了要一张 640px 的图把原图全解码一遍**。
+# 实测（245K，6P+8E，P=6 并发，24 张 8~12MP 原图，服务端 [vcr.stat] 记账）：
+#   单张墙钟 200.3ms 里 decode 占 173.9ms（82%）；此时 GPU 利用率仅 ~26%。
+#
+# 做法：解码时给 PIL 一个「解码后长边 ≥ 该值」的下限，让它走 libjpeg 的
+# draft()（DCT 域 1/2、1/4、1/8 直接解），而不是全分辨率解完再用 BILINEAR 缩。
+# 实测同一批（P=6，decode+resize 合计）：
+#   全分辨率           194.9 ms/张（解码后 8.0~12.6 MP）
+#   长边≥1600          ~90-110 ms/张（约 -50%）
+#   长边≥1024          ~62 ms/张
+#   长边≥640            34.2 ms/张
+#
+# 为什么定 1600 而不是更快的那两档 —— 人脸链路实测（30 张人脸密集图 409 张脸，
+# 与全分辨率解码逐脸配对，判据是同一张脸两版嵌入的余弦）：
+#   长边≥1600：脸数完全一致，cos 均值 0.98440 / 最小 0.90314，bbox IoU 中位 1.000
+#   长边≥1024：cos 均值 0.94479 / 最小 0.72334 —— 开始明显改变嵌入，会带偏聚簇
+#   长边≥640 ：cos 均值 0.81862 / 最小 0.12649 —— 不可用
+# FACE_SIM 现为 0.55，1600 档的 0.90 最小余弦距它仍有充足余量；且 bbox 坐标、
+# FACE_MIN_PIX(48px) 的真值口径全部不变（见 preprocess.Letterbox.dec_scale）。
+#
+# 注意 denominator 只能取 2 的幂：所以 1600 档对「长边 < 3200」的图不生效
+# （3000x2000 → 1/2 = 1500 < 1600，保持全分辨率解码），这类图本来也只有 6MP。
+# 设成 0 或负数 = 关闭降采样（回到逐位等价的旧行为，A/B 对照用）。
+DECODE_MIN_LONG = max(0, int(os.environ.get("VCR_DECODE_MIN_LONG", "1600")))
 # ---------------------------------------------------------------------------
 # CPU 线程数（可在「⚙ 性能设置」里改 + 对比测速，落 models/current_threads.json）
 #
@@ -276,14 +305,84 @@ def logical_cores() -> int:
     return os.cpu_count() or 4
 
 
+def _cpu_topology() -> tuple[int, int, int]:
+    """返回 (物理核数, P 核数, E 核数)。拿不到时猜测值并标记。
+
+    为什么要真读拓扑（BUG-2026-1027-003）：旧实现用 `logical // 2` 猜物理核，
+    这个假设只在「每个物理核都有超线程」时成立。AMD Zen 4（7840HS，8C/16T）符合，
+    但 Intel 从 Alder Lake 起是大小核且**桌面版没有超线程** —— 245K 是 6P+8E、
+    14 个逻辑核，`14 // 2 = 7` 恰好猜成「7 个物理核」，而真实是 6 个 P 核 + 8 个 E 核。
+
+    intra_op 线程跑在 E 核上是纯亏：实测同一台 245K 上 det 单次推理
+      6 线程 32.8ms · 8 线程 39.9ms · 10 线程 54.2ms · 12 线程 88.9ms · 14 线程 110.2ms
+    （线程越多越慢：一旦越过 P 核数量就往 E 核溢出，ORT 的 spin-wait 在 E 核上
+    把 P 核一起拖垮）。所以默认值应该取 **P 核数**，不是「逻辑核/2」，也不是总核数。
+
+    数据源：Windows GetLogicalProcessorInformationEx(RelationProcessorCore)，
+    每个核带 EfficiencyClass（越大越强），同厂商同架构下可稳定区分 P/E。
+    非 Windows 或调用失败 → 回落旧口径 logical//2（不比以前差）。
+    """
+    guess = max(1, logical_cores() // 2)
+    if os.name != "nt":
+        return guess, guess, 0
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        fn = k32.GetLogicalProcessorInformationEx
+        # RelationProcessorCore = 0
+        buf = ctypes.create_string_buffer(0)
+        length = wintypes.DWORD(0)
+        fn(0, buf, ctypes.byref(length))
+        if length.value <= 0:
+            return guess, guess, 0
+        buf = ctypes.create_string_buffer(length.value)
+        if not fn(0, buf, ctypes.byref(length)):
+            return guess, guess, 0
+
+        total = 0
+        classes: dict[int, int] = {}
+        off = 0
+        raw = buf.raw
+        while off < length.value:
+            # SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX:
+            #   DWORD Relationship; DWORD Size; <union>
+            rel, size = struct.unpack_from("II", raw, off)
+            if size <= 0:
+                break
+            if rel == 0:  # RelationProcessorCore
+                # PROCESSOR_RELATIONSHIP: BYTE Flags; BYTE EfficiencyClass;
+                #                       BYTE Reserved[20]; WORD GroupCount; ...
+                eff = raw[off + 8 + 1]
+                classes[eff] = classes.get(eff, 0) + 1
+                total += 1
+            off += size
+        if total <= 0:
+            return guess, guess, 0
+        if len(classes) == 1:
+            # 同质核（AMD 全大核 / 老 Intel）→ 物理核 = 总核
+            return total, total, 0
+        best = max(classes)
+        p = classes[best]
+        return total, p, total - p
+    except Exception:  # noqa: BLE001
+        return guess, guess, 0
+
+
 def physical_cores_guess() -> int:
-    """物理核数推测：CPython 拿不到真实拓扑，按「逻辑核 = 物理核 × 2（超线程）」估计。"""
-    return max(1, logical_cores() // 2)
+    """物理核数（真读拓扑；拿不到才回落 logical//2）。"""
+    return _cpu_topology()[0]
 
 
 def default_threads() -> int:
-    """默认线程数：物理核数，夹在 [4, 8]（低于 4 太慢、高于 8 收益递减且抢内存带宽）。"""
-    return max(4, min(8, physical_cores_guess()))
+    """默认线程数：**P 核数**（非混合核时就是物理核数），夹在 [4, 8]。
+
+    上限 8 的理由保持不变（高于 8 收益递减且抢内存带宽）；下限 4 保证小机器能用。
+    混合核机器（如 6P+8E）取 6 而不是 7/14 —— 实测 6 线程比 14 线程快 3.4 倍。
+    """
+    _, p_cores, _ = _cpu_topology()
+    return max(4, min(8, p_cores))
 
 
 def threads() -> int:
@@ -300,22 +399,35 @@ def threads() -> int:
 
 
 def set_threads(n: int) -> int:
-    """持久化线程数（越界则夹紧）；返回生效值。失败不阻断（下次启动回落默认）。"""
+    """持久化线程数（越界则夹紧）；返回**实际生效值**。
+
+    ⚠️ 旧实现写失败时 `except: pass` 然后 `return n`，于是 POST /threads 会返回
+    「applied=7」而实际生效仍是旧值（BUG-2026-1027-009，实测撞到过：写 7 读回 12）。
+    现在写完回读一次，返回真实生效值；写失败额外打一行 stderr，不再静默。
+    """
     n = max(THREADS_MIN, min(THREADS_MAX, int(n)))
     try:
         with open(THREADS_CURRENT_PATH, "w", encoding="utf-8") as f:
             json.dump({"threads": n}, f)
-    except Exception:  # noqa: BLE001
-        pass
-    return n
+    except Exception as e:  # noqa: BLE001
+        print(f"[VCR] 线程数持久化失败（{THREADS_CURRENT_PATH}）: {e}", file=sys.stderr)
+    actual = threads()
+    if actual != n:
+        print(f"[VCR] 线程数未生效：期望 {n} 实际 {actual}", file=sys.stderr)
+    return actual
 
 
 def threads_info() -> dict:
     """给 UI 的线程数现状（当前/默认/核数/可选档）。"""
+    physical, p_cores, e_cores = _cpu_topology()
     return {
         "threads": threads(),
         "default": default_threads(),
-        "physical_guess": physical_cores_guess(),
+        "physical_guess": physical,
+        "physical": physical,
+        "p_cores": p_cores,
+        "e_cores": e_cores,
+        "hybrid": e_cores > 0,
         "logical": logical_cores(),
         "min": THREADS_MIN,
         "max": THREADS_MAX,
@@ -435,6 +547,16 @@ NIGHT_LUMA = 45
 # 文档 OCR 通道
 # ---------------------------------------------------------------------------
 OCR_AREA_STRONG = 0.12        # 文字框面积占比 >12% 且 ≥2 框 → 强证据 → document
+# OCR 前置门（P-OPT3，2026-10-27）
+#
+# 仲裁优先级是「人物规则 > OCR > 截图 > 夜景」，所以人物规则一旦命中，OCR 结果
+# 永远不会被采纳 —— 而旧实现每张图都无条件跑一次 OCR。
+# 实测（245K + DML，P=6，24 张原图）：整批共 55 次加锁，**持锁时间占墙钟 99.0%**
+# （GPU 会话全局串行锁就是天花板），其中 OCR 占 24 次（44%）。
+# 前置门用 arbitrator.person_rule_hits(det_out) 判定，与仲裁共用同一个函数，
+# 因此**结论等价**（不是“几乎等价”）：被跳过的那些图，OCR 本来就不会被读。
+# 设 VCR_OCR_GATE=0 可关闭（A/B 对照用）。
+OCR_GATE = os.environ.get("VCR_OCR_GATE", "1") != "0"
 OCR_PROB_THRESH = 0.3         # DB 概率图阈值
 OCR_BOX_THRESH = 0.5          # box 平均概率阈值（DB box_thresh）
 

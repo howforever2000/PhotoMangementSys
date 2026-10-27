@@ -26,8 +26,46 @@ ARC_DST = np.array(
 )
 
 
+def open_image_ex(path: str) -> tuple[Image.Image | None, tuple[int, int] | None]:
+    """解码 + 按 EXIF Orientation 转正，同时返回**真实原图像素尺寸**。
+
+    为什么必须同时回尺寸（P-DEC1）：解码走 draft() 降采样后（见 config.
+    DECODE_MIN_LONG），返回的图比真实原图小，而下游有两个口径必须保持真值：
+      · bbox / kps 要落在**真实原图坐标系**（Rust 侧按它去裁头像、生成镶略图）
+      · FACE_MIN_PIX / AREA 阈值要按**真实原图**像素算
+    所以尺寸不能从返回图的 .size 推，必须由这里带出去
+    （转正会交换宽高，所以尺寸在 exif_transpose **之后**取）。
+    """
+    try:
+        with Image.open(path) as img:
+            orig_before = img.size
+            # draft 必须在真正加载前调（exif_transpose / convert 会触发加载）。
+            # 只对 JPEG 生效；PNG/HEIC 等是空操作，此时下面算出的 dec_scale = 1。
+            floor = config.DECODE_MIN_LONG
+            if floor > 0:
+                w, h = orig_before
+                long_side = max(w, h)
+                denom = 1
+                while denom < 8 and long_side / (denom * 2) >= floor:
+                    denom *= 2
+                if denom > 1:
+                    img.draft("RGB", (max(1, w // denom), max(1, h // denom)))
+            out = ImageOps.exif_transpose(img).convert("RGB")
+            # 转正会交换宽高（竖拍相机片）。解码图的宽高比是否与转正前“同向”
+            # 能无歧义地判断有没有被交换 —— 不能用 out.size 当原图尺寸（那是降采样后的）。
+            ow, oh = orig_before
+            if (out.size[0] > out.size[1]) != (ow > oh):
+                ow, oh = oh, ow
+            return out, (ow, oh)
+    except Exception:
+        return None, None
+
+
 def open_image(path: str) -> Image.Image | None:
-    """解码并**按 EXIF Orientation 转正**。
+    """解码并**按 EXIF Orientation 转正**（不关心真实原图尺寸时的入口）。
+
+    要参与坐标换算的调用方（pipeline.classify_one）必须用 open_image_ex，
+    否则会把「降采样后的尺寸」当成原图尺寸，导致 bbox 与尺度阈值全部错位。
 
     # 为什么必须显式转正（BUG-2026-1014-002）
 
@@ -51,11 +89,8 @@ def open_image(path: str) -> Image.Image | None:
     注意 exif_transpose 会**删除** Orientation 标签（避免下游二次转正），并交换
     宽高；无 EXIF 或 Orientation=1 时是零成本的恒等操作。
     """
-    try:
-        with Image.open(path) as img:
-            return ImageOps.exif_transpose(img).convert("RGB")
-    except Exception:
-        return None
+    img, _ = open_image_ex(path)
+    return img
 
 
 # ---------------------------------------------------------------------------
@@ -74,19 +109,37 @@ def open_image(path: str) -> Image.Image | None:
 #   - 越界过滤与面积比用原图尺寸 `lb.size`，与旧实现同口径。
 # ---------------------------------------------------------------------------
 class Letterbox(NamedTuple):
-    """一次解码 + 一次缩放的产物；三通道与影调都从它派生。"""
+    """一次解码 + 一次缩放的产物；三通道与影调都从它派生。
+
+    P-DEC1：解码可能已走 draft() 降采样，所以三个坐标口径要分清 ——
+      · base     ：解码图再缩到最长边 DET_SIZE（模型吃这个，坐标在 base 空间）
+      · r        ：base → **真实原图** 的等比缩放比（box/kps/area 一律换算到原图）
+      · size     ：**真实原图**像素尺寸（越界过滤 / 面积比 / FACE_MIN_PIX 的真值口径）
+      · dec_scale：解码图长边 / 真实原图长边（≤1）。只有 face_align 需要它 ——
+                  它直接在**解码图**上裁切，所以要把「原图坐标的关键点」
+                  乘回 dec_scale 变成解码图坐标。
+    旧实现里三者相等只是因为解码 == 原图；拆开后语义不变，逐位等价性只在 base 上。
+    """
 
     base: Image.Image            # 最长边 = DET_SIZE 的等比缩放图（共用同一份）
-    r: float                     # 原图 → base 的等比缩放比（几何换算永远用它）
-    size: tuple[int, int]        # 原图像素尺寸（越界过滤 / 面积比口径）
+    r: float                     # 真实原图 → base 的等比缩放比（几何换算永远用它）
+    size: tuple[int, int]        # 真实原图像素尺寸（越界过滤 / 面积比口径）
+    dec_scale: float = 1.0       # 解码图长边 / 真实原图长边（draft 降采样后 <1）
 
 
-def letterbox(img: Image.Image) -> Letterbox:
-    """把已解码的图缩放一次，供 det/ocr/face 三通道与影调共用。"""
+def letterbox(img: Image.Image, orig_size: tuple[int, int] | None = None) -> Letterbox:
+    """把已解码的图缩放一次，供 det/ocr/face 三通道与影调共用。
+
+    orig_size 必须是**真实原图**尺寸（open_image_ex 的第二个返回值）。
+    不传 = 视 img 为全分辨率解码（旧行为，供独立入口 / bench 使用）。
+    """
     w, h = img.size
-    r = config.DET_SIZE / max(w, h)
-    base = img.resize((max(1, round(w * r)), max(1, round(h * r))), Image.BILINEAR)
-    return Letterbox(base=base, r=r, size=(w, h))
+    ow, oh = orig_size if orig_size else (w, h)
+    # base 从**解码图**缩（这是真正要算的那一步），r 按**原图**算（换算口径）
+    r = config.DET_SIZE / max(ow, oh)
+    bs = config.DET_SIZE / max(w, h)
+    base = img.resize((max(1, round(w * bs)), max(1, round(h * bs))), Image.BILINEAR)
+    return Letterbox(base=base, r=r, size=(ow, oh), dec_scale=max(w, h) / max(ow, oh))
 
 
 def det_tensor(lb: Letterbox) -> tuple[np.ndarray, float, int, int]:
