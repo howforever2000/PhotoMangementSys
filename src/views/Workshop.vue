@@ -66,6 +66,11 @@ const widgets = [
 /** 当前打开的小组件 id（null = 仅卡片列表；带照片进来时直接进编辑器） */
 const activeWidget = ref<string | null>(initialPhoto ? "studio" : null);
 
+/** 页头读数：在工坊首页说"有几个小组件"，进去后说"在哪个小组件" */
+const activeWidgetTitle = computed(
+  () => widgets.find((w) => w.id === activeWidget.value)?.title ?? "",
+);
+
 function openWidget(w: (typeof widgets)[number]) {
   if (!w.ready) return;
   activeWidget.value = w.id;
@@ -96,11 +101,14 @@ onMounted(() => {
 
 <template>
   <div class="workshop-page" :class="{ 'wide-mode': activeWidget === 'studio' }">
-    <AppHeader title="创意工坊" />
+    <AppHeader title="创意工坊" icon="🎨" :meta="activeWidget ? activeWidgetTitle : `${widgets.length} 个小组件`" />
     <div class="workshop-content">
       <header class="workshop-header">
         <div class="header-text">
-          <h1 class="page-title">创意工坊</h1>
+          <!-- FEAT-106：删掉重复的大标题。
+               AppHeader 已经写着「创意工坊 · N 个小组件」，
+               下面再来一个 28px 的同名标题 = 同一信息在一屏里说两遍，
+               而且那个大标题会把内容往下推 36px（首屏看不到卡片）。 -->
           <p class="page-subtitle">图片编辑小组件 · 打开即用，处理都在本机完成</p>
         </div>
       </header>
@@ -151,27 +159,25 @@ export default { components: { PhotoEditor } };
   min-height: 100vh;
 }
 
+/* 页面壳（FEAT-106）：与顶栏、数据带同一套左右留白。 */
 .workshop-content {
   position: relative;
   z-index: 2;
-  max-width: 1080px;
-  margin: 0 auto;
-  padding: 40px 24px 64px;
+  padding: 16px var(--sp-8) 64px;
 }
 
 /* FEAT-099 基准调色：编辑器是「直方图 + 画布 + 面板」三栏，
    卡片列表那种 1080px 窄容器会把画布压到不足 400px。
    打开编辑器时让容器铺满，只保留左右最小边距。 */
 .workshop-page.wide-mode .workshop-content {
-  max-width: none;
-  padding: 20px 16px 20px;
+  padding: 12px var(--sp-5) 20px;
 }
 
 .workshop-header {
   display: flex;
   align-items: center;
   gap: 16px;
-  margin-bottom: 36px;
+  margin-bottom: 16px;
 }
 
 .back-btn {

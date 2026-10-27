@@ -4101,7 +4101,598 @@
       ],
       "created_at": "2026-10-23T17:44:34+08:00",
       "fixed_at": "2026-10-23T17:44:34+08:00"
+    },
+    {
+      "id": "BUG-2026-1023-009",
+      "date": "2026-10-23",
+      "status": "resolved",
+      "title": "点开时间线后进程直接退出（0xC00000FD 栈溢出）：v2 缩略图指纹让全库缓存一次性失效 + 129 路并发请求 + 后端每路再开 8 线程",
+      "module": "缩略图 (thumbnail) / 时间线 (Timeline) / 跨页面缩略图请求",
+      "symptom": [
+        "运行中点开时间线/相册，进程瞬间消失；cargo 报 `thread '<unknown>' (23492) has overflowed its stack` + `exit code: 0xc00000fd (STATUS_STACK_OVERFLOW)`",
+        "app.log 停在最后一条 get_photo_thumbs 上：没有 panic、没有堆栈、没有 ERROR 行",
+        "同一会话里 get_photo_thumbs 几乎全是 `hit=0 generated=1~2`，单次耗时 1.6~29.6s",
+        "thumbs/grid 目录留下 20 个 0 字节缩略图，时间戳正好在两次死亡的时刻（第一次 17 个 @19:28:50-52，第二次 3 个 @19:29:37）",
+        "v0.4.2 没有这个问题"
+      ],
+      "root_cause": {
+        "summary": "fcfbaf7（BUG-2026-1014-002，随 v0.4.3 发布）把缩略图渲染版本升到 v2 并掺进两个缓存键（thumb_photo_hash 的表主键 + file_fingerprint 的磁盘文件名），于是升级后全库 2.5 万张缩略图『一次性全部失效』；而时间线页 loadThumbs() 又是『按相册分组后 Promise.all 一次性要全量』，冷缓存下变成几百路并发解码，后端每路再 thread::scope 开 min(核数,8) 线程，最终把进程资源打穿，Windows 把线程栈提交失败报成 0xC00000FD（名字叫栈溢出，实际是资源耗尽）。",
+        "detail": [
+          "v0.4.2 不炸不等于代码更安全：那时缓存是热的，99% 请求 hit，现场生成的只有一两张；v2 一升级全部变 miss，同一个『并发 + 每路再开 8 线程』的放大器才第一次被真正推满",
+          "实测（PMS_LOG_LEVEL=debug）：点开时间线一次性发出 129 个 get_photo_thumbs（每个相册一路），单相册最多 2876 条路径、全库 24990 张；后端 129 × 8 ≈ 1000 线程同时解码大 JPEG",
+          "实测进程指标：线程数峰值 732、私有内存 1.2GB（缓存已热的情况下）；冷缓存还要叠加每张 2000 万像素 JPEG 的解码峰值",
+          "0 字节文件证明『多线程同时写同一个缩略图路径』：时间线/回忆/相册详情各自按 album 分组取同一张照片，save_with_format 直接写目标文件，一个线程刚 File::create 截断、另一个还在写，进程一 abort 就留下空文件；而 is_thumb_file_alive 只判 is_file()，这些 0 字节文件会被当成永久『命中』，那一格永远是碎图",
+          "退出码 0xC00000FD 容易被误读成『递归/栈溢出 bug』，本案里没有任何递归——是线程栈无法继续提交"
+        ]
+      },
+      "fix": "三层限流 + 原子落盘：①后端 thumbnail.rs 加进程级生成闸门 acquire_gen_permit()（上限 min(核数,4)，卡在 save_thumbnail 解码前），无论多少请求叠加，同时解码的线程数恒定；②ensure_grid_thumbs_with_lookup 去掉 thread::scope 二次开线程（并行只留给显式扫描路径 ensure_grid_thumbs_missing_parallel），交互式懒加载一律串行；③save_thumbnail 改『同目录临时文件 + rename』原子落盘，is_thumb_file_alive 要求 size>0，杜绝 0 字节残骸被当命中；④前端新增 utils/thumbQueue.ts 全局队列（在飞 ≤3、单批 ≤60、按 path 去重、结果缓存），把 8 处直接 invoke('get_photo_thumbs') 全部收口；⑤Timeline.vue 由『一次要全量』改为 IntersectionObserver 按视口惰性入队（rootMargin 600px、每批 60、待入队上限 300），滚动时渐进补齐",
+      "evidence_log": "修复前：点开时间线 → 129 路并发 / 线程 732 / 私有内存 1.2GB → 进程 0xC00000FD 退出。修复后（同机同库，滚动十余屏）：get_photo_thumbs 共 20 次（paths 最大 56、平均 13）、线程峰值 38、私有内存 33MB、无 panic、无 0 字节文件、缩略图正常渲染；cargo test --lib thumbnail:: 12 项全过（含新增 gen_gate_caps_concurrent_generation、concurrent_same_source_writes_atomically）；npx vue-tsc --noEmit 0 error；node --test 78 项全过",
+      "lessons": [
+        "改『影响像素』的渲染逻辑可以，但同时 bump 缓存键 = 全库冷缓存，必须当成一次『冷启动压测』来评估并发路径",
+        "任何『按相册分组 → Promise.all』的批量请求模式都要先问：分组数 × 每组分片数 × 后端每请求线程数 是多少？本案是 129 × 8 ≈ 1000 线程",
+        "STATUS_STACK_OVERFLOW 不等于递归：先看进程线程数/内存曲线，再看代码里有没有递归",
+        "并发写同一个缓存文件必须原子写（临时文件 + rename），否则崩溃/断电会留下 0 字节或半截文件，而『exists 即命中』的判据会让它永久生效"
+      ],
+      "related_files": [
+        "src-tauri/src/thumbnail.rs",
+        "src/utils/thumbQueue.ts",
+        "src/views/Timeline.vue",
+        "src/stores/album.ts",
+        "src/views/Memories.vue",
+        "src/views/SmartSearch.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/LocationGallery.vue",
+        "src/components/CategoryManager.vue",
+        "src/components/PhotoGrid.vue"
+      ],
+      "created_at": "2026-10-23T18:30:00+08:00",
+      "fixed_at": "2026-10-23T20:35:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1023-010",
+      "date": "2026-10-23",
+      "status": "resolved",
+      "title": "缩略图「一次生成永久保存」被一次版本号改动打破：键空间解耦 + 27,550 行旧缓存原地复用 + 回收 1.4GB",
+      "module": "缩略图缓存 (thumbnail / photo_thumb_cache) / 版本升级迁移",
+      "symptom": [
+        "升级到 v0.4.3 后，全库 2.5 万张缩略图全部重新生成（日志里 hit=0 generated=2 连续刷屏）",
+        "明明之前都生成过、扫描也预热过，磁盘上 25,777 个旧缩略图（1.45GB）还在，却一个都不命中",
+        "扫描中心/覆盖率提示认为「照片都有缩略图」，从不触发预热",
+        "与 BUG-2026-1023-009 同源：冷缓存放大了并发风暴，把进程打死"
+      ],
+      "root_cause": {
+        "summary": "v0.4.3 的 fcfbaf7 为了 EXIF 转正把渲染版本 v2 掺进了两个缓存键：表主键 thumb_photo_hash（多了 |v2）与文件名 file_fingerprint（多了 v2_ 前缀），但没有配套迁移。于是 24,924 行表记录 + 25,777 个磁盘文件同时变成不可达；而扫描侧 photo_content_scan.photo_hash（content::photo_hash）没有掺版本，两套键空间从此错开——扫描侧 LEFT JOIN 仍能对上旧行、判定『都有缩略图不必预热』，懒加载侧用新键又一条都查不到，表现为『升级后全量重生成』。",
+        "detail": [
+          "缓存本来就是「一次生成、永久保存」两层结构：photo_thumb_cache 表（键 photo_hash）+ thumbs/grid/album_<id>_photo_<指纹>.jpg；扫描（ensure_grid_thumbs_missing_parallel / prewarm_thumbs）会预生成并写表 —— 机制本身没问题，坏在键被换了",
+          "表主键与文件名是两把独立的钥匙，v2 同时换了两把，且 reuse_legacy_thumb 的候选名也是用新指纹拼的，连『复用旧文件』的兜底路径一起断掉",
+          "实测（迁移前）：表 27,984 行（旧键 24,924 / 新 v2 键 3,060）；grid 35,707 个文件（旧 25,777 = 1.45GB / 新 v2 9,930）；扫描 24,990 行里 24,923 能与旧行对齐 → 扫描侧认为『缺图 0』",
+          "400 张抽样读 EXIF：orientation=1 占 97.8%（391/400），8 占 1.8%，6 占 0.5%。v2 的改动是『先按 EXIF 转正、再缩放』，orientation=1 时转正是恒等变换 → 这些照片的 v1 与 v2 输出逐字节相同，本可零解码复用",
+          "反过来 orientation≠1 的旧图是『躺倒』的，改名冒充 v2 产物会把 BUG-2026-1014-002 种回去，必须排除"
+        ]
+      },
+      "fix": "A 键空间解耦：thumb_photo_hash 不再掺渲染版本，与 content::photo_hash 逐字同源（主键只管『哪张照片』），渲染版本只进文件名（THUMB_RENDER_VERSION 只被 file_fingerprint 使用）；history 键函数 thumb_photo_hash_v1 保留仅供迁移认领老行。B 一次性迁移（新增 src-tauri/src/thumb_migrate.rs，启动后台线程、settings 标记幂等）：逐行用旧键算回老行 → 校验源图与旧 thumb 均可用 → 读源图 EXIF orientation，仅 ==1 允许把旧文件 rename（失败则 copy）成新指纹名并重写行（零解码）；≠1 计为 needs_regen 交给懒加载。C 垃圾回收：删旧键死行 + 删除表里无任何行引用的孤儿 grid 文件。配套 5 条测试（表键与 content::photo_hash 同源 / 版本只进文件名 / 旧键与新键不同 / 迁移主流程端到端 / 源图缺失保守跳过）。",
+      "evidence_log": "真机真库（2.8 万行）实测：迁移 64 秒，扫描 27,984 行 → 重订键复用 27,550 行（98.4%）、旧图缺失 50、躺倒需重生成 384、源图缺失 0、删旧键死行 3,060、删孤儿文件 1,067、回收 59.9MB。迁移后：grid 文件 35,707 → 24,949（旧命名 25,777 → 382，0 字节文件 0 个）；表 27,984 → 24,924 行，其中 24,504 行已是 v2 文件名；扫描侧『缺缩略图』从 0（假象）变成 67（真实待生成量）。cargo test --lib 414 passed / 3 ignored；npx vue-tsc --noEmit 0 error。",
+      "lessons": [
+        "缓存键 = 契约。任何参与缓存键的常量（渲染版本/算法版本）都要先问：它属于『身份』还是『产物』？身份键（哪张照片）必须与扫描侧/其他表同源，产物版本只该进产物名",
+        "bump 缓存版本 = 全库冷启动，必须同时交付迁移路径，否则等于把用户的『永久缓存』静默清零",
+        "改像素的升级要按 orientation 分类：恒等变换的那部分（本例 97.8%）可以改名复用，不必重解码",
+        "反向也要防：不能为了复用把需要变的旧产物直接冒充新产物（orientation≠1 会把已修的横拍躺倒 bug 种回去）",
+        "迁移要幂等 + 单条失败不中断（源图被删/文件被占用都要 continue），并留 settings 标记防止每次启动重跑"
+      ],
+      "related_files": [
+        "src-tauri/src/thumbnail.rs",
+        "src-tauri/src/thumb_migrate.rs",
+        "src-tauri/src/db/thumb_cache.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/content.rs"
+      ],
+      "created_at": "2026-10-23T21:10:00+08:00",
+      "fixed_at": "2026-10-23T21:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1024-001",
+      "date": "2026-10-24",
+      "status": "resolved",
+      "title": "数据带与左侧筛选栏重叠（左栏玻璃板上探 10px 压住数据带下沿）",
+      "module": "相册管理 / 页面版式",
+      "symptom": [
+        "左上角出现叠影：左栏的磨砂玻璃板压住数据带面板的下沿",
+        "窗口高度变化时更明显"
+      ],
+      "root_cause": {
+        "summary": "左栏玻璃板是 ::before 伪元素且 inset: -10px -12px -12px -14px，向上溢出 10px；数据带就在正上方 4px 处，两个盒子咬在一起",
+        "why_missed": "视觉上是「玻璃板好看」，没人去算那块板比它自己的内容框大了 10px"
+      },
+      "fix": [
+        "inset 顶部改为 0（只在左/下扩余量）",
+        "数据带 margin-bottom 4 → 16px",
+        "左栏吸顶 top 72 → 168px，避开「顶栏 56 + 数据带 96 + 间距」"
+      ],
+      "lessons": [
+        "伪元素画「板」时，负 inset 等于把板放大到内容框之外 —— 上下左右都要与相邻块的实际间距一起核算"
+      ]
+    },
+    {
+      "id": "BUG-2026-1024-002",
+      "date": "2026-10-24",
+      "status": "resolved",
+      "title": "密排算法「逐行调平」会把首行抽空成巨幅横幅（1120×260 扁片）",
+      "module": "相册墙 / justifiedRows",
+      "symptom": [
+        "末行只剩一块 → 从上一行搬一块下来 → 上一行又变太高 → 继续往上搬 → 首行只剩一块",
+        "首行那块宽度等于整个容器，被 maxCoverH 夹住后变成一条扁片"
+      ],
+      "root_cause": {
+        "summary": "「把太高一行的末尾挪到下一行」这种局部修正会逐行向上级联；而末行没有「下一行」可借时又要向上拉，级联方向刚好指向开头",
+        "why_missed": "单看一行的修正是对的，级联效应要跑到第 3、4 行才显形"
+      },
+      "fix": [
+        "改成「先枚举行数 R，再按宽高比均匀分行，最后打分选最优」——从根上没有级联",
+        "打分里对「单块成行」重罚、对「h 被夹到上下限」重罚"
+      ],
+      "lessons": [
+        "几何布局算法不要用局部修正（每修一处都会影响邻居）；要么全局求解，要么枚举候选打分",
+        "测试要覆盖 count = 5/7/9/12/13/24/25/37/129 —— 某些 count 才会触发退化形状"
+      ]
+    },
+    {
+      "id": "BUG-2026-1024-003",
+      "date": "2026-10-24",
+      "status": "resolved",
+      "title": "组件样式改了但面板颜色没变 —— main.css 的 body.theme-dark .glass-surface 特异性更高",
+      "module": "全局样式 / 材质",
+      "symptom": [
+        "把 .gs-area 的 background 改成墙板玻璃后，截图里还是一块发紫的旧玻璃",
+        "看起来像 HMR 没生效或改错文件"
+      ],
+      "root_cause": {
+        "summary": "main.css 的 body.theme-dark .glass-surface 特异性是 (0,2,1)，组件里的 .gs-area.glass-surface 只有 (0,2,0) —— 被压掉了",
+        "why_missed": "同一份 CSS 里既有「组件类」又有「body 前缀的主题覆盖」，靠肉眼比对选择器很容易漏数"
+      },
+      "fix": [
+        "组件侧要覆盖时提到 body .gs-area.glass-surface（0,3,1），scoped 属性选择器再加一层"
+      ],
+      "lessons": [
+        "改完样式必须在浏览器里读一次 getComputedStyle 确认真值，不要凭截图猜「是不是没热更」",
+        "项目里凡是 body.xxx 形式的主题覆盖，组件层的同名覆盖都要提一级特异性"
+      ]
+    },
+    {
+      "id": "BUG-2026-1024-004",
+      "date": "2026-10-24",
+      "status": "resolved",
+      "title": "对比度审计假阳性占六成：只用页面底色、读不懂 color(srgb …)、把禁用控件也算进去",
+      "module": ".visual/audit-contrast.cjs",
+      "symptom": [
+        "金底墨字的主按钮被报 1.2:1",
+        "所有用 color-mix() 的元素都被报低对比",
+        "每个 disabled 按钮都成为一条不合格"
+      ],
+      "root_cause": {
+        "summary": "① 比较底固定用页面渐变，忽略元素自身背景；② Chromium 把 color-mix() 的计算值输出成 color(srgb 0~1 / a)，旧解析当成 0~255；③ 没有豁免禁用态"
+      },
+      "fix": [
+        "向上遍历祖先按 alpha 叠加 background-color，用元素自身有效背景",
+        "支持 color(srgb r g b / a) 并把分量 ×255；无法解析的色彩空间直接跳过不猜",
+        "跳过 [disabled] / [aria-disabled]（WCAG 1.4.3 豁免）"
+      ],
+      "lessons": [
+        "审计工具的结论要先自检：如果一半的「不合格」是按钮/禁用态，那是工具的问题不是界面的问题",
+        "假阳性比没有工具更糟 —— 它会把真实缺陷埋掉"
+      ]
+    },
+    {
+      "id": "BUG-2026-1024-005",
+      "date": "2026-10-24",
+      "status": "resolved",
+      "title": "主页「仪表墙化」后用户要回到原本的观感（FEAT-106 的 Home 部分整体回退）",
+      "module": "首页 Home.vue / 全局视觉系统",
+      "symptom": [
+        "用户看完 FEAT-106 改造后的主页截图，明确要求「主界面回到原本的感觉」",
+        "截图里的主页是：大标题 + 一条仪表数据带 + 四张宽窄交替（7/5）的墙板入口卡",
+        "原本的主页是：大标题 + 2×2 等宽玻璃入口卡，内容宽锁 1000px"
+      ],
+      "root_cause": {
+        "summary": "这不是代码缺陷，是视觉方向的用户否决：FEAT-106 把 Home 从「四张入口卡」改成「控制台首页」（仪表带 + 12 栅格宽窄板），方向没被接受。",
+        "why_missed": "改造时只对照了 Rainmeter 参考图的形态（仪表墙），没有让用户先看主页这一页的效果；相册墙/数据带/顶栏的同类改造被接受，主页不被接受 —— 说明「结构页」与「内容页」对仪表化的接受度不同。"
+      },
+      "fix": [
+        "git checkout 6c63d79 -- src/views/Home.vue，只回退这一个文件",
+        "相册墙行式密排、仪表化数据带、玻璃顶栏、StatBand/GroupStat/Sparkline 组件全部保留",
+        "回退前逐项核验旧版依赖仍有效：.glass-card、theme.cardStyle、--radius-card、--shadow-2、--color-on-bg / --color-on-bg-2、--color-link",
+        "StatBand 未变成死代码：AlbumList / Memories / ScanHub / SmartAlbum / Timeline / LocationGallery 六处仍在消费"
+      ],
+      "lessons": [
+        "整页级的视觉重做要分页验收：内容页（相册墙）先落地，结构页（首页）等用户看过再动，否则一次改 7 页返工量大",
+        "用户给的 SHA 就是验收基准线 —— 回退时直接用 git checkout <sha> -- <file>，不要手工改回去（容易漏样式细节）",
+        "「回到原本的感觉」要确认范围：本例只回退 Home，其余仪表化改造保留"
+      ]
+    },
+    {
+      "id": "BUG-2026-1024-006",
+      "date": "2026-10-24",
+      "status": "resolved",
+      "title": "同屏三类容器互相争夺「独立区块」地位 —— 用户反馈「有信息但差点意思」",
+      "module": "全局视觉 / 数据带 / 相册墙 / 左栏",
+      "symptom": [
+        "数据带换成两行（地点页 9 块 = 4+4+1，第二行末尾空一格），读起来像表格",
+        "每块数据板都有一条金进度条，一屏 9 处强调，等于没有强调",
+        "左栏一整块灰玻璃 + 右栏内容又是一片，中间一条暗缝，像两个抽屉并列",
+        "每张照片封面上压着两个深色胶囊（图注 + 日期），盖掉左下角约 15% 面积",
+        "用户原话：简约 / 有信息 / 高级 / 直观，但「感觉还是差点意思」"
+      ],
+      "root_cause": {
+        "summary": "问题不是「卡片不够精致」，而是**所有东西都被卡片包住了**。一屏出现 2 类以上容器（玻璃板 / 卡片 / 药丸 / 分段控件）时，它们互相争夺「我是一个独立区块」这件事，读者失去了唯一的层级通道 —— 「有信息」变成「有很多框」",
+        "detail": [
+          "数据带折行是算术必然：`.u-stat{flex:1 1 0;min-width:132px}`，5 块刚好 692px，9 块 1268px > 内容宽。项数随数据变化，没有安全 min-width 值",
+          "折行后每块被 flex:1 拉到更大宽度 → 两行板尺寸不一致 → 眼睛读成「表格第二行只剩一格」",
+          "tokens.css §2.7 自己写着「强调色只允许三处」，实际每块板一条金进度条",
+          "左栏 `.album-side::before` 的 inset 向外扩 10-12px → 实际边界比内容框大 → 与右栏起始线永远对不齐",
+          "胶囊方案是给「一屏几十块」的密排墙设计的；现在一行只有 3~5 块，封面本身就是足够大的对比面"
+        ],
+        "why_missed": "改造时把每一处都单独看「好不好看」，没有统计一屏内到底有几个容器。参考图是 Rainmeter 桌面（本身就靠大量小面板），直接搬形态就会把「面板数量」也搬过来"
+      },
+      "fix": [
+        "容器归零：数据带/左栏/图注/组头全部去底，只留两处真实物理边界（输入框、弹窗）",
+        "数据带 = 文本列 + 竖向发丝线，宽度按信息量加权（w-1/w-2），任意项数恒为一行",
+        "读数 30px / 字重 340（大字号+细字重是排印，大字号+粗字重是 PPT 图表）",
+        "文字只留 3 档（--fg / --fg-2 / --fg-3），不允许第四档；旧代码里 --c-fg-2 / --color-text-2 / opacity:.7 三种灰互相差 5%，看着就是「脏」",
+        "金色预算：一屏最多 2 处（当前选中项 + 主按钮）",
+        "图注从封面胶囊改到封面下方一行裸文字；名字与张数连成一串（不左右分推，否则不同宽度的瓦片会让张数落在不同 x 位置，读成两栏表格）"
+      ],
+      "lessons": [
+        "整页视觉改版先数容器：一屏内 background-color 非透明的块级元素数量是硬指标（旧 19 → 目标 ≤2）",
+        "「卡片套件」风格的根因不是卡片好看不好看，而是卡片数量。每加一个容器就多一个「我是独立区块」的声明",
+        "参考图的形态不能直接搬：Rainmeter 是桌面性皮肤（信息密度靠大量小面板达成），相册应用的信息量不在「面板数量」而在「照片本身」"
+      ]
+    },
+    {
+      "id": "BUG-2026-1024-007",
+      "date": "2026-10-24",
+      "status": "resolved",
+      "title": "新令牌取「弱化」值反而踩穿对比度：按纯黑/纯白底标定，实际页面是预设三段渐变",
+      "module": "tokens.css / theme.ts / StatBand",
+      "symptom": [
+        "对比度审计报 43 处不合格，全部集中在新加的两个令牌上",
+        "u-stat-label / unit / note：深色 3.22:1、浅色 2.83:1（AA 需 4.5:1）",
+        "search-scope：浅色 3.54:1"
+      ],
+      "root_cause": {
+        "summary": "--fg-3 初值（深 .38 / 浅 .44）是按「纯黑 #0a090d / 纯白 #faf8f5」标定的，但页面底实际是预设的三段渐变，最亮端（落日紫夜 #3b2b52）比纯黑亮得多",
+        "why_missed": "标定时脑子里只有「深色模式 = 深底」这一个假设；而 FEAT-105 一整轮都在修「模式 ≠ 背景明度」的错配，我却又在新令牌上重复了同一个错误"
+      },
+      "fix": [
+        "按渐变端点重标：--fg-3 深 .38 → .52（在 #3b2b52 上 ≥4.5:1）/ 浅 .44 → .60（在 #ddd7cd 上 ≥4.5:1）",
+        "把「要读的」标签/单位/注释从 --fg-3 提到 --fg-2：它们不是单位后缀那类装饰元素，9.5px 下 3:1 就是硬伤",
+        "最终 7 页 × 深浅 = 12 组全部 0 处不合格"
+      ],
+      "lessons": [
+        "新增文字色令牌时，标定基准必须是「预设渐变的最亮/最暗端点」，不是纯黑/纯白",
+        "「弱化」不等于「低对比度」：层次靠字号与字重建立，颜色只保证可读的下限",
+        "审计工具的价值就在这里：手工目测永远看不出 2.83 和 4.5 的差别"
+      ]
+    },
+    {
+      "id": "BUG-2026-1024-008",
+      "date": "2026-10-24",
+      "status": "resolved",
+      "title": "地图缩放四处坑：光点跟着变大 / 剪裁留白 / 拖拽快 k 倍 / 键盘收不到",
+      "module": "LocationMap.vue",
+      "symptom": [
+        "放大 6 倍后整张图只剩一大块黄色色斑（光点半径被一起放大）",
+        "改用 svg{overflow:hidden} 剪裁后，地图两边各留一大块空白",
+        "放大后拖动地图，鼠标移 100px 地图跑 600px",
+        "按 0 / + / - 完全无反应"
+      ],
+      "root_cause": {
+        "summary": "① pointRadius() 返回的是「地图坐标」，套上 <g scale(k)> 后跟着放大；② svg 的 overflow:hidden 会把**画布本身**剪成 viewBox 宽高比；③ getScreenCTM() 只到根坐标系（不含 <g> 的 transform），拖拽时又乘了一次 scale；④ keydown 挂在 svg 上，焦点在点击/拖拽后丢失",
+        "why_missed": "四个都是「看起来应该能工作」的实现，只有实际拖一拖、放一放才暴露"
+      },
+      "fix": [
+        "光点半径 = screenR / k（缩放时点位「位置拉开」而不是「自身变大」，和地图应用的 pin 同理）；标签字号同理用 --s:1/k 抵消",
+        "剪裁改用 clipPath（只限制内容，不影响 svg 占位）",
+        "拖拽只除 CTM 的缩放分量，不再乘 scale；探针断言 Δx=120 = 鼠标位移",
+        "键盘监听挂到宿主 div（带 tabindex），不再挂 svg"
+      ],
+      "lessons": [
+        "矢量图形缩放时，描边（vector-effect）与点位半径必须分别处理：前者按屏幕像素恒定，后者按屏幕像素恒定、位置跟着放大",
+        "svg 的 overflow 语义与 HTML 元素不同 —— 它剪的是画布而不是内容",
+        "getScreenCTM() 的范围容易搞错：它只到 svg 根坐标系，transform 过的 <g> 不在内",
+        "交互类改动必须写探针断言，不能只靠截图：截图看不出「拖拽速度是 6 倍」"
+      ]
+    },
+    {
+      "id": "BUG-2026-1024-009",
+      "date": "2026-10-24",
+      "status": "resolved",
+      "title": "“液态玻璃”名义存在但不生效：令牌同名冲突 + 默认预设关闭 + 一套样式零消费者",
+      "module": "tokens.css / main.css / theme.ts / presets.ts / AppHeader.vue",
+      "symptom": [
+        "顶栏 compputed backdropFilter 实测为 none（从头到尾就是一块不透明度 0.62 的实心色）",
+        "顶栏 borderTopWidth 实测 0px（语法要求 1px）",
+        "README 写着三种玻璃各司其职，实际第四种（cardStyle 内联）也在场，四套透明度各不相同",
+        ".glass-float 这个类全仓 0 个消费者",
+        "用户问“是否已经优化了液态玻璃材质” —— 答案是不但没优化，连名字对应的效果本身也没有真正生效"
+      ],
+      "root_cause": {
+        "summary": "三个独立问题叠在一起：① --glass-blur 同名不同义（tokens.css 给完整 filter 值、main.css 给长度，后者后加载胜出）→ AppHeader 算得 `18px saturate(...)` → 无效值整条丢弃；② --glass-border 同理，导致 `border: <颜色>` 这种合法简写把宽度默认成 3px 或 border-style 变 none；③ 8 套预设全部 material:plain，而 body.mat-plain 显式把 backdrop-filter 设为 none",
+        "why_missed": "”看不出来“—— 填充不透明度高到 0.62，实心色和“模糊后的背景”在深色壁纸上差异很小。反而让人误以为模糊在正常工作，于是又去调填充值（.58 下限就是这么来的），在错误的方向上持续加固"
+      },
+      "fix": [
+        "改名而不是合并：--float-blur/--float-saturate/--float-border/--float-fill/--float-shadow 给浮层，--glass-* 只管卡片（模糊半径+饱和倍率+描边颜色）",
+        "所有 border 使用方写全 `1px solid var(--glass-border)`（tokens.css / AppHeader 已改，main.css 加注释约束）",
+        "探针 .visual/probe-glass-tokens.cjs 用 computed 值钉死：backdropFilter 必须包含 url(#liquid-lens) 与 blur(..px)，border 必须 1px"
+      ],
+      "lessons": [
+        "同一句 CSS 自定义属性名在两个文件里含义不同时，后加载的会**静默**覆盖前一个。CSS 变量没有类型检查，坏值只会让整条声明被丢弃，控制台一声不响",
+        "“看着差不多”是本项目最大的敌人：填充 0.62 的实心色与真模糊在深色壁纸上几乎不可分，导致一个完全失效的材质被当成“效果已实现”过了好几轮",
+        "引入一个材质前先问三个问题：它的令牌有没有同名冲突？默认预设里它是不是被关掉了？它有真实消费者吗？（本例三题全中）",
+        "截图不能证明“效果生效”，只有 computed 值 / 像素差能证明"
+      ]
+    },
+    {
+      "id": "BUG-2026-1024-010",
+      "date": "2026-10-24",
+      "status": "resolved",
+      "title": "性能探针三次都测出假数：rAF 间隔 / 局部重绘 / 截图吞吐都摸不到 backdrop-filter 的真实代价",
+      "module": ".visual/probe-glass-fps.cjs",
+      "symptom": [
+        "第一版：三档玻璃测出全是 5ms（连裸背景也是 5ms）",
+        "第二版：改了背景动画，三档仍然全是 5ms / 200fps",
+        "第三版：连续截图测吞吐，算出“加玻璃反而更快 -27ms”这种荒谬结果"
+      ],
+      "root_cause": {
+        "summary": "① 第一版只改玻璃**内部**元素 → backdrop-filter 采样的是玻璃**背后**，不触发重新光栅化；② 第二版只看 rAF 间隔 → 无头 Edge 下 rAF 被节流到 200fps，且合成器光栅代价**不进入 JS 的 rAF 间隔**；③ 第三版 PNG 编码抖动（±30ms）远大于滤镜本身（~1-3ms），信噪比不足",
+        "why_missed": "“测出一个数字”本身就是陷阱——三版都有一个看似合理的数字输出，不追问“这个数受什么控制”就会把它当真"
+      },
+      "fix": [
+        "放弃“测时间”，改用**图元数**作为可跨环境的判断依据：② 边缘折射 ≈ 3 图元，③ 折射+色散 ≈ 11 图元（约 3 倍）",
+        "probe-glass-fps.cjs 降级为“渲染是否正确”的检查器，文件头明写不要引用它的耗时数字",
+        "把三版失败原因写进文件头 —— 防止后来者再走一遍"
+      ],
+      "lessons": [
+        "backdrop-filter 的成本全在光栅化，而光栅化对 JS 不可见：rAF 间隔测不到它",
+        "强制完整光栅化的手段（截图）代价本身就和被测物同量级，信噪比不足",
+        "当一个指标连续多版都给出差不多相同的数时，先怀疑指标本身不敏感，而不是得出结论"
+      ]
+    },
+    {
+      "id": "BUG-2026-1026-001",
+      "date": "2026-10-26",
+      "status": "resolved",
+      "title": "CLIP 模型缺失时按 1s/2s/4s 反复「未就绪」重试，白等 7 秒并刷屏日志",
+      "module": "src-tauri/src/vision.rs、src-tauri/src/content.rs、src/views/SmartSearch.vue",
+      "symptom": [
+        "日志：`[embed] embed_text_batch HTTP 503` → `CLIP 未就绪: 整图缺失: .../python/models/chinese-clip/onnx/model_fp16.onnx`",
+        "随后按 1000ms / 2000ms / 4000ms 连续重试，整个 warmup 耗时约 7150ms 才失败",
+        "每次进入搜索页或重试都重复一遍；用户看到的是「一直转圈 + 一直未就绪」，却没有任何下载入口"
+      ],
+      "root_cause": {
+        "summary": "is_not_ready 把「HTTP 503」一律视为可自愈的「服务未就绪」，而 Python 侧在模型文件缺失时同样返回 503；错误体里的「整图缺失」被后置的 503 规则吞掉，于是确定性失败进入了 1s/2s/4s 退避重试。semantic_status 又把 backoff 判断放在 model_missing 之前，导致即便前端知道缺模型也要等退避窗口结束才提示。",
+        "why_missed": "503 在 CLIP 冷加载时确实常见，最初为修「重启后首次搜索报未就绪」把 503 整体归为可重试；没有把「加载中」与「文件不存在」两种 503 分开。"
+      },
+      "fix": [
+        "新增 is_model_missing_detail：错误体含「整图缺失 / 模型缺失 / 文件缺失 / 未下载 / 未找到模型 / no such file / not found / missing model / model file / does not exist」时，is_not_ready 直接返回 false",
+        "post_json_with_retry 因此立即返回确定性错误（仍进入退避，避免每次搜索都去撞），不再空转 7 秒",
+        "semantic_status 把 clip_model_present 判断提到 backoff 之前，返回 code=model_missing",
+        "clip_model_present 改为 fp16 / fp32 任一档 + tokenizer 就绪即可，修复只下 fp32 被误判未下载",
+        "SmartSearch 检测到 model_missing 自动弹 ModelMissingDialog；扫描链路把人脸/OCR 缺模型错误也接到同一弹窗"
+      ],
+      "lessons": [
+        "同一状态码可能对应完全不同的可恢复性：判断重试前先读错误体，别只看 503。",
+        "「退避」只对会自愈的失败有意义；文件缺失应该直接转成用户可执行的下一步（下载），而不是等待。",
+        "排查这类日志先确认实际在跑的后端来自哪个目录 —— 旧进程占用固定端口时，新版前端会连到旧模型目录。"
+      ]
+    },
+    {
+      "id": "BUG-2026-1026-002",
+      "date": "2026-10-26",
+      "status": "resolved",
+      "title": "启动即崩：attempt to write a readonly database / unable to open database file（实为进程对数据目录无写权限）",
+      "module": "src-tauri/src/lib.rs（启动流程）、src-tauri/src/db/mod.rs（Database::open）",
+      "symptom": [
+        "`cargo run` 起应用，日志停在「数据库初始化中...」，随后 panic：`数据库初始化失败: Sqlite(SqliteFailure(Error { code: ReadOnly, extended_code: 8 }, Some(\"attempt to write a readonly database\")))`",
+        "同一份代码/库，换个时机再跑变成 `code: CannotOpen, extended_code: 14, \"unable to open database file\"` —— 两次报错不一致，进一步误导方向",
+        "日志里看不出是哪个文件、哪一步失败（`Database::open` 内部先 CREATE TABLE IF NOT EXISTS，报错点离权限问题很远）"
+      ],
+      "root_cause": {
+        "summary": "进程对 `%APPDATA%\\com.photomanagementsys.app` 没有写权限，SQLite 因此无法创建 `photos.db-wal` / `-shm`。WAL 文件存在时表现为 ReadOnly（打开成功、恢复失败），WAL 被清掉后表现为 CannotOpen（连主库带 sidecar 一起失败）——同因异果。权限来自运行环境：工作区目录带 Low 完整性标签，从工作区启动的 exe 以 Low IL 运行，只能写 Low IL 对象（%APPDATA% 为 Medium）→ 详见 BUG-2026-1027-007（2026-10-27 修正归因）。",
+        "evidence": [
+          "同一个 exe 拷到 %TEMP% 启动 → 日志正常出现「数据库初始化完成」，恢复登录，get_albums 返回 131 个相册，窗口标题正常",
+          "rusqlite 同样版本的最小探针（src-tauri/examples/db_probe.rs）：在工作区运行 `std::fs::write` → `拒绝访问 (os error 5)`；把同一个 exe 拷到 %TEMP% 再跑 → 写入 OK、`PRAGMA journal_mode=WAL` OK、DDL OK",
+          "anaconda 的 sqlite3.exe（不在工作区）在同一目录建库/写入正常 → 目录 ACL 与文件本身都没问题",
+          "`PRAGMA quick_check` = ok；`C:\\...\\photos.db` 的所有者/ACL 均为 Administrator:(F)，非只读属性",
+          "2026-10-27 补充（BUG-2026-1027-007）：真正机制是工作区根目录被打 Low 完整性标签、exe 继承 Low IL，而不是「受限会话只许写工作区」；`icacls` 可见 `Mandatory Label\\Low Mandatory Level:(OI)(CI)(NW)`。工作区标签改回 Medium 后，工作区内直接启动即正常。"
+        ],
+        "why_missed": "SQLite 把 OS 层的 ACCESS_DENIED 折算成 CANTOPEN/READONLY，两个错误码都不带路径与 Win32 码；而 `Database::open` 的 expect 只打印 rusqlite 错误，于是「权限」被读成「库坏了」。"
+      },
+      "fix": [
+        "启动自检 `ensure_dir_writable(data_dir)`：建目录 + 写 `.write_probe` + 删除，失败即 `fatal_data_dir()` 输出「数据目录不可写：<路径> / 原因 / 三条排查」并 exit(1)，不再 panic",
+        "`Database::open` 的 expect 改为 match：失败时打印库路径 + 「占用 / 损坏（可用同目录 *.bak-* 替换）」两类排查，exit(1)",
+        "新增 `PMS_DATA_DIR` 环境变量覆盖数据目录（便携部署 / 受限环境 / 排障），指定时跳过旧目录迁移；默认行为不变",
+        "新增 `src-tauri/examples/db_probe.rs`：一条命令区分「权限问题」与「库损坏」（写盘 / 打开 / WAL / DDL 四项）",
+        "新增 `scripts/dev-outside.ps1` + `npm run dev:outside`：前端仍走 1420 的 vite（热更新照旧），构建后把 exe 拷到 `%LOCALAPPDATA%\\pms-run` 再启动 —— 镜像在工作区外即不受该限制，实测正常加载 131 个相册"
+      ],
+      "lessons": [
+        "SQLite 的 ReadOnly / CannotOpen 几乎总是「目录或 sidecar 写不进去」，不是库损坏；先测目录可写，再看库。",
+        "最快的归因实验是**同一个 exe 换个路径跑**：可写位置能起、不可写位置崩 → 环境权限；两边都崩 → 才是代码/库。",
+        "ReadOnly(8) 与 CannotOpen(14) 可以是同一个根因的两种表现：取决于失败瞬间 WAL 是否还在 —— 别扭地解释成两个 bug。",
+        "启动失败要给「能行动的话」（路径 + 原因 + 下一步），panic 调用栈对用户零信息量。",
+        "自己发起的长任务（tauri dev / 构建）会留下 WAL：非正常结束的下一次启动会把「环境权限」伪装成「库只读」。"
+      ]
+    },
+    {
+      "id": "BUG-2026-1027-001",
+      "date": "2026-10-27",
+      "status": "resolved",
+      "title": "液态玻璃的「棱环」伪元素从未渲染：规则缺 content，计算值一直是 content:none",
+      "module": "src/assets/main.css（body.mat-liquid .glass-surface::after）",
+      "symptom": [
+        "液态材质在浅色预设下几乎看不出是玻璃：卡片与背景明度差 < 2%，只剩一条描边",
+        "getComputedStyle(card,'::after').content === \"none\"、position:static —— 高光棱环整个不存在",
+        "同一套规则在深色下也不生效，只是深底上填充差异更大，掩盖了缺失"
+      ],
+      "root_cause": {
+        "summary": "main.css 里为液态写了两条 ::after 规则（mat-plain 的 display:none 与 mat-liquid 的 160° 渐变背景），但从来没有任何一条给出 content:''/position/inset。没有 content 的伪元素不会被生成，于是 background 声明完全空转。",
+        "why_missed": "验收时看的是「有没有这条 CSS」而不是「这一层画出来没有」；截图对比又只在深色预设下做过，深底填充差异把缺失掩盖了。"
+      },
+      "fix": [
+        "补全 ::after 的几何：content:'' / position:absolute / inset:0 / border-radius:inherit / pointer-events:none",
+        "改用 padding:1px + mask-composite:exclude 裁成真正的 1px 棱环（满面积渐变会盖在内容上把照片与文字洗白）",
+        "棱环颜色改为引用 --liquid-specular / --liquid-depth（store 按背景明度下发），浅底用 0.9 白 + 0.16 暗壁"
+      ],
+      "lessons": [
+        "伪元素规则「写了 background 却没有 content」是最容易静默失效的一类 CSS：样式面板里看得到声明，页面上什么都没有。判据是 getComputedStyle(el,'::after').content，不是源码里有没有这段。",
+        "同一材质要在深/浅两套底色上各验一次：深底的高光失效常被填充差异掩盖。"
+      ]
+    },
+    {
+      "id": "BUG-2026-1027-002",
+      "date": "2026-10-27",
+      "status": "resolved",
+      "title": "拖「组件透明度」滑块没反应：液态下 0~62% 被统一夹到 0.58",
+      "module": "src/stores/theme.ts（effectiveAlpha）、src/components/ThemeDialog.vue",
+      "symptom": [
+        "液态材质下把透明度从 20% 拖到 50%，画面完全不变",
+        "实测 --color-surface 的 alpha：compAlpha 0.2 → 0.58、0.5 → 0.58、0.8 → 0.76 —— 只有 >0.62 才开始跟手",
+        "换算到画面上：两个 alpha 只差 2~3 个色阶，等于没有变化"
+      ],
+      "root_cause": {
+        "summary": "FEAT-103 为液态加的「−0.04 偏移 + 0.58 下限 + 对比度安全阀」三重夹紧，在材质变成用户可选卡面之后仍是硬夹：Math.max(0.58, base-0.04) 把 0~62% 全部夹平；安全阀再在对比不足时把值退回上一个候选。",
+        "why_missed": "当时的约束是「玻璃只用于浮层，填充不够实就看不清字」，下限是为浮层写的；后来材质开放给卡面，限制没有跟着撤销，也没有「拖到底有没有变化」的用例。"
+      },
+      "fix": [
+        "effectiveAlpha 直接返回 compAlpha（滑块唯一事实），删除 LIQUID_ALPHA_DROP / LIQUID_ALPHA_FLOOR 与对比度安全阀",
+        "可读性交给已有机制：文字色对 glassRgb（玻璃等效底色）现算，主题弹窗里的「实测最深色带 ≈ x:1」如实报警",
+        "下限只保留在派生层：dialogAlpha 不低于 0.55（弹窗后面是照片，不是壁纸渐变）"
+      ],
+      "lessons": [
+        "「安全阀」是在特定用途下写的：用途一变就必须复查，否则它会静默吃掉用户的操作（用户只会说「滑块坏了」）。",
+        "验收滑块类控件要看**下发的值**而不只是画面：画面上 2~3 个色阶的差别人眼几乎不可分辨。",
+        "填充色与背景太接近时，alpha 变化本身也看不出（实测 25% vs 72% 只差 2~3 个色阶）—— 先修色差，再谈透明度。"
+      ]
+    },
+    {
+      "id": "BUG-2026-1027-003",
+      "date": "2026-10-27",
+      "status": "fixed",
+      "title": "时间线进页面 2~4 s、滚久了退出当前界面、左栏跳转卡顿或没反应",
+      "module": "src/views/Timeline.vue、src-tauri/src/db/content.rs、src/utils/justifiedRows.ts",
+      "symptom": "① 每次进时间线缩略图要等很久；② 滚一段时间后整页退出/白屏；③ 点左侧月份要么卡，要么完全没反应（远处的月份）；④ 从回忆页带 query 跳过来经常落空。",
+      "root_cause": "① list_timeline 一次返回 24,980 行 × 18 列 = 14.10 MB，前端只用 7 列；② justifyRows 收到 breakPoints 时仍先跑完「枚举行数 R 再打分」的 O(n²) 搜索，而结果整段被丢弃（n=24,980 时约 3 亿次迭代），叠加 rows→groups→flatItems→lineRows→monthRowMap 四层各新建 2.5 万个对象，全部在主线程同步跑；③ visibleMonths 单调增长、滚过的月份永不卸载，每卡还挂 IntersectionObserver + function ref + img，滚到底 2.5 万个 figure → WebView2 渲染进程节点/内存爆炸被回收；④ 缩略图按卡入队、每次只带 1~5 条路径，全局并发仅 3，一次滚动上千次 IPC 往返；⑤ railNodes 来自全量 groups 而锚点只存在于已渲染月份，getElementById 返回 null 时 railGo 直接 return；⑥ scrollIntoView({smooth}) 沿途经过上千张卡并触发追加渲染，文档高度边滚边变 → 落点漂移。",
+      "fix": "FEAT-122：新增 timeline_index / timeline_month 按月分页（骨架 3.91 KB / 31 ms，缩略图路径随行下发）；前端改为高度账本 + 窗口化渲染（DOM 卡片稳定 40~47 个）；jumpTo 用账本直接 scrollTo 并 pin 目标；左栏高亮改账本二分；layoutMonth 去掉被丢弃的行数枚举，按月 O(n) 排且高度是可预算的纯函数。",
+      "lessons": "① 优化前先量「首包体积」，15 MB 的 JSON 在主线程解析+派生，任何单点优化都杯水车薪；② 虚拟滚动的前提是「高度可预算」——本项目所有格子用名义宽高比、不用真实图片尺寸，所以 (count, width) 就能算出精确行高，这是方案能成立的关键；③ 懒加载图片 ≠ 懒加载列表：只把缩略图改懒、DOM 仍全量建，滚久了照样崩；④ 平滑滚动的代价与文档长度成正比，长列表跳转应「先定窗口再即时定位」；⑤ 排序/聚合类 SQL 在没有可写临时目录的受限会话里会报 SQLITE_CANTOPEN(unable to open database file) —— 这是工作区内 exe 只能写工作区的老问题（同 BUG-2026-1026-002），跑量测探针要把 exe 拷到工作区外。"
+    },
+    {
+      "id": "BUG-2026-1027-004",
+      "date": "2026-10-27",
+      "status": "fixed",
+      "title": "人物头像裁不出来：get_person_avatar 报「无法读取图片头信息」，缩略图报「Illegal start bytes:8950」",
+      "module": "src-tauri/src/avatar.rs、src-tauri/src/persons.rs、src-tauri/src/thumbnail.rs、src-tauri/src/imgio.rs",
+      "symptom": "① 人物页部分人物永远没有头像，日志里 get_person_avatar END | ERR | 无法读取图片头信息；② 部分照片的网格缩略图补齐失败：Image(Decoding(... Illegal start bytes:8950))。",
+      "root_cause": "本轮实测定位：`crop_avatar_local` / `crop_square` 用**扩展名**判断是否 JPEG（`name.ends_with(\".jpg\")`），再交给 `jpeg_decoder` 读图头。但图库里存在「内容与扩展名不一致」的文件 —— 直接统计 `vcr-data/persons.db` 的 faces 表：10,565 条人脸里 **95 条**原图的文件头是 `89 50 4E 47`（PNG），其中一批就叫 `*.jpg`（微信/截图导出常见）。jpeg_decoder 读 PNG 必然 `info()` 返回 None → 报「无法读取图片头信息」。同一类文件在 thumbnail.rs 里走 `image::open` 兜底也救不回来 —— `image::open` 先按**扩展名**猜格式（ImageReader::open 语义），照样把它当 JPEG 解，于是报 `Illegal start bytes:8950`（8950 = PNG 魔数）。",
+      "fix": "① 新增 `avatar::is_jpeg_file()`：读文件头 3 字节判 `FF D8 FF`，不信扩展名；avatar.rs 与 persons.rs 改用它选解码路径。② 新增 `src-tauri/src/imgio.rs::open_any()`：`image::load_from_memory` 按**魔数**解码，非 JPEG 快速路径与所有兜底分支统一走它；thumbnail.rs 也加 `open_any_image()` 替换两处 `image::open`。JPEG 源图仍保留 DCT 降采样快速路径（大图全解码要 5~14 s）。",
+      "lessons": "① 「按扩展名判图片格式」在本项目是系统性隐患：缩略图缓存里也有一批 `.jpg` 文件实际是 WebP（24,945 个 grid 缩略图全是这种），所以任何新写的解码/裁切代码都要按魔数判断；② `image::open` 会按扩展名猜格式，`image::load_from_memory` 才按内容嗅探 —— 遇到名不副实的文件必须用后者；③ 沙箱会话里 `cargo test` 会因写不了 %TEMP% 而假失败（PermissionDenied / 数据依赖），验证 Rust 单测要把测试 exe 拷到工作区外跑（同 BUG-2026-1026-002）。"
+    },
+    {
+      "id": "BUG-2026-1027-005",
+      "date": "2026-10-27",
+      "status": "fixed",
+      "title": "部分人物的头像/封面永远裁不出来：代表脸选中的那张原图已不在磁盘上",
+      "module": "src-tauri/src/persons.rs",
+      "symptom": "人物页个别卡片一直没有图；日志报「代表脸原图不存在: D:\\...\\mmexport1699190089634.jpg」。",
+      "root_cause": "representative_face() 用「与质心最相似」挑代表脸，**不看原图是否还在**。照片被删/移走后，这个人物每次裁切都在同一张不存在的文件上失败 —— 永久失败，没有任何自愈路径。实测真实注册表前 5 人就有一个（文件确实已不存在）。",
+      "fix": "候选比较时额外检查 Path::is_file()，另存一份「原图仍在磁盘」的最优解，优先返回它；一张都不存在时才退回最优解（让报错信息仍可读）。头像与卡片封面共用这个函数，两条链路一起修好。",
+      "lessons": "「挑代表脸」这类选优逻辑必须把「资源是否真的可用」纳入判据 —— 否则聚类/相似度算得再准，落到一张不存在的文件上就等于该人物永久没有封面。"
+    },
+    {
+      "id": "BUG-2026-1027-006",
+      "date": "2026-10-27",
+      "status": "fixed",
+      "title": "同一相册被完整扫描两遍：后端没有单飞锁，前端守卫只在单个 Pinia 实例内有效",
+      "module": "扫描入库 / src-tauri/src/content.rs / src/stores/content.ts / src-tauri/src/category.rs",
+      "symptom": [
+        "只点了一次「开始组合扫描（覆盖）」，后端却把同一相册完整跑了两遍：album=126 的 776 张，205587ms + 147106ms，两次都 total=776 written=776",
+        "用户观感是「前端显示扫描完成后，后端又跑了一遍」",
+        "两遍之间没有 cancel、没有报错、没有第二次点击的痕迹"
+      ],
+      "root_cause": {
+        "summary": "两个层面各缺一块：① 后端 scan_album_combined 完全没有互斥（唯一的进程级锁是 content.rs 的 EMBED_CACHE，与扫描无关），同一相册可以被任意并行/重复调用；② 前端的三道守卫（combinedJobs[albumId].running / globalScanJob.running / runningSingle）全是 JS 内存状态，只在同一个 Pinia 实例内有效。多开一个窗口、整页重载、两个 app 进程并存时，各自的 running 都是 false，互相看不见 —— 守卫在真正需要它的场景下正好失效。",
+        "detail": [
+          "时间线铁证（app.log，本机）：第 1 次 21:13:21.13 起、21:16:46.71 打 [AOP:RET]（205587ms）；第 2 次起点由 21:19:14.580 − 147.106s 反推 ≈21:16:47.5，即第 1 次 AI 腿结束（21:16:46.33）后约 1.1s 发起",
+          "关键判据：第 1 次真正返回前端是 21:17:03.562（scan.timing 打印点），因为 content.rs:2086-2137 在 log_call_end_with 之后还要同步 await 缩略图预热 → 分类命中重建（11.7s）→ 描述索引（5.0s）。也就是说第 2 次启动时第 1 次还没返回，「扫描完成回调」这类前端代码路径不可能是触发源",
+          "同一个错位还解释了用户的观感：进度条在 AI 腿结束时就到 776/776，之后 16.8s 是黑箱；UI 在 21:17:03 显示「✅ 已写入 776/776」的那一刻，第 2 次已经在后台跑了 16 秒",
+          "排除项：10-27 全天没有 cancel_scan（「收到停止请求」只出现在 10-01）；src 里没有任何 setTimeout/setInterval、没有看门狗/续扫；后端没有 scan-done 类事件（只有 classify-progress / embed-progress）；批量列表重复 id 会被 job.running 挡住；整页重载会重跑整套 mount 命令（list_persons/list_categories/overview_stats/thumbs），而事发窗口只有 3 条 get_albums，不是重载",
+          "环境侧证据：python 服务 pid=2988 从 20:07:24 一直活到 21:11:15 被新进程以「ensure B段 收养就绪实例」方式接管（说明旧 app 进程退出不清理子进程）；20:42:31 起过实例、21:10:23 又起了 pid=17060，两者之间没有任何退出痕迹；src-tauri/Cargo.toml 只有 tauri-plugin-opener/dialog，没有 tauri-plugin-single-instance，两个实例共用同一个 photos.db 与同一个识别服务是完全允许的",
+          "没能钉死的一点：谁在 21:16:47.5 发的第二次请求。[AOP:CALL] 是 DEBUG 级（PMS_LOG_LEVEL 默认 info 过滤），日志里既没有请求参数也没有调用方，两条请求长得一模一样"
+        ]
+      },
+      "fix": [
+        "后端单飞（content.rs）：static SCAN_LOCK: tokio::sync::Mutex<()> + static SCAN_ALBUM: AtomicI64 + ScanSlotGuard(Drop 清位)；try_lock 抢不到立即返回「已有扫描进行中（相册 X），请等待其完成或停止后再试」并打 WARN。锁必须在重置取消标记之前获取 —— 被拒绝的请求不得清掉别人的取消位",
+        "调用方留痕（content.rs + content.ts）：scan_album_combined 新增可选参数 client_tag，入口用 info 级打 `[scan] 请求 | album=.. types=.. overwrite=.. client=<窗口 label>/<页面会话 id>/<调用点>`；三个 invoke 点分别传 sync / single / global。页面会话 id 是模块级随机串，重载即换新 —— 下次「跑两遍」日志第一行就能看出是不是两个上下文",
+        "分类重建指纹短路（category.rs）：语义命中只取决于（向量、模型、分类定义），与 content 表无关。semantic_fingerprint = 模型 + photo_embeddings 的 (条数, max rowid, max generated_at) + 21 行分类定义（id/来源/关键词/排除词/阈值/启用/排序），未变则跳过并沿用上次命中数（存 app_settings.category_hit_sig）。builtin 规则分类照旧每次 SQL 直算；rebuild_one（保存分类后）与 rebuild_categories（手动重建）强制重算，且单分类重建不写指纹（避免局部结果被当成全局）",
+        "新增 Rust 单测 semantic_fingerprint_tracks_inputs：新向量 / 重编码（只变 generated_at）/ 换模型 / 改关键词 / 改阈值 / 改启用 都必须改变指纹，他人向量不得影响"
+      ],
+      "evidence_log": "修复前（真机 app.log）：album=126 两条 scan_album_combined END，205587ms（21:16:46.714）与 147106ms（21:19:14.580），各 total=776 written=776；第 2 次起点 21:16:47.5 早于第 1 次返回前端 21:17:03.562。分类重建每次全量重写 24896 条索引 × 17 语义分类：album=96 只扫 115 张也花 8754ms（占本次总时长 83821ms 的 10%），且命中 20610 / 索引 24896 与上一轮逐字相同。修复后：cargo check 通过（仅既有 dead-code 告警）；cargo test --lib 在工区外执行 420 passed / 3 ignored（工区内跑有 20 项因 %TEMP% 不可写而假失败，PermissionDenied，同 BUG-2026-1026-002）；npx vue-tsc --noEmit 0 error；npm test 164 passed。单飞锁的拒绝路径尚未在真机双开场景复现（需用户双窗口验证）。",
+      "lessons": [
+        "前端的 running 标志不是并发控制：它只是某个 JS 上下文里的一个布尔值，多开 / 重载 / 重启立刻失效。凡是有副作用、耗时长、能被用户重复触发的命令，都必须在后端单飞（try_lock 失败就明确拒绝，返回原因而不是静默排队）",
+        "「AOP:RET 耗时」不等于「命令返回前端」：本例两者差 9.9~16.8s 的收尾段。排查「跑两遍」第一步是算时间差，不是读代码 —— 先确认第二次是否落在第一次的返回点之后再判断触发源",
+        "长任务的收尾阶段必须上报进度（或至少在 UI 上显示「收尾中」）。进度条 100% 与真实返回之间隔着十几秒，用户会误判完成、重复点击，日志里就会留下「跑两遍」",
+        "做「有变化才重算」之前先写清输入的指纹是什么：语义命中的输入只有（向量、模型、分类定义），content 表与它无关。把 content 也塞进指纹看起来更保险，实际会让短路几乎永不命中，等于白做",
+        "「输入指纹 + 产物一起存」是短路能如实汇报的前提：只存指纹不存上次命中数，跳过时只能报「命中 0」，日志与 UI 都会造出新的假象",
+        "指纹写入必须区分全量与局部：单分类重建写指纹，会让下一轮全量扫描误跳，把局部结果当成全局结果"
+      ],
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/category.rs",
+        "src/stores/content.ts"
+      ],
+      "created_at": "2026-10-27T21:40:00+08:00",
+      "fixed_at": "2026-10-27T22:10:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1027-007",
+      "date": "2026-10-27",
+      "status": "fixed",
+      "title": "工作区目录带 Low 完整性标签，从工作区启动的 exe 一律写不进 %APPDATA%（启动即「数据目录不可写 os error 5」）",
+      "module": "环境/工作区权限（非代码缺陷）；暴露点 src-tauri/src/lib.rs::ensure_dir_writable / fatal_data_dir",
+      "symptom": [
+        "`cargo run` 立即退出：`[FATAL] 数据目录不可写：C:\\Users\\Administrator\\AppData\\Roaming\\com.photomanagementsys.app 原因：拒绝访问。 (os error 5)`，发生在迁移 / logger / 建库之前",
+        "同一个 exe 拷到 %LOCALAPPDATA%\\pms-run 或 %TEMP% 再跑完全正常（数据库初始化完成、恢复登录、get_albums 正常）",
+        "PMS_DATA_DIR 指向 C:\\Temp\\... 同样 os error 5；指向工作区内目录则正常启动 —— 与目标目录无关，只与「exe 落在哪」有关",
+        "同源历史症状：BUG-2026-1026-002（SQLite ReadOnly/8、CannotOpen/14）；cargo test 在工区内跑出现 20 项 %TEMP% 不可写假失败（PermissionDenied，见 BUG-2026-1027-006 的 evidence）"
+      ],
+      "root_cause": {
+        "summary": "工作区根目录被打了 Low 完整性标签（`icacls` 显示 `Mandatory Label\\Low Mandatory Level:(OI)(CI)(NW)`），target/debug 下的 exe 由继承取得 Low IL。Windows 强制完整性控制（MIC）默认 no-write-up：Low IL 进程只能写 Low IL 对象，而 %APPDATA% / %TEMP% / C:\\Temp 都是 Medium → 所有写在系统调用层返回 ACCESS_DENIED(5)。与 ACL、杀软、实例占用、库损坏全无关。",
+        "evidence": [
+          "`icacls <工作区根>` = `Mandatory Label\\Low Mandatory Level:(OI)(CI)(NW)`；`icacls src-tauri\\target\\debug\\photo-management-sys.exe` = `Low Mandatory Level (I)`（继承标记）",
+          "对照实验（同一份 exe，改变容器）：新目录 C:\\Temp\\low-il-test 打 Low 标签 → 拷入 exe → PMS_DATA_DIR 指向普通 Medium 目录 → 复现 os error 5；该目录标签改回 Medium → 同一条命令成功。判据是完整性标签，与路径无关",
+          "反向对照：工作区 exe + PMS_DATA_DIR=工作区内目录 → 正常启动（数据库初始化完成）；工作区 exe + PMS_DATA_DIR=C:\\Temp → os error 5",
+          "PowerShell（System32 下的 Medium/High IL 进程）往同一目录写文件成功 → 排除 ACL / 并发占用 / 杀软（Defender 实时保护本来就是关闭态）",
+          "工作区根 ACL 另带异常项：`Everyone:(CI)(DENY)(DC)` 加两个无法解析的 `S-1-4-…` 写入授权 —— 与 Low 标签同源，整个工程树是某次带低完整性/沙箱标记的复制或解压产物"
+        ],
+        "why_missed": "os error 5 太笼统，第一反应总是 ACL / 杀软 / 占用；而 icacls 默认输出把 Mandatory Label 排在末尾，很容易被当成「没给权限」而不是「进程被降级」。BUG-2026-1026-002 记成「受限会话限制工作区 exe 只能写工作区」——现象对、机制错。"
+      },
+      "fix": [
+        "根治（一次性，不必降权或换目录）：`icacls \"D:\\YUAN HAO\\Documents\\PersonalIdeaProject\\PhotoMangementSys\" /setintegritylevel (OI)(CI)M` —— 工作区及全部子项（含 target\\*\\*.exe）改为 Medium，继承改动即时传播到已有子项",
+        "验证：`icacls <exe>` 显示 `Medium Mandatory Level`；直接启动 target\\debug 下的 exe → app.log 出现「数据库初始化完成 / 已恢复上次登录用户 id=1」",
+        "备选（不动 ACL）：`npm run dev:outside`（把 exe 拷到 %LOCALAPPDATA%\\pms-run 启动，见 BUG-2026-1026-002 的 scripts/dev-outside.ps1）；或 PMS_DATA_DIR 指向工作区内目录（库会落在仓库里，不推荐）",
+        "代码侧配套：fatal_data_dir 的排查项补第 ④ 条（icacls 出现 Low Mandatory Level → setintegritylevel (OI)(CI)M），下次同因失败直接从提示里拿到动作"
+      ],
+      "evidence_log": "修复前后同一条启动命令对比：修复前 → exit 1 + FATAL「数据目录不可写 … os error 5」；修复后 → pid=19160 存活，app.log 依次出现「==== APP START v0.4.3 pid=19160 data_dir=…」→「数据库初始化完成」→「已恢复上次登录用户 id=1（记住登录 3 天）」。对照实验的低标签目录与临时代码目录均已清理。",
+      "lessons": [
+        "Windows 的「拒绝访问」有两层：ACL（谁能访问这个对象）与完整性级别（这个进程被允许写到哪一层）。icacls 输出里的 Mandatory Label 必须看，看到 Low 就等于「这个 exe 天生写不了用户目录」",
+        "归因实验的优先级：同一个 exe 换个容器试 → 能跑就是环境；再换标签 / 换完整性级别试 → 能跑就精确到 MIC。两步能省掉几小时的代码排查",
+        "别把「部分测试因 %TEMP% 不可写而假失败」当噪声：那是进程被降级的强信号（Low IL 进程写不进 Medium 的 %TEMP%）",
+        "工作区权限一旦被外部工具改过（Low 标签 / Everyone DENY / 无法解析的 S-1-4 SID），所有「莫名其妙写不进去」的问题都先怀疑它，别先去翻数据库或应用代码"
+      ],
+      "related_files": [
+        "src-tauri/src/lib.rs"
+      ],
+      "created_at": "2026-10-27T22:00:00+08:00",
+      "fixed_at": "2026-10-27T21:56:00+08:00"
     }
   ],
-  "updated": "2026-10-23T17:44:34+08:00"
+  "updated": "2026-10-27"
 }

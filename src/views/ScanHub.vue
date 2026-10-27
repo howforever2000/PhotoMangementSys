@@ -1,28 +1,28 @@
 <script setup lang="ts">
 /**
- * 图片扫描板块 Hub（FEAT-038）
+ * 扫描入库模块 Hub（FEAT-038，FEAT-105 重做）
  *
- * 模仿「智慧相册」SmartAlbum 的 Hub 模式：
- *  - 顶部 Hero：渐变背景 + 关键统计（相册数 / 总照片 / 已扫描入库 / 已入库相册 / 后台任务状态）
- *  - 4 个子模块入口卡：渐变区分，点击切换下方内容
- *    - 「全局照片扫描入库」：默认 tab，直接在 Hub 内渲染 GlobalScanPanel 子组件
- *    - 「扫描测试工具」：跳转子页面 /scan/test（按年·地点组织移动）
- *    - 「按年·地点浏览」：占位（待开发）
- *    - 「重复扫描清理」：占位（待开发）
- *  - 下方区域：渲染当前选中 tab 的子组件（默认 GlobalScanPanel）
+ * FEAT-105 改了什么：旧版顶部是「彩虹渐变 Hero + 4 张渐变入口卡 + 胶囊 tab」，
+ * 同一组功能被写了两遍（卡一遍、tab 一遍），而且渐变吃掉了页面的注意力。
+ * 现在：模块页头（你在哪） + 数据带（有多少） + ModuleTabs（看哪块） + 内容。
+ *
+ * 子功能（全在本模块内，不再有跨模块导航）：
+ *   · 全局扫描入库：默认 tab，直接在 Hub 内渲染 GlobalScanPanel
+ *   · 按年·地点浏览：待开发（置灰可见）
+ *   · 重复扫描清理：待开发（置灰可见）
+ *   · 相册扫描分组工具：独立子页 /scan/test
  *
  * 全局扫描任务状态在 Pinia store 中独立存活，切换 tab / 离开 Hub 不中断扫描。
  */
 import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { useThemeStore } from "../stores/theme";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import GlobalScanPanel from "../components/GlobalScanPanel.vue";
-import AppHeader from "../components/ui/AppHeader.vue";
+import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
+import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 
 const router = useRouter();
-const theme = useThemeStore();
 const albumStore = useAlbumStore();
 const contentStore = useContentStore();
 
@@ -99,6 +99,60 @@ watch(
   { immediate: true },
 );
 
+/* ---------------- 数据带 / 二级导航 / 页头读数（FEAT-105） ---------------- */
+
+/** 数据带：把旧 hero 里的五格搬到带里。
+ *  任务状态单占一格：它是这页唯一"会变"的值，放在带尾不会打乱前面四个静态读数。 */
+const statItems = computed<StatItem[]>(() => {
+  const jobValue = globalRunning.value
+    ? "运行中"
+    : globalDoneCount.value || globalFailedCount.value
+      ? `${globalDoneCount.value}/${globalDoneCount.value + globalFailedCount.value}`
+      : "—";
+  return [
+    { label: "相册", value: totalAlbums.value, unit: "个" },
+    { label: "照片", value: totalPhotos.value, unit: "张" },
+    {
+      label: "已入库相册",
+      value: scannedAlbums.value,
+      unit: "个",
+      progress: totalAlbums.value ? scannedAlbums.value / totalAlbums.value : 0,
+      progressTone: "muted",
+    },
+    {
+      label: "已入库照片",
+      value: scannedIn.value,
+      unit: "张",
+      progress: totalPhotos.value ? scannedIn.value / totalPhotos.value : 0,
+    },
+    {
+      label: "全局扫描任务",
+      value: jobValue,
+      tone: globalRunning.value ? "up" : "mute",
+      note: globalFailedCount.value ? `${globalFailedCount.value} 个失败` : undefined,
+    },
+  ];
+});
+
+/** 组件内部分区：四项全属于「扫描入库」 */
+const moduleTabs = computed<HeaderTab[]>(() =>
+  tabs.map((t) => ({
+    key: t.key,
+    label: t.label.replace("全局照片扫描入库", "全局扫描"),
+    to: t.inline ? undefined : t.path,
+    disabled: !t.enabled,
+    why: t.enabled ? undefined : "功能待开发：扫描写库后即可用",
+  })),
+);
+
+/** 页头读数：一行说清这页在干什么 */
+const headerMeta = computed(() => {
+  const parts: string[] = [];
+  if (scannedAlbums.value) parts.push(`${scannedAlbums.value} 个相册已入库`);
+  if (globalRunning.value) parts.push("后台扫描中");
+  return parts.join(" · ");
+});
+
 onMounted(async () => {
   if (!albumStore.albums.length) {
     try {
@@ -108,154 +162,22 @@ onMounted(async () => {
     }
   }
 });
-
-/* ---------------- 子模块入口卡（智慧相册风格） ---------------- */
-interface SubModule {
-  tab: string;
-  icon: string;
-  title: string;
-  desc: string;
-  /** 鲜艳彩虹底（糖果色系，按用户色卡） */
-  gradient: string;
-}
-const subModules: SubModule[] = [
-  {
-    tab: "global",
-    icon: "🗂️",
-    title: "全局照片扫描入库",
-    desc: "勾选相册批量扫描入库，支持全选、启停、进度与后台执行",
-    gradient: "linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-pink) 100%)",
-  },
-  {
-    tab: "by-time-place",
-    icon: "🗓️",
-    title: "按年·地点浏览",
-    desc: "把扫描结果按年 / 地点组织聚合展示（待开发）",
-    gradient: "linear-gradient(135deg, var(--candy-blue) 0%, var(--candy-rose) 100%)",
-  },
-  {
-    tab: "dedupe",
-    icon: "🧹",
-    title: "重复扫描清理",
-    desc: "基于哈希找出已入库但重复扫描的照片，支持一键清理（待开发）",
-    gradient: "linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-blue) 100%)",
-  },
-  {
-    tab: "test",
-    icon: "🧪",
-    title: "相册扫描分组工具",
-    desc: "扫描任意文件夹 → 按年·地点分组预览与批量移动（独立子页面）",
-    gradient: "linear-gradient(135deg, var(--candy-pink) 0%, var(--candy-rose) 100%)",
-  },
-];
-
-function openSub(m: SubModule) {
-  const def = tabs.find((t) => t.key === m.tab);
-  if (!def || !def.enabled) return;
-  if (def.path) {
-    router.push(def.path);
-    return;
-  }
-  activeTab.value = m.tab;
-}
-
-/** FEAT-051：tab 栏点击 —— 独立子页面（有 path）直接跳转，修复点击后空白的问题 */
-function onTabClick(t: ScanTab) {
-  if (!t.enabled) return;
-  if (t.path) {
-    router.push(t.path);
-    return;
-  }
-  activeTab.value = t.key;
-}
 </script>
 
 <template>
-  <div class="scan-page" :style="{ color: theme.textColor }">
-    <AppHeader title="扫描" />
+  <div class="scan-page" :style="{ color: 'var(--fg)' }">
+    <!-- 大组件页头：组件名 + 本组件内部分区（全局扫描 / 按年·地点 / 重复清理 / 分组工具） -->
+    <AppHeader
+      title="扫描入库"
+      icon="📥"
+      :meta="headerMeta"
+      :tabs="moduleTabs"
+      :active="activeTab"
+      @pick="(k) => (activeTab = k)"
+    />
 
-    <!-- Hero：彩虹横幅（按需求保留）；糖果浅底配墨色字，避免白字对比度不足 -->
-    <section
-      class="scan-hero glass-surface candy-surface"
-      :style="{
-        background:
-          'linear-gradient(135deg, var(--candy-cream) 0%, var(--candy-pink) 55%, var(--candy-blue) 100%)',
-      }"
-    >
-      <div class="scan-hero-content">
-        <h1 class="scan-hero-title">🔍 图片扫描</h1>
-        <p class="scan-hero-sub">批量扫描入库，按年·地点整理，重复清理与相册分组</p>
-        <div class="scan-stats">
-          <div class="stat">
-            <span class="stat-num">{{ totalAlbums }}</span>
-            <span class="stat-label">个相册</span>
-          </div>
-          <div class="stat-divider"></div>
-          <div class="stat">
-            <span class="stat-num">{{ totalPhotos }}</span>
-            <span class="stat-label">张照片</span>
-          </div>
-          <div class="stat-divider"></div>
-          <div class="stat">
-            <span class="stat-num">{{ scannedAlbums }}</span>
-            <span class="stat-label">个已入库相册</span>
-          </div>
-          <div class="stat-divider"></div>
-          <div class="stat">
-            <span class="stat-num">{{ scannedIn }}</span>
-            <span class="stat-label">已入库照片</span>
-          </div>
-          <div class="stat-divider"></div>
-          <div class="stat scan-task-stat" :class="{ running: globalRunning }">
-            <span class="stat-num">
-              <template v-if="globalRunning">⏳ 后台运行中</template>
-              <template v-else-if="globalDoneCount || globalFailedCount">
-                {{ globalDoneCount }} / {{ globalDoneCount + globalFailedCount }} 完成
-              </template>
-              <template v-else>—</template>
-            </span>
-            <span class="stat-label">全局扫描任务</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 4 个子模块入口卡（强调：点击切换下方内容） -->
-    <section class="scan-subgrid">
-      <button
-        v-for="m in subModules"
-        :key="m.tab"
-        class="scan-subcard glass-surface candy-surface"
-        :class="{ 'scan-subcard-active': activeTab === m.tab, 'scan-subcard-disabled': !tabs.find((t) => t.key === m.tab)?.enabled }"
-        :style="{ background: m.gradient }"
-        :aria-disabled="!tabs.find((t) => t.key === m.tab)?.enabled"
-        @click="openSub(m)"
-      >
-        <span class="scan-subicon">{{ m.icon }}</span>
-        <span class="scan-subbody">
-          <span class="scan-subtitle-line">{{ m.title }}</span>
-          <span class="scan-subdesc">{{ m.desc }}</span>
-        </span>
-        <span class="scan-subarrow">{{ tabs.find((t) => t.key === m.tab)?.enabled ? "→" : "🔒" }}</span>
-      </button>
-    </section>
-
-    <!-- 分类方式标签栏（与 SmartAlbum 风格一致） -->
-    <nav class="tab-bar" role="tablist">
-      <button
-        v-for="t in tabs"
-        :key="t.key"
-        class="tab-item"
-        :class="{ active: activeTab === t.key, disabled: !t.enabled }"
-        role="tab"
-        :aria-selected="activeTab === t.key"
-        @click="onTabClick(t)"
-      >
-        <span class="tab-icon">{{ t.icon }}</span>
-        {{ t.label }}
-        <span v-if="!t.enabled" class="tab-pending">待开发</span>
-      </button>
-    </nav>
+    <!-- 数据带：相册 / 照片 / 已入库 / 任务状态 -->
+    <StatBand :items="statItems" class="scan-stats" />
 
     <!-- 当前 tab 对应的子内容区（FEAT-038：默认 tab 即在 Hub 内渲染 GlobalScanPanel） -->
     <section class="scan-active-area">
@@ -276,215 +198,32 @@ function onTabClick(t: ScanTab) {
 </template>
 
 <style scoped>
+/* ---- 页面壳（FEAT-105）----
+   只负责左右留白与纵向节奏；宽度不锁 max-width，
+   扫描队列表与相册双列在宽屏下应该铺开而不是居中缩窄。 */
 .scan-page {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 24px 20px 48px;
-}
-.scan-back { margin-bottom: 14px; }
-
-/* ---- Hero：糖果彩虹横幅（与下方子模块卡同一色族 · 用户色卡） ---- */
-.scan-hero {
-  position: relative;
-  /* 与 SmartAlbum 同一修法：min-height + 内容自适应，统计行换行不裁切 */
-  min-height: 220px;
-  height: auto;
-  border-radius: var(--radius-card);
-  overflow: hidden;
-  margin-bottom: 22px;
-  background: var(--glass-bg); /* 未内联渐变时的玻璃回退 */
-  /* 描边只做兜底：边缘光泽由 ::after 渐变棱环主导（左上亮→右下反光） */
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  /* 糖果浅底 → 墨色字（与子卡一致） */
-  color: #1f2733;
-  box-shadow: var(--shadow-2);
-}
-.scan-hero-content {
-  position: relative;
-  min-height: 220px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 22px 32px;
-}
-.scan-hero-title {
-  font-size: 30px;
-  margin: 0 0 6px;
-  font-weight: 800;
-  letter-spacing: 0;
-  text-shadow: none;
-  color: #1f2733;
-}
-.scan-hero-sub {
-  margin: 0 0 16px;
-  font-size: 14px;
-  /* 去掉 opacity，用实色：渐变过渡区上副标题不再发虚 */
-  color: #2a3547;
-}
-.scan-stats {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  column-gap: 20px;
-  row-gap: 12px;
-  flex-wrap: wrap;
-}
-.stat {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 52px;
-}
-.stat-num {
-  font-size: 20px;
-  font-weight: 700;
-  text-shadow: none;
-  white-space: nowrap;
-}
-.stat-label {
-  font-size: 11.5px;
-  color: #2a3547;
-  white-space: nowrap;
-}
-.stat-divider {
-  width: 1px;
-  height: 26px;
-  background: rgba(31, 39, 51, 0.28);
-}
-.scan-task-stat.running .stat-num {
-  animation: scan-task-pulse 1.6s ease-in-out infinite;
-}
-@keyframes scan-task-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
+  min-height: 100vh;
+  padding-bottom: 48px;
 }
 
-/* ---- 子模块卡（糖果彩虹 · 同一色族） ---- */
-.scan-subgrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 12px;
-  margin: 4px 0 22px;
-}
-.scan-subcard {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  text-align: left;
-  padding: 14px 16px;
-  border-radius: var(--radius-card);
-  cursor: pointer;
-  background: var(--glass-bg);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  /* 糖果色底 → 墨色字（浅色渐变上白字不达标） */
-  color: #1f2733;
-  transition: transform var(--dur-2) ease, box-shadow var(--dur-2) ease;
-  box-shadow: var(--shadow-1);
-}
-.scan-subcard:hover:not(.scan-subcard-disabled) {
-  transform: translateY(-3px);
-  box-shadow: var(--shadow-2);
-}
-.scan-subcard-active {
-  outline: 2px solid var(--color-link);
-  outline-offset: 1px;
-  transform: translateY(-3px);
-}
-.scan-subcard-disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-.scan-subicon {
-  font-size: 26px;
-  flex-shrink: 0;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.25));
-}
-.scan-subbody {
-  flex: 1;
-  min-width: 0;
-}
-.scan-subtitle-line {
-  font-size: 15px;
-  font-weight: 700;
-  display: block;
-  color: #1f2733;
-  text-shadow: none;
-}
-.scan-subdesc {
-  font-size: 12px;
-  /* 与标题同墨色：12px 小字在任何糖果色端点都 ≥4.5:1（#2e3a4e 在粉端仅 4.27） */
-  color: #1f2733;
-  display: block;
-  margin-top: 2px;
-}
-.scan-subarrow {
-  font-size: 16px;
-  opacity: 0.85;
-  flex-shrink: 0;
-}
+/* 数据带：与顶栏保持 16px（板底缘与内容之间要留空气，否则读不出板的厚度） */
+/* 数据带（FEAT-107）自带 padding + 下缘发丝线，外层只控纵向节奏。 */
+.scan-stats { margin: 0 0 16px; }
 
-/* ---- 分类 tab ---- */
-.tab-bar {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 18px;
-  border-bottom: 1px solid currentColor;
-  border-image: linear-gradient(90deg, rgba(128, 138, 158, 0.45), transparent) 1;
-  padding-bottom: 10px;
-  flex-wrap: wrap;
-}
-.tab-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid transparent;
-  background: transparent;
-  box-shadow: inset 0 0 0 1px rgba(128, 138, 158, 0.4);
-  border-radius: 999px;
-  padding: 6px 16px;
-  font-size: 13px;
-  cursor: pointer;
-  color: inherit;
-  opacity: 0.85;
-  transition: all var(--dur-2);
-}
-.tab-item:hover:not(.disabled) { border-color: var(--color-primary); color: var(--color-primary-text); opacity: 1; }
-.tab-item.active {
-  background: var(--color-primary);
-  border-color: var(--color-primary);
-  box-shadow: none;
-  color: var(--color-on-primary);
-  opacity: 1;
-}
-.tab-item.disabled { opacity: 0.45; cursor: not-allowed; }
-.tab-icon { font-size: 14px; }
-.tab-pending {
-  font-size: 10px;
-  background: rgba(138, 146, 163, 0.2);
-  border-radius: 999px;
-  padding: 1px 6px;
-}
-.tab-item.active .tab-pending { background: rgba(255, 255, 255, 0.25); color: #fff; }
-
-/* ---- 下方内容区 ---- */
-.scan-active-area { margin-top: 4px; }
+/* 内容区左右留白与页头/数据带对齐（--sp-8 = 52px） */
+.scan-active-area { padding: 0 var(--sp-8); }
 
 .scan-placeholder,
 .scan-jump-placeholder {
   text-align: center;
   padding: 60px 20px;
-  opacity: 0.7;
-  font-size: 14px;
+  color: var(--c-fg-2);
+  font-size: var(--fs-body);
 }
 .scan-jump-placeholder .btn { margin-top: 14px; }
 
-@media (max-width: 640px) {
-  .scan-page { padding: 16px 12px 32px; }
-  .scan-hero { min-height: 0; height: auto; padding: 0; }
-  .scan-hero-content { min-height: 0; padding: 18px; }
-  .scan-hero-title { font-size: 26px; }
-  .scan-subcard { padding: 12px 14px; }
-  .stat-divider { display: none; }
-  .scan-stats { column-gap: 24px; }
+/* 窄窗：页头收窄时内容区同步跟上 */
+@media (max-width: 900px) {
+  .scan-active-area { padding: 0 var(--sp-5); }
 }
 </style>

@@ -27,6 +27,7 @@ mod exif_orient;
 mod edit;
 mod folder;
 mod geo_index;
+mod imgio;
 mod logger;
 mod model_dl;
 mod photo_info;
@@ -40,6 +41,7 @@ mod studio;
 mod test_scan;
 mod test_scan_job;
 mod textdesc;
+mod thumb_migrate;
 mod thumbnail;
 mod tone;
 mod vision;
@@ -47,7 +49,7 @@ mod photos;
 mod album;
 mod vcr_settings;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -116,6 +118,8 @@ use model_dl::commands::{
 };
 use persons::commands::{
     delete_person,
+    get_person_cover,
+    get_person_covers_bulk,
     get_person_photos,
     list_person_photos,
     list_persons,
@@ -230,6 +234,66 @@ pub(crate) fn now() -> i64 {
 }
 
 
+/// 启动自检：数据目录必须**可创建、可写**。
+///
+/// 为什么值得单独一步（BUG-2026-1026-002）：
+///   目录不可写时，SQLite 给出的报错是
+///     `attempt to write a readonly database`（ReadOnly / 8）
+///   或 `unable to open database file`（CannotOpen / 14）
+///   —— 两条都完全看不出"是权限问题"。实测：同一个 exe 放在可写位置启动正常，
+///   放在写不进去的位置（被沙箱/安全软件限制、或目录被占）就以这两种错误崩在
+///   `Database::open`，日志里只有一句"数据库初始化失败"，排查方向完全靠猜。
+///   提前探一次写，能把"权限/占用"和"库损坏"彻底分开。
+///   “不可写”还有第二层来源：进程被降级到 Low 完整性级别时，ACL 给得再宽也写不了
+///   Medium 目录（BUG-2026-1027-007）—— 区分方法见 `fatal_data_dir` 的排查项 ④。
+fn ensure_dir_writable(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let probe = dir.join(".write_probe");
+    std::fs::write(&probe, b"ok")?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
+/// 数据目录解析：`PMS_DATA_DIR` 优先，否则用 Tauri 的 app_data_dir。
+///
+/// 为什么留这个开关：受限环境（沙箱 / 只读用户目录 / 便携部署 / 排障）下
+/// app_data_dir 可能写不进去，而库本身是好的。给一个显式入口，
+/// 就能在不改系统权限的前提下把数据挪到可写目录。默认行为完全不变。
+fn resolve_data_dir(app: &tauri::AppHandle) -> PathBuf {
+    if let Some(raw) = std::env::var_os("PMS_DATA_DIR") {
+        let p = PathBuf::from(raw);
+        if !p.as_os_str().is_empty() {
+            return p;
+        }
+    }
+    app.path()
+        .app_data_dir()
+        .expect("无法获取应用数据目录")
+}
+
+/// 数据目录不可写时的统一退出：先落盘日志，再打印到 stderr，最后退出。
+/// 不 panic —— panic 的调用栈对用户没有任何信息量。
+///
+/// 排查项 ④ 的由来（BUG-2026-1027-007）：Windows 的「拒绝访问」有两层，
+/// ACL 只是其中一层；另一层是**完整性级别**（强制完整性控制 no-write-up）。
+/// 工作区目录一旦被打了 Low 完整性标签，其中的 exe 就以 Low IL 运行，
+/// 而 %APPDATA% / %TEMP% 是 Medium IL → 任何写入都返回 os error 5，
+/// 与 ACL、杀软、并发占用全都无关。此前这条被误记成「受限会话」（BUG-2026-1026-002）。
+fn fatal_data_dir(dir: &Path, err: &std::io::Error) -> ! {
+    let msg = format!(
+        "数据目录不可写：{}\n原因：{err}\n\
+         排查：① 该目录是否被安全软件/沙箱/权限限制；② 是否已有实例占用；\
+         ③ 可用环境变量 PMS_DATA_DIR 指定一个可写目录后重试；\
+         ④ 若 `icacls` 在该目录或本程序所在目录上显示 Low Mandatory Level\
+         （进程被降级，Low IL 写不了 %APPDATA%/%TEMP% 这类 Medium 目录），\
+         先执行 `icacls \"<该目录>\" /setintegritylevel (OI)(CI)M` 提升到 Medium 再重试。",
+        dir.display()
+    );
+    logger::log_error("startup", &msg);
+    eprintln!("[FATAL] {msg}");
+    std::process::exit(1)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -238,20 +302,30 @@ pub fn run() {
         .setup(|app| {
             // 数据库文件存放于 Tauri 的 app_data_dir
             // Windows: %APPDATA%/com.photomanagementsys.app/photos.db
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("无法获取应用数据目录");
+            let data_dir = resolve_data_dir(app.handle());
+            /* 启动自检（BUG-2026-1026-002）：写不进去就不要往下走。
+               放在迁移与 logger 之前 —— 这两步自己也要写盘，先把"能不能写"问清楚，
+               后面才不会被一个看不懂的 SQLite 报错误导（见 ensure_dir_writable 注释）。 */
+            if let Err(e) = ensure_dir_writable(&data_dir) {
+                fatal_data_dir(&data_dir, &e);
+            }
             // 一次性迁移：标识符由 com.haoyuan.* 改为中性名后，老用户的
             // photos.db / thumbs / vcr-data / **app.key** 会留在旧目录，
             // 应用照常启动但相册为空、加密字段无法解密（BUG-2026-1014-001）。
             //
             // 必须早于 logger::init 与一切 app_data_dir 消费：否则日志写进新目录、
             // 数据还在旧目录，排障时两边对不上。
-            let migrate_note = devpath::migrate_legacy_data_dir(
-                data_dir.parent().unwrap_or(&data_dir),
-                &data_dir,
-            );
+            //
+            // 指定了 PMS_DATA_DIR 时跳过：那时 data_dir 是用户挑的目录，
+            // 它旁边不存在"旧标识符目录"，迁移只会白跑一次文件枚举。
+            let migrate_note = if std::env::var_os("PMS_DATA_DIR").is_some() {
+                "已指定 PMS_DATA_DIR，跳过旧目录迁移".to_string()
+            } else {
+                devpath::migrate_legacy_data_dir(
+                    data_dir.parent().unwrap_or(&data_dir),
+                    &data_dir,
+                )
+            };
             // 迁移只搬文件，不搬库里的绝对路径：`albums.cover_path` /
             // `photo_thumb_cache.thumb_path` 仍然写着旧标识符目录，目录一改名就全部变成死链
             // （症状：**所有相册封面碎图**，而相册名/张数一切正常，BUG-2026-1021-005）。
@@ -311,7 +385,23 @@ pub fn run() {
             crypto::init(&data_dir).expect("初始化应用加密密钥失败");
             let db_path = data_dir.join("photos.db");
             logger::log_info("数据库初始化中...");
-            let database = Database::open(&db_path).expect("数据库初始化失败");
+            /* 不 panic：启动失败时用户看到的应当是一句能行动的话，而不是调用栈。
+               （目录不可写的情况已被上面的 ensure_dir_writable 拦下，走到这里
+                 还剩"库被占用 / 库损坏"两类。） */
+            let database = match Database::open(&db_path) {
+                Ok(db) => db,
+                Err(e) => {
+                    let msg = format!(
+                        "数据库初始化失败：{e}\n库路径：{}\n\
+                         排查：① 是否已有实例占用（任务管理器结束残留进程后重试）；\
+                         ② 库文件是否损坏（同目录 *.bak-* 为历史备份，可替换后重试）",
+                        db_path.display()
+                    );
+                    logger::log_error("startup", &msg);
+                    eprintln!("[FATAL] {msg}");
+                    std::process::exit(1);
+                }
+            };
             logger::log_info("数据库初始化完成");
             // 记住登录表（R2）：登录时写入 3 天 token，启动时恢复免密登录
             if let Err(e) = session::init_schema(database.conn()) {
@@ -355,6 +445,39 @@ pub fn run() {
             // FEAT-099 非破坏图像编辑引擎：编辑会话表（预览平面 + 工作区缓存）
             // 与 app 生命周期同长，打开图片时惰性填充，关闭编辑器时整体释放
             app.manage(edit::commands::EditState::new());
+            // BUG-2026-1023-009 收尾：缩略图缓存键空间解耦后的**一次性迁移**
+            // （重订键复用旧文件 + 回收孤儿），必须早于用户开始浏览；
+            // 放后台线程跑，不阻塞窗口首帧；幂等（settings 标记控制）。
+            {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    let Ok(thumbs) = thumbs_dir(&h) else {
+                        logger::log_warn("取缩略图目录失败，跳过迁移");
+                        return;
+                    };
+                    let st = h.state::<AppState>();
+                    let report = {
+                        let db = match st.0.lock() {
+                            Ok(db) => db,
+                            Err(e) => {
+                                logger::log_error(
+                                    "thumb_migrate",
+                                    &format!("数据库锁中毒，跳过迁移: {e}"),
+                                );
+                                return;
+                            }
+                        };
+                        thumb_migrate::migrate_if_needed(&db, &thumbs)
+                    };
+                    if report.ran {
+                        logger::log_info(&format!(
+                            "[thumb] 缓存迁移已执行：复用 {} 行 / 回收 {:.1} MB",
+                            report.migrated_rows,
+                            report.freed_bytes as f64 / (1024.0 * 1024.0)
+                        ));
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -446,6 +569,8 @@ pub fn run() {
             list_person_photos,
             get_person_photos,
             get_person_avatar,
+            get_person_cover,
+            get_person_covers_bulk,
             set_person_avatar_from_photo,
             restore_person_avatar,
             rename_person,
@@ -462,6 +587,9 @@ pub fn run() {
             content::commands::backfill_photo_exif,
             content::commands::search_photo_content_with_filters,
             content::commands::list_timeline,
+    content::commands::timeline_index,
+    content::commands::timeline_month,
+    content::commands::overview_stats,
             content::commands::list_content_categories,
             content::commands::list_photos_by_category,
             category::commands::list_categories,

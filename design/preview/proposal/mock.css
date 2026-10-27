@@ -1,0 +1,394 @@
+/* ══════════════════════════════════════════════════════════════════
+   提案效果图 v2 · 「无卡片」方向
+   ──────────────────────────────────────────────────────────────────
+   与 v1 的根本差别：v1 仍然用玻璃板包住每一组信息（等于承认「卡片套件」），
+   v2 按你的截图方向 —— **文字直接压在背景上**，层级只靠
+   字号 / 字重 / 色彩三档 / 发丝分隔线建立，不靠边框与容器。
+
+   三条硬规则（后面所有页面都遵守）：
+     ① 数据是「文本列 + 竖向发丝线」，不是「一排小玻璃板」
+     ② 层级只有 3 档文字色：主 / 次 / 弱；没有第四档
+     ③ 金色只出现在两处：当前选中项、主行动按钮
+   ══════════════════════════════════════════════════════════════════ */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  font-family: "Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI",
+    -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1, "tnum" 1;
+  background: #120e1c;
+}
+
+body {
+  min-height: 100vh;
+  padding-bottom: 64px;
+  color: var(--fg);
+  background: linear-gradient(165deg, #241a33 0%, #1b1428 46%, #100c19 100%);
+}
+
+/* ── 三档文字 + 一根发丝线 ──────────────────────────────────────── */
+:root {
+  --fg:   #f0eef3;                    /* 主：读数、标题、当前项 */
+  --fg-2: rgba(240, 238, 243, 0.60);  /* 次：标签、元信息 */
+  --fg-3: rgba(240, 238, 243, 0.38);  /* 弱：单位、计数、辅助 */
+  --rule: rgba(255, 255, 255, 0.085);
+  --accent: #d7a750;
+  --accent-ink: #1a1206;
+
+  --hover: rgba(255, 255, 255, 0.055);
+  --ctrl-line: rgba(255, 255, 255, 0.115);
+  --gutter: 48px;
+}
+
+body.light {
+  background: linear-gradient(165deg, #fbf9f6 0%, #f4f0ea 48%, #e6e0d7 100%);
+  --fg:   #16151a;
+  --fg-2: rgba(22, 21, 26, 0.62);
+  --fg-3: rgba(22, 21, 26, 0.40);
+  --rule: rgba(22, 21, 26, 0.10);
+  --accent: #7d571a;
+  --accent-ink: #fdf8ee;
+  --hover: rgba(22, 21, 26, 0.05);
+  --ctrl-line: rgba(22, 21, 26, 0.14);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   顶栏：一条 52px 的横向带，**只有下缘一根发丝线**
+   ──────────────────────────────────────────────────────────────────
+   不再做成「浮起的玻璃药丸」：顶栏是页面的一部分，不是浮在页面上的工具。
+   做成玻璃板后它和内容之间总有 10px 的缝，那个缝读起来像「两个窗口」。
+   ────────────────────────────────────────────────────────────────── */
+.topbar {
+  height: 54px;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 0 var(--gutter);
+  border-bottom: 1px solid var(--rule);
+  /* 极淡的一层，让顶栏在滚动时与内容分开；不是玻璃，只是「上浮一点」 */
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0));
+}
+body.light .topbar {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0));
+}
+
+.tb-back {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 9px 0 6px;
+  border-radius: 6px;
+  font-size: 11.5px; color: var(--fg-2);
+  box-shadow: inset 0 0 0 1px var(--rule);
+}
+.tb-back svg { display: block; }
+
+.tb-name { display: flex; align-items: baseline; gap: 7px; }
+.tb-emo { font-size: 13.5px; filter: saturate(0.7); }
+.tb-title { font-size: 15.5px; font-weight: 620; letter-spacing: -0.015em; }
+.tb-meta { font-size: 11px; color: var(--fg-3); }
+
+.tb-nav {
+  display: flex; align-items: center; gap: 1px;
+  padding-left: 12px; margin-left: 3px;
+  border-left: 1px solid var(--rule);
+  height: 20px;
+}
+.tb-nav span {
+  position: relative;
+  padding: 0 10px; height: 30px; display: inline-flex; align-items: center;
+  font-size: 12.5px; color: var(--fg-2);
+}
+.tb-nav span.on { color: var(--fg); font-weight: 600; }
+.tb-nav span.on::after {
+  content: ""; position: absolute; left: 10px; right: 10px; bottom: 2px;
+  height: 1.5px; border-radius: 2px; background: var(--accent);
+}
+.tb-nav em {
+  font-style: normal; font-size: 10px; color: var(--fg-3);
+  margin-left: 5px; font-variant-numeric: tabular-nums;
+}
+.tb-sp { flex: 1; }
+
+/* 搜索胶囊：范围写在框里 —— 这是「功能边界」唯一诚实的表达方式 */
+.tb-search {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 29px; padding: 0 6px 0 10px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--ctrl-line);
+  font-size: 12px; color: var(--fg-2);
+}
+.tb-search svg { display: block; opacity: 0.65; }
+.tb-search b { font-weight: 400; }
+.tb-search em {
+  font-style: normal; font-size: 9.5px; letter-spacing: 0.05em;
+  padding: 2px 6px; border-radius: 4px;
+  color: var(--fg-3); background: var(--hover);
+}
+
+.tb-user {
+  width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 11px;
+  background: linear-gradient(140deg, #b98a45, #6d4a2a);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   数据带：**文本列 + 竖向发丝线**（无卡片）
+   ──────────────────────────────────────────────────────────────────
+   三行结构，所有列严格同基线：
+     标签（9.5px 大写 弱色） → 读数（30px 细字重） → 说明（10.5px 弱色）
+   列与列之间一根 12px 高的竖线；第一列左侧不留线（它贴着内容边）。
+
+   为什么读数用**细字重**而不是 560/650：
+     大字号 + 细字重是排印；大字号 + 粗字重是 PPT 图表。
+     同一屏里数字有 5 个，全部加粗就等于全部没有重点。
+   ────────────────────────────────────────────────────────────────── */
+.band {
+  display: flex;
+  align-items: stretch;
+  padding: 20px var(--gutter) 16px;
+  border-bottom: 1px solid var(--rule);
+}
+.stat { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/* 宽度按信息量加权：读数短的列窄一点，长一点的宽一点 */
+.stat.w-1 { flex: 1 1 0; }
+.stat.w-2 { flex: 1.5 1 0; }
+
+.stat + .stat {
+  position: relative;
+  padding-left: 26px;
+  margin-left: 26px;
+}
+.stat + .stat::before {
+  content: ""; position: absolute; left: 0; top: 3px; bottom: 3px;
+  width: 1px; background: var(--rule);
+}
+
+.stat-label {
+  font-size: 9.5px; letter-spacing: 0.15em; text-transform: uppercase;
+  font-weight: 600; color: var(--fg-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.stat-val { display: flex; align-items: baseline; gap: 5px; line-height: 1; }
+.stat-num {
+  font-size: 30px; font-weight: 340; letter-spacing: -0.7px;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.stat-unit { font-size: 11px; font-weight: 500; color: var(--fg-3); }
+.stat-note {
+  font-size: 10.5px; color: var(--fg-3); letter-spacing: 0.01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.stat-note.warn { color: var(--accent); opacity: 0.9; }
+
+/* 极细占比线：只加在「占比有意义」的列，2px，长度=真实比例。
+   ⚠️ 默认用弱色，**不默认金色**：数据带里有 5 列，只要有一条满格金线，
+   其余四列就全部变成「没被选中的」。金色留给「当前选中项」和主按钮。 */
+.stat-line {
+  margin-top: 4px; height: 2px; border-radius: 2px;
+  background: var(--rule); position: relative; overflow: hidden;
+}
+.stat-line i {
+  position: absolute; inset: 0 auto 0 0; border-radius: 2px;
+  background: var(--fg-3);
+}
+.stat-line.hot i { background: var(--accent); }
+
+/* ══════════════════════════════════════════════════════════════════
+   左筛选：纯文字列
+   ──────────────────────────────────────────────────────────────────
+   选中态 = 左侧 2px 竖条 + 文字提亮到主色，**底色几乎不可见**。
+   不用「整块高亮」：一列十几项，每项都有一块底就是十几个小卡片。
+   ────────────────────────────────────────────────────────────────── */
+.body-layout {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  gap: 34px;
+  padding: 18px var(--gutter) 0;
+  align-items: start;
+}
+
+.side { display: flex; flex-direction: column; gap: 20px; }
+.side-group { display: flex; flex-direction: column; gap: 1px; }
+.side-h {
+  font-size: 9.5px; letter-spacing: 0.15em; text-transform: uppercase;
+  font-weight: 600; color: var(--fg-3);
+  margin-bottom: 6px; padding-left: 9px;
+}
+.side-item {
+  position: relative;
+  display: flex; align-items: center; gap: 8px;
+  height: 27px; padding: 0 7px 0 9px;
+  border-radius: 5px;
+  font-size: 12.5px; color: var(--fg-2);
+}
+.side-item .n {
+  margin-left: auto; font-size: 10.5px; color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+.side-item.on { color: var(--fg); font-weight: 600; background: var(--hover); }
+.side-item.on::before {
+  content: ""; position: absolute; left: 0; top: 7px; bottom: 7px;
+  width: 2px; border-radius: 2px; background: var(--accent);
+}
+.side-item.on .n { color: var(--fg-2); }
+
+/* ── 右栏头：一行，左「计数」右「操作」 ─────────────────────────── */
+.main-head { display: flex; align-items: center; gap: 12px; height: 30px; }
+.main-count { font-size: 12px; color: var(--fg-3); }
+.main-count b { font-weight: 600; color: var(--fg-2); }
+.main-actions { margin-left: auto; display: flex; gap: 7px; }
+
+.btn {
+  height: 28px; padding: 0 12px; border-radius: 6px;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 500; color: var(--fg-2);
+  box-shadow: inset 0 0 0 1px var(--ctrl-line);
+  white-space: nowrap;
+}
+.btn-primary {
+  color: var(--accent-ink);
+  background: linear-gradient(180deg, #e3b569, #c9963d);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32);
+  font-weight: 620;
+}
+
+/* ── 搜索行：一整行，但**只搜相册名**；右侧给出「内容检索」的出口 ── */
+.search-row {
+  display: flex; align-items: center; gap: 12px;
+  margin: 12px 0 4px;
+}
+.search-box {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 9px;
+  height: 34px; padding: 0 12px;
+  border-radius: 8px;
+  background: var(--hover);
+  box-shadow: inset 0 0 0 1px var(--rule);
+  font-size: 12.5px; color: var(--fg-3);
+}
+.search-box svg { flex-shrink: 0; opacity: 0.55; }
+/* 范围提示贴在框内右侧 —— 用户敲字之前就看见「不含照片内容」 */
+.search-box .scope {
+  margin-left: auto; flex-shrink: 0;
+  font-size: 10.5px; color: var(--fg-3);
+  padding-left: 10px; border-left: 1px solid var(--rule);
+}
+.search-else {
+  flex-shrink: 0; font-size: 11.5px; color: var(--fg-2);
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.search-else u { text-decoration: none; color: var(--accent); }
+
+/* ══════════════════════════════════════════════════════════════════
+   相册墙：行式密排，**图注在封面下方**（不再压成胶囊）
+   ──────────────────────────────────────────────────────────────────
+   为什么图注从「压在封面上的胶囊」改回「封面下方一行文字」：
+     胶囊是给「一屏几十块、每块都要说名字」的密排用的；而这里一行只有 3–5 块，
+     胶囊反而把照片盖掉一块。压在下方的**裸文字**才是「自然嵌入」：
+       · 名字靠左、张数靠右，同一基线 —— 一行就说完
+       · 没有底、没有框、没有描边；层级靠字号与色阶
+       · 日期压在封面左下角，用极小号 + 文字阴影，不用深色块
+   ────────────────────────────────────────────────────────────────── */
+.wall { display: flex; flex-direction: column; gap: 14px; }
+.wall-row { display: flex; gap: 12px; align-items: flex-start; }
+
+.tile { display: flex; flex-direction: column; gap: 7px; min-width: 0; flex: 1 1 0; }
+.tile.wide { flex: 1.55 1 0; }
+
+.cover {
+  position: relative; width: 100%;
+  border-radius: 5px; overflow: hidden;
+  /* ⚠️ 背景色放这里会被后声明的 .c1~.c9 渐变覆盖（同特异性，靠顺序），
+     所以占位底只给「无渐变类」的封面用；有渐变类时渐变自己就是底。 */
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+body.light .cover {
+  box-shadow: inset 0 0 0 1px rgba(22, 21, 26, 0.06);
+}
+/* 底部极淡的阴影带：只为了「日期文字」在浅色照片上也读得出来。
+   高度 34px，最深 0.30 —— 低于这个值浅照片上白字就消失，
+   高于这个值就变成「压在照片上的黑带」。 */
+.cover::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 34px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.30), rgba(0, 0, 0, 0));
+  pointer-events: none;
+}
+.cover .ph {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 20px; opacity: 0.22;
+}
+/* 日期：极小的裸文字，压在封面左下角 */
+.date {
+  position: absolute; left: 8px; bottom: 6px; z-index: 1;
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.90);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+/* 未入库：右上角一个极小的裸标签，不用深色底块 */
+.badge {
+  position: absolute; right: 8px; top: 6px; z-index: 1;
+  font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+  font-weight: 650; color: rgba(255, 255, 255, 0.82);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+/* 图注：裸文字一行，名字 + 张数**连成一串**，同基线，没有容器。
+   ⚠️ 张数不要 margin-left:auto 推到最右 —— 瓦片宽度不同，推到右边会让
+   每一行的「张数」落在不同的 x 位置，读起来像两栏表格而不是一句描述。 */
+.cap { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.cap b {
+  font-size: 13px; font-weight: 600; letter-spacing: -0.008em;
+  color: var(--fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  min-width: 0; flex: 0 1 auto;
+}
+.cap s {
+  text-decoration: none; flex-shrink: 0;
+  font-size: 10.5px; color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 组头：年份 + 组级读数，同基线；读数用弱色，不抢年份 */
+.group-head {
+  display: flex; align-items: baseline; gap: 12px;
+  margin: 26px 0 11px;
+}
+.group-head.first { margin-top: 6px; }
+.group-year { font-size: 22px; font-weight: 620; letter-spacing: -0.5px; color: var(--fg); }
+.group-stat { display: flex; align-items: baseline; gap: 9px; font-size: 11px; color: var(--fg-3); }
+.group-stat span + span { padding-left: 9px; border-left: 1px solid var(--rule); }
+.group-head .right { margin-left: auto; }
+
+/* 假封面：用渐变代替真实照片，只表达明度关系。
+   ⚠️ 选择器必须写成 .cover.c1 而不是 .c1 —— 否则 body.light .cover（0,2,0）
+   会盖掉 .c1（0,1,0），浅色版的所有封面会变成一片灰（实测踩过）。 */
+.cover.c1 { background: linear-gradient(150deg, #6b7f96, #3d4a5a 55%, #26303c); }
+.cover.c2 { background: linear-gradient(150deg, #9c7d5a, #6a5238 60%, #3d2f21); }
+.cover.c3 { background: linear-gradient(150deg, #4f6b5c, #33463c 60%, #1e2a24); }
+.cover.c4 { background: linear-gradient(150deg, #7a6a8c, #4c415a 60%, #2b2434); }
+.cover.c5 { background: linear-gradient(150deg, #8a6a6a, #5a4242 60%, #332727); }
+.cover.c6 { background: linear-gradient(150deg, #5d7a8c, #3b4f5c 60%, #232e36); }
+.cover.c7 { background: linear-gradient(150deg, #8c7f6a, #5c5342 60%, #332e26); }
+.cover.c8 { background: linear-gradient(150deg, #59607a, #383d4f 60%, #21242f); }
+.cover.c9 { background: linear-gradient(150deg, #6f8a7a, #465a4f 60%, #27332c); }
+
+/* 时间线缩略图带里的方块也用同一批渐变 */
+.th.c1 { background: linear-gradient(150deg, #6b7f96, #3d4a5a 55%, #26303c); }
+.th.c2 { background: linear-gradient(150deg, #9c7d5a, #6a5238 60%, #3d2f21); }
+.th.c3 { background: linear-gradient(150deg, #4f6b5c, #33463c 60%, #1e2a24); }
+.th.c4 { background: linear-gradient(150deg, #7a6a8c, #4c415a 60%, #2b2434); }
+.th.c5 { background: linear-gradient(150deg, #8a6a6a, #5a4242 60%, #332727); }
+.th.c6 { background: linear-gradient(150deg, #5d7a8c, #3b4f5c 60%, #232e36); }
+.th.c7 { background: linear-gradient(150deg, #8c7f6a, #5c5342 60%, #332e26); }
+.th.c8 { background: linear-gradient(150deg, #59607a, #383d4f 60%, #21242f); }
+.th.c9 { background: linear-gradient(150deg, #6f8a7a, #465a4f 60%, #27332c); }
+
+.note {
+  font-size: 11px; color: var(--fg-3); line-height: 1.75;
+  padding-top: 10px; border-top: 1px solid var(--rule);
+}

@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>FEAT-115 · 相册管理</title>
+<link rel="stylesheet" href="./feat115.css" />
+</head>
+<body data-theme="pine-soft">
+
+<div class="topbar">
+  <span class="tb-back">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    主页
+  </span>
+  <span class="tb-name">
+    <span class="tb-title">📁 相册管理</span>
+    <span class="tb-meta">8 个相册 · 1 个系统相册</span>
+  </span>
+  <nav class="tb-nav">
+    <span class="on">全部相册</span><span>按时间</span><span>按地点</span>
+  </nav>
+  <span class="tb-sp"></span>
+  <span class="tb-search">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2.2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    <b>搜索相册名</b><em>仅名称</em>
+  </span>
+  <span class="tb-user">y</span>
+</div>
+
+<!-- ══════ 数据带：金色收敛到 1 处（"已入库"的占比线）═════════
+     现状截图：相册/照片/已入库/待入库/占用 5 列里 4 条金色进度线。
+     tokens.css §2.7 写着"强调色只允许出现在当前项/变化值/图表高亮三处"，
+     一屏 4 处金 = 没有强调。这里只留"已入库"一条 ——
+     因为它回答"库建好了吗"这个唯一的核心问题。 -->
+<div class="band">
+  <div class="stat w-1">
+    <span class="stat-label">相册</span>
+    <span class="stat-val"><span class="stat-num">8</span><span class="stat-unit">个</span></span>
+    <span class="stat-note">含 1 个系统相册</span>
+  </div>
+  <div class="stat w-2">
+    <span class="stat-label">照片</span>
+    <span class="stat-val"><span class="stat-num">394</span><span class="stat-unit">张</span></span>
+    <span class="stat-note">合计 1.5 GB</span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">已入库</span>
+    <span class="stat-val"><span class="stat-num">343</span><span class="stat-unit">张</span></span>
+    <span class="stat-line hot"><i style="width:87%"></i></span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">待入库</span>
+    <span class="stat-val"><span class="stat-num">2</span><span class="stat-unit">个</span></span>
+    <span class="stat-note">落日山峦 · 夜景拾遗</span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">占用</span>
+    <span class="stat-val"><span class="stat-num">1.5</span><span class="stat-unit">GB</span></span>
+    <span class="stat-line"><i style="width:18%"></i></span>
+  </div>
+</div>
+
+<div class="layout">
+  <!-- ══════ 左栏：纯文字列，无底板 ══════ -->
+  <aside class="side">
+    <div class="side-group" style="position:relative">
+      <span class="side-rail-line"></span>
+      <h3 class="side-h">排序</h3>
+      <button class="side-item on"><span>按时间</span></button>
+      <button class="side-item"><span>按地点</span></button>
+      <button class="side-item"><span>手动排序</span></button>
+    </div>
+    <div class="side-group">
+      <h3 class="side-h">入库</h3>
+      <button class="side-item on"><span>全部</span><span class="n">8</span></button>
+      <button class="side-item"><span>已入库</span><span class="n">6</span></button>
+      <button class="side-item"><span>未入库</span><span class="n">2</span></button>
+    </div>
+    <div class="side-group">
+      <h3 class="side-h">年份</h3>
+      <button class="side-item on"><span>全部年份</span><span class="n">8</span></button>
+      <button class="side-item"><span>2026 年</span><span class="n">4</span></button>
+      <button class="side-item"><span>2025 年</span><span class="n">2</span></button>
+      <button class="side-item"><span>2024 年</span><span class="n">2</span></button>
+    </div>
+  </aside>
+
+  <!-- ══════ 右栏 ══════ -->
+  <div>
+    <!-- 右栏头：左计数 + 右操作，一行 -->
+    <div style="display:flex;align-items:center;gap:10px;height:30px">
+      <span style="font-size:12px;color:var(--fg-3)">8 个相册 · 按拍摄时间</span>
+      <span style="margin-left:auto;display:flex;gap:7px">
+        <button class="btn" type="button">批量导入</button>
+        <button class="btn" type="button">批量管理</button>
+        <button class="btn btn-primary" type="button">新建相册</button>
+      </span>
+    </div>
+
+    <!-- 搜索行：只搜相册名；范围写在框里，出口在框外 -->
+    <div style="display:flex;align-items:center;gap:12px;margin:12px 0 18px">
+      <div class="search-box" style="flex:1;min-width:0">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style="opacity:.55;flex-shrink:0"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2.2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        <span>搜索相册名称…</span>
+        <span class="scope">不检索照片内容</span>
+      </div>
+      <span style="flex-shrink:0;font-size:11.5px;color:var(--fg-2)">找照片内容？去<u style="text-decoration:none;color:var(--accent)"> 智能搜索 </u>→</span>
+    </div>
+
+    <!-- 系统相册 -->
+    <div class="group-head first">
+      <span class="group-year" style="font-size:15px">📦 系统相册</span>
+      <span class="group-stat"><span>归档 · 隐藏 的聚合视图</span></span>
+    </div>
+    <div class="wall">
+      <div class="wall-row">
+        <div class="tile" style="flex:0 0 38%">
+          <div class="cover c9" style="aspect-ratio:16/10"></div>
+          <div class="cap"><b>归档</b><s>5 张 · 0 MB</s></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 普通相册：行式密排。图注移到封面下方（不再压封面）-->
+    <div class="group-head">
+      <span class="group-year">2026 年</span>
+      <span class="group-stat"><span>4 个相册</span><span>234 张</span><span>按拍摄时间</span></span>
+      <span class="right" style="font-size:10.5px;color:var(--fg-3)">照片仍在原位置不变</span>
+    </div>
+    <div class="wall" id="wall-2026"></div>
+
+    <div class="group-head">
+      <span class="group-year">2025 年</span>
+      <span class="group-stat"><span>2 个相册</span><span>125 张</span></span>
+    </div>
+    <div class="wall" id="wall-2025"></div>
+
+    <div class="group-head">
+      <span class="group-year">2024 年</span>
+      <span class="group-stat"><span>2 个相册</span><span>35 张</span></span>
+    </div>
+    <div class="wall" id="wall-2024"></div>
+  </div>
+</div>
+
+<p class="note">
+  「归档」与「隐藏」是照片的聚合视图：照片仍在原位置不变。归档可在相册中直接查看；
+  隐藏相册需在<u style="text-decoration:none;color:var(--fg-2)"> 个人信息 </u>中输入登录密码解锁。
+</p>
+
+<script src="./feat115-data.js"></script>
+<script>
+/* 行式密排：与 justifiedRows.ts 同一思路 ——
+   每行 flex，瓦片宽按 1 / 1.55 两档，整行精确铺满容器宽。
+   这里按容器宽度手工分行（效果图不需要跑算法），
+   重点是演示"错落来自宽幅，行内严格等高、行宽精确铺满"。 */
+/* ⚠️ 宽幅因子 1.5，且**每行至少 2 张**。
+   曾把某年最后一张单独放一行 —— flex 会把它拉到 100% 宽，
+   变成一条占满全屏的横幅（用户明确反对："不要让一个相册占满整个屏幕"）。
+   错落的来源是"一块更宽"，不是"一块独占一行"。 */
+function tile(a, wide) {
+  return `<div class="tile${wide ? " wide" : ""}">
+    <div class="cover c${a.c}" style="aspect-ratio:16/10">
+      <img src="${photo(a.id, 320, 200)}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" />
+      ${a.scanned ? "" : '<span class="badge">未入库</span>'}
+      <span class="date">${a.date}</span>
+    </div>
+    <div class="cap"><b>${a.name}</b><s>${a.n} 张</s></div>
+  </div>`;
+}
+function row(items) {
+  return '<div class="wall-row">' + items.map(([a, w]) => tile(a, w)).join("") + "</div>";
+}
+const y2026 = ALBUMS.filter((a) => a.date.startsWith("2026"));
+const y2025 = ALBUMS.filter((a) => a.date.startsWith("2025"));
+const y2024 = ALBUMS.filter((a) => a.date.startsWith("2024"));
+/* 每年一整行，行内第一张宽 1.5 倍 —— 错落但周期可预期，且没有一张独占一行。
+   2026：毕业季(宽) · 猫咪 · 街头 · 落日
+   2025：家人(宽) · 海边
+   2024：夜景 · 文档(宽)   ← 宽幅换到行尾，避免每年都在同一个位置 */
+document.getElementById("wall-2026").innerHTML =
+  row([[y2026[0], true], [y2026[1], false], [y2026[2], false], [y2026[3], false]]);
+document.getElementById("wall-2025").innerHTML =
+  row([[y2025[0], true], [y2025[1], false]]);
+document.getElementById("wall-2024").innerHTML =
+  row([[y2024[0], false], [y2024[1], true]]);
+</script>
+</body>
+</html>

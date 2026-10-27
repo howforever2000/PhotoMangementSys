@@ -17,6 +17,8 @@
   backdrop-filter: blur(4px);
 }
 .pm-dialog {
+  /* position:relative 是「存为预设」命名浮层的定位锚（absolute inset:0 铺满弹窗） */
+  position: relative;
   width: min(440px, 100%);
   max-height: 86vh;
   overflow-y: auto;
@@ -179,6 +181,29 @@
   border-radius: 10px;
   background: var(--pm-input-bg);
   cursor: pointer;
+}
+/* 自绘取色器入口（FEAT-114）：与旧 input[type=color] 同尺寸，点击打开 PmColorPicker */
+.pm-swatch-btn {
+  width: 52px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--pm-soft-border);
+  border-radius: 10px;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 2px var(--pm-input-bg);
+  transition:
+    transform var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+.pm-swatch-btn:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 0 0 2px var(--pm-input-bg),
+    0 4px 12px rgba(0, 0, 0, 0.22);
+}
+.pm-swatch-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 .pm-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -365,6 +390,125 @@ body.theme-dark .pm-dialog input:disabled {
   border-color: var(--color-primary);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 40%, transparent);
 }
+/* ── 我的预设（FEAT-118）─────────────────────────────────────────────
+   卡片本身复用 .pm-preset 的外观，但结构多了一层：外层 div 定位、
+   内层 button 负责"套用"、角上一个 × 负责"删除"。
+   之所以不用 button 套 button：那是无效 HTML，浏览器会把内层弹出去。 */
+.pm-preset-custom {
+  padding: 0;
+  cursor: default;
+}
+.pm-preset-custom:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--pm-input-border);
+}
+.pm-preset-custom.on {
+  border-color: var(--color-primary);
+}
+.pm-preset-hit {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: inherit;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.pm-preset-hit:hover .pm-preset-swatch {
+  filter: brightness(1.06);
+}
+/* 删除：平时不可见，悬停/聚焦才现 —— 低频且危险的动作不该常驻在一排卡片上 */
+.pm-preset-del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-1) ease, background var(--dur-1) ease;
+}
+.pm-preset-custom:hover .pm-preset-del,
+.pm-preset-custom:focus-within .pm-preset-del {
+  opacity: 1;
+}
+.pm-preset-del:hover {
+  background: rgba(200, 60, 60, 0.85);
+}
+.pm-preset-empty {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px dashed var(--pm-input-border);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--pm-hint);
+}
+
+/* ── 「存为预设」的命名浮层 ───────────────────────────────────────────
+   只问一件事，所以是弹窗内就地一行，不另开二级弹窗。 */
+.pm-name-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 8, 12, 0.55);
+  border-radius: inherit;
+}
+.pm-name-box {
+  width: min(340px, 86%);
+  padding: 18px 20px 16px;
+  border-radius: 14px;
+  background: var(--pm-bg, #1b1b22);
+  border: 1px solid var(--pm-input-border);
+  box-shadow: var(--shadow-2);
+}
+.pm-name-box h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--pm-text);
+}
+.pm-name-hint {
+  margin: 6px 0 12px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--pm-hint);
+}
+.pm-name-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--pm-input-border);
+  background: var(--pm-input-bg);
+  color: var(--pm-text);
+  font-size: 13px;
+}
+.pm-name-input:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+.pm-name-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
 .pm-preset-swatch {
   display: block;
   height: 72px;

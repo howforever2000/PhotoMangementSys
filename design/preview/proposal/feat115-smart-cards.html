@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>FEAT-115 · 内容分类 / 人物</title>
+<link rel="stylesheet" href="./feat115.css" />
+</head>
+<body data-theme="pine-soft">
+
+<div class="topbar">
+  <span class="tb-back">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    主页
+  </span>
+  <span class="tb-name">
+    <span class="tb-title">🧠 智慧相册</span>
+    <span class="tb-meta">14 位人物 · 9 个相册</span>
+  </span>
+  <nav class="tb-nav">
+    <span>全局概览</span><span class="on">内容分类</span><span>人物 <em>14</em></span><span>地点</span><span>回忆</span><span>时间线</span><span>智能搜索</span>
+  </nav>
+  <span class="tb-sp"></span>
+  <span class="tb-search">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2.2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    <b>搜索照片</b>
+  </span>
+  <span class="tb-user">y</span>
+</div>
+
+<div class="band">
+  <div class="stat w-1">
+    <span class="stat-label">分类</span>
+    <span class="stat-val"><span class="stat-num">6</span><span class="stat-unit">个</span></span>
+    <span class="stat-note">4 个规则 · 2 个自定义</span>
+  </div>
+  <div class="stat w-2">
+    <span class="stat-label">总命中</span>
+    <span class="stat-val"><span class="stat-num">597</span><span class="stat-unit">张次</span></span>
+    <span class="stat-note">同一张可属多个分类</span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">语义索引</span>
+    <span class="stat-val"><span class="stat-num">0</span><span class="stat-unit">%</span></span>
+    <span class="stat-note">待建索引</span>
+  </div>
+  <div class="stat w-2">
+    <span class="stat-label">索引覆盖</span>
+    <span class="stat-val"><span class="stat-num">93</span><span class="stat-unit">/ 399</span></span>
+    <span class="stat-note">建索引后语义分类才会亮</span>
+  </div>
+</div>
+
+<!-- ══════ 分类卡：去掉玻璃底，只留封面 + 落款 ══════
+     现状：.cat-card.glass-card + :style="theme.cardStyle" —— 每张卡一块玻璃板。
+     改法：玻璃底整块删掉。封面本身就是足够大的对比面，
+           层级由封面落款（白字 + 渐变兜底）承担。
+           错落沿用"每 5 张一张宽幅"，周期可预期。 -->
+<div class="shell" style="padding-top:18px">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+    <span style="font-size:12px;color:var(--fg-3)">6 个分类 · 共 597 张次</span>
+    <span style="margin-left:auto;display:flex;gap:7px">
+      <button class="btn" type="button">🔄 重建分类</button>
+      <button class="btn" type="button">⚙ 管理分类</button>
+    </span>
+  </div>
+  <div class="cat-grid" id="cats"></div>
+</div>
+
+<!-- ══════ 人物：同样去掉玻璃底 ══════ -->
+<div class="shell" style="padding-top:34px">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px;padding-top:20px;border-top:1px solid var(--rule)">
+    <span style="font-size:22px;font-weight:620;letter-spacing:-.5px">人物</span>
+    <span style="font-size:11px;color:var(--fg-3)">14 位 · 按出现次数排序 · 7 位待命名</span>
+    <span style="margin-left:auto;display:flex;gap:7px">
+      <button class="btn" type="button">🔄 重建聚类</button>
+      <button class="btn" type="button">刷新</button>
+    </span>
+  </div>
+  <div class="person-grid" id="persons"></div>
+</div>
+
+<p class="note">
+  未命名的人物依赖逐个改名才可用，因此不作为主入口 —— 想按人找照片时，
+  从顶栏「人物」进来。改名前它显示为 P05 / P06 这类聚类号。
+</p>
+
+<script src="./feat115-data.js"></script>
+<script>
+/* 分类卡：每 5 张一张宽幅（与相册墙 wideEvery:5 同一节奏）*/
+document.getElementById("cats").innerHTML = CATS.map((c, i) =>
+  `<article class="cat-card${i % 5 === 1 ? " is-wide" : ""}" title="${c.name} · ${c.n} 张">
+    <div class="cat-cover c${c.c}">
+      <img src="${photo(i + 20, 320, 200)}" alt="" />
+      <span class="cat-count">${c.n} 张</span>
+      <span class="cat-tag">${i < 4 ? "规则" : "自定义"}</span>
+      <div class="cat-seal">
+        <h3 class="cat-name">${c.icon} ${c.name}</h3>
+        <span class="cat-sub">${c.words} 词 · 匹配度 0.72</span>
+      </div>
+    </div>
+  </article>`).join("");
+
+/* 人物卡：头像 84px 居中，名字可折两行（不用 ellipsis 截断）*/
+document.getElementById("persons").innerHTML = PERSONS.map((p) =>
+  `<article class="person" title="${p.name ?? "未命名"}（${p.id}）">
+    <div class="person-av" style="background:linear-gradient(150deg,hsl(${p.id.charCodeAt(1) * 37 % 360},42%,58%),hsl(${(p.id.charCodeAt(1) * 37 + 40) % 360},38%,32%))">
+      ${p.name ? p.name.slice(0, 1) : "?"}
+      <span class="person-n">${p.n} 张</span>
+    </div>
+    <div class="person-name">${p.name ?? p.id}</div>
+    <div class="person-count">${p.n} 张</div>
+    <div class="person-act">✎ 重命名</div>
+  </article>`).join("");
+</script>
+</body>
+</html>

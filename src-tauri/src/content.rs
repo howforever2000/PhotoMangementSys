@@ -34,6 +34,25 @@ use crate::db::PhotoContentRecord;
 type EmbedCacheEntry = Arc<(crate::db::EmbeddingVersion, Vec<(String, Option<i64>, String, Vec<f32>)>)>;
 static EMBED_CACHE: Mutex<Option<HashMap<i64, EmbedCacheEntry>>> = Mutex::new(None);
 
+/// 扫描单飞锁：同一时刻只允许一个 `scan_album_combined` 在跑。
+///
+/// 为什么后端还要再管一次（前端已有 `job.running` 守卫）：前端的守卫是 **JS 内存状态**，
+/// 只在同一个 Pinia 实例内有效—— 多开一个窗口、页面重新加载、两个 app 进程并存时，
+/// 各自的 `running` 都是 false，互相看不见。实测事故（BUG-2026-1027-006）：
+/// album=126 的 776 张照片被完整扫了两遍（205s + 147s），第二遍正好在第一次的
+/// 收尾阶段启动，UI 还显示「扫描中」，用户完全无从察觉。
+static SCAN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// 当前正在扫描的相册 id（0 = 空闲）—— 只用于把拒绝原因说清楚
+static SCAN_ALBUM: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// 扫描占位槽的清道夫：无论正常返回还是提前 `?` 退出，都会把 SCAN_ALBUM 归零
+struct ScanSlotGuard;
+impl Drop for ScanSlotGuard {
+    fn drop(&mut self) {
+        SCAN_ALBUM.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// 语义召回置信度默认阈值（Phase 0 实测：相关命中集中 0.41~0.46，非相关背景值更低）
 const SEMANTIC_MIN_SIM_DEFAULT: f64 = 0.30;
 /// 语义召回硬上限（极端大库保护，按余弦降序截断）
@@ -1592,6 +1611,9 @@ pub mod commands {
         // FEAT-SEM：覆盖/增量。true（默认）= 全量重扫并覆盖已入库结果；
         // false = 跳过已入库照片，只处理新照片
         overwrite: Option<bool>,
+        // 调用方标识（窗口 label / 页面会话 id / 调用点，前端拼接后传入）
+        // 只用于日志：出现「跑两遍」时第一行就能看出是谁发的（BUG-2026-1027-006）
+        client_tag: Option<String>,
         app: tauri::AppHandle,
         scan: tauri::State<'_, crate::ScanState>,
         state: tauri::State<'_, AppState>,
@@ -1600,6 +1622,11 @@ pub mod commands {
         let overwrite = overwrite.unwrap_or(true);
         let _t = log_call!("scan_album_combined", &format!("album_id={album_id} scan_types={scan_types:?} overwrite={overwrite}"));
         let user_id = require_user(&session)?;
+        let client = client_tag.unwrap_or_else(|| "-".to_string());
+        // 入口即留痕：`[AOP:CALL]` 是 DEBUG 级，默认 info 日志里看不到请求参数与调用方
+        logger::log_info(&format!(
+            "[scan] 请求 | album={album_id} types={scan_types:?} overwrite={overwrite} client={client}"
+        ));
 
         if scan_types.is_empty() {
             return Err("scan_types 不能为空".to_string());
@@ -1610,6 +1637,25 @@ pub mod commands {
         {
             return Err("非法 scan_types，允许 basic / tone / person / semantic".to_string());
         }
+
+        // 单飞：抢不到锁说明已有扫描在跑 → 直接拒绝，绝不允许两个扫描并行。
+        // 必须放在重置取消标记**之前**：被拒绝的请求不得动别人的取消位。
+        let _scan_guard = match SCAN_LOCK.try_lock() {
+            Ok(g) => g,
+            Err(_) => {
+                let running = SCAN_ALBUM.load(std::sync::atomic::Ordering::SeqCst);
+                logger::log_warn(&format!(
+                    "[scan] 拒绝重复扫描 | 请求 album={album_id} client={client} | 已有 album={running} 在跑"
+                ));
+                return Err(if running > 0 {
+                    format!("已有扫描进行中（相册 {running}），请等待其完成或停止后再试")
+                } else {
+                    "已有扫描进行中，请等待其完成或停止后再试".to_string()
+                });
+            }
+        };
+        SCAN_ALBUM.store(album_id, std::sync::atomic::Ordering::SeqCst);
+        let _scan_slot = ScanSlotGuard;
 
         // 重置取消标记：本次扫描全新开始；前端「停止」→ `cancel_scan` 置位后提前结束
         scan.0.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -2114,11 +2160,20 @@ pub mod commands {
         if outcome.is_ok() && (do_ai || do_semantic) {
             match crate::category::rebuild_semantic_hits(&app, &state, user_id).await {
                 Ok(rep) => {
-                    logger::log_info(&format!(
-                        "[scan] 分类命中已重建：分类 {} · 命中 {} · 索引 {} · {}ms",
-                        rep.categories, rep.hits, rep.indexed, rep.ms
-                    ));
-                    timing.span_with("分类重建", t_rebuild, &format!("命中{}", rep.hits));
+                    if rep.skipped {
+                        // 输入指纹未变：命中表就是当前输入的结果，不必重写 2 万行
+                        logger::log_info(&format!(
+                            "[scan] 分类命中未变，跳过重建（沿用 {} 条命中）· {}ms",
+                            rep.hits, rep.ms
+                        ));
+                        timing.span_with("分类重建", t_rebuild, "跳过·输入未变");
+                    } else {
+                        logger::log_info(&format!(
+                            "[scan] 分类命中已重建：分类 {} · 命中 {} · 索引 {} · {}ms",
+                            rep.categories, rep.hits, rep.indexed, rep.ms
+                        ));
+                        timing.span_with("分类重建", t_rebuild, &format!("命中{}", rep.hits));
+                    }
                 }
                 Err(e) => {
                     logger::log_info(&format!("[scan] 分类重建跳过（不影响扫描）：{e}"));
@@ -2267,6 +2322,104 @@ pub mod commands {
         match &r {
             Ok(list) => logger::log_call_end_with("list_timeline", _t, &format!("OK | rows={}", list.len())),
             Err(e) => logger::log_call_end_with("list_timeline", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
+    /// FEAT-122：时间线骨架（按月计数 + 统计读数）
+    ///
+    /// 实测 24,980 张的库：< 20 ms / 约 3 KB（对比 `list_timeline` 的 15 MB）。
+    /// 前端拿它画左栏、年组统计 + 算出每个月的**占位高度**。
+    #[tauri::command]
+    pub async fn timeline_index(
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<db::TimelineIndex, String> {
+        let _t = log_call!("timeline_index", "");
+        let user_id = require_user(&session)?;
+        let r = (|| -> Result<db::TimelineIndex, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.timeline_index(user_id).map_err(|e| format!("{:?}", e))
+        })();
+        match &r {
+            Ok(idx) => logger::log_call_end_with(
+                "timeline_index",
+                _t,
+                &format!("OK | months={} total={}", idx.months.len(), idx.total),
+            ),
+            Err(e) => logger::log_call_end_with("timeline_index", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
+    /// FEAT-122：取某个月的一页时间线卡片（带 `thumb_path`）
+    ///
+    /// - `year = "未记录"` → 无拍摄时间的那一组
+    /// - `limit <= 0` → 不限（按月整包拉，最大月 952 张）
+    #[tauri::command]
+    pub async fn timeline_month(
+        year: String,
+        month: String,
+        limit: Option<i64>,
+        offset: Option<i64>,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Vec<db::TimelineCard>, String> {
+        let _t = log_call!("timeline_month", &format!("{year}-{month}"));
+        let user_id = require_user(&session)?;
+        let r = (|| -> Result<Vec<db::TimelineCard>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.timeline_month(user_id, &year, &month, limit.unwrap_or(0), offset.unwrap_or(0))
+                .map_err(|e| format!("{:?}", e))
+        })();
+        match &r {
+            Ok(cards) => logger::log_call_end_with(
+                "timeline_month",
+                _t,
+                &format!("OK | rows={} with_thumb={}", cards.len(), cards.iter().filter(|c| c.thumb_path.is_some()).count()),
+            ),
+            Err(e) => logger::log_call_end_with("timeline_month", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
+    /// FEAT-123：全局概览快照
+    ///
+    /// 改前：概览页要拉 `list_timeline`（24,980 行 / 14,438 KB）+ 5 个命令，
+    /// 实测一次构建横跨 3~44 秒。现在：后端算一次聚合（带签名缓存，落
+    /// `overview_cache` 表，重启后仍命中），返回 2~4 KB 快照；
+    /// 照片库没变时**一句聚合都不跑**。
+    #[tauri::command]
+    pub async fn overview_stats(
+        today_md: String,
+        today_year: i32,
+        force: Option<bool>,
+        app: tauri::AppHandle,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<db::OverviewStats, String> {
+        let _t = log_call!("overview_stats", &format!("md={today_md} y={today_year}"));
+        let user_id = require_user(&session)?;
+        let r = async {
+            let model = crate::category::current_model_id(&app).await?;
+            let db = state.0.lock().map_err(|e| format!("{e}"))?;
+            db.overview_stats(user_id, &model, &today_md, today_year, force.unwrap_or(false))
+                .map_err(|e| format!("{e}"))
+        }
+        .await;
+        match &r {
+            Ok(s) => logger::log_call_end_with(
+                "overview_stats",
+                _t,
+                &format!(
+                    "OK | total={} months={} known={} indexed={}",
+                    s.total_scanned,
+                    s.months.len(),
+                    s.known,
+                    s.indexed
+                ),
+            ),
+            Err(e) => logger::log_call_end_with("overview_stats", _t, &format!("ERR | {e}")),
         }
         r
     }
@@ -2559,7 +2712,17 @@ pub mod commands {
             clip_model_present, clip_ready, semantic_backoff_remaining, SemanticStatus,
         };
 
-        // 1. 退避窗口（最高优先：退避期内其它探测都无意义）
+        // 1. 模型文件缺失（先于退避判断：缺文件不会自愈，退避期里也必须如实告知，
+        //    否则前端要等 20s 退避结束才弹「下载模型」）
+        if !clip_model_present() {
+            return Ok(SemanticStatus {
+                ready: false,
+                code: "model_missing".into(),
+                message: "CLIP 语义模型尚未下载，当前只能做关键词匹配。点「下载模型」即可在应用内补齐（无需重启）。".into(),
+                backoff_remaining_ms: 0,
+            });
+        }
+        // 2. 退避窗口（模型已在位：这里的失败才是服务/加载层面的瞬时问题）
         if let Some(rest) = semantic_backoff_remaining() {
             return Ok(SemanticStatus {
                 ready: false,
@@ -2569,15 +2732,6 @@ pub mod commands {
                     rest.as_secs().max(1)
                 ),
                 backoff_remaining_ms: rest.as_millis() as u64,
-            });
-        }
-        // 2. 模型文件缺失（唯一真正需要用户「去下载」的情形）
-        if !clip_model_present() {
-            return Ok(SemanticStatus {
-                ready: false,
-                code: "model_missing".into(),
-                message: "CLIP 语义模型尚未下载，当前只能做关键词匹配。可前往「扫描中心 → ⚙ 性能设置」下载语义模型。".into(),
-                backoff_remaining_ms: 0,
             });
         }
         // 3. 服务未运行 / 模型未加载完成

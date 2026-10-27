@@ -1,6 +1,8 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
+import { useOverviewStore } from "./overview";
 import type { Album, CreateAlbumInput, UpdateAlbumInput, BatchAlbumOutcome, MergeAlbumOutcome } from "../types/album";
+import { getThumbs } from "../utils/thumbQueue";
 import { filterVisibleAlbums } from "../types/album";
 import { useVaultStore } from "./vault";
 import type {
@@ -95,10 +97,16 @@ export const useAlbumStore = defineStore("album", {
       return await invoke<string[]>("list_album_photos", { albumId });
     },
 
-    /** 批量生成/复用照片网格缩略图，返回 [(原图路径, 缩略图路径)] */
+    /**
+     * 批量生成/复用照片网格缩略图，返回 [(原图路径, 缩略图路径)]
+     *
+     * 一律走 `utils/thumbQueue` 的全局队列（在飞 ≤3、单批 ≤60、按 path 去重），
+     * 不再直连 invoke：BUG-2026-1023-009 的根因之一就是「任何页面都能随时
+     * 向后端追加一路缩略图请求」，多个页面叠在一起就把进程打死了。
+     */
     async getPhotoThumbs(albumId: number, paths: string[]): Promise<[string, string][]> {
       if (!paths.length) return [];
-      return await invoke<[string, string][]>("get_photo_thumbs", { albumId, paths });
+      return await getThumbs(albumId, paths);
     },
 
     /** 读取单张照片信息（分辨率/文件大小/RGB 直方图，按需实时读，不落库） */
@@ -108,12 +116,17 @@ export const useAlbumStore = defineStore("album", {
 
     /** 批量「相册记录删除」：从网格浏览中移除+清扫描记录，本地文件保留（可恢复） */
     async deletePhotoRecords(albumId: number, paths: string[]): Promise<PhotoDeleteOutcome> {
-      return await invoke<PhotoDeleteOutcome>("delete_photo_records", { albumId, paths });
+      const r = await invoke<PhotoDeleteOutcome>("delete_photo_records", { albumId, paths });
+      /* FEAT-112：删照片会改变总张数/入库数/覆盖率 → 概览缓存失效 */
+      useOverviewStore().invalidate();
+      return r;
     },
 
     /** 批量「本地文件删除」：删磁盘文件并级联清理记录与缩略图缓存（不可恢复） */
     async deletePhotoFiles(albumId: number, paths: string[]): Promise<PhotoDeleteOutcome> {
-      return await invoke<PhotoDeleteOutcome>("delete_photo_files", { albumId, paths });
+      const r = await invoke<PhotoDeleteOutcome>("delete_photo_files", { albumId, paths });
+      useOverviewStore().invalidate();
+      return r;
     },
 
     /** 恢复已「记录删除」的照片（撤销删除）：从 album_photo_excluded 移除，恢复网格显示 */
@@ -235,6 +248,8 @@ export const useAlbumStore = defineStore("album", {
         rootPath,
       });
       await this.fetchAlbums();
+      /* FEAT-112：导入新相册后概览统计（相册数/总张数/存储）变了，失效缓存 */
+      useOverviewStore().invalidate();
       return result;
     },
 

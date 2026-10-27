@@ -357,3 +357,55 @@ export function componentTone(hex: string): ComponentTone {
     text3: onDark ? "rgba(219,226,245,.88)" : "#4b5b6e",
   };
 }
+
+/* ── HSV 双向换算（FEAT-118：取色器的色盘用）──────────────────────────────
+   色盘的状态天然是 HSV（色相是角度、饱和度是半径、明度是纵向），
+   但这套界面其余部分一律用 #rrggbb 作为唯一真值。
+   所以这里只做两个方向的转换，色盘自己不持有"颜色"，只持有短暂的 h/s/v 交互态，
+   避免出现「色盘里的颜色和令牌里的颜色不一致」这种双真值问题。 */
+
+export interface Hsv {
+  /** 0~360 */
+  h: number;
+  /** 0~1 */
+  s: number;
+  /** 0~1 */
+  v: number;
+}
+
+export function hexToHsv(hex: string): Hsv {
+  const [r0, g0, b0] = hexToRgb(hex);
+  const r = r0 / 255, g = g0 / 255, b = b0 / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0;
+  if (d > 1e-9) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  const s = max <= 1e-9 ? 0 : d / max;
+  return { h, s, v: max };
+}
+
+export function hsvToHex({ h, s, v }: Hsv): string {
+  const hh = ((h % 360) + 360) % 360;
+  const c = v * s;
+  const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
+  const m = v - c;
+  let r = 0, g = 0, b = 0;
+  if (hh < 60) [r, g, b] = [c, x, 0];
+  else if (hh < 120) [r, g, b] = [x, c, 0];
+  else if (hh < 180) [r, g, b] = [0, c, x];
+  else if (hh < 240) [r, g, b] = [0, x, c];
+  else if (hh < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  return rgbToHex([
+    Math.round((r + m) * 255),
+    Math.round((g + m) * 255),
+    Math.round((b + m) * 255),
+  ]);
+}

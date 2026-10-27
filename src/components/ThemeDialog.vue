@@ -3,16 +3,29 @@
  * 主题 / 皮肤设置弹窗（FEAT-086 重构）
  *
  * 双页签结构：
- *  - 预定义效果：5 套三段渐变预设（源自设计图），一键整套联动
- *    （渐变三色标 + 配套组件色 + 组件透明度 + 普通卡片材质）；
- *  - 自定义效果：原主题弹窗全部能力迁入 + 组件透明度滑块 + 普通/液态材质二选一。
+ *  - 预定义效果：三段渐变预设（源自设计图），一键整套联动
+ *    （渐变三色标 + 配套组件色 + 组件透明度 + 材质）；材质选项本身已移到自定义页；
+ *  - 自定义效果：原主题弹窗全部能力迁入 + 组件透明度滑块 + 卡片/仪表墙材质。
+ *
+ * 取色统一走 PmColorPicker（自绘）：最近使用固定 5 格、悬停可删，
+ * 避免系统取色弹窗的历史颜色无限堆积。
  *
  * 由 Home.vue 渲染并 teleport 到 body；样式走全局 .pm-*（pm-dialog.css）。
  */
-import { onBeforeUnmount, onMounted, ref, computed } from "vue";
+import { onBeforeUnmount, onMounted, ref, computed, nextTick } from "vue";
 import { DEFAULT_WALLPAPER, useThemeStore } from "../stores/theme";
 import { normalizeHex } from "../utils/color";
 import { ALL_PRESETS, PRESET_GROUPS, matchesPreset, presetGradient } from "../utils/presets";
+import {
+  MAX_CUSTOM_PRESETS,
+  addCustomPreset,
+  customPresetFromPrefs,
+  normalizeName,
+  readCustomPresets,
+  removeCustomPreset,
+  type CustomPreset,
+} from "../utils/customPresets";
+import PmColorPicker from "./ui/PmColorPicker.vue";
 
 const emit = defineEmits<{ close: [] }>();
 const theme = useThemeStore();
@@ -54,8 +67,101 @@ const activePresetId = computed(() => {
   return hit?.id ?? "";
 });
 
+/* ---------------- 我的预设（FEAT-118，最多 6 个） ----------------
+   存的是「当前外观」的快照，所以入口放在自定义页 —— 这是"我把这一套留下来"的动作，
+   不是在预定义页"挑一套内置的"。列表仍在预定义页展示（和内置预设并排），
+   因为用户的动作是"选一套外观"，来源不该影响他到哪里去点。 */
+const customPresets = ref<CustomPreset[]>(readCustomPresets());
+const namingOpen = ref(false);
+const nameDraft = ref("");
+const nameInput = ref<HTMLInputElement | null>(null);
+/** 满了就不再给"存为预设"的入口，而是直接说明要先删一个 */
+const customFull = computed(() => customPresets.value.length >= MAX_CUSTOM_PRESETS);
+
+function persistCustom(next: CustomPreset[]) {
+  customPresets.value = next;
+  try {
+    localStorage.setItem("pm-theme.customPresets", JSON.stringify(next));
+  } catch {
+    /* 配额满/被禁用：本次会话可用，只是不持久化 */
+  }
+}
+
+function openNaming() {
+  if (customFull.value) return;
+  namingOpen.value = true;
+  nameDraft.value = "";
+  void nextTick(() => nameInput.value?.focus());
+}
+
+function saveCustom() {
+  if (customFull.value) return;
+  const preset = customPresetFromPrefs(theme.$state as never, normalizeName(nameDraft.value));
+  const res = addCustomPreset(customPresets.value, preset);
+  if (!res.ok) return;
+  persistCustom(res.list);
+  namingOpen.value = false;
+  activeTab.value = "preset";
+}
+
+function dropCustom(id: string) {
+  persistCustom(removeCustomPreset(customPresets.value, id));
+}
+
+/** 自定义预设的预览渐变（与 presetGradient 同一条表达式，只是入参少个 material） */
+function customGradient(p: CustomPreset) {
+  return `linear-gradient(${p.angle}deg, ${p.colors[0]}, ${p.colors[1]}, ${p.colors[2]})`;
+}
+
+function applyCustom(p: CustomPreset) {
+  theme.applyPreset({
+    id: p.id,
+    name: p.name,
+    mode: p.mode,
+    colors: p.colors,
+    angle: p.angle,
+    compColor: p.compColor,
+    compAlpha: p.compAlpha,
+    material: "plain",
+  });
+}
+
+const activeCustomId = computed(() => {
+  const hit = customPresets.value.find((p) =>
+    matchesPreset(
+      { ...p, material: "plain" } as never,
+      {
+        bgStyle: theme.bgStyle,
+        gradFrom: theme.gradFrom,
+        gradMid: theme.gradMid,
+        gradTo: theme.gradTo,
+        compColor: theme.compColor,
+        compAlpha: theme.compAlpha,
+      },
+    ),
+  );
+  return hit?.id ?? "";
+});
+
 /** 角度滑块可用性：背景必须处于渐变态（纯色/背景图下改角度无可见效果 → 禁用） */
 const angleEnabled = computed(() => theme.bgStyle === "gradient");
+
+/* ---------------- 取色器（自绘，替代系统弹窗的无限历史色） ----------------
+ * `<input type="color">` 会把历史颜色交给系统/浏览器维护：选得越多越长，
+ * 既不能限制为 5 个也不能删。改用 PmColorPicker（最近 5 个、悬停可删）。 */
+type ColorField = "compColor" | "bgColor" | "gradFrom" | "gradMid" | "gradTo";
+const colorTarget = ref<{ field: ColorField; title: string } | null>(null);
+const colorValue = computed(() => (colorTarget.value ? theme[colorTarget.value.field] : "#ffffff"));
+
+function openColor(field: ColorField, title: string) {
+  colorTarget.value = { field, title };
+}
+
+function commitColor(v: string) {
+  if (!colorTarget.value) return;
+  theme[colorTarget.value.field] = v;
+  theme.persist();
+}
 
 /* ---------------- 自定义效果（原弹窗能力迁入） ---------------- */
 const bgFileInput = ref<HTMLInputElement | null>(null);
@@ -129,6 +235,9 @@ function chooseBgImage() {
 /* ---------------- Esc 关闭（组件自持，Home 只管自己另外两个弹窗） ---------------- */
 function onKey(e: KeyboardEvent) {
   if (e.key === "Escape") {
+    // 取色器叠在本弹窗之上：Esc 先关它（PmColorPicker 自己处理），
+    // 这里必须让行，否则一次 Esc 会把两层一起关掉。
+    if (colorTarget.value) return;
     e.preventDefault();
     e.stopPropagation();
     emit("close");
@@ -174,37 +283,18 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
           aria-labelledby="tab-preset"
         >
           <p class="pm-hint" style="margin: -4px 0 12px">
-            默认外观 = 启动封面（与登录页同一张壁纸 + 落日紫金）；下面 6 套按**深浅分组**，
-            点一下整套应用（渐变 + 组件色 + 模式）
+            默认外观 = 启动封面（与登录页同一张壁纸 + 落日紫金）；下面预设按**深浅分组**，
+            点一下整套应用（渐变 + 组件色 + 模式）。「松绿混色」等彩色预设还会改变
+            智慧相册「全局概览」仪表墙的强调色与光晕。
           </p>
 
-          <!-- FEAT-103：深/浅模式切换。
-               以前 ThemeDialog 里没有这个开关 —— DEFAULTS.mode 写死 dark，
-               模板里虽有 body:not(.theme-dark) 分支，但用户根本切不过去。
-               现在放在预设列表上方：它是点预设前的第一个决策。 -->
-          <div class="pm-mode-row">
-            <span class="pm-mode-label">模式</span>
-            <div class="pm-mode-seg" role="group" aria-label="深浅模式">
-              <button
-                type="button"
-                class="pm-mode-btn"
-                :class="{ on: theme.mode === 'dark' }"
-                :aria-pressed="theme.mode === 'dark'"
-                @click="theme.setMode('dark')"
-              >
-                深色
-              </button>
-              <button
-                type="button"
-                class="pm-mode-btn"
-                :class="{ on: theme.mode === 'light' }"
-                :aria-pressed="theme.mode === 'light'"
-                @click="theme.setMode('light')"
-              >
-                浅色
-              </button>
-            </div>
-          </div>
+          <!-- FEAT-112：深浅模式开关已移除（用户反馈“深色/浅色切换没用”——
+               实际上预设自身已携带 mode，单独一个开关只会造出“深色模式 + 浅色预设”
+               这种错配态；要换到浅色直接点浅色组里的预设即可）。 -->
+
+          <!-- 材质选项已从预定义页移除（用户反馈：预定义只负责配色/氛围，
+               材质属于「自定义效果」的个人口味；且两者的材质语义不同，
+               放在预设页容易让人以为会随预设一起换）。见自定义页「卡片材质」。 -->
 
           <!-- 默认卡（FEAT-094）：点一下回到「启动封面 + 落日紫金」，与底部的「恢复默认」等价。
                以前重置后 5 张预设卡会全部掉高亮（选中态判据只认渐变），这里把默认态补成一张卡。 -->
@@ -264,10 +354,65 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
                 <span class="pm-preset-dots">
                   <i v-for="c in p.colors" :key="c" :style="{ background: c }"></i>
                   <i :style="{ background: p.compColor }" title="组件色"></i>
+                  <i v-if="p.accent" :style="{ background: p.accent }" title="仪表墙强调色"></i>
                 </span>
                 <span v-if="activePresetId === p.id" class="pm-preset-check" aria-hidden="true">✓</span>
               </button>
             </div>
+          </div>
+
+          <!-- ══ 我的预设（FEAT-118）══════════════════════════════════════════
+               和内置预设并排，因为用户的动作都是"选一套外观"，来源不该影响他去哪点。
+               最多 6 个：满了就不再给"存为预设"的入口（自定义页会说明），
+               而不是静默丢掉最早的 —— 静默丢失比拒绝更让人恼火。 -->
+          <div class="pm-preset-group">
+            <div class="pm-preset-group-head">
+              <span class="pm-preset-group-title">我的预设</span>
+              <span class="pm-preset-group-note">
+                {{ customPresets.length }} / {{ MAX_CUSTOM_PRESETS }} · 在「自定义效果」里调好后可存为预设
+              </span>
+            </div>
+            <div v-if="customPresets.length" class="pm-presets">
+              <div
+                v-for="p in customPresets"
+                :key="p.id"
+                class="pm-preset pm-preset-custom"
+                :class="{ on: activeCustomId === p.id }"
+              >
+                <button
+                  class="pm-preset-hit"
+                  type="button"
+                  :aria-pressed="activeCustomId === p.id"
+                  :aria-label="`套用我的预设 ${p.name}`"
+                  @click="applyCustom(p)"
+                >
+                  <span class="pm-preset-swatch" :style="{ background: customGradient(p) }"></span>
+                  <span class="pm-preset-name">
+                    <span>{{ p.name }}</span>
+                    <span class="pm-preset-badge">
+                      {{ p.mode === "dark" ? "深色" : "浅色" }} · {{ Math.round(p.compAlpha * 100) }}%
+                    </span>
+                  </span>
+                  <span class="pm-preset-dots">
+                    <i v-for="c in p.colors" :key="c" :style="{ background: c }"></i>
+                    <i :style="{ background: p.compColor }" title="组件色"></i>
+                  </span>
+                  <span v-if="activeCustomId === p.id" class="pm-preset-check" aria-hidden="true">✓</span>
+                </button>
+                <button
+                  class="pm-preset-del"
+                  type="button"
+                  :aria-label="`删除我的预设 ${p.name}`"
+                  title="删除这个预设"
+                  @click.stop="dropCustom(p.id)"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+            <p v-else class="pm-preset-empty">
+              还没有自定义预设。到「自定义效果」调好颜色、角度与组件色，点「存为预设」就能留在这里
+            </p>
           </div>
 
           <!-- 角度：作用于当前预设渐变；未套用预设（背景非渐变）时禁用，避免“改了没反应” -->
@@ -297,7 +442,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
           aria-labelledby="tab-custom"
         >
           <div class="pm-section">
-            <div class="pm-section-title">卡片材质</div>
+            <div class="pm-section-title">材质</div>
             <div class="pm-seg">
               <button
                 type="button"
@@ -315,20 +460,24 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
               </button>
             </div>
             <p class="pm-hint" style="margin: 6px 0 0">
-              普通：无模糊、无纹理的卡片 · 液态：边缘折射 + 壁厚高光（全局生效）
+              普通：无模糊、无纹理的卡片 · 液态：背景压暗/提亮 + 上缘镜面 + 下缘壁厚
+              · 全局生效：卡片、面板、仪表墙 widget 一并用这一套材质
             </p>
+
           </div>
 
           <div class="pm-section">
             <div class="pm-section-title">组件色调</div>
             <p class="pm-hint pm-comp-hint">卡片 / 面板等组件的底色 · 默认白色</p>
             <div class="pm-color-row">
-              <input
-                type="color"
-                v-model="theme.compColor"
-                @change="theme.persist()"
+              <button
+                class="pm-swatch-btn"
+                type="button"
+                :style="{ background: theme.compColor }"
                 aria-label="组件色调色块（点击打开调色盘）"
-              />
+                title="点击选择颜色"
+                @click="openColor('compColor', '组件色调')"
+              ></button>
               <input
                 class="pm-hex pm-mono"
                 type="text"
@@ -355,7 +504,9 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
             </label>
             <!-- FEAT-094：透明度能拉到 0，但代价当场说清楚 ——
                  文字色是按背景**均值**推的，卡片的填充就是那层「把局部差异抹平」的底；
-                 这条读数逐带算过，比一个拍脑袋的下限诚实。 -->
+                 这条读数逐带算过，比一个拍脑袋的下限诚实。
+                 FEAT-121：滑块现在是**唯一事实**（旧版液态会把值夹到 0.58 下限，
+                 0~62% 拖不出任何变化）——所以这条读数比以往更重要：它不再被安全阀掩盖。 -->
             <p class="pm-hint" :class="{ 'pm-warn': theme.readability.worst < 4.5 }" style="margin: 2px 0 0">
               实测最深色带上的文字对比 ≈ {{ theme.readability.worst.toFixed(1) }}:1
               <template v-if="theme.readability.worst < 4.5">
@@ -413,7 +564,14 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
           <div v-if="theme.bgStyle === 'color'" class="pm-section">
             <label class="pm-section-title">选择颜色</label>
             <div class="pm-color-row">
-              <input type="color" v-model="theme.bgColor" @change="theme.persist()" />
+              <button
+                class="pm-swatch-btn"
+                type="button"
+                :style="{ background: theme.bgColor }"
+                aria-label="背景纯色（点击打开调色盘）"
+                title="点击选择颜色"
+                @click="openColor('bgColor', '背景颜色')"
+              ></button>
               <span class="pm-mono">{{ theme.bgColor }}</span>
             </div>
           </div>
@@ -421,9 +579,30 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
           <div v-else-if="theme.bgStyle === 'gradient'" class="pm-section">
             <div class="pm-section-title">渐变配色（三段）</div>
             <div class="pm-grade">
-              <input type="color" v-model="theme.gradFrom" @change="theme.persist()" aria-label="渐变起始色" />
-              <input type="color" v-model="theme.gradMid" @change="theme.persist()" aria-label="渐变中段色" />
-              <input type="color" v-model="theme.gradTo" @change="theme.persist()" aria-label="渐变结束色" />
+              <button
+                class="pm-swatch-btn"
+                type="button"
+                :style="{ background: theme.gradFrom }"
+                aria-label="渐变起始色（点击打开调色盘）"
+                title="起始色"
+                @click="openColor('gradFrom', '渐变起始色')"
+              ></button>
+              <button
+                class="pm-swatch-btn"
+                type="button"
+                :style="{ background: theme.gradMid }"
+                aria-label="渐变中段色（点击打开调色盘）"
+                title="中段色"
+                @click="openColor('gradMid', '渐变中段色')"
+              ></button>
+              <button
+                class="pm-swatch-btn"
+                type="button"
+                :style="{ background: theme.gradTo }"
+                aria-label="渐变结束色（点击打开调色盘）"
+                title="结束色"
+                @click="openColor('gradTo', '渐变结束色')"
+              ></button>
             </div>
             <label class="pm-range">
               <span>角度</span>
@@ -459,9 +638,51 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
 
         <div class="pm-actions">
           <button class="pm-btn" type="button" @click="theme.reset()">恢复默认</button>
+          <button
+            class="pm-btn"
+            type="button"
+            :disabled="customFull"
+            :title="customFull ? `最多保存 ${MAX_CUSTOM_PRESETS} 个自定义预设，请先删除一个` : '把当前外观存成一套预设'"
+            @click="openNaming"
+          >
+            {{ customFull ? `预设已满（${MAX_CUSTOM_PRESETS}）` : "存为预设" }}
+          </button>
           <button class="pm-btn pm-btn-primary" type="button" @click="emit('close')">完成</button>
         </div>
+
+      <!-- 命名浮层：只问一件事（叫什么），所以就地弹一行，不另开二级弹窗 -->
+      <div v-if="namingOpen" class="pm-name-mask" @click.self="namingOpen = false">
+        <div class="pm-name-box" role="dialog" aria-modal="true" aria-labelledby="pm-name-title">
+          <h4 id="pm-name-title">存为预设</h4>
+          <p class="pm-name-hint">
+            保存当前配色、角度与组件色 · 已存 {{ customPresets.length }} / {{ MAX_CUSTOM_PRESETS }}
+          </p>
+          <input
+            ref="nameInput"
+            v-model="nameDraft"
+            class="pm-name-input"
+            type="text"
+            maxlength="12"
+            placeholder="给这套外观起个名字"
+            aria-label="预设名称"
+            @keydown.enter.prevent="saveCustom"
+            @keydown.esc.prevent="namingOpen = false"
+          />
+          <div class="pm-name-foot">
+            <button class="pm-btn" type="button" @click="namingOpen = false">取消</button>
+            <button class="pm-btn pm-btn-primary" type="button" @click="saveCustom">保存</button>
+          </div>
+        </div>
+      </div>
       </div>
     </div>
+
+    <PmColorPicker
+      :visible="!!colorTarget"
+      :model-value="colorValue"
+      :title="colorTarget?.title"
+      @update:model-value="commitColor"
+      @close="colorTarget = null"
+    />
   </teleport>
 </template>

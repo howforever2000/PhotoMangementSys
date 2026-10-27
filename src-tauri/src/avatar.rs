@@ -12,20 +12,36 @@ use std::path::Path;
 /// 中心方裁：读图 → 取中心正方形 → 缩放 `size×size` → JPEG 落盘到 `dst`
 ///
 /// 输入支持项目已启用的格式（jpg/jpeg/png/webp/gif/bmp）；输出统一 JPEG。
+/// 按**文件头**判断是否为 JPEG（不信扩展名）
+///
+/// BUG-2026-1027-004：本项目图库里存在「内容与扩展名不一致」的文件 ——
+/// 实测 `vcr-data/persons.db` 的 10,565 条人脸中有 **95 条**原图头是
+/// `89 50 4E 47`（PNG），其中一批还叫 `*.jpg`（微信/截图导出的典型产物）。
+/// 旧代码用 `ends_with(".jpg")` 判 JPEG，再交给 `jpeg_decoder` 读头，
+/// `info()` 返回 None → 报「无法读取图片头信息」，该人物的头像永远裁不出来。
+pub fn is_jpeg_file(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 3];
+    if f.read(&mut head).unwrap_or(0) < 3 {
+        return false;
+    }
+    head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF
+}
+
 pub fn crop_square(src: &Path, dst: &Path, size: u32) -> Result<(), String> {
     if !src.is_file() {
         return Err(format!("图片不存在: {}", src.display()));
     }
-    let name = src
-        .file_name()
-        .map(|n| n.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    let is_jpeg = name.ends_with(".jpg") || name.ends_with(".jpeg");
+    let is_jpeg = is_jpeg_file(src);
 
     let cropped = if is_jpeg {
         crop_square_jpeg(src, size)?
     } else {
-        let img = image::open(src).map_err(|e| format!("图片解码失败: {e}"))?;
+        // 按**内容**解码（image::open 会按扩展名猜格式，遇到 PNG 内容却叫 .jpg 会直接失败）
+        let img = crate::imgio::open_any(src)?;
         let side = img.width().min(img.height()).max(1);
         let x = (img.width() - side) / 2;
         let y = (img.height() - side) / 2;
@@ -138,6 +154,45 @@ pub fn clear_all_avatar_cache(dir: &Path) -> u32 {
 }
 
 /// 缓存是否仍可信：自选头像恒真；自动头像要求签名与**当前**人脸集一致
+/// FEAT-124：人物卡封面（4:5 竖版）的缓存路径
+///
+/// 与头像分开：头像 96×96 给圆形小图/合并弹窗；封面 480×600 给人物卡当照片。
+/// 签名机制与头像完全一致（`cover_{pid}.sig`），人物库重建/合并后自动失效重裁。
+pub fn cover_paths(dir: &Path, pid: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let d = dir.join("covers");
+    (d.join(format!("cover_{pid}.jpg")), d.join(format!("cover_{pid}.sig")))
+}
+
+/// 封面身份签名是否与当前人脸集一致
+pub fn cover_cache_valid(dir: &Path, pid: &str, cur_sig: Option<&str>) -> bool {
+    let (jpg, sig) = cover_paths(dir, pid);
+    if !jpg.is_file() {
+        return false;
+    }
+    match (std::fs::read_to_string(&sig), cur_sig) {
+        (Ok(written), Some(cur)) => written.trim() == cur,
+        _ => false,
+    }
+}
+
+/// 写封面签名（裁切成功后调用）
+pub fn write_cover_sig(dir: &Path, pid: &str) {
+    let (_jpg, sig) = cover_paths(dir, pid);
+    if let Ok(Some(s)) = crate::persons::face_sig(pid) {
+        if let Some(parent) = sig.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(sig, s);
+    }
+}
+
+/// 封面刷新事件载荷（后台批量裁切时逐个人物上报，前端渐进替换）
+#[derive(Clone, serde::Serialize)]
+pub struct CoverRefreshed {
+    pub pid: String,
+    pub path: String,
+}
+
 fn cache_valid(dir: &Path, pid: &str, cur_sig: Option<&str>) -> bool {
     let (_jpg, sig, custom) = avatar_paths(dir, pid);
     if custom.is_file() {
@@ -558,6 +613,19 @@ mod tests {
         crop_square(&jpg, &dst_jpg, 96).unwrap();
         let img2 = image::open(&dst_jpg).unwrap();
         assert_eq!((img2.width(), img2.height()), (96, 96));
+
+        // BUG-2026-1027-004：内容 PNG + 扩展名 .jpg（微信/截图导出的典型产物）
+        // 旧代码按扩展名判 JPEG，交给 jpeg_decoder 会报「无法读取图片头信息」。
+        // 实测库里 10,565 条人脸有 95 条是这种文件。
+        let fake = tmp.join("fake.jpg");
+        image::RgbImage::new(200, 120)
+            .save_with_format(&fake, image::ImageFormat::Png)
+            .unwrap();
+        assert!(!is_jpeg_file(&fake), "PNG 内容不应被判为 JPEG");
+        let dst_fake = tmp.join("out_fake.jpg");
+        crop_square(&fake, &dst_fake, 96).expect("PNG 内容 + .jpg 扩展名必须仍能裁切");
+        let img3 = image::open(&dst_fake).unwrap();
+        assert_eq!((img3.width(), img3.height()), (96, 96));
 
         std::fs::remove_dir_all(&tmp).ok();
     }

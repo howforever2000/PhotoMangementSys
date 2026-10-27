@@ -25,6 +25,9 @@ export type ThemeMode = "light" | "dark";
 export type BackgroundStyle = "image" | "gradient" | "color";
 /** 卡片材质：普通（无模糊/无纹理）/ 液态（低模糊 + 流体高光） */
 export type Material = "plain" | "liquid";
+/** FEAT-110：仪表墙 widget 材质（只作用于智慧相册「全局概览」等 widget 墙，
+ *  与全站卡片材质 Material 互不影响）：玻璃（半透模糊）/ 普通（实心 tint） */
+export type WidgetMaterial = "glass" | "plain";
 
 export interface Prefs {
   mode: ThemeMode;
@@ -38,6 +41,9 @@ export interface Prefs {
   temperature: number;
   /** 玻璃材质 */
   material: Material;
+  /* FEAT-117：widgetMaterial 已并入 material（一个材质控制所有），
+     不再是 Prefs 的字段。旧 localStorage 里残留的这个键会被 normalizePrefs
+     自然丢弃（它按白名单逐字段构建对象），不会报错。 */
   bgStyle: BackgroundStyle;
   bgColor: string;
   gradFrom: string;

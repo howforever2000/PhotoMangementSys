@@ -6,33 +6,9 @@
  *   2. 深色组件底必须翻成浅色文字，且翻的方向永远是「对比更高的一侧」；
  *   3. 次级底/描边必须与主底保持层级（浅底更暗、深底更亮）。
  */
-import { test } from "node:test";
+import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import {
-  LINK_GOLD_HUE,
-  LINK_GOLD_LIGHT,
-  LINK_GOLD_SAT,
-  TEMP_COOL,
-  TEMP_WARM,
-  TEXT_DARK,
-  TEXT_LIGHT,
-  applyTemperature,
-  componentTone,
-  contrastRatio,
-  glassBandContrast,
-  hexToRgb,
-  hexToRgba,
-  hslAtTargetLum,
-  hslToRgb,
-  isDarkText,
-  linkOnGlass,
-  mixRgb,
-  normalizeHex,
-  relLum,
-  rgbToHsl,
-  saturateColor,
-  type Rgb,
-} from "./color.ts";
+import { LINK_GOLD_HUE, LINK_GOLD_LIGHT, LINK_GOLD_SAT, TEMP_COOL, TEMP_WARM, TEXT_DARK, TEXT_LIGHT, applyTemperature, componentTone, contrastRatio, glassBandContrast, hexToRgb, hexToRgba, hslAtTargetLum, hslToRgb, isDarkText, linkOnGlass, mixRgb, normalizeHex, relLum, rgbToHsl, saturateColor, type Rgb, hexToHsv, hsvToHex } from "./color.ts";
 
 test("normalizeHex：归一化 #rgb/#RRGGBB，坏值回落白色", () => {
   assert.equal(normalizeHex("#FFFFFF"), "#ffffff");
@@ -305,3 +281,45 @@ test("FEAT-094 glassBandContrast：深色背景 α=0 仍安全，浅顶带渐变
   assert.ok(full.worst >= 4.5, `设计值附近应达标，实测 ${full.worst.toFixed(2)}:1`);
   assert.equal(zero.text, "#1f2733", "文字色应仍由均值玻璃决定（与 componentTone 同源）");
 });
+
+/* ── FEAT-118：HSV 双向换算 ────────────────────────────────────────────
+   色盘的交互态是 HSV、令牌的唯一真值是 hex，两者必须严格互逆，
+   否则「拖完色盘再拖回来」会慢慢漂色。 */
+test("hexToHsv/hsvToHex：六个纯色相往返一致", () => {
+  for (const hex of ["#ff0000", "#ffff00", "#00ff00", "#00ffff", "#0000ff", "#ff00ff"]) {
+    assert.equal(hsvToHex(hexToHsv(hex)), hex);
+  }
+});
+
+test("hexToHsv/hsvToHex：灰阶饱和度为 0、明度等于通道值", () => {
+  const g = hexToHsv("#808080");
+  assert.equal(g.s, 0);
+  assert.ok(Math.abs(g.v - 128 / 255) < 1e-6);
+  assert.equal(hsvToHex(g), "#808080");
+});
+
+test("hexToHsv/hsvToHex：黑色 / 白色不产生 NaN 色相", () => {
+  for (const hex of ["#000000", "#ffffff"]) {
+    const hsv = hexToHsv(hex);
+    assert.ok(Number.isFinite(hsv.h), `${hex} 的色相必须是有限值`);
+    assert.equal(hsvToHex(hsv), hex);
+  }
+});
+
+test("hexToHsv/hsvToHex：色相越界（负数 / >360）归一化", () => {
+  assert.equal(hsvToHex({ h: -30, s: 1, v: 1 }), hsvToHex({ h: 330, s: 1, v: 1 }));
+  assert.equal(hsvToHex({ h: 390, s: 1, v: 1 }), hsvToHex({ h: 30, s: 1, v: 1 }));
+});
+
+test("hexToHsv/hsvToHex：全色域采样互逆（0~359 每 13°，5 档明度）", () => {
+  for (let h = 0; h < 360; h += 13) {
+    for (const v of [0.15, 0.4, 0.62, 0.85, 1]) {
+      const hex = hsvToHex({ h, s: 0.7, v });
+      const back = hexToHsv(hex);
+      // hex 只有 8 位精度，色相与明度允许 1 个量化步内的偏差
+      assert.ok(Math.abs(back.v - v) <= 1 / 255 + 1e-6, `${hex} 明度漂移过大`);
+      assert.equal(hsvToHex(back), hex, `${hex} 往返后色值变了`);
+    }
+  }
+});
+

@@ -30,8 +30,23 @@ const props = withDefaults(
      *   地点/手动视图暂时还是 card），不必一次改完 2883 行。
      */
     variant?: "card" | "tile";
+    /** FEAT-105：mosaic = 参与跨格错落排布的大瓦片。
+     *  封面填满格子，图注压在封面底部（海报落款），而不是封面下方。 */
+    mosaic?: boolean;
+    /**
+     * FEAT-106：wall = 行式密排里的瓦片。
+     *
+     * 与 mosaic 的区别：
+     *   mosaic 是「封面填满格子 + 图注叠在封面里」（海报落款）
+     *   wall   是「封面高度由所在行决定 + 图注在下方的玻璃条里」
+     *
+     * 行式密排要求**同一行内所有瓦片严格等高**（否则图注会错位），
+     * 所以封面高度不能由 aspect-ratio 决定，必须由外层行传下来 ——
+     * 这就是 --cover-h 这个 CSS 变量的作用。
+     */
+    wall?: boolean;
   }>(),
-  { showLocation: false, variant: "card" },
+  { showLocation: false, variant: "card", mosaic: false, wall: false },
 );
 
 const emit = defineEmits<{
@@ -51,17 +66,31 @@ const isTile = computed(() => props.variant === "tile");
 /**
  * tile 变体的图注右侧元信息。
  *
- * 组装顺序有讲究：先给"有多少张"，再给"什么时候"——
- * 用户在扫视相册网格时第一眼找的是"这个相册多大/是不是我要的那个"，
- * 时间只是辅助。用 ` · ` 分隔，保持一行。
+ * 组装顺序有讲究：先给"有多少张"——用户在扫视相册网格时第一眼找的是
+ * "这个相册多大/是不是我要的那个"。时间已移到封面左下角（FEAT-105），
+ * 不再重复出现在图注里。
  *
  * 为什么不带 size_bytes：在极简版面上，体积对相册浏览几乎无决策价值
  * （用户不会因为某个相册 200MB 而改变行为），但张数会。体积仍保留在
  * tile 的 title 里（悬停可见），不占主视觉。
  */
+/** 封面左下角的时间标签：年 + 月（"2024年6月"），日太细不占位 */
+const tileTime = computed(() => {
+  const t = props.album.shoot_time;
+  if (!t) return "";
+  const y = t.slice(0, 4);
+  const m = t.slice(5, 7);
+  return m ? `${y}年${Number(m)}月` : `${y}年`;
+});
+
+/**
+ * 封面左下角落款的元信息行：张数 · 时间（· 地点）。
+ * 图注已嵌入封面内部（海报落款），时间不再单独占一个胶囊。
+ */
 const tileMeta = computed(() => {
   const parts: string[] = [`${props.album.photo_count} 张`];
-  if (props.album.shoot_time) parts.push(props.album.shoot_time.slice(0, 4));
+  if (tileTime.value) parts.push(tileTime.value);
+  // 地点（仅地点视图有意义）跟在时间后面
   if (props.showLocation && props.album.location) parts.push(props.album.location);
   return parts.join(" · ");
 });
@@ -89,14 +118,14 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 
 <template>
   <!-- ══════════════ FEAT-103：tile 变体（Canvas 极简） ══════════════
-       裸封面 + 两行图注。没有卡片背景、没有阴影、没有内边距 ——
+       裸封面 + 下方一行裸文字图注。没有卡片背景、没有阴影、没有内边距 ——
        层级由留白建立，不靠边框。但交互与 card 完全一致（多选/右键/键盘）。
        注意：勾选框仍保留（批量管理是刚需），只是把它从"卡片内左上"
        改成贴在封面上的圆点，避免裸封面上突然出现一个方块。 -->
   <article
     v-if="isTile"
     class="album-tile"
-    :class="{ 'tile-selected': selected, 'tile-manage': selectMode }"
+    :class="{ 'tile-selected': selected, 'tile-manage': selectMode, 'tile-mosaic': mosaic, 'tile-wall': wall }"
     :tabindex="0"
     role="button"
     :aria-pressed="selectMode ? selected : undefined"
@@ -109,7 +138,7 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
       <img v-if="album.cover_path" :src="fileUrl(album.cover_path)" alt="" loading="lazy" decoding="async" />
       <div v-else class="tile-placeholder">📷</div>
 
-      <!-- 已入库角标：从 pill 降为纯文字（封面本身就是底色，不需要 pill 兜底） -->
+      <!-- 已入库角标：裸文字 + 文字阴影，不用深色底块 -->
       <span
         v-if="!isScanned"
         class="tile-badge"
@@ -126,11 +155,20 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
         :aria-label="`勾选 ${album.name}`"
         @click.stop="emit('toggle-select', $event)"
       >{{ selected ? "✓" : "" }}</span>
-    </div>
 
-    <div class="tile-cap">
-      <b class="tile-name">{{ album.name }}</b>
-      <span class="tile-meta">{{ tileMeta }}</span>
+      <!--
+        图注（落款）嵌入封面左下角：名字一行 + 张数·时间一行。
+        白色裸文字 + 文字阴影，底部一层渐变保证浅色照片上可读（见 CSS）。
+        整块 pointer-events:none，不挡卡片点击 / 勾选。
+
+        FEAT-115 曾把它移到封面下方（"照片完整可见"），FEAT-117 按用户要求回退：
+        **文字与照片的嵌入关系就是这个页面的性格** —— 移出去之后一墙封面变成
+        "图 + 说明"的表格感，错落与海报感都没了。
+      -->
+      <div class="tile-seal">
+        <b class="tile-name">{{ album.name }}</b>
+        <span class="tile-meta">{{ tileMeta }}</span>
+      </div>
     </div>
   </article>
 
@@ -465,8 +503,11 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   display: flex;
   flex-direction: column;
   cursor: pointer;
-  /* 悬停只改亮度与描边，不做位移/加阴影：
-     密集网格里任何位移都会让邻格"抖"，而阴影会把裸封面重新变回卡片。 */
+  /* FEAT-105：Rainmeter 皮肤化 —— 瓦片也是一块磨砂玻璃板。
+     但**封面本身不透明**（照片是内容，不能透），所以玻璃效果落在：
+       · 封面下方的图注区（真正的玻璃，能透出壁纸）
+       · 板边缘的亮边与投影（让每块读起来是"浮在壁纸上的一块板"）
+     封面保持不透明是必须的：照片透出壁纸会变成鬼影。 */
   transition:
     filter var(--dur-2) var(--ease-out),
     transform var(--dur-1) var(--ease-out);
@@ -514,20 +555,92 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   opacity: 0.32;
 }
 
-/* 角标：纯文字 + 文字阴影（不再用 pill）。
-   裸封面上叠一个半透明药丸会变成"贴纸"，而 9px 大写文字压在照片上
-   已经足够可读 —— 因为照片底部本来就有暗角。 */
+/* 「未入库」角标：**裸文字**（FEAT-107）。
+   之前是深色胶囊 —— 胶囊压在照片上就等于盖掉一块画面，
+   而这里一行只有 3~5 块，照片本身才是主体。
+   配色判据见下方《封面上裸文字的配色》一段。 */
 .tile-badge {
   position: absolute;
-  top: 9px;
-  left: 9px;
+  top: 8px;
+  right: 10px;
+  z-index: 1;
   font-size: 9px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  font-weight: var(--fw-strong);
-  color: rgba(255, 255, 255, 0.86);
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  font-weight: 650;
+  /* 默认 = 占位情景：跟随主题文字色 */
+  color: var(--fg-2);
   pointer-events: none;
+}
+/* 真封面（照片）上才用白字 + 文字阴影 */
+.tile-cover:has(img) .tile-badge {
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7), 0 0 6px rgba(0, 0, 0, 0.4);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   封面上裸文字的配色（FEAT-107）
+   ──────────────────────────────────────────────────────────────────────────
+   为什么不能拿 `body:not(.theme-dark)` 当判据：
+   那个类表达的是「用户选了浅色模式」，与「封面底色是深是浅」无关；
+   而且探针/内嵌情景下该类可能根本没挂上，于是“浅色分支”
+   在深色界面里静默生效（实测踩到：光探针里的日期字变成深色）。
+
+   正确判据是**封面自己有没有照片**：
+     · 有 <img> → 照片总有暗部 → 白字 + 文字阴影
+     · 无 <img> → 占位底跟着主题走 → 用 --fg 系列（深底白字 / 浅底深字）
+   这个判据不依赖任何全局类，也不可能错配。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── 图注落款：嵌入封面左下角（名字一行 + 张数·时间一行）──────────────
+   FEAT-117：按用户要求回退到嵌入布局。理由：**文字与照片的叠压关系才是
+   这个页面的性格** —— 图注移到封面下方后，一墙封面退化成"图 + 说明"的
+   表格感，海报感与错落都消失。
+
+   无照片（占位底）时跟随主题文字色；有照片时切白字（见下条）。
+   整块 pointer-events:none，不拦截卡片点击 / 勾选圆点。 */
+.tile-seal {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 9px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  pointer-events: none;
+}
+.tile-seal .tile-name {
+  max-width: 100%;
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile-seal .tile-meta {
+  max-width: 100%;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 有真封面（照片）：白字 + 投影。可读性由底部渐变兜底（见 ::after），
+   照片总有暗部，白字 + 投影在绝大多数封面上安全。 */
+.tile-cover:has(img) .tile-seal .tile-name,
+.tile-cover:has(img) .tile-seal .tile-meta {
+  color: rgba(255, 255, 255, 0.94);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.78), 0 0 9px rgba(0, 0, 0, 0.4);
 }
 
 /* 勾选圆点：22px，与封面的 5px 圆角形成对比但不突兀 */
@@ -565,32 +678,76 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
     0 0 0 2px var(--c-accent);
 }
 
-.tile-cap {
-  padding-top: 11px;
+/* 封面底部渐变：为左下角两行落款兜底（名字 + 张数·时间）。
+   FEAT-117 随落款回退到 54px/0.42 —— 单行角标用 34px/0.30 够，
+   但两行白字在雪景/天空上发虚，必须更厚。
+   ⚠️ 只给**有真封面**的瓦片（同旧规则）。 */
+.tile-cover:has(img)::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 54px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0));
+  pointer-events: none;
+}
+/* FEAT-105：mosaic 变体（跨格的大瓦片）
+   默认 .tile-cover 用 padding-bottom:62.5% 定一个固定宽高比，
+   在跨 2×2 的大格子里只会占住上方一块，底下留白 —— 看起来像"图没铺满"。
+   这里在大格子里改成：封面填满剩余高度（flex:1），落款随封面内嵌。 */
+.album-tile.tile-mosaic {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
+  flex-direction: column;
+  height: 100%;
+}
+.album-tile.tile-mosaic .tile-cover {
+  /* 覆盖 62.5% 的 padding-bottom 方案：改用 flex 填满 */
+  height: auto;
+  padding-bottom: 0;
+  flex: 1;
+  min-height: 0;
 }
 
-.tile-name {
-  font-size: var(--fs-title);
-  font-weight: var(--fw-em);
-  letter-spacing: var(--ls-title);
-  color: var(--c-fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
+/* ── FEAT-106/107：wall 变体（行式密排）──────────────────────────────
+   与 mosaic 的结构差异：
+     mosaic：封面填满格子（flex:1）
+     wall  ：封面高度 = 所在行的高度（--cover-h 由外层传入，px 值）
+   两者都是 .album-tile.tile-* 修饰类，特异性相同（0,2,0），
+   所以靠**声明顺序**定胜负 —— 本段写在 mosaic 段之后。
+
+   ⚠️ FEAT-107：图注从封面内部搬到封面下方后，
+   `.album-tile.tile-wall { height: 100% }` 会把图注挤出去（整行高度固定）。
+   现在行高 = coverH + captionH(30)，所以这里让封面 flex:none、图注占剩下的 30px。 */
+.album-tile.tile-wall {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
-.tile-meta {
-  font-size: var(--fs-meta);
-  color: var(--c-fg-2);
-  letter-spacing: var(--ls-meta);
-  white-space: nowrap;
-  flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
+.album-tile.tile-wall .tile-cover {
+  /* 覆盖 62.5% 的 padding-bottom 方案：高度由行决定 */
+  height: var(--cover-h, 160px);
+  padding-bottom: 0;
+  flex: none;
+}
+
+/* ── 悬停：整块瓦片抬亮，封面边缘亮起 ── */
+.album-tile.tile-wall:hover .tile-cover {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+    var(--cover-topline);
+}
+
+/* 无封面相册（新建/封面文件被移走）的角标：占位底是浅灰，白字会消失。
+   这种情况下给角标一个半透黑底 —— 这是**唯一**仍需要底的地方，
+   因为它落在的不是照片，而是空占位。 */
+.album-tile .tile-cover:not(:has(img)) .tile-badge {
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(23, 22, 26, 0.55);
+  padding: 2px 7px;
+  border-radius: 4px;
+  text-shadow: none;
 }
 
 .album-tile:hover .tile-cover {
@@ -617,28 +774,11 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
     0 0 0 3.5px transparent;
 }
 
-/* 浅色模式：占位底与描边换成暗色系 */
+/* 浅色模式：占位底换成暗色系 */
 body:not(.theme-dark) .tile-cover {
   background: rgba(23, 22, 26, 0.05);
 }
 
-/* 角标在浅色下的可读性：
-   角标原本是"白字 + 黑文字阴影"，专为"压在照片上"设计 —— 照片总有暗部。
-   但**没有封面的相册**（新建/封面文件被移走）底是浅灰，白字直接消失。
-   这里给无封面场景一个实底：用 backdrop-filter 取不可靠（浅灰上无意义），
-   直接给一个半透黑药丸 + 纯白字。 */
-body:not(.theme-dark) .tile-cover:not(:has(img)) .tile-badge {
-  color: #fff;
-  background: rgba(23, 22, 26, 0.55);
-  padding: 2px 7px;
-  border-radius: 4px;
-  text-shadow: none;
-}
-/* 深色下同样处理：深灰占位底上白字尚可读，但加一层薄底更稳 */
-body.theme-dark .tile-cover:not(:has(img)) .tile-badge {
-  background: rgba(255, 255, 255, 0.12);
-  padding: 2px 7px;
-  border-radius: 4px;
-  color: rgba(255, 255, 255, 0.92);
-}
+/* 无封面的占位情景：角标用主题文字色（已在基础规则里），这里不再写
+   body.theme-dark 分支 —— 那个类作为判据不成立（见上方说明）。 */
 </style>

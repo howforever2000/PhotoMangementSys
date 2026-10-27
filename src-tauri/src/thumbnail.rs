@@ -8,6 +8,7 @@
 //! - 按指纹前 2 位分目录（避免单目录文件过多，IO 性能更好）
 
 use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 use image::ImageFormat;
@@ -161,11 +162,20 @@ pub fn scan_album_dir(dir: &Path) -> AlbumScan {
 /// 网格缩略图缓存子目录（与封面缩略图隔离，避免 cleanup_album_auto_thumbs 误删）
 const GRID_THUMBS_SUBDIR: &str = "grid";
 
-/// 缩略图渲染算法版本（参与 `thumb_photo_hash` 缓存键）。
+/// 缩略图渲染算法版本（**只参与磁盘文件名**，不参与表主键）。
 ///
 /// 语义：**只影响像素内容**的改动才需要 bump。v2 = 按 EXIF Orientation 转正
 /// （BUG-2026-1014-002）；v1 = 初始实现。
-const THUMB_RENDER_VERSION: u32 = 2;
+///
+/// ⚠️ BUG-2026-1023-009 的教训：本版本号曾经被同时掺进 `thumb_photo_hash`
+/// （`photo_thumb_cache` 的主键），一次 bump 就把 2.5 万行缓存记录和扫描侧的
+/// `photo_content_scan.photo_hash` 撕成两套键空间——扫描侧 `count_scanned_without_thumb`
+/// 仍然能对得上旧行、认为「全都有缩略图所以不必预热」，而懒加载侧查新键又一条不中，
+/// 于是升级后第一次浏览变成全库重生成。
+///
+/// 现约定：**主键只由 path+size+mtime 决定（与 `content::photo_hash` 完全同源）；
+/// 渲染版本只进文件名**。这样 bump 只让旧**文件**失效，表行可原地重订键复用。
+pub(crate) const THUMB_RENDER_VERSION: u32 = 2;
 
 /// FEAT-044：计算与 `photo_content_scan.photo_hash` 同源的指纹
 ///
@@ -173,12 +183,27 @@ const THUMB_RENDER_VERSION: u32 = 2;
 /// 之所以在 thumbnail.rs 中复制实现，是为了让“仅调用缩略图模块”的场景不依赖
 /// content 模块（如别处动态生成缩略图但不入库）。
 /// 跨模块一致性靠**集成测试**保证（见 `tests_thumb_cache_consistency`）。
+///
+/// ❗ 不要再往 input 里掺渲染版本 —— 那会把两套键空间拆开（BUG-2026-1023-009）。
 pub fn thumb_photo_hash(path: &Path, len: u64, mtime_ns: u128) -> String {
     let path_str = path.to_string_lossy();
-    // 掺入渲染算法版本：缩略图**像素内容**变了（BUG-2026-1014-002 起按 EXIF 转正），
-    // 但键原本只由「路径+大小+mtime」决定 → 老用户会直接命中缓存里的**躺倒**旧图，
-    // 表现为「代码改了却毫无变化」。任何影响像素的渲染改动都必须 bump 此版本。
-    let input = format!("{len}|{mtime_ns}|{path_str}|v{THUMB_RENDER_VERSION}");
+    let input = format!("{len}|{mtime_ns}|{path_str}");
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in input.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// 历史 v1 键（**掺了渲染版本**），仅供一次性迁移把老行认回来。
+///
+/// BUG-2026-1023-009：v1→v2 升级时主键掺了 `|v2`，老库里那 2.4 万行用的就是
+/// 这个函数算出的键。迁移时用同样的算法才算得到它们，否则永远找不回旧行。
+/// **新代码不要调用它**（新键见 [`thumb_photo_hash`]）。
+pub fn thumb_photo_hash_v1(path: &Path, len: u64, mtime_ns: u128, version: u32) -> String {
+    let path_str = path.to_string_lossy();
+    let input = format!("{len}|{mtime_ns}|{path_str}|v{version}");
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in input.as_bytes() {
         h ^= *b as u64;
@@ -203,7 +228,14 @@ fn read_file_meta(path: &Path) -> Option<(u64, u128)> {
 /// FEAT-044：表命中后返表的 thumb_path，但需额外 stat 确认文件存在
 /// （表里记录可能由于人为删除缓存 / 磁盘清理失效）
 fn is_thumb_file_alive(thumb_path: &str) -> bool {
-    !thumb_path.is_empty() && std::path::Path::new(thumb_path).is_file()
+    // 长度必须 > 0：生成中途进程被打断会留下 0 字节文件（BUG-2026-1023-009
+    // 崩溃现场就有 20 个），只判 `is_file()` 会把它当成缓存命中，于是
+    // 网格里那一格永远是一张碎图且再也不会自愈。
+    !thumb_path.is_empty()
+        && std::path::Path::new(thumb_path)
+            .metadata()
+            .map(|m| m.is_file() && m.len() > 0)
+            .unwrap_or(false)
 }
 
 /// FEAT-044：表命中后构建记录并 upsert
@@ -324,7 +356,16 @@ where
     let hashes: Vec<String> = source_hashes.iter().map(|(_, h)| h.clone()).collect();
     let hit_map = db_lookup(&hashes); // hash → thumb_path（已验证 alive）
 
-    // 2. 生成未命中项（并行：按 CPU 核数分块，首次打开大相册（缓存全冷）提速数倍）
+    // 2. 生成未命中项 —— **本函数一律串行**（BUG-2026-1023-009）。
+    //
+    // 这里原本是「misses 够多就 thread::scope 按核数开 min(核数,8) 个线程」。
+    // 单请求看是加速，多请求叠加时是灾难：时间线页一次点开就并发了 129 个
+    // 本函数调用（每个相册一路），129 × 8 ≈ 1000 个线程同时解码大 JPEG，
+    // 线程数实测冲到 732、内存 1.2GB，最后整进程以 0xC00000FD 退出。
+    //
+    // 并行度改由**进程级**闸门（`save_thumbnail` 里的 `acquire_gen_permit`）
+    // 提供：多路请求天然并行，但真正同时解码的线程数恒定 ≤ gen_max()。
+    // 代价是单个请求变慢，收益是「请求再多也不会把进程打死」——这里选后者。
     let misses: Vec<(String, String)> = source_hashes
         .iter()
         .filter(|(_, hash)| !hit_map.contains_key(hash))
@@ -332,52 +373,19 @@ where
         .collect();
     let mut gen_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut generated: Vec<(String, String, u64, u128)> = Vec::new(); // (source, thumb, len, mtime_ns)
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .min(8);
-    // 小批量（<2×核数）直接串行，省去线程开销
-    if misses.len() >= workers * 2 && workers > 1 {
-        let gen_sync = std::sync::Mutex::new((gen_map, generated));
-        let chunk_size = misses.len().div_ceil(workers);
-        std::thread::scope(|scope| {
-            for part in misses.chunks(chunk_size) {
-                let gen_sync = &gen_sync;
-                scope.spawn(move || {
-                    for (source, _hash) in part {
-                        let path = std::path::Path::new(source.as_str());
-                        let (len, mtime_ns) = match read_file_meta(path) {
-                            Some(m) => m,
-                            None => continue,
-                        };
-                        if let Ok(thumb) = ensure_grid_thumb(album_id, path, thumbs_dir, None, 0) {
-                            let mut g = gen_sync.lock().unwrap();
-                            g.0.insert(source.clone(), thumb.clone());
-                            g.1.push((source.clone(), thumb, len, mtime_ns));
-                        }
-                        // 单张失败不影响其余：跳过
-                    }
-                });
+    for (source, _hash) in &misses {
+        let path = std::path::Path::new(source.as_str());
+        let (len, mtime_ns) = match read_file_meta(path) {
+            Some(m) => m,
+            None => continue,
+        };
+        match ensure_grid_thumb(album_id, path, thumbs_dir, None, 0) {
+            Ok(thumb) => {
+                gen_map.insert(source.clone(), thumb.clone());
+                generated.push((source.clone(), thumb, len, mtime_ns));
             }
-        });
-        let g = gen_sync.into_inner().unwrap();
-        gen_map = g.0;
-        generated = g.1;
-    } else {
-        for (source, _hash) in &misses {
-            let path = std::path::Path::new(source.as_str());
-            let (len, mtime_ns) = match read_file_meta(path) {
-                Some(m) => m,
-                None => continue,
-            };
-            match ensure_grid_thumb(album_id, path, thumbs_dir, None, 0) {
-                Ok(thumb) => {
-                    gen_map.insert(source.clone(), thumb.clone());
-                    generated.push((source.clone(), thumb, len, mtime_ns));
-                }
-                Err(_) => {
-                    // 单张失败不影响其余：跳过
-                }
+            Err(_) => {
+                // 单张失败不影响其余：跳过
             }
         }
     }
@@ -783,6 +791,14 @@ fn file_fingerprint(path: &Path) -> String {
     fp
 }
 
+/// 供迁移复用：暴露文件名指纹（`file_fingerprint` 是私有的）
+///
+/// 命名规则必须与 `ensure_grid_thumb` 内部一致，否则迁移改出来的名字
+/// 跟懒加载算出来的名字对不上，白忙一场。
+pub fn thumbnail_fingerprint(source: &Path) -> String {
+    file_fingerprint(source)
+}
+
 /// P1 WebP 优化：按指纹前 2 位分目录（避免单目录文件过多）
 fn webp_subdir(fingerprint: &str) -> String {
     fingerprint.chars().take(2).collect()
@@ -907,10 +923,100 @@ pub fn cleanup_all_album_thumbs(album_id: i64, thumbs_dir: &Path) {
     cleanup_album_grid_thumbs(album_id, thumbs_dir);
 }
 
+/// 按**内容**解码（`image::open` 按扩展名猜格式，会把 PNG 内容叫 .jpg 的文件判成 JPEG）
+fn open_any_image(source: &Path) -> Result<image::DynamicImage, ThumbError> {
+    let bytes = std::fs::read(source).map_err(ThumbError::Io)?;
+    image::load_from_memory(&bytes).map_err(ThumbError::Image)
+}
+
 /// 判断文件名是否为 JPEG（.jpg / .jpeg）
 fn is_jpeg_path(file_name: &str) -> bool {
     let lower = file_name.to_lowercase();
     lower.ends_with(".jpg") || lower.ends_with(".jpeg")
+}
+
+// =====================================================================
+// 全局生成闸门（BUG-2026-1023-009 进程级崩溃的根治措施之一）
+// =====================================================================
+//
+// 事故现象：点开时间线后进程直接消失，终端只有
+//   `thread '<unknown>' (23492) has overflowed its stack`
+//   `exit code: 0xc00000fd (STATUS_STACK_OVERFLOW)`
+// 而 app.log 停在最后一条 get_photo_thumbs 上，没有任何 panic 与堆栈。
+//
+// 链式原因（实测数据，见 bug-notes BUG-2026-1023-009）：
+// 1. FEAT-1021 把缩略图渲染版本升到 v2（EXIF 转正），两个缓存键
+//    （`thumb_photo_hash` 的表主键 + `file_fingerprint` 的磁盘文件名）
+//    一起变 → 全库 2.5 万张缩略图**一次性全部失效**（v0.4.2 是热缓存，
+//    所以那个版本不炸）；
+// 2. 时间线页按 album 分组后 `Promise.all`，一次点开就发出 129 个
+//    `get_photo_thumbs`，单个相册最多 2876 条路径；
+// 3. 后端每个请求内部再 `thread::scope` 开 min(核数,8) 个线程现场解码 →
+//    进程线程数实测冲到 **732**、私有内存 **1.2GB**，冷缓存时还要乘上
+//    每张 2000 万像素 JPEG 的解码峰值；
+// 4. 线程栈在内存/提交量被打穿时无法继续提交，Windows 把这种失败报成
+//    0xC00000FD（= STATUS_STACK_OVERFLOW）→ 进程 abort，正在写盘的缩略图
+//    被截成 0 字节（崩溃现场实测留下 20 个 0 字节文件）。
+//
+// 因此「谁想生成」与「同时允许几个人真去解码」必须解耦：
+// 本闸门让全进程同时解码/编码的线程数恒定 ≤ [`gen_max`]，与请求路数无关。
+// 前端另有限流（`src/utils/thumbQueue.ts`）、并去掉单请求内部的二次开线程
+// （见 `ensure_grid_thumbs_with_lookup`），三层一起保证不再出现线程风暴。
+
+/// 当前正在生成的数量（受 [`GEN_GATE_CV`] 与 [`gen_max`] 约束）
+static GEN_GATE: Mutex<usize> = Mutex::new(0);
+/// 闸门通知：有线程释放名额时唤醒等待者
+static GEN_GATE_CV: Condvar = Condvar::new();
+/// 并发上限（首次使用时按 CPU 核数定，恒定不再变）
+static GEN_MAX: OnceLock<usize> = OnceLock::new();
+
+/// 同时生成的缩略图张数上限。
+///
+/// 取 `min(核数, 4)`：解码+WebP 编码本身是 CPU 密集型，超过核数只有
+/// 线程切换开销；4 已经能让单张相册的首次填充跑满常见 4~8 核的机器，
+/// 又不会在请求叠加时把内存打穿。
+fn gen_max() -> usize {
+    *GEN_MAX.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(1, 4)
+    })
+}
+
+/// 生成名额的 RAII 句柄：drop 即归还并唤醒一个等待者
+struct GenPermit;
+
+impl Drop for GenPermit {
+    fn drop(&mut self) {
+        // 锁中毒也要归还名额（否则一次 panic 会永久堵死闸门）
+        let mut cur = GEN_GATE.lock().unwrap_or_else(|e| e.into_inner());
+        *cur = cur.saturating_sub(1);
+        GEN_GATE_CV.notify_one();
+    }
+}
+
+/// 申请一个生成名额（超出上限时阻塞等待，不是丢弃任务）
+fn acquire_gen_permit() -> GenPermit {
+    let max = gen_max();
+    let mut cur = GEN_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    while *cur >= max {
+        cur = GEN_GATE_CV.wait(cur).unwrap_or_else(|e| e.into_inner());
+    }
+    *cur += 1;
+    GenPermit
+}
+
+/// 缩略图临时文件名：`<原名>.tmp<pid>_<seq>`（与目标同目录，保证 rename 同卷）
+fn temp_thumb_path(thumb_path: &Path) -> PathBuf {
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = thumb_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    name.push_str(&format!(".tmp{}_{}", std::process::id(), seq));
+    thumb_path.with_file_name(name)
 }
 
 /// JPEG DCT 降采样解码（只解所需 DCT 块，比全尺寸解码快 16~64 倍）
@@ -945,6 +1051,10 @@ fn save_thumbnail(source: &Path, thumb_path: &Path) -> Result<(), ThumbError> {
         crate::exif_orient::apply_orientation(img, orientation)
     };
 
+    // 全局闸门：从这里到函数返回，本线程占一个生成名额。
+    // 放置点选在解码之前、参数准备之后，保证「排在闸门外的请求」不占 CPU 与内存。
+    let _permit = acquire_gen_permit();
+
     let thumb = if is_jpeg_path(
         source
             .file_name()
@@ -955,17 +1065,36 @@ fn save_thumbnail(source: &Path, thumb_path: &Path) -> Result<(), ThumbError> {
         match decode_jpeg_scaled(source, THUMB_SIZE) {
             Ok(img) => oriented(image::DynamicImage::ImageRgb8(img))
                 .thumbnail(THUMB_SIZE, THUMB_SIZE),
-            // 降采样失败（异常 JPEG）降级为全尺寸解码，保证可用性
-            Err(_) => oriented(image::open(source)?).thumbnail(THUMB_SIZE, THUMB_SIZE),
+            // 降采样失败（异常 JPEG / 名不副实的 PNG）降级：按**内容**解码
+            Err(_) => match open_any_image(source) {
+                Ok(img) => oriented(img).thumbnail(THUMB_SIZE, THUMB_SIZE),
+                Err(e) => return Err(e),
+            },
         }
     } else {
-        oriented(image::open(source)?).thumbnail(THUMB_SIZE, THUMB_SIZE)
+        // 非 .jpg 扩展名 / 内容不是 JPEG：按魔数解码（不信扩展名）
+        oriented(open_any_image(source)?).thumbnail(THUMB_SIZE, THUMB_SIZE)
     };
     if let Some(parent) = thumb_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // 原子落盘：先写同目录临时文件，再改名到目标。
+    //
+    // 为什么必须（BUG-2026-1023-009）：同一张照片会被多个入口同时请求
+    // （时间线 / 回忆 / 相册详情各自按 album 分组取），直接写目标文件时
+    // 一个线程 `File::create` 刚截断、另一个线程还在写 → 崩溃或断电就会
+    // 留下半截/0 字节残骸；现在目标文件要么不存在，要么完整。
     // P1: WebP 编码，质量 85（压缩率远优于 JPEG）
-    thumb.save_with_format(thumb_path, ImageFormat::WebP)?;
+    let tmp_path = temp_thumb_path(thumb_path);
+    thumb.save_with_format(&tmp_path, ImageFormat::WebP)?;
+    // Windows 的 rename 不允许覆盖已存在文件：先删目标再改名
+    if std::fs::rename(&tmp_path, thumb_path).is_err() {
+        let _ = std::fs::remove_file(thumb_path);
+        if let Err(e) = std::fs::rename(&tmp_path, thumb_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(ThumbError::Io(e));
+        }
+    }
     Ok(())
 }
 
@@ -1449,6 +1578,59 @@ mod tests {
         assert_eq!(unix_secs_to_date(1_767_225_600), (2026, 1, 1));
     }
 
+    // -----------------------------------------------------------------
+    // BUG-2026-1023-009：键空间约定（表主键与扫描侧同源，版本只进文件名）
+    // -----------------------------------------------------------------
+
+    /// 表主键必须与 `content::photo_hash` **逐字同源**。
+    ///
+    /// 事故：曾经把渲染版本掺进表主键 → `photo_thumb_cache` 与
+    /// `photo_content_scan` 的 join（`count_scanned_without_thumb`）永远对不上，
+    /// 系统认为「全都有缩略图」而不预热，懒加载侧又全 miss。
+    #[test]
+    fn table_key_matches_content_photo_hash() {
+        let path = Path::new("D:/photos/IMG_0001.jpg");
+        let (len, mtime) = (1_234_567u64, 1_700_000_000_123_456_789u128);
+        assert_eq!(
+            thumb_photo_hash(path, len, mtime),
+            crate::content::photo_hash(&path.to_string_lossy(), len, mtime),
+            "表主键必须与扫描侧 photo_hash 完全一致（不得掺渲染版本）"
+        );
+    }
+
+    /// 渲染版本必须只影响**文件名**，不影响表主键。
+    /// bump 版本时这个测试会提醒：表行可以原地复用，只是文件名换了。
+    #[test]
+    fn render_version_only_in_file_name() {
+        let tmp = std::env::temp_dir().join(format!("ver_split_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let img_path = tmp.join("a.jpg");
+        image::RgbImage::new(32, 32).save(&img_path).unwrap();
+
+        let (len, mtime) = read_file_meta(&img_path).unwrap();
+        let key = thumb_photo_hash(&img_path, len, mtime);
+        assert_eq!(key, crate::content::photo_hash(&img_path.to_string_lossy(), len, mtime));
+
+        let fp = file_fingerprint(&img_path);
+        assert!(
+            fp.starts_with(&format!("v{THUMB_RENDER_VERSION}_")),
+            "文件名指纹应带渲染版本前缀，实际: {fp}"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 旧键函数：能算出 v2 时代的键（迁移靠它把老行认回来）
+    #[test]
+    fn legacy_hash_differs_from_current_hash() {
+        let path = Path::new("D:/photos/IMG_0002.jpg");
+        let (len, mtime) = (999u64, 42u128);
+        let new_key = thumb_photo_hash(path, len, mtime);
+        let old_key = thumb_photo_hash_v1(path, len, mtime, THUMB_RENDER_VERSION);
+        assert_ne!(new_key, old_key, "旧键掺了版本号，必须与新键不同");
+        assert_eq!(old_key.len(), 16);
+    }
+
     /// 生成测试图片并验证扫描与缩略图
     #[test]
     fn find_and_thumb() {
@@ -1512,5 +1694,87 @@ mod tests {
             .filter(|n| n.starts_with("album_1_"))
             .collect();
         assert_eq!(remaining.len(), 0, "删除相册后缓存应全部清理");
+    }
+
+    // -----------------------------------------------------------------
+    // BUG-2026-1023-009 回归：缩略图线程风暴导致进程 0xC00000FD 退出
+    // -----------------------------------------------------------------
+
+    /// 闸门必须真的把「同时生成数」卡在 `gen_max()` 以内。
+    ///
+    /// 事故里 129 路请求各自开 8 线程 → 同时解码几十张 2000 万像素图，
+    /// 线程数 732 / 私有内存 1.2GB，最后整进程以栈提交失败退出。
+    #[test]
+    fn gen_gate_caps_concurrent_generation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CUR: AtomicUsize = AtomicUsize::new(0);
+        static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    for _ in 0..4 {
+                        let _permit = acquire_gen_permit();
+                        let now = CUR.fetch_add(1, Ordering::SeqCst) + 1;
+                        PEAK.fetch_max(now, Ordering::SeqCst);
+                        // 持有名额一小会儿，给其它线程制造叠加机会
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        CUR.fetch_sub(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let peak = PEAK.load(Ordering::SeqCst);
+        assert!(peak <= gen_max(), "同时生成数 {peak} 超过闸门上限 {}", gen_max());
+        assert_eq!(CUR.load(Ordering::SeqCst), 0, "名额必须全部归还");
+    }
+
+    /// 同一张照片被并发生成时必须原子落盘：
+    /// 不得留下 0 字节残骸（崩溃现场有 20 个），也不得残留 `.tmp` 临时文件。
+    #[test]
+    fn concurrent_same_source_writes_atomically() {
+        let tmp = std::env::temp_dir().join(format!("pm_atomic_thumb_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let img_dir = tmp.join("photos");
+        std::fs::create_dir_all(&img_dir).unwrap();
+        let img_path = img_dir.join("same.jpg");
+        image::RgbImage::new(160, 120).save(&img_path).unwrap();
+        let src = img_path.to_string_lossy().into_owned();
+        let thumbs = tmp.join("thumbs");
+
+        // 8 个线程同时要同一张（时间线/回忆/相册详情会这样叠）
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let src = src.clone();
+                let thumbs = thumbs.clone();
+                scope.spawn(move || {
+                    ensure_grid_thumbs_with_lookup(
+                        3,
+                        &[src],
+                        &thumbs,
+                        &|_hashes| std::collections::HashMap::new(),
+                        |_gen| {},
+                    )
+                });
+            }
+        });
+
+        let grid = thumbs.join(GRID_THUMBS_SUBDIR);
+        let entries: Vec<_> = std::fs::read_dir(&grid).unwrap().flatten().collect();
+        let mut thumbs_count = 0;
+        for e in &entries {
+            let name = e.file_name().to_string_lossy().into_owned();
+            assert!(!name.contains(".tmp"), "不得残留临时文件：{name}");
+            let len = e.metadata().unwrap().len();
+            assert!(len > 0, "不得留下 0 字节缩略图：{name}");
+            thumbs_count += 1;
+        }
+        assert_eq!(thumbs_count, 1, "同一指纹只应产出一个文件");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

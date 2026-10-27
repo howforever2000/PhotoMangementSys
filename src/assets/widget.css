@@ -1,0 +1,569 @@
+/* ==========================================================================
+   Widget 仪表墙（FEAT-110）—— 智慧相册「全局概览」专用
+   ══════════════════════════════════════════════════════════════════════════
+   设计原则（与 tokens.css §3 的材质铁律一致）：
+     · widget 是**仪表盘层**：数量少（一屏约 12 块）、面积大，可以上玻璃；
+       相册墙 / 照片网格等内容层不许用（一屏几十块 backdrop-filter 必掉帧）。
+     · 命名空间独立（--w-* / .ui-widget*）：不覆盖 --color-*、--glass-*、--slip-*，
+       删掉本文件不影响任何现有界面。
+     · 玻璃填充不自己配色：用 color-mix 取现有 --color-surface（compColor 经
+       主题管线算出的容器色），所以选任何预设，板的 tint 都自动跟着主题走。
+     · 文字一律用 --color-text* 三档（store 已按玻璃等效底色做 WCAG 标定），
+       强调只用 --w-accent / --w-accent-2（预设可覆盖，默认落日金）。
+   性能：blur 固定 24px、无动画滤镜；feDisplacementMap 折射只留给浮层，
+   这里绝不引用 url(#liquid-lens)（核显本一屏十几块位移滤镜撑不住）。
+   ========================================================================== */
+
+:root {
+  /* 几何 */
+  --w-radius: 16px;
+  --w-radius-inner: 10px;
+  --w-gap: 14px;
+  /* 内边距拆成两轴：无边框的画法下，上下（呼吸）与左右（对齐轴）不该同值；
+     也给"媒体出血"留出可计算的负外边距。 */
+  --w-pad-y: 15px;
+  --w-pad-x: 18px;
+  --w-pad: var(--w-pad-y) var(--w-pad-x);
+  --w-row-h: 116px;
+
+  /* 强调渐变（默认落日金；松绿等彩色预设由 theme store 覆盖 --w-accent*） */
+  --w-accent: #f0bd6a;
+  --w-accent-2: #e8a33d;
+  --w-accent-soft: rgba(232, 163, 61, 0.16);
+
+  /* 玻璃壁厚
+     ⚠️ 可见性实测（.visual/probe-line-visibility.cjs）：
+       旧的单层半透白描边（11% 白）在松绿深底上只有 1.42~2.0:1，
+       在启动封面亮部只有 1.1~1.38:1 —— 板直接融进背景，“线条看不见”。
+     改成**双色描边**（玻璃板在真实世界里的画法）：
+       内侧一圈亮边 → 深色背景上靠它读出“板是抬起的”
+       外侧一圈暗环 → 亮色背景上靠它读出“板浮在壁纸之上”
+     两层叠加后，任意底色下边界都成立，且都不需要把线做得刺眼。 */
+  --w-line: rgba(255, 255, 255, 0.07);      /* 玻璃边微光（不再承担可见性） */
+  /* ── 轻量化（FEAT-113）：从「各向同性硬线」改为「上亮下暗的立体边」────
+     之前是 inset 0 0 0 1px（四边同亮 50%）+ 0 0 0 1px（四边同暗 55%），
+     两圈完整实线叠在一起，一屏十几块就是一张硬网格 —— 这正是
+     「边线太重」的来源。真实玻璃板不是四边同亮的：上缘受光最亮、
+     下缘最暗、左右只是极淡的转折。改成四向分别给值后，一圈完整的
+     硬线消失，立体感反而更可信。
+     边界可见性不靠这条线：板面 vs 背景实测 3.07~3.65:1（已单独达标），
+     线只做“修边”，不必再独扛 3:1。 */
+  --w-edge-hi: rgba(255, 255, 255, 0.40);   /* 上缘受光 */
+  --w-edge-lo: rgba(0, 0, 0, 0.24);         /* 下缘背光 */
+  --w-edge-side: rgba(255, 255, 255, 0.10); /* 左右转折（极淡） */
+  --w-inner-line: rgba(255, 255, 255, 0.30); /* 兼容旧引用（已不用于四边环） */
+  --w-outer-line: rgba(0, 0, 0, 0.28);      /* 外侧暗环改为轻环（原 55%） */
+  --w-divider: rgba(255, 255, 255, 0.55);   /* 板内结构分隔线（实测 11% 时只有 1.24:1） */
+  --w-divider-dark: rgba(0, 0, 0, 0.50);    /* 分隔线的暗侧（刻线效果） */
+  --w-dot: rgba(255, 255, 255, 0.26);       /* 点阵 / 装饰点 */
+  --w-cover-line: rgba(255, 255, 255, 0.20); /* 封面内描边 */
+  /* 白玻璃层比例：由 theme store 按**背景实际明度**下发（深底 22% / 亮底 34%）。
+     CSS 猜不出背后是壁纸亮部还是深色渐变，这层比例必须由 store 给。 */
+  --w-glass-white: 22%;
+  --w-edge-top: rgba(255, 255, 255, 0.26);
+  --w-edge-bottom: rgba(0, 0, 0, 0.28);
+  --w-shadow:
+    /* ① 上缘受光 —— 唯一的"亮边"。0.40 只在 1px 内发生，
+       读起来是"玻璃的断面被光切到"，不是"描了个白框"。 */
+    inset 0 1px 0 var(--w-edge-hi),
+    /* ② 下缘背光 —— 厚度的读数。没有它，板会像一张贴纸。 */
+    inset 0 -1px 0 var(--w-edge-lo),
+    /* ③ 贴边实影 + ④ 环境柔光。FEAT-116 删掉了原来的
+       `0 0 0 1px var(--w-outer-line)` 四边暗环：一屏七八块时，
+       这些暗环会首尾相接连成一张硬网格（FEAT-113 只删掉了亮环，暗环还在），
+       "板与板之间有一道缝"的观感就来自这里。浮起感改由下面两层承担。 */
+    0 1px 2px rgba(0, 0, 0, 0.26),
+    0 18px 40px -26px rgba(0, 0, 0, 0.62);
+  /* 棱边镜面光（沿上缘快速收干的两道窄高光） */
+  --w-sheen:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 24%),
+    linear-gradient(132deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.04) 18%, rgba(255, 255, 255, 0) 36%);
+
+  /* 图形轨道（环 / 柱 / 进度条的未填充部分） */
+  --w-track: rgba(255, 255, 255, 0.20);
+}
+
+body:not(.theme-dark) {
+  --w-accent: #8a5a12;
+  --w-accent-2: #b07a22;
+  --w-accent-soft: rgba(138, 90, 18, 0.12);
+  /* 浅色底上的角色对调：板是白玻璃，内侧用暗线、外侧用白环 */
+  --w-line: rgba(23, 22, 26, 0.08);
+  --w-ink-hi: rgba(23, 22, 26, 0.14);
+  --w-ink-lo: rgba(23, 22, 26, 0.05);
+  --w-edge-hi: rgba(255, 255, 255, 0.72);
+  --w-edge-lo: rgba(23, 22, 26, 0.10);
+  --w-edge-side: rgba(23, 22, 26, 0.05);
+  --w-inner-line: rgba(23, 22, 26, 0.14);
+  --w-outer-line: rgba(255, 255, 255, 0.72);
+  --w-edge-top: rgba(255, 255, 255, 0.78);
+  --w-edge-bottom: rgba(120, 105, 88, 0.10);
+  --w-shadow:
+    inset 0 1px 0 var(--w-edge-top),
+    inset 0 -1px 0 var(--w-edge-lo),
+    /* 浅色下接触阴影是边界的**主**信号（白板 vs 浅底，明度差做不出 3:1）。
+       去掉四边白环后，这里必须给足：板"浮在纸面上"全靠这一圈。
+       FEAT-116 实测：0.10/0.40 两档在白霜板下几乎读不出浮起，加深到 0.13/0.48。 */
+    0 1px 3px rgba(60, 48, 36, 0.13),
+    0 18px 38px -26px rgba(60, 48, 36, 0.48);
+  --w-sheen:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 26%);
+  /* 浅色下轨道加深：15% 的墨在白霜板上实测只有 1.1:1，
+     未选中的柱子几乎消失，读者只能看到"一根金条"而不是"一年的分布"。 */
+  --w-track: rgba(23, 22, 26, 0.26);
+}
+
+/* ── 浅色下的玻璃板：白霜，不是灰罩 ──────────────────────────────────
+   FEAT-116 修的是**质感**而不是可见性：
+   上一版为了让板在白底上"能看出边界"，叠了一层 30% 的 #101218 暗罩，
+   结果浅色模式下每一块板都是一片灰塑料 —— 背景的暖调被压死，
+   一屏十一块就是十一块灰板（对照截图肉眼可辨）。
+   现在回到玻璃的物理：白霜（提亮）+ 模糊 + 饱和 + **接触阴影**。
+   边界由「上缘 1px 高光 + 下缘 1px 灰线 + 贴边实影」三条极细的信号给出，
+   不靠把整块面压暗。明度差因此很小（1.2:1 量级），这是白玻璃的物理事实；
+   可读性由文字色（--color-text* 按板面等效底标定）单独保证，不指望板面本身。 */
+body:not(.theme-dark) .ui-widget--glass {
+  background-color: color-mix(in srgb, #ffffff 58%, transparent);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, #ffffff 26%, transparent),
+    color-mix(in srgb, #ffffff 6%, transparent)
+  );
+}
+
+/* ── 栅格 ─────────────────────────────────────────────────────────────── */
+.ui-widget-grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  grid-auto-rows: var(--w-row-h);
+  gap: var(--w-gap);
+}
+.ui-widget.span-3 { grid-column: span 3; }
+.ui-widget.span-4 { grid-column: span 4; }
+.ui-widget.span-5 { grid-column: span 5; }
+.ui-widget.span-6 { grid-column: span 6; }
+.ui-widget.span-7 { grid-column: span 7; }
+.ui-widget.span-8 { grid-column: span 8; }
+.ui-widget.span-12 { grid-column: span 12; }
+.ui-widget.rows-1 { grid-row: span 1; }
+.ui-widget.rows-2 { grid-row: span 2; }
+.ui-widget.rows-3 { grid-row: span 3; }
+
+/* 窄屏：全部降为整行，高度交给内容（仪表墙只在桌面端并排，移动端纵向排） */
+@media (max-width: 1000px) {
+  .ui-widget-grid { grid-auto-rows: auto; }
+  .ui-widget {
+    grid-column: span 12 !important;
+    grid-row: auto !important;
+    min-height: 132px;
+  }
+}
+
+/* ── 基类 ─────────────────────────────────────────────────────────────── */
+.ui-widget {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: var(--w-pad);
+  border-radius: var(--w-radius);
+  /* 面板内的文字用 --color-text*（按板面等效底色标定过对比度）；
+     bare 变体会把这一层换成 --fg*（按页面底标定）。见下方 --bare。 */
+  --w-fg: var(--color-text);
+  --w-fg2: var(--color-text-2);
+  --w-fg3: var(--color-text-3);
+  color: var(--w-fg);
+  overflow: hidden;
+  isolation: isolate;
+}
+.ui-widget::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+}
+.ui-widget > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* 玻璃材质：白玻璃 + 主题色调两层。
+   ⚠️ 可见性实测（.visual/probe-line-visibility.cjs）查出的真根因：
+     之前的写法是 `background: color-mix(...), color-mix(...)` ——
+     **background 简写里颜色只能有一个**，第二个 color-mix 让**整条声明失效**
+     （实测 computed backgroundColor = rgba(0,0,0,0)、backgroundImage = none），
+     于是板根本没有填充，只剩 backdrop 模糊与描边 → “线看不见”。
+     现在拆开写：色调层用 background-color，白玻璃层用 background-image
+     （linear-gradient 包一层，让它能当 image 叠在 color 之上）。 */
+.ui-widget--glass {
+  /* 配比：色调层给足（板才有主题色），白层只做“被光提亮”的量（22%）。
+     30% 白会把松绿洗成脏灰；0% 白板又与深背景同色（1:1，看不见）。 */
+  background-color: color-mix(in srgb, var(--color-surface) 62%, transparent);
+  background-image: linear-gradient(
+    color-mix(in srgb, #ffffff var(--w-glass-white), transparent),
+    color-mix(in srgb, #ffffff var(--w-glass-white), transparent)
+  );
+  /* FEAT-116：模糊 24 → 30、饱和 1.3 → 1.45。
+     板面本身已经很实（62% 色调 + 16~30% 白），能透出来的信息本来就少；
+     加大模糊半径让透出来的那点背景变成"色温"而不是"图形"，
+     这才是玻璃而不是半透明塑料。saturate 提高后壁纸的暖调会从板下透出来。 */
+  -webkit-backdrop-filter: blur(30px) saturate(1.45);
+  backdrop-filter: blur(30px) saturate(1.45);
+  /* 不再写 border：边界全部交给 --w-shadow 的「上亮下暗 + 接触影」，
+     FEAT-116 又把四边暗环也删了 —— 见 --w-shadow 的注释。 */
+  box-shadow: var(--w-shadow);
+}
+.ui-widget--glass::before {
+  background: var(--w-sheen);
+}
+
+/* ── bare：没有板，文字直接压在页面上（FEAT-116）──────────────────────
+   参考图里"几点了 / 今天几号"那几块是**没有容器**的：读数就是页面的一部分。
+   仪表墙如果每一块都有板，一屏十一块 = 十一个同一重量的矩形，
+   层级只能靠字号硬撑，读起来像"贴满便利贴的墙"。
+   现在把"纯读数"的块交给 bare，把"有内容（照片/人脸/地图）"的块留给玻璃板：
+   一层是排印，一层是承载体，两类声部互相衬托，板反而更显得是"板"。
+   注意 bare **不参与** backdrop-filter（省掉一屏若干次模糊），
+   它也不需要 --color-text（那是按板面标定的），改用页面级 --fg*。 */
+.ui-widget--bare {
+  --w-fg: var(--fg);
+  --w-fg2: var(--fg-2);
+  --w-fg3: var(--fg-3);
+  background: none;
+  box-shadow: none;
+  /* 上下留一点余地：裸块的最后一行（入库占比线 / 月度脚注）
+     不该贴着行边界，否则读者会把它当成"下一行的开头"。 */
+  padding: 2px 0 10px;
+  overflow: visible;
+  /* 壁纸透上来的亮部可能压掉文字对比：给一道 1px 的柔和暗影
+     （深色底上是暗影，浅色底上是白色提亮，见下方浅色档）。
+     它不是"描边"——只在字形边缘 2px 内生效，肉眼读作"字印得深一点"。 */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.32);
+}
+.ui-widget--bare::before { display: none; }
+body:not(.theme-dark) .ui-widget--bare {
+  text-shadow: 0 1px 1px rgba(255, 255, 255, 0.65);
+}
+/* 裸块整块可点时，hover 只把标题从弱色提到主色 —— 又轻又明确。 */
+.ui-widget--bare.ui-widget--link:hover > .ui-widget-head .ui-widget-label-cn,
+.ui-widget--bare.ui-widget--link:hover > .ui-widget-head .ui-widget-label {
+  color: var(--w-fg);
+}
+
+
+/* 普通材质：近实心 tint 板，零模糊、无镜面光，厚度只靠顶亮 + 底暗 + 轻投影 */
+.ui-widget--plain {
+  background: var(--color-surface-2);
+  box-shadow:
+    inset 0 1px 0 var(--w-edge-hi),
+    inset 0 -1px 0 var(--w-edge-lo),
+    0 1px 2px rgba(0, 0, 0, 0.18),
+    0 16px 34px -26px rgba(0, 0, 0, 0.56);
+}
+body:not(.theme-dark) .ui-widget--plain {
+  box-shadow:
+    inset 0 1px 0 var(--w-edge-hi),
+    inset 0 -1px 0 var(--w-edge-lo),
+    0 1px 2px rgba(60, 48, 36, 0.08),
+    0 16px 34px -26px rgba(60, 48, 36, 0.36);
+}
+
+/* 可点击的整块 widget：按压缩放（与 tokens §3.2 同一手感）
+   ⚠️ 传了 to 的 widget 渲染成 <router-link>，浏览器默认会给 <a> 里的
+   文字加下划线 —— 实测"2,507"下面多出一条横线，被误读成设计元素。
+   这里是整块可点的容器，下划线语义不成立，必须显式去掉。 */
+.ui-widget--link {
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+  transition: transform var(--dur-1) ease, border-color var(--dur-2) ease;
+}
+/* 悬停反馈：删掉四边描边后，border-color 的 hover 已经没有可改的对象。
+   改成"板面被照亮一点"（填充提亮 8%）—— 与玻璃的物理一致，
+   也比给整面墙加 hover 描边安静得多（那会让一屏板子开始闪框）。 */
+.ui-widget--glass.ui-widget--link {
+  transition: transform var(--dur-1) ease, background-color var(--dur-2) ease;
+}
+.ui-widget--glass.ui-widget--link:hover {
+  background-color: color-mix(in srgb, var(--color-surface) 70%, transparent);
+}
+.ui-widget--link:active {
+  transform: scale(0.99);
+}
+
+/* ── 板内分隔线：双刻线（etched）─────────────────────────────────────
+   为什么不用单层半透线：单层线在**亮底**上必然弱（实测白线 0.38 在亮板上
+   只有 1.54:1），在**暗底**上又太抢。双刻线是 iOS/macOS 的经典做法：
+     亮侧 1px + 暗侧 1px 紧贴 → 读成一道“凹槽”，任何底色下总有一侧可见。
+   用法：给容器加 .w-divider-v（竖）或 .w-divider-h（横）。 */
+.w-divider-v {
+  border-left: 1px solid var(--w-divider);
+  box-shadow: -1px 0 0 var(--w-divider-dark);
+}
+.w-divider-h {
+  border-top: 1px solid var(--w-divider);
+  box-shadow: 0 -1px 0 var(--w-divider-dark);
+}
+
+/* ── 头部 / 正文槽 ───────────────────────────────────────────────────── */
+/* 头部是"这一块是什么"的唯一标识，所以它必须**跨块对齐**：
+   同一行里所有 widget 的标签落在同一条基线上，靠固定行高 18px 保证。
+   只给一句话的标题留 18px，是这个网格能读成"一张版"的原因。 */
+.ui-widget-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 18px;
+  flex: none;
+}
+.ui-widget-label {
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--w-fg2);
+}
+.ui-widget-label-cn {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--w-fg2);
+}
+/* 头部右侧的"读数/动作"：与标签同基线，弱一档。
+   它是**补充**，不该和标签抢注意力 —— 所以 --w-fg3 而不是 --w-fg2。 */
+.ui-widget-head-right {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--w-fg3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.ui-widget-link {
+  color: var(--w-accent);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+}
+.ui-widget-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ui-widget-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 排印（全站 widget 共用）─────────────────────────────────────────────
+   读数用**细字重 + 负字距**：大字号本来就抢眼，再加粗就变成"每块都在喊"。
+   三档读数：xl（裸读数主数字）/ lg（面板里的主数字）/ sm（次级）。
+   tabular-nums 让不同块的数字在纵向也能对齐（这是"整齐"的一半来源）。 */
+.w-num-xl {
+  font-size: 62px;
+  font-weight: 300;
+  letter-spacing: -2.6px;
+  line-height: 0.86;
+  font-variant-numeric: tabular-nums;
+}
+.w-stat-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 10px;
+}
+.w-stat-num {
+  font-size: 38px;
+  font-weight: 320;
+  letter-spacing: -1.4px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.w-stat-num.sm { font-size: 27px; letter-spacing: -0.9px; }
+/* 单位：跟着读数基线，弱一档、小两号 —— 读起来是"2507 张"，不是"2507 张照片" */
+.w-stat-unit { font-size: 11.5px; color: var(--w-fg2); }
+.w-stat-delta { font-size: 10.5px; font-weight: 600; margin-left: auto; white-space: nowrap; }
+.w-stat-delta.up { color: var(--w-accent); }
+.w-stat-delta.mute { color: var(--w-fg2); font-weight: 400; }
+/* 脚注：一行放得下就一行，放不下省略 —— 仪表块高度固定，不允许换行把版撑开 */
+.w-stat-note {
+  font-size: 10.5px;
+  color: var(--w-fg2);
+  margin: 7px 0 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.w-stat-note .hot { color: var(--w-accent); }
+
+/* 元信息：用"·"分隔的短句（12 个相册 · 2019–2026）。
+   刻意不做成 chip：chip 是容器，一旦每块都挂三四个胶囊，
+   仪表墙就回到"一堆小框"的老路（这正是 FEAT-116 要去掉的）。 */
+.w-meta-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 10px;
+  font-size: 10.5px;
+  color: var(--w-fg2);
+  font-variant-numeric: tabular-nums;
+}
+.w-meta-row > span {
+  position: relative;
+  white-space: nowrap;
+}
+.w-meta-row > span + span::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: 50%;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+  transform: translateY(-50%);
+}
+
+/* 细占比线：3px。默认弱色（--w-track），只有 .hot 才走强调色渐变。 */
+.w-pbar {
+  margin-top: auto;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--w-track);
+  overflow: hidden;
+}
+.w-pbar.lg { height: 4px; }
+.w-pbar > i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--w-fg2);
+}
+.w-pbar.hot > i {
+  background: linear-gradient(90deg, var(--w-accent), var(--w-accent-2));
+}
+
+/* 封面（CoversCore 用）：内描边用 widget 专用值（比全站 --cover-inset 深，
+   否则亮照片上封面边界消失） */
+.w-cv {
+  position: relative;
+  border-radius: 10px;
+  overflow: hidden;
+  min-height: 0;
+  box-shadow: inset 0 0 0 1px var(--w-cover-line);
+  background: rgba(128, 128, 128, 0.18);
+}
+.w-cv img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.w-cv-ph {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  color: var(--color-text-3);
+  background: color-mix(in srgb, var(--color-surface-2) 70%, transparent);
+}
+.w-cv::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.38), transparent 46%);
+}
+.w-cv-name {
+  position: absolute;
+  left: 8px;
+  bottom: 7px;
+  z-index: 2;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+  max-width: calc(100% - 16px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ==========================================================================
+   FEAT-116 · 两种"文字进入画面"的排版方式
+   ──────────────────────────────────────────────────────────────────────────
+   ① --bleed（下出血）：标题仍在板上，照片从标题下方**铺到板的三条边**。
+      对比旧做法（照片四周留 15px 内边距）：
+      15px 的白边 + 1px 内描边 = 照片被"贴"进了一个相框，
+      一块板里同时出现"板边"和"照片边"两层边界。
+      出血后照片自己就是板的形状，只剩一层边界 —— 板与内容合成一个物件。
+   ② --cover（满幅）：整块板就是一张照片，标题浮在照片上（上缘渐变压暗）。
+      用于"那年今日"这类**一张图就是全部内容**的块。
+      标题用白字 + 1px 投影：照片亮部也能读，且不引入任何新容器。
+   ========================================================================== */
+.ui-widget--bleed { padding: 0; }
+.ui-widget--bleed > .ui-widget-head {
+  padding: var(--w-pad-y) var(--w-pad-x) 0;
+}
+.ui-widget--bleed > .ui-widget-body {
+  padding: 0;
+  margin-top: 10px;
+  border-radius: 0 0 var(--w-radius) var(--w-radius);
+  overflow: hidden;
+}
+
+.ui-widget--cover { padding: 0; }
+.ui-widget--cover > .ui-widget-head {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 3;
+  padding: 11px 13px 26px;
+  color: #fff;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.52), rgba(0, 0, 0, 0.18) 62%, transparent);
+}
+.ui-widget--cover > .ui-widget-head .ui-widget-label-cn,
+.ui-widget--cover > .ui-widget-head .ui-widget-label,
+.ui-widget--cover > .ui-widget-head .ui-widget-head-right {
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+.ui-widget--cover > .ui-widget-body {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+/* 空封面（那年今日还没凑齐照片 / 加载失败）：整块板就是"照片"，照片不在时
+   白色标题会直接压在白霜板上（实测浅色 1.1:1，等于标题不可见）。
+   给空缺的"照片位"补一层底，深浅模式各给自己的：
+     深色 → 近黑的待填卡（"这里本该有张照片"）
+     浅色 → 极淡的墨渍（浅色页上摆一块黑盒子是全页最重的元素，反而更抢眼）
+   底变了，里面的字也要跟着换挡，否则两种模式下必有一种看不见。 */
+.ui-widget--cover:not(:has(img)) {
+  background-color: color-mix(in srgb, #0d1016 84%, transparent);
+}
+.ui-widget--cover:not(:has(img)) > .ui-widget-head {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.30), transparent);
+}
+body:not(.theme-dark) .ui-widget--cover:not(:has(img)) {
+  background-color: color-mix(in srgb, #2a2630 7%, transparent);
+}
+body:not(.theme-dark) .ui-widget--cover:not(:has(img)) > .ui-widget-head {
+  background: none;
+}
+body:not(.theme-dark) .ui-widget--cover:not(:has(img)) > .ui-widget-head .ui-widget-label-cn,
+body:not(.theme-dark) .ui-widget--cover:not(:has(img)) > .ui-widget-head .ui-widget-label,
+body:not(.theme-dark) .ui-widget--cover:not(:has(img)) > .ui-widget-head .ui-widget-head-right {
+  color: var(--color-text-2);
+  text-shadow: none;
+}
+

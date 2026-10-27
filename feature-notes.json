@@ -3,6 +3,282 @@
   "description": "重点功能记录档案：记录功能的目的、实现方式和技术亮点，供项目发展与参考",
   "features": [
     {
+      "id": "FEAT-113",
+      "name": "界面质感重构：卡片轻量化 + 分类瀑布流错落 + 时间线左栏导航 + 人物竖排大卡（+ 扫描入库重排效果图）",
+      "module": "src/assets/widget.css、src/assets/main.css、src/components/CategoryGallery.vue、src/views/Timeline.vue、src/components/PersonGallery.vue、design/preview/proposal/mock-scan-rework.html",
+      "status": "done",
+      "purpose": "用户对视觉的四条不满（③ 卡片边线太重 / 内容分类缺错落感 / 时间线要像相册管理的左侧时间栏 + 照片错落；⑦ 人物页名字显示不全），加上 ④ 扫描入库界面需重排（要求先出效果图）。本条目覆盖 ③/⑦ 的落地与 ④ 的效果图交付；④ 的代码实施待用户确认效果图后进行。",
+      "implementation": {
+        "③-1 卡片轻量化": "去掉「四边同亮 50% 内环 + 四边同暗 55% 外环」两圈完整实线 —— 一屏十几块时它们会彼此连成硬网格。改为立面逻辑（真实玻璃板四边本就不同亮）：--w-edge-hi 上缘 40%、--w-edge-lo 下缘 24%、--w-edge-side 左右 10%、外环降到 28%，接触影加重以补偿浮起感；圆角 18→14，删掉 border。全局 .glass-card 同样改为上亮下暗四向分别给值。",
+        "③-2 分类错落": "根因不是「没用瀑布流」（本来就是 multicol），而是**高度周期与列数互质错位**：nth-child(6n+k) 周期 6，列数 5/4/3；5 列时第 1/3/5 列开头恰好拿到同一批高度 → 列头错落、列内完全对齐，整屏仍像网格。改按 id 哈希（CAT_H 8 档 176~256）取高度，与位置彻底解耦，任意列数下都不会重建规律；刷新也不跳位。",
+        "③-3 时间线": "左侧新增 sticky 时间栏：年/月两级拍平成单列（竖线画在容器 background 上，避免被行盒切断），当前视口所在项金点高亮 + 自动跟随滚动，点击 scrollIntoView 跳转；右侧照片改行式密排，**复用 utils/justifiedRows**（与相册墙同一算法，行宽精确铺满容器）。年分组去掉外层卡片底与内边距（左栏已在表达结构，右栏再套一层是双重容器），改标题下分隔线。窄屏 ≤1080px 左栏转横向吸顶条。",
+        "⑦ 人物卡": "根因不是省略号写法，而是横排布局把名字空间吃光了：176px − 头像 64 − 间距 14 − 内边距 32 = 只剩 66px，后面还挤着「✎」。加宽也没用（名字拿的是剩余空间）。改竖排：头像 64→86px 居中、卡宽 176→196、名字拿整卡宽并折两行（line-clamp:2 + overflow-wrap:anywhere，不用 ellipsis）、张数徽标压头像下沿、合并按钮占满行宽、重命名按钮改为悬停才现。",
+        "④ 扫描入库效果图": "design/preview/proposal/mock-scan-rework.html（+ shoot-scan.cjs，暮紫/松绿两变体）。按**任务阶段**分区而非按功能堆叠：① 顶部常驻状态条（在不在跑/跑到哪/能不能停）② 左：选择区（过滤+全选反选+已选计数+相册状态徽标）+ 底部主 CTA ③ 右：任务区（扫描项 2 列 → 总进度 → 当前相册 → 汇总 → 逐相册状态）。功能与现有 GlobalScanPanel 一一对应，未增删能力。"
+      },
+      "highlights": [
+        "「太重」的量化判据：两圈完整 1px 实线叠加 = 每块卡贡献 2 条高对比边；一屏 12 块就有 24 条线互相竞争。改成四向不同强度后，一圈完整的线消失，但立体感更强 —— 视觉重量来自「完整闭环」，不是线条本身。",
+        "板面 vs 背景的对比要靠**填充**，不是靠线：实测轻量化前后板面对比完全一致（dusk/pine 均 18/22 不达标，逐卡数值相同），说明边界本就不是那条线在承担。",
+        "周期与列数互质是小陷阱：nth-child 周期 6 配 5 列，看起来「每个都不同」，实际同一列的开头几张拿到同一批值 —— 判据要看**同列相邻**是否重复，不是看整体是否有重复。",
+        "「错落」应由宽度变化承担，不该由行高忽高忽低承担：行高在 104~232 时相邻行 240 与 143 并排，观感是「排错了」而非「错落」。收到 140~196 后才是错落。",
+        "布局类失效往往错在「什么时候量」而不是「怎么算」：#tl-board 在 v-else 里，onMounted 时还没进 DOM，量到的是回退值 1000 而非真实 1322，导致 0/18 行铺满。模板 ref + watch 元素出现才是正确时机。",
+        "名字截断的根因常在容器分配（横排剩余空间），不在文本溢出声明；先算一遍「可用宽 = 卡宽 − 内边距 − 头像 − 间距」比调 text-overflow 有效得多。",
+        "探针取样点必须落在**真正被点击的元素**上：点 <g> 的 bbox 中心会落到标签空处（bbox 含文字），一度把已修好的地图点击误判为 FAIL。",
+        "效果图自己会骗自己：① 全页截图下 body 的 background fixed 只画一屏，下半部变白底白字 —— 背景要写 html；② 效果图页只引 mock-widgets.css 没有 tokens.css，var(--sp-8) 未定义会让整条 padding 被丢弃；③ 令牌命名空间写错（--color-*/--w-* vs --fg/--accent）会让进度条、主按钮整条声明静默失效。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 133/133 全绿",
+        "npx vite build exit 0",
+        ".visual/probe-board-contrast.cjs（新建）：板面 vs 板外背景对比，带 SELFTEST 17:1 自检；轻量化前后 dusk/pine 均 18/22，逐卡数值完全一致 → 未削弱边界",
+        ".visual/probe-timeline.cjs（新建）：15/15 行精确铺满容器宽、行高 4 档取值、滚动跟随 ✓、点击跳转 ✓",
+        ".visual/probe-person.cjs（新建）：12 个长短名字压测，scrollW/H vs clientW/H 判定被裁切 0/12",
+        "视觉核对：dusk/pine/plain/wall/light 五变体前后截图逐张比对"
+      ],
+      "related_files": [
+        "src/assets/widget.css",
+        "src/assets/main.css",
+        "src/components/CategoryGallery.vue",
+        "src/views/Timeline.vue",
+        "src/components/PersonGallery.vue",
+        "design/preview/proposal/mock-scan-rework.html",
+        "design/preview/proposal/shoot-scan.cjs",
+        ".visual/probe-board-contrast.cjs",
+        ".visual/probe-timeline.cjs",
+        ".visual/probe-person.cjs",
+        ".visual/timeline-probe.ts",
+        ".visual/person-probe.ts",
+        ".visual/cat-probe.ts"
+      ],
+      "keywords": [
+        "卡片轻量化",
+        "边框太重",
+        "上亮下暗",
+        "瀑布流错落",
+        "nth-child 周期",
+        "id 哈希",
+        "时间线左栏",
+        "sticky",
+        "justifiedRows",
+        "行式密排",
+        "人物卡竖排",
+        "名字截断",
+        "扫描入库重排",
+        "ResizeObserver",
+        "v-else 量宽"
+      ],
+      "created_at": "2026-10-25T21:20:00+08:00",
+      "updated_at": "2026-10-25T21:20:00+08:00"
+    },
+    {
+      "id": "FEAT-112",
+      "name": "预设体系收敛（删重叠/浅色扩到 6）+ 概览统计缓存 + 地图放大点击失效 + 人物跳转失效",
+      "module": "src/utils/presets.ts、src/utils/presets.test.ts、src/components/ThemeDialog.vue、src/stores/overview.ts、src/components/OverviewPane.vue、src/stores/album.ts、src/stores/content.ts、src/components/ui/LocationMap.vue、src/views/SmartAlbum.vue、design/preview/proposal/mock-layout-rework.html",
+      "status": "in_progress",
+      "purpose": "用户一次性提出 7 条：①删除无区分度的深空石墨、浅色扩到 6 套、文字卡片适配深浅预设、去掉无用的深浅模式开关；②概览每次实时计算延迟高，改为导入/扫描后更新；③卡片边线太重、内容分类无错落感、时间线要左侧时间栏+照片错落；④扫描入库界面重排（先出效果图）；⑤地图放大后点击不跳转；⑥概览点人物不跳转；⑦人物页名字显示不全。本条目覆盖其中已完成部分（①②⑤⑥），③④⑦的布局重排已出效果图待确认。",
+      "implementation": {
+        "① 预设收敛": "删掉「深空石墨」（与「墨色石板」同为中性冷、只差 4° 色相与 3% 明度，肉眼几乎同色）；浅色 4→6，新增「菊芋淡紫」（#f3eef7→#c9bede，紫调，与深色默认同色相家族）与「陶土暖砂」（#f7f0e8→#d8bda2，明度跨度 0.20，与亚麻 0.14 一眼可分）。深浅模式开关从 ThemeDialog 移除 —— 预设自带 mode，单独开关只会造出「深色模式 + 浅色预设」错配态；要浅色直接点浅色组。presets.test 断言同步为深 4 + 浅 6 = 10。",
+        "② 概览统计缓存": "新增 stores/overview.ts：快照 + dirty 标记 + inflight 去重。缓存策略是「变动即失效」而不是按时间过期 —— 显式在 import_albums 成功、scan_album_combined 成功、scanAlbumsCombined 有成功项、rebuild_categories、delete_photo_records/files 后调 invalidate()。刻意不监听 albumStore.albums：fetchAlbums 在启动时也会调，那样等于每次启动都失效，缓存失去意义。OverviewPane 改为 computed 读快照，切回概览零 IPC；骨架屏只在「从未算过」时出现，避免有缓存也闪一下白块。",
+        "⑤ 地图放大后点击失效": "根因是 Pointer Events 规范：pointerdown 立刻 setPointerCapture(svg)，捕获期间**后续 click 也被重定向到 svg**，<g class=u-point> 上的 @click 永远收不到。修法改为拖拽阈值提升（DRAG_THRESHOLD=4px）：按下只记 pressing，移动超过 4px 才 setPointerCapture 并进入拖拽，否则保持不捕获，让 click 正常落到光点。点与拖被彻底分开，不依赖时序。",
+        "⑥ 概览点人物不跳转": "根因：goFace() 用 router.push('/smart?tab=face')，但当时已在 /smart 上，vue-router 不会重挂组件，而 activeTab 只在 onMounted 里读过一次 → 点了没反应。修法是 watch(() => route.query.tab)，用双向同步而不是 computed(route)：切 tab 需要「状态先变、URL 后同步（replace 不塞历史）」，纯 computed 会往返回弹。同时补 watch(query.person) 让深链人物定位也跟着变。",
+        "③④⑦ 效果图": "新增 design/preview/proposal/mock-layout-rework.html（+ shoot-layout.cjs），一页覆盖四项：卡片轻量化前后对比（无描边 + 14px 圆角）、内容分类 4 列瀑布流错落、时间线左侧吸顶时间栏 + 照片混合宽高比错落、扫描入库「状态条 + 左相册多选 + 右任务日志」三块结构、人物竖排大卡（名字最多两行不截断）。出图命令 node design/preview/proposal/shoot-layout.cjs。"
+      },
+      "highlights": [
+        "「排除法」也要有依据：深空石墨该不该删，判据不是「我觉得像」，而是实测两张预设卡的色相差 4°、明度差 3% —— 低于肉眼可辨阈值就等于白占一个位置。",
+        "缓存的失效信号必须由**变更动作**显式触发，不能挂在「数据被重新拉取」上：fetchAlbums 在启动路径里也会跑，用它当信号等于缓存永不命中。",
+        "pointer capture 会连 click 一起改派 —— 这是「放大后点不动、不放大却正常」这类非对称 bug 的典型根因；拖拽/点击互斥必须用移动阈值，而不是在 pointerdown 就抢捕获。",
+        "同一组件内 router.push 只改 query 时组件不会重挂，onMounted 读一次参数的写法必然失效；要么 watch query，要么把状态做成 URL 派生。",
+        "效果图阶段踩到两个「效果图自己骗自己」的坑：①全页截图下 body 的 background-attachment:fixed 只画一屏，下半部变白底白字 —— 背景要写在 html 上；②效果图页只引 mock-widgets.css、没有 tokens.css，var(--sp-8) 未定义会让整条 padding 被丢弃，页面贴边。",
+        "探针取样点要选**真正被点击的元素**：点 <g> 的 bbox 中心会落在文字标签的空白处（bbox 含标签），一度把已修好的地图点击误判为 FAIL。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 133/133 全绿（presets.test 已同步为 10 套：深 4 + 浅 6）",
+        "npx vite build exit 0",
+        ".visual/probe-feat112.cjs 三项回归：① 地图放大后点击 PASS（clicks=[0]、详情视图出现）② 概览点人物 PASS（hash 变 #/smart?tab=face 且人物画廊渲染）③ 二次进入概览 list_timeline 调用 0 次（缓存生效）"
+      ],
+      "related_files": [
+        "src/utils/presets.ts",
+        "src/utils/presets.test.ts",
+        "src/components/ThemeDialog.vue",
+        "src/stores/overview.ts",
+        "src/components/OverviewPane.vue",
+        "src/stores/album.ts",
+        "src/stores/content.ts",
+        "src/components/ui/LocationMap.vue",
+        "src/views/SmartAlbum.vue",
+        "design/preview/proposal/mock-layout-rework.html",
+        "design/preview/proposal/shoot-layout.cjs",
+        ".visual/probe-feat112.cjs",
+        ".visual/overview-probe.ts"
+      ],
+      "keywords": [
+        "预设",
+        "深空石墨",
+        "菊芋淡紫",
+        "陶土暖砂",
+        "深浅模式开关",
+        "概览缓存",
+        "失效时机",
+        "pointercapture",
+        "地图点击",
+        "query watch",
+        "人物跳转",
+        "瀑布流",
+        "时间栏",
+        "扫描入库重排",
+        "人物卡"
+      ],
+      "created_at": "2026-10-25T19:40:00+08:00",
+      "updated_at": "2026-10-25T19:40:00+08:00"
+    },
+    {
+      "id": "FEAT-111",
+      "name": "深色模式线条看不见：widget 玻璃填充失效的根因修复 + 边界可见性实测体系",
+      "module": "src/assets/widget.css、src/stores/theme.ts、src/components/OverviewPane.vue、src/components/ui/widget/GeoPinsCore.vue、.visual/probe-line-visibility.cjs、.visual/probe-widget-bg.cjs、.visual/overview-probe.ts",
+      "status": "done",
+      "purpose": "用户反馈「现在深色模式会有线条看不见的问题」。这是一类**看不见就说不清**的缺陷：可能是描边太淡、可能是分隔线太淡、也可能是整个板子根本没画出来。做法是先建**像素级测量体系**（自写 PNG 解码器 + 采样真实渲染像素 + 算 WCAG 对比度），把「看不见」量化成具体数值，再逐项归因，而不是凭观感调参。",
+      "implementation": {
+        "① 测量体系（.visual/probe-line-visibility.cjs）": "自写最小 PNG 解码器（8bit RGB/RGBA，非隔行，含 5 种 filter 反算），Playwright 截整页后在页面内给每条候选线定位**真实像素坐标**，再逐点采样算对比度。内置自检项（SELFTEST）：取一块已知高对比参照的 9×9 盒内极值差，若它都测不出高对比就说明解码/取样坏了，后续数据不可信（第一版就靠它确认过解码链路没问题）。",
+        "② 真根因：`background` 简写里颜色只能有一个": "widget 玻璃层写成 `background: color-mix(...), color-mix(...)` —— **background 简写里颜色只能有一个**，第二个 color-mix 让**整条声明失效**（实测 computed backgroundColor = rgba(0,0,0,0)、backgroundImage = none）。于是板子根本没有填充，只剩 backdrop 模糊与描边 → 壁纸上等于透明，线自然看不见。修法：拆成 background-color（色调层）+ background-image（linear-gradient 包一层承载白玻璃层），两者可各自独立。",
+        "③ 玻璃配方改成「白玻璃 + 主题色调」两层": "深色档：色调层 color-mix(surface 62%) + 白玻璃层（比例由 store 按背景明度下发）。物理依据：白玻璃叠在暗背景上会被光提亮，板才读得出来；0% 白则板与背景同明度（实测 1.00~1.01:1）。浅色档**反过来**：白玻璃叠白底等于没画（实测板面 vs 背景仅 1.18:1），改为「30% 暗层 + 14% 白层」的微暗磨砂（iOS 浅色玻璃的做法），并加强接触阴影 —— 浅色下明度差做不出 3:1，边界靠「微暗面 + 接触阴影 + 内侧暗边」三重。",
+        "④ 白玻璃层比例由 store 按背景实际明度下发": "新增 --w-glass-white：壁纸取亮端分位（P95）折算透明度/底色/遮罩后的亮度，≥0.22 给 30%（亮壁纸），否则 16%（深色渐变）。这是「CSS 猜不出背后明度、而 store 知道」的典型场景；token 是 widget 专用，不碰全站 --color- 与 --float- 令牌，老用户外观不受影响。",
+        "⑤ 双色描边 + 双刻线": "板边界改为「内侧 1px 亮边 + 外侧 1px 暗环」：深色背景靠亮边读出抬起，亮壁纸靠暗环读出浮起（单层半透白描边在两种底色下都只有 1.1~2.0:1）。板内结构分隔线改**双刻线**（亮侧 + 暗侧各 1px，iOS/macOS 的 etched 做法）：单层白线在亮板上只有 1.5:1，双刻线任何底色下总有一侧可见。",
+        "⑥ 配套修正": "GeoPins 点阵色从 --color-text-3（实测 1.01:1，整片看不见）改为专用 --w-dot；封面内描边改用 --w-cover-line；轨道 --w-track 11%→20%；那年今日速览卡（86px 薄板）脚注溢出 → 改为 Δ 位同行 + 脚注 nowrap/ellipsis 保护。"
+      },
+      "highlights": [
+        "「看不见」的缺陷必须先量化再改：本次靠像素测量把「线看不见」定位成「板子整个没画出来」，而不是「描边太淡」——如果直接调描边透明度，会在错的层面调半天。",
+        "CSS background 简写里颜色只能有一个：多个 color-mix 写在 background 里会**静默丢弃整条声明**（不报错、无警告）。background-color + background-image 分写是唯一可靠解。",
+        "白玻璃与暗玻璃的配方方向相反：深色底要「提亮」（白玻璃），浅色底要「压深」（微暗磨砂）——同一套数值不可能同时成立，必须按背景明度分档，而判据只能由 store 给。",
+        "描边在 1px 宽度下天然难到 3:1（它分隔的是板与板面，不是板与背景）；真正决定「看不看得见板」的是**板面与背景的明度差**。所以度量指标要选对，否则会把力气花在错误的参数上。",
+        "测量工具必须自带自检：没有自检项时，探针自己的坐标/解码错误会被当成产品缺陷（本次首轮 many 项 1:1 的假数据就是这样暴露的）。",
+        "块注释里出现连续的星号斜杠会提前闭合注释（今天在同一批改动里踩了两次，第二次直接让 vite 500）。写令牌名时别把 --color- 与 --float- 直接相邻。",
+        "探针不经过 App.vue 时必须补齐 App 提供的层：本次缺背景遮罩（scrim）导致壁纸比真实上屏更亮，一度把 22% 误判为不够用。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 133/133 全绿",
+        "npx vite build exit 0",
+        "线可见性实测（板面 vs 背景，阈值 3:1）：暮紫渐变 3.07:1 · 松绿 3.06:1 · 启动封面壁纸 3.65:1 · 普通材质 3.26:1 · AppHeader 浮层 3.26~3.47:1",
+        "浅色档：板面 vs 背景 1.49:1 + 接触阴影 1.28:1 + 内侧暗边 1.29:1（白底上浅色玻璃的明度差有物理上限，靠三重信号读边界而非单一明度比）",
+        "Playwright 截图走查四态：暮紫玻璃 / 松绿玻璃 / 暮紫普通 / 浅色玻璃 —— 板面、圆角、描边、分隔线、层级均可读"
+      ],
+      "related_files": [
+        "src/assets/widget.css",
+        "src/stores/theme.ts",
+        "src/components/OverviewPane.vue",
+        "src/components/ui/widget/GeoPinsCore.vue",
+        "src/components/ui/widget/StatCore.vue",
+        ".visual/probe-line-visibility.cjs",
+        ".visual/probe-widget-bg.cjs",
+        ".visual/overview-probe.ts",
+        ".visual/shoot-overview.cjs"
+      ],
+      "keywords": [
+        "线条看不见",
+        "可见性",
+        "对比度",
+        "WCAG",
+        "1.4.11",
+        "深色模式",
+        "玻璃",
+        "白玻璃",
+        "双色描边",
+        "双刻线",
+        "etched",
+        "color-mix",
+        "background简写",
+        "像素测量",
+        "PNG解码",
+        "自检",
+        "光晕",
+        "松绿"
+      ],
+      "created_at": "2026-10-25T17:20:00+08:00",
+      "updated_at": "2026-10-25T17:20:00+08:00"
+    },
+    {
+      "id": "FEAT-110",
+      "name": "智慧相册「全局概览」玻璃仪表墙 + 松绿混色预设 + 玻璃/普通双材质 widget 组件库",
+      "module": "src/assets/widget.css、src/utils/presets.ts、src/utils/prefs.ts、src/stores/theme.ts、src/components/ui/widget/*、src/components/OverviewPane.vue、src/views/SmartAlbum.vue、src/components/ui/AppHeader.vue、src/components/ThemeDialog.vue",
+      "status": "done",
+      "purpose": "用户要求：① 支持配色预设，可把炭黑主题切到松绿；② 组件区分玻璃/普通两种材质；③ 先做 Home 仪表墙效果图，后改主意——Home 保持原样（简约四卡），仪表墙落到智慧相册的「全局概览」分区并去掉快捷入口；④ 编码满足原子性、组件可复用。交付一套可复用的玻璃 widget 原子组件库与概览页，零后端改动、零破坏现有界面。",
+      "implementation": {
+        "① 独立命名空间（不碰现有材质体系）": "新增 src/assets/widget.css（--w-* 令牌 + .ui-widget* 类）。玻璃填充不自己配色，用 color-mix(in srgb,var(--color-surface) 62%,transparent) 取主题容器色，任何预设下板的 tint 自动跟随；文字一律用 store 已做 WCAG 标定的 --color-text-2/3。不覆盖 --color-*、--float-*、--slip-*，删掉本文件不影响任何现有界面。",
+        "② 玻璃/普通双材质": "UiWidget 的 material 切面：glass=tint 半透+blur24/saturate1.3+棱边镜面（沿上缘两道窄高光）+壁厚 inset 阴影；plain=var(--color-surface-2) 近实心 tint、零 backdrop-filter、无镜面光。材质来源 theme.widgetMaterial（独立于全站卡片 material），可被 prop 单次覆盖。偏好新增 Prefs.widgetMaterial(glass|plain)，normalizePrefs 老配置回落 glass；body 挂 w-mat-glass/w-mat-plain 类。",
+        "③ 松绿混色预设": "presets.ts 新增深色第 5 套 pine-night「松绿混色」：预设渐变本身仍守全站「单一色相+明度跨度≥0.08+组件色通道极差≤12」铁律（否则 presets.test 挂），真正的混色由新增可选字段 washes（翡翠青/青蓝/柠光三团径向光晕）+ accent/accent2（翡翠绿 #5fd8a4 → 青 #46c2d2 异色渐变）承担。store.activePreset 用与 ThemeDialog 同一个 matchesPreset 命中预设后下发 --w-accent/--w-accent-2（非彩色预设 removeProperty 回落落日金），widgetWash 提供光晕背景，仅 SmartAlbum 概览分区激活期间挂 .smart-wash fixed 层，切走即移除，不污染其他页面。",
+        "④ 原子组件库": "src/components/ui/widget/：WidgetGrid（12 列/86px 行/14 gutter，≤1000px 全降整行）+ UiWidget 基类（只管材质/span/rows/圆角壁厚/head 槽与可选 to/clickable）+ 8 个互不嵌套的内容芯 StatCore/GaugeCore/BarsCore/CoversCore/FacesCore/GeoPinsCore/RankBarsCore/MemoryCore。Core 全部纯展示、数据由父级传入，可跨页复用。",
+        "⑤ 全局概览分区": "SmartAlbum tabs 头部插入「全局概览」作为第一项并设为默认（状态 tabs 加 overview；空 query 高亮从 category 改为 overview，AppHeader.isTabOn 同步）。新建 OverviewPane.vue 接入现有命令（零新增后端）：get_albums/list_timeline/list_persons/get_person_avatars_bulk/list_photo_locations/list_categories/category_index_stats/get_photo_thumbs。11 块 widget：XL 照片库总览（总张数/GB/年份跨度/相册数+入库进度+今年月度柱阵）、语义索引环、那年今日速览、相册封面拼贴、人物头像簇、地点散点、内容分类、人脸照片覆盖环+GPS 覆盖环+Top 城市排行、最近导入封面条、那年今日大卡。概览激活时隐藏重复的 StatBand。widget 全部可点跳对应分区/页。Memories/Timeline/SmartSearch 三处 moduleTabs 同步在第一项加「全局概览→/smart」。",
+        "⑥ ThemeDialog": "预设页加「仪表墙 液态玻璃/普通材质」分段开关（写 theme.widgetMaterial+persist）；预设卡 dots 对带 accent 的预设多渲染一个强调色点；说明文案点出松绿等彩色预设会改概览墙强调色与光晕。"
+      },
+      "highlights": [
+        "最大设计约束：现有主题系统的预设铁律（单一色相/明度跨度/组件色近中性）是可读性保证，不能为「混色」破坏它——解法是把混色挪到可选 washes 光晕层 + accent 异色渐变，预设渐变本体仍合规。混色感来自光而非多段彩色背景。",
+        "块注释里写 CSS 令牌（如 --color-* 后紧跟 /--glass-*）时，星号斜杠会被当成注释结束符，产生一串诡异 TS1127/TS1109；块注释中永远不要出现连续的 */。",
+        "材质偏好必须与全站 material 分离（新 widgetMaterial），否则一个仪表墙开关会改动全站卡片，违背零破坏。",
+        "GeoPinsCore 不追求精确地图（精确地图用 LocationMap，全宽 177KB 省界），小卡里只做经纬度等距投影散点表达分布密度；常驻地名标签只给 Top1（Top2 在四川盆地区域会和 Top1 重叠），地名要按 · 取城市名（四川省·成都→成都）。",
+        "BarsCore 高度 0 的未来月份不画柱（is-zero 透明），否则最小高度 min-height:4px 会让 11/12 月出现假数据柱。",
+        "探针不经过 App.vue/main.ts：需手动引 widget.css、挂 GlassFilters、把 theme.layerBase 铺到 body，否则样式/折射/背景全缺（曾误判成产品 bug）。",
+        "模板里 span=\"8\" 是字符串，传给联合字面量 number 类型会 tsc 报错，要写成 :span=\"8\"。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 133/133 全绿（presets.test 断言更新为 9 套：深 5 浅 4）",
+        "npx vite build exit 0",
+        "Playwright 概览探针三变体（暮紫玻璃/松绿玻璃/暮紫普通）真实数据渲染：玻璃 vs 普通差异清晰、松绿绿→青渐变与三团光晕生效、当月柱高亮/未来月空柱、Top 城市名正确、封面与头像走真实缩略图管线；空数据（themed-probe 补 list_categories 等 5 个命令 stub）概览优雅降级不报错"
+      ],
+      "related_files": [
+        "src/assets/widget.css",
+        "src/main.ts",
+        "src/utils/presets.ts",
+        "src/utils/presets.test.ts",
+        "src/utils/prefs.ts",
+        "src/stores/theme.ts",
+        "src/components/ui/widget/WidgetGrid.vue",
+        "src/components/ui/widget/UiWidget.vue",
+        "src/components/ui/widget/StatCore.vue",
+        "src/components/ui/widget/GaugeCore.vue",
+        "src/components/ui/widget/BarsCore.vue",
+        "src/components/ui/widget/CoversCore.vue",
+        "src/components/ui/widget/FacesCore.vue",
+        "src/components/ui/widget/GeoPinsCore.vue",
+        "src/components/ui/widget/RankBarsCore.vue",
+        "src/components/ui/widget/MemoryCore.vue",
+        "src/components/OverviewPane.vue",
+        "src/views/SmartAlbum.vue",
+        "src/components/ui/AppHeader.vue",
+        "src/components/ThemeDialog.vue",
+        "src/views/Memories.vue",
+        "src/views/Timeline.vue",
+        "src/views/SmartSearch.vue",
+        ".visual/overview-probe.ts",
+        ".visual/overview-probe.html",
+        ".visual/shoot-overview.cjs",
+        ".visual/themed-probe.ts"
+      ],
+      "keywords": [
+        "全局概览",
+        "仪表墙",
+        "widget",
+        "玻璃材质",
+        "普通材质",
+        "松绿",
+        "混色",
+        "光晕",
+        "accent渐变",
+        "原子组件",
+        "UiWidget",
+        "Core",
+        "智慧相册",
+        "预设",
+        "widgetMaterial",
+        "color-mix",
+        "GeoPins",
+        "覆盖率",
+        "那年今日"
+      ],
+      "created_at": "2026-10-25T15:30:00+08:00",
+      "updated_at": "2026-10-25T15:30:00+08:00"
+    },
+    {
       "id": "FEAT-001",
       "name": "相册管理核心",
       "module": "相册 CRUD / SQLite 持久化",
@@ -3739,7 +4015,797 @@
       ],
       "created_at": "2026-10-23T17:06:56+08:00",
       "updated_at": "2026-10-23T17:44:34+08:00"
+    },
+    {
+      "id": "FEAT-105",
+      "name": "界面质感改造：模块页头 + 二级 tab + 数据带 + 纸片材质 + 预设 8 套",
+      "status": "done",
+      "description": "在 FEAT-103 基础上继续推进，前端为主。① 导航三层：Home 四张卡（一级）→ 模块页头 AppHeader（只说明你在哪，不含任何一级导航）→ ModuleTabs（模块内二级 tab，34px + 1.5px 金色下划线）→ 面包屑（仅相册详情）。旧版把 4 个模块塞进顶栏，等于在模块页内又摆一条全局导航；现在一级入口只存在于 Home。② 删掉三处彩虹渐变 hero（智慧相册/扫描入库/回忆）与全部渐变入口卡，连同 .candy-surface 与 --candy-* 六个色值整块移除（theme.ts 也随之不再下发）。统一为：页头（你在哪）+ 数据带（有多少）+ 二级 tab（看哪块）+ 内容。③ 新增纸片材质 --slip-* 与 .slip；液态玻璃 --glass-* / .glass-float 原样保留，分工：玻璃只用于浮层（真模糊），纸片躺在内容中（不模糊、不采样背景）。④ 预设 6→8 套：深色加深空石墨，浅色加晨雾青瓷。⑤ 相册 tile 网格 216→208、gap 30/26→12/12、加 dense；人物网格 220→176、gap 16→12、加 dense（同屏 5 列 → 7 列）。⑥ 所有主界面统计信息保留，只是从渐变 hero 搬进 StatBand。",
+      "related_files": [
+        "src/components/ui/AppHeader.vue",
+        "src/components/ui/ModuleTabs.vue",
+        "src/components/ui/StatBand.vue",
+        "src/assets/tokens.css",
+        "src/assets/main.css",
+        "src/stores/theme.ts",
+        "src/utils/presets.ts",
+        "src/utils/presets.test.ts",
+        "src/views/SmartAlbum.vue",
+        "src/views/ScanHub.vue",
+        "src/views/Memories.vue",
+        "src/views/Timeline.vue",
+        "src/views/SmartSearch.vue",
+        "src/views/Workshop.vue",
+        "src/views/AlbumList.vue",
+        "src/views/AlbumDetail.vue",
+        "src/views/TestScan.vue",
+        "src/components/PersonGallery.vue",
+        ".visual/page-structure-probe.ts",
+        ".visual/shell-probe.ts",
+        "design/preview/README.md"
+      ],
+      "keywords": [
+        "模块页头",
+        "AppHeader",
+        "ModuleTabs",
+        "二级导航",
+        "数据带",
+        "StatBand",
+        "纸片",
+        "slip",
+        "液态玻璃",
+        "glass",
+        "预设",
+        "presets",
+        "深空石墨",
+        "晨雾青瓷",
+        "删渐变",
+        "candy-surface",
+        "密排",
+        "dense",
+        "质感",
+        "层级"
+      ],
+      "notes": [
+        "第一版只改了 NAV 数组与网格间距，页内的彩虹渐变 hero 与渐变入口卡没动，被用户判为「和效果图差别很大」——教训：改层级必须连带清掉旧的层级视觉，否则导航数据变了、观感没变。",
+        "糖果釉面 .candy-surface 与 --candy-* 已无任何消费者，整块删除；theme.ts 里每帧 6 次 setProperty 一并去掉。",
+        "ModuleTabs.isOn 必须同时比 path 与 to 里的 query —— /smart、/smart?tab=category、/smart?tab=location 的 path 完全一样，只比 path 会让三个 tab 同时高亮。已 6/6 渲染实测。",
+        "结构探针踩坑：多页共用一个 router，后一次 push 会污染前一页的 route，出现两个 tab 同时高亮；每页必须独立 app + 独立 router。",
+        "效果图里「每 5 张一张 2×2 重点瓦片」仍未做：需把封面高度从固定 160px 改为随行高、标题移入封面浮层，等于重写 AlbumCard 版式，按「前端不要太重」先不做。",
+        "后端（src-tauri）本次零改动。",
+        "【2026-10-24 回退】FEAT-106 期间给 Home 加的「仪表数据带 + 12 栅格宽窄入口卡」已整体回退到 6c63d79 版本（大标题 + 2×2 等宽玻璃入口卡 + 1000px 内容宽）。相册墙/数据带/顶栏的仪表化改造保留不动，只回退 Home 一页。回退依据：用户明确要「主界面回到原本的感觉」。",
+        "【2026-10-24 回退】Home 旧版依赖的 .glass-card / theme.cardStyle / --radius-card / --shadow-2 / --color-on-bg* / --color-link 全部仍然有效（已逐项核对存在），所以回退是纯文件级 git checkout，不需要改依赖层。"
+      ],
+      "created_at": "2026-10-23T18:41:14+08:00",
+      "updated_at": "2026-10-24T02:40:03+08:00"
+    },
+    {
+      "id": "FEAT-106",
+      "name": "仪表墙重做（Rainmeter 皮肤落地）",
+      "module": "全局视觉系统 / 相册墙 / 数据带 / 顶栏",
+      "purpose": "把界面从「通用卡片套件」改成参考图那样的仪表墙：一面壁纸 + 若干独立磨砂玻璃板，板间露壁纸；同时修掉数据带与左栏重叠、相册墙行尾空洞、数据带数字压环三个硬问题",
+      "implementation": {
+        "frontend": "Vue3。相册墙改用行式密排（src/utils/justifiedRows.ts）：每行一个 flex 容器、行宽精确等于容器宽、行内瓦片等高、每 5 块一张 1.8 倍宽幅；数据带改为「微标签 + 大读数 + 底部进度条」；顶栏改为浮起的玻璃板并统一四种玻璃材质",
+        "key_points": [
+          "行式密排替掉 grid-auto-flow:dense：dense 回填需要连续空位，跨列大瓦片上方那两列已占满，剩下奇数格永远填不上",
+          "行数/行高用「枚举 R + 打分」而不是单条公式：离散切行时公式会舍入到「末行只剩一块」，那块的宽度就是整个容器 → 被高度上限夹住成巨幅横幅",
+          "环改进度条不是审美选择：环是绝对定位的图形，delta 换行就重叠；进度条在 flex 流里独占一行，结构上不可能重叠",
+          "三种玻璃分工：--panel-glass-*（墙板）/ --glass-*（浮层）/ --slip-*（纸片），不合并",
+          "页内留白统一为 0 var(--sp-8)，与全宽玻璃顶栏对齐（旧版 Timeline/SmartSearch 是 max-width:1200 居中缩窄）",
+          "智慧相册默认 tab = 内容分类（人物墙要逐个改名才可用，不该占主入口），切 tab 用 router.replace 同步 URL",
+          "分区导航顺序四个页面共用同一份：内容分类/人物/地点/回忆/时间线/智能搜索",
+          "审计脚本必须按元素自身背景链算对比度、能解析 color(srgb …)、跳过禁用控件，否则假阳性占六成"
+        ],
+        "verification": [
+          "npm test 133/133（含 justifiedRows 14 条）",
+          "npx vue-tsc --noEmit 干净",
+          "对比度审计：7 页 × 深浅 = 0 处不合格",
+          "几何探针：行宽 1120 = 容器宽；同行封面高一致"
+        ]
+      }
+    },
+    {
+      "id": "FEAT-107",
+      "name": "无容器阅读层 + 数据带文本列 + 地图缩放 + 搜索边界隔离",
+      "module": "全局视觉系统 / 数据带 / 相册墙 / 地点地图 / 搜索",
+      "status": "in-progress",
+      "purpose": "按用户反馈「简约 / 有信息 / 高级 / 直观，文字与卡片要自然嵌入背景，各组件功能相互独立」做一轮方向性改造：把容器减到零，层级改由字号/字重/三档文字色/发丝线建立",
+      "implementation": {
+        "frontend": "Vue3。新增无容器阅读层令牌（--fg/-fg-2/-fg-3/--rule/--hover/--ctrl-line/--gutter）；StatBand 从一排玻璃小面板重写为文本列；相册管理删左栏玻璃板、图注从胶囊下移到封面下裸文字；LocationMap 支持 Ctrl+滚轮缩放；相册管理搜索去掉内容检索",
+        "key_points": [
+          "诊断结论：问题不是「卡片不够精致」，而是所有东西都被卡片包住了。一屏出现 2 类以上容器（玻璃板/卡片/药丸/分段控件）时，它们互相争夺「我是一个独立区块」，读者失去唯一的层级通道——有信息变成有很多框",
+          "旧 StatBand 折行是算术必然（flex:1 1 0 + min-width:132px，9 块=1268px > 内容宽）；项数随数据变化，没有安全 min-width 值，只能改成加权宽度 + 不换行",
+          "读数 30px 配字重 340 而不是 560：大字号+粗字重是 PPT 图表，大字号+细字重才是排印。一屏 5 个读数全部加粗等于全部没有重点",
+          "--fg 系由 theme.ts 按背景实际明度下发（不是 body 类）：旧做法靠 body.theme-dark 选，在「深色模式 + 浅色预设」错配下失效",
+          "封面裸文字的配色判据是 :has(img) 而非 body:not(.theme-dark)：后者表达用户选了哪个模式，与封面底色无关，且探针下该类可能没挂上，会让浅色分支在深色界面静默生效",
+          "地图缩放用 <g :transform> 而不是改 viewBox（后者要重算 261 个省 path 的屏幕坐标）；光点半径必须除以 k，否则 6 倍时 13px 点变 154px 色斑；剪裁用 clipPath，svg{overflow:hidden} 会把画布剪成 viewBox 宽高比、两边留白",
+          "地图缩放上限 6 倍而不是 12：底图是 DP 简化到 2.2km 的省级轮廓，12 倍看到的不是更详细的地图而是被拉粗的折线",
+          "相册管理的搜索要隔离：用户对「搜索」的期待取决于他在哪个大组件里；且内容检索依赖 content_scan 内容库、相册名检索是纯 SQL，成本/命中语义/失败原因全不同，混一个 loading 态让「为什么没结果」无法归因",
+          "--gutter 暂时 = var(--sp-8)：全站页头/左栏还在用 52px，直接给 48px 会立刻多条 4px 错位",
+          "金色预算：全站只允许当前项/变化值/图表高亮三处；旧版每块数据板一条金进度条=一屏 9 处强调"
+        ],
+        "verification": [
+          "npm test 133/133",
+          "npx vue-tsc --noEmit 干净",
+          "vite build 成功",
+          "对比度审计 7 页 × 深浅 = 12 组全部 0 处不合格",
+          ".visual/probe-map-zoom.cjs 7 项断言全通过（裸滚轮不缩放且页面能滚 / 光标下点位偏移 0.017 / 上限 6 / 按 0 复位 / 描边 1px / 拖拽位移 120=鼠标位移）",
+          "截图核对：相册管理深浅两套、地图 1x 与 6x"
+        ]
+      },
+      "notes": [
+        "效果图在 design/preview/proposal/（HTML+CSS 源码入库，PNG 不入库；node design/preview/proposal/shoot.cjs 可重跑）",
+        "P1+P2（令牌+数据带）= a0588d5，地图缩放 = 6a81278，P3（相册管理+搜索隔离）= 9b63937",
+        "待办：P4 时间线（标题合行 + 自绘年份筛选 + 月行缩略图带）、P5 地点页（读数只留 4 项 + 地图与榜单两栏）、P6 顶栏（浮起玻璃板改为横向带 + 下缘发丝线，改动最广建议最后）",
+        "审计抓到的真缺陷：--fg-3 初值按纯黑/纯白底标定（.38/.44），但页面底是预设三段渐变，最亮端 3.22:1 / 最暗端 2.83:1。按渐变端点重标为 .52/.60 后全部达标",
+        "themed-probe 已补 list_photo_locations 桩数据（13 个城市含 1 个无坐标组）：原来返回 null，地点页渲染不出地图，探针无法验证"
+      ],
+      "updated_at": "2026-10-24T23:59:00+08:00"
+    },
+    {
+      "id": "FEAT-108",
+      "name": "液态玻璃：令牌冲突修复 + 真实边缘折射",
+      "module": "全局材质系统 / 浮层玻璃 / 顶栏",
+      "status": "done",
+      "purpose": "对着 skill-liquid-glass（Android/Compose backdrop 库）的光学模型检查本项目实现，修掉三处“名义上有液态玻璃、实际不生效”的缺陷，并把 Web 端能做的真实折射接上",
+      "implementation": {
+        "frontend": "Vue3 + CSS。新增 GlassFilters.vue（全应用一份的 SVG 滤镜定义，挂 App 根）；浮层玻璃改为 backdrop-filter: url(#liquid-lens) blur(8px) saturate(...)；令牌拆为 --glass-*（卡片：长度+数字）与 --float-*（浮层：长度+数字+纯颜色描边）",
+        "key_points": [
+          "Web 端确实能做真实折射：backdrop-filter: url(#svgfilter) 在 Chromium/WebView2 可用，feDisplacementMap 会把背景真正扭折（已像素级实测，不是推测）",
+          "url() 必须写在 blur() 前面：反过来的话先模糊再把糊掉的图去位移，弯折完全看不出来",
+          "滤镜定义必须挂 App 根且不能 display:none：url(#id) 是全文档作用域，display:none 里的滤镜部分实现不解析；探针页不经过 App.vue 时要单独挂，否则静默失效（与纯模糊像素差 0）",
+          "折射只给浮层（顶栏/.glass-float），不给卡片：一屏几十张卡片每张都跑位移 = 直接掉帧",
+          "加了折射后 --float-blur 从 16px 降到 8px：折射本身就是强“不透明信号”，再配 16px 强模糊会把弯折抹平",
+          "色散（chromaticAberration）未进生产：需拆 RGB 三通道分别位移再叠合，约 11 个滤镜图元（3 倍工作量），当前壁纸密度下肉眼收益极小；定义留在对照页 #lensDisperse",
+          "与原生 RuntimeShader 的本质差距：噪声位移场是随机的，不是严格沿边缘径向；缓解靠 baseFrequency 取很低（0.012）让位移场大尺度缓变"
+        ],
+        "verification": [
+          ".visual/probe-glass-refraction.cjs 像素差判定：折射 vs 纯模糊 MAE 2.03，纯模糊 vs 无滤镜 MAE 27.13",
+          ".visual/probe-glass-tokens.cjs：computed backdropFilter = url(#liquid-lens) blur(8px) saturate(1.1) · border 1px",
+          "npm test 133/133 · vue-tsc 干净 · vite build 成功",
+          "对比度审计 7 页 × 深浅 = 12 组全部 0 处不合格"
+        ]
+      },
+      "notes": [
+        "令牌冲突修复 = ff0e38e，折射接入 = 94dc94f",
+        "对照页：node .visual/shoot-glass-lab.cjs（需 dev server），三档玻璃并排 + 接真实顶栏尺寸",
+        "性能实测的三次失败已记入 BUG-2026-1024-009：rAF 间隔 / 内部元素重绘 / 截图吞吐 都测不准，最终改用图元数作为可跨环境依据"
+      ],
+      "updated_at": "2026-10-25T01:10:00+08:00"
+    },
+    {
+      "id": "FEAT-109",
+      "name": "相册管理/智慧相册四处体验修复：去重快捷项 + 折叠按钮生效 + 图注嵌入封面 + 数据带不裁切",
+      "module": "src/views/AlbumList.vue、src/components/AlbumCard.vue、src/components/CategoryGallery.vue、src/components/LocationGallery.vue",
+      "status": "done",
+      "purpose": "用户连续反馈四处问题：①相册管理左栏底部「快捷」组（全部折叠/批量管理）与右上横栏重复，要求去掉；②「全部折叠」按钮点击无效果；③相册墙图注应嵌入封面左下角，内容分类卡也要错落感且文字嵌入式；④智慧相册上下两条数据带左右文字显示不全（被裁切）。",
+      "implementation": {
+        "① 去重": "删除 AlbumList 左栏整个「快捷」side-group（全部折叠/批量管理）——这两项右上 main-head 横栏都有，保留一处入口（横栏）。",
+        "② 折叠按钮生效": "根因：FEAT-106 日期模式已改为扁平行式密排墙，模板里不再有任何年/季/月折叠分组，但 onToggleAll→toggleAllGroups 仍在收集已废弃的 groupedYears 折叠 key，collapsed 变了却没有任何 DOM 绑定它，所以按时间模式点按钮毫无反应。修法：A) 清理死代码——删除 groupedYears/groupByTime/YearGroup 导入与 yearKey/seasonKey/monthKey，currentVisibleAlbums 的 date 分支直接返回 dateOrderedAlbums；B) 折叠只服务真有分组的视图：工具栏「全部折叠」按钮加 v-if=sortMode!=='date'（按时间无分组可折，不放假按钮）；地点模式 allCollapsed 改为「每个地点分组都折叠」才为真（旧逻辑 collapsed.size>0 在部分折叠时也显示「全部展开」是错的），toggleAllGroups 收敛为只处理地点分组。手动排序模式仍走 ManualSort 暴露的 toggleAll/isAllCollapsed，不变。",
+        "③ 图注嵌入 + 错落": "AlbumCard tile/wall 变体：删除封面下方的 .tile-cap 图注条与独立的 .tile-time 胶囊，新增封面内左下角 .tile-seal（相册名一行 + 「张数 · 年月份[·地点]」一行）；有真封面(:has(img))白字+文字阴影+底部 54px 黑渐变(0.42)，无封面占位用主题字色不加遮罩；justifiedRows 调用 captionH 30→0，行高=封面高（旧行高=封面+30 图注，会留白条）。CategoryGallery 分类卡：删除封面下方 .cat-body，名称+「词数·匹配度」做成封面左下角 .cat-seal；网格 grid 改 CSS multicol 瀑布流（column-count 5/4/3/2 响应式 + break-inside:avoid），封面高按 nth-child(6n) 周期取 238/176/210/256/190/200，形成顶对齐、底部高低错落；无封面类目纯色底用 categoryTone 自带对比字色 --tone-fg（浅底深字、夜景底浅字）不压黑渐变，有真封面才用黑渐变+白字（与 AlbumCard 同一 :has(img) 判据）。",
+        "④ 数据带裁切": "根因：LocationGallery 的 .lg-stats 用 margin:0 calc(var(--gutter)*-1) 想全出血抵消父级 52px padding，实测整盒被拉到 left:-52/right:1492（视口外），首列标签「有地点城市」贴左缘、末列 delta「四川省·达州」贴右缘均被裁切。修法：去掉负 margin，改为 margin:0 0 6px，让地点数据带与 SmartAlbum 顶部主数据带共用同一条 52px 沟槽左轴，两带左右对齐、文字完整。"
+      },
+      "highlights": [
+        "「点了没反应」类 bug 先区分「没有绑定该状态的 DOM」与「状态没改」——本次 collapsed 确实变了，只是日期扁平墙没有任何元素读它，属于重构后遗留的死状态。",
+        "封面嵌入式文字一律用 :has(img) 判据分流（照片=白字+黑渐变，纯色/占位底=主题/色卡对比字色），不靠全局暗色类——纯色色底上恒压黑渐变会变成一块灰板。",
+        "瀑布流用固定 nth-child 周期高度而非随机：随机高度每次刷新跳位，周期错落可预期且纯函数。",
+        "StatBand 自带 52px gutter padding，任何消费方都不该再用负 margin 把它拉出沟槽；负 margin 出血在它身上=整盒移出视口。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 133/133 全绿（含 justifiedRows 14 条）",
+        "npx vite build exit 0",
+        "Playwright 探针：date 工具栏无折叠按钮 / location 点「全部折叠」组体 v-show=false 且文案变「全部展开」、再点恢复 / 相册墙深浅两套落款清晰 / 分类卡 12 张高低错落且浅色底名称深字 / 地点页双数据带左右同轴、delta 完整"
+      ],
+      "related_files": [
+        "src/views/AlbumList.vue",
+        "src/components/AlbumCard.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/LocationGallery.vue"
+      ],
+      "keywords": [
+        "全部折叠",
+        "图注嵌入",
+        "落款",
+        "瀑布流",
+        "错落",
+        "数据带",
+        "StatBand",
+        "负margin裁切",
+        "死代码",
+        "行式密排",
+        "captionH",
+        ":has(img)"
+      ],
+      "created_at": "2026-10-25T00:00:00+08:00",
+      "updated_at": "2026-10-25T00:00:00+08:00"
+    },
+    {
+      "id": "FEAT-114",
+      "name": "模型下载全覆盖 + 缺模型弹窗 + 材质归位 + 取色器历史色限 5 可删",
+      "module": "src-tauri/src/model_dl.rs、src-tauri/src/vision.rs、src/components/settings/ModelDownloadRows.vue、src/components/settings/ModelMissingDialog.vue、src/components/ui/PmColorPicker.vue、src/components/ThemeDialog.vue",
+      "status": "done",
+      "purpose": "用户三条反馈：① 预定义效果里的「仪表墙材质」应去掉，材质归自定义页；② CLIP 模型未下载时后台反复「未就绪」重试 1s/2s/4s，且应用内只能下载部分模型 —— 要求检测到缺失就弹窗、每个模型都有国内下载地址，并给出 GitHub model.zip 兜底；③ 主题取色弹窗的历史颜色越选越长，要求默认最多 5 个、悬停出现 × 可删除。",
+      "implementation": {
+        "① 材质归位": "删除 ThemeDialog 预定义页的 pm-mode-row（theme.widgetMaterial），把「仪表墙 液态玻璃/普通材质」移进自定义页「卡片材质」下方并补一条作用域说明。两个材质维度（全站卡片 theme.material / 仪表墙 theme.widgetMaterial）仍独立，不会随预设一起换。",
+        "② 缺失模型不再空转": "vision::is_model_missing_detail 先匹配「整图缺失 / 模型缺失 / 文件缺失 / 未下载 / no such file / not found」等确定性标记，命中则 is_not_ready=false，post_json_with_retry 立即返回而不是 1s/2s/4s 三次重试；semantic_status 把 model_missing 判断提到 backoff 之前（缺文件不会自愈，退避期也要如实告知）。clip_model_present 改为 fp16 / fp32 任一档就绪即可，避免只下 fp32 被误判未下载。",
+        "③ 下载表扩全": "DlSpec 从「单主文件 + extra」泛化为 files: [{remote, local, abs_url, expect_min}]，支持多文件与绝对 URL；新增 face-precise（immich-app/buffalo_l：detection/model.onnx→det_10g.onnx、recognition/model.onnx→w600k_r50.onnx）、face-light（WePrompt/buffalo_sc：det_500m.onnx、w600k_mbf.onnx）、ocr（ModelScope RapidOCR ch_PP-OCRv4_det_mobile→paddleocr-det.onnx）。HF 文件走 hf-mirror / aifasthub 双路竞速，OCR 走 ModelScope；逐文件续传/校验/落位，进度按模型总体积聚合。",
+        "④ 缺模型弹窗": "新增 ModelDownloadRows（设置页与弹窗共用的下载列表：展示 label/note、已下载/下载中/失败重试、一键下载全部缺失）与 ModelMissingDialog。SmartSearch 在 semantic_status=model_missing 时自动弹一次（之后可点提示条「⬇ 下载模型」重开）；ScanPanel / GlobalScanPanel 听到「缺少模型文件」时按人脸或 OCR 分类弹出，并从报错里提取 .onnx 文件名展示。弹窗与设置页都提供 model.zip（v0.4.2，528.9MB）跳转与解压路径说明。",
+        "⑤ 取色器": "新增 PmColorPicker 替代全部 <input type=\"color\">（组件色调 / 纯色背景 / 渐变三色标）。色板 8 列 × 5 行 + 最近使用；localStorage pms.colorPicker.recent 去重、上限 5、最新在前；每个最近色块悬停/聚焦时右上角出现 ×，点击即删除；点「选择」才提交，Esc 只关取色器不连带关主题弹窗。"
+      },
+      "highlights": [
+        "系统/Chromium 取色弹窗的历史色由浏览器自己维护，应用无法限制数量或删除 —— 要满足「最多 5 个 + 可删」只能自绘取色器。",
+        "503 不全是可重试：模型文件缺失也返回 503，但重试不会自愈；必须先用错误体里的「缺失」语义把它从「加载中」里择出来。",
+        "HF 仓库内路径 ≠ 本地文件名：buffalo_l 的 detection/model.onnx 落位必须改回 det_10g.onnx，否则下载成功但 Python 仍报缺模型。",
+        "下载单元下沉到文件后，多文件模型才能共用同一套续传/校验/取消逻辑；进度用模型总体积做分母，避免每换一个文件进度条回 0。",
+        "排查时确认：用户日志里的 18765 端口属于仍在运行的 -dev 旧后端（没有 CLIP），当前仓库 python/models 实际已齐；旧进程不关会持续把新版请求带到旧模型目录。"
+      ],
+      "tests": [
+        "npm test 137/137 全绿",
+        "npx vue-tsc --noEmit exit 0",
+        "npx vite build exit 0",
+        "cargo test --no-default-features：417 passed / 0 failed（新增 missing_model_503_is_not_retryable、face_and_ocr_specs_match_python_config 等）",
+        "Playwright 探针：预定义页无材质行 / 自定义页两行材质 / 取色器连选 10 次仍只保留 5 个最近色、悬停出现 × / 缺模型弹窗 5 行模型与一键下载布局正常"
+      ],
+      "related_files": [
+        "src/components/ThemeDialog.vue",
+        "src/components/ui/PmColorPicker.vue",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/content.rs",
+        "src/components/settings/ModelDownloadRows.vue",
+        "src/components/settings/ModelDownloadsSection.vue",
+        "src/components/settings/ModelMissingDialog.vue",
+        "src/components/settings/PerfSettingsDialog.vue",
+        "src/components/ScanPanel.vue",
+        "src/components/GlobalScanPanel.vue",
+        "src/views/SmartSearch.vue",
+        "src/types/content.ts",
+        "src/assets/pm-dialog.css"
+      ],
+      "keywords": [
+        "模型下载",
+        "CLIP",
+        "buffalo_l",
+        "buffalo_sc",
+        "PaddleOCR",
+        "model.zip",
+        "hf-mirror",
+        "aifasthub",
+        "ModelScope",
+        "断点续传",
+        "多文件",
+        "model_missing",
+        "503",
+        "退避",
+        "取色器",
+        "最近使用",
+        "历史颜色",
+        "色块删除",
+        "PmColorPicker",
+        "仪表墙材质",
+        "预定义效果"
+      ],
+      "created_at": "2026-10-26T12:00:00+08:00",
+      "updated_at": "2026-10-26T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-115",
+      "name": "界面质感改造落地：顶栏带式化 + 概览一面墙一块板 + 图注移出封面 + 独占行修正 + 文字色收敛",
+      "module": "src/components/ui/AppHeader.vue、OverviewPane.vue、AlbumCard.vue、CategoryGallery.vue、PersonGallery.vue、GlobalScanPanel.vue、CollapseSection.vue、ui/StatBand.vue、ui/widget/GeoPinsCore.vue、ui/widget/RankBarsCore.vue、utils/justifiedRows.ts、views/AlbumList/Timeline/Memories/SmartSearch/ScanHub/SmartAlbum/AlbumDetail/LocationGallery",
+      "status": "done",
+      "purpose": "用户要求：简约 · 有数据 · 整体对齐 · 部分放大错落 · 文字与背景嵌入 · 避免过多的框与繁重感 · 统一风格与质感。先出效果图（design/preview/proposal/feat115-*.png，深色松夜绿低保和 + 浅色晨雾青瓷两套），确认后按方案落地。**Home 页明确不改。**",
+      "implementation": {
+        "量化基线": "自建 .visual/probe-containers.cjs（口径 v3：容器 = 有填充 alpha>.10 或外投影或可见描边，排除壁纸层/照片框/表单控件/6% 选中微光）。改造前：AlbumList 3 · SmartAlbum 13 · ScanHub 7 · Memories 9 · Timeline 1 · SmartSearch 1(表单不计) · AlbumDetail 5 · Home 5。改造后：AlbumList 0 · SmartAlbum 2 · ScanHub 1 · Memories 0 · Timeline 0 · SmartSearch 0 · AlbumDetail 1 · Home 5(未动)。",
+        "S1 文字色收敛": "同屏曾并存 5 种\"同义不同值\"的主/次文字色：--color-text(#f5f7ff)、--color-text-2(…,.92)、--c-fg(#f2f0f4)、--c-fg-2(…,.68)、--fg(#f0eef3)。壁纸层统一到 --fg 三档（--fg/-fg-2/-fg-3）；页面壳基色从 theme.textColor 改为 var(--fg)；AlbumList/AppHeader 内 --c-fg* 全部替换为 --fg*。AlbumList 文字色档 7→6、Timeline 4→2、Memories 4→2。",
+        "S1b StatBand 金色默认值": "StatBand 的 aux 文案 :class=\"it.tone ?? 'up'\" —— 缺省是 up，于是所有没写 tone 的静态计数全被染成 --c-accent-bright 的金色（实测同屏 3 处）。缺省改为 'mute'，并在 props 文档里写明\"金色是'这数在变'的信号\"。改后金色 3→1。",
+        "S2 卡片去玻璃底": "CategoryGallery 的 .cat-card 去掉 glass-card + :style=theme.cardStyle，只留 inset 1px 内描边；hover 从 translateY(-3px)+shadow 改为 filter:brightness(1.06)（一屏十几块同时位移=整片在动）。PersonGallery 的 .person-card 同样去卡：padding 归零、圆角/投影删除、网格 196→150px。",
+        "S2b 无封面兜底": "去玻璃卡后\"还没匹配到照片\"的分类变成透明区（新建分类的常态），实测整屏只剩空描边框。给 .cat-cover:not(:has(img)) 用 !important 盖掉 inline 色卡底（其中\"文档\"档是浅色 → 白板），改中性半透明 + 落款字色切回 --fg。角标从深色胶囊改为裸文字+投影（与相册墙 .tile-badge 同一套语言）。",
+        "S3 图注移出封面": "AlbumCard 的 .tile-seal 从\"绝对定位压封面左下角、两行竖排\"改为\"封面下方一行横排\"：名字 13px/600 + 张数 10.5px/--fg-3，gap 7px 连成一串（不用 margin-left:auto 推右 —— 瓦片宽度不同会让每行张数落在不同 x 位置，读成两栏表格）。行高 line-height 固定 18px 保证下一行封面起点不错位。底部渐变兜底 54px/0.42 → 34px/0.30（只为封面内的日期/未入库角标兜底）。captionH 0→26。系统相册也从 card 变体改 tile 变体（一屏里两种材质并存=不统一）。",
+        "S4 独占行修正": "justifiedRows §2 生成行时：coverH 被 clamp 夹住，但 width 仍按\"铺满 W\"分配，两者独立 → 宽高比失真。单块成行时最极端：宽=整个容器、高被压到 maxCoverH → 一条占满全屏的横幅（用户明确否掉）。改为：自然高度落在区间内 → 精确铺满；被夹住 → 宽度 = 宽高比 × 实际高度，剩余空间留在行尾。同时 AlbumList wideFactor 1.8→1.5。",
+        "S5 扫描面板": "GlobalScanPanel 从\"单栏堆块\"改成\"左右分栏\"（左=选择区+扫描内容，右=任务/空态），删掉 .gs-select-block 的内衬板（外层 .gs-area 已是墙板玻璃，里面再套一块板=板里还有板）；勾选行从整块底色改左侧 2px 竖条+5% 微光；扫描内容 2×2 带边框盒子→一行紧凑胶囊，选中态用淡色底+描边（只有主 CTA 用实心金）；修 .gs-filter-input 重复声明（后一条 background:var(--color-surface-2) 把前一条盖掉 → 输入框是板上开了个洞）。",
+        "S6 三页对齐": "Timeline 页头三行（标题→工具条→数据带，约 200px）合成一行；数据带 5→4 列（\"无拍摄时间\"与\"地点覆盖\"是任何年份都不变的诊断读数，合并为\"元数据完整度\"）；标题 19→17px。SmartSearch 去掉 .ss-filters 整块底板、入框字号 15→13（7 档字阶里没有 15 的位置）、空态留白 70→52px。AlbumDetail 去 max-width:1200 居中改 padding:0 var(--gutter)（全站唯一一页居中缩窄，宽屏下与全宽顶栏对不齐）。CollapseSection 从\"三块卡片\"改\"折纸行\"（只留上缘发丝线）——详情页一进来就是三个同尺寸卡片，把页面切成三段，而它们承载的是同一张照片列表的三个工具。",
+        "S7 概览一面墙一块板": "OverviewPane 从 11 块独立 <UiWidget>（每块自带填充+边框+投影，块间 14px 缝露壁纸）改为 5 个 .ov-zone 分带 + 板内 12 栅格，整面墙只有一块 .ov-board。错落改由栅格宽窄（8/4 · 4/4/4 · 12 · 8/4）承担 —— 宽窄是版式语言（有序），缝是容器语言（数框）。板内 widget 全部去容器化（:deep 清填充/边框/模糊/投影/圆角）。⚠️ 必须同时重置 grid-row：原 rows-2 是 grid-row:span 2，配 grid-auto-rows:86px 时表示\"占两行 86px\"，但板内改用内容自适应行高后 span 2 会凭空多出两行隐式轨道，整带被拉到 360px。",
+        "S7b 环/点/排行的色": "RankBarsCore 6 行全用强调色渐变（6 处强调=没有强调，且看不出谁第一）→ 默认 --color-text-3，只有 :first-child 用强调色。GeoPinsCore 的点阵文字用 --color-text-2（按 widget 玻璃底标定）→ 板内 widget 已无填充，背后就是壁纸，那套值直接失效（实测浅色 1.01:1），改用 --c-fg-2 并同时给 fill 与 color（审计读的是 computed color）。",
+        "S8 顶栏带式化": "AppHeader 从\"浮起的磨砂玻璃板\"（52px 高、圆角 12、填充 .62、blur 18 + url(#liquid-lens) 折射、上缘镜面+下缘暗壁+外投影、外面留 10px 空气）改成\"一条 54px 的带\"：padding 归零、无圆角/填充/模糊/边框，只有下缘一根 1px 发丝线 + 一层极淡渐变（滚动时才看得出与内容分离）。原因：板与内容之间那条 10px 缝读起来像\"两个窗口叠在一起\"；且它是一屏最亮的玻璃，把注意力从内容抢走。--float-* 仍被搜索胶囊/弹窗/菜单消费，顶栏不再消费。连带重算吸顶：.album-side 150→70px、.tl-rail 68→62px。"
+      },
+      "highlights": [
+        "「容器」这个指标必须先定义清楚才有意义：第一版探针把 body 的 backgroundColor 当基准（渐变写在 background-image 上 → computed 是 transparent，差值恒真）；第二版 boxShadow.split(\",\") 把 rgba(0,0,0,.5) 切开、inset 只落在第一段 → 含 inset 的多层影被判成\"有外投影\"（虚高 5 倍）；第三版 box-shadow:none 被切成字面量 \"none\"、既非空也不含 inset（又虚高 5 倍）；第四版把照片框的内描边与表单控件也算进来。四轮修完数字才可信 —— 度量工具本身必须先自证。",
+        "对比度审计脚本读的是 computed color，SVG 的 fill 它看不见：只改 fill 会出现\"肉眼已修好、审计仍报 1.01:1\"。两个属性一起给才对齐。",
+        "CardGallery 去掉玻璃底之后，\"没有封面\"的分支会失去唯一的承载面 —— 一屏只剩几个空描边框。去容器化的同时必须给\"空内容\"补一个可见底，否则常态化的空态直接变成不可见。",
+        "Vue 模板的属性列表里不能放 JS 块注释（/* */）：会被当成属性解析，报 \"object literal cannot have multiple properties with the same name\" 或一堆 TS1005。注释要么放 HTML 注释里，要么放 <script>/<style> 里。",
+        "彻底不要用 git stash 做\"前后基线对比\"：stash -u 会把探针脚本一起收走，接着反复 pop / 覆盖 / drop 极易把源码改动丢掉（本次实际丢过一次，靠 git fsck --unreachable 找回 dangling stash commit 才救回 16 个文件）。要对比基线就用 git worktree 另开一份，或先把改动 commit 到临时分支。",
+        "StatBand 的 tone 缺省值是个隐形陷阱：写在 :class 里的 `it.tone ?? 'up'` 让所有\"没写 tone\"的列都变成金色，而调用方（6 个页面）根本不会注意到自己没写。缺省值必须选\"最不显眼\"的那一档。",
+        "Grid 的 grid-row:span N 只在有显式轨道高度时才是\"占 N 个 86px\"；一旦改成内容自适应行高，span N 会创建 N 条隐式轨道把行撑高。改布局模式时必须同时重置跨行声明。",
+        "「错落」的边界是\"一块更宽\"，不是\"一块独占一行\"：后者在 flex/grid 里会被拉到 100% 宽，观感变成占满全屏的 hero 横幅 —— 用户明确否掉了这个形态。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 139/139 全绿（新增 2 条：断点段内只剩 1 块时不成横幅、合并时块总数不丢）",
+        "npx vite build exit 0",
+        ".visual/audit-contrast.cjs：8 页 × 深浅 = 0 处不合格（顶栏从玻璃变渐变、widget 去填充后重测）",
+        ".visual/probe-containers.cjs（新建，口径经 4 轮修正）：改造前后同口径对比，8 页里 6 页降到 ≤2，Home 未动"
+      ],
+      "related_files": [
+        "src/components/ui/AppHeader.vue",
+        "src/components/OverviewPane.vue",
+        "src/components/AlbumCard.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/PersonGallery.vue",
+        "src/components/GlobalScanPanel.vue",
+        "src/components/CollapseSection.vue",
+        "src/components/ui/StatBand.vue",
+        "src/components/ui/widget/GeoPinsCore.vue",
+        "src/components/ui/widget/RankBarsCore.vue",
+        "src/utils/justifiedRows.ts",
+        "src/utils/justifiedRows.test.ts",
+        "src/views/AlbumList.vue",
+        "src/views/Timeline.vue",
+        "src/views/Memories.vue",
+        "src/views/SmartSearch.vue",
+        "src/views/ScanHub.vue",
+        "src/views/SmartAlbum.vue",
+        "src/views/AlbumDetail.vue",
+        "src/components/LocationGallery.vue",
+        ".visual/probe-containers.cjs",
+        ".visual/shoot-current.cjs",
+        "design/preview/proposal/feat115.css",
+        "design/preview/proposal/shoot-feat115.cjs"
+      ],
+      "keywords": [
+        "界面改造",
+        "去容器",
+        "顶栏带式",
+        "一面墙一块板",
+        "图注移出封面",
+        "错落",
+        "文字色收敛",
+        "feat115"
+      ],
+      "created_at": "2026-10-27T12:00:00+08:00",
+      "updated_at": "2026-10-27T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-117",
+      "name": "图注回退嵌入 / 时间线热加载 / 仪表墙恢复卡片（文字嵌入+卡片混合）/ 材质单维度 / 预设重建 8 套",
+      "module": "src/composables/useIncrementalReveal.ts（新）、views/Timeline.vue、components/OverviewPane.vue、components/AlbumCard.vue、views/AlbumList.vue、components/ui/widget/{UiWidget,GeoPinsCore,RankBarsCore}.vue、assets/widget.css、stores/theme.ts、utils/prefs.ts、utils/presets.ts、components/ThemeDialog.vue",
+      "status": "done",
+      "purpose": "用户五条要求：①相册卡文字保持嵌入封面 ②时间线热加载（一次性渲染太大会卡死）③仪表墙需要卡片，与「文字背景嵌入」相结合（参考 Rainmeter 深藏青皮肤）④编码注重原子性与组件可复用 ⑤预设界面两个材质选项合一 + 预设推到重建（10 套 → 8 套，更有质感与风格）。",
+      "implementation": {
+        "R1 图注回退": "FEAT-115 把 .tile-seal 移到封面下方（照片完整可见），用户要求回退 —— 文字与照片的叠压关系才是这个页面的性格，移出后一墙封面退化成「图 + 说明」的表格感，海报感与错落都消失。回到 position:absolute 封面左下角两行落款；底部渐变兜底回 54px/0.42（两行白字在雪景/天空上需要更厚的暗带）；AlbumList 的 captionH 26→0。保留 justifiedRows 的「单块不成横幅」修正（形状缺陷，与风格无关）。",
+        "R2 时间线热加载": "缩略图是懒的（IntersectionObserver），但 DOM 是急的 —— 原先 `v-for=\"g in groups\"` 一次把 2.5 万个 <figure> + 2.5 万个 observer 全建出来，进页面几秒白屏。懒加载图片 ≠ 懒加载列表。新增 useIncrementalReveal：预算 = 视口高 × 5 屏，按单元累计 costOf() 直到够预算；滚到距底 900px 追加 2 屏。单元取「月份」（天然断点 + 用户认得出的分界），costOf 用 justifiedRows 已算好的真实行高，所以「一屏放多少张」不用猜 —— 预算换算出来就是实际像素。实测 mock（8 个月/93 张）：首屏 5 个月 59 张、docH 5592；滚到底 6 个月 73 张 → 8 个月 93 张。切换年份筛选时 reset，否则累积预算会一次渲完。",
+        "R3 仪表墙恢复卡片": "采纳 backup/pre-feat115 分支上被覆盖的 FEAT-116「双声部」骨架（UiWidget 的 variant=panel/bare + bleed/cover）：纯读数（照片库、今年月度）文字直接压在页面上、有内容（相册/人物/地点/最近导入/那年今日）才配板 —— 板与裸交替出现时，「板」才重新被读成「承载内容的物件」，而不是默认背景纹理。这正是用户要的「文字嵌入 + 卡片相结合」。同时修两处：①GeoPinsCore 的标签只写 fill 不写 color（审计读 computed color，肉眼修好了审计仍报 1.03:1）；②cover 变体的空态（那年今日没照片时）白字压在白霜板上 1.1:1 —— 深浅模式各补一层底并同步换字色（深色近黑待填卡 / 浅色极淡墨渍，浅色页上摆一块黑盒子反而更抢眼）。③gpsRatio 分母从「已入库张数」改为「全库张数」并 min(1)：两者不同量纲，mock 里出现「591.4% 带 GPS」。",
+        "R4 原子性与复用": "①新 composable useIncrementalReveal（与业务无关，任何长列表可用）；②材质收敛为单一来源：theme.widgetMaterial 从独立 ref 降级为 material 的派生 computed（liquid→glass），body 的 w-mat-* 类由 applyMaterial 一并下发；UiWidget 只读 theme.material；prefs 里删掉 widgetMaterial 字段（旧 localStorage 残留键被 normalizePrefs 的白名单自然丢弃，不报错）；③预设仍走单一 Preset schema（accent/accent2/washes 可选，缺省回落全局金）。",
+        "R5a 材质合一": "ThemeDialog 自定义页原来有两组材质开关（卡片材质 plain/liquid + 仪表墙材质 glass/plain），名字都叫「液态玻璃 / 普通」，改一个另一个不动 —— 用户点了两次都以为坏了一个。材质是「这个界面是什么做的」，不该按页面分叉。删掉第二组，只留一组并注明「全局生效：卡片、面板、仪表墙 widget 一并」。",
+        "R5b 预设重建 8 套": "上一版 10 套的问题是**没有「风格」这个维度**：只调三段渐变的色相，组件色/透明度/强调色几乎一样，10 张预览卡像同一张图的 10 个滤镜。这一版每套同时动三样：背景明度跨度（决定轻重）、组件色冷暖（决定性格）、强调色（决定高亮落点）。深 4 = 紫（落日紫夜，保留：它是 DEFAULTS 与登录三页共用的品牌外观）/ 蓝（藏青夜，新增，参考图那套深藏青）/ 绿（松夜绿）/ 褐（墨褐）；浅 4 = 雾白（中性）/ 亚麻（暖）/ 晨雾青瓷（冷绿，配青绿强调而非金 —— 冷底上的金会像旧纸上的黄斑）/ 陶砂（暖砂）。删：墨色石板（与石墨类重复）、余烬暖褐（被墨褐取代）、纸白（组件色与页面底几乎同色，去卡片化后等于没有承载面）、菊芋淡紫（与深色默认撞色相）。",
+        "附带修复": "①Vue scoped 样式里写 :global(...) 会被整条丢弃（编译产物里查无此规则）—— 直接写 body 前缀即可，scoped 只给最后一段加 [data-v-*]；②浅色下 --w-track 15% 墨在白霜板实测 1.1:1，未选中的柱子几乎消失，读者只看到「一根金条」而不是「一年的分布」，改 26%。"
+      },
+      "highlights": [
+        "「懒加载图片」和「懒加载列表」是两件事：把 IntersectionObserver 全铺上，DOM 节点依然是一次建完的。判断一个长列表是否真的懒，看的不是有没有 observer，而是 document.querySelectorAll(卡片).length 是不是等于总数。",
+        "按「条数」定阈值是错的：100 条在一屏 6 张的宽屏是 16 屏，在一屏 30 张的窄屏是 3 屏。用户说的是「大概几屏」，那就直接按像素算预算，把单元高度交给调用方（这里用 justifiedRows 已算好的真实行高），换算出来的才是他真正看到的量。",
+        "「空态」是材质改动的隐形受害者：cover 变体靠「照片」提供底，照片不在时白色标题直接压在白霜板上（浅色 1.1:1）。凡是「底色由内容提供」的容器，都必须给空态补一层兜底底 —— 否则常态化的空态直接不可见。",
+        "同一个空态在深浅两种模式下不能共用一个底：深色给近黑（待填卡），浅色给极淡墨渍。浅色页上摆一块黑盒子，它就成了全页最重的元素，比空着还抢眼。",
+        "对比度审计读的是 computed color，SVG 的 fill 它看不见：SVG 文字必须同时给 fill 与 color，否则会出现「肉眼已修好、审计仍报 1.03:1」。",
+        "统计口径（分子分母）必须同量纲：gpsRatio 用「地点聚合张数 / 已入库张数」算出了 591.4% —— 两个数来自不同查询、覆盖不同范围。跨来源的比例一定要显式写清楚分母是谁，再兜一层 min(1)。",
+        "两个同名开关是配置界面最坏的形态：ThemeDialog 里「液态玻璃 / 普通」出现两次，各管一处，改一个另一个不动，用户会以为界面坏了。材质是「界面是什么做的」，不该按页面分叉 —— 一个维度只能有一个控件。",
+        "预设数量不是问题，缺少「风格维度」才是：10 套只改色相，看起来就是同一张图的 10 个滤镜。要让人一眼分出风格，每套至少要同时动三样（明度跨度 / 组件色冷暖 / 强调色）。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 139/139（presets.test 断言预设总数 8 / 深 4 / 浅 4，并逐套校验单色相、明度跨度、组件色近中性）",
+        "npx vite build exit 0",
+        ".visual/probe-timeline-lazy.cjs（新增）：首屏 5 个月 59/93 张 → 滚到底 6 个月 73 张 → 8 个月 93 张，hasMore 正确归 false",
+        ".visual/audit-contrast.cjs：8 页 × 深浅 = 0 处不合格（含仪表墙恢复卡片后新增的三处回归：geo 标签、cover 空态标题、cover 空态文案）",
+        ".visual/probe-containers.cjs：SmartAlbum 由 2 回到 13 —— 这是**预期**的，用户本轮明确要求仪表墙恢复卡片；其余页保持 0~2"
+      ],
+      "related_files": [
+        "src/composables/useIncrementalReveal.ts",
+        "src/views/Timeline.vue",
+        "src/components/OverviewPane.vue",
+        "src/components/AlbumCard.vue",
+        "src/views/AlbumList.vue",
+        "src/components/ui/widget/UiWidget.vue",
+        "src/components/ui/widget/GeoPinsCore.vue",
+        "src/components/ui/widget/RankBarsCore.vue",
+        "src/assets/widget.css",
+        "src/stores/theme.ts",
+        "src/utils/prefs.ts",
+        "src/utils/presets.ts",
+        "src/utils/presets.test.ts",
+        "src/components/ThemeDialog.vue",
+        ".visual/probe-timeline-lazy.cjs"
+      ],
+      "keywords": [
+        "热加载",
+        "增量渲染",
+        "仪表墙双声部",
+        "材质合一",
+        "预设重建",
+        "文字嵌入",
+        "feat117"
+      ],
+      "created_at": "2026-10-27T16:30:00+08:00",
+      "updated_at": "2026-10-27T16:30:00+08:00"
+    },
+    {
+      "id": "FEAT-118",
+      "name": "取色器改色盘（删 40 格色块）+ 自定义预设可命名保存（上限 6）+ 松夜绿提亮",
+      "module": "src/components/ui/PmColorPicker.vue、components/ThemeDialog.vue、utils/color.ts、utils/customPresets.ts（新）、utils/presets.ts、assets/pm-dialog.css",
+      "status": "done",
+      "purpose": "用户三条反馈：①松夜绿预设再亮一点；②取色器里那个色块选择去掉，直接色盘自定义；③加一个按钮，自定义结果可以存为预设并取名，最多存 6 个。",
+      "implementation": {
+        "松夜绿提亮": "原三段渐变 #162e25 → #080f0c 的明度区间是 L 13.3% → 4.5%，在大多数屏幕上读成「近黑」，绿相只在色彩管理好的显示器上才看得出来。改为 #24493c → #0c1a15（L 21.4% → 7.5%，跨度 13.9%），组件色同步 #232a26 → #26302b（通道极差 10，仍近中性）。仍满足预设三条铁律：单色相（~160°）、明度跨度 ≥0.08、组件色通道极差 ≤12。",
+        "取色器改色盘": "删掉 8 列 × 5 行的预设色块网格 —— 它有两个问题：①只有离散值，想「比这格再亮一点」只能手输色号；②一屏几十个艳色块比界面本身还花，取色器成了全站最艳的地方。改成一个 264px 色相环（conic-gradient + radial mask 挖空中心）+ 内嵌饱和度/明度方块（两层线性渐变），两块都能拖：环按 atan2 换算色相（+90° 让红色落在顶部），方块横轴 = 饱和度、纵轴 = 明度（向上增长）。指针按下即生效，拖动期间才挂 pointermove、松手立即摘。离散集合只保留「最近用过」（最多 5 个，悬停可删）。",
+        "色盘不持有颜色": "色盘交互态是 HSV、令牌唯一真值是 hex。为了不出现「色盘里的颜色和令牌不一致」的双真值，utils/color.ts 新增 hexToHsv / hsvToHex 双向换算（纯函数、进单测覆盖全色域采样互逆），组件里的 hsv 只是短暂的交互态：拖色盘 → hsvToHex 写 draft；外部改 draft（hex 输入/最近色/打开弹窗）→ 反向同步 hsv。拖动过程**不** emit（主题重算是一次全站 CSS 变量下发，每帧发会把主线程占满、色盘自己会卡）。",
+        "自定义预设（上限 6）": "新 utils/customPresets.ts：只存外观（mode/三段色/角度/组件色/透明度），不存 accent/washes；id 由时间戳+随机段生成、不参与比对（允许重名）；上限 6 是硬约束，满了返回 ok:false 拒绝而不是丢最早的（静默丢失比拒绝更恼火）；读取逐条容错，任何一条不合法整条丢弃，绝不让坏数据把弹窗搞崩。存独立 localStorage 键而不是塞进 Prefs —— Prefs 是「当前长什么样」的单一真值集合，预设是「可保存的外观列表」，塞进去会让 normalizePrefs 的白名单逐字段模型破功，还会破坏 prefs.test 的「空输入 == DEFAULTS」不变量。",
+        "预设入口与列表": "「存为预设」按钮放底部 footer（两个页签都能用），点了就地弹一行命名浮层（只问一件事，不另开二级弹窗，Enter 保存 / Esc 取消 / 名字上限 12 字）。列表放在「预定义效果」页的「我的预设」分组（与内置预设并排、计数 N/6），因为用户的动作都是「选一套外观」，来源不该影响他去哪里点；卡片复用 .pm-preset 外观 + 角上一个 ×（悬停/聚焦才现）删除。满了按钮变「预设已满（6）」并 disabled。"
+      },
+      "highlights": [
+        "「色板」和「色盘」不是同一个交互：色板是「从这几十个里选一个」，色盘是「任意颜色都拖得出来」。前者省一次拖动，后者不会撞到「就差一点」的墙。对调色类界面，色盘才是对的那一个 —— 离散色块越多，界面越花，用户越觉得「这颜色不是我想要的」。",
+        "色盘这类连续控件的状态必须和令牌的真值单向收敛：色盘持有 HSV 会自然漂色（hex 只有 8 位精度），所以 hsv 只能是短暂的交互态，写出去立刻落成 hex、再由 watch 反同步回来。反过来（拿 HSV 当唯一真值）会让「输了个色号」和「拖了下色盘」产生两套真值。",
+        "连续拖动控件不能每帧提交到全局状态：主题每次变更是一次全站 CSS 变量下发 + 重算，拖色盘时每帧 emit 会把自己的帧率拖死。按下即本地生效、松手才对外提交（或只写草稿、点「选择」才落地）。",
+        "上限的语义要比数字本身更明确：满了到底丢最早的还是拒绝新的？丢最早的看起来更省事，但用户会以为自己存住了（列表里确实有 6 个，只是不是他的）。拒绝 + 显式说明原因，代价只是让用户删一个。",
+        "环形 + 内嵌方块的几何约束：方块边长必须 ≤ 内半径 × √2，否则四个角会钻到环下面。这个数字必须跟着环的内径走 —— 把尺寸写成百分比（而不是 px）才能改一个数字就整体等比放大，否则放大色盘时必然错位一次。",
+        "浮层的定位锚要看 DOM 层级而不是 CSS：命名浮层写成 position:absolute; inset:0，但它当时是弹窗的兄弟节点（在 teleport 根下），于是铺满整个视口、又被弹窗遮罩压在下面 —— 表现为「点了没反应」。absolute 的包含块是最近的定位祖先，插错一层就等于换了个坐标系。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 154/154（新增 5 条 HSV 双向换算 + 10 条 customPresets 断言：上限拒绝、坏数据整条丢弃、名字兜底与截断、去重、storage key 固定）",
+        "npx vite build exit 0",
+        ".visual/probe-theme-118.cjs（新增）：色盘存在且旧色块已移除、命名浮层可保存、保存后自动跳回预定义页、无控制台错误",
+        ".visual/probe-custom-presets.cjs（新增）：连存 6 个 → 按钮变「预设已满（6）」且 disabled → 强点不开浮层、库存仍 6 → 删一个后恢复可存（5）",
+        ".visual/audit-contrast.cjs：8 页 × 深浅 = 0 处不合格（松夜绿提亮后重测）"
+      ],
+      "related_files": [
+        "src/components/ui/PmColorPicker.vue",
+        "src/components/ThemeDialog.vue",
+        "src/utils/color.ts",
+        "src/utils/color.test.ts",
+        "src/utils/customPresets.ts",
+        "src/utils/customPresets.test.ts",
+        "src/utils/presets.ts",
+        "src/assets/pm-dialog.css",
+        ".visual/probe-theme-118.cjs",
+        ".visual/probe-custom-presets.cjs"
+      ],
+      "keywords": [
+        "色盘",
+        "取色器",
+        "自定义预设",
+        "预设上限",
+        "松夜绿提亮",
+        "HSV",
+        "feat118"
+      ],
+      "created_at": "2026-10-27T18:20:00+08:00",
+      "updated_at": "2026-10-27T18:20:00+08:00"
+    },
+    {
+      "id": "FEAT-119",
+      "name": "预定义预设收敛为 4 套（深 2 / 浅 2）+ 藏青夜提亮加层次 + 浅色降饱和",
+      "module": "src/utils/presets.ts、src/utils/presets.test.ts、.visual/themed-probe.ts、README.md",
+      "status": "done",
+      "purpose": "用户反馈：预设太多，预定义只做四套；并指定保留 松夜绿 / 晨雾青瓷 / 藏青夜 / 陶砂，其中 藏青夜要更亮更有层次（仍属深色系）、两套浅色要层次更明显、然后浅色整体降饱和。要求「先渲染看效果再改代码」，因此按 提案渲染 → 确认 → 落地 三步走。",
+      "implementation": {
+        "八套 → 四套": "保留 藏青夜 + 松夜绿（深）、晨雾青瓷 + 陶砂（浅）。删除 落日紫夜 / 墨褐 / 雾白 / 亚麻。删落日紫夜的理由要单独说明：它是 DEFAULTS 与登录三页共用的品牌外观，但「预定义效果」页本来就有独立的「启动封面（默认）」卡导出同一套紫夜+落日金，所以**默认外观一字未改**，只是不再占一个预设位 —— 预设位的语义是「可选的风格」，不该有一个位置被「当前默认」占着。删墨褐（与陶砂同暖色相家族）、雾白（与青瓷明度几乎重叠）、亚麻（与陶砂同为暖白，只差饱和度）。",
+        "藏青夜 提亮+层次": "原 #2a3548 → #0c1017（跨度 0.155）→ 新 #34435c → #1a2433 → #0b1018（跨度 0.214）。关键做法是**只抬上沿、不整体调浅**：顶部 L 0.282 承接壁纸光感、中段 0.151 给容器明确参照、底部 0.069 沉住，三档拉开才读得出纵深；整体平均明度仍 < 0.2，仍属深色系。组件色同步 #272b31 → #2b3037（通道极差 12，仍近中性）。",
+        "浅色 加层次": "浅色最容易犯的毛病是「背景像一块白纸」—— 设计时怕脏只敢拉开一点点明度，但三档色标是大面积背景，跨度不够就没有纵深，容器只能靠描边浮起来，观感是「糊」而不是「干净」。晨雾青瓷跨度 0.176 → 0.251、陶砂 0.198 → 0.331。",
+        "浅色 降饱和": "做法是**锁死色相与明度、只缩 HSL 饱和度**，不能直接对 hex 乘系数：接近灰的段在 8 位取整后会跳到别的色相（实测色相极差从 5° 涨到 20°+），而「单色相」是硬约束。晨雾青瓷 ×0.6（S 0.355/0.268/0.208 → 0.226/0.155/0.119，这套本来饱和度就低，×0.7 肉眼几乎无差）；陶砂 ×0.7（S 0.583/0.505/0.440 → 0.417/0.355/0.306，底部 #bca281 还读得出「陶土」，再降就退成灰米色、与名字脱节）。",
+        "探针口径同步": "themed-probe.ts 原来写死 LIGHT_PRESETS[2]，砍到 2 套后变成 undefined —— 审计脚本只抛一句 TypeError，仍照「0 处不合格」输出，等于**静默通过**。改为按 id 取（celadon-light）+ 取不到就 throw。凡是按下标取「配置数组」的探针都有这个隐患。"
+      },
+      "highlights": [
+        "预设数量从来不是问题，「每个位置有没有唯一角色」才是。8 套时用户面对 8 张卡的动作是「随便点一个看看」，那是列表还没成为工具的信号；收敛到 4 套后每一种都有明确的适用场景（冷蓝夜间 / 中性绿 / 冷绿白日 / 暖砂）。",
+        "降饱和不能对 hex 乘系数：接近中性的颜色在 8 位取整后会「跳到」另一个色相，而单色相是硬约束。正确做法是锁死 H 与 L、只缩 HSL 的 S，再生成 hex。",
+        "「提亮」和「加层次」是两个方向：整体调浅会在暗环境刺眼，而用户要的是纵深。做法只抬上沿、中段与底部保持不动甚至压深 —— 平均明度几乎不变，但三档差异变大。",
+        "浅色的「干净」和「糊」只差一个跨度：不敢拉开明度是怕脏，但跨度不够时容器浮不起来，观感就是糊。层次必须靠 L 拉开，不能靠描边救。",
+        "探针里按下标取配置数组迟早会静默失效：LIGHT_PRESETS[2] 在数组变短后返回 undefined，脚本没有崩在这里，而是拿空预设算出「0 处不合格」—— 比报错更糟。取配置一律按 id，取不到就 throw。",
+        "删掉「品牌默认」预设不等于改默认外观：默认卡（启动封面）与 DEFAULTS 是另一条路径，只要那条路径不动，删预设位对老用户和新装用户的外观都是零影响。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 154/154（presets.test 断言总数 4 / 深 2 / 浅 2，并逐套校验单色相、明度跨度、组件色近中性）",
+        "npx vite build exit 0",
+        ".visual/shoot-four-presets.cjs（新增）：点**真实预设卡**后截 Home，证明代码改动生效（不写死 localStorage 色值）；弹窗内只剩 5 张卡 = 启动封面 + 4 套",
+        ".visual/audit-contrast.cjs：8 页 × 深浅 = 0 处不合格（浅色底色改动后必须重测）",
+        "四套硬指标：色相极差 1.5° / 4.3° / 6.6°（新值 5.2°）/ 2.8°；明度跨度 0.214 / 0.139 / 0.251 / 0.331；组件色通道极差 12 / 10 / 6 / 10"
+      ],
+      "related_files": [
+        "src/utils/presets.ts",
+        "src/utils/presets.test.ts",
+        ".visual/themed-probe.ts",
+        ".visual/shoot-four-presets.cjs",
+        "README.md"
+      ],
+      "keywords": [
+        "预设收敛",
+        "四套",
+        "藏青夜",
+        "降饱和",
+        "层次",
+        "落日紫夜",
+        "feat119"
+      ],
+      "created_at": "2026-10-27T19:40:00+08:00",
+      "updated_at": "2026-10-27T19:40:00+08:00"
+    },
+    {
+      "id": "FEAT-120",
+      "name": "概览「地点」块：假装的地图 → 地点 Top5 排行 + 年份 Top5 柱阵（一块两栏、不画分隔线）",
+      "module": "src/components/OverviewPane.vue、src/components/ui/widget/RankBarsCore.vue、BarsCore.vue（删 GeoPinsCore.vue）",
+      "status": "done",
+      "purpose": "用户指出概览「地点」那块的点阵地图没有信息量，要求改成统计数据：照片前五多的地点与年份。",
+      "implementation": {
+        "诊断": "原块是一张「假装的地图」：点阵是装饰填充，4 个橙点里只有 1 个有名字（北京 6），其余没量级、没名字、还互相重叠。400x168 的尺寸下地图的优势（分布形状）读不出来，唯一成立的结论（有定位信息）脚注已经说完了 —— 一块板只承担一句话，而那句话别处已经有了。",
+        "版式": "同一块板内两栏，左「地点 Top5」横向排行条、右「年份 Top5」竖柱阵。**两栏之间不画分隔线**（用户明确要求）：406px 再切一根竖线会被读成「两个小格子」，而这两栏其实是同一句话的两面 —— 照片都在哪、什么时候拍的。靠形态差异区分：地名无序 -> 横条（最省高度、地名读得清）；年份有序 -> 竖柱（才看得出哪几年多、哪几年空）。",
+        "年份排序": "先按张数取前五（用户要的「前五多」），取完再**按年份升序摆柱**。按张数从高到低排会得到一条永远单调下降的斜坡，那是「排行」不是「这些年的分布」；升序之后形状才可读，再把峰值那根高亮，两个信息都在。",
+        "量纲": "地点来自 list_photo_locations（全库聚合）、年份只能从 list_timeline 算（已入库），两者分母不同 —— 不跨栏相加、不共用百分比，右栏自带「已入库 N 张」标明自己的口径。这是不再出现「591.4% 带 GPS」的前提。",
+        "金色预算": "排行榜 5 根条若都用强调渐变，同屏就是 5 个金色，违反 tokens 的「强调色只标一个答案」。RankBarsCore 加 tone=accent|muted，概览用 muted（--w-fg2 @0.55），强调色只留给年份峰值柱 —— 长度已经把名次说完了。",
+        "去重": "脚注原本有「，最多在 成都」，榜里已经有「成都 639」，同一件事说两遍，删掉，连带删掉没人用的 topCity computed。",
+        "顺带修的两个真 bug": "① BarsCore 的年份/月份小字写在 <i> 里，<i> 默认斜体，年份显示成手写体且 tabular-nums 失效，补 font-style: normal。② .visual/overview-probe.ts 里 applyPreset(LIGHT_PRESETS[2]) 在预设砍到 2 套后变成 applyPreset(undefined)，不抛错、只是静默保留上一套配色，于是「浅色探针」截出来的其实是深色（和 themed-probe.ts 同一个坑，两处都改成按 id 取）。"
+      },
+      "highlights": [
+        "「一块板只承担一句话」是判断该不该换掉一个可视化的标准：点阵地图在这块里的全部产出（有定位信息）脚注已经说完，那它就是装饰，不是数据。",
+        "两种数据并排时，形式差异比分隔线更有效：横条 vs 竖柱，一眼就知道是两件事，还不占一条假的 1px 结构。",
+        "取前 N 之后要**重排**：按量级降序摆柱得到的是斜坡（排行），按序数升序摆柱得到的是分布（形状）。用户要「前五多」是选中集合，不是展示顺序。",
+        "不同分母的两个数不能并排放着不说话：各自标自己的总数（全库 987 张 / 已入库 2498 张），比合成一个百分比诚实。",
+        "排行条不该是强调色：长度已经表达了名次，5 根金色会让整块板没有一个焦点；弱化到 fg2@0.55 后，唯一的强调留给「峰值是哪一年」。",
+        "探针按下标取配置数组是第二个静默陷阱（applyPreset(undefined) 静默不生效），与 LIGHT_PRESETS[2] 导致对比度审计输出「0 处不合格」是同一类：探针自己的失败必须 loudly fail。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 154/154",
+        "npx vite build exit 0",
+        "audit-contrast：8 页 x 深浅 = 0 处不合格",
+        ".visual/probe-geoyear-widget.cjs（新增）：用 overview-probe 的真实形状 mock（2017-2026 逐年增长）截 深色/浅色/壁纸 三套 + 整墙，确认柱阵有形状、两栏不撞行",
+        "实测两栏尺寸：split 400x151 / 左榜 191x110 / 右柱区 191x132，板 436x246"
+      ],
+      "related_files": [
+        "src/components/OverviewPane.vue",
+        "src/components/ui/widget/RankBarsCore.vue",
+        "src/components/ui/widget/BarsCore.vue",
+        ".visual/probe-geoyear-widget.cjs",
+        ".visual/overview-probe.ts"
+      ],
+      "keywords": [
+        "概览",
+        "地点",
+        "年份",
+        "Top5",
+        "排名",
+        "柱阵",
+        "仪表墙",
+        "geo",
+        "feat120"
+      ],
+      "created_at": "2026-10-27T21:10:00+08:00",
+      "updated_at": "2026-10-27T21:10:00+08:00"
+    },
+    {
+      "id": "FEAT-121",
+      "name": "液态玻璃材质 v2：浅底可见性（压暗填充 + 背景明度位移 + 棱环修复）+ 透明度滑块回归跟手",
+      "module": "src/stores/theme.ts、src/assets/main.css、src/assets/tokens.css、src/components/ThemeDialog.vue",
+      "status": "done",
+      "purpose": "用户反馈两条：① 浅色背景下液态玻璃效果不明显；② 改透明度没有变化。参考 WXperia/liquid-glass-vue（WebGL/shadcn 风格，边缘位移折射）与 mianbeishiwole/Liquid-Glass-Vue（纯 CSS：模糊 + 135° 高光 + 1px 顶缘 + inset 阴影）两个实现，取「纯 CSS 光学分层」路线（前者要 WebGL/shader worker，与「不要让组件过重」冲突）。",
+      "implementation": {
+        "① 浅底填充改方向": "液态填充不再一律向白提亮 12%：改由背景实际明度决定 —— 深底向白 12%（湿玻璃），浅底向冷灰 #26342f 压暗 20%。根因是「白玻璃落在白纸上等于没有板」：实测旧填充与背景明度差 < 2%，高光/棱环/模糊全部画了看不见。12% 也不够（只拉开 6~8%），20% 后板面稳定低一档。",
+        "② 背景明度位移": "backdrop-filter 增加 brightness/contrast（浅 .97/1.04、深 1.06/1.02，由 store 按背景明度下发）。四套预定义背景都是平滑渐变，模糊在平滑面上是零信息，真正能把玻璃区域从周围分开的只有 tonal shift。",
+        "③ 棱环修复": "body.mat-liquid ...::after 之前只有 background 没有 content（计算值 content:none），棱环从未渲染。补全几何并改用 padding:1px + mask-composite:exclude 裁成真正的 1px 环（满面积渐变会洗白内容）。",
+        "④ 壁厚令牌化": "--shadow-1 的 1px 硬边改引用 --liquid-specular/--liquid-depth（浅底 0.9 白 / 0.16 暗壁），并各加一层 2~3px 内晕，让边缘是渐变过渡而不是一条描边。",
+        "⑤ 四层高光令牌化": "湿边/厚度/光池/135° 镜面四层此前写死 0.16~0.05 的白，浅底上叠起来不到 2% 明度差；改为由 --liquid-specular/--liquid-depth 经 color-mix 派生，深浅底自动跟手。",
+        "⑥ 透明度回归跟手": "删除 FEAT-103 的「−0.04 + 0.58 下限 + 对比度安全阀」，effectiveAlpha = compAlpha。下限只保留在弹层派生值（dialogAlpha ≥ .55），因为弹窗后面常是照片而不是壁纸渐变。",
+        "⑦ 浮层同步": "--float-* 增加 brightness/contrast（浅 .97/1.03、深 1.06/1.02），浅色浮层填充 .72 → .66，让搜索胶囊/弹窗在浅底上也能读出玻璃而不是白卡。"
+      },
+      "highlights": [
+        "「浅色看不出玻璃」不是模糊不够，而是三层白叠三层白：白填充 + 白高光 + 白棱环 + 白底。修法是让**板面比背景低一档**，白高光才有地方可亮。",
+        "模糊在平滑渐变上是零信息：四套预定义背景全是渐变，blur 16px 与 0px 在板面上几乎没有像素差。能制造差异的只有填充色差与 tonal shift（brightness/contrast）。",
+        "伪元素规则缺 content 会静默失效：mat-liquid 的棱环写了 background 却没有 content，计算值 content:none，两层伪元素规则全部空转。验收要读 getComputedStyle(el,'::after').content。",
+        "alpha 的感知下限取决于填充与背景的色差：填充色与背景只差 6~8% 时，25% 与 72% 两个 alpha 在屏幕上只差 2~3 个色阶 —— 先修色差，滑块自然跟手。",
+        "两个参考实现的取舍：liquid-glass-vue（WXperia）靠 feDisplacementMap + 预烘焙位移贴图（甚至 WebGL shader worker）做真实边缘折射，视觉上限最高但组件重、且本仓 spec 明确要求卡片不挂位移滤镜；Liquid-Glass-Vue（mianbeishiwole）是纯 CSS（blur + 135° 高光 + 1px 顶缘 + inset 壁厚），取它的分层思路，折射仍只留给浮层。",
+        "实验记录：feImage + 数据 URI 渐变位移贴图在本机 Chromium 下对周期性/平滑背景**看不到可测的弯折**（.visual 实验页已删除），所以本仓没有为此增加滤镜图元。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 154/154 全绿",
+        "npm run build exit 0",
+        ".visual/probe-liquid.mjs（新建）：浅底板面 vs 板外明度差 <2% → 15.7%/15%/9.2%；plain→liquid 变化像素 15.6%；alpha 25%→50% 变化像素 10.9%（修复前 0%）",
+        "视觉核对：light/dark × plain/liquid × alpha(0/25/50/72/90) + /scan /workshop /smart /home 四页截图（.visual/baseline/liquid/）"
+      ],
+      "related_files": [
+        "src/stores/theme.ts",
+        "src/assets/main.css",
+        "src/assets/tokens.css",
+        "src/components/ThemeDialog.vue",
+        "design/design-system.md",
+        ".visual/probe-liquid.mjs",
+        ".visual/preview.html",
+        ".visual/themed-probe.ts"
+      ],
+      "keywords": [
+        "液态玻璃",
+        "liquid glass",
+        "浅色背景",
+        "透明度滑块",
+        "棱环",
+        "伪元素 content",
+        "brightness",
+        "tonal shift",
+        "liquid-glass-vue"
+      ]
+    },
+    {
+      "id": "FEAT-122",
+      "name": "照片时间线按月分页 + 窗口化渲染 + 跳转定位（首包 14.10 MB → 3.91 KB）",
+      "module": "src-tauri/src/db/content.rs、src-tauri/src/content.rs、src-tauri/src/lib.rs、src/views/Timeline.vue、src/utils/timelineLayout.ts、src/stores/timeline.ts",
+      "status": "done",
+      "purpose": "用户反馈：时间线的照片预览「每次加载很久、偶尔还退出当前界面」，左栏点击跳转也卡。实测定位到四层原因：① 进页面 list_timeline 一次拉 24,980 行 = 14.10 MB JSON（18 列），前端只用到 7 列；② 主线程对 2.5 万条跑四层派生（rows→groups→flatItems→lineRows→monthRowMap），其中 justifyRows 传了 breakPoints 仍先跑完 O(n²) 的行数枚举行再整段丢弃；③ DOM 只增不减（visibleMonths 单调增长，滚过的月份不卸载）→ 滚到底 2.5 万个 figure + 2.5 万个 IntersectionObserver → WebView2 渲染进程被回收（=「退出当前界面」）；④ 缩略图请求被拆成每次 1~5 条路径的 IPC 往返（日志实证），且左栏点击用 scrollIntoView({smooth}) 要穿过上千张卡、目标月未渲染时 getElementById 直接落空（点了没反应）。",
+      "implementation": {
+        "① 骨架 + 按月分页": "新增 timeline_index（年·月计数 + total/no_time/no_location，实测 3.91 KB / 31 ms）与 timeline_month(year, month, limit, offset)。前端首屏只拿骨架 + 视口月份的明细，滚到哪拉到哪，拉过的月份留在模块级缓存里跨页面复用。",
+        "② 缩略图随行下发": "timeline_month 里 LEFT JOIN photo_thumb_cache ON photo_hash （与 thumb_photo_hash 同源），卡片自带 thumb_path。实测覆盖 24,913/24,980（99.7%），剩下 67 张才走 get_photo_thumbs 兜底 —— 正常浏览时该命令一次都不会被调用。",
+        "③ 高度账本 + 窗口化": "新增 utils/timelineLayout.layoutMonth(count, width, phaseOffset)：按月 O(n) 贪心排（去掉被丢弃的行数枚举），给出像素级精确的月高度。响应式数据改用「普通 Map + version 版本号」而不是 reactive 数组，避免 2.5 万个 Proxy。board 用绝对定位单元 + 显式高度账本，只渲染视口 ±1/±2.4 屏的月份与行，其余是等高占位；未记录那 4,840 张同样走行级窗口化。",
+        "④ 跳转即定位": "jumpTo() 用账本直接 scrollTo({behavior:'auto'})，并先 pin 住目标月（目标未渲染也能一跳到位）；左栏高亮改成在账本上二分（零 DOM 查询）；删除全部 scrollIntoView({smooth})；跳转期间挂起 loadMore。",
+        "⑤ 骨架缓存": "stores/timeline.ts 模块级缓存 index + 月度明细 + 缩略图表，在智慧相册各 tab 间来回点不再重拉。"
+      },
+      "highlights": {
+        "首包体积": "14,438 KB → 3.91 KB（骨架 97 行），单月 100~1,720 KB 按需取",
+        "后端耗时": "list_timeline 107 ms → timeline_index 31 ms；单月 2~26 ms",
+        "DOM 规模": "改前滚到底 24,980 个 figure → 改后稳定 40~47 个卡片节点（与库大小无关）",
+        "跳转": "点最远的月份（跨 229 个左栏节点）落点离视口顶 65px，文档高度跳转前后不变（不漂移）",
+        "请求数": "进页面 1 次 timeline_index + 1 次 timeline_month，get_photo_thumbs = 0"
+      },
+      "tests": {
+        "单测": "src/utils/timelineLayout.test.ts（10 项：行宽铺满 / 行高区间 / 不重不漏 / 高度纯函数 / 宽幅周期跨月连续 / 二分定位边界）—— npm test 全绿 164 项",
+        "浏览器验收": ".visual/probe-timeline-virtual.cjs（2.5 万行 mock）：DOM 卡片 ≤ 1500、docH 跳转前后不变、落点 ≤ 200px、timeline_index 仅 1 次、list_timeline 0 次、get_photo_thumbs ≤ 3 次",
+        "后端量测": "src-tauri/examples/timeline_probe.rs（真实库快照）给改前/改后体积与耗时"
+      },
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/examples/timeline_probe.rs",
+        "src/views/Timeline.vue",
+        "src/utils/timelineLayout.ts",
+        "src/utils/timelineLayout.test.ts",
+        "src/stores/timeline.ts",
+        "src/types/timeline.ts",
+        ".visual/preview-mock.js",
+        ".visual/preview.html",
+        ".visual/probe-timeline-virtual.cjs",
+        ".pi/plan-feat122-timeline-perf.md"
+      ],
+      "keywords": [
+        "时间线",
+        "热加载",
+        "虚拟列表",
+        "分页",
+        "timeline_index",
+        "timeline_month",
+        "缩略图",
+        "卡顿",
+        "performance"
+      ]
+    },
+    {
+      "id": "FEAT-123",
+      "name": "全局概览改成「数据变动才重算」的快照（首屏 14,438 KB 报文 → 3.35 KB，之后每次 22 ms）",
+      "module": "src-tauri/src/db/overview.rs、src-tauri/src/content.rs、src-tauri/src/lib.rs、src/stores/overview.ts、src/components/OverviewPane.vue、src/views/SmartAlbum.vue、src/types/overview.ts",
+      "status": "done",
+      "purpose": "用户反馈「全局概览每次也很慢，是重新计算的吗？可以每次导入照片或者扫描入库后才更新」。实测结论：是。虽然 FEAT-112 已有 dirty 缓存的骨架，但每次失效后的重建要拉 list_timeline（24,980 行 / 14,438 KB）+ list_categories + list_photo_locations + list_persons + category_index_stats（312~574 ms，慢在 known 的三表 UNION），再由前端对 2.5 万行遍历 6 遍算聚合 —— 日志里一次「概览构建簇」横跨 3~44 秒。另外 SmartAlbum 为了拿一个 .length 也会拉一次 list_timeline。",
+      "implementation": {
+        "后端聚合": "新增 db/overview.rs：一次 SQL 聚合算出 11 块 widget 需要的全部读数（总张数 / 无时间 / 带人脸 / 带 GPS / 年份跨度 / 月度分布 / 最近入库 6 张 / 那年今日 / 语义索引覆盖），不再把 2.5 万行明细发给前端。",
+        "签名缓存": "数据签名 = photo_content_scan / albums / photo_marks / photo_embeddings 四表的 (COUNT, MAX(时间戳)) + photo_categories 计数 + 生效模型名。签名一致 → 直接返回上次的 JSON；变了才重算并落 overview_cache 表（重启后仍命中）。这同时满足「导入/扫描后才更新」和「漏调 invalidate 也能自愈」。",
+        "前端瘦身": "stores/overview.ts 改调一次 overview_stats（+ 三个本来就很小的人物/地点/分类列表）；OverviewPane 的 6 处 2.5 万行遍历全部换成快照字段；SmartAlbum 的已入库张数改读快照，不再为 .length 拉 14 MB。",
+        "那年今日": "口径（往年同月同日）由前端传入 today_md / today_year，后端不算日历，避免时区各算一套。"
+      },
+      "highlights": {
+        "报文体积": "14,438 KB（list_timeline）→ 3.35 KB（快照）",
+        "耗时": "首次构建 571 ms（含原 category_index_stats 的 549 ms 聚合）；之后每次 22 ms（只跑签名）",
+        "请求数": "进概览 1 次 overview_stats + list_persons/locations/categories 各 1 次；list_timeline 0 次、category_index_stats 0 次",
+        "切回": "从概览切走再切回，新增请求 = 0（store 缓存命中）"
+      },
+      "tests": {
+        "浏览器验收": ".visual/probe-overview-snapshot.cjs：断言 overview_stats 恰好 1 次、list_timeline/category_index_stats 为 0、hero 读数渲染、切回 0 新增请求 —— 全部达标",
+        "后端量测": "src-tauri/examples/timeline_probe.rs 的「FEAT-123 概览快照」段：签名 22 ms / 聚合 549 ms / 快照 3.35 KB",
+        "类型与单测": "vue-tsc 无错；npm test 164 项全绿"
+      },
+      "related_files": [
+        "src-tauri/src/db/overview.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/examples/timeline_probe.rs",
+        "src/stores/overview.ts",
+        "src/components/OverviewPane.vue",
+        "src/views/SmartAlbum.vue",
+        "src/types/overview.ts",
+        ".visual/probe-overview-snapshot.cjs",
+        ".visual/preview-mock.js"
+      ],
+      "keywords": [
+        "概览",
+        "overview",
+        "快照",
+        "缓存",
+        "签名",
+        "性能",
+        "list_timeline",
+        "category_index_stats"
+      ]
+    },
+    {
+      "id": "FEAT-124",
+      "name": "人物页改成「照片裁切封面 + 文字嵌入」（4:5 人脸裁切 + 底部压字）",
+      "module": "src/components/PersonGallery.vue、src-tauri/src/persons.rs、src-tauri/src/avatar.rs、src-tauri/src/lib.rs",
+      "status": "done",
+      "purpose": "用户要求：人物界面「干脆不显示头像，而是显示照片或者照片的裁切，文字嵌入」。旧版是 86px 圆形头像 + 下方三行元信息（名字/编号/登记日期/合并按钮）——圆形把合影裁成一张脸，看不出人物在哪、和谁在一起；文字也全在照片之外。",
+      "implementation": {
+        "后端封面裁切": "新增 persons::crop_face_cover_local(pid)：以人脸框为中心、四周外扩 35%、垂直上移 6% 取 4:5 竖版，输出 480×600 JPEG；JPEG 走 jpeg_decoder 降采样快路径，其余格式走 imgio::open_any 按魔数解码（沿用 BUG-2026-1027-004 的纪律）。cover_rect() 负责等比夹紧，贴边也不越界。",
+        "缓存与签名": "封面缓存 avatars/covers/cover_<pid>.jpg + .sig，签名与头像同一套（`<张数>:<最大 face id>`）—— 人物库重建/合并后自动失效重裁，不会显示别人。",
+        "两个新命令": "get_person_cover（单个，现场裁）+ get_person_covers_bulk（批量，只查缓存；缺失的排队后台裁并 emit `person-cover-refreshed`，前端渐进替换，不阻塞列表首屏）。",
+        "前端卡片": "卡片改成 4:5 封面（.pc-cover），姓名 +「P0x · N 张照片」压在底部渐变上；未命名显示「未命名」；重命名/合并收进 hover 浮出的右上角小工具；点击仍看照片、右键仍可换头像；无封面时退化为首字大号占位。"
+      },
+      "highlights": {
+        "卡片形态": "86px 圆头像 → 4:5 照片封面（实测宽高比 0.80）",
+        "文字": "从照片下方三行 → 压在照片底部渐变上（与相册墙 .tile-seal 同一套语言）",
+        "真实数据验证": "真实注册表前 5 人裁剪 4/4 成功（480×600），含一张原图已不在磁盘的降级路径",
+        "933 人首屏": "批量接口只查缓存，后台裁一轮 40~75 s，边裁边换，列表不等"
+      },
+      "tests": {
+        "单测": "test_crop_face_cover_local_real_data（真实注册表裁剪 480×600）与 test_cover_rect_geometry（4:5 恒定 + 贴边不越界）；工作区外跑完整 lib 测试 419 passed / 0 failed",
+        "浏览器验收": ".visual/probe-person-cover.cjs（mock）：14 张卡片全部有封面、宽高比 0.80、文字在封面内、10 位未命名显示「未命名」、get_person_covers_bulk 恰好 1 次",
+        "截图": ".visual/out/person-cover.png"
+      },
+      "related_files": [
+        "src-components-PersonGallery.vue",
+        "src-tauri/src/persons.rs",
+        "src-tauri/src/avatar.rs",
+        "src-tauri/src/lib.rs",
+        ".visual/probe-person-cover.cjs",
+        ".visual/preview-mock.js"
+      ],
+      "keywords": [
+        "人物",
+        "封面",
+        "裁切",
+        "文字嵌入",
+        "person cover",
+        "4:5",
+        "人脸"
+      ]
+    },
+    {
+      "id": "FEAT-125",
+      "name": "扫描命令单飞 + 调用方留痕 + 分类重建输入指纹短路",
+      "module": "src-tauri/src/content.rs、src-tauri/src/category.rs、src/stores/content.ts",
+      "status": "done",
+      "purpose": "BUG-2026-1027-006：album=126 的 776 张被完整扫了两遍（205587ms + 147106ms），而用户只点了一次；第二遍在第一次的收尾阶段启动，UI 还显示「扫描中」。根因是后端没有任何扫描互斥、前端守卫只在单个 Pinia 实例内有效（多开/重载/双进程即失效），且收尾段 10~17s 不上报进度。顺带解决一个纯浪费：每次扫描收尾都把 17 个语义分类 × 全库 2.5 万条命中整表重写（实测 8.7~11.7s），而重扫已编码相册时向量一条都没变。",
+      "implementation": {
+        "① 后端单飞": "content.rs 新增 static SCAN_LOCK: tokio::sync::Mutex<()>（const_new）、static SCAN_ALBUM: AtomicI64（仅用于把拒绝原因说清楚）与 ScanSlotGuard（Drop 时归零）。scan_album_combined 在参数校验之后、重置取消标记之前 try_lock：抢不到立即返回「已有扫描进行中（相册 X），请等待其完成或停止后再试」并打 WARN。顺序是刻意的 —— 被拒绝的请求不得清掉别人的取消位。",
+        "② 调用方留痕": "scan_album_combined 新增可选参数 client_tag；入口用 info 级打 `[scan] 请求 | album=.. types=.. overwrite=.. client=<窗口 label>/<页面会话 id>/<调用点>`（[AOP:CALL] 是 DEBUG 级，默认日志看不到参数）。前端 content.ts 新增模块级 CLIENT_SESSION（随机串，重载即换新）与 clientTag(scene)，三个 invoke 点分别传 sync / single / global。",
+        "③ 分类重建指纹短路": "category.rs 新增 semantic_fingerprint（模型 + photo_embeddings 的 条数/max rowid/max generated_at + 全部分类定义），与 app_settings.category_hit_sig（指纹 + 上次命中数/索引数/分类数）比对；未变则跳过语义重算并如实沿用上次命中数。builtin 规则分类照旧每次 SQL 直算（它的输入是 content 表）。rebuild_one（保存分类后）与 rebuild_categories（手动重建）强制重算；单分类重建不写指纹，避免局部结果被当成全局。RebuildReport 新增 skipped 字段，扫描收尾日志与 scan.timing 会标「跳过·输入未变」。"
+      },
+      "highlights": [
+        "跑两遍在物理上不再可能：任何第二个调用方（另一个窗口 / 重载后的页面 / 另一个进程 / 连点）都会被 try_lock 拒绝并留下 WARN 日志",
+        "日志可自证：`[scan] 请求 | client=main/single/ab12cd` 一眼看出是谁发的；页面会话 id 变化即代表发生过整页重载",
+        "重扫已编码相册时分类重建从 8.7~11.7s 降到毫秒级，且命中数照实汇报，不再出现「命中 0」的假象"
+      ],
+      "tests": "新增 category::tests::semantic_fingerprint_tracks_inputs（新向量 / 重编码只变 generated_at / 换模型 / 改关键词 / 改阈值 / 改启用 都必须改变指纹；他人向量不得影响）。cargo check 通过；cargo test --lib 在工区外跑 420 passed / 3 ignored；npx vue-tsc --noEmit 0 error；npm test 164 passed。",
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/category.rs",
+        "src/stores/content.ts"
+      ],
+      "keywords": [
+        "scan",
+        "scan_album_combined",
+        "单飞",
+        "互斥",
+        "client_tag",
+        "分类重建",
+        "指纹",
+        "semantic_fingerprint",
+        "扫描两遍"
+      ]
     }
   ],
-  "updated": "2026-10-23T17:44:34+08:00"
+  "updated": "2026-10-27"
 }

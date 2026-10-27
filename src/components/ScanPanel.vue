@@ -6,6 +6,7 @@ import { trace } from "../utils/trace";
 import { categoryLabel } from "../utils/categoryLabel";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import PerfSettingsDialog from "./settings/PerfSettingsDialog.vue";
+import ModelMissingDialog from "./settings/ModelMissingDialog.vue";
 import { SCAN_MODE_TITLE, SCAN_MODE_TIP } from "../utils/scanModeTip";
 import { PERF_TIMEOUT, withTimeout } from "../utils/withTimeout";
 import { useNotify } from "../composables/useNotify";
@@ -35,6 +36,21 @@ const comboError = computed(() => job.value.error);
 const comboReport = computed(() => job.value.report);
 const comboRows = computed(() => job.value.rows);
 const comboProgress = computed(() => job.value.progress);
+
+/* FEAT-114：人脸通道预检报「缺少模型文件」→ 直接弹下载窗，而不是只留一行红字。 */
+const modelDialogOpen = ref(false);
+const modelDialogReason = ref<"face" | "ocr">("face");
+const modelMissingFiles = ref<string[]>([]);
+let lastPromptKey = "";
+const MODEL_MISSING_RE = /缺少模型文件|模型未下载|模型缺失|模型文件不完整|未找到模型/;
+
+watch(comboError, (text) => {
+  if (!text || !MODEL_MISSING_RE.test(text) || text === lastPromptKey) return;
+  lastPromptKey = text;
+  modelDialogReason.value = /paddleocr|ocr/i.test(text) ? "ocr" : "face";
+  modelMissingFiles.value = [...new Set(text.match(/[\w.-]+\.onnx/gi) ?? [])];
+  modelDialogOpen.value = true;
+});
 
 onMounted(() => {
   // 重新进入时恢复之前勾选的类型（若仍在扫描则不中断）
@@ -259,6 +275,14 @@ const openImage = trace("openImage", async (path: string) => {
 
   <!-- ⚙ 性能设置 / 📦 模型管理（与全局扫描共用同一实现） -->
   <PerfSettingsDialog v-model="perfOpen" />
+
+  <!-- FEAT-114：模型缺失 → 当场下载 -->
+  <ModelMissingDialog
+    :visible="modelDialogOpen"
+    :reason="modelDialogReason"
+    :missing-files="modelMissingFiles"
+    @close="modelDialogOpen = false"
+  />
 </template>
 
 <style scoped>

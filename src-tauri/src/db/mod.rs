@@ -10,14 +10,18 @@
 pub mod category;
 pub mod content;
 pub mod embedding;
+pub mod overview;
 pub mod thumb_cache;
 pub use category::{CategoryIndexStats, CategoryOverviewRow, CategoryPhotoRow};
 pub use content::{
     AlbumContentRow, CategoryGroupRow, ContentFilters, ContentSearchHit, FieldGroups,
-    LocationGroupRow, PhotoContentRecord, SmartHit,
+    LocationGroupRow, PhotoContentRecord, SmartHit, TimelineCard, TimelineIndex,
+    TimelineMonthIndex,
 };
 pub use embedding::EmbeddingVersion;
+pub use overview::{OverviewCard, OverviewStats};
 pub use thumb_cache::ThumbCacheRecord;
+pub use thumb_cache::ThumbCacheRow;
 
 use crate::photos::RecentlyExcludedItem;
 
@@ -523,6 +527,8 @@ impl Database {
         self.init_embedding_schema()?;
         // 语义分类表（v5：用户自定义分类 + 命中物化 + 关键词向量缓存）
         self.init_category_schema()?;
+        // FEAT-123：全局概览快照（变动即重算，否则零成本）
+        self.init_overview_schema()?;
         // FEAT-067：描述向量表（文本塔；与图像塔 photo_embeddings 分开存）
         self.init_text_embedding_schema()?;
         // FEAT-067：应用级配置项（KV；如「描述是否嵌入人物真名」，默认开）

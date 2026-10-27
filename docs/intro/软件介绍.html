@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>本地相册搭子 · 软件介绍</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", sans-serif;
+    color: #2a2333;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .serif { font-family: "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", serif; }
+
+  .page {
+    position: relative;
+    width: 210mm;
+    height: 297mm;
+    overflow: hidden;
+    page-break-after: always;
+    background: #fbf9f6;
+  }
+  .page:last-child { page-break-after: auto; }
+
+  /* ---------- 通用版式 ---------- */
+  .pad { padding: 20mm 20mm 16mm 20mm; height: 100%; display: flex; flex-direction: column; }
+
+  .eyebrow {
+    font-size: 8.4pt;
+    letter-spacing: .22em;
+    color: #b07b26;
+    text-transform: uppercase;
+    margin: 0 0 3mm 0;
+    display: flex;
+    align-items: center;
+    gap: 3mm;
+  }
+  .eyebrow::after {
+    content: "";
+    flex: 1;
+    height: .3pt;
+    background: #d8cdbd;
+  }
+  h1.chapter {
+    font-family: "Noto Serif CJK SC", serif;
+    font-size: 25pt;
+    font-weight: 600;
+    line-height: 1.3;
+    margin: 0 0 4mm 0;
+    letter-spacing: .01em;
+  }
+  .kicker { font-size: 10.5pt; color: #6c6274; line-height: 1.9; margin: 0 0 8mm 0; max-width: 150mm; }
+
+  p { font-size: 10pt; line-height: 1.95; margin: 0 0 3.5mm 0; }
+  .muted { color: #6f6577; }
+  .foot {
+    position: absolute; left: 20mm; right: 20mm; bottom: 9mm;
+    display: flex; justify-content: space-between;
+    font-size: 7.6pt; color: #9a908f; letter-spacing: .06em;
+  }
+  .num {
+    position: absolute; right: 20mm; bottom: 8mm;
+    font-family: "Noto Serif CJK SC", serif;
+    font-size: 30pt; color: #e8dfd2; line-height: 1;
+  }
+
+  /* ---------- 封面 ---------- */
+  .cover { background: #191322; color: #f6f1e9; }
+  .cover::before {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(120% 80% at 78% 8%, rgba(224,160,48,.30) 0%, rgba(224,160,48,0) 55%),
+      radial-gradient(90% 70% at 8% 30%, rgba(120,86,140,.42) 0%, rgba(120,86,140,0) 60%),
+      linear-gradient(180deg, #1d1626 0%, #171120 55%, #120e19 100%);
+  }
+  .cover-inner { position: relative; padding: 24mm 20mm 0 20mm; }
+  .cover .mark {
+    display: flex; align-items: center; gap: 4mm; margin-bottom: 26mm;
+  }
+  .cover .mark img {
+    width: 17mm; height: 17mm; border-radius: 4.2mm;
+    box-shadow: 0 2mm 6mm rgba(0,0,0,.45);
+  }
+  .cover .mark span { font-size: 8.4pt; letter-spacing: .3em; color: #cbbfae; }
+  .cover h1 {
+    font-family: "Noto Serif CJK SC", serif;
+    font-size: 44pt; line-height: 1.18; font-weight: 600;
+    margin: 0 0 3mm 0; letter-spacing: .02em;
+  }
+  .cover h2 {
+    font-size: 11pt; font-weight: 400; letter-spacing: .32em;
+    color: #c9a86d; margin: 0 0 9mm 0; text-transform: uppercase;
+  }
+  .cover .lede {
+    font-family: "Noto Serif CJK SC", serif;
+    font-size: 14pt; line-height: 2; color: #e7dfd3; max-width: 128mm;
+    margin: 0 0 10mm 0;
+  }
+  .cover .rule { width: 22mm; height: 1.2pt; background: #e0a030; margin: 0 0 8mm 0; }
+  .cover .meta {
+    display: flex; gap: 10mm; font-size: 8.6pt; color: #a89c92; letter-spacing: .12em;
+  }
+  .cover .meta b { color: #efe6d8; font-weight: 500; }
+  .cover .shot {
+    position: absolute; left: 20mm; right: 20mm; bottom: -6mm;
+    border-radius: 3.2mm;
+    box-shadow: 0 8mm 18mm rgba(0,0,0,.55);
+    border: .4pt solid rgba(255,255,255,.16);
+    overflow: hidden;
+  }
+  .cover .shot img { width: 100%; display: block; }
+
+  /* ---------- 定位 ---------- */
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; margin: 2mm 0 9mm 0; }
+  .card {
+    background: #fff; border: .3pt solid #e6dccd; border-radius: 2.4mm;
+    padding: 7mm 7mm 6mm 7mm;
+  }
+  .card h3 {
+    font-family: "Noto Serif CJK SC", serif;
+    font-size: 12.5pt; margin: 0 0 2.5mm 0; font-weight: 600;
+  }
+  .card p { font-size: 9.4pt; line-height: 1.9; margin: 0; color: #554b60; }
+  .card .tag { font-size: 7.6pt; letter-spacing: .18em; color: #b07b26; margin-bottom: 3mm; display: block; }
+
+  .compare { width: 100%; border-collapse: collapse; margin-top: 1mm; }
+  .compare th, .compare td {
+    text-align: left; padding: 3.4mm 4mm; font-size: 9.2pt;
+    border-bottom: .3pt solid #e9e0d2;
+  }
+  .compare th { font-weight: 500; color: #8a7f88; font-size: 8.4pt; letter-spacing: .12em; }
+  .compare td.first { color: #6f6577; width: 26%; }
+  .compare td.local { color: #1f1a28; font-weight: 600; }
+  .compare td.cloud { color: #9a908f; }
+
+  .numbers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-top: auto; border-top: .3pt solid #e3d9c9; }
+  .numbers div { padding: 6mm 4mm 0 0; }
+  .numbers b { font-family: "Noto Serif CJK SC", serif; font-size: 26pt; color: #b07b26; display: block; line-height: 1; }
+  .numbers span { font-size: 8.6pt; color: #6f6577; display: block; margin-top: 2.5mm; letter-spacing: .04em; }
+
+  /* ---------- 能力 ---------- */
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5mm; }
+  .feat { padding: 5.5mm 5mm; background: #fff; border: .3pt solid #e6dccd; border-radius: 2.4mm; }
+  .feat .no { font-family: "Noto Serif CJK SC", serif; font-size: 9pt; color: #c19a5b; letter-spacing: .1em; }
+  .feat h4 { font-size: 10.6pt; margin: 1.6mm 0 1.8mm 0; font-weight: 600; letter-spacing: .02em; }
+  .feat p { font-size: 8.6pt; line-height: 1.8; margin: 0; color: #5f5566; }
+
+  /* ---------- 界面导览 ---------- */
+  .shot-wrap { margin-bottom: 6mm; }
+  .shot-frame {
+    border-radius: 2.6mm; overflow: hidden; border: .3pt solid #ded4c4;
+    box-shadow: 0 1.6mm 5mm rgba(40,28,20,.10);
+    background: #fff;
+  }
+  .shot-frame img { width: 100%; display: block; }
+  .caption { display: flex; gap: 3mm; margin-top: 2.6mm; font-size: 8.6pt; color: #6f6577; line-height: 1.7; }
+  .caption b { color: #2a2333; font-weight: 600; }
+  .caption .idx {
+    font-family: "Noto Serif CJK SC", serif; color: #b07b26; font-size: 9pt; line-height: 1.5;
+    min-width: 6mm;
+  }
+  .note {
+    margin-top: auto; font-size: 8.2pt; color: #8d8391; border-top: .3pt solid #e3d9c9; padding-top: 3.5mm;
+  }
+
+  /* ---------- 架构 ---------- */
+  .layer {
+    background: #fff; border: .3pt solid #e6dccd; border-radius: 2.4mm;
+    padding: 4.6mm 6mm; display: flex; align-items: flex-start; gap: 5mm;
+  }
+  .layer .lab {
+    min-width: 27mm; font-family: "Noto Serif CJK SC", serif; font-size: 11pt; color: #1f1a28;
+  }
+  .layer .lab em { display: block; font-style: normal; font-size: 7.4pt; letter-spacing: .16em; color: #b07b26; margin-top: 1.2mm; }
+  .layer .body { flex: 1; }
+  .layer .body strong { font-size: 9.2pt; font-weight: 600; display: block; margin-bottom: 1mm; }
+  .layer .body span { font-size: 8.6pt; color: #655b6d; line-height: 1.75; display: block; }
+  .arrow { text-align: center; font-size: 8pt; color: #a99f9f; margin: 2.2mm 0; letter-spacing: .16em; }
+
+  .stack { width: 100%; border-collapse: collapse; margin-top: 6mm; }
+  .stack th, .stack td { text-align: left; font-size: 8.8pt; padding: 3mm 3mm; border-bottom: .3pt solid #e9e0d2; vertical-align: top; }
+  .stack th { font-weight: 500; font-size: 8.2pt; color: #8a7f88; letter-spacing: .1em; width: 24%; }
+  .stack td { color: #4b4256; }
+
+  /* ---------- 收尾 ---------- */
+  .steps { counter-reset: step; margin: 2mm 0 8mm 0; }
+  .step { display: flex; gap: 5mm; padding: 4.2mm 0; border-bottom: .3pt solid #e9e0d2; }
+  .step::before {
+    counter-increment: step; content: "0" counter(step);
+    font-family: "Noto Serif CJK SC", serif; color: #b07b26; font-size: 11pt; min-width: 9mm;
+  }
+  .step b { font-size: 9.8pt; display: block; margin-bottom: 1.2mm; }
+  .step span { font-size: 9pt; color: #655b6d; line-height: 1.8; display: block; }
+  .end {
+    margin-top: auto; background: #191322; color: #e9e0d2; border-radius: 2.4mm;
+    padding: 8mm 9mm; display: flex; justify-content: space-between; align-items: flex-end;
+  }
+  .end h3 { font-family: "Noto Serif CJK SC", serif; font-size: 15pt; margin: 0 0 2mm 0; font-weight: 500; }
+  .end p { margin: 0; font-size: 8.6pt; color: #b3a798; line-height: 1.8; }
+  .end .right { text-align: right; font-size: 8pt; color: #9d9083; line-height: 1.9; }
+</style>
+</head>
+<body>
+
+<!-- ============ 01 封面 ============ -->
+<section class="page cover">
+  <div class="cover-inner">
+    <div class="mark">
+      <img src="assets/app-icon.png" alt="" />
+      <span>PHOTOMANAGEMENTSYS</span>
+    </div>
+
+    <h1>本地相册搭子</h1>
+    <h2>Local-first photo library</h2>
+
+    <div class="rule"></div>
+    <p class="lede">照片留在本机，AI 也在本机。<br />按时间、人物与地点，把攒了十年的照片重新翻出来。</p>
+
+    <div class="meta">
+      <div>版本　<b>v0.4.3</b></div>
+      <div>平台　<b>Windows x64</b></div>
+      <div>运行　<b>完全离线</b></div>
+    </div>
+
+  </div>
+  <div class="shot"><img src="assets/s_checkhome.png" alt="主页" /></div>
+</section>
+
+<!-- ============ 02 定位 ============ -->
+<section class="page">
+  <div class="pad">
+    <p class="eyebrow">01　定位</p>
+    <h1 class="chapter">一个不上传的相册</h1>
+    <p class="kicker">云相册替你保管照片，代价是先把照片交出去。PhotoManagementSys 反着来：照片始终躺在你的硬盘里，识别、检索、整理全部在本机完成，断网照样能用。</p>
+
+    <div class="two">
+      <div class="card">
+        <span class="tag">它是什么</span>
+        <h3>桌面端的个人照片库</h3>
+        <p>面向个人照片库的 Windows 桌面应用。相册是对本地文件夹的抽象——导入已有文件夹，或新建相册再绑定目录；改名、移动、归类都不动原始文件。</p>
+      </div>
+      <div class="card">
+        <span class="tag">它凭什么</span>
+        <h3>内置离线 AI 微服务</h3>
+        <p>随应用打包的 VCR 视觉识别服务，基于 ONNX Runtime 在本机完成分类、检测、人脸与 OCR 推理。模型在应用内下载，可切换档位，也可开 GPU 加速。</p>
+      </div>
+    </div>
+
+    <table class="compare">
+      <tr><th>　</th><th>云相册</th><th>本地相册搭子</th></tr>
+      <tr><td class="first">照片存放</td><td class="cloud">上传到服务商机房</td><td class="local">本机磁盘，原文件不动</td></tr>
+      <tr><td class="first">AI 识别</td><td class="cloud">云端推理，按量计费</td><td class="local">本机 ONNX 推理，零调用费</td></tr>
+      <tr><td class="first">网络依赖</td><td class="cloud">无网络即不可用</td><td class="local">全程可离线运行</td></tr>
+      <tr><td class="first">数据归属</td><td class="cloud">托管在他人服务器</td><td class="local">只在你自己的机器上</td></tr>
+    </table>
+
+    <div class="numbers">
+      <div><b>9</b><span>自动分类大类</span></div>
+      <div><b>0</b><span>上传的照片</span></div>
+      <div><b>3</b><span>一个文件夹即一个相册</span></div>
+    </div>
+  </div>
+  <div class="foot"><span>本地相册搭子 · 软件介绍</span><span>PhotoManagementSys</span></div>
+  <div class="num">02</div>
+</section>
+
+<!-- ============ 03 能力 ============ -->
+<section class="page">
+  <div class="pad">
+    <p class="eyebrow">02　能力</p>
+    <h1 class="chapter">它替你做哪些事</h1>
+    <p class="kicker">从「把照片导进来」到「三秒内找到那一张」，中间的整理、归类、找人、修图都在同一个应用里完成。</p>
+
+    <div class="grid3">
+      <div class="feat"><div class="no">01</div><h4>相册管理</h4><p>创建、编辑、重命名、设封面、加标签与地点；支持直接导入本地文件夹，相册与磁盘目录一一对应。</p></div>
+      <div class="feat"><div class="no">02</div><h4>智能分类</h4><p>照片自动归入 9 大类，动物再细分为狗、猫、鸟；文档走 OCR，另有场景识别与夜景判定。</p></div>
+      <div class="feat"><div class="no">03</div><h4>人物识别</h4><p>人脸检测与特征提取，自动聚合同一个人；可改名、合并、删除误检，头像自动生成。</p></div>
+      <div class="feat"><div class="no">04</div><h4>时间线 · 回忆</h4><p>跨相册按时间铺开全部照片；按人物、地点与节日聚合成一段段可回看的回忆。</p></div>
+      <div class="feat"><div class="no">05</div><h4>智能搜索</h4><p>标题、标签、地点、内容组合搜索；EXIF 参数、影调与 AI 类别三合一过滤，层层收窄。</p></div>
+      <div class="feat"><div class="no">06</div><h4>创意工坊</h4><p>传统图像算子按参数面板驱动，可叠加 AI 处理与手绘蒙版；前后对比支持并排与分割线拖动。</p></div>
+      <div class="feat"><div class="no">07</div><h4>批量操作</h4><p>批量设置地点与标签、批量移入相册、批量导出到文件夹；分组树与手动排序随手整理。</p></div>
+      <div class="feat"><div class="no">08</div><h4>多用户与安全</h4><p>同机多账户，相册与搜索按登录用户隔离；密码 Argon2id 加盐，敏感字段 AES-256-GCM 落库。</p></div>
+      <div class="feat"><div class="no">09</div><h4>模型管理</h4><p>应用内下载模型，官方与镜像源自动择优；分类模型五档切换，GPU 加速一键开关。</p></div>
+    </div>
+
+    <div class="note">以上能力均在本机执行。缩略图、人物头像与 GPS 反查省市同样离线完成，只有下载模型时需要联网。</div>
+  </div>
+  <div class="foot"><span>本地相册搭子 · 软件介绍</span><span>PhotoManagementSys</span></div>
+  <div class="num">03</div>
+</section>
+
+<!-- ============ 04 导览 1 ============ -->
+<section class="page">
+  <div class="pad">
+    <p class="eyebrow">03　界面导览 · 入口</p>
+    <h1 class="chapter">四块入口，一眼看懂</h1>
+    <p class="kicker">主页不做信息堆叠，只回答一个问题：接下来要去哪儿。四个板块对应四条主线——整理、入库、修图、检索。</p>
+
+    <div class="shot-wrap">
+      <div class="shot-frame"><img src="assets/s_checkhome.png" alt="主页" /></div>
+    </div>
+
+    <div class="caption"><span class="idx">A</span><span><b>相册管理</b>　创建相册、绑定本地文件夹、设封面。相册只是索引，目录结构与文件本身保持不变。</span></div>
+    <div class="caption"><span class="idx">B</span><span><b>图片扫描</b>　批量入库：读取 EXIF、判定影调、跑 AI 识别，按拍摄年份与地点自动整理。</span></div>
+    <div class="caption"><span class="idx">C</span><span><b>创意工坊</b>　区域直方图均衡化、基准调色与图像处理算子，参数实时预览。</span></div>
+    <div class="caption"><span class="idx">D</span><span><b>智慧相册</b>　时间线、智能搜索、人物总览与回忆——所有「找照片」的动作都在这里收口。</span></div>
+  </div>
+  <div class="foot"><span>本地相册搭子 · 软件介绍</span><span>PhotoManagementSys</span></div>
+  <div class="num">04</div>
+</section>
+
+<!-- ============ 05 导览 2 ============ -->
+<section class="page">
+  <div class="pad">
+    <p class="eyebrow">04　界面导览 · 相册</p>
+    <h1 class="chapter">按年份、季节、月份折叠</h1>
+    <p class="kicker">相册列表沿时间轴展开：年 → 季 → 月逐层收拢，卡片上直接给出照片张数、占用空间与拍摄时间，不必点进去猜。</p>
+
+    <div class="shot-wrap">
+      <div class="shot-frame"><img src="assets/s_albums.png" alt="相册列表" /></div>
+      <div class="caption"><span class="idx">A</span><span><b>时间路线图</b>　点击年份或季节即可跳转，几十个相册也不会翻到失去方向。</span></div>
+    </div>
+
+    <div class="shot-wrap">
+      <div class="shot-frame"><img src="assets/s_detail.png" alt="相册详情" /></div>
+      <div class="caption"><span class="idx">B</span><span><b>相册详情</b>　封面、目录、地点、标签、张数与拍摄时间一屏读完；下方折叠面板依次是照片搜索、组合扫描与缩略图浏览。</span></div>
+    </div>
+
+    <div class="note">「组合扫描」把 EXIF 拍摄时间、影调与 AI 内容识别合并在一次遍历中完成，进度在后台跑，切走页面也不会中断。</div>
+  </div>
+  <div class="foot"><span>本地相册搭子 · 软件介绍</span><span>PhotoManagementSys</span></div>
+  <div class="num">05</div>
+</section>
+
+<!-- ============ 06 导览 3 ============ -->
+<section class="page">
+  <div class="pad">
+    <p class="eyebrow">05　界面导览 · 浏览与检索</p>
+    <h1 class="chapter">看得见，也找得到</h1>
+    <p class="kicker">缩略图按需生成、分页渲染；点开即灯箱，评分、标签、归档、隐藏与删除都在同一层完成。</p>
+
+    <div class="shot-wrap">
+      <div class="shot-frame"><img src="assets/s_grid.png" alt="缩略图浏览" /></div>
+      <div class="caption"><span class="idx">A</span><span><b>缩略图浏览</b>　密度滑块随手放大缩小；未扫描的照片先给「照片可浏览」提示，扫描后才有分类与人物标签。</span></div>
+    </div>
+
+    <div class="shot-wrap">
+      <div class="shot-frame"><img src="assets/s_smart3.png" alt="智慧相册" /></div>
+      <div class="caption"><span class="idx">B</span><span><b>智慧相册</b>　照片、相册、人物与扫描进度集中在顶部一行；人物、内容分类、地点三种视图切换，检索从关键词一路收窄到具体条件。</span></div>
+    </div>
+  </div>
+  <div class="foot"><span>本地相册搭子 · 软件介绍</span><span>PhotoManagementSys</span></div>
+  <div class="num">06</div>
+</section>
+
+<!-- ============ 07 架构 ============ -->
+<section class="page">
+  <div class="pad">
+    <p class="eyebrow">06　架构</p>
+    <h1 class="chapter">三层进程，各管一段</h1>
+    <p class="kicker">桌面壳、业务后端与 AI 推理拆成独立进程，用固定契约通信。AI 换模型、改推理栈，都不牵动照片与数据库那一侧。</p>
+
+    <div class="layer">
+      <div class="lab">前端<em>VUE 3</em></div>
+      <div class="body">
+        <strong>渲染进程 · WebView</strong>
+        <span>Vue 3 + TypeScript + Vite + Pinia + Vue Router，负责界面渲染、状态管理与后端命令调用。</span>
+      </div>
+    </div>
+
+    <div class="arrow">↓　TAURI IPC（invoke 命令 / 事件）</div>
+
+    <div class="layer">
+      <div class="lab">后端<em>RUST</em></div>
+      <div class="body">
+        <strong>Tauri 主进程</strong>
+        <span>命令层 #[tauri::command] · 业务层 db / photo_scan / thumbnail / tone / content / persons / auth / geo_index · 持久层 SQLite。</span>
+      </div>
+    </div>
+
+    <div class="arrow">↓　HTTP　REST　127.0.0.1</div>
+
+    <div class="layer">
+      <div class="lab">微服务<em>PYTHON</em></div>
+      <div class="body">
+        <strong>VCR 视觉内容识别</strong>
+        <span>FastAPI + ONNX Runtime，接口 / 服务 / 持久化 / 基础设施分层。YOLOv8 分类与检测、SCRFD 人脸、ArcFace 识别、PaddleOCR 文字。</span>
+      </div>
+    </div>
+
+    <table class="stack">
+      <tr><th>桌面壳</th><td>Tauri 2.x（Rust）　·　Windows x64</td></tr>
+      <tr><th>Rust 后端</th><td>rusqlite（内置 SQLite）· image / jpeg-decoder · kamadak-exif · walkdir · argon2 · aes-gcm · reqwest · tokio</td></tr>
+      <tr><th>Python 微服务</th><td>FastAPI + uvicorn · onnxruntime · Pillow · numpy · opencv-python</td></tr>
+      <tr><th>AI 模型</th><td>YOLOv8s/n-cls（分类）· YOLOv8n-det（检测）· SCRFD（人脸框）· ArcFace（人像向量）· PaddleOCR（文字）</td></tr>
+    </table>
+
+    <div class="note">微服务打包为独立可执行文件，端口在冷门段动态分配并落盘，避免与其他程序抢占 8765；服务异常时主程序照常可用，只是 AI 相关功能降级。</div>
+  </div>
+  <div class="foot"><span>本地相册搭子 · 软件介绍</span><span>PhotoManagementSys</span></div>
+  <div class="num">07</div>
+</section>
+
+<!-- ============ 08 性能与隐私 ============ -->
+<section class="page">
+  <div class="pad">
+    <p class="eyebrow">07　工程细节</p>
+    <h1 class="chapter">快一点，再稳一点</h1>
+    <p class="kicker">本地应用的体验上限，往往卡在 IO 与解码上。这些数字都来自真实相册的实测，而不是参数表上的理论值。</p>
+
+    <table class="stack" style="margin-top:0">
+      <tr><th>缩略图解码</th><td>改用 jpeg-decoder 的 DCT 降采样，只解所需块：6000×4000 大图换封面 <b>7.7s → 0.76s</b>（约 10 倍）。</td></tr>
+      <tr><th>批量识别</th><td>单次最多 64 张分批提交，进度事件实时回传，识别中界面照常可用。</td></tr>
+      <tr><th>离线地理</th><td>内嵌省市边界数据做点面判断，GPS 反查在本地完成，不逐张联网反编码。</td></tr>
+      <tr><th>三合一扫描</th><td>EXIF、影调、AI 内容在一次组合扫描中跑完，避免同一目录反复遍历。</td></tr>
+      <tr><th>渲染策略</th><td>照片网格分页渲染、缩略图缓存落盘；封面与列表不再整页等待。</td></tr>
+    </table>
+
+    <h1 class="chapter" style="font-size:17pt; margin:11mm 0 3mm 0">隐私不是设置项，是默认值</h1>
+    <p>照片、缩略图与人物数据全部存放于本机数据目录，不上传、不回流；跨机迁移只需拷贝文件夹与 photos.db。密码用 Argon2id 加盐哈希，邮箱、手机号等敏感字段以 AES-256-GCM 加密落库，登录态支持三天免密。</p>
+
+    <div class="note">所有推理在本机进行——这意味着模型、算力与数据都在你手里，也意味着第一次使用需要手动放置模型文件（见下页）。</div>
+  </div>
+  <div class="foot"><span>本地相册搭子 · 软件介绍</span><span>PhotoManagementSys</span></div>
+  <div class="num">08</div>
+</section>
+
+<!-- ============ 09 开始使用 ============ -->
+<section class="page">
+  <div class="pad">
+    <p class="eyebrow">08　开始使用</p>
+    <h1 class="chapter">三步，把照片接进来</h1>
+    <p class="kicker">安装包约 108MB，内含识别微服务但不含模型（模型压缩包约 529MB）。看图、相册管理与调色不依赖模型，可以先装先用。</p>
+
+    <div class="steps">
+      <div class="step"><div><b>安装应用</b><span>下载 v0.4.3 安装包：NSIS 按用户安装、无需管理员权限；或 MSI 按机器安装到 Program Files。</span></div></div>
+      <div class="step"><div><b>放置模型</b><span>下载 model.zip，解压到安装根目录。已装过 v0.4.2 的用户无需重复下载；也可以在应用内直接下载并切换档位。</span></div></div>
+      <div class="step"><div><b>注册并导入</b><span>注册账号 → 新建相册并选择本地图片文件夹 → 在详情页执行「组合扫描」，分类、人物与时间线随之生成。</span></div></div>
+    </div>
+
+    <p class="muted" style="font-size:9.2pt">支持 jpg / jpeg / png / webp / gif / bmp。首次扫描大相册会花一些时间，之后只做增量探测。</p>
+
+    <div class="end">
+      <div>
+        <h3>照片是你的，识别也该是你的。</h3>
+        <p>本地相册搭子 · PhotoManagementSys v0.4.3　·　Windows x64<br />仓库：github.com/howforever2000/PhotoMangementSys</p>
+      </div>
+      <div class="right">
+        PolyForm Noncommercial 1.0.0<br />个人 / 学习 / 非营利免费<br />商业用途需另行授权
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span>本地相册搭子 · 软件介绍</span><span>PhotoManagementSys</span></div>
+  <div class="num">09</div>
+</section>
+
+</body>
+</html>

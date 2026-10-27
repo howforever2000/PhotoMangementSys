@@ -30,7 +30,7 @@ use std::time::Instant;
 use serde::Serialize;
 use tauri::Emitter;
 
-use crate::db::category::{self, CategoryHitRecord, CategoryInput};
+use crate::db::category::{self, CategoryDef, CategoryHitRecord, CategoryInput};
 use crate::{logger, AppState};
 
 /// 默认语义匹配强度阈值（净增益；P0 实测：0.03 在真实库上精度 70%~90%）
@@ -89,6 +89,8 @@ pub struct RebuildReport {
     pub indexed: usize,
     /// 是否因索引为空而跳过（前端据此提示先做语义扫描）
     pub empty_index: bool,
+    /// 是否因「输入指纹未变」跳过语义重算（扫描收尾的固定开销优化）
+    pub skipped: bool,
 }
 
 /// 预览样张
@@ -297,13 +299,103 @@ pub async fn current_model_id(app: &tauri::AppHandle) -> Result<String, String> 
 // 对外服务
 // ---------------------------------------------------------------------------
 
+/// 输入指纹的存储键（值 = `fp \u{1f} hits \u{1f} indexed \u{1f} cats`）
+const HIT_SIG_KEY: &str = "category_hit_sig";
+
+/// 上一次语义重建的输入指纹 + 产物计数
+///
+/// 连产物一起存：指纹未变 = 命中表还是上次算出来的那一份，把它报回去（而不是报 0），
+/// 日志与 UI 才不会出现「命中 0」的假象。
+struct HitSig {
+    fp: String,
+    hits: usize,
+    indexed: usize,
+    categories: usize,
+}
+
+fn read_hit_sig(db: &crate::db::Database) -> Option<HitSig> {
+    let raw = db.get_setting(HIT_SIG_KEY).ok().flatten()?;
+    let mut it = raw.split('\u{1f}');
+    let fp = it.next()?.to_string();
+    Some(HitSig {
+        fp,
+        hits: it.next().and_then(|s| s.parse().ok()).unwrap_or(0),
+        indexed: it.next().and_then(|s| s.parse().ok()).unwrap_or(0),
+        categories: it.next().and_then(|s| s.parse().ok()).unwrap_or(0),
+    })
+}
+
+fn write_hit_sig(
+    db: &crate::db::Database,
+    fp: &str,
+    hits: usize,
+    indexed: usize,
+    categories: usize,
+) {
+    let v = format!("{fp}\u{1f}{hits}\u{1f}{indexed}\u{1f}{categories}");
+    if let Err(e) = db.set_setting(HIT_SIG_KEY, &v) {
+        logger::log_warn(&format!("[category] 索引指纹写入失败（下次会重算）：{e}"));
+    }
+}
+
+/// 语义命中的**输入指纹** —— 没变就不必重算
+///
+/// 语义命中只取决于三样输入：图片向量、生效模型、分类定义。
+/// 与 `photo_content_scan`（EXIF / 影调 / 人物）无关 —— 那是 builtin 规则分类的输入，
+/// 而 builtin 走 SQL 直算（毫秒级），每次都重算，因此不进这个指纹。
+///
+/// 为什么需要它：一次全量重建要把 17 个语义分类 × 全库 2.5 万张的命中行整表重写，
+/// 实测 8.7~11.7 s；而重扫一个已经编码过的相册时向量一条都没变
+/// （日志：「待编码 0 张 · 已有同档位向量跳过 776 张」），这十秒是纯浪费。
+fn semantic_fingerprint(
+    conn: &rusqlite::Connection,
+    user_id: i64,
+    model: &str,
+    cats: &[CategoryDef],
+) -> String {
+    // 向量表信号：(条数, 最大 rowid, 最大 generated_at)
+    // 条数 / rowid 捕捉「新增或删除」，generated_at 捕捉「同一张照片被重新编码」
+    // （upsert 走 ON CONFLICT 时 rowid 不变，只靠 rowid 会漏判）
+    let (n, max_rowid, max_gen): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(MAX(rowid), 0), COALESCE(MAX(generated_at), 0)
+             FROM photo_embeddings WHERE user_id = ?1 AND model = ?2",
+            rusqlite::params![user_id, model],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap_or((0, 0, 0));
+    // 分类定义：关键词 / 排除词 / 阈值 / 启用 / 排序 —— 编辑关键词既不改变分类张数、
+    // 也不改变 sort_order，只靠「表签名」会漏判
+    let mut defs: Vec<String> = cats
+        .iter()
+        .map(|c| {
+            format!(
+                "{}|{}|{}|{}|{:.4}|{}|{}",
+                c.id,
+                c.source,
+                c.keywords.join("\u{1f}"),
+                c.exclude_keywords.join("\u{1f}"),
+                c.threshold,
+                if c.enabled { 1 } else { 0 },
+                c.sort_order
+            )
+        })
+        .collect();
+    defs.sort();
+    format!(
+        "{model}|{n}|{max_rowid}|{max_gen}\n--defs--\n{}",
+        defs.join("\n")
+    )
+}
+
 /// 重建全部语义分类命中（扫描完成后自动调用 / 用户手动「重建」）
 pub async fn rebuild_semantic_hits(
     app: &tauri::AppHandle,
     state: &AppState,
     user_id: i64,
 ) -> Result<RebuildReport, String> {
-    rebuild_inner(app, state, user_id, None).await
+    // 扫描收尾：输入指纹未变就跳过（结果与重算等同）
+    rebuild_inner(app, state, user_id, None, true).await
 }
 
 /// 重建单个分类命中
@@ -313,7 +405,8 @@ pub async fn rebuild_one(
     user_id: i64,
     category_id: i64,
 ) -> Result<RebuildReport, String> {
-    rebuild_inner(app, state, user_id, Some(category_id)).await
+    // 用户显式操作 / 保存分类后：强制重算，不做指纹短路
+    rebuild_inner(app, state, user_id, Some(category_id), false).await
 }
 
 async fn rebuild_inner(
@@ -321,6 +414,9 @@ async fn rebuild_inner(
     state: &AppState,
     user_id: i64,
     only: Option<i64>,
+    // 扫描收尾传 true：输入指纹与上次一致就跳过语义重算；
+    // 用户手动「重建 / 保存分类」传 false（就是要重算一遍）
+    allow_skip: bool,
 ) -> Result<RebuildReport, String> {
     let t0 = Instant::now();
     let model = current_model_id(app).await?;
@@ -328,12 +424,21 @@ async fn rebuild_inner(
         let db = state.0.lock().map_err(|e| format!("{e}"))?;
         db.list_categories(user_id).map_err(|e| format!("{e}"))?
     };
+    // 指纹 + 上次产物：一次聚合查询 + 21 行分类定义，成本 < 1ms
+    let (fp, last_sig) = {
+        let db = state.0.lock().map_err(|e| format!("{e}"))?;
+        (
+            semantic_fingerprint(db.conn(), user_id, &model, &cats),
+            read_hit_sig(&db),
+        )
+    };
     let targets: Vec<_> = cats
         .into_iter()
         .filter(|c| only.map(|id| id == c.id).unwrap_or(true))
         .collect();
 
-    // 1. builtin（规则分类）：SQL 直算，不跑 CLIP
+    // 1. builtin（规则分类）：SQL 直算，不跑 CLIP —— 毫秒级，永久重算
+    //    （它的输入是 content 表，与语义向量的指纹无关）
     let mut total_hits = 0usize;
     let mut semantic_count = 0usize;
     for c in targets.iter().filter(|c| c.source == category::SOURCE_BUILTIN) {
@@ -351,58 +456,92 @@ async fn rebuild_inner(
         .filter(|c| c.source != category::SOURCE_BUILTIN && !c.keywords.is_empty())
         .collect();
     let mut indexed = 0usize;
+    let mut skipped = false;
     if !sem.is_empty() {
-        let photos = load_photo_vecs(state, user_id, &model)?;
-        indexed = photos.len();
-        if photos.is_empty() {
-            // 索引为空：清空命中，明确告知而非静默
-            for c in &sem {
-                let db = state.0.lock().map_err(|e| format!("{e}"))?;
-                db.replace_category_hits(c.id, user_id, &[])
-                    .map_err(|e| format!("{e}"))?;
-            }
-            return Ok(RebuildReport {
-                categories: targets.len(),
-                hits: total_hits,
-                ms: t0.elapsed().as_millis() as u64,
-                model,
-                indexed,
-                empty_index: true,
-            });
-        }
-        let mut all_texts: Vec<String> = NEUTRAL_PROMPTS.iter().map(|s| s.to_string()).collect();
-        for c in &sem {
-            for t in c.keywords.iter().chain(c.exclude_keywords.iter()) {
-                let t = t.trim().to_string();
-                if !t.is_empty() && !all_texts.iter().any(|x| *x == t) {
-                    all_texts.push(t);
+        // 指纹短路：向量 / 模型 / 分类定义都没变 → 命中表已是当前输入的结果
+        if allow_skip {
+            if let Some(sig) = &last_sig {
+                if sig.fp == fp {
+                    skipped = true;
+                    total_hits += sig.hits;
+                    indexed = sig.indexed;
+                    semantic_count = sig.categories;
+                    logger::log_info(&format!(
+                        "[category] 跳过重建：输入指纹未变（向量/模型/分类定义均无变化）· 沿用命中 {} · {}ms",
+                        sig.hits,
+                        t0.elapsed().as_millis()
+                    ));
                 }
             }
         }
-        let vecs = resolve_text_vectors(app, state, &model, &all_texts).await?;
-        let neutral: Vec<Vec<f32>> = NEUTRAL_PROMPTS
-            .iter()
-            .filter_map(|t| vecs.get(*t).cloned())
-            .collect();
-        let base = neutral_base(&photos, &neutral);
-        for c in &sem {
-            let input = CategoryInput {
-                name: c.name.clone(),
-                icon: c.icon.clone(),
-                keywords: c.keywords.clone(),
-                exclude_keywords: c.exclude_keywords.clone(),
-                threshold: c.threshold,
-                sort_order: c.sort_order,
-                enabled: c.enabled,
-            };
-            let (hits, _scores) = score_category(&photos, &base, c.id, user_id, &input, &vecs);
-            let n = {
+        if !skipped {
+            let photos = load_photo_vecs(state, user_id, &model)?;
+            indexed = photos.len();
+            if photos.is_empty() {
+                // 索引为空：清空命中，明确告知而非静默
+                for c in &sem {
+                    let db = state.0.lock().map_err(|e| format!("{e}"))?;
+                    db.replace_category_hits(c.id, user_id, &[])
+                        .map_err(|e| format!("{e}"))?;
+                }
+                let rep = RebuildReport {
+                    categories: targets.len(),
+                    hits: total_hits,
+                    ms: t0.elapsed().as_millis() as u64,
+                    model,
+                    indexed,
+                    empty_index: true,
+                    skipped: false,
+                };
+                if only.is_none() {
+                    let db = state.0.lock().map_err(|e| format!("{e}"))?;
+                    write_hit_sig(&db, &fp, 0, 0, sem.len());
+                }
+                return Ok(rep);
+            }
+            let mut all_texts: Vec<String> = NEUTRAL_PROMPTS.iter().map(|s| s.to_string()).collect();
+            for c in &sem {
+                for t in c.keywords.iter().chain(c.exclude_keywords.iter()) {
+                    let t = t.trim().to_string();
+                    if !t.is_empty() && !all_texts.iter().any(|x| *x == t) {
+                        all_texts.push(t);
+                    }
+                }
+            }
+            let vecs = resolve_text_vectors(app, state, &model, &all_texts).await?;
+            let neutral: Vec<Vec<f32>> = NEUTRAL_PROMPTS
+                .iter()
+                .filter_map(|t| vecs.get(*t).cloned())
+                .collect();
+            let base = neutral_base(&photos, &neutral);
+            // 本次语义腿真正写入的命中数（与 builtin 分开记账，供指纹短路时整体复用）
+            let mut sem_hits = 0usize;
+            for c in &sem {
+                let input = CategoryInput {
+                    name: c.name.clone(),
+                    icon: c.icon.clone(),
+                    keywords: c.keywords.clone(),
+                    exclude_keywords: c.exclude_keywords.clone(),
+                    threshold: c.threshold,
+                    sort_order: c.sort_order,
+                    enabled: c.enabled,
+                };
+                let (hits, _scores) = score_category(&photos, &base, c.id, user_id, &input, &vecs);
+                let n = {
+                    let db = state.0.lock().map_err(|e| format!("{e}"))?;
+                    db.replace_category_hits(c.id, user_id, &hits)
+                        .map_err(|e| format!("{e}"))?
+                };
+                total_hits += n;
+                sem_hits += n;
+                semantic_count += 1;
+            }
+            // 只有「全量重建」才能代表整张命中表的当前状态；单分类重建写指纹会把
+            // 局部结果当成全局结果，下轮扫描就会误跳
+            if only.is_none() {
                 let db = state.0.lock().map_err(|e| format!("{e}"))?;
-                db.replace_category_hits(c.id, user_id, &hits)
-                    .map_err(|e| format!("{e}"))?
-            };
-            total_hits += n;
-            semantic_count += 1;
+                write_hit_sig(&db, &fp, sem_hits, indexed, semantic_count);
+            }
         }
     }
 
@@ -413,12 +552,15 @@ async fn rebuild_inner(
         model,
         indexed,
         empty_index: false,
+        skipped,
     };
-    logger::log_info(&format!(
-        "[category] 重建完成：分类 {}（语义 {}）· 命中 {} · 索引 {} · {}ms",
-        report.categories, semantic_count, report.hits, report.indexed, report.ms
-    ));
-    let _ = app.emit("category-rebuild-done", &report);
+    if !skipped {
+        logger::log_info(&format!(
+            "[category] 重建完成：分类 {}（语义 {}）· 命中 {} · 索引 {} · {}ms",
+            report.categories, semantic_count, report.hits, report.indexed, report.ms
+        ));
+        let _ = app.emit("category-rebuild-done", &report);
+    }
     Ok(report)
 }
 
@@ -662,7 +804,7 @@ pub mod commands {
     ) -> Result<RebuildReport, String> {
         let user_id = require_user(&session)?;
         let _t = crate::logger::log_call_start("rebuild_categories", &format!("id={id:?}"));
-        let r = rebuild_inner(&app, &state, user_id, id).await;
+        let r = rebuild_inner(&app, &state, user_id, id, false).await;
         match &r {
             Ok(rep) => crate::logger::log_call_end_with(
                 "rebuild_categories",
@@ -825,5 +967,92 @@ mod tests {
         assert!(validate_input(&CategoryInput { name: "  ".into(), ..form(&["k"], &[], 0.03) }).is_err());
         assert!(validate_input(&CategoryInput { name: "x".repeat(21), ..form(&["k"], &[], 0.03) }).is_err());
         assert!(validate_input(&form(&["k"], &[], 0.5)).is_err(), "阈值超范围应拒绝");
+    }
+
+    // ---- 输入指纹短路（BUG-2026-1027-006）----
+
+    fn cat_def(id: i64, source: &str, kws: &[&str], thr: f64, enabled: bool) -> CategoryDef {
+        CategoryDef {
+            id,
+            user_id: 1,
+            name: format!("c{id}"),
+            icon: String::new(),
+            source: source.into(),
+            slug: String::new(),
+            keywords: kws.iter().map(|s| s.to_string()).collect(),
+            exclude_keywords: vec![],
+            threshold: thr,
+            sort_order: id,
+            enabled,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    fn fp_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE photo_embeddings (
+                 photo_hash TEXT PRIMARY KEY, user_id INTEGER, model TEXT,
+                 embedding BLOB, generated_at INTEGER);",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// 指纹必须「宁可多算，不可漏算」：向量 / 模型 / 分类定义任一变化都要变，
+    /// 否则会误跳重建 → 命中表与分类定义脱节，且用户无从发现。
+    #[test]
+    fn semantic_fingerprint_tracks_inputs() {
+        let conn = fp_conn();
+        let cats = vec![cat_def(1, "preset", &["猫"], 0.03, true)];
+        let a = semantic_fingerprint(&conn, 1, "m1", &cats);
+        assert_eq!(a, semantic_fingerprint(&conn, 1, "m1", &cats), "同一输入指纹应稳定");
+
+        // 新增一条向量
+        conn.execute(
+            "INSERT INTO photo_embeddings (photo_hash,user_id,model,embedding,generated_at)
+             VALUES ('h1',1,'m1',x'00',100)",
+            [],
+        )
+        .unwrap();
+        let b = semantic_fingerprint(&conn, 1, "m1", &cats);
+        assert_ne!(a, b, "新向量必须改变指纹");
+
+        // 同一张照片被重新编码：upsert 不改 rowid，只有 generated_at 变
+        conn.execute(
+            "UPDATE photo_embeddings SET generated_at = 200 WHERE photo_hash = 'h1'",
+            [],
+        )
+        .unwrap();
+        let c = semantic_fingerprint(&conn, 1, "m1", &cats);
+        assert_ne!(b, c, "重编码必须改变指纹（只靠 rowid 会漏判）");
+
+        // 换模型 / 改关键词 / 改阈值 / 改启用
+        assert_ne!(c, semantic_fingerprint(&conn, 1, "m2", &cats), "换模型必须改变指纹");
+        assert_ne!(
+            c,
+            semantic_fingerprint(&conn, 1, "m1", &[cat_def(1, "preset", &["狗"], 0.03, true)]),
+            "改关键词必须改变指纹"
+        );
+        assert_ne!(
+            c,
+            semantic_fingerprint(&conn, 1, "m1", &[cat_def(1, "preset", &["猫"], 0.05, true)]),
+            "改阈值必须改变指纹"
+        );
+        assert_ne!(
+            c,
+            semantic_fingerprint(&conn, 1, "m1", &[cat_def(1, "preset", &["猫"], 0.03, false)]),
+            "启用开关必须改变指纹"
+        );
+
+        // 别的用户的向量不该影响本用户指纹（user_id 过滤）
+        conn.execute(
+            "INSERT INTO photo_embeddings (photo_hash,user_id,model,embedding,generated_at)
+             VALUES ('h2',2,'m1',x'00',999)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(c, semantic_fingerprint(&conn, 1, "m1", &cats), "他人向量不得影响指纹");
     }
 }

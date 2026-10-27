@@ -2,7 +2,6 @@ import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 import {
   componentTone,
-  contrastRatio,
   glassBandContrast,
   gradientAverage,
   hexToRgb,
@@ -17,8 +16,8 @@ import {
   saturateColor,
   type Rgb,
 } from "../utils/color";
-import { DEFAULTS, isDefaultLook, normalizePrefs, type BackgroundStyle, type Material, type Prefs, type ThemeMode } from "../utils/prefs";
-import { presetPrefs, type Preset } from "../utils/presets";
+import { DEFAULTS, isDefaultLook, normalizePrefs, type BackgroundStyle, type Material, type Prefs, type ThemeMode, type WidgetMaterial } from "../utils/prefs";
+import { ALL_PRESETS, matchesPreset, presetPrefs, type Preset } from "../utils/presets";
 /* FEAT-094：默认背景图 = 登录页那张启动封面。作为构建产物里的内置资源引用
    （Vite 会给出带哈希的 URL），**不写 localStorage** —— 否则 176KB 的 data URL
    很容易撞上存储配额，进而把整套偏好保存都拖掉（本文件开头的键分离就是这么来的）。 */
@@ -32,6 +31,12 @@ const KEY_IMAGE = "pm-theme-image";
 
 /** 深色模式对应的默认纯色背景（setMode 在亮/暗之间同步底色时用） */
 const DARK_BG = "#1a1428";
+
+/** 浅色模式的默认渐变三色（纸白暖中性）。
+ *  DEFAULTS 里只有深色档（因为默认外观是启动封面），
+ *  这里补上浅色档，供 setMode 切模式时同步渐变用（FEAT-105）。
+ *  取值与浅色预设「纸白暖中性」一致，避免"切模式后渐变和预设对不上"。 */
+const LIGHT_GRAD: [string, string, string] = ["#faf8f5", "#f0ece6", "#ddd7cd"];
 
 /** 默认背景图（启动封面）的构建产物 URL */
 export const DEFAULT_WALLPAPER = defaultWallpaper;
@@ -114,6 +119,18 @@ export const useThemeStore = defineStore("theme", () => {
      零开销、零视觉变化。 */
   /** FEAT-086：卡片材质（普通/液态），预设一律普通卡片 */
   const material = ref<Material>(saved.material);
+  /* FEAT-117：材质**只有一个维度**了。
+     FEAT-110 曾给仪表墙单独开了一个 widgetMaterial（glass/plain），
+     理由是"仪表墙是另一个语境"。实际使用中用户点了两次都以为坏了一个：
+     两套开关名字都叫"液态玻璃 / 普通"，改一个另一个不动，没人能记住哪套管哪儿。
+     材质是"这个界面是什么做的"，不该按页面分叉。
+     这里保留 widgetMaterial 这个名字（外面 UiWidget 仍在读），
+     但它**降级为 material 的派生值**，不再持久化、不再能被单独设置。
+     映射：liquid → glass，plain → plain。旧 prefs 里的 widgetMaterial
+     仍然被 normalizePrefs 读取（不报错），只是不再生效。 */
+  const widgetMaterial = computed<WidgetMaterial>(() =>
+    material.value === "liquid" ? "glass" : "plain",
+  );
   const bgStyle = ref<BackgroundStyle>(saved.bgStyle);
   const bgColor = ref(saved.bgColor);
   const gradFrom = ref(saved.gradFrom);
@@ -194,11 +211,35 @@ export const useThemeStore = defineStore("theme", () => {
   }
 
   /** 切换亮暗模式：若纯色背景仍是另一模式的默认值（用户未自定义），则同步换成对应色调，
-   *  避免「深色模式 + 浅色背景」这种不可读组合 */
+   *  避免「深色模式 + 浅色背景」这种不可读组合。
+   *
+   *  FEAT-105 修：原来只管了**纯色底**（bgColor），漏了**渐变底**三色标。
+   *  于是出现这个错配态：用户在浅色预设（纸白 #faf8f5/#f0ece6/#ddd7cd）下点「深色」，
+   *  mode 变成 dark → body 挂 theme-dark → tokens.css 的 --c-* 切到深色档（白字），
+   *  而页面底仍是浅色渐变 —— 白字落在浅底上，1.03:1，完全看不见。
+   *  （这正是用户截图里"浅色背景 + 白色文字"的成因。）
+   *
+   *  现在：渐变三色若还是本模式的默认值（用户没手动调过），一并换成目标模式的默认渐变。
+   *  用户手动改过渐变则**不动** —— 那是他明确选的配色，不该被模式切换覆盖。
+   */
   function setMode(next: ThemeMode) {
     const pairDefault = next === "dark" ? DEFAULTS.bgColor : DARK_BG;
     if (bgColor.value === pairDefault || bgColor.value === DEFAULTS.bgColor || bgColor.value === DARK_BG) {
       bgColor.value = next === "dark" ? DARK_BG : DEFAULTS.bgColor;
+    }
+    /* 渐变三色：仅当还是**当前模式**的默认值时跟随切换。
+       判据用“当前模式默认值”或“目标模式默认值”两种 —— 覆盖“从预设切到模式”
+       与“从模式切到预设”两条路径。 */
+    const darkGrad = [DEFAULTS.gradFrom!, DEFAULTS.gradMid!, DEFAULTS.gradTo!];
+    const lightGrad = LIGHT_GRAD;
+    const cur = isDark.value ? darkGrad : lightGrad;
+    const target = next === "dark" ? darkGrad : lightGrad;
+    const isDefaultGrad =
+      gradFrom.value === cur[0] || gradFrom.value === target[0] || gradFrom.value === DEFAULTS.gradFrom!;
+    if (isDefaultGrad && bgStyle.value === "gradient") {
+      gradFrom.value = target[0];
+      gradMid.value = target[1];
+      gradTo.value = target[2];
     }
     mode.value = next;
     persist();
@@ -376,59 +417,51 @@ export const useThemeStore = defineStore("theme", () => {
   });
 
   /**
-   * 液态填充色（FEAT-086 表面光学 / FEAT-101 M3）：向白提亮 12% 呈现「湿玻璃」。
-   * 普通卡片维持组件原色。
+   * 页面底是浅色还是深色 —— **按实际背景明度判，不按 mode 判**。
    *
-   * M3：20% → 12%。掺白是「奶雾感」的来源，掺到 20% 时卡面偏奶白、
-   * 看不出背后在透——「玻璃」变成了「上漆的板」。降到 12% 保住湿感，
-   * 把透明度还给玻璃；文字对比由 glassRgb 同步重算，不需另调。
-   *
-   * 在 compFill 入口收口（而非只改 cardBg）：--color-surface/--glass-bg（类路径）与
-   * cardStyle（内联路径）同一出口，文字对比计算 glassRgb 也用它，三处永远一致。
-   * 注：不采用方案里的 color-mix(...white) —— 它会把 alpha 从 0.42 推到 0.536，
-   * 用户调的 compAlpha 滑块被材质嘴改；这里只提亮色相，
-   * alpha 只由滑块 + 材质偏移（effectiveAlpha）决定，不让“掺白”顺手把透明度也改了。
+   * tokens.css §3 已经为 --c-* 踩过一次这个坑（「深色模式 + 浅色预设」→ 白底白字）。
+   * 材质的白玻璃/暗壁同理：浅底上再画白玻璃 = 没有板。
    */
-  const fillColor = computed(() =>
-    material.value === "liquid"
-      ? rgbToHex(mixRgb(hexToRgb(compColorTemp.value), [255, 255, 255], 0.12))
-      : compColorTemp.value,
-  );
+  const onLightBg = computed(() => relLum(effectiveBg.value) >= 0.5);
 
   /**
-   * FEAT-103 P0：液态的名义透明度**不再大幅下调**（0.12 → 0.04），且加 0.58 下限。
+   * 液态填充色的**色相** —— 深浅底走两个相反方向（FEAT-121）。
    *
-   * 改动理由（与 M3 的取舍不同，不是推翻它，而是补一条它没看到的约束）：
-   * M3 想要「更通透」，但那时卡片还是**全屏铺开的主要容器** —— 降通退 −0.12 后，
-   * 背景壁纸的光会从卡片下半部透上来，把数据区（图表、柱阵）压成一层灰。
-   * 本次重设计之后玻璃只用于**浮层**（搜索、抽屉、灯箱工具条、弹窗），
-   * 这些层的后面是**内容（照片/页面）而不是纯壁纸**，于是：
-   *   · 降 0.12 会让照片的颜色直接涌进搜索胶囊里，胶囊内的字看不清；
-   *   · 降 0.04 既能保住一点点「透」，又不会让底层照片影响可读性。
-   * 0.58 下限：低于此值时，大面积深色照片后面的浮层会变成中灰死区
-   * （黑白两种文字都上不了 4.5:1），这是实测过的。
+   * 深底：向白提亮 12%（湿玻璃，保留 M3 的结论：掺白 20% 会变成「上漆的板」）。
+   * 浅底：向冷灰压暗 **20%**。这是本轮的核心修复 ——
+   *   「白玻璃」落在白纸上等于没有板。实测（.visual/probe-liquid2.mjs，晨雾青瓷底
+   *   #ecf3f0）：旧填充 rgba(240,245,243,.68) 与背景明度差 < 2%，于是高光、棱环、
+   *   模糊全都「画了但看不见」，整块卡读起来就是一张白卡。
+   *   12% 还不够：实测只拉开 6~8% 明度差，且 25% 与 72% 两个 alpha 在屏幕上只差
+   *   2~3 个色阶（滑块“没反应”的第二个原因）。20% 之后板面稳定比背景低一档。
    *
-   * 安全阀逻辑完整保留 —— 它才是真正做判断的地方，上面的 0.04 只是把「意愿」调小。
+   * 注：只改**色相**，不改 alpha —— alpha 的唯一来源是滑块（见 effectiveAlpha）。
    */
-  const LIQUID_ALPHA_DROP = 0.04;
-  const LIQUID_ALPHA_FLOOR = 0.58;
-  const effectiveAlpha = computed(() => {
-    const base = compAlpha.value;
-    if (material.value !== "liquid") return base;
-    // floor 只抬底、不压顶：用户把滑块拉得很高（>0.62）时不应被“降回来”
-    const dropped = Math.max(LIQUID_ALPHA_FLOOR, base - LIQUID_ALPHA_DROP);
-    if (Math.abs(dropped - base) < 1e-6) return base;
-    const fill = hexToRgb(fillColor.value);
-    const ratioAt = (a: number) => {
-      const glass = mixRgb(effectiveBg.value, fill, a);
-      const tone = componentTone(rgbToHex(glass));
-      return contrastRatio(relLum(hexToRgb(tone.text)), relLum(glass));
-    };
-    const baseRatio = ratioAt(base);
-    const droppedRatio = ratioAt(dropped);
-    if (baseRatio < 4.5) return droppedRatio >= baseRatio ? dropped : base;
-    return droppedRatio >= 4.5 ? dropped : base;
+  const fillColor = computed(() => {
+    if (material.value !== "liquid") return compColorTemp.value;
+    const base = hexToRgb(compColorTemp.value);
+    return rgbToHex(
+      onLightBg.value
+        ? mixRgb(base, [38, 52, 48], 0.2)
+        : mixRgb(base, [255, 255, 255], 0.12),
+    );
   });
+
+  /**
+   * FEAT-121：液态透明度 = **滑块原值**。
+   *
+   * 旧实现（FEAT-103）给液态加了「−0.04 → 下限 0.58 → 对比度安全阀」，结果是
+   * 滑块 0~62% 全被夹成同一个数：实测 compAlpha 0.2 / 0.5 都下发 0.58，
+   * 只有 >0.62 才开始动 —— 用户拖了半天画面不变，这不是错觉，是夹死的。
+   *
+   * 那套夹法的前提是「玻璃只用在浮层上，填充不够实就看不清字」；现在材质是
+   * 用户可选的卡面，通透明度本身就是他要调的那个观感，工具不该偷偷改他的值。
+   *
+   * 可读性怎么保：文字色本来就按 glassRgb（玻璃等效底色）现算，alpha 一降，
+   * 等效底色自动贴近背景、文字取向跟着翻；主题弹窗里那条
+   * 「实测最深色带 ≈ x:1」会如实报警 —— 交给读数，不替用户做决定。
+   */
+  const effectiveAlpha = computed(() => compAlpha.value);
 
   /** 玻璃等效底色：组件色调以 **有效 alpha**（滑块 + 材质偏移）叠在**实际页面背景**上。
    *  文字对比必须对着这个等效色算——玻璃是半透明的，只拿色调原色判断会误判
@@ -464,6 +497,57 @@ export const useThemeStore = defineStore("theme", () => {
     const body = document.body;
     body.style.setProperty("--color-on-bg", onBgColor.value);
     body.style.setProperty("--color-on-bg-2", onBgSubColor.value);
+    /* FEAT-105：--c-* 改为跟随**实际页面背景**下发，而不是靠 body.theme-dark 类选。
+       原来的做法（tokens.css 里 :root 深色 + body:not(.theme-dark) 浅色）假设
+       "模式 == 背景明度"，这个假设在「深色模式 + 浅色预设」这类错配下不成立，
+       结果就是浅色底上出现白字（用户截图：1.03:1）。
+       这里按**实际背景的明度**决定 fg 档位，错配状态自然消失；
+       body 类只留给 main.css 的 --color-* 家族使用。
+
+       ⚠️ 判据用 effectiveBg（背景本身）的明度，**不是** isDarkText(onBgColor) ——
+          后者判断的是「文字色深浅」，而这里要判断的是「背景深浅」，语义相反
+          （浅底 + 深字 时它会返回 true，害我把白字发给浅底）。 */
+    const bgLum = relLum(effectiveBg.value);
+    const cOnDark = bgLum < 0.5; // 背景是深的 → 用浅色文字
+    body.style.setProperty("--c-fg", cOnDark ? "#f2f0f4" : "#17161a");
+    /* FEAT-105：墙板玻璃把底**提亮**了（白玻璃叠在深底上，板底从 #271d37
+       变成 rgb(76,68,89)）。所以玻璃板上的次级文字需要比页面上的更亮：
+       .58 白在那个底上只有 3.94:1（低于 AA）。
+       这里给玻璃板单独一档更亮的次级色 —— 不是全局改 --c-fg-2，
+       因为页面上的次级文字（不在玻璃上）不需要那么亮。 */
+    body.style.setProperty("--c-fg-2", cOnDark ? "rgba(242,240,244,.68)" : "rgba(23,22,26,.66)");
+    body.style.setProperty("--c-fg-3", cOnDark ? "rgba(242,240,244,.56)" : "rgba(23,22,26,.52)");
+    body.style.setProperty("--c-rule", cOnDark ? "rgba(255,255,255,.075)" : "rgba(23,22,26,.085)");
+    body.style.setProperty("--c-accent", cOnDark ? "#d4a24a" : "#7d571a");
+    /* FEAT-105：玻璃板专用强调色。
+       玻璃板把底**提亮**了（深色预设：#271d37 → rgb(76,68,89)），
+       原本的 #d4a24a 金在那个底上只有 3.97:1。
+       深色底上要**提亮**金色，浅色底上要**压暗**金色 —— 方向相反，
+       所以不能写成固定值，得按底色明度分两档下发。 */
+    body.style.setProperty("--c-accent-bright", cOnDark ? "#f0bd6a" : "#6b4a12");
+    body.style.setProperty("--c-danger", cOnDark ? "#d96a6a" : "#b4453f");
+
+    /* FEAT-107：无容器阅读层（--fg / --fg-2 / --fg-3 / --rule / --hover / --ctrl-line）
+       这组值是给**直接压在壁纸上的文字**用的（数据带 / 左栏 / 图注 / 组头），
+       与 --c-* 并行存在而不是替代它 —— --c-* 是按“承载面等效底色”标定的，
+       承载面被删掉后那套值的标定基准就不成立了。
+
+       为什么在这里下发而不是写在 tokens.css 的 :root / body:not(.theme-dark)：
+         tokens.css 的两档靠 body 类选，而 body 类只能表达“用户选了哪个模式”；
+         真正决定文字的应该是**背景的实际明度**（深色模式 + 浅色预设会错配）。
+         这里跟 --c-* 用同一个 cOnDark 判据，两套值永远同向。 */
+    body.style.setProperty("--fg", cOnDark ? "#f0eef3" : "#16151a");
+    body.style.setProperty("--fg-2", cOnDark ? "rgba(240,238,243,.60)" : "rgba(22,21,26,.66)");
+    /* --fg-3 要按「预设渐变最亮/最暗端」标定，不是纯黑/纯白底：
+       深色 .38 → 最亮端 3.22:1（不达标）；浅色 .44 → 最暗端 2.83:1。
+       提到 .52 / .60 后两边都 ≥4.5:1，且仍明显弱于 --fg-2。 */
+    body.style.setProperty("--fg-3", cOnDark ? "rgba(240,238,243,.52)" : "rgba(22,21,26,.60)");
+    body.style.setProperty("--rule", cOnDark ? "rgba(255,255,255,.085)" : "rgba(22,21,26,.10)");
+    body.style.setProperty("--hover", cOnDark ? "rgba(255,255,255,.055)" : "rgba(22,21,26,.05)");
+    body.style.setProperty(
+      "--ctrl-line",
+      cOnDark ? "rgba(255,255,255,.115)" : "rgba(22,21,26,.14)",
+    );
     // 背景上的链接色：body.theme-dark 的 --color-link 恒为浅金（玻璃卡语境），
     // 落在页面背景上的链接需要另一套 —— 浅背景→深金，深背景→浅金
     body.style.setProperty("--color-link-on-bg", sat(onBgDark.value ? "#8a5a12" : "#ffd9a0"));
@@ -477,7 +561,9 @@ export const useThemeStore = defineStore("theme", () => {
         : "0 1px 3px rgba(0,0,0,.38)",
     );
   }
-  watch([onBgColor, onBgDark, bgStyle, bgImageEff], applyTextVars, { immediate: true });
+  /* watch 依赖：onBgColor 已含实际背景信息（含 compColor/compAlpha 的影响），
+     再加上 mode —— 切模式时即便背景没变，fg 档位也要跟着重算。 */
+  watch([onBgColor, onBgDark, bgStyle, bgImageEff, mode], applyTextVars, { immediate: true });
 
   /* ---------- 把深/浅色模式同步到 body ----------
      这样 main.css 中的 `body.theme-dark { --color-text: ... }` 才能覆盖全局，
@@ -498,9 +584,58 @@ export const useThemeStore = defineStore("theme", () => {
     if (typeof document === "undefined") return;
     document.body.classList.toggle("mat-plain", m === "plain");
     document.body.classList.toggle("mat-liquid", m === "liquid");
+    /* FEAT-117：仪表墙的两个 body 类由同一个材质推出（见 widgetMaterial 注释） */
+    document.body.classList.toggle("w-mat-glass", m === "liquid");
+    document.body.classList.toggle("w-mat-plain", m === "plain");
   }
   applyMaterial(material.value);
   watch(material, applyMaterial);
+
+  /* ---------- FEAT-110：widget 强调色（预设可覆盖） ----------
+     默认落日金；松绿混色等预设自带 accent/accent2 时，命中该预设就下发。
+     只写 --w-accent* 两个令牌，不动 --c-accent / --color-primary。
+     判据用与 ThemeDialog 同一个 matchesPreset，保证“弹窗里高亮哪套，
+     widget 就用哪套的强调色”，不会出现两处不一致。 */
+  const activePreset = computed<Preset | null>(() => {
+    const hit = ALL_PRESETS.find((p) =>
+      matchesPreset(p, {
+        bgStyle: bgStyle.value,
+        gradFrom: gradFrom.value,
+        gradMid: gradMid.value,
+        gradTo: gradTo.value,
+        compColor: compColor.value,
+        compAlpha: compAlpha.value,
+      }),
+    );
+    return hit ?? null;
+  });
+
+  /** 概览页专用：命中预设的三团有色光晕（无则 null，不渲染该层） */
+  const widgetWash = computed<Record<string, string> | null>(() => {
+    const w = activePreset.value?.washes;
+    if (!w) return null;
+    return {
+      backgroundImage: [
+        `radial-gradient(60% 46% at 12% -8%, ${w[0]}, transparent 62%)`,
+        `radial-gradient(52% 40% at 94% 2%, ${w[1]}, transparent 66%)`,
+        `radial-gradient(48% 38% at 80% 112%, ${w[2]}, transparent 62%)`,
+      ].join(","),
+    };
+  });
+
+  function applyWidgetAccent() {
+    if (typeof document === "undefined") return;
+    const p = activePreset.value;
+    const set = (name: string, v?: string) => {
+      if (v) document.body.style.setProperty(name, v);
+      else document.body.style.removeProperty(name);
+    };
+    /* 不命中彩色预设时移除 inline 值 → 回落到 widget.css 的 :root/浅色档默认 */
+    set("--w-accent", p?.accent);
+    set("--w-accent-2", p?.accent2);
+  }
+  watch([bgStyle, gradFrom, gradMid, gradTo, compColor, compAlpha], applyWidgetAccent,
+    { immediate: true });
 
   /* ---------- 组件色调下发（FEAT-084/085/086）：容器 = 玻璃 ----------
      玻璃底色 = 组件色调以 effectiveAlpha（滑块 + 材质偏移）叠在页面背景上（Q2-A），
@@ -508,12 +643,18 @@ export const useThemeStore = defineStore("theme", () => {
      换背景色/背景图/组件色调/透明度/材质都会重新推导。 */
 
   /** 玻璃分层透明度（由滑块 compAlpha + 材质偏移派生）：
-   *  容器 = effectiveAlpha / 次级面板 +0.24 / 弹层 +0.36，封顶 0.95。
+   *  容器 = effectiveAlpha（滑块原值）/ 次级面板 +0.24 / 弹层 +0.36，封顶 0.95。
    *  必须声明在 applyCompColor 的 immediate watch 之前（TDZ：否则首帧就抛
-   *  Cannot access 'containerAlpha' before initialization —— 冒烟实测踩过）。 */
+   *  Cannot access 'containerAlpha' before initialization —— 冒烟实测踩过）。
+   *
+   *  FEAT-121：滑块不再被夹（见 effectiveAlpha），但**派生层仍保留一层底**：
+   *  弹窗后面往往是照片，不是壁纸渐变 —— alpha 拖到 0 时卡片可以真的透明，
+   *  而弹窗/菜单变成 36% 填充的话，黑底照片上的字会直接压不住。
+   *  所以下限只加在弹层上（.55），卡面仍完全跟手 —— "拖滑块有变化"与
+   *  "弹窗永远能读"这两件事不矛盾。 */
   const containerAlpha = computed(() => effectiveAlpha.value);
   const panelAlpha = computed(() => Math.min(0.95, effectiveAlpha.value + 0.24));
-  const dialogAlpha = computed(() => Math.min(0.95, effectiveAlpha.value + 0.36));
+  const dialogAlpha = computed(() => Math.min(0.95, Math.max(0.55, effectiveAlpha.value + 0.36)));
 
   function applyCompColor() {
     if (typeof document === "undefined") return;
@@ -530,8 +671,79 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--glass-bg", compFill(containerAlpha.value));
     body.style.setProperty("--liquid-bg", compFill(panelAlpha.value));
     body.style.setProperty("--glass-border", tone.border);
+    /* ---------- FEAT-121：液态玻璃的光学令牌（按**背景实际明度**给，不按 mode） ----------
+       本轮的两个用户反馈（浅底看不出玻璃 / 拖透明度没反应）中，前者根因不在模糊半径：
+       四套预定义背景都是平滑渐变，模糊在平滑面上不产生任何可读差异；而旧值的
+       「白填充 + 白高光 + 白棱环」在浅底上是三层白叠三层白。
+       真正能把玻璃「立起来」的只有三件事，这里逐个给值：
+         ① 背后的明度位移（--glass-brightness/contrast）—— 玻璃区域比周围亮/暗一档；
+         ② 填充与背景的明度差（见 fillColor：浅底压暗 12%、深底提亮 12%）；
+         ③ 上缘镜面 / 下缘暗壁这对 1px 硬边（--liquid-specular / --liquid-depth）——
+            板厚只能靠这两条色差读出来，浅底上白边无效，必须是**暗**的下缘。
+       数值来源：浅底 #ecf3f0 上亮度差 < 2% ⇒ 无感；压一档（~6~10%）后板面可辨，
+       且文字对比不受影响（文字色对玻璃等效底色现算，见 glassRgb）。 */
+    const light = onLightBg.value;
+    body.style.setProperty("--glass-brightness", light ? "0.97" : "1.06");
+    body.style.setProperty("--glass-contrast", light ? "1.04" : "1.02");
+    body.style.setProperty(
+      "--liquid-specular",
+      light ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.46)",
+    );
+    body.style.setProperty(
+      "--liquid-depth",
+      light ? "rgba(18,28,24,0.16)" : "rgba(0,0,0,0.34)",
+    );
+    body.style.setProperty(
+      "--liquid-shadow-out",
+      light
+        ? "0 1px 2px rgba(20,40,32,0.10), 0 16px 32px -18px rgba(20,40,32,0.42)"
+        : "0 1px 2px rgba(0,0,0,0.18), 0 18px 36px -18px rgba(0,0,0,0.55)",
+    );
+    /* FEAT-105：墙板玻璃的填充。
+       关键认知：**玻璃板不是“组件色的半透明”，而是“白玻璃”**。
+       参考图里每一块板都是浅灰发白、半透明、能透出壁纸 ——
+       这是真玻璃的样子（无色，只折射/散射光）。
+       如果用组件色（深色系）做半透明，得到的是“深色塑料片”：
+       在深色底上糊成一片，壁纸的光完全透不出来。
+
+       所以：填充 = 白 + 极淡的组件色调（保留一点主题色相），
+       alpha 跟着**底色明度**走：底越深，白玻璃越明显（透出壁纸）；底越亮，白玻璃越淡
+       （否则白玻璃 + 白底 = 没有板，只有“脏”）。 */
+    const panelTone = rgbToHex(
+      mixRgb(hexToRgb(compColorTemp.value), [255, 255, 255], 0.86),
+    );
+    const panelAlphaValue = isDark.value ? 0.2 : 0.5;
+    body.style.setProperty(
+      "--panel-glass-fill",
+      `rgba(${hexToRgb(panelTone).map((v) => Math.round(v)).join(",")},${panelAlphaValue})`,
+    );
+
+    /* FEAT-110：widget 玻璃的“白玻璃层”比例 —— **按背景实际明度给，不写死**。
+       实测（.visual/probe-line-visibility.cjs）：
+         深背景（松绿/深色渐变）下白层 30% 会把主题色洗成脏灰，22% 才既保留松绿又 ≥3:1；
+         亮背景（启动封面）下 22% 不够，板面只有 2.54:1，需要 34% 才回到 ≥3:1。
+       这就是“CSS 猜不出背后明度、而 store 知道”的典型场景。
+       判据：**背景图取亮端分位（P95）**，其余取均值 —— 壁纸是渐变的（落日图天空
+       亮部远高于均值），widget 板要能在最亮的那片上也被看清。
+       这是 widget 专用令牌，不碰全局的 --color- 与 --float- 令牌，老用户外观不受影响。 */
+    let bgLumW: number;
+    if (bgStyle.value === "image" && bgImageBands.value?.length) {
+      /* 壁纸亮度要按**上屏后的呈现**算：图片 → 透明度（bgOpacity）→ 底色 → 遮罩。
+         遮罩（FEAT-094，上重下轻）会把亮部压下去，不折算就高估了背景亮度。
+         取最亮的一档（P95）—— widget 板要能在壁纸最亮那片上也被看清。 */
+      const scrim = SCRIM_RGB;
+      const base = hexToRgb(bgColorTemp.value);
+      const bands = bgImageBands.value.map((b) =>
+        mixRgb(mixRgb(b, base, 1 - bgOpacity.value), scrim, SCRIM_MEAN_ALPHA),
+      );
+      bgLumW = relLum(bands[bands.length - 1]);
+    } else {
+      bgLumW = relLum(effectiveBg.value);
+    }
+    body.style.setProperty("--w-glass-white", bgLumW < 0.22 ? "16%" : "30%");
   }
-  watch([compColor, compAlpha, effectiveBg, material], applyCompColor, { immediate: true });
+  /* effectiveBg / bgImageBands 已在依赖里（背景明度变化会重算白玻璃层比例） */
+  watch([compColor, compAlpha, effectiveBg, material, bgImageBands], applyCompColor, { immediate: true });
 
   /* ---------- FEAT-087：品牌色 / 语义色族下发 ----------
      组件里已把硬编码色值注册成 var(--color-*)（codemod 扫描替换），
@@ -581,15 +793,10 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--color-ok-text", sat(isDark.value ? "#6ed27a" : "#2f9e44"));
     body.style.setProperty("--color-danger-text", sat(isDark.value ? "#f87171" : "#c92a2a"));
     body.style.setProperty("--color-warn-text", sat(isDark.value ? "#f59e0b" : "#b45309"));
-    /* 糖果彩虹色板：hero 横幅 / 入口卡 / 回忆故事卡的渐变基色。
-       这些渐变串在 <script> 里拼装（内联 :style），所以必须注册成令牌才能被
-       饱和度 + 色温统一带动（否则滑块只影响按钮/背景，糖果卡原地不动）。 */
-    body.style.setProperty("--candy-cream", temp("#fffcbd"));
-    body.style.setProperty("--candy-pink", temp("#f075c7"));
-    body.style.setProperty("--candy-blue", temp("#65d5f9"));
-    body.style.setProperty("--candy-rose", temp("#fb6d9b"));
-    body.style.setProperty("--candy-indigo", temp("#505fdd"));
-    body.style.setProperty("--candy-violet", temp("#3a36e4"));
+    /* FEAT-105：糖果彩虹色板（--candy-*）六个令牌已不再下发 ——
+       唯一消费者是 hero 横幅 / 入口卡 / 回忆故事卡的渐变底，那三处已改成
+       模块页头 + 数据带 + 裸照片卡。主题滑块从此只影响还在用的色族，
+       不会再推一批没人读的变量（每帧 6 次 setProperty）。 */
     /* 玻璃卡语境的链接色（Q5=A 的 Bug 修复）：**按玻璃等效底色现算**，不再用 isDark 二分。
        旧写法给一个固定深金（LINK_LIGHT #8a5a12），但链接实际落在玻璃上 —— 浅玻璃 +
        恒定 dark mode 正好是最差组合，实测 5 套预设只有 2.20~2.64:1（AA 需 4.5:1），
@@ -612,12 +819,19 @@ export const useThemeStore = defineStore("theme", () => {
   const cardBg = computed(() => compFill(containerAlpha.value));
   /** 卡片描边（颜色值）：玻璃边缘内高光，方向随等效底色明暗 */
   const cardBorder = computed(() => glassTone.value.border);
-  /** 普通卡片关闭 backdrop-filter；液态保留模糊 + 饱和。
-   *  内联 cardStyle 会覆盖 CSS 规则，所以这里必须与材质同步下发 "none"。 */
+  /** 普通卡片关闭 backdrop-filter；液态保留模糊 + 饱和 + **明度/对比位移**。
+   *  内联 cardStyle 会覆盖 CSS 规则，所以这里必须与材质同步下发 "none"。
+   *
+   *  FEAT-121：多出来的 brightness/contrast 是“浅色看不出玻璃”的第二条修复 ——
+   *  背景若是一片平滑渐变（四套预定义全是），模糊本身是**零信息**（模糊平滑面 = 平滑面）；
+   *  真正能把玻璃区域从周围分开的是 tonal shift。
+   *  两个令牌由 applyCompColor 按背景明度下发（浅 .97 / 深 1.06），
+   *  类路径（main.css）引用同一对令牌，两条路径不会跑偏。 */
   const glassBackdrop = computed(() =>
     material.value === "plain"
       ? "none"
-      : "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
+      : "blur(var(--glass-blur)) saturate(var(--glass-saturate)) " +
+        "brightness(var(--glass-brightness, 1)) contrast(var(--glass-contrast, 1))",
   );
 
   /** 卡片/容器整套样式（内联 style 直接消费）：材质两件套。
@@ -694,6 +908,8 @@ export const useThemeStore = defineStore("theme", () => {
     compAlpha,
     saturation,
     material,
+    widgetMaterial,
+    widgetWash,
     bgStyle,
     bgColor,
     gradFrom,

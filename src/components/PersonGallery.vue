@@ -41,9 +41,56 @@ const avatarMap = ref<Record<string, string>>({});
 /** FEAT-047：头像资源 URL 时间戳（自选头像覆盖同路径文件后破 webview 图片缓存） */
 const avatarTs = ref(Date.now());
 
+/* ── FEAT-124：人物卡改成「照片裁切 + 文字嵌入」────────────────────────
+   卡片封面用 4:5 的人脸裁切（后端 `get_person_covers_bulk`），不再是圆头像；
+   姓名/张数用底部渐变压在照片上（与相册墙 `.tile-seal` 同一套语言）。
+   头像（96×96）仍然保留，但只用于合并弹窗等小圆片场景。 */
+const coverMap = ref<Record<string, string>>({});
+const coverTs = ref(Date.now());
+let unlistenCoverRefresh: UnlistenFn | null = null;
+
+function coverUrl(_pid: string, path: string): string {
+  return withCacheBust(path, coverTs.value);
+}
+
+/** 批量取封面：命中的直接渲染，未命中的后端排队后台裁切并 emit 事件 */
+async function loadCovers() {
+  const pids = persons.value.map((p) => p.id);
+  if (!pids.length) return;
+  try {
+    const paths = await invoke<(string | null)[]>("get_person_covers_bulk", { pids });
+    const next: Record<string, string> = { ...coverMap.value };
+    persons.value.forEach((p, i) => {
+      const path = paths[i];
+      if (path) next[p.id] = coverUrl(p.id, path);
+    });
+    coverMap.value = next;
+  } catch {
+    /* 封面不可用 → 首字占位，不影响列表 */
+  }
+}
+
+/** 后台裁切完成 → 渐进替换（933 人现场裁一轮要几十秒，不能阻塞首屏） */
+async function bindCoverRefresh() {
+  unlistenCoverRefresh = await listen<{ pid: string; path: string }>(
+    "person-cover-refreshed",
+    (ev) => {
+      const { pid, path } = ev.payload;
+      coverTs.value = Date.now();
+      coverMap.value = { ...coverMap.value, [pid]: coverUrl(pid, path) };
+    },
+  );
+}
+
+/** 资源 URL + 时间戳（同名覆盖后仍能刷新）；mock 环境是 data URL，追加 ?t= 会让它失效 */
+function withCacheBust(path: string, ts: number): string {
+  const url = convertFileSrc(path);
+  return url.startsWith("data:") ? url : `${url}?t=${ts}`;
+}
+
 /** 头像 asset URL：附时间戳参数，同名覆盖后仍能刷新显示 */
 function avatarUrl(_pid: string, path: string): string {
-  return `${convertFileSrc(path)}?t=${avatarTs.value}`;
+  return withCacheBust(path, avatarTs.value);
 }
 
 /* ---- 行内重命名 ---- */
@@ -128,6 +175,8 @@ async function load() {
       if (path) next[p.id] = avatarUrl(p.id, path);
     });
     avatarMap.value = next;
+    // FEAT-124：人物卡封面（4:5 照片裁切）
+    await loadCovers();
     // FEAT-046：携带 focusPid → 自动打开该人物的照片弹窗
     if (props.focusPid) {
       const target = persons.value.find((p) => p.id === props.focusPid);
@@ -148,10 +197,12 @@ function flash(msg: string) {
 onMounted(() => {
   void load();
   void bindAvatarRefresh();
+  void bindCoverRefresh();
 });
 
 onBeforeUnmount(() => {
   unlistenAvatarRefresh?.();
+  unlistenCoverRefresh?.();
 });
 
 /* ---- 查看该人物的照片（复用预计算缩略图 + 大图看图器）---- */
@@ -580,45 +631,62 @@ const vFocus: Directive<HTMLElement> = {
       <p class="pg-hint">进入任意相册 → 「综合扫描」（勾选人脸识别）后，识别到的人物会自动登记在此。</p>
     </div>
 
-    <!-- 人物卡片网格 -->
+    <!-- 人物卡片网格（FEAT-124：照片裁切封面 + 文字嵌入） -->
     <div v-else class="person-grid">
-      <article v-for="p in persons" :key="p.id" class="person-card glass-card" :style="surfaceStyle" :title="`${displayName(p)}（${p.id}）`">
+      <article
+        v-for="p in persons"
+        :key="p.id"
+        class="person-card"
+        :title="`${displayName(p)}（${p.id}）· ${p.face_count} 张照片`"
+      >
         <div
-          class="person-avatar-wrap"
+          class="pc-cover"
           @click.stop="openPhotos(p)"
           @contextmenu.prevent="onAvatarContextMenu($event, p)"
           title="点击查看该人物的照片；右键可更换头像"
         >
-          <img v-if="avatarMap[p.id]" :src="avatarMap[p.id]" class="person-avatar" alt="" />
-          <span v-else class="person-avatar person-avatar-fallback">{{ displayName(p).slice(0, 1) }}</span>
-          <span class="person-face-count">{{ p.face_count }} 张脸</span>
-        </div>
-        <div class="person-info">
-          <!-- 行内重命名 -->
-          <template v-if="editingId === p.id">
-            <input
-              v-model="editingName"
-              class="person-rename-input"
-              maxlength="50"
-              placeholder="输入新名称"
-              @keyup.enter="saveRename(p)"
-              @keyup.esc="stopRename"
-              v-focus
-            />
-            <div class="person-edit-actions">
-              <button class="mini-btn ok" @click="saveRename(p)">保存</button>
-              <button class="mini-btn" @click="stopRename">取消</button>
-            </div>
-          </template>
-          <template v-else>
-            <div class="person-name-row">
-              <span class="person-name">{{ displayName(p) }}</span>
-              <button class="mini-btn" title="重命名" @click="startRename(p)">✎</button>
-            </div>
-            <div class="person-id mono">{{ p.id }}</div>
-            <div class="person-date">登记于 {{ p.created_at }}</div>
-            <button class="mini-btn merge-btn" @click="mergingSource = p">合并到其他人物…</button>
-          </template>
+          <img v-if="coverMap[p.id]" :src="coverMap[p.id]" class="pc-img" loading="lazy" alt="" />
+          <span v-else class="pc-ph">{{ displayName(p).slice(0, 1) }}</span>
+
+          <!-- 文字嵌入：底部渐变上压姓名 + 张数 -->
+          <div class="pc-cap">
+            <template v-if="editingId === p.id">
+              <input
+                v-model="editingName"
+                class="person-rename-input pc-rename"
+                maxlength="50"
+                placeholder="输入新名称"
+                @click.stop
+                @keyup.enter="saveRename(p)"
+                @keyup.esc="stopRename"
+                v-focus
+              />
+              <div class="pc-edit-actions" @click.stop>
+                <button class="mini-btn ok" @click="saveRename(p)">保存</button>
+                <button class="mini-btn" @click="stopRename">取消</button>
+              </div>
+            </template>
+            <template v-else>
+              <div class="pc-name">{{ p.name && p.name !== p.id ? p.name : "未命名" }}</div>
+              <div class="pc-meta">
+                <span class="mono pc-id">{{ p.id }}</span>
+                <span class="pc-dot">·</span>
+                {{ p.face_count }} 张照片
+              </div>
+            </template>
+          </div>
+
+          <!-- hover 才浮出的工具：不抢封面的视觉 -->
+          <div v-if="editingId !== p.id" class="pc-tools" @click.stop>
+            <button class="mini-btn" title="重命名" @click="startRename(p)">✎</button>
+            <button
+              class="mini-btn"
+              title="合并到其他人物"
+              @click="mergingSource = p"
+            >
+              ⇄
+            </button>
+          </div>
         </div>
       </article>
     </div>
@@ -858,75 +926,194 @@ body.theme-dark .pg-action-msg {
   margin-top: 8px;
 }
 
+/* ── 人物卡：竖排大卡（FEAT-113 ⑦）─────────────────────────────────
+   【为什么改】旧版是 176px 宽的**横排**卡：头像 64 + 间距 14 + 内边距 32
+   = 110px 被占掉，名字只剩 66px 宽。而名字后面还挤着一个「✎」按钮，
+   于是「妈妈」「爸爸」勉强能显示，一碰到「外婆（成都老宅）」这种就只剩
+   “外婆（成…” —— 这就是“名字显示不全”的真正原因，**不是省略号写错了**。
+   横排卡里再加宽也没用：名字区域是剩余空间，永远会被头像吃掉大半。
+
+   改竖排后名字拿到整张卡的宽度，并允许折两行：名字是这张卡的主信息，
+   宁可两行也不截断。列宽 176 → 196：一行少排一两张，换来名字可读。 */
 .person-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 16px;
+  /* FEAT-124：卡片变成 4:5 照片封面，列宽抬到 176px（再小就看不出是谁） */
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  grid-auto-flow: dense;
+  gap: 18px 14px;
 }
 
+/* FEAT-124：人物卡 = 一张 4:5 的人脸裁切照片 + 文字嵌在照片底部。
+   旧版是「圆头像 + 下方三行元信息」，头像只有 86px 且圆形裁掉了合影上下文；
+   用户要的是「显示照片或照片的裁切」，所以封面改回照片，文字压上去。 */
 .person-card {
-  background: transparent; /* 底色由 surfaceStyle(主题) 提供 */
-  border-radius: 12px;
-  padding: 16px;
+  background: transparent;
+  padding: 0;
   display: flex;
-  align-items: center;
-  gap: 14px;
-  transition: transform var(--dur-2), box-shadow var(--dur-2);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  text-align: left;
 }
-.person-card:hover {
+
+/* 封面：4:5 竖版，圆角由卡片自己给（与相册墙瓦片同一套观感） */
+.pc-cover {
+  position: relative;
+  aspect-ratio: 4 / 5;
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--c-fg) 10%, transparent);
+  transition: transform var(--dur-1) ease, box-shadow var(--dur-2) ease;
+}
+.pc-cover:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
 }
-
-.person-avatar-wrap { position: relative; flex-shrink: 0; }
-
-.person-avatar {
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
+.pc-img {
+  width: 100%;
+  height: 100%;
   object-fit: cover;
   display: block;
-  border: 2px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
 }
-.person-avatar-fallback {
-  background: var(--color-primary);
-  color: var(--color-on-primary);
-  font-size: 26px;
-  line-height: 60px;
-  text-align: center;
-  display: inline-block;
-}
-.person-face-count {
+/* 无封面（还没裁出来 / 人物无脸）→ 首字大号占位，不用灰块 */
+.pc-ph {
   position: absolute;
-  bottom: -4px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--color-primary);
-  color: var(--color-on-primary);
-  font-size: 11px;
-  padding: 1px 8px;
-  border-radius: 999px;
-  white-space: nowrap;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 44px;
+  font-weight: 650;
+  color: color-mix(in srgb, var(--c-fg) 45%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
 }
 
-.person-info { min-width: 0; flex: 1; }
+/* 文字嵌入：底部渐变让白字在任何照片上都读得出来 */
+.pc-cap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 26px 10px 9px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.72));
+  color: #fff;
+  pointer-events: none;
+}
+.pc-cap > * {
+  pointer-events: auto;
+}
+.pc-name {
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.pc-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  opacity: 0.82;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.pc-id {
+  font-size: 10.5px;
+  opacity: 0.9;
+}
+.pc-dot {
+  opacity: 0.5;
+}
+
+/* hover 才浮出的工具条（不抢封面视觉） */
+.pc-tools {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--dur-1) ease;
+}
+.pc-cover:hover .pc-tools,
+.pc-cover:focus-within .pc-tools {
+  opacity: 1;
+}
+.pc-tools .mini-btn {
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.pc-tools .mini-btn:hover {
+  background: rgba(0, 0, 0, 0.68);
+}
+
+/* 封面上的行内重命名 */
+.pc-rename {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 13px;
+  padding: 3px 6px;
+  border-radius: 6px;
+}
+.pc-edit-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.person-info { min-width: 0; width: 100%; }
 
 .person-name-row {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
   min-width: 0;
 }
 .person-name {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
+  /* 名字最多两行，**不用省略号**：宁可折行也不截断。
+     overflow-wrap 处理超长无空格串（纯英文/ID），避免直接溢出卡片。 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  line-height: 1.32;
+  max-width: 100%;
+}
+/* 重命名按钮：命名是低频动作，不该和名字争视线。
+   默认隐藏（占位保留，避免悬停时名字跳行），悬停/聚焦才出现。 */
+.person-name-row .mini-btn {
+  margin-top: 1px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--dur-1) ease;
+  pointer-events: none;
+}
+.person-card:hover .person-name-row .mini-btn,
+.person-card:focus-within .person-name-row .mini-btn {
+  opacity: 1;
+  pointer-events: auto;
 }
 .mono { font-family: Consolas, Monaco, monospace; }
-.person-id { font-size: 12px; color: var(--color-link); margin-top: 2px; }
-.person-date { font-size: 11px; opacity: 0.6; margin-top: 4px; }
+.person-id { font-size: 11px; color: var(--color-link); margin-top: 3px; opacity: 0.85; }
+.person-date { font-size: 10.5px; opacity: 0.55; margin-top: 3px; font-variant-numeric: tabular-nums; }
 
 .mini-btn {
   border: 1px solid currentColor;
@@ -941,7 +1128,8 @@ body.theme-dark .pg-action-msg {
 }
 .mini-btn:hover { border-color: var(--color-link); color: var(--color-link); }
 .mini-btn.ok { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
-.merge-btn { margin-top: 6px; }
+/* 合并按钮：竖排后占整行宽，也更好点 */
+.merge-btn { margin-top: 4px; border: none; padding: 2px 4px; font-size: 10.5px; color: var(--fg-3); }
 
 .person-rename-input {
   width: 100%;

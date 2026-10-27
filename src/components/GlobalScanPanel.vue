@@ -8,12 +8,13 @@
  * - 支持启动 / 停止；两级进度条（相册级总进度 + 当前相册照片级进度）
  * - 后台执行：任务状态存于 Pinia store，离开页面扫描不中断，回来恢复显示
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import type { GlobalScanItem, GlobalScanItemStatus } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
 import PerfSettingsDialog from "./settings/PerfSettingsDialog.vue";
+import ModelMissingDialog from "./settings/ModelMissingDialog.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import { SCAN_MODE_TITLE, SCAN_MODE_TIP } from "../utils/scanModeTip";
 import { scanItemNote, type ScanItemNote } from "../utils/scanItemNote";
@@ -30,6 +31,25 @@ const job = computed(() => contentStore.globalScanJob);
 const running = computed(() => job.value.running);
 const stopping = computed(() => job.value.stopping);
 const items = computed(() => job.value.items);
+
+/* FEAT-114：扫描报「缺少模型文件」时自动弹下载窗（人脸通道预检失败的原话见
+   vision::ensure_face_channel_ready）。同一段报错只弹一次，避免 watcher 反复触发。 */
+const modelDialogOpen = ref(false);
+const modelDialogReason = ref<"face" | "ocr">("face");
+const modelMissingFiles = ref<string[]>([]);
+let lastPromptKey = "";
+const MODEL_MISSING_RE = /缺少模型文件|模型未下载|模型缺失|模型文件不完整|未找到模型/;
+
+watch(
+  () => [job.value.error, ...items.value.map((i) => i.error)].join("\n"),
+  (text) => {
+    if (!text || !MODEL_MISSING_RE.test(text) || text === lastPromptKey) return;
+    lastPromptKey = text;
+    modelDialogReason.value = /paddleocr|ocr/i.test(text) ? "ocr" : "face";
+    modelMissingFiles.value = [...new Set(text.match(/[\w.-]+\.onnx/gi) ?? [])];
+    modelDialogOpen.value = true;
+  },
+);
 
 // ---- 相册勾选 ----
 const albums = computed(() => albumStore.albums);
@@ -233,7 +253,13 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- 相册勾选区 -->
+    <!-- FEAT-115：左右分栏。
+         左 = 选择区（相册勾选 + 扫描内容 + 主 CTA），右 = 任务区（进度 / 空态）。
+         按「任务阶段」分区，而不是按功能继续往下堆块 ——
+         一个动作（勾选 → 选择类型 → 开始）应该在同一条竖线上走完。 -->
+    <div class="gs-cols">
+      <div class="gs-col-l">
+    <!-- 相册勾选区（FEAT-115：不再是一块内衬板，只是左栏的一段） -->
     <div class="gs-select-block">
       <div class="gs-select-head">
         <label class="gs-check-all" :class="{ disabled: running }">
@@ -316,7 +342,9 @@ onMounted(() => {
     </div>
 
     <p v-if="job.error" class="gs-error">{{ job.error }}</p>
+      </div><!-- /gs-col-l -->
 
+      <div class="gs-col-r">
     <!-- 进度区：总进度 + 当前相册照片级进度 -->
     <div v-if="items.length" class="gs-progress-block">
       <div class="gs-progress-head">
@@ -390,12 +418,23 @@ onMounted(() => {
 
     <!-- 空态 -->
     <div v-if="!items.length" class="gs-empty">
-      <p>勾选相册 → 选择扫描类型 → 点击「开始扫描入库」</p>
+      <p class="gs-empty-title">当前没有进行中的任务</p>
+      <p class="gs-empty-text">勾选左侧相册 → 选择扫描类型 → 点「开始扫描入库」<br />扫描在后台执行，离开页面不中断</p>
     </div>
+      </div><!-- /gs-col-r -->
+    </div><!-- /gs-cols -->
   </section>
 
   <!-- FEAT-051：性能设置弹窗（⚙ 性能设置 / 📦 模型管理，与相册扫描共用） -->
   <PerfSettingsDialog v-model="perfOpen" />
+
+  <!-- FEAT-114：人脸/OCR 模型缺失时当场下载 -->
+  <ModelMissingDialog
+    :visible="modelDialogOpen"
+    :reason="modelDialogReason"
+    :missing-files="modelMissingFiles"
+    @close="modelDialogOpen = false"
+  />
 
   <!-- FEAT-SEM：扫描方式确认（覆盖 / 增量 / 取消） -->
   <ConfirmDialog
@@ -416,11 +455,26 @@ onMounted(() => {
 /* ---- 区域容器（与 ScanPanel 白底卡片风格一致） ---- */
 /* BUG-2026-0921-005：与 ScanPanel 同源问题——浅色背景硬编码 + var(--color-text)
    深色下翻浅，文字落在白底上不可读。全部改为主题变量。 */
+/* 扫描主面板（FEAT-106）：从「组件色调玻璃」改为「墙板玻璃」。
+   旧版用 --color-surface（组件色调半透明）—— 那是一块**发紫的板**，
+   叠在青绿色壁纸上与页头/数据带的白色磨砂板不是同一种材质，
+   一屏里出现了两套“玻璃”。现在与页头、数据带、侧栏、入口卡同一套。 */
 .gs-area {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  background: var(--color-surface);
+  border: 1px solid var(--panel-glass-edge);
+  border-radius: var(--panel-glass-radius);
   overflow: hidden;
+}
+/* 直接用墙板变量覆盖 .glass-surface 的底色与模糊。
+   ⚠️ 特异性必须压过 main.css 的 `body.theme-dark .glass-surface`（0,2,1）：
+      光写 `.gs-area.glass-surface` 只有（0,2,0），会被它抢掉，
+      结果是“代码改了但面板还是旧的紫调玻璃”（实测过）。
+      加上 body 前缀后是（0,3,1），两套模式都稳定生效。 */
+body .gs-area.glass-surface {
+  background-color: var(--panel-glass-fill);
+  -webkit-backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  backdrop-filter: blur(var(--panel-glass-blur)) saturate(var(--panel-glass-saturate));
+  box-shadow: var(--panel-glass-shadow);
+  color: var(--c-fg);
 }
 
 .gs-toolbar {
@@ -428,7 +482,7 @@ onMounted(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 14px 10px;
+  padding: 14px 16px 12px;
   flex-wrap: wrap;
 }
 
@@ -452,25 +506,34 @@ onMounted(() => {
    成因：① .btn-ghost 是「透明底 + 1px 描边」，在白底面板上等于没有底色；
         ② 禁用态用整体 opacity:.55（按钮变虚，而非真正的禁用底色）。
    处置：中性/幽灵按钮改实底浅色；禁用态改实心灰，不再用整体透明度。 */
+/* 按钮（FEAT-106）：改用令牌而不是硬编码的浅色底。
+   旧版写死了 background:#fff / color:#1f2733，在深色预设里是一块**发光的白块**，
+   而且 hover 时 color: var(--color-link)（浅金）在白底上只有 2.3:1。 */
 .btn {
-  min-height: 36px;
-  padding: 8px 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 13px;
   border-radius: 8px;
-  border: 1px solid #d5dbe6;
-  background: #fff;
-  color: #1f2733;
+  border: 1px solid var(--c-rule);
+  background: color-mix(in srgb, var(--c-fg) 5%, transparent);
+  color: var(--c-fg-2);
   cursor: pointer;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-em);
   transition: background var(--dur-2), border-color var(--dur-2), color var(--dur-2), box-shadow var(--dur-1), transform var(--dur-1);
 }
-.btn:hover:not(:disabled) { border-color: var(--color-link); color: var(--color-link); box-shadow: 0 2px 8px rgba(16, 24, 40, 0.08); }
+.btn:hover:not(:disabled) {
+  color: var(--c-fg);
+  border-color: color-mix(in srgb, var(--c-fg) 22%, transparent);
+  background: color-mix(in srgb, var(--c-fg) 9%, transparent);
+  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.08);
+}
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:focus-visible { outline: 2px solid color-mix(in srgb, var(--color-primary) 55%, transparent); outline-offset: 2px; }
 .btn:disabled {
-  background: #eef1f6;
-  border-color: #dfe4ec;
-  color: #98a2b3;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 .gs-btn-primary { background: var(--color-primary); color: var(--color-on-primary); border-color: var(--color-primary); }
@@ -479,19 +542,61 @@ onMounted(() => {
 .gs-btn-danger { background: var(--color-danger); color: #fff; border-color: var(--color-danger); }
 .gs-btn-danger:hover:not(:disabled) { background: var(--color-danger-hover); border-color: var(--color-danger-hover); color: #fff; }
 .gs-btn-danger:disabled { background: #f0b3b5; border-color: #f0b3b5; color: #fff; cursor: not-allowed; }
-.btn-ghost { background: color-mix(in srgb, var(--color-primary) 16%, transparent); color: var(--color-primary-text); border-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }
-.btn-ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--color-primary) 26%, transparent); border-color: var(--color-primary); color: var(--color-primary-text); }
-.btn-ghost:disabled { background: #f2f4f8; border-color: #e3e7ee; color: #9aa4b4; cursor: not-allowed; }
-.btn-mini { padding: 2px 8px; font-size: 11px; border: 1px solid var(--color-border); border-radius: 3px; background: var(--color-surface-2); color: inherit; cursor: pointer; }
-.btn-mini:hover { border-color: var(--color-link); color: var(--color-link); }
-.btn-mini:disabled { background: var(--color-neutral-soft); color: var(--color-text-3); cursor: not-allowed; }
+/* 幽灵按钮（金强调档）：
+   ⚠️ 不能用 --color-primary-text 当字色 —— 它是浅金 #ffd9a0，
+   那是为**深色玻璃**准备的一档；在浅色预设下落在 16% 金底上只有 1.1:1（实测）。
+   改用按底色明度分档的 --c-accent-bright（深底提亮 / 浅底压暗，方向相反）。 */
+.btn-ghost {
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  color: var(--c-accent-bright, var(--c-accent));
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary) 26%, transparent);
+  border-color: var(--color-primary);
+  color: var(--c-accent-bright, var(--c-accent));
+}
+/* 禁用态：用 --c-fg 的低透明档（两套模式都成立），不再写死浅灰底 + 浅灰字 */
+.btn-ghost:disabled {
+  background: color-mix(in srgb, var(--c-fg) 6%, transparent);
+  border-color: var(--c-rule);
+  color: var(--c-fg-3);
+  cursor: not-allowed;
+}
+.btn-mini { padding: 2px 8px; font-size: 11px; border: 1px solid var(--c-rule); border-radius: 4px; background: color-mix(in srgb, var(--c-fg) 6%, transparent); color: var(--c-fg); cursor: pointer; }
+.btn-mini:hover:not(:disabled) { border-color: color-mix(in srgb, var(--c-fg) 26%, transparent); color: var(--c-fg); }
+.btn-mini:disabled { background: color-mix(in srgb, var(--c-fg) 4%, transparent); color: var(--c-fg-3); cursor: not-allowed; }
 
 /* ---- 相册勾选区 ---- */
+/* ── FEAT-115：左右分栏 ──────────────────────────────────────────
+   一块板（.gs-area）内部用一根发丝线分成左右两区。
+   左区承担"选择 → 开始"的动作线，右区只回答"现在跑到哪了"。
+   窄屏（<1100）落回单栏，分隔线从"左"改到"上"。 */
+.gs-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  border-top: 1px solid var(--c-rule);
+}
+.gs-col-l { padding: 14px 16px 18px; min-width: 0; }
+.gs-col-r { padding: 14px 16px 18px; min-width: 0; border-left: 1px solid var(--c-rule); }
+@media (max-width: 1100px) {
+  .gs-cols { grid-template-columns: 1fr; }
+  .gs-col-r { border-left: none; border-top: 1px solid var(--c-rule); }
+}
+
 .gs-select-block {
-  margin: 0 14px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: var(--color-surface-2);
+  margin: 0;
+  /* FEAT-106：内层块也从“组件色调玻璃”改为**深一档的墙板内衬**。
+     旧值 --color-surface-2 是 rgba(42,38,48,.86) —— 一块近乎不透明的紫板，
+     盖在外层白玻璃上，两者不是同一材质，大块区域就会“发紫”。
+     现在用 --c-fg 的低透明档，与壁纸色温一致。 */
+  /* FEAT-115：内衬板整块删掉。
+     外层 .gs-area 已经是一块墙板玻璃，里面再套一块带边框+底色的板
+     就是"板里还有板" —— 一屏里两个容器争夺同一件事。
+     现在相册列表直接落在板面上，靠行间距与 hover 微光分组。 */
+  border: none;
+  border-radius: 0;
+  background: none;
 }
 
 .gs-select-head {
@@ -515,24 +620,32 @@ onMounted(() => {
 .gs-check-all.disabled { opacity: 0.6; cursor: not-allowed; }
 
 .gs-select-count { font-size: 12px; color: var(--color-text-3); }
-.gs-select-count b { color: var(--color-link); }
+.gs-select-count b { color: var(--fg); font-weight: 620; }
 
 .gs-filter { margin-left: auto; }
+/* FEAT-115：这里原本写了两遍 background/color，后一条
+   `background: var(--color-surface-2)` 把前一条盖掉 —— 于是输入框是
+   一块比板面更深的实心方块，看起来像"板上开了个洞"。
+   删掉重复声明，只留发丝描边 + 5% 底（与全站输入框同一口径）。 */
 .gs-filter-input {
   width: 200px;
   height: 28px;
-  padding: 0 8px;
-  font-size: 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  background: var(--color-surface-2);
-  color: inherit;
+  padding: 0 10px;
+  font-size: 11.5px;
+  border: none;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--c-fg) 6%, transparent);
+  box-shadow: inset 0 0 0 1px var(--c-rule);
+  color: var(--fg);
   outline: none;
 }
-.gs-filter-input:focus { border-color: var(--color-link); }
+.gs-filter-input::placeholder { color: var(--fg-3); }
+.gs-filter-input:focus { box-shadow: inset 0 0 0 1px var(--c-accent); }
 
 .gs-album-list {
-  max-height: 260px;
+  /* 分栏后左栏更高：9 行相册一次看完（约 38px/行）。
+     超过再滚 —— 半行被切掉比需要滚动更难受。 */
+  max-height: 348px;
   overflow-y: auto;
 }
 
@@ -555,8 +668,22 @@ onMounted(() => {
   font-size: 13px;
 }
 .gs-album-row:last-child { border-bottom: none; }
-.gs-album-row:hover { background: var(--color-soft-accent); }
-.gs-album-row.checked { background: var(--color-soft-accent); }
+/* FEAT-115：选中态从"整块底色"改成"左侧 2px 竖条 + 5% 微光"。
+   一屏十几行，每行一块底就是十几个小卡片；竖条只占 2px 却能把"选中"
+   表达清楚，而且与左栏筛选（.side-item.on）用同一套语言。 */
+.gs-album-row { position: relative; }
+.gs-album-row:hover { background: color-mix(in srgb, var(--c-fg) 5%, transparent); }
+.gs-album-row.checked { background: color-mix(in srgb, var(--c-fg) 5%, transparent); }
+.gs-album-row.checked::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--c-accent);
+}
 .gs-album-row.locked { cursor: default; }
 .gs-album-row input[type="checkbox"] { flex: none; }
 
@@ -595,8 +722,25 @@ onMounted(() => {
   white-space: nowrap;
 }
 .gs-badge-plain { background: var(--color-neutral-soft); color: var(--color-text-3); }
-.gs-badge-ok { background: var(--color-ok-soft); color: var(--color-ok); }
-.gs-badge-todo { background: var(--color-warn-soft); color: var(--color-warn); }
+/* FEAT-105 实测：--color-ok / --color-warn 是按“页面底”标定的，落在同色系的
+   soft 底（半透明绿/橙）上只有 4.4:1，差一点到 AA。这里浅色下换成深一档的实色，
+   深色不动（深色底上反而需要亮色）。 */
+/* FEAT-106：徽标改成“实底 + 白字”。
+   为什么不用“同色系淡底 + 同色系文字”：那个组合的对比度取决于
+   底下那层板有多亮 —— 板一变（墙板提亮/换预设）就往下掉，
+   实测从 4.4 掉到 3.76，怎么调都是追着跑。
+   实底就固定了：--color-ok-solid（#15803d）+ 白字 = 5.1:1；
+   --color-warn-solid（#b45309）+ 白字 = 4.9:1。两套模式都成立。 */
+.gs-badge-ok {
+  background: var(--color-ok-solid);
+  color: #fff;
+  font-weight: var(--fw-em);
+}
+.gs-badge-todo {
+  background: var(--color-warn-solid);
+  color: #fff;
+  font-weight: var(--fw-em);
+}
 
 /* ---- 扫描设置 ---- */
 .gs-controls {
@@ -607,20 +751,34 @@ onMounted(() => {
   padding: 12px 14px;
 }
 
-.gs-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; flex: 1; min-width: 0; }
+/* FEAT-115：2×2 带边框的盒子 → 一行紧凑胶囊。
+   四个复选框原来各占一个描边矩形，在大面板里又形成"格子里还有格子"；
+   现在是一排胶囊：选中的用实底强调色，未选中的只有一根发丝描边。 */
+.gs-checks { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
 .gs-check {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
-  border: 1px solid var(--color-border);
+  height: 26px;
+  padding: 0 10px;
+  border: none;
   border-radius: 6px;
   cursor: pointer;
-  transition: all var(--dur-2);
-  background: transparent;
+  font-size: 11.5px;
+  color: var(--fg-2);
+  box-shadow: inset 0 0 0 1px var(--c-ctrl-line, rgba(255, 255, 255, 0.11));
+  transition: color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
 }
-.gs-check:hover { border-color: var(--color-link); background: var(--color-soft-accent); }
-.gs-check.active { border-color: var(--color-link); background: var(--color-soft-accent); }
+.gs-check input { width: 12px; height: 12px; margin: 0; accent-color: var(--c-accent); }
+.gs-check:hover { color: var(--fg); }
+.gs-check.active {
+  color: var(--fg);
+  font-weight: 560;
+  background: color-mix(in srgb, var(--c-accent, #d4a24a) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-accent, #d4a24a) 42%, transparent);
+}
+/* 说明文字在胶囊内不占独立行；未选中时压到弱色 */
+.gs-check-desc { display: none; }
 .gs-check input:disabled { cursor: not-allowed; }
 .gs-check-label { font-weight: 500; font-size: 13px; }
 .gs-check-desc { font-size: 11px; color: var(--color-text-3); }
@@ -636,7 +794,7 @@ onMounted(() => {
   background: var(--color-danger-soft);
 }
 
-.gs-progress-block { padding: 10px 14px 14px; }
+.gs-progress-block { padding: 4px 0 0; }
 
 .gs-progress-head {
   display: flex;
@@ -771,11 +929,13 @@ onMounted(() => {
   50% { opacity: 0.55; }
 }
 
-.gs-empty {
-  padding: 22px 14px;
-  text-align: center;
-  color: var(--color-text-3);
-  font-size: 13px;
-}
+/* FEAT-115：空态从"一块占位卡"改成"一段说明" —— 没有任务时不该出现第二个容器 */
+.gs-empty { padding: 34px 0 10px; text-align: center; }
 .gs-empty p { margin: 0; }
+.gs-empty-title { font-size: 12.5px; font-weight: 560; color: var(--fg); }
+/* ⚠️ 用 --fg-2 不用 --fg-3：这句是"怎么做"的操作指引，属于要读的文字；
+   --fg-3 在板面上实测 3.59:1（dark），不达 AA。 */
+/* 用 --c-fg-2（承载面档）而不是 --fg-2：这段文字落在板面填充上，
+   不是直接落壁纸。--fg-2 实测 4.21:1（dark），差 0.3 不达标。 */
+.gs-empty-text { margin-top: 6px !important; font-size: 11px; color: var(--c-fg-2); line-height: 1.7; }
 </style>

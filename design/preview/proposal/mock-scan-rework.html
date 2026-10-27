@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>扫描入库 · 界面重排效果图 v2</title>
+<link rel="stylesheet" href="mock-widgets.css" />
+<style>
+/* ══════════════════════════════════════════════════════════════════════
+   ④ 扫描入库界面重排（FEAT-113 效果图 v2）
+   ──────────────────────────────────────────────────────────────────────
+   v1 为什么“太乱了”：我把它拆成了 6 个方框 ——
+     页头 + 状态条 + 左相册面板 + 右两个面板（扫描项/任务）+ 又一个状态条。
+     框越多越乱；而且我同时贴了“运行中”和“空闲态”两个状态条，自相矛盾。
+
+   v2 的原则：**只留一个面板**。分区靠留白与细分隔线，不靠多个卡片。
+     · 顶部一行：页面读数 + 次要操作（性能设置）
+     · 相册列表：**两列**（相册名短，单列会拉得很长 —— 现在真实界面
+       就是单列 11 行、还会被裁掉一截）
+     · 扫描项：收成一行 chips（原来 2×2 大方块占了近 1/3 屏）
+     · 底部一行：已选摘要 + 主按钮（选完直接开始，不用回顶部找）
+     · 进度区：只在运行时出现，平时不占位
+   功能一个不少，只是把“六个框”合成“一个框里的五段”。
+   ══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --track: rgba(255, 255, 255, 0.13);
+  --danger: #e08585;
+}
+
+.w-page { padding: 0 52px 56px; }
+
+/* 背景写 html（不能 fixed）：全页截图时 fixed 只画一屏，下半部会变白底白字 */
+html {
+  background:
+    radial-gradient(60% 46% at 12% -8%, var(--wash-a), transparent 62%),
+    radial-gradient(52% 40% at 94% 2%, var(--wash-b), transparent 66%),
+    radial-gradient(48% 38% at 80% 112%, var(--wash-c), transparent 62%),
+    linear-gradient(165deg, var(--bg-1) 0%, var(--bg-2) 48%, var(--bg-3) 100%);
+  min-height: 100%;
+}
+body { background: transparent; color: var(--fg); }
+
+/* 卡片：照抄产品玻璃配方，但去掉 1px 实描边（与 ③ 轻量化同一语言） */
+.soft {
+  border-radius: 14px;
+  background-color: rgba(var(--tint), 0.38);
+  background-image: linear-gradient(180deg, rgba(255,255,255,.07), transparent 26%);
+  -webkit-backdrop-filter: blur(24px) saturate(1.32);
+  backdrop-filter: blur(24px) saturate(1.32);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.20),
+    0 0 0 1px rgba(0,0,0,.10),
+    0 10px 26px -16px rgba(0,0,0,.66);
+}
+
+/* 页头（真实产品由 AppHeader 承担，这里只表达位置） */
+.mock-header {
+  display: flex; align-items: center; gap: 11px;
+  height: 52px; padding: 0 16px 0 12px; border-radius: 14px; margin-bottom: 12px;
+  background-color: rgba(var(--tint), 0.38);
+  background-image: linear-gradient(180deg, rgba(255,255,255,.07), transparent 30%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.20), 0 0 0 1px rgba(0,0,0,.10), 0 12px 30px -18px rgba(0,0,0,.7);
+}
+.mh-back {
+  display: inline-flex; align-items: center; height: 26px; padding: 0 10px 0 8px;
+  border-radius: 7px; font-size: 11.5px; color: var(--fg-2);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.16);
+}
+.mh-title { font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
+.mh-meta { font-size: 11px; color: var(--fg-3); }
+.mh-nav { display: flex; gap: 2px; padding-left: 13px; margin-left: 3px;
+  border-left: 1px solid rgba(255,255,255,.12); }
+.mh-nav span { padding: 5px 11px; border-radius: 7px; font-size: 12px; color: var(--fg-2); }
+.mh-nav span.on { color: var(--fg); font-weight: 600; background: rgba(255,255,255,.11); }
+
+/* 数据带（真实产品由 StatBand 承担）：四格读数 + 细轨 */
+.band { display: flex; padding: 0 6px 16px; margin-bottom: 14px;
+  border-bottom: 1px solid rgba(255,255,255,.09); }
+.band > div { flex: 1; padding-right: 26px; }
+.band > div + div { padding-left: 26px; border-left: 1px solid rgba(255,255,255,.10); }
+.band .k { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-3); }
+.band .v { font-size: 27px; font-weight: 300; letter-spacing: -1px; line-height: 1.1; margin-top: 4px; }
+.band .v small { font-size: 11px; font-weight: 400; letter-spacing: 0; color: var(--fg-2); margin-left: 4px; }
+.band .bar { height: 2px; border-radius: 2px; background: rgba(255,255,255,.13); margin-top: 8px; }
+.band .bar i { display: block; height: 100%; border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+
+/* ── 唯一的面板 ──────────────────────────────────────────────── */
+.panel { padding: 0; overflow: hidden; }
+
+/* ① 顶部一行：说明 + 次要操作 */
+.p-head { display: flex; align-items: center; gap: 12px; padding: 13px 18px; }
+.p-head .t { font-size: 12.5px; font-weight: 600; }
+.p-head .t b { color: var(--accent-bright); font-weight: 650; }
+.p-head .d { font-size: 10.5px; color: var(--fg-3); }
+.p-head .act { margin-left: auto; display: flex; gap: 8px; flex: none; }
+
+.btn-ghost { height: 28px; padding: 0 12px; border-radius: 8px; font-size: 11px;
+  cursor: pointer; border: none; color: var(--fg-2); background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.14); }
+.btn-ghost:hover { color: var(--fg); }
+.btn-primary { height: 30px; padding: 0 18px; border-radius: 9px; font-size: 11.5px;
+  font-weight: 700; cursor: pointer; border: none; color: #20160a;
+  background: linear-gradient(135deg, var(--accent-bright), var(--accent-2));
+  box-shadow: 0 4px 14px -6px var(--accent); }
+.btn-stop { height: 30px; padding: 0 16px; border-radius: 9px; font-size: 11.5px;
+  cursor: pointer; border: none; color: var(--danger);
+  background: rgba(224,133,133,.13); box-shadow: inset 0 0 0 1px rgba(224,133,133,.3); }
+
+/* ② 相册工具行 */
+.sel { display: flex; align-items: center; gap: 9px; padding: 0 18px 9px; }
+.chk { width: 15px; height: 15px; border-radius: 4.5px; flex: none; display: grid; place-items: center;
+  font-size: 10px; font-weight: 800; color: #20160a; background: var(--accent); }
+.sel .n { font-size: 11px; color: var(--fg-3); }
+.sel .n b { color: var(--accent-bright); font-size: 12px; }
+.sel .mini { height: 22px; padding: 0 9px; border-radius: 6px; font-size: 10.5px; cursor: pointer;
+  border: none; color: var(--fg-2); background: rgba(255,255,255,.07); }
+.filter { margin-left: auto; height: 26px; width: 168px; padding: 0 10px; border-radius: 7px;
+  border: none; background: rgba(255,255,255,.07); color: var(--fg); font-size: 11px; outline: none; }
+.filter::placeholder { color: var(--fg-3); }
+
+/* ③ 相册列表：两列 —— 相册名短，单列会把面板拉得很长（真实界面 11 行还被裁切） */
+.albums {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 10px;
+  padding: 0 12px 12px;
+  /* 限高 + 内部滚动：相册多时不把主按钮顶到屏幕外 */
+  max-height: 316px; overflow-y: auto;
+}
+.row { display: flex; align-items: center; gap: 9px; padding: 7px 8px;
+  border-radius: 8px; font-size: 11.5px; }
+.row.on { background: rgba(255,255,255,.055); }
+.box { width: 14px; height: 14px; border-radius: 4px; flex: none; display: grid; place-items: center;
+  font-size: 9.5px; font-weight: 800; color: #20160a;
+  box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.32); }
+.row.on .box { background: var(--accent); box-shadow: none; }
+.row .nm { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .ct { font-size: 10px; color: var(--fg-3); font-variant-numeric: tabular-nums; flex: none; }
+.tag { font-size: 9px; padding: 1px 6px; border-radius: 999px; flex: none; }
+.tag.ok { background: rgba(111,212,224,.15); color: var(--ok); }
+.tag.todo { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-bright); }
+
+/* ④ 扫描项：一行 chips（不再是 2×2 大方块） */
+.chips { display: flex; align-items: center; gap: 8px; padding: 12px 18px;
+  border-top: 1px solid rgba(255,255,255,.08); flex-wrap: wrap; }
+.chips .lb { font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--fg-3); flex: none; margin-right: 2px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 27px; padding: 0 11px;
+  border-radius: 999px; font-size: 11px; cursor: pointer;
+  color: var(--fg-3); background: rgba(255,255,255,.055);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
+.chip i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .5; }
+.chip.on { color: var(--fg); background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent); }
+.chip.on i { background: var(--accent); opacity: 1; }
+.chips .hint { font-size: 10px; color: var(--fg-3); margin-left: auto; }
+
+/* ⑤ 底部：已选摘要 + 主按钮 */
+.p-foot { display: flex; align-items: center; gap: 14px; padding: 12px 18px;
+  border-top: 1px solid rgba(255,255,255,.08); background: rgba(0,0,0,.10); }
+.p-foot .sum { font-size: 11.5px; color: var(--fg-2); line-height: 1.5; }
+.p-foot .sum b { color: var(--fg); font-size: 12.5px; }
+.p-foot .sum small { color: var(--fg-3); }
+.p-foot .go { margin-left: auto; flex: none; }
+
+/* ── 进度态（同一条面板内展开，不另起一块）────────────────────── */
+.prog { padding: 13px 18px; border-top: 1px solid rgba(255,255,255,.08); }
+.prog-top { display: flex; align-items: baseline; gap: 9px; margin-bottom: 8px; }
+.prog-top b { font-size: 12px; font-weight: 600; }
+.prog-top small { font-size: 10.5px; color: var(--fg-3); }
+.prog-top .pct { margin-left: auto; font-size: 12.5px; font-weight: 650;
+  color: var(--accent-bright); font-variant-numeric: tabular-nums; }
+.track { height: 5px; border-radius: 4px; background: var(--track); overflow: hidden; }
+.track i { display: block; height: 100%; border-radius: 4px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.track.sub { height: 3px; margin-top: 7px; }
+.track.sub i { background: linear-gradient(90deg, var(--ok), var(--accent-2)); }
+
+/* 逐相册状态：紧凑三列（不是宽表格） */
+.tbl { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 12px; }
+.tbl th { text-align: left; font-weight: 500; color: var(--fg-3); font-size: 9.5px;
+  letter-spacing: .1em; text-transform: uppercase; padding: 0 6px 6px;
+  border-bottom: 1px solid rgba(255,255,255,.10); }
+.tbl td { padding: 6px; border-bottom: 1px solid rgba(255,255,255,.055); }
+.tbl tr:last-child td { border-bottom: none; }
+.tbl tr.cur { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
+.tbl .num.f { color: var(--danger); }
+.st { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; }
+.st::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.st.done { color: var(--ok); }
+.st.run { color: var(--accent-bright); }
+.st.wait { color: var(--fg-3); }
+
+/* hidden 属性优先于 display:flex —— 否则 .p-foot 的 display 会把 hidden 覆盖掉，
+   导致“空闲态也显示进度 + 停止”这种自相矛盾的渲染。 */
+[hidden] { display: none !important; }
+
+.note { font-size: 11px; color: var(--fg-3); margin: 22px 0 0; }
+</style>
+</head>
+<body data-theme="dusk">
+
+<div class="w-page">
+
+  <!-- AppHeader -->
+  <div class="mock-header">
+    <span class="mh-back">‹ 主页</span>
+    <span style="font-size:15px">📥</span>
+    <span class="mh-title">扫描入库</span>
+    <span class="mh-meta">8 个相册已入库</span>
+    <nav class="mh-nav">
+      <span class="on">全局扫描</span>
+      <span>按年·地点</span>
+      <span>重复清理</span>
+      <span>分组工具</span>
+    </nav>
+    <span style="margin-left:auto;font-size:11px;color:var(--fg-3)">🔍 搜索照片</span>
+  </div>
+
+  <!-- StatBand -->
+  <div class="band">
+    <div><div class="k">相册</div><div class="v">12<small>个</small></div></div>
+    <div><div class="k">照片</div><div class="v">486<small>张</small></div></div>
+    <div><div class="k">已入库相册</div><div class="v">8<small>/ 12</small></div><div class="bar"><i style="width:67%"></i></div></div>
+    <div><div class="k">已入库照片</div><div class="v">400<small>张</small></div><div class="bar"><i style="width:82%"></i></div></div>
+  </div>
+
+  <!-- ═══ 唯一的面板 ═══ -->
+  <section class="panel soft">
+
+    <!-- ① 顶部一行 -->
+    <div class="p-head">
+      <div>
+        <div class="t">勾选要扫描的相册，一次批量执行 <b>EXIF / 影调 / 人物·文档</b> 写入内容库</div>
+        <div class="d">与相册详情「组合扫描」同一套组件 · 后台执行，离开页面不中断</div>
+      </div>
+      <div class="act">
+        <button class="btn-ghost">⚙ 性能设置</button>
+      </div>
+    </div>
+
+    <!-- ② 工具行 -->
+    <div class="sel">
+      <span class="chk">✓</span>
+      <span class="n">已选 <b>3</b> / 12 个相册</span>
+      <button class="mini">反选</button>
+      <input class="filter" placeholder="按名称 / 路径过滤…" />
+    </div>
+
+    <!-- ③ 相册列表：两列 -->
+    <div class="albums">
+      <div class="row on"><span class="box">✓</span><span class="nm">毕业旅行</span><span class="ct">109 张</span><span class="tag ok">已入库</span></div>
+      <div class="row on"><span class="box">✓</span><span class="nm">聚会合影</span><span class="ct">109 张</span><span class="tag ok">已入库</span></div>
+      <div class="row on"><span class="box">✓</span><span class="nm">美食</span><span class="ct">57 张</span><span class="tag ok">已入库</span></div>
+      <div class="row"><span class="box"></span><span class="nm">森林徒步</span><span class="ct">42 张</span><span class="tag ok">已入库</span></div>
+      <div class="row"><span class="box"></span><span class="nm">自然风景</span><span class="ct">36 张</span><span class="tag ok">已入库</span></div>
+      <div class="row"><span class="box"></span><span class="nm">夜空</span><span class="ct">31 张</span><span class="tag todo">待入库</span></div>
+      <div class="row"><span class="box"></span><span class="nm">日落晚霞</span><span class="ct">25 张</span><span class="tag todo">待入库</span></div>
+      <div class="row"><span class="box"></span><span class="nm">人像</span><span class="ct">24 张</span><span class="tag ok">已入库</span></div>
+      <div class="row"><span class="box"></span><span class="nm">晨曦</span><span class="ct">22 张</span><span class="tag ok">已入库</span></div>
+      <div class="row"><span class="box"></span><span class="nm">城市夜景</span><span class="ct">18 张</span><span class="tag todo">待入库</span></div>
+      <div class="row"><span class="box"></span><span class="nm">花</span><span class="ct">16 张</span><span class="tag ok">已入库</span></div>
+      <div class="row"><span class="box"></span><span class="nm">雪</span><span class="ct">12 张</span><span class="tag todo">待入库</span></div>
+    </div>
+
+    <!-- ④ 扫描项 chips -->
+    <div class="chips">
+      <span class="lb">扫描内容</span>
+      <span class="chip on"><i></i>EXIF 基础</span>
+      <span class="chip on"><i></i>影调分析</span>
+      <span class="chip on"><i></i>人物·文档</span>
+      <span class="chip"><i></i>语义向量</span>
+      <span class="hint">语义向量需 CLIP 模型</span>
+    </div>
+
+    <!-- ⑤ 底部：摘要 + 主按钮。
+         运行态不另起一块底栏，而是把同一个左位换成进度摘要、
+         右位换成「停止」—— 按钮永远在同一个位置，不让人找不到。 -->
+    <div class="p-foot" id="idle-foot">
+      <div class="sum">已选 <b>3</b> 个相册 · <b>275</b> 张照片<br /><small>预计 3～5 分钟 · 已扫描过的照片会自动跳过</small></div>
+      <button class="btn-primary go">开始扫描入库</button>
+    </div>
+
+    <!-- 运行态（默认隐藏；?state=running 切换） -->
+    <div class="prog" id="run-prog" hidden>
+      <div class="prog-top">
+        <b>正在扫描 · 第 2 / 3 个相册</b>
+        <small>毕业旅行 62 / 109 张 · 成功 61 · 失败 1</small>
+        <span class="pct">58%</span>
+      </div>
+      <div class="track"><i style="width:58%"></i></div>
+      <div class="track sub"><i style="width:57%"></i></div>
+      <table class="tbl">
+        <thead><tr><th>相册</th><th>状态</th><th class="num">入库</th><th class="num">失败</th></tr></thead>
+        <tbody>
+          <tr><td>美食</td><td><span class="st done">完成</span></td><td class="num">57</td><td class="num">0</td></tr>
+          <tr class="cur"><td>毕业旅行</td><td><span class="st run">进行中</span></td><td class="num">61</td><td class="num f">1</td></tr>
+          <tr><td>聚会合影</td><td><span class="st wait">等待</span></td><td class="num">—</td><td class="num">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="p-foot" id="run-foot" hidden>
+      <div class="sum">全局进度 <b>1 / 3</b> 个相册完成 · 累计入库 <b>118</b> 张<br /><small>后台执行中，可随时停止；已扫描部分仍会入库</small></div>
+      <button class="btn-stop go">停止</button>
+    </div>
+
+  </section>
+
+  <p class="note">↑ 同一块面板内的五段：顶部读数 · 两步工具行 · 相册两列 · 扫描项 chips · 底部摘要与主按钮。进度区只在运行时展开，平时不占位。</p>
+</div>
+
+<script>
+  const q = new URLSearchParams(location.search);
+  if ((q.get("v") || "").includes("pine")) document.body.dataset.theme = "pine";
+  /* 运行态：隐藏空闲底栏、展开进度区。
+     两个状态用两个 URL 分别出图，而不是同一张里并排两个状态 ——
+     v1 那样做自相矛盾（同一位置同时写“正在扫描”和“上次扫描”）。 */
+  if (q.get("state") === "running") {
+    document.getElementById("idle-foot").hidden = true;
+    document.getElementById("run-prog").hidden = false;
+    document.getElementById("run-foot").hidden = false;
+    document.querySelectorAll(".chip, .row, .filter").forEach((el) => (el.style.opacity = "0.5"));
+  }
+</script>
+</body>
+</html>
