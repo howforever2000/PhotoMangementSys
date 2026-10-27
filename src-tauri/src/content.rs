@@ -2271,6 +2271,63 @@ pub mod commands {
         r
     }
 
+    /// FEAT-122：时间线骨架（按月计数 + 统计读数）
+    ///
+    /// 实测 24,980 张的库：< 20 ms / 约 3 KB（对比 `list_timeline` 的 15 MB）。
+    /// 前端拿它画左栏、年组统计 + 算出每个月的**占位高度**。
+    #[tauri::command]
+    pub async fn timeline_index(
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<db::TimelineIndex, String> {
+        let _t = log_call!("timeline_index", "");
+        let user_id = require_user(&session)?;
+        let r = (|| -> Result<db::TimelineIndex, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.timeline_index(user_id).map_err(|e| format!("{:?}", e))
+        })();
+        match &r {
+            Ok(idx) => logger::log_call_end_with(
+                "timeline_index",
+                _t,
+                &format!("OK | months={} total={}", idx.months.len(), idx.total),
+            ),
+            Err(e) => logger::log_call_end_with("timeline_index", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
+    /// FEAT-122：取某个月的一页时间线卡片（带 `thumb_path`）
+    ///
+    /// - `year = "未记录"` → 无拍摄时间的那一组
+    /// - `limit <= 0` → 不限（按月整包拉，最大月 952 张）
+    #[tauri::command]
+    pub async fn timeline_month(
+        year: String,
+        month: String,
+        limit: Option<i64>,
+        offset: Option<i64>,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Vec<db::TimelineCard>, String> {
+        let _t = log_call!("timeline_month", &format!("{year}-{month}"));
+        let user_id = require_user(&session)?;
+        let r = (|| -> Result<Vec<db::TimelineCard>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.timeline_month(user_id, &year, &month, limit.unwrap_or(0), offset.unwrap_or(0))
+                .map_err(|e| format!("{:?}", e))
+        })();
+        match &r {
+            Ok(cards) => logger::log_call_end_with(
+                "timeline_month",
+                _t,
+                &format!("OK | rows={} with_thumb={}", cards.len(), cards.iter().filter(|c| c.thumb_path.is_some()).count()),
+            ),
+            Err(e) => logger::log_call_end_with("timeline_month", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
     /// 内容分类两级聚合（FEAT-048）：大类 → 细类计数 + 各大类封面（置信度最高）
     #[tauri::command]
     pub async fn list_content_categories(

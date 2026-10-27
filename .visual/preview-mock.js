@@ -10,6 +10,22 @@
  * 会漏掉"数据为空时页面长什么样"这类真实问题）。
  */
 
+/* ---------- 路由改写：preview.html 不在根路径 ----------
+ * 应用用 createWebHistory（路径式路由），直接访问
+ * /.visual/preview.html#/albums 时 router 看到的是 pathname="/.visual/preview.html"，
+ * 匹配不到任何页面 —— 表现为「整页只剩背景渐变」（实测踩过）。
+ * 在应用启动前把地址栏改写成目标路径，document 仍是带 mock 的这一份。
+ * 注意：改写后刷新会回到真实 index.html（那份没有 mock），刷新即失效。
+ *
+ * FEAT-122：这段原先只存在于 preview.html 的**内联副本**里，导致改 preview-mock.js
+ * 却不生效（两份副本漂移）。现在 mock 只有本文件一份，preview.html 用外链引入。
+ */
+{
+  const hashPath = location.hash.replace(/^#/, "");
+  const target = hashPath.startsWith("/") ? hashPath : "/albums";
+  history.replaceState(null, "", target + location.search);
+}
+
 /* ---------- 工具：造一张"照片感"的 SVG 占位图（转 data URL） ---------- */
 function photo(seed, w = 320, h = 200) {
   // 用 seed 生成稳定的伪随机色相，保证每次刷新同一相册封面不变
@@ -107,6 +123,65 @@ const CATEGORIES = [
   { category: "文档", count: 44, cover_path: null },
 ];
 
+/* ---------- FEAT-122：时间线的按月分页桩 ----------
+ * 这里单独造一份**大库**（约 2.5 万行），因为要验证的正是「DOM 不随库变大而膨胀」
+ * 与「跳转落点精确」两件事 —— 用原来那几百行 mock 测不出来。 */
+const TL_ROWS = (() => {
+  const rows = [];
+  let id = 1;
+  const cities = ["北京市", "上海市", "成都市", "杭州市", "西安市", "三亚市"];
+  const cats = ["人像", "风景", "夜景", "美食", "猫咪", "建筑"];
+  const push = (y, m, n) => {
+    for (let i = 0; i < n; i++) {
+      const album = ALBUMS[id % ALBUMS.length];
+      const shoot = y
+        ? `${y}-${String(m).padStart(2, "0")}-${String(1 + (i % 27)).padStart(2, "0")}`
+        : null;
+      rows.push({
+        id: id,
+        path: `C:/photos/${y ?? "x"}${m ?? 0}/${id}.jpg`,
+        album_id: album.id,
+        album_name: album.name,
+        shoot_time: shoot,
+        location: id % 5 === 0 ? null : cities[id % cities.length],
+        label: id % 4 === 0 ? null : cats[id % cats.length],
+      });
+      id += 1;
+    }
+  };
+  for (let y = 2008; y <= 2026; y++) {
+    for (let m = 1; m <= 12; m++) {
+      // 大小月分明：既要有 10 张的小月，也要有 900+ 的大月
+      push(y, m, 8 + ((y * 13 + m * 37) % 120));
+    }
+  }
+  push(null, null, 4840); // 「未记录拍摄时间」那一团（实测本机就是 4,840 张）
+  return rows;
+})();
+
+const TL_INDEX = (() => {
+  const map = new Map();
+  let noTime = 0;
+  let noLoc = 0;
+  for (const r of TL_ROWS) {
+    const ym = r.shoot_time ? r.shoot_time.slice(0, 7) : "";
+    map.set(ym, (map.get(ym) ?? 0) + 1);
+    if (!r.shoot_time) noTime += 1;
+    if (!r.location) noLoc += 1;
+  }
+  const months = [...map.entries()]
+    .sort((a, b) => (a[0] === "" ? 1 : b[0] === "" ? -1 : a[0].localeCompare(b[0])))
+    .map(([ym, count]) => ({
+      year: ym ? ym.slice(0, 4) : "未记录",
+      month: ym ? ym.slice(5, 7) : "",
+      count,
+    }));
+  return { months, total: TL_ROWS.length, no_time: noTime, no_location: noLoc };
+})();
+
+/** 请求计数（探针要断言「进页面只发了个位数请求」） */
+window.__PM_MOCK_CALLS__ = {};
+
 /* ---------- invoke 桩 ---------- */
 const HANDLERS = {
   get_current_user: () => ({ id: 1, username: "yuanhao", email: "y@local", phone: "", created_at: 0, avatar: null }),
@@ -115,6 +190,21 @@ const HANDLERS = {
   list_timeline: (args) => {
     // 按 user_id 过滤（mock 不区分用户）
     return ROWS;
+  },
+  /* FEAT-122：时间线骨架 + 按月分页 */
+  timeline_index: () => TL_INDEX,
+  timeline_month: (args) => {
+    const { year, month } = args ?? {};
+    const limit = Number(args?.limit ?? 0);
+    const offset = Number(args?.offset ?? 0);
+    const all = TL_ROWS.filter((r) => {
+      if (year === "未记录" || !year) return !r.shoot_time;
+      if (!r.shoot_time) return false;
+      if (r.shoot_time.slice(0, 4) !== year) return false;
+      return month ? r.shoot_time.slice(5, 7) === month : r.shoot_time.length < 7;
+    });
+    const page = limit > 0 ? all.slice(offset, offset + limit) : all.slice(offset);
+    return page.map((r) => ({ ...r, thumb_path: `c:${r.path}` }));
   },
   get_photo_thumbs: (args) => (args.paths ?? []).map((p) => [p, thumbFor(p)]),
   list_persons: () => PERSONS,
@@ -146,6 +236,8 @@ window.__TAURI_INTERNALS__ = {
   /** 插件 API（dialog 等）在页面里也可能被调用；给个空实现避免硬崩 */
   isTauri: true,
   invoke(cmd, args, opts) {
+    const calls = window.__PM_MOCK_CALLS__;
+    calls[cmd] = (calls[cmd] ?? 0) + 1;
     const h = HANDLERS[cmd];
     if (!h) {
       console.warn(`[mock] 未实现的 invoke: ${cmd}`, args ?? "");
@@ -157,3 +249,26 @@ window.__TAURI_INTERNALS__ = {
 
 // convertFileSrc 的真实实现会拼 asset:// 协议；mock 环境直接透传
 window.__PM_MOCK_CONVERT__ = (p) => p;
+
+/* ---------- 材质 / 透明度 / 明暗 探针钩子（?mat=liquid&alpha=0.3&mode=light） ----------
+ * 原先是内联在 preview.html 里的一段；FEAT-122 把整份 mock 收敛到本文件
+ * （两处副本导致「改了 preview-mock.js 却没生效」），这里一并搬过来。
+ */
+{
+  const q = new URLSearchParams(location.search);
+  const wanted = { mat: q.get("mat"), mode: q.get("mode"), alpha: q.get("alpha") };
+  if (wanted.mat || wanted.mode || wanted.alpha) {
+    const wait = setInterval(async () => {
+      if (!document.body.className.includes("mat-")) return;
+      clearInterval(wait);
+      const { useThemeStore } = await import("/src/stores/theme");
+      const theme = useThemeStore();
+      if (wanted.mode === "light" || wanted.mode === "dark") theme.mode = wanted.mode;
+      if (wanted.mat === "liquid" || wanted.mat === "plain") theme.material = wanted.mat;
+      const a = Number(wanted.alpha);
+      if (wanted.alpha !== null && Number.isFinite(a)) theme.compAlpha = a;
+      await new Promise((r) => setTimeout(r, 600));
+      window.__PROBE_READY__ = true;
+    }, 50);
+  }
+}

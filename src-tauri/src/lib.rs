@@ -571,6 +571,8 @@ pub fn run() {
             content::commands::backfill_photo_exif,
             content::commands::search_photo_content_with_filters,
             content::commands::list_timeline,
+    content::commands::timeline_index,
+    content::commands::timeline_month,
             content::commands::list_content_categories,
             content::commands::list_photos_by_category,
             category::commands::list_categories,

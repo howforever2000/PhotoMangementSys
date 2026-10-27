@@ -306,6 +306,67 @@ pub struct LocationGroupRow {
     pub lon: Option<f64>,
 }
 
+// ═════════════════════════════════════════════════════════════════════
+// FEAT-122：时间线按月分页（首包不再拉全量）
+//
+// 为什么要动这里：`list_timeline` 一次返回 24,980 行 × 18 列 = **15.09 MB**，
+// 而时间线首屏真正需要的只是「哪些年月、各多少张」。实测该请求 + 前端对 2.5 万条
+// 做四层派生（rows→groups→flatItems→lineRows→monthRowMap），让首屏花 2~4 s；
+// 而且 DOM 只增不减，滚到底 = 2.5 万个 <figure> → WebView2 渲染进程被回收
+// （BUG-2026-1027-003）。本组接口把「骨架」与「逐月明细」拆开，且把
+// `thumb_path` 随行下发，前端不再为每张卡发一次 `get_photo_thumbs`。
+// ═════════════════════════════════════════════════════════════════════
+
+/// 时间线索引的一个月分组
+#[derive(Debug, Clone, Serialize)]
+pub struct TimelineMonthIndex {
+    /// 年（"2024"）；无拍摄时间的整组归入 "未记录"
+    pub year: String,
+    /// 月（"06"）；无拍摄时间为空串
+    pub month: String,
+    /// 该月照片数
+    pub count: i64,
+}
+
+/// 时间线骨架（一次查询、实测约 3 KB）
+///
+/// 前端拿它画左栏、年组统计，以及**每个月的占位高度**，
+/// 不再需要 2.5 万行明细就能把滚动条长度算准。
+#[derive(Debug, Clone, Serialize)]
+pub struct TimelineIndex {
+    /// 按月计数（年·月升序；「未记录」组排在最后）
+    pub months: Vec<TimelineMonthIndex>,
+    /// 已入库照片总数
+    pub total: i64,
+    /// 无拍摄时间张数
+    pub no_time: i64,
+    /// 无定位张数（location 为空或 NULL）
+    pub no_location: i64,
+}
+
+/// 时间线单张卡片：只有时间线用得到的 7 个字段 + 缩略图路径
+///
+/// 对比 `ContentSearchHit`（18 列、实测约 630 B/行），本结构约 190 B/行，
+/// 且 `thumb_path` 随行下发（LEFT JOIN `photo_thumb_cache`，键空间同源）。
+#[derive(Debug, Clone, Serialize)]
+pub struct TimelineCard {
+    pub id: i64,
+    /// 照片绝对路径
+    pub path: String,
+    /// 归属相册 ID（可能为空）
+    pub album_id: Option<i64>,
+    /// 归属相册名称（可能为空）
+    pub album_name: Option<String>,
+    /// 拍摄时间（可能为空 = 未记录）
+    pub shoot_time: Option<String>,
+    /// 反查地名（可能为空）
+    pub location: Option<String>,
+    /// AI 标签（可能为空）
+    pub label: Option<String>,
+    /// 网格缩略图缓存绝对路径；`None` = 还没生成，前端走 `get_photo_thumbs` 兜底
+    pub thumb_path: Option<String>,
+}
+
 /// 内容命中行统一列清单（list_timeline / list_photos_by_category 共用，
 /// 列序与 `map_content_search_hit` 严格对应）
 const CONTENT_HIT_SELECT: &str = "SELECT p.id, p.path, p.parent_dir, p.album_id, a.name, a.path,
@@ -664,6 +725,137 @@ impl Database {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![user_id], map_content_search_hit)?;
         rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
+    }
+
+    // ---- FEAT-122：时间线按月分页（首包不再拉全量） ----
+
+    /// 时间线骨架：按月聚合计数 + 首屏统计读数
+    ///
+    /// 为什么单独一个命令（FEAT-122）：`list_timeline` 一次返回 24,980 行 = 15 MB，
+    /// 而前端首屏真正需要的只是「哪些年月、各多少张」。实测该请求让时间线首屏
+    /// 2~4 s（BUG-2026-1027-003）。本命令实测 < 20 ms / 约 3 KB。
+    pub fn timeline_index(&self, user_id: i64) -> Result<TimelineIndex, DbError> {
+        // 月份归属表达式：空/空串拍摄时间统一归入 ''（前端渲染为「未记录」）
+        const YM: &str =
+            "CASE WHEN p.shoot_time IS NULL OR p.shoot_time = '' THEN '' \
+             ELSE substr(p.shoot_time, 1, 7) END";
+
+        let sql = format!(
+            "SELECT {YM} AS ym, COUNT(*)
+             FROM photo_content_scan p
+             WHERE p.user_id = ?1
+             GROUP BY ym
+             ORDER BY (ym = '') ASC, ym ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![user_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+
+        let mut months: Vec<TimelineMonthIndex> = Vec::new();
+        let mut total = 0i64;
+        let mut no_time = 0i64;
+        for row in rows {
+            let (ym, count) = row?;
+            total += count;
+            let (year, month) = if ym.is_empty() {
+                no_time += count;
+                ("未记录".to_string(), String::new())
+            } else {
+                // ym = "YYYY-MM"；残缺值（只有年 / 只有月）按「未记录该月」处理
+                let year = ym.get(0..4).unwrap_or(&ym).to_string();
+                let month = ym.get(5..7).unwrap_or("").to_string();
+                (year, month)
+            };
+            months.push(TimelineMonthIndex {
+                year,
+                month,
+                count,
+            });
+        }
+        drop(stmt);
+
+        let no_location: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM photo_content_scan
+                 WHERE user_id = ?1 AND (location IS NULL OR location = '')",
+                params![user_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        Ok(TimelineIndex {
+            months,
+            total,
+            no_time,
+            no_location,
+        })
+    }
+
+    /// 取某一个月（"未记录" 组用 `year = "未记录"`）的一页卡片
+    ///
+    /// - `limit <= 0` 表示不限（内部按 -1 传给 SQLite，语义即"无上限"）
+    /// - `thumb_path` 由 `photo_thumb_cache` LEFT JOIN 得到（键空间同源，
+    ///   见 `thumbnail::thumb_photo_hash` 与 `content::photo_hash` 的约定）；
+    ///   未生成缩略图的 67/24980 张会返回 NULL，前端走兜底命令。
+    pub fn timeline_month(
+        &self,
+        user_id: i64,
+        year: &str,
+        month: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<TimelineCard>, DbError> {
+        const BASE: &str = "SELECT p.id, p.path, p.album_id, a.name, p.shoot_time,
+                    p.location, p.label, t.thumb_path
+             FROM photo_content_scan p
+             LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
+             LEFT JOIN photo_thumb_cache t ON t.photo_hash = p.photo_hash
+             WHERE p.user_id = ?1 AND ";
+
+        fn map_card(r: &rusqlite::Row) -> rusqlite::Result<TimelineCard> {
+            Ok(TimelineCard {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                album_id: r.get(2)?,
+                album_name: r.get(3)?,
+                shoot_time: r.get(4)?,
+                location: r.get(5)?,
+                label: r.get(6)?,
+                thumb_path: r.get::<_, Option<String>>(7)?,
+            })
+        }
+
+        let limit = if limit <= 0 { -1 } else { limit };
+        let mut out: Vec<TimelineCard> = if year.is_empty() || year == "未记录" {
+            let sql = format!(
+                "{BASE}(p.shoot_time IS NULL OR p.shoot_time = '') \
+                 ORDER BY p.id ASC LIMIT ?2 OFFSET ?3"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![user_id, limit, offset], map_card)?;
+            rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)?
+        } else if month.is_empty() {
+            // 该年下残缺的拍摄时间（"2024" / "2024-"）：不丢数据，单独成一组
+            let sql = format!(
+                "{BASE}substr(p.shoot_time, 1, 4) = ?2 AND length(p.shoot_time) < 7 \
+                 ORDER BY p.id ASC LIMIT ?3 OFFSET ?4"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![user_id, year, limit, offset], map_card)?;
+            rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)?
+        } else {
+            let sql = format!(
+                "{BASE}substr(p.shoot_time, 1, 4) = ?2 AND substr(p.shoot_time, 6, 2) = ?3 \
+                 ORDER BY p.id ASC LIMIT ?4 OFFSET ?5"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![user_id, year, month, limit, offset], map_card)?;
+            rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)?
+        };
+        out.shrink_to_fit();
+        Ok(out)
     }
 
     /// FEAT-048：按大类/细类列出照片（分类浏览二级视图）

@@ -4631,7 +4631,59 @@
         "tonal shift",
         "liquid-glass-vue"
       ]
+    },
+    {
+      "id": "FEAT-122",
+      "name": "照片时间线按月分页 + 窗口化渲染 + 跳转定位（首包 14.10 MB → 3.91 KB）",
+      "module": "src-tauri/src/db/content.rs、src-tauri/src/content.rs、src-tauri/src/lib.rs、src/views/Timeline.vue、src/utils/timelineLayout.ts、src/stores/timeline.ts",
+      "status": "done",
+      "purpose": "用户反馈：时间线的照片预览「每次加载很久、偶尔还退出当前界面」，左栏点击跳转也卡。实测定位到四层原因：① 进页面 list_timeline 一次拉 24,980 行 = 14.10 MB JSON（18 列），前端只用到 7 列；② 主线程对 2.5 万条跑四层派生（rows→groups→flatItems→lineRows→monthRowMap），其中 justifyRows 传了 breakPoints 仍先跑完 O(n²) 的行数枚举行再整段丢弃；③ DOM 只增不减（visibleMonths 单调增长，滚过的月份不卸载）→ 滚到底 2.5 万个 figure + 2.5 万个 IntersectionObserver → WebView2 渲染进程被回收（=「退出当前界面」）；④ 缩略图请求被拆成每次 1~5 条路径的 IPC 往返（日志实证），且左栏点击用 scrollIntoView({smooth}) 要穿过上千张卡、目标月未渲染时 getElementById 直接落空（点了没反应）。",
+      "implementation": {
+        "① 骨架 + 按月分页": "新增 timeline_index（年·月计数 + total/no_time/no_location，实测 3.91 KB / 31 ms）与 timeline_month(year, month, limit, offset)。前端首屏只拿骨架 + 视口月份的明细，滚到哪拉到哪，拉过的月份留在模块级缓存里跨页面复用。",
+        "② 缩略图随行下发": "timeline_month 里 LEFT JOIN photo_thumb_cache ON photo_hash （与 thumb_photo_hash 同源），卡片自带 thumb_path。实测覆盖 24,913/24,980（99.7%），剩下 67 张才走 get_photo_thumbs 兜底 —— 正常浏览时该命令一次都不会被调用。",
+        "③ 高度账本 + 窗口化": "新增 utils/timelineLayout.layoutMonth(count, width, phaseOffset)：按月 O(n) 贪心排（去掉被丢弃的行数枚举），给出像素级精确的月高度。响应式数据改用「普通 Map + version 版本号」而不是 reactive 数组，避免 2.5 万个 Proxy。board 用绝对定位单元 + 显式高度账本，只渲染视口 ±1/±2.4 屏的月份与行，其余是等高占位；未记录那 4,840 张同样走行级窗口化。",
+        "④ 跳转即定位": "jumpTo() 用账本直接 scrollTo({behavior:'auto'})，并先 pin 住目标月（目标未渲染也能一跳到位）；左栏高亮改成在账本上二分（零 DOM 查询）；删除全部 scrollIntoView({smooth})；跳转期间挂起 loadMore。",
+        "⑤ 骨架缓存": "stores/timeline.ts 模块级缓存 index + 月度明细 + 缩略图表，在智慧相册各 tab 间来回点不再重拉。"
+      },
+      "highlights": {
+        "首包体积": "14,438 KB → 3.91 KB（骨架 97 行），单月 100~1,720 KB 按需取",
+        "后端耗时": "list_timeline 107 ms → timeline_index 31 ms；单月 2~26 ms",
+        "DOM 规模": "改前滚到底 24,980 个 figure → 改后稳定 40~47 个卡片节点（与库大小无关）",
+        "跳转": "点最远的月份（跨 229 个左栏节点）落点离视口顶 65px，文档高度跳转前后不变（不漂移）",
+        "请求数": "进页面 1 次 timeline_index + 1 次 timeline_month，get_photo_thumbs = 0"
+      },
+      "tests": {
+        "单测": "src/utils/timelineLayout.test.ts（10 项：行宽铺满 / 行高区间 / 不重不漏 / 高度纯函数 / 宽幅周期跨月连续 / 二分定位边界）—— npm test 全绿 164 项",
+        "浏览器验收": ".visual/probe-timeline-virtual.cjs（2.5 万行 mock）：DOM 卡片 ≤ 1500、docH 跳转前后不变、落点 ≤ 200px、timeline_index 仅 1 次、list_timeline 0 次、get_photo_thumbs ≤ 3 次",
+        "后端量测": "src-tauri/examples/timeline_probe.rs（真实库快照）给改前/改后体积与耗时"
+      },
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/examples/timeline_probe.rs",
+        "src/views/Timeline.vue",
+        "src/utils/timelineLayout.ts",
+        "src/utils/timelineLayout.test.ts",
+        "src/stores/timeline.ts",
+        "src/types/timeline.ts",
+        ".visual/preview-mock.js",
+        ".visual/preview.html",
+        ".visual/probe-timeline-virtual.cjs",
+        ".pi/plan-feat122-timeline-perf.md"
+      ],
+      "keywords": [
+        "时间线",
+        "热加载",
+        "虚拟列表",
+        "分页",
+        "timeline_index",
+        "timeline_month",
+        "缩略图",
+        "卡顿",
+        "performance"
+      ]
     }
   ],
-  "updated": "2026-10-27T21:10:00+08:00"
+  "updated": "2026-10-27"
 }

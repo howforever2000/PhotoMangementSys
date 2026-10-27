@@ -14,7 +14,8 @@ pub mod thumb_cache;
 pub use category::{CategoryIndexStats, CategoryOverviewRow, CategoryPhotoRow};
 pub use content::{
     AlbumContentRow, CategoryGroupRow, ContentFilters, ContentSearchHit, FieldGroups,
-    LocationGroupRow, PhotoContentRecord, SmartHit,
+    LocationGroupRow, PhotoContentRecord, SmartHit, TimelineCard, TimelineIndex,
+    TimelineMonthIndex,
 };
 pub use embedding::EmbeddingVersion;
 pub use thumb_cache::ThumbCacheRecord;
