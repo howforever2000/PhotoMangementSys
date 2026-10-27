@@ -16,9 +16,9 @@
  */
 import { computed, onMounted, ref } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 import { useContentStore } from "../stores/content";
+import { getThumbs } from "../utils/thumbQueue";
 import PhotoLightbox from "./PhotoLightbox.vue";
 import PhotoActionMenu from "./PhotoActionMenu.vue";
 import PhotoDeleteDialog, { type DeleteMode } from "./PhotoDeleteDialog.vue";
@@ -29,7 +29,6 @@ import type { CategoryIndexStats, CategoryOverview, CategoryPhoto } from "../typ
 import { categoryLabel, categoryTone } from "../utils/categoryLabel";
 import { relToMatch } from "../utils/matchScore";
 
-const theme = useThemeStore();
 const notify = useNotify();
 const contentStore = useContentStore();
 
@@ -93,6 +92,19 @@ const totalHits = computed(() => cards.value.reduce((n, c) => n + c.count, 0));
 function toneBg(c: CategoryCard): string {
   return categoryTone(c.slug || "other").bg;
 }
+/** 卡片无封面时色底上的落款字色（色卡自带对比色，浅底深字 / 夜景底浅字） */
+function toneFg(c: CategoryCard): string {
+  return categoryTone(c.slug || "other").fg;
+}
+
+/* 分类卡宽度错落（FEAT-113 修订）：每第 5 张占两列，成为一个“大图”。
+   与相册墙 wideEvery:5 同一节奏 —— 用户要求“参考相册管理界面”，
+   所以这里刻意不另调一个数字。
+   为何按 index 而不是 id：宽度是**排布**属性，只与位置有关；
+   用 id 会让同一张分类在增删时忽大忽小。 */
+function isWideCat(i: number): boolean {
+  return i % 5 === 4;
+}
 
 /** 语义索引是否为空（分类极可能空 → 优先提示建索引） */
 const indexEmpty = computed(() => (stats.value?.indexed ?? 0) === 0);
@@ -154,7 +166,7 @@ async function loadCoverThumbs() {
   await Promise.all(
     [...byAlbum.entries()].map(async ([aid, paths]) => {
       try {
-        const pairs = await invoke<[string, string][]>("get_photo_thumbs", { albumId: aid, paths });
+        const pairs = await getThumbs(aid, paths);
         for (const [path, thumb] of pairs) if (!thumbMap.value[path]) thumbMap.value[path] = thumb;
       } catch {
         /* 封面缺图不阻塞：回退类目色底 */
@@ -231,7 +243,7 @@ async function loadGridThumbs() {
   await Promise.all(
     [...byAlbum.entries()].map(async ([aid, paths]) => {
       try {
-        const pairs = await invoke<[string, string][]>("get_photo_thumbs", { albumId: aid, paths });
+        const pairs = await getThumbs(aid, paths);
         for (const [path, thumb] of pairs) if (!thumbMap.value[path]) thumbMap.value[path] = thumb;
       } catch {
         /* 单相册失败不阻塞：缺图卡片回退占位 */
@@ -432,7 +444,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="cg-wrap" :style="{ color: theme.textColor }">
+  <div class="cg-wrap" :style="{ color: 'var(--fg)' }">
     <!-- ============ 视图 1：分类卡片 ============ -->
     <template v-if="!activeCard">
       <!-- 工具条：索引覆盖 + 重建 + 管理 -->
@@ -475,24 +487,25 @@ onMounted(load);
       <!-- 分类卡片网格 -->
       <div v-else class="cat-grid">
         <article
-          v-for="t in cards"
+          v-for="(t, ti) in cards"
           :key="t.id"
-          class="cat-card glass-card"
-          :style="theme.cardStyle"
+          class="cat-card"
+          :class="{ 'is-wide': isWideCat(ti) }"
           :title="`${t.name} · ${t.count} 张`"
           @click="openCategory(t)"
         >
-          <div class="cat-cover" :style="{ background: toneBg(t) }">
+          <div class="cat-cover" :style="{ background: toneBg(t), '--tone-fg': toneFg(t) }">
             <img v-if="t.cover && thumbMap[t.cover]" :src="fileUrl(thumbMap[t.cover])" loading="lazy" alt="" />
             <span v-else class="cat-cover-ph">{{ t.icon || t.name.slice(0, 1) }}</span>
             <span class="cat-count">{{ t.count }} 张</span>
             <span v-if="t.source === 'builtin'" class="cat-tag">规则</span>
-          </div>
-          <div class="cat-body">
-            <h3 class="cat-name">{{ t.icon }} {{ t.name }}</h3>
-            <span v-if="t.keywords.length" class="cat-sub-hint">
-              {{ t.keywords.length }} 词 · 匹配度 {{ relToMatch(t.threshold) }}
-            </span>
+            <!-- 名称嵌入封面左下角（落款）：有照片白字+渐变，无色底用主题字色 -->
+            <div class="cat-seal">
+              <h3 class="cat-name">{{ t.icon }} {{ t.name }}</h3>
+              <span v-if="t.keywords.length" class="cat-sub">
+                {{ t.keywords.length }} 词 · 匹配度 {{ relToMatch(t.threshold) }}
+              </span>
+            </div>
           </div>
         </article>
       </div>
@@ -632,11 +645,13 @@ onMounted(load);
 }
 .cg-index {
   font-size: 12.5px;
-  opacity: 0.7;
+  /* 用 fg-2 而不是 opacity .7：opacity 会把已经弱化的文字再乘一次，
+     在磨砂玻璃底上很容易掉到 3.3:1 以下（审计实测）。 */
+  color: var(--c-fg-2);
 }
 .cg-index.warn {
-  color: var(--color-warn-solid, var(--color-warn-solid));
-  opacity: 1;
+  color: var(--color-warn-text, var(--color-warn));
+  font-weight: var(--fw-em);
 }
 .cg-total {
   font-size: 12.5px;
@@ -653,13 +668,14 @@ onMounted(load);
 }
 .cat-tag {
   position: absolute;
-  left: 8px;
-  top: 8px;
-  padding: 2px 8px;
-  font-size: 10.5px;
-  color: #fff;
-  background: rgba(60, 90, 200, 0.75);
-  border-radius: 999px;
+  left: 10px;
+  top: 7px;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.62);
 }
 .photo-score {
   position: absolute;
@@ -718,32 +734,111 @@ onMounted(load);
   50% { opacity: 0.4; }
 }
 
-/* ---- 分类卡片网格 ---- */
+/* ── 分类卡网格（FEAT-113 修订）：对齐优先，宽度错落 ────────────────
+   用户明确：“错落不是瀑布这种，还是要对齐，但可以是一个大图和两个小图
+   的宽度和长度对齐，参考相册管理界面。”
+
+   所以这里不用 multicol 瀑布流（高度各自不同、底边不齐），改**行对齐网格**：
+   · 每一行内卡片高度严格相等（上下齐）
+   · 错落来自**宽度**：周期地让某一张占 2 列（大图），其余 1 列（小图）
+   · 行宽铺满，左右也齐，依赖 CSS grid 自带的列对齐
+
+   为何不用 justifyRows：分类卡数量少、内容就是“封面 + 角落名字”，
+   不需要按真实宽高比反算；grid 的直接列号定位就够，且增删分类不会引起
+   大规模重排（justifyRows 会影响后续所有行）。 */
 .cat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(4, 1fr);
+  grid-auto-rows: 186px;
+  /* grid-auto-flow: dense 是“大图占两列后留下的空位用小卡回填”的关键。
+     不用它时，大图后面的那个空位会空着，出现洞。 */
+  grid-auto-flow: dense;
+  gap: 14px;
 }
+@media (max-width: 1280px) { .cat-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 900px)  { .cat-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px)  { .cat-grid { grid-template-columns: 1fr; } }
+
 .cat-card {
+  display: block;
+  margin: 0;
   border-radius: 14px;
   overflow: hidden;
   cursor: pointer;
-  transition: transform var(--dur-2) ease, box-shadow var(--dur-2) ease;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
+  /* FEAT-115：卡片不再是玻璃板。
+     一屏十几块时，每块都带填充+边框+投影 = 十几个"框"互相争夺层级；
+     而封面本身就是足够大的对比面，照片自己的边缘就是边界。
+     只留 1px 内描边做必要边界（防止封面亮部与壁纸糊在一起）。 */
+  transition: filter var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);
+  box-shadow: inset 0 0 0 1px var(--cover-line);
 }
+/* 每第 5 张占两列（与相册墙 wideEvery:5 同一个节奏），
+   且占两行 —— 于是它是一块“大图”，周围是小图，四边都对齐。 */
+.cat-card.is-wide {
+  grid-column: span 2;
+}
+/* 悬停只提亮、不位移 —— 一屏十几块同时位移会产生"整片都在动"的噪感。
+   位移留给"确实要表达层级变化"的地方（抽屉、弹窗）。 */
 .cat-card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+  filter: brightness(1.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
 }
+
+/* ⚠️ 无封面的分类卡：必须自带可见底。
+   去玻璃卡之后，"没有匹配到照片"的分类（新建分类的常态）会变成一块透明区域 ——
+   实测整屏只剩几个空的描边框，认不出那是分类卡。
+   这里给色卡底再压一层：色底 + 内描边 + 居中图标，保证空分类也读得出是"一张卡"。 */
+.cat-cover:not(:has(img)) {
+  /* inline style 给了色卡底（categoryTone(t).bg）—— 其中"文档"那档是浅色，
+     没有照片垫底时它就成了一块**白板**（实测），与整页深色完全断裂。
+     这里用 !important 盖掉 inline 的浅色底，改中性半透明（!important 优先级高于
+     inline 声明，普通 CSS 不行）。 */
+  background: color-mix(in srgb, var(--c-fg) 7%, transparent) !important;
+  box-shadow: inset 0 0 0 1px var(--cover-line);
+}
+/* 底色已改成深色中性底 → 落款字色也要跟着从"色卡对比色"切回常规字色，
+   否则"文档"卡的名称是深字压深底（实测看不见）。 */
+.cat-cover:not(:has(img)) .cat-name,
+.cat-cover:not(:has(img)) .cat-sub {
+  color: var(--fg);
+  text-shadow: none;
+}
+.cat-cover:not(:has(img)) .cat-sub { color: var(--fg-3); }
+/* ⚠️ 无封面的分类卡必须自带可见底（FEAT-115）：
+   去玻璃卡之后，"还没匹配到照片"的分类（新建分类的常态）会变成一块透明区域，
+   整屏只剩几个空描边框，认不出那是分类卡。 */
+.cat-cover:not(:has(img)) {
+  /* inline style 给了色卡底（categoryTone(t).bg）—— 其中"文档"那档是浅色，
+     没有照片垫底时它就成了一块**白板**（实测），与整页深色完全断裂。
+     这里用 !important 盖掉 inline 的浅色底，改中性半透明（!important 优先级高于
+     inline 声明，普通 CSS 不行）。 */
+  background: color-mix(in srgb, var(--c-fg) 7%, transparent) !important;
+  box-shadow: inset 0 0 0 1px var(--cover-line);
+}
+/* 底色已改成深色中性底 → 落款字色也要跟着从"色卡对比色"切回常规字色，
+   否则"文档"卡的名称是深字压深底（实测看不见）。 */
+.cat-cover:not(:has(img)) .cat-name,
+.cat-cover:not(:has(img)) .cat-sub {
+  color: var(--fg);
+  text-shadow: none;
+}
+.cat-cover:not(:has(img)) .cat-sub { color: var(--fg-3); }
+
+/* 封面填满整张卡片（不再有下方文字条）。
+   高度 100% 跟随网格行高 —— 行内/列内均严格对齐，不再按 id 哈希取不同高度。 */
 .cat-cover {
   position: relative;
-  aspect-ratio: 4 / 3;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
 }
+
 .cat-cover img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -754,33 +849,71 @@ onMounted(load);
   font-weight: 700;
   opacity: 0.75;
 }
+/* FEAT-115：角标与相册墙统一成"裸文字 + 文字投影"，不再压深色胶囊。
+   胶囊是给"必须压住复杂背景"的场景用的；封面底部已有渐变兜底，
+   再叠一层胶囊就是同一个问题解决两次。 */
 .cat-count {
   position: absolute;
-  right: 8px;
-  top: 8px;
-  padding: 2px 9px;
-  font-size: 11.5px;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.55);
-  border-radius: 999px;
-  backdrop-filter: blur(3px);
+  right: 10px;
+  top: 7px;
+  z-index: 2;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.62);
+  font-variant-numeric: tabular-nums;
 }
-.cat-body {
-  padding: 10px 12px 12px;
+/* 无封面时封面是中性深底，白字仍然可读；不需要额外处理 */
+
+/* 名称落款：嵌入封面左下角。
+   判据与 AlbumCard 一致 —— 看封面自己有没有照片：
+   · 无照片（类目纯色底，绝大多数是浅色）：用字卡自带的对比字色 --tone-fg，
+     不压黑渐变（黑渐变在浅底上会变成一块灰板）；
+   · 有照片：底部黑渐变 + 白字（见下方 :has(img) 分支）。 */
+.cat-seal {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  padding: 26px 12px 10px;
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  background: transparent;
+  pointer-events: none;
 }
 .cat-name {
   margin: 0;
+  max-width: 100%;
   font-size: 15px;
   font-weight: 700;
-}
-.cat-sub-hint {
-  font-size: 11.5px;
-  opacity: 0.6;
+  color: var(--tone-fg, #475569);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cat-sub {
+  max-width: 100%;
+  font-size: 11px;
+  color: var(--tone-fg, #475569);
+  opacity: 0.72;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 有真封面：底部黑渐变 + 白字（照片总有暗部） */
+.cat-cover:has(img) .cat-seal {
+  padding-top: 30px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0));
+}
+.cat-cover:has(img) .cat-name,
+.cat-cover:has(img) .cat-sub {
+  color: #fff;
+  opacity: 1;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.72);
 }
 
 /* ---- 二级头部 + chips ---- */
@@ -880,7 +1013,6 @@ onMounted(load);
 }
 
 @media (max-width: 640px) {
-  .cat-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
   .photo-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
 }
 

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>FEAT-115 · 时间线（基准页）</title>
+<link rel="stylesheet" href="./feat115.css" />
+<style>
+/* 时间线左栏：年/月两级拍平成单列，当前项金点高亮 */
+.tl-shell { display: grid; grid-template-columns: 150px minmax(0,1fr); gap: 30px; padding: 0 var(--sp-8); align-items: start; }
+.tl-rail { position: sticky; top: 74px; padding: 18px 0 0; }
+.tl-rail-inner { position: relative; display: flex; flex-direction: column; gap: 1px; padding-left: 14px; }
+.tl-rail-inner::before { content: ""; position: absolute; left: 4px; top: 6px; bottom: 6px; width: 1px; background: var(--rule); }
+.tl-node { position: relative; display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 6px; border: none; background: none; border-radius: 5px; font-size: 12px; color: var(--fg-2); cursor: pointer; text-align: left; }
+.tl-node:hover { background: var(--hover); color: var(--fg); }
+.tl-node.is-year { font-size: 13px; font-weight: 620; color: var(--fg); height: 28px; margin-top: 6px; }
+.tl-node.is-month { padding-left: 16px; }
+.tl-node.on { color: var(--fg); font-weight: 600; background: var(--hover); }
+.tl-dot { position: absolute; left: -12px; width: 5px; height: 5px; border-radius: 50%; background: var(--fg-3); }
+.tl-node.on .tl-dot { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.tl-node .n { margin-left: auto; font-size: 10.5px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+
+/* 照片行式密排 */
+.tl-board { padding-top: 4px; }
+.tl-row { display: flex; gap: 10px; margin-bottom: 10px; }
+.tl-cell { position: relative; border-radius: var(--r-cover); overflow: hidden; box-shadow: inset 0 0 0 1px var(--cover-line); flex-shrink: 0; }
+.tl-cell img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.tl-cap { position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; display: flex; align-items: center; gap: 7px; padding: 14px 8px 6px; font-size: 9.5px; color: rgba(255,255,255,.9); background: linear-gradient(to top, rgba(0,0,0,.42), rgba(0,0,0,0)); text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+.tl-cap .go { margin-left: auto; opacity: .75; }
+.tl-year-title { display: flex; align-items: baseline; gap: 12px; margin: 22px 0 10px; }
+.tl-year-title h2 { font-size: 22px; font-weight: 620; letter-spacing: -.5px; }
+.tl-year-title .c { font-size: 11px; color: var(--fg-3); }
+.tl-month-title { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; font-weight: 560; color: var(--fg); margin: 16px 0 8px; }
+.tl-month-title span { font-size: 10.5px; font-weight: 400; color: var(--fg-3); }
+</style>
+</head>
+<body data-theme="pine-soft">
+
+<div class="topbar">
+  <span class="tb-back">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    主页
+  </span>
+  <span class="tb-name">
+    <span class="tb-title">🗓️ 智慧相册</span>
+    <span class="tb-meta">93 张已入库照片</span>
+  </span>
+  <nav class="tb-nav">
+    <span>全局概览</span><span>内容分类</span><span>人物</span><span>地点</span><span>回忆</span><span class="on">时间线</span><span>智能搜索</span>
+  </nav>
+  <span class="tb-sp"></span>
+  <span class="tb-search">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2.2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    <b>搜索照片</b>
+  </span>
+  <span class="tb-user">y</span>
+</div>
+
+<!-- 数据带：4 列（诊断读数合并进注释，不各占一列）-->
+<div class="band">
+  <div class="stat w-1">
+    <span class="stat-label">照片</span>
+    <span class="stat-val"><span class="stat-num">93</span><span class="stat-unit">张</span></span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">时间跨度</span>
+    <span class="stat-val"><span class="stat-num">3</span><span class="stat-unit">年 / 9 个月</span></span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">无拍摄时间</span>
+    <span class="stat-val"><span class="stat-num">5</span><span class="stat-unit">张</span></span>
+    <span class="stat-note">EXIF 未写 · 归入「未记录」</span>
+  </div>
+  <div class="stat w-2">
+    <span class="stat-label">地点覆盖</span>
+    <span class="stat-val"><span class="stat-num">60</span><span class="stat-unit">%</span></span>
+    <span class="stat-note">37 张无定位 · 6 城有点位</span>
+    <span class="stat-line"><i style="width:60%"></i></span>
+  </div>
+</div>
+
+<!-- 标题行：与「共 N 张」「年份筛选」合并成一行（不再三行 200px）-->
+<div class="page-head">
+  <span class="page-title">照片时间线</span>
+  <span class="page-sub">跨相册按拍摄时间聚合浏览 · 共 93 张</span>
+  <span class="right">
+    <button class="btn" type="button">全部年份 ▾</button>
+  </span>
+</div>
+
+<div class="tl-shell">
+  <!-- 左栏：年/月两级 -->
+  <aside class="tl-rail">
+    <div class="tl-rail-inner" id="rail"></div>
+  </aside>
+
+  <!-- 右栏：年 → 月 → 行式密排 -->
+  <div class="tl-board" id="board"></div>
+</div>
+
+<script src="./feat115-data.js"></script>
+<script>
+/* 年 → 月 分组 */
+const years = {};
+for (const r of ROWS) {
+  (years[r.year] ??= {});
+  (years[r.year][r.month] ??= []).push(r);
+}
+const yearKeys = Object.keys(years).map(Number).sort((a, b) => b - a);
+
+/* 左栏 */
+const rail = document.getElementById("rail");
+let railHtml = "";
+for (const y of yearKeys) {
+  const months = years[y];
+  const yTotal = Object.values(months).reduce((n, a) => n + a.length, 0);
+  railHtml += `<button class="tl-node is-year"><span class="tl-dot"></span>${y}<span class="n">${yTotal}</span></button>`;
+  for (const m of Object.keys(months).map(Number).sort((a, b) => b - a)) {
+    railHtml += `<button class="tl-node is-month"><span class="tl-dot"></span>${m} 月<span class="n">${months[m].length}</span></button>`;
+  }
+}
+rail.innerHTML = railHtml;
+
+/* 右栏：每个月内部做行式密排。
+   效果图手工分行：每行 3~4 张，宽张 1.5 倍，整行铺满。 */
+const board = document.getElementById("board");
+let boardHtml = "";
+for (const y of yearKeys) {
+  const months = years[y];
+  const yTotal = Object.values(months).reduce((n, a) => n + a.length, 0);
+  boardHtml += `<div class="tl-year-title">
+    <h2>🗓️ ${y} 年</h2>
+    <span class="c">${Object.keys(months).length} 个月 · ${yTotal} 张 · 平均 ${Math.round(yTotal / Object.keys(months).length)}/月</span>
+  </div>`;
+  for (const m of Object.keys(months).map(Number).sort((a, b) => b - a)) {
+    const items = months[m];
+    boardHtml += `<div class="tl-month-title">${m} 月 <span>${items.length}</span></div>`;
+    /* 分行：每行 3 张（第 1 张宽 1.5×）*/
+    for (let i = 0; i < items.length; i += 3) {
+      const chunk = items.slice(i, i + 3);
+      const widths = chunk.map((_, k) => (k === 0 ? 1.5 : 1));
+      const unit = (1100 - 10 * (chunk.length - 1)) / widths.reduce((a, b) => a + b, 0);
+      boardHtml += '<div class="tl-row">' + chunk.map((r, k) => {
+        const w = Math.round(unit * widths[k]);
+        return `<div class="tl-cell" style="width:${w}px;height:${Math.round(w * 0.66)}px">
+          <img src="${photo(r.seed, 240, 158)}" alt="" />
+          <div class="tl-cap">
+            ${r.label ? `<span>${r.label}</span>` : ""}
+            ${r.location ? `<span>📍 ${r.location}</span>` : ""}
+            <span class="go">↗</span>
+          </div>
+        </div>`;
+      }).join("") + "</div>";
+    }
+  }
+}
+board.innerHTML = boardHtml +
+  `<p class="note" style="margin:24px 0 0;padding-top:14px">
+    2025 / 2024 年同此结构（图中略）。左侧时间栏吸顶跟随滚动，当前视口所在月份金点高亮，点击跳转。
+   </p>`;
+</script>
+</body>
+</html>

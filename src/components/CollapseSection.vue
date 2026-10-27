@@ -71,31 +71,37 @@ function toggle() {
 </template>
 
 <style scoped>
+/* FEAT-115：折叠区从"一块卡片"改成"一条折纸行"。
+   相册详情页一进来就是三个 CollapseSection —— 三块卡片同尺寸同圆角同投影，
+   把页面切成三段，而它们承载的其实是**同一张照片列表的三个工具**。
+   现在只留上缘一根发丝线：结构由行本身表达，不需要再包一层容器。
+   （展开后的内容区仍然有边界 —— 那里确实有需要被框住的东西。） */
 .collapse-section {
-  background: var(--color-surface, #fff);
-  border: 1px solid var(--color-border, #e2e6ee);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-1);
-  overflow: hidden;
-  color: var(--color-text);
+  background: none;
+  border: none;
+  border-top: 1px solid var(--rule);
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+  color: var(--fg);
 }
 
 .collapse-section + .collapse-section {
-  margin-top: 16px;
+  margin-top: 0;
 }
 
 .cs-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 14px 18px;
+  gap: 9px;
+  padding: 13px 2px;
   cursor: pointer;
   user-select: none;
   transition: background var(--dur-2);
 }
 
 .cs-head:hover {
-  background: var(--color-primary-soft, #f6f8fc);
+  background: var(--hover);
 }
 
 .cs-chevron {
@@ -112,9 +118,9 @@ function toggle() {
 
 .cs-title {
   margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 560;
+  color: var(--fg);
 }
 
 .cs-subtitle {
@@ -123,15 +129,15 @@ function toggle() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  color: var(--color-text-2);
+  font-size: 10.5px;
+  color: var(--fg-3);
 }
 
 .cs-action-hint {
   margin-left: auto;
   flex-shrink: 0;
-  font-size: 12px;
-  color: var(--color-text-2);
+  font-size: 10.5px;
+  color: var(--fg-3);
 }
 
 .cs-subtitle + .cs-action-hint,

@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>提案 v2 · 时间线（无卡片）</title>
+<link rel="stylesheet" href="./mock.css" />
+<style>
+  /* ══════════════════════════════════════════════════════════════
+     修「第三张截图」的四个硬问题
+     ──────────────────────────────────────────────────────────────
+     ① 页内又写一遍「照片时间线」大标题（顶栏已有「时间线」tab）
+        → 标题保留但缩小到 17px，降到「小标题」档，不再是 hero
+     ② 「共 24987 张 + 年份下拉」与 5 块数据带**各占一行**（共两行 96px）
+        → 合并成标题行右侧的两个控件
+     ③ 原生 <select> 在深色下必然出白底（截图里那块白框盖住数据带）
+        → 不用 select，用自绘下拉（同按钮规格）
+     ④ 时间线的正文只有「年 → 月 → N 张」三层文字，没有任何图像
+        → 月行右侧给缩略图带，这才是照片应用该有的密度
+     ══════════════════════════════════════════════════════════════ */
+
+  /* 标题行：一行装完标题 + 副标题 + 计数 + 年份筛选 */
+  .page-head {
+    display: flex; align-items: flex-end; gap: 12px;
+    padding: 18px var(--gutter) 0;
+  }
+  .ph-title { font-size: 17px; font-weight: 620; letter-spacing: -0.02em; color: var(--fg); }
+  .ph-sub { font-size: 11.5px; color: var(--fg-3); padding-bottom: 1px; }
+  .ph-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  .ph-count { font-size: 11.5px; color: var(--fg-3); }
+  .ph-count b { color: var(--fg-2); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* 年份筛选：与按钮同规格的自绘控件（不用原生 select） */
+  .picker {
+    display: inline-flex; align-items: center; gap: 7px;
+    height: 28px; padding: 0 9px;
+    border-radius: 6px;
+    box-shadow: inset 0 0 0 1px var(--ctrl-line);
+    font-size: 12px; color: var(--fg);
+  }
+  .picker svg { opacity: 0.55; }
+
+  /* 年组头：年份 + 组读数 + 右端月度柱阵 */
+  .year-head {
+    display: flex; align-items: baseline; gap: 12px;
+    margin: 28px 0 4px;
+  }
+  .year-head.first { margin-top: 14px; }
+  .year-head .y { font-size: 24px; font-weight: 620; letter-spacing: -0.6px; }
+  .year-head .mid { display: flex; align-items: baseline; gap: 9px; font-size: 11px; color: var(--fg-3); }
+  .year-head .mid span + span { padding-left: 9px; border-left: 1px solid var(--rule); }
+
+  /* 月度柱阵：收在年组头右端，不单开一块（单开一块就成了第 6 个读数） */
+  .month-bars {
+    margin-left: auto; display: flex; align-items: flex-end; gap: 2px;
+    height: 17px; padding-bottom: 2px;
+  }
+  .month-bars i { width: 4px; border-radius: 1px 1px 0 0; background: var(--fg-3); opacity: 0.5; }
+  .month-bars i.on { background: var(--accent); opacity: 1; }
+
+  /* ══ 月行：一行 = 月份 + 缩略图带 + 张数 ══════════════════════════
+     这是本次改动里「有信息」最直接的体现：
+     现在的时间线一屏只有 3 行文字（2026/9月/128张），
+     改成一屏能看到 6 个月的**照片本身**。
+     ══════════════════════════════════════════════════════════════ */
+  .month-row {
+    display: flex; align-items: center; gap: 14px;
+    padding: 9px 0;
+    border-top: 1px solid var(--rule);
+  }
+  .month-row:hover { background: var(--hover); }
+  .m-label {
+    width: 52px; flex-shrink: 0;
+    font-size: 12px; color: var(--fg-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .strip { display: flex; gap: 4px; min-width: 0; overflow: hidden; flex: 1; }
+  .strip .th {
+    width: 58px; height: 40px; border-radius: 3px; flex-shrink: 0;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  }
+  .m-count {
+    width: 52px; flex-shrink: 0; text-align: right;
+    font-size: 11px; color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .doc-foot {
+    display: flex; align-items: baseline; gap: 10px;
+    margin: 30px 0 0; padding-top: 10px;
+    border-top: 1px solid var(--rule);
+    font-size: 11px; color: var(--fg-3); line-height: 1.75;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="tb-back">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+      <path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    主页
+  </span>
+  <span class="tb-name">
+    <span class="tb-emo">📅</span>
+    <span class="tb-title">智慧相册</span>
+    <span class="tb-meta">24987 张已入库</span>
+  </span>
+  <nav class="tb-nav">
+    <span>内容分类</span><span>人物</span><span>地点</span><span>回忆</span>
+    <span class="on">时间线</span><span>智能搜索</span>
+  </nav>
+  <span class="tb-sp"></span>
+  <span class="tb-search">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+      <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2.2"/>
+      <path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+    </svg>
+    <b>搜索照片</b>
+    <em>全库</em>
+  </span>
+  <span class="tb-user">👤</span>
+</div>
+
+<!-- 标题行：标题 + 副标题 + 计数 + 年份筛选，全部一行 -->
+<div class="page-head">
+  <span class="ph-title">照片时间线</span>
+  <span class="ph-sub">按拍摄时间跨相册聚合</span>
+  <div class="ph-right">
+    <span class="ph-count">共 <b>24987</b> 张</span>
+    <span class="picker">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+        <rect x="4" y="6" width="16" height="14" rx="2.5" stroke="currentColor" stroke-width="1.9"/>
+        <path d="M4 10.5h16M8.5 4v4M15.5 4v4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      </svg>
+      全部年份
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none">
+        <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </span>
+  </div>
+</div>
+
+<!-- 数据带：4 列（不是 5 列）。诊断读数（无时间/地点覆盖）合并成一条注释，
+     因为它们在任何一年的视图里都是同一个数 —— 那就不该占一个「读数」的位置 -->
+<div class="band">
+  <div class="stat w-2">
+    <span class="stat-label">照片</span>
+    <span class="stat-val"><span class="stat-num">24987</span><span class="stat-unit">张</span></span>
+    <span class="stat-note">跨 31 个相册</span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">时间跨度</span>
+    <span class="stat-val"><span class="stat-num">10</span><span class="stat-unit">年</span></span>
+    <span class="stat-note">96 个月中有照片 71 个</span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">月均</span>
+    <span class="stat-val"><span class="stat-num">260</span><span class="stat-unit">张</span></span>
+    <span class="stat-note">按有照片的月计</span>
+  </div>
+  <div class="stat w-2">
+    <span class="stat-label">无拍摄时间</span>
+    <span class="stat-val"><span class="stat-num">4847</span><span class="stat-unit">张</span></span>
+    <span class="stat-line"><i style="width:19%"></i></span>
+  </div>
+</div>
+
+<div style="padding:0 var(--gutter)">
+
+  <!-- ══ 2026 ══ -->
+  <div class="year-head first">
+    <span class="y">2026</span>
+    <span class="mid"><span>5 个月</span><span>388 张</span><span>平均 78 / 月</span></span>
+    <span class="month-bars">
+      <i style="height:8%"></i><i style="height:12%"></i><i style="height:24%"></i>
+      <i style="height:32%"></i><i style="height:50%"></i><i style="height:62%"></i>
+      <i style="height:76%"></i><i style="height:96%"></i><i style="height:68%"></i>
+      <i style="height:42%"></i><i style="height:28%"></i><i class="on" style="height:54%"></i>
+    </span>
+  </div>
+
+  <div class="month-row">
+    <span class="m-label">9 月</span>
+    <span class="strip">
+      <span class="th c1"></span><span class="th c2"></span><span class="th c3"></span>
+      <span class="th c4"></span><span class="th c5"></span><span class="th c6"></span>
+      <span class="th c7"></span><span class="th c8"></span><span class="th c9"></span>
+      <span class="th c1"></span><span class="th c3"></span><span class="th c5"></span>
+      <span class="th c7"></span><span class="th c2"></span><span class="th c4"></span>
+      <span class="th c6"></span><span class="th c8"></span><span class="th c9"></span>
+      <span class="th c1"></span><span class="th c2"></span><span class="th c3"></span>
+      <span class="th c4"></span><span class="th c5"></span><span class="th c6"></span>
+    </span>
+    <span class="m-count">128 张</span>
+  </div>
+
+  <div class="month-row">
+    <span class="m-label">8 月</span>
+    <span class="strip">
+      <span class="th c9"></span><span class="th c5"></span><span class="th c4"></span>
+      <span class="th c8"></span><span class="th c2"></span><span class="th c6"></span>
+      <span class="th c1"></span><span class="th c7"></span><span class="th c3"></span>
+      <span class="th c5"></span><span class="th c9"></span><span class="th c4"></span>
+      <span class="th c6"></span><span class="th c1"></span><span class="th c8"></span>
+      <span class="th c2"></span><span class="th c3"></span><span class="th c7"></span>
+      <span class="th c9"></span><span class="th c5"></span><span class="th c4"></span>
+      <span class="th c8"></span><span class="th c2"></span><span class="th c6"></span>
+    </span>
+    <span class="m-count">96 张</span>
+  </div>
+
+  <div class="month-row">
+    <span class="m-label">7 月</span>
+    <span class="strip">
+      <span class="th c3"></span><span class="th c7"></span><span class="th c1"></span>
+      <span class="th c9"></span><span class="th c4"></span><span class="th c2"></span>
+      <span class="th c6"></span><span class="th c8"></span><span class="th c5"></span>
+      <span class="th c1"></span><span class="th c3"></span><span class="th c7"></span>
+      <span class="th c1"></span><span class="th c9"></span><span class="th c4"></span>
+      <span class="th c2"></span><span class="th c6"></span><span class="th c8"></span>
+      <span class="th c5"></span><span class="th c3"></span><span class="th c7"></span>
+      <span class="th c1"></span><span class="th c9"></span><span class="th c4"></span>
+    </span>
+    <span class="m-count">74 张</span>
+  </div>
+
+  <div class="month-row">
+    <span class="m-label">6 月</span>
+    <span class="strip">
+      <span class="th c4"></span><span class="th c8"></span><span class="th c2"></span>
+      <span class="th c6"></span><span class="th c9"></span><span class="th c1"></span>
+      <span class="th c5"></span><span class="th c7"></span><span class="th c3"></span>
+      <span class="th c2"></span><span class="th c4"></span><span class="th c8"></span>
+      <span class="th c6"></span><span class="th c9"></span><span class="th c1"></span>
+      <span class="th c5"></span><span class="th c7"></span><span class="th c3"></span>
+      <span class="th c2"></span><span class="th c6"></span><span class="th c9"></span>
+    </span>
+    <span class="m-count">58 张</span>
+  </div>
+
+  <div class="month-row">
+    <span class="m-label">4 月</span>
+    <span class="strip">
+      <span class="th c6"></span><span class="th c2"></span><span class="th c8"></span>
+      <span class="th c4"></span><span class="th c7"></span><span class="th c1"></span>
+      <span class="th c9"></span><span class="th c3"></span><span class="th c6"></span>
+      <span class="th c2"></span><span class="th c8"></span><span class="th c4"></span>
+    </span>
+    <span class="m-count">32 张</span>
+  </div>
+
+  <!-- ══ 2025 ══ -->
+  <div class="year-head">
+    <span class="y">2025</span>
+    <span class="mid"><span>11 个月</span><span>2914 张</span><span>平均 265 / 月</span></span>
+    <span class="month-bars">
+      <i style="height:20%"></i><i style="height:28%"></i><i style="height:42%"></i>
+      <i style="height:36%"></i><i style="height:54%"></i><i style="height:60%"></i>
+      <i style="height:88%"></i><i style="height:70%"></i><i style="height:48%"></i>
+      <i style="height:38%"></i><i style="height:32%"></i><i style="height:2%"></i>
+    </span>
+  </div>
+
+  <div class="month-row">
+    <span class="m-label">7 月</span>
+    <span class="strip">
+      <span class="th c2"></span><span class="th c1"></span><span class="th c5"></span>
+      <span class="th c7"></span><span class="th c3"></span><span class="th c8"></span>
+      <span class="th c4"></span><span class="th c6"></span><span class="th c9"></span>
+      <span class="th c2"></span><span class="th c7"></span><span class="th c1"></span>
+      <span class="th c5"></span><span class="th c3"></span><span class="th c8"></span>
+      <span class="th c6"></span><span class="th c4"></span><span class="th c9"></span>
+      <span class="th c2"></span><span class="th c1"></span><span class="th c5"></span>
+      <span class="th c7"></span><span class="th c3"></span><span class="th c8"></span>
+    </span>
+    <span class="m-count">410 张</span>
+  </div>
+
+  <div class="month-row">
+    <span class="m-label">5 月</span>
+    <span class="strip">
+      <span class="th c1"></span><span class="th c9"></span><span class="th c3"></span>
+      <span class="th c6"></span><span class="th c4"></span><span class="th c8"></span>
+      <span class="th c2"></span><span class="th c7"></span><span class="th c5"></span>
+      <span class="th c9"></span><span class="th c1"></span><span class="th c3"></span>
+      <span class="th c4"></span><span class="th c8"></span><span class="th c6"></span>
+      <span class="th c2"></span><span class="th c7"></span><span class="th c5"></span>
+      <span class="th c9"></span><span class="th c1"></span><span class="th c3"></span>
+    </span>
+    <span class="m-count">286 张</span>
+  </div>
+
+  <!-- 无拍摄时间：固定置底、弱化，但不隐藏 -->
+  <div class="year-head">
+    <span class="y" style="font-size:18px;color:var(--fg-3)">未记录时间</span>
+    <span class="mid"><span>4847 张</span><span>来自 31 个相册</span></span>
+  </div>
+
+  <div class="doc-foot">
+    <span>
+      「无拍摄时间」= EXIF 里没有 DateTimeOriginal，且文件系统修改时间不可信（拷贝会改它）。
+      这批照片固定置底，不参与按年分组。
+    </span>
+  </div>
+</div>
+
+</body>
+</html>

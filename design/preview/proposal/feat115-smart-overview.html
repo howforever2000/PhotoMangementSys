@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>FEAT-115 · 智慧相册 · 全局概览</title>
+<link rel="stylesheet" href="./feat115.css" />
+</head>
+<body data-theme="pine-soft">
+
+<div class="topbar">
+  <span class="tb-back">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    主页
+  </span>
+  <span class="tb-name">
+    <span class="tb-title">🧠 智慧相册</span>
+    <span class="tb-meta">14 位人物 · 9 个相册</span>
+  </span>
+  <nav class="tb-nav">
+    <span class="on">全局概览</span><span>内容分类</span><span>人物 <em>14</em></span><span>地点</span><span>回忆</span><span>时间线</span><span>智能搜索</span>
+  </nav>
+  <span class="tb-sp"></span>
+  <span class="tb-search">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2.2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    <b>搜索照片</b>
+  </span>
+  <span class="tb-user">y</span>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     一面墙一块板
+     ──────────────────────────────────────────────────────────────────
+     现状：11 块玻璃 widget 各带填充 + 边框 + 投影，块间 14px 缝露出壁纸
+           → 实测 23 个容器，眼睛读到"11 块板排在墙上"。
+     改法：整面墙只做**一块**通栏玻璃板，内部用发丝线分成 4 个区。
+           错落改由板内 12 栅格的宽窄（span 7 / 5 / 4 / 8 / 12）承担 ——
+           宽窄是版式语言，缝是容器语言；前者有序，后者数框。
+     信息一块不少：照片库总览 / 语义索引 / 那年今日 / 相册封面 / 人物 /
+     地点 / 内容分类 / 人脸覆盖 / GPS 覆盖 / Top 城市 / 最近导入 / 那年今日大卡
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="board">
+
+  <!-- ── 区 1：照片库总览（左 7 栅格）+ 索引与今年节奏（右 5 栅格）── -->
+  <div class="zone">
+    <div class="grid12" style="padding:20px 22px 18px">
+      <div class="sp7">
+        <div class="zone-head" style="margin-bottom:14px">
+          <span class="zone-title">照片库总览</span>
+          <span class="zone-meta">2024 – 2026</span>
+        </div>
+        <div class="kv-row" style="gap:18px">
+          <div class="kv">
+            <span class="kv-label">照片</span>
+            <span class="kv-val"><span class="kv-num">399</span><span class="kv-unit">张</span></span>
+          </div>
+          <div class="kv">
+            <span class="kv-label">占用</span>
+            <span class="kv-val"><span class="kv-num">1.5</span><span class="kv-unit">GB</span></span>
+          </div>
+          <div class="kv">
+            <span class="kv-label">相册</span>
+            <span class="kv-val"><span class="kv-num">9</span><span class="kv-unit">个</span></span>
+          </div>
+          <div class="kv">
+            <span class="kv-label">跨度</span>
+            <span class="kv-val"><span class="kv-num" style="font-size:22px">3</span><span class="kv-unit">年</span></span>
+          </div>
+        </div>
+        <!-- 入库进度：一条占比线（板内唯一金色）-->
+        <div style="margin-top:16px">
+          <div style="display:flex;align-items:baseline;gap:8px;font-size:10.5px;color:var(--fg-3)">
+            <span>已入库</span>
+            <span style="color:var(--fg-2);font-variant-numeric:tabular-nums">93 / 399 · 23.3%</span>
+          </div>
+          <div class="track" style="margin-top:6px"><i style="width:23.3%"></i></div>
+        </div>
+      </div>
+
+      <div class="sp5" style="border-left:1px solid var(--rule);padding-left:22px">
+        <div class="zone-head" style="margin-bottom:14px">
+          <span class="zone-title">今年月度节奏</span>
+          <span class="zone-meta">2026 · 0 张</span>
+        </div>
+        <div class="bars">
+          <i style="height:0%"></i><i style="height:0%"></i><i style="height:38%"></i><i style="height:0%"></i>
+          <i style="height:52%"></i><i style="height:66%" class="on"></i><i style="height:0%"></i><i style="height:0%"></i>
+          <i style="height:44%"></i><i style="height:0%"></i><i style="height:0%"></i><i style="height:0%"></i>
+        </div>
+        <p style="font-size:10.5px;color:var(--fg-3);margin-top:9px;line-height:1.6">
+          6 月最多（毕业季 108 张）。今年尚未扫描，故月度计数来自 EXIF 预读。
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 区 2：语义索引（环）+ 那年今日 + 相册封面拼贴 ── -->
+  <div class="zone">
+    <div class="grid12" style="padding:18px 22px">
+      <div class="sp4">
+        <div class="zone-head" style="margin-bottom:12px">
+          <span class="zone-title">语义索引</span>
+        </div>
+        <div class="ring">
+          <svg width="56" height="56" viewBox="0 0 56 56" aria-hidden="true">
+            <circle cx="28" cy="28" r="23" fill="none" stroke="var(--rule)" stroke-width="5" />
+            <circle cx="28" cy="28" r="23" fill="none" stroke="var(--accent)" stroke-width="5"
+              stroke-linecap="round" stroke-dasharray="144.5" stroke-dashoffset="144.5"
+              transform="rotate(-90 28 28)" />
+            <text x="28" y="32" text-anchor="middle" font-size="13" font-weight="560"
+              fill="var(--fg)" font-family="inherit">0%</text>
+          </svg>
+          <div>
+            <div style="font-size:12.5px;font-weight:560;color:var(--fg)">尚未建立</div>
+            <div class="ring-cap">93 张已入库<br />索引完整后此处亮起</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sp4" style="border-left:1px solid var(--rule);padding-left:22px">
+        <div class="zone-head" style="margin-bottom:12px">
+          <span class="zone-title">那年今日</span>
+          <span class="zone-meta">去年今天</span>
+        </div>
+        <div style="display:flex;gap:9px">
+          <div class="cover c2" style="width:56px;aspect-ratio:1;flex-shrink:0">
+            <img src="" alt="" id="td-cover" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" />
+          </div>
+          <div>
+            <div style="font-size:13px;font-weight:560">2025 年 10 月</div>
+            <div class="kv-note" style="margin-top:3px">家人 · 84 张中的 12 张</div>
+            <div class="kv-note" style="margin-top:2px">📍 成都市</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sp4" style="border-left:1px solid var(--rule);padding-left:22px">
+        <div class="zone-head" style="margin-bottom:12px">
+          <span class="zone-title">相册封面</span>
+          <span class="zone-meta">9 个</span>
+        </div>
+        <div style="display:flex;gap:6px">
+          <div class="cover c1" style="flex:1;aspect-ratio:1"></div>
+          <div class="cover c2" style="flex:1;aspect-ratio:1"></div>
+          <div class="cover c4" style="flex:1;aspect-ratio:1"></div>
+          <div class="cover c5" style="flex:1;aspect-ratio:1"></div>
+          <div class="cover c7" style="flex:1;aspect-ratio:1"></div>
+        </div>
+        <p class="kv-note" style="margin-top:9px">点击进入相册管理</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 区 3：人物（7）+ 地点散点（5）── -->
+  <div class="zone">
+    <div class="grid12" style="padding:18px 22px">
+      <div class="sp7">
+        <div class="zone-head" style="margin-bottom:12px">
+          <span class="zone-title">人物</span>
+          <span class="zone-meta">14 位 · 按出现次数排序</span>
+          <span class="right" style="font-size:10.5px;color:var(--fg-3)">15 张照片含人物</span>
+        </div>
+        <div class="faces" id="faces"></div>
+      </div>
+
+      <div class="sp5" style="border-left:1px solid var(--rule);padding-left:22px">
+        <div class="zone-head" style="margin-bottom:12px">
+          <span class="zone-title">地点</span>
+          <span class="zone-meta">6 城</span>
+        </div>
+        <div class="dots">
+          <span class="dot big" style="width:22px;height:22px;left:62%;top:26%"></span>
+          <span class="dot" style="width:17px;height:17px;left:76%;top:52%"></span>
+          <span class="dot" style="width:14px;height:14px;left:38%;top:58%"></span>
+          <span class="dot" style="width:11px;height:11px;left:70%;top:64%"></span>
+          <span class="dot" style="width:9px;height:9px;left:58%;top:80%"></span>
+          <span class="dot" style="width:8px;height:8px;left:50%;top:44%"></span>
+          <em style="left:62%;top:8%">北京 186</em>
+        </div>
+        <p class="kv-note" style="margin-top:8px">GPS 覆盖 591.4% · 550 张有定位</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 区 4：内容分类 + 覆盖环 + Top 城市 ── -->
+  <div class="zone">
+    <div class="grid12" style="padding:18px 22px">
+      <div class="sp4">
+        <div class="zone-head" style="margin-bottom:12px">
+          <span class="zone-title">内容分类</span>
+        </div>
+        <div style="display:flex;align-items:baseline;gap:8px">
+          <span style="font-size:30px;font-weight:340;letter-spacing:-.7px">6</span>
+          <span style="font-size:11px;color:var(--fg-3)">个语义分类</span>
+        </div>
+        <p class="kv-note" style="margin-top:7px;line-height:1.6">人物 220 · 风景 168 · 夜景 96<br />文档 44 · 美食 38 · 猫 31</p>
+        <p class="kv-note" style="margin-top:7px">0 张已归类（待建索引）</p>
+      </div>
+
+      <div class="sp4" style="border-left:1px solid var(--rule);padding-left:22px">
+        <div class="zone-head" style="margin-bottom:12px">
+          <span class="zone-title">人脸照片覆盖</span>
+        </div>
+        <div class="ring">
+          <svg width="52" height="52" viewBox="0 0 56 56" aria-hidden="true">
+            <circle cx="28" cy="28" r="23" fill="none" stroke="var(--rule)" stroke-width="5" />
+            <circle cx="28" cy="28" r="23" fill="none" stroke="var(--accent)" stroke-width="5"
+              stroke-linecap="round" stroke-dasharray="144.5" stroke-dashoffset="121.4"
+              transform="rotate(-90 28 28)" />
+            <text x="28" y="32" text-anchor="middle" font-size="12" font-weight="560"
+              fill="var(--fg)" font-family="inherit">16%</text>
+          </svg>
+          <div>
+            <div class="ring-cap"><b style="color:var(--fg-2);font-weight:560">15</b> 张含人物<br />归为 <b style="color:var(--fg-2);font-weight:560">14</b> 位</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sp4" style="border-left:1px solid var(--rule);padding-left:22px">
+        <div class="zone-head" style="margin-bottom:12px">
+          <span class="zone-title">Top 城市</span>
+        </div>
+        <div class="rank" id="rank"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 区 5：最近导入（8）+ 那年今日大卡（4）── -->
+  <div class="zone">
+    <div class="grid12" style="padding:18px 22px 20px">
+      <div class="sp8">
+        <div class="zone-head" style="margin-bottom:12px">
+          <span class="zone-title">最近导入</span>
+          <span class="right" style="font-size:10.5px;color:var(--accent)">时间线 →</span>
+        </div>
+        <div class="strip" id="strip"></div>
+        <div class="strip-cap" id="strip-cap"></div>
+      </div>
+
+      <div class="sp4" style="border-left:1px solid var(--rule);padding-left:22px">
+        <div class="zone-head" style="margin-bottom:12px">
+          <span class="zone-title">那年今日</span>
+        </div>
+        <div style="text-align:center;padding:14px 0 6px">
+          <div style="font-size:34px;font-weight:340;letter-spacing:-.9px;color:var(--fg)">0</div>
+          <div class="kv-note" style="margin-top:5px">组</div>
+        </div>
+        <p class="kv-note" style="text-align:center;line-height:1.6">去年今天的照片<br />会出现在这里</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="note">
+  一块板、四个区、五条发丝线 —— 这是本页全部的"框"。
+  错落来自栅格宽窄（7/5 · 4/4/4 · 7/5 · 8/4）与字号档位，不来自板与板之间的缝。
+  每个区都可点，跳转到对应分区（内容分类 / 人物 / 地点 / 时间线）。
+</p>
+
+<script src="./feat115-data.js"></script>
+<script>
+document.getElementById("td-cover").src = photo(2, 120, 120);
+
+/* 人物头像簇 */
+const facesEl = document.getElementById("faces");
+let html = "";
+for (const p of PERSONS) {
+  html += `<div class="face" style="background:linear-gradient(150deg,hsl(${p.id.charCodeAt(1) * 37 % 360},42%,58%),hsl(${(p.id.charCodeAt(1) * 37 + 40) % 360},38%,32%))"
+    title="${p.name ?? "未命名"}（${p.id}）">${(p.name ?? "?").slice(0, 1)}</div>`;
+}
+html += '<div class="face more">+7</div>';
+facesEl.innerHTML = html;
+
+/* Top 城市排行条 */
+const max = CITIES[0].n;
+document.getElementById("rank").innerHTML = CITIES.map((c, i) =>
+  `<div class="rank-row${i === 0 ? " top" : ""}">
+    <span class="rank-name">${c.name}</span>
+    <span class="rank-track"><i style="width:${(c.n / max) * 100}%"></i></span>
+    <span class="rank-n">${c.n}</span>
+  </div>`).join("");
+
+/* 最近导入封面条 */
+const recent = [ALBUMS[3], ALBUMS[0], ALBUMS[5], ALBUMS[2], ALBUMS[4]];
+document.getElementById("strip").innerHTML = recent.map((a) =>
+  `<div class="cover c${a.c}"><img src="${photo(a.id, 200, 125)}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" /></div>`).join("");
+document.getElementById("strip-cap").innerHTML = recent.map((a) => `<span>${a.name}</span>`).join("");
+</script>
+</body>
+</html>

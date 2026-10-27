@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>布局重排效果图 · 内容分类 / 时间线 / 扫描入库 / 人物</title>
+<link rel="stylesheet" href="mock-widgets.css" />
+<style>
+/* ══════════════════════════════════════════════════════════════════════
+   FEAT-112 布局重排效果图（不进产品代码，仅用于确认方向）
+   对应问题：
+     ③ 卡片边线太重 → 轻边框/无边框；内容分类错落；时间线左侧时间栏 + 照片错落
+     ④ 扫描入库界面重排
+     ⑦ 人物页卡片重排（名字要能显示全）
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ── 轻量化后的卡片语言（对应问题③）──────────────────────────────
+   三件事：
+     1. 去掉 1px 实描边 → 只留一道极淡的内侧光 + 投影，靠"明度差 + 阴影"读边界
+     2. 圆角 18 → 14（板子变轻，圆角太大会显"厚"）
+     3. 板面填充更透（玻璃 40% 色调 + 12% 白），让壁纸参与构图
+   ───────────────────────────────────────────────────────────────── */
+/* ══ 背景修正：把渐变放到 html 上（非 fixed）══
+   原因：mock-widgets.css 用 body + background-attachment: fixed，
+   全页截图时 fixed 背景只画一屏，下半部就是白底 + 白字（全看不见）。
+   html 背景会传递到画布（canvas），覆盖整个滚动区域 —— 这是全页截图唯一可靠的写法。 */
+html {
+  background:
+    radial-gradient(60% 46% at 12% -8%, var(--wash-a), transparent 62%),
+    radial-gradient(52% 40% at 94% 2%, var(--wash-b), transparent 66%),
+    radial-gradient(48% 38% at 80% 112%, var(--wash-c), transparent 62%),
+    linear-gradient(165deg, var(--bg-1) 0%, var(--bg-2) 48%, var(--bg-3) 100%);
+}
+body { background: transparent; }
+
+/* ⚠️ 这里必须写字面量 52px：效果图页只引 mock-widgets.css，没有 tokens.css，
+   var(--sp-8) 未定义会让整条 padding 声明被丢弃（首版就因此贴着视口边缘）。 */
+.w-page { padding: 0 52px 56px; }
+.w-sec { margin-top: 34px; }
+.w-sec-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 14px; }
+.w-sec-title { font-size: 16px; font-weight: 650; letter-spacing: -.02em; }
+.w-sec-note { font-size: 11px; color: var(--color-text-3); }
+.w-sec-tag {
+  margin-left: auto; font-size: 10px; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--w-line); color: var(--color-text-3);
+}
+
+/* 轻卡片：无边框 */
+.soft-card {
+  position: relative;
+  border-radius: 14px;
+  background-color: color-mix(in srgb, var(--color-surface) 34%, transparent);
+  background-image: linear-gradient(
+    color-mix(in srgb, #ffffff var(--w-glass-white), transparent),
+    color-mix(in srgb, #ffffff var(--w-glass-white), transparent)
+  );
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  backdrop-filter: blur(18px) saturate(1.2);
+  /* 无 border：只留内侧一道极淡上光 + 外侧 1px 暗环 + 柔影 */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 0 1px rgba(0, 0, 0, 0.12),
+    0 8px 22px -14px rgba(0, 0, 0, 0.5);
+}
+
+/* ── ① 内容分类：多列瀑布流，卡片高度随内容，无网格感 ───────────── */
+.cat-flow { column-count: 4; column-gap: 12px; column-fill: balance; }
+.cat {
+  break-inside: avoid;
+  width: 100%; /* column 容器里的子项必须显式 100%，否则会按内容宽溢出列 */
+  display: block;
+  margin-bottom: 12px;
+  border-radius: 14px;
+  overflow: hidden;
+  position: relative;
+  cursor: pointer;
+  /* 封面本来就是"内容"，卡片不描边 */
+  box-shadow: 0 8px 20px -14px rgba(0, 0, 0, 0.55);
+}
+/* 封面必须绝对定位铺满：.ph-* 只给背景色，没有尺寸；
+   不铺满就会变成 0 高（首版效果图就踩了这个）。 */
+.cat > .ph { position: absolute; inset: 0; }
+.cat h4 {
+  position: absolute; left: 12px; bottom: 10px; z-index: 2;
+  font-size: 13px; font-weight: 650; color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .7);
+  display: flex; align-items: center; gap: 6px;
+}
+.cat .sub {
+  display: block; font-size: 9.5px; font-weight: 400;
+  color: rgba(255, 255, 255, .78); margin-top: 2px;
+}
+.cat::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, .62) 0%, rgba(0, 0, 0, .1) 40%, transparent 62%);
+}
+/* 高度错落：周期 5 档，避免"高低高低"规律的机械感 */
+.cat:nth-child(5n+1) { height: 232px; }
+.cat:nth-child(5n+2) { height: 168px; }
+.cat:nth-child(5n+3) { height: 206px; }
+.cat:nth-child(5n+4) { height: 258px; }
+.cat:nth-child(5n+5) { height: 186px; }
+
+/* ── ② 时间线：左侧吸顶时间栏 + 右侧错落照片 ───────────────────── */
+.tl-shell { display: flex; gap: 26px; align-items: flex-start; }
+.tl-rail {
+  position: sticky; top: 84px; width: 128px; flex: none;
+  display: flex; flex-direction: column; gap: 1px;
+  padding-left: 2px;
+}
+.tl-rail-item {
+  position: relative; display: flex; align-items: baseline; gap: 8px;
+  padding: 6px 0 6px 16px; cursor: pointer; border: none; background: none;
+  color: var(--color-text-3); font-size: 12px; line-height: 1.4; text-align: left;
+}
+.tl-rail-item::before {
+  content: ""; position: absolute; left: 0; top: 11px; width: 6px; height: 6px;
+  border-radius: 50%; box-shadow: inset 0 0 0 1.5px currentColor; opacity: .55;
+}
+.tl-rail-item::after {
+  content: ""; position: absolute; left: 2.5px; top: 17px; bottom: -7px;
+  width: 1px; background: currentColor; opacity: .16;
+}
+.tl-rail-item:last-child::after { display: none; }
+.tl-rail-item b { font-weight: 650; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.tl-rail-item span { font-size: 10.5px; opacity: .72; flex: none; }
+.tl-rail-item span:first-of-type { min-width: 26px; }
+.tl-rail-item.on { color: var(--w-accent); }
+.tl-rail-item.on::before { box-shadow: inset 0 0 0 1.5px currentColor, 0 0 0 3px var(--w-accent-soft); opacity: 1; }
+.tl-rail-item.on b { font-weight: 700; }
+
+.tl-main { flex: 1; min-width: 0; }
+.tl-month-block { margin-bottom: 26px; }
+.tl-month-head {
+  display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px;
+  padding-bottom: 7px; border-bottom: 1px solid var(--w-divider);
+}
+.tl-month-head h3 { font-size: 14px; font-weight: 650; }
+.tl-month-head span { font-size: 10.5px; color: var(--color-text-3); }
+/* 错落排布：混合宽高比 + 不等宽（不用等宽网格） */
+.tl-flow { display: flex; flex-wrap: wrap; gap: 8px; }
+.tl-ph {
+  border-radius: 10px; overflow: hidden; position: relative; cursor: pointer;
+  box-shadow: 0 6px 16px -12px rgba(0, 0, 0, .6);
+}
+.tl-ph:nth-child(7n+1) { width: 258px; height: 172px; }
+.tl-ph:nth-child(7n+2) { width: 156px; height: 172px; }
+.tl-ph:nth-child(7n+3) { width: 156px; height: 118px; }
+.tl-ph:nth-child(7n+4) { width: 210px; height: 118px; }
+.tl-ph:nth-child(7n+5) { width: 184px; height: 148px; }
+.tl-ph:nth-child(7n+6) { width: 132px; height: 148px; }
+.tl-ph:nth-child(7n+7) { width: 236px; height: 132px; }
+.tl-ph .ph { position: absolute; inset: 0; }
+
+/* ── ③ 扫描入库：状态条 + 左相册选择 + 右任务面板 ─────────────── */
+.scan-status {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 16px; border-radius: 14px; margin-bottom: 14px;
+  background-color: color-mix(in srgb, var(--color-surface) 30%, transparent);
+  background-image: linear-gradient(
+    color-mix(in srgb, #ffffff var(--w-glass-white), transparent),
+    color-mix(in srgb, #ffffff var(--w-glass-white), transparent)
+  );
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14), 0 0 0 1px rgba(0, 0, 0, .1);
+}
+.scan-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--color-ok-vivid);
+  box-shadow: 0 0 10px var(--color-ok-vivid); flex: none;
+}
+.scan-status b { font-size: 12.5px; font-weight: 600; }
+.scan-status small { font-size: 11px; color: var(--color-text-3); }
+.scan-progress { flex: 1; max-width: 320px; height: 4px; border-radius: 4px; background: var(--w-track); overflow: hidden; }
+.scan-progress i { display: block; height: 100%; width: 62%; background: linear-gradient(90deg, var(--w-accent), var(--w-accent-2)); }
+.scan-actions { margin-left: auto; display: flex; gap: 8px; }
+.btn-soft {
+  height: 30px; padding: 0 14px; border-radius: 9px; font-size: 11.5px; cursor: pointer;
+  border: none; color: var(--color-text); background: rgba(128, 128, 128, .14);
+}
+.btn-soft:hover { background: rgba(128, 128, 128, .22); }
+.btn-solid {
+  height: 30px; padding: 0 16px; border-radius: 9px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  border: none; color: #1b1206; background: linear-gradient(135deg, var(--w-accent), var(--w-accent-2));
+}
+.scan-shell { display: flex; gap: 14px; align-items: flex-start; }
+.scan-left { flex: 1; min-width: 0; padding: 14px 16px; }
+.scan-right { flex: 1; min-width: 0; padding: 14px 16px; }
+.panel-title {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+  font-size: 11px; font-weight: 600; letter-spacing: .12em;
+  color: var(--color-text-2); text-transform: uppercase;
+}
+.panel-title .cnt { margin-left: auto; font-size: 10.5px; letter-spacing: 0; color: var(--color-text-3); }
+.album-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border-radius: 9px; cursor: pointer; font-size: 12px;
+}
+.album-row:hover { background: rgba(128, 128, 128, .1); }
+.album-row.on { background: color-mix(in srgb, var(--w-accent) 12%, transparent); }
+.chk {
+  width: 16px; height: 16px; border-radius: 5px; flex: none;
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, .28);
+  display: grid; place-items: center; font-size: 11px; line-height: 1;
+  color: #1b1206; font-weight: 700;
+}
+.album-row.on .chk {
+  background: var(--w-accent);
+  box-shadow: none;
+}
+.album-row .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.album-row .st { margin-left: auto; font-size: 10.5px; color: var(--color-text-3); flex: none; }
+.album-row .st.done { color: var(--color-ok-vivid); }
+.album-row .st.todo { color: var(--w-accent); }
+
+.log-line {
+  display: flex; gap: 8px; font-size: 11px; line-height: 1.9;
+  color: var(--color-text-2); font-variant-numeric: tabular-nums;
+}
+.log-line time { color: var(--color-text-3); flex: none; }
+.log-line.ok::before { content: "✓"; color: var(--color-ok-vivid); }
+.log-line.warn::before { content: "!"; color: var(--w-accent); }
+
+.opt-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.opt {
+  font-size: 11px; padding: 5px 11px; border-radius: 8px;
+  background: rgba(128, 128, 128, .12); color: var(--color-text-2); cursor: pointer;
+}
+.opt.on { background: color-mix(in srgb, var(--w-accent) 16%, transparent); color: var(--color-text); }
+
+/* ── ④ 人物：竖排大卡，名字两行不截断 ──────────────────────────── */
+.person-flow { display: grid; grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 12px; }
+.person {
+  border-radius: 14px; overflow: hidden; position: relative; cursor: pointer;
+  padding: 18px 14px 14px; text-align: center;
+}
+.person .avatar {
+  width: 86px; height: 86px; border-radius: 50%; margin: 0 auto 12px;
+  position: relative; box-shadow: 0 6px 18px -10px rgba(0, 0, 0, .7);
+}
+.person .avatar .ph { position: absolute; inset: 0; border-radius: 50%; }
+.person .faces {
+  position: absolute; bottom: -6px; left: 50%; transform: translateX(-50%);
+  font-size: 9.5px; padding: 1.5px 8px; border-radius: 999px;
+  background: color-mix(in srgb, var(--w-accent) 88%, #000);
+  color: #1b1206; font-weight: 600; white-space: nowrap;
+}
+.person h4 {
+  font-size: 13.5px; font-weight: 650; line-height: 1.35;
+  /* 名字最多两行，不省略号截断：这是用户报的"名字不能显示全" */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: break-word;
+}
+.person .pid { font-size: 10.5px; color: var(--color-text-3); margin-top: 3px; }
+.person .meta { font-size: 10px; color: var(--color-text-3); margin-top: 6px; opacity: .85; }
+.person .rename {
+  position: absolute; top: 10px; right: 10px; width: 24px; height: 24px;
+  border-radius: 7px; border: none; background: rgba(128, 128, 128, .18);
+  color: var(--color-text-2); font-size: 11px; cursor: pointer; opacity: 0;
+  transition: opacity var(--dur-2);
+}
+.person:hover .rename { opacity: 1; }
+
+/* 对比块：旧 vs 新 */
+.cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 6px; }
+.cmp-box { padding: 14px 16px; border-radius: 12px; }
+.cmp-box h5 { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--color-text-3); margin-bottom: 10px; }
+.cmp-old { box-shadow: inset 0 0 0 1px rgba(255,255,255,.18), 0 6px 16px -12px rgba(0,0,0,.6); }
+.cmp-new { box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 0 0 1px rgba(0,0,0,.1); }
+</style>
+</head>
+<body data-theme="dusk" data-mat="glass">
+
+<div class="w-page">
+
+  <!-- ══════════ ⓪ 卡片轻重对比 ══════════ -->
+  <section class="w-sec">
+    <div class="w-sec-head">
+      <h2 class="w-sec-title">① 卡片轻量化（问题③）</h2>
+      <span class="w-sec-note">左边是现在（1px 实描边 + 18px 圆角），右边是建议（无描边 + 14px）</span>
+    </div>
+    <div class="cmp">
+      <div class="cmp-box cmp-old" style="background: color-mix(in srgb, var(--color-surface) 50%, transparent)">
+        <h5>现在 · 描边 + 大圆角</h5>
+        <div class="w-stat-row" style="margin-top:0"><span class="w-stat-num sm">2,507</span><span class="w-stat-unit">张照片</span></div>
+        <p class="w-stat-note">边框 1px 半透白，在深底上读成一条"硬线"，一屏十几块就显重</p>
+      </div>
+      <div class="cmp-box cmp-new soft-card">
+        <h5>建议 · 无描边 + 14px</h5>
+        <div class="w-stat-row" style="margin-top:0"><span class="w-stat-num sm">2,507</span><span class="w-stat-unit">张照片</span></div>
+        <p class="w-stat-note">只留内侧上光与投影，靠明度差与影子读边界，轻但仍在</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ ① 内容分类错落 ══════════ -->
+  <section class="w-sec">
+    <div class="w-sec-head">
+      <h2 class="w-sec-title">② 内容分类：瀑布流错落（问题③）</h2>
+      <span class="w-sec-note">4 列多列流，高度按 5 档周期错落；名称与计数压在封面左下角，卡片本身不描边</span>
+      <span class="w-sec-tag">替代当前等高网格</span>
+    </div>
+    <div class="cat-flow">
+      <div class="cat"><div class="ph ph-5"></div><h4>夜空<span class="sub">31 张 · 匹配度 82</span></h4></div>
+      <div class="cat"><div class="ph ph-6"></div><h4>美食<span class="sub">57 张 · 匹配度 76</span></h4></div>
+      <div class="cat"><div class="ph ph-4"></div><h4>森林徒步<span class="sub">42 张 · 匹配度 71</span></h4></div>
+      <div class="cat"><div class="ph ph-3"></div><h4>自然风景<span class="sub">36 张 · 匹配度 68</span></h4></div>
+      <div class="cat"><div class="ph ph-1"></div><h4>聚会合影<span class="sub">24 张 · 匹配度 64</span></h4></div>
+      <div class="cat"><div class="ph ph-8"></div><h4>花<span class="sub">9 张 · 匹配度 58</span></h4></div>
+      <div class="cat" style="background: #4d8a6b"><h4>人像<span class="sub">24 张 · 规则分类</span></h4></div>
+      <div class="cat"><div class="ph ph-2"></div><h4>日落晚霞<span class="sub">25 张 · 匹配度 73</span></h4></div>
+      <div class="cat" style="background: #6b5a8f"><h4>扫街<span class="sub">18 张 · 规则分类</span></h4></div>
+    </div>
+  </section>
+
+  <!-- ══════════ ② 时间线 ══════════ -->
+  <section class="w-sec">
+    <div class="w-sec-head">
+      <h2 class="w-sec-title">③ 时间线：左侧时间栏 + 照片错落（问题③）</h2>
+      <span class="w-sec-note">左栏吸顶，年/月两级可点跳；右侧照片混合宽高比排布，不再等宽网格</span>
+    </div>
+    <div class="tl-shell">
+      <nav class="tl-rail">
+        <button class="tl-rail-item on"><b>2026</b><span>388</span></button>
+        <button class="tl-rail-item"><span>10月</span><span>20</span></button>
+        <button class="tl-rail-item"><span>09月</span><span>64</span></button>
+        <button class="tl-rail-item"><span>08月</span><span>58</span></button>
+        <button class="tl-rail-item"><b>2025</b><span>612</span></button>
+        <button class="tl-rail-item"><b>2024</b><span>540</span></button>
+        <button class="tl-rail-item"><b>2023</b><span>396</span></button>
+      </nav>
+      <div class="tl-main">
+        <div class="tl-month-block">
+          <div class="tl-month-head"><h3>2026 年 10 月</h3><span>20 张 · 成都</span></div>
+          <div class="tl-flow">
+            <div class="tl-ph"><div class="ph ph-2"></div></div>
+            <div class="tl-ph"><div class="ph ph-5"></div></div>
+            <div class="tl-ph"><div class="ph ph-6"></div></div>
+            <div class="tl-ph"><div class="ph ph-4"></div></div>
+            <div class="tl-ph"><div class="ph ph-3"></div></div>
+            <div class="tl-ph"><div class="ph ph-8"></div></div>
+            <div class="tl-ph"><div class="ph ph-1"></div></div>
+          </div>
+        </div>
+        <div class="tl-month-block">
+          <div class="tl-month-head"><h3>2026 年 09 月</h3><span>64 张 · 成都 / 重庆</span></div>
+          <div class="tl-flow">
+            <div class="tl-ph"><div class="ph ph-3"></div></div>
+            <div class="tl-ph"><div class="ph ph-7"></div></div>
+            <div class="tl-ph"><div class="ph ph-1"></div></div>
+            <div class="tl-ph"><div class="ph ph-2"></div></div>
+            <div class="tl-ph"><div class="ph ph-6"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ ③ 扫描入库 ══════════ -->
+  <section class="w-sec">
+    <div class="w-sec-head">
+      <h2 class="w-sec-title">④ 扫描入库：状态条 + 左选择 / 右任务（问题④）</h2>
+      <span class="w-sec-note">把"一长串面板"收成三块：顶部状态条（可停/可续）、左侧相册多选（带入库状态）、右侧任务与日志</span>
+    </div>
+
+    <div class="scan-status">
+      <span class="scan-dot"></span>
+      <b>正在扫描 3 个相册</b>
+      <small>毕业旅行 · 128 / 206 张</small>
+      <div class="scan-progress"><i></i></div>
+      <div class="scan-actions">
+        <button class="btn-soft">暂停</button>
+        <button class="btn-soft">停止</button>
+      </div>
+    </div>
+
+    <div class="scan-shell">
+      <div class="scan-left soft-card">
+        <div class="panel-title">选择相册 <span class="cnt">12 个 · 已选 3</span></div>
+        <div class="album-row on"><span class="chk">✓</span><span class="nm">毕业旅行</span><span class="st todo">待扫描 206</span></div>
+        <div class="album-row on"><span class="chk">✓</span><span class="nm">聚会合影</span><span class="st todo">待扫描 109</span></div>
+        <div class="album-row on"><span class="chk">✓</span><span class="nm">美食</span><span class="st todo">待扫描 57</span></div>
+        <div class="album-row"><span class="chk"></span><span class="nm">森林徒步</span><span class="st done">已入库 42</span></div>
+        <div class="album-row"><span class="chk"></span><span class="nm">自然风景</span><span class="st done">已入库 36</span></div>
+        <div class="album-row"><span class="chk"></span><span class="nm">夜空</span><span class="st todo">待扫描 31</span></div>
+      </div>
+
+      <div class="scan-right soft-card">
+        <div class="panel-title">扫描内容 <span class="cnt">三项全选</span></div>
+        <div class="opt-grid">
+          <span class="opt on">EXIF 时间地点</span>
+          <span class="opt on">影调分析</span>
+          <span class="opt on">AI 分类 + 人脸</span>
+        </div>
+        <div class="panel-title" style="margin-top:16px">最近任务</div>
+        <div class="log-line ok"><time>10:42</time>美食 · 57 张入库完成</div>
+        <div class="log-line ok"><time>10:39</time>聚会合影 · 109 张入库完成</div>
+        <div class="log-line warn"><time>10:31</time>夜空 · 跳过 3 张（无 EXIF）</div>
+        <div class="log-line ok"><time>耗时</time>平均 1.8 s / 张（AI 档 b16）</div>
+
+        <div class="panel-title" style="margin-top:16px">队列</div>
+        <div class="log-line"><time>进行中</time>毕业旅行 128/206</div>
+        <div class="log-line"><time>排队</time>2 个相册</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ ④ 人物 ══════════ -->
+  <section class="w-sec">
+    <div class="w-sec-head">
+      <h2 class="w-sec-title">⑤ 人物：竖排大卡，名字两行不截断（问题⑦）</h2>
+      <span class="w-sec-note">现在 176px 横排卡里右侧只剩 ~90px，名字被省略号吃掉；改为竖排：头像居中、名字最多两行</span>
+    </div>
+    <div class="person-flow">
+      <div class="person soft-card">
+        <button class="rename">✎</button>
+        <div class="avatar"><div class="ph ph-1"></div><span class="faces">908 张脸</span></div>
+        <h4>妈妈</h4>
+        <div class="pid">P002</div>
+        <div class="meta">登记于 2026-09-02</div>
+      </div>
+      <div class="person soft-card">
+        <button class="rename">✎</button>
+        <div class="avatar"><div class="ph ph-3"></div><span class="faces">842 张脸</span></div>
+        <h4>爸爸</h4>
+        <div class="pid">P001</div>
+        <div class="meta">登记于 2026-09-02</div>
+      </div>
+      <div class="person soft-card">
+        <button class="rename">✎</button>
+        <div class="avatar"><div class="ph ph-8"></div><span class="faces">786 张脸</span></div>
+        <h4>外婆（成都老宅）</h4>
+        <div class="pid">P004</div>
+        <div class="meta">登记于 2026-09-05</div>
+      </div>
+      <div class="person soft-card">
+        <button class="rename">✎</button>
+        <div class="avatar"><div class="ph ph-6"></div><span class="faces">642 张脸</span></div>
+        <h4>未命名 · 2026 毕业照合影中的朋友</h4>
+        <div class="pid">P018</div>
+        <div class="meta">登记于 2026-10-01</div>
+      </div>
+      <div class="person soft-card">
+        <button class="rename">✎</button>
+        <div class="avatar"><div class="ph ph-4"></div><span class="faces">520 张脸</span></div>
+        <h4>豆豆</h4>
+        <div class="pid">P027</div>
+        <div class="meta">登记于 2026-10-08</div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<p class="foot-note">布局重排效果图 · 暮紫 / 玻璃材质 · 与产品现有令牌同一套颜色体系</p>
+
+<script>
+  const v = new URLSearchParams(location.search).get("v") || "";
+  if (v.includes("pine")) document.body.dataset.theme = "pine";
+  if (v.includes("plain")) document.querySelectorAll(".soft-card").forEach((el) => {
+    el.style.backdropFilter = "none";
+    el.style.webkitBackdropFilter = "none";
+    el.style.backgroundColor = "color-mix(in srgb, var(--color-surface-2) 92%, transparent)";
+  });
+  if (v.includes("light")) {
+    document.body.dataset.theme = "light";
+    document.body.classList.remove("theme-dark");
+  }
+</script>
+</body>
+</html>

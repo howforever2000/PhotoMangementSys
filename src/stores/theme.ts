@@ -17,8 +17,8 @@ import {
   saturateColor,
   type Rgb,
 } from "../utils/color";
-import { DEFAULTS, isDefaultLook, normalizePrefs, type BackgroundStyle, type Material, type Prefs, type ThemeMode } from "../utils/prefs";
-import { presetPrefs, type Preset } from "../utils/presets";
+import { DEFAULTS, isDefaultLook, normalizePrefs, type BackgroundStyle, type Material, type Prefs, type ThemeMode, type WidgetMaterial } from "../utils/prefs";
+import { ALL_PRESETS, matchesPreset, presetPrefs, type Preset } from "../utils/presets";
 /* FEAT-094：默认背景图 = 登录页那张启动封面。作为构建产物里的内置资源引用
    （Vite 会给出带哈希的 URL），**不写 localStorage** —— 否则 176KB 的 data URL
    很容易撞上存储配额，进而把整套偏好保存都拖掉（本文件开头的键分离就是这么来的）。 */
@@ -32,6 +32,12 @@ const KEY_IMAGE = "pm-theme-image";
 
 /** 深色模式对应的默认纯色背景（setMode 在亮/暗之间同步底色时用） */
 const DARK_BG = "#1a1428";
+
+/** 浅色模式的默认渐变三色（纸白暖中性）。
+ *  DEFAULTS 里只有深色档（因为默认外观是启动封面），
+ *  这里补上浅色档，供 setMode 切模式时同步渐变用（FEAT-105）。
+ *  取值与浅色预设「纸白暖中性」一致，避免"切模式后渐变和预设对不上"。 */
+const LIGHT_GRAD: [string, string, string] = ["#faf8f5", "#f0ece6", "#ddd7cd"];
 
 /** 默认背景图（启动封面）的构建产物 URL */
 export const DEFAULT_WALLPAPER = defaultWallpaper;
@@ -114,6 +120,18 @@ export const useThemeStore = defineStore("theme", () => {
      零开销、零视觉变化。 */
   /** FEAT-086：卡片材质（普通/液态），预设一律普通卡片 */
   const material = ref<Material>(saved.material);
+  /* FEAT-117：材质**只有一个维度**了。
+     FEAT-110 曾给仪表墙单独开了一个 widgetMaterial（glass/plain），
+     理由是"仪表墙是另一个语境"。实际使用中用户点了两次都以为坏了一个：
+     两套开关名字都叫"液态玻璃 / 普通"，改一个另一个不动，没人能记住哪套管哪儿。
+     材质是"这个界面是什么做的"，不该按页面分叉。
+     这里保留 widgetMaterial 这个名字（外面 UiWidget 仍在读），
+     但它**降级为 material 的派生值**，不再持久化、不再能被单独设置。
+     映射：liquid → glass，plain → plain。旧 prefs 里的 widgetMaterial
+     仍然被 normalizePrefs 读取（不报错），只是不再生效。 */
+  const widgetMaterial = computed<WidgetMaterial>(() =>
+    material.value === "liquid" ? "glass" : "plain",
+  );
   const bgStyle = ref<BackgroundStyle>(saved.bgStyle);
   const bgColor = ref(saved.bgColor);
   const gradFrom = ref(saved.gradFrom);
@@ -194,11 +212,35 @@ export const useThemeStore = defineStore("theme", () => {
   }
 
   /** 切换亮暗模式：若纯色背景仍是另一模式的默认值（用户未自定义），则同步换成对应色调，
-   *  避免「深色模式 + 浅色背景」这种不可读组合 */
+   *  避免「深色模式 + 浅色背景」这种不可读组合。
+   *
+   *  FEAT-105 修：原来只管了**纯色底**（bgColor），漏了**渐变底**三色标。
+   *  于是出现这个错配态：用户在浅色预设（纸白 #faf8f5/#f0ece6/#ddd7cd）下点「深色」，
+   *  mode 变成 dark → body 挂 theme-dark → tokens.css 的 --c-* 切到深色档（白字），
+   *  而页面底仍是浅色渐变 —— 白字落在浅底上，1.03:1，完全看不见。
+   *  （这正是用户截图里"浅色背景 + 白色文字"的成因。）
+   *
+   *  现在：渐变三色若还是本模式的默认值（用户没手动调过），一并换成目标模式的默认渐变。
+   *  用户手动改过渐变则**不动** —— 那是他明确选的配色，不该被模式切换覆盖。
+   */
   function setMode(next: ThemeMode) {
     const pairDefault = next === "dark" ? DEFAULTS.bgColor : DARK_BG;
     if (bgColor.value === pairDefault || bgColor.value === DEFAULTS.bgColor || bgColor.value === DARK_BG) {
       bgColor.value = next === "dark" ? DARK_BG : DEFAULTS.bgColor;
+    }
+    /* 渐变三色：仅当还是**当前模式**的默认值时跟随切换。
+       判据用“当前模式默认值”或“目标模式默认值”两种 —— 覆盖“从预设切到模式”
+       与“从模式切到预设”两条路径。 */
+    const darkGrad = [DEFAULTS.gradFrom!, DEFAULTS.gradMid!, DEFAULTS.gradTo!];
+    const lightGrad = LIGHT_GRAD;
+    const cur = isDark.value ? darkGrad : lightGrad;
+    const target = next === "dark" ? darkGrad : lightGrad;
+    const isDefaultGrad =
+      gradFrom.value === cur[0] || gradFrom.value === target[0] || gradFrom.value === DEFAULTS.gradFrom!;
+    if (isDefaultGrad && bgStyle.value === "gradient") {
+      gradFrom.value = target[0];
+      gradMid.value = target[1];
+      gradTo.value = target[2];
     }
     mode.value = next;
     persist();
@@ -464,6 +506,57 @@ export const useThemeStore = defineStore("theme", () => {
     const body = document.body;
     body.style.setProperty("--color-on-bg", onBgColor.value);
     body.style.setProperty("--color-on-bg-2", onBgSubColor.value);
+    /* FEAT-105：--c-* 改为跟随**实际页面背景**下发，而不是靠 body.theme-dark 类选。
+       原来的做法（tokens.css 里 :root 深色 + body:not(.theme-dark) 浅色）假设
+       "模式 == 背景明度"，这个假设在「深色模式 + 浅色预设」这类错配下不成立，
+       结果就是浅色底上出现白字（用户截图：1.03:1）。
+       这里按**实际背景的明度**决定 fg 档位，错配状态自然消失；
+       body 类只留给 main.css 的 --color-* 家族使用。
+
+       ⚠️ 判据用 effectiveBg（背景本身）的明度，**不是** isDarkText(onBgColor) ——
+          后者判断的是「文字色深浅」，而这里要判断的是「背景深浅」，语义相反
+          （浅底 + 深字 时它会返回 true，害我把白字发给浅底）。 */
+    const bgLum = relLum(effectiveBg.value);
+    const cOnDark = bgLum < 0.5; // 背景是深的 → 用浅色文字
+    body.style.setProperty("--c-fg", cOnDark ? "#f2f0f4" : "#17161a");
+    /* FEAT-105：墙板玻璃把底**提亮**了（白玻璃叠在深底上，板底从 #271d37
+       变成 rgb(76,68,89)）。所以玻璃板上的次级文字需要比页面上的更亮：
+       .58 白在那个底上只有 3.94:1（低于 AA）。
+       这里给玻璃板单独一档更亮的次级色 —— 不是全局改 --c-fg-2，
+       因为页面上的次级文字（不在玻璃上）不需要那么亮。 */
+    body.style.setProperty("--c-fg-2", cOnDark ? "rgba(242,240,244,.68)" : "rgba(23,22,26,.66)");
+    body.style.setProperty("--c-fg-3", cOnDark ? "rgba(242,240,244,.56)" : "rgba(23,22,26,.52)");
+    body.style.setProperty("--c-rule", cOnDark ? "rgba(255,255,255,.075)" : "rgba(23,22,26,.085)");
+    body.style.setProperty("--c-accent", cOnDark ? "#d4a24a" : "#7d571a");
+    /* FEAT-105：玻璃板专用强调色。
+       玻璃板把底**提亮**了（深色预设：#271d37 → rgb(76,68,89)），
+       原本的 #d4a24a 金在那个底上只有 3.97:1。
+       深色底上要**提亮**金色，浅色底上要**压暗**金色 —— 方向相反，
+       所以不能写成固定值，得按底色明度分两档下发。 */
+    body.style.setProperty("--c-accent-bright", cOnDark ? "#f0bd6a" : "#6b4a12");
+    body.style.setProperty("--c-danger", cOnDark ? "#d96a6a" : "#b4453f");
+
+    /* FEAT-107：无容器阅读层（--fg / --fg-2 / --fg-3 / --rule / --hover / --ctrl-line）
+       这组值是给**直接压在壁纸上的文字**用的（数据带 / 左栏 / 图注 / 组头），
+       与 --c-* 并行存在而不是替代它 —— --c-* 是按“承载面等效底色”标定的，
+       承载面被删掉后那套值的标定基准就不成立了。
+
+       为什么在这里下发而不是写在 tokens.css 的 :root / body:not(.theme-dark)：
+         tokens.css 的两档靠 body 类选，而 body 类只能表达“用户选了哪个模式”；
+         真正决定文字的应该是**背景的实际明度**（深色模式 + 浅色预设会错配）。
+         这里跟 --c-* 用同一个 cOnDark 判据，两套值永远同向。 */
+    body.style.setProperty("--fg", cOnDark ? "#f0eef3" : "#16151a");
+    body.style.setProperty("--fg-2", cOnDark ? "rgba(240,238,243,.60)" : "rgba(22,21,26,.66)");
+    /* --fg-3 要按「预设渐变最亮/最暗端」标定，不是纯黑/纯白底：
+       深色 .38 → 最亮端 3.22:1（不达标）；浅色 .44 → 最暗端 2.83:1。
+       提到 .52 / .60 后两边都 ≥4.5:1，且仍明显弱于 --fg-2。 */
+    body.style.setProperty("--fg-3", cOnDark ? "rgba(240,238,243,.52)" : "rgba(22,21,26,.60)");
+    body.style.setProperty("--rule", cOnDark ? "rgba(255,255,255,.085)" : "rgba(22,21,26,.10)");
+    body.style.setProperty("--hover", cOnDark ? "rgba(255,255,255,.055)" : "rgba(22,21,26,.05)");
+    body.style.setProperty(
+      "--ctrl-line",
+      cOnDark ? "rgba(255,255,255,.115)" : "rgba(22,21,26,.14)",
+    );
     // 背景上的链接色：body.theme-dark 的 --color-link 恒为浅金（玻璃卡语境），
     // 落在页面背景上的链接需要另一套 —— 浅背景→深金，深背景→浅金
     body.style.setProperty("--color-link-on-bg", sat(onBgDark.value ? "#8a5a12" : "#ffd9a0"));
@@ -477,7 +570,9 @@ export const useThemeStore = defineStore("theme", () => {
         : "0 1px 3px rgba(0,0,0,.38)",
     );
   }
-  watch([onBgColor, onBgDark, bgStyle, bgImageEff], applyTextVars, { immediate: true });
+  /* watch 依赖：onBgColor 已含实际背景信息（含 compColor/compAlpha 的影响），
+     再加上 mode —— 切模式时即便背景没变，fg 档位也要跟着重算。 */
+  watch([onBgColor, onBgDark, bgStyle, bgImageEff, mode], applyTextVars, { immediate: true });
 
   /* ---------- 把深/浅色模式同步到 body ----------
      这样 main.css 中的 `body.theme-dark { --color-text: ... }` 才能覆盖全局，
@@ -498,9 +593,58 @@ export const useThemeStore = defineStore("theme", () => {
     if (typeof document === "undefined") return;
     document.body.classList.toggle("mat-plain", m === "plain");
     document.body.classList.toggle("mat-liquid", m === "liquid");
+    /* FEAT-117：仪表墙的两个 body 类由同一个材质推出（见 widgetMaterial 注释） */
+    document.body.classList.toggle("w-mat-glass", m === "liquid");
+    document.body.classList.toggle("w-mat-plain", m === "plain");
   }
   applyMaterial(material.value);
   watch(material, applyMaterial);
+
+  /* ---------- FEAT-110：widget 强调色（预设可覆盖） ----------
+     默认落日金；松绿混色等预设自带 accent/accent2 时，命中该预设就下发。
+     只写 --w-accent* 两个令牌，不动 --c-accent / --color-primary。
+     判据用与 ThemeDialog 同一个 matchesPreset，保证“弹窗里高亮哪套，
+     widget 就用哪套的强调色”，不会出现两处不一致。 */
+  const activePreset = computed<Preset | null>(() => {
+    const hit = ALL_PRESETS.find((p) =>
+      matchesPreset(p, {
+        bgStyle: bgStyle.value,
+        gradFrom: gradFrom.value,
+        gradMid: gradMid.value,
+        gradTo: gradTo.value,
+        compColor: compColor.value,
+        compAlpha: compAlpha.value,
+      }),
+    );
+    return hit ?? null;
+  });
+
+  /** 概览页专用：命中预设的三团有色光晕（无则 null，不渲染该层） */
+  const widgetWash = computed<Record<string, string> | null>(() => {
+    const w = activePreset.value?.washes;
+    if (!w) return null;
+    return {
+      backgroundImage: [
+        `radial-gradient(60% 46% at 12% -8%, ${w[0]}, transparent 62%)`,
+        `radial-gradient(52% 40% at 94% 2%, ${w[1]}, transparent 66%)`,
+        `radial-gradient(48% 38% at 80% 112%, ${w[2]}, transparent 62%)`,
+      ].join(","),
+    };
+  });
+
+  function applyWidgetAccent() {
+    if (typeof document === "undefined") return;
+    const p = activePreset.value;
+    const set = (name: string, v?: string) => {
+      if (v) document.body.style.setProperty(name, v);
+      else document.body.style.removeProperty(name);
+    };
+    /* 不命中彩色预设时移除 inline 值 → 回落到 widget.css 的 :root/浅色档默认 */
+    set("--w-accent", p?.accent);
+    set("--w-accent-2", p?.accent2);
+  }
+  watch([bgStyle, gradFrom, gradMid, gradTo, compColor, compAlpha], applyWidgetAccent,
+    { immediate: true });
 
   /* ---------- 组件色调下发（FEAT-084/085/086）：容器 = 玻璃 ----------
      玻璃底色 = 组件色调以 effectiveAlpha（滑块 + 材质偏移）叠在页面背景上（Q2-A），
@@ -530,8 +674,51 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--glass-bg", compFill(containerAlpha.value));
     body.style.setProperty("--liquid-bg", compFill(panelAlpha.value));
     body.style.setProperty("--glass-border", tone.border);
+    /* FEAT-105：墙板玻璃的填充。
+       关键认知：**玻璃板不是“组件色的半透明”，而是“白玻璃”**。
+       参考图里每一块板都是浅灰发白、半透明、能透出壁纸 ——
+       这是真玻璃的样子（无色，只折射/散射光）。
+       如果用组件色（深色系）做半透明，得到的是“深色塑料片”：
+       在深色底上糊成一片，壁纸的光完全透不出来。
+
+       所以：填充 = 白 + 极淡的组件色调（保留一点主题色相），
+       alpha 跟着**底色明度**走：底越深，白玻璃越明显（透出壁纸）；底越亮，白玻璃越淡
+       （否则白玻璃 + 白底 = 没有板，只有“脏”）。 */
+    const panelTone = rgbToHex(
+      mixRgb(hexToRgb(compColorTemp.value), [255, 255, 255], 0.86),
+    );
+    const panelAlphaValue = isDark.value ? 0.2 : 0.5;
+    body.style.setProperty(
+      "--panel-glass-fill",
+      `rgba(${hexToRgb(panelTone).map((v) => Math.round(v)).join(",")},${panelAlphaValue})`,
+    );
+
+    /* FEAT-110：widget 玻璃的“白玻璃层”比例 —— **按背景实际明度给，不写死**。
+       实测（.visual/probe-line-visibility.cjs）：
+         深背景（松绿/深色渐变）下白层 30% 会把主题色洗成脏灰，22% 才既保留松绿又 ≥3:1；
+         亮背景（启动封面）下 22% 不够，板面只有 2.54:1，需要 34% 才回到 ≥3:1。
+       这就是“CSS 猜不出背后明度、而 store 知道”的典型场景。
+       判据：**背景图取亮端分位（P95）**，其余取均值 —— 壁纸是渐变的（落日图天空
+       亮部远高于均值），widget 板要能在最亮的那片上也被看清。
+       这是 widget 专用令牌，不碰全局的 --color- 与 --float- 令牌，老用户外观不受影响。 */
+    let bgLumW: number;
+    if (bgStyle.value === "image" && bgImageBands.value?.length) {
+      /* 壁纸亮度要按**上屏后的呈现**算：图片 → 透明度（bgOpacity）→ 底色 → 遮罩。
+         遮罩（FEAT-094，上重下轻）会把亮部压下去，不折算就高估了背景亮度。
+         取最亮的一档（P95）—— widget 板要能在壁纸最亮那片上也被看清。 */
+      const scrim = SCRIM_RGB;
+      const base = hexToRgb(bgColorTemp.value);
+      const bands = bgImageBands.value.map((b) =>
+        mixRgb(mixRgb(b, base, 1 - bgOpacity.value), scrim, SCRIM_MEAN_ALPHA),
+      );
+      bgLumW = relLum(bands[bands.length - 1]);
+    } else {
+      bgLumW = relLum(effectiveBg.value);
+    }
+    body.style.setProperty("--w-glass-white", bgLumW < 0.22 ? "16%" : "30%");
   }
-  watch([compColor, compAlpha, effectiveBg, material], applyCompColor, { immediate: true });
+  /* effectiveBg / bgImageBands 已在依赖里（背景明度变化会重算白玻璃层比例） */
+  watch([compColor, compAlpha, effectiveBg, material, bgImageBands], applyCompColor, { immediate: true });
 
   /* ---------- FEAT-087：品牌色 / 语义色族下发 ----------
      组件里已把硬编码色值注册成 var(--color-*)（codemod 扫描替换），
@@ -581,15 +768,10 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--color-ok-text", sat(isDark.value ? "#6ed27a" : "#2f9e44"));
     body.style.setProperty("--color-danger-text", sat(isDark.value ? "#f87171" : "#c92a2a"));
     body.style.setProperty("--color-warn-text", sat(isDark.value ? "#f59e0b" : "#b45309"));
-    /* 糖果彩虹色板：hero 横幅 / 入口卡 / 回忆故事卡的渐变基色。
-       这些渐变串在 <script> 里拼装（内联 :style），所以必须注册成令牌才能被
-       饱和度 + 色温统一带动（否则滑块只影响按钮/背景，糖果卡原地不动）。 */
-    body.style.setProperty("--candy-cream", temp("#fffcbd"));
-    body.style.setProperty("--candy-pink", temp("#f075c7"));
-    body.style.setProperty("--candy-blue", temp("#65d5f9"));
-    body.style.setProperty("--candy-rose", temp("#fb6d9b"));
-    body.style.setProperty("--candy-indigo", temp("#505fdd"));
-    body.style.setProperty("--candy-violet", temp("#3a36e4"));
+    /* FEAT-105：糖果彩虹色板（--candy-*）六个令牌已不再下发 ——
+       唯一消费者是 hero 横幅 / 入口卡 / 回忆故事卡的渐变底，那三处已改成
+       模块页头 + 数据带 + 裸照片卡。主题滑块从此只影响还在用的色族，
+       不会再推一批没人读的变量（每帧 6 次 setProperty）。 */
     /* 玻璃卡语境的链接色（Q5=A 的 Bug 修复）：**按玻璃等效底色现算**，不再用 isDark 二分。
        旧写法给一个固定深金（LINK_LIGHT #8a5a12），但链接实际落在玻璃上 —— 浅玻璃 +
        恒定 dark mode 正好是最差组合，实测 5 套预设只有 2.20~2.64:1（AA 需 4.5:1），
@@ -694,6 +876,8 @@ export const useThemeStore = defineStore("theme", () => {
     compAlpha,
     saturation,
     material,
+    widgetMaterial,
+    widgetWash,
     bgStyle,
     bgColor,
     gradFrom,

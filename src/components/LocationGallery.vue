@@ -14,6 +14,7 @@ import { computed, onMounted, ref } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
+import { getThumbs } from "../utils/thumbQueue";
 import PhotoLightbox from "./PhotoLightbox.vue";
 import PhotoActionMenu from "./PhotoActionMenu.vue";
 import PhotoDeleteDialog, { type DeleteMode } from "./PhotoDeleteDialog.vue";
@@ -132,7 +133,7 @@ async function loadCoverThumbs() {
   await Promise.all(
     [...byAlbum.entries()].map(async ([aid, paths]) => {
       try {
-        const pairs = await invoke<[string, string][]>("get_photo_thumbs", { albumId: aid, paths });
+        const pairs = await getThumbs(aid, paths);
         for (const [path, thumb] of pairs) if (!thumbMap.value[path]) thumbMap.value[path] = thumb;
       } catch {
         /* 封面缺图不阻塞 */
@@ -178,7 +179,7 @@ async function loadGridThumbs() {
   await Promise.all(
     [...byAlbum.entries()].map(async ([aid, paths]) => {
       try {
-        const pairs = await invoke<[string, string][]>("get_photo_thumbs", { albumId: aid, paths });
+        const pairs = await getThumbs(aid, paths);
         for (const [path, thumb] of pairs) if (!thumbMap.value[path]) thumbMap.value[path] = thumb;
       } catch {
         /* 单相册失败不阻塞 */
@@ -336,7 +337,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="lg-wrap" :style="{ color: theme.textColor }">
+  <div class="lg-wrap" :style="{ color: 'var(--fg)' }">
     <!-- ============ 视图 1：地点卡片 ============ -->
     <template v-if="!activeGroup">
       <div v-if="loading" class="lg-state">
@@ -397,7 +398,6 @@ onMounted(load);
         <div v-if="view === 'map'" class="lg-map-wrap">
           <LocationMap
             :groups="groups"
-            :width="820"
             :active-name="mapActive"
             @pick="onMapPick"
           />
@@ -553,11 +553,14 @@ onMounted(load);
 
 /* ===== FEAT-103：地点页新骨架（数据带 + 视图切换 + 地图） ===== */
 
-/* 统计带：贴齐页面左右留白（--sp-8），但负 margin 抵消父级 padding。
-   这里不用 .lg-wrap 直接改 padding —— 它被 CategoryGallery 等其他视图复用同构样式，
-   改父级会连带影响它们。 */
+/* 数据带（FEAT-107）：与主数据带（SmartAlbum 顶部那条）左右对齐 ——
+   它作为 .lg-wrap 的直接子元素，已由 SmartAlbum 的 :deep(.lg-wrap > *) 给了
+   52px 沟槽 padding。
+   ⚠️ 旧写法用 margin:0 calc(var(--gutter)*-1) 想“抵消外层 padding 全出血”，
+   实测会把整盒拉到视口外（left:-52 / right:1492），首列标签与末列 delta
+   直接贴边被裁切。这里不再出血，两条带同一条左轴。 */
 .lg-stats {
-  margin: 0 calc(var(--sp-8) * -1) 4px;
+  margin: 0 0 6px;
 }
 
 .lg-viewbar {

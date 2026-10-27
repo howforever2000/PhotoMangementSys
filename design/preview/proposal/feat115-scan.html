@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>FEAT-115 · 扫描入库</title>
+<link rel="stylesheet" href="./feat115.css" />
+</head>
+<body data-theme="pine-soft">
+
+<div class="topbar">
+  <span class="tb-back">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    主页
+  </span>
+  <span class="tb-name">
+    <span class="tb-title">📥 扫描入库</span>
+    <span class="tb-meta">6 个相册已入库</span>
+  </span>
+  <nav class="tb-nav">
+    <span class="on">全局扫描</span><span>按年 · 地点浏览</span><span>重复扫描清理</span><span>相册扫描分组工具</span>
+  </nav>
+  <span class="tb-sp"></span>
+  <span class="tb-search">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2.2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    <b>搜索照片</b>
+  </span>
+  <span class="tb-user">y</span>
+</div>
+
+<div class="band">
+  <div class="stat w-1">
+    <span class="stat-label">相册</span>
+    <span class="stat-val"><span class="stat-num">9</span><span class="stat-unit">个</span></span>
+  </div>
+  <div class="stat w-2">
+    <span class="stat-label">照片</span>
+    <span class="stat-val"><span class="stat-num">399</span><span class="stat-unit">张</span></span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">已入库相册</span>
+    <span class="stat-val"><span class="stat-num">6</span><span class="stat-unit">/ 9</span></span>
+    <span class="stat-line hot"><i style="width:67%"></i></span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">已入库照片</span>
+    <span class="stat-val"><span class="stat-num">343</span><span class="stat-unit">张</span></span>
+    <span class="stat-line"><i style="width:86%"></i></span>
+  </div>
+  <div class="stat w-1">
+    <span class="stat-label">任务状态</span>
+    <span class="stat-val"><span class="stat-num" style="font-size:22px">空闲</span></span>
+    <span class="stat-note">上次耗时 3 分 12 秒</span>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     扫描面板：从「组件色调玻璃」改为墙板玻璃，且只做一块板
+     ──────────────────────────────────────────────────────────────────
+     现状：GlobalScanPanel 用 cardStyle（组件色调）下发底色，
+           与全站的 --panel-glass-* 是两套材质；面板内部每行还有 hover 底。
+     改法：① 面板本体用 --panel-fill（白玻璃，透出壁纸）
+           ② 内部左右分栏用一根发丝线，不再各自一块板
+           ③ 勾选行去掉整块底色，只留 hover 时的 5% 微光
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="board">
+  <div class="scan-cols">
+    <!-- 左：选择区 -->
+    <div class="scan-l">
+      <div class="zone-head">
+        <span class="zone-title">选择要扫描的相册</span>
+        <span class="zone-meta">一次批量写入 EXIF / 影调 / 人物 · 文档</span>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <span class="chk-row on" style="padding:0;flex-shrink:0">
+          <span class="chk-box">✓</span>
+        </span>
+        <span style="font-size:12px;color:var(--fg-2)">已选 <b style="color:var(--fg);font-weight:600">3</b> / 9 个相册</span>
+        <button class="btn" type="button" style="height:24px">反选</button>
+        <input class="f-ctl" placeholder="按名称 / 路径过滤…" style="margin-left:auto;width:180px" />
+      </div>
+
+      <div id="scan-rows"></div>
+
+      <div class="zone-head" style="margin:18px 0 10px">
+        <span class="zone-title">扫描内容</span>
+        <span class="zone-meta">语义向量需 CLIP 模型</span>
+      </div>
+      <div class="chips">
+        <span class="chip on"><i></i>EXIF 基础</span>
+        <span class="chip on"><i></i>影调分析</span>
+        <span class="chip on"><i></i>人物 · 文档</span>
+        <span class="chip"><i></i>语义向量</span>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:14px;margin-top:20px;padding-top:16px;border-top:1px solid var(--rule)">
+        <div style="font-size:11.5px;color:var(--fg-3);line-height:1.7">
+          已选 <b style="color:var(--fg-2);font-weight:560">3</b> 个相册 · <b style="color:var(--fg-2);font-weight:560">275</b> 张照片<br />
+          预计 3～5 分钟 · 已扫描过的照片会自动跳过
+        </div>
+        <button class="btn btn-primary" type="button" style="margin-left:auto;height:32px;padding:0 16px">开始扫描入库</button>
+      </div>
+    </div>
+
+    <!-- 右：任务区 -->
+    <div class="scan-r">
+      <div class="zone-head">
+        <span class="zone-title">扫描任务</span>
+        <span class="zone-meta">后台执行 · 离开页面不中断</span>
+      </div>
+
+      <!-- 空态：没有任务时也是一行说明，不是一块占位卡 -->
+      <div style="padding:26px 0 10px;text-align:center">
+        <div style="font-size:24px;opacity:.45">📥</div>
+        <p style="font-size:12.5px;font-weight:560;margin-top:10px">当前没有进行中的任务</p>
+        <p style="font-size:11px;color:var(--fg-3);margin-top:5px;line-height:1.7">
+          勾选左侧相册 → 选扫描类型 → 点「开始扫描入库」<br />
+          扫描在后台执行，离开页面不中断
+        </p>
+      </div>
+
+      <!-- 任务结构预览（跑起来时右侧长这样）-->
+      <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--rule)">
+        <div class="zone-head" style="margin-bottom:10px">
+          <span class="zone-title" style="color:var(--fg-3)">运行时长这样</span>
+        </div>
+        <div style="display:flex;align-items:baseline;gap:8px;font-size:10.5px;color:var(--fg-3)">
+          <span>总进度</span>
+          <span style="color:var(--fg-2);font-variant-numeric:tabular-nums">142 / 275 张 · 52%</span>
+        </div>
+        <div class="track" style="margin:6px 0 12px"><i style="width:52%"></i></div>
+        <div style="font-size:11.5px;color:var(--fg-2);line-height:1.8">
+          正在扫描 <b style="color:var(--fg);font-weight:560">2026 毕业季</b>（108 张）<br />
+          <span style="color:var(--fg-3)">EXIF 12 · 影调 12 · 人物 9 · 跳过 0</span>
+        </div>
+        <div style="display:flex;gap:16px;margin-top:12px;font-size:10.5px;color:var(--fg-3)">
+          <span>已用 1 分 48 秒</span><span>剩余约 1 分 40 秒</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="note">
+  与相册详情「组合扫描」同一套组件。扫描在后台执行，离开页面不中断；
+  可随时点「停止」，已扫描部分仍会入库。
+</p>
+
+<script src="./feat115-data.js"></script>
+<script>
+const rows = [
+  { a: ALBUMS[0], on: true }, { a: ALBUMS[1], on: true }, { a: ALBUMS[2], on: true },
+  { a: ALBUMS[3], on: false }, { a: ALBUMS[4], on: false }, { a: ALBUMS[5], on: false },
+  { a: ALBUMS[6], on: false }, { a: ALBUMS[7], on: false },
+];
+document.getElementById("scan-rows").innerHTML = rows.map(({ a, on }) =>
+  `<div class="chk-row${on ? " on" : ""}">
+    <span class="chk-box">${on ? "✓" : ""}</span>
+    <span class="chk-nm">${a.name}</span>
+    <span class="chk-path">C:/photos/${a.name}</span>
+    <span class="chk-ct">${a.n} 张</span>
+    <span class="tag ${a.scanned ? "ok" : "todo"}">${a.scanned ? "已入库" : "待入库"}</span>
+  </div>`).join("");
+</script>
+</body>
+</html>

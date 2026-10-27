@@ -1,0 +1,941 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>全界面稿 · 4 套精简预设</title>
+<link rel="stylesheet" href="../../src/assets/tokens.css" />
+<link rel="stylesheet" href="./inner.css" />
+<link rel="stylesheet" href="./all.css" />
+</head>
+<body>
+
+<!-- ════════ 1 · Home（原样 · 落日紫夜） ════════ -->
+<div class="shot t1" id="s1">
+  <div class="home-content">
+    <header class="home-header">
+      <div class="header-text">
+        <h1 class="app-title">本地相册管理</h1>
+        <p class="app-subtitle">照片留在本机，按时间、人物与地点重新翻出来</p>
+      </div>
+      <div class="user-box">
+        <button class="user-chip"><span class="avatar">👤</span><span class="user-name">hao</span></button>
+        <button class="icon-btn">🎨</button>
+        <button class="icon-btn">⚙️</button>
+        <button class="logout-btn">退出登录</button>
+      </div>
+    </header>
+    <main class="module-grid">
+      <article class="module-card">
+        <div class="module-icon"><span class="module-emoji">📁</span></div>
+        <div class="module-body"><h2 class="module-title">相册管理</h2>
+          <p class="module-desc">创建相册、绑定本地文件夹、设置封面</p></div>
+        <div class="module-arrow">打开相册 →</div>
+      </article>
+      <article class="module-card">
+        <div class="module-icon"><span class="module-emoji">🔍</span></div>
+        <div class="module-body"><h2 class="module-title">图片扫描</h2>
+          <p class="module-desc">批量扫描入库（EXIF / 影调 / AI），支持按年·地点整理</p></div>
+        <div class="module-arrow">开始扫描 →</div>
+      </article>
+      <article class="module-card">
+        <div class="module-icon"><span class="module-emoji">🎨</span></div>
+        <div class="module-body"><h2 class="module-title">创意工坊</h2>
+          <p class="module-desc">区域直方图均衡化、基准调色与图像处理算子</p></div>
+        <div class="module-arrow">打开工坊 →</div>
+      </article>
+      <article class="module-card">
+        <div class="module-icon"><span class="module-emoji">🧠</span></div>
+        <div class="module-body"><h2 class="module-title">智慧相册</h2>
+          <p class="module-desc">时间线、智能搜索、人物总览与回忆</p></div>
+        <div class="module-arrow">浏览相册 →</div>
+      </article>
+    </main>
+  </div>
+</div>
+
+<!-- ════════ 2 · 我的相册（落日紫夜） ════════ -->
+<div class="shot t1" id="s2">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>主页</span>
+    <div class="modname"><span class="emo">📁</span><h1>我的相册</h1><span class="cnt">12 个相册 · 653 张 · 18.4 GB</span></div>
+    <span class="sp"></span>
+    <div class="hd-search">🔍 搜索相册名称…<span class="hd-kbd">Ctrl K</span></div>
+    <div class="hd-av"></div>
+  </div>
+  <nav class="subtabs">
+    <span class="tb on">全部<span class="n">12</span></span>
+    <span class="tb">系统相册<span class="n">1</span></span>
+    <span class="tb">归档<span class="n">1</span></span>
+    <span class="tb">隐藏<span class="n">1</span></span>
+    <span class="tb off">回收站<span class="n">0</span></span>
+    <span class="sp"></span>
+    <span class="act">全选</span><span class="act">批量入库</span>
+    <span class="act primary">＋ 新建相册</span>
+  </nav>
+  <div class="band" style="height:78px">
+    <div class="bcell"><span class="blabel">相册</span><div class="bnum">12<u>个</u></div></div>
+    <div class="bcell"><span class="blabel">照片</span><div class="bnum">653<u>张</u></div></div>
+    <div class="bcell"><span class="blabel">已入库</span><div class="bnum">10<u>个</u><em>615 张</em></div></div>
+    <div class="bcell"><span class="blabel">未入库</span><div class="bnum">2<u>个</u><em class="mute">需扫描</em></div></div>
+    <div class="bcell"><span class="blabel">占用</span><div class="bnum">18.4<u>GB</u></div></div>
+  </div>
+  <div class="toolbar">
+    <div class="seg"><span class="on">按时间</span><span>按年·季</span><span>按地点</span><span>按入库</span></div>
+    <span class="chip">全部年份 ▾</span><span class="sp"></span>
+    <span class="tiny2 dim">按年 → 季 两级折叠与原分组逻辑一致</span>
+  </div>
+  <div class="mpage" style="padding-top:12px">
+    <div class="sidesplit">
+      <aside class="sidef">
+        <div class="grp">年份</div>
+        <a class="on">2026<span class="n">3</span></a><a>2025<span class="n">2</span></a>
+        <a>2024<span class="n">3</span></a><a>2023<span class="n">2</span></a><a>2022<span class="n">1</span></a>
+        <div class="grp">状态</div>
+        <a>已入库<span class="n">10</span></a><a>未入库<span class="n">2</span></a>
+        <div class="grp">批量</div>
+        <a>批量标签</a><a>批量改地点</a><a>合并相册</a>
+      </aside>
+      <div class="wall4">
+        <article class="astile w2"><img src="./assets/p2.jpg" alt="" />
+          <div class="amark"><span class="abadge">已入库</span></div><span class="acount">109</span>
+          <div class="acap"><b>毕业旅行</b><span>2024年6月 · 1.8 GB</span></div></article>
+        <article class="astile"><img src="./assets/p4.jpg" alt="" />
+          <div class="amark"><span class="abadge">已入库</span></div><span class="acount">36</span>
+          <div class="acap"><b>山野清晨</b><span>2026年9月</span></div></article>
+        <article class="astile"><img src="./assets/p3.jpg" alt="" />
+          <div class="amark"><span class="abadge off">未入库</span></div><span class="acount">24</span>
+          <div class="acap"><b>人像</b><span>2026年9月</span></div></article>
+        <article class="astile"><img src="./assets/p7.jpg" alt="" />
+          <div class="amark"><span class="abadge">已入库</span></div><span class="acount">18</span>
+          <div class="acap"><b>湖与岛</b><span>2025年7月</span></div></article>
+        <article class="astile"><img src="./assets/p5.jpg" alt="" />
+          <div class="amark"><span class="abadge">已入库</span></div><span class="acount">42</span>
+          <div class="acap"><b>森林徒步</b><span>2025年5月</span></div></article>
+        <article class="astile"><img src="./assets/p9.jpg" alt="" />
+          <div class="amark"><span class="abadge">已入库</span></div><span class="acount">31</span>
+          <div class="acap"><b>夜空</b><span>2024年12月</span></div></article>
+        <article class="astile"><img src="./assets/p11.jpg" alt="" />
+          <div class="amark"><span class="abadge">已入库</span></div><span class="acount">57</span>
+          <div class="acap"><b>美食</b><span>2024年10月</span></div></article>
+        <article class="astile"><img src="./assets/p12.jpg" alt="" /><span class="acount">12</span>
+          <div class="acap"><b>雪</b><span>2024年1月</span></div></article>
+        <article class="astile"><img src="./assets/p1.jpg" alt="" />
+          <div class="amark"><span class="abadge">已入库</span></div><span class="acount">25</span>
+          <div class="acap"><b>日落晚霞</b><span>2023年8月</span></div></article>
+        <article class="astile"><img src="./assets/p8.jpg" alt="" /><span class="acount">9</span>
+          <div class="acap"><b>花</b><span>2023年4月</span></div></article>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 3 · 相册详情（落日紫夜） ════════ -->
+<div class="shot t1" id="s3">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>我的相册</span>
+    <div class="modname"><h1>毕业旅行</h1><span class="cnt">109 张 · 1.8 GB · 2024年6月</span></div>
+    <span class="sp"></span>
+    <span class="chip">🧩 组合扫描</span>
+    <span class="act primary" style="background:var(--c-accent);color:#1a1204;font-weight:600;box-shadow:none">扫描入库</span>
+    <div class="hd-av"></div>
+  </div>
+  <div class="crumb3" style="padding-top:10px">D: <span>/</span> 照片 <span>/</span> <b>毕业旅行</b> <span style="margin-left:8px" class="dim">· 文件夹已绑定</span></div>
+  <nav class="subtabs" style="padding-top:6px">
+    <span class="tb on">照片<span class="n">109</span></span>
+    <span class="tb">人物<span class="n">6</span></span>
+    <span class="tb">语义<span class="n">4</span></span>
+    <span class="tb">影调分布</span>
+    <span class="sp"></span>
+    <span class="act">🔍 照片搜索</span>
+    <span class="act">全选</span>
+    <span class="act">批量标签</span>
+  </nav>
+  <div class="band" style="height:70px">
+    <div class="bcell"><span class="blabel">照片</span><div class="bnum">109<u>张</u></div></div>
+    <div class="bcell"><span class="blabel">已入库</span><div class="bnum">109<u>/ 109</u><em>100%</em></div></div>
+    <div class="bcell"><span class="blabel">人物</span><div class="bnum">6<u>位</u></div></div>
+    <div class="bcell"><span class="blabel">时间段</span><div class="bnum" style="font-size:18px">6/12 – 6/19</div></div>
+    <div class="bcell"><span class="blabel">相机</span><div class="bnum" style="font-size:18px">ILCE-7M4</div></div>
+  </div>
+  <div class="mpage" style="padding-top:12px">
+    <div class="wall4" style="grid-auto-rows:132px;grid-template-columns:repeat(5,1fr)">
+      <article class="astile"><img src="./assets/p2.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p7.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p1.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p5.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p12.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p9.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p11.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p4.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p3.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p8.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p6.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p2.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p7.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p1.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p5.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p12.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p9.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p11.jpg" alt="" /></article>
+      <article class="astile"><img src="./assets/p4.jpg" alt="" /></article>
+      <article class="astile" style="display:grid;place-items:center;box-shadow:inset 0 0 0 1px var(--c-rule);color:var(--c-fg-2);font-size:11px">+89 张</article>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 4 · 智慧相册 · 人物（深空石墨） ════════ -->
+<div class="shot t2" id="s4">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>主页</span>
+    <div class="modname"><span class="emo">🧠</span><h1>智慧相册</h1><span class="cnt">170 位人物 · 21 类语义 · 18 个月度回忆</span></div>
+    <span class="sp"></span>
+    <div class="hd-search">🔍 搜索人物 / 分类<span class="hd-kbd">Ctrl K</span></div>
+    <div class="hd-av"></div>
+  </div>
+  <nav class="subtabs">
+    <span class="tb on">人物<span class="n">170</span></span>
+    <span class="tb">时间线<span class="n">653</span></span>
+    <span class="tb">回忆<span class="n">18</span></span>
+    <span class="tb">地点<span class="n">0</span></span>
+    <span class="tb">语义分类<span class="n">21</span></span>
+    <span class="tb">智能搜索</span>
+    <span class="tb">以图搜图</span>
+    <span class="sp"></span>
+    <span class="act">合并建议 3</span><span class="act primary">批量命名</span>
+  </nav>
+  <div class="band" style="height:78px">
+    <div class="bcell"><span class="blabel">已扫描</span><div class="bnum">653<u>张</u></div></div>
+    <div class="bcell"><span class="blabel">已命名</span><div class="bnum">84<u>/ 170</u><em>49%</em></div></div>
+    <div class="bcell"><span class="blabel">平均置信度</span><div class="bnum">0.53</div></div>
+    <div class="bcell"><span class="blabel">GPS 覆盖</span><div class="bnum">0<u>%</u><em class="mute">653 无定位</em></div></div>
+  </div>
+  <div class="toolbar">
+    <div class="seg"><span class="on">全部</span><span>已命名 84</span><span>待命名 86</span></div>
+    <span class="chip">按出现次数 ▾</span><span class="chip">按相册 ▾</span><span class="sp"></span>
+    <span class="tiny2 dim">未命名聚类灰化 · 点开可命名或合并</span>
+  </div>
+  <div class="mpage" style="padding-top:12px">
+    <div class="two">
+      <section class="slip" style="padding:13px 14px">
+        <div class="pwall8">
+          <div class="pc"><img src="./assets/p3.jpg" alt="" /><div class="cap"><b>林小满</b><span>128</span></div></div>
+          <div class="pc"><img src="./assets/p6.jpg" alt="" /><div class="cap"><b>陈屿</b><span>94</span></div></div>
+          <div class="pc"><img src="./assets/p8.jpg" alt="" /><div class="cap"><b>周迟</b><span>76</span></div></div>
+          <div class="pc"><img src="./assets/p5.jpg" alt="" /><div class="cap"><b>阿岚</b><span>61</span></div></div>
+          <div class="pc"><img src="./assets/p11.jpg" alt="" /><div class="cap"><b>苏禾</b><span>55</span></div></div>
+          <div class="pc"><img src="./assets/p2.jpg" alt="" /><div class="cap"><b>许南</b><span>48</span></div></div>
+          <div class="pc raw"><img src="./assets/p9.jpg" alt="" /><div class="cap"><b>P094</b><span>37</span></div></div>
+          <div class="pc raw"><img src="./assets/p1.jpg" alt="" /><div class="cap"><b>P016</b><span>35</span></div></div>
+          <div class="pc raw"><img src="./assets/p7.jpg" alt="" /><div class="cap"><b>P101</b><span>31</span></div></div>
+          <div class="pc raw"><img src="./assets/p3.jpg" alt="" /><div class="cap"><b>P023</b><span>28</span></div></div>
+          <div class="pc raw"><img src="./assets/p8.jpg" alt="" /><div class="cap"><b>P045</b><span>26</span></div></div>
+          <div class="pc raw"><img src="./assets/p6.jpg" alt="" /><div class="cap"><b>P067</b><span>22</span></div></div>
+          <div class="pc raw"><img src="./assets/p5.jpg" alt="" /><div class="cap"><b>P112</b><span>19</span></div></div>
+          <div class="pc raw"><img src="./assets/p11.jpg" alt="" /><div class="cap"><b>P130</b><span>17</span></div></div>
+          <div class="pc raw"><img src="./assets/p4.jpg" alt="" /><div class="cap"><b>P141</b><span>15</span></div></div>
+          <div class="pc raw"><img src="./assets/p12.jpg" alt="" /><div class="cap"><b>P155</b><span>13</span></div></div>
+          <div class="pc raw"><img src="./assets/p9.jpg" alt="" /><div class="cap"><b>P162</b><span>11</span></div></div>
+          <div class="pc raw"><img src="./assets/p2.jpg" alt="" /><div class="cap"><b>P170</b><span>9</span></div></div>
+        </div>
+      </section>
+      <div class="col">
+        <section class="slip" style="padding:11px 13px">
+          <div class="sh"><span class="lb">合并建议</span><span class="sp"></span><span class="rv">3 组</span></div>
+          <div class="rows tight">
+            <div class="rw"><span class="nm">P094 ↔ P016</span><span class="tm acc">0.91</span></div>
+            <div class="rw"><span class="nm">P101 ↔ P067</span><span class="tm acc">0.88</span></div>
+            <div class="rw"><span class="nm">P023 ↔ P045</span><span class="tm">0.84</span></div>
+          </div>
+          <div class="bt primary" style="margin-top:9px;align-self:stretch;justify-content:center">批量合并</div>
+        </section>
+        <section class="slip" style="padding:11px 13px">
+          <div class="sh"><span class="lb">命名进度</span><span class="sp"></span><span class="rv">49%</span></div>
+          <div class="mbar" style="height:4px"><i style="width:49%"></i></div>
+          <div class="tiny2 dim" style="margin-top:8px">84 已命名 · 86 待命名</div>
+        </section>
+        <section class="slip" style="padding:11px 13px">
+          <div class="sh"><span class="lb">语义分类</span><span class="sp"></span><span class="rv">Top 4</span></div>
+          <div class="rows tight">
+            <div class="rw"><span class="nm">聚会合影</span><span class="tm">109</span></div>
+            <div class="rw"><span class="nm">自然风景</span><span class="tm">36</span></div>
+            <div class="rw"><span class="nm">日落晚霞</span><span class="tm">25</span></div>
+            <div class="rw"><span class="nm dim">其他 18 类</span><span class="tm">483</span></div>
+          </div>
+        </section>
+        <section class="slip" style="padding:11px 13px">
+          <div class="sh"><span class="lb">地点</span><span class="sp"></span><span class="rv">0 / 12</span></div>
+          <div class="tiny2" style="color:var(--c-fg-2)">653 张均无 GPS。<br />批量设置地点后可在此按城市点亮。</div>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 5 · 时间线（深空石墨） ════════ -->
+<div class="shot t2" id="s5">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>智慧相册</span>
+    <div class="modname"><span class="emo">📅</span><h1>照片时间线</h1><span class="cnt">653 张 · 2022–2026 · 41 个月份</span></div>
+    <span class="sp"></span>
+    <div class="seg"><span class="on">月</span><span>年</span></div>
+    <div class="hd-av"></div>
+  </div>
+  <nav class="subtabs">
+    <span class="tb on">全部<span class="n">653</span></span>
+    <span class="tb">2026<span class="n">204</span></span>
+    <span class="tb">2025<span class="n">186</span></span>
+    <span class="tb">2024<span class="n">178</span></span>
+    <span class="tb">2023<span class="n">85</span></span>
+    <span class="tb off">其他<span class="n">0</span></span>
+    <span class="sp"></span>
+    <span class="tiny2 dim" style="align-self:center">时间缺失的照片已归入「其他」，当前为 0</span>
+  </nav>
+  <div class="tlwrap">
+    <div class="tlbar">
+      <span class="yr">2022</span><span class="yr">2023</span><span class="yr on">2024</span>
+      <span class="yr">2025</span><span class="yr">2026</span>
+      <span class="sp" style="flex:1"></span>
+      <span class="tiny2 dim">年份尺 · 点年份跳转</span>
+    </div>
+    <div class="tlmonths">
+      <div class="mbox"><div class="mh"><b>2026年9月</b><span>204 张</span></div>
+        <div class="mg"><img src="./assets/p4.jpg" alt="" /><img src="./assets/p3.jpg" alt="" /><img src="./assets/p4.jpg" alt="" />
+          <img src="./assets/p3.jpg" alt="" /><img src="./assets/p4.jpg" alt="" /><img src="./assets/p3.jpg" alt="" /></div></div>
+      <div class="mbox"><div class="mh"><b>2025年7月</b><span>18 张</span></div>
+        <div class="mg"><img src="./assets/p7.jpg" alt="" /><img src="./assets/p7.jpg" alt="" /><img src="./assets/p7.jpg" alt="" />
+          <img src="./assets/p7.jpg" alt="" /><img src="./assets/p7.jpg" alt="" /><img src="./assets/p7.jpg" alt="" /></div></div>
+      <div class="mbox"><div class="mh"><b>2025年5月</b><span>42 张</span></div>
+        <div class="mg"><img src="./assets/p5.jpg" alt="" /><img src="./assets/p5.jpg" alt="" /><img src="./assets/p5.jpg" alt="" />
+          <img src="./assets/p5.jpg" alt="" /><img src="./assets/p5.jpg" alt="" /><img src="./assets/p5.jpg" alt="" /></div></div>
+      <div class="mbox"><div class="mh"><b>2024年12月</b><span>31 张</span></div>
+        <div class="mg"><img src="./assets/p9.jpg" alt="" /><img src="./assets/p9.jpg" alt="" /><img src="./assets/p12.jpg" alt="" />
+          <img src="./assets/p9.jpg" alt="" /><img src="./assets/p12.jpg" alt="" /><img src="./assets/p9.jpg" alt="" /></div></div>
+      <div class="mbox"><div class="mh"><b>2024年10月</b><span>57 张</span></div>
+        <div class="mg"><img src="./assets/p11.jpg" alt="" /><img src="./assets/p11.jpg" alt="" /><img src="./assets/p11.jpg" alt="" />
+          <img src="./assets/p11.jpg" alt="" /><img src="./assets/p8.jpg" alt="" /><img src="./assets/p11.jpg" alt="" /></div></div>
+      <div class="mbox"><div class="mh"><b>2024年6月</b><span>109 张</span></div>
+        <div class="mg"><img src="./assets/p2.jpg" alt="" /><img src="./assets/p2.jpg" alt="" /><img src="./assets/p7.jpg" alt="" />
+          <img src="./assets/p2.jpg" alt="" /><img src="./assets/p7.jpg" alt="" /><img src="./assets/p2.jpg" alt="" /></div></div>
+      <div class="mbox"><div class="mh"><b>2024年1月</b><span>12 张</span></div>
+        <div class="mg"><img src="./assets/p12.jpg" alt="" /><img src="./assets/p12.jpg" alt="" /><img src="./assets/p12.jpg" alt="" />
+          <img src="./assets/p12.jpg" alt="" /><img src="./assets/p4.jpg" alt="" /><img src="./assets/p12.jpg" alt="" /></div></div>
+      <div class="mbox"><div class="mh"><b>2023年8月</b><span>25 张</span></div>
+        <div class="mg"><img src="./assets/p1.jpg" alt="" /><img src="./assets/p1.jpg" alt="" /><img src="./assets/p1.jpg" alt="" />
+          <img src="./assets/p1.jpg" alt="" /><img src="./assets/p8.jpg" alt="" /><img src="./assets/p1.jpg" alt="" /></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 6 · 回忆（落日紫夜） ════════ -->
+<div class="shot t1" id="s6">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>智慧相册</span>
+    <div class="modname"><span class="emo">✨</span><h1>回忆</h1><span class="cnt">18 个月度故事 · 3 个年度回顾</span></div>
+    <span class="sp"></span>
+    <span class="chip">2026 ▾</span>
+    <div class="hd-av"></div>
+  </div>
+  <nav class="subtabs">
+    <span class="tb on">故事 · 按月<span class="n">18</span></span>
+    <span class="tb">本月精选<span class="n">12</span></span>
+    <span class="tb">年度回顾<span class="n">3</span></span>
+    <span class="tb">近期人物<span class="n">6</span></span>
+    <span class="sp"></span>
+    <span class="act">生成回忆</span>
+  </nav>
+  <div class="mpage" style="padding-top:14px">
+    <div class="memhero">
+      <img src="./assets/p1.jpg" alt="" />
+      <div class="mh-in">
+        <h2>2024 年 6 月 · 海边的那几天</h2>
+        <p>109 张照片 · 6 位人物 · 与「毕业旅行」重叠 87%</p>
+      </div>
+    </div>
+    <div class="sect-h"><h2>故事 · 按月</h2><span class="n">18 个</span><span class="sp"></span><span class="more">查看全部 →</span></div>
+    <div class="storyrow">
+      <div class="story"><img src="./assets/p2.jpg" alt="" /><div class="sl2"><b>2024年6月</b><span>109 张 · 毕业旅行</span></div></div>
+      <div class="story"><img src="./assets/p11.jpg" alt="" /><div class="sl2"><b>2024年10月</b><span>57 张 · 美食</span></div></div>
+      <div class="story"><img src="./assets/p9.jpg" alt="" /><div class="sl2"><b>2024年12月</b><span>31 张 · 夜空</span></div></div>
+      <div class="story"><img src="./assets/p9.jpg" alt="" /><div class="sl2"><b>2025年1月</b><span>14 张 · 冬夜</span></div></div>
+    </div>
+    <div class="sect-h"><h2>年度回顾</h2><span class="n">3 个</span><span class="sp"></span></div>
+    <div class="two" style="grid-template-columns:1fr 300px">
+      <div class="storyrow" style="grid-template-columns:repeat(3,1fr)">
+        <div class="story" style="aspect-ratio:4/3"><img src="./assets/p5.jpg" alt="" /><div class="sl2"><b>2026</b><span>204 张</span></div></div>
+        <div class="story" style="aspect-ratio:4/3"><img src="./assets/p7.jpg" alt="" /><div class="sl2"><b>2025</b><span>186 张</span></div></div>
+        <div class="story" style="aspect-ratio:4/3"><img src="./assets/p1.jpg" alt="" /><div class="sl2"><b>2024</b><span>178 张</span></div></div>
+      </div>
+      <section class="slip" style="padding:12px 14px">
+        <div class="sh"><span class="lb">近期人物</span><span class="sp"></span><span class="rv">6 位</span></div>
+        <div class="rows tight">
+          <div class="rw"><span class="nm">林小满</span><span class="tm">128 张 · 5 个相册</span></div>
+          <div class="rw"><span class="nm">陈屿</span><span class="tm">94 张 · 4 个相册</span></div>
+          <div class="rw"><span class="nm">周迟</span><span class="tm">76 张 · 3 个相册</span></div>
+          <div class="rw"><span class="nm">阿岚</span><span class="tm">61 张 · 2 个相册</span></div>
+          <div class="rw"><span class="nm dim">苏禾</span><span class="tm">55 张</span></div>
+          <div class="rw"><span class="nm dim">许南</span><span class="tm">48 张</span></div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 7 · 地点（深空石墨 · 空态） ════════ -->
+<div class="shot t2" id="s7">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>智慧相册</span>
+    <div class="modname"><span class="emo">📍</span><h1>地点</h1><span class="cnt">0 个城市 · 653 张无 GPS</span></div>
+    <span class="sp"></span>
+    <span class="chip">📥 批量设置地点</span>
+    <div class="hd-av"></div>
+  </div>
+  <nav class="subtabs">
+    <span class="tb">人物<span class="n">170</span></span>
+    <span class="tb">时间线<span class="n">653</span></span>
+    <span class="tb">回忆<span class="n">18</span></span>
+    <span class="tb on">地点<span class="n">0</span></span>
+    <span class="tb">语义分类<span class="n">21</span></span>
+    <span class="tb">智能搜索</span>
+    <span class="tb">以图搜图</span>
+    <span class="sp"></span>
+    <span class="act">按相册设置</span>
+  </nav>
+  <div class="band" style="height:78px">
+    <div class="bcell"><span class="blabel">城市</span><div class="bnum">0<u>个</u></div></div>
+    <div class="bcell"><span class="blabel">带坐标</span><div class="bnum">0<u>张</u><em class="mute">0%</em></div></div>
+    <div class="bcell"><span class="blabel">手动设置</span><div class="bnum">0<u>张</u></div></div>
+    <div class="bcell"><span class="blabel">可归集</span><div class="bnum">12<u>个相册</u></div></div>
+  </div>
+  <div class="mpage" style="padding-top:12px">
+    <div class="two">
+      <section class="slip">
+        <div class="empty2">
+          <div class="e-ico">🗺️</div>
+          <div class="e-t">还没有任何地点数据</div>
+          <div class="e-s">这批照片的 EXIF 里没有 GPS 信息（653 张全部缺失），
+            所以地图上不会有点。可以按相册批量设置城市——设完后这里会按城市点亮，时间线里也能按「年·地点」分组。</div>
+          <div style="display:flex;gap:7px;margin-top:14px">
+            <span class="bt primary">批量设置地点</span>
+            <span class="bt">重新读取 EXIF</span>
+          </div>
+        </div>
+      </section>
+      <div class="col">
+        <section class="slip" style="padding:12px 14px">
+          <div class="sh"><span class="lb">可选城市</span><span class="sp"></span><span class="rv">来自相册名</span></div>
+          <div class="rows tight">
+            <div class="rw"><span class="nm">成都</span><span class="tm">3 个相册 · 89 张</span></div>
+            <div class="rw"><span class="nm">杭州</span><span class="tm">2 个相册 · 61 张</span></div>
+            <div class="rw"><span class="nm">三亚</span><span class="tm">1 个相册 · 109 张</span></div>
+            <div class="rw dim"><span class="nm">其他</span><span class="tm">6 个相册</span></div>
+          </div>
+        </section>
+        <section class="slip" style="padding:12px 14px">
+          <div class="sh"><span class="lb">说明</span></div>
+          <div class="tiny2" style="line-height:1.75;color:var(--c-fg-2)">
+            地点为手动维护字段，写进数据库而不是回写照片文件。
+            同一相册里被单独改过地点的照片会保留自己的值。
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 8 · 语义分类（落日紫夜） ════════ -->
+<div class="shot t1" id="s8">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>智慧相册</span>
+    <div class="modname"><span class="emo">🏷️</span><h1>语义分类</h1><span class="cnt">21 类 · 653 张已打标</span></div>
+    <span class="sp"></span>
+    <div class="hd-search">🔍 搜索分类<span class="hd-kbd">Ctrl K</span></div>
+    <div class="hd-av"></div>
+  </div>
+  <nav class="subtabs">
+    <span class="tb">人物<span class="n">170</span></span>
+    <span class="tb">时间线<span class="n">653</span></span>
+    <span class="tb">回忆<span class="n">18</span></span>
+    <span class="tb">地点<span class="n">0</span></span>
+    <span class="tb on">语义分类<span class="n">21</span></span>
+    <span class="tb">智能搜索</span>
+    <span class="tb">以图搜图</span>
+    <span class="sp"></span>
+    <span class="act">重新打标</span>
+  </nav>
+  <div class="band" style="height:78px">
+    <div class="bcell"><span class="blabel">分类</span><div class="bnum">21<u>类</u></div></div>
+    <div class="bcell"><span class="blabel">已打标</span><div class="bnum">653<u>张</u><em>100%</em></div></div>
+    <div class="bcell"><span class="blabel">最大类</span><div class="bnum" style="font-size:18px">聚会合影<em>109</em></div></div>
+    <div class="bcell"><span class="blabel">平均置信度</span><div class="bnum">0.71</div></div>
+  </div>
+  <div class="toolbar">
+    <div class="seg"><span class="on">按张数</span><span>按置信度</span><span>按时间</span></div>
+    <span class="sp"></span><span class="tiny2 dim">同一张照片可属多个分类</span>
+  </div>
+  <div class="mpage" style="padding-top:12px">
+    <div class="catgrid">
+      <div class="cat"><img src="./assets/p2.jpg" alt="" /><span class="cn">01</span><div class="cc"><b>聚会合影</b><span>109</span></div></div>
+      <div class="cat"><img src="./assets/p5.jpg" alt="" /><span class="cn">02</span><div class="cc"><b>自然风景</b><span>36</span></div></div>
+      <div class="cat"><img src="./assets/p11.jpg" alt="" /><span class="cn">03</span><div class="cc"><b>美食</b><span>57</span></div></div>
+      <div class="cat"><img src="./assets/p5.jpg" alt="" /><span class="cn">04</span><div class="cc"><b>森林徒步</b><span>42</span></div></div>
+      <div class="cat"><img src="./assets/p9.jpg" alt="" /><span class="cn">05</span><div class="cc"><b>夜空</b><span>31</span></div></div>
+      <div class="cat"><img src="./assets/p1.jpg" alt="" /><span class="cn">06</span><div class="cc"><b>日落晚霞</b><span>25</span></div></div>
+      <div class="cat"><img src="./assets/p3.jpg" alt="" /><span class="cn">07</span><div class="cc"><b>人像</b><span>24</span></div></div>
+      <div class="cat"><img src="./assets/p7.jpg" alt="" /><span class="cn">08</span><div class="cc"><b>湖与岛</b><span>18</span></div></div>
+      <div class="cat"><img src="./assets/p12.jpg" alt="" /><span class="cn">09</span><div class="cc"><b>雪</b><span>12</span></div></div>
+      <div class="cat"><img src="./assets/p8.jpg" alt="" /><span class="cn">10</span><div class="cc"><b>花</b><span>9</span></div></div>
+      <div class="cat"><img src="./assets/p6.jpg" alt="" /><span class="cn">11</span><div class="cc"><b>猫</b><span>14</span></div></div>
+      <div class="cat" style="display:grid;place-items:center;box-shadow:inset 0 0 0 1px var(--c-rule);color:var(--c-fg-2);font-size:12px">其他 10 类<br /><span class="tiny2 dim">共 76 张</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 9 · 智能搜索（深空石墨） ════════ -->
+<div class="shot t2" id="s9">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>智慧相册</span>
+    <div class="modname"><span class="emo">🔎</span><h1>智能搜索</h1><span class="cnt">自然语言 · 以图搜图 · 653 张可检索</span></div>
+    <span class="sp"></span>
+    <div class="seg"><span class="on">文字</span><span>以图搜图</span></div>
+    <div class="hd-av"></div>
+  </div>
+  <div class="searchwrap">
+    <div class="sbox">
+      <span style="font-size:13px;opacity:.6">🔍</span>
+      <span class="q">海边日落</span><span class="caret"></span>
+      <span class="sp"></span>
+      <span class="hint">↵ 搜索 · 支持「2023年的聚会」「成都 人像」</span>
+    </div>
+    <div class="suggests">
+      <span class="lb2">猜你要</span>
+      <span class="chip">海边日落</span><span class="chip">2023年的聚会</span>
+      <span class="chip">一只猫</span><span class="chip">成都 人像</span>
+      <span class="chip">夜空 长曝光</span>
+    </div>
+    <div class="facet">
+      <aside>
+        <div class="fgroup">
+          <div class="fg-h">时间<span>4</span></div>
+          <a class="on">2024<span class="n">31</span></a><a>2023<span class="n">25</span></a>
+          <a>2025<span class="n">18</span></a><a>2022<span class="n">6</span></a>
+        </div>
+        <div class="fgroup">
+          <div class="fg-h">人物<span>2</span></div>
+          <a>林小满<span class="n">12</span></a><a>周迟<span class="n">7</span></a>
+        </div>
+        <div class="fgroup">
+          <div class="fg-h">分类<span>3</span></div>
+          <a class="on">日落晚霞<span class="n">25</span></a><a>自然风景<span class="n">9</span></a>
+          <a>湖与岛<span class="n">4</span></a>
+        </div>
+      </aside>
+      <div>
+        <div class="sect-h" style="margin-top:0"><h2>匹配 38 张</h2><span class="n">按相关度排序</span><span class="sp"></span>
+          <span class="more">相似度 0.71 以上</span></div>
+        <div class="sres">
+          <img src="./assets/p1.jpg" alt="" /><img src="./assets/p1.jpg" alt="" /><img src="./assets/p1.jpg" alt="" />
+          <img src="./assets/p1.jpg" alt="" /><img src="./assets/p1.jpg" alt="" /><img src="./assets/p1.jpg" alt="" />
+          <img src="./assets/p1.jpg" alt="" /><img src="./assets/p1.jpg" alt="" /><img src="./assets/p1.jpg" alt="" />
+          <img src="./assets/p1.jpg" alt="" /><img src="./assets/p1.jpg" alt="" /><img src="./assets/p1.jpg" alt="" />
+          <img src="./assets/p1.jpg" alt="" /><img src="./assets/p1.jpg" alt="" /><img src="./assets/p1.jpg" alt="" />
+          <img src="./assets/p1.jpg" alt="" /><img src="./assets/p1.jpg" alt="" /><div class="more2">+20</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 10 · 以图搜图（深空石墨） ════════ -->
+<div class="shot t2" id="s10">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>智慧相册</span>
+    <div class="modname"><span class="emo">🔎</span><h1>智能搜索</h1><span class="cnt">以图搜图 · 向量库 653 条</span></div>
+    <span class="sp"></span>
+    <div class="seg"><span>文字</span><span class="on">以图搜图</span></div>
+    <div class="hd-av"></div>
+  </div>
+  <div class="searchwrap">
+    <div class="two" style="grid-template-columns:300px 1fr">
+      <div class="col">
+        <section class="slip" style="padding:12px 14px">
+          <div class="sh"><span class="lb">查询图</span><span class="sp"></span><span class="rv">可拖入</span></div>
+          <div class="dropzone">
+            <div class="dz-ico">🖼️</div>
+            <div class="dz-t">拖入一张图片，或点击选择</div>
+            <div class="dz-s">按 CLIP 向量找相似照片，不依赖文件名</div>
+          </div>
+        </section>
+        <section class="slip" style="padding:12px 14px">
+          <div class="sh"><span class="lb">检索参数</span></div>
+          <div class="opt"><span class="l">相似度下限</span><span class="v">0.62</span></div>
+          <div class="opt"><span class="l">返回条数</span><span class="v">60</span></div>
+          <div class="opt"><span class="l">限定时段</span><span class="v dim">不限</span></div>
+          <div class="opt"><span class="l">限定人物</span><span class="v dim">不限</span></div>
+        </section>
+      </div>
+      <section class="slip" style="padding:12px 14px">
+        <div class="sh"><span class="lb">最相似</span><span class="sp"></span><span class="rv">取前 48 张</span></div>
+        <div class="sres" style="grid-template-columns:repeat(7,1fr)">
+          <img src="./assets/p2.jpg" alt="" /><img src="./assets/p2.jpg" alt="" /><img src="./assets/p7.jpg" alt="" />
+          <img src="./assets/p2.jpg" alt="" /><img src="./assets/p1.jpg" alt="" /><img src="./assets/p5.jpg" alt="" />
+          <img src="./assets/p2.jpg" alt="" /><img src="./assets/p2.jpg" alt="" /><img src="./assets/p7.jpg" alt="" />
+          <img src="./assets/p4.jpg" alt="" /><img src="./assets/p1.jpg" alt="" /><img src="./assets/p5.jpg" alt="" />
+          <img src="./assets/p2.jpg" alt="" /><img src="./assets/p9.jpg" alt="" /><img src="./assets/p7.jpg" alt="" />
+          <img src="./assets/p4.jpg" alt="" /><img src="./assets/p1.jpg" alt="" /><img src="./assets/p5.jpg" alt="" />
+          <img src="./assets/p12.jpg" alt="" /><img src="./assets/p9.jpg" alt="" /><img src="./assets/p7.jpg" alt="" />
+        </div>
+        <div class="tiny2 dim" style="margin-top:10px">排序依据：余弦相似度。点击结果进入灯箱，可继续「找相似」。</div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 11 · 创意工坊（落日紫夜） ════════ -->
+<div class="shot t1" id="s11">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>主页</span>
+    <div class="modname"><span class="emo">🎨</span><h1>创意工坊</h1><span class="cnt">1 张照片正在编辑 · 不修改原文件</span></div>
+    <span class="sp"></span>
+    <span class="chip">原图</span><span class="chip on">柔光窗景</span>
+    <div class="hd-av"></div>
+  </div>
+  <nav class="subtabs">
+    <span class="tb on">编辑器</span>
+    <span class="tb">批量处理</span>
+    <span class="tb">预设管理<span class="n">6</span></span>
+    <span class="tb off">算子库</span>
+    <span class="sp"></span>
+    <span class="act">重置</span><span class="act primary">导出</span>
+  </nav>
+  <div class="mpage" style="padding-top:14px">
+    <div class="editor" style="height:500px;grid-template-columns:190px 1fr 268px">
+      <aside class="slip ep">
+        <div class="sh"><span class="lb">算子栈</span><span class="sp"></span><span class="rv">可叠加</span></div>
+        <div class="oplist">
+          <div class="op on"><span class="sw"></span>区域直方图均衡<span class="n">0.7</span></div>
+          <div class="op on"><span class="sw"></span>基准调色 · 暖调<span class="n">+18</span></div>
+          <div class="op"><span class="sw"></span>曲线 · S 形</div>
+          <div class="op"><span class="sw"></span>锐化<span class="n">0</span></div>
+          <div class="op"><span class="sw"></span>暗角</div>
+        </div>
+        <div style="margin-top:auto">
+          <div class="sh" style="margin-top:10px"><span class="lb">直方图</span><span class="sp"></span><span class="rv">RGB</span></div>
+          <div class="hist">
+            <i style="height:12%"></i><i style="height:18%"></i><i style="height:26%"></i>
+            <i style="height:34%"></i><i style="height:41%"></i><i style="height:56%"></i>
+            <i style="height:72%"></i><i class="hot" style="height:88%"></i><i class="hot" style="height:96%"></i>
+            <i style="height:84%"></i><i style="height:66%"></i><i style="height:52%"></i>
+            <i style="height:44%"></i><i style="height:36%"></i><i style="height:28%"></i>
+            <i style="height:22%"></i>
+          </div>
+        </div>
+      </aside>
+      <div class="cv"><img src="./assets/p1.jpg" alt="" />
+        <div class="hud"><span>柔光窗景 · 已应用</span><span style="opacity:.6">100%</span>
+          <span style="margin-left:auto">3840 × 2560 · 12.4 MB</span><span style="opacity:.6">前后对比</span></div>
+      </div>
+      <aside class="slip ep">
+        <div class="sh"><span class="lb">参数</span><span class="sp"></span><span class="rv">基准调色</span></div>
+        <div class="sld"><div class="sl"><span>亮度</span><b>+12</b></div><div class="trk"><i style="width:58%"></i><span class="kn" style="left:58%"></span></div></div>
+        <div class="sld"><div class="sl"><span>对比度</span><b>+24</b></div><div class="trk"><i style="width:66%"></i><span class="kn" style="left:66%"></span></div></div>
+        <div class="sld"><div class="sl"><span>高光</span><b>−18</b></div><div class="trk"><i style="width:38%"></i><span class="kn" style="left:38%"></span></div></div>
+        <div class="sld" style="margin-bottom:0"><div class="sl"><span>阴影</span><b>+30</b></div><div class="trk"><i style="width:72%"></i><span class="kn" style="left:72%"></span></div></div>
+        <div class="sh" style="margin-top:13px"><span class="lb">预设</span></div>
+        <div class="rows tight">
+          <div class="rw"><span class="nm">柔光窗景</span><span class="pill ok">当前</span></div>
+          <div class="rw"><span class="nm">电影冷调</span><span class="tm">应用</span></div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 12 · 扫描入库（落日紫夜） ════════ -->
+<div class="shot t1" id="s12">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>主页</span>
+    <div class="modname"><span class="emo">🔍</span><h1>图片扫描</h1><span class="cnt">12 个相册 · 全局扫描运行中 · 退出页面不中断</span></div>
+    <span class="sp"></span>
+    <div class="hd-search">🔍 搜索任务 / 相册<span class="hd-kbd">Ctrl K</span></div>
+    <div class="hd-av"></div>
+  </div>
+  <nav class="subtabs">
+    <span class="tb on">全局扫描<span class="n">68%</span></span>
+    <span class="tb">按年·地点</span>
+    <span class="tb">扫描分组工具</span>
+    <span class="tb">重复清理</span>
+    <span class="tb off">性能设置</span>
+    <span class="sp"></span>
+    <span class="act">暂停</span><span class="act">取消</span>
+    <span class="act primary">开始扫描</span>
+  </nav>
+  <div class="band" style="height:78px">
+    <div class="bcell"><span class="blabel">进度</span><div class="bnum">68<u>%</u><em>8/12 相册</em></div></div>
+    <div class="bcell"><span class="blabel">已处理</span><div class="bnum">442<u>张</u><em>24/s</em></div></div>
+    <div class="bcell"><span class="blabel">失败</span><div class="bnum">2<u>张</u></div></div>
+    <div class="bcell"><span class="blabel">已运行</span><div class="bnum" style="font-size:20px">12:41</div></div>
+    <div class="bcell"><span class="blabel">预计剩余</span><div class="bnum" style="font-size:20px">6:12</div></div>
+  </div>
+  <div class="mpage" style="padding-top:14px">
+    <div class="two" style="grid-template-columns:1fr 288px">
+      <div class="col">
+        <section class="slip taskcard" style="padding:15px 17px">
+          <div class="ringbig"><em>68%</em></div>
+          <div>
+            <div class="sh" style="margin-bottom:5px"><span class="lb">进行中</span><span class="sp"></span><span class="rv">「毕业旅行」</span></div>
+            <div style="font-size:13px;font-weight:var(--fw-em)">EXIF → 影调分析 → 人脸聚类 → 语义向量</div>
+            <div class="tiny2 dim" style="margin-top:4px">当前阶段：人脸聚类 42/109 · 并发 8 线程</div>
+            <div class="tmeta">
+              <div><b>8 / 12</b><span>相册</span></div>
+              <div><b>442</b><span>已处理</span></div>
+              <div><b>24 /s</b><span>吞吐</span></div>
+              <div><b>2</b><span>失败</span></div>
+            </div>
+          </div>
+        </section>
+        <section class="slip" style="padding:12px 15px">
+          <div class="sh"><span class="lb">任务队列</span><span class="sp"></span><span class="rv">按耗时排序</span></div>
+          <div class="qrow hd"><span>相册</span><span>阶段</span><span>进度</span><span class="num">照片</span><span class="num">耗时</span></div>
+          <div class="qrow"><span class="qn"><b>毕业旅行</b></span><span class="st">人脸聚类</span><span class="qbar"><i style="width:88%"></i></span><span class="num">109</span><span class="num">4:12</span></div>
+          <div class="qrow"><span class="qn"><b>山野清晨</b></span><span class="st">影调分析</span><span class="qbar"><i style="width:52%"></i></span><span class="num">36</span><span class="num">1:38</span></div>
+          <div class="qrow"><span class="qn"><b>人像</b></span><span class="st">语义向量</span><span class="qbar"><i style="width:24%"></i></span><span class="num">24</span><span class="num">0:41</span></div>
+          <div class="qrow"><span class="qn"><b>湖与岛</b></span><span class="st">已完成</span><span class="qbar"><i class="done" style="width:100%"></i></span><span class="num">18</span><span class="num">1:02</span></div>
+          <div class="qrow"><span class="qn dim"><b>美食</b></span><span class="st dim">排队中</span><span class="qbar"><i style="width:0"></i></span><span class="num">57</span><span class="num">—</span></div>
+          <div class="qrow"><span class="qn dim"><b>猫</b></span><span class="st acc">2 张失败</span><span class="qbar"><i class="done" style="width:100%"></i></span><span class="num">14</span><span class="num">0:06</span></div>
+        </section>
+      </div>
+      <div class="col">
+        <section class="slip" style="padding:12px 14px">
+          <div class="sh"><span class="lb">扫描项</span></div>
+          <div class="opt"><span class="l">EXIF / 拍摄时间</span><span class="v">开启</span></div>
+          <div class="opt"><span class="l">影调与直方图</span><span class="v">开启</span></div>
+          <div class="opt"><span class="l">人脸识别 · VCR</span><span class="v">开启</span></div>
+          <div class="opt"><span class="l">语义向量 · CLIP</span><span class="v">GPU</span></div>
+          <div class="opt"><span class="l">OCR 文字</span><span class="v dim">关闭</span></div>
+        </section>
+        <section class="slip" style="padding:12px 14px">
+          <div class="sh"><span class="lb">增量</span><span class="sp"></span><span class="rv">相比上次</span></div>
+          <div class="rows tight">
+            <div class="rw"><span class="nm">新增照片</span><span class="tm acc">+24</span></div>
+            <div class="rw"><span class="nm">新增人物</span><span class="tm acc">+12</span></div>
+            <div class="rw"><span class="nm">重复文件</span><span class="tm">36 组</span></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 13 · 灯箱（落日紫夜 · 浮层用玻璃） ════════ -->
+<div class="shot t1" id="s13" style="padding-bottom:0">
+  <div class="lightbox" style="height:640px">
+    <img class="lb-img" src="./assets/p1.jpg" alt="" />
+    <span class="lb-nav" style="left:16px">‹</span>
+    <span class="lb-nav" style="right:16px">›</span>
+    <div class="lb-meta"><b>日落晚霞 / DSC_04182</b>3840 × 2560 · 12.4 MB<br />f/8 · 1/250s · ISO 100 · 24mm</div>
+    <div class="lb-tools">
+      <span>‹</span><span>1 / 109</span><span>›</span>
+      <span class="on">信息</span><span>旋转</span><span>收藏</span><span>找相似</span><span>设为封面</span><span>导出</span><span>×</span>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 14 · 主题弹窗（4 套精简） ════════ -->
+<div class="shot t1" id="s14">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>主页</span>
+    <div class="modname"><h1>外观</h1><span class="cnt">4 套预设 · 也可自定义</span></div>
+  </div>
+  <div class="dlg">
+    <div class="dlg-h"><h2>主题 · 皮肤</h2><span class="sp"></span><span class="x">✕</span></div>
+
+    <div class="gtitle"><span>深色</span><span class="sp"></span><span>2 套 · 适合暗环境浏览</span></div>
+    <div class="prow">
+      <div class="pcard on" style="background:linear-gradient(165deg,#3b2b52,#271d37 55%,#120e1c)">
+        <div class="pi" style="color:#f2f0f4">
+          <b>落日紫夜</b>
+          <span style="color:rgba(242,240,244,.58)">紫夜金 · 与登录页启动封面配套</span>
+          <span class="tag">默认 · 当前</span>
+        </div>
+        <div class="pv">
+          <div class="pmini-card" style="background:rgba(42,38,48,.74)"></div>
+          <div class="pmini-txt" style="color:rgba(242,240,244,.5)">Aa 653 张</div>
+        </div>
+      </div>
+      <div class="pcard" style="background:linear-gradient(165deg,#1d2833,#131b24 55%,#080c11)">
+        <div class="pi" style="color:#eef1f5">
+          <b>深空石墨</b>
+          <span style="color:rgba(238,241,245,.55)">纯冷深调 · 最不干扰照片色彩</span>
+          <span class="tag old">选用</span>
+        </div>
+        <div class="pv">
+          <div class="pmini-card" style="background:rgba(26,34,42,.78);--pc-rule:rgba(255,255,255,.13)"></div>
+          <div class="pmini-txt" style="color:rgba(238,241,245,.48)">Aa 653 张</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gtitle"><span>浅色</span><span class="sp"></span><span>2 套 · 适合日间与印前校对</span></div>
+    <div class="prow">
+      <div class="pcard" style="background:linear-gradient(165deg,#faf8f5,#f0ece6 55%,#ddd7cd)">
+        <div class="pi" style="color:#17161a">
+          <b>纸白暖中性</b>
+          <span style="color:rgba(23,22,26,.6)">最接近白纸 · 层次靠留白与描边</span>
+          <span class="tag old">选用</span>
+        </div>
+        <div class="pv">
+          <div class="pmini-card" style="background:rgba(255,255,255,.94);--pc-rule:rgba(23,22,26,.13);box-shadow:inset 0 0 0 1px rgba(23,22,26,.13),0 5px 12px -6px rgba(23,22,26,.45)"></div>
+          <div class="pmini-txt" style="color:rgba(23,22,26,.55)">Aa 653 张</div>
+        </div>
+      </div>
+      <div class="pcard" style="background:linear-gradient(165deg,#eaf1ee,#d8e5df 55%,#b6cbc2)">
+        <div class="pi" style="color:#14201c">
+          <b>晨雾青瓷</b>
+          <span style="color:rgba(20,32,28,.6)">淡青绿 · 树叶 / 水面多的库更耐看</span>
+          <span class="tag old">选用</span>
+        </div>
+        <div class="pv">
+          <div class="pmini-card" style="background:rgba(255,255,255,.92);--pc-rule:rgba(20,32,28,.13);box-shadow:inset 0 0 0 1px rgba(20,32,28,.13),0 5px 12px -6px rgba(20,32,28,.45)"></div>
+          <div class="pmini-txt" style="color:rgba(20,32,28,.55)">Aa 653 张</div>
+        </div>
+      </div>
+    </div>
+    <div class="foot">
+      <div class="tiny2 dim">已移除 4 套与现有预设色相 / 明度重复的配色（墨色石板、余烬暖褐、亚麻浅灰、雾光冷灰）。<br />
+        删除不影响老用户外观：色值仍在本地，只是不再被标记为某个预设。</div>
+      <span class="bt">自定义…</span>
+      <span class="bt primary">完成</span>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 15 · 我的相册 · 浅色纸白 ════════ -->
+<div class="shot t3" id="s15">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>主页</span>
+    <div class="modname"><span class="emo">📁</span><h1>我的相册</h1><span class="cnt">12 个相册 · 653 张 · 18.4 GB</span></div>
+    <span class="sp"></span>
+    <div class="hd-search">🔍 搜索相册名称…<span class="hd-kbd">Ctrl K</span></div>
+    <div class="hd-av" style="background:linear-gradient(140deg,#cfc9be,#a89f90)"></div>
+  </div>
+  <nav class="subtabs">
+    <span class="tb on">全部<span class="n">12</span></span>
+    <span class="tb">系统相册<span class="n">1</span></span>
+    <span class="tb">归档<span class="n">1</span></span>
+    <span class="tb">隐藏<span class="n">1</span></span>
+    <span class="tb off">回收站<span class="n">0</span></span>
+    <span class="sp"></span>
+    <span class="act">全选</span><span class="act">批量入库</span>
+    <span class="act primary">＋ 新建相册</span>
+  </nav>
+  <div class="band" style="height:78px">
+    <div class="bcell"><span class="blabel">相册</span><div class="bnum">12<u>个</u></div></div>
+    <div class="bcell"><span class="blabel">照片</span><div class="bnum">653<u>张</u></div></div>
+    <div class="bcell"><span class="blabel">已入库</span><div class="bnum">10<u>个</u><em>615 张</em></div></div>
+    <div class="bcell"><span class="blabel">未入库</span><div class="bnum">2<u>个</u><em class="mute">需扫描</em></div></div>
+    <div class="bcell"><span class="blabel">占用</span><div class="bnum">18.4<u>GB</u></div></div>
+  </div>
+  <div class="toolbar">
+    <div class="seg"><span class="on">按时间</span><span>按年·季</span><span>按地点</span><span>按入库</span></div>
+    <span class="chip">全部年份 ▾</span><span class="sp"></span>
+    <span class="tiny2 dim">浅色下纸片靠柔和投影读厚度</span>
+  </div>
+  <div class="mpage" style="padding-top:12px">
+    <div class="wall4" style="grid-template-columns:repeat(5,1fr);grid-auto-rows:150px">
+      <article class="astile w2" style="grid-column:span 2;grid-row:span 2"><img src="./assets/p2.jpg" alt="" />
+        <div class="amark"><span class="abadge">已入库</span></div><span class="acount">109</span>
+        <div class="acap"><b>毕业旅行</b><span>2024年6月 · 1.8 GB</span></div></article>
+      <article class="astile"><img src="./assets/p4.jpg" alt="" /><span class="acount">36</span>
+        <div class="acap"><b>山野清晨</b><span>2026年9月</span></div></article>
+      <article class="astile"><img src="./assets/p3.jpg" alt="" /><span class="acount">24</span>
+        <div class="acap"><b>人像</b><span>2026年9月</span></div></article>
+      <article class="astile"><img src="./assets/p7.jpg" alt="" /><span class="acount">18</span>
+        <div class="acap"><b>湖与岛</b><span>2025年7月</span></div></article>
+      <article class="astile"><img src="./assets/p5.jpg" alt="" /><span class="acount">42</span>
+        <div class="acap"><b>森林徒步</b><span>2025年5月</span></div></article>
+      <article class="astile"><img src="./assets/p9.jpg" alt="" /><span class="acount">31</span>
+        <div class="acap"><b>夜空</b><span>2024年12月</span></div></article>
+      <article class="astile"><img src="./assets/p11.jpg" alt="" /><span class="acount">57</span>
+        <div class="acap"><b>美食</b><span>2024年10月</span></div></article>
+      <article class="astile"><img src="./assets/p12.jpg" alt="" /><span class="acount">12</span>
+        <div class="acap"><b>雪</b><span>2024年1月</span></div></article>
+      <article class="astile"><img src="./assets/p1.jpg" alt="" /><span class="acount">25</span>
+        <div class="acap"><b>日落晚霞</b><span>2023年8月</span></div></article>
+      <article class="astile"><img src="./assets/p8.jpg" alt="" /><span class="acount">9</span>
+        <div class="acap"><b>花</b><span>2023年4月</span></div></article>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 16 · 智慧相册 · 浅色青瓷 ════════ -->
+<div class="shot t4" id="s16">
+  <div class="mtop">
+    <span class="back-home"><span class="ico">←</span>主页</span>
+    <div class="modname"><span class="emo">🧠</span><h1>智慧相册</h1><span class="cnt">人物 170 · 语义 21 · 回忆 18</span></div>
+    <span class="sp"></span>
+    <div class="hd-search">🔍 搜索人物 / 分类<span class="hd-kbd">Ctrl K</span></div>
+    <div class="hd-av" style="background:linear-gradient(140deg,#b6cbc2,#8fa9a0)"></div>
+  </div>
+  <nav class="subtabs">
+    <span class="tb on">人物<span class="n">170</span></span>
+    <span class="tb">时间线<span class="n">653</span></span>
+    <span class="tb">回忆<span class="n">18</span></span>
+    <span class="tb">地点<span class="n">0</span></span>
+    <span class="tb">语义分类<span class="n">21</span></span>
+    <span class="tb">智能搜索</span>
+    <span class="sp"></span>
+    <span class="act">合并建议 3</span><span class="act primary">批量命名</span>
+  </nav>
+  <div class="band" style="height:78px">
+    <div class="bcell"><span class="blabel">已扫描</span><div class="bnum">653<u>张</u></div></div>
+    <div class="bcell"><span class="blabel">已命名</span><div class="bnum">84<u>/ 170</u><em>49%</em></div></div>
+    <div class="bcell"><span class="blabel">平均置信度</span><div class="bnum">0.53</div></div>
+    <div class="bcell"><span class="blabel">GPS 覆盖</span><div class="bnum">0<u>%</u><em class="mute">653 无定位</em></div></div>
+  </div>
+  <div class="mpage" style="padding-top:12px">
+    <div class="two">
+      <section class="slip" style="padding:13px 14px">
+        <div class="sh"><span class="lb">人物</span><span class="sp"></span><span class="rv">170 位</span></div>
+        <div class="pwall8" style="grid-template-columns:repeat(7,1fr)">
+          <div class="pc"><img src="./assets/p3.jpg" alt="" /><div class="cap"><b>林小满</b><span>128</span></div></div>
+          <div class="pc"><img src="./assets/p6.jpg" alt="" /><div class="cap"><b>陈屿</b><span>94</span></div></div>
+          <div class="pc"><img src="./assets/p8.jpg" alt="" /><div class="cap"><b>周迟</b><span>76</span></div></div>
+          <div class="pc"><img src="./assets/p5.jpg" alt="" /><div class="cap"><b>阿岚</b><span>61</span></div></div>
+          <div class="pc"><img src="./assets/p11.jpg" alt="" /><div class="cap"><b>苏禾</b><span>55</span></div></div>
+          <div class="pc"><img src="./assets/p2.jpg" alt="" /><div class="cap"><b>许南</b><span>48</span></div></div>
+          <div class="pc"><img src="./assets/p4.jpg" alt="" /><div class="cap"><b>米粒</b><span>41</span></div></div>
+          <div class="pc raw"><img src="./assets/p9.jpg" alt="" /><div class="cap"><b>P094</b><span>37</span></div></div>
+          <div class="pc raw"><img src="./assets/p1.jpg" alt="" /><div class="cap"><b>P016</b><span>35</span></div></div>
+          <div class="pc raw"><img src="./assets/p7.jpg" alt="" /><div class="cap"><b>P101</b><span>31</span></div></div>
+          <div class="pc raw"><img src="./assets/p3.jpg" alt="" /><div class="cap"><b>P023</b><span>28</span></div></div>
+          <div class="pc raw"><img src="./assets/p8.jpg" alt="" /><div class="cap"><b>P045</b><span>26</span></div></div>
+          <div class="pc raw"><img src="./assets/p6.jpg" alt="" /><div class="cap"><b>P067</b><span>22</span></div></div>
+          <div class="pc raw"><img src="./assets/p5.jpg" alt="" /><div class="cap"><b>P112</b><span>19</span></div></div>
+        </div>
+      </section>
+      <div class="col">
+        <section class="slip" style="padding:11px 13px">
+          <div class="sh"><span class="lb">命名进度</span><span class="sp"></span><span class="rv">49%</span></div>
+          <div class="mbar" style="height:4px"><i style="width:49%"></i></div>
+          <div class="tiny2 dim" style="margin-top:8px">84 已命名 · 86 待命名</div>
+        </section>
+        <section class="slip" style="padding:11px 13px">
+          <div class="sh"><span class="lb">语义分类</span><span class="sp"></span><span class="rv">Top 4</span></div>
+          <div class="rows tight">
+            <div class="rw"><span class="nm">聚会合影</span><span class="tm">109</span></div>
+            <div class="rw"><span class="nm">自然风景</span><span class="tm">36</span></div>
+            <div class="rw"><span class="nm">日落晚霞</span><span class="tm">25</span></div>
+            <div class="rw"><span class="nm dim">其他 18 类</span><span class="tm">483</span></div>
+          </div>
+        </section>
+        <section class="slip" style="padding:11px 13px">
+          <div class="sh"><span class="lb">地点</span><span class="sp"></span><span class="rv">0 / 12</span></div>
+          <div class="tiny2" style="color:var(--c-fg-2)">653 张均无 GPS。<br />批量设置地点后可在此按城市点亮。</div>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -15,7 +15,8 @@
  * 样张用 get_photo_thumbs 批量取（FEAT-044 缓存命中 0 IO）。
  */
 import { computed, ref, watch } from "vue";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { getThumbs } from "../utils/thumbQueue";
 import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 import { useContentStore } from "../stores/content";
@@ -195,7 +196,7 @@ async function loadSampleThumbs() {
   await Promise.all(
     [...byAlbum.entries()].map(async ([aid, paths]) => {
       try {
-        const pairs = await invoke<[string, string][]>("get_photo_thumbs", { albumId: aid, paths });
+        const pairs = await getThumbs(aid, paths);
         for (const [path, thumb] of pairs) if (!thumbMap.value[path]) thumbMap.value[path] = thumb;
       } catch {
         /* 缺图不阻塞：样张回退占位 */

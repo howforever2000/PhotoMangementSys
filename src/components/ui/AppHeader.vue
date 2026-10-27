@@ -1,239 +1,380 @@
 <script setup lang="ts">
 /**
- * AppHeader —— 全站统一顶栏（FEAT-103 · P5）
+ * AppHeader —— 大组件内部导航条（FEAT-106 重做）
  *
- * 目的：消掉 11 个页面里各自手写的「← 返回主页」按钮，并给所有页面
- * 一个一致的导航锚点。此前每个页面都在重复实现同一件事，且文案不一
- * （"返回主页" / "← 返回" / "返回图片扫描"），用户无法建立空间感。
+ * ══════════════════════════════════════════════════════════════════════════
+ * 结构
+ * ──────────────────────────────────────────────────────────────────────────
+ *   [← 主页] [图标][组件名 · 读数] │ 分区1 分区2 分区3 …              [搜索] [头像]
  *
- * 形态选择：**顶栏常驻**，不用侧边栏。
- *   相册产品的核心行为是横向浏览大量封面，纵向侧栏会永久占用 200px
- *   的封面空间；顶栏 56px 换来的封装比更高。低频入口（归档/隐藏/扫描/
- *   工坊/设置）走头像菜单。
+ * 这条栏**不跨大组件**。它上面每一项都属于"当前这个大组件"内部的功能分区。
+ * 跨大组件的入口只有一个地方：Home 的四张卡（点「← 主页」回去换）。
  *
- * 玻璃：整个应用里玻璃只出现在浮层。这里顶栏**不是**玻璃 ——
- *   它是结构性元素，用纯色 + 底部发丝线。滚动时也不变成玻璃
- *   （滚动玻璃会让页面内容从半透明的导航下透过去，是"好看但读不清"的典型）。
+ * 演进记录（很重要，避免再走回头路）：
+ *   第 1 版 NAV = 相册/时间线/人物/地点/语义 —— 后四项是 /smart 内部的 tab，
+ *            却和"相册"平起平坐，层级错位。
+ *   第 2 版把导航整条删掉，只留「← 主页 + 模块名」—— 矫枉过正：
+ *            大组件内部确实需要一条常驻的分区导航。
+ *   第 3 版（FEAT-105）栏内 = **本组件内部的分区**，由每个页面通过 `tabs` 传入。
+ *   第 4 版（现在，FEAT-106）：版式重做为**一块独立的磨砂玻璃板**，
+ *            悬在页面底之上、与内容区有明确的厚度差（见下方玻璃说明）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * 玻璃：这条栏是**浮在内容之上**的一层，所以用 --glass-*（浮层玻璃）
+ * ──────────────────────────────────────────────────────────────────────────
+ * 语义约束（比数值更重要）：--glass-* 只允许被「浮在内容之上」的层消费。
+ * 面板/卡片用 --panel-glass-*（墙板玻璃），两者刻意不合并：
+ * 一个是"浮起来的工具条"，一个是"墙上的板"。
+ *
+ * 模糊度要克制（18px）：顶栏后面滚过的是正文，糊到看不清就失去导航可读性。
+ * ══════════════════════════════════════════════════════════════════════════
  */
 import { computed } from "vue";
-import { useRouter, useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "../../stores/auth";
 
-withDefaults(
+export interface HeaderTab {
+  /** 稳定 key（状态型分区用） */
+  key?: string;
+  label: string;
+  /** 计数徽标 */
+  count?: number | string;
+  /** 跳转路由（路由型分区用，如 /scan/test） */
+  to?: string;
+  /** 置灰但可见（"有这块功能，当前条件不可用"） */
+  disabled?: boolean;
+  /** 置灰原因，写进 title —— 灰掉必须讲原因 */
+  why?: string;
+}
+
+const props = withDefaults(
   defineProps<{
-    /** 页面标题（当前页） */
+    /** 大组件名（如「相册管理」） */
     title?: string;
-    /** 是否显示主导航（登录后才显示） */
-    showNav?: boolean;
-    /** 紧凑高度（副页面用） */
+    /** 组件 emoji */
+    icon?: string;
+    /** 一行读数 */
+    meta?: string;
+    /** 组件内部的分区（不传则不渲染导航区，用于登录页等独立壳） */
+    tabs?: HeaderTab[];
+    /** 当前激活分区的 key（状态型） */
+    active?: string;
+    /** 紧凑高度 */
     compact?: boolean;
   }>(),
-  { title: "", showNav: true, compact: false },
+  { title: "", icon: "", meta: "", tabs: () => [], active: "", compact: false },
 );
+
+const emit = defineEmits<{ pick: [key: string] }>();
 
 const router = useRouter();
 const route = useRoute();
 const auth = useAuthStore();
-
-/** 主导航项：只放 5 个高频入口。
- *  为什么是这 5 个：相册/时间线/人物/地点/语义 覆盖了"找照片"的全部主路径。
- *  归档、隐藏、扫描、工坊、设置都是低频（每周一次以下），收进头像菜单。
- *
- *  ⚠️ tab key 必须与 SmartAlbum.vue 的 tabs 定义一致（face / category / location），
- *  否则高亮永远落在"人物"上（默认回退值）。 */
-const NAV = [
-  { label: "相册", path: "/albums", tab: null },
-  { label: "时间线", path: "/timeline", tab: null },
-  { label: "人物", path: "/smart", tab: "face" },
-  { label: "地点", path: "/smart", tab: "location" },
-  { label: "语义", path: "/smart", tab: "category" },
-] as const;
-
-/** 导航项的完整 href（/smart 需要带 query） */
-function hrefOf(item: (typeof NAV)[number]): string {
-  return item.tab ? `${item.path}?tab=${item.tab}` : item.path;
-}
-
-/** 当前激活项：按 path + tab 匹配（/album/3 也算"相册"） */
-function isActive(item: (typeof NAV)[number]): boolean {
-  if (item.path === "/albums") {
-    return route.path === "/albums" || route.path.startsWith("/album/");
-  }
-  if (item.path === "/timeline") return route.path === "/timeline";
-  if (item.path === "/smart") {
-    if (route.path !== "/smart") return false;
-    return (route.query.tab ?? "face") === item.tab;
-  }
-  // 前面的分支已穷尽 NAV 的所有 path；这里保留一个显式 fallback
-  // 而不写 `return route.path === item.path` —— TS 会把 item 收窄为 never
-  return false;
-}
-
 const username = computed(() => auth.user?.username ?? "");
+
+/**
+ * 路由型 tab 是否处于选中态。
+ *
+ * 为什么不能直接写 `$route.path === t.to`：
+ *   内容分类与人物、地点都住在 /smart 上，靠 `?tab=` 区分 ——
+ *   它们的 `to` 是 "/smart?tab=category" 这种**带 query 的字符串**，
+ *   而 `$route.path` 永远只是 "/smart"，两者永远不会相等，
+ *   结果就是这两个 tab 永远不高亮（用户不知道自己在哪一块）。
+ *
+ * 现在：分别比较 path 与 tab query；
+ *   缺省 tab 视为该页的**第一个** tab（/smart 默认就是全局概览，FEAT-110）——
+ *   否则从 Home 直接进 /smart 时导航栏会一个高亮都没有。
+ */
+function isTabOn(to?: string): boolean {
+  if (!to) return false;
+  const target = router.resolve(to);
+  if (target.path !== route.path) return false;
+  const want = target.query.tab;
+  const cur = route.query.tab;
+  if (want === undefined) return cur === undefined || cur === "";
+  // /smart 不带 tab 时默认落在全局概览上
+  if (cur === undefined || cur === "") return want === "overview";
+  return cur === want;
+}
 </script>
 
 <template>
-  <header class="u-header" :class="{ 'u-header-compact': compact }">
-    <!-- 品牌：点击回首页（这是唯一的"返回"入口，所有页面共享） -->
-    <button class="u-brand" type="button" title="回到首页" @click="router.push('/home')">
-      <span class="u-brand-dot" aria-hidden="true"></span>
-      <span class="u-brand-txt">{{ title || "相册" }}</span>
-    </button>
+  <header class="mh" :class="{ 'mh-compact': compact }">
+    <div class="mh-inner">
+      <!-- 唯一出口：回 Home 换大组件（这不是导航项，是"退出本组件"） -->
+      <button class="mh-back" type="button" title="回到主页（切换其他组件）" @click="router.push('/home')">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span>主页</span>
+      </button>
 
-    <nav v-if="showNav" class="u-nav" aria-label="主导航">
-      <RouterLink
-        v-for="item in NAV"
-        :key="item.label"
-        :to="hrefOf(item)"
-        class="u-nav-item"
-        :class="{ on: isActive(item) }"
+      <!-- 组件名：图标 + 名字 + 读数，三者读成一块 -->
+      <div class="mh-name">
+        <span v-if="icon" class="mh-emo" aria-hidden="true">{{ icon }}</span>
+        <span class="mh-title">{{ title || "相册" }}</span>
+        <span v-if="meta" class="mh-meta">{{ meta }}</span>
+      </div>
+
+      <!-- 组件内部分区导航：每一项都属于本组件 -->
+      <nav v-if="tabs.length" class="mh-nav" aria-label="组件内分区">
+        <template v-for="t in tabs" :key="t.key || t.label">
+          <RouterLink v-if="t.to && !t.disabled" :to="t.to" class="mh-nav-item" :class="{ on: isTabOn(t.to) }">
+            {{ t.label }}
+            <span v-if="t.count !== undefined && t.count !== ''" class="mh-nav-n">{{ t.count }}</span>
+          </RouterLink>
+          <button
+            v-else
+            type="button"
+            class="mh-nav-item"
+            :class="{ on: !!t.key && t.key === props.active, off: t.disabled }"
+            :disabled="t.disabled"
+            :title="t.disabled ? t.why : undefined"
+            @click="!t.disabled && t.key && emit('pick', t.key)"
+          >
+            {{ t.label }}
+            <span v-if="t.count !== undefined && t.count !== ''" class="mh-nav-n">{{ t.count }}</span>
+          </button>
+        </template>
+      </nav>
+
+      <div class="mh-sp"></div>
+
+      <button class="mh-search" type="button" title="搜索照片（⌘K）" @click="router.push('/search')">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2" />
+          <path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        <span class="mh-search-txt">搜索照片</span>
+      </button>
+
+      <button
+        v-if="username"
+        class="mh-user"
+        type="button"
+        :title="`${username} · 账户设置`"
+        @click="router.push('/home')"
       >
-        {{ item.label }}
-      </RouterLink>
-    </nav>
-
-    <div class="u-header-spacer"></div>
-
-    <!-- 右侧：搜索入口 + 用户 -->
-    <button class="u-search" type="button" title="搜索照片（⌘K）" @click="router.push('/search')">
-      <span aria-hidden="true">🔍</span>
-      <span class="u-search-txt">搜索照片</span>
-    </button>
-
-    <button
-      v-if="username"
-      class="u-user"
-      type="button"
-      :title="`${username} · 账户设置`"
-      @click="router.push('/home')"
-    >
-      <span class="u-user-avatar" aria-hidden="true">👤</span>
-    </button>
+        <span aria-hidden="true">👤</span>
+      </button>
+    </div>
   </header>
 </template>
 
 <style scoped>
-.u-header {
-  display: flex;
-  align-items: center;
-  gap: 38px;
-  height: 56px;
-  padding: 0 var(--sp-8);
-  /* 结构层：纯色 + 底部发丝线。不是玻璃 —— 见组件头注释。 */
-  border-bottom: 1px solid var(--c-rule);
-  background: transparent;
-  /* 吸顶：长页面滚动时导航始终可达（用户不必滚回顶部才能换页） */
+/* ══════════════════════════════════════════════════════════════════════════
+   顶栏 = 一块浮在页面之上的磨砂玻璃板
+   ──────────────────────────────────────────────────────────────────────────
+   关键认知（FEAT-106）：顶栏**不是**"页面底色 + 一条线"，而是一块**板**。
+   之前它是页面底色 + 发丝线，内容从下方滚过时两者糊在一起 —— 读不出厚度。
+   现在板有明确的边界：
+     · 板体（玻璃填充 + 模糊）
+     · 板的底缘（一条暗壁 = 厚度读数）
+     · 板下的柔光（悬浮感）
+   板与内容之间还留了 10px 的空气（--mh-gap），让内容从板下穿过而不是贴着。
+   ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════
+   FEAT-115：顶栏 = 一条**带**，不是一块**板**
+   ──────────────────────────────────────────────────────────────────────────
+   改前（FEAT-106/108）：一块浮起的磨砂玻璃板（52px 高、圆角 12、填充 .62、
+       模糊 18px、上缘镜面 + 下缘暗壁 + 外投影），且外面留 10px 空气。
+       结果：板与内容之间那条 10px 的缝，读起来像"两个窗口叠在一起"；
+       而且一屏里它是最亮的一块玻璃，把注意力从内容抢走。
+
+   改后：一条 54px 的横向带，**只有下缘一根发丝线**。
+       · 没有缝 —— 内容从带下穿过，读成"一个页面"
+       · 没有填充 —— 带体只是极淡的一层渐变（滚动时才看得出与内容分离）
+       · 没有模糊 —— 后面滚过的是正文，糊掉反而降低可读性
+       · --float-* 令牌仍然有效，但**顶栏不再消费它**（搜索胶囊 / 弹窗 /
+         右键菜单还在用）。别以为这里漏改了。
+   ══════════════════════════════════════════════════════════════════════════ */
+.mh {
   position: sticky;
   top: 0;
   z-index: var(--z-sticky);
-  /* 吸顶后页面内容会从下方滚过：给一层与页面底色相同的实底，
-     避免文字在半透明的导航区里糊在一起。
-     （这不是玻璃，是与页面同色的遮罩） */
-  backdrop-filter: none;
-  background: var(--c-bg);
+  height: 54px;
+  padding: 0 var(--sp-8);
+  border-bottom: 1px solid var(--rule);
+  /* 极淡一层：让顶栏在滚动时与内容分开；不是玻璃，只是"上浮一点" */
+  background: linear-gradient(180deg, var(--hover), transparent);
+}
+/* 浅底上反过来：用一点白把带体提亮（浅底的"上浮"方向是更亮，不是更暗） */
+body:not(.theme-dark) .mh {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.5), transparent);
 }
 
-.u-header-compact {
-  height: 48px;
-  gap: 24px;
-}
-
-/* —— 品牌 —— */
-.u-brand {
-  display: inline-flex;
+.mh-inner {
+  display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 14px;
+  height: 53px;
   padding: 0;
   background: none;
   border: none;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-.u-brand-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 3px;
-  background: var(--c-accent);
-}
-.u-brand-txt {
-  font-size: 14px;
-  font-weight: var(--fw-em);
-  letter-spacing: 0.02em;
-  color: var(--c-fg);
+  box-shadow: none;
 }
 
-/* —— 主导航：文字 + 当前项金色下划线 —— */
-.u-nav {
+/* 紧凑模式：带矮 6px（内容多的页面用） */
+.mh-compact .mh-inner {
+  height: 47px;
+}
+
+/* —— 返回主页 —— */
+.mh-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px 0 8px;
+  border-radius: 7px;
+  border: none;
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--c-rule);
+  font-size: 11.5px;
+  color: var(--fg-2);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);
+}
+.mh-back:hover {
+  color: var(--fg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-accent) 45%, transparent);
+}
+
+/* —— 组件名 —— */
+.mh-name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+.mh-emo {
+  font-size: 15px;
+  align-self: center;
+  /* emoji 降浓：四个高饱和色块是整屏最跳的元素，
+     退回"素色面板上的图标"而不是"贴纸" */
+  filter: saturate(0.78) brightness(1.02);
+}
+.mh-title {
+  font-size: var(--fs-head);
+  font-weight: var(--fw-strong);
+  letter-spacing: -0.018em;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.mh-meta {
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* —— 组件内部分区导航：与组件名之间一条发丝竖线分隔，
+       让"我是谁"和"我能去哪"读成两件事 —— */
+.mh-nav {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: 2px;
+  min-width: 0;
+  padding-left: 14px;
+  border-left: 1px solid var(--c-rule);
+  height: 22px;
 }
-.u-nav-item {
+.mh-nav-item {
   position: relative;
-  padding: 6px 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border: none;
+  background: none;
+  border-radius: 7px;
   font-size: var(--fs-body);
   letter-spacing: var(--ls-body);
-  color: var(--c-fg-2);
+  color: var(--fg-2);
   text-decoration: none;
-  transition: color var(--dur-2) var(--ease-out);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
 }
-.u-nav-item:hover {
-  color: var(--c-fg);
+.mh-nav-item:hover {
+  color: var(--fg);
+  background: var(--hover, rgba(255, 255, 255, 0.055));
 }
-.u-nav-item.on {
-  color: var(--c-fg);
+.mh-nav-item.on {
+  color: var(--fg);
+  font-weight: var(--fw-em);
+  background: var(--hover, rgba(255, 255, 255, 0.055));
 }
-/* 下划线用 1.5px + bottom:-2px：贴在文字基线下方一点点，
-   比贴在元素盒子底部（-6px）更贴近字，视觉上"挂"在词上而不是容器上。 */
-.u-nav-item.on::after {
+/* 选中下划线贴在文字下方，比"整块高亮"轻，与全站的 tab 语言一致 */
+.mh-nav-item.on::after {
   content: "";
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -2px;
+  left: 11px;
+  right: 11px;
+  bottom: 3px;
   height: 1.5px;
   border-radius: 2px;
   background: var(--c-accent);
 }
+.mh-nav-item.off {
+  /* 置灰项用 --c-fg-2 + opacity .75：既弱于可点项（--c-fg），又保底可读。
+     用户得先看清这个词才知道这块功能叫什么，再去 hover 读 why。 */
+  color: var(--fg-2);
+  opacity: 0.75;
+  cursor: not-allowed;
+}
+.mh-nav-item.off:hover {
+  background: none;
+}
+.mh-nav-n {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: var(--fg-2);
+  background: var(--hover, rgba(255, 255, 255, 0.07));
+  font-variant-numeric: tabular-nums;
+}
+.mh-nav-item.on .mh-nav-n {
+  color: var(--c-accent-bright, var(--c-accent));
+  background: color-mix(in srgb, var(--c-accent) 14%, transparent);
+}
 
-.u-header-spacer {
+.mh-sp {
   flex: 1;
 }
 
-/* —— 搜索：全站唯一的玻璃元素之一（它确实浮在内容之上） —— */
-.u-search {
+/* —— 搜索：栏里唯一的独立控件（玻璃药丸） —— */
+.mh-search {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   height: 30px;
-  padding: 0 13px 0 10px;
+  padding: 0 14px 0 11px;
   border-radius: var(--r-pill);
-  border: var(--glass-border);
-  background: var(--glass-fill);
-  box-shadow: var(--glass-shadow);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--c-rule);
+  background: var(--hover, rgba(255, 255, 255, 0.05));
+  color: var(--fg-2);
   cursor: pointer;
   flex-shrink: 0;
-  transition: box-shadow var(--dur-2) var(--ease-out);
+  transition: color var(--dur-2) var(--ease-out), border-color var(--dur-2) var(--ease-out);
 }
-.u-search span {
-  font-size: 11.5px;
-  color: var(--c-fg-3);
+.mh-search-txt {
+  color: inherit;
 }
-.u-search-txt {
-  color: var(--c-fg-2) !important;
-}
-.u-search:hover {
-  box-shadow:
-    var(--glass-shadow),
-    0 0 0 1px color-mix(in srgb, var(--c-accent) 40%, transparent);
+.mh-search:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--c-accent) 40%, transparent);
 }
 
 /* —— 用户 —— */
-.u-user {
-  width: 26px;
-  height: 26px;
+.mh-user {
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   display: grid;
   place-items: center;
@@ -246,32 +387,43 @@ const username = computed(() => auth.user?.username ?? "");
     inset 0 1px 0 rgba(255, 255, 255, 0.3),
     0 2px 8px rgba(0, 0, 0, 0.35);
 }
-.u-user-avatar {
+.mh-user span {
   font-size: 12px;
   opacity: 0.85;
 }
 
-/* 窄窗：导航横向滚动而不是换行（换行会把顶栏撑成两行，吸顶高度不稳定） */
-@media (max-width: 1080px) {
-  .u-header {
-    gap: 22px;
-    padding: 0 var(--sp-5);
+/* 窄窗：分区导航横向滚动而不是换行（换行会把顶栏撑成两行，吸顶高度不稳定） */
+@media (max-width: 1180px) {
+  .mh {
+    padding: 8px var(--sp-5) 0;
   }
-  .u-nav {
-    gap: 16px;
+  .mh-inner {
+    gap: 10px;
+  }
+  .mh-meta {
+    display: none;
+  }
+  .mh-nav {
+    padding-left: 10px;
     overflow-x: auto;
     scrollbar-width: none;
   }
-  .u-nav::-webkit-scrollbar {
+  .mh-nav::-webkit-scrollbar {
     display: none;
   }
 }
-@media (max-width: 760px) {
-  .u-search-txt {
+@media (max-width: 860px) {
+  .mh-title {
+    font-size: var(--fs-title);
+  }
+  .mh-search-txt {
     display: none;
   }
-  .u-search {
+  .mh-search {
     padding: 0 10px;
+  }
+  .mh-nav-item {
+    padding: 0 7px;
   }
 }
 </style>

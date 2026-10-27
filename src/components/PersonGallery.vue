@@ -582,7 +582,7 @@ const vFocus: Directive<HTMLElement> = {
 
     <!-- 人物卡片网格 -->
     <div v-else class="person-grid">
-      <article v-for="p in persons" :key="p.id" class="person-card glass-card" :style="surfaceStyle" :title="`${displayName(p)}（${p.id}）`">
+      <article v-for="p in persons" :key="p.id" class="person-card" :title="`${displayName(p)}（${p.id}）`">
         <div
           class="person-avatar-wrap"
           @click.stop="openPhotos(p)"
@@ -858,31 +858,50 @@ body.theme-dark .pg-action-msg {
   margin-top: 8px;
 }
 
+/* ── 人物卡：竖排大卡（FEAT-113 ⑦）─────────────────────────────────
+   【为什么改】旧版是 176px 宽的**横排**卡：头像 64 + 间距 14 + 内边距 32
+   = 110px 被占掉，名字只剩 66px 宽。而名字后面还挤着一个「✎」按钮，
+   于是「妈妈」「爸爸」勉强能显示，一碰到「外婆（成都老宅）」这种就只剩
+   “外婆（成…” —— 这就是“名字显示不全”的真正原因，**不是省略号写错了**。
+   横排卡里再加宽也没用：名字区域是剩余空间，永远会被头像吃掉大半。
+
+   改竖排后名字拿到整张卡的宽度，并允许折两行：名字是这张卡的主信息，
+   宁可两行也不截断。列宽 176 → 196：一行少排一两张，换来名字可读。 */
 .person-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 16px;
+  /* FEAT-115：卡片不再是玻璃板 → 不需要 196px 的卡宽，收到 150px 更密 */
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-auto-flow: dense;
+  gap: 22px 18px;
 }
 
+/* FEAT-115：人物卡去容器化。
+   头像本身就是最强的识别面，外面再套一块玻璃板只是多一个"框"。
+   padding 归零、圆角与投影删掉 —— 层级交给头像大小与名字字重。 */
 .person-card {
-  background: transparent; /* 底色由 surfaceStyle(主题) 提供 */
-  border-radius: 12px;
-  padding: 16px;
+  background: transparent;
+  padding: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 14px;
-  transition: transform var(--dur-2), box-shadow var(--dur-2);
+  gap: 8px;
+  text-align: center;
 }
-.person-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1);
-}
+/* FEAT-115：没有卡片底板之后，"登记于 …" 这类技术元信息不该与名字同等可见。
+   整条淡到 --fg-3；重命名笔 / 合并按钮沿用文件下方已有的 hover 才现规则。 */
+.person-date { opacity: 1; color: var(--fg-3); font-size: 10px; }
+.person-id { opacity: 1; color: var(--fg-3); font-size: 10px; }
 
-.person-avatar-wrap { position: relative; flex-shrink: 0; }
+.person-avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+  /* 张数徽标向下伸出，给容器留余量，避免被裁切 */
+  margin-bottom: 6px;
+}
 
 .person-avatar {
-  width: 64px;
-  height: 64px;
+  width: 86px;
+  height: 86px;
   border-radius: 50%;
   object-fit: cover;
   display: block;
@@ -891,42 +910,64 @@ body.theme-dark .pg-action-msg {
 .person-avatar-fallback {
   background: var(--color-primary);
   color: var(--color-on-primary);
-  font-size: 26px;
-  line-height: 60px;
+  font-size: 34px;
+  line-height: 82px;
   text-align: center;
   display: inline-block;
 }
 .person-face-count {
   position: absolute;
-  bottom: -4px;
+  bottom: -6px;
   left: 50%;
   transform: translateX(-50%);
   background: var(--color-primary);
   color: var(--color-on-primary);
-  font-size: 11px;
-  padding: 1px 8px;
+  font-size: 10.5px;
+  padding: 1.5px 8px;
   border-radius: 999px;
   white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
 }
 
-.person-info { min-width: 0; flex: 1; }
+.person-info { min-width: 0; width: 100%; }
 
 .person-name-row {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
   min-width: 0;
 }
 .person-name {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
+  /* 名字最多两行，**不用省略号**：宁可折行也不截断。
+     overflow-wrap 处理超长无空格串（纯英文/ID），避免直接溢出卡片。 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  line-height: 1.32;
+  max-width: 100%;
+}
+/* 重命名按钮：命名是低频动作，不该和名字争视线。
+   默认隐藏（占位保留，避免悬停时名字跳行），悬停/聚焦才出现。 */
+.person-name-row .mini-btn {
+  margin-top: 1px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--dur-1) ease;
+  pointer-events: none;
+}
+.person-card:hover .person-name-row .mini-btn,
+.person-card:focus-within .person-name-row .mini-btn {
+  opacity: 1;
+  pointer-events: auto;
 }
 .mono { font-family: Consolas, Monaco, monospace; }
-.person-id { font-size: 12px; color: var(--color-link); margin-top: 2px; }
-.person-date { font-size: 11px; opacity: 0.6; margin-top: 4px; }
+.person-id { font-size: 11px; color: var(--color-link); margin-top: 3px; opacity: 0.85; }
+.person-date { font-size: 10.5px; opacity: 0.55; margin-top: 3px; font-variant-numeric: tabular-nums; }
 
 .mini-btn {
   border: 1px solid currentColor;
@@ -941,7 +982,8 @@ body.theme-dark .pg-action-msg {
 }
 .mini-btn:hover { border-color: var(--color-link); color: var(--color-link); }
 .mini-btn.ok { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
-.merge-btn { margin-top: 6px; }
+/* 合并按钮：竖排后占整行宽，也更好点 */
+.merge-btn { margin-top: 4px; border: none; padding: 2px 4px; font-size: 10.5px; color: var(--fg-3); }
 
 .person-rename-input {
   width: 100%;

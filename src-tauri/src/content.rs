@@ -2559,7 +2559,17 @@ pub mod commands {
             clip_model_present, clip_ready, semantic_backoff_remaining, SemanticStatus,
         };
 
-        // 1. 退避窗口（最高优先：退避期内其它探测都无意义）
+        // 1. 模型文件缺失（先于退避判断：缺文件不会自愈，退避期里也必须如实告知，
+        //    否则前端要等 20s 退避结束才弹「下载模型」）
+        if !clip_model_present() {
+            return Ok(SemanticStatus {
+                ready: false,
+                code: "model_missing".into(),
+                message: "CLIP 语义模型尚未下载，当前只能做关键词匹配。点「下载模型」即可在应用内补齐（无需重启）。".into(),
+                backoff_remaining_ms: 0,
+            });
+        }
+        // 2. 退避窗口（模型已在位：这里的失败才是服务/加载层面的瞬时问题）
         if let Some(rest) = semantic_backoff_remaining() {
             return Ok(SemanticStatus {
                 ready: false,
@@ -2569,15 +2579,6 @@ pub mod commands {
                     rest.as_secs().max(1)
                 ),
                 backoff_remaining_ms: rest.as_millis() as u64,
-            });
-        }
-        // 2. 模型文件缺失（唯一真正需要用户「去下载」的情形）
-        if !clip_model_present() {
-            return Ok(SemanticStatus {
-                ready: false,
-                code: "model_missing".into(),
-                message: "CLIP 语义模型尚未下载，当前只能做关键词匹配。可前往「扫描中心 → ⚙ 性能设置」下载语义模型。".into(),
-                backoff_remaining_ms: 0,
             });
         }
         // 3. 服务未运行 / 模型未加载完成

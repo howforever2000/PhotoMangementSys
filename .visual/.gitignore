@@ -1,0 +1,4 @@
+# 探针运行时产物（dev server 日志、临时截图）
+_vite*.log
+_vite*.err
+_dbg-*.png

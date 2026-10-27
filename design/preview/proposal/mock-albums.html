@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>提案 v2 · 相册管理（无卡片 · 深色）</title>
+<link rel="stylesheet" href="./mock.css" />
+</head>
+<body>
+
+<div class="topbar">
+  <span class="tb-back">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+      <path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    主页
+  </span>
+
+  <span class="tb-name">
+    <span class="tb-emo">📁</span>
+    <span class="tb-title">相册管理</span>
+    <span class="tb-meta">129 个相册</span>
+  </span>
+
+  <nav class="tb-nav">
+    <span class="on">全部相册</span>
+    <span>按时间</span>
+    <span>按地点</span>
+  </nav>
+
+  <span class="tb-sp"></span>
+
+  <span class="tb-search">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+      <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2.2"/>
+      <path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+    </svg>
+    <b>搜索相册名</b>
+    <em>仅名称</em>
+  </span>
+
+  <span class="tb-user">👤</span>
+</div>
+
+<!-- ══════ 数据带：文本列 + 竖向发丝线，没有一块板 ══════ -->
+<div class="band">
+  <div class="stat w-2">
+    <span class="stat-label">相册</span>
+    <span class="stat-val"><span class="stat-num">129</span><span class="stat-unit">个</span></span>
+    <span class="stat-note">含 1 个系统相册</span>
+  </div>
+
+  <div class="stat w-2">
+    <span class="stat-label">照片</span>
+    <span class="stat-val"><span class="stat-num">25078</span><span class="stat-unit">张</span></span>
+    <span class="stat-note">合计 81.3 GB</span>
+  </div>
+
+  <div class="stat w-1">
+    <span class="stat-label">已入库</span>
+    <span class="stat-val"><span class="stat-num">25062</span></span>
+    <span class="stat-line"><i style="width:99.6%"></i></span>
+  </div>
+
+  <div class="stat w-1">
+    <span class="stat-label">待入库</span>
+    <span class="stat-val"><span class="stat-num">1</span><span class="stat-unit">个</span></span>
+    <span class="stat-note warn">需要扫描</span>
+  </div>
+
+  <div class="stat w-1">
+    <span class="stat-label">人物</span>
+    <span class="stat-val"><span class="stat-num">933</span><span class="stat-unit">位</span></span>
+    <span class="stat-note">已聚类</span>
+  </div>
+</div>
+
+<div class="body-layout">
+  <!-- ══════ 左筛选：纯文字 ══════ -->
+  <aside class="side">
+    <div class="side-group">
+      <div class="side-h">排序</div>
+      <div class="side-item on">按时间</div>
+      <div class="side-item">按地点</div>
+      <div class="side-item">手动排序</div>
+    </div>
+
+    <div class="side-group">
+      <div class="side-h">入库</div>
+      <div class="side-item on">全部 <span class="n">129</span></div>
+      <div class="side-item">已入库 <span class="n">128</span></div>
+      <div class="side-item">未入库 <span class="n">1</span></div>
+    </div>
+
+    <div class="side-group">
+      <div class="side-h">年份</div>
+      <div class="side-item on">全部年份 <span class="n">129</span></div>
+      <div class="side-item">2026 年 <span class="n">20</span></div>
+      <div class="side-item">2025 年 <span class="n">16</span></div>
+      <div class="side-item">2024 年 <span class="n">31</span></div>
+      <div class="side-item">2023 年 <span class="n">29</span></div>
+      <div class="side-item">2022 年 <span class="n">7</span></div>
+      <div class="side-item">2021 年 <span class="n">8</span></div>
+      <div class="side-item">2020 年 <span class="n">6</span></div>
+      <div class="side-item">2019 年 <span class="n">6</span></div>
+      <div class="side-item">2017 年 <span class="n">1</span></div>
+      <div class="side-item">未分类 <span class="n">1</span></div>
+    </div>
+
+    <div class="side-group">
+      <div class="side-h">密度</div>
+      <div class="side-item on">密排</div>
+      <div class="side-item">舒适</div>
+    </div>
+  </aside>
+
+  <!-- ══════ 右栏 ══════ -->
+  <div class="main">
+    <div class="main-head">
+      <span class="main-count"><b>129</b> 个相册 · 2026 年 20 个</span>
+      <div class="main-actions">
+        <span class="btn">全部折叠</span>
+        <span class="btn">批量导入</span>
+        <span class="btn">📋 管理</span>
+        <span class="btn btn-primary">新建相册</span>
+      </div>
+    </div>
+
+    <!-- 搜索：只查相册名；照片内容检索给一个明确出口，不再混在同一个框里 -->
+    <div class="search-row">
+      <span class="search-box">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+          <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2.2"/>
+          <path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+        </svg>
+        搜索相册名称…
+        <span class="scope">不检索照片内容</span>
+      </span>
+      <span class="search-else">找照片内容？<u>去智能搜索 →</u></span>
+    </div>
+
+    <!-- ══ 2026 ══ -->
+    <div class="group-head first">
+      <span class="group-year">2026</span>
+      <span class="group-stat"><span>20 个相册</span><span>4128 张</span><span>平均 206 / 个</span></span>
+      <div class="group-stat right"><span>最近 2026-09-25</span></div>
+    </div>
+
+    <div class="wall">
+      <div class="wall-row">
+        <div class="tile">
+          <div class="cover c1" style="height:186px"><span class="date">2026年9月</span></div>
+          <div class="cap"><b>毕业旅行</b><s>109 张</s></div>
+        </div>
+        <div class="tile">
+          <div class="cover c2" style="height:186px">
+            <span class="badge">未入库</span><span class="date">2026年9月</span>
+          </div>
+          <div class="cap"><b>聚会合影</b><s>109 张</s></div>
+        </div>
+        <div class="tile">
+          <div class="cover c3" style="height:186px"><span class="date">2026年9月</span></div>
+          <div class="cap"><b>森林徒步</b><s>42 张</s></div>
+        </div>
+        <div class="tile">
+          <div class="cover c4" style="height:186px"><span class="date">2026年9月</span></div>
+          <div class="cap"><b>自然风景</b><s>36 张</s></div>
+        </div>
+      </div>
+
+      <div class="wall-row">
+        <div class="tile">
+          <div class="cover c5" style="height:186px">
+            <span class="badge">未入库</span><span class="date">2026年8月</span>
+          </div>
+          <div class="cap"><b>夜空</b><s>31 张</s></div>
+        </div>
+        <div class="tile">
+          <div class="cover c6" style="height:186px"><span class="date">2026年8月</span></div>
+          <div class="cap"><b>日落晚霞</b><s>25 张</s></div>
+        </div>
+        <div class="tile">
+          <div class="cover c7" style="height:186px"><span class="date">2026年8月</span></div>
+          <div class="cap"><b>湖与岛</b><s>18 张</s></div>
+        </div>
+        <!-- 宽幅：错落感来自「一块更宽」，来自周期，不是随机 -->
+        <div class="tile wide">
+          <div class="cover c8" style="height:186px"><span class="date">2026年7月</span></div>
+          <div class="cap"><b>人像</b><s>24 张</s></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ 2025 ══ -->
+    <div class="group-head">
+      <span class="group-year">2025</span>
+      <span class="group-stat"><span>16 个相册</span><span>2914 张</span><span>平均 182 / 个</span></span>
+      <div class="group-stat right"><span>最近 2025-12-18</span></div>
+    </div>
+
+    <div class="wall">
+      <div class="wall-row">
+        <div class="tile">
+          <div class="cover c9" style="height:186px"><span class="date">2025年7月</span></div>
+          <div class="cap"><b>猫</b><s>14 张</s></div>
+        </div>
+        <div class="tile">
+          <div class="cover c1" style="height:186px"><span class="date">2025年5月</span></div>
+          <div class="cap"><b>美食</b><s>57 张</s></div>
+        </div>
+        <div class="tile">
+          <div class="cover c4" style="height:186px"><span class="date">2025年3月</span></div>
+          <div class="cap"><b>花</b><s>9 张</s></div>
+        </div>
+        <div class="tile">
+          <div class="cover c2" style="height:186px"><span class="date">2025年1月</span></div>
+          <div class="cap"><b>雪</b><s>12 张</s></div>
+        </div>
+      </div>
+    </div>
+
+    <p class="note" style="margin-top:26px">
+      「归档」与「隐藏」是聚合视图 —— 照片仍在原位置不变。归档可在相册里直接查看；
+      隐藏需在个人信息里输入登录密码解锁。
+    </p>
+  </div>
+</div>
+
+</body>
+</html>

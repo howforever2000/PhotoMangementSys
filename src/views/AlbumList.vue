@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
@@ -12,9 +12,7 @@ import type { Album, CreateAlbumInput } from "../types/album";
 import { isVirtualAlbum } from "../types/album";
 import { useVaultStore } from "../stores/vault";
 import type { Folder, ManualTree } from "../types/folder";
-import type { ContentSearchHit } from "../types/content";
-import { groupByTime, seasonName, MONTH_NAMES } from "../utils/timeGroup";
-import type { YearGroup } from "../utils/timeGroup";
+import { justifyRows, type JustifiedRow } from "../utils/justifiedRows";
 import ManualSort from "./ManualSort.vue";
 import AlbumCard from "../components/AlbumCard.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
@@ -307,20 +305,8 @@ const currentVisibleAlbumIds = computed<number[]>(() => {
     }
     return ids;
   }
-  // date mode
-  const ids: number[] = [];
-  for (const yg of groupedYears.value) {
-    if (isCollapsed(yearKey(yg.year))) continue;
-    for (const a of yg.uncategorized) ids.push(a.id);
-    for (const sg of yg.seasons) {
-      if (isCollapsed(seasonKey(yg.year, sg.season))) continue;
-      for (const mg of sg.months) {
-        if (isCollapsed(monthKey(yg.year, sg.season, mg.month))) continue;
-        for (const a of mg.albums) ids.push(a.id);
-      }
-    }
-  }
-  return ids;
+  // date 模式：整墙扁平密排，没有可折叠分组，所有相册恒可见
+  return dateOrderedAlbums.value.map((a) => a.id);
 });
 
 /** 退出勾选管理模式，清空所有选择 */
@@ -836,9 +822,57 @@ function setSortMode(mode: "date" | "location" | "manual") {
 /** 手动排序组件实例引用（用于调用其全部折叠/展开） */
 const manualSortRef = ref<InstanceType<typeof ManualSort> | null>(null);
 
+/* -------------------- 左侧栏筛选（FEAT-105） --------------------
+   左栏是**模块内部件**，不是导航：它只收窄当前页的可见集合。
+   三项互不冲突，可叠加：年份（date 模式可用的时间维度） × 入库状态 × 搜索词。
+   选择写 localStorage：用户改过的视图要能留住（与 sortMode 一致的做法）。 */
+
+/** 入库状态筛选：all=全部 · in=已入库 · out=未入库 */
+const scanFilter = ref<"all" | "in" | "out">(
+  (localStorage.getItem("album-scan-filter") as "all" | "in" | "out") ?? "all",
+);
+function setScanFilter(v: "all" | "in" | "out") {
+  scanFilter.value = v;
+  localStorage.setItem("album-scan-filter", v);
+}
+
+/** 年份筛选：null = 全部年份（0 代表"未分类"这一组，与 groupByTime 的口径一致） */
+const yearFilter = ref<number | null>(null);
+function setYearFilter(y: number | null) {
+  yearFilter.value = y;
+  // 切换年份时展开全部，否则用户点了年份却看到全是折叠的
+  collapsed.value = new Set();
+}
+
+/** 当前可见相册：左栏筛选叠在普通相册上（虚拟相册单独成块，不受这里影响） */
+const visibleAlbums = computed(() => {
+  let list = normalAlbums.value;
+  if (scanFilter.value === "in") list = list.filter((a) => (a.scanned_photo_count || 0) > 0);
+  if (scanFilter.value === "out") list = list.filter((a) => !a.scanned_photo_count);
+  // 年份筛选：扁平密排后没有分組标题可跳，所以直接在这里收窄集合
+  if (yearFilter.value !== null) {
+    list = list.filter((a) => {
+      const y = a.shoot_time ? Number(String(a.shoot_time).slice(0, 4)) || 0 : 0;
+      return y === yearFilter.value;
+    });
+  }
+  return list;
+});
+
+/** 左栏"年份"区：从全量普通相册统计，不随年份筛选变化（否则选完就只剩一行） */
+const yearBuckets = computed<Array<{ year: number; count: number }>>(() => {
+  const map = new Map<number, number>();
+  for (const a of normalAlbums.value) {
+    const y = a.shoot_time ? Number(String(a.shoot_time).slice(0, 4)) || 0 : 0;
+    map.set(y, (map.get(y) ?? 0) + 1);
+  }
+  return [...map.entries()]
+    .map(([year, count]) => ({ year, count }))
+    .sort((a, b) => (a.year === 0 ? 1 : b.year === 0 ? -1 : b.year - a.year));
+});
+
 /** 地点分组：按地点名分组（保持 A-Z 顺序，无地点排最后） */
-const locationGroups = computed<Array<{ location: string | null; albums: Album[] }>>(() => {
-  const groups: Array<{ location: string | null; albums: Album[] }> = [];
+const locationGroups = computed<Array<{ location: string | null; albums: Album[] }>>(() => {  const groups: Array<{ location: string | null; albums: Album[] }> = [];
   const map = new Map<string | null, Album[]>();
   for (const a of locationSortedAlbums.value) {
     const loc = a.location ?? null;
@@ -851,11 +885,24 @@ const locationGroups = computed<Array<{ location: string | null; albums: Album[]
   return groups;
 });
 
-/** 折叠状态：key 为分组的唯一标识 */
+/** 折叠状态：key 为地点分组的唯一标识（日期墙是扁平密排，没有折叠分组） */
 const collapsed = ref<Set<string>>(new Set());
 
-/** 时间分组的相册树（FEAT-095：排除归档 / 隐藏虚拟相册，它们单独成块展示） */
-const groupedYears = computed<YearGroup[]>(() => groupByTime(normalAlbums.value));
+/** 年份筛选下的可见相册数（左栏右上角那个"12 个相册 · 653 张"用它） */
+const visibleCount = computed(() => visibleAlbums.value.length);
+
+/** FEAT-105：日期模式的扁平列表 —— 按拍摄时间倒序（新的在前）。
+ *  原来靠 年→季→月 三层嵌套表达时间，现在改成一条时间线：
+ *  时间信息在每张卡片自己的封面左下角，读起来是"扫过一条时间线"，
+ *  而不是"翻一本按月份分好组的目录"。 */
+const dateOrderedAlbums = computed(() =>
+  [...visibleAlbums.value].sort((a, b) => {
+    const ta = a.shoot_time ?? "";
+    const tb = b.shoot_time ?? "";
+    if (ta === tb) return (b.photo_count || 0) - (a.photo_count || 0);
+    return tb.localeCompare(ta);
+  }),
+);
 
 /**
  * FEAT-103：顶部统计数据带（替代原来的「无统计」空白页头）
@@ -870,6 +917,24 @@ const groupedYears = computed<YearGroup[]>(() => groupByTime(normalAlbums.value)
  *   · 占用 —— 本机存储压力，笔记本用户关心
  *   ← 组级/卡片级已有"每相册张数、拍摄年、路径"，不重复上移
  */
+/**
+ * 数据带的微型柱阵（FEAT-106）：按年份分布的相册数。
+ *
+ * 为什么这个数据有意义：它是“照片墙上方的一眼概览”——
+ * 哪个年份的相册多，一眼看到。而不用点开左栏的年份列表。
+ */
+const yearBars = computed(() => {
+  const map = new Map<number, number>();
+  for (const a of normalAlbums.value) {
+    const y = a.shoot_time ? Number(String(a.shoot_time).slice(0, 4)) || 0 : 0;
+    map.set(y, (map.get(y) ?? 0) + 1);
+  }
+  const years = [...map.entries()].sort((a, b) => a[0] - b[0]);
+  if (!years.length) return [];
+  const max = Math.max(...years.map(([, n]) => n));
+  return years.map(([, n]) => (n / max) * 100);
+});
+
 const statItems = computed<StatItem[]>(() => {
   const all = normalAlbums.value;
   const totalPhotos = all.reduce((n, a) => n + (a.photo_count || 0), 0);
@@ -880,18 +945,176 @@ const statItems = computed<StatItem[]>(() => {
   const gb = totalBytes / 1024 / 1024 / 1024;
 
   return [
-    { label: "相册", value: all.length, delta: virtualAlbums.value.length ? `+${virtualAlbums.value.length} 系统` : "" },
-    { label: "照片", value: totalPhotos },
-    { label: "已入库", value: scannedPhotos, delta: `${scannedAlbums} 个相册`, tone: scannedAlbums ? "up" : "mute" },
+    {
+      label: "相册",
+      value: all.length,
+      delta: virtualAlbums.value.length ? `+${virtualAlbums.value.length} 系统` : "",
+      // 相册数占「全部相册」的比例：1（即 100%），意味着没有待新建的
+      progress: all.length ? 1 : 0,
+      progressTone: "muted",
+      // 年度分布柱阵：一眼看出哪个年份的相册多
+      bars: yearBars.value,
+    },
+    {
+      label: "照片",
+      value: totalPhotos,
+      // 照片数没有天然上限，用「已入库比例」作为它的进度（与「已入库」格呼应）
+      progress: totalPhotos ? scannedPhotos / totalPhotos : 0,
+      progressTone: "muted",
+    },
+    {
+      label: "已入库",
+      value: scannedPhotos,
+      delta: `${scannedAlbums} 个相册`,
+      /* FEAT-115：静态计数不是"变化值"，不该占金色预算（tokens.css §2.7）。
+         原来 tone:"up" → .u-stat-aux.up → --c-accent-bright，同屏 3 处金色。 */
+      tone: "mute",
+      // FEAT-106：进度条 = 入库完成度（已入库照片 / 总照片）
+      progress: totalPhotos ? scannedPhotos / totalPhotos : 0,
+    },
     {
       label: "待入库",
       value: pending,
       delta: pending ? "需要扫描" : "全部已扫",
-      tone: pending ? "up" : "mute",
+      /* 待入库的语义是"还差多少"，属于欠缺而非增长 → down，不是 up */
+      tone: pending ? "down" : "mute",
+      // 待入库：显示的是「还差多少」的补数进度，用弱化色（不抢"已入库"的强调色）
+      progress: totalPhotos ? 1 - scannedPhotos / totalPhotos : 0,
+      progressTone: "muted",
     },
-    { label: "占用", value: gb >= 100 ? Math.round(gb) : gb.toFixed(1), unit: "GB" },
+    {
+      label: "占用",
+      value: gb >= 100 ? Math.round(gb) : gb.toFixed(1),
+      unit: "GB",
+      // 占用：相对 100GB 的比例，给个"占满本地空间"的直觉
+      progress: Math.min(1, gb / 100),
+      progressTone: "muted",
+    },
   ];
 });
+
+/** 页头读数：一行说清这页装了多少（取代旧工具栏里的"我的相册"大标题） */
+const headerMeta = computed(() => {
+  const n = normalAlbums.value.length;
+  const v = virtualAlbums.value.length;
+  return v ? `${n} 个相册 · ${v} 个系统相册` : `${n} 个相册`;
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FEAT-106：行式密排（justified rows）
+   ──────────────────────────────────────────────────────────────────────────
+   旧实现用 CSS grid 的 `auto-fill` + `grid-auto-flow: dense` + 大瓦片跨 2×4，
+   靠 dense 回填制造错落。实测两个硬伤：
+     ① 行尾出现无法回填的**空洞**（dense 需要连续空位，跨列大瓦片上方
+        那两列已被占满，剩下的空位是奇数格，回填不上）；
+     ② dense 的回填顺序依赖元素流 —— 筛选/滚动后同一个相册会"跳位置"。
+   现在改成行式密排（见 utils/justifiedRows.ts）：每行是一个 flex 容器，
+   瓦片宽度按整数比例分配、行宽精确铺满容器，没有空洞也没有回填。
+
+   容器宽度靠 ResizeObserver 量（而不是写死）：左右栏宽度会随窗口变，
+   写死的行宽会在窄窗下溢出。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** 密排容器的宽度（px）：0 = 还没量到（首帧或容器隐藏） */
+const wallWidth = ref(0);
+/** 密排容器元素 */
+const wallEl = ref<HTMLElement | null>(null);
+let wallRO: ResizeObserver | null = null;
+
+/** 相册墙的行式密排结果 */
+const wallRows = computed<JustifiedRow[]>(() =>
+  justifyRows({
+    count: dateOrderedAlbums.value.length,
+    containerWidth: wallWidth.value,
+    gap: 12,
+    /* FEAT-117：图注回到封面内部（嵌入落款）→ 行高 = 封面高，不再预留图注条 */
+    captionH: 0,
+    // 名义高度 232：实际封面高由缩放决定（≤ 232）。
+    // 基础比例 1.28（约 5:4）比 4:3 更方 —— 参考图里的照片面板接近正方形，
+    // 而不是扁扁的横幅。1.28 × 232 ≈ 297px 宽（行内 3~4 块），
+    // 封面高约 232px，接近方形。
+    nominalHeight: 232,
+    baseAspect: 1.28,
+    wideEvery: 5,
+    /* FEAT-115：1.8 → 1.5。
+       1.8 倍宽时，宽幅块在 3 列屏上会占掉半个视口 —— 观感接近"一张铺满"，
+       而用户明确否掉了"一个相册占满整个屏幕"。1.5 足够读出"这块不一样"。 */
+    wideFactor: 1.5,
+    minCoverH: 130,
+    maxCoverH: 260,
+  }),
+);
+
+/** 行分组：渲染时按行输出 flex 容器 */
+const wallRowGroups = computed(() =>
+  wallRows.value.map((row) => ({
+    row,
+    items: row.cells.map((cell) => ({ cell, album: dateOrderedAlbums.value[cell.index] })),
+  })),
+);
+
+/** 量容器宽度；用 requestAnimationFrame 节流，避免 resize 风暴时反复重排 */
+function measureWall() {
+  const el = wallEl.value;
+  if (!el) return;
+  const w = el.clientWidth;
+  if (w > 0 && Math.abs(w - wallWidth.value) > 1) wallWidth.value = w;
+}
+
+/** 观察容器尺寸变化（窗口缩放 / 左栏折叠 / 字体加载导致的回流） */
+function observeWall(el: HTMLElement | null) {
+  wallRO?.disconnect();
+  wallRO = null;
+  wallEl.value = el;
+  if (!el) return;
+  measureWall();
+  if (typeof ResizeObserver !== "undefined") {
+    wallRO = new ResizeObserver(() => {
+      if (rafWallId != null) return;
+      rafWallId = requestAnimationFrame(() => {
+        rafWallId = null;
+        measureWall();
+      });
+    });
+    wallRO.observe(el);
+  }
+}
+
+let rafWallId: number | null = null;
+
+onMounted(() => {
+  window.addEventListener("resize", measureWall, { passive: true });
+  // 挂载后建立尺寸观察（模板 ref 此时才拿到元素）
+  observeWall(wallEl.value);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", measureWall);
+  wallRO?.disconnect();
+  wallRO = null;
+  if (rafWallId != null) cancelAnimationFrame(rafWallId);
+});
+
+/** 数据变化（筛选/排序）后重算一次行宽 */
+watch(dateOrderedAlbums, () => {
+  // 等 DOM 更新后再量：瓦片数量变了但容器宽度没变时，其实不需要重算，
+  // 但重算一次最省心（算法是纯函数，幂等）。
+  requestAnimationFrame(measureWall);
+});
+
+/** 切换排序模式：日期模式的墙板元素会重新挂载，需要重新建立尺寸观察。
+ *  否则从「按地点」切回「按时间」时墙板宽度停在 0，页面会一片空白。 */
+watch(sortMode, (mode) => {
+  if (mode !== "date") {
+    wallRO?.disconnect();
+    wallRO = null;
+    return;
+  }
+  requestAnimationFrame(() => observeWall(wallEl.value));
+});
+
+/* 本模块不加二级 tab：相册管理只有一块内容（时间分组 + 系统相册区块），
+   没有"可以切过去的另一块"。链一个指向 /scan/test 的 tab 更是错的 ——
+   那是扫描入库模块的东西。二级 tab 只在真有同级功能时才加。 */
 
 /** 是否折叠某分组 */
 function isCollapsed(key: string): boolean {
@@ -909,74 +1132,34 @@ function toggleCollapse(key: string) {
   collapsed.value = next;
 }
 
-/** 年份折叠 key */
-function yearKey(year: number): string {
-  return `y-${year}`;
-}
-/** 季节折叠 key */
-function seasonKey(year: number, season: string): string {
-  return `s-${year}-${season}`;
-}
-/** 月份折叠 key */
-function monthKey(year: number, season: string, month: number): string {
-  return `m-${year}-${season}-${month}`;
-}
 /** 地点折叠 key */
 function locationKey(location: string | null): string {
   return `loc-${location ?? "__none__"}`;
 }
 
-/** 路线图点击：滚动到对应年分组并展开 */
-function jumpToYear(year: number) {
-  // 展开该年分组
-  const key = yearKey(year);
-  if (collapsed.value.has(key)) {
-    const next = new Set(collapsed.value);
-    next.delete(key);
-    collapsed.value = next;
-  }
-  // 滚动到对应分组
-  const el = document.getElementById(`year-${year}`);
-  if (el) {
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
-    // 高亮提示
-    el.classList.add("year-highlight");
-    setTimeout(() => el.classList.remove("year-highlight"), 1500);
-  }
-}
+/* FEAT-105：删掉 jumpToYear —— 「时间路线图」横条已删除（年份筛选改由左栏承担），
+   没有滚动目标了。 */
 
-/** 展开 / 折叠全部（日期 / 地点模式） */
+/** 折叠 / 展开全部地点分组（日期墙无分组，此函数仅在地点模式调用） */
 function toggleAllGroups() {
-  // 收集当前模式下的所有分组 key
-  const keys: string[] = [];
-  if (sortMode.value === "location") {
-    for (const g of locationGroups.value) {
-      keys.push(locationKey(g.location));
-    }
-  } else {
-    for (const yg of groupedYears.value) {
-      keys.push(yearKey(yg.year));
-      for (const sg of yg.seasons) {
-        keys.push(seasonKey(yg.year, sg.season));
-        for (const mg of sg.months) {
-          keys.push(monthKey(yg.year, sg.season, mg.month));
-        }
-      }
-    }
-  }
+  const keys = locationGroups.value.map((g) => locationKey(g.location));
   if (collapsed.value.size > 0) {
-    collapsed.value = new Set(); // 全部展开
+    collapsed.value = new Set(); // 已有折叠（含部分折叠）→ 全部展开
   } else {
     collapsed.value = new Set(keys); // 全部折叠
   }
 }
 
-/** 当前模式是否处于"全部折叠"状态（用于按钮文字） */
+/** 当前模式是否处于“全部折叠”状态（用于按钮文字）。
+ *  地点模式要求**每个**分组都折叠才算（部分折叠时按钮仍给“全部折叠”）。 */
 const allCollapsed = computed(() => {
   if (sortMode.value === "manual") {
     return manualSortRef.value?.isAllCollapsed ?? false;
   }
-  return collapsed.value.size > 0;
+  return (
+    locationGroups.value.length > 0 &&
+    locationGroups.value.every((g) => collapsed.value.has(locationKey(g.location)))
+  );
 });
 
 /** 工具栏"全部折叠 / 展开"按钮：按当前模式分发 */
@@ -997,43 +1180,59 @@ interface SearchHit {
 }
 const searchKeyword = ref("");
 const searchResults = ref<SearchHit[]>([]);
-/** 全局照片内容搜索命中（群相册搜索：跨全部相册的照片内容） */
-const contentHits = ref<ContentSearchHit[]>([]);
 const isSearching = ref(false);
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** 搜索框输入（防抖）：同时搜相册 + 全局照片内容 */
+/* ══════════════════════════════════════════════════════════════════════════
+   FEAT-107：相册管理的搜索**只搜相册名**（功能边界隔离）
+   ────────────────────────────────────────────────────────────────────────
+   改之前：这里用 Promise.all 同时跑 search_albums + searchPhotoContent，
+   于是一个 placeholder 写着「搜索相册名称…」的框，实际在做**全库照片内容检索**，
+   结果面板里还会多出一组「照片内容」。
+
+   为什么这是缺陷而不是“功能更强大”：
+     · 相册管理和智慧相册→智能搜索是**两个大组件**。用户对“搜索”的期待
+       取决于他在哪个组件里：在相册管理里想找“哪个相册”，在智能搜索里
+       想找“哪张照片”。同一个框同时干两件事，两边都说不清在搜什么。
+     · 内容检索要走 content_scan 的内容库（可能没扫描过），而相册名检索
+       是纯 SQL。两者成本、命中语义、失败原因完全不同，混在一个
+       loading 态里会让“为什么没结果”无法归因。
+
+   现在：只走 search_albums；相册名搜不到时给一句**明确出口**
+   （去智能搜索），而不是默默换一种检索方式。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** 搜索框输入（防抖）：只检索相册名 + 分组名 */
 function onSearchInput() {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(async () => {
     const kw = searchKeyword.value.trim();
     if (!kw) {
       searchResults.value = [];
-      contentHits.value = [];
       return;
     }
     isSearching.value = true;
     try {
-      const [albums, contents] = await Promise.all([
-        invoke<Array<{ album: Album; folder_id: number | null; folder_path: string }>>(
-          "search_albums",
-          { keyword: kw }
-        ),
-        contentStore.searchPhotoContent(kw), // album_id=null → 全局群相册内容搜索
-      ]);
+      const albums = await invoke<
+        Array<{ album: Album; folder_id: number | null; folder_path: string }>
+      >("search_albums", { keyword: kw });
       searchResults.value = albums.map((r) => ({
         album: r.album,
         folder_id: r.folder_id,
         folder_path: r.folder_path,
       }));
-      contentHits.value = contents;
     } catch {
       searchResults.value = [];
-      contentHits.value = [];
     } finally {
       isSearching.value = false;
     }
   }, 300);
+}
+
+/** 跳去智慧相册的智能搜索（照片内容检索的唯一入口） */
+function gotoSmartSearch() {
+  const kw = searchKeyword.value.trim();
+  router.push({ path: "/search", query: kw ? { q: kw } : undefined });
 }
 
 /** 是否处于搜索状态（有输入关键词） */
@@ -1043,22 +1242,6 @@ const isSearchingActive = computed(() => searchKeyword.value.trim().length > 0);
 function clearSearch() {
   searchKeyword.value = "";
   searchResults.value = [];
-  contentHits.value = [];
-}
-
-/** 点击照片内容命中：跳转到所属相册（无相册则打开所在文件夹） */
-async function gotoContentHit(hit: ContentSearchHit) {
-  if (hit.album_id != null) {
-    router.push(`/album/${hit.album_id}`);
-    return;
-  }
-  if (hit.album_path) {
-    try {
-      await invoke("open_folder", { path: hit.album_path });
-    } catch (e) {
-      notify.error("无法打开文件夹", String(e));
-    }
-  }
 }
 
 /** 手动排序模式下待跳转的分组 id（搜索结果点击分组路径触发） */
@@ -1157,11 +1340,14 @@ function onKey(e: KeyboardEvent) {
 </script>
 
 <template>
+  <!-- FEAT-115：页面壳基色改用 --fg（无容器阅读层）。
+       原来用 theme.textColor = --color-text(#f5f7ff)，与 --fg(#f0eef3)
+       只差 2% 亮度 —— 但同屏并存就是两种近白，文字色档因此虚高。 -->
   <div
     class="album-page"
     :style="{
-      color: theme.textColor,
-      '--text': theme.textColor,
+      color: 'var(--fg)',
+      '--text': 'var(--fg)',
       '--sub-text': theme.subTextColor,
       // 弱文字直接落在页面背景上：跟随实际背景对比度（旧 isDark 二分在浅色预设下融底）
       '--muted': theme.onBgSubColor,
@@ -1176,24 +1362,102 @@ function onKey(e: KeyboardEvent) {
       '--danger-bg': theme.onBgDark ? 'color-mix(in srgb, var(--color-danger) 12%, transparent)' : 'color-mix(in srgb, var(--color-danger) 15%, transparent)',
     }"
   >
-    <!-- FEAT-103：全站统一顶栏（取代页面自制的「← 主页」） -->
-    <AppHeader title="相册" />
+    <AppHeader title="相册管理" icon="📁" :meta="headerMeta" compact />
 
-    <!-- 顶部工具栏（需求 §5.3） -->
-    <header class="toolbar">
-      <div class="toolbar-left">
-        <h1 class="page-title">我的相册</h1>
-      </div>
+    <!-- FEAT-103：统计数据带（页头正下方，先于任何分组） -->
+    <StatBand :items="statItems" class="album-stats" />
+
+
+    <!--
+      FEAT-105：双栏布局 —— 左栏是**组件内部的筛选器**（不是导航），
+      右栏是内容。参考效果图：左侧“排序 / 入库 / 年份”负责收窄当前视图，
+      顶部那条栏只负责“本组件内部的分区”，两者职责不重叠。
+
+      为什么筛选放左栏而不是顶栏：顶栏只有 56px，塞不下“按时间/按地点/按入库 +
+      8 个年份”两百多个可点区域；硬塞会让顶栏变成设置面板。
+    -->
+    <div class="album-layout">
+      <!-- 左栏：本页内部筛选 -->
+      <aside class="album-side" aria-label="相册筛选">
+        <div class="side-group">
+          <h3 class="side-h">排序</h3>
+          <button
+            v-for="opt in [
+              { v: 'date', label: '按时间' },
+              { v: 'location', label: '按地点' },
+              { v: 'manual', label: '手动排序' },
+            ]"
+            :key="opt.v"
+            class="side-item"
+            :class="{ on: sortMode === opt.v }"
+            @click="setSortMode(opt.v as 'date' | 'location' | 'manual')"
+          >{{ opt.label }}</button>
+        </div>
+
+        <div class="side-group">
+          <h3 class="side-h">入库</h3>
+          <button
+            v-for="opt in [
+              { v: 'all', label: '全部' },
+              { v: 'in', label: '已入库' },
+              { v: 'out', label: '未入库' },
+            ]"
+            :key="opt.v"
+            class="side-item"
+            :class="{ on: scanFilter === opt.v }"
+            @click="setScanFilter(opt.v as 'all' | 'in' | 'out')"
+          >
+            {{ opt.label }}
+            <span class="side-n">{{
+              opt.v === "all"
+                ? normalAlbums.length
+                : opt.v === "in"
+                  ? normalAlbums.filter((a) => (a.scanned_photo_count || 0) > 0).length
+                  : normalAlbums.filter((a) => !a.scanned_photo_count).length
+            }}</span>
+          </button>
+        </div>
+
+        <div class="side-group">
+          <h3 class="side-h">年份</h3>
+          <button class="side-item" :class="{ on: yearFilter === null }" @click="setYearFilter(null)">
+            全部年份
+            <span class="side-n">{{ normalAlbums.length }}</span>
+          </button>
+          <button
+            v-for="b in yearBuckets"
+            :key="b.year"
+            class="side-item"
+            :class="{ on: yearFilter === b.year }"
+            @click="setYearFilter(b.year)"
+          >
+            {{ b.year === 0 ? "未分类" : `${b.year} 年` }}
+            <span class="side-n">{{ b.count }}</span>
+          </button>
+        </div>
+      </aside>
+
+      <!-- 右栏：内容 -->
+      <div class="album-main">
+        <!-- 内容区头部：只说"当前看的是什么范围"，不重复组件名（页头已有） -->
+        <div class="main-head">
+          <span class="main-sub">
+            {{ visibleCount }} 个相册
+            <template v-if="yearFilter !== null">
+              · {{ yearFilter === 0 ? "未分类" : `${yearFilter} 年` }}
+            </template>
+            <template v-if="scanFilter !== 'all'">
+              · {{ scanFilter === "in" ? "已入库" : "未入库" }}
+            </template>
+            <template v-if="yearFilter !== null || scanFilter !== 'all'">
+              · <button class="main-reset" @click="setYearFilter(null); setScanFilter('all')">清除筛选</button>
+            </template>
+          </span>
+          <div class="main-actions">
       <div class="toolbar-actions">
-        <!-- 非勾选模式：排序控件 + 批量导入 / 管理 / 新建 -->
+        <!-- 非勾选模式：批量导入 / 管理 / 新建 -->
         <template v-if="!isSelectMode">
-          <!-- 排序方式 -->
-          <select class="select" :value="sortMode" @change="(e) => setSortMode((e.target as HTMLSelectElement).value as 'date' | 'location' | 'manual')">
-            <option value="date">按日期</option>
-            <option value="location">按地点</option>
-            <option value="manual">手动排序</option>
-          </select>
-          <button class="btn" @click="onToggleAll">
+          <button v-if="sortMode !== 'date'" class="btn" @click="onToggleAll">
             {{ allCollapsed ? "全部展开" : "全部折叠" }}
           </button>
           <button class="btn" :disabled="isImporting" @click="batchImport">
@@ -1281,12 +1545,13 @@ function onKey(e: KeyboardEvent) {
           </div>
         </template>
       </div>
-    </header>
 
-    <!-- FEAT-103：统计数据带（页头正下方，先于任何分组） -->
-    <StatBand :items="statItems" class="album-stats" />
+          </div>
+        </div>
 
-    <!-- 搜索栏 -->
+    <!-- 搜索栏：只检索相册名（FEAT-107 功能边界隔离）
+         右侧常驻「不检索照片内容」+ 一个去智能搜索的出口 ——
+         范围写在框里，而不是靠用户点进去试。 -->
     <div class="search-bar">
       <div class="search-input-wrap">
         <span class="search-icon">🔍</span>
@@ -1297,16 +1562,25 @@ function onKey(e: KeyboardEvent) {
           @input="onSearchInput"
         />
         <button v-if="searchKeyword" class="search-clear" @click="clearSearch">×</button>
+        <span class="search-scope">不检索照片内容</span>
       </div>
+      <button
+        class="search-elsewhere"
+        type="button"
+        :title="searchKeyword ? `去智能搜索「${searchKeyword}」` : '去智能搜索（按内容 / 人物 / 地点找照片）'"
+        @click="gotoSmartSearch"
+      >
+        找照片内容？去智能搜索 →
+      </button>
     </div>
 
-    <!-- 搜索结果面板：相册 + 照片内容（全局智能搜索） -->
+    <!-- 搜索结果面板：只有「相册」一组（内容检索已移到智能搜索） -->
     <div v-if="isSearchingActive" class="search-results">
       <div v-if="isSearching" class="search-status">正在搜索…</div>
       <template v-else>
         <!-- 相册匹配 -->
         <div v-if="searchResults.length" class="search-section">
-          <div class="search-section-title">相册</div>
+          <div class="search-section-title">相册（{{ searchResults.length }}）</div>
           <div class="search-result-list">
             <div
               v-for="hit in searchResults"
@@ -1333,51 +1607,19 @@ function onKey(e: KeyboardEvent) {
             </div>
           </div>
         </div>
-        <!-- 照片内容匹配（智能搜索，跨全部相册） -->
-        <div v-if="contentHits.length" class="search-section">
-          <div class="search-section-title">照片内容（{{ contentHits.length }}）</div>
-          <div class="search-result-list">
-            <div
-              v-for="hit in contentHits"
-              :key="'c' + hit.id"
-              class="search-result-item"
-              title="点击跳转到所属相册"
-              @click="gotoContentHit(hit)"
-            >
-              <div class="result-cover result-placeholder">🖼</div>
-              <div class="result-info">
-                <span class="result-name">{{ hit.label || hit.category || "照片" }}</span>
-                <div class="result-meta">
-                  <span class="result-path">{{ hit.album_name || hit.parent_dir }}</span>
-                  <span v-if="hit.location" class="result-path">{{ hit.location }}</span>
-                </div>
-                <div class="result-meta" v-if="hit.person_ids.length || hit.shoot_time">
-                  <span class="result-path">{{ [hit.person_ids.join(" "), hit.shoot_time].filter(Boolean).join(" · ") }}</span>
-                </div>
-              </div>
-              <span class="result-arrow">→</span>
-            </div>
-          </div>
-        </div>
-        <div v-if="!searchResults.length && !contentHits.length" class="search-status">
-          未找到匹配的相册或照片内容
+        <!-- 空态：说清「只搜了名字」，并给出另一条路 -->
+        <div v-else class="search-status">
+          没有名称匹配的相册。
+          <button class="search-status-link" type="button" @click="gotoSmartSearch">
+            按照片内容在智能搜索里找 →
+          </button>
         </div>
       </template>
     </div>
 
-    <!-- 日期模式：年 → 季节 → 月 路线图（点击年份可跳转） -->
-    <div v-if="!isSelectMode && sortMode === 'date'" class="view-bar">
-      <span class="view-bar-label">时间路线图</span>
-      <span v-if="groupedYears.length === 0" class="bc-empty">暂无相册</span>
-      <template v-for="yg in groupedYears" :key="yg.year">
-        <span class="bc-sep">›</span>
-        <span
-          class="bc-item bc-link"
-          :title="`跳转到 ${yg.year === 0 ? '未分类' : yg.year + '年'}`"
-          @click="jumpToYear(yg.year)"
-        >{{ yg.year === 0 ? "未分类" : `${yg.year}年` }}</span>
-      </template>
-    </div>
+    <!-- FEAT-105：删掉"时间路线图"横条 —— 左栏已有年份导航（可点击筛选），
+         这里再列一遍年份是重复；而且它把年份排成一行等距文字，
+         与"错落"的诉求相反。年份筛选改由左栏承担。 -->
 
     <!-- 地点模式：提示栏 -->
     <div v-if="!isSelectMode && sortMode === 'location'" class="view-bar">
@@ -1400,11 +1642,13 @@ function onKey(e: KeyboardEvent) {
         点击卡片勾选 · <kbd>Esc</kbd> 退出 · <kbd>Ctrl+A</kbd> 全选当前可见 · <kbd>Del</kbd> 删除（仅删记录）
       </span>
     </div>
-
     <!--
       FEAT-095：归档 / 隐藏相册固定区块
       不参与时间 / 地点 / 手动排序（没有真实文件夹与拍摄时间），始终置顶展示。
     -->
+    <!-- FEAT-115：系统相册也走 tile 变体（与相册墙同一形态）。
+         原来用默认 card 变体（glass-surface），一屏里立刻多出两块玻璃卡，
+         而右侧相册墙是无卡片的裸封面 —— 两种材质并存就"不统一"。 -->
     <section v-if="virtualAlbums.length" class="virtual-albums">
       <h2 class="group-head group-year">📦 系统相册</h2>
       <div class="album-grid">
@@ -1412,6 +1656,7 @@ function onKey(e: KeyboardEvent) {
           v-for="album in virtualAlbums"
           :key="album.id"
           :album="album"
+          variant="tile"
           :select-mode="false"
           :selected="false"
           @click="router.push(`/album/${album.id}`)"
@@ -1429,96 +1674,41 @@ function onKey(e: KeyboardEvent) {
     </section>
 
     <!-- 日期模式：时间分组视图（年 → 季节 → 月，可折叠） -->
+    <!-- FEAT-105：日期模式改为**扁平密排**（不再年→季→月三层嵌套）
+         理由：左栏已有年份导航，年份再当一层大标题就是重复；
+         季、月三层折叠头把一屏切成十几条横带，看起来像"表格"而不是"相册墙"。
+         现在：所有相册按拍摄时间倒序平铺在一个 dense 网格里，
+         时间信息移到封面左下角的落款里（AlbumCard 的 .tile-seal），
+         网格用 grid-auto-rows + 行高错落制造"密排但不死板"的节奏。 -->
     <main v-if="sortMode === 'date'" class="timeline-view">
-      <template v-for="yg in groupedYears" :key="yg.year">
-        <!-- 年分组 -->
-        <section
-          :id="`year-${yg.year}`"
-          class="year-group"
-          :class="{ collapsed: isCollapsed(yearKey(yg.year)) }"
-        >
-          <h2 class="group-head group-year" @click="toggleCollapse(yearKey(yg.year))">
-            <span class="fold-arrow">{{ isCollapsed(yearKey(yg.year)) ? "▸" : "▾" }}</span>
-            <span class="group-title">{{ yg.year === 0 ? "未分类" : `${yg.year} 年` }}</span>
-            <span class="group-count">
-              {{ yg.seasons.reduce((n, s) => n + s.months.reduce((m, mo) => m + mo.albums.length, 0), 0) + yg.uncategorized.length }} 个相册
-            </span>
-          </h2>
-          <div v-show="!isCollapsed(yearKey(yg.year))" class="group-body">
-            <!-- 未分类相册 -->
-            <div v-if="yg.uncategorized.length > 0" class="season-group">
-              <h3 class="group-head group-season" @click="toggleCollapse(`${yearKey(yg.year)}-uc`)">
-                <span class="fold-arrow">{{ isCollapsed(`${yearKey(yg.year)}-uc`) ? "▸" : "▾" }}</span>
-                <span class="group-title">未分类</span>
-              </h3>
-              <div v-show="!isCollapsed(`${yearKey(yg.year)}-uc`)" class="group-body">
-                <div class="album-grid is-tile">
-                  <AlbumCard
-                    v-for="album in yg.uncategorized"
-                    :key="album.id"
-                    :album="album"
-                    :select-mode="isSelectMode"
-                    :selected="selectedIds.has(album.id)"
-                    @click="isSelectMode ? toggleSelect(album.id) : router.push(`/album/${album.id}`)"
-                    @contextmenu="onRightClick(album.id, $event)"
-                    @toggle-select="toggleSelect(album.id, $event)"
-                    @open-path="openAlbumPath(album.path, $event)"
-                    @open-source-path="openSourcePath($event)"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <!-- 季节分组 -->
-            <section
-              v-for="sg in yg.seasons"
-              :key="seasonKey(yg.year, sg.season)"
-              class="season-group"
-              :class="{ collapsed: isCollapsed(seasonKey(yg.year, sg.season)) }"
-            >
-              <h3 class="group-head group-season" @click="toggleCollapse(seasonKey(yg.year, sg.season))">
-                <span class="fold-arrow">{{ isCollapsed(seasonKey(yg.year, sg.season)) ? "▸" : "▾" }}</span>
-                <span class="group-title">{{ seasonName(sg.season) }}</span>
-                <span class="group-bc">{{ yg.year }} 年 › {{ seasonName(sg.season) }}</span>
-                <span class="group-count">{{ sg.months.reduce((n, m) => n + m.albums.length, 0) }} 个相册</span>
-              </h3>
-              <div v-show="!isCollapsed(seasonKey(yg.year, sg.season))" class="group-body">
-                <!-- 月分组 -->
-                <section
-                  v-for="mg in sg.months"
-                  :key="monthKey(yg.year, sg.season, mg.month)"
-                  class="month-group"
-                  :class="{ collapsed: isCollapsed(monthKey(yg.year, sg.season, mg.month)) }"
-                >
-                  <h4 class="group-head group-month" @click="toggleCollapse(monthKey(yg.year, sg.season, mg.month))">
-                    <span class="fold-arrow">{{ isCollapsed(monthKey(yg.year, sg.season, mg.month)) ? "▸" : "▾" }}</span>
-                    <span class="group-title">{{ MONTH_NAMES[mg.month - 1] }}</span>
-                    <span class="group-bc">{{ yg.year }} 年 › {{ seasonName(sg.season) }} › {{ MONTH_NAMES[mg.month - 1] }}</span>
-                    <span class="group-count">{{ mg.albums.length }} 个相册</span>
-                  </h4>
-                  <div v-show="!isCollapsed(monthKey(yg.year, sg.season, mg.month))" class="group-body">
-                    <div class="album-grid is-tile">
-                      <AlbumCard
-                        v-for="album in mg.albums"
-                        :key="album.id"
-                        :album="album"
-                        variant="tile"
-                        :select-mode="isSelectMode"
-                        :selected="selectedIds.has(album.id)"
-                        @click="isSelectMode ? toggleSelect(album.id) : router.push(`/album/${album.id}`)"
-                        @contextmenu="onRightClick(album.id, $event)"
-                        @toggle-select="toggleSelect(album.id, $event)"
-                        @open-path="openAlbumPath(album.path, $event)"
-                        @open-source-path="openSourcePath($event)"
-                      />
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </section>
+      <!-- FEAT-106：行式密排。
+           每一行是一个 flex 容器（display:flex），瓦片宽度由算法算好，
+           行宽精确等于容器宽度 —— 不会有空洞。
+           gap 是唯一的面板缝隙，缝里露出壁纸。 -->
+      <div ref="wallEl" class="album-wall" :style="{ '--wall-gap': '12px' }">
+        <div v-for="(g, ri) in wallRowGroups" :key="ri" class="album-wall-row" :style="{ height: `${g.row.height}px` }">
+          <div
+            v-for="item in g.items"
+            :key="item.album.id"
+            class="album-wall-cell"
+            :style="{ width: `${item.cell.width}px`, '--cover-h': `${item.cell.coverH}px` }"
+          >
+            <AlbumCard
+              :album="item.album"
+              variant="tile"
+              wall
+              :mosaic="item.cell.wide"
+              :select-mode="isSelectMode"
+              :selected="selectedIds.has(item.album.id)"
+              @click="isSelectMode ? toggleSelect(item.album.id) : router.push(`/album/${item.album.id}`)"
+              @contextmenu="onRightClick(item.album.id, $event)"
+              @toggle-select="toggleSelect(item.album.id, $event)"
+              @open-path="openAlbumPath(item.album.path, $event)"
+              @open-source-path="openSourcePath($event)"
+            />
           </div>
-        </section>
-      </template>
+        </div>
+      </div>
     </main>
 
     <!-- 地点模式：按地点分组（A-Z 顺序，可折叠） -->
@@ -1571,6 +1761,10 @@ function onKey(e: KeyboardEvent) {
       action-label="创建第一个相册"
       @action="openCreateDialog"
     />
+      </div>
+      <!-- /右栏 album-main -->
+    </div>
+    <!-- /双栏 album-layout -->
 
     <!-- 右键菜单 -->
     <div
@@ -1900,18 +2094,254 @@ function onKey(e: KeyboardEvent) {
 </template>
 
 <style scoped>
+/* 页面壳（FEAT-105）：不再锁 max-width、不再自带左右 padding。
+   旧版 max-width:1200 + padding:24 会让顶栏（52px 内边距、全宽）与内容各算各的，
+   宽屏下顶栏贴着窗口、内容却居中缩窄。左右留白统一由 --sp-8 提供。
+
+   FEAT-106：顶栏改成一块**浮起的玻璃板**后，它下面需要一段空气
+   （否则板底缘与第一行内容贴在一起，板的厚度读数就没了）。 */
 .album-page {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 24px;
   min-height: 100vh;
+  padding-bottom: 48px;
 }
 
+/* ---- 双栏：左筛选（176px 固定） + 右内容（自适应） ----
+   为何固定宽度而不百分比：左栏是“分组标签 + 计数”，宽度由最长标签（“全部年份”）
+   决定，与窗口无关；用百分比会让它在大屏上宽到能再放下一列，反而不像筛选器。
+
+   FEAT-107：间距 28 → 30，左栏 188 → 176。
+   左栏不再有玻璃板后，188px 的内容框看起來会比实际宽一截（四周没东西了），
+   176 才是“一列文字”该有的宽度。 */
+.album-layout {
+  display: grid;
+  grid-template-columns: 176px minmax(0, 1fr);
+  gap: 30px;
+  padding: 16px var(--gutter) 0;
+  align-items: start;
+}
+
+/* 左栏吸顶：滚长列表时筛选始终可改，不用先滚回顶部。
+   top 值要避开顶栏 + 数据带 + 间距。
+   FEAT-107：旧版 168px 是按“顶栏 56 + 数据带 96 + 间距”算的，
+   数据带改成文本列后变矮了（~112），不用下移这么多。 */
+.album-side {
+  position: sticky;
+  /* FEAT-115：顶栏从"52px 玻璃板 + 10px 空气（=62px）"改成 54px 的带式后，
+     吸顶位置要跟着上移；旧值 150px 是按"顶栏 56 + 数据带 96"算的，
+     数据带改成文本列后只有 ~110，150 会让筛选栏悬在离顶 100px 的地方。 */
+  top: 70px;
+  padding-top: 2px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FEAT-106：行式密排（justified rows）—— 相册墙
+   ──────────────────────────────────────────────────────────────────────────
+   结构：
+     .album-wall        容器（只用来量宽度）
+       .album-wall-row  一行（flex 容器，宽度 = 100%）
+         .album-wall-cell  一格（宽度由算法算好）
+
+   为什么不用 grid：
+     grid 的 auto-fill 每行等宽，dense 回填又会留下空洞（见 utils/justifiedRows.ts
+     的注释）。行式密排是 flex：瓦片宽度是 inline style（算法给的整数 px），
+     整行宽度 = Σ宽 + gap×(n−1) = 容器宽度，**精确铺满**。
+
+   行高由行容器的 height 定（inline style），格内的封面用 --cover-h 拿同一个值，
+   于是整行封面严格对齐（图注已嵌入封面内部，不再占额外行高）。
+   ══════════════════════════════════════════════════════════════════════════ */
+.album-wall {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wall-gap, 12px);
+  min-width: 0;
+}
+
+.album-wall-row {
+  display: flex;
+  gap: var(--wall-gap, 12px);
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+}
+
+.album-wall-cell {
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+/* 封面高度由算法给出（内联 --cover-h），行容器给出总高（= 封面高）。
+   两者都在 px 上，行内所有瓦片严格对齐。 */
+
+/* 窄窗：墙板不再分宽幅（3 列屏上宽幅瓦片会占掉大半个屏），
+   改为等宽平铺 —— 由容器宽度自然决定瓦片数。 */
+@media (max-width: 900px) {
+  .album-wall-row {
+    flex-wrap: wrap;
+    height: auto !important;
+  }
+  .album-wall-cell {
+    flex: 1 1 calc(50% - (var(--wall-gap, 12px) / 2));
+    width: auto !important;
+  }
+  .album-wall-cell .tile-cover {
+    height: auto !important;
+    aspect-ratio: 3 / 2;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FEAT-107：左栏不再是一块玻璃板
+   ──────────────────────────────────────────────────────────────────────────
+   旧实现用 ::before 画一整块玻璃（inset: 0 -10px -10px -12px）。
+   两个问题：
+     ① 左栏是板、右栏内容又是一片 —— 两栏之间一条暗缝，
+        读起来是“两个抽屉并列”，不是一个页面的两栏；
+     ② inset 向外扩 10-12px，左栏的实际边界比它的内容框大，
+        与右栏的起始线永远对不齐（这也是这条侧栏无论怎么调都“看着别扭”的原因）。
+
+   现在：整块 ::before 删除 —— 左栏承载的是文字列表，
+   文字自己会形成一列，不需要底板。分组标题用 9.5px 大写 + .15em 字距，
+   与数据带标签用**同一套字阶**（左右两处的分组标题以前是两套字号）。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.side-group + .side-group {
+  margin-top: 18px;
+}
+.side-h {
+  margin: 0 0 6px;
+  /* 与数据带标签、组头读数同一套字阶（FEAT-107） */
+  font-size: 9.5px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  font-weight: 600;
+  /* 分组标题是“这一栏是什么”的唯一标识，属于要读的文字。
+     之前用 --c-fg-3（3.15:1）不达标；现在用 --fg-2（≥5:1）。 */
+  color: var(--fg-2);
+}
+
+/* 筛选项：整行可点，选中用左侧 2px 金条 + 文字提亮 ——
+   不用背景块填充：一栏里 15 个带背景的格子会变成"标签云"，读不出层级。 */
+.side-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 27px;
+  padding: 0 7px 0 9px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  font-size: 12.5px;
+  color: var(--fg-2);
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
+}
+.side-item:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+/* 选中 = 左侧 2px 竖条 + 文字提亮；底只给 --hover（≈5% 白，几乎不可见）。
+   不用“整块高亮”：一列十几项，每项都有一块底就是十几个小卡片。 */
+.side-item.on {
+  color: var(--fg);
+  font-weight: 600;
+  background: var(--hover);
+}
+.side-item.on::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--c-accent);
+}
+.side-item:disabled {
+  color: var(--fg-3);
+  cursor: not-allowed;
+}
+.side-n {
+  font-size: 10.5px;
+  /* 计数是用户判断"该组多少个"的依据 —— 要读，用 --fg-3（已提到 ≥4.5:1） */
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+.side-item.on .side-n {
+  /* 选中项的计数跟着提亮一档（仍在弱色系，不再用金色 —— 金色留给竖条） */
+  color: var(--fg-2);
+}
+
+/* 右栏内容头部：左计数 + 右操作，同一行
+   （原来 toolbar 独占一行且贴窗口右边，跟内容对不齐） */
+.main-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.main-sub {
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+}
+.main-actions {
+  margin-left: auto;
+}
+.main-actions > :deep(.toolbar-actions) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.main-reset {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: inherit;
+  color: var(--c-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* 窄窗：左栏从固定宽度变为顶部横向条 —— 手机上竖向侧栏会把内容挤到 200px 宽。 */
+@media (max-width: 900px) {
+  .album-layout {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding: 0 var(--sp-5);
+  }
+  .album-side {
+    position: static;
+    display: flex;
+    gap: 16px;
+    overflow-x: auto;
+    padding-bottom: 6px;
+    scrollbar-width: none;
+  }
+  .album-side::-webkit-scrollbar {
+    display: none;
+  }
+  .side-group + .side-group {
+    margin-top: 0;
+  }
+  .side-group {
+    flex: 0 0 auto;
+  }
+  .side-item {
+    height: 24px;
+  }
+}
+
+/* 工具栏：与页头/数据带同一侧边留白（--sp-8） */
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 24px;
+  padding: 0 var(--sp-8);
+  margin-bottom: 14px;
 }
 
 .toolbar-left {
@@ -2054,59 +2484,119 @@ function onKey(e: KeyboardEvent) {
   color: var(--color-on-primary);
 }
 
-/* 搜索栏 */
+/* 搜索行（FEAT-107）：输入框 + 范围后缀 + 去智能搜索的出口。
+
+   为什么搜索框不能只写个 placeholder：
+     placeholder 在**开始输入后就消失**，恰好是用户最需要知道
+     “我在搜什么范围”的那一刻。所以范围得是框内一个常驻的灰字。 */
 .search-bar {
-  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
 }
 
 .search-input-wrap {
   position: relative;
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
+  max-width: 460px;
+  min-width: 0;
 }
 
 .search-icon {
   position: absolute;
   left: 12px;
-  font-size: 14px;
-  color: var(--muted);
+  font-size: 12px;
+  /* 装饰图标但也要看得见：用 fg-2（≈5:1）而不是 fg-3（≈3.5:1） */
+  color: var(--fg-2);
   pointer-events: none;
 }
 
 .search-input {
   width: 100%;
-  padding: 10px 36px 10px 36px;
-  border: 1px solid var(--input-border);
-  border-radius: 8px;
-  font-size: 14px;
+  height: 34px;
+  /* 右侧要同时容纳「清除 ×」与「范围后缀」，所以留较宽的内边距 */
+  padding: 0 118px 0 32px;
+  border: 1px solid var(--c-rule);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-body);
   outline: none;
   box-sizing: border-box;
-  color: var(--text);
-  background: var(--input-bg);
-  transition: border-color var(--dur-2);
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  transition: border-color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
+}
+
+/* 范围后缀：框内右侧、常驻、不可交互 —— 它是“边界说明”而不是控件。
+   用一根发丝竖线与输入区分开（否则会读成填好的内容）。
+
+   ⚠️ 颜色用 --fg-2 而不是 --fg-3：这句“不检索照片内容”是**功能边界**，
+   它存在的全部意义就是被读到；用弱色（实测浅色 3.54:1）等于白写。 */
+.search-scope {
+  position: absolute;
+  right: 12px;
+  padding-left: 11px;
+  border-left: 1px solid var(--c-rule);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  color: var(--fg-2);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 出口：把「内容检索」明确指到智能搜索，而不是在这个框里默借实现 */
+.search-elsewhere {
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 11.5px;
+  color: var(--fg-2);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--dur-2) var(--ease-out);
+}
+.search-elsewhere:hover {
+  color: var(--c-accent-bright, var(--c-accent));
+}
+
+/* 空态里的同行链接（不单独占行） */
+.search-status-link {
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: inherit;
+  color: var(--c-accent-bright, var(--c-accent));
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .search-input::placeholder {
-  color: var(--muted);
+  color: var(--fg-3);
 }
 
 .search-input:focus {
-  border-color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
 .search-clear {
   position: absolute;
-  right: 10px;
+  right: 92px;
   border: none;
   background: none;
-  color: var(--muted);
-  font-size: 18px;
+  color: var(--fg-3);
+  font-size: 16px;
   cursor: pointer;
   line-height: 1;
 }
 
 .search-clear:hover {
-  color: var(--text);
+  color: var(--fg);
 }
 
 /* 搜索结果面板 */
@@ -2316,20 +2806,30 @@ function onKey(e: KeyboardEvent) {
 
 .group-count {
   font-size: 12px;
-  color: var(--muted);
+  /* FEAT-105：--muted（浅色下仅 2.96:1）→ --sub-text。
+     12px 的"N 个相册"是要读的（用户靠它判断该组多大），不是装饰，
+     所以不应用 muted 档。 */
+  color: var(--sub-text);
   font-weight: normal;
 }
 
 .group-bc {
   font-size: 12px;
-  color: var(--color-link);
-  background: var(--color-soft-accent);
+  /* FEAT-105 实测：原来用 --color-link-on-bg（浅金），在浅色预设的暗端仍只有
+     4.13:1；而这个胶囊底是半透明白，叠在暗端反而更暗，两者叠加后不稳定。
+     现在文字用 --c-fg-2（已按最暗端标定），胶囊只做“这是一个范围标记”的形状，
+     不靠颜色区分含义。 */
+  color: var(--fg-2);
+  background: var(--slip-fill);
+  box-shadow: inset 0 0 0 1px var(--c-rule);
   border-radius: 4px;
   padding: 1px 8px;
 }
 
 .fold-arrow {
-  color: var(--muted);
+  /* FEAT-105：--muted → --sub-text。折叠箭头是 13px 的可点击区域，
+     它不只是装饰（用户得看到有这个开关），浅色下 muted 仅 2.96:1。 */
+  color: var(--sub-text);
   font-size: 13px;
   width: 14px;
   text-align: center;
@@ -2355,26 +2855,44 @@ function onKey(e: KeyboardEvent) {
 
 /* ===== FEAT-103：统计带与 tile 网格 ===== */
 
-/* 统计带贴齐页面左右留白。
-   用负 margin 抵消父级 padding，而不是改父级 ——
-   .album-page 的内边距还被搜索栏/时间路线图/分组头共用，
-   单独为数据带改它会让其他区块一起移位。 */
+/* 数据带（FEAT-107）：它自带 padding: 18px var(--gutter) 16px + 下缘发丝线，
+   所以外层只控制上下节奏。
+
+   ⚠️ 这里**不能**写 padding: 0 —— scoped 属性选择器与组件内部规则同特异性，
+   靠声明顺序取胜，写一层 padding: 0 会把组件自己的左右内边距一并抹掉，
+   第一列直接贴在窗口左边缘（实测踩过）。 */
 .album-stats {
-  margin: 0 0 4px;
+  margin: 20px 0 4px;
 }
 
 /* tile 网格：比 card 网格更密（封面不需要内边距，可以排到 216px）。
    小图密排是相册浏览的正确密度：一屏多看到 3~4 张，扫视成本更低。
-   auto-fill + minmax 保证窄窗自动降列，不用写断点。 */
+   auto-fill + minmax 保证窄窗自动降列，不用写断点。
+
+   FEAT-105：gap 30/26 → 12/12，并加 grid-auto-flow: dense。
+   为什么只动间距不动瓦片尺寸：一屏的信息量由"列数 × 行距"决定，
+   而封面本身已经是内容，不需要再加底、加框、加影（加了就成了"贴纸墙"）。
+   间距收窄后同宽度下每行能多容纳一列，视觉上就是"更密但不更乱"。
+   dense 负责把被展开分组撑剩的尾位填满，避免折叠分组后留下空洞。 */
 .album-grid.is-tile {
-  grid-template-columns: repeat(auto-fill, minmax(216px, 1fr));
-  gap: 30px 26px;
+  grid-template-columns: repeat(auto-fill, minmax(208px, 1fr));
+  grid-auto-flow: dense;
+  gap: 12px;
+}
+
+/* FEAT-106：旧的 mosaic 网格样式已删除。
+   dense 回填会造成行尾空洞，且位置不稳定 —— 改用行式密排（.album-wall）。
+   保留 .album-grid.is-tile（地点/手动视图仍用普通网格）。 */
+.album-grid.is-tile {
+  grid-template-columns: repeat(auto-fill, minmax(208px, 1fr));
+  grid-auto-flow: dense;
+  gap: 12px;
 }
 
 @media (max-width: 900px) {
   .album-grid.is-tile {
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    gap: 22px 18px;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
   }
 }
 
@@ -2418,35 +2936,52 @@ function onKey(e: KeyboardEvent) {
   font-size: 14px;
 }
 
-/* 通用按钮 */
+/* 通用按钮（FEAT-106）：与顶栏/数据带同一套“玻璃面板上的控件”语言。
+   旧版是 border 1px + 实心底（card-bg）—— 在一墙磨砂玻璃面板里
+   那是一块块“深色描边盒子”，看得见的只有边框。
+   现在：透明底 + 发丝描边 + 悬停时才出现一点点提亮。 */
 .btn {
-  padding: 8px 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 13px;
   border-radius: 8px;
-  border: 1px solid var(--input-border);
-  background: var(--card-bg);
+  border: 1px solid var(--c-rule);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  color: var(--fg-2);
   cursor: pointer;
-  font-size: 14px;
-  transition: all var(--dur-2);
+  font-size: var(--fs-body);
+  letter-spacing: var(--ls-body);
+  transition: color var(--dur-2) var(--ease-out), border-color var(--dur-2) var(--ease-out),
+    background var(--dur-2) var(--ease-out);
 }
 
-.btn:hover {
-  border-color: var(--color-primary);
-  color: var(--color-primary-text);
+.btn:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg) 22%, transparent);
+  background: color-mix(in srgb, var(--fg) 9%, transparent);
 }
 
 .btn-primary {
+  /* 主按钮固定用“亮金 + 墨字”这一对 —— 不要用 --c-accent。
+     --c-accent 在浅色预设下是**深棕**（#7d571a，为的是在浅底上当文字用），
+     拿它做填充底色 + 墨字 = 2.71:1，实测已经被审计拓到过。
+     --color-primary / --color-on-primary 是全局定好的“金底墨字”配对，两套模式都达标。 */
   background: var(--color-primary);
   color: var(--color-on-primary);
   border-color: var(--color-primary);
+  font-weight: var(--fw-em);
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   background: var(--color-primary-hover);
-  color: #fff;
+  color: var(--color-on-primary);
+  border-color: var(--color-primary-hover);
 }
 
 .btn:disabled {
-  opacity: 0.6;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
@@ -2520,14 +3055,22 @@ function onKey(e: KeyboardEvent) {
 .virtual-albums {
   margin-bottom: 28px;
   padding-bottom: 20px;
-  border-bottom: 1px solid var(--color-border, rgba(128, 138, 158, 0.24));
+  border-bottom: 1px solid var(--rule);
+}
+/* FEAT-105：系统相册通常只有 1~2 张卡，用 auto-fill 会在右边留下一大片空白。
+   这里改成定宽列（不拉伸），卡片保持封面该有的尺寸，空白留在右侧 ——
+   比让卡片被拉到 700px 宽要合理（一张卡片比一栋楼还宽，认不出那是封面）。 */
+.virtual-albums .album-grid {
+  grid-template-columns: repeat(auto-fill, 260px);
+  gap: 16px;
 }
 .virtual-hint {
   margin: 10px 0 0;
-  font-size: 12.5px;
+  font-size: 11.5px;
   line-height: 1.7;
-  color: var(--color-link);
-  opacity: 0.85;
+  /* FEAT-115：原来是"金色 + opacity .85"双重弱化 ——
+     既占金色预算，又让已经偏暗的文字再乘 0.85。直接用弱档文字色。 */
+  color: var(--fg-3);
 }
 .virtual-hint a {
   color: var(--color-link);
@@ -2950,3 +3493,4 @@ function onKey(e: KeyboardEvent) {
   }
 }
 </style>
+
