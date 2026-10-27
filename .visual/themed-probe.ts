@@ -111,7 +111,15 @@ const PAGE_PATH: Record<string, string> = {
 (async () => {
   const [which, pageName = "AlbumList"] = location.hash.replace(/^#/, "").split("/");
   const mode = which === "light" ? "light" : "dark";
-  const preset = mode === "light" ? LIGHT_PRESETS[2] : DARK_PRESETS[0];
+  /* 按 id 取而不是按下标：FEAT-119 把浅色从 4 套砍到 2 套，
+     原来的 LIGHT_PRESETS[2] 直接变成 undefined，审计脚本静默报错、
+     还照着空预设算出"0 处不合格" —— 探针本身也要有"取不到就大声失败"。 */
+  const LIGHT_PROBE_ID = "celadon-light";
+  const preset =
+    mode === "light"
+      ? (LIGHT_PRESETS.find((p) => p.id === LIGHT_PROBE_ID) ?? LIGHT_PRESETS[0])
+      : DARK_PRESETS[0];
+  if (!preset) throw new Error(`预设缺失：mode=${mode}，请检查 src/utils/presets.ts`);
 
   const mod = await import(/* @vite-ignore */ `/src/views/${pageName}.vue`);
   const Comp = mod.default;
