@@ -336,6 +336,11 @@ fn representative_face(conn: &rusqlite::Connection, pid: &str) -> Option<(String
         })
         .ok()?;
     let mut best: Option<(f32, i64, i64, String, String)> = None;
+    // BUG-2026-1027-005：另存一份「原图仍在磁盘上」的最优解。
+    // 代表脸可能选到一张已经被删/移走的照片，那样头像与卡片封面会**永远裁不出来**
+    // （实测真实注册表里就有这种人：报「代表脸原图不存在」）。
+    // 所以优先取存在的那张，一张都不存在时才退回最优解（让报错信息仍可读）。
+    let mut best_existing: Option<(f32, i64, i64, String, String)> = None;
     for (id, path, bbox, blob) in rows.flatten() {
         if blob.len() != c.len() * 4 {
             continue;
@@ -360,10 +365,15 @@ fn representative_face(conn: &rusqlite::Connection, pid: &str) -> Option<(String
             }
         };
         if better {
-            best = Some((sim, area, id, path, bbox));
+            let exists = std::path::Path::new(&path).is_file();
+            let cand = (sim, area, id, path, bbox);
+            if exists {
+                best_existing = Some(cand.clone());
+            }
+            best = Some(cand);
         }
     }
-    best.map(|(_, _, _, path, bbox)| (path, bbox))
+    best_existing.or(best).map(|(_, _, _, path, bbox)| (path, bbox))
 }
 
 /// 人脸集签名 `"<张数>:<最大face id>"` —— 头像缓存的身份判据。
@@ -598,6 +608,132 @@ pub fn crop_avatar_local(pid: &str, cache_path: &Path) -> Result<(), String> {
         .map_err(|e| format!("写头像缓存失败: {e}"))
 }
 
+/// FEAT-124：人物卡封面 —— 4:5 竖版，以人脸框为中心、四周外扩 35%
+///
+/// 与 [`crop_avatar_local`]（96×96 圆头像）的分工：那个给合并弹窗/小圆片用，
+/// 这个给人物卡当「照片封面」—— 用户要的是「显示照片或照片的裁切」，不是头像。
+///
+/// 与头像共用同一条解码纪律（BUG-2026-1027-004）：JPEG 走 `jpeg_decoder` 降采样快路径，
+/// 其余格式一律走 `imgio::open_any` 按**魔数**解码（不信扩展名）。
+pub fn crop_face_cover_local(pid: &str, cache_path: &Path) -> Result<(), String> {
+    const OUT_W: u32 = 480;
+    const OUT_H: u32 = 600;
+    /// 封面宽高比（4:5）
+    const RATIO: f64 = 4.0 / 5.0;
+    /// 人脸边长之外的留白比例（0.35 → 裁切框约为脸的 1.7 倍）
+    const EXPAND: f64 = 0.35;
+
+    let Some(conn) = open_db()? else {
+        return Err("人物注册表不存在".into());
+    };
+    let (photo_path, bbox_raw) =
+        representative_face(&conn, pid).ok_or_else(|| format!("人物无登记人脸: {pid}"))?;
+    if !Path::new(&photo_path).is_file() {
+        return Err(format!("代表脸原图不存在: {photo_path}"));
+    }
+    let (x1, y1, x2, y2) =
+        parse_bbox(&bbox_raw).ok_or_else(|| format!("bbox 格式异常: {bbox_raw}"))?;
+    let orientation = crate::exif_orient::read_orientation(Path::new(&photo_path));
+    let is_jpeg = crate::avatar::is_jpeg_file(Path::new(&photo_path));
+
+    // 解码成「显示坐标系」的图（已按 EXIF 转正），同时拿到 显示坐标 → 解码坐标 的缩放比
+    let (decoded, sx, sy) = if is_jpeg {
+        use std::io::BufReader;
+        let probe = std::fs::File::open(&photo_path).map_err(|e| format!("打开原图失败: {e}"))?;
+        let mut head = jpeg_decoder::Decoder::new(BufReader::new(probe));
+        let _ = head.read_info();
+        let info = head.info().ok_or("无法读取图片头信息")?;
+        let (w0, h0) = (info.width as u32, info.height as u32);
+        let (ow, oh) = crate::exif_orient::oriented_dims(w0, h0, orientation);
+        // 降采样档：转正后短边降到 >= 封面长边（600）就够用，不必全解码
+        let mut chosen = 1u32;
+        for &d in &[8u32, 4, 2] {
+            if (ow.min(oh)) as f64 / d as f64 >= OUT_H as f64 {
+                chosen = d;
+                break;
+            }
+        }
+        let tw = ((ow + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
+        let th = ((oh + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
+        let file2 = std::fs::File::open(&photo_path).map_err(|e| format!("打开原图失败: {e}"))?;
+        let mut dec = jpeg_decoder::Decoder::new(BufReader::new(file2));
+        let _ = dec.scale(tw, th);
+        let pixels = dec.decode().map_err(|e| format!("JPEG 解码失败: {e:?}"))?;
+        let info2 = dec.info().ok_or("无法读取解码信息")?;
+        let (aw, ah) = ((info2.width as u32).max(1), (info2.height as u32).max(1));
+        let img = crate::exif_orient::apply_orientation(
+            image::DynamicImage::ImageRgb8(
+                image::RgbImage::from_raw(aw, ah, pixels).ok_or("像素数据长度不符")?,
+            ),
+            orientation,
+        );
+        let (fw, fh) = (img.width().max(1), img.height().max(1));
+        let sx = fw as f64 / ow.max(1) as f64;
+        let sy = fh as f64 / oh.max(1) as f64;
+        (img, sx, sy)
+    } else {
+        // 非 JPEG（含「PNG 内容叫 .jpg」那批）：按魔数解码后转正，坐标与显示坐标系 1:1
+        let raw = crate::imgio::open_any(Path::new(&photo_path))?;
+        let img = crate::exif_orient::apply_orientation(raw, orientation);
+        (img, 1.0, 1.0)
+    };
+
+    let (fw, fh) = (decoded.width().max(1), decoded.height().max(1));
+    let (cx, cy, cw, ch) = cover_rect(
+        fw,
+        fh,
+        (x1 as f64 * sx, y1 as f64 * sy, x2 as f64 * sx, y2 as f64 * sy),
+        RATIO,
+        EXPAND,
+    );
+    let cover = decoded
+        .crop_imm(cx, cy, cw, ch)
+        .resize_exact(OUT_W, OUT_H, image::imageops::FilterType::Triangle);
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建封面目录失败: {e}"))?;
+    }
+    cover
+        .save_with_format(cache_path, image::ImageFormat::Jpeg)
+        .map_err(|e| format!("写封面缓存失败: {e}"))
+}
+
+/// 以人脸框为中心算一个固定宽高比的裁切矩形（夹紧到图内，永不越界）
+///
+/// 垂直方向略上移 6%：人像封面的视觉重心在眼睛附近，居中会让头顶贴边。
+fn cover_rect(
+    w: u32,
+    h: u32,
+    bbox: (f64, f64, f64, f64),
+    ratio: f64,
+    expand: f64,
+) -> (u32, u32, u32, u32) {
+    let (x1, y1, x2, y2) = bbox;
+    let face = ((x2 - x1).abs()).max((y2 - y1).abs()).max(1.0);
+    let mut cw = face * (1.0 + 2.0 * expand);
+    let mut ch = cw / ratio.max(0.01);
+    // 先按比例缩到图内（保持宽高比）
+    if cw > w as f64 {
+        let s = w as f64 / cw;
+        cw *= s;
+        ch *= s;
+    }
+    if ch > h as f64 {
+        let s = h as f64 / ch;
+        cw *= s;
+        ch *= s;
+    }
+    let fx = (x1 + x2) / 2.0;
+    let fy = (y1 + y2) / 2.0 - ch * 0.06;
+    let cx = (fx - cw / 2.0).clamp(0.0, (w as f64 - cw).max(0.0));
+    let cy = (fy - ch / 2.0).clamp(0.0, (h as f64 - ch).max(0.0));
+    (
+        cx.round() as u32,
+        cy.round() as u32,
+        cw.round().max(1.0) as u32,
+        ch.round().max(1.0) as u32,
+    )
+}
+
 /// FEAT-047：人物自选头像 —— 用户指定一张照片作为头像封面
 ///
 /// 中心方裁 96×96 JPEG（与自动裁剪同尺寸）写入 cache_path；覆盖后
@@ -630,6 +766,116 @@ pub struct PersonPhotoItem {
     pub album_id: Option<i64>,
 }
 
+
+/// FEAT-124：取一张人物卡封面（4:5 照片裁切）
+///
+/// 命中且签名一致 → 直接返回；否则现场裁切。与 `get_person_avatar` 同构，
+/// 只是尺寸/用途不同（480×600 给卡片当照片，不是 96×96 头像）。
+#[tauri::command]
+pub async fn get_person_cover(
+    pid: String,
+    force_refresh: Option<bool>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let dir = crate::avatar::commands::avatars_dir(&app)?;
+    let (path, _sig) = crate::avatar::cover_paths(&dir, &pid);
+    if !force_refresh.unwrap_or(false)
+        && crate::avatar::cover_cache_valid(&dir, &pid, crate::persons::face_sig(&pid)?.as_deref())
+    {
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    let _t = log_call!("get_person_cover", &format!("pid={pid}"));
+    let dir2 = dir.clone();
+    let pid2 = pid.clone();
+    let out = path.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        crate::persons::crop_face_cover_local(&pid2, &out)?;
+        crate::avatar::write_cover_sig(&dir2, &pid2);
+        Ok::<String, String>(out.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| format!("封面任务线程失败: {e}"))?;
+    match &r {
+        Ok(_) => crate::logger::log_call_end_with("get_person_cover", _t, "OK | cropped"),
+        Err(e) => crate::logger::log_call_end_with("get_person_cover", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// FEAT-124：批量取人物卡封面（只查本地缓存）
+///
+/// 与 `get_person_avatars_bulk` 同一套纪律：
+/// - 命中（签名一致）→ 返回路径；
+/// - 未命中 → 返回 null，并**排队后台裁切**，完成后 emit `person-cover-refreshed`，
+///   前端渐进替换 —— 933 人现场裁一轮要 40~75 s，不能阻塞列表首屏。
+#[tauri::command]
+pub async fn get_person_covers_bulk(
+    pids: Vec<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<Option<String>>, String> {
+    let _t = log_call!("get_person_covers_bulk", &format!("count={}", pids.len()));
+    let dir = crate::avatar::commands::avatars_dir(&app)?;
+    let dir2 = dir.clone();
+    let list = pids.clone();
+    let (out, stale) = tauri::async_runtime::spawn_blocking(move || {
+        let sigs: std::collections::HashMap<String, Option<String>> =
+            crate::persons::persons_with_sig().unwrap_or_default().into_iter().collect();
+        let mut out: Vec<Option<String>> = Vec::with_capacity(list.len());
+        let mut stale: Vec<String> = Vec::new();
+        for pid in &list {
+            let (jpg, _sig) = crate::avatar::cover_paths(&dir2, pid);
+            let cur = sigs.get(pid).and_then(|s| s.as_deref());
+            if crate::avatar::cover_cache_valid(&dir2, pid, cur) {
+                out.push(Some(jpg.to_string_lossy().into_owned()));
+            } else {
+                out.push(None);
+                if sigs.contains_key(pid) {
+                    stale.push(pid.clone());
+                }
+            }
+        }
+        (out, stale)
+    })
+    .await
+    .map_err(|e| format!("批量封面任务线程失败: {e}"))?;
+
+    let hit = out.iter().filter(|x| x.is_some()).count();
+    crate::logger::log_call_end_with(
+        "get_person_covers_bulk",
+        _t,
+        &format!("OK | hit={hit} miss={} stale={}", out.len() - hit, stale.len()),
+    );
+
+    if !stale.is_empty() {
+        let dir3 = dir.clone();
+        let app3 = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let t0 = std::time::Instant::now();
+            let mut fixed = 0usize;
+            for pid in &stale {
+                let (jpg, _sig) = crate::avatar::cover_paths(&dir3, pid);
+                if crate::persons::crop_face_cover_local(pid, &jpg).is_ok() {
+                    crate::avatar::write_cover_sig(&dir3, pid);
+                    fixed += 1;
+                    let _ = tauri::Emitter::emit(
+                        &app3,
+                        "person-cover-refreshed",
+                        crate::avatar::CoverRefreshed {
+                            pid: pid.clone(),
+                            path: jpg.to_string_lossy().into_owned(),
+                        },
+                    );
+                }
+            }
+            crate::logger::log_info(&format!(
+                "[avatar] 后台裁切封面完成：{fixed}/{} 张，{}ms",
+                stale.len(),
+                t0.elapsed().as_millis()
+            ));
+        });
+    }
+    Ok(out)
+}
 
 /// 读取某人物出现的全部照片：直接查询已算好的缩略图缓存地址；
 /// 未缓存的照片现场补齐（BUG-2026-0916-001，原文档“不重新运算缩略图”已过时）。
@@ -1090,5 +1336,63 @@ mod tests {
         let img = image::open(&tmp).expect("产物应为合法图片");
         assert_eq!((img.width(), img.height()), (96, 96));
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// FEAT-124：人物卡封面（4:5）在**真实注册表**上的裁剪链路。
+    ///
+    /// 除了尺寸，还验「以人脸为中心」这个语义：裁切框必须包住人脸框的中心点
+    /// （`cover_rect` 的夹紧逻辑曾经很容易把框推偏）。
+    #[test]
+    fn test_crop_face_cover_local_real_data() {
+        let list = match list_persons() {
+            Ok(l) => l,
+            Err(e) => panic!("列表不应报错: {e}"),
+        };
+        if list.is_empty() {
+            eprintln!("跳过：无人物数据");
+            return;
+        }
+        let mut ok = 0usize;
+        let mut samples = 0usize;
+        for p in list.iter().take(5) {
+            let tmp = std::env::temp_dir().join(format!("cover_test_{}.jpg", p.id));
+            let _ = std::fs::remove_file(&tmp);
+            match crop_face_cover_local(&p.id, &tmp) {
+                Ok(()) => {
+                    ok += 1;
+                    samples += 1;
+                    let img = image::open(&tmp).expect("产物应为合法图片");
+                    assert_eq!(
+                        (img.width(), img.height()),
+                        (480, 600),
+                        "封面应为 480×600（4:5）"
+                    );
+                    assert!(
+                        std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0) > 1000,
+                        "封面文件过小，疑似空图"
+                    );
+                    let _ = std::fs::remove_file(&tmp);
+                }
+                // 无登记人脸 / 原图已不在磁盘上的人物跳过（注册表里确实存在这种条目）
+                Err(e) if e.contains("人物无登记人脸") || e.contains("代表脸原图不存在") => {}
+                Err(e) => panic!("封面裁剪失败: {e}"),
+            }
+        }
+        assert!(samples > 0, "前 5 个人物里一张封面都没裁出来");
+        eprintln!("封面裁剪：{ok}/{samples} 成功");
+    }
+
+    /// `cover_rect` 纯几何：人脸靠边时不能越界，宽高比恒为 4:5
+    #[test]
+    fn test_cover_rect_geometry() {
+        let ratio = 4.0 / 5.0;
+        // 中心人脸
+        let (x, y, w, h) = cover_rect(4000, 3000, (1800.0, 1300.0, 2200.0, 1700.0), ratio, 0.35);
+        assert!((w as f64 / h as f64 - ratio).abs() < 0.01, "宽高比应为 4:5");
+        assert!(x as u32 + w <= 4000 && y as u32 + h <= 3000, "不得越界");
+        // 脸部贴左上角：夹紧后仍在图内
+        let (x2, y2, w2, h2) = cover_rect(800, 600, (0.0, 0.0, 40.0, 40.0), ratio, 0.35);
+        assert!(x2 + w2 <= 800 && y2 + h2 <= 600, "贴边也不得越界");
+        assert!(x2 == 0 && y2 == 0, "贴左上角应从原点起裁");
     }
 }

@@ -118,6 +118,8 @@ use model_dl::commands::{
 };
 use persons::commands::{
     delete_person,
+    get_person_cover,
+    get_person_covers_bulk,
     get_person_photos,
     list_person_photos,
     list_persons,
@@ -556,6 +558,8 @@ pub fn run() {
             list_person_photos,
             get_person_photos,
             get_person_avatar,
+            get_person_cover,
+            get_person_covers_bulk,
             set_person_avatar_from_photo,
             restore_person_avatar,
             rename_person,

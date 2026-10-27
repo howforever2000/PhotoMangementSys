@@ -154,6 +154,45 @@ pub fn clear_all_avatar_cache(dir: &Path) -> u32 {
 }
 
 /// 缓存是否仍可信：自选头像恒真；自动头像要求签名与**当前**人脸集一致
+/// FEAT-124：人物卡封面（4:5 竖版）的缓存路径
+///
+/// 与头像分开：头像 96×96 给圆形小图/合并弹窗；封面 480×600 给人物卡当照片。
+/// 签名机制与头像完全一致（`cover_{pid}.sig`），人物库重建/合并后自动失效重裁。
+pub fn cover_paths(dir: &Path, pid: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let d = dir.join("covers");
+    (d.join(format!("cover_{pid}.jpg")), d.join(format!("cover_{pid}.sig")))
+}
+
+/// 封面身份签名是否与当前人脸集一致
+pub fn cover_cache_valid(dir: &Path, pid: &str, cur_sig: Option<&str>) -> bool {
+    let (jpg, sig) = cover_paths(dir, pid);
+    if !jpg.is_file() {
+        return false;
+    }
+    match (std::fs::read_to_string(&sig), cur_sig) {
+        (Ok(written), Some(cur)) => written.trim() == cur,
+        _ => false,
+    }
+}
+
+/// 写封面签名（裁切成功后调用）
+pub fn write_cover_sig(dir: &Path, pid: &str) {
+    let (_jpg, sig) = cover_paths(dir, pid);
+    if let Ok(Some(s)) = crate::persons::face_sig(pid) {
+        if let Some(parent) = sig.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(sig, s);
+    }
+}
+
+/// 封面刷新事件载荷（后台批量裁切时逐个人物上报，前端渐进替换）
+#[derive(Clone, serde::Serialize)]
+pub struct CoverRefreshed {
+    pub pid: String,
+    pub path: String,
+}
+
 fn cache_valid(dir: &Path, pid: &str, cur_sig: Option<&str>) -> bool {
     let (_jpg, sig, custom) = avatar_paths(dir, pid);
     if custom.is_file() {

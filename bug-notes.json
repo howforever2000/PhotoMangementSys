@@ -4593,6 +4593,17 @@
       "root_cause": "本轮实测定位：`crop_avatar_local` / `crop_square` 用**扩展名**判断是否 JPEG（`name.ends_with(\".jpg\")`），再交给 `jpeg_decoder` 读图头。但图库里存在「内容与扩展名不一致」的文件 —— 直接统计 `vcr-data/persons.db` 的 faces 表：10,565 条人脸里 **95 条**原图的文件头是 `89 50 4E 47`（PNG），其中一批就叫 `*.jpg`（微信/截图导出常见）。jpeg_decoder 读 PNG 必然 `info()` 返回 None → 报「无法读取图片头信息」。同一类文件在 thumbnail.rs 里走 `image::open` 兜底也救不回来 —— `image::open` 先按**扩展名**猜格式（ImageReader::open 语义），照样把它当 JPEG 解，于是报 `Illegal start bytes:8950`（8950 = PNG 魔数）。",
       "fix": "① 新增 `avatar::is_jpeg_file()`：读文件头 3 字节判 `FF D8 FF`，不信扩展名；avatar.rs 与 persons.rs 改用它选解码路径。② 新增 `src-tauri/src/imgio.rs::open_any()`：`image::load_from_memory` 按**魔数**解码，非 JPEG 快速路径与所有兜底分支统一走它；thumbnail.rs 也加 `open_any_image()` 替换两处 `image::open`。JPEG 源图仍保留 DCT 降采样快速路径（大图全解码要 5~14 s）。",
       "lessons": "① 「按扩展名判图片格式」在本项目是系统性隐患：缩略图缓存里也有一批 `.jpg` 文件实际是 WebP（24,945 个 grid 缩略图全是这种），所以任何新写的解码/裁切代码都要按魔数判断；② `image::open` 会按扩展名猜格式，`image::load_from_memory` 才按内容嗅探 —— 遇到名不副实的文件必须用后者；③ 沙箱会话里 `cargo test` 会因写不了 %TEMP% 而假失败（PermissionDenied / 数据依赖），验证 Rust 单测要把测试 exe 拷到工作区外跑（同 BUG-2026-1026-002）。"
+    },
+    {
+      "id": "BUG-2026-1027-005",
+      "date": "2026-10-27",
+      "status": "fixed",
+      "title": "部分人物的头像/封面永远裁不出来：代表脸选中的那张原图已不在磁盘上",
+      "module": "src-tauri/src/persons.rs",
+      "symptom": "人物页个别卡片一直没有图；日志报「代表脸原图不存在: D:\\...\\mmexport1699190089634.jpg」。",
+      "root_cause": "representative_face() 用「与质心最相似」挑代表脸，**不看原图是否还在**。照片被删/移走后，这个人物每次裁切都在同一张不存在的文件上失败 —— 永久失败，没有任何自愈路径。实测真实注册表前 5 人就有一个（文件确实已不存在）。",
+      "fix": "候选比较时额外检查 Path::is_file()，另存一份「原图仍在磁盘」的最优解，优先返回它；一张都不存在时才退回最优解（让报错信息仍可读）。头像与卡片封面共用这个函数，两条链路一起修好。",
+      "lessons": "「挑代表脸」这类选优逻辑必须把「资源是否真的可用」纳入判据 —— 否则聚类/相似度算得再准，落到一张不存在的文件上就等于该人物永久没有封面。"
     }
   ],
   "updated": "2026-10-27"

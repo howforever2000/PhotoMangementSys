@@ -99,11 +99,13 @@ function makeRows() {
 }
 const ROWS = makeRows();
 
+/* 人物（字段与真实 `PersonInfo` 对齐：id / name / face_count / created_at）。
+   旧版这里是 person_id / photo_count —— 跟后端不符，导致探针里卡片上的编号与张数渲染成空。 */
 const PERSONS = Array.from({ length: 14 }, (_, i) => ({
-  person_id: `P${String(i + 1).padStart(2, "0")}`,
+  id: `P${String(i + 1).padStart(2, "0")}`,
   name: i < 4 ? ["爸爸", "妈妈", "小舟", "同学A"][i] : null,
-  photo_count: 3 + ((i * 37) % 90),
-  cover_path: null,
+  face_count: 3 + ((i * 37) % 90),
+  created_at: "2026-0" + ((i % 9) + 1) + "-1" + (i % 9),
 }));
 
 const LOCATIONS = [
@@ -254,6 +256,13 @@ const HANDLERS = {
     };
   },
   get_photo_thumbs: (args) => (args.paths ?? []).map((p) => [p, thumbFor(p)]),
+  /* FEAT-124：人物卡封面（4:5）—— mock 直接给彩色 data URL */
+  get_person_covers_bulk: (args) =>
+    (args.pids ?? []).map((pid) => thumbFor(`cover:${pid}`)),
+  /* 圆形小头像（合并弹窗用）：mock 一律给图，缺了会让 PersonGallery 在 load() 里抛错 */
+  get_person_avatars_bulk: (args) =>
+    (args.pids ?? []).map((pid) => thumbFor(`avatar:${pid}`)),
+  get_person_cover: (args) => thumbFor(`cover:${args.pid ?? "x"}`),
   list_persons: () => PERSONS,
   list_photo_locations: () => LOCATIONS,
   list_photos_by_location: (args) => ROWS.filter((r) => r.location === args.location).slice(0, 24),

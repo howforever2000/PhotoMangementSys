@@ -4730,6 +4730,47 @@
         "list_timeline",
         "category_index_stats"
       ]
+    },
+    {
+      "id": "FEAT-124",
+      "name": "人物页改成「照片裁切封面 + 文字嵌入」（4:5 人脸裁切 + 底部压字）",
+      "module": "src/components/PersonGallery.vue、src-tauri/src/persons.rs、src-tauri/src/avatar.rs、src-tauri/src/lib.rs",
+      "status": "done",
+      "purpose": "用户要求：人物界面「干脆不显示头像，而是显示照片或者照片的裁切，文字嵌入」。旧版是 86px 圆形头像 + 下方三行元信息（名字/编号/登记日期/合并按钮）——圆形把合影裁成一张脸，看不出人物在哪、和谁在一起；文字也全在照片之外。",
+      "implementation": {
+        "后端封面裁切": "新增 persons::crop_face_cover_local(pid)：以人脸框为中心、四周外扩 35%、垂直上移 6% 取 4:5 竖版，输出 480×600 JPEG；JPEG 走 jpeg_decoder 降采样快路径，其余格式走 imgio::open_any 按魔数解码（沿用 BUG-2026-1027-004 的纪律）。cover_rect() 负责等比夹紧，贴边也不越界。",
+        "缓存与签名": "封面缓存 avatars/covers/cover_<pid>.jpg + .sig，签名与头像同一套（`<张数>:<最大 face id>`）—— 人物库重建/合并后自动失效重裁，不会显示别人。",
+        "两个新命令": "get_person_cover（单个，现场裁）+ get_person_covers_bulk（批量，只查缓存；缺失的排队后台裁并 emit `person-cover-refreshed`，前端渐进替换，不阻塞列表首屏）。",
+        "前端卡片": "卡片改成 4:5 封面（.pc-cover），姓名 +「P0x · N 张照片」压在底部渐变上；未命名显示「未命名」；重命名/合并收进 hover 浮出的右上角小工具；点击仍看照片、右键仍可换头像；无封面时退化为首字大号占位。"
+      },
+      "highlights": {
+        "卡片形态": "86px 圆头像 → 4:5 照片封面（实测宽高比 0.80）",
+        "文字": "从照片下方三行 → 压在照片底部渐变上（与相册墙 .tile-seal 同一套语言）",
+        "真实数据验证": "真实注册表前 5 人裁剪 4/4 成功（480×600），含一张原图已不在磁盘的降级路径",
+        "933 人首屏": "批量接口只查缓存，后台裁一轮 40~75 s，边裁边换，列表不等"
+      },
+      "tests": {
+        "单测": "test_crop_face_cover_local_real_data（真实注册表裁剪 480×600）与 test_cover_rect_geometry（4:5 恒定 + 贴边不越界）；工作区外跑完整 lib 测试 419 passed / 0 failed",
+        "浏览器验收": ".visual/probe-person-cover.cjs（mock）：14 张卡片全部有封面、宽高比 0.80、文字在封面内、10 位未命名显示「未命名」、get_person_covers_bulk 恰好 1 次",
+        "截图": ".visual/out/person-cover.png"
+      },
+      "related_files": [
+        "src-components-PersonGallery.vue",
+        "src-tauri/src/persons.rs",
+        "src-tauri/src/avatar.rs",
+        "src-tauri/src/lib.rs",
+        ".visual/probe-person-cover.cjs",
+        ".visual/preview-mock.js"
+      ],
+      "keywords": [
+        "人物",
+        "封面",
+        "裁切",
+        "文字嵌入",
+        "person cover",
+        "4:5",
+        "人脸"
+      ]
     }
   ],
   "updated": "2026-10-27"
