@@ -1027,9 +1027,8 @@ const wallRows = computed<JustifiedRow[]>(() =>
     count: dateOrderedAlbums.value.length,
     containerWidth: wallWidth.value,
     gap: 12,
-    /* FEAT-115：图注移到封面下方 → 行高必须预留它，否则图注会被挤进下一行。
-       图注高度 = margin-top 8 + line-height 18 = 26。 */
-    captionH: 26,
+    /* FEAT-117：图注回到封面内部（嵌入落款）→ 行高 = 封面高，不再预留图注条 */
+    captionH: 0,
     // 名义高度 232：实际封面高由缩放决定（≤ 232）。
     // 基础比例 1.28（约 5:4）比 4:3 更方 —— 参考图里的照片面板接近正方形，
     // 而不是扁扁的横幅。1.28 × 232 ≈ 297px 宽（行内 3~4 块），
