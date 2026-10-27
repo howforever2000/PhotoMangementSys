@@ -206,6 +206,53 @@ const HANDLERS = {
     const page = limit > 0 ? all.slice(offset, offset + limit) : all.slice(offset);
     return page.map((r) => ({ ...r, thumb_path: `c:${r.path}` }));
   },
+  /* FEAT-123：概览快照（从 TL_ROWS 派生，字段与 Rust 侧 OverviewStats 对齐） */
+  overview_stats: () => {
+    const months = new Map();
+    let noTime = 0;
+    let withFace = 0;
+    let withGps = 0;
+    let yMin = null;
+    let yMax = null;
+    for (const r of TL_ROWS) {
+      if (!r.shoot_time) noTime += 1;
+      else {
+        const ym = r.shoot_time.slice(0, 7);
+        months.set(ym, (months.get(ym) ?? 0) + 1);
+        const y = Number(r.shoot_time.slice(0, 4));
+        yMin = yMin === null ? y : Math.min(yMin, y);
+        yMax = yMax === null ? y : Math.max(yMax, y);
+      }
+      if (r.id % 6 === 0) withFace += 1;
+      if (r.id % 3 === 0) withGps += 1;
+    }
+    const card = (r) => ({
+      path: r.path,
+      album_id: r.album_id,
+      album_name: r.album_name,
+      shoot_time: r.shoot_time,
+      location: r.location,
+    });
+    return {
+      total_scanned: TL_ROWS.length,
+      no_time: noTime,
+      with_face: withFace,
+      with_gps: withGps,
+      year_min: yMin,
+      year_max: yMax,
+      months: [...months.entries()].sort((a, b) => a[0].localeCompare(b[0])),
+      recent: TL_ROWS.slice(-6).reverse().map(card),
+      on_this_day: null,
+      on_this_day_count: 0,
+      indexed: TL_ROWS.length - 9,
+      stale: 9,
+      known: TL_ROWS.length + 6,
+      semantic_categories: 4,
+      model: "mock-clip",
+      signature: "mock",
+      built_at: Date.now(),
+    };
+  },
   get_photo_thumbs: (args) => (args.paths ?? []).map((p) => [p, thumbFor(p)]),
   list_persons: () => PERSONS,
   list_photo_locations: () => LOCATIONS,

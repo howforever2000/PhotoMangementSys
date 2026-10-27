@@ -2328,6 +2328,47 @@ pub mod commands {
         r
     }
 
+    /// FEAT-123：全局概览快照
+    ///
+    /// 改前：概览页要拉 `list_timeline`（24,980 行 / 14,438 KB）+ 5 个命令，
+    /// 实测一次构建横跨 3~44 秒。现在：后端算一次聚合（带签名缓存，落
+    /// `overview_cache` 表，重启后仍命中），返回 2~4 KB 快照；
+    /// 照片库没变时**一句聚合都不跑**。
+    #[tauri::command]
+    pub async fn overview_stats(
+        today_md: String,
+        today_year: i32,
+        force: Option<bool>,
+        app: tauri::AppHandle,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<db::OverviewStats, String> {
+        let _t = log_call!("overview_stats", &format!("md={today_md} y={today_year}"));
+        let user_id = require_user(&session)?;
+        let r = async {
+            let model = crate::category::current_model_id(&app).await?;
+            let db = state.0.lock().map_err(|e| format!("{e}"))?;
+            db.overview_stats(user_id, &model, &today_md, today_year, force.unwrap_or(false))
+                .map_err(|e| format!("{e}"))
+        }
+        .await;
+        match &r {
+            Ok(s) => logger::log_call_end_with(
+                "overview_stats",
+                _t,
+                &format!(
+                    "OK | total={} months={} known={} indexed={}",
+                    s.total_scanned,
+                    s.months.len(),
+                    s.known,
+                    s.indexed
+                ),
+            ),
+            Err(e) => logger::log_call_end_with("overview_stats", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
     /// 内容分类两级聚合（FEAT-048）：大类 → 细类计数 + 各大类封面（置信度最高）
     #[tauri::command]
     pub async fn list_content_categories(

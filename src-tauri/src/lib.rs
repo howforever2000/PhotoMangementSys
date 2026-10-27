@@ -573,6 +573,7 @@ pub fn run() {
             content::commands::list_timeline,
     content::commands::timeline_index,
     content::commands::timeline_month,
+    content::commands::overview_stats,
             content::commands::list_content_categories,
             content::commands::list_photos_by_category,
             category::commands::list_categories,

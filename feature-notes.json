@@ -4683,6 +4683,53 @@
         "卡顿",
         "performance"
       ]
+    },
+    {
+      "id": "FEAT-123",
+      "name": "全局概览改成「数据变动才重算」的快照（首屏 14,438 KB 报文 → 3.35 KB，之后每次 22 ms）",
+      "module": "src-tauri/src/db/overview.rs、src-tauri/src/content.rs、src-tauri/src/lib.rs、src/stores/overview.ts、src/components/OverviewPane.vue、src/views/SmartAlbum.vue、src/types/overview.ts",
+      "status": "done",
+      "purpose": "用户反馈「全局概览每次也很慢，是重新计算的吗？可以每次导入照片或者扫描入库后才更新」。实测结论：是。虽然 FEAT-112 已有 dirty 缓存的骨架，但每次失效后的重建要拉 list_timeline（24,980 行 / 14,438 KB）+ list_categories + list_photo_locations + list_persons + category_index_stats（312~574 ms，慢在 known 的三表 UNION），再由前端对 2.5 万行遍历 6 遍算聚合 —— 日志里一次「概览构建簇」横跨 3~44 秒。另外 SmartAlbum 为了拿一个 .length 也会拉一次 list_timeline。",
+      "implementation": {
+        "后端聚合": "新增 db/overview.rs：一次 SQL 聚合算出 11 块 widget 需要的全部读数（总张数 / 无时间 / 带人脸 / 带 GPS / 年份跨度 / 月度分布 / 最近入库 6 张 / 那年今日 / 语义索引覆盖），不再把 2.5 万行明细发给前端。",
+        "签名缓存": "数据签名 = photo_content_scan / albums / photo_marks / photo_embeddings 四表的 (COUNT, MAX(时间戳)) + photo_categories 计数 + 生效模型名。签名一致 → 直接返回上次的 JSON；变了才重算并落 overview_cache 表（重启后仍命中）。这同时满足「导入/扫描后才更新」和「漏调 invalidate 也能自愈」。",
+        "前端瘦身": "stores/overview.ts 改调一次 overview_stats（+ 三个本来就很小的人物/地点/分类列表）；OverviewPane 的 6 处 2.5 万行遍历全部换成快照字段；SmartAlbum 的已入库张数改读快照，不再为 .length 拉 14 MB。",
+        "那年今日": "口径（往年同月同日）由前端传入 today_md / today_year，后端不算日历，避免时区各算一套。"
+      },
+      "highlights": {
+        "报文体积": "14,438 KB（list_timeline）→ 3.35 KB（快照）",
+        "耗时": "首次构建 571 ms（含原 category_index_stats 的 549 ms 聚合）；之后每次 22 ms（只跑签名）",
+        "请求数": "进概览 1 次 overview_stats + list_persons/locations/categories 各 1 次；list_timeline 0 次、category_index_stats 0 次",
+        "切回": "从概览切走再切回，新增请求 = 0（store 缓存命中）"
+      },
+      "tests": {
+        "浏览器验收": ".visual/probe-overview-snapshot.cjs：断言 overview_stats 恰好 1 次、list_timeline/category_index_stats 为 0、hero 读数渲染、切回 0 新增请求 —— 全部达标",
+        "后端量测": "src-tauri/examples/timeline_probe.rs 的「FEAT-123 概览快照」段：签名 22 ms / 聚合 549 ms / 快照 3.35 KB",
+        "类型与单测": "vue-tsc 无错；npm test 164 项全绿"
+      },
+      "related_files": [
+        "src-tauri/src/db/overview.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/examples/timeline_probe.rs",
+        "src/stores/overview.ts",
+        "src/components/OverviewPane.vue",
+        "src/views/SmartAlbum.vue",
+        "src/types/overview.ts",
+        ".visual/probe-overview-snapshot.cjs",
+        ".visual/preview-mock.js"
+      ],
+      "keywords": [
+        "概览",
+        "overview",
+        "快照",
+        "缓存",
+        "签名",
+        "性能",
+        "list_timeline",
+        "category_index_stats"
+      ]
     }
   ],
   "updated": "2026-10-27"

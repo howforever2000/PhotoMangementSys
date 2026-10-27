@@ -1,33 +1,33 @@
 /**
- * 全局概览统计缓存（FEAT-112）
+ * 全局概览统计缓存（FEAT-112 起，FEAT-123 重做取数方式）
  *
- * 为什么需要这一层（用户报「全局概览每次好像是实时计算，时间延迟较高」）：
- *   概览页要 5 个命令 + 一次全量时间线（2.5 万行）才能算出 11 块 widget 的数。
- *   每次切进这一页都重跑一遍 = 每次都要等；而这批数只在**相册/照片发生变动**时
- *   才会变。所以按「变动即失效」缓存，而不是按时间过期。
+ * ## 改前（FEAT-112）
+ * 为了画 11 块 widget，一次拉 5 个命令，其中 `list_timeline` 是**全量 2.5 万行**
+ * （实测 14,438 KB / 107 ms），再由前端遍历 6 遍算聚合；外加 `category_index_stats`
+ * （实测 312~574 ms，慢在 known 的三表 UNION）。日志里一次「概览构建簇」横跨 3~44 秒。
  *
- * 失效时机（用户指定）：导入相册 / 扫描入库 / 删除照片 / 重建分类索引。
- *   这些操作都会在成功后调 `invalidate()`；下次进概览才重新算。
- *   注意：不监听 albumStore.albums 变化来自动失效 —— fetchAlbums 在启动时也会
- *   被调用，那样等于每次启动都失效一次缓存，缓存就没意义了。必须由**变更动作**显式触发。
+ * ## 改后（FEAT-123）
+ * 聚合搬到后端：一次 `overview_stats` 返回 2~4 KB 快照。后端带**数据签名缓存**
+ * （落 `overview_cache` 表），照片库没变化时连聚合都不跑 —— 也就是用户要的
+ * 「只在导入照片 / 扫描入库之后才更新」。前端只再补三个本来就很小、且与照片内容
+ * 无关的列表（人物 / 地点聚合 / 分类定义）。
+ *
+ * ## 失效时机
+ * 导入相册 / 扫描入库 / 删照片 / 重建分类索引后调 `invalidate()`；
+ * 即便漏调，后端签名（张数 + 最大时间戳）也会在下一次请求时自愈。
  */
 import { defineStore } from "pinia";
 import { ref, shallowRef } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type {
-  CategoryIndexStats,
-  CategoryOverview,
-  ContentSearchHit,
-  LocationGroupRow,
-} from "../types/content";
+import type { CategoryOverview, LocationGroupRow } from "../types/content";
+import type { OverviewStats } from "../types/overview";
 import type { PersonInfo } from "../types/photo";
 
 export interface OverviewSnapshot {
-  timeline: ContentSearchHit[];
+  stats: OverviewStats;
   persons: PersonInfo[];
   locations: LocationGroupRow[];
   categories: CategoryOverview[];
-  catStats: CategoryIndexStats | null;
   /** 构建时间（用于「刚更新」提示与调试） */
   builtAt: number;
 }
@@ -46,11 +46,6 @@ export const useOverviewStore = defineStore("overview", () => {
     dirty.value = true;
   }
 
-  /**
-   * 取数据：缓存可用则**零 IPC** 直接返回；失效或强制刷新时才真正拉取。
-   * 并发安全：building 期间的重复调用直接复用同一个 Promise（切 tab 手快时
-   * 会连点，不能每次开一轮 IPC）。
-   */
   let inflight: Promise<void> | null = null;
 
   async function load(force = false): Promise<void> {
@@ -61,19 +56,19 @@ export const useOverviewStore = defineStore("overview", () => {
     error.value = "";
     inflight = (async () => {
       try {
-        const [timeline, persons, locations, categories] = await Promise.all([
-          invoke<ContentSearchHit[]>("list_timeline"),
+        const now = new Date();
+        const todayMd = `${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        const [stats, persons, locations, categories] = await Promise.all([
+          invoke<OverviewStats>("overview_stats", {
+            todayMd,
+            todayYear: now.getFullYear(),
+            force,
+          }),
           invoke<PersonInfo[]>("list_persons"),
           invoke<LocationGroupRow[]>("list_photo_locations"),
           invoke<CategoryOverview[]>("list_categories"),
         ]);
-        let catStats: CategoryIndexStats | null = null;
-        try {
-          catStats = await invoke<CategoryIndexStats>("category_index_stats");
-        } catch {
-          /* 语义索引统计不可用不影响其余 widget */
-        }
-        snapshot.value = { timeline, persons, locations, categories, catStats, builtAt: Date.now() };
+        snapshot.value = { stats, persons, locations, categories, builtAt: Date.now() };
         dirty.value = false;
       } catch (e) {
         error.value = String(e);

@@ -17,6 +17,26 @@ use std::time::Instant;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 
+/// 概览快照（与 `db::overview::OverviewStats` 同形，仅用于量体积）
+#[derive(Serialize)]
+struct OverviewBench {
+    total_scanned: i64,
+    no_time: i64,
+    with_face: i64,
+    with_gps: i64,
+    year_min: Option<i32>,
+    year_max: Option<i32>,
+    months: Vec<(String, i64)>,
+    recent: Vec<Card>,
+    on_this_day: Option<Card>,
+    on_this_day_count: i64,
+    indexed: i64,
+    stale: i64,
+    known: i64,
+    semantic_categories: i64,
+    model: String,
+}
+
 #[derive(Serialize)]
 struct OldHit {
     id: i64,
@@ -233,6 +253,190 @@ fn main() {
         )
         .unwrap_or(0);
     println!("\n缩略图随行下发覆盖率: {joined}/{all}（缺 {} 张走 get_photo_thumbs 兜底）", all - joined);
+
+    // ── 5. FEAT-123：概览快照 ──────────────────────────────────────────
+    overview_bench(&conn, user_id, "chinese-clip-vit-b16-fp32");
+}
+
+/// 量概览快照：签名查询（= 缓存命中路径）与全量聚合（= 未命中路径）分开计时
+fn overview_bench(conn: &Connection, user_id: i64, model: &str) {
+    println!("\n── FEAT-123 概览快照 ──────────────────────────────────");
+
+    // 签名：四张表的 (COUNT, MAX(ts)) + 分类数 + 模型名
+    let t = Instant::now();
+    let mut sig = String::new();
+    for (table, ts) in [
+        ("photo_content_scan", "scanned_at"),
+        ("albums", "updated_at"),
+        ("photo_marks", "updated_at"),
+        ("photo_embeddings", "rowid"),
+    ] {
+        let sql = format!(
+            "SELECT COUNT(*), COALESCE(MAX({ts}), 0) FROM {table} WHERE user_id = ?1"
+        );
+        let row: (i64, i64) = conn
+            .query_row(&sql, params![user_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap_or((0, 0));
+        sig.push_str(&format!("{table}:{}:{}|", row.0, row.1));
+    }
+    let ms_sig = t.elapsed().as_millis();
+    println!("缓存命中路径（只跑签名）      {ms_sig:>5} ms   sig={}…", &sig[..sig.len().min(48)]);
+
+    // 全量聚合
+    let t = Instant::now();
+    let (total_scanned, no_time, with_face, with_gps, year_min, year_max): (
+        i64,
+        i64,
+        i64,
+        i64,
+        Option<i32>,
+        Option<i32>,
+    ) = conn
+        .query_row(
+            "SELECT COUNT(*),
+                SUM(CASE WHEN shoot_time IS NULL OR shoot_time = '' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN person_ids IS NOT NULL AND person_ids NOT IN ('', '[]') THEN 1 ELSE 0 END),
+                SUM(CASE WHEN lat IS NOT NULL AND lon IS NOT NULL THEN 1 ELSE 0 END),
+                MIN(CASE WHEN shoot_time GLOB '[12][0-9][0-9][0-9]*' THEN CAST(substr(shoot_time,1,4) AS INTEGER) END),
+                MAX(CASE WHEN shoot_time GLOB '[12][0-9][0-9][0-9]*' THEN CAST(substr(shoot_time,1,4) AS INTEGER) END)
+             FROM photo_content_scan WHERE user_id = ?1",
+            params![user_id],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                    r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                    r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    r.get::<_, Option<i32>>(4)?,
+                    r.get::<_, Option<i32>>(5)?,
+                ))
+            },
+        )
+        .unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT substr(shoot_time,1,7), COUNT(*) FROM photo_content_scan
+             WHERE user_id = ?1 AND shoot_time IS NOT NULL AND length(shoot_time) >= 7
+             GROUP BY 1 ORDER BY 1",
+        )
+        .unwrap();
+    let months: Vec<(String, i64)> = stmt
+        .query_map(params![user_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    drop(stmt);
+    let recent = query_cards(
+        conn,
+        user_id,
+        "SELECT p.path, p.album_id, a.name, p.shoot_time, p.location
+         FROM photo_content_scan p
+         LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
+         WHERE p.user_id = ?1 ORDER BY p.id DESC LIMIT 6",
+    );
+    let on_this_day_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM photo_content_scan WHERE user_id = ?1
+               AND shoot_time IS NOT NULL AND length(shoot_time) >= 10
+               AND substr(shoot_time, 6, 5) = '10-27'
+               AND CAST(substr(shoot_time,1,4) AS INTEGER) < 2026",
+            params![user_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let on_this_day = query_cards(
+        conn,
+        user_id,
+        "SELECT p.path, p.album_id, a.name, p.shoot_time, p.location
+         FROM photo_content_scan p
+         LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
+         WHERE p.user_id = ?1 AND p.shoot_time IS NOT NULL AND length(p.shoot_time) >= 10
+           AND substr(p.shoot_time, 6, 5) = '10-27'
+           AND CAST(substr(p.shoot_time,1,4) AS INTEGER) < 2026
+         ORDER BY p.shoot_time DESC, p.id DESC LIMIT 1",
+    )
+    .into_iter()
+    .next();
+    let indexed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM photo_embeddings WHERE user_id = ?1 AND model = ?2",
+            params![user_id, model],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let total_emb: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM photo_embeddings WHERE user_id = ?1",
+            params![user_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let known: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM (
+                 SELECT photo_hash FROM photo_content_scan WHERE user_id = ?1
+                 UNION SELECT photo_hash FROM photo_thumb_cache WHERE user_id = ?1
+                 UNION SELECT photo_hash FROM photo_embeddings WHERE user_id = ?1
+             )",
+            params![user_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let semantic_categories: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM photo_categories WHERE user_id = ?1 AND source != 'builtin' AND enabled = 1",
+            params![user_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let ms_build = t.elapsed().as_millis();
+
+    let payload = OverviewBench {
+        total_scanned,
+        no_time,
+        with_face,
+        with_gps,
+        year_min,
+        year_max,
+        months,
+        recent,
+        on_this_day,
+        on_this_day_count,
+        indexed,
+        stale: total_emb - indexed,
+        known,
+        semantic_categories,
+        model: model.to_string(),
+    };
+    let bytes = serde_json::to_vec(&payload).unwrap().len();
+    println!(
+        "未命中路径（聚合）          {ms_build:>5} ms   快照 {:.2} KB",
+        kb(bytes)
+    );
+    println!(
+        "合计：首次 {} ms，之后每次 {} ms（纯签名命中）",
+        ms_sig + ms_build,
+        ms_sig
+    );
+}
+
+fn query_cards(conn: &Connection, user_id: i64, sql: &str) -> Vec<Card> {
+    let mut stmt = conn.prepare(sql).unwrap();
+    stmt.query_map(params![user_id], |r| {
+        Ok(Card {
+            id: 0,
+            path: r.get(0)?,
+            album_id: r.get(1)?,
+            album_name: r.get(2)?,
+            shoot_time: r.get(3)?,
+            location: r.get(4)?,
+            label: None,
+            thumb_path: None,
+        })
+    })
+    .unwrap()
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
 }
 
 fn query_month(

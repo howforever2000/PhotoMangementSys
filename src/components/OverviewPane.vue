@@ -51,13 +51,12 @@ const overview = useOverviewStore();
 const loading = ref(true);
 const error = ref("");
 
-/* 数据全部来自 overview store（按「变动即失效」缓存，见 stores/overview.ts）。
-   这里用 computed 读快照，切回概览时是**零 IPC** 直接渲染。 */
-const timeline = computed(() => overview.snapshot?.timeline ?? []);
+/* 数据全部来自 overview store。FEAT-123：快照里只有聚合数（约 2~4 KB），
+   不再持有 2.5 万行明细 —— 改前每次构建都要拉 14,438 KB 再遍历 6 遍。 */
+const stats = computed(() => overview.snapshot?.stats ?? null);
 const persons = computed(() => overview.snapshot?.persons ?? []);
 const locations = computed(() => overview.snapshot?.locations ?? []);
 const categories = computed(() => overview.snapshot?.categories ?? []);
-const catStats = computed(() => overview.snapshot?.catStats ?? null);
 
 /** path → 缩略图可渲染 URL（时间线照片走缩略图管线；相册封面直转） */
 const thumbMap = ref<Record<string, string>>({});
@@ -77,16 +76,17 @@ const fileUrl = (p: string | null | undefined) => (p ? convertFileSrc(p) : "");
 const totalPhotos = computed(() => store.albums.reduce((n, a) => n + (a.photo_count || 0), 0));
 const totalBytes = computed(() => store.albums.reduce((n, a) => n + (a.size_bytes || 0), 0));
 const totalAlbums = computed(() => store.albums.length);
-const scanned = computed(() => timeline.value.length);
+const scanned = computed(() => stats.value?.total_scanned ?? 0);
 const knownRatio = computed(() => (totalPhotos.value ? scanned.value / totalPhotos.value : 0));
 const indexedRatio = computed(() =>
-  catStats.value && catStats.value.known > 0 ? catStats.value.indexed / catStats.value.known : 0,
+  stats.value && stats.value.known > 0 ? stats.value.indexed / stats.value.known : 0,
 );
 
-/** 年份跨度 */
+/** 年份跨度（后端已算好 MIN/MAX，不用再遍历 2.5 万行） */
 const years = computed(() => {
-  const ys = timeline.value.map((r) => Number(r.shoot_time?.slice(0, 4))).filter((y) => y > 1900);
-  return ys.length ? { min: Math.min(...ys), max: Math.max(...ys) } : null;
+  const s = stats.value;
+  if (!s || s.year_min == null || s.year_max == null) return null;
+  return { min: s.year_min, max: s.year_max };
 });
 
 /** 今年月度柱阵（10 月之前填实，未来月不画柱；高亮当月） */
@@ -94,10 +94,11 @@ const now = new Date();
 const year = now.getFullYear();
 const monthBars = computed(() => {
   const counts = new Array(12).fill(0);
-  for (const r of timeline.value) {
-    if (!r.shoot_time || Number(r.shoot_time.slice(0, 4)) !== year) continue;
-    const m = Number(r.shoot_time.slice(5, 7));
-    if (m >= 1 && m <= 12) counts[m - 1]++;
+  const prefix = `${year}-`;
+  for (const [ym, n] of stats.value?.months ?? []) {
+    if (!ym.startsWith(prefix)) continue;
+    const m = Number(ym.slice(5, 7));
+    if (m >= 1 && m <= 12) counts[m - 1] += n;
   }
   const max = Math.max(1, ...counts);
   return { values: counts.map((c) => c / max), active: now.getMonth(), counts };
@@ -109,15 +110,9 @@ const yearMonthlyAvg = computed(() => {
   return passed ? Math.round(yearTotal.value / passed) : 0;
 });
 
-/** 人物照片覆盖（timeline 行里带 person_ids 的比例） */
-const faceRatio = computed(() => {
-  if (!scanned.value) return 0;
-  const withFace = timeline.value.filter((r) => r.person_ids && r.person_ids.length > 0).length;
-  return withFace / scanned.value;
-});
-const facePhotos = computed(() =>
-  timeline.value.filter((r) => r.person_ids && r.person_ids.length > 0).length,
-);
+/** 人物照片覆盖（后端直接给「带人脸的照片数」） */
+const facePhotos = computed(() => stats.value?.with_face ?? 0);
+const faceRatio = computed(() => (scanned.value ? facePhotos.value / scanned.value : 0));
 
 /** GPS 覆盖与 Top 城市 */
 const namedLoc = computed(() => locations.value.filter((g) => g.location !== null));
@@ -151,22 +146,22 @@ const topPlaces = computed(() => {
  * 再把张数最多的那根高亮出来，两个信息都在（哪几年多 + 峰值在哪一年）。
  */
 const yearTop = computed(() => {
-  const counts = new Map<number, number>();
-  for (const r of timeline.value) {
-    const y = Number(r.shoot_time?.slice(0, 4));
-    if (y > 1900) counts.set(y, (counts.get(y) ?? 0) + 1);
+  const counts = new Map<string, number>();
+  for (const [ym, n] of stats.value?.months ?? []) {
+    const y = ym.slice(0, 4);
+    counts.set(y, (counts.get(y) ?? 0) + n);
   }
   const picked = [...counts.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, TOP_N)
-    .sort((a, b) => a[0] - b[0]);
+    .sort((a, b) => a[0].localeCompare(b[0]));
   const max = Math.max(1, ...picked.map(([, c]) => c));
   let peak = 0;
   picked.forEach(([, c], i) => {
     if (i > 0 && c > picked[peak][1]) peak = i;
   });
   return {
-    labels: picked.map(([y]) => String(y)),
+    labels: picked.map(([y]) => y),
     values: picked.map(([, c]) => c / max),
     /* 柱宽在样式里封顶（见 .ov-years 的 max-width）：
        柱数不足 5（如片库只有一年）时不补空槽位 —— 空槽会被读成"那几年没拍照片"，
@@ -180,8 +175,8 @@ const yearTop = computed(() => {
   };
 });
 
-/** 最近导入：时间线倒序前 6 张 */
-const recent = computed(() => [...timeline.value].reverse().slice(0, 6));
+/** 最近导入：后端按 id 倒序给的 6 张（不用再复制 2.5 万行去 reverse） */
+const recent = computed(() => stats.value?.recent ?? []);
 const recentCovers = computed(() =>
   recent.value.map((r) => ({ src: thumbMap.value[r.path] || "", name: r.album_name ?? "" })),
 );
@@ -204,22 +199,21 @@ const faceItems = computed(() =>
 
 /** 分类：启用的语义分类与计数（只用于「照片库总览」的一行元信息） */
 const enabledCats = computed(() => categories.value.filter((c) => c.enabled));
-const catCount = computed(() => catStats.value?.semantic_categories ?? enabledCats.value.length);
-const catIndexed = computed(() => catStats.value?.indexed ?? scanned.value);
-const catStale = computed(() => catStats.value?.stale ?? 0);
+const catCount = computed(() => stats.value?.semantic_categories ?? enabledCats.value.length);
+const catIndexed = computed(() => stats.value?.indexed ?? scanned.value);
+const catStale = computed(() => stats.value?.stale ?? 0);
 
-/** 那年今日（过去年份同月同日） */
-const mm = String(now.getMonth() + 1).padStart(2, "0");
-const dd = String(now.getDate()).padStart(2, "0");
-const onThisDay = computed(() =>
-  timeline.value.filter(
-    (r) => r.shoot_time?.slice(5, 7) === mm && r.shoot_time?.slice(8, 10) === dd && Number(r.shoot_time.slice(0, 4)) < year,
-  ),
-);
-const memoryHero = computed(() => [...onThisDay.value].reverse()[0] ?? null);
+/**
+ * 那年今日（过去年份同月同日）
+ *
+ * 后端按「年-月-日 + 往年」算好总数与最新一张；这里不再 filter 2.5 万行。
+ */
+const memoryHero = computed(() => stats.value?.on_this_day ?? null);
+/** 那天一共多少张（后端计数，避免为一个小角标再拉一遍明细） */
+const onThisDayCount = computed(() => stats.value?.on_this_day_count ?? 0);
 const memoryCover = computed(() => (memoryHero.value ? thumbMap.value[memoryHero.value.path] || "" : ""));
 const memoryYearsAgo = computed(() =>
-  memoryHero.value ? year - Number(memoryHero.value.shoot_time!.slice(0, 4)) : 0,
+  memoryHero.value?.shoot_time ? year - Number(memoryHero.value.shoot_time.slice(0, 4)) : 0,
 );
 
 async function loadThumb(paths: { albumId: number; path: string }[]) {
@@ -429,7 +423,7 @@ function goAlbum(id?: number | null) {
           v-if="memoryHero"
           :src="memoryCover"
           :title="`${memoryYearsAgo} 年前的今天`"
-          :subtitle="`${memoryHero.shoot_time!.slice(0, 4)}${memoryHero.location ? ' · ' + memoryHero.location : ''}`"
+          :subtitle="`${memoryHero.shoot_time!.slice(0, 4)}${memoryHero.location ? ' · ' + memoryHero.location : ''}${onThisDayCount > 1 ? ' · 共 ' + onThisDayCount + ' 张' : ''}`"
           @activate="router.push('/memories')"
         />
         <div v-else class="ov-empty ov-empty-mem">往年今天的照片会出现在这里</div>

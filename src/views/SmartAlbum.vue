@@ -1,15 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import { useRoute, useRouter } from "vue-router";
 import { useThemeStore } from "../stores/theme";
 import { useAlbumStore } from "../stores/album";
+import { useOverviewStore } from "../stores/overview";
 import PersonGallery from "../components/PersonGallery.vue";
 import CategoryGallery from "../components/CategoryGallery.vue";
 import LocationGallery from "../components/LocationGallery.vue";
 import OverviewPane from "../components/OverviewPane.vue";
-import type { ContentSearchHit } from "../types/content";
-import type { PersonInfo } from "../types/photo";
 import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 
@@ -36,6 +34,8 @@ const route = useRoute();
 const router = useRouter();
 const theme = useThemeStore();
 const store = useAlbumStore();
+/** FEAT-123：已入库张数 / 人物数读概览快照（签名缓存），不再为了一个 .length 拉 14 MB */
+const overview = useOverviewStore();
 
 /** FEAT-046：深链定位的人物 id（/smart?tab=face&person={pid}） */
 const focusPid = ref<string | null>(null);
@@ -72,13 +72,11 @@ function fmtSize(bytes: number): string {
 async function loadStats() {
   try {
     if (!store.albums.length) await store.fetchAlbums();
-    // 已扫描入库数（跨相册）与人物数
-    const [tl, pl] = await Promise.all([
-      invoke<ContentSearchHit[]>("list_timeline"),
-      invoke<PersonInfo[]>("list_persons"),
-    ]);
-    scannedIn.value = tl.length;
-    totalPersons.value = pl.length;
+    /* FEAT-123：已入库张数与人物数直接读概览快照（后端签名缓存）。
+       改前这里为了拿一个 `.length` 就拉一次 `list_timeline` —— 24,980 行 / 14,438 KB。 */
+    await overview.load();
+    scannedIn.value = overview.snapshot?.stats.total_scanned ?? 0;
+    totalPersons.value = overview.snapshot?.persons.length ?? 0;
   } catch {
     /* 统计不可用也不阻塞入口 */
   }
