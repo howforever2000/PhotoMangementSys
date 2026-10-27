@@ -12,20 +12,36 @@ use std::path::Path;
 /// 中心方裁：读图 → 取中心正方形 → 缩放 `size×size` → JPEG 落盘到 `dst`
 ///
 /// 输入支持项目已启用的格式（jpg/jpeg/png/webp/gif/bmp）；输出统一 JPEG。
+/// 按**文件头**判断是否为 JPEG（不信扩展名）
+///
+/// BUG-2026-1027-004：本项目图库里存在「内容与扩展名不一致」的文件 ——
+/// 实测 `vcr-data/persons.db` 的 10,565 条人脸中有 **95 条**原图头是
+/// `89 50 4E 47`（PNG），其中一批还叫 `*.jpg`（微信/截图导出的典型产物）。
+/// 旧代码用 `ends_with(".jpg")` 判 JPEG，再交给 `jpeg_decoder` 读头，
+/// `info()` 返回 None → 报「无法读取图片头信息」，该人物的头像永远裁不出来。
+pub fn is_jpeg_file(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 3];
+    if f.read(&mut head).unwrap_or(0) < 3 {
+        return false;
+    }
+    head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF
+}
+
 pub fn crop_square(src: &Path, dst: &Path, size: u32) -> Result<(), String> {
     if !src.is_file() {
         return Err(format!("图片不存在: {}", src.display()));
     }
-    let name = src
-        .file_name()
-        .map(|n| n.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    let is_jpeg = name.ends_with(".jpg") || name.ends_with(".jpeg");
+    let is_jpeg = is_jpeg_file(src);
 
     let cropped = if is_jpeg {
         crop_square_jpeg(src, size)?
     } else {
-        let img = image::open(src).map_err(|e| format!("图片解码失败: {e}"))?;
+        // 按**内容**解码（image::open 会按扩展名猜格式，遇到 PNG 内容却叫 .jpg 会直接失败）
+        let img = crate::imgio::open_any(src)?;
         let side = img.width().min(img.height()).max(1);
         let x = (img.width() - side) / 2;
         let y = (img.height() - side) / 2;
@@ -558,6 +574,19 @@ mod tests {
         crop_square(&jpg, &dst_jpg, 96).unwrap();
         let img2 = image::open(&dst_jpg).unwrap();
         assert_eq!((img2.width(), img2.height()), (96, 96));
+
+        // BUG-2026-1027-004：内容 PNG + 扩展名 .jpg（微信/截图导出的典型产物）
+        // 旧代码按扩展名判 JPEG，交给 jpeg_decoder 会报「无法读取图片头信息」。
+        // 实测库里 10,565 条人脸有 95 条是这种文件。
+        let fake = tmp.join("fake.jpg");
+        image::RgbImage::new(200, 120)
+            .save_with_format(&fake, image::ImageFormat::Png)
+            .unwrap();
+        assert!(!is_jpeg_file(&fake), "PNG 内容不应被判为 JPEG");
+        let dst_fake = tmp.join("out_fake.jpg");
+        crop_square(&fake, &dst_fake, 96).expect("PNG 内容 + .jpg 扩展名必须仍能裁切");
+        let img3 = image::open(&dst_fake).unwrap();
+        assert_eq!((img3.width(), img3.height()), (96, 96));
 
         std::fs::remove_dir_all(&tmp).ok();
     }

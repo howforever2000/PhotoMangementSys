@@ -923,6 +923,12 @@ pub fn cleanup_all_album_thumbs(album_id: i64, thumbs_dir: &Path) {
     cleanup_album_grid_thumbs(album_id, thumbs_dir);
 }
 
+/// 按**内容**解码（`image::open` 按扩展名猜格式，会把 PNG 内容叫 .jpg 的文件判成 JPEG）
+fn open_any_image(source: &Path) -> Result<image::DynamicImage, ThumbError> {
+    let bytes = std::fs::read(source).map_err(ThumbError::Io)?;
+    image::load_from_memory(&bytes).map_err(ThumbError::Image)
+}
+
 /// 判断文件名是否为 JPEG（.jpg / .jpeg）
 fn is_jpeg_path(file_name: &str) -> bool {
     let lower = file_name.to_lowercase();
@@ -1059,11 +1065,15 @@ fn save_thumbnail(source: &Path, thumb_path: &Path) -> Result<(), ThumbError> {
         match decode_jpeg_scaled(source, THUMB_SIZE) {
             Ok(img) => oriented(image::DynamicImage::ImageRgb8(img))
                 .thumbnail(THUMB_SIZE, THUMB_SIZE),
-            // 降采样失败（异常 JPEG）降级为全尺寸解码，保证可用性
-            Err(_) => oriented(image::open(source)?).thumbnail(THUMB_SIZE, THUMB_SIZE),
+            // 降采样失败（异常 JPEG / 名不副实的 PNG）降级：按**内容**解码
+            Err(_) => match open_any_image(source) {
+                Ok(img) => oriented(img).thumbnail(THUMB_SIZE, THUMB_SIZE),
+                Err(e) => return Err(e),
+            },
         }
     } else {
-        oriented(image::open(source)?).thumbnail(THUMB_SIZE, THUMB_SIZE)
+        // 非 .jpg 扩展名 / 内容不是 JPEG：按魔数解码（不信扩展名）
+        oriented(open_any_image(source)?).thumbnail(THUMB_SIZE, THUMB_SIZE)
     };
     if let Some(parent) = thumb_path.parent() {
         std::fs::create_dir_all(parent)?;

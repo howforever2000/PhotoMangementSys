@@ -27,6 +27,7 @@ mod exif_orient;
 mod edit;
 mod folder;
 mod geo_index;
+mod imgio;
 mod logger;
 mod model_dl;
 mod photo_info;

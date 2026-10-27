@@ -521,11 +521,9 @@ pub fn crop_avatar_local(pid: &str, cache_path: &Path) -> Result<(), String> {
     let dx = (bw as f64 * 0.12) as i64;
     let dy = (bh as f64 * 0.12) as i64;
 
-    let name = Path::new(&photo_path)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    let is_jpeg = name.ends_with(".jpg") || name.ends_with(".jpeg");
+    // BUG-2026-1027-004：不能按扩展名判 JPEG —— 库里 95 条人脸原图是 PNG 却叫 .jpg，
+    // 交给 jpeg_decoder 会报「无法读取图片头信息」，那批人物永远没有头像。
+    let is_jpeg = crate::avatar::is_jpeg_file(Path::new(&photo_path));
 
     // BUG-2026-1014-002：bbox 来自 Python 检测侧，那边已按 EXIF 转正，故 bbox
     // 处于**显示坐标系**。此处若不解码后同样转正，就会「拿转正后的坐标去裁躺倒的
@@ -578,7 +576,8 @@ pub fn crop_avatar_local(pid: &str, cache_path: &Path) -> Result<(), String> {
         let ch = ((bh + 2 * dy) as f64 * sh).min((fh - cy.min(fh)) as f64).max(1.0) as u32;
         decoded.crop_imm(cx.min(fw), cy.min(fh), cw, ch)
     } else {
-        let img = image::open(&photo_path).map_err(|e| format!("图片解码失败: {e}"))?;
+        // 按**内容**解码（image::open 按扩展名猜格式，PNG 内容叫 .jpg 时会报 Illegal start bytes）
+        let img = crate::imgio::open_any(std::path::Path::new(&photo_path))?;
         let img = crate::exif_orient::apply_orientation(img, orientation);
         let cx1 = (x1 - dx).max(0) as u32;
         let cy1 = (y1 - dy).max(0) as u32;

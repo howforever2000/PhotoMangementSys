@@ -4582,6 +4582,17 @@
       "root_cause": "① list_timeline 一次返回 24,980 行 × 18 列 = 14.10 MB，前端只用 7 列；② justifyRows 收到 breakPoints 时仍先跑完「枚举行数 R 再打分」的 O(n²) 搜索，而结果整段被丢弃（n=24,980 时约 3 亿次迭代），叠加 rows→groups→flatItems→lineRows→monthRowMap 四层各新建 2.5 万个对象，全部在主线程同步跑；③ visibleMonths 单调增长、滚过的月份永不卸载，每卡还挂 IntersectionObserver + function ref + img，滚到底 2.5 万个 figure → WebView2 渲染进程节点/内存爆炸被回收；④ 缩略图按卡入队、每次只带 1~5 条路径，全局并发仅 3，一次滚动上千次 IPC 往返；⑤ railNodes 来自全量 groups 而锚点只存在于已渲染月份，getElementById 返回 null 时 railGo 直接 return；⑥ scrollIntoView({smooth}) 沿途经过上千张卡并触发追加渲染，文档高度边滚边变 → 落点漂移。",
       "fix": "FEAT-122：新增 timeline_index / timeline_month 按月分页（骨架 3.91 KB / 31 ms，缩略图路径随行下发）；前端改为高度账本 + 窗口化渲染（DOM 卡片稳定 40~47 个）；jumpTo 用账本直接 scrollTo 并 pin 目标；左栏高亮改账本二分；layoutMonth 去掉被丢弃的行数枚举，按月 O(n) 排且高度是可预算的纯函数。",
       "lessons": "① 优化前先量「首包体积」，15 MB 的 JSON 在主线程解析+派生，任何单点优化都杯水车薪；② 虚拟滚动的前提是「高度可预算」——本项目所有格子用名义宽高比、不用真实图片尺寸，所以 (count, width) 就能算出精确行高，这是方案能成立的关键；③ 懒加载图片 ≠ 懒加载列表：只把缩略图改懒、DOM 仍全量建，滚久了照样崩；④ 平滑滚动的代价与文档长度成正比，长列表跳转应「先定窗口再即时定位」；⑤ 排序/聚合类 SQL 在没有可写临时目录的受限会话里会报 SQLITE_CANTOPEN(unable to open database file) —— 这是工作区内 exe 只能写工作区的老问题（同 BUG-2026-1026-002），跑量测探针要把 exe 拷到工作区外。"
+    },
+    {
+      "id": "BUG-2026-1027-004",
+      "date": "2026-10-27",
+      "status": "fixed",
+      "title": "人物头像裁不出来：get_person_avatar 报「无法读取图片头信息」，缩略图报「Illegal start bytes:8950」",
+      "module": "src-tauri/src/avatar.rs、src-tauri/src/persons.rs、src-tauri/src/thumbnail.rs、src-tauri/src/imgio.rs",
+      "symptom": "① 人物页部分人物永远没有头像，日志里 get_person_avatar END | ERR | 无法读取图片头信息；② 部分照片的网格缩略图补齐失败：Image(Decoding(... Illegal start bytes:8950))。",
+      "root_cause": "本轮实测定位：`crop_avatar_local` / `crop_square` 用**扩展名**判断是否 JPEG（`name.ends_with(\".jpg\")`），再交给 `jpeg_decoder` 读图头。但图库里存在「内容与扩展名不一致」的文件 —— 直接统计 `vcr-data/persons.db` 的 faces 表：10,565 条人脸里 **95 条**原图的文件头是 `89 50 4E 47`（PNG），其中一批就叫 `*.jpg`（微信/截图导出常见）。jpeg_decoder 读 PNG 必然 `info()` 返回 None → 报「无法读取图片头信息」。同一类文件在 thumbnail.rs 里走 `image::open` 兜底也救不回来 —— `image::open` 先按**扩展名**猜格式（ImageReader::open 语义），照样把它当 JPEG 解，于是报 `Illegal start bytes:8950`（8950 = PNG 魔数）。",
+      "fix": "① 新增 `avatar::is_jpeg_file()`：读文件头 3 字节判 `FF D8 FF`，不信扩展名；avatar.rs 与 persons.rs 改用它选解码路径。② 新增 `src-tauri/src/imgio.rs::open_any()`：`image::load_from_memory` 按**魔数**解码，非 JPEG 快速路径与所有兜底分支统一走它；thumbnail.rs 也加 `open_any_image()` 替换两处 `image::open`。JPEG 源图仍保留 DCT 降采样快速路径（大图全解码要 5~14 s）。",
+      "lessons": "① 「按扩展名判图片格式」在本项目是系统性隐患：缩略图缓存里也有一批 `.jpg` 文件实际是 WebP（24,945 个 grid 缩略图全是这种），所以任何新写的解码/裁切代码都要按魔数判断；② `image::open` 会按扩展名猜格式，`image::load_from_memory` 才按内容嗅探 —— 遇到名不副实的文件必须用后者；③ 沙箱会话里 `cargo test` 会因写不了 %TEMP% 而假失败（PermissionDenied / 数据依赖），验证 Rust 单测要把测试 exe 拷到工作区外跑（同 BUG-2026-1026-002）。"
     }
   ],
   "updated": "2026-10-27"
