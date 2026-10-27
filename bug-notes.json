@@ -4692,7 +4692,66 @@
       ],
       "created_at": "2026-10-27T22:00:00+08:00",
       "fixed_at": "2026-10-27T21:56:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1027-008",
+      "date": "2026-10-27",
+      "status": "wontfix",
+      "title": "GPU 串行锁不能拆成「每会话一把」—— 跨会话并发 DML 同样 ACCESS_VIOLATION",
+      "module": "python/vcr/model_registry.py（_GPU_RUN_LOCK）",
+      "symptom": [
+        "P=6 跑 classify_batch 时，持锁时间占墙钟 97.6%~99.0%（50~55 次加锁），GPU 串行就是天花板；于是很自然会想把一把全局锁拆成 det/ocr/face_det/face_rec 各一把，让不同会话并行。",
+        "实测拆开后进程**直接段错误**：Windows fatal exception: access violation，栈在 onnxruntime_inference_collection.py:296 run → detector.run / ocr_service.run / face_service.embed_checked，exit code -1073741819。"
+      ],
+      "root_cause": "DirectML 执行提供方的非线程安全不是「同一会话内」的问题，而是**同一设备上下文**层面的：多个 DML 会话并发 run 会在共享的 D3D12 设备上踩同一个资源。BUG-2026-0923-001 记的是「同会话并发」，本条把边界扩大到「跨会话并发也不行」。",
+      "evidence_log": [
+        "pipeline_cost_probe 实测：wall 11203ms · 持锁 11096ms（99.0%）· 加锁 55 次 · 单次持锁均摊 201.7ms",
+        "拆成每会话一把锁后：Windows fatal exception: access violation（多个线程栈同时停在 InferenceSession.run）· EXIT=-1073741819"
+      ],
+      "solution": "不改。全局锁是 DML 的硬约束，想并行只能换 EP（CUDA/TensorRT/OpenVINO）或减少加锁次数（已做：FEAT-127 OCR 前置门）。另：det 与 face_det 的 ONNX 是**静态 batch=1**（declared [1,3,640,640]，喂 batch=2 直接 INVALID_ARGUMENT），所以「合并推理 batch 减少调用次数」对这两条通道不可行，必须重新导出动态 batch 的模型；ocr 与 face_rec 是动态 batch，可以合。",
+      "lessons": [
+        "「GPU 加速反而更慢」的常见误判是先怀疑 CPU，其实要先量**持锁占比**：占比接近 1 说明墙钟全部落在串行段，优化 CPU 只能小幅改善（实测 decode 砍掉 100ms，墙钟只降 37ms）。",
+        "改锁粒度前必须先用 faulthandler 起一个探针跑一遍，否则线上表现为随机 RemoteDisconnected / 进程消失。"
+      ]
+    },
+    {
+      "id": "BUG-2026-1027-009",
+      "date": "2026-10-27",
+      "status": "fixed",
+      "title": "POST /threads 谎报生效：写文件失败被 except: pass 吞掉，返回 applied 但实际未变",
+      "module": "python/vcr/config.py（set_threads）",
+      "symptom": [
+        "POST /threads {threads:7} 返回 {\"applied\":7, \"threads\":12}，随后 GET /threads 仍是 12；手动把 models/current_threads.json 写成 7 之后 GET 立刻变 7 —— 说明是写入没落地。"
+      ],
+      "root_cause": "set_threads() 里 `except Exception: pass` 吞掉写失败，然后 `return n`（期望值而非实际值），调用方据此回报「已生效」。",
+      "evidence_log": [
+        "POST /threads → {\"ok\":true,\"loading\":true,\"threads\":12,\"applied\":7}",
+        "GET /threads → 12（写入未落地）"
+      ],
+      "solution": "写完回读一次，返回 config.threads() 的真实值；写失败/未生效各打一行 stderr。",
+      "lessons": [
+        "「静默降级」写在读路径上是鲁棒，写在写路径上就是谎报 —— 写操作失败必须外显。"
+      ]
+    },
+    {
+      "id": "BUG-2026-1027-010",
+      "date": "2026-10-27",
+      "status": "open",
+      "title": "服务端成本结构日志（[vcr.stat] classify_batch …）实际没有进 app.log",
+      "module": "src-tauri/src/vision.rs（attach_child_output / 子进程输出转存）· python/server.py（_log）",
+      "symptom": [
+        "server.py::_log 的 docstring 写「宿主 Rust 侧会转存到 app.log」，但 app.log 里 grep `vcr.stat` / `classify_batch 批=` 一条都没有；那条最有用的「decode · det · ocr · face 均摊」日志全丢，只能手动起服务抓子进程 stdout。"
+      ],
+      "root_cause": "未定位。vision.rs 的 attach_child_output 把子进程输出推进 CHILD_OUTPUT 环形缓冲（只在启动失败时回带），没有写进应用日志通道；_log 的目标却是 stdout 而非 stderr。",
+      "evidence_log": [
+        "Select-String app.log -Pattern 'vcr.stat|classify_batch' → 无匹配（33044 行日志）",
+        "手动 Start-Process … -RedirectStandardOutput 后立即可见 [vcr.stat] classify_batch 批=24张 …"
+      ],
+      "solution": "待修：让 attach_child_output 把子进程 stdout/stderr 逐行进应用日志（带 [vcr] 前缀），或把 _log 改成写 stderr 并在 Rust 侧转存。",
+      "lessons": [
+        "排「为什么慢」时，成本分解日志是否可见本身就是一等公民；不可观测的性能优化等于没做。"
+      ]
     }
   ],
-  "updated": "2026-10-27"
+  "updated": "2026-10-27T23:40:00+08:00"
 }
