@@ -244,6 +244,8 @@ pub(crate) fn now() -> i64 {
 ///   放在写不进去的位置（被沙箱/安全软件限制、或目录被占）就以这两种错误崩在
 ///   `Database::open`，日志里只有一句"数据库初始化失败"，排查方向完全靠猜。
 ///   提前探一次写，能把"权限/占用"和"库损坏"彻底分开。
+///   “不可写”还有第二层来源：进程被降级到 Low 完整性级别时，ACL 给得再宽也写不了
+///   Medium 目录（BUG-2026-1027-007）—— 区分方法见 `fatal_data_dir` 的排查项 ④。
 fn ensure_dir_writable(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let probe = dir.join(".write_probe");
@@ -271,11 +273,20 @@ fn resolve_data_dir(app: &tauri::AppHandle) -> PathBuf {
 
 /// 数据目录不可写时的统一退出：先落盘日志，再打印到 stderr，最后退出。
 /// 不 panic —— panic 的调用栈对用户没有任何信息量。
+///
+/// 排查项 ④ 的由来（BUG-2026-1027-007）：Windows 的「拒绝访问」有两层，
+/// ACL 只是其中一层；另一层是**完整性级别**（强制完整性控制 no-write-up）。
+/// 工作区目录一旦被打了 Low 完整性标签，其中的 exe 就以 Low IL 运行，
+/// 而 %APPDATA% / %TEMP% 是 Medium IL → 任何写入都返回 os error 5，
+/// 与 ACL、杀软、并发占用全都无关。此前这条被误记成「受限会话」（BUG-2026-1026-002）。
 fn fatal_data_dir(dir: &Path, err: &std::io::Error) -> ! {
     let msg = format!(
         "数据目录不可写：{}\n原因：{err}\n\
          排查：① 该目录是否被安全软件/沙箱/权限限制；② 是否已有实例占用；\
-         ③ 可用环境变量 PMS_DATA_DIR 指定一个可写目录后重试。",
+         ③ 可用环境变量 PMS_DATA_DIR 指定一个可写目录后重试；\
+         ④ 若 `icacls` 在该目录或本程序所在目录上显示 Low Mandatory Level\
+         （进程被降级，Low IL 写不了 %APPDATA%/%TEMP% 这类 Medium 目录），\
+         先执行 `icacls \"<该目录>\" /setintegritylevel (OI)(CI)M` 提升到 Medium 再重试。",
         dir.display()
     );
     logger::log_error("startup", &msg);
