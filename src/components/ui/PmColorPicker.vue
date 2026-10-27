@@ -426,14 +426,15 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.45);
   pointer-events: none;
 }
-/* 内方块：边长必须 ≤ 内半径 × √2，否则四个角会钻到环下面。
-   内半径 34% ⇒ 上限 48%；取 46% 留一点呼吸。 */
+/* 内方块：边长必须 ≤ 环内半径 × √2，否则四个角会钻到环下面。
+   实测环内半径 ≈ 122px（264px 的 46%，环带约 10px）⇒ 边长上限 ≈ 172px = 65%。
+   取 62%（164px，对角 116px）留 6px 呼吸 —— 再大四角就会压到环上。 */
 .cp-sv {
   position: absolute;
-  left: 27%;
-  top: 27%;
-  width: 46%;
-  height: 46%;
+  left: 19%;
+  top: 19%;
+  width: 62%;
+  height: 62%;
   border-radius: 10px;
   cursor: crosshair;
   touch-action: none;
