@@ -157,6 +157,21 @@ const PAGE_PATH: Record<string, string> = {
     if (v !== undefined) (theme as any)[k] = v;
   }
   if (patch.mode) (theme as any).mode = patch.mode;
+  /* `?mat=liquid|plain` 覆盖预设带的材质（预设一律 plain）。
+     材质探针要在**同一套背景/组件色**下对比两种材质，
+     否则「液态看着不明显」到底是材质的锅还是预设色的锅分不清。 */
+  const matOverride = new URLSearchParams(location.search).get("mat");
+  if (matOverride === "liquid" || matOverride === "plain") {
+    (theme as any).material = matOverride;
+  }
+  /* `?alpha=0.4` 覆盖组件透明度 —— 用来验证「拖滑块有没有真的改变填充」。
+     必须先判"参数存在"：Number(null) === 0 是有限值，直接判断会把没带参数的
+     探针也钉到 compAlpha=0（实测：误判成"液态透明度永远是 58%"）。 */
+  const alphaRaw = new URLSearchParams(location.search).get("alpha");
+  const alphaOverride = alphaRaw === null ? NaN : Number(alphaRaw);
+  if (Number.isFinite(alphaOverride) && alphaOverride >= 0 && alphaOverride <= 0.9) {
+    (theme as any).compAlpha = alphaOverride;
+  }
   await nextTick();
   await new Promise((r) => setTimeout(r, 400));
 

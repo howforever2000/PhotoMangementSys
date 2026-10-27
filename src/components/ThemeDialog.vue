@@ -460,7 +460,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
               </button>
             </div>
             <p class="pm-hint" style="margin: 6px 0 0">
-              普通：无模糊、无纹理的卡片 · 液态：边缘折射 + 壁厚高光
+              普通：无模糊、无纹理的卡片 · 液态：背景压暗/提亮 + 上缘镜面 + 下缘壁厚
               · 全局生效：卡片、面板、仪表墙 widget 一并用这一套材质
             </p>
 
@@ -504,7 +504,9 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
             </label>
             <!-- FEAT-094：透明度能拉到 0，但代价当场说清楚 ——
                  文字色是按背景**均值**推的，卡片的填充就是那层「把局部差异抹平」的底；
-                 这条读数逐带算过，比一个拍脑袋的下限诚实。 -->
+                 这条读数逐带算过，比一个拍脑袋的下限诚实。
+                 FEAT-121：滑块现在是**唯一事实**（旧版液态会把值夹到 0.58 下限，
+                 0~62% 拖不出任何变化）——所以这条读数比以往更重要：它不再被安全阀掩盖。 -->
             <p class="pm-hint" :class="{ 'pm-warn': theme.readability.worst < 4.5 }" style="margin: 2px 0 0">
               实测最深色带上的文字对比 ≈ {{ theme.readability.worst.toFixed(1) }}:1
               <template v-if="theme.readability.worst < 4.5">

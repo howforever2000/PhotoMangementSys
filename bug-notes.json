@@ -4520,7 +4520,58 @@
         "启动失败要给「能行动的话」（路径 + 原因 + 下一步），panic 调用栈对用户零信息量。",
         "自己发起的长任务（tauri dev / 构建）会留下 WAL：非正常结束的下一次启动会把「环境权限」伪装成「库只读」。"
       ]
+    },
+    {
+      "id": "BUG-2026-1027-001",
+      "date": "2026-10-27",
+      "status": "resolved",
+      "title": "液态玻璃的「棱环」伪元素从未渲染：规则缺 content，计算值一直是 content:none",
+      "module": "src/assets/main.css（body.mat-liquid .glass-surface::after）",
+      "symptom": [
+        "液态材质在浅色预设下几乎看不出是玻璃：卡片与背景明度差 < 2%，只剩一条描边",
+        "getComputedStyle(card,'::after').content === \"none\"、position:static —— 高光棱环整个不存在",
+        "同一套规则在深色下也不生效，只是深底上填充差异更大，掩盖了缺失"
+      ],
+      "root_cause": {
+        "summary": "main.css 里为液态写了两条 ::after 规则（mat-plain 的 display:none 与 mat-liquid 的 160° 渐变背景），但从来没有任何一条给出 content:''/position/inset。没有 content 的伪元素不会被生成，于是 background 声明完全空转。",
+        "why_missed": "验收时看的是「有没有这条 CSS」而不是「这一层画出来没有」；截图对比又只在深色预设下做过，深底填充差异把缺失掩盖了。"
+      },
+      "fix": [
+        "补全 ::after 的几何：content:'' / position:absolute / inset:0 / border-radius:inherit / pointer-events:none",
+        "改用 padding:1px + mask-composite:exclude 裁成真正的 1px 棱环（满面积渐变会盖在内容上把照片与文字洗白）",
+        "棱环颜色改为引用 --liquid-specular / --liquid-depth（store 按背景明度下发），浅底用 0.9 白 + 0.16 暗壁"
+      ],
+      "lessons": [
+        "伪元素规则「写了 background 却没有 content」是最容易静默失效的一类 CSS：样式面板里看得到声明，页面上什么都没有。判据是 getComputedStyle(el,'::after').content，不是源码里有没有这段。",
+        "同一材质要在深/浅两套底色上各验一次：深底的高光失效常被填充差异掩盖。"
+      ]
+    },
+    {
+      "id": "BUG-2026-1027-002",
+      "date": "2026-10-27",
+      "status": "resolved",
+      "title": "拖「组件透明度」滑块没反应：液态下 0~62% 被统一夹到 0.58",
+      "module": "src/stores/theme.ts（effectiveAlpha）、src/components/ThemeDialog.vue",
+      "symptom": [
+        "液态材质下把透明度从 20% 拖到 50%，画面完全不变",
+        "实测 --color-surface 的 alpha：compAlpha 0.2 → 0.58、0.5 → 0.58、0.8 → 0.76 —— 只有 >0.62 才开始跟手",
+        "换算到画面上：两个 alpha 只差 2~3 个色阶，等于没有变化"
+      ],
+      "root_cause": {
+        "summary": "FEAT-103 为液态加的「−0.04 偏移 + 0.58 下限 + 对比度安全阀」三重夹紧，在材质变成用户可选卡面之后仍是硬夹：Math.max(0.58, base-0.04) 把 0~62% 全部夹平；安全阀再在对比不足时把值退回上一个候选。",
+        "why_missed": "当时的约束是「玻璃只用于浮层，填充不够实就看不清字」，下限是为浮层写的；后来材质开放给卡面，限制没有跟着撤销，也没有「拖到底有没有变化」的用例。"
+      },
+      "fix": [
+        "effectiveAlpha 直接返回 compAlpha（滑块唯一事实），删除 LIQUID_ALPHA_DROP / LIQUID_ALPHA_FLOOR 与对比度安全阀",
+        "可读性交给已有机制：文字色对 glassRgb（玻璃等效底色）现算，主题弹窗里的「实测最深色带 ≈ x:1」如实报警",
+        "下限只保留在派生层：dialogAlpha 不低于 0.55（弹窗后面是照片，不是壁纸渐变）"
+      ],
+      "lessons": [
+        "「安全阀」是在特定用途下写的：用途一变就必须复查，否则它会静默吃掉用户的操作（用户只会说「滑块坏了」）。",
+        "验收滑块类控件要看**下发的值**而不只是画面：画面上 2~3 个色阶的差别人眼几乎不可分辨。",
+        "填充色与背景太接近时，alpha 变化本身也看不出（实测 25% vs 72% 只差 2~3 个色阶）—— 先修色差，再谈透明度。"
+      ]
     }
   ],
-  "updated": "2026-10-26T23:25:00+08:00"
+  "updated": "2026-10-27T17:10:00+08:00"
 }

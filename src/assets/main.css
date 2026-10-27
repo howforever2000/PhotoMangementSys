@@ -81,6 +81,11 @@
      FEAT-100：磨砂 / 釉瓷已收敛掉，旧值在 prefs.normalizePrefs 回落为 plain。 */
   --glass-blur: 18px;                  /* 容器模糊**半径**（长度） */
   --glass-saturate: 1.05;              /* 玻璃后背景饱和度（素化 C1：1.3 → 1.05） */
+  /* FEAT-121：背景的**明度/对比位移**。模糊只能把背景变成色块，
+     平滞背景（四套预定义全是纯渐变）模糊后仍然是同一片颜色 —— 想让“玻璃在这里”
+     可读，得靠 tonal shift。默认 1（不变），液态由 theme store 按背景明度下发。 */
+  --glass-brightness: 1;
+  --glass-contrast: 1;
   --glass-bg: var(--color-surface);    /* 容器填充：由 theme store 按组件色调下发 */
   /* ⚠️ FEAT-108：本令牌是**纯颜色**（不是完整 border）。
      曾与 tokens.css 的「完整 border」同名，而使用方写 `border: var(--glass-border)`
@@ -127,12 +132,18 @@
   --panel-glass-radius: 12px;  /* 液态高光（素化 C2 / M3）：0.45 → 0.20，且衰减段**大幅拉短**——
      液态的招牌是「窄而快衰减」的一束反光（40% 处就基本收干净），
      旧值拖到 58% 是一整片糊白，卡面因此发闷发艳。
-     M3：这束光是**静态**的 —— 全应用唯一的固定光源方向（左上 135°），不跟鼠标。 */
+     M3：这束光是**静态**的 —— 全应用唯一的固定光源方向（左上 135°），不跟鼠标。
+     FEAT-121：色值改成引用 --liquid-specular（由 store 按背景明度下发）——
+     浅底上用 0.2 的白等于没画，必须能单独调强弱。 */
+  --liquid-specular: rgba(255, 255, 255, 0.46); /* 上缘/镜面亮度（浅底会换成 0.9） */
+  --liquid-depth: rgba(0, 0, 0, 0.34);          /* 下缘暗壁 = 板厚读数 */
+  --liquid-shadow-out: 0 1px 2px rgba(0, 0, 0, 0.18),
+    0 18px 36px -18px rgba(0, 0, 0, 0.55);
   --liquid-highlight: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.2) 0%,
-    rgba(255, 255, 255, 0.05) 22%,
-    rgba(255, 255, 255, 0) 40%
+    color-mix(in srgb, var(--liquid-specular) 44%, transparent) 0%,
+    color-mix(in srgb, var(--liquid-specular) 12%, transparent) 22%,
+    transparent 42%
   );
   /* 公共表面光影：双向倒角（顶部白亮棱 + 底部暗色玻璃壁）+ 单柔光投影。
      素化 C5：删掉原来的第二层硬投影 `0 2px 4px .16` —— 那道 4px 的近距离黑影
@@ -236,8 +247,7 @@ body.mat-plain {
 body.mat-liquid {
   /* FEAT-103 P0：模糊 12 → 16px，饱和 1.08 → 1.1。
      "液体"的正确组合是「模糊更大 + 填充更实」—— 只看模糊半径会误判成"越糊越玻璃"，
-     其实模糊只是让背光变成色块，真正的通透感来自填充不透明度
-     （CompAlpha 已按 §3 下限 .58 下发，见 stores/theme.ts effectiveAlpha）。 */
+     其实模糊只是让背光变成色块，真正的通透感来自填充不透明度。 */
   --glass-blur: 16px;
   --glass-saturate: 1.1;
   /* 液态壁厚（FEAT-103 收敛）：原来 6 层 inset 叠成一片灰白，壁厚反而读不出。
@@ -247,15 +257,23 @@ body.mat-liquid {
        ③ 环境柔光（唯一外层阴影）—— 悬浮
      删掉的三层分别是：亮雾（宽而弱 → 一层灰雾）、焦散（贴下缘的亮线，
      与②的暗壁在 1px 距离内互相抵消）、左右薄边（3px 尺度上不可见）。
-     保留在令牌里而非规则里，是为了内联 cardStyle 路径也拿到同一份（内联会盖规则）。 */
+     保留在令牌里而非规则里，是为了内联 cardStyle 路径也拿到同一份（内联会盖规则）。
+
+     FEAT-121：两个色值改引用 --liquid-specular / --liquid-depth（store 按背景明度下发）——
+     浅底上「0.42 的白 + 0.34 的黑」都不成立（白在浅底上看不见、黑在浅底上又过脏），
+     写死就永远只能满足一半场景。 */
   --shadow-1:
-    /* ① 上缘镜面 */
-    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    /* ① 上缘镜面（1px 硬边） */
+    inset 0 1px 0 var(--liquid-specular),
+    /* ①b 上缘内晕（2px 尺度）—— 真玻璃的边缘是**渐变过渡**，只靠 1px 硬边
+       在浅底 + 平滑背景上会被当成“描边”。这层是 1px 硬边之外的柔和壁厚。 */
+    inset 0 2px 6px -3px var(--liquid-specular),
     /* ② 下缘暗壁 —— 唯一能读出"厚度"的一层 */
-    inset 0 -1px 0 rgba(0, 0, 0, 0.34),
+    inset 0 -1px 0 var(--liquid-depth),
+    /* ②b 下缘内晕：光被壁挡住后在底部积成一道暗，两端向中间衰减 */
+    inset 0 -3px 8px -4px var(--liquid-depth),
     /* ③ 环境影 + 悬浮柔光（合为一层：两个不同尺度的影曾是脏边的来源） */
-    0 1px 2px rgba(0, 0, 0, 0.18),
-    0 18px 36px -18px rgba(0, 0, 0, 0.55);
+    var(--liquid-shadow-out);
 }
 
 /* ==========================================================================
@@ -272,8 +290,12 @@ body.mat-liquid {
      （Home 的 user-box 实测 24px，子项全部溢出，BUG-2026-1021-001）。
      游标亮斑取消后全仓再无 @container / cqw 查询，留着只是白背一个坑。 */
   background-color: var(--glass-bg); /* 普通/液态两条路径共用填充 */
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  /* FEAT-121：brightness/contrast 是“背景平滞时玻璃也能被看见”的唯一手段，
+     两个令牌由 theme store 按**背景实际明度**下发（浅 .97 / 深 1.06）。 */
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate))
+    brightness(var(--glass-brightness)) contrast(var(--glass-contrast));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate))
+    brightness(var(--glass-brightness)) contrast(var(--glass-contrast));
   box-shadow: var(--shadow-1);
 }
 /* cardStyle 的内联描边已上收到这里：内联 border-color 会盖掉悬停态换色。
@@ -330,19 +352,42 @@ body.mat-plain .glass-card::after {
    留着死样式会让后来者以为还有对象在用。--candy-* 六个色值一并删除。
    ========================================================================== */
 
-/* —— 液态的棱环只认一个光源方向（M3 补充）——
-   共享棱环的第二层是 135° 双角反光：左上与**右下**各一条 0.26/0.28 的白。
-   底缘保持暗壁，于是「亮在上、暗在下」这条光路才真正闭住。 */
+/* —— 液态的棱环（FEAT-121 修复：这一层之前**根本没画出来**）——
+   规则早就写在这里，但缺了 `content` / `position` / `inset`，
+   计算值一直是 content:none、position:static —— 伪元素不存在。
+   也就是说 M3 之后液态卡片**从来没有高光棱环**：
+   深底上还能靠填充差异掩盖，浅底上就只剩一片白。
+   实测：getComputedStyle(card,'::after').content === "none"。
+
+   画法用「padding + mask exclude」裁成 1px 环，而不是满面积渐变：
+   满面积渐变会盖在内容上（照片、文字全被洗一层白）；
+   环只需要那 1px —— 这也是它叫「棱环」而不是「高光层」的原因。
+   成本：一个伪元素 + 一次 mask 合成，不增加滤镜/位移。 */
 body.mat-liquid .glass-surface::after,
 body.mat-liquid .glass-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  /* 光源只有一个：左上 135°。环上沿亮、下沿暗，右下角回光一点点。 */
   background: linear-gradient(
     160deg,
-    rgba(255, 255, 255, 0.46) 0%,
-    rgba(255, 255, 255, 0.1) 26%,
-    rgba(255, 255, 255, 0) 46%,
-    rgba(0, 0, 0, 0.12) 64%,
-    rgba(0, 0, 0, 0.34) 100%
+    var(--liquid-specular) 0%,
+    color-mix(in srgb, var(--liquid-specular) 22%, transparent) 26%,
+    transparent 46%,
+    color-mix(in srgb, var(--liquid-depth) 40%, transparent) 64%,
+    var(--liquid-depth) 100%
   );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
 }
 
 /* 统一盒模型：避免组件内 width+padding 溢出 */
@@ -592,14 +637,37 @@ body.mat-liquid .glass-surface,
 body.mat-liquid .glass-card {
   /* 静态光学全部落在元素自身（见 M3 图层分工）：
      ① 上缘湿边水光（一道极窄亮带：玻璃刚被擦过的湿感）
-     ② 底部透光焦散（光从底缘穿进厚壁后向上散开 —— 「透明」的主要证据）
-     ③ 两处内部光池 ④ 135° 静态高光带
-     壁厚内影在 --shadow-1 令牌里（不能放这里 —— 内联 cardStyle 的 boxShadow 会盖掉本规则）。 */
+     ② 底部透光/厚度（浅底上是**暗**带：光从底缘穿进厚壁，板才看得出厚度）
+     ③ 内部光池 ④ 135° 静态高光带
+     壁厚内影在 --shadow-1 令牌里（不能放这里 —— 内联 cardStyle 的 boxShadow 会盖掉本规则）。
+
+     FEAT-121：四层全部改成「由 --liquid-specular / --liquid-depth 派生」——
+     旧值写死了 0.16/0.13/0.12/0.05 的白，在浅底上这四层加起来不到 2% 明度差，
+     画了跟没画一样（这就是“浅色背景效果不明显”的直接原因）。
+     现在不用手调两套数值：把两个基准色（镜面亮度 / 壁厚暗度）交给 store
+     按背景明度下发，四层自动跟着变深浅。 */
   background-image:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0, rgba(255, 255, 255, 0) 10%),
-    linear-gradient(0deg, rgba(255, 255, 255, 0.13) 0, rgba(255, 255, 255, 0) 17%),
-    radial-gradient(120% 90% at 18% 0%, rgba(255, 255, 255, 0.12), transparent 45%),
-    radial-gradient(100% 80% at 85% 100%, rgba(255, 255, 255, 0.05), transparent 40%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--liquid-specular) 70%, transparent) 0,
+      color-mix(in srgb, var(--liquid-specular) 12%, transparent) 7%,
+      transparent 15%
+    ),
+    linear-gradient(
+      0deg,
+      color-mix(in srgb, var(--liquid-depth) 70%, transparent) 0,
+      transparent 18%
+    ),
+    radial-gradient(
+      120% 90% at 18% 0%,
+      color-mix(in srgb, var(--liquid-specular) 30%, transparent),
+      transparent 48%
+    ),
+    radial-gradient(
+      100% 80% at 85% 100%,
+      color-mix(in srgb, var(--liquid-specular) 14%, transparent),
+      transparent 42%
+    ),
     var(--liquid-highlight);
   background-color: var(--glass-bg);
   background-repeat: no-repeat;

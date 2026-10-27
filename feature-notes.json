@@ -4579,6 +4579,58 @@
       ],
       "created_at": "2026-10-27T21:10:00+08:00",
       "updated_at": "2026-10-27T21:10:00+08:00"
+    },
+    {
+      "id": "FEAT-121",
+      "name": "液态玻璃材质 v2：浅底可见性（压暗填充 + 背景明度位移 + 棱环修复）+ 透明度滑块回归跟手",
+      "module": "src/stores/theme.ts、src/assets/main.css、src/assets/tokens.css、src/components/ThemeDialog.vue",
+      "status": "done",
+      "purpose": "用户反馈两条：① 浅色背景下液态玻璃效果不明显；② 改透明度没有变化。参考 WXperia/liquid-glass-vue（WebGL/shadcn 风格，边缘位移折射）与 mianbeishiwole/Liquid-Glass-Vue（纯 CSS：模糊 + 135° 高光 + 1px 顶缘 + inset 阴影）两个实现，取「纯 CSS 光学分层」路线（前者要 WebGL/shader worker，与「不要让组件过重」冲突）。",
+      "implementation": {
+        "① 浅底填充改方向": "液态填充不再一律向白提亮 12%：改由背景实际明度决定 —— 深底向白 12%（湿玻璃），浅底向冷灰 #26342f 压暗 20%。根因是「白玻璃落在白纸上等于没有板」：实测旧填充与背景明度差 < 2%，高光/棱环/模糊全部画了看不见。12% 也不够（只拉开 6~8%），20% 后板面稳定低一档。",
+        "② 背景明度位移": "backdrop-filter 增加 brightness/contrast（浅 .97/1.04、深 1.06/1.02，由 store 按背景明度下发）。四套预定义背景都是平滑渐变，模糊在平滑面上是零信息，真正能把玻璃区域从周围分开的只有 tonal shift。",
+        "③ 棱环修复": "body.mat-liquid ...::after 之前只有 background 没有 content（计算值 content:none），棱环从未渲染。补全几何并改用 padding:1px + mask-composite:exclude 裁成真正的 1px 环（满面积渐变会洗白内容）。",
+        "④ 壁厚令牌化": "--shadow-1 的 1px 硬边改引用 --liquid-specular/--liquid-depth（浅底 0.9 白 / 0.16 暗壁），并各加一层 2~3px 内晕，让边缘是渐变过渡而不是一条描边。",
+        "⑤ 四层高光令牌化": "湿边/厚度/光池/135° 镜面四层此前写死 0.16~0.05 的白，浅底上叠起来不到 2% 明度差；改为由 --liquid-specular/--liquid-depth 经 color-mix 派生，深浅底自动跟手。",
+        "⑥ 透明度回归跟手": "删除 FEAT-103 的「−0.04 + 0.58 下限 + 对比度安全阀」，effectiveAlpha = compAlpha。下限只保留在弹层派生值（dialogAlpha ≥ .55），因为弹窗后面常是照片而不是壁纸渐变。",
+        "⑦ 浮层同步": "--float-* 增加 brightness/contrast（浅 .97/1.03、深 1.06/1.02），浅色浮层填充 .72 → .66，让搜索胶囊/弹窗在浅底上也能读出玻璃而不是白卡。"
+      },
+      "highlights": [
+        "「浅色看不出玻璃」不是模糊不够，而是三层白叠三层白：白填充 + 白高光 + 白棱环 + 白底。修法是让**板面比背景低一档**，白高光才有地方可亮。",
+        "模糊在平滑渐变上是零信息：四套预定义背景全是渐变，blur 16px 与 0px 在板面上几乎没有像素差。能制造差异的只有填充色差与 tonal shift（brightness/contrast）。",
+        "伪元素规则缺 content 会静默失效：mat-liquid 的棱环写了 background 却没有 content，计算值 content:none，两层伪元素规则全部空转。验收要读 getComputedStyle(el,'::after').content。",
+        "alpha 的感知下限取决于填充与背景的色差：填充色与背景只差 6~8% 时，25% 与 72% 两个 alpha 在屏幕上只差 2~3 个色阶 —— 先修色差，滑块自然跟手。",
+        "两个参考实现的取舍：liquid-glass-vue（WXperia）靠 feDisplacementMap + 预烘焙位移贴图（甚至 WebGL shader worker）做真实边缘折射，视觉上限最高但组件重、且本仓 spec 明确要求卡片不挂位移滤镜；Liquid-Glass-Vue（mianbeishiwole）是纯 CSS（blur + 135° 高光 + 1px 顶缘 + inset 壁厚），取它的分层思路，折射仍只留给浮层。",
+        "实验记录：feImage + 数据 URI 渐变位移贴图在本机 Chromium 下对周期性/平滑背景**看不到可测的弯折**（.visual 实验页已删除），所以本仓没有为此增加滤镜图元。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 154/154 全绿",
+        "npm run build exit 0",
+        ".visual/probe-liquid.mjs（新建）：浅底板面 vs 板外明度差 <2% → 15.7%/15%/9.2%；plain→liquid 变化像素 15.6%；alpha 25%→50% 变化像素 10.9%（修复前 0%）",
+        "视觉核对：light/dark × plain/liquid × alpha(0/25/50/72/90) + /scan /workshop /smart /home 四页截图（.visual/baseline/liquid/）"
+      ],
+      "related_files": [
+        "src/stores/theme.ts",
+        "src/assets/main.css",
+        "src/assets/tokens.css",
+        "src/components/ThemeDialog.vue",
+        "design/design-system.md",
+        ".visual/probe-liquid.mjs",
+        ".visual/preview.html",
+        ".visual/themed-probe.ts"
+      ],
+      "keywords": [
+        "液态玻璃",
+        "liquid glass",
+        "浅色背景",
+        "透明度滑块",
+        "棱环",
+        "伪元素 content",
+        "brightness",
+        "tonal shift",
+        "liquid-glass-vue"
+      ]
     }
   ],
   "updated": "2026-10-27T21:10:00+08:00"

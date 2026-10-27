@@ -2,7 +2,6 @@ import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 import {
   componentTone,
-  contrastRatio,
   glassBandContrast,
   gradientAverage,
   hexToRgb,
@@ -418,59 +417,51 @@ export const useThemeStore = defineStore("theme", () => {
   });
 
   /**
-   * 液态填充色（FEAT-086 表面光学 / FEAT-101 M3）：向白提亮 12% 呈现「湿玻璃」。
-   * 普通卡片维持组件原色。
+   * 页面底是浅色还是深色 —— **按实际背景明度判，不按 mode 判**。
    *
-   * M3：20% → 12%。掺白是「奶雾感」的来源，掺到 20% 时卡面偏奶白、
-   * 看不出背后在透——「玻璃」变成了「上漆的板」。降到 12% 保住湿感，
-   * 把透明度还给玻璃；文字对比由 glassRgb 同步重算，不需另调。
-   *
-   * 在 compFill 入口收口（而非只改 cardBg）：--color-surface/--glass-bg（类路径）与
-   * cardStyle（内联路径）同一出口，文字对比计算 glassRgb 也用它，三处永远一致。
-   * 注：不采用方案里的 color-mix(...white) —— 它会把 alpha 从 0.42 推到 0.536，
-   * 用户调的 compAlpha 滑块被材质嘴改；这里只提亮色相，
-   * alpha 只由滑块 + 材质偏移（effectiveAlpha）决定，不让“掺白”顺手把透明度也改了。
+   * tokens.css §3 已经为 --c-* 踩过一次这个坑（「深色模式 + 浅色预设」→ 白底白字）。
+   * 材质的白玻璃/暗壁同理：浅底上再画白玻璃 = 没有板。
    */
-  const fillColor = computed(() =>
-    material.value === "liquid"
-      ? rgbToHex(mixRgb(hexToRgb(compColorTemp.value), [255, 255, 255], 0.12))
-      : compColorTemp.value,
-  );
+  const onLightBg = computed(() => relLum(effectiveBg.value) >= 0.5);
 
   /**
-   * FEAT-103 P0：液态的名义透明度**不再大幅下调**（0.12 → 0.04），且加 0.58 下限。
+   * 液态填充色的**色相** —— 深浅底走两个相反方向（FEAT-121）。
    *
-   * 改动理由（与 M3 的取舍不同，不是推翻它，而是补一条它没看到的约束）：
-   * M3 想要「更通透」，但那时卡片还是**全屏铺开的主要容器** —— 降通退 −0.12 后，
-   * 背景壁纸的光会从卡片下半部透上来，把数据区（图表、柱阵）压成一层灰。
-   * 本次重设计之后玻璃只用于**浮层**（搜索、抽屉、灯箱工具条、弹窗），
-   * 这些层的后面是**内容（照片/页面）而不是纯壁纸**，于是：
-   *   · 降 0.12 会让照片的颜色直接涌进搜索胶囊里，胶囊内的字看不清；
-   *   · 降 0.04 既能保住一点点「透」，又不会让底层照片影响可读性。
-   * 0.58 下限：低于此值时，大面积深色照片后面的浮层会变成中灰死区
-   * （黑白两种文字都上不了 4.5:1），这是实测过的。
+   * 深底：向白提亮 12%（湿玻璃，保留 M3 的结论：掺白 20% 会变成「上漆的板」）。
+   * 浅底：向冷灰压暗 **20%**。这是本轮的核心修复 ——
+   *   「白玻璃」落在白纸上等于没有板。实测（.visual/probe-liquid2.mjs，晨雾青瓷底
+   *   #ecf3f0）：旧填充 rgba(240,245,243,.68) 与背景明度差 < 2%，于是高光、棱环、
+   *   模糊全都「画了但看不见」，整块卡读起来就是一张白卡。
+   *   12% 还不够：实测只拉开 6~8% 明度差，且 25% 与 72% 两个 alpha 在屏幕上只差
+   *   2~3 个色阶（滑块“没反应”的第二个原因）。20% 之后板面稳定比背景低一档。
    *
-   * 安全阀逻辑完整保留 —— 它才是真正做判断的地方，上面的 0.04 只是把「意愿」调小。
+   * 注：只改**色相**，不改 alpha —— alpha 的唯一来源是滑块（见 effectiveAlpha）。
    */
-  const LIQUID_ALPHA_DROP = 0.04;
-  const LIQUID_ALPHA_FLOOR = 0.58;
-  const effectiveAlpha = computed(() => {
-    const base = compAlpha.value;
-    if (material.value !== "liquid") return base;
-    // floor 只抬底、不压顶：用户把滑块拉得很高（>0.62）时不应被“降回来”
-    const dropped = Math.max(LIQUID_ALPHA_FLOOR, base - LIQUID_ALPHA_DROP);
-    if (Math.abs(dropped - base) < 1e-6) return base;
-    const fill = hexToRgb(fillColor.value);
-    const ratioAt = (a: number) => {
-      const glass = mixRgb(effectiveBg.value, fill, a);
-      const tone = componentTone(rgbToHex(glass));
-      return contrastRatio(relLum(hexToRgb(tone.text)), relLum(glass));
-    };
-    const baseRatio = ratioAt(base);
-    const droppedRatio = ratioAt(dropped);
-    if (baseRatio < 4.5) return droppedRatio >= baseRatio ? dropped : base;
-    return droppedRatio >= 4.5 ? dropped : base;
+  const fillColor = computed(() => {
+    if (material.value !== "liquid") return compColorTemp.value;
+    const base = hexToRgb(compColorTemp.value);
+    return rgbToHex(
+      onLightBg.value
+        ? mixRgb(base, [38, 52, 48], 0.2)
+        : mixRgb(base, [255, 255, 255], 0.12),
+    );
   });
+
+  /**
+   * FEAT-121：液态透明度 = **滑块原值**。
+   *
+   * 旧实现（FEAT-103）给液态加了「−0.04 → 下限 0.58 → 对比度安全阀」，结果是
+   * 滑块 0~62% 全被夹成同一个数：实测 compAlpha 0.2 / 0.5 都下发 0.58，
+   * 只有 >0.62 才开始动 —— 用户拖了半天画面不变，这不是错觉，是夹死的。
+   *
+   * 那套夹法的前提是「玻璃只用在浮层上，填充不够实就看不清字」；现在材质是
+   * 用户可选的卡面，通透明度本身就是他要调的那个观感，工具不该偷偷改他的值。
+   *
+   * 可读性怎么保：文字色本来就按 glassRgb（玻璃等效底色）现算，alpha 一降，
+   * 等效底色自动贴近背景、文字取向跟着翻；主题弹窗里那条
+   * 「实测最深色带 ≈ x:1」会如实报警 —— 交给读数，不替用户做决定。
+   */
+  const effectiveAlpha = computed(() => compAlpha.value);
 
   /** 玻璃等效底色：组件色调以 **有效 alpha**（滑块 + 材质偏移）叠在**实际页面背景**上。
    *  文字对比必须对着这个等效色算——玻璃是半透明的，只拿色调原色判断会误判
@@ -652,12 +643,18 @@ export const useThemeStore = defineStore("theme", () => {
      换背景色/背景图/组件色调/透明度/材质都会重新推导。 */
 
   /** 玻璃分层透明度（由滑块 compAlpha + 材质偏移派生）：
-   *  容器 = effectiveAlpha / 次级面板 +0.24 / 弹层 +0.36，封顶 0.95。
+   *  容器 = effectiveAlpha（滑块原值）/ 次级面板 +0.24 / 弹层 +0.36，封顶 0.95。
    *  必须声明在 applyCompColor 的 immediate watch 之前（TDZ：否则首帧就抛
-   *  Cannot access 'containerAlpha' before initialization —— 冒烟实测踩过）。 */
+   *  Cannot access 'containerAlpha' before initialization —— 冒烟实测踩过）。
+   *
+   *  FEAT-121：滑块不再被夹（见 effectiveAlpha），但**派生层仍保留一层底**：
+   *  弹窗后面往往是照片，不是壁纸渐变 —— alpha 拖到 0 时卡片可以真的透明，
+   *  而弹窗/菜单变成 36% 填充的话，黑底照片上的字会直接压不住。
+   *  所以下限只加在弹层上（.55），卡面仍完全跟手 —— "拖滑块有变化"与
+   *  "弹窗永远能读"这两件事不矛盾。 */
   const containerAlpha = computed(() => effectiveAlpha.value);
   const panelAlpha = computed(() => Math.min(0.95, effectiveAlpha.value + 0.24));
-  const dialogAlpha = computed(() => Math.min(0.95, effectiveAlpha.value + 0.36));
+  const dialogAlpha = computed(() => Math.min(0.95, Math.max(0.55, effectiveAlpha.value + 0.36)));
 
   function applyCompColor() {
     if (typeof document === "undefined") return;
@@ -674,6 +671,34 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--glass-bg", compFill(containerAlpha.value));
     body.style.setProperty("--liquid-bg", compFill(panelAlpha.value));
     body.style.setProperty("--glass-border", tone.border);
+    /* ---------- FEAT-121：液态玻璃的光学令牌（按**背景实际明度**给，不按 mode） ----------
+       本轮的两个用户反馈（浅底看不出玻璃 / 拖透明度没反应）中，前者根因不在模糊半径：
+       四套预定义背景都是平滑渐变，模糊在平滑面上不产生任何可读差异；而旧值的
+       「白填充 + 白高光 + 白棱环」在浅底上是三层白叠三层白。
+       真正能把玻璃「立起来」的只有三件事，这里逐个给值：
+         ① 背后的明度位移（--glass-brightness/contrast）—— 玻璃区域比周围亮/暗一档；
+         ② 填充与背景的明度差（见 fillColor：浅底压暗 12%、深底提亮 12%）；
+         ③ 上缘镜面 / 下缘暗壁这对 1px 硬边（--liquid-specular / --liquid-depth）——
+            板厚只能靠这两条色差读出来，浅底上白边无效，必须是**暗**的下缘。
+       数值来源：浅底 #ecf3f0 上亮度差 < 2% ⇒ 无感；压一档（~6~10%）后板面可辨，
+       且文字对比不受影响（文字色对玻璃等效底色现算，见 glassRgb）。 */
+    const light = onLightBg.value;
+    body.style.setProperty("--glass-brightness", light ? "0.97" : "1.06");
+    body.style.setProperty("--glass-contrast", light ? "1.04" : "1.02");
+    body.style.setProperty(
+      "--liquid-specular",
+      light ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.46)",
+    );
+    body.style.setProperty(
+      "--liquid-depth",
+      light ? "rgba(18,28,24,0.16)" : "rgba(0,0,0,0.34)",
+    );
+    body.style.setProperty(
+      "--liquid-shadow-out",
+      light
+        ? "0 1px 2px rgba(20,40,32,0.10), 0 16px 32px -18px rgba(20,40,32,0.42)"
+        : "0 1px 2px rgba(0,0,0,0.18), 0 18px 36px -18px rgba(0,0,0,0.55)",
+    );
     /* FEAT-105：墙板玻璃的填充。
        关键认知：**玻璃板不是“组件色的半透明”，而是“白玻璃”**。
        参考图里每一块板都是浅灰发白、半透明、能透出壁纸 ——
@@ -794,12 +819,19 @@ export const useThemeStore = defineStore("theme", () => {
   const cardBg = computed(() => compFill(containerAlpha.value));
   /** 卡片描边（颜色值）：玻璃边缘内高光，方向随等效底色明暗 */
   const cardBorder = computed(() => glassTone.value.border);
-  /** 普通卡片关闭 backdrop-filter；液态保留模糊 + 饱和。
-   *  内联 cardStyle 会覆盖 CSS 规则，所以这里必须与材质同步下发 "none"。 */
+  /** 普通卡片关闭 backdrop-filter；液态保留模糊 + 饱和 + **明度/对比位移**。
+   *  内联 cardStyle 会覆盖 CSS 规则，所以这里必须与材质同步下发 "none"。
+   *
+   *  FEAT-121：多出来的 brightness/contrast 是“浅色看不出玻璃”的第二条修复 ——
+   *  背景若是一片平滑渐变（四套预定义全是），模糊本身是**零信息**（模糊平滑面 = 平滑面）；
+   *  真正能把玻璃区域从周围分开的是 tonal shift。
+   *  两个令牌由 applyCompColor 按背景明度下发（浅 .97 / 深 1.06），
+   *  类路径（main.css）引用同一对令牌，两条路径不会跑偏。 */
   const glassBackdrop = computed(() =>
     material.value === "plain"
       ? "none"
-      : "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
+      : "blur(var(--glass-blur)) saturate(var(--glass-saturate)) " +
+        "brightness(var(--glass-brightness, 1)) contrast(var(--glass-contrast, 1))",
   );
 
   /** 卡片/容器整套样式（内联 style 直接消费）：材质两件套。

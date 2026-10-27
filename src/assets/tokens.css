@@ -330,6 +330,10 @@ body:not(.theme-dark) {
      8px 保留“背景不可读”的同时让折射的形状留下来（与 skill 的 blur(2dp) 同向）。 */
   --float-blur: 8px;
   --float-saturate: 1.1;
+  /* FEAT-121：浮层也要有“背景被压过一道”的证据。深底上提亮一档，
+     让顶栏/弹窗从壁纸上浮起来（纯 blur 对平滑背景是零信息）。 */
+  --float-brightness: 1.06;
+  --float-contrast: 1.02;
   --float-border: rgba(255, 255, 255, 0.10);
   --float-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.34),
@@ -338,9 +342,13 @@ body:not(.theme-dark) {
 }
 
 body:not(.theme-dark) {
-  --float-fill: rgba(255, 255, 255, 0.72);
+  /* FEAT-121：.72 → .66。白玻璃落在浅底上，填充越实越像“白卡”而不是玻璃；
+     剩下的可读性由 brightness(.97)（背后压一档）+ 上缘镜面 + 1px 描边承担。 */
+  --float-fill: rgba(255, 255, 255, 0.66);
   --float-blur: 8px;
   --float-saturate: 1.15;
+  --float-brightness: 0.97;
+  --float-contrast: 1.03;
   --float-border: rgba(255, 255, 255, 0.95);
   --float-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 1),
@@ -357,8 +365,10 @@ body:not(.theme-dark) {
   border: 1px solid var(--float-border);
   /* FEAT-108：与顶栏同一套——真实边缘折射在前、模糊在后。
      url(#liquid-lens) 由 App.vue 里的 <GlassFilters /> 定义（全文档一份）。 */
-  -webkit-backdrop-filter: url(#liquid-lens) blur(var(--float-blur)) saturate(var(--float-saturate));
-  backdrop-filter: url(#liquid-lens) blur(var(--float-blur)) saturate(var(--float-saturate));
+  -webkit-backdrop-filter: url(#liquid-lens) blur(var(--float-blur)) saturate(var(--float-saturate))
+    brightness(var(--float-brightness, 1)) contrast(var(--float-contrast, 1));
+  backdrop-filter: url(#liquid-lens) blur(var(--float-blur)) saturate(var(--float-saturate))
+    brightness(var(--float-brightness, 1)) contrast(var(--float-contrast, 1));
   box-shadow: var(--float-shadow);
 }
 

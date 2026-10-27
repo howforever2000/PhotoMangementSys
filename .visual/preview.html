@@ -8,6 +8,8 @@
  * 浏览器预览 Mock（仅 `.visual/preview.html` 使用，不进业务代码）
  *
  * 用法：Vite 启动后访问 /.visual/preview.html#/albums 等。
+ * （hash 里的路径会在应用启动前被改写成真实 URL —— 应用用的是 createWebHistory，
+ *   停在 /.visual/preview.html 上会匹配不到任何路由，整页空白。）
  * 它在业务模块加载**之前**注册 window.__TAURI_INTERNALS__，
  * 让 @tauri-apps/api/core 的 invoke 走到我们的桩函数而不是真后端。
  *
@@ -15,6 +17,19 @@
  * 而 Playwright 截图需要真实页面（探针页绕过了页面自身的加载逻辑，
  * 会漏掉"数据为空时页面长什么样"这类真实问题）。
  */
+
+/* ---------- 路由改写：preview.html 不在根路径 ----------
+ * 应用用 createWebHistory（路径式路由），直接访问
+ * /.visual/preview.html#/albums 时 router 看到的是 pathname="/.visual/preview.html"，
+ * 匹配不到任何页面 —— 表现为「整页只剩背景渐变」（实测踩过）。
+ * 在应用启动前把地址栏改写成目标路径，document 仍是带 mock 的这一份。
+ * 注意：改写后刷新会回到真实 index.html（那份没有 mock），刷新即失效。
+ */
+{
+  const hashPath = location.hash.replace(/^#/, "");
+  const target = hashPath.startsWith("/") ? hashPath : "/albums";
+  history.replaceState(null, "", target + location.search);
+}
 
 /* ---------- 工具：造一张"照片感"的 SVG 占位图（转 data URL） ---------- */
 function photo(seed, w = 320, h = 200) {
@@ -143,6 +158,10 @@ const HANDLERS = {
 /** convertFileSrc 在 mock 下直接放行（data URL 不能再包一层） */
 window.__TAURI_INTERNALS__ = {
   transformCallback(cb) { return cb; },
+  /* @tauri-apps/api 的 convertFileSrc 直接读 __TAURI_INTERNALS__.convertFileSrc
+     （不是 __PM_MOCK_CONVERT__）—— 缺了它，凡是渲染缩略图的页面首屏就抛
+     "convertFileSrc is not a function" 整页空白。 */
+  convertFileSrc(p) { return p; },
   invoke(cmd, args, opts) {
     const h = HANDLERS[cmd];
     if (!h) {
@@ -155,6 +174,31 @@ window.__TAURI_INTERNALS__ = {
 
 // convertFileSrc 的真实实现会拼 asset:// 协议；mock 环境直接透传
 window.__PM_MOCK_CONVERT__ = (p) => p;
+
+/* ---------- 材质 / 透明度 / 明暗 探针钩子（?mat=liquid&alpha=0.3&mode=light） ----------
+ * 为什么需要：theme store **刻意不回读** prefs.mode（见 stores/theme.ts「模式固定为默认值」），
+ * 而 compAlpha 在液态下会被 effectiveAlpha 夹到下限 —— 这两个量的真机行为
+ * 只能在 store 跑完之后改，写 localStorage 是没用的。
+ * 除了探针，正常访问 preview.html 不受影响（不带参数时什么都不做）。
+ */
+{
+  const q = new URLSearchParams(location.search);
+  const wanted = { mat: q.get("mat"), mode: q.get("mode"), alpha: q.get("alpha") };
+  if (wanted.mat || wanted.mode || wanted.alpha) {
+    const wait = setInterval(async () => {
+      if (!document.body.className.includes("mat-")) return;
+      clearInterval(wait);
+      const { useThemeStore } = await import("/src/stores/theme");
+      const theme = useThemeStore();
+      if (wanted.mode === "light" || wanted.mode === "dark") theme.mode = wanted.mode;
+      if (wanted.mat === "liquid" || wanted.mat === "plain") theme.material = wanted.mat;
+      const a = Number(wanted.alpha);
+      if (wanted.alpha !== null && Number.isFinite(a)) theme.compAlpha = a;
+      await new Promise((r) => setTimeout(r, 600));
+      window.__PROBE_READY__ = true;
+    }, 50);
+  }
+}
 </script>
 <script type="module" src="/src/main.ts"></script>
 </body>
