@@ -34,6 +34,25 @@ use crate::db::PhotoContentRecord;
 type EmbedCacheEntry = Arc<(crate::db::EmbeddingVersion, Vec<(String, Option<i64>, String, Vec<f32>)>)>;
 static EMBED_CACHE: Mutex<Option<HashMap<i64, EmbedCacheEntry>>> = Mutex::new(None);
 
+/// 扫描单飞锁：同一时刻只允许一个 `scan_album_combined` 在跑。
+///
+/// 为什么后端还要再管一次（前端已有 `job.running` 守卫）：前端的守卫是 **JS 内存状态**，
+/// 只在同一个 Pinia 实例内有效—— 多开一个窗口、页面重新加载、两个 app 进程并存时，
+/// 各自的 `running` 都是 false，互相看不见。实测事故（BUG-2026-1027-006）：
+/// album=126 的 776 张照片被完整扫了两遍（205s + 147s），第二遍正好在第一次的
+/// 收尾阶段启动，UI 还显示「扫描中」，用户完全无从察觉。
+static SCAN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// 当前正在扫描的相册 id（0 = 空闲）—— 只用于把拒绝原因说清楚
+static SCAN_ALBUM: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// 扫描占位槽的清道夫：无论正常返回还是提前 `?` 退出，都会把 SCAN_ALBUM 归零
+struct ScanSlotGuard;
+impl Drop for ScanSlotGuard {
+    fn drop(&mut self) {
+        SCAN_ALBUM.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// 语义召回置信度默认阈值（Phase 0 实测：相关命中集中 0.41~0.46，非相关背景值更低）
 const SEMANTIC_MIN_SIM_DEFAULT: f64 = 0.30;
 /// 语义召回硬上限（极端大库保护，按余弦降序截断）
@@ -1592,6 +1611,9 @@ pub mod commands {
         // FEAT-SEM：覆盖/增量。true（默认）= 全量重扫并覆盖已入库结果；
         // false = 跳过已入库照片，只处理新照片
         overwrite: Option<bool>,
+        // 调用方标识（窗口 label / 页面会话 id / 调用点，前端拼接后传入）
+        // 只用于日志：出现「跑两遍」时第一行就能看出是谁发的（BUG-2026-1027-006）
+        client_tag: Option<String>,
         app: tauri::AppHandle,
         scan: tauri::State<'_, crate::ScanState>,
         state: tauri::State<'_, AppState>,
@@ -1600,6 +1622,11 @@ pub mod commands {
         let overwrite = overwrite.unwrap_or(true);
         let _t = log_call!("scan_album_combined", &format!("album_id={album_id} scan_types={scan_types:?} overwrite={overwrite}"));
         let user_id = require_user(&session)?;
+        let client = client_tag.unwrap_or_else(|| "-".to_string());
+        // 入口即留痕：`[AOP:CALL]` 是 DEBUG 级，默认 info 日志里看不到请求参数与调用方
+        logger::log_info(&format!(
+            "[scan] 请求 | album={album_id} types={scan_types:?} overwrite={overwrite} client={client}"
+        ));
 
         if scan_types.is_empty() {
             return Err("scan_types 不能为空".to_string());
@@ -1610,6 +1637,25 @@ pub mod commands {
         {
             return Err("非法 scan_types，允许 basic / tone / person / semantic".to_string());
         }
+
+        // 单飞：抢不到锁说明已有扫描在跑 → 直接拒绝，绝不允许两个扫描并行。
+        // 必须放在重置取消标记**之前**：被拒绝的请求不得动别人的取消位。
+        let _scan_guard = match SCAN_LOCK.try_lock() {
+            Ok(g) => g,
+            Err(_) => {
+                let running = SCAN_ALBUM.load(std::sync::atomic::Ordering::SeqCst);
+                logger::log_warn(&format!(
+                    "[scan] 拒绝重复扫描 | 请求 album={album_id} client={client} | 已有 album={running} 在跑"
+                ));
+                return Err(if running > 0 {
+                    format!("已有扫描进行中（相册 {running}），请等待其完成或停止后再试")
+                } else {
+                    "已有扫描进行中，请等待其完成或停止后再试".to_string()
+                });
+            }
+        };
+        SCAN_ALBUM.store(album_id, std::sync::atomic::Ordering::SeqCst);
+        let _scan_slot = ScanSlotGuard;
 
         // 重置取消标记：本次扫描全新开始；前端「停止」→ `cancel_scan` 置位后提前结束
         scan.0.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -2114,11 +2160,20 @@ pub mod commands {
         if outcome.is_ok() && (do_ai || do_semantic) {
             match crate::category::rebuild_semantic_hits(&app, &state, user_id).await {
                 Ok(rep) => {
-                    logger::log_info(&format!(
-                        "[scan] 分类命中已重建：分类 {} · 命中 {} · 索引 {} · {}ms",
-                        rep.categories, rep.hits, rep.indexed, rep.ms
-                    ));
-                    timing.span_with("分类重建", t_rebuild, &format!("命中{}", rep.hits));
+                    if rep.skipped {
+                        // 输入指纹未变：命中表就是当前输入的结果，不必重写 2 万行
+                        logger::log_info(&format!(
+                            "[scan] 分类命中未变，跳过重建（沿用 {} 条命中）· {}ms",
+                            rep.hits, rep.ms
+                        ));
+                        timing.span_with("分类重建", t_rebuild, "跳过·输入未变");
+                    } else {
+                        logger::log_info(&format!(
+                            "[scan] 分类命中已重建：分类 {} · 命中 {} · 索引 {} · {}ms",
+                            rep.categories, rep.hits, rep.indexed, rep.ms
+                        ));
+                        timing.span_with("分类重建", t_rebuild, &format!("命中{}", rep.hits));
+                    }
                 }
                 Err(e) => {
                     logger::log_info(&format!("[scan] 分类重建跳过（不影响扫描）：{e}"));

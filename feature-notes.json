@@ -4771,6 +4771,40 @@
         "4:5",
         "人脸"
       ]
+    },
+    {
+      "id": "FEAT-125",
+      "name": "扫描命令单飞 + 调用方留痕 + 分类重建输入指纹短路",
+      "module": "src-tauri/src/content.rs、src-tauri/src/category.rs、src/stores/content.ts",
+      "status": "done",
+      "purpose": "BUG-2026-1027-006：album=126 的 776 张被完整扫了两遍（205587ms + 147106ms），而用户只点了一次；第二遍在第一次的收尾阶段启动，UI 还显示「扫描中」。根因是后端没有任何扫描互斥、前端守卫只在单个 Pinia 实例内有效（多开/重载/双进程即失效），且收尾段 10~17s 不上报进度。顺带解决一个纯浪费：每次扫描收尾都把 17 个语义分类 × 全库 2.5 万条命中整表重写（实测 8.7~11.7s），而重扫已编码相册时向量一条都没变。",
+      "implementation": {
+        "① 后端单飞": "content.rs 新增 static SCAN_LOCK: tokio::sync::Mutex<()>（const_new）、static SCAN_ALBUM: AtomicI64（仅用于把拒绝原因说清楚）与 ScanSlotGuard（Drop 时归零）。scan_album_combined 在参数校验之后、重置取消标记之前 try_lock：抢不到立即返回「已有扫描进行中（相册 X），请等待其完成或停止后再试」并打 WARN。顺序是刻意的 —— 被拒绝的请求不得清掉别人的取消位。",
+        "② 调用方留痕": "scan_album_combined 新增可选参数 client_tag；入口用 info 级打 `[scan] 请求 | album=.. types=.. overwrite=.. client=<窗口 label>/<页面会话 id>/<调用点>`（[AOP:CALL] 是 DEBUG 级，默认日志看不到参数）。前端 content.ts 新增模块级 CLIENT_SESSION（随机串，重载即换新）与 clientTag(scene)，三个 invoke 点分别传 sync / single / global。",
+        "③ 分类重建指纹短路": "category.rs 新增 semantic_fingerprint（模型 + photo_embeddings 的 条数/max rowid/max generated_at + 全部分类定义），与 app_settings.category_hit_sig（指纹 + 上次命中数/索引数/分类数）比对；未变则跳过语义重算并如实沿用上次命中数。builtin 规则分类照旧每次 SQL 直算（它的输入是 content 表）。rebuild_one（保存分类后）与 rebuild_categories（手动重建）强制重算；单分类重建不写指纹，避免局部结果被当成全局。RebuildReport 新增 skipped 字段，扫描收尾日志与 scan.timing 会标「跳过·输入未变」。"
+      },
+      "highlights": [
+        "跑两遍在物理上不再可能：任何第二个调用方（另一个窗口 / 重载后的页面 / 另一个进程 / 连点）都会被 try_lock 拒绝并留下 WARN 日志",
+        "日志可自证：`[scan] 请求 | client=main/single/ab12cd` 一眼看出是谁发的；页面会话 id 变化即代表发生过整页重载",
+        "重扫已编码相册时分类重建从 8.7~11.7s 降到毫秒级，且命中数照实汇报，不再出现「命中 0」的假象"
+      ],
+      "tests": "新增 category::tests::semantic_fingerprint_tracks_inputs（新向量 / 重编码只变 generated_at / 换模型 / 改关键词 / 改阈值 / 改启用 都必须改变指纹；他人向量不得影响）。cargo check 通过；cargo test --lib 在工区外跑 420 passed / 3 ignored；npx vue-tsc --noEmit 0 error；npm test 164 passed。",
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/category.rs",
+        "src/stores/content.ts"
+      ],
+      "keywords": [
+        "scan",
+        "scan_album_combined",
+        "单飞",
+        "互斥",
+        "client_tag",
+        "分类重建",
+        "指纹",
+        "semantic_fingerprint",
+        "扫描两遍"
+      ]
     }
   ],
   "updated": "2026-10-27"

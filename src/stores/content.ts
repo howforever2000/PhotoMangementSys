@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ClassifyProgress } from "../types/photo";
 import { useAlbumStore } from "./album";
 import { useOverviewStore } from "./overview";
@@ -29,6 +30,23 @@ import type {
   VcrSweepResult,
   VcrThreadsInfo,
 } from "../types/content";
+
+// ---- 扫描调用方标识（BUG-2026-1027-006）----
+//
+// 后端 `scan_album_combined` 的入口日志会打出 `client=<tag>`。
+// 三段含义：窗口 label（识别多开）/ 页面会话 id（识别整页重载）/ 调用点（识别哪条入口）。
+// 没有它时，「同一相册扫了两遍」只能看到两条一模一样的请求，无法判断是谁发的。
+const CLIENT_SESSION = Math.random().toString(36).slice(2, 8);
+
+function clientTag(scene: string): string {
+  let label = "main";
+  try {
+    label = getCurrentWindow().label || "main";
+  } catch {
+    /* 非 Tauri 环境（浏览器里调 UI）不阻塞 */
+  }
+  return `${label}/${scene}/${CLIENT_SESSION}`;
+}
 
 // ---- FEAT-038：全局照片扫描入库（跨相册批量，后台执行） ----
 
@@ -430,6 +448,7 @@ export const useContentStore = defineStore("content", {
           albumId,
           scanTypes,
           batchSize,
+          clientTag: clientTag("sync"),
         });
         this.combinedRows = outcome.rows;
         this.lastReport = { report: outcome.report, results: [] };
@@ -562,6 +581,7 @@ export const useContentStore = defineStore("content", {
           scanTypes: types,
           batchSize,
           overwrite,
+          clientTag: clientTag("single"),
         });
         // 若期间已发起新扫描，丢弃这次旧结果
         if (job.scanId !== myId) return;
@@ -740,6 +760,7 @@ export const useContentStore = defineStore("content", {
               scanTypes: types,
               batchSize,
               overwrite,
+              clientTag: clientTag("global"),
             });
             if (job.scanId !== myId) return;
             item.total = outcome.report.total;

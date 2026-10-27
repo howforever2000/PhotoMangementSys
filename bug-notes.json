@@ -4604,6 +4604,51 @@
       "root_cause": "representative_face() 用「与质心最相似」挑代表脸，**不看原图是否还在**。照片被删/移走后，这个人物每次裁切都在同一张不存在的文件上失败 —— 永久失败，没有任何自愈路径。实测真实注册表前 5 人就有一个（文件确实已不存在）。",
       "fix": "候选比较时额外检查 Path::is_file()，另存一份「原图仍在磁盘」的最优解，优先返回它；一张都不存在时才退回最优解（让报错信息仍可读）。头像与卡片封面共用这个函数，两条链路一起修好。",
       "lessons": "「挑代表脸」这类选优逻辑必须把「资源是否真的可用」纳入判据 —— 否则聚类/相似度算得再准，落到一张不存在的文件上就等于该人物永久没有封面。"
+    },
+    {
+      "id": "BUG-2026-1027-006",
+      "date": "2026-10-27",
+      "status": "fixed",
+      "title": "同一相册被完整扫描两遍：后端没有单飞锁，前端守卫只在单个 Pinia 实例内有效",
+      "module": "扫描入库 / src-tauri/src/content.rs / src/stores/content.ts / src-tauri/src/category.rs",
+      "symptom": [
+        "只点了一次「开始组合扫描（覆盖）」，后端却把同一相册完整跑了两遍：album=126 的 776 张，205587ms + 147106ms，两次都 total=776 written=776",
+        "用户观感是「前端显示扫描完成后，后端又跑了一遍」",
+        "两遍之间没有 cancel、没有报错、没有第二次点击的痕迹"
+      ],
+      "root_cause": {
+        "summary": "两个层面各缺一块：① 后端 scan_album_combined 完全没有互斥（唯一的进程级锁是 content.rs 的 EMBED_CACHE，与扫描无关），同一相册可以被任意并行/重复调用；② 前端的三道守卫（combinedJobs[albumId].running / globalScanJob.running / runningSingle）全是 JS 内存状态，只在同一个 Pinia 实例内有效。多开一个窗口、整页重载、两个 app 进程并存时，各自的 running 都是 false，互相看不见 —— 守卫在真正需要它的场景下正好失效。",
+        "detail": [
+          "时间线铁证（app.log，本机）：第 1 次 21:13:21.13 起、21:16:46.71 打 [AOP:RET]（205587ms）；第 2 次起点由 21:19:14.580 − 147.106s 反推 ≈21:16:47.5，即第 1 次 AI 腿结束（21:16:46.33）后约 1.1s 发起",
+          "关键判据：第 1 次真正返回前端是 21:17:03.562（scan.timing 打印点），因为 content.rs:2086-2137 在 log_call_end_with 之后还要同步 await 缩略图预热 → 分类命中重建（11.7s）→ 描述索引（5.0s）。也就是说第 2 次启动时第 1 次还没返回，「扫描完成回调」这类前端代码路径不可能是触发源",
+          "同一个错位还解释了用户的观感：进度条在 AI 腿结束时就到 776/776，之后 16.8s 是黑箱；UI 在 21:17:03 显示「✅ 已写入 776/776」的那一刻，第 2 次已经在后台跑了 16 秒",
+          "排除项：10-27 全天没有 cancel_scan（「收到停止请求」只出现在 10-01）；src 里没有任何 setTimeout/setInterval、没有看门狗/续扫；后端没有 scan-done 类事件（只有 classify-progress / embed-progress）；批量列表重复 id 会被 job.running 挡住；整页重载会重跑整套 mount 命令（list_persons/list_categories/overview_stats/thumbs），而事发窗口只有 3 条 get_albums，不是重载",
+          "环境侧证据：python 服务 pid=2988 从 20:07:24 一直活到 21:11:15 被新进程以「ensure B段 收养就绪实例」方式接管（说明旧 app 进程退出不清理子进程）；20:42:31 起过实例、21:10:23 又起了 pid=17060，两者之间没有任何退出痕迹；src-tauri/Cargo.toml 只有 tauri-plugin-opener/dialog，没有 tauri-plugin-single-instance，两个实例共用同一个 photos.db 与同一个识别服务是完全允许的",
+          "没能钉死的一点：谁在 21:16:47.5 发的第二次请求。[AOP:CALL] 是 DEBUG 级（PMS_LOG_LEVEL 默认 info 过滤），日志里既没有请求参数也没有调用方，两条请求长得一模一样"
+        ]
+      },
+      "fix": [
+        "后端单飞（content.rs）：static SCAN_LOCK: tokio::sync::Mutex<()> + static SCAN_ALBUM: AtomicI64 + ScanSlotGuard(Drop 清位)；try_lock 抢不到立即返回「已有扫描进行中（相册 X），请等待其完成或停止后再试」并打 WARN。锁必须在重置取消标记之前获取 —— 被拒绝的请求不得清掉别人的取消位",
+        "调用方留痕（content.rs + content.ts）：scan_album_combined 新增可选参数 client_tag，入口用 info 级打 `[scan] 请求 | album=.. types=.. overwrite=.. client=<窗口 label>/<页面会话 id>/<调用点>`；三个 invoke 点分别传 sync / single / global。页面会话 id 是模块级随机串，重载即换新 —— 下次「跑两遍」日志第一行就能看出是不是两个上下文",
+        "分类重建指纹短路（category.rs）：语义命中只取决于（向量、模型、分类定义），与 content 表无关。semantic_fingerprint = 模型 + photo_embeddings 的 (条数, max rowid, max generated_at) + 21 行分类定义（id/来源/关键词/排除词/阈值/启用/排序），未变则跳过并沿用上次命中数（存 app_settings.category_hit_sig）。builtin 规则分类照旧每次 SQL 直算；rebuild_one（保存分类后）与 rebuild_categories（手动重建）强制重算，且单分类重建不写指纹（避免局部结果被当成全局）",
+        "新增 Rust 单测 semantic_fingerprint_tracks_inputs：新向量 / 重编码（只变 generated_at）/ 换模型 / 改关键词 / 改阈值 / 改启用 都必须改变指纹，他人向量不得影响"
+      ],
+      "evidence_log": "修复前（真机 app.log）：album=126 两条 scan_album_combined END，205587ms（21:16:46.714）与 147106ms（21:19:14.580），各 total=776 written=776；第 2 次起点 21:16:47.5 早于第 1 次返回前端 21:17:03.562。分类重建每次全量重写 24896 条索引 × 17 语义分类：album=96 只扫 115 张也花 8754ms（占本次总时长 83821ms 的 10%），且命中 20610 / 索引 24896 与上一轮逐字相同。修复后：cargo check 通过（仅既有 dead-code 告警）；cargo test --lib 在工区外执行 420 passed / 3 ignored（工区内跑有 20 项因 %TEMP% 不可写而假失败，PermissionDenied，同 BUG-2026-1026-002）；npx vue-tsc --noEmit 0 error；npm test 164 passed。单飞锁的拒绝路径尚未在真机双开场景复现（需用户双窗口验证）。",
+      "lessons": [
+        "前端的 running 标志不是并发控制：它只是某个 JS 上下文里的一个布尔值，多开 / 重载 / 重启立刻失效。凡是有副作用、耗时长、能被用户重复触发的命令，都必须在后端单飞（try_lock 失败就明确拒绝，返回原因而不是静默排队）",
+        "「AOP:RET 耗时」不等于「命令返回前端」：本例两者差 9.9~16.8s 的收尾段。排查「跑两遍」第一步是算时间差，不是读代码 —— 先确认第二次是否落在第一次的返回点之后再判断触发源",
+        "长任务的收尾阶段必须上报进度（或至少在 UI 上显示「收尾中」）。进度条 100% 与真实返回之间隔着十几秒，用户会误判完成、重复点击，日志里就会留下「跑两遍」",
+        "做「有变化才重算」之前先写清输入的指纹是什么：语义命中的输入只有（向量、模型、分类定义），content 表与它无关。把 content 也塞进指纹看起来更保险，实际会让短路几乎永不命中，等于白做",
+        "「输入指纹 + 产物一起存」是短路能如实汇报的前提：只存指纹不存上次命中数，跳过时只能报「命中 0」，日志与 UI 都会造出新的假象",
+        "指纹写入必须区分全量与局部：单分类重建写指纹，会让下一轮全量扫描误跳，把局部结果当成全局结果"
+      ],
+      "related_files": [
+        "src-tauri/src/content.rs",
+        "src-tauri/src/category.rs",
+        "src/stores/content.ts"
+      ],
+      "created_at": "2026-10-27T21:40:00+08:00",
+      "fixed_at": "2026-10-27T22:10:00+08:00"
     }
   ],
   "updated": "2026-10-27"
