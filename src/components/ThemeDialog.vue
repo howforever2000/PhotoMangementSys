@@ -12,10 +12,19 @@
  *
  * 由 Home.vue 渲染并 teleport 到 body；样式走全局 .pm-*（pm-dialog.css）。
  */
-import { onBeforeUnmount, onMounted, ref, computed } from "vue";
+import { onBeforeUnmount, onMounted, ref, computed, nextTick } from "vue";
 import { DEFAULT_WALLPAPER, useThemeStore } from "../stores/theme";
 import { normalizeHex } from "../utils/color";
 import { ALL_PRESETS, PRESET_GROUPS, matchesPreset, presetGradient } from "../utils/presets";
+import {
+  MAX_CUSTOM_PRESETS,
+  addCustomPreset,
+  customPresetFromPrefs,
+  normalizeName,
+  readCustomPresets,
+  removeCustomPreset,
+  type CustomPreset,
+} from "../utils/customPresets";
 import PmColorPicker from "./ui/PmColorPicker.vue";
 
 const emit = defineEmits<{ close: [] }>();
@@ -54,6 +63,82 @@ const activePresetId = computed(() => {
       compColor: theme.compColor,
       compAlpha: theme.compAlpha,
     }),
+  );
+  return hit?.id ?? "";
+});
+
+/* ---------------- 我的预设（FEAT-118，最多 6 个） ----------------
+   存的是「当前外观」的快照，所以入口放在自定义页 —— 这是"我把这一套留下来"的动作，
+   不是在预定义页"挑一套内置的"。列表仍在预定义页展示（和内置预设并排），
+   因为用户的动作是"选一套外观"，来源不该影响他到哪里去点。 */
+const customPresets = ref<CustomPreset[]>(readCustomPresets());
+const namingOpen = ref(false);
+const nameDraft = ref("");
+const nameInput = ref<HTMLInputElement | null>(null);
+/** 满了就不再给"存为预设"的入口，而是直接说明要先删一个 */
+const customFull = computed(() => customPresets.value.length >= MAX_CUSTOM_PRESETS);
+
+function persistCustom(next: CustomPreset[]) {
+  customPresets.value = next;
+  try {
+    localStorage.setItem("pm-theme.customPresets", JSON.stringify(next));
+  } catch {
+    /* 配额满/被禁用：本次会话可用，只是不持久化 */
+  }
+}
+
+function openNaming() {
+  if (customFull.value) return;
+  namingOpen.value = true;
+  nameDraft.value = "";
+  void nextTick(() => nameInput.value?.focus());
+}
+
+function saveCustom() {
+  if (customFull.value) return;
+  const preset = customPresetFromPrefs(theme.$state as never, normalizeName(nameDraft.value));
+  const res = addCustomPreset(customPresets.value, preset);
+  if (!res.ok) return;
+  persistCustom(res.list);
+  namingOpen.value = false;
+  activeTab.value = "preset";
+}
+
+function dropCustom(id: string) {
+  persistCustom(removeCustomPreset(customPresets.value, id));
+}
+
+/** 自定义预设的预览渐变（与 presetGradient 同一条表达式，只是入参少个 material） */
+function customGradient(p: CustomPreset) {
+  return `linear-gradient(${p.angle}deg, ${p.colors[0]}, ${p.colors[1]}, ${p.colors[2]})`;
+}
+
+function applyCustom(p: CustomPreset) {
+  theme.applyPreset({
+    id: p.id,
+    name: p.name,
+    mode: p.mode,
+    colors: p.colors,
+    angle: p.angle,
+    compColor: p.compColor,
+    compAlpha: p.compAlpha,
+    material: "plain",
+  });
+}
+
+const activeCustomId = computed(() => {
+  const hit = customPresets.value.find((p) =>
+    matchesPreset(
+      { ...p, material: "plain" } as never,
+      {
+        bgStyle: theme.bgStyle,
+        gradFrom: theme.gradFrom,
+        gradMid: theme.gradMid,
+        gradTo: theme.gradTo,
+        compColor: theme.compColor,
+        compAlpha: theme.compAlpha,
+      },
+    ),
   );
   return hit?.id ?? "";
 });
@@ -274,6 +359,60 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
                 <span v-if="activePresetId === p.id" class="pm-preset-check" aria-hidden="true">✓</span>
               </button>
             </div>
+          </div>
+
+          <!-- ══ 我的预设（FEAT-118）══════════════════════════════════════════
+               和内置预设并排，因为用户的动作都是"选一套外观"，来源不该影响他去哪点。
+               最多 6 个：满了就不再给"存为预设"的入口（自定义页会说明），
+               而不是静默丢掉最早的 —— 静默丢失比拒绝更让人恼火。 -->
+          <div class="pm-preset-group">
+            <div class="pm-preset-group-head">
+              <span class="pm-preset-group-title">我的预设</span>
+              <span class="pm-preset-group-note">
+                {{ customPresets.length }} / {{ MAX_CUSTOM_PRESETS }} · 在「自定义效果」里调好后可存为预设
+              </span>
+            </div>
+            <div v-if="customPresets.length" class="pm-presets">
+              <div
+                v-for="p in customPresets"
+                :key="p.id"
+                class="pm-preset pm-preset-custom"
+                :class="{ on: activeCustomId === p.id }"
+              >
+                <button
+                  class="pm-preset-hit"
+                  type="button"
+                  :aria-pressed="activeCustomId === p.id"
+                  :aria-label="`套用我的预设 ${p.name}`"
+                  @click="applyCustom(p)"
+                >
+                  <span class="pm-preset-swatch" :style="{ background: customGradient(p) }"></span>
+                  <span class="pm-preset-name">
+                    <span>{{ p.name }}</span>
+                    <span class="pm-preset-badge">
+                      {{ p.mode === "dark" ? "深色" : "浅色" }} · {{ Math.round(p.compAlpha * 100) }}%
+                    </span>
+                  </span>
+                  <span class="pm-preset-dots">
+                    <i v-for="c in p.colors" :key="c" :style="{ background: c }"></i>
+                    <i :style="{ background: p.compColor }" title="组件色"></i>
+                  </span>
+                  <span v-if="activeCustomId === p.id" class="pm-preset-check" aria-hidden="true">✓</span>
+                </button>
+                <button
+                  class="pm-preset-del"
+                  type="button"
+                  :aria-label="`删除我的预设 ${p.name}`"
+                  title="删除这个预设"
+                  @click.stop="dropCustom(p.id)"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+            <p v-else class="pm-preset-empty">
+              还没有自定义预设。到「自定义效果」调好颜色、角度与组件色，点「存为预设」就能留在这里
+            </p>
           </div>
 
           <!-- 角度：作用于当前预设渐变；未套用预设（背景非渐变）时禁用，避免“改了没反应” -->
@@ -497,8 +636,42 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
 
         <div class="pm-actions">
           <button class="pm-btn" type="button" @click="theme.reset()">恢复默认</button>
+          <button
+            class="pm-btn"
+            type="button"
+            :disabled="customFull"
+            :title="customFull ? `最多保存 ${MAX_CUSTOM_PRESETS} 个自定义预设，请先删除一个` : '把当前外观存成一套预设'"
+            @click="openNaming"
+          >
+            {{ customFull ? `预设已满（${MAX_CUSTOM_PRESETS}）` : "存为预设" }}
+          </button>
           <button class="pm-btn pm-btn-primary" type="button" @click="emit('close')">完成</button>
         </div>
+
+      <!-- 命名浮层：只问一件事（叫什么），所以就地弹一行，不另开二级弹窗 -->
+      <div v-if="namingOpen" class="pm-name-mask" @click.self="namingOpen = false">
+        <div class="pm-name-box" role="dialog" aria-modal="true" aria-labelledby="pm-name-title">
+          <h4 id="pm-name-title">存为预设</h4>
+          <p class="pm-name-hint">
+            保存当前配色、角度与组件色 · 已存 {{ customPresets.length }} / {{ MAX_CUSTOM_PRESETS }}
+          </p>
+          <input
+            ref="nameInput"
+            v-model="nameDraft"
+            class="pm-name-input"
+            type="text"
+            maxlength="12"
+            placeholder="给这套外观起个名字"
+            aria-label="预设名称"
+            @keydown.enter.prevent="saveCustom"
+            @keydown.esc.prevent="namingOpen = false"
+          />
+          <div class="pm-name-foot">
+            <button class="pm-btn" type="button" @click="namingOpen = false">取消</button>
+            <button class="pm-btn pm-btn-primary" type="button" @click="saveCustom">保存</button>
+          </div>
+        </div>
+      </div>
       </div>
     </div>
 
