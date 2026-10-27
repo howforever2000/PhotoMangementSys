@@ -6,12 +6,19 @@
  * 选得越多越长、既不能限制数量也不能删除（用户实测会堆到一大排）。
  * 这里把历史收成 5 格（最近使用在前），悬停色块右上角出现 × 可删。
  *
- * 结构对齐系统弹窗的直觉：上方色板点选 → 下方「自定义」放最近用过的颜色 →
- * 右下角 取消 / 选择。点「选择」才提交，避免误点色板直接改主题。
+ * FEAT-118：**删掉 64 格预设色块，改成色盘**。
+ * 原来那套「8 列色相 × 5 行明度」是从系统弹窗抄来的心智，但它有两个问题：
+ *   ① 只有 64 个离散值，想"比这格再亮一点"就只能手输色号；
+ *   ② 一屏 64 个色块比界面本身还艳，取色器成了全站最花的地方。
+ * 现在只有一个色相环 + 内嵌饱和度/明度方块：任意颜色都是拖出来的，
+ * 剩下的离散集合只保留「最近用过」（最多 5 个，可删）。
+ *
+ * 结构：左上色盘 → 下方最近用过 → 色号输入 → 右下 取消 / 选择。
+ * 点「选择」才提交，避免拖动过程中每一帧都改主题。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useThemeStore } from "../../stores/theme";
-import { normalizeHex, rgbToHex, hslToRgb } from "../../utils/color";
+import { normalizeHex, hexToHsv, hsvToHex, type Hsv } from "../../utils/color";
 
 const props = defineProps<{
   visible: boolean;
@@ -72,27 +79,6 @@ function removeRecent(hex: string, e: MouseEvent) {
   writeRecent();
 }
 
-/* ---------------- 色板（8 列 × 5 行，按色相分列、按明度分行） ---------------- */
-const PALETTE: string[] = (() => {
-  // 与系统取色弹窗相同的心智：一列一个色相，从上到下由浅到深；最后一列为灰阶。
-  const columns = [
-    { h: 210, s: 0.62 },
-    { h: 145, s: 0.62 },
-    { h: 50, s: 0.78 },
-    { h: 25, s: 0.82 },
-    { h: 0, s: 0.76 },
-    { h: 300, s: 0.52 },
-    { h: 30, s: 0.34 },
-    { h: 0, s: 0 },
-  ];
-  const lights = [0.82, 0.69, 0.56, 0.42, 0.27];
-  const out: string[] = [];
-  for (const l of lights) {
-    for (const c of columns) out.push(rgbToHex(hslToRgb(c.h, c.s, l)));
-  }
-  return out;
-})();
-
 /* ---------------- 草稿与提交 ---------------- */
 const draft = ref(normalizeHex(props.modelValue));
 
@@ -101,6 +87,7 @@ watch(
   (v) => {
     if (!v) return;
     draft.value = normalizeHex(props.modelValue);
+    hsv.value = hexToHsv(draft.value);
     recent.value = readRecent();
     void nextTick(() => hexInput.value?.focus());
   },
@@ -137,6 +124,83 @@ function onSwatchDblClick(hex: string) {
   confirm();
 }
 
+/* ══════════════════ 色盘（色相环 + 内嵌饱和度/明度方块）══════════════════
+   两套坐标必须分开算：
+     环：色相是**角度**（把指针位置换算成 atan2 的极角）
+     块：饱和度是**横轴**、明度是**纵轴**（明度向上增长，与直觉一致）
+   拖动过程只改 draft（hex），不放每帧 emit —— 主题重算是一次全站 CSS 变量下发，
+   拖色盘时每帧都发会把主线程占满，色盘自己会卡住。 */
+const hsv = ref<Hsv>(hexToHsv(normalizeHex(props.modelValue)));
+
+/** 外部（hex 输入 / 最近色 / 打开弹窗）改了 draft → 反向同步色盘 */
+watch(draft, (hex) => {
+  const cur = hsvToHex(hsv.value);
+  if (cur === hex) return;
+  hsv.value = hexToHsv(hex);
+});
+
+const ringEl = ref<HTMLElement | null>(null);
+const svEl = ref<HTMLElement | null>(null);
+
+/** 从指针位置取归一化坐标（useX 越界夹到 0~1） */
+function pointIn(el: HTMLElement, e: PointerEvent) {
+  const r = el.getBoundingClientRect();
+  const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  const y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+  return { x, y };
+}
+
+function dragRing(e: PointerEvent, el: HTMLElement | null = ringEl.value) {
+  if (!el) return;
+  const { x, y } = pointIn(el, e);
+  // atan2 的 0° 指向右侧；色相环的 0°（红）放在顶部，所以 +90°
+  const deg = (Math.atan2(y - 0.5, x - 0.5) * 180) / Math.PI + 90;
+  hsv.value = { ...hsv.value, h: ((deg % 360) + 360) % 360 };
+  draft.value = hsvToHex(hsv.value);
+}
+
+function dragSv(e: PointerEvent, el: HTMLElement | null = svEl.value) {
+  if (!el) return;
+  const { x, y } = pointIn(el, e);
+  hsv.value = { ...hsv.value, s: x, v: 1 - y };
+  draft.value = hsvToHex(hsv.value);
+}
+
+/** 指针按下即生效，并挂一个只在拖动期间存在的 move 监听（松手就摘） */
+function startDrag(kind: "ring" | "sv", e: PointerEvent) {
+  e.preventDefault();
+  const el = kind === "ring" ? ringEl.value : svEl.value;
+  if (!el) return;
+  (kind === "ring" ? dragRing : dragSv)(e, el);
+  const move = (ev: PointerEvent) => (kind === "ring" ? dragRing : dragSv)(ev, el);
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
+
+/** 色盘顶部的"当前色"圆点在环上的角度与在方块里的坐标 */
+const ringKnob = computed(() => {
+  const rad = ((hsv.value.h - 90) * Math.PI) / 180;
+  return {
+    left: `${50 + Math.cos(rad) * 50}%`,
+    top: `${50 + Math.sin(rad) * 50}%`,
+  };
+});
+const svKnob = computed(() => ({
+  left: `${hsv.value.s * 100}%`,
+  top: `${(1 - hsv.value.v) * 100}%`,
+}));
+/** 内嵌方块：左到右白→纯色相，下到上透明→黑 */
+const svBg = computed(() => {
+  const pure = hsvToHex({ h: hsv.value.h, s: 1, v: 1 });
+  return {
+    background: `linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, ${pure})`,
+  };
+});
+
 const hexInput = ref<HTMLInputElement | null>(null);
 
 /* ---------------- Esc（必须拦住，否则会连着把主题弹窗一起关掉） ---------------- */
@@ -167,21 +231,39 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
           <button class="cp-x" type="button" aria-label="关闭" @click="emit('close')">×</button>
         </div>
 
-        <div class="cp-grid" role="group" aria-label="预设颜色">
-          <button
-            v-for="c in PALETTE"
-            :key="c"
-            type="button"
-            class="cp-swatch"
-            :class="{ 'on': draft === c }"
-            :style="{ background: c }"
-            :title="c"
-            :aria-label="`选择颜色 ${c}`"
-            @click="pick(c)"
-            @dblclick="onSwatchDblClick(c)"
+        <!-- 色盘（FEAT-118 替代 64 格色块）：
+             外环 = 色相，内方块 = 饱和度 × 明度。两块都能拖，指针按下即生效。 -->
+        <div class="cp-wheel-wrap">
+          <div
+            ref="ringEl"
+            class="cp-ring"
+            role="slider"
+            tabindex="0"
+            aria-label="色相"
+            aria-valuemin="0"
+            aria-valuemax="360"
+            :aria-valuenow="Math.round(hsv.h)"
+            @pointerdown="startDrag('ring', $event)"
+            @keydown.left.prevent="hsv = { ...hsv, h: (hsv.h + 355) % 360 }; draft = hsvToHex(hsv)"
+            @keydown.right.prevent="hsv = { ...hsv, h: (hsv.h + 5) % 360 }; draft = hsvToHex(hsv)"
           >
-            <span v-if="draft === c" class="cp-check" aria-hidden="true">✓</span>
-          </button>
+            <span class="cp-ring-knob" :style="ringKnob"></span>
+          </div>
+          <div
+            ref="svEl"
+            class="cp-sv"
+            role="slider"
+            tabindex="0"
+            aria-label="饱和度与明度"
+            :style="svBg"
+            @pointerdown="startDrag('sv', $event)"
+            @keydown.left.prevent="hsv = { ...hsv, s: Math.max(0, hsv.s - 0.02) }; draft = hsvToHex(hsv)"
+            @keydown.right.prevent="hsv = { ...hsv, s: Math.min(1, hsv.s + 0.02) }; draft = hsvToHex(hsv)"
+            @keydown.up.prevent="hsv = { ...hsv, v: Math.min(1, hsv.v + 0.02) }; draft = hsvToHex(hsv)"
+            @keydown.down.prevent="hsv = { ...hsv, v: Math.max(0, hsv.v - 0.02) }; draft = hsvToHex(hsv)"
+          >
+            <span class="cp-sv-knob" :style="svKnob"></span>
+          </div>
         </div>
 
         <div class="cp-recent-head">
@@ -301,10 +383,71 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
   background: var(--pm-btn-hover);
   color: var(--pm-text);
 }
-.cp-grid {
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-  gap: 4px;
+/* ── 色盘 ─────────────────────────────────────────────────────────────
+   环用 conic-gradient + radial mask 挖空中心（比 SVG 环省事，且天然平滑）；
+   内方块叠两层线性渐变。两者都不吃 backdrop-filter，拖动不重排。 */
+.cp-wheel-wrap {
+  position: relative;
+  /* FEAT-118 反馈：色盘是这块弹窗的唯一操作对象，做小了拖动精度也差 ——
+     264px 是弹窗内容宽（440 - 2×24 内边距 = 392）下留足呼吸的尺寸。
+     环宽、内方块、两个滑块全部用百分比，改这一个数字就等比例放大。 */
+  width: 264px;
+  height: 264px;
+  margin: 2px auto 4px;
+  flex-shrink: 0;
+}
+.cp-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  cursor: crosshair;
+  touch-action: none;
+  /* from 90deg：让 0°（红）落在顶部，与指针换算的 +90° 偏移对齐 */
+  background: conic-gradient(
+    from 90deg,
+    #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000
+  );
+  /* 挖空中心：62% 以内透明，63% 起实心 —— 1% 的过渡边避免锯齿 */
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, transparent 66%, #000 67%);
+  mask-image: radial-gradient(circle at 50% 50%, transparent 66%, #000 67%);
+}
+.cp-ring:focus-visible,
+.cp-sv:focus-visible {
+  outline: 2px solid var(--c-accent, #e8a33d);
+  outline-offset: 3px;
+}
+.cp-ring-knob {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+/* 内方块：边长必须 ≤ 内半径 × √2，否则四个角会钻到环下面。
+   内半径 34% ⇒ 上限 48%；取 46% 留一点呼吸。 */
+.cp-sv {
+  position: absolute;
+  left: 27%;
+  top: 27%;
+  width: 46%;
+  height: 46%;
+  border-radius: 10px;
+  cursor: crosshair;
+  touch-action: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), 0 2px 8px rgba(0, 0, 0, 0.28);
+}
+.cp-sv-knob {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: 0 0 0 2px #fff, inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
 }
 .cp-swatch {
   position: relative;
