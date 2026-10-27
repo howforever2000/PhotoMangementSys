@@ -4364,7 +4364,69 @@
       ],
       "created_at": "2026-10-27T12:00:00+08:00",
       "updated_at": "2026-10-27T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-117",
+      "name": "图注回退嵌入 / 时间线热加载 / 仪表墙恢复卡片（文字嵌入+卡片混合）/ 材质单维度 / 预设重建 8 套",
+      "module": "src/composables/useIncrementalReveal.ts（新）、views/Timeline.vue、components/OverviewPane.vue、components/AlbumCard.vue、views/AlbumList.vue、components/ui/widget/{UiWidget,GeoPinsCore,RankBarsCore}.vue、assets/widget.css、stores/theme.ts、utils/prefs.ts、utils/presets.ts、components/ThemeDialog.vue",
+      "status": "done",
+      "purpose": "用户五条要求：①相册卡文字保持嵌入封面 ②时间线热加载（一次性渲染太大会卡死）③仪表墙需要卡片，与「文字背景嵌入」相结合（参考 Rainmeter 深藏青皮肤）④编码注重原子性与组件可复用 ⑤预设界面两个材质选项合一 + 预设推到重建（10 套 → 8 套，更有质感与风格）。",
+      "implementation": {
+        "R1 图注回退": "FEAT-115 把 .tile-seal 移到封面下方（照片完整可见），用户要求回退 —— 文字与照片的叠压关系才是这个页面的性格，移出后一墙封面退化成「图 + 说明」的表格感，海报感与错落都消失。回到 position:absolute 封面左下角两行落款；底部渐变兜底回 54px/0.42（两行白字在雪景/天空上需要更厚的暗带）；AlbumList 的 captionH 26→0。保留 justifiedRows 的「单块不成横幅」修正（形状缺陷，与风格无关）。",
+        "R2 时间线热加载": "缩略图是懒的（IntersectionObserver），但 DOM 是急的 —— 原先 `v-for=\"g in groups\"` 一次把 2.5 万个 <figure> + 2.5 万个 observer 全建出来，进页面几秒白屏。懒加载图片 ≠ 懒加载列表。新增 useIncrementalReveal：预算 = 视口高 × 5 屏，按单元累计 costOf() 直到够预算；滚到距底 900px 追加 2 屏。单元取「月份」（天然断点 + 用户认得出的分界），costOf 用 justifiedRows 已算好的真实行高，所以「一屏放多少张」不用猜 —— 预算换算出来就是实际像素。实测 mock（8 个月/93 张）：首屏 5 个月 59 张、docH 5592；滚到底 6 个月 73 张 → 8 个月 93 张。切换年份筛选时 reset，否则累积预算会一次渲完。",
+        "R3 仪表墙恢复卡片": "采纳 backup/pre-feat115 分支上被覆盖的 FEAT-116「双声部」骨架（UiWidget 的 variant=panel/bare + bleed/cover）：纯读数（照片库、今年月度）文字直接压在页面上、有内容（相册/人物/地点/最近导入/那年今日）才配板 —— 板与裸交替出现时，「板」才重新被读成「承载内容的物件」，而不是默认背景纹理。这正是用户要的「文字嵌入 + 卡片相结合」。同时修两处：①GeoPinsCore 的标签只写 fill 不写 color（审计读 computed color，肉眼修好了审计仍报 1.03:1）；②cover 变体的空态（那年今日没照片时）白字压在白霜板上 1.1:1 —— 深浅模式各补一层底并同步换字色（深色近黑待填卡 / 浅色极淡墨渍，浅色页上摆一块黑盒子反而更抢眼）。③gpsRatio 分母从「已入库张数」改为「全库张数」并 min(1)：两者不同量纲，mock 里出现「591.4% 带 GPS」。",
+        "R4 原子性与复用": "①新 composable useIncrementalReveal（与业务无关，任何长列表可用）；②材质收敛为单一来源：theme.widgetMaterial 从独立 ref 降级为 material 的派生 computed（liquid→glass），body 的 w-mat-* 类由 applyMaterial 一并下发；UiWidget 只读 theme.material；prefs 里删掉 widgetMaterial 字段（旧 localStorage 残留键被 normalizePrefs 的白名单自然丢弃，不报错）；③预设仍走单一 Preset schema（accent/accent2/washes 可选，缺省回落全局金）。",
+        "R5a 材质合一": "ThemeDialog 自定义页原来有两组材质开关（卡片材质 plain/liquid + 仪表墙材质 glass/plain），名字都叫「液态玻璃 / 普通」，改一个另一个不动 —— 用户点了两次都以为坏了一个。材质是「这个界面是什么做的」，不该按页面分叉。删掉第二组，只留一组并注明「全局生效：卡片、面板、仪表墙 widget 一并」。",
+        "R5b 预设重建 8 套": "上一版 10 套的问题是**没有「风格」这个维度**：只调三段渐变的色相，组件色/透明度/强调色几乎一样，10 张预览卡像同一张图的 10 个滤镜。这一版每套同时动三样：背景明度跨度（决定轻重）、组件色冷暖（决定性格）、强调色（决定高亮落点）。深 4 = 紫（落日紫夜，保留：它是 DEFAULTS 与登录三页共用的品牌外观）/ 蓝（藏青夜，新增，参考图那套深藏青）/ 绿（松夜绿）/ 褐（墨褐）；浅 4 = 雾白（中性）/ 亚麻（暖）/ 晨雾青瓷（冷绿，配青绿强调而非金 —— 冷底上的金会像旧纸上的黄斑）/ 陶砂（暖砂）。删：墨色石板（与石墨类重复）、余烬暖褐（被墨褐取代）、纸白（组件色与页面底几乎同色，去卡片化后等于没有承载面）、菊芋淡紫（与深色默认撞色相）。",
+        "附带修复": "①Vue scoped 样式里写 :global(...) 会被整条丢弃（编译产物里查无此规则）—— 直接写 body 前缀即可，scoped 只给最后一段加 [data-v-*]；②浅色下 --w-track 15% 墨在白霜板实测 1.1:1，未选中的柱子几乎消失，读者只看到「一根金条」而不是「一年的分布」，改 26%。"
+      },
+      "highlights": [
+        "「懒加载图片」和「懒加载列表」是两件事：把 IntersectionObserver 全铺上，DOM 节点依然是一次建完的。判断一个长列表是否真的懒，看的不是有没有 observer，而是 document.querySelectorAll(卡片).length 是不是等于总数。",
+        "按「条数」定阈值是错的：100 条在一屏 6 张的宽屏是 16 屏，在一屏 30 张的窄屏是 3 屏。用户说的是「大概几屏」，那就直接按像素算预算，把单元高度交给调用方（这里用 justifiedRows 已算好的真实行高），换算出来的才是他真正看到的量。",
+        "「空态」是材质改动的隐形受害者：cover 变体靠「照片」提供底，照片不在时白色标题直接压在白霜板上（浅色 1.1:1）。凡是「底色由内容提供」的容器，都必须给空态补一层兜底底 —— 否则常态化的空态直接不可见。",
+        "同一个空态在深浅两种模式下不能共用一个底：深色给近黑（待填卡），浅色给极淡墨渍。浅色页上摆一块黑盒子，它就成了全页最重的元素，比空着还抢眼。",
+        "对比度审计读的是 computed color，SVG 的 fill 它看不见：SVG 文字必须同时给 fill 与 color，否则会出现「肉眼已修好、审计仍报 1.03:1」。",
+        "统计口径（分子分母）必须同量纲：gpsRatio 用「地点聚合张数 / 已入库张数」算出了 591.4% —— 两个数来自不同查询、覆盖不同范围。跨来源的比例一定要显式写清楚分母是谁，再兜一层 min(1)。",
+        "两个同名开关是配置界面最坏的形态：ThemeDialog 里「液态玻璃 / 普通」出现两次，各管一处，改一个另一个不动，用户会以为界面坏了。材质是「界面是什么做的」，不该按页面分叉 —— 一个维度只能有一个控件。",
+        "预设数量不是问题，缺少「风格维度」才是：10 套只改色相，看起来就是同一张图的 10 个滤镜。要让人一眼分出风格，每套至少要同时动三样（明度跨度 / 组件色冷暖 / 强调色）。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 139/139（presets.test 断言预设总数 8 / 深 4 / 浅 4，并逐套校验单色相、明度跨度、组件色近中性）",
+        "npx vite build exit 0",
+        ".visual/probe-timeline-lazy.cjs（新增）：首屏 5 个月 59/93 张 → 滚到底 6 个月 73 张 → 8 个月 93 张，hasMore 正确归 false",
+        ".visual/audit-contrast.cjs：8 页 × 深浅 = 0 处不合格（含仪表墙恢复卡片后新增的三处回归：geo 标签、cover 空态标题、cover 空态文案）",
+        ".visual/probe-containers.cjs：SmartAlbum 由 2 回到 13 —— 这是**预期**的，用户本轮明确要求仪表墙恢复卡片；其余页保持 0~2"
+      ],
+      "related_files": [
+        "src/composables/useIncrementalReveal.ts",
+        "src/views/Timeline.vue",
+        "src/components/OverviewPane.vue",
+        "src/components/AlbumCard.vue",
+        "src/views/AlbumList.vue",
+        "src/components/ui/widget/UiWidget.vue",
+        "src/components/ui/widget/GeoPinsCore.vue",
+        "src/components/ui/widget/RankBarsCore.vue",
+        "src/assets/widget.css",
+        "src/stores/theme.ts",
+        "src/utils/prefs.ts",
+        "src/utils/presets.ts",
+        "src/utils/presets.test.ts",
+        "src/components/ThemeDialog.vue",
+        ".visual/probe-timeline-lazy.cjs"
+      ],
+      "keywords": [
+        "热加载",
+        "增量渲染",
+        "仪表墙双声部",
+        "材质合一",
+        "预设重建",
+        "文字嵌入",
+        "feat117"
+      ],
+      "created_at": "2026-10-27T16:30:00+08:00",
+      "updated_at": "2026-10-27T16:30:00+08:00"
     }
   ],
-  "updated": "2026-10-27T12:00:00+08:00"
+  "updated": "2026-10-27T16:30:00+08:00"
 }

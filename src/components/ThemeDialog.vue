@@ -303,7 +303,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
           aria-labelledby="tab-custom"
         >
           <div class="pm-section">
-            <div class="pm-section-title">卡片材质</div>
+            <div class="pm-section-title">材质</div>
             <div class="pm-seg">
               <button
                 type="button"
@@ -321,37 +321,10 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
               </button>
             </div>
             <p class="pm-hint" style="margin: 6px 0 0">
-              普通：无模糊、无纹理的卡片 · 液态：边缘折射 + 壁厚高光（全局生效）
+              普通：无模糊、无纹理的卡片 · 液态：边缘折射 + 壁厚高光
+              · 全局生效：卡片、面板、仪表墙 widget 一并用这一套材质
             </p>
-            <!-- 仪表墙材质（FEAT-110）：只作用于智慧相册「全局概览」的 widget 墙。
-                 从预定义页迁到这里 —— 材质属于自定义口味，且与上面的卡片材质是
-                 两个独立维度，放一起才不会被误认为「随预设一起换」。 -->
-            <div class="pm-mode-row" style="margin: 12px 0 0">
-              <span class="pm-mode-label">仪表墙</span>
-              <div class="pm-mode-seg" role="group" aria-label="仪表墙 widget 材质">
-                <button
-                  type="button"
-                  class="pm-mode-btn"
-                  :class="{ on: theme.widgetMaterial === 'glass' }"
-                  :aria-pressed="theme.widgetMaterial === 'glass'"
-                  @click="theme.widgetMaterial = 'glass'; theme.persist()"
-                >
-                  液态玻璃
-                </button>
-                <button
-                  type="button"
-                  class="pm-mode-btn"
-                  :class="{ on: theme.widgetMaterial === 'plain' }"
-                  :aria-pressed="theme.widgetMaterial === 'plain'"
-                  @click="theme.widgetMaterial = 'plain'; theme.persist()"
-                >
-                  普通材质
-                </button>
-              </div>
-            </div>
-            <p class="pm-hint" style="margin: 0">
-              仪表墙 = 智慧相册「全局概览」的统计卡片，与上面的全站卡片材质互不影响
-            </p>
+
           </div>
 
           <div class="pm-section">

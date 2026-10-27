@@ -120,8 +120,18 @@ export const useThemeStore = defineStore("theme", () => {
      零开销、零视觉变化。 */
   /** FEAT-086：卡片材质（普通/液态），预设一律普通卡片 */
   const material = ref<Material>(saved.material);
-  /** FEAT-110：仪表墙 widget 材质（玻璃/普通），只作用于 widget 墙，独立于全站卡片材质 */
-  const widgetMaterial = ref<WidgetMaterial>(saved.widgetMaterial);
+  /* FEAT-117：材质**只有一个维度**了。
+     FEAT-110 曾给仪表墙单独开了一个 widgetMaterial（glass/plain），
+     理由是"仪表墙是另一个语境"。实际使用中用户点了两次都以为坏了一个：
+     两套开关名字都叫"液态玻璃 / 普通"，改一个另一个不动，没人能记住哪套管哪儿。
+     材质是"这个界面是什么做的"，不该按页面分叉。
+     这里保留 widgetMaterial 这个名字（外面 UiWidget 仍在读），
+     但它**降级为 material 的派生值**，不再持久化、不再能被单独设置。
+     映射：liquid → glass，plain → plain。旧 prefs 里的 widgetMaterial
+     仍然被 normalizePrefs 读取（不报错），只是不再生效。 */
+  const widgetMaterial = computed<WidgetMaterial>(() =>
+    material.value === "liquid" ? "glass" : "plain",
+  );
   const bgStyle = ref<BackgroundStyle>(saved.bgStyle);
   const bgColor = ref(saved.bgColor);
   const gradFrom = ref(saved.gradFrom);
@@ -148,7 +158,6 @@ export const useThemeStore = defineStore("theme", () => {
       saturation: saturation.value,
       temperature: 0, /* 色温模块停用：永远写 0，旧值不再被读回（见上方说明） */
       material: material.value,
-      widgetMaterial: widgetMaterial.value,
       bgStyle: bgStyle.value,
       bgColor: bgColor.value,
       gradFrom: gradFrom.value,
@@ -243,7 +252,6 @@ export const useThemeStore = defineStore("theme", () => {
     compAlpha.value = DEFAULTS.compAlpha;
     saturation.value = DEFAULTS.saturation;
     material.value = DEFAULTS.material;
-    widgetMaterial.value = DEFAULTS.widgetMaterial;
     bgStyle.value = DEFAULTS.bgStyle;
     bgColor.value = DEFAULTS.bgColor;
     gradFrom.value = DEFAULTS.gradFrom;
@@ -585,21 +593,12 @@ export const useThemeStore = defineStore("theme", () => {
     if (typeof document === "undefined") return;
     document.body.classList.toggle("mat-plain", m === "plain");
     document.body.classList.toggle("mat-liquid", m === "liquid");
+    /* FEAT-117：仪表墙的两个 body 类由同一个材质推出（见 widgetMaterial 注释） */
+    document.body.classList.toggle("w-mat-glass", m === "liquid");
+    document.body.classList.toggle("w-mat-plain", m === "plain");
   }
   applyMaterial(material.value);
   watch(material, applyMaterial);
-
-  /* ---------- FEAT-110：仪表墙 widget 材质（玻璃/普通） ----------
-     与上面的全站卡片材质**完全独立**：只挂 body.w-mat-* 类，
-     widget.css 按这个类选 .ui-widget--glass / --plain。
-     老用户 localStorage 无此字段 → normalizePrefs 回落 glass。 */
-  function applyWidgetMaterial(m: WidgetMaterial) {
-    if (typeof document === "undefined") return;
-    document.body.classList.toggle("w-mat-glass", m === "glass");
-    document.body.classList.toggle("w-mat-plain", m === "plain");
-  }
-  applyWidgetMaterial(widgetMaterial.value);
-  watch(widgetMaterial, applyWidgetMaterial);
 
   /* ---------- FEAT-110：widget 强调色（预设可覆盖） ----------
      默认落日金；松绿混色等预设自带 accent/accent2 时，命中该预设就下发。

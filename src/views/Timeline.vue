@@ -11,6 +11,7 @@ import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
 import type { ContentSearchHit } from "../types/content";
 import { getThumbs } from "../utils/thumbQueue";
 import { justifyRows } from "../utils/justifiedRows";
+import { useIncrementalReveal } from "../composables/useIncrementalReveal";
 
 /**
  * 照片时间线（FEAT-033）—— 跨相册按拍摄时间聚合浏览
@@ -311,6 +312,68 @@ const groups = computed<YearGroup[]>(() => {
 });
 
 const totalFiltered = computed(() => groups.value.reduce((n, g) => n + g.months.reduce((k, mg) => k + mg.items.length, 0), 0));
+
+/* ══════════════ FEAT-117：时间线热加载（按屏幕预算增量渲染）══════════════
+   问题：缩略图是懒的，但 DOM 是急的 —— 这里原先 `v-for="g in groups"` 一次把
+   所有年/月/行建成节点。2.5 万张照片 = 2.5 万个 <figure> + 2.5 万个 observer，
+   进页面几秒白屏。
+
+   做法：把「月份」当成最小渲染单元（月份是天然断点，也是用户认得出的分界），
+   交给 useIncrementalReveal 按"屏幕高度"决定先渲多少 —— 首屏 5 屏，
+   滚到底再追加 2 屏。具体一屏放多少张不用猜：`costOf` 用的是当月各行的
+   真实行高（justifiedRows 已算好），所以预算换算出来的就是实际像素。 */
+interface MonthUnit {
+  key: string;
+  year: string;
+  month: string;
+  label: string;
+  items: ContentSearchHit[];
+  /** 估算高度：月份标题 + 每行（行高 + 行间距） */
+  height: number;
+}
+
+const monthUnits = computed<MonthUnit[]>(() => {
+  const out: MonthUnit[] = [];
+  for (const g of groups.value) {
+    for (const mg of g.months) {
+      const rows = monthRowMap.value[g.year + "|" + mg.month] ?? [];
+      const h = 46 + rows.reduce((n, r) => n + r.height + 8, 0);
+      out.push({
+        key: g.year + "|" + mg.month,
+        year: g.year,
+        month: mg.month,
+        label: mg.label,
+        items: mg.items,
+        height: h,
+      });
+    }
+  }
+  return out;
+});
+
+const { visible: visibleMonths, hasMore: hasMoreMonths, loadMore: loadMoreMonths, reset: resetMonths, visibleCount: visibleMonthCount } =
+  useIncrementalReveal<MonthUnit>({
+    units: monthUnits,
+    costOf: (u) => u.height,
+    screens: 5,
+    stepScreens: 2,
+  });
+
+/* 渲染视图：只带已渲染的月份，但年份统计仍取自**完整**年组
+   （否则"2024 年 1234 张"会随着滚动不断变小，读数就成了假的）。 */
+const renderGroups = computed<YearGroup[]>(() => {
+  const shown = new Set(visibleMonths.value.map((u) => u.key));
+  const out: YearGroup[] = [];
+  for (const g of groups.value) {
+    const months = g.months.filter((mg) => shown.has(g.year + "|" + mg.month));
+    if (!months.length) continue;
+    out.push({ year: g.year, months });
+  }
+  return out;
+});
+
+/** 切换年份筛选 → 重新从 5 屏开始（否则累积预算会一次渲完新结果） */
+watch(yearFilter, () => nextTick(resetMonths));
 
 /** 每个年组的统计（月数 / 张数 / 月均）+ 月度分布迷你柱 */
 interface YearStat {
@@ -682,7 +745,7 @@ function goAlbumFromLightbox(albumId: number) {
       <!-- 右侧：年分组 → 月分组 → 行式密排 -->
       <div ref="boardEl" id="tl-board" class="tl-board">
         <section
-          v-for="g in groups"
+          v-for="g in renderGroups"
           :key="g.year"
           :id="`y-${g.year}`"
           class="tl-year"
@@ -743,6 +806,19 @@ function goAlbumFromLightbox(albumId: number) {
             </div>
           </div>
         </section>
+
+        <!-- 热加载哨兵：还没渲完就显示"往后还有多少"。
+             滚动到底部附近会自动追加（useIncrementalReveal 监听 window scroll），
+             这里的按钮是给键盘用户/跳转落点的兜底出口。 -->
+        <div v-if="hasMoreMonths" class="tl-more">
+          <button type="button" class="tl-more-btn" @click="loadMoreMonths">
+            继续加载
+          </button>
+          <span class="tl-more-hint">
+            已渲染 {{ visibleMonthCount }} / {{ monthUnits.length }} 个月 ·
+            向下滚动自动加载
+          </span>
+        </div>
       </div>
     </div>
 
@@ -860,6 +936,39 @@ function goAlbumFromLightbox(albumId: number) {
 .tl-month {
   margin-bottom: 20px;
 }
+/* ── 热加载哨兵（FEAT-117）─────────────────────────────────────────────
+   它不是"加载更多"按钮，而是**进度说明**：告诉用户下面还有东西、
+   而且滚下去就会自己出来。所以文字在前、按钮在后，且只有发丝线不用框。 */
+.tl-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  padding: var(--sp-6) 0 var(--sp-2);
+  border-top: 1px solid var(--rule);
+  margin-top: var(--sp-4);
+}
+.tl-more-btn {
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color var(--dur-1) ease, border-color var(--dur-1) ease;
+}
+.tl-more-btn:hover {
+  color: var(--fg);
+  border-color: var(--fg-3);
+}
+.tl-more-hint {
+  font-size: 11px;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
 .tl-month-title {
   font-size: 13px;
   margin: 0 0 9px;

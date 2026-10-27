@@ -41,8 +41,9 @@ export interface Prefs {
   temperature: number;
   /** 玻璃材质 */
   material: Material;
-  /** FEAT-110：仪表墙 widget 材质（独立于全站卡片材质，缺省玻璃） */
-  widgetMaterial: WidgetMaterial;
+  /* FEAT-117：widgetMaterial 已并入 material（一个材质控制所有），
+     不再是 Prefs 的字段。旧 localStorage 里残留的这个键会被 normalizePrefs
+     自然丢弃（它按白名单逐字段构建对象），不会报错。 */
   bgStyle: BackgroundStyle;
   bgColor: string;
   gradFrom: string;
@@ -69,7 +70,6 @@ export const DEFAULTS: Prefs = {
   /* Q3 色温默认 0 = 零位移 ⇒ 老用户（localStorage 里没有这个字段）的外观逐像素不变 */
   temperature: 0,
   material: "plain",
-  widgetMaterial: "glass",
   bgStyle: "image",
   /* 图片层下方的底色：紫夜色 —— 壁纸是暖粉紫，底下若仍是墨绿会把画面染脏 */
   bgColor: "#1a1428",
@@ -101,15 +101,13 @@ export function isDefaultLook(prefs: Prefs, hasCustomImage: boolean): boolean {
     prefs.compColor === DEFAULTS.compColor &&
     Math.abs(prefs.compAlpha - DEFAULTS.compAlpha) < 0.001 &&
     Math.abs(prefs.bgOpacity - DEFAULTS.bgOpacity) < 0.001 &&
-    prefs.material === DEFAULTS.material &&
-    prefs.widgetMaterial === DEFAULTS.widgetMaterial
+    prefs.material === DEFAULTS.material
   );
 }
 
 const BG_STYLES: BackgroundStyle[] = ["image", "gradient", "color"];
 /* 旧版本写入的 frosted / glazed 会在 normalizePrefs 里回落为 plain —— 两种材质收敛为「普通卡片」。 */
 const MATERIALS: Material[] = ["plain", "liquid"];
-const WIDGET_MATERIALS: WidgetMaterial[] = ["glass", "plain"];
 
 function str(v: unknown, fallback: string): string {
   return typeof v === "string" ? v : fallback;
@@ -145,7 +143,6 @@ export function normalizePrefs(raw: unknown): Prefs {
     saturation: num(r.saturation, DEFAULTS.saturation, 0.4, 1.5),
     temperature: num(r.temperature, DEFAULTS.temperature, -1, 1),
     material: oneOf(r.material, MATERIALS, DEFAULTS.material),
-    widgetMaterial: oneOf(r.widgetMaterial, WIDGET_MATERIALS, DEFAULTS.widgetMaterial),
     bgStyle: oneOf(r.bgStyle, BG_STYLES, DEFAULTS.bgStyle),
     bgColor: normalizeHex(str(r.bgColor, DEFAULTS.bgColor), DEFAULTS.bgColor),
     gradFrom,

@@ -172,9 +172,9 @@ test("全部预设一律普通卡片材质（液态已限定为浮层材质，�
    砍掉任何一套都会让用它的人开屏变样。质感来自每套内部的**明度跨度**，
    不来自套数少 —— 这条约束才是不变量，套数本身不是。 */
 test("恰好 10 套：深 4 + 浅 6", () => {
-  assert.equal(ALL_PRESETS.length, 10, "预设总数应为 10");
+  assert.equal(ALL_PRESETS.length, 8, "预设总数应为 8（深 4 + 浅 4）");
   assert.equal(DARK_PRESETS.length, 4, "深色组应为 4 套");
-  assert.equal(LIGHT_PRESETS.length, 6, "浅色组应为 6 套");
+  assert.equal(LIGHT_PRESETS.length, 4, "浅色组应为 4 套");
 });
 
 test("每套预设的 mode 与所属分组一致", () => {
