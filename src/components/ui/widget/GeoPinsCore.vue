@@ -88,7 +88,13 @@ function shortName(n: string | null): string {
 <style scoped>
 .w-geo {
   flex: 1;
-  min-height: 0;
+  /* FEAT-115：仪表墙不再是"每块 86px×行数"的固定格子 —— 板内由内容定高。
+     SVG 是 `height:100%` + viewBox，在窄格里会被**宽高比反推成一个很高的盒子**
+     （实测 span-4 时 272px），整带被撑到 360px，中间一大片空白。
+     小卡里的散点只是"分布密度"的表征，不是主地图（主地图在「地点」分区），
+     给它明确的高度区间即可。 */
+  min-height: 132px;
+  max-height: 172px;
   margin-top: 6px;
   border-radius: var(--w-radius-inner);
   overflow: hidden;
@@ -104,8 +110,14 @@ function shortName(n: string | null): string {
 .w-geo-pin {
   cursor: pointer;
 }
+/* FEAT-115：改用无容器阅读层的次档文字色。
+   原来用 --color-text-2 是按"widget 玻璃板等效底色"标定的；
+   板内 widget 已经不再有填充，背后就是壁纸，那套值直接失效
+   （实测浅色 1.01:1、深色 2.11:1，等于看不见）。 */
 .w-geo-txt {
-  fill: var(--color-text-2);
+  /* fill 负责上色，color 让审计脚本（读 computed color）与肉眼看到的一致 */
+  fill: var(--c-fg-2);
+  color: var(--c-fg-2);
   font-size: 3.1px;
   font-weight: 600;
 }

@@ -337,7 +337,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="lg-wrap" :style="{ color: theme.textColor }">
+  <div class="lg-wrap" :style="{ color: 'var(--fg)' }">
     <!-- ============ 视图 1：地点卡片 ============ -->
     <template v-if="!activeGroup">
       <div v-if="loading" class="lg-state">

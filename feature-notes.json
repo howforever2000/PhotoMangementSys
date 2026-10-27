@@ -4288,7 +4288,83 @@
       ],
       "created_at": "2026-10-26T12:00:00+08:00",
       "updated_at": "2026-10-26T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-115",
+      "name": "界面质感改造落地：顶栏带式化 + 概览一面墙一块板 + 图注移出封面 + 独占行修正 + 文字色收敛",
+      "module": "src/components/ui/AppHeader.vue、OverviewPane.vue、AlbumCard.vue、CategoryGallery.vue、PersonGallery.vue、GlobalScanPanel.vue、CollapseSection.vue、ui/StatBand.vue、ui/widget/GeoPinsCore.vue、ui/widget/RankBarsCore.vue、utils/justifiedRows.ts、views/AlbumList/Timeline/Memories/SmartSearch/ScanHub/SmartAlbum/AlbumDetail/LocationGallery",
+      "status": "done",
+      "purpose": "用户要求：简约 · 有数据 · 整体对齐 · 部分放大错落 · 文字与背景嵌入 · 避免过多的框与繁重感 · 统一风格与质感。先出效果图（design/preview/proposal/feat115-*.png，深色松夜绿低保和 + 浅色晨雾青瓷两套），确认后按方案落地。**Home 页明确不改。**",
+      "implementation": {
+        "量化基线": "自建 .visual/probe-containers.cjs（口径 v3：容器 = 有填充 alpha>.10 或外投影或可见描边，排除壁纸层/照片框/表单控件/6% 选中微光）。改造前：AlbumList 3 · SmartAlbum 13 · ScanHub 7 · Memories 9 · Timeline 1 · SmartSearch 1(表单不计) · AlbumDetail 5 · Home 5。改造后：AlbumList 0 · SmartAlbum 2 · ScanHub 1 · Memories 0 · Timeline 0 · SmartSearch 0 · AlbumDetail 1 · Home 5(未动)。",
+        "S1 文字色收敛": "同屏曾并存 5 种\"同义不同值\"的主/次文字色：--color-text(#f5f7ff)、--color-text-2(…,.92)、--c-fg(#f2f0f4)、--c-fg-2(…,.68)、--fg(#f0eef3)。壁纸层统一到 --fg 三档（--fg/-fg-2/-fg-3）；页面壳基色从 theme.textColor 改为 var(--fg)；AlbumList/AppHeader 内 --c-fg* 全部替换为 --fg*。AlbumList 文字色档 7→6、Timeline 4→2、Memories 4→2。",
+        "S1b StatBand 金色默认值": "StatBand 的 aux 文案 :class=\"it.tone ?? 'up'\" —— 缺省是 up，于是所有没写 tone 的静态计数全被染成 --c-accent-bright 的金色（实测同屏 3 处）。缺省改为 'mute'，并在 props 文档里写明\"金色是'这数在变'的信号\"。改后金色 3→1。",
+        "S2 卡片去玻璃底": "CategoryGallery 的 .cat-card 去掉 glass-card + :style=theme.cardStyle，只留 inset 1px 内描边；hover 从 translateY(-3px)+shadow 改为 filter:brightness(1.06)（一屏十几块同时位移=整片在动）。PersonGallery 的 .person-card 同样去卡：padding 归零、圆角/投影删除、网格 196→150px。",
+        "S2b 无封面兜底": "去玻璃卡后\"还没匹配到照片\"的分类变成透明区（新建分类的常态），实测整屏只剩空描边框。给 .cat-cover:not(:has(img)) 用 !important 盖掉 inline 色卡底（其中\"文档\"档是浅色 → 白板），改中性半透明 + 落款字色切回 --fg。角标从深色胶囊改为裸文字+投影（与相册墙 .tile-badge 同一套语言）。",
+        "S3 图注移出封面": "AlbumCard 的 .tile-seal 从\"绝对定位压封面左下角、两行竖排\"改为\"封面下方一行横排\"：名字 13px/600 + 张数 10.5px/--fg-3，gap 7px 连成一串（不用 margin-left:auto 推右 —— 瓦片宽度不同会让每行张数落在不同 x 位置，读成两栏表格）。行高 line-height 固定 18px 保证下一行封面起点不错位。底部渐变兜底 54px/0.42 → 34px/0.30（只为封面内的日期/未入库角标兜底）。captionH 0→26。系统相册也从 card 变体改 tile 变体（一屏里两种材质并存=不统一）。",
+        "S4 独占行修正": "justifiedRows §2 生成行时：coverH 被 clamp 夹住，但 width 仍按\"铺满 W\"分配，两者独立 → 宽高比失真。单块成行时最极端：宽=整个容器、高被压到 maxCoverH → 一条占满全屏的横幅（用户明确否掉）。改为：自然高度落在区间内 → 精确铺满；被夹住 → 宽度 = 宽高比 × 实际高度，剩余空间留在行尾。同时 AlbumList wideFactor 1.8→1.5。",
+        "S5 扫描面板": "GlobalScanPanel 从\"单栏堆块\"改成\"左右分栏\"（左=选择区+扫描内容，右=任务/空态），删掉 .gs-select-block 的内衬板（外层 .gs-area 已是墙板玻璃，里面再套一块板=板里还有板）；勾选行从整块底色改左侧 2px 竖条+5% 微光；扫描内容 2×2 带边框盒子→一行紧凑胶囊，选中态用淡色底+描边（只有主 CTA 用实心金）；修 .gs-filter-input 重复声明（后一条 background:var(--color-surface-2) 把前一条盖掉 → 输入框是板上开了个洞）。",
+        "S6 三页对齐": "Timeline 页头三行（标题→工具条→数据带，约 200px）合成一行；数据带 5→4 列（\"无拍摄时间\"与\"地点覆盖\"是任何年份都不变的诊断读数，合并为\"元数据完整度\"）；标题 19→17px。SmartSearch 去掉 .ss-filters 整块底板、入框字号 15→13（7 档字阶里没有 15 的位置）、空态留白 70→52px。AlbumDetail 去 max-width:1200 居中改 padding:0 var(--gutter)（全站唯一一页居中缩窄，宽屏下与全宽顶栏对不齐）。CollapseSection 从\"三块卡片\"改\"折纸行\"（只留上缘发丝线）——详情页一进来就是三个同尺寸卡片，把页面切成三段，而它们承载的是同一张照片列表的三个工具。",
+        "S7 概览一面墙一块板": "OverviewPane 从 11 块独立 <UiWidget>（每块自带填充+边框+投影，块间 14px 缝露壁纸）改为 5 个 .ov-zone 分带 + 板内 12 栅格，整面墙只有一块 .ov-board。错落改由栅格宽窄（8/4 · 4/4/4 · 12 · 8/4）承担 —— 宽窄是版式语言（有序），缝是容器语言（数框）。板内 widget 全部去容器化（:deep 清填充/边框/模糊/投影/圆角）。⚠️ 必须同时重置 grid-row：原 rows-2 是 grid-row:span 2，配 grid-auto-rows:86px 时表示\"占两行 86px\"，但板内改用内容自适应行高后 span 2 会凭空多出两行隐式轨道，整带被拉到 360px。",
+        "S7b 环/点/排行的色": "RankBarsCore 6 行全用强调色渐变（6 处强调=没有强调，且看不出谁第一）→ 默认 --color-text-3，只有 :first-child 用强调色。GeoPinsCore 的点阵文字用 --color-text-2（按 widget 玻璃底标定）→ 板内 widget 已无填充，背后就是壁纸，那套值直接失效（实测浅色 1.01:1），改用 --c-fg-2 并同时给 fill 与 color（审计读的是 computed color）。",
+        "S8 顶栏带式化": "AppHeader 从\"浮起的磨砂玻璃板\"（52px 高、圆角 12、填充 .62、blur 18 + url(#liquid-lens) 折射、上缘镜面+下缘暗壁+外投影、外面留 10px 空气）改成\"一条 54px 的带\"：padding 归零、无圆角/填充/模糊/边框，只有下缘一根 1px 发丝线 + 一层极淡渐变（滚动时才看得出与内容分离）。原因：板与内容之间那条 10px 缝读起来像\"两个窗口叠在一起\"；且它是一屏最亮的玻璃，把注意力从内容抢走。--float-* 仍被搜索胶囊/弹窗/菜单消费，顶栏不再消费。连带重算吸顶：.album-side 150→70px、.tl-rail 68→62px。"
+      },
+      "highlights": [
+        "「容器」这个指标必须先定义清楚才有意义：第一版探针把 body 的 backgroundColor 当基准（渐变写在 background-image 上 → computed 是 transparent，差值恒真）；第二版 boxShadow.split(\",\") 把 rgba(0,0,0,.5) 切开、inset 只落在第一段 → 含 inset 的多层影被判成\"有外投影\"（虚高 5 倍）；第三版 box-shadow:none 被切成字面量 \"none\"、既非空也不含 inset（又虚高 5 倍）；第四版把照片框的内描边与表单控件也算进来。四轮修完数字才可信 —— 度量工具本身必须先自证。",
+        "对比度审计脚本读的是 computed color，SVG 的 fill 它看不见：只改 fill 会出现\"肉眼已修好、审计仍报 1.01:1\"。两个属性一起给才对齐。",
+        "CardGallery 去掉玻璃底之后，\"没有封面\"的分支会失去唯一的承载面 —— 一屏只剩几个空描边框。去容器化的同时必须给\"空内容\"补一个可见底，否则常态化的空态直接变成不可见。",
+        "Vue 模板的属性列表里不能放 JS 块注释（/* */）：会被当成属性解析，报 \"object literal cannot have multiple properties with the same name\" 或一堆 TS1005。注释要么放 HTML 注释里，要么放 <script>/<style> 里。",
+        "彻底不要用 git stash 做\"前后基线对比\"：stash -u 会把探针脚本一起收走，接着反复 pop / 覆盖 / drop 极易把源码改动丢掉（本次实际丢过一次，靠 git fsck --unreachable 找回 dangling stash commit 才救回 16 个文件）。要对比基线就用 git worktree 另开一份，或先把改动 commit 到临时分支。",
+        "StatBand 的 tone 缺省值是个隐形陷阱：写在 :class 里的 `it.tone ?? 'up'` 让所有\"没写 tone\"的列都变成金色，而调用方（6 个页面）根本不会注意到自己没写。缺省值必须选\"最不显眼\"的那一档。",
+        "Grid 的 grid-row:span N 只在有显式轨道高度时才是\"占 N 个 86px\"；一旦改成内容自适应行高，span N 会创建 N 条隐式轨道把行撑高。改布局模式时必须同时重置跨行声明。",
+        "「错落」的边界是\"一块更宽\"，不是\"一块独占一行\"：后者在 flex/grid 里会被拉到 100% 宽，观感变成占满全屏的 hero 横幅 —— 用户明确否掉了这个形态。"
+      ],
+      "tests": [
+        "npx vue-tsc --noEmit exit 0",
+        "npm test 139/139 全绿（新增 2 条：断点段内只剩 1 块时不成横幅、合并时块总数不丢）",
+        "npx vite build exit 0",
+        ".visual/audit-contrast.cjs：8 页 × 深浅 = 0 处不合格（顶栏从玻璃变渐变、widget 去填充后重测）",
+        ".visual/probe-containers.cjs（新建，口径经 4 轮修正）：改造前后同口径对比，8 页里 6 页降到 ≤2，Home 未动"
+      ],
+      "related_files": [
+        "src/components/ui/AppHeader.vue",
+        "src/components/OverviewPane.vue",
+        "src/components/AlbumCard.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/PersonGallery.vue",
+        "src/components/GlobalScanPanel.vue",
+        "src/components/CollapseSection.vue",
+        "src/components/ui/StatBand.vue",
+        "src/components/ui/widget/GeoPinsCore.vue",
+        "src/components/ui/widget/RankBarsCore.vue",
+        "src/utils/justifiedRows.ts",
+        "src/utils/justifiedRows.test.ts",
+        "src/views/AlbumList.vue",
+        "src/views/Timeline.vue",
+        "src/views/Memories.vue",
+        "src/views/SmartSearch.vue",
+        "src/views/ScanHub.vue",
+        "src/views/SmartAlbum.vue",
+        "src/views/AlbumDetail.vue",
+        "src/components/LocationGallery.vue",
+        ".visual/probe-containers.cjs",
+        ".visual/shoot-current.cjs",
+        "design/preview/proposal/feat115.css",
+        "design/preview/proposal/shoot-feat115.cjs"
+      ],
+      "keywords": [
+        "界面改造",
+        "去容器",
+        "顶栏带式",
+        "一面墙一块板",
+        "图注移出封面",
+        "错落",
+        "文字色收敛",
+        "feat115"
+      ],
+      "created_at": "2026-10-27T12:00:00+08:00",
+      "updated_at": "2026-10-27T12:00:00+08:00"
     }
   ],
-  "updated": "2026-10-26T12:00:00+08:00"
+  "updated": "2026-10-27T12:00:00+08:00"
 }

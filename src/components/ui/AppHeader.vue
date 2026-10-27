@@ -173,67 +173,50 @@ function isTabOn(to?: string): boolean {
      · 板下的柔光（悬浮感）
    板与内容之间还留了 10px 的空气（--mh-gap），让内容从板下穿过而不是贴着。
    ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════
+   FEAT-115：顶栏 = 一条**带**，不是一块**板**
+   ──────────────────────────────────────────────────────────────────────────
+   改前（FEAT-106/108）：一块浮起的磨砂玻璃板（52px 高、圆角 12、填充 .62、
+       模糊 18px、上缘镜面 + 下缘暗壁 + 外投影），且外面留 10px 空气。
+       结果：板与内容之间那条 10px 的缝，读起来像"两个窗口叠在一起"；
+       而且一屏里它是最亮的一块玻璃，把注意力从内容抢走。
+
+   改后：一条 54px 的横向带，**只有下缘一根发丝线**。
+       · 没有缝 —— 内容从带下穿过，读成"一个页面"
+       · 没有填充 —— 带体只是极淡的一层渐变（滚动时才看得出与内容分离）
+       · 没有模糊 —— 后面滚过的是正文，糊掉反而降低可读性
+       · --float-* 令牌仍然有效，但**顶栏不再消费它**（搜索胶囊 / 弹窗 /
+         右键菜单还在用）。别以为这里漏改了。
+   ══════════════════════════════════════════════════════════════════════════ */
 .mh {
   position: sticky;
   top: 0;
   z-index: var(--z-sticky);
-  padding: 10px var(--sp-8) 0;
-  /* 板体本身不画背景，只给下面那层 .mh-inner 画玻璃 —— 这样板的内边距
-     （上下留白）也是玻璃的一部分，而不是一块贴在玻璃上的透明区。 */
-  background: transparent;
+  height: 54px;
+  padding: 0 var(--sp-8);
+  border-bottom: 1px solid var(--rule);
+  /* 极淡一层：让顶栏在滚动时与内容分开；不是玻璃，只是"上浮一点" */
+  background: linear-gradient(180deg, var(--hover), transparent);
+}
+/* 浅底上反过来：用一点白把带体提亮（浅底的"上浮"方向是更亮，不是更暗） */
+body:not(.theme-dark) .mh {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.5), transparent);
 }
 
 .mh-inner {
   display: flex;
   align-items: center;
   gap: 14px;
-  height: 52px;
-  padding: 0 16px 0 12px;
-  border-radius: var(--panel-glass-radius);
-  /* FEAT-108：改用浮层专用令牌 --float-*。
-     旧写法 `var(--glass-blur)` 期望它是完整 filter 值，
-     但 main.css 把同名令牌定义成长度并后加载覆盖 → `18px saturate(...)`
-     是无效值，**整条 backdrop-filter 被丢弃**（实测 computed = "none"）。
-     边框同理：`border: var(--glass-border)` 拿到纯颜色，宽度默认成 3px。 */
-  background-color: var(--float-fill);
-  /* FEAT-108：浮层玻璃 = 真实边缘折射 + 轻模糊。
-     `url(#liquid-lens)` 引用 GlassFilters.vue（挂在 App 根）里定义的 SVG 滤镜，
-     它用 feDisplacementMap 把**背后的内容**沿噪声场弯折 —— 这才是“厚度”的来源，
-     而不是靠 1px 高光假装。
-
-     ⚠️ 滤镜顺序：url() 必须写在 blur() **前面**。
-     反过来的话 Chromium 会先模糊再把糊掉的图去位移，弯折完全不明显（实测）。
-
-     ⚠️ 只给浮层（顶栏/弹窗/菜单）。一屏几十张卡片每张都跑位移 = 直接掉帧。 */
-  -webkit-backdrop-filter: url(#liquid-lens) blur(var(--float-blur)) saturate(var(--float-saturate));
-  backdrop-filter: url(#liquid-lens) blur(var(--float-blur)) saturate(var(--float-saturate));
-  border: 1px solid var(--float-border);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.30),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.34),
-    0 10px 26px -16px rgba(0, 0, 0, 0.72);
-  /* 板顶镜面高光（与 .panel-glass 同一道光，方向固定左上 135°） */
-  position: relative;
-  overflow: hidden;
+  height: 53px;
+  padding: 0;
+  background: none;
+  border: none;
+  box-shadow: none;
 }
 
-.mh-inner::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.13) 0%,
-    rgba(255, 255, 255, 0.035) 20%,
-    rgba(255, 255, 255, 0) 44%
-  );
-}
-
-/* 紧凑模式：板矮 8px（内容多的页面用） */
+/* 紧凑模式：带矮 6px（内容多的页面用） */
 .mh-compact .mh-inner {
-  height: 44px;
+  height: 47px;
 }
 
 /* —— 返回主页 —— */
@@ -248,13 +231,13 @@ function isTabOn(to?: string): boolean {
   background: none;
   box-shadow: inset 0 0 0 1px var(--c-rule);
   font-size: 11.5px;
-  color: var(--c-fg-2);
+  color: var(--fg-2);
   cursor: pointer;
   flex-shrink: 0;
   transition: color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);
 }
 .mh-back:hover {
-  color: var(--c-fg);
+  color: var(--fg);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-accent) 45%, transparent);
 }
 
@@ -277,12 +260,12 @@ function isTabOn(to?: string): boolean {
   font-size: var(--fs-head);
   font-weight: var(--fw-strong);
   letter-spacing: -0.018em;
-  color: var(--c-fg);
+  color: var(--fg);
   white-space: nowrap;
 }
 .mh-meta {
   font-size: var(--fs-meta);
-  color: var(--c-fg-2);
+  color: var(--fg-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -311,18 +294,18 @@ function isTabOn(to?: string): boolean {
   border-radius: 7px;
   font-size: var(--fs-body);
   letter-spacing: var(--ls-body);
-  color: var(--c-fg-2);
+  color: var(--fg-2);
   text-decoration: none;
   white-space: nowrap;
   cursor: pointer;
   transition: color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
 }
 .mh-nav-item:hover {
-  color: var(--c-fg);
+  color: var(--fg);
   background: var(--hover, rgba(255, 255, 255, 0.055));
 }
 .mh-nav-item.on {
-  color: var(--c-fg);
+  color: var(--fg);
   font-weight: var(--fw-em);
   background: var(--hover, rgba(255, 255, 255, 0.055));
 }
@@ -340,7 +323,7 @@ function isTabOn(to?: string): boolean {
 .mh-nav-item.off {
   /* 置灰项用 --c-fg-2 + opacity .75：既弱于可点项（--c-fg），又保底可读。
      用户得先看清这个词才知道这块功能叫什么，再去 hover 读 why。 */
-  color: var(--c-fg-2);
+  color: var(--fg-2);
   opacity: 0.75;
   cursor: not-allowed;
 }
@@ -352,7 +335,7 @@ function isTabOn(to?: string): boolean {
   line-height: 1;
   padding: 2px 5px;
   border-radius: 4px;
-  color: var(--c-fg-2);
+  color: var(--fg-2);
   background: var(--hover, rgba(255, 255, 255, 0.07));
   font-variant-numeric: tabular-nums;
 }
@@ -375,7 +358,7 @@ function isTabOn(to?: string): boolean {
   border-radius: var(--r-pill);
   border: 1px solid var(--c-rule);
   background: var(--hover, rgba(255, 255, 255, 0.05));
-  color: var(--c-fg-2);
+  color: var(--fg-2);
   cursor: pointer;
   flex-shrink: 0;
   transition: color var(--dur-2) var(--ease-out), border-color var(--dur-2) var(--ease-out);
@@ -384,7 +367,7 @@ function isTabOn(to?: string): boolean {
   color: inherit;
 }
 .mh-search:hover {
-  color: var(--c-fg);
+  color: var(--fg);
   border-color: color-mix(in srgb, var(--c-accent) 40%, transparent);
 }
 

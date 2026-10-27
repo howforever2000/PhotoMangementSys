@@ -43,10 +43,16 @@ defineProps<{
   background: var(--w-track);
   overflow: hidden;
 }
+/* FEAT-115：默认用弱色条，只有**第一名**才用强调色。
+   改前 6 行全部金色 —— 一屏 6 处强调等于没有强调，
+   而且读者看不出"谁第一"（长度已经表达了比例，颜色该只标记冠军）。 */
 .w-rank-row b {
   display: block;
   height: 100%;
   border-radius: 3px;
+  background: var(--color-text-3);
+}
+.w-rank-row:first-child b {
   background: linear-gradient(90deg, var(--w-accent), var(--w-accent-2));
 }
 .w-rank-row em {

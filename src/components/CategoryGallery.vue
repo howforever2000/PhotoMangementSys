@@ -16,7 +16,6 @@
  */
 import { computed, onMounted, ref } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 import { useContentStore } from "../stores/content";
 import { getThumbs } from "../utils/thumbQueue";
@@ -30,7 +29,6 @@ import type { CategoryIndexStats, CategoryOverview, CategoryPhoto } from "../typ
 import { categoryLabel, categoryTone } from "../utils/categoryLabel";
 import { relToMatch } from "../utils/matchScore";
 
-const theme = useThemeStore();
 const notify = useNotify();
 const contentStore = useContentStore();
 
@@ -446,7 +444,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="cg-wrap" :style="{ color: theme.textColor }">
+  <div class="cg-wrap" :style="{ color: 'var(--fg)' }">
     <!-- ============ 视图 1：分类卡片 ============ -->
     <template v-if="!activeCard">
       <!-- 工具条：索引覆盖 + 重建 + 管理 -->
@@ -491,9 +489,8 @@ onMounted(load);
         <article
           v-for="(t, ti) in cards"
           :key="t.id"
-          class="cat-card glass-card"
+          class="cat-card"
           :class="{ 'is-wide': isWideCat(ti) }"
-          :style="theme.cardStyle"
           :title="`${t.name} · ${t.count} 张`"
           @click="openCategory(t)"
         >
@@ -671,13 +668,14 @@ onMounted(load);
 }
 .cat-tag {
   position: absolute;
-  left: 8px;
-  top: 8px;
-  padding: 2px 8px;
-  font-size: 10.5px;
-  color: #fff;
-  background: rgba(60, 90, 200, 0.75);
-  border-radius: 999px;
+  left: 10px;
+  top: 7px;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.62);
 }
 .photo-score {
   position: absolute;
@@ -767,18 +765,64 @@ onMounted(load);
   border-radius: 14px;
   overflow: hidden;
   cursor: pointer;
-  transition: transform var(--dur-2) ease, box-shadow var(--dur-2) ease;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
+  /* FEAT-115：卡片不再是玻璃板。
+     一屏十几块时，每块都带填充+边框+投影 = 十几个"框"互相争夺层级；
+     而封面本身就是足够大的对比面，照片自己的边缘就是边界。
+     只留 1px 内描边做必要边界（防止封面亮部与壁纸糊在一起）。 */
+  transition: filter var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);
+  box-shadow: inset 0 0 0 1px var(--cover-line);
 }
 /* 每第 5 张占两列（与相册墙 wideEvery:5 同一个节奏），
    且占两行 —— 于是它是一块“大图”，周围是小图，四边都对齐。 */
 .cat-card.is-wide {
   grid-column: span 2;
 }
+/* 悬停只提亮、不位移 —— 一屏十几块同时位移会产生"整片都在动"的噪感。
+   位移留给"确实要表达层级变化"的地方（抽屉、弹窗）。 */
 .cat-card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+  filter: brightness(1.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
 }
+
+/* ⚠️ 无封面的分类卡：必须自带可见底。
+   去玻璃卡之后，"没有匹配到照片"的分类（新建分类的常态）会变成一块透明区域 ——
+   实测整屏只剩几个空的描边框，认不出那是分类卡。
+   这里给色卡底再压一层：色底 + 内描边 + 居中图标，保证空分类也读得出是"一张卡"。 */
+.cat-cover:not(:has(img)) {
+  /* inline style 给了色卡底（categoryTone(t).bg）—— 其中"文档"那档是浅色，
+     没有照片垫底时它就成了一块**白板**（实测），与整页深色完全断裂。
+     这里用 !important 盖掉 inline 的浅色底，改中性半透明（!important 优先级高于
+     inline 声明，普通 CSS 不行）。 */
+  background: color-mix(in srgb, var(--c-fg) 7%, transparent) !important;
+  box-shadow: inset 0 0 0 1px var(--cover-line);
+}
+/* 底色已改成深色中性底 → 落款字色也要跟着从"色卡对比色"切回常规字色，
+   否则"文档"卡的名称是深字压深底（实测看不见）。 */
+.cat-cover:not(:has(img)) .cat-name,
+.cat-cover:not(:has(img)) .cat-sub {
+  color: var(--fg);
+  text-shadow: none;
+}
+.cat-cover:not(:has(img)) .cat-sub { color: var(--fg-3); }
+/* ⚠️ 无封面的分类卡必须自带可见底（FEAT-115）：
+   去玻璃卡之后，"还没匹配到照片"的分类（新建分类的常态）会变成一块透明区域，
+   整屏只剩几个空描边框，认不出那是分类卡。 */
+.cat-cover:not(:has(img)) {
+  /* inline style 给了色卡底（categoryTone(t).bg）—— 其中"文档"那档是浅色，
+     没有照片垫底时它就成了一块**白板**（实测），与整页深色完全断裂。
+     这里用 !important 盖掉 inline 的浅色底，改中性半透明（!important 优先级高于
+     inline 声明，普通 CSS 不行）。 */
+  background: color-mix(in srgb, var(--c-fg) 7%, transparent) !important;
+  box-shadow: inset 0 0 0 1px var(--cover-line);
+}
+/* 底色已改成深色中性底 → 落款字色也要跟着从"色卡对比色"切回常规字色，
+   否则"文档"卡的名称是深字压深底（实测看不见）。 */
+.cat-cover:not(:has(img)) .cat-name,
+.cat-cover:not(:has(img)) .cat-sub {
+  color: var(--fg);
+  text-shadow: none;
+}
+.cat-cover:not(:has(img)) .cat-sub { color: var(--fg-3); }
 
 /* 封面填满整张卡片（不再有下方文字条）。
    高度 100% 跟随网格行高 —— 行内/列内均严格对齐，不再按 id 哈希取不同高度。 */
@@ -805,18 +849,21 @@ onMounted(load);
   font-weight: 700;
   opacity: 0.75;
 }
+/* FEAT-115：角标与相册墙统一成"裸文字 + 文字投影"，不再压深色胶囊。
+   胶囊是给"必须压住复杂背景"的场景用的；封面底部已有渐变兜底，
+   再叠一层胶囊就是同一个问题解决两次。 */
 .cat-count {
   position: absolute;
-  right: 8px;
-  top: 8px;
+  right: 10px;
+  top: 7px;
   z-index: 2;
-  padding: 2px 9px;
-  font-size: 11.5px;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.55);
-  border-radius: 999px;
-  backdrop-filter: blur(3px);
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.62);
+  font-variant-numeric: tabular-nums;
 }
+/* 无封面时封面是中性深底，白字仍然可读；不需要额外处理 */
 
 /* 名称落款：嵌入封面左下角。
    判据与 AlbumCard 一致 —— 看封面自己有没有照片：

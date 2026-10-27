@@ -16,7 +16,6 @@
  */
 import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { useThemeStore } from "../stores/theme";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import GlobalScanPanel from "../components/GlobalScanPanel.vue";
@@ -24,7 +23,6 @@ import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 
 const router = useRouter();
-const theme = useThemeStore();
 const albumStore = useAlbumStore();
 const contentStore = useContentStore();
 
@@ -167,7 +165,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="scan-page" :style="{ color: theme.textColor }">
+  <div class="scan-page" :style="{ color: 'var(--fg)' }">
     <!-- 大组件页头：组件名 + 本组件内部分区（全局扫描 / 按年·地点 / 重复清理 / 分组工具） -->
     <AppHeader
       title="扫描入库"

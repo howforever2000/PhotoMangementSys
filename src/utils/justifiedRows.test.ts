@@ -159,6 +159,11 @@ test("breakPoints：行不会跨越断点", () => {
 test("breakPoints：每行仍精确铺满容器宽", () => {
   const rows = justifyRows({ ...OPTS, count: 30, breakPoints: [7, 15, 24] });
   for (const r of rows) {
+    /* FEAT-115 起，"被夹住的行"（自然高度超出 min/max → 宽度按宽高比走）
+       刻意不铺满，见 justifiedRows.ts §2 的说明。所以这里只断言未夹住的行。 */
+    const natural = (OPTS.containerWidth - OPTS.gap * (r.cells.length - 1)) /
+      r.cells.reduce((s, c) => s + c.width / c.coverH, 0);
+    if (natural > 300 || natural < 110) continue;
     const used = r.cells.reduce((s, c) => s + c.width, 0) + OPTS.gap * (r.cells.length - 1);
     assert.equal(used, OPTS.containerWidth, `行宽 ${used} 未铺满 ${OPTS.containerWidth}`);
   }
@@ -177,4 +182,31 @@ test("breakPoints：越界与非法值被忽略", () => {
   const rows = justifyRows({ ...OPTS, count: 6, breakPoints: [0, 6, 99, -1, 2.5] });
   const total = rows.reduce((n, r) => n + r.cells.length, 0);
   assert.equal(total, 6);
+});
+
+/* ── FEAT-115：段内只剩 1 块时不得独占整行 ──────────────────────────
+   用户明确否掉了「一个相册占满整个屏幕」：
+   某一年只剩 1 个相册（或断点把段落切得只剩 1 项）时，单块成行的宽度
+   = 整个容器 W，观感是一条铺满全屏的横幅。正确形态是把它并进上一行。 */
+test("断点段内只剩 1 块时，不生成独占整行的横幅", () => {
+  // 段划分：[0,5) [5,6) [6,12) —— 中间那段只有 1 项
+  const rows = justifyRows({ ...OPTS, count: 12, breakPoints: [5, 6] });
+  const W = OPTS.containerWidth;
+  for (const r of rows) {
+    if (r.cells.length !== 1) continue;
+    const w = r.cells[0].width;
+    // 单块成行只在"整段就只有一块"时才允许；这里中间段前面有内容，必须被合并
+    assert.ok(
+      w < W * 0.6,
+      `出现独占整行的单块瓦片：宽 ${w} / 容器 ${W}（${((w / W) * 100).toFixed(1)}%）`,
+    );
+  }
+});
+
+test("断点段内只剩 1 块时，块总数不丢", () => {
+  const rows = justifyRows({ ...OPTS, count: 12, breakPoints: [5, 6] });
+  const total = rows.reduce((n, r) => n + r.cells.length, 0);
+  assert.equal(total, 12, "合并单块时不能把瓦片弄丢");
+  const indices = new Set(rows.flatMap((r) => r.cells.map((c) => c.index)));
+  assert.equal(indices.size, 12, "每个下标都只能出现一次");
 });

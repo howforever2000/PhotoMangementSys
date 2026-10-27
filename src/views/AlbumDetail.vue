@@ -240,10 +240,12 @@ const vaultDenied = computed(
 </template>
 
 <style scoped>
+/* FEAT-115：去 1200px 居中。
+   全站其余 8 页都是"全宽 + 左右 --gutter(52px)"，只有本页居中缩窄到 1200 ——
+   宽屏下顶栏贴着窗口、内容却内缩，两者对不齐（读起来像两个页面）。
+   现在同一左轴，宽度交给内容。 */
 .detail-page {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 24px;
+  padding: 0 var(--gutter) 48px;
   min-height: 100vh;
   color: var(--detail-text);
 }
@@ -252,7 +254,8 @@ const vaultDenied = computed(
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 24px;
+  margin-bottom: 16px;
+  padding-top: 14px;
 }
 .nav-left {
   display: flex;

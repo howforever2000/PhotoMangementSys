@@ -261,6 +261,7 @@ export function justifyRows(opts: JustifyOptions): JustifiedRow[] {
       const from = cuts[s];
       const to = cuts[s + 1];
       let i = from;
+      /* 本段从第几块开始 —— 用于判断"段内只剩一块" */
       while (i < to) {
         const row: number[] = [];
         let sumA = 0;
@@ -275,6 +276,7 @@ export function justifyRows(opts: JustifyOptions): JustifiedRow[] {
           sumA += aspects[i];
           i += 1;
         }
+
         if (row.length) finalGroups.push(row);
       }
     }
@@ -282,25 +284,45 @@ export function justifyRows(opts: JustifyOptions): JustifiedRow[] {
     for (const g of groups) finalGroups.push(g);
   }
 
-  // ── 2. 生成行（宽度按比例分配，行宽精确 = W）────────────────────────
+  // ── 2. 生成行 ──────────────────────────────────────────────────────
+  //
+  /* FEAT-115：高度被夹住时，宽度必须**跟着高度走**，不能再强行拉满 W。
+     ────────────────────────────────────────────────────────────────────
+     旧写法先 `coverH = clamp(natural, min, max)`，再让宽度按 `aspect/sumA*avail`
+     分配（永远精确等于 W）。两者独立 → 一旦 coverH 被夹住，宽高比就失真：
+     最极端的形状是"某年只剩 1 个相册"时，单块成行 → 宽度 = 整个容器 W、
+     高度被夹到 maxCoverH → 一条**占满全屏的横幅**。
+     用户明确否掉了这个形态（"不要让一个相册占满整个屏幕"）。
+
+     正确做法：自然高度落在区间内 → 精确铺满（行式密排的本意）；
+     被夹住 → 按宽高比出宽，剩余空间留在行尾（这本身就是"这一格内容少"的信息）。
+     不能靠"把单块并进上一行"来回避 —— 断点的语义是不跨月，跨段合并会破坏它。 */
   for (const row of finalGroups) {
     const k = row.length;
     if (!k) continue;
     const avail = W - gap * (k - 1);
     const sumA = row.reduce((s, idx) => s + aspects[idx], 0);
-    // 反算该行的封面高，并夹到允许区间
-    const coverH = Math.round(clamp(avail / sumA, minCoverH, maxCoverH));
+    const natural = avail / sumA;
+    const coverH = Math.round(clamp(natural, minCoverH, maxCoverH));
+    const clamped = natural > maxCoverH || natural < minCoverH;
 
     const cells: JustifiedCell[] = row.map((idx) => ({
       index: idx,
       wide: wides[idx],
       coverH,
-      width: Math.round((aspects[idx] / sumA) * avail),
+      /* 被夹住时宽度 = 宽高比 × 实际高度（保持每块自己的比例）；
+         未夹住时按比例分配，让整行精确铺满。 */
+      width: clamped
+        ? Math.round(aspects[idx] * coverH)
+        : Math.round((aspects[idx] / sumA) * avail),
     }));
 
-    // 取整误差（每格 0~1px）补给最后一块，保证行宽精确 = W
-    const used = cells.reduce((s, c) => s + c.width, 0) + gap * (k - 1);
-    if (used !== W) cells[cells.length - 1].width += W - used;
+    /* 取整误差补给最后一块 —— 但**只在精确铺满的分支**这么做。
+       被夹住的行不该被拉回去：那正是横幅的成因。 */
+    if (!clamped) {
+      const used = cells.reduce((s, c) => s + c.width, 0) + gap * (k - 1);
+      if (used !== W) cells[cells.length - 1].width += W - used;
+    }
 
     rows.push({ cells, height: coverH + captionH });
   }

@@ -966,7 +966,9 @@ const statItems = computed<StatItem[]>(() => {
       label: "已入库",
       value: scannedPhotos,
       delta: `${scannedAlbums} 个相册`,
-      tone: scannedAlbums ? "up" : "mute",
+      /* FEAT-115：静态计数不是"变化值"，不该占金色预算（tokens.css §2.7）。
+         原来 tone:"up" → .u-stat-aux.up → --c-accent-bright，同屏 3 处金色。 */
+      tone: "mute",
       // FEAT-106：进度条 = 入库完成度（已入库照片 / 总照片）
       progress: totalPhotos ? scannedPhotos / totalPhotos : 0,
     },
@@ -974,7 +976,8 @@ const statItems = computed<StatItem[]>(() => {
       label: "待入库",
       value: pending,
       delta: pending ? "需要扫描" : "全部已扫",
-      tone: pending ? "up" : "mute",
+      /* 待入库的语义是"还差多少"，属于欠缺而非增长 → down，不是 up */
+      tone: pending ? "down" : "mute",
       // 待入库：显示的是「还差多少」的补数进度，用弱化色（不抢"已入库"的强调色）
       progress: totalPhotos ? 1 - scannedPhotos / totalPhotos : 0,
       progressTone: "muted",
@@ -1024,8 +1027,9 @@ const wallRows = computed<JustifiedRow[]>(() =>
     count: dateOrderedAlbums.value.length,
     containerWidth: wallWidth.value,
     gap: 12,
-    // 图注已嵌入封面内部（左下角落款），行高 = 封面高，不再预留图注条
-    captionH: 0,
+    /* FEAT-115：图注移到封面下方 → 行高必须预留它，否则图注会被挤进下一行。
+       图注高度 = margin-top 8 + line-height 18 = 26。 */
+    captionH: 26,
     // 名义高度 232：实际封面高由缩放决定（≤ 232）。
     // 基础比例 1.28（约 5:4）比 4:3 更方 —— 参考图里的照片面板接近正方形，
     // 而不是扁扁的横幅。1.28 × 232 ≈ 297px 宽（行内 3~4 块），
@@ -1033,8 +1037,10 @@ const wallRows = computed<JustifiedRow[]>(() =>
     nominalHeight: 232,
     baseAspect: 1.28,
     wideEvery: 5,
-    // 宽幅 = 窄幅的 1.8 倍宽（5:4 → 2.25:1），足够读出"这块不一样"
-    wideFactor: 1.8,
+    /* FEAT-115：1.8 → 1.5。
+       1.8 倍宽时，宽幅块在 3 列屏上会占掉半个视口 —— 观感接近"一张铺满"，
+       而用户明确否掉了"一个相册占满整个屏幕"。1.5 足够读出"这块不一样"。 */
+    wideFactor: 1.5,
     minCoverH: 130,
     maxCoverH: 260,
   }),
@@ -1335,11 +1341,14 @@ function onKey(e: KeyboardEvent) {
 </script>
 
 <template>
+  <!-- FEAT-115：页面壳基色改用 --fg（无容器阅读层）。
+       原来用 theme.textColor = --color-text(#f5f7ff)，与 --fg(#f0eef3)
+       只差 2% 亮度 —— 但同屏并存就是两种近白，文字色档因此虚高。 -->
   <div
     class="album-page"
     :style="{
-      color: theme.textColor,
-      '--text': theme.textColor,
+      color: 'var(--fg)',
+      '--text': 'var(--fg)',
       '--sub-text': theme.subTextColor,
       // 弱文字直接落在页面背景上：跟随实际背景对比度（旧 isDark 二分在浅色预设下融底）
       '--muted': theme.onBgSubColor,
@@ -1638,6 +1647,9 @@ function onKey(e: KeyboardEvent) {
       FEAT-095：归档 / 隐藏相册固定区块
       不参与时间 / 地点 / 手动排序（没有真实文件夹与拍摄时间），始终置顶展示。
     -->
+    <!-- FEAT-115：系统相册也走 tile 变体（与相册墙同一形态）。
+         原来用默认 card 变体（glass-surface），一屏里立刻多出两块玻璃卡，
+         而右侧相册墙是无卡片的裸封面 —— 两种材质并存就"不统一"。 -->
     <section v-if="virtualAlbums.length" class="virtual-albums">
       <h2 class="group-head group-year">📦 系统相册</h2>
       <div class="album-grid">
@@ -1645,6 +1657,7 @@ function onKey(e: KeyboardEvent) {
           v-for="album in virtualAlbums"
           :key="album.id"
           :album="album"
+          variant="tile"
           :select-mode="false"
           :selected="false"
           @click="router.push(`/album/${album.id}`)"
@@ -2114,7 +2127,10 @@ function onKey(e: KeyboardEvent) {
    数据带改成文本列后变矮了（~112），不用下移这么多。 */
 .album-side {
   position: sticky;
-  top: 150px;
+  /* FEAT-115：顶栏从"52px 玻璃板 + 10px 空气（=62px）"改成 54px 的带式后，
+     吸顶位置要跟着上移；旧值 150px 是按"顶栏 56 + 数据带 96"算的，
+     数据带改成文本列后只有 ~110，150 会让筛选栏悬在离顶 100px 的地方。 */
+  top: 70px;
   padding-top: 2px;
 }
 
@@ -2270,7 +2286,7 @@ function onKey(e: KeyboardEvent) {
 }
 .main-sub {
   font-size: var(--fs-meta);
-  color: var(--c-fg-2);
+  color: var(--fg-2);
 }
 .main-actions {
   margin-left: auto;
@@ -2495,7 +2511,7 @@ function onKey(e: KeyboardEvent) {
   left: 12px;
   font-size: 12px;
   /* 装饰图标但也要看得见：用 fg-2（≈5:1）而不是 fg-3（≈3.5:1） */
-  color: var(--c-fg-2);
+  color: var(--fg-2);
   pointer-events: none;
 }
 
@@ -2509,8 +2525,8 @@ function onKey(e: KeyboardEvent) {
   font-size: var(--fs-body);
   outline: none;
   box-sizing: border-box;
-  color: var(--c-fg);
-  background: color-mix(in srgb, var(--c-fg) 5%, transparent);
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
   transition: border-color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
 }
 
@@ -2526,7 +2542,7 @@ function onKey(e: KeyboardEvent) {
   border-left: 1px solid var(--c-rule);
   font-size: 10.5px;
   letter-spacing: 0.01em;
-  color: var(--c-fg-2);
+  color: var(--fg-2);
   white-space: nowrap;
   pointer-events: none;
 }
@@ -2538,7 +2554,7 @@ function onKey(e: KeyboardEvent) {
   border: none;
   background: none;
   font-size: 11.5px;
-  color: var(--c-fg-2);
+  color: var(--fg-2);
   cursor: pointer;
   white-space: nowrap;
   transition: color var(--dur-2) var(--ease-out);
@@ -2561,12 +2577,12 @@ function onKey(e: KeyboardEvent) {
 }
 
 .search-input::placeholder {
-  color: var(--c-fg-3);
+  color: var(--fg-3);
 }
 
 .search-input:focus {
   border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
-  background: color-mix(in srgb, var(--c-fg) 8%, transparent);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
 .search-clear {
@@ -2574,14 +2590,14 @@ function onKey(e: KeyboardEvent) {
   right: 92px;
   border: none;
   background: none;
-  color: var(--c-fg-3);
+  color: var(--fg-3);
   font-size: 16px;
   cursor: pointer;
   line-height: 1;
 }
 
 .search-clear:hover {
-  color: var(--c-fg);
+  color: var(--fg);
 }
 
 /* 搜索结果面板 */
@@ -2804,7 +2820,7 @@ function onKey(e: KeyboardEvent) {
      4.13:1；而这个胶囊底是半透明白，叠在暗端反而更暗，两者叠加后不稳定。
      现在文字用 --c-fg-2（已按最暗端标定），胶囊只做“这是一个范围标记”的形状，
      不靠颜色区分含义。 */
-  color: var(--c-fg-2);
+  color: var(--fg-2);
   background: var(--slip-fill);
   box-shadow: inset 0 0 0 1px var(--c-rule);
   border-radius: 4px;
@@ -2933,8 +2949,8 @@ function onKey(e: KeyboardEvent) {
   padding: 0 13px;
   border-radius: 8px;
   border: 1px solid var(--c-rule);
-  background: color-mix(in srgb, var(--c-fg) 5%, transparent);
-  color: var(--c-fg-2);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  color: var(--fg-2);
   cursor: pointer;
   font-size: var(--fs-body);
   letter-spacing: var(--ls-body);
@@ -2943,9 +2959,9 @@ function onKey(e: KeyboardEvent) {
 }
 
 .btn:hover:not(:disabled) {
-  color: var(--c-fg);
-  border-color: color-mix(in srgb, var(--c-fg) 22%, transparent);
-  background: color-mix(in srgb, var(--c-fg) 9%, transparent);
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg) 22%, transparent);
+  background: color-mix(in srgb, var(--fg) 9%, transparent);
 }
 
 .btn-primary {
@@ -3040,7 +3056,7 @@ function onKey(e: KeyboardEvent) {
 .virtual-albums {
   margin-bottom: 28px;
   padding-bottom: 20px;
-  border-bottom: 1px solid var(--color-border, rgba(128, 138, 158, 0.24));
+  border-bottom: 1px solid var(--rule);
 }
 /* FEAT-105：系统相册通常只有 1~2 张卡，用 auto-fill 会在右边留下一大片空白。
    这里改成定宽列（不拉伸），卡片保持封面该有的尺寸，空白留在右侧 ——
@@ -3051,10 +3067,11 @@ function onKey(e: KeyboardEvent) {
 }
 .virtual-hint {
   margin: 10px 0 0;
-  font-size: 12.5px;
+  font-size: 11.5px;
   line-height: 1.7;
-  color: var(--color-link);
-  opacity: 0.85;
+  /* FEAT-115：原来是"金色 + opacity .85"双重弱化 ——
+     既占金色预算，又让已经偏暗的文字再乘 0.85。直接用弱档文字色。 */
+  color: var(--fg-3);
 }
 .virtual-hint a {
   color: var(--color-link);

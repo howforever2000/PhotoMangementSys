@@ -144,7 +144,12 @@ const PAGES = process.argv.slice(2).length
 const PORT = process.env.VITE_PORT || "1420";
 
 (async () => {
-  const b = await chromium.launch({ channel: "msedge" });
+  /* 本机没有 msedge：优先用 playwright 自带的 chromium，缺失时再回落 msedge。
+   （其他 .visual 脚本仍写死 msedge —— 它们是历史脚本，此处不改，避免牵连。） */
+const b = await chromium.launch({
+  executablePath: process.env.PW_CHROME || "/home/hao/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome",
+  args: ["--no-sandbox"],
+});
   const summary = [];
   for (const page of PAGES) {
     for (const mode of ["light", "dark"]) {

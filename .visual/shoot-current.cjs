@@ -7,6 +7,9 @@ const ROUTES = {
   Home: "/home",
   AlbumList: "/albums",
   SmartAlbum: "/smart",
+  SmartCategory: "/smart?tab=category",
+  SmartFace: "/smart?tab=face",
+  SmartLocation: "/smart?tab=location",
   ScanHub: "/scan",
   Memories: "/memories",
   Timeline: "/timeline",
@@ -25,7 +28,7 @@ const PORT = process.env.VITE_PORT || "1519";
     p.on("console", (m) => {
       if (m.type() === "error") console.log(`[${page_}] console.error`, m.text().slice(0, 160));
     });
-    await p.goto(`http://localhost:${PORT}${ROUTES[page_] ?? "/home"}?mock=true`, { waitUntil: "load" });
+    await p.goto(`http://localhost:${PORT}${ROUTES[page_] ?? "/home"}${(ROUTES[page_] ?? "").includes("?") ? "&" : "?"}mock=true`, { waitUntil: "load" });
     await p.evaluate(() => document.fonts.ready);
     await p.waitForTimeout(1400);
     const out = `design/preview/current-${page_}.png`;

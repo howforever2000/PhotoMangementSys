@@ -18,7 +18,6 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useAlbumStore } from "../stores/album";
 import { useOverviewStore } from "../stores/overview";
 import { getThumbs } from "../utils/thumbQueue";
-import WidgetGrid from "./ui/widget/WidgetGrid.vue";
 import UiWidget from "./ui/widget/UiWidget.vue";
 import StatCore from "./ui/widget/StatCore.vue";
 import GaugeCore from "./ui/widget/GaugeCore.vue";
@@ -244,8 +243,20 @@ function onGeoPick() {
       <button type="button" @click="refresh">重试</button>
     </div>
 
-    <WidgetGrid v-else>
-      <!-- ── XL：照片库总览 ── -->
+    <!-- ══════════════════════════════════════════════════════════════════
+         FEAT-115：一面墙 = 一块板
+         ──────────────────────────────────────────────────────────────────
+         改前：11 块 <UiWidget>，每块自带填充 + 边框 + 投影，块间 14px 缝露壁纸
+               → 实测 13 个"有底色/有描影"的块，眼睛读到"11 块板排在墙上"。
+         改后：整面墙只有 1 块通栏玻璃板（.ov-board），内部用**发丝线分带**
+               （5 个 .ov-zone），带内是 12 栅格（每带 span 合计 12）。
+               错落改由栅格宽窄（8/4 · 4/4/4 · 12 · 8/4）承担 ——
+               宽窄是版式语言（有序），缝是容器语言（数框）。
+         信息一块不少，只是不再各自成板。
+         ══════════════════════════════════════════════════════════════════ -->
+    <div v-else class="ov-board">
+      <!-- 带 1：照片库总览（8）+ 语义索引（4）-->
+      <section class="ov-zone"><div class="ov-grid">
       <UiWidget :span="8" :rows="2" label-cn="照片库总览">
         <template #right><span>{{ year }}</span></template>
         <div class="ov-hero">
@@ -287,7 +298,10 @@ function onGeoPick() {
       </UiWidget>
 
       <!-- ── 那年今日速览 ── -->
-      <UiWidget :span="4" :rows="1" label="那年今日" :to="'/memories'">
+      </div></section>
+      <!-- 带 2：那年今日（4）+ 相册（4）+ 人物（4）-->
+      <section class="ov-zone"><div class="ov-grid">
+      <UiWidget :span="4" :rows="2" label="那年今日" :to="'/memories'">
         <StatCore
           :value="onThisDay.length"
           unit="组"
@@ -314,6 +328,9 @@ function onGeoPick() {
       </UiWidget>
 
       <!-- ── 地点 ── -->
+      </div></section>
+      <!-- 带 3：地点（4）+ 内容分类（4）+ 人物照片覆盖（4）-->
+      <section class="ov-zone"><div class="ov-grid">
       <UiWidget :span="4" :rows="2" label-cn="地点" clickable @click="goLocation()">
         <template #right><b>{{ namedLoc.length }}</b>&nbsp;城</template>
         <GeoPinsCore v-if="namedLoc.length" :groups="locations" @pick="onGeoPick" />
@@ -340,7 +357,10 @@ function onGeoPick() {
       </UiWidget>
 
       <!-- ── GPS 覆盖 ── -->
-      <UiWidget :span="4" :rows="2" label="地点定位覆盖" clickable @click="goLocation()">
+      </div></section>
+      <!-- 带 4：地点定位覆盖（整行 12）—— 它自带 Top 城市排行，需要横向空间 -->
+      <section class="ov-zone"><div class="ov-grid">
+      <UiWidget :span="12" :rows="2" label="地点定位覆盖" clickable @click="goLocation()">
         <GaugeCore :ratio="gpsRatio" :size="76">
           <b>{{ namedLoc.reduce((n, g) => n + g.count, 0).toLocaleString() }}</b> 张带 GPS<br />聚为 <b>{{ namedLoc.length }}</b> 个地点
         </GaugeCore>
@@ -348,6 +368,9 @@ function onGeoPick() {
       </UiWidget>
 
       <!-- ── 最近导入 ── -->
+      </div></section>
+      <!-- 带 5：最近导入（8）+ 那年今日大卡（4）-->
+      <section class="ov-zone"><div class="ov-grid">
       <UiWidget :span="8" :rows="2" label-cn="最近导入" :to="'/timeline'">
         <template #right><span class="ui-widget-link">时间线 →</span></template>
         <CoversCore
@@ -369,13 +392,83 @@ function onGeoPick() {
         />
         <div v-else class="ov-empty ov-empty-mem">往年今天的照片会出现在这里</div>
       </UiWidget>
-    </WidgetGrid>
+      </div></section>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .overview {
   padding: 4px var(--sp-8) 48px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   FEAT-115：一面墙 = **一块板**
+   ──────────────────────────────────────────────────────────────────────
+   这是整页唯一一个容器。改前 11 块 widget 各自带填充+边框+投影，
+   一屏 13 个"块"，视觉上像"11 块板排在墙上"——每块都在争当独立区块，
+   读者失去了唯一的层级通道（"有信息"变成"有很多框"）。
+
+   现在：板只画一次（填充 + 模糊 + 上亮下暗的立体边 + 一层接触影），
+   内部靠**发丝线分带**（.ov-zone + .ov-zone）与栅格宽窄建立层级。
+   带的顺序按"信息的亲密程度"排：规模 → 亮点 → 三大入口 → 覆盖诊断 → 最近内容。
+   ══════════════════════════════════════════════════════════════════════ */
+.ov-board {
+  border-radius: 14px;
+  background-color: var(--panel-glass-fill, rgba(255, 255, 255, 0.055));
+  -webkit-backdrop-filter: blur(26px) saturate(1.2);
+  backdrop-filter: blur(26px) saturate(1.2);
+  border: 1px solid var(--panel-glass-edge, rgba(255, 255, 255, 0.085));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.20),
+    0 10px 24px -14px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+/* 区间分隔：一根 1px 发丝线。第一带没有上边的线（它贴着板顶）。 */
+.ov-zone + .ov-zone {
+  border-top: 1px solid var(--rule);
+}
+
+.ov-grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  /* 带内 gutter：14px 是紧凑的，这里给 16/18 让"不带板"的块之间透得过气 */
+  gap: 18px 20px;
+  padding: 18px 22px 20px;
+  align-items: start;
+}
+
+/* 板内 widget 一律**去容器化**：填充/边框/模糊/投影全部撤掉。
+   它们现在只是"板上的一格内容"，边界由板与发丝线提供。 */
+.ov-board :deep(.ui-widget) {
+  /* ⚠️ 必须重置 grid-row：原来的 `rows-2` 是 `grid-row: span 2`，
+     配合 `grid-auto-rows: 86px` 时它表示"占两行 86px"；
+     但板内改用了内容自适应行高 → span 2 会**凭空多出两行隐式轨道**，
+     整个带被拉到 300px+ 高，中间留一大片空白（实测踩到）。
+     板内改为 grid-row:auto，高度交给内容。 */
+  grid-row: auto !important;
+  border-radius: 0;
+  background: none;
+  background-image: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  padding: 0;
+  overflow: visible;
+}
+.ov-board :deep(.ui-widget::before) {
+  display: none;
+}
+/* 保留 widget 的 hover 反馈，但只提亮内部内容，不再画整块高亮 */
+.ov-board :deep(.ui-widget--link:hover) {
+  background: none;
+}
+
+@media (max-width: 1000px) {
+  .ov-grid { grid-template-columns: 1fr; gap: 20px; padding: 16px 18px 18px; }
+  .ov-board :deep(.ui-widget) { min-height: 0; }
 }
 
 /* XL 总览：左右分栏 */

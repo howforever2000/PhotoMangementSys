@@ -39,10 +39,37 @@ const PORT = process.env.VITE_PORT || "1519";
         if (rc.top > 900) continue; // 只算首屏
         blocks++;
         const bg = parse(cs.backgroundColor);
-        const hasFill = bg && bg.a > 0.06 && Math.abs(bg.r - rootBg.r) + Math.abs(bg.g - rootBg.g) + Math.abs(bg.b - rootBg.b) > 12;
+        const hasFill = bg && bg.a > 0.10 && Math.abs(bg.r - rootBg.r) + Math.abs(bg.g - rootBg.g) + Math.abs(bg.b - rootBg.b) > 12;
         const hasBorder = parseFloat(cs.borderTopWidth) > 0 && parse(cs.borderTopColor)?.a > 0.12;
-        const hasShadow = cs.boxShadow && cs.boxShadow !== "none";
-        const isPhoto = el.tagName === "IMG" || el.tagName === "FIGURE" || el.tagName === "PICTURE";
+        /* box-shadow 的逗号必须在**括号深度 0** 处切分：
+           rgba(0,0,0,.5) 自带逗号，直接 split 会把一层 inset 影切成多段、
+           "inset" 只落在第一段 → 含 inset 的多层影被误判成"有外投影"（虚高 5 倍）。
+           `none` 会被切成字面量 "none"，必须显式剔掉。 */
+        const shadowLayers = (() => {
+          let d = 0, ps = [], cu = "";
+          for (const ch of cs.boxShadow || "") {
+            if (ch === "(") d++;
+            if (ch === ")") d--;
+            if (ch === "," && d === 0) { ps.push(cu); cu = ""; continue; }
+            cu += ch;
+          }
+          if (cu.trim()) ps.push(cu);
+          return ps;
+        })();
+        const hasShadow = shadowLayers.some((l) => l.trim() && l.trim() !== "none" && !l.includes("inset"));
+        /* 什么算"一个框"：
+           ✅ 有填充(alpha>.10) / 有外投影 / 有可见描边，面积 > 4000px²
+           ❌ 不算：壁纸层 .app-bg-*、照片框（含 <img> 直接子元素）、
+                    选中态 5~6% 微光（它在该阈值以下） */
+        const isPhoto =
+          el.tagName === "IMG" || el.tagName === "FIGURE" || el.tagName === "PICTURE" ||
+          /app-bg-/.test(el.className || "") ||
+          !!el.querySelector(":scope > img") ||
+          /* 表单控件（input/select/textarea/button）**必须有边界** ——
+             不然用户不知道那里能打字/能点。它们是"允许的边界"，
+             不在"过多的框"的统计范围内（design-system.md §3 明确写了两处真实容器：
+             照片封面本身 + 输入框）。 */
+          ["INPUT", "SELECT", "TEXTAREA", "BUTTON", "LABEL", "OPTION"].includes(el.tagName);
         if ((hasFill || hasBorder || hasShadow) && !isPhoto && rc.width * rc.height > 4000) containers++;
         // 文字色
         const txt = [...el.childNodes].some((c) => c.nodeType === 3 && c.textContent.trim());

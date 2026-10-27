@@ -115,11 +115,14 @@
           { location: null, count: 31, lat: null, lon: null, cover_path: null, cover_album_id: null },
         ];
         
+        /* 与 CategoryCard 类型对齐（slug/keywords/threshold/source 缺一个模板就会抛错） */
         const CATEGORIES = [
-          { category: "人物", count: 220, cover_path: "c:1" },
-          { category: "风景", count: 168, cover_path: "c:5" },
-          { category: "夜景", count: 96, cover_path: "c:7" },
-          { category: "文档", count: 44, cover_path: null },
+          { id: 1, name: "人物", slug: "person", count: 220, cover: "c:1", cover_path: "c:1", icon: "🧑", keywords: ["人", "合影", "portrait"], threshold: 0.28, source: "builtin", category: "人物" },
+          { id: 2, name: "风景", slug: "scene", count: 168, cover: "c:5", cover_path: "c:5", icon: "🏞️", keywords: ["山", "海", "风景", "landscape"], threshold: 0.30, source: "builtin", category: "风景" },
+          { id: 3, name: "夜景", slug: "night", count: 96, cover: "c:7", cover_path: "c:7", icon: "🌃", keywords: ["夜", "灯光", "夜景"], threshold: 0.26, source: "builtin", category: "夜景" },
+          { id: 4, name: "文档", slug: "doc", count: 44, cover: null, cover_path: null, icon: "📄", keywords: ["文档", "截图", "票据"], threshold: 0.34, source: "builtin", category: "文档" },
+          { id: 5, name: "美食", slug: "food", count: 38, cover: "c:2", cover_path: "c:2", icon: "🍜", keywords: ["美食", "食物", "餐桌"], threshold: 0.30, source: "custom", category: "美食" },
+          { id: 6, name: "猫", slug: "cat", count: 31, cover: "c:3", cover_path: "c:3", icon: "🐱", keywords: ["猫", "猫咪"], threshold: 0.24, source: "custom", category: "猫" },
         ];
         
         /* ---------- invoke 桩 ---------- */

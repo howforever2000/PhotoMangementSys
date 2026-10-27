@@ -3,7 +3,6 @@ import { computed, onMounted, onUnmounted, ref, reactive } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useRouter } from "vue-router";
-import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
 import type { SmartHit } from "../types/content";
@@ -31,7 +30,6 @@ import ModelMissingDialog from "../components/settings/ModelMissingDialog.vue";
  *   - 卡片右上角「📁 相册名」→ 跳转该照片所属相册（次要入口，点击不触发预览）
  */
 const router = useRouter();
-const theme = useThemeStore();
 const notify = useNotify();
 
 /** 二级导航：智能搜索属于智慧相册模块，与全局概览/内容分类/人物/时间线/回忆同级。
@@ -418,7 +416,7 @@ function showTag(r: SmartHit): string {
 </script>
 
 <template>
-  <div class="ss-page" :style="{ color: theme.textColor }">
+  <div class="ss-page" :style="{ color: 'var(--fg)' }">
     <AppHeader title="智慧相册" icon="🔎" meta="智能搜索" :tabs="moduleTabs" />
     <header class="ss-header">
       <h1 class="ss-title">🔎 智能搜索</h1>
@@ -672,11 +670,12 @@ function showTag(r: SmartHit): string {
   /* 页面背景上的标题：on-bg 对比色（BUG-2026-0919-004） */
   color: var(--color-on-bg, inherit);
 }
+/* FEAT-115：不用 opacity 弱化 —— opacity 会把已经偏暗的文字再乘一次，
+   两处叠加后低于 4.5:1。直接用弱档文字色。 */
 .ss-subtitle {
   margin: 0;
-  opacity: 0.7;
-  font-size: 13px;
-  color: var(--color-on-bg-2, inherit);
+  font-size: 11.5px;
+  color: var(--fg-3);
 }
 .ss-searchbar {
   display: flex;
@@ -690,7 +689,8 @@ function showTag(r: SmartHit): string {
   background: var(--input-bg, rgba(127, 127, 127, 0.06));
   color: inherit;
   border-radius: 8px;
-  font-size: 15px;
+  /* 15px 在 7 档字阶里没有落脚处；正文档是 12.5，输入框给 13 略大一档 */
+  font-size: 13px;
 }
 .ss-btn-smart {
   white-space: nowrap;
@@ -721,14 +721,18 @@ function showTag(r: SmartHit): string {
 .ss-btn-go {
   white-space: nowrap;
 }
+/* FEAT-115：筛选条不再是"一块底板 + 里面一堆输入框"。
+   一屏里已经有一个搜索框（它必须有边界，否则不知道能打字），
+   下面再来一整块圆角底，就是第二个容器在表达同一件事。
+   现在筛选直接落在壁纸上，靠 12px 间距与控件自身描边分组。 */
 .ss-filters {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 10px;
   align-items: center;
-  background: var(--card-bg, rgba(127, 127, 127, 0.05));
-  padding: 12px;
-  border-radius: 12px;
+  background: none;
+  padding: 0;
+  border-radius: 0;
   margin-bottom: 18px;
 }
 .f-item {
@@ -769,7 +773,9 @@ function showTag(r: SmartHit): string {
 }
 .ss-empty {
   text-align: center;
-  padding: 70px 20px;
+  /* FEAT-115：70px 上下留白 + 30px 图标 = 空态占了半屏。
+     空屏是"邀请动作"，不是"展示插画"—— 缩短留白，把示例 chips 提到近处。 */
+  padding: 52px 20px 30px;
   display: flex;
   flex-direction: column;
   align-items: center;

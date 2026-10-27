@@ -156,15 +156,15 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
         @click.stop="emit('toggle-select', $event)"
       >{{ selected ? "✓" : "" }}</span>
 
-      <!--
-        图注（落款）嵌入封面左下角：名字一行 + 张数·时间一行。
-        白色裸文字 + 文字阴影，底部一层渐变保证浅色照片上可读（见 CSS）。
-        整块 pointer-events:none，不挡卡片点击 / 勾选。
-      -->
-      <div class="tile-seal">
-        <b class="tile-name">{{ album.name }}</b>
-        <span class="tile-meta">{{ tileMeta }}</span>
-      </div>
+    </div>
+
+    <!-- FEAT-115：图注从"压封面的落款"移到封面下方一行。
+         胶囊/落款是给"一屏几十块、每块都要说名字"的密排用的；
+         而这里一行只有 3~4 块，压在照片上等于把画面盖掉一块。
+         移到下方 = 照片完整可见，文字直接落在壁纸上（自然嵌入）。 -->
+    <div class="tile-seal">
+      <b class="tile-name">{{ album.name }}</b>
+      <span class="tile-meta">{{ tileMeta }}</span>
     </div>
   </article>
 
@@ -588,51 +588,44 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
    这个判据不依赖任何全局类，也不可能错配。
    ══════════════════════════════════════════════════════════════════════════ */
 
-/* ── 图注落款：嵌入封面左下角（名字一行 + 张数·时间一行）──────────────
-   无照片（占位底）时跟随主题文字色；有照片时切白字（见下条）。
-   整块 pointer-events:none，不拦截卡片点击 / 勾选圆点。 */
+/* ── 图注：封面下方一行裸文字（FEAT-115）────────────────────────────
+   没有底、没有框、没有描边 —— 层级由字号（13 vs 10.5）与色阶（fg / fg-3）建立。
+
+   为什么张数**不**用 margin-left:auto 推到最右：
+   瓦片宽度不同（宽幅 1.5 倍），推到右边会让每一行的张数落在不同 x 位置，
+   读起来像两栏表格，而不是一句"名字 · 张数"的描述。用 gap 连成一串即可。
+
+   line-height 固定 18px：不同字数的名字会让图注高度变化，
+   进而让下一行的封面起点错位 —— 这是"整齐的错落"与"排错了"的分界线。 */
 .tile-seal {
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 9px;
-  z-index: 2;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  margin-top: 8px;
   pointer-events: none;
 }
 .tile-seal .tile-name {
-  max-width: 100%;
-  font-size: 13.5px;
-  font-weight: 650;
-  line-height: 1.25;
-  letter-spacing: -0.01em;
+  min-width: 0;
+  flex: 0 1 auto;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  letter-spacing: -0.008em;
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .tile-seal .tile-meta {
-  max-width: 100%;
+  flex-shrink: 0;
   font-size: 10.5px;
   font-weight: 500;
-  line-height: 1.3;
+  line-height: 18px;
   letter-spacing: 0.01em;
-  color: var(--fg-2);
+  color: var(--fg-3);
   font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* 有真封面（照片）：白字 + 投影。可读性由底部渐变兜底（见 ::after），
-   照片总有暗部，白字 + 投影在绝大多数封面上安全。 */
-.tile-cover:has(img) .tile-seal .tile-name,
-.tile-cover:has(img) .tile-seal .tile-meta {
-  color: rgba(255, 255, 255, 0.94);
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.78), 0 0 9px rgba(0, 0, 0, 0.4);
 }
 
 /* 勾选圆点：22px，与封面的 5px 圆角形成对比但不突兀 */
@@ -670,8 +663,9 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
     0 0 0 2px var(--c-accent);
 }
 
-/* 封面底部渐变：为左下角两行落款兜底（名字 + 张数·时间）。
-   54px 高、最深 0.42 —— 单行时 34px/0.30 够用，两行在雪景/天空上会发虚。
+/* 封面底部渐变：现在只为封面内的「日期 / 未入库」角标兜底（图注已移出封面）。
+   54px/0.42 → 34px/0.30：单行角标用不到那么厚的暗带，
+   厚了就是"压在照片上的一条黑带"。
    ⚠️ 只给**有真封面**的瓦片（同旧规则）。 */
 .tile-cover:has(img)::after {
   content: "";
@@ -679,8 +673,8 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 54px;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0));
+  height: 34px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.30), rgba(0, 0, 0, 0));
   pointer-events: none;
 }
 /* FEAT-105：mosaic 变体（跨格的大瓦片）

@@ -17,7 +17,6 @@ import { useRouter } from "vue-router";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getThumbs } from "../utils/thumbQueue";
 import { useAlbumStore } from "../stores/album";
-import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 import type { ContentSearchHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
@@ -28,7 +27,6 @@ import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 
 const router = useRouter();
 const store = useAlbumStore();
-const theme = useThemeStore();
 const notify = useNotify();
 
 const loading = ref(true);
@@ -358,7 +356,7 @@ function goAlbumFromLightbox(albumId: number) {
 </script>
 
 <template>
-  <div class="memories-page" :style="{ color: theme.textColor }">
+  <div class="memories-page" :style="{ color: 'var(--fg)' }">
     <AppHeader title="智慧相册" icon="🌟" meta="回忆" compact :tabs="moduleTabs" />
 
     <!-- 数据带：取代原彩虹 Hero 的统计格（统计信息一条不少） -->
@@ -610,13 +608,14 @@ function goAlbumFromLightbox(albumId: number) {
 }
 .mem-section-head h2 {
   margin: 0;
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 22px;
+  font-weight: 620;
+  letter-spacing: -0.5px;
+  color: var(--fg);
 }
 .mem-section-sub {
-  font-size: 12px;
-  /* 深绿底上的弱说明文字提亮一档（原 0.7 偏灰） */
-  color: var(--color-text-2);
+  font-size: 11px;
+  color: var(--fg-3);
 }
 
 /* ---- 故事行（月度）水平滚动 ---- */
@@ -645,13 +644,14 @@ function goAlbumFromLightbox(albumId: number) {
   position: relative;
   cursor: pointer;
   color: #fff;
-  /* 材质升级：糖果釉面的方向棱线 + 更实的落影（原 0.15 浮而不定） */
-  box-shadow: var(--shadow-1);
-  transition: transform var(--dur-2) ease, box-shadow var(--dur-2) ease;
+  /* FEAT-115：卡片不再是玻璃/糖果釉面 —— 只留封面内描边做必要边界。
+     封面上本来就有名字与张数（白色裸字 + 底部渐变兜底），
+     再套一层投影只是让整行"浮"起来，与相邻的「本月精选」网格材质不一致。 */
+  box-shadow: inset 0 0 0 1px var(--cover-line);
+  transition: filter var(--dur-2) var(--ease-out);
 }
 .mem-story:hover {
-  transform: translateY(-3px);
-  box-shadow: var(--shadow-2);
+  filter: brightness(1.06);
 }
 /* candy-surface 颗粒层必须在照片/暗纱之上（absolute 子元素按 DOM 顺序盖住伪元素） */
 .mem-story::before,

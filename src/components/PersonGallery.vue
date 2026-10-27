@@ -582,7 +582,7 @@ const vFocus: Directive<HTMLElement> = {
 
     <!-- 人物卡片网格 -->
     <div v-else class="person-grid">
-      <article v-for="p in persons" :key="p.id" class="person-card glass-card" :style="surfaceStyle" :title="`${displayName(p)}（${p.id}）`">
+      <article v-for="p in persons" :key="p.id" class="person-card" :title="`${displayName(p)}（${p.id}）`">
         <div
           class="person-avatar-wrap"
           @click.stop="openPhotos(p)"
@@ -869,26 +869,28 @@ body.theme-dark .pg-action-msg {
    宁可两行也不截断。列宽 176 → 196：一行少排一两张，换来名字可读。 */
 .person-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  /* FEAT-115：卡片不再是玻璃板 → 不需要 196px 的卡宽，收到 150px 更密 */
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   grid-auto-flow: dense;
-  gap: 14px;
+  gap: 22px 18px;
 }
 
+/* FEAT-115：人物卡去容器化。
+   头像本身就是最强的识别面，外面再套一块玻璃板只是多一个"框"。
+   padding 归零、圆角与投影删掉 —— 层级交给头像大小与名字字重。 */
 .person-card {
-  background: transparent; /* 底色由 surfaceStyle(主题) 提供 */
-  border-radius: 14px;
-  padding: 20px 18px 16px;
+  background: transparent;
+  padding: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   text-align: center;
-  transition: transform var(--dur-2), box-shadow var(--dur-2);
 }
-.person-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1);
-}
+/* FEAT-115：没有卡片底板之后，"登记于 …" 这类技术元信息不该与名字同等可见。
+   整条淡到 --fg-3；重命名笔 / 合并按钮沿用文件下方已有的 hover 才现规则。 */
+.person-date { opacity: 1; color: var(--fg-3); font-size: 10px; }
+.person-id { opacity: 1; color: var(--fg-3); font-size: 10px; }
 
 .person-avatar-wrap {
   position: relative;
@@ -981,7 +983,7 @@ body.theme-dark .pg-action-msg {
 .mini-btn:hover { border-color: var(--color-link); color: var(--color-link); }
 .mini-btn.ok { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
 /* 合并按钮：竖排后占整行宽，也更好点 */
-.merge-btn { margin-top: 9px; width: 100%; }
+.merge-btn { margin-top: 4px; border: none; padding: 2px 4px; font-size: 10.5px; color: var(--fg-3); }
 
 .person-rename-input {
   width: 100%;

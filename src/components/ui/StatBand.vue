@@ -50,7 +50,15 @@ export interface StatItem {
   unit?: string;
   /** 变化值 / 补充说明（如 "+28" / "128 / 129"），落在**标签行右侧** */
   delta?: string;
-  /** 变化值语气：up = 强调色 / mute = 弱化 / down = 危险色 */
+  /**
+   * 变化值语气：`up` = 强调色 / `mute` = 弱化 / `down` = 危险色。
+   *
+   * ⚠️ 缺省是 `mute`，**不是 `up`**（FEAT-115 修）。
+   * 旧版缺省是 "up"，于是所有"没写 tone"的列（也就是绝大多数静态计数）
+   * 都被染成 --c-accent-bright 的金色 —— 一屏 3 处金，强调色预算（tokens.css
+   * §2.7 只允许"当前项 / 变化值 / 图表高亮"三处）直接爆掉。
+   * 金色是"这数在变"的信号，静态计数不该用它。
+   */
   tone?: "up" | "mute" | "down";
   /** 趋势序列（缺省则不画 sparkline） */
   spark?: number[];
@@ -116,7 +124,7 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
         <span
           v-if="it.delta"
           class="u-stat-aux"
-          :class="[it.tone ?? 'up', { dim: !it.tone || it.tone === 'mute' }]"
+          :class="[it.tone ?? 'mute', { dim: !it.tone || it.tone === 'mute' }]"
         >{{ it.delta }}</span>
       </div>
 

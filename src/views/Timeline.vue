@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useRoute, useRouter } from "vue-router";
-import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
 import EmptyState from "../components/EmptyState.vue";
@@ -29,7 +28,6 @@ import { justifyRows } from "../utils/justifiedRows";
  */
 const router = useRouter();
 const route = useRoute();
-const theme = useThemeStore();
 const notify = useNotify();
 
 const loading = ref(true);
@@ -94,23 +92,21 @@ const timelineStats = computed<StatItem[]>(() => {
       value: yearCount,
       unit: yearCount ? `年 / ${ym.size} 个月` : "无数据",
     },
+    /* FEAT-115：原来的「无拍摄时间」与「地点覆盖」各占一列，但它们是**诊断读数** ——
+       在任何一年都读同一个值，占两列等于把首屏宽度送给不常变的信息。
+       合并成一列：主读数给"有拍摄时间"的占比，注释里同时交代两个缺口。
+       唯一一处金色留给它 —— 它回答"这页的数据全不全"。
+       ⚠️ 不能把两个缺口都写成 tone:"up"（金色）：金色是"这数在变"的信号。 */
     {
-      label: "无拍摄时间",
-      value: noTime,
-      delta: all.length ? `${Math.round((noTime / all.length) * 100)}%` : "",
-      tone: noTime > 0 ? "up" : "mute",
-      // 有拍摄时间的占比（进度条 = 已完成的部分，倒过来读更好懂）
-      progress: all.length ? (all.length - noTime) / all.length : 0,
-    },
-    {
-      label: "地点覆盖",
-      value: all.length ? Math.round(((all.length - noLoc) / all.length) * 100) : 0,
+      label: "元数据完整度",
+      value: all.length ? Math.round(((all.length - noTime) / all.length) * 100) : 0,
       unit: "%",
-      // 这是“照片没 GPS”与“功能坏了”的唯一区分依据，因此 0% 时给出明确提示
-      delta: noLoc === all.length ? "未记录 GPS" : `${noLoc} 张无定位`,
-      tone: noLoc === all.length ? "mute" : "up",
-      progress: all.length ? (all.length - noLoc) / all.length : 0,
-      progressTone: noLoc === all.length ? "muted" : "accent",
+      note:
+        (noTime ? `${noTime} 张无拍摄时间` : "拍摄时间齐全") +
+        " · " +
+        (noLoc === all.length ? "未记录 GPS" : `${noLoc} 张无定位`),
+      progress: all.length ? (all.length - noTime) / all.length : 0,
+      progressTone: noTime === 0 ? "muted" : "accent",
     },
   ];
   return items;
@@ -608,26 +604,27 @@ function goAlbumFromLightbox(albumId: number) {
 </script>
 
 <template>
-  <div class="tl-page" :style="{ color: theme.textColor }">
+  <div class="tl-page" :style="{ color: 'var(--fg)' }">
     <AppHeader
       title="智慧相册"
       icon="📅"
       :meta="`${rows.length} 张已入库照片`"
       :tabs="moduleTabs"
     />
+    <!-- FEAT-115：标题 / 副标题 / 总数 / 年份筛选 合成**一行**。
+         改前是三行（标题 → 工具条 → 数据带）约 200px 才看到第一张照片；
+         而顶栏已经写着「智慧相册 · 时间线」，页内再来一个 19px 大标题
+         是同一信息说两遍。 -->
     <header class="tl-header">
       <h1 class="tl-title">照片时间线</h1>
-      <p class="tl-subtitle">跨相册按拍摄时间聚合浏览</p>
+      <p class="tl-subtitle">跨相册按拍摄时间聚合浏览 · 共 {{ totalFiltered }} 张</p>
+      <span class="tl-head-right">
+        <select v-model="yearFilter" class="tl-year-select" @change="onYearFilter">
+          <option value="all">全部年份</option>
+          <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
+        </select>
+      </span>
     </header>
-
-    <!-- 工具条：年份过滤 + 总数 -->
-    <div class="tl-toolbar">
-      <label class="tl-count">共 {{ totalFiltered }} 张</label>
-      <select v-model="yearFilter" class="tl-year-select" @change="onYearFilter">
-        <option value="all">全部年份</option>
-        <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
-      </select>
-    </div>
 
     <!-- FEAT-103：时间维度统计数据带（无拍摄时间 / 地点覆盖在这里可见） -->
     <StatBand v-if="!loading && !error && rows.length" :items="timelineStats" class="tl-stats" />
@@ -782,38 +779,28 @@ function goAlbumFromLightbox(albumId: number) {
   box-sizing: border-box;
 }
 
-/* 页内标题降一档：顶栏已经有「智慧相册 · 时间线」，
-   这里只需要说明"这页看的是什么"，不需要再来一个 22px 大标题抢主视觉 */
+/* FEAT-115：页头一行。标题降到 17px（不再与顶栏的组件名抢主视觉），
+   副标题带上总数，年份筛选靠右 —— 一行读完"这页是什么 / 有多少 / 看哪年"。 */
 .tl-header {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 12px;
   flex-wrap: wrap;
-  margin: 16px 0 10px;
+  margin: 18px 0 14px;
 }
 .tl-title {
-  font-size: var(--fs-head);
+  font-size: 17px;
   margin: 0;
-  font-weight: var(--fw-em);
+  font-weight: 620;
   letter-spacing: -0.2px;
-  /* 页面背景上的标题：on-bg 对比色（BUG-2026-0919-004） */
-  color: var(--color-on-bg, inherit);
+  color: var(--fg);
 }
 .tl-subtitle {
   margin: 0;
   font-size: var(--fs-meta);
-  color: var(--c-fg-2);
+  color: var(--fg-3);
 }
-.tl-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 6px 0 18px;
-}
-.tl-count {
-  font-size: 14px;
-  opacity: 0.8;
-}
+.tl-head-right { margin-left: auto; display: inline-flex; align-items: center; }
 /* 年份筛选下拉（FEAT-106）：
    ⚠️ 这里修的是一个**类名碰撞**：旧版下拉与年份卡片都叫 .tl-year，
    于是下拉吃到了卡片的 background: var(--card-bg) + padding: 16px，
@@ -901,9 +888,10 @@ function goAlbumFromLightbox(albumId: number) {
 }
 .tl-rail {
   flex: 0 0 148px;
-  /* 顶栏（52px）之下，留一点呼吸 */
+  /* FEAT-115：顶栏现在是 54px 的带（不再是 52px 板 + 10px 空气），
+     吸顶位置跟着上移 6px。 */
   position: sticky;
-  top: 68px;
+  top: 62px;
   max-height: calc(100vh - 96px);
   overflow-y: auto;
   /* 滚动时不要出现滚动条把它挤窄 */

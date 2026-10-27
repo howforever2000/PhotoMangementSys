@@ -204,7 +204,7 @@ function syncTabQuery(key: string) {
 </script>
 
 <template>
-  <div class="smart-page" :style="{ color: theme.textColor }">
+  <div class="smart-page" :style="{ color: 'var(--fg)' }">
     <!-- FEAT-110：混色光晕层。仅当前预设自带 washes（如松绿混色）时有值；
          概览分区激活期间铺在背景之上、内容之下，切走即移除（不污染其他页面）。 -->
     <div v-if="activeTab === 'overview' && theme.widgetWash" class="smart-wash" :style="theme.widgetWash"></div>
