@@ -60,5 +60,9 @@ withDefaults(
   transform: translateX(-50%);
   font-size: 8px;
   color: var(--color-text-3);
+  /* <small> 在 <i> 里，而 <i> 默认斜体 —— 年份是数字，斜体看着像手写体、
+     tabular-nums 也失效（数字宽度不再等高）。必须显式复位。 */
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
 }
 </style>

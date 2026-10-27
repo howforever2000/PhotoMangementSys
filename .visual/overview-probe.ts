@@ -241,7 +241,11 @@ const ROUTES = [
   const theme = useThemeStore();
   const pine = DARK_PRESETS.find((p) => p.id === "pine-night")!;
   if (variant === "light") {
-    theme.applyPreset(LIGHT_PRESETS[2]);
+    /* 按 id 取，不按下标：FEAT-119 把浅色从 4 套砍到 2 套，
+       LIGHT_PRESETS[2] 变成 undefined —— applyPreset(undefined) 不会抛错，
+       只是**静默保留上一套配色**，于是"浅色探针"截出来的其实是深色。
+       和 themed-probe.ts 是同一个坑，两处都改。 */
+    theme.applyPreset(LIGHT_PRESETS.find((p) => p.id === "celadon-light") ?? LIGHT_PRESETS[0]);
   } else if (variant === "wall") {
     /* 默认外观：启动封面壁纸 + 落日紫金组件色（用户深色模式的真实样子） */
     theme.reset();
