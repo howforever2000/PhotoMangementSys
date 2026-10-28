@@ -615,14 +615,114 @@ pub fn crop_avatar_local(pid: &str, cache_path: &Path) -> Result<(), String> {
 ///
 /// 与头像共用同一条解码纪律（BUG-2026-1027-004）：JPEG 走 `jpeg_decoder` 降采样快路径，
 /// 其余格式一律走 `imgio::open_any` 按**魔数**解码（不信扩展名）。
-pub fn crop_face_cover_local(pid: &str, cache_path: &Path) -> Result<(), String> {
-    const OUT_W: u32 = 480;
-    const OUT_H: u32 = 600;
-    /// 封面宽高比（4:5）
-    const RATIO: f64 = 4.0 / 5.0;
-    /// 人脸边长之外的留白比例（0.35 → 裁切框约为脸的 1.7 倍）
-    const EXPAND: f64 = 0.35;
+/// 封面输出尺寸与裁切参数（模块级：自动裁切与「用户指定照片」裁切共用一套口径）
+const OUT_W: u32 = 480;
+const OUT_H: u32 = 600;
+/// 封面宽高比（4:5）
+const COVER_RATIO: f64 = 4.0 / 5.0;
+/// 人脸边长之外的留白比例（0.35 → 裁切框约为脸的 1.7 倍）
+const COVER_EXPAND: f64 = 0.35;
 
+/// 解码成「显示坐标系」的图（已按 EXIF 转正），并返回 显示坐标 → 解码坐标 的缩放比
+///
+/// 两条解码纪律合在这里，供「自动封面」与「用户指定照片封面」共用：
+/// - JPEG 走 `jpeg_decoder` 分级降采样（短边降到 >= `min_short_side` 即可，不必全解码，
+///   大图从秒级降到几十毫秒）；
+/// - 其余格式（含「PNG 内容叫 .jpg」那批，BUG-2026-1027-004）按**魔数**解码，不信扩展名。
+fn decode_display(
+    photo_path: &str,
+    min_short_side: u32,
+) -> Result<(image::DynamicImage, f64, f64), String> {
+    let orientation = crate::exif_orient::read_orientation(Path::new(photo_path));
+    if !crate::avatar::is_jpeg_file(Path::new(photo_path)) {
+        // 非 JPEG：按魔数解码后转正，坐标与显示坐标系 1:1
+        let raw = crate::imgio::open_any(Path::new(photo_path))?;
+        let img = crate::exif_orient::apply_orientation(raw, orientation);
+        return Ok((img, 1.0, 1.0));
+    }
+    use std::io::BufReader;
+    let probe = std::fs::File::open(photo_path).map_err(|e| format!("打开原图失败: {e}"))?;
+    let mut head = jpeg_decoder::Decoder::new(BufReader::new(probe));
+    let _ = head.read_info();
+    let info = head.info().ok_or("无法读取图片头信息")?;
+    let (w0, h0) = (info.width as u32, info.height as u32);
+    let (ow, oh) = crate::exif_orient::oriented_dims(w0, h0, orientation);
+    // 降采样档：转正后短边降到 >= 目标长边就够用，不必全解码
+    let mut chosen = 1u32;
+    for &d in &[8u32, 4, 2] {
+        if (ow.min(oh)) as f64 / d as f64 >= min_short_side as f64 {
+            chosen = d;
+            break;
+        }
+    }
+    let tw = ((ow + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
+    let th = ((oh + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
+    let file2 = std::fs::File::open(photo_path).map_err(|e| format!("打开原图失败: {e}"))?;
+    let mut dec = jpeg_decoder::Decoder::new(BufReader::new(file2));
+    let _ = dec.scale(tw, th);
+    let pixels = dec.decode().map_err(|e| format!("JPEG 解码失败: {e:?}"))?;
+    let info2 = dec.info().ok_or("无法读取解码信息")?;
+    let (aw, ah) = ((info2.width as u32).max(1), (info2.height as u32).max(1));
+    let img = crate::exif_orient::apply_orientation(
+        image::DynamicImage::ImageRgb8(
+            image::RgbImage::from_raw(aw, ah, pixels).ok_or("像素数据长度不符")?,
+        ),
+        orientation,
+    );
+    let (fw, fh) = (img.width().max(1), img.height().max(1));
+    Ok((
+        img,
+        fw as f64 / ow.max(1) as f64,
+        fh as f64 / oh.max(1) as f64,
+    ))
+}
+
+/// 按矩形裁 4:5 封面并落盘（唯一写盘出口：自动裁切与自选裁切都走这里）
+fn save_cover(
+    decoded: &image::DynamicImage,
+    rect: (u32, u32, u32, u32),
+    cache_path: &Path,
+) -> Result<(), String> {
+    let (cx, cy, cw, ch) = rect;
+    let cover = decoded
+        .crop_imm(cx, cy, cw, ch)
+        .resize_exact(OUT_W, OUT_H, image::imageops::FilterType::Triangle);
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建封面目录失败: {e}"))?;
+    }
+    cover
+        .save_with_format(cache_path, image::ImageFormat::Jpeg)
+        .map_err(|e| format!("写封面缓存失败: {e}"))
+}
+
+/// 中部最大 4:5 矩形（无脸可依据时的兜底：既不裁到怪角度，也不裁出空白）
+fn cover_rect_center(w: u32, h: u32, ratio: f64) -> (u32, u32, u32, u32) {
+    let (wf, hf) = (w as f64, h as f64);
+    let mut cw = wf;
+    let mut ch = cw / ratio.max(0.01);
+    if ch > hf {
+        ch = hf;
+        cw = ch * ratio.max(0.01);
+    }
+    (
+        ((wf - cw) / 2.0).round().max(0.0) as u32,
+        ((hf - ch) / 2.0).round().max(0.0) as u32,
+        cw.round().max(1.0) as u32,
+        ch.round().max(1.0) as u32,
+    )
+}
+
+/// 某人物在**指定照片**里的人脸框（bbox 文本）；该照片没登记这个人的人脸则 None
+fn face_bbox_for_photo(conn: &rusqlite::Connection, pid: &str, photo_path: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT bbox FROM faces WHERE person_id = ?1 AND photo_path = ?2 ORDER BY id ASC LIMIT 1",
+        rusqlite::params![pid, photo_path],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+pub fn crop_face_cover_local(pid: &str, cache_path: &Path) -> Result<(), String> {
     let Some(conn) = open_db()? else {
         return Err("人物注册表不存在".into());
     };
@@ -633,68 +733,51 @@ pub fn crop_face_cover_local(pid: &str, cache_path: &Path) -> Result<(), String>
     }
     let (x1, y1, x2, y2) =
         parse_bbox(&bbox_raw).ok_or_else(|| format!("bbox 格式异常: {bbox_raw}"))?;
-    let orientation = crate::exif_orient::read_orientation(Path::new(&photo_path));
-    let is_jpeg = crate::avatar::is_jpeg_file(Path::new(&photo_path));
 
-    // 解码成「显示坐标系」的图（已按 EXIF 转正），同时拿到 显示坐标 → 解码坐标 的缩放比
-    let (decoded, sx, sy) = if is_jpeg {
-        use std::io::BufReader;
-        let probe = std::fs::File::open(&photo_path).map_err(|e| format!("打开原图失败: {e}"))?;
-        let mut head = jpeg_decoder::Decoder::new(BufReader::new(probe));
-        let _ = head.read_info();
-        let info = head.info().ok_or("无法读取图片头信息")?;
-        let (w0, h0) = (info.width as u32, info.height as u32);
-        let (ow, oh) = crate::exif_orient::oriented_dims(w0, h0, orientation);
-        // 降采样档：转正后短边降到 >= 封面长边（600）就够用，不必全解码
-        let mut chosen = 1u32;
-        for &d in &[8u32, 4, 2] {
-            if (ow.min(oh)) as f64 / d as f64 >= OUT_H as f64 {
-                chosen = d;
-                break;
-            }
-        }
-        let tw = ((ow + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
-        let th = ((oh + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
-        let file2 = std::fs::File::open(&photo_path).map_err(|e| format!("打开原图失败: {e}"))?;
-        let mut dec = jpeg_decoder::Decoder::new(BufReader::new(file2));
-        let _ = dec.scale(tw, th);
-        let pixels = dec.decode().map_err(|e| format!("JPEG 解码失败: {e:?}"))?;
-        let info2 = dec.info().ok_or("无法读取解码信息")?;
-        let (aw, ah) = ((info2.width as u32).max(1), (info2.height as u32).max(1));
-        let img = crate::exif_orient::apply_orientation(
-            image::DynamicImage::ImageRgb8(
-                image::RgbImage::from_raw(aw, ah, pixels).ok_or("像素数据长度不符")?,
-            ),
-            orientation,
-        );
-        let (fw, fh) = (img.width().max(1), img.height().max(1));
-        let sx = fw as f64 / ow.max(1) as f64;
-        let sy = fh as f64 / oh.max(1) as f64;
-        (img, sx, sy)
-    } else {
-        // 非 JPEG（含「PNG 内容叫 .jpg」那批）：按魔数解码后转正，坐标与显示坐标系 1:1
-        let raw = crate::imgio::open_any(Path::new(&photo_path))?;
-        let img = crate::exif_orient::apply_orientation(raw, orientation);
-        (img, 1.0, 1.0)
-    };
-
+    let (decoded, sx, sy) = decode_display(&photo_path, OUT_H)?;
     let (fw, fh) = (decoded.width().max(1), decoded.height().max(1));
-    let (cx, cy, cw, ch) = cover_rect(
+    let rect = cover_rect(
         fw,
         fh,
         (x1 as f64 * sx, y1 as f64 * sy, x2 as f64 * sx, y2 as f64 * sy),
-        RATIO,
-        EXPAND,
+        COVER_RATIO,
+        COVER_EXPAND,
     );
-    let cover = decoded
-        .crop_imm(cx, cy, cw, ch)
-        .resize_exact(OUT_W, OUT_H, image::imageops::FilterType::Triangle);
-    if let Some(parent) = cache_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建封面目录失败: {e}"))?;
+    save_cover(&decoded, rect, cache_path)
+}
+
+/// 用户指定的照片 → 4:5 人物卡封面（BUG-2026-1028-013）
+///
+/// 为什么需要它：人物卡画的是 cover（FEAT-124），只改 96×96 头像时卡片毫无变化，
+/// 用户看到的就是「设置了新头像但没效果」。所以同一个动作必须也把封面换成这张照片。
+/// 裁切依据：该照片里这个人的脸框（有则贴脸裁）；没有就退化为整图中部 4:5。
+pub fn crop_photo_cover_local(
+    pid: &str,
+    photo_path: &str,
+    cache_path: &Path,
+) -> Result<(), String> {
+    if !Path::new(photo_path).is_file() {
+        return Err(format!("所选照片不存在: {photo_path}"));
     }
-    cover
-        .save_with_format(cache_path, image::ImageFormat::Jpeg)
-        .map_err(|e| format!("写封面缓存失败: {e}"))
+    let bbox = open_db()
+        .ok()
+        .flatten()
+        .and_then(|conn| face_bbox_for_photo(&conn, pid, photo_path))
+        .and_then(|raw| parse_bbox(&raw));
+
+    let (decoded, sx, sy) = decode_display(photo_path, OUT_H)?;
+    let (fw, fh) = (decoded.width().max(1), decoded.height().max(1));
+    let rect = match bbox {
+        Some((x1, y1, x2, y2)) => cover_rect(
+            fw,
+            fh,
+            (x1 as f64 * sx, y1 as f64 * sy, x2 as f64 * sx, y2 as f64 * sy),
+            COVER_RATIO,
+            COVER_EXPAND,
+        ),
+        None => cover_rect_center(fw, fh, COVER_RATIO),
+    };
+    save_cover(&decoded, rect, cache_path)
 }
 
 /// 以人脸框为中心算一个固定宽高比的裁切矩形（夹紧到图内，永不越界）
@@ -1394,5 +1477,62 @@ mod tests {
         let (x2, y2, w2, h2) = cover_rect(800, 600, (0.0, 0.0, 40.0, 40.0), ratio, 0.35);
         assert!(x2 + w2 <= 800 && y2 + h2 <= 600, "贴边也不得越界");
         assert!(x2 == 0 && y2 == 0, "贴左上角应从原点起裁");
+    }
+
+    /// BUG-2026-1028-013：用户指定照片 → 4:5 封面（真实注册表）
+    ///
+    /// 这是「设置头像没效果」的正解链路：人物卡画的是封面，所以同一个动作必须
+    /// 也能从**指定照片**裁出 480×600 封面（而不是只能从代表脸裁）。
+    #[test]
+    fn test_crop_photo_cover_local_real_data() {
+        let list = match list_persons() {
+            Ok(l) => l,
+            Err(e) => panic!("列表不应报错: {e}"),
+        };
+        if list.is_empty() {
+            eprintln!("跳过：无人物数据");
+            return;
+        }
+        let Some(conn) = open_db().expect("打开注册表不应报错") else {
+            eprintln!("跳过：注册表不存在");
+            return;
+        };
+        let mut samples = 0usize;
+        for p in list.iter().take(5) {
+            let Some((photo, _bbox)) = representative_face(&conn, &p.id) else {
+                continue;
+            };
+            if !Path::new(&photo).is_file() {
+                continue;
+            }
+            let tmp = std::env::temp_dir().join(format!("photo_cover_test_{}.jpg", p.id));
+            let _ = std::fs::remove_file(&tmp);
+            crop_photo_cover_local(&p.id, &photo, &tmp)
+                .unwrap_or_else(|e| panic!("指定照片裁封面失败: {e}"));
+            let img = image::open(&tmp).expect("产物应为合法图片");
+            assert_eq!((img.width(), img.height()), (480, 600), "封面应为 480×600（4:5）");
+            assert!(
+                std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0) > 1000,
+                "封面文件过小，疑似空图"
+            );
+            let _ = std::fs::remove_file(&tmp);
+            samples += 1;
+        }
+        assert!(samples > 0, "前 5 个人物里一张指定照片封面都没裁出来");
+        eprintln!("指定照片裁封面：{samples} 张成功");
+    }
+
+    /// 无脸可依据时的兜底矩形：居中、保 4:5、不越界，
+    /// 横图（宽>高）与竖图（高>宽）都要正确
+    #[test]
+    fn test_cover_rect_center() {
+        let ratio = 4.0 / 5.0;
+        for (w, h) in [(4000u32, 3000u32), (3000, 4000), (100, 1000), (1920, 1080)] {
+            let (x, y, cw, ch) = cover_rect_center(w, h, ratio);
+            assert!(x + cw <= w && y + ch <= h, "{w}x{h} 不得越界：{x}+{cw} / {y}+{ch}");
+            assert!(cw >= 1 && ch >= 1, "{w}x{h} 尺寸不得为 0");
+            let got = cw as f64 / ch as f64;
+            assert!((got - ratio).abs() < 0.02, "{w}x{h} 宽高比异常：{got}");
+        }
     }
 }

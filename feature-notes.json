@@ -4948,7 +4948,51 @@
       ],
       "created_at": "2026-10-28T22:55:00+08:00",
       "updated_at": "2026-10-28T22:55:00+08:00"
+    },
+    {
+      "id": "FEAT-130",
+      "name": "人像（头像 + 封面）统一写入与时间线缩略图自愈",
+      "status": "done",
+      "purpose": "让「换这张照片当头像」在人物卡上真的可见；让时间线缩略图对「缓存表有行、磁盘没文件」的情况自愈，而不是长期空白",
+      "module": "src-tauri/src/avatar.rs、src-tauri/src/persons.rs、src-tauri/src/content.rs、src/stores/timeline.ts、src/utils/thumbQueue.ts、src/components/PersonGallery.vue、src/views/Timeline.vue",
+      "implementation": {
+        "backend": "新增 persons::crop_photo_cover_local（指定照片 → 480×600 封面，贴脸或中部兜底）+ decode_display/save_cover 共用步骤；set_person_avatar_from_photo / restore_person_avatar 改为一次写头像+封面并返回 {avatar, cover}；封面 .custom 标记与清理（remove_avatar_cache / clear_all_avatar_cache 覆盖 covers/）；timeline_month 用 drop_dead_thumb_links 过滤死链",
+        "frontend": "PersonGallery applyPortrait 同刷 avatarMap+coverMap；右键菜单「更换头像 / 封面…」；Timeline <img @error> → markThumbBroken（限一次重试）；ensureThumbs 支持 album_id=0；getThumbs 支持 onPair 逐张回调",
+        "tooling": "python/bench/diag_thumb_cache_health.py 只读诊断缩略图缓存表与磁盘一致性"
+      },
+      "highlights": [
+        "封面与头像共用同一套解码纪律（JPEG 分级降采样 / 非 JPEG 按魔数），没有复制两份解码代码",
+        "自选封面永不被后台重裁覆盖（.custom），且随人物删除/合并/重建一起清掉，杜绝 P 编号复用串照片",
+        "时间线修复不需要迁移脚本：置 None → 前端兜底 → get_photo_thumbs 重生成并 upsert，浏览即自愈"
+      ],
+      "related_files": [
+        "src-tauri/src/avatar.rs",
+        "src-tauri/src/persons.rs",
+        "src-tauri/src/content.rs",
+        "src/stores/timeline.ts",
+        "src/utils/thumbQueue.ts",
+        "src/components/PersonGallery.vue",
+        "src/views/Timeline.vue",
+        "python/bench/diag_thumb_cache_health.py"
+      ],
+      "keywords": [
+        "头像",
+        "封面",
+        "cover",
+        "crop_photo_cover_local",
+        "缩略图",
+        "thumb_path",
+        "时间线",
+        "自愈"
+      ],
+      "tests": [
+        "cargo test --lib 424 passed（新增 test_crop_photo_cover_local_real_data / test_cover_cache_validity_and_cleanup / test_cover_rect_center / drop_dead_thumb_links_nulls_missing_files_only）",
+        "npm run build（vue-tsc + vite）通过；npm test 164 passed",
+        "diag_thumb_cache_health.py 实测：修复前 53.3% 死链"
+      ],
+      "created_at": "2026-10-28T23:35:00+08:00",
+      "updated_at": "2026-10-28T23:35:00+08:00"
     }
   ],
-  "updated": "2026-10-28T22:55:00+08:00"
+  "updated": "2026-10-28T23:35:00+08:00"
 }

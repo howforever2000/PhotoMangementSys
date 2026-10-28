@@ -468,21 +468,34 @@ const settingAvatar = ref<string | null>(null);
 /** 头像挑选模式：由头像右键菜单「更换头像…」进入，弹窗顶部显示提示条 */
 const avatarPickMode = ref(false);
 
+/** 命令返回：头像与卡片封面两条缓存路径（后端一次写入） */
+interface PersonPortrait {
+  avatar: string;
+  cover: string;
+}
+
+/** 头像 + 封面一起刷新（人物卡画的是 cover，只刷 avatar 等于没变，BUG-2026-1028-013） */
+function applyPortrait(pid: string, p: PersonPortrait): void {
+  avatarTs.value = Date.now();
+  coverTs.value = Date.now();
+  avatarMap.value = { ...avatarMap.value, [pid]: avatarUrl(pid, p.avatar) };
+  coverMap.value = { ...coverMap.value, [pid]: coverUrl(pid, p.cover) };
+}
+
 async function setAvatar(p: PersonInfo, photoPath: string) {
   if (settingAvatar.value) return;
   settingAvatar.value = photoPath;
   try {
-    const cachePath = await invoke<string>("set_person_avatar_from_photo", {
+    const portrait = await invoke<PersonPortrait>("set_person_avatar_from_photo", {
       pid: p.id,
       photoPath,
     });
-    avatarTs.value = Date.now();
-    avatarMap.value = { ...avatarMap.value, [p.id]: avatarUrl(p.id, cachePath) };
+    applyPortrait(p.id, portrait);
     if (avatarPickMode.value) {
       // 从「更换头像」入口来的：选完即收工，回到画廊看效果
       closePhotos();
     }
-    flash(`已将所选照片设为 ${displayName(p)} 的头像`);
+    flash(`已将所选照片设为 ${displayName(p)} 的头像与卡片封面`);
   } catch (e) {
     flash(`设置头像失败：${String(e)}`);
   } finally {
@@ -502,7 +515,7 @@ const ctxItems = computed<ContextMenuEntry[]>(() => {
   if (!p) return [];
   return [
     {
-      label: "更换头像…",
+      label: "更换头像 / 封面…",
       icon: "🖼",
       onClick: () => {
         avatarPickMode.value = true;
@@ -528,10 +541,9 @@ async function restoreAvatar(p: PersonInfo) {
   if (restoringAvatar.value) return;
   restoringAvatar.value = p.id;
   try {
-    const cachePath = await invoke<string>("restore_person_avatar", { pid: p.id });
-    avatarTs.value = Date.now();
-    avatarMap.value = { ...avatarMap.value, [p.id]: avatarUrl(p.id, cachePath) };
-    flash(`已恢复 ${displayName(p)} 的自动头像`);
+    const portrait = await invoke<PersonPortrait>("restore_person_avatar", { pid: p.id });
+    applyPortrait(p.id, portrait);
+    flash(`已恢复 ${displayName(p)} 的自动头像与封面`);
   } catch (e) {
     flash(`恢复自动头像失败：${String(e)}`);
   } finally {

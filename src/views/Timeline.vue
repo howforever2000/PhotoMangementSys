@@ -14,6 +14,7 @@ import {
   ensureCards,
   ensureThumbs,
   loadIndex,
+  markThumbBroken,
   thumbOf,
   timelineKey,
   version as tlVersion,
@@ -421,6 +422,17 @@ function syncLoads() {
   if (missingThumbs.length) ensureThumbs(missingThumbs);
 }
 
+/**
+ * 缩略图 `<img>` 加载失败（BUG-2026-1028-014）
+ *
+ * 后端已在 `timeline_month` 过滤掉磁盘上不存在的 thumb_path，但文件可能在页面加载后
+ * 被清掉。这里是最后一道防线：交给 store 把 path 视为缺失并重走一次兜底（有上限，
+ * 不会死循环），卡片立即回退为占位图而不是留一个破图框。
+ */
+function onThumbError(card: TimelineCard | null): void {
+  if (card) markThumbBroken(card);
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // 跳转：一次定位（不再穿过整条时间线）
 // ══════════════════════════════════════════════════════════════════════════
@@ -826,6 +838,7 @@ function applyJumpQuery() {
                       decoding="async"
                       class="tl-thumb"
                       alt=""
+                      @error="onThumbError(cell.card)"
                     />
                     <div v-else class="tl-thumb tl-thumb-ph">🖼️</div>
                     <figcaption v-if="cell.card" class="tl-cap">

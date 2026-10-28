@@ -4820,7 +4820,75 @@
         "任何「轮询直到 ready」的写法都必须回答三个问题：谁启动、什么时候停、停了之后用户怎么办",
         "惰性加载通道的 ready=false 是常态，不是错误态，更不是「加载中」—— 状态语义写错会连带写出无限循环与误导文案"
       ]
+    },
+    {
+      "id": "BUG-2026-1028-013",
+      "date": "2026-10-28",
+      "status": "fixed",
+      "title": "人物侧「设置头像」无效果：改了 96×96 头像，人物卡画的是 4:5 封面",
+      "module": "src-tauri/src/avatar.rs（set_person_avatar_from_photo / restore_person_avatar）、src-tauri/src/persons.rs（crop_face_cover_local）、src/components/PersonGallery.vue",
+      "symptom": [
+        "在人物照片弹窗里点「设为头像」，提示条正常弹出（『已将所选照片设为 … 的头像』），但人物卡上的图完全没变",
+        "「恢复自动头像」同样看起来没生效"
+      ],
+      "root_cause": [
+        "FEAT-124 之后人物卡渲染的是 coverMap[p.id]（covers/cover_<pid>.jpg，480×600 的 4:5 裁切），不是 avatarMap（96×96）",
+        "而 set_person_avatar_from_photo 只写 avatars/avatar_<pid>.jpg + .custom，前端也只更新 avatarMap；封面仍是「代表脸」自动裁出来的那张",
+        "restore_person_avatar 同理：只恢复头像，自选封面留在原地",
+        "另：remove_avatar_cache / clear_all_avatar_cache 从不清理 covers/，删除/合并/重建后旧封面会随 P 编号复用串到下一个人（与 BUG-2026-1001-001 同类）"
+      ],
+      "evidence_log": [
+        "代码链路：PersonGallery 模板 648 行渲染 coverMap[p.id]；setAvatar 只写 avatarMap（旧实现）",
+        "persons.rs 只有 crop_face_cover_local(pid)（按代表脸裁），没有「按指定照片裁封面」的能力"
+      ],
+      "solution": [
+        "persons.rs 抽出 decode_display(JPEG 降采样 / 非 JPEG 按魔数) 与 save_cover 两个共用步骤，新增 crop_photo_cover_local(pid, photo_path, out)：优先用该照片里此人的人脸框贴脸裁，无脸则中部 4:5 兜底",
+        "set_person_avatar_from_photo 一次写两份（96×96 头像 + 480×600 封面）并落两个 .custom 标记，返回 {avatar, cover}；任一裁切失败整体报错，不留半成品",
+        "restore_person_avatar 一并恢复封面（清 .custom/jpg/sig 后按代表脸重裁两份）",
+        "cover_cache_valid 增加 .custom 判据：自选封面恒真，后台重裁不会覆盖用户选择",
+        "remove_avatar_cache / clear_all_avatar_cache 同时清 covers/（含 .custom），杜绝 P 编号复用时封面串人",
+        "PersonGallery：applyPortrait 同刷 avatarMap+coverMap 与两个时间戳；右键菜单改名「更换头像 / 封面…」，提示文案写明两处都更新"
+      ],
+      "lessons": [
+        "「设置了但没效果」先确认用户看的那块像素由哪个数据源渲染；FEAT-124 把人物卡的数据源从 avatar 换成 cover，旧写入路径就静默失效了",
+        "同一份用户意图（这张照片代表人）必须同时落到它影响的所有缓存上，否则就是半成品状态",
+        "缓存清理要按「命名空间」扫，而不是只扫记得的那几个文件：covers/ 子目录漏了两年"
+      ]
+    },
+    {
+      "id": "BUG-2026-1028-014",
+      "date": "2026-10-28",
+      "status": "fixed",
+      "title": "时间线缩略图大量空白：photo_thumb_cache 的死链被当作事实下发，前端兜底只看 null",
+      "module": "src-tauri/src/content.rs（timeline_month）、src-tauri/src/db/content.rs、src/stores/timeline.ts、src/views/Timeline.vue、src/utils/thumbQueue.ts",
+      "symptom": [
+        "智慧相册 → 时间线里大量卡片是空白/破图框，只显示地点标签；等很久也不出现",
+        "日志却是 timeline_month OK | rows=117 with_thumb=117 —— 后端认为「全都有缩略图」"
+      ],
+      "root_cause": [
+        "timeline_month 的 thumb_path 来自 LEFT JOIN photo_thumb_cache，那只是缓存表，行在 ≠ 文件在",
+        "实测该库 24,917 行里 13,292 行（53.3%）的 thumb_path 指向的文件已被清掉（全在 thumbs/grid），而 thumbs 目录实际只有 11,744 个文件",
+        "前端 adoptThumbs 直接把 thumb_path 塞进响应式表渲染 <img src=死路径>；ensureThumbs 兜底只看 thumb_path == null（全库仅 64 张），死路径永远进不了兜底队列",
+        "对照：get_photo_thumbs 有 is_file() 校验并当场重生成（所以相册网格能自愈），时间线走的是另一条不做校验的路径"
+      ],
+      "evidence_log": [
+        "python/bench/diag_thumb_cache_health.py：photo_thumb_cache 24,917 行 / 13,292 行文件不存在（53.3%）；抽样 2000 条磁盘命中率仅 34.0%",
+        "timeline_month 日志 with_thumb=rows（后端无校验），而截图里卡片大量空白"
+      ],
+      "solution": [
+        "后端 content.rs 新增纯函数 drop_dead_thumb_links(cards)：timeline_month 返回前逐条 is_file() 校验，死链置 None（每页 ≤300 次 stat，实测 <2ms），日志加 dead_thumb 计数",
+        "置 None 后前端 ensureThumbs 兜底自然接管，get_photo_thumbs 校验存活并 upsert，死行随浏览被覆盖 —— 越用越自愈（无需迁移脚本）",
+        "前端第二道防线：<img @error> → store.markThumbBroken(card) 把 path 从响应式表删掉并重走一次兜底（每张最多重试 1 次，避免死循环）",
+        "ensureThumbs 支持无归属照片（album_id=null → 0「无归属缓存命名空间」），此前这类照片永远进不了兜底",
+        "getThumbs 增加可选 onPair 回调：缩略图按到达顺序逐张出图，不再等整批（300 张）一起亮",
+        "新增取证工具 python/bench/diag_thumb_cache_health.py（只读统计缓存表 vs 磁盘）"
+      ],
+      "lessons": [
+        "任何「缓存表里的路径」在下发前都要校验存活；把缓存当事实用，就会在文件被清掉后长期显示空白，而且日志一片 OK",
+        "兜底条件不要写成 `== null`：还有第三种状态「有值但无效」，它才是缓存失效后的常态",
+        "同一个能力存在两条实现（timeline_month vs get_photo_thumbs）时，校验纪律只写在一处就等于没写"
+      ]
     }
   ],
-  "updated": "2026-10-28T22:55:00+08:00"
+  "updated": "2026-10-28T23:35:00+08:00"
 }
