@@ -296,8 +296,317 @@ pub fn delete_person(pid: &str) -> Result<(), String> {
         }
     }
 }
+// ---------------------------------------------------------------------------
+// 人脸归属的人工修正（人物页「移出此人 / 移到其他人物」）
+//
+// 为什么不能只改 faces.person_id：扫描端 `PersonStore.register()` 每次都是
+// 「按质心匹配 → 插入一行 faces」，只改行会被下次重扫按旧质心认回去。
+// 因此这里同时写 `face_overrides`（photo_path + bbox 主键），Python 侧
+// `register()` 会先查覆盖表，命中就不再跑质心匹配。
+// ---------------------------------------------------------------------------
+
+/// `face_overrides.person_id` 的哨兵值：明确「不属于任何人」（与 Python 侧 NO_PERSON 同值）
+const FACE_OVERRIDE_NONE: &str = "__none__";
+
+/// f32 blob（小端）→ 向量；空 / 长度非 4 的倍数 → None
+fn blob_to_vec(blob: &[u8]) -> Option<Vec<f32>> {
+    if blob.is_empty() || blob.len() % 4 != 0 {
+        return None;
+    }
+    Some(
+        blob.chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect(),
+    )
+}
+
+fn vec_to_blob(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+/// SQL 占位符串：`?start,?start+1,...`
+fn placeholders(n: usize, start: usize) -> String {
+    (start..start + n)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// 重算某人物的人脸数与质心；一张脸都不剩就把人物整行删掉。
+///
+/// 质心重算（而不是从旧质心做减法）是为了避免「人工修正移走典型脸 → 质心漂移」
+/// 的累积误差：faces 表才是唯一事实来源。
+fn recompute_person(conn: &rusqlite::Connection, pid: &str) -> Result<i64, String> {
+    let mut stmt = conn
+        .prepare("SELECT embedding FROM faces WHERE person_id = ?1")
+        .map_err(|e| format!("查询人脸失败: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![pid], |r| r.get::<_, Vec<u8>>(0))
+        .map_err(|e| format!("查询人脸失败: {e}"))?;
+    let mut sum: Vec<f32> = Vec::new();
+    let mut n: i64 = 0;
+    for row in rows {
+        let blob = row.map_err(|e| format!("读取人脸向量失败: {e}"))?;
+        let Some(v) = blob_to_vec(&blob) else { continue };
+        if sum.is_empty() {
+            sum = vec![0.0; v.len()];
+        }
+        if v.len() != sum.len() {
+            continue; // 换模型后维度不一致的历史向量：跳过，不污染质心
+        }
+        for (a, b) in sum.iter_mut().zip(v.iter()) {
+            *a += b;
+        }
+        n += 1;
+    }
+    if n == 0 {
+        conn.execute("DELETE FROM persons WHERE id = ?1", rusqlite::params![pid])
+            .map_err(|e| format!("删除空人物失败: {e}"))?;
+        conn.execute(
+            "DELETE FROM face_overrides WHERE person_id = ?1",
+            rusqlite::params![pid],
+        )
+        .map_err(|e| format!("清理覆盖记录失败: {e}"))?;
+        return Ok(0);
+    }
+    let norm = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for x in sum.iter_mut() {
+            *x /= norm;
+        }
+    }
+    conn.execute(
+        "UPDATE persons SET centroid = ?1, face_count = ?2 WHERE id = ?3",
+        rusqlite::params![vec_to_blob(&sum), n, pid],
+    )
+    .map_err(|e| format!("更新质心失败: {e}"))?;
+    Ok(n)
+}
+
+/// 下一个人物编号（P001 起，取当前最大值 +1）
+fn next_person_id(conn: &rusqlite::Connection) -> Result<String, String> {
+    let m: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(CAST(SUBSTR(id,2) AS INTEGER)), 0) FROM persons",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    Ok(format!("P{:03}", m + 1))
+}
+
+fn now_string() -> String {
+    // 与 Python 侧同一列（TEXT）：这里存 unix 秒，只用于排错追查，不参与排序/比较
+    crate::now().to_string()
+}
+
+/// 按照片路径删除人脸登记 + 覆盖记录（「清除数据库记录」调用）。
+///
+/// 只删人脸，不动 persons：空掉的人物由 `recompute_person` 顺势清理。
+/// 返回删除的 faces 行数。
+pub fn delete_faces_by_paths(paths: &[String]) -> Result<usize, String> {
+    if paths.is_empty() {
+        return Ok(0);
+    }
+    let Some(conn) = open_db()? else {
+        return Ok(0);
+    };
+    let mut affected: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut deleted = 0usize;
+    for chunk in paths.chunks(400) {
+        let ph = placeholders(chunk.len(), 1);
+        let sel = format!("SELECT DISTINCT person_id FROM faces WHERE photo_path IN ({ph})");
+        {
+            let mut stmt = conn.prepare(&sel).map_err(|e| format!("查询人脸失败: {e}"))?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+            let rows = stmt
+                .query_map(params.as_slice(), |r| r.get::<_, String>(0))
+                .map_err(|e| format!("查询人脸失败: {e}"))?;
+            for r in rows {
+                affected.insert(r.map_err(|e| format!("读取人脸行失败: {e}"))?);
+            }
+        }
+        let del = format!("DELETE FROM faces WHERE photo_path IN ({ph})");
+        let params: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        deleted += conn
+            .execute(&del, params.as_slice())
+            .map_err(|e| format!("删除人脸失败: {e}"))?;
+        // 覆盖记录同生命周期：清掉后照片回到「全新」，下次扫描可自由重新聚类。
+        let del_ov = format!("DELETE FROM face_overrides WHERE photo_path IN ({ph})");
+        conn.execute(&del_ov, params.as_slice())
+            .map_err(|e| format!("清理覆盖记录失败: {e}"))?;
+    }
+    for pid in affected {
+        recompute_person(&conn, &pid)?;
+    }
+    Ok(deleted)
+}
+
+/// 人脸改挂结果（前端提示用）
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct FaceMoveOutcome {
+    /// 请求处理的照片数
+    pub requested: usize,
+    /// 实际改动的人脸行数（一张照片可能多张脸）
+    pub moved: usize,
+    pub from_pid: String,
+    /// 目标人物；None = 移出全部人物
+    pub to_pid: Option<String>,
+    /// 本次新建的人物编号（目标为「新建」时）
+    pub created_pid: Option<String>,
+    /// 没有该人物人脸的照片（正常情况，不算失败）
+    pub skipped_paths: Vec<String>,
+}
+
+/// 把 `from_pid` 名下、属于 `paths` 的人脸改挂到 `to_pid` 或新建人物；
+/// `to_pid` 与 `new_name` 同时为 None → 移出全部人物（删除人脸行 + 覆盖为「无人」）。
+///
+/// 三种用法：
+/// 1. 移出此人：`to_pid=None, new_name=None`
+/// 2. 移到已有的人：`to_pid=Some("P003")`
+/// 3. 移到新建的人：`new_name=Some("李四")`
+pub fn move_faces(
+    from_pid: &str,
+    to_pid: Option<&str>,
+    new_name: Option<&str>,
+    paths: &[String],
+) -> Result<FaceMoveOutcome, String> {
+    let mut out = FaceMoveOutcome {
+        requested: paths.len(),
+        from_pid: from_pid.to_string(),
+        ..Default::default()
+    };
+    if paths.is_empty() {
+        return Ok(out);
+    }
+    if to_pid == Some(from_pid) {
+        return Err("目标人物与当前人物相同".into());
+    }
+    let Some(conn) = open_db()? else {
+        return Err(format!("人物注册表不存在: {}", persons_db_path().display()));
+    };
+
+    // 1) 取出要动的人脸行（顺带确认目标人物存在）
+    let mut rows: Vec<(i64, String, String, Vec<u8>)> = Vec::new();
+    for chunk in paths.chunks(400) {
+        let ph = placeholders(chunk.len(), 2);
+        let sql = format!(
+            "SELECT id, photo_path, bbox, embedding FROM faces \
+             WHERE person_id = ?1 AND photo_path IN ({ph})"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| format!("查询人脸失败: {e}"))?;
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() + 1);
+        params.push(&from_pid);
+        for p in chunk {
+            params.push(p);
+        }
+        let it = stmt
+            .query_map(params.as_slice(), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                ))
+            })
+            .map_err(|e| format!("查询人脸失败: {e}"))?;
+        for r in it {
+            rows.push(r.map_err(|e| format!("读取人脸行失败: {e}"))?);
+        }
+    }
+    if rows.is_empty() {
+        return Ok(out);
+    }
+    if let Some(t) = to_pid {
+        let exists: bool = conn
+            .query_row("SELECT 1 FROM persons WHERE id = ?1", rusqlite::params![t], |_| Ok(()))
+            .is_ok();
+        if !exists {
+            return Err(format!("目标人物不存在: {t}"));
+        }
+    }
+
+    // 2) 目标人物：已有 / 新建（编号先算好，行在事务里插）
+    let new_pid = if to_pid.is_none() && new_name.is_some() {
+        Some(next_person_id(&conn)?)
+    } else {
+        None
+    };
+    let target: Option<String> = to_pid.map(str::to_string).or_else(|| new_pid.clone());
+
+    // 3) 单事务：建人物（可选）→ 改挂/删除 → 写覆盖 → 重算两方质心
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| format!("开启事务失败: {e}"))?;
+    let r = (|| -> Result<(), String> {
+        if let Some(pid) = &new_pid {
+            let raw = new_name.unwrap_or("").trim();
+            let name: String = if raw.is_empty() {
+                pid.clone()
+            } else {
+                raw.chars().take(50).collect()
+            };
+            let seed = blob_to_vec(&rows[0].3).ok_or_else(|| "人脸向量损坏".to_string())?;
+            conn.execute(
+                "INSERT INTO persons(id, name, centroid, face_count, created_at) VALUES(?1,?2,?3,0,?4)",
+                rusqlite::params![pid, name, vec_to_blob(&seed), now_string()],
+            )
+            .map_err(|e| format!("新建人物失败: {e}"))?;
+        }
+        let ov_target = target.clone().unwrap_or_else(|| FACE_OVERRIDE_NONE.to_string());
+        let now = now_string();
+        for (id, path, bbox, _) in &rows {
+            match &target {
+                Some(t) => {
+                    conn.execute(
+                        "UPDATE faces SET person_id = ?1 WHERE id = ?2",
+                        rusqlite::params![t, id],
+                    )
+                    .map_err(|e| format!("改挂人脸失败: {e}"))?;
+                }
+                None => {
+                    conn.execute("DELETE FROM faces WHERE id = ?1", rusqlite::params![id])
+                        .map_err(|e| format!("删除人脸失败: {e}"))?;
+                }
+            }
+            // 关键：写覆盖，保证下次重扫不会被质心认回原人物
+            conn.execute(
+                "INSERT OR REPLACE INTO face_overrides(photo_path, bbox, person_id, created_at) \
+                 VALUES(?1,?2,?3,?4)",
+                rusqlite::params![path, bbox, ov_target, now],
+            )
+            .map_err(|e| format!("写入修正记录失败: {e}"))?;
+        }
+        recompute_person(&conn, from_pid)?;
+        if let Some(t) = &target {
+            recompute_person(&conn, t)?;
+        }
+        Ok(())
+    })();
+    match r {
+        Ok(_) => conn
+            .execute_batch("COMMIT")
+            .map_err(|e| format!("提交事务失败: {e}"))?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    }
+
+    let touched: std::collections::HashSet<&str> = rows.iter().map(|r| r.1.as_str()).collect();
+    out.skipped_paths = paths
+        .iter()
+        .filter(|p| !touched.contains(p.as_str()))
+        .cloned()
+        .collect();
+    out.moved = rows.len();
+    out.to_pid = target;
+    out.created_pid = new_pid;
+    Ok(out)
+}
+
 fn representative_face(conn: &rusqlite::Connection, pid: &str) -> Option<(String, String)> {
-    // 代表脸 = 「与质心最相似」的一张（不再取最早登记的一张）。
     // 为什么改：质心是该人物所有脸的方向均值，与它最相似的脸就是最典型的正面大脸；
     // 最早登记的可能是远处小脸/侧脸，裁出来糊成一片（用户反馈的「封面看不出是谁」）。
     // 并列时取 bbox 面积更大者，再并列取 id 小者 —— 结果稳定不跳变。
@@ -478,6 +787,9 @@ pub fn reset_registry() -> Result<(String, i64, i64), String> {
             .map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM faces", []).map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM persons", []).map_err(|e| e.to_string())?;
+        // 人工修正覆盖也清空：重建后 P 编号会重新分配，留着旧覆盖只会在
+        // 「P001 换成了别人」之后把脸挂到错误的人身上。重建 = 从头聚类。
+        let _ = conn.execute("DELETE FROM face_overrides", []);
         // meta 一并清空：下次登记时 Python 会写入当前激活模型（全新安装语义）
         let _ = conn.execute("DELETE FROM meta", []);
         Ok(())
@@ -1157,6 +1469,68 @@ pub fn delete_person(
         crate::logger::log_call_end_with("delete_person", _t, "OK");
     } else if let Err(e) = &r {
         crate::logger::log_call_end_with("delete_person", _t, &format!("ERR | {e}"));
+    }
+    r
+}
+
+
+/// 人物注册表：人工修正人脸归属（移出此人 / 移到已有的人 / 移到新建的人）
+///
+/// 三种调用方式：
+/// - `to_pid = null, new_name = null`：移出全部人物（这张脸不再属于任何人）
+/// - `to_pid = "P003"`：移到已有的人物
+/// - `new_name = "李四"`：新建一个人物并移入
+///
+/// 同时写 `face_overrides`，保证**重新扫描不会把修正覆盖回去**；
+/// 并同步 `photo_content_scan.person_ids`（网格徽标 / 人物筛选 / 描述文本读它）。
+#[tauri::command]
+pub fn move_person_faces(
+    from_pid: String,
+    to_pid: Option<String>,
+    new_name: Option<String>,
+    paths: Vec<String>,
+    app: tauri::AppHandle,
+    state: tauri::State<crate::AppState>,
+    session: tauri::State<crate::SessionState>,
+) -> Result<crate::persons::FaceMoveOutcome, String> {
+    let _t = log_call!(
+        "move_person_faces",
+        &format!("from={from_pid} to={to_pid:?} new={new_name:?} paths={}", paths.len())
+    );
+    let user_id = crate::require_user(&session)?;
+    let r = crate::persons::move_faces(&from_pid, to_pid.as_deref(), new_name.as_deref(), &paths);
+    match &r {
+        Ok(outcome) => {
+            if outcome.moved > 0 {
+                // 1. 内容表 person_ids 同步（失败不回滚人脸：下次扫描会补齐）
+                if let Ok(db) = state.0.lock() {
+                    let _ = db.sync_person_ids_for_paths(
+                        &paths,
+                        Some(&from_pid),
+                        outcome.to_pid.as_deref(),
+                    );
+                }
+                // 2. 头像缓存：两边的人脸集都变了，签名失配，下次读取自动重裁
+                if let Ok(dir) = crate::avatar::commands::avatars_dir(&app) {
+                    crate::avatar::remove_avatar_cache(&dir, &from_pid);
+                    if let Some(t) = &outcome.to_pid {
+                        crate::avatar::remove_avatar_cache(&dir, t);
+                    }
+                }
+                // 3. 描述文本里的真名变了 → 后台增量重建（与改名同一套机制）
+                spawn_desc_rebuild(
+                    &app,
+                    user_id,
+                    format!("move faces {from_pid} -> {:?}", outcome.to_pid),
+                );
+            }
+            crate::logger::log_call_end_with(
+                "move_person_faces",
+                _t,
+                &format!("OK | moved={} created={:?}", outcome.moved, outcome.created_pid),
+            );
+        }
+        Err(e) => crate::logger::log_call_end_with("move_person_faces", _t, &format!("ERR | {e}")),
     }
     r
 }
