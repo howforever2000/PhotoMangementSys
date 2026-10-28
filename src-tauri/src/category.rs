@@ -842,6 +842,42 @@ pub mod commands {
         r.map_err(|e| e.to_string())
     }
 
+    /// 人工纠错：把照片从当前分类移除（只删该分类的命中行，不动照片与其他数据）
+    ///
+    /// 与「清除数据库记录」的区别：这里只解除「这张图属于这个分类」这一条判断，
+    /// 其余分类、标签、向量、人物全部保留。
+    #[tauri::command]
+    pub async fn remove_photos_from_category(
+        category_id: i64,
+        paths: Vec<String>,
+        state: State<'_, AppState>,
+        session: State<'_, SessionState>,
+    ) -> Result<usize, String> {
+        let user_id = require_user(&session)?;
+        let _t = logger::log_call_start(
+            "remove_photos_from_category",
+            &format!("cat={category_id} paths={}", paths.len()),
+        );
+        let r = {
+            let db = state.0.lock().map_err(|e| format!("{e}"))?;
+            db.remove_category_hits(category_id, user_id, &paths)
+                .map_err(|e| format!("{e}"))
+        };
+        match &r {
+            Ok(n) => logger::log_call_end_with(
+                "remove_photos_from_category",
+                _t,
+                &format!("OK | removed={n}"),
+            ),
+            Err(e) => logger::log_call_end_with(
+                "remove_photos_from_category",
+                _t,
+                &format!("ERR | {e}"),
+            ),
+        }
+        r
+    }
+
     /// 语义索引覆盖统计（「已索引 N/M」+ 换档提醒）
     #[tauri::command]
     pub async fn category_index_stats(

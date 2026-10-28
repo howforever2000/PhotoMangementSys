@@ -4888,7 +4888,45 @@
         "兜底条件不要写成 `== null`：还有第三种状态「有值但无效」，它才是缓存失效后的常态",
         "同一个能力存在两条实现（timeline_month vs get_photo_thumbs）时，校验纪律只写在一处就等于没写"
       ]
+    },
+    {
+      "id": "BUG-2026-1028-015",
+      "date": "2026-10-28",
+      "status": "fixed",
+      "title": "照片「处理方式」四分化提交 01c8612 运行即坏：构建失败 + 三处调用点未迁移导致「移除」真删文件",
+      "module": "src/components/PhotoDeleteDialog.vue、CategoryGallery.vue、LocationGallery.vue、PhotoActionMenu.vue、PhotoGrid.vue、src-tauri/src/lib.rs、src-tauri/src/photos.rs、src-tauri/src/persons.rs、src/stores/album.ts",
+      "symptom": [
+        "打开「处理这张照片」弹窗即报错（Vue 渲染抛 TypeError: count is not a function），弹窗出不来",
+        "npm run build 直接失败（vue-tsc 报 TS2349 ×2 + TS2367 ×3），打不出安装包",
+        "分类页 / 地点页 / 照片右键菜单里选「移除（只是不想在这里看到）」→ 文件被真删进回收站",
+        "相册页选「删除文件（移入回收站）」→ 实际走的是 delete_photo_files（std::fs::remove_file，永久删除）",
+        "分类页选「从这个分类移除」→ 后端 remove_photos_from_category 根本没注册，命令不存在"
+      ],
+      "root_cause": [
+        "① PhotoDeleteDialog 模板写成 `{{ count() }}`，而 count 是 computed ref（模板里已自动解包为 number）→ 调用不存在的方法",
+        "② DeleteMode 从 2 值（records|trash）扩成 4 值（remove|reassign|purge|trash），但 CategoryGallery / LocationGallery / PhotoActionMenu 三处仍按 `mode === \"records\" ? A : B` 分派 —— 条件恒假，任何选择都落到 delete_photos_to_trash",
+        "③ 三处又都没给弹窗传 context，文案全按「相册」渲染，用户根本看不出执行的是什么",
+        "④ 相册页 trash 分支走 albumStore.deletePhotoFiles → delete_photo_files（remove_file 永久删除），与弹窗文案「移入回收站可找回」相反",
+        "⑤ category::commands::remove_photos_from_category 新加后忘了加进 lib.rs 的 invoke_handler，前端一旦调用必然 unknown command"
+      ],
+      "evidence_log": [
+        "npm run build：PhotoDeleteDialog.vue(131,43)/(166,46) TS2349 表达式不可调用；CategoryGallery(384)/LocationGallery(255)/PhotoActionMenu(156) TS2367 类型无交集",
+        "git revert 01c8612 后 npm run build 通过 → 证明 5 处全部来自该提交",
+        "src-tauri/src/photos.rs::delete_photo_files 实现为 std::fs::remove_file（不进回收站）",
+        "lib.rs 的 invoke_handler 未含 remove_photos_from_category"
+      ],
+      "solution": [
+        "回退：git revert 01c8612（9010708）先让 dev 回到可构建可运行状态",
+        "重新落地并修：① count() → count；② 三处调用点按 mode 显式分派（分类 remove → remove_photos_from_category；purge → albumStore.purgePhotoData；trash → delete_photos_to_trash）；③ 弹窗新增 DeleteContext: album|person|category|location|generic，location/generic **不提供**「移除」；④ 相册页 trash 统一走 delete_photos_to_trash，albumStore.deletePhotoFiles 标注「UI 不再使用」；⑤ lib.rs 注册 remove_photos_from_category",
+        "顺手加固：PhotoDeleteDialog 补 Esc 关闭；purge_photo_data 改 async + spawn_blocking（几百张缩略图删除不再占主线程）；persons::open_db 加 5s busy_timeout（与 Python 微服务并发写时不再立刻 database is locked）；人物页 remove 的文案改成「修正会被记住，重扫不会再挂回此人」，不再承诺可重新移回（移出即删掉人脸行，UI 无撤销入口）"
+      ],
+      "lessons": [
+        "改共享类型（DeleteMode）时，编译器会替你找全所有分支 —— 前提是构建真的跑过。这次是「先推再验」，5 个错误一个都没拦住",
+        "三元表达式按『旧枚举值』分派是危险的：枚举扩容后条件恒假会静默落到 else 分支，而这个分支往往是破坏性的（删文件）",
+        "文案承诺（移入回收站可找回）必须与实现（remove_file）逐字对齐；不可逆操作不能写在可逆的措辞里",
+        "新增 tauri::command 必须同时改 lib.rs 的 invoke_handler，否则前端调用只会得到 unknown command"
+      ]
     }
   ],
-  "updated": "2026-10-28T23:35:00+08:00"
+  "updated": "2026-10-29T00:20:00+08:00"
 }

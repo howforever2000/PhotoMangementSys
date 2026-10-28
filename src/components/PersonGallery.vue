@@ -301,6 +301,35 @@ const deleting = ref(false);
 /** FEAT-095：归档 / 隐藏动作（与全站共用同一套语义） */
 const photoActions = usePhotoActions();
 
+/** 后端 `FaceMoveOutcome` 的前端投影（只取提示需要的字段） */
+interface FaceMoveOutcome {
+  requested: number;
+  moved: number;
+  from_pid: string;
+  to_pid: string | null;
+  created_pid: string | null;
+  skipped_paths: string[];
+}
+/** `PhotoDeleteOutcome` 的最小投影（人物页只用计数） */
+interface PhotoDeleteOutcomeLite {
+  requested: number;
+  deleted: number;
+  failed: number;
+  failed_paths: string[];
+}
+
+const personLabel = computed(() => {
+  const p = viewingPerson.value;
+  return p ? displayName(p) : "该人物";
+});
+
+/** 可改挂的候选人物（排除当前人物，按张数降序由后端保证） */
+const reassignCandidates = computed(() =>
+  persons.value
+    .filter((p) => p.id !== viewingPerson.value?.id)
+    .map((p) => ({ id: p.id, name: displayName(p), face_count: p.face_count })),
+);
+
 function enterSelectMode() {
   selectMode.value = true;
   selected.value = new Set();
@@ -336,42 +365,94 @@ function askDeleteCurrent() {
 }
 
 /**
- * FEAT-095：删除方式二选一（相册记录删除 / 本地删除移入回收站）
+ * 人物页的处理方式（四项：从此人移除 / 移到其他人物 / 清除数据库记录 / 回收站）
  *
- * 两种模式都由后端按路径处理（不依赖相册上下文），所以人物画廊这类
- * 跨相册来源也能正确执行。执行后重拉当前人物照片列表。
+ * 前两项走 `move_person_faces`（改 faces 归属 + 写覆盖表，重扫不覆盖）；
+ * 后两项与相册页共用同一批后端命令，语义完全一致。
  */
 async function pickMode(mode: DeleteMode) {
   const paths = modeDialogPaths.value ?? [];
+  const pid = viewingPerson.value?.id;
   if (!paths.length) return;
-  deleting.value = true;
-  const cmd = mode === "records" ? "delete_photo_records_by_paths" : "delete_photos_to_trash";
-  try {
-    const outcome = await invoke<{
-      requested: number;
-      deleted: number;
-      failed: number;
-      failed_paths: string[];
-    }>(cmd, { paths });
+  if ((mode === "remove" || mode === "reassign") && !pid) {
+    // 没有当前人物时这两项无从执行 —— 关闭弹窗而不是留一个“点了没反应”的面板
     modeDialogPaths.value = null;
-    // 重新拉取当前人物照片（缓存已清，剩余照片即时补齐）
-    const person = viewingPerson.value;
-    if (person) await openPhotos(person);
-    exitSelectMode();
-    if (lightboxOpen.value) {
-      if (!viewingPhotos.value.length) lightboxOpen.value = false;
-      else lightboxIndex.value = Math.min(lightboxIndex.value, viewingPhotos.value.length - 1);
+    return;
+  }
+  deleting.value = true;
+  try {
+    if (mode === "remove") {
+      const out = await invoke<FaceMoveOutcome>("move_person_faces", {
+        fromPid: pid,
+        toPid: null,
+        newName: null,
+        paths,
+      });
+      modeDialogPaths.value = null;
+      await refreshAfterFaceChange();
+      flash(out.moved > 0 ? `已从「${personLabel.value}」移除 ${out.moved} 张` : "这些照片本来就不属于该人物");
+      return;
     }
-    if (outcome.failed > 0) {
-      flash(`已删除 ${outcome.deleted} / ${outcome.requested} 张（失败 ${outcome.failed}）`);
-    } else {
-      flash(`已删除 ${outcome.deleted} 张（${mode === "trash" ? "已移入回收站" : "仅清除记录，本地文件保留"}）`);
+    if (mode === "purge") {
+      const out = await albumStore.purgePhotoData(paths);
+      modeDialogPaths.value = null;
+      await refreshAfterFaceChange();
+      flash(`已清除 ${out.deleted} 张照片的识别数据（重新导入相册才能找回）`);
+      return;
     }
+    // trash：文件移入回收站 + 级联清记录
+    const out = await invoke<PhotoDeleteOutcomeLite>("delete_photos_to_trash", { paths });
+    modeDialogPaths.value = null;
+    await refreshAfterFaceChange();
+    if (out.failed > 0) flash(`已删除 ${out.deleted} / ${out.requested} 张（失败 ${out.failed}）`);
+    else flash(`已删除 ${out.deleted} 张（已移入回收站）`);
   } catch (e) {
-    flash(`删除失败：${String(e)}`);
+    flash(`处理失败：${String(e)}`);
   } finally {
     deleting.value = false;
     selected.value = new Set();
+  }
+}
+
+/** 弹窗第二屏选完目标人物后回调：改挂到已有 / 新建人物 */
+async function pickReassign(target: { pid?: string; name?: string }) {
+  const paths = modeDialogPaths.value ?? [];
+  const pid = viewingPerson.value?.id;
+  if (!paths.length || !pid) return;
+  deleting.value = true;
+  try {
+    const out = await invoke<FaceMoveOutcome>("move_person_faces", {
+      fromPid: pid,
+      toPid: target.pid ?? null,
+      newName: target.name ?? null,
+      paths,
+    });
+    modeDialogPaths.value = null;
+    await refreshAfterFaceChange();
+    const who = target.name ?? displayName(persons.value.find((p) => p.id === target.pid) ?? ({ id: target.pid ?? "", name: target.pid ?? "" } as PersonInfo));
+    flash(out.moved > 0 ? `已把 ${out.moved} 张移到「${who}」` : "没有可移动的人脸");
+  } catch (e) {
+    flash(`移动失败：${String(e)}`);
+  } finally {
+    deleting.value = false;
+    selected.value = new Set();
+  }
+}
+
+/** 人脸归属变更后：重拉人物列表 + 当前人物照片；人物已被搬空则退回列表 */
+async function refreshAfterFaceChange() {
+  const pid = viewingPerson.value?.id;
+  await load();
+  if (!pid) return;
+  const still = persons.value.find((p) => p.id === pid);
+  if (!still) {
+    closePhotos();
+    return;
+  }
+  await openPhotos(still);
+  if (lightboxOpen.value) {
+    if (!viewingPhotos.value.length) lightboxOpen.value = false;
+    else lightboxIndex.value = Math.min(lightboxIndex.value, viewingPhotos.value.length - 1);
   }
 }
 
@@ -858,11 +939,15 @@ const vFocus: Directive<HTMLElement> = {
       </div>
     </Teleport>
 
-    <!-- FEAT-095：删除方式选择（相册记录删除 / 本地删除移入回收站） -->
+    <!-- 人物页处理方式：从此人移除 / 移到其他人物 / 清除数据库记录 / 回收站 -->
     <PhotoDeleteDialog
       :paths="modeDialogPaths"
+      context="person"
+      :person-name="personLabel"
+      :persons="reassignCandidates"
       :busy="deleting"
       @pick="pickMode"
+      @reassign="pickReassign"
       @cancel="modeDialogPaths = null"
     />
 

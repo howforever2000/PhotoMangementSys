@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import { useOverviewStore } from "./overview";
 import type { Album, CreateAlbumInput, UpdateAlbumInput, BatchAlbumOutcome, MergeAlbumOutcome } from "../types/album";
-import { getThumbs } from "../utils/thumbQueue";
+import { getThumbs, forgetThumb } from "../utils/thumbQueue";
 import { filterVisibleAlbums } from "../types/album";
 import { useVaultStore } from "./vault";
 import type {
@@ -122,9 +122,28 @@ export const useAlbumStore = defineStore("album", {
       return r;
     },
 
-    /** 批量「本地文件删除」：删磁盘文件并级联清理记录与缩略图缓存（不可恢复） */
+    /**
+     * 批量「永久删除本地文件」：**不经过回收站**，文件不可恢复。
+     *
+     * ⚠️ BUG-2026-1028-015：UI 已不再调用它 —— 「处理方式 → 删除文件」的文案
+     * 明确写着「移入回收站可找回」，而这里实际是 `std::fs::remove_file`。
+     * 一律改用 `delete_photos_to_trash`（走系统回收站）。保留本方法只供后台
+     * 维护/脚本使用，请勿从界面重新接回。
+     */
     async deletePhotoFiles(albumId: number, paths: string[]): Promise<PhotoDeleteOutcome> {
       const r = await invoke<PhotoDeleteOutcome>("delete_photo_files", { albumId, paths });
+      paths.forEach(forgetThumb);
+      useOverviewStore().invalidate();
+      return r;
+    },
+
+    /**
+     * 批量「清除数据库记录」：删扫描记录 / 语义向量 / 分类命中 / 人脸 / 缩略图，
+     * 并让照片从相册网格消失。**重新导入相册才回来**（单纯重扫不会）。
+     */
+    async purgePhotoData(paths: string[]): Promise<PhotoDeleteOutcome> {
+      const r = await invoke<PhotoDeleteOutcome>("purge_photo_data", { paths });
+      paths.forEach(forgetThumb);
       useOverviewStore().invalidate();
       return r;
     },
