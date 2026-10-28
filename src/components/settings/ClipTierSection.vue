@@ -57,7 +57,9 @@ const tip = computed(() => {
 });
 
 async function load(silent = false) {
-  loading.value = true;
+  // 静默刷新（轮询用）不碰 loading：否则每 1.5s 徽标就在「切换中…」与真实状态之间
+  // 闪一下，看着像一直在切档。
+  if (!silent) loading.value = true;
   failed.value = false;
   try {
     const v = await withTimeout(store.fetchVcrModels(), PERF_TIMEOUT.read, "list_vcr_models");
@@ -73,7 +75,7 @@ async function load(silent = false) {
     }
     return false;
   } finally {
-    loading.value = false;
+    if (!silent) loading.value = false;
   }
 }
 
@@ -86,27 +88,46 @@ watch(
 // P22：档位切换后服务端是**后台异步加载**（`finish_clip_switch`，耗时可达数十秒），
 // `set_vcr_model` 立刻返回时 `clip_ready` 还是 false。没有轮询的话，「模型加载中…」
 // 徽标会一直挂着，哪怕加载早已完成 —— 这正是「配置说 A、实测说 B」错觉的另一半
-// 来源（另一半是 P21 的会话实测不刷新）。加载完后停钟，与 onUnmounted 成对清理。
+// 来源（另一半是 P21 的会话实测不刷新）。
+//
+// BUG-2026-1028-012（本处旧实现在此翻车）：它把 `watch(clip_ready)` + immediate
+// 当成轮询开关 → 「clip_ready 为 false」就等于「一直轮询」。而 CLIP 是**惰性通道**
+// （新进程里在第一次语义请求之前 `clip_ready` 恒为 false），所以只要打开性能设置，
+// 不论模型是否齐全，都会 1.5s 一次永不停歇地调 `list_vcr_models`；那条命令还要过
+// 一遍 `ensure_service_ready`（单飞锁 + /health 探测），把 app.log 刷成瀑布。
+// 修正：轮询**只由切换动作启动**，带次数上限（就绪或超限即停），并提供手动刷新。
+const POLL_INTERVAL_MS = 1500;
+/** 上限：`finish_clip_switch` 实测上限数十秒，留 60s 后停表改为手动刷新 */
+const POLL_MAX_TRIES = 40;
+const polling = ref(false);
+const pollTries = ref(0);
 const readyTimer = ref<number | null>(null);
+
 function stopReadyPoll() {
   if (readyTimer.value != null) {
     window.clearInterval(readyTimer.value);
     readyTimer.value = null;
   }
+  polling.value = false;
 }
-watch(
-  () => info.value?.clip_ready,
-  (v) => {
-    if (v !== false) {
-      stopReadyPoll();
-      return;
-    }
-    if (readyTimer.value == null) {
-      readyTimer.value = window.setInterval(() => void load(true), 1500);
-    }
-  },
-  { immediate: true },
-);
+
+function startReadyPoll() {
+  stopReadyPoll();
+  polling.value = true;
+  pollTries.value = 0;
+  readyTimer.value = window.setInterval(async () => {
+    pollTries.value += 1;
+    await load(true);
+    // 就绪 或 到上限 → 停；失败也继续等（服务可能正被后台加载占着），靠上限兜底
+    if (info.value?.clip_ready !== false || pollTries.value >= POLL_MAX_TRIES) stopReadyPoll();
+  }, POLL_INTERVAL_MS);
+}
+
+/** 手动刷新：轮询已停（超限）后给用户一个「再查一次」的入口 */
+function recheck() {
+  void load(true);
+}
+
 onUnmounted(stopReadyPoll);
 
 /** 用户改下拉 → 先弹二次确认，确认后才真正切档 */
@@ -125,6 +146,7 @@ async function onConfirm() {
   try {
     const v = await withTimeout(store.setVcrModel(name), PERF_TIMEOUT.write, "set_vcr_model");
     selected.value = v.current ?? name;
+    if (v.clip_ready === false) startReadyPoll();
     notify.success(
       "语义模型已切换",
       v.clip_ready === false
@@ -179,7 +201,12 @@ async function onConfirm() {
         清单加载失败
         <button class="btn btn-sm" @click="load()">重试</button>
       </span>
-      <span v-else-if="info?.clip_ready === false" class="stat dim">模型加载中…</span>
+      <span v-else-if="polling" class="stat dim">模型后台加载中…</span>
+      <span v-else-if="info?.clip_ready === false" class="stat dim">
+        <!-- 惰性通道：未加载 ≠ 加载中，旧文案「模型加载中…」会让人以为永远卡住 -->
+        未加载（首次语义搜索时自动加载）
+        <button class="btn btn-sm" title="重新读取状态" @click="recheck">⟳</button>
+      </span>
       <span v-else-if="tip" class="stat">{{ tip }}</span>
     </div>
 

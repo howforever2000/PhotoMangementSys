@@ -4751,7 +4751,76 @@
       "lessons": [
         "排「为什么慢」时，成本分解日志是否可见本身就是一等公民；不可观测的性能优化等于没做。"
       ]
+    },
+    {
+      "id": "BUG-2026-1028-011",
+      "date": "2026-10-28",
+      "status": "fixed",
+      "title": "安装版「人物通道不可用」：发行包不含模型 + 应用内下载表漏了人物检测（yolov8n-det.onnx）",
+      "module": "发布流程（release.ps1 / src-tauri/release*.json）、src-tauri/src/model_dl.rs、src-tauri/src/vision.rs、python/vcr/model_registry.py",
+      "symptom": [
+        "0.4.3 安装版日志持续刷 det=模型文件缺失: ['%APPDATA%\\com.photomanagementsys.app\\vcr-models\\yolov8n-det.onnx']，/health.ok 恒为 false",
+        "人物/扫描链路不可用：每次调用 ensure_service_ready(wait_models=true) 白等 90s，最后报「识别服务正在加载模型（大模型首次加载较慢），请稍候重试」",
+        "模型管理里人脸（det_10g + w600k_r50）与语义（chinese-clip 两档）都能下载成功，所以用户看到「模型一直在」，唯独人物检测补不上"
+      ],
+      "root_cause": [
+        "0.4.1/0.4.2/0.4.3 用 src-tauri/release.tauri.conf.no-models.json 打包（resources 只有 vcr-server.exe）：0.3.1 安装包 467MB → 0.4.3 只有 110MB，解包可见仅 vcr\\vcr-server.exe",
+        "安装目录无 vcr\\models → vision::resolve_model_dir 回落到 app_data_dir/vcr-models，模型只能靠应用内下载",
+        "model_dl::specs() 只有 chinese-clip / chinese-clip-fp32 / face-precise / face-light / ocr —— **没有 yolov8n-det**，所以 det 永远补不齐",
+        "python/server.py::health 的 ok 定义为 reg.is_ready('det')，且 preload_main 只预热 det：det 文件不在则 ok 永远 false，人脸/语义虽齐全也救不了"
+      ],
+      "evidence_log": [
+        "7z l PhotoManagementSys_0.4.3_x64-setup.exe → 仅 vcr\\vcr-server.exe，无 vcr\\models\\*.onnx（0.3.1 则有 6 个模型）",
+        "%APPDATA%\\com.photomanagementsys.app\\vcr-models 实测：有 det_10g/det_500m/w600k_mbf/w600k_r50 + chinese-clip 两档，缺 yolov8n-det.onnx 与 paddleocr-det.onnx",
+        "同一份 vcr-server.exe 指该目录：/health → ok=false, load_errors.det='模型文件缺失: [...yolov8n-det.onnx]'；POST /face/warmup → ready=true（证明人脸通道本身无恙）",
+        "补上 yolov8n-det.onnx + paddleocr-det.onnx 后同一命令 → ok=true, det_ready=true, load_errors={}（用户现场确认人物通道恢复）"
+      ],
+      "solution": [
+        "model_dl::specs() 新增 person-det（yolov8n-det.onnx，12.8MB，required=true），源 salim4n/yolov8n-detect-onnx（仓库内 yolov8n-onnx-web/yolov8n.onnx → 本地 yolov8n-det.onnx），走 hf-mirror + aifasthub 双镜像",
+        "源选择经过等价性验证（python/bench/verify_det_source_equiv.py）：与该机 python/models/yolov8n-det.onnx 同一固定输入下 84×8400 输出 max|Δ|=0.000e+00、IO 签名一致；webml/yolov8n 是另一次导出（max|Δ|=3.66e-04）故不采用",
+        "端到端验证：把镜像下载到的文件作为唯一模型放进空目录 → /health.ok=true, det_ready=true",
+        "vision::poll_ready 增加确定性失败短路：/health 的 load_errors 已写明「模型文件缺失」时立即返回可执行报错（附文件名与目录、指路模型管理），不再白等 90s 后说「正在加载模型」",
+        "前端 ModelMissingDialog 新增 det 场景；ScanPanel / GlobalScanPanel 的缺失原因判定改为「先认 yolov8n/人物检测，再认 ocr」",
+        "PerfSettingsDialog 的 ESSENTIAL_MODELS 加入 person-det（缺它「模型管理」页签立刻出黄点）",
+        "release.ps1 新增第 5 步产物自检：解包 NSIS 安装包，逐个核对 release 配置声明 resources 是否真的在里面，缺则构建失败"
+      ],
+      "lessons": [
+        "「模型在不在」只有一个口径：vcr 服务实际读的那个目录 + /health 的 load_errors。用户看到的模型列表（人脸/语义）齐全，完全不代表主链路判据（det）就绪",
+        "发布包瘦身（去掉模型）必须同时补齐应用内下载清单，否则就是把用户堵死在没有出口的路上；打包后再解包自检一次是唯一可靠的拦截点",
+        "就绪超时需要区分「加载中（可等待）」与「文件缺失（永不就绪）」：前者等，后者必须立刻报错并指路"
+      ]
+    },
+    {
+      "id": "BUG-2026-1028-012",
+      "date": "2026-10-28",
+      "status": "fixed",
+      "title": "打开「性能设置」后 app.log 被无限刷：ClipTier/FaceTier 把惰性通道的 ready=false 当轮询开关",
+      "module": "src/components/settings/ClipTierSection.vue、src/components/settings/FaceTierSection.vue、python/server.py::health",
+      "symptom": [
+        "只要打开性能设置面板，日志就 1.5s 一轮地刷：ensure 请求 ×2 → 获得单飞锁 → ensure A段 → poll_alive 开始/就绪 → ensure 完成 → list_models → get_face_tier_info（约 700~800 行/分钟）",
+        "语义模型与人脸模型两处永久显示「模型加载中…」，哪怕档位模型早已下载齐全"
+      ],
+      "root_cause": [
+        "两个 Section 都用 watch(ready) + immediate 当轮询开关：ready===false 就 setInterval(load, 1500)，只有变成 true 才 clearInterval —— 没有次数上限也没有退避",
+        "CLIP 与人脸都是**惰性通道**：新进程里第一次语义请求/扫描之前 clip_ready / face_ready 恒为 false，所以健康的机器上也会无限轮询",
+        "每轮 list_vcr_models / get_face_tier_info 都要经过 ensure_service_ready（单飞锁 + /health 探测 + poll_alive），把设置面板的轻量轮询放大成整条保活链路",
+        "load(true) 静默刷新同样置 loading=true → 徽标每 1.5s 在「切换中…」与真实状态间闪烁"
+      ],
+      "evidence_log": [
+        "app.log 现场：06:58.768 两条 ensure 请求（两个 Section 同时触发）→ .811 get_face_tier_info END，一轮约 43ms，稳态 1.5s 一轮不停",
+        "面板截图：语义模型与人脸模型同时挂「模型加载中…」，而 /models 已显示 b16-fp32 双塔 754MB ✓下载、人脸 191.3MB ✓下载"
+      ],
+      "solution": [
+        "轮询只由**切换动作**启动（onConfirm 且后端返回 ready=false 时 startReadyPoll），带 60s 上限（40×1.5s），就绪或超限即停",
+        "手动刷新入口：超限后做「⟳」按钮（recheck），避免「点了没反应」",
+        "未加载与加载中分开表达：惰性未加载 → 「未加载（首次语义搜索/首次扫描时自动加载）」，仅轮询期间才显示「模型后台加载中…」",
+        "load(silent) 不再改写 loading，消除徽标闪烁"
+      ],
+      "lessons": [
+        "任何「轮询直到 ready」的写法都必须回答三个问题：谁启动、什么时候停、停了之后用户怎么办",
+        "惰性加载通道的 ready=false 是常态，不是错误态，更不是「加载中」—— 状态语义写错会连带写出无限循环与误导文案"
+      ]
     }
   ],
-  "updated": "2026-10-27T23:40:00+08:00"
+  "updated": "2026-10-28T22:55:00+08:00"
 }

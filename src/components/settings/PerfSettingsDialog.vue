@@ -27,8 +27,10 @@ const tab = ref<Tab>("perf");
 
 /** 有「默认链路」需要的模型未下载 → 在「模型管理」页签上给个可视提示。
  *  FEAT-114：下载表扩到人脸/OCR 后不再用 required（两个模型档位互斥，标哪个都不对），
- *  只对默认链路（语义 fp16 + 人脸高精度）提示。 */
-const ESSENTIAL_MODELS = new Set(["chinese-clip", "face-precise"]);
+ *  只对默认链路（语义 fp16 + 人脸高精度）提示。
+ *  BUG-2026-1028-011：加上人物检测 —— 它是 `/health.ok` 的唯一判据（缺了人物/扫描全废），
+ *  比语义/人脸更不能缺，所以即使它不带 required 标签也必须算进来。 */
+const ESSENTIAL_MODELS = new Set(["person-det", "chinese-clip", "face-precise"]);
 const dlPending = computed(() =>
   store.modelDownloads.some((d) => ESSENTIAL_MODELS.has(d.name) && !d.done),
 );

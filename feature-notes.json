@@ -4902,7 +4902,53 @@
       ],
       "created_at": "2026-10-27T23:40:00+08:00",
       "updated_at": "2026-10-27T23:40:00+08:00"
+    },
+    {
+      "id": "FEAT-129",
+      "name": "人物检测模型（yolov8n-det）纳入应用内下载 + 发布包自检",
+      "status": "done",
+      "purpose": "让「不带模型的轻量安装包」这条路线真正可用：新装用户能在应用内补齐人物检测（/health.ok 的唯一判据），并且以后再打出无模型包会被构建脚本拦住",
+      "module": "src-tauri/src/model_dl.rs、src-tauri/src/vision.rs、src/components/settings/*、src/components/ScanPanel.vue、src/components/GlobalScanPanel.vue、release.ps1",
+      "implementation": {
+        "backend": "DlSpec 新增 person-det（yolov8n-det.onnx 12.8MB，required=true，HF 双镜像 salim4n/yolov8n-detect-onnx 的 yolov8n-onnx-web/yolov8n.onnx）；poll_ready 在 load_errors 指明模型文件缺失时立即失败并给出可执行报错",
+        "frontend": "模型缺失弹窗新增 det 场景与文案；扫描面板缺失原因判定先认 yolov8n/人物检测再认 ocr；性能设置 ESSENTIAL_MODELS 加入 person-det；ClipTier/FaceTier 轮询改「仅切换后启动 + 60s 上限 + 手动刷新」",
+        "release": "release.ps1 第 5 步解包 NSIS 自检 resources 清单，缺项即构建失败（拦截无模型包误发）"
+      },
+      "highlights": [
+        "源等价性可复验：python/bench/verify_det_source_equiv.py 比对本地模型与候选源的 IO 签名 + 前向输出（本机 max|Δ|=0.000e+00）",
+        "端到端：镜像下载所得文件作为唯一模型放入空目录 → /health ok=true / det_ready=true",
+        "cargo test --lib 420 passed；vue-tsc + vite build 通过"
+      ],
+      "related_files": [
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/vision.rs",
+        "src/components/settings/ClipTierSection.vue",
+        "src/components/settings/FaceTierSection.vue",
+        "src/components/settings/ModelMissingDialog.vue",
+        "src/components/settings/PerfSettingsDialog.vue",
+        "src/components/ScanPanel.vue",
+        "src/components/GlobalScanPanel.vue",
+        "release.ps1",
+        "python/bench/verify_det_source_equiv.py"
+      ],
+      "keywords": [
+        "模型下载",
+        "人物检测",
+        "yolov8n-det",
+        "det",
+        "health.ok",
+        "发布包",
+        "轮询",
+        "性能设置"
+      ],
+      "tests": [
+        "cargo test --lib（含 model_dl::tests::face_and_ocr_specs_match_python_config 新增 DET_MODEL 断言）",
+        "python/bench/verify_det_source_equiv.py python/models/yolov8n-det.onnx <候选.onnx> → ✅ 等价",
+        "实际镜像 Range 探测：hf-mirror / aifasthub 均 206，12823637 字节"
+      ],
+      "created_at": "2026-10-28T22:55:00+08:00",
+      "updated_at": "2026-10-28T22:55:00+08:00"
     }
   ],
-  "updated": "2026-10-27T23:40:00+08:00"
+  "updated": "2026-10-28T22:55:00+08:00"
 }

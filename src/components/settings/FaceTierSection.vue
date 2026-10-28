@@ -44,9 +44,10 @@ const tip = computed(() => {
   return `${m.det} + ${m.rec} · 合计 ${mb(m.bytes)}`;
 });
 
-async function load() {
+async function load(silent = false) {
   if (props.locked) return false;
-  loading.value = true;
+  // 静默刷新（轮询用）不动 loading：否则每 1.5s「切换中…」闪一下
+  if (!silent) loading.value = true;
   errMsg.value = "";
   try {
     const v = await withTimeout(store.fetchFaceTiers(), PERF_TIMEOUT.read, "get_face_tier_info");
@@ -57,7 +58,7 @@ async function load() {
     errMsg.value = String(e);
     return false;
   } finally {
-    loading.value = false;
+    if (!silent) loading.value = false;
   }
 }
 
@@ -73,27 +74,45 @@ watch(
   },
 );
 
-// 切换后服务端后台加载新档（r50 冷加载数秒）：face_ready=false 期间轮询，就绪即停
+// 切换后服务端后台加载新档（r50 冷加载数秒）：face_ready=false 期间轮询，就绪即停。
+//
+// BUG-2026-1028-012（本处旧实现更严重）：旧实现用 `watch(face_ready)` + immediate
+// 当轮询开关，而**人脸通道是惰性的** —— `/face/tiers` 的 face_ready 取 `is_ready()`，
+// 新进程里在第一次扫描之前恒为 false。于是只要打开性能设置，哪怕模型完全齐全，
+// 也会 1.5s 一次永不停止地调 `get_face_tier_info`（它还会连带走 list_models →
+// ensure_service_ready），并且永久挂着「模型加载中…」的假做。
+// 修正：轮询只由**切换动作**启动 + 次数上限；未加载用明确文案而不是「加载中」。
+const POLL_INTERVAL_MS = 1500;
+/** 上限：r50 冷加载实测数秒，留 60s 后停表改为手动刷新 */
+const POLL_MAX_TRIES = 40;
+const polling = ref(false);
+const pollTries = ref(0);
 const readyTimer = ref<number | null>(null);
+
 function stopReadyPoll() {
   if (readyTimer.value != null) {
     window.clearInterval(readyTimer.value);
     readyTimer.value = null;
   }
+  polling.value = false;
 }
-watch(
-  () => info.value?.face_ready,
-  (v) => {
-    if (v !== false) {
-      stopReadyPoll();
-      return;
-    }
-    if (readyTimer.value == null) {
-      readyTimer.value = window.setInterval(() => void load(), 1500);
-    }
-  },
-  { immediate: true },
-);
+
+function startReadyPoll() {
+  stopReadyPoll();
+  polling.value = true;
+  pollTries.value = 0;
+  readyTimer.value = window.setInterval(async () => {
+    pollTries.value += 1;
+    await load(true);
+    if (info.value?.face_ready !== false || pollTries.value >= POLL_MAX_TRIES) stopReadyPoll();
+  }, POLL_INTERVAL_MS);
+}
+
+/** 手动刷新：轮询已停（超限）后给用户一个「再查一次」的入口 */
+function recheck() {
+  void load(true);
+}
+
 onUnmounted(stopReadyPoll);
 
 function onChange() {
@@ -111,6 +130,7 @@ async function onConfirm() {
   try {
     const v = await withTimeout(store.setFaceTier(name), PERF_TIMEOUT.write, "set_face_tier");
     selected.value = v.current ?? name;
+    if (v.face_ready === false) startReadyPoll();
     notify.success(
       "人脸模型已切换",
       v.face_ready === false
@@ -159,7 +179,12 @@ async function onConfirm() {
         清单加载失败：{{ errMsg.slice(0, 60) }}{{ errMsg.length > 60 ? "…" : "" }}
         <button class="btn btn-sm" @click="load()">重试</button>
       </span>
-      <span v-else-if="info?.face_ready === false" class="stat dim">模型加载中…</span>
+      <span v-else-if="polling" class="stat dim">模型后台加载中…</span>
+      <span v-else-if="info?.face_ready === false" class="stat dim">
+        <!-- 惰性通道：未加载 ≠ 加载中（旧文案会让人以为扫描前永远卡住） -->
+        未加载（首次扫描时自动加载）
+        <button class="btn btn-sm" title="重新读取状态" @click="recheck">⟳</button>
+      </span>
       <span v-else-if="tip" class="stat">{{ tip }}</span>
     </div>
 

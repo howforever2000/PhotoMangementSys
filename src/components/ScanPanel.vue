@@ -37,9 +37,11 @@ const comboReport = computed(() => job.value.report);
 const comboRows = computed(() => job.value.rows);
 const comboProgress = computed(() => job.value.progress);
 
-/* FEAT-114：人脸通道预检报「缺少模型文件」→ 直接弹下载窗，而不是只留一行红字。 */
+/* FEAT-114：人脸通道预检报「缺少模型文件」→ 直接弹下载窗，而不是只留一行红字。
+   BUG-2026-1028-011：人物检测（yolov8n-det）也走这条 —— 它是主链路，缺了连人脸预检
+   都到不了，报错文案里必带文件名，因此先认 det 再认 ocr。 */
 const modelDialogOpen = ref(false);
-const modelDialogReason = ref<"face" | "ocr">("face");
+const modelDialogReason = ref<"face" | "ocr" | "det">("face");
 const modelMissingFiles = ref<string[]>([]);
 let lastPromptKey = "";
 const MODEL_MISSING_RE = /缺少模型文件|模型未下载|模型缺失|模型文件不完整|未找到模型/;
@@ -47,7 +49,11 @@ const MODEL_MISSING_RE = /缺少模型文件|模型未下载|模型缺失|模型
 watch(comboError, (text) => {
   if (!text || !MODEL_MISSING_RE.test(text) || text === lastPromptKey) return;
   lastPromptKey = text;
-  modelDialogReason.value = /paddleocr|ocr/i.test(text) ? "ocr" : "face";
+  modelDialogReason.value = /yolov8n|人物检测/i.test(text)
+    ? "det"
+    : /paddleocr|ocr/i.test(text)
+      ? "ocr"
+      : "face";
   modelMissingFiles.value = [...new Set(text.match(/[\w.-]+\.onnx/gi) ?? [])];
   modelDialogOpen.value = true;
 });

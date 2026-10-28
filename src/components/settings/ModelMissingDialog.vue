@@ -5,6 +5,10 @@
  * 触发场景：语义搜索发现 CLIP 未下载、扫描前人脸通道预检报「缺少模型文件」。
  * 目标：把「后台反复重试 + 只给一句报错」变成「明确告诉你缺什么 + 当场可下载」。
  *
+ * BUG-2026-1028-011：新增 `det`（人物检测）场景 —— 0.4.x 轻量安装包不带模型，
+ * 而下载表曾漏登记 yolov8n-det.onnx，于是「人物通道不可用」根本没办法自救；
+ * 现在缺它时直接弹到这里，列表里第一行就是「人物检测 · YOLOv8n（必需）」。
+ *
  * 列表与设置页共用 ModelDownloadRows；这里只负责场景化文案与兜底通道。
  */
 import { computed } from "vue";
@@ -15,8 +19,8 @@ import ModelDownloadRows from "./ModelDownloadRows.vue";
 
 const props = defineProps<{
   visible: boolean;
-  /** 触发来源：语义搜索 / 人脸扫描 / OCR / 通用 */
-  reason?: "semantic" | "face" | "ocr" | "general";
+  /** 触发来源：语义搜索 / 人物检测 / 人脸扫描 / OCR / 通用 */
+  reason?: "semantic" | "det" | "face" | "ocr" | "general";
   /** 缺哪些文件（后端报错原文里的文件名，展示用） */
   missingFiles?: string[];
 }>();
@@ -31,6 +35,7 @@ const MODEL_ZIP =
   "https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.2/model.zip";
 
 const title = computed(() => {
+  if (props.reason === "det") return "人物检测模型缺失";
   if (props.reason === "face") return "人脸模型缺失";
   if (props.reason === "ocr") return "OCR 模型缺失";
   if (props.reason === "semantic") return "语义模型缺失";
@@ -40,6 +45,9 @@ const title = computed(() => {
 const reasonText = computed(() => {
   if (props.reason === "semantic") {
     return "CLIP 语义模型没有下载，智能搜索只能做关键词匹配。下载后无需重启，搜索会自动恢复语义检索。";
+  }
+  if (props.reason === "det") {
+    return "人物检测模型（YOLOv8n）没有下载。它是识别主链路，缺它时整条人物 / 扫描链路都不就绪（表现为扫描没反应、人物出不来）。下载 12.8MB 后重试扫描即可。";
   }
   if (props.reason === "face") {
     return "人脸检测 / 识别模型没有下载，扫描会跳过人脸登记（表现为「扫完 0 位人物」）。请补齐当前档位的两个模型。";
