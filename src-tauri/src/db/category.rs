@@ -504,34 +504,6 @@ impl Database {
         Ok(out)
     }
 
-    /// 把指定照片从某个分类里移除（人工纠错：AI 把照片分错了类）
-    ///
-    /// 只删 `photo_category_hits` 里该分类的命中行，不动照片、不动其他分类，
-    /// 也不动扫描记录 —— 用户明确说「这张不是这个分类」时用这个。
-    /// 返回删除的命中行数。
-    pub fn remove_category_hits(
-        &self,
-        category_id: i64,
-        user_id: i64,
-        paths: &[String],
-    ) -> Result<usize, DbError> {
-        let mut n = 0usize;
-        for chunk in paths.chunks(400) {
-            let holders: Vec<String> = (3..3 + chunk.len()).map(|i| format!("?{i}")).collect();
-            let sql = format!(
-                "DELETE FROM photo_category_hits \
-                 WHERE category_id = ?1 AND user_id = ?2 AND path IN ({})",
-                holders.join(",")
-            );
-            let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&category_id, &user_id];
-            for p in chunk {
-                params_vec.push(p);
-            }
-            n += self.conn.execute(&sql, params_vec.as_slice())?;
-        }
-        Ok(n)
-    }
-
     /// 分类下的照片（按语义强度降序；三表 LEFT JOIN 兼容未跑 AI 扫描的照片）
     pub fn list_category_photos(
         &self,

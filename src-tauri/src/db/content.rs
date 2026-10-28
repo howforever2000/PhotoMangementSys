@@ -1683,62 +1683,6 @@ impl Database {
         }
         Ok(n)
     }
-
-    /// 人脸归属变更后同步 `photo_content_scan.person_ids`
-    ///
-    /// 人物页读的是 `faces` 表，但网格徽标、人物筛选、照片描述文本读的是这张表的
-    /// JSON 数组 —— 不同步就会出现「人物页已改、别处还是旧名字」。
-    ///
-    /// - `remove`：从清单里去掉（移出此人 / 移到别处）
-    /// - `add`：追加到末尾（移动到目标人物）
-    ///
-    /// 只改已入库的照片（没扫描过的照片本来就没有 person_ids），返回更新行数。
-    pub fn sync_person_ids_for_paths(
-        &self,
-        paths: &[String],
-        remove: Option<&str>,
-        add: Option<&str>,
-    ) -> Result<usize, DbError> {
-        if paths.is_empty() {
-            return Ok(0);
-        }
-        let mut sel = self.conn.prepare(
-            "SELECT photo_hash, person_ids FROM photo_content_scan WHERE path = ?1",
-        )?;
-        let mut upd = self.conn.prepare(
-            "UPDATE photo_content_scan SET person_ids = ?1, person_count = ?2 WHERE photo_hash = ?3",
-        )?;
-        let mut n = 0usize;
-        for p in paths {
-            let row: Option<(String, Option<String>)> = sel
-                .query_row(params![p], |r| Ok((r.get(0)?, r.get(1)?)))
-                .ok();
-            let Some((hash, raw)) = row else { continue };
-            let mut ids: Vec<String> = raw
-                .as_deref()
-                .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
-                .unwrap_or_default();
-            let before = ids.clone();
-            if let Some(rm) = remove {
-                ids.retain(|x| x != rm);
-            }
-            if let Some(a) = add {
-                if !ids.iter().any(|x| x == a) {
-                    ids.push(a.to_string());
-                }
-            }
-            if ids == before {
-                continue;
-            }
-            let json = if ids.is_empty() {
-                None
-            } else {
-                Some(serde_json::to_string(&ids).unwrap_or_default())
-            };
-            n += upd.execute(params![json, ids.len() as i64, hash])?;
-        }
-        Ok(n)
-    }
 }
 
 /// 事务内写入一条记录（供批量 upsert 复用）

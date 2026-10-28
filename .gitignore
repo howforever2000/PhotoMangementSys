@@ -130,6 +130,3 @@ design/preview/assets/
 # 视觉优化提案的效果图（同样体积大、可重现：
 # node design/preview/proposal/shoot.cjs）。HTML/CSS 源码入库，截图不入库。
 design/preview/proposal/*.png
-
-# 模型下载进度（.dl_*.meta，随机器与时间变化，不入库）
-python/models/.*.meta

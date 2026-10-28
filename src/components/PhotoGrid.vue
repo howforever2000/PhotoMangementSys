@@ -382,7 +382,7 @@ function openPhotoContextMenu(e: MouseEvent, path: string, index: number) {
         onClick: () => {
           if (!selectMode.value) toggleSelectMode();
           toggleSelect(path);
-          requestDelete();
+          requestDelete("records");
         },
       },
     ],
@@ -408,7 +408,7 @@ function onLightboxDelete(path: string) {
     if (!selectMode.value) toggleSelectMode();
     toggleSelect(path);
   }
-  requestDelete();
+  requestDelete("records");
 }
 
 /** FEAT-095：大图内的归档 / 隐藏按钮 */
@@ -429,12 +429,13 @@ const selectMode = ref(false);
 const selectedPaths = ref<Set<string>>(new Set());
 
 /**
- * 「处理方式」弹窗状态：null=关闭；否则记录待处理路径与用户选定的方式
+ * 二次确认弹窗状态：null=关闭；否则记录待删模式与路径
  *
- * FEAT-095：删除方式选择统一交给 `PhotoDeleteDialog`（相册页 3 项：
- * 从相册移除 / 清除数据库记录 / 删除文件），各调用方只负责执行。
+ * FEAT-095：mode 由 `"record" | "file"` 改为共享组件的 `DeleteMode`
+ * （`records` = 相册记录删除 / `trash` = 本地删除移入回收站），
+ * 删除方式选择统一交给 `PhotoDeleteDialog`。
  */
-const confirmState = ref<null | { mode?: DeleteMode; paths: string[] }>(null);
+const confirmState = ref<null | { mode: DeleteMode; paths: string[] }>(null);
 const deleting = ref(false);
 const deleteMsg = ref("");
 
@@ -519,16 +520,17 @@ function toggleSelectAll(selectAll = !allSelected.value) {
     : new Set();
 }
 
-/** 打开「处理方式」弹窗（当前勾选的照片） */
-function requestDelete() {
+/** 打开二次确认弹窗（当前勾选的照片，两种删除模式） */
+function requestDelete(mode: DeleteMode = "records") {
   const paths = [...selectedPaths.value];
   if (!paths.length) return;
-  confirmState.value = { paths };
+  confirmState.value = { mode, paths };
 }
 
-/** 用户在弹窗里选定方式即最终确认，立刻执行 */
+/** FEAT-095：删除方式二选一（选模式即最终确认，交由共享弹窗） */
 async function pickDeleteMode(mode: DeleteMode) {
   if (!confirmState.value) return;
+  // 用户在共享弹窗里选了「本地删除」，覆盖原先预选的模式
   confirmState.value = { ...confirmState.value, mode };
   await doConfirmedDelete();
 }
@@ -552,76 +554,62 @@ async function onBatchMark(kind: PhotoMarkState) {
   await load();
 }
 
-/** 按用户选定的方式执行 → 刷新网格 → 报告结果
- *  - 移除：显示「撤销」Toast（参考 Gmail），识别数据与文件都不动
- *  - 清除：无撤销（数据已删），提示需重新导入相册
- *  - 回收站：仅提示结果（文件可在系统回收站找回）
- */
+/** 确认后执行删除：调后端命令 → 刷新网格 → 报告结果
+ *  - 记录删除模式显示「撤销」Toast（参考 Gmail）
+ *  - 本地删除（移入回收站，可找回）仅提示结果 */
 async function doConfirmedDelete() {
   if (!confirmState.value || deleting.value) return;
   const { mode, paths } = confirmState.value;
-  if (!mode) return;
   deleting.value = true;
   deleteMsg.value = "";
-  // FEAT-095：虚拟相册（归档 / 隐藏）没有「原相册」语义，移除 = 取消标记
-  const inVirtual = albumMarkState.value !== null;
   try {
-    if (mode === "remove") {
-      if (inVirtual) {
-        const ok = albumMarkState.value === "hidden"
-          ? await photoActions.unhide(paths)
-          : await photoActions.unarchive(paths);
-        if (!ok) throw new Error("取消归档 / 隐藏失败");
-        exitSelectMode();
-        await load();
-        return;
-      }
-      const outcome = await albumStore.deletePhotoRecords(props.albumId, paths);
-      exitSelectMode();
-      await load(); // 后端已过滤被移除项
-      const undoPaths = paths.slice(0, outcome.deleted);
+    // FEAT-095：虚拟相册（归档 / 隐藏）没有「原相册」语义，删除统一按路径处理
+    const inVirtual = albumMarkState.value !== null;
+    const outcome =
+      mode === "trash"
+        ? inVirtual
+          ? await invoke<PhotoDeleteOutcome>("delete_photos_to_trash", { paths })
+          : await albumStore.deletePhotoFiles(props.albumId, paths)
+        : inVirtual
+          ? await invoke<PhotoDeleteOutcome>("delete_photo_records_by_paths", { paths })
+          : await albumStore.deletePhotoRecords(props.albumId, paths);
+    exitSelectMode();
+    await load(); // 重新拉取列表（后端已过滤被移除项）并回传新计数
+    if (mode === "trash") {
+      deleteMsg.value =
+        `已处理 ${outcome.deleted} / ${outcome.requested} 张（文件已移入回收站）` +
+        (outcome.failed ? `，${outcome.failed} 张失败：${outcome.failed_paths.slice(0, 3).join("、")}` : "");
+      if (deleteMsg.value) setTimeout(() => (deleteMsg.value = ""), 5000);
+    } else {
+      // 记录删除显示撤销 Toast（5 秒窗口，参考 Gmail）
+      const deleted = outcome.deleted;
+      const undoPaths = paths.slice(0, deleted);
       const undoFn = async () => {
         try {
-          const restored = await albumStore.restorePhotoRecords(props.albumId, undoPaths);
-          toastStore.success("已恢复", `成功恢复 ${restored} 张照片`);
-          await load();
+          if (inVirtual) {
+            // 虚拟相册里「撤销」= 取消归档 / 隐藏，让照片回到原相册
+            await (albumMarkState.value === "hidden"
+              ? photoActions.unhide(undoPaths)
+              : photoActions.unarchive(undoPaths));
+          } else {
+            const restored = await albumStore.restorePhotoRecords(props.albumId, undoPaths);
+            toastStore.success("已恢复", `成功恢复 ${restored} 张照片`);
+          }
+          await load(); // 重新显示
         } catch (e) {
           toastStore.error("恢复失败", String(e));
         }
       };
       toastStore.action(
         "success",
-        `已从相册移除 ${outcome.deleted} 张照片`,
+        `已移除 ${deleted} 张照片`,
         [{ label: "撤销", onClick: undoFn, style: "primary" }],
-        "识别数据与文件都还在，可在「最近删除」中恢复",
+        inVirtual ? "已移出归档 / 隐藏，可撤销" : "从相册移除，可在「最近删除」中恢复",
         5000,
       );
-      return;
     }
-
-    if (mode === "purge") {
-      const outcome = await albumStore.purgePhotoData(paths);
-      exitSelectMode();
-      await load();
-      deleteMsg.value =
-        `已清除 ${outcome.deleted} / ${outcome.requested} 张照片的识别数据` +
-        "（重新导入该相册才能找回）";
-      setTimeout(() => (deleteMsg.value = ""), 6000);
-      return;
-    }
-
-    // trash：文件移入系统回收站，识别数据同步清除
-    const outcome = inVirtual
-      ? await invoke<PhotoDeleteOutcome>("delete_photos_to_trash", { paths })
-      : await albumStore.deletePhotoFiles(props.albumId, paths);
-    exitSelectMode();
-    await load();
-    deleteMsg.value =
-      `已处理 ${outcome.deleted} / ${outcome.requested} 张（文件已移入回收站）` +
-      (outcome.failed ? `，${outcome.failed} 张失败：${outcome.failed_paths.slice(0, 3).join("、")}` : "");
-    if (deleteMsg.value) setTimeout(() => (deleteMsg.value = ""), 5000);
   } catch (e) {
-    deleteMsg.value = `处理失败：${String(e)}`;
+    deleteMsg.value = `删除失败：${String(e)}`;
   } finally {
     confirmState.value = null;
     deleting.value = false;
@@ -818,7 +806,7 @@ function onKey(e: KeyboardEvent) {
     toggleSelectAll();
   } else if (e.key === "Delete" && selectedPaths.value.size > 0) {
     e.preventDefault();
-    requestDelete();
+    requestDelete("records");
   }
 }
 </script>
@@ -873,7 +861,8 @@ function onKey(e: KeyboardEvent) {
           :disabled="!selectedPaths.size || photoActions.busy.value"
           @click="onBatchMark('hidden')"
         >🔒 {{ albumMarkState === 'hidden' ? '取消隐藏' : '隐藏' }}</button>
-        <button class="btn btn-danger-pg" :disabled="!selectedPaths.size || deleting" @click="requestDelete()">删除…</button>
+        <button class="btn" :disabled="!selectedPaths.size || deleting" @click="requestDelete('records')">删除相册记录</button>
+        <button class="btn btn-danger-pg" :disabled="!selectedPaths.size || deleting" @click="requestDelete('trash')">删除本地文件…</button>
       </div>
     </div>
     <div v-if="deleteMsg" class="pg-delete-msg">{{ deleteMsg }}</div>

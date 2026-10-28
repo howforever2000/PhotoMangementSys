@@ -1,120 +1,38 @@
 <script setup lang="ts">
 /**
- * 照片「处理方式」选择弹窗
+ * FEAT-095：照片删除方式选择弹窗（需求 R7 / D1）
  *
- * 把三件不同的事拆开，让用户清楚自己在删什么：
- *  - **移除（remove）**：只改「出现在哪里」，识别数据与文件都保留，可撤销
- *  - **修正（reassign）**：人工纠正 AI 认错的人，只改归属，不删任何数据
- *  - **清除（purge）**：删掉照片的全部识别数据，重新导入相册才回来
- *  - **删除文件（trash）**：移入系统回收站，识别数据同步清除
+ * 删除必须二次确认，且提供两种模式让用户明确后果：
+ *  - **相册记录删除**：清除扫描 / AI 记录与缩略图缓存，本地文件保留（可找回）
+ *  - **本地删除（移入回收站）**：照片移入系统回收站，可找回；记录与缓存同步清除
  *
- * 各页面按语境只显示适用的项（相册 3 项 / 人物 4 项 / 分类·地点 3 项），
- * 危险程度自上而下递增，最后一项永远是回收站。
- *
- * 原子性：以前四个画廊各自实现删除弹窗、语义还互有出入（详见
- * `delete_photo_records` 的 P0 修复）；现在「选方式」只剩这一处。
+ * 原子性：三种实现此前散落在 PhotoGrid（record/file 两命令 + ConfirmDialog）、
+ * PersonGallery、CategoryGallery（各自的 del-mask 弹窗），语义略有差异。
+ * 本组件把「选模式」这一层收敛为唯一入口，各调用方只负责传路径 + 处理结果。
  */
-import { computed, ref, watch } from "vue";
 import { useThemeStore } from "../stores/theme";
 
-export type DeleteMode = "remove" | "reassign" | "purge" | "trash";
-export type DeleteContext = "album" | "person" | "category" | "location";
-
-/** 可改挂的人物选项（只取展示所需字段，避免与 PersonInfo 强耦合） */
-export interface PersonPickOption {
-  id: string;
-  name: string;
-  face_count: number;
-}
+export type DeleteMode = "records" | "trash";
 
 const props = defineProps<{
-  /** 待处理路径；null = 关闭 */
+  /** 待删除路径；null = 关闭 */
   paths: string[] | null;
-  /** 页面语境：决定选项列表与中间项文案 */
-  context?: DeleteContext;
-  /** 当前在虚拟相册（归档 / 隐藏）内：「移除」= 取消标记 */
+  /** 当前所在相册是虚拟相册（归档 / 隐藏）时为 true：
+   *  此时没有「原相册」，只提供本地删除（记录删除对虚拟相册无意义） */
   inVirtualAlbum?: boolean;
-  /** 人物语境下当前人物名字（用于「从「张三」移除」文案） */
-  personName?: string;
-  /** 人物语境下的候选人物（不含当前人物） */
-  persons?: PersonPickOption[];
-  /** 正在执行（禁用按钮，防重复提交） */
+  /** 正在执行删除（禁用按钮，防重复提交） */
   busy?: boolean;
 }>();
 
 const emit = defineEmits<{
-  /** 选定处理方式，由调用方执行 */
+  /** 用户选定删除方式，由调用方执行实际删除 */
   (e: "pick", mode: DeleteMode): void;
-  /** 人物语境「移到其他人物」：pid = 目标人物；name = 新建人物名字（二选一） */
-  (e: "reassign", target: { pid?: string; name?: string }): void;
   (e: "cancel"): void;
 }>();
 
 const theme = useThemeStore();
 
-const count = computed(() => props.paths?.length ?? 0);
-const context = computed<DeleteContext>(() => props.context ?? "album");
-
-/** 子视图："modes" 选项列表 / "reassign" 人物选择器 */
-const view = ref<"modes" | "reassign">("modes");
-const keyword = ref("");
-const newName = ref("");
-
-// 每次打开都回到第一屏，清掉上次的搜索词
-watch(
-  () => props.paths,
-  (p) => {
-    if (p) {
-      view.value = "modes";
-      keyword.value = "";
-      newName.value = "";
-    }
-  },
-);
-
-const personLabel = computed(() => props.personName?.trim() || "该人物");
-
-const removeTitle = computed(() => {
-  if (context.value === "person") return `从「${personLabel.value}」移除`;
-  if (context.value === "category" || context.value === "location") return "从当前分类隐藏";
-  return "从这个相册移除";
-});
-
-const removeHint = computed(() => {
-  if (context.value === "person")
-    return "只解除这张照片与该人物的关联，照片和其他识别数据都不动，可重新移回";
-  if (context.value === "category" || context.value === "location")
-    return "照片不再出现在这个分类里，识别数据与文件都保留，可随时恢复";
-  return props.inVirtualAlbum
-    ? "取消归档 / 隐藏，照片回到原相册；识别数据与文件都不动"
-    : "照片不再出现在本相册，识别数据与文件都保留，可随时恢复";
-});
-
-const filteredPersons = computed(() => {
-  const kw = keyword.value.trim().toLowerCase();
-  const list = props.persons ?? [];
-  return kw ? list.filter((p) => p.name.toLowerCase().includes(kw) || p.id.toLowerCase().includes(kw)) : list;
-});
-
-function pick(mode: DeleteMode) {
-  if (props.busy) return;
-  if (mode === "reassign") {
-    view.value = "reassign";
-    return;
-  }
-  emit("pick", mode);
-}
-
-function choosePerson(p: PersonPickOption) {
-  if (props.busy) return;
-  emit("reassign", { pid: p.id });
-}
-
-function chooseNew() {
-  const name = newName.value.trim();
-  if (!name || props.busy) return;
-  emit("reassign", { name });
-}
+const count = () => props.paths?.length ?? 0;
 </script>
 
 <template>
@@ -126,70 +44,22 @@ function chooseNew() {
         aria-modal="true"
         :style="{ background: theme.isDark ? 'rgba(30,34,46,.96)' : '#fff' }"
       >
-        <!-- 第一屏：选处理方式 -->
-        <template v-if="view === 'modes'">
-          <h4 class="pdd-title">处理这张照片（{{ count() }} 张）</h4>
-          <p class="pdd-tip">先想清楚是「只是不想在这里看到」，还是「要把识别数据删掉」。</p>
+        <h4 class="pdd-title">选择删除方式（{{ count() }} 张）</h4>
+        <p class="pdd-tip">两种方式都会从当前视图中移除照片，区别在于本地文件是否保留。</p>
 
-          <button class="pdd-opt" :disabled="busy" @click="pick('remove')">
-            <b>👁 {{ removeTitle }}</b>
-            <span>{{ removeHint }}</span>
-          </button>
+        <button class="pdd-opt" :disabled="busy" @click="emit('pick', 'records')">
+          <b>📄 从相册管理中删除（保留文件）</b>
+          <span>清除扫描 / AI 记录与缩略图缓存，本地文件保留，可重新扫描找回</span>
+        </button>
 
-          <button
-            v-if="context === 'person'"
-            class="pdd-opt"
-            :disabled="busy"
-            @click="pick('reassign')"
-          >
-            <b>🔁 移到其他人物…</b>
-            <span>AI 认错了人？把它挂到正确的人名下。修正结果在重新扫描后依然有效</span>
-          </button>
+        <button class="pdd-opt pdd-opt-danger" :disabled="busy" @click="emit('pick', 'trash')">
+          <b>🗑 本地删除（移入回收站）</b>
+          <span>照片移入系统回收站，可在系统回收站找回；记录与缓存同步清除</span>
+        </button>
 
-          <button class="pdd-opt pdd-opt-warn" :disabled="busy" @click="pick('purge')">
-            <b>🧹 清除数据库记录</b>
-            <span>删掉全部识别数据（标签 / 分类 / 人物 / 语义向量）并让它从相册消失；重新导入相册才能找回</span>
-          </button>
-
-          <button class="pdd-opt pdd-opt-danger" :disabled="busy" @click="pick('trash')">
-            <b>🗑 删除文件（移入回收站）</b>
-            <span>照片移入系统回收站，可在回收站找回；识别数据同步清除</span>
-          </button>
-
-          <button class="btn pdd-cancel" :disabled="busy" @click="emit('cancel')">
-            {{ busy ? "处理中…" : "取消" }}
-          </button>
-        </template>
-
-        <!-- 第二屏：选目标人物 -->
-        <template v-else>
-          <h4 class="pdd-title">移到哪个「人物」？（{{ count() }} 张）</h4>
-          <p class="pdd-tip">选一个已有的人物，或新建一个人物并命名。</p>
-
-          <input v-model="keyword" class="pdd-input" type="search" placeholder="搜索人物…" />
-          <div class="pdd-person-list">
-            <button
-              v-for="p in filteredPersons"
-              :key="p.id"
-              class="pdd-person"
-              :disabled="busy"
-              @click="choosePerson(p)"
-            >
-              <span class="pdd-person-name">{{ p.name }}</span>
-              <span class="pdd-person-count">{{ p.face_count }} 张</span>
-            </button>
-            <p v-if="!filteredPersons.length" class="pdd-empty">没有匹配的人物</p>
-          </div>
-
-          <div class="pdd-new">
-            <input v-model="newName" class="pdd-input" type="text" placeholder="或新建人物（输入名字）" />
-            <button class="btn btn-primary" :disabled="busy || !newName.trim()" @click="chooseNew">
-              新建并移入
-            </button>
-          </div>
-
-          <button class="btn pdd-cancel" :disabled="busy" @click="view = 'modes'">返回</button>
-        </template>
+        <button class="btn pdd-cancel" :disabled="busy" @click="emit('cancel')">
+          {{ busy ? "处理中…" : "取消" }}
+        </button>
       </div>
     </div>
   </Teleport>
@@ -207,8 +77,6 @@ function chooseNew() {
 }
 .pdd-dialog {
   width: min(440px, 92vw);
-  max-height: 86vh;
-  overflow-y: auto;
   border-radius: 14px;
   padding: 18px;
   display: flex;
@@ -245,10 +113,6 @@ function chooseNew() {
   border-color: rgba(106, 141, 240, 0.75);
   background: rgba(106, 141, 240, 0.08);
 }
-.pdd-opt-warn:hover:not(:disabled) {
-  border-color: color-mix(in srgb, #e0a03a 75%, transparent);
-  background: color-mix(in srgb, #e0a03a 10%, transparent);
-}
 .pdd-opt-danger:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--color-danger) 75%, transparent);
   background: color-mix(in srgb, var(--color-danger) 8%, transparent);
@@ -264,52 +128,5 @@ function chooseNew() {
 }
 .pdd-cancel {
   align-self: flex-end;
-}
-.pdd-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(127, 127, 127, 0.32);
-  background: transparent;
-  color: inherit;
-}
-.pdd-person-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 40vh;
-  overflow-y: auto;
-}
-.pdd-person {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 9px 12px;
-  border-radius: 8px;
-  border: 1px solid rgba(127, 127, 127, 0.24);
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-}
-.pdd-person:hover:not(:disabled) {
-  border-color: rgba(106, 141, 240, 0.75);
-  background: rgba(106, 141, 240, 0.08);
-}
-.pdd-person-count {
-  font-size: 12px;
-  opacity: 0.6;
-}
-.pdd-empty {
-  margin: 4px 0;
-  font-size: 12px;
-  opacity: 0.6;
-}
-.pdd-new {
-  display: flex;
-  gap: 8px;
-}
-.pdd-new .pdd-input {
-  flex: 1;
 }
 </style>
