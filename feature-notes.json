@@ -4992,7 +4992,83 @@
       ],
       "created_at": "2026-10-28T23:35:00+08:00",
       "updated_at": "2026-10-28T23:35:00+08:00"
+    },
+    {
+      "id": "FEAT-131",
+      "name": "照片「处理方式」四分化：移除 / 改挂 / 清除数据库记录 / 删除文件",
+      "module": "src-tauri/src/photos.rs、src-tauri/src/db/content.rs、src-tauri/src/db/category.rs、src-tauri/src/category.rs、src/components/PhotoDeleteDialog.vue、src/components/PhotoGrid.vue、src/stores/album.ts",
+      "status": "done",
+      "purpose": "「删除相册记录」一个按钮同时干了三件语义完全不同的事：让照片从网格消失、删掉全部识别数据、有时还删文件。用户想「这张 AI 分错了、我只要它别出现在这个相册里」时没有对应的操作，只能整条记录删掉再重扫；分类页也有同样的问题（AI 把照片分错类，无法人工纠正，只能连照片一起清记录）。",
+      "implementation": {
+        "① 移除（remove）": "delete_photo_records 只写 album_photo_excluded，不再级联删 content —— EXIF / 阳光 / 分类 / 人物 / 语义向量全部保留，照片仍出现在时间线、回忆、搜索与人物相册里；可通过 restore_photo_records 撤销。这正是「从相册移除」与「清除记录」的区别。",
+        "② 清除（purge）": "新增 purge_photo_data 命令：先解析归属相册（photo_content_scan.album_id 优先，未入库的用「相册目录最长前缀」兜底，必须在使用扫描记录之前算）→ 清缩略图表行与磁盘文件 → 按相册分组写排除表 → delete_content_by_paths（content / 向量 / 分类命中同生命周期）→ persons::delete_faces_by_paths（独立库，必须在主库锁之外）。恢复方式只有「删相册重新导入」（新 album_id → 排除记录失效）。",
+        "③ 删除文件（trash）": "沿用 delete_photos_to_trash，语义不变（移入系统回收站 + 级联清记录）。",
+        "④ 分类人工纠错": "新增 remove_photos_from_category（db::remove_category_hits）：只删 photo_category_hits 里该分类的命中行，照片、其他分类、扫描记录全不动 —— 解决「AI 分错类不能只纠正一条判断」的问题。",
+        "⑤ 前端收敛": "PhotoDeleteDialog 的 DeleteMode 由 records|trash 改为 remove|reassign|purge|trash，新增 context（album / person / category / location）按语境裁剪选项，危险程度自下而上递增、最后一项永远是回收站；count 改为 computed（原先是函数式 props 读取，选项文案里的张数不会随 props 更新）。各画廊只负责「传路径 + 执行选定的方式」，删掉了此前散在四处、语义互有出入的 del-mask 弹窗。"
+      },
+      "highlights": [
+        "「删除」这个词把三件事混成一件：看不见了 / 数据没了 / 文件没了。分开命名后每个选项都能用一句话说清后果，且都有对应的可逆路径（撤销排除 / 重新导入 / 回收站）",
+        "purge 的顺序是被依赖关系逼出来的：归属相册要先算（删了 content 就只剩前缀兜底）、缩略图要先清（依赖原图仍可读）、persons.db 要放在主库锁外（独立连接，嵌套加锁会死锁）",
+        "「AI 分错类」的正确修法是删命中行而不是删照片记录 —— 命中行是「这张图属于这个分类」这一条判断，照片本身没有任何问题"
+      ],
+      "tests": "cargo check 通过（33 warnings，均为既有 dead_code）；npm run build 由用户侧验证。",
+      "related_files": [
+        "src-tauri/src/photos.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/db/category.rs",
+        "src-tauri/src/category.rs",
+        "src/components/PhotoDeleteDialog.vue",
+        "src/components/PhotoGrid.vue",
+        "src/stores/album.ts"
+      ],
+      "keywords": [
+        "purge_photo_data",
+        "delete_photo_records",
+        "remove_photos_from_category",
+        "相册移除",
+        "清除数据库记录",
+        "人工纠错",
+        "PhotoDeleteDialog",
+        "DeleteMode"
+      ]
+    },
+    {
+      "id": "FEAT-132",
+      "name": "人物人脸归属人工改挂 + face_overrides 覆盖表（重扫不覆盖人工修正）",
+      "module": "src-tauri/src/persons.rs、src-tauri/src/db/content.rs、python/vcr/persistence/person_store.py、src/components/PersonGallery.vue",
+      "status": "done",
+      "purpose": "AI 认错人（把 A 的脸聚到 B 名下）时用户完全无从纠正；且哪怕手动改了，下次重扫仍按旧质心把它认回去 —— 因为扫描端每次都是「匹配质心 → 插一行 faces」，只改行挡不住重扫。",
+      "implementation": {
+        "① 覆盖表": "persons.db 新增 face_overrides(photo_path, bbox, person_id, created_at)，主键 (photo_path,bbox)。person_id 为哨兵 __none__ 表示「明确不属于任何人」。与 faces 解耦：重建人物库清空 faces 时覆盖记录仍在，目标人物不存在则自动失效回退到正常匹配。",
+        "② 扫描端优先": "PersonStore.register() 先查 lookup_override，命中就不再跑质心匹配（override=__none__ 直接返回 None）；merge / delete / reset_registry 同步迁移或清理覆盖记录，避免把脸挂到已删除或已换人的 P 编号上。",
+        "③ 三种用法": "move_faces(from_pid, to_pid, new_name, paths)：to_pid 与 new_name 都为空 = 移出全部人物（删 faces 行 + 覆盖为无人）；to_pid=Some = 移到已有的人；new_name=Some = 新建人物并移入（编号取当前最大 +1）。单事务内完成建人物 → 改挂/删除 → 写覆盖 → 重算两方质心。",
+        "④ 质心重算": "recompute_person 从 faces 全量重算质心与 face_count（而不是从旧质心做减法），避免「移走典型脸 → 质心漂移」的累积误差；一张脸都不剩就把人物整行删掉。",
+        "⑤ 下游同步": "新增 db::sync_person_ids_for_paths 同步 photo_content_scan.person_ids（网格徽标 / 人物筛选 / 描述文本读这张表，不同步会出现「人物页已改、别处还是旧名字」）；两端头像缓存签名失配自动重裁；描述文本后台增量重建（与改名同一套机制）。"
+      },
+      "highlights": [
+        "「改了又被改回去」的根因不在更新语句，而在数据模型：扫描是 insert-only 的派生过程，人工修正必须作为**输入**存下来，而不是去改派生结果",
+        "覆盖表用 (photo_path, bbox) 而不是 faces.id：faces 行在重扫时会被重新插入、id 会变，只有「照片 + 框」在语义上稳定",
+        "__none__ 哨兵是必要的：没有它就无法区分「没有人工意见」（按质心重新认）和「用户明确说不是任何人」（永久排除）"
+      ],
+      "tests": "cargo check 通过。",
+      "related_files": [
+        "src-tauri/src/persons.rs",
+        "src-tauri/src/db/content.rs",
+        "python/vcr/persistence/person_store.py",
+        "src/components/PersonGallery.vue"
+      ],
+      "keywords": [
+        "move_person_faces",
+        "face_overrides",
+        "人脸改挂",
+        "移出人物",
+        "人工修正",
+        "重扫覆盖",
+        "recompute_person",
+        "sync_person_ids",
+        "NO_PERSON"
+      ]
     }
   ],
-  "updated": "2026-10-28T23:35:00+08:00"
+  "updated": "2026-10-28T23:59:00+08:00"
 }
