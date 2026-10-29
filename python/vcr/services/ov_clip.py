@@ -36,11 +36,12 @@ NPU 只有一条队列，且 OV 的 compiled_model 在高并发下仍建议串�
 from __future__ import annotations
 
 import os
-import sys
 import threading
 import time
 
 import numpy as np
+
+from .. import logutil
 
 # NPU 单队列：锁只包住 infer，不包预处理/后处理（与 _GPU_RUN_LOCK 同纪律）
 _RUN_LOCK = threading.Lock()
@@ -110,7 +111,7 @@ class OvClipVision:
                 return True
             except Exception as e:  # noqa: BLE001
                 self.error = f"{dev}: {type(e).__name__}: {str(e)[:300]}"
-                print(f"[VCR] 语义塔 {dev} 编译失败: {self.error}", file=sys.stderr)
+                logutil.err(f"[VCR] 语义塔 {dev} 编译失败: {self.error}")
                 continue
         return False
 

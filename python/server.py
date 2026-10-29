@@ -97,7 +97,7 @@ def _health_dict() -> dict:
 #     B/16 ↔ L/14-336）；新增 /embed_text_batch。
 # v6：CPU 线程数可调（/threads 读写 + /benchmark 支持临时线程覆盖 + /benchmark_sweep 扫档），
 #     供「⚙ 性能设置」按不同硬件实测选优。
-VCR_API_VERSION = 10  # v10: 语义图像塔可走 OpenVINO 后端（FEAT-129，行为变更须重启服务）；
+VCR_API_VERSION = 11  # v11: 修 BUG-2026-1101-001（stderr 写失败把 OV 成功加载改写成失败）；v10: 语义图像塔可走 OpenVINO 后端（FEAT-129，行为变更须重启服务）；
 #                        v9: 人脸质量闸门（几何/尺寸/清晰度 + 边缘质量限新建）
 
 

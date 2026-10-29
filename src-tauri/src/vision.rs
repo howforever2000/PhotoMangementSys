@@ -260,7 +260,7 @@ const ADOPT_WAIT_MAX: u32 = 3;
 ///     “清单加载失败/端点不存在”，排查起来白费半小时（本次实测踩到）。
 /// v9：人脸质量闸门（几何/尺寸/清晰度 + 边缘质量只准并入不准新建）。
 ///     —— **行为变更也要抬**：模型与端点都没变，但不重启服务就还是旧行为。
-const VCR_API_VERSION: u64 = 10;
+const VCR_API_VERSION: u64 = 11;
 /// FEAT-051：ensure 单飞锁 —— 并发命令共享一次「探测/重启/启动」流程，
 /// 邓免多进程同时拚 8765 端口（winerror 10048）
 static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

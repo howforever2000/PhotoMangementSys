@@ -15,6 +15,7 @@ import numpy as np
 import onnxruntime as ort
 
 from . import config
+from . import logutil
 from . import ovrt
 
 # 模型加载失败后的冷却期（秒）：
@@ -99,6 +100,10 @@ class ModelRegistry:
         # 行为与组件出现前**逐字一致**。
         self._ov_clip = None
         self._ov_error = ""
+        # 与 ORT 的 LOAD_RETRY_COOLDOWN 同口径：OV 失败（NPU 驱动忙/编译失败）后
+        # 不跟着每次 clip_vision 访问就重编一次（NPU 单次编译 0.7~6.3s，
+        # 否则一次坏驱动会让语义腿变成「每张图都卡 2.5 秒」）。
+        self._ov_failed_at = 0.0
 
     @staticmethod
     def _session_facts(sess: ort.InferenceSession, path: str, cpu_fallback: bool,
@@ -153,12 +158,11 @@ class ModelRegistry:
         except Exception as gpu_err:  # noqa: BLE001
             if not prov or prov[0] == "CPUExecutionProvider":
                 raise
-            import sys as _sys
-
-            print(
-                f"[VCR] GPU 会话创建失败（{prov[0]}），回退 CPU 重试: {gpu_err}",
-                file=_sys.stderr,
-            )
+            # 同一条纪律（BUG-2026-1101-001）：诊断输出用 logutil，永不抛。
+            # 旧写法在这里 `print(..., file=sys.stderr)`，宿主管道关闭时会抛
+            # OSError(22)，把「回退 CPU 重试」这一步直接炸掉 —— 本函数是主链路，
+            # 一旦抛错就连 det 都起不来。
+            logutil.err(f"[VCR] GPU 会话创建失败（{prov[0]}），回退 CPU 重试: {gpu_err}")
             sess = ort.InferenceSession(
                 path, sess_options=opts, providers=["CPUExecutionProvider"]
             )
@@ -249,10 +253,9 @@ class ModelRegistry:
                         self._load_errors.pop(key, None)
                         return
                     except Exception as e:  # noqa: BLE001
-                        import sys as _sys
-
-                        print(f"[VCR] 模型加载失败 {key} {p}: {type(e).__name__}: {e}",
-                              file=_sys.stderr)
+                        logutil.err(
+                            f"[VCR] 模型加载失败 {key} {p}: {type(e).__name__}: {e}"
+                        )
                         self._load_errors[key] = f"{type(e).__name__}: {e}"
                         continue
             self._ready[key] = False
@@ -321,7 +324,14 @@ class ModelRegistry:
         """语义塔后端现状（/health、性能设置面板共用）。不触发模型加载。"""
         st = ovrt.status()
         mode = ovrt.read_mode()
-        active = self._ov_clip is not None and self._ov_clip.ready
+        # active 必须同时满足「对象在」+「注册表也认它就绪」。
+        # BUG-2026-1101-001 的教训：只读 _ov_clip 会与 is_ready 脱钩，
+        # 于是在 UI 上显示「加速中」、而 health.clip_ready 却是 false。
+        active = (
+            self._ov_clip is not None
+            and self._ov_clip.ready
+            and self._ready.get("clip_vision", False)
+        )
         return {
             "mode": mode,
             "active": active,
@@ -343,11 +353,23 @@ class ModelRegistry:
         return os.path.isfile(p["vision"])
 
     def _ensure_ov_clip(self) -> None:
-        """构建 OV 语义塔（幂等）；失败则记原因并保留 ORT 路径可用性。"""
+        """构建 OV 语义塔（幂等）；失败则记原因并保留 ORT 路径可用性。
+
+        ⚠️ BUG-2026-1101-001（本函数曾经的错）：
+        旧实现把`print(…, file=sys.stderr)`写在「状态已提交」之后。
+        打包版宿主管道关闭时，那一行会抛 `OSError: [Errno 22]`，被外层
+        `except Exception` 接住，于是**成功的加载被改写成失败**：
+            active=true（_ov_clip 已赋值） ←→ _ready=False / load_errors 有内容
+            ⇒ /health.clip_ready=false ⇒ 宿主跳过语义入库 ⇒ NPU 全程 0 占用
+        现在的纪律：**日志走 logutil（永不抛），且状态提交放在最后**。
+        """
         with self._lock:
             if self._ov_clip is not None:
                 return
             if not self._ov_eligible():
+                return
+            # 冷却期：上次失败后 LOAD_RETRY_COOLDOWN 秒内不重试（防 NPU 编译风暴）
+            if time.monotonic() - self._ov_failed_at < LOAD_RETRY_COOLDOWN:
                 return
             from .services.ov_clip import OvClipVision
 
@@ -357,25 +379,36 @@ class ModelRegistry:
             try:
                 ov = OvClipVision(p["vision"], int(p["size"]), prefer)
                 if not ov.load():
+                    self._ov_clip = None
                     self._ov_error = ov.error or "编译失败"
+                    self._ov_failed_at = time.monotonic()
                     self._ready["clip_vision"] = False
                     self._load_errors["clip_vision"] = f"OpenVINO: {self._ov_error}"
                     return
-                self._ov_clip = ov
-                self._sessions.pop("clip_vision", None)   # 同时只保留一条腿
-                self._ready["clip_vision"] = True
-                self._session_info["clip_vision"] = ov.facts()
-                self._load_errors.pop("clip_vision", None)
-                self._ov_error = ""
-                print(
-                    f"[VCR] 语义图像塔后端 = OpenVINO:{ov.device}"
-                    f"（编译+预热 {ov.load_ms:.0f}ms）",
-                    file=__import__("sys").stderr,
-                )
+                facts = ov.facts()
             except Exception as e:  # noqa: BLE001
+                self._ov_clip = None
                 self._ov_error = f"{type(e).__name__}: {e}"
+                self._ov_failed_at = time.monotonic()
                 self._ready["clip_vision"] = False
                 self._load_errors["clip_vision"] = f"OpenVINO: {self._ov_error}"
+                logutil.exc("[VCR] 语义图像塔 OpenVINO 后端初始化失败", e)
+                return
+
+            # ---- 以下才是状态提交：上面任何失败都不会跑到这里 ----
+            self._ov_clip = ov
+            self._sessions.pop("clip_vision", None)   # 同时只保留一条腿
+            self._ready["clip_vision"] = True
+            self._session_info["clip_vision"] = facts
+            self._load_errors.pop("clip_vision", None)
+            self._ov_error = ""
+            self._ov_failed_at = 0.0
+            # 日志放在状态提交**之后**，但走 logutil（永不抛）—— 即使管道已关，
+            # 也不会再把一次成功的加载变成失败
+            logutil.err(
+                f"[VCR] 语义图像塔后端 = OpenVINO:{ov.device}"
+                f"（编译+预热 {ov.load_ms:.0f}ms）"
+            )
 
     def set_clip_runtime(self, mode: str) -> dict:
         """切换语义塔后端（auto / ort）：持久化 + 清空两侧会话，下次访问重建。"""
@@ -383,6 +416,7 @@ class ModelRegistry:
             ovrt.write_mode(mode)
             self._ov_clip = None
             self._ov_error = ""
+            self._ov_failed_at = 0.0   # 用户主动切换 = 清冷却，立即可重试
             for k in ("clip_vision",):
                 self._sessions.pop(k, None)
                 self._ready.pop(k, None)

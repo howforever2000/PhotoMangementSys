@@ -39,6 +39,7 @@ import shutil
 import sys
 import threading
 
+from . import logutil
 from . import config
 
 # 组件在模型目录下的落位（与 model_dl.rs 的 DlFile.local 必须逐字一致）
@@ -146,12 +147,12 @@ def ensure_unpacked() -> str | None:
                 raise RuntimeError("压缩包结构不符（缺少 openvino/libs）")
         except Exception as e:  # noqa: BLE001
             shutil.rmtree(tmp, ignore_errors=True)
-            print(f"[VCR] OpenVINO 运行时解压失败: {type(e).__name__}: {e}", file=sys.stderr)
+            logutil.err(f"[VCR] OpenVINO 运行时解压失败: {type(e).__name__}: {e}")
             return None
         _promote(tmp, unpack_root())
         root = resolve_root()
         if root:
-            print(f"[VCR] OpenVINO 运行时已就位: {root}", file=sys.stderr)
+            logutil.err(f"[VCR] OpenVINO 运行时已就位: {root}")
         return root
 
 
@@ -167,10 +168,9 @@ def _promote(src: str, dst: str) -> bool:
             return True
         except OSError as e:
             if attempt == 2:
-                print(
+                logutil.err(
                     f"[VCR] OpenVINO 运行时改名失败（{type(e).__name__}: {e}），"
-                    f"本次直接从 {os.path.basename(src)} 运行，下次启动重试",
-                    file=sys.stderr,
+                    f"本次直接从 {os.path.basename(src)} 运行，下次启动重试"
                 )
                 return False
     return False

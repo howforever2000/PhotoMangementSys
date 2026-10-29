@@ -4926,7 +4926,57 @@
         "文案承诺（移入回收站可找回）必须与实现（remove_file）逐字对齐；不可逆操作不能写在可逆的措辞里",
         "新增 tauri::command 必须同时改 lib.rs 的 invoke_handler，否则前端调用只会得到 unknown command"
       ]
+    },
+    {
+      "id": "BUG-2026-1101-001",
+      "date": "2026-11-01",
+      "status": "fixed",
+      "title": "语义索引显示「NPU 加速中」但 NPU 占用恒为 0：stderr 写失败把成功的 OV 加载改写成了失败",
+      "module": "python/vcr/model_registry.py、python/vcr/services/ov_clip.py、python/vcr/ovrt.py、python/vcr/logutil.py（新增）、python/server.py、src-tauri/src/vision.rs",
+      "symptom": [
+        "性能设置显示「语义索引 · NPU 已启用」，任务管理器里 NPU 占用始终 0%",
+        "活服务 /health 三行自相矛盾：sessions.clip_vision=[\"OpenVINO:NPU\"]（会话建好了）、load_errors.clip_vision=\"OpenVINO: OSError: [Errno 22] Invalid argument\"、clip_ready=false",
+        "因为 clip_ready=false，宿主的语义腿整段跳过 ⇒ NPU 一次都没有被真正调用"
+      ],
+      "root_cause": [
+        "打包版对子进程用 Stdio::piped()（vision.rs::attach_child_output），管道在服务重启/宿主回收时关闭；此后 Python 往 sys.stderr 写一行日志就会抛 OSError: [Errno 22] Invalid argument",
+        "_ensure_ov_clip() 把诊断日志 print(..., file=sys.stderr) 写在「状态已提交」之后：_ov_clip 已赋值、_ready=True、_session_info 已写 → 然后那一行抛异常，被外层 except Exception 接住，于是把 success 改写成 failure",
+        "改写后 _ov_clip 没有被回滚 ⇒ clip_runtime_status().active=true（UI 显示加速中），而 is_ready(clip_vision)=false（宿主认为没就绪）—— 两个事实来源分叉",
+        "同一类隐患还有两处既有代码：_create_session 的「GPU 失败回退 CPU」提示、_load 的「模型加载失败」提示；_create_session 那处一旦抛在回退路径上会连 det 都起不来"
+      ],
+      "evidence_log": [
+        "活服务 /health（18765）：active=true / backend=openvino / device=NPU / load_ms=2498.7，同时 load_errors.clip_vision=\"OpenVINO: OSError: [Errno 22] Invalid argument\"、clip_ready=false",
+        "同一进程 sessions 表：det/face_det/face_rec/ocr 全是 DmlExecutionProvider（GPU 已开），唯独 clip_vision=OpenVINO:NPU —— 证明 OV 确实编译成功了，失败发生在日志那一行",
+        "app.log 里没有『[VCR] 语义图像塔后端 = OpenVINO:NPU』这一行（因为写不出去），但有 /clip_runtime 的 backend=ort —— 正是状态分叉的表现",
+        "python/bench/verify_ov_clip_broken_stderr.py：注入「每次写都抛 OSError(22)」的 stderr 后，修复前 is_ready=False + load_error 非空；修复后 is_ready=True + load_error='' + active=True"
+      ],
+      "solution": [
+        "新增 vcr/logutil.py：err()/out()/exc() 包住写 stream 的异常，永不抛；exc() 还会带栈（这次只留一行无栈信息，多花了一轮排查）",
+        "_ensure_ov_clip 重排为「先构造 → 再提交状态 → 最后打日志」；日志走 logutil；失败路径显式把 _ov_clip 置 None，杜绝 active 与 is_ready 分叉",
+        "clip_runtime_status().active 改为同时要求 _ov_clip.ready **且** _ready['clip_vision']，两个事实来源不允许再分叉",
+        "把既有两处 print(..., file=sys.stderr) 一并改成 logutil（_create_session 的 GPU 回退提示、_load 的加载失败提示）",
+        "补 OV 失败冷却（LOAD_RETRY_COOLDOWN 30s）：否则一次坏驱动会让每张图都重编 NPU（0.7~6.3s/次）",
+        "VCR_API_VERSION 10 16 → 11，让宿主自动换掉已加载旧代码的服务进程"
+      ],
+      "prevention": [
+        "纪律：凡「进度/诊断」输出一律走 logutil；凡「状态提交」必须在输出之前完成或与输出完全解耦",
+        "凡有「两个地方各自维护同一个事实」（对象状态 + 注册表 is_ready）的地方，对外暴露的 active 必须要求两者同时成立",
+        "回归脚本 python/bench/verify_ov_clip_broken_stderr.py 常驻：任何新增的 stderr 输出只要落在状态提交之前/之内，这条脚本就会红"
+      ],
+      "keywords": [
+        "stderr",
+        "OSError 22",
+        "Invalid argument",
+        "NPU 占用 0",
+        "clip_ready false",
+        "OpenVINO",
+        "状态分叉",
+        "logutil",
+        "pipe"
+      ],
+      "created_at": "2026-11-01T23:20:00+08:00",
+      "updated_at": "2026-11-01T23:20:00+08:00"
     }
   ],
-  "updated": "2026-10-29T00:20:00+08:00"
+  "updated": "2026-11-01T23:20:00+08:00"
 }
