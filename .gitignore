@@ -133,3 +133,12 @@ design/preview/proposal/*.png
 
 # 模型下载进度（.dl_*.meta，随机器与时间变化，不入库）
 python/models/.*.meta
+
+# NPU/OpenVINO 可行性探针的临时装置（pip --target 装的 openvino 运行时，~300MB，
+# 随时可重建：pip install --target python/.tmp-ovprobe openvino）
+python/.tmp-ovprobe/
+# 探针脚本运行时产生的 NPU 编译缓存（OpenVINO CACHE_DIR）
+python/bench/out/ov_cache/
+# 智能体一次性排障脚本（本地探针，无构建/运行引用）
+.pi/*_probe.py
+.visual/out/
