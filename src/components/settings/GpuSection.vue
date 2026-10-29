@@ -124,7 +124,7 @@ function providerLabel(p: string): string {
   </div>
   <p class="hint">
     实测（8 核 16 线程 · 40 张）：GPU <b>80.0~82.6</b> vs CPU <b>109.4</b> ms/张，识别约快 1.3×。
-    加速只作用于<b>人物检测 / 人脸 / OCR</b>，语义模型默认仍走 CPU。
+    本开关只管<b>人物检测 / 人脸 / OCR</b>；语义索引是另一条腿，见上方「语义索引加速」。
   </p>
 </template>
 

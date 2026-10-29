@@ -62,6 +62,10 @@ fn open_db() -> Result<Option<rusqlite::Connection>, String> {
     }
     let conn = rusqlite::Connection::open(&path)
         .map_err(|e| format!("打开人物注册表失败: {e}"))?;
+    // 人物库是**与 Python 微服务并发写**的：扫描时 `register()` 一直在插 faces。
+    // 没有 busy handler 时，任何写冲突都立刻返回 "database is locked"（人工改挂、
+    // 改名这些操作会直接报错）。5s 已足以覆盖一次正常写事务。
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
     Ok(Some(conn))
 }
 
@@ -296,8 +300,317 @@ pub fn delete_person(pid: &str) -> Result<(), String> {
         }
     }
 }
+// ---------------------------------------------------------------------------
+// 人脸归属的人工修正（人物页「移出此人 / 移到其他人物」）
+//
+// 为什么不能只改 faces.person_id：扫描端 `PersonStore.register()` 每次都是
+// 「按质心匹配 → 插入一行 faces」，只改行会被下次重扫按旧质心认回去。
+// 因此这里同时写 `face_overrides`（photo_path + bbox 主键），Python 侧
+// `register()` 会先查覆盖表，命中就不再跑质心匹配。
+// ---------------------------------------------------------------------------
+
+/// `face_overrides.person_id` 的哨兵值：明确「不属于任何人」（与 Python 侧 NO_PERSON 同值）
+const FACE_OVERRIDE_NONE: &str = "__none__";
+
+/// f32 blob（小端）→ 向量；空 / 长度非 4 的倍数 → None
+fn blob_to_vec(blob: &[u8]) -> Option<Vec<f32>> {
+    if blob.is_empty() || blob.len() % 4 != 0 {
+        return None;
+    }
+    Some(
+        blob.chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect(),
+    )
+}
+
+fn vec_to_blob(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+/// SQL 占位符串：`?start,?start+1,...`
+fn placeholders(n: usize, start: usize) -> String {
+    (start..start + n)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// 重算某人物的人脸数与质心；一张脸都不剩就把人物整行删掉。
+///
+/// 质心重算（而不是从旧质心做减法）是为了避免「人工修正移走典型脸 → 质心漂移」
+/// 的累积误差：faces 表才是唯一事实来源。
+fn recompute_person(conn: &rusqlite::Connection, pid: &str) -> Result<i64, String> {
+    let mut stmt = conn
+        .prepare("SELECT embedding FROM faces WHERE person_id = ?1")
+        .map_err(|e| format!("查询人脸失败: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![pid], |r| r.get::<_, Vec<u8>>(0))
+        .map_err(|e| format!("查询人脸失败: {e}"))?;
+    let mut sum: Vec<f32> = Vec::new();
+    let mut n: i64 = 0;
+    for row in rows {
+        let blob = row.map_err(|e| format!("读取人脸向量失败: {e}"))?;
+        let Some(v) = blob_to_vec(&blob) else { continue };
+        if sum.is_empty() {
+            sum = vec![0.0; v.len()];
+        }
+        if v.len() != sum.len() {
+            continue; // 换模型后维度不一致的历史向量：跳过，不污染质心
+        }
+        for (a, b) in sum.iter_mut().zip(v.iter()) {
+            *a += b;
+        }
+        n += 1;
+    }
+    if n == 0 {
+        conn.execute("DELETE FROM persons WHERE id = ?1", rusqlite::params![pid])
+            .map_err(|e| format!("删除空人物失败: {e}"))?;
+        conn.execute(
+            "DELETE FROM face_overrides WHERE person_id = ?1",
+            rusqlite::params![pid],
+        )
+        .map_err(|e| format!("清理覆盖记录失败: {e}"))?;
+        return Ok(0);
+    }
+    let norm = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for x in sum.iter_mut() {
+            *x /= norm;
+        }
+    }
+    conn.execute(
+        "UPDATE persons SET centroid = ?1, face_count = ?2 WHERE id = ?3",
+        rusqlite::params![vec_to_blob(&sum), n, pid],
+    )
+    .map_err(|e| format!("更新质心失败: {e}"))?;
+    Ok(n)
+}
+
+/// 下一个人物编号（P001 起，取当前最大值 +1）
+fn next_person_id(conn: &rusqlite::Connection) -> Result<String, String> {
+    let m: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(CAST(SUBSTR(id,2) AS INTEGER)), 0) FROM persons",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    Ok(format!("P{:03}", m + 1))
+}
+
+fn now_string() -> String {
+    // 与 Python 侧同一列（TEXT）：这里存 unix 秒，只用于排错追查，不参与排序/比较
+    crate::now().to_string()
+}
+
+/// 按照片路径删除人脸登记 + 覆盖记录（「清除数据库记录」调用）。
+///
+/// 只删人脸，不动 persons：空掉的人物由 `recompute_person` 顺势清理。
+/// 返回删除的 faces 行数。
+pub fn delete_faces_by_paths(paths: &[String]) -> Result<usize, String> {
+    if paths.is_empty() {
+        return Ok(0);
+    }
+    let Some(conn) = open_db()? else {
+        return Ok(0);
+    };
+    let mut affected: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut deleted = 0usize;
+    for chunk in paths.chunks(400) {
+        let ph = placeholders(chunk.len(), 1);
+        let sel = format!("SELECT DISTINCT person_id FROM faces WHERE photo_path IN ({ph})");
+        {
+            let mut stmt = conn.prepare(&sel).map_err(|e| format!("查询人脸失败: {e}"))?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+            let rows = stmt
+                .query_map(params.as_slice(), |r| r.get::<_, String>(0))
+                .map_err(|e| format!("查询人脸失败: {e}"))?;
+            for r in rows {
+                affected.insert(r.map_err(|e| format!("读取人脸行失败: {e}"))?);
+            }
+        }
+        let del = format!("DELETE FROM faces WHERE photo_path IN ({ph})");
+        let params: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        deleted += conn
+            .execute(&del, params.as_slice())
+            .map_err(|e| format!("删除人脸失败: {e}"))?;
+        // 覆盖记录同生命周期：清掉后照片回到「全新」，下次扫描可自由重新聚类。
+        let del_ov = format!("DELETE FROM face_overrides WHERE photo_path IN ({ph})");
+        conn.execute(&del_ov, params.as_slice())
+            .map_err(|e| format!("清理覆盖记录失败: {e}"))?;
+    }
+    for pid in affected {
+        recompute_person(&conn, &pid)?;
+    }
+    Ok(deleted)
+}
+
+/// 人脸改挂结果（前端提示用）
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct FaceMoveOutcome {
+    /// 请求处理的照片数
+    pub requested: usize,
+    /// 实际改动的人脸行数（一张照片可能多张脸）
+    pub moved: usize,
+    pub from_pid: String,
+    /// 目标人物；None = 移出全部人物
+    pub to_pid: Option<String>,
+    /// 本次新建的人物编号（目标为「新建」时）
+    pub created_pid: Option<String>,
+    /// 没有该人物人脸的照片（正常情况，不算失败）
+    pub skipped_paths: Vec<String>,
+}
+
+/// 把 `from_pid` 名下、属于 `paths` 的人脸改挂到 `to_pid` 或新建人物；
+/// `to_pid` 与 `new_name` 同时为 None → 移出全部人物（删除人脸行 + 覆盖为「无人」）。
+///
+/// 三种用法：
+/// 1. 移出此人：`to_pid=None, new_name=None`
+/// 2. 移到已有的人：`to_pid=Some("P003")`
+/// 3. 移到新建的人：`new_name=Some("李四")`
+pub fn move_faces(
+    from_pid: &str,
+    to_pid: Option<&str>,
+    new_name: Option<&str>,
+    paths: &[String],
+) -> Result<FaceMoveOutcome, String> {
+    let mut out = FaceMoveOutcome {
+        requested: paths.len(),
+        from_pid: from_pid.to_string(),
+        ..Default::default()
+    };
+    if paths.is_empty() {
+        return Ok(out);
+    }
+    if to_pid == Some(from_pid) {
+        return Err("目标人物与当前人物相同".into());
+    }
+    let Some(conn) = open_db()? else {
+        return Err(format!("人物注册表不存在: {}", persons_db_path().display()));
+    };
+
+    // 1) 取出要动的人脸行（顺带确认目标人物存在）
+    let mut rows: Vec<(i64, String, String, Vec<u8>)> = Vec::new();
+    for chunk in paths.chunks(400) {
+        let ph = placeholders(chunk.len(), 2);
+        let sql = format!(
+            "SELECT id, photo_path, bbox, embedding FROM faces \
+             WHERE person_id = ?1 AND photo_path IN ({ph})"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| format!("查询人脸失败: {e}"))?;
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() + 1);
+        params.push(&from_pid);
+        for p in chunk {
+            params.push(p);
+        }
+        let it = stmt
+            .query_map(params.as_slice(), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                ))
+            })
+            .map_err(|e| format!("查询人脸失败: {e}"))?;
+        for r in it {
+            rows.push(r.map_err(|e| format!("读取人脸行失败: {e}"))?);
+        }
+    }
+    if rows.is_empty() {
+        return Ok(out);
+    }
+    if let Some(t) = to_pid {
+        let exists: bool = conn
+            .query_row("SELECT 1 FROM persons WHERE id = ?1", rusqlite::params![t], |_| Ok(()))
+            .is_ok();
+        if !exists {
+            return Err(format!("目标人物不存在: {t}"));
+        }
+    }
+
+    // 2) 目标人物：已有 / 新建（编号先算好，行在事务里插）
+    let new_pid = if to_pid.is_none() && new_name.is_some() {
+        Some(next_person_id(&conn)?)
+    } else {
+        None
+    };
+    let target: Option<String> = to_pid.map(str::to_string).or_else(|| new_pid.clone());
+
+    // 3) 单事务：建人物（可选）→ 改挂/删除 → 写覆盖 → 重算两方质心
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| format!("开启事务失败: {e}"))?;
+    let r = (|| -> Result<(), String> {
+        if let Some(pid) = &new_pid {
+            let raw = new_name.unwrap_or("").trim();
+            let name: String = if raw.is_empty() {
+                pid.clone()
+            } else {
+                raw.chars().take(50).collect()
+            };
+            let seed = blob_to_vec(&rows[0].3).ok_or_else(|| "人脸向量损坏".to_string())?;
+            conn.execute(
+                "INSERT INTO persons(id, name, centroid, face_count, created_at) VALUES(?1,?2,?3,0,?4)",
+                rusqlite::params![pid, name, vec_to_blob(&seed), now_string()],
+            )
+            .map_err(|e| format!("新建人物失败: {e}"))?;
+        }
+        let ov_target = target.clone().unwrap_or_else(|| FACE_OVERRIDE_NONE.to_string());
+        let now = now_string();
+        for (id, path, bbox, _) in &rows {
+            match &target {
+                Some(t) => {
+                    conn.execute(
+                        "UPDATE faces SET person_id = ?1 WHERE id = ?2",
+                        rusqlite::params![t, id],
+                    )
+                    .map_err(|e| format!("改挂人脸失败: {e}"))?;
+                }
+                None => {
+                    conn.execute("DELETE FROM faces WHERE id = ?1", rusqlite::params![id])
+                        .map_err(|e| format!("删除人脸失败: {e}"))?;
+                }
+            }
+            // 关键：写覆盖，保证下次重扫不会被质心认回原人物
+            conn.execute(
+                "INSERT OR REPLACE INTO face_overrides(photo_path, bbox, person_id, created_at) \
+                 VALUES(?1,?2,?3,?4)",
+                rusqlite::params![path, bbox, ov_target, now],
+            )
+            .map_err(|e| format!("写入修正记录失败: {e}"))?;
+        }
+        recompute_person(&conn, from_pid)?;
+        if let Some(t) = &target {
+            recompute_person(&conn, t)?;
+        }
+        Ok(())
+    })();
+    match r {
+        Ok(_) => conn
+            .execute_batch("COMMIT")
+            .map_err(|e| format!("提交事务失败: {e}"))?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    }
+
+    let touched: std::collections::HashSet<&str> = rows.iter().map(|r| r.1.as_str()).collect();
+    out.skipped_paths = paths
+        .iter()
+        .filter(|p| !touched.contains(p.as_str()))
+        .cloned()
+        .collect();
+    out.moved = rows.len();
+    out.to_pid = target;
+    out.created_pid = new_pid;
+    Ok(out)
+}
+
 fn representative_face(conn: &rusqlite::Connection, pid: &str) -> Option<(String, String)> {
-    // 代表脸 = 「与质心最相似」的一张（不再取最早登记的一张）。
     // 为什么改：质心是该人物所有脸的方向均值，与它最相似的脸就是最典型的正面大脸；
     // 最早登记的可能是远处小脸/侧脸，裁出来糊成一片（用户反馈的「封面看不出是谁」）。
     // 并列时取 bbox 面积更大者，再并列取 id 小者 —— 结果稳定不跳变。
@@ -478,6 +791,9 @@ pub fn reset_registry() -> Result<(String, i64, i64), String> {
             .map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM faces", []).map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM persons", []).map_err(|e| e.to_string())?;
+        // 人工修正覆盖也清空：重建后 P 编号会重新分配，留着旧覆盖只会在
+        // 「P001 换成了别人」之后把脸挂到错误的人身上。重建 = 从头聚类。
+        let _ = conn.execute("DELETE FROM face_overrides", []);
         // meta 一并清空：下次登记时 Python 会写入当前激活模型（全新安装语义）
         let _ = conn.execute("DELETE FROM meta", []);
         Ok(())
@@ -615,14 +931,114 @@ pub fn crop_avatar_local(pid: &str, cache_path: &Path) -> Result<(), String> {
 ///
 /// 与头像共用同一条解码纪律（BUG-2026-1027-004）：JPEG 走 `jpeg_decoder` 降采样快路径，
 /// 其余格式一律走 `imgio::open_any` 按**魔数**解码（不信扩展名）。
-pub fn crop_face_cover_local(pid: &str, cache_path: &Path) -> Result<(), String> {
-    const OUT_W: u32 = 480;
-    const OUT_H: u32 = 600;
-    /// 封面宽高比（4:5）
-    const RATIO: f64 = 4.0 / 5.0;
-    /// 人脸边长之外的留白比例（0.35 → 裁切框约为脸的 1.7 倍）
-    const EXPAND: f64 = 0.35;
+/// 封面输出尺寸与裁切参数（模块级：自动裁切与「用户指定照片」裁切共用一套口径）
+const OUT_W: u32 = 480;
+const OUT_H: u32 = 600;
+/// 封面宽高比（4:5）
+const COVER_RATIO: f64 = 4.0 / 5.0;
+/// 人脸边长之外的留白比例（0.35 → 裁切框约为脸的 1.7 倍）
+const COVER_EXPAND: f64 = 0.35;
 
+/// 解码成「显示坐标系」的图（已按 EXIF 转正），并返回 显示坐标 → 解码坐标 的缩放比
+///
+/// 两条解码纪律合在这里，供「自动封面」与「用户指定照片封面」共用：
+/// - JPEG 走 `jpeg_decoder` 分级降采样（短边降到 >= `min_short_side` 即可，不必全解码，
+///   大图从秒级降到几十毫秒）；
+/// - 其余格式（含「PNG 内容叫 .jpg」那批，BUG-2026-1027-004）按**魔数**解码，不信扩展名。
+fn decode_display(
+    photo_path: &str,
+    min_short_side: u32,
+) -> Result<(image::DynamicImage, f64, f64), String> {
+    let orientation = crate::exif_orient::read_orientation(Path::new(photo_path));
+    if !crate::avatar::is_jpeg_file(Path::new(photo_path)) {
+        // 非 JPEG：按魔数解码后转正，坐标与显示坐标系 1:1
+        let raw = crate::imgio::open_any(Path::new(photo_path))?;
+        let img = crate::exif_orient::apply_orientation(raw, orientation);
+        return Ok((img, 1.0, 1.0));
+    }
+    use std::io::BufReader;
+    let probe = std::fs::File::open(photo_path).map_err(|e| format!("打开原图失败: {e}"))?;
+    let mut head = jpeg_decoder::Decoder::new(BufReader::new(probe));
+    let _ = head.read_info();
+    let info = head.info().ok_or("无法读取图片头信息")?;
+    let (w0, h0) = (info.width as u32, info.height as u32);
+    let (ow, oh) = crate::exif_orient::oriented_dims(w0, h0, orientation);
+    // 降采样档：转正后短边降到 >= 目标长边就够用，不必全解码
+    let mut chosen = 1u32;
+    for &d in &[8u32, 4, 2] {
+        if (ow.min(oh)) as f64 / d as f64 >= min_short_side as f64 {
+            chosen = d;
+            break;
+        }
+    }
+    let tw = ((ow + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
+    let th = ((oh + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
+    let file2 = std::fs::File::open(photo_path).map_err(|e| format!("打开原图失败: {e}"))?;
+    let mut dec = jpeg_decoder::Decoder::new(BufReader::new(file2));
+    let _ = dec.scale(tw, th);
+    let pixels = dec.decode().map_err(|e| format!("JPEG 解码失败: {e:?}"))?;
+    let info2 = dec.info().ok_or("无法读取解码信息")?;
+    let (aw, ah) = ((info2.width as u32).max(1), (info2.height as u32).max(1));
+    let img = crate::exif_orient::apply_orientation(
+        image::DynamicImage::ImageRgb8(
+            image::RgbImage::from_raw(aw, ah, pixels).ok_or("像素数据长度不符")?,
+        ),
+        orientation,
+    );
+    let (fw, fh) = (img.width().max(1), img.height().max(1));
+    Ok((
+        img,
+        fw as f64 / ow.max(1) as f64,
+        fh as f64 / oh.max(1) as f64,
+    ))
+}
+
+/// 按矩形裁 4:5 封面并落盘（唯一写盘出口：自动裁切与自选裁切都走这里）
+fn save_cover(
+    decoded: &image::DynamicImage,
+    rect: (u32, u32, u32, u32),
+    cache_path: &Path,
+) -> Result<(), String> {
+    let (cx, cy, cw, ch) = rect;
+    let cover = decoded
+        .crop_imm(cx, cy, cw, ch)
+        .resize_exact(OUT_W, OUT_H, image::imageops::FilterType::Triangle);
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建封面目录失败: {e}"))?;
+    }
+    cover
+        .save_with_format(cache_path, image::ImageFormat::Jpeg)
+        .map_err(|e| format!("写封面缓存失败: {e}"))
+}
+
+/// 中部最大 4:5 矩形（无脸可依据时的兜底：既不裁到怪角度，也不裁出空白）
+fn cover_rect_center(w: u32, h: u32, ratio: f64) -> (u32, u32, u32, u32) {
+    let (wf, hf) = (w as f64, h as f64);
+    let mut cw = wf;
+    let mut ch = cw / ratio.max(0.01);
+    if ch > hf {
+        ch = hf;
+        cw = ch * ratio.max(0.01);
+    }
+    (
+        ((wf - cw) / 2.0).round().max(0.0) as u32,
+        ((hf - ch) / 2.0).round().max(0.0) as u32,
+        cw.round().max(1.0) as u32,
+        ch.round().max(1.0) as u32,
+    )
+}
+
+/// 某人物在**指定照片**里的人脸框（bbox 文本）；该照片没登记这个人的人脸则 None
+fn face_bbox_for_photo(conn: &rusqlite::Connection, pid: &str, photo_path: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT bbox FROM faces WHERE person_id = ?1 AND photo_path = ?2 ORDER BY id ASC LIMIT 1",
+        rusqlite::params![pid, photo_path],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+pub fn crop_face_cover_local(pid: &str, cache_path: &Path) -> Result<(), String> {
     let Some(conn) = open_db()? else {
         return Err("人物注册表不存在".into());
     };
@@ -633,68 +1049,51 @@ pub fn crop_face_cover_local(pid: &str, cache_path: &Path) -> Result<(), String>
     }
     let (x1, y1, x2, y2) =
         parse_bbox(&bbox_raw).ok_or_else(|| format!("bbox 格式异常: {bbox_raw}"))?;
-    let orientation = crate::exif_orient::read_orientation(Path::new(&photo_path));
-    let is_jpeg = crate::avatar::is_jpeg_file(Path::new(&photo_path));
 
-    // 解码成「显示坐标系」的图（已按 EXIF 转正），同时拿到 显示坐标 → 解码坐标 的缩放比
-    let (decoded, sx, sy) = if is_jpeg {
-        use std::io::BufReader;
-        let probe = std::fs::File::open(&photo_path).map_err(|e| format!("打开原图失败: {e}"))?;
-        let mut head = jpeg_decoder::Decoder::new(BufReader::new(probe));
-        let _ = head.read_info();
-        let info = head.info().ok_or("无法读取图片头信息")?;
-        let (w0, h0) = (info.width as u32, info.height as u32);
-        let (ow, oh) = crate::exif_orient::oriented_dims(w0, h0, orientation);
-        // 降采样档：转正后短边降到 >= 封面长边（600）就够用，不必全解码
-        let mut chosen = 1u32;
-        for &d in &[8u32, 4, 2] {
-            if (ow.min(oh)) as f64 / d as f64 >= OUT_H as f64 {
-                chosen = d;
-                break;
-            }
-        }
-        let tw = ((ow + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
-        let th = ((oh + chosen - 1) / chosen).clamp(1, u16::MAX as u32) as u16;
-        let file2 = std::fs::File::open(&photo_path).map_err(|e| format!("打开原图失败: {e}"))?;
-        let mut dec = jpeg_decoder::Decoder::new(BufReader::new(file2));
-        let _ = dec.scale(tw, th);
-        let pixels = dec.decode().map_err(|e| format!("JPEG 解码失败: {e:?}"))?;
-        let info2 = dec.info().ok_or("无法读取解码信息")?;
-        let (aw, ah) = ((info2.width as u32).max(1), (info2.height as u32).max(1));
-        let img = crate::exif_orient::apply_orientation(
-            image::DynamicImage::ImageRgb8(
-                image::RgbImage::from_raw(aw, ah, pixels).ok_or("像素数据长度不符")?,
-            ),
-            orientation,
-        );
-        let (fw, fh) = (img.width().max(1), img.height().max(1));
-        let sx = fw as f64 / ow.max(1) as f64;
-        let sy = fh as f64 / oh.max(1) as f64;
-        (img, sx, sy)
-    } else {
-        // 非 JPEG（含「PNG 内容叫 .jpg」那批）：按魔数解码后转正，坐标与显示坐标系 1:1
-        let raw = crate::imgio::open_any(Path::new(&photo_path))?;
-        let img = crate::exif_orient::apply_orientation(raw, orientation);
-        (img, 1.0, 1.0)
-    };
-
+    let (decoded, sx, sy) = decode_display(&photo_path, OUT_H)?;
     let (fw, fh) = (decoded.width().max(1), decoded.height().max(1));
-    let (cx, cy, cw, ch) = cover_rect(
+    let rect = cover_rect(
         fw,
         fh,
         (x1 as f64 * sx, y1 as f64 * sy, x2 as f64 * sx, y2 as f64 * sy),
-        RATIO,
-        EXPAND,
+        COVER_RATIO,
+        COVER_EXPAND,
     );
-    let cover = decoded
-        .crop_imm(cx, cy, cw, ch)
-        .resize_exact(OUT_W, OUT_H, image::imageops::FilterType::Triangle);
-    if let Some(parent) = cache_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建封面目录失败: {e}"))?;
+    save_cover(&decoded, rect, cache_path)
+}
+
+/// 用户指定的照片 → 4:5 人物卡封面（BUG-2026-1028-013）
+///
+/// 为什么需要它：人物卡画的是 cover（FEAT-124），只改 96×96 头像时卡片毫无变化，
+/// 用户看到的就是「设置了新头像但没效果」。所以同一个动作必须也把封面换成这张照片。
+/// 裁切依据：该照片里这个人的脸框（有则贴脸裁）；没有就退化为整图中部 4:5。
+pub fn crop_photo_cover_local(
+    pid: &str,
+    photo_path: &str,
+    cache_path: &Path,
+) -> Result<(), String> {
+    if !Path::new(photo_path).is_file() {
+        return Err(format!("所选照片不存在: {photo_path}"));
     }
-    cover
-        .save_with_format(cache_path, image::ImageFormat::Jpeg)
-        .map_err(|e| format!("写封面缓存失败: {e}"))
+    let bbox = open_db()
+        .ok()
+        .flatten()
+        .and_then(|conn| face_bbox_for_photo(&conn, pid, photo_path))
+        .and_then(|raw| parse_bbox(&raw));
+
+    let (decoded, sx, sy) = decode_display(photo_path, OUT_H)?;
+    let (fw, fh) = (decoded.width().max(1), decoded.height().max(1));
+    let rect = match bbox {
+        Some((x1, y1, x2, y2)) => cover_rect(
+            fw,
+            fh,
+            (x1 as f64 * sx, y1 as f64 * sy, x2 as f64 * sx, y2 as f64 * sy),
+            COVER_RATIO,
+            COVER_EXPAND,
+        ),
+        None => cover_rect_center(fw, fh, COVER_RATIO),
+    };
+    save_cover(&decoded, rect, cache_path)
 }
 
 /// 以人脸框为中心算一个固定宽高比的裁切矩形（夹紧到图内，永不越界）
@@ -1162,6 +1561,68 @@ pub fn delete_person(
 }
 
 
+/// 人物注册表：人工修正人脸归属（移出此人 / 移到已有的人 / 移到新建的人）
+///
+/// 三种调用方式：
+/// - `to_pid = null, new_name = null`：移出全部人物（这张脸不再属于任何人）
+/// - `to_pid = "P003"`：移到已有的人物
+/// - `new_name = "李四"`：新建一个人物并移入
+///
+/// 同时写 `face_overrides`，保证**重新扫描不会把修正覆盖回去**；
+/// 并同步 `photo_content_scan.person_ids`（网格徽标 / 人物筛选 / 描述文本读它）。
+#[tauri::command]
+pub fn move_person_faces(
+    from_pid: String,
+    to_pid: Option<String>,
+    new_name: Option<String>,
+    paths: Vec<String>,
+    app: tauri::AppHandle,
+    state: tauri::State<crate::AppState>,
+    session: tauri::State<crate::SessionState>,
+) -> Result<crate::persons::FaceMoveOutcome, String> {
+    let _t = log_call!(
+        "move_person_faces",
+        &format!("from={from_pid} to={to_pid:?} new={new_name:?} paths={}", paths.len())
+    );
+    let user_id = crate::require_user(&session)?;
+    let r = crate::persons::move_faces(&from_pid, to_pid.as_deref(), new_name.as_deref(), &paths);
+    match &r {
+        Ok(outcome) => {
+            if outcome.moved > 0 {
+                // 1. 内容表 person_ids 同步（失败不回滚人脸：下次扫描会补齐）
+                if let Ok(db) = state.0.lock() {
+                    let _ = db.sync_person_ids_for_paths(
+                        &paths,
+                        Some(&from_pid),
+                        outcome.to_pid.as_deref(),
+                    );
+                }
+                // 2. 头像缓存：两边的人脸集都变了，签名失配，下次读取自动重裁
+                if let Ok(dir) = crate::avatar::commands::avatars_dir(&app) {
+                    crate::avatar::remove_avatar_cache(&dir, &from_pid);
+                    if let Some(t) = &outcome.to_pid {
+                        crate::avatar::remove_avatar_cache(&dir, t);
+                    }
+                }
+                // 3. 描述文本里的真名变了 → 后台增量重建（与改名同一套机制）
+                spawn_desc_rebuild(
+                    &app,
+                    user_id,
+                    format!("move faces {from_pid} -> {:?}", outcome.to_pid),
+                );
+            }
+            crate::logger::log_call_end_with(
+                "move_person_faces",
+                _t,
+                &format!("OK | moved={} created={:?}", outcome.moved, outcome.created_pid),
+            );
+        }
+        Err(e) => crate::logger::log_call_end_with("move_person_faces", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+
 /// 人物注册表：重建人物库（备份 + 清空 + 清头像缓存）——换识别模型后的显式动作
 ///
 /// 为什么必须存在：ArcFace 换模型 = 换嵌入空间，旧质心与新向量不可比（余弦会
@@ -1394,5 +1855,62 @@ mod tests {
         let (x2, y2, w2, h2) = cover_rect(800, 600, (0.0, 0.0, 40.0, 40.0), ratio, 0.35);
         assert!(x2 + w2 <= 800 && y2 + h2 <= 600, "贴边也不得越界");
         assert!(x2 == 0 && y2 == 0, "贴左上角应从原点起裁");
+    }
+
+    /// BUG-2026-1028-013：用户指定照片 → 4:5 封面（真实注册表）
+    ///
+    /// 这是「设置头像没效果」的正解链路：人物卡画的是封面，所以同一个动作必须
+    /// 也能从**指定照片**裁出 480×600 封面（而不是只能从代表脸裁）。
+    #[test]
+    fn test_crop_photo_cover_local_real_data() {
+        let list = match list_persons() {
+            Ok(l) => l,
+            Err(e) => panic!("列表不应报错: {e}"),
+        };
+        if list.is_empty() {
+            eprintln!("跳过：无人物数据");
+            return;
+        }
+        let Some(conn) = open_db().expect("打开注册表不应报错") else {
+            eprintln!("跳过：注册表不存在");
+            return;
+        };
+        let mut samples = 0usize;
+        for p in list.iter().take(5) {
+            let Some((photo, _bbox)) = representative_face(&conn, &p.id) else {
+                continue;
+            };
+            if !Path::new(&photo).is_file() {
+                continue;
+            }
+            let tmp = std::env::temp_dir().join(format!("photo_cover_test_{}.jpg", p.id));
+            let _ = std::fs::remove_file(&tmp);
+            crop_photo_cover_local(&p.id, &photo, &tmp)
+                .unwrap_or_else(|e| panic!("指定照片裁封面失败: {e}"));
+            let img = image::open(&tmp).expect("产物应为合法图片");
+            assert_eq!((img.width(), img.height()), (480, 600), "封面应为 480×600（4:5）");
+            assert!(
+                std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0) > 1000,
+                "封面文件过小，疑似空图"
+            );
+            let _ = std::fs::remove_file(&tmp);
+            samples += 1;
+        }
+        assert!(samples > 0, "前 5 个人物里一张指定照片封面都没裁出来");
+        eprintln!("指定照片裁封面：{samples} 张成功");
+    }
+
+    /// 无脸可依据时的兜底矩形：居中、保 4:5、不越界，
+    /// 横图（宽>高）与竖图（高>宽）都要正确
+    #[test]
+    fn test_cover_rect_center() {
+        let ratio = 4.0 / 5.0;
+        for (w, h) in [(4000u32, 3000u32), (3000, 4000), (100, 1000), (1920, 1080)] {
+            let (x, y, cw, ch) = cover_rect_center(w, h, ratio);
+            assert!(x + cw <= w && y + ch <= h, "{w}x{h} 不得越界：{x}+{cw} / {y}+{ch}");
+            assert!(cw >= 1 && ch >= 1, "{w}x{h} 尺寸不得为 0");
+            let got = cw as f64 / ch as f64;
+            assert!((got - ratio).abs() < 0.02, "{w}x{h} 宽高比异常：{got}");
+        }
     }
 }

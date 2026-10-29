@@ -33,9 +33,10 @@ const stopping = computed(() => job.value.stopping);
 const items = computed(() => job.value.items);
 
 /* FEAT-114：扫描报「缺少模型文件」时自动弹下载窗（人脸通道预检失败的原话见
-   vision::ensure_face_channel_ready）。同一段报错只弹一次，避免 watcher 反复触发。 */
+   vision::ensure_face_channel_ready）。同一段报错只弹一次，避免 watcher 反复触发。
+   BUG-2026-1028-011：先认人物检测（yolov8n-det）——它缺了连人脸预检都到不了。 */
 const modelDialogOpen = ref(false);
-const modelDialogReason = ref<"face" | "ocr">("face");
+const modelDialogReason = ref<"face" | "ocr" | "det">("face");
 const modelMissingFiles = ref<string[]>([]);
 let lastPromptKey = "";
 const MODEL_MISSING_RE = /缺少模型文件|模型未下载|模型缺失|模型文件不完整|未找到模型/;
@@ -45,7 +46,11 @@ watch(
   (text) => {
     if (!text || !MODEL_MISSING_RE.test(text) || text === lastPromptKey) return;
     lastPromptKey = text;
-    modelDialogReason.value = /paddleocr|ocr/i.test(text) ? "ocr" : "face";
+    modelDialogReason.value = /yolov8n|人物检测/i.test(text)
+      ? "det"
+      : /paddleocr|ocr/i.test(text)
+        ? "ocr"
+        : "face";
     modelMissingFiles.value = [...new Set(text.match(/[\w.-]+\.onnx/gi) ?? [])];
     modelDialogOpen.value = true;
   },

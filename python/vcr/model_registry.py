@@ -15,6 +15,7 @@ import numpy as np
 import onnxruntime as ort
 
 from . import config
+from . import logutil
 
 # 模型加载失败后的冷却期（秒）：
 # 冷启动瞬间的加载失败（显存/磁盘/驱动瞬时抖动）不应把该通道**永久**锁死
@@ -147,12 +148,11 @@ class ModelRegistry:
         except Exception as gpu_err:  # noqa: BLE001
             if not prov or prov[0] == "CPUExecutionProvider":
                 raise
-            import sys as _sys
-
-            print(
-                f"[VCR] GPU 会话创建失败（{prov[0]}），回退 CPU 重试: {gpu_err}",
-                file=_sys.stderr,
-            )
+            # 同一条纪律（BUG-2026-1101-001）：诊断输出用 logutil，永不抛。
+            # 旧写法在这里 `print(..., file=sys.stderr)`，宿主管道关闭时会抛
+            # OSError(22)，把「回退 CPU 重试」这一步直接炸掉 —— 本函数是主链路，
+            # 一旦抛错就连 det 都起不来。
+            logutil.err(f"[VCR] GPU 会话创建失败（{prov[0]}），回退 CPU 重试: {gpu_err}")
             sess = ort.InferenceSession(
                 path, sess_options=opts, providers=["CPUExecutionProvider"]
             )
@@ -243,10 +243,9 @@ class ModelRegistry:
                         self._load_errors.pop(key, None)
                         return
                     except Exception as e:  # noqa: BLE001
-                        import sys as _sys
-
-                        print(f"[VCR] 模型加载失败 {key} {p}: {type(e).__name__}: {e}",
-                              file=_sys.stderr)
+                        logutil.err(
+                            f"[VCR] 模型加载失败 {key} {p}: {type(e).__name__}: {e}"
+                        )
                         self._load_errors[key] = f"{type(e).__name__}: {e}"
                         continue
             self._ready[key] = False

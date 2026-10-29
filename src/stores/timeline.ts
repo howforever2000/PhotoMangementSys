@@ -45,6 +45,14 @@ const thumbs = reactive(new Map<string, string>());
 const thumbPending = new Set<string>();
 
 /**
+ * 已经因 `<img>` 加载失败重试过一次的 path。
+ *
+ * 重试要有上限：重新生成也可能失败（原图已删/损坏），无上限重入队就是无限循环。
+ * 重试一次仍不行 → 保持占位图，与「这张本来就没缩略图」同一观感。
+ */
+const thumbRetried = new Set<string>();
+
+/**
  * 数据版本号。
  *
  * 这里刻意用「普通 Map + 版本号」而不是 `reactive(数组)`：
@@ -75,6 +83,7 @@ export function invalidate(): void {
   months.clear();
   thumbs.clear();
   thumbPending.clear();
+  thumbRetried.clear();
   bump();
 }
 
@@ -191,19 +200,19 @@ export function ensureThumbs(cards: TimelineCard[]): void {
       thumbs.set(c.path, c.thumb_path);
       continue;
     }
-    if (c.album_id == null) continue;
+    // album_id 为空 → 用 0（「无归属缓存命名空间」，与 persons.rs 的约定一致）。
+    // 以前直接 continue 跳过：没归入相册的照片永远拿不到兜底缩略图（BUG-2026-1028-014）。
+    const albumId = c.album_id ?? 0;
     thumbPending.add(c.path);
-    const list = byAlbum.get(c.album_id) ?? [];
+    const list = byAlbum.get(albumId) ?? [];
     list.push(c.path);
-    byAlbum.set(c.album_id, list);
+    byAlbum.set(albumId, list);
   }
   for (const [albumId, paths] of byAlbum) {
-    void getThumbs(albumId, paths)
-      .then((pairs) => {
-        for (const [path, thumb] of pairs) {
-          if (thumb) thumbs.set(path, thumb);
-        }
-      })
+    void getThumbs(albumId, paths, (path, thumb) => {
+      // 逐张落进响应式表：卡片按到达顺序出图，而不是等整批（300 张）才一起亮
+      thumbs.set(path, thumb);
+    })
       .catch(() => {
         /* 拿不到就保持占位；滚出再滚回会重新入队（与改前语义一致） */
       })
@@ -211,4 +220,20 @@ export function ensureThumbs(cards: TimelineCard[]): void {
         for (const p of paths) thumbPending.delete(p);
       });
   }
+}
+
+/**
+ * 缩略图 `<img>` 加载失败 → 把死路径当成「没有缩略图」重走一遍兜底（BUG-2026-1028-014）
+ *
+ * 两道防线里的第二道：后端 `timeline_month` 已经会过滤掉磁盘上不存在的 thumb_path，
+ * 但文件可能在页面加载后被清掉（或后端口径以外的情况）。`<img onerror>` 是唯一
+ * 能真正发现「浏览器拿不到这张图」的地方，把 path 从响应式表里删掉，卡片自然回退成
+ * 占位图，然后重新入兜底队列（get_photo_thumbs 会当场重生成）。
+ */
+export function markThumbBroken(card: TimelineCard): void {
+  thumbs.delete(card.path);
+  bump();
+  if (thumbRetried.has(card.path)) return; // 已重试过一次 → 停手，避免死循环
+  thumbRetried.add(card.path);
+  ensureThumbs([{ ...card, thumb_path: null }]);
 }

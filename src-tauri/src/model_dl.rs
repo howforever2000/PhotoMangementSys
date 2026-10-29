@@ -38,6 +38,7 @@ struct DlFile {
 ///
 /// 目录约定（与 python/vcr/config.py 严格一致）：
 ///
+/// - 人物检测（主链路）：`yolov8n-det.onnx` 直接落模型根目录（`config.DET_MODEL`）
 /// - CLIP 两档：`chinese-clip*/onnx/<onnx>` + 根目录 `tokenizer.json` / `vocab.txt`
 ///   （tokenizer 必须在模型根目录，见 BUG-2026-0920-002）
 /// - 人脸两档：`det_*.onnx` + `w600k_*.onnx` 直接落 `python/models/`
@@ -45,6 +46,11 @@ struct DlFile {
 ///
 /// CLIP 档位清单 = b16（fp16，默认）+ b16-fp32（可走 DirectML）。L/14-336 已于
 /// 2026-09-21 实测否决并下架，故不在下载表中。
+///
+/// BUG-2026-1028-011：0.4.x 的发行包改用了 `release.tauri.conf.no-models.json`
+/// （resources 只有 vcr-server.exe），模型全靠本表下载；而本表**漏了人物检测**，
+/// 于是新装用户的 `/health.ok` 永远为 false（ok 的唯一判据就是 det），
+/// 表现为「人物通道不可用 + 扫描等 90s 后报正在加载」。现在补齐并标 required。
 struct DlSpec {
     name: &'static str,
     /// UI 展示名（如「语义 · B/16 fp16（推荐）」）
@@ -173,8 +179,23 @@ fn specs() -> Vec<DlSpec> {
         ),
         expect_min: 3_000_000,
     }];
+    const PERSON_DET: &[DlFile] = &[DlFile {
+        remote: "yolov8n-onnx-web/yolov8n.onnx",
+        local: "yolov8n-det.onnx",
+        abs_url: None,
+        expect_min: 11_000_000,
+    }];
 
     vec![
+        DlSpec {
+            name: "person-det",
+            label: "人物检测 · YOLOv8n（必需）",
+            note: "12.8MB · 人物/车辆检测主链路，缺它人物与扫描全部不可用",
+            repo: "salim4n/yolov8n-detect-onnx",
+            files: PERSON_DET,
+            required: true,
+            expect_bytes: 12_823_637,
+        },
         DlSpec {
             name: "chinese-clip",
             label: "语义 · B/16 fp16（推荐）",
@@ -1061,6 +1082,13 @@ mod tests {
         expect.extend(quoted_values(&text, "rec"));
         assert!(text.contains("OCR_MODEL = \"paddleocr-det.onnx\""));
         expect.push("paddleocr-det.onnx".into());
+        // 人物检测（主链路，/health.ok 的唯一判据）：必须能在应用内下载到。
+        // BUG-2026-1028-011：此前漏登记，轻量安装包用户永远补不齐 det。
+        assert!(
+            text.contains("DET_MODEL = \"yolov8n-det.onnx\""),
+            "python 侧 DET_MODEL 改名后须同步本测试"
+        );
+        expect.push("yolov8n-det.onnx".into());
 
         let all = specs();
         let locals: Vec<String> = all
@@ -1074,6 +1102,7 @@ mod tests {
             );
         }
     }
+
 
     /// 下载条目自洽性：命名/落位唯一、HF 文件走多镜像、绝对 URL 单源、体积下限合理。
     #[test]

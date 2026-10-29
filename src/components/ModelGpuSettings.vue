@@ -17,13 +17,16 @@
  * 服务可用性：由 ClipTierSection 充当探针（`list_vcr_models` 最轻且必然依赖服务）。
  * 它失败 → 本组件显示横幅并锁定①③；模型管理页签不受影响（BUG-2026-0918-002）。
  */
-import { ref } from "vue";
+import { ref, computed, onMounted } from "vue";
 import CollapseSection from "./CollapseSection.vue";
 import HardwareSection from "./settings/HardwareSection.vue";
 import ClipTierSection from "./settings/ClipTierSection.vue";
 import FaceTierSection from "./settings/FaceTierSection.vue";
 import ScanAdvancedSection from "./settings/ScanAdvancedSection.vue";
 import BenchmarkSection from "./settings/BenchmarkSection.vue";
+import { useContentStore } from "../stores/content";
+
+const store = useContentStore();
 
 /** 识别服务不可用 → 横幅 + 锁定依赖它的分区（不整块隐藏，用户仍能重试） */
 const initFailed = ref(false);
@@ -44,6 +47,42 @@ function retry() {
   initError.value = "";
   retryToken.value += 1;
 }
+
+// ---- 「这台机器现在怎么跑」摘要 ----
+//
+// 这一屏原来难懂的核心：四个开关分属**两条不同的腿**（GPU 加速 → 人物/人脸/OCR；
+// 语义索引 → 另受「语义档位」约束），但 UI 上从没说清楚。现在在顶部用两行把
+// “当前实际在哪跑”直接摆出来，开关变成“为什么这样”的解释而不是猜谜。
+//
+// 数据源：gpuStatus（人物链路的请求值）+ vcrModels.current（语义档位）。
+// 语义腿的真实规则写在 model_registry._clip_providers：fp16 档固定 CPU；
+// fp32 档才跟随 GPU 开关 —— 所以这里必须按档位说，不能笼统写一句“语义也走 GPU”。
+const accelOn = computed(() => store.gpuStatus?.use_gpu === true);
+const clipTier = computed(() => store.vcrModels?.current ?? "");
+const clipTierLabel = computed(() => {
+  const m = store.vcrModels?.models?.find((x) => x.name === store.vcrModels?.current);
+  return m?.label ?? clipTier.value ?? "";
+});
+const semantic = computed(() => {
+  if (!store.vcrModels) return { text: "读取中…", tone: "dim" as const };
+  if (clipTier.value.includes("fp16")) {
+    return { text: "CPU（fp16 档固定不走 GPU）", tone: "dim" as const };
+  }
+  if (accelOn.value) {
+    return { text: "DirectML 加速（跟随下方开关）", tone: "ok" as const };
+  }
+  return { text: "CPU（fp32 档可开 GPU）", tone: "dim" as const };
+});
+const personChain = computed(() =>
+  accelOn.value
+    ? { text: "DirectML 加速", tone: "ok" as const }
+    : { text: "CPU（未开加速）", tone: "dim" as const },
+);
+
+onMounted(() => {
+  // 摘要只做展示：失败不弹错（下面的分区各自有自己的错误态与重试）
+  if (!store.vcrModels) void store.fetchVcrModels().catch(() => {});
+});
 </script>
 
 <template>
@@ -59,6 +98,20 @@ function retry() {
         下面①②③区依赖识别服务，已暂时锁定；<b>「📦 模型管理」页签不依赖服务，仍可正常使用</b>。
       </span>
     </p>
+
+    <!-- FEAT-133：这台机器现在怎么跑（把两条腿分开说清） -->
+    <div class="now" aria-label="这台机器当前的推理方式">
+      <div class="now-row">
+        <span class="now-k">语义索引</span>
+        <span class="now-v" :class="semantic.tone">{{ semantic.text }}</span>
+        <span class="now-note">照片编向量 · 以图搜图 · 语义分类（当前档位：{{ clipTierLabel }}）</span>
+      </div>
+      <div class="now-row">
+        <span class="now-k">人物与文字</span>
+        <span class="now-v" :class="personChain.tone">{{ personChain.text }}</span>
+        <span class="now-note">人物检测 · 人脸 · OCR（由下方「GPU 加速」控制）</span>
+      </div>
+    </div>
 
     <!-- ① 本机硬件 -->
     <section class="block">
@@ -132,6 +185,44 @@ function retry() {
 }
 .banner-sub {
   color: var(--color-text-2);
+}
+/* 「现在怎么跑」摘要：两条腿分两行，每行只回答“现在在哪” */
+.now {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--color-surface-2);
+}
+.now-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.now-k {
+  min-width: 72px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.now-v {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--color-text-2);
+}
+.now-v.ok {
+  color: var(--color-ok);
+}
+.now-v.dim {
+  color: var(--color-text-3);
+  font-weight: 600;
+}
+.now-note {
+  font-size: 11.5px;
+  color: var(--color-text-3);
 }
 .btn {
   min-height: 26px;

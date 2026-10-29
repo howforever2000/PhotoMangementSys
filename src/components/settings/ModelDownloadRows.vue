@@ -8,8 +8,7 @@
  * FEAT-114 起 Rust 侧下载表覆盖 语义两档 + 人脸两档 + OCR（此前只有 CLIP），
  * 因此每行展示 label（人类可读名）与 note（体积/取舍），而不是裸模型 id。
  */
-import { computed, onMounted, ref, watch } from "vue";
-import { useContentStore } from "../../stores/content";
+import { computed, onMounted, ref, watch } from "vue";import { useContentStore } from "../../stores/content";
 import { useNotify } from "../../composables/useNotify";
 import type { ModelDlStatus } from "../../types/content";
 

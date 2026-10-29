@@ -128,10 +128,16 @@ fn pid_of_avatar_file(name: &str) -> Option<String> {
 }
 
 /// 删掉某个人物的全部头像缓存文件（jpg/签名/自选标记），返回删掉的文件数
+///
+/// BUG-2026-1028-013：**封面**三件套（`covers/cover_{pid}.{jpg,sig,custom}`）一并删。
+/// 以前只清头像：人物卡画的是封面，删除/合并后封面残渣会跟 P 编号一起被新人复用，
+/// 表现就是「新人物卡上出现别人的照片」（与 BUG-2026-1001-001 同类）。
 pub fn remove_avatar_cache(dir: &Path, pid: &str) -> u32 {
     let (jpg, sig, custom) = avatar_paths(dir, pid);
+    let (cover_jpg, cover_sig) = cover_paths(dir, pid);
+    let cover_custom = cover_custom_path(dir, pid);
     let mut n = 0;
-    for p in [jpg, sig, custom] {
+    for p in [jpg, sig, custom, cover_jpg, cover_sig, cover_custom] {
         if std::fs::remove_file(&p).is_ok() {
             n += 1;
         }
@@ -140,16 +146,23 @@ pub fn remove_avatar_cache(dir: &Path, pid: &str) -> u32 {
 }
 
 /// 清掉全部人物头像缓存（重建人物库用）；用户头像 `user_*.jpg` 保留
+///
+/// 封面在 `covers/` 子目录（与头像同一套 P 编号命名），必须一起清：
+/// 重建后 P 编号重新分配，旧封面留在磁盘上同样会被复用（BUG-2026-1028-013）。
 pub fn clear_all_avatar_cache(dir: &Path) -> u32 {
     let mut n = 0;
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with("avatar_") && std::fs::remove_file(e.path()).is_ok() {
-                n += 1;
+    let mut sweep = |d: &Path, prefix: &str| {
+        if let Ok(rd) = std::fs::read_dir(d) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name.starts_with(prefix) && std::fs::remove_file(e.path()).is_ok() {
+                    n += 1;
+                }
             }
         }
-    }
+    };
+    sweep(dir, "avatar_");
+    sweep(&dir.join("covers"), "cover_");
     n
 }
 
@@ -163,11 +176,22 @@ pub fn cover_paths(dir: &Path, pid: &str) -> (std::path::PathBuf, std::path::Pat
     (d.join(format!("cover_{pid}.jpg")), d.join(format!("cover_{pid}.sig")))
 }
 
-/// 封面身份签名是否与当前人脸集一致
+/// 封面「自选」标记（内容存源图路径，便于排查这张封面哪来的）
+///
+/// 与头像的 `.custom` 同一语义：用户指定过封面就**无条件优先**，
+/// 不因身份签名变化而被后台重裁覆盖（BUG-2026-1028-013）。
+pub fn cover_custom_path(dir: &Path, pid: &str) -> std::path::PathBuf {
+    dir.join("covers").join(format!("cover_{pid}.custom"))
+}
+
+/// 封面身份签名是否与当前人脸集一致（自选封面恒真）
 pub fn cover_cache_valid(dir: &Path, pid: &str, cur_sig: Option<&str>) -> bool {
     let (jpg, sig) = cover_paths(dir, pid);
     if !jpg.is_file() {
         return false;
+    }
+    if cover_custom_path(dir, pid).is_file() {
+        return true;
     }
     match (std::fs::read_to_string(&sig), cur_sig) {
         (Ok(written), Some(cur)) => written.trim() == cur,
@@ -227,8 +251,8 @@ use tauri::Manager;
 
 // 头像缓存身份校验/清理助手（定义在本文件外层模块，见“头像缓存的身份纪律”段）
 use super::{
-    avatar_paths, cache_valid, pid_of_avatar_file, remove_avatar_cache, write_sig,
-    AvatarRefreshed,
+    avatar_paths, cache_valid, cover_custom_path, cover_paths, pid_of_avatar_file,
+    remove_avatar_cache, write_cover_sig, write_sig, AvatarRefreshed,
 };
 
 // =====================================================================
@@ -465,17 +489,30 @@ pub async fn get_person_avatars_bulk(
 }
 
 
+/// 自选/恢复人像的结果：头像与卡片封面两条路径都要回给前端
+///
+/// 为什么必须成对：人物卡画的是 cover（FEAT-124），只回头像时前端只刷新 96×96，
+/// 用户看到的就是「设置了新头像但卡片毫无变化」（BUG-2026-1028-013）。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonPortrait {
+    pub avatar: String,
+    pub cover: String,
+}
+
 /// FEAT-047：人物自选头像 —— 用户在人物照片弹窗指定一张照片作为头像封面
 ///
-/// 中心方裁 96×96 JPEG 覆盖 `avatars/avatar_{pid}.jpg`（get_person_avatar 的
-/// is_file() 缓存命中自选结果，优先于自动裁剪）。解码在阻塞线程执行。
-/// 同时落 `.custom` 标记：自选头像永不因身份签名失配被自动重裁覆盖（用户选择优先）。
+/// **同时**产出两样东西（BUG-2026-1028-013）：
+///   - `avatars/avatar_{pid}.jpg`：96×96 中心方裁（合并弹窗等小圆片用，同路径覆盖）
+///   - `covers/cover_{pid}.jpg`：480×600 的 4:5 裁切（人物卡真正显示的那张）
+/// 两者都落 `.custom` 标记：用户选择优先，永不因身份签名失配被自动重裁覆盖。
+/// 解码在阻塞线程执行；任一裁切失败则整体报错（不会出现「头像新了封面还是旧」的半成品）。
 #[tauri::command]
 pub async fn set_person_avatar_from_photo(
     pid: String,
     photo_path: String,
     app: tauri::AppHandle,
-) -> Result<String, String> {
+) -> Result<PersonPortrait, String> {
     let _t = log_call!("set_person_avatar_from_photo", &format!("pid={pid}"));
     if !std::path::Path::new(&photo_path).is_file() {
         crate::logger::log_call_end_with("set_person_avatar_from_photo", _t, "ERR | 原图不存在");
@@ -483,14 +520,20 @@ pub async fn set_person_avatar_from_photo(
     }
     let dir = avatars_dir(&app)?;
     let (cache_path, sig_path, custom_path) = avatar_paths(&dir, &pid);
+    let (cover_path, cover_sig) = cover_paths(&dir, &pid);
+    let cover_custom = cover_custom_path(&dir, &pid);
     let cache_str = cache_path.to_string_lossy().into_owned();
+    let cover_str = cover_path.to_string_lossy().into_owned();
     let src = photo_path.clone();
+    let pid2 = pid.clone();
     let dst = cache_path.clone();
-    let r = tauri::async_runtime::spawn_blocking(move || {
+    let cover_dst = cover_path.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         crate::persons::set_avatar_from_photo(
             std::path::Path::new(&src),
             std::path::Path::new(&dst),
-        )
+        )?;
+        crate::persons::crop_photo_cover_local(&pid2, &src, &cover_dst)
     })
     .await
     .map_err(|e| format!("头像任务线程失败: {e}"))?;
@@ -498,47 +541,72 @@ pub async fn set_person_avatar_from_photo(
         // 标记为自选（内容存源图路径，便于排查“这个头像哪来的”）；旧签名作废
         let _ = std::fs::write(&custom_path, &photo_path);
         let _ = std::fs::remove_file(&sig_path);
+        if let Some(parent) = cover_custom.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&cover_custom, &photo_path);
+        let _ = std::fs::remove_file(&cover_sig);
     }
     match &r {
-        Ok(_) => crate::logger::log_call_end_with("set_person_avatar_from_photo", _t, "OK | custom"),
+        Ok(_) => crate::logger::log_call_end_with(
+            "set_person_avatar_from_photo",
+            _t,
+            "OK | custom（头像 + 封面）",
+        ),
         Err(e) => crate::logger::log_call_end_with("set_person_avatar_from_photo", _t, &format!("ERR | {e}")),
     }
     r?;
-    Ok(cache_str)
+    Ok(PersonPortrait {
+        avatar: cache_str,
+        cover: cover_str,
+    })
 }
 
 
 /// 恢复自动头像：抹掉自选标记 + 按当前代表脸重裁（右键菜单用）
 ///
 /// 与 set_person_avatar_from_photo 成对：用户挑错了/想回到“最像本人的脸”时，
-/// 一步回到自动选脸结果。无脸人物返回错误（前端 toast 提示）。
+/// 一步回到自动选脸结果。**头像与卡片封面一起恢复**（BUG-2026-1028-013：
+/// 以前只恢复头像，卡片上的自选封面留着不动，看起来就像“恢复没生效”）。
+/// 无脸人物返回错误（前端 toast 提示）。
 #[tauri::command]
 pub async fn restore_person_avatar(
     pid: String,
     app: tauri::AppHandle,
-) -> Result<String, String> {
+) -> Result<PersonPortrait, String> {
     let _t = log_call!("restore_person_avatar", &format!("pid={pid}"));
     let dir = avatars_dir(&app)?;
-    let (cache_path, _sig, custom_path) = avatar_paths(&dir, &pid);
-    let _ = std::fs::remove_file(&custom_path);
-    let _ = std::fs::remove_file(&cache_path);
+    let (cache_path, avatar_sig, custom_path) = avatar_paths(&dir, &pid);
+    let (cover_path, cover_sig) = cover_paths(&dir, &pid);
+    let cover_custom = cover_custom_path(&dir, &pid);
+    for p in [&custom_path, &cache_path, &cover_custom, &cover_path] {
+        let _ = std::fs::remove_file(p);
+    }
+    let _ = std::fs::remove_file(&cover_sig);
+    let _ = std::fs::remove_file(&avatar_sig);
     let dir2 = dir.clone();
     let pid2 = pid.clone();
     let dst = cache_path.clone();
-    let r = tauri::async_runtime::spawn_blocking(move || {
-        crate::persons::crop_avatar_local(&pid2, &dst)
+    let cover_dst = cover_path.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        crate::persons::crop_avatar_local(&pid2, &dst)?;
+        crate::persons::crop_face_cover_local(&pid2, &cover_dst)
     })
     .await
     .map_err(|e| format!("头像任务线程失败: {e}"))?;
     if r.is_ok() {
         write_sig(&dir2, &pid);
+        write_cover_sig(&dir2, &pid);
     }
     match &r {
-        Ok(_) => crate::logger::log_call_end_with("restore_person_avatar", _t, "OK | auto"),
+        Ok(_) => crate::logger::log_call_end_with("restore_person_avatar", _t, "OK | auto（头像 + 封面）"),
         Err(e) => crate::logger::log_call_end_with("restore_person_avatar", _t, &format!("ERR | {e}")),
     }
     r?;
-    Ok(cache_path.to_string_lossy().into_owned())
+    Ok(PersonPortrait {
+        avatar: cache_path.to_string_lossy().into_owned(),
+        cover: cover_path.to_string_lossy().into_owned(),
+    })
 }
 
 }
@@ -628,6 +696,47 @@ mod tests {
         assert_eq!((img3.width(), img3.height()), (96, 96));
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 封面缓存可信判据 + 封面随人头缓存一起清理（BUG-2026-1028-013）
+    ///
+    /// 两条都要测：①自选封面必须恒真（否则后台重裁会把用户选的照片换掉）；
+    /// ②删/合并/重建时封面文件必须真被清掉（否则 P 编号复用后封面串到下一个人）。
+    #[test]
+    fn test_cover_cache_validity_and_cleanup() {
+        let dir = std::env::temp_dir().join(format!("cover_sig_test_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("covers")).unwrap();
+        let (jpg, sig) = cover_paths(&dir, "P009");
+        let custom = cover_custom_path(&dir, "P009");
+
+        assert!(!cover_cache_valid(&dir, "P009", Some("1:1")), "无文件不可信");
+        std::fs::write(&jpg, b"x").unwrap();
+        assert!(!cover_cache_valid(&dir, "P009", Some("1:1")), "无签名不可信");
+        std::fs::write(&sig, "1:1").unwrap();
+        assert!(cover_cache_valid(&dir, "P009", Some("1:1")));
+        assert!(!cover_cache_valid(&dir, "P009", Some("2:2")), "签名不符不可信");
+
+        std::fs::write(&custom, "D:/photo.jpg").unwrap();
+        assert!(
+            cover_cache_valid(&dir, "P009", Some("999:9")),
+            "自选封面应无条件可信（用户选择优先）"
+        );
+
+        // 同时放一个真头像文件：验证「两套（头像+封面）一次清完」是 4 个以上
+        std::fs::write(dir.join("avatar_P009.jpg"), b"z").unwrap();
+        assert!(remove_avatar_cache(&dir, "P009") >= 4, "应清掉头像+封面两套文件");
+        assert!(!jpg.exists() && !sig.exists() && !custom.exists());
+        assert!(!dir.join("avatar_P009.jpg").exists());
+
+        std::fs::create_dir_all(dir.join("covers")).unwrap();
+        std::fs::write(&jpg, b"x").unwrap();
+        std::fs::write(&sig, "1:1").unwrap();
+        std::fs::write(dir.join("avatar_P010.jpg"), b"y").unwrap();
+        assert!(clear_all_avatar_cache(&dir) >= 3);
+        assert!(!jpg.exists() && !sig.exists());
+        assert!(!dir.join("avatar_P010.jpg").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// 源文件不存在应报错而非 panic

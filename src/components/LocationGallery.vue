@@ -14,6 +14,7 @@ import { computed, onMounted, ref } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
+import { useAlbumStore } from "../stores/album";
 import { getThumbs } from "../utils/thumbQueue";
 import PhotoLightbox from "./PhotoLightbox.vue";
 import PhotoActionMenu from "./PhotoActionMenu.vue";
@@ -27,6 +28,7 @@ import type { ContentSearchHit, LocationGroupRow } from "../types/content";
 
 const theme = useThemeStore();
 const notify = useNotify();
+const albumStore = useAlbumStore();
 
 const UNKNOWN_LABEL = "未记录地点";
 
@@ -246,21 +248,42 @@ function pickMode(mode: DeleteMode) {
   void executeDelete(paths, mode);
 }
 
-/** 删除执行中（禁用共享弹窗按钮，防重复提交） */
+/** 执行中（禁用共享弹窗按钮，防重复提交） */
 const deleting = ref(false);
 
+/**
+ * 按选定方式执行（BUG-2026-1028-015）
+ *
+ * 地点视图没有「只是不想在这里看到」的数据模型（分类有命中表、相册有排除表，
+ * 地点没有），所以弹窗只给「清除数据 / 回收站」两项；这里也绝不能再把未知方式
+ * 当成回收站删除 —— 旧实现 `mode === "records" ? A : B` 在 DeleteMode 换成
+ * remove|reassign|purge|trash 后永远选中 B，选任何项都会真删文件。
+ */
 async function executeDelete(paths: string[], mode: DeleteMode) {
   if (!paths.length || deleting.value) return;
+  if (mode === "remove" || mode === "reassign") return; // 本视图不提供，防御式忽略
   deleting.value = true;
-  const cmd = mode === "records" ? "delete_photo_records_by_paths" : "delete_photos_to_trash";
   try {
-    const outcome = await invoke<{
-      requested: number;
-      deleted: number;
-      failed: number;
-      failed_paths: string[];
-    }>(cmd, { paths });
-    const removed = new Set(paths.filter((p) => !outcome.failed_paths.includes(p)));
+    let deleted = paths.length;
+    let failed = 0;
+    let failedPaths: string[] = [];
+    if (mode === "purge") {
+      const out = await albumStore.purgePhotoData(paths);
+      deleted = out.deleted;
+      failed = out.failed;
+      failedPaths = out.failed_paths ?? [];
+    } else {
+      const out = await invoke<{
+        requested: number;
+        deleted: number;
+        failed: number;
+        failed_paths: string[];
+      }>("delete_photos_to_trash", { paths });
+      deleted = out.deleted;
+      failed = out.failed;
+      failedPaths = out.failed_paths;
+    }
+    const removed = new Set(paths.filter((p) => !failedPaths.includes(p)));
     photos.value = photos.value.filter((p) => !removed.has(p.path));
     const tm = { ...thumbMap.value };
     for (const p of removed) delete tm[p];
@@ -274,19 +297,19 @@ async function executeDelete(paths: string[], mode: DeleteMode) {
     if (activeGroup.value && !groups.value.some((g) => g.location === activeGroup.value!.location)) {
       backToCards();
     }
-    if (outcome.failed > 0) {
+    if (failed > 0) {
       notify.warning(
-        `已删除 ${outcome.deleted} / ${outcome.requested} 张`,
-        `失败：${outcome.failed_paths.slice(0, 3).join("、")}${outcome.failed_paths.length > 3 ? "…" : ""}`,
+        `已处理 ${deleted} / ${paths.length} 张`,
+        `失败：${failedPaths.slice(0, 3).join("、")}${failedPaths.length > 3 ? "…" : ""}`,
       );
     } else {
       notify.success(
-        `已删除 ${outcome.deleted} 张`,
-        mode === "trash" ? "文件已移入系统回收站" : "本地文件保留，仅清除记录",
+        `已处理 ${deleted} 张`,
+        mode === "trash" ? "文件已移入系统回收站" : "识别数据已清除，重新导入相册才能找回",
       );
     }
   } catch (e) {
-    notify.error("删除失败", String(e));
+    notify.error("处理失败", String(e));
   } finally {
     modeDialogPaths.value = null;
     deleting.value = false;
@@ -509,6 +532,7 @@ onMounted(load);
     <!-- FEAT-095（R7 / D1）：批量删除方式选择，复用共享弹窗 -->
     <PhotoDeleteDialog
       :paths="modeDialogPaths"
+      context="location"
       :busy="deleting"
       @pick="pickMode"
       @cancel="modeDialogPaths = null"

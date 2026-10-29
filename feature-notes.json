@@ -4805,7 +4805,344 @@
         "semantic_fingerprint",
         "扫描两遍"
       ]
+    },
+    {
+      "id": "FEAT-126",
+      "name": "AI 腿解码降采样（draft DCT 域解码）",
+      "module": "python/vcr/preprocess.py · python/vcr/config.py（DECODE_MIN_LONG）",
+      "status": "done",
+      "purpose": "AI 腿每张图的 CPU 大头不是推理，而是「为了要一张 640px 的图把 8~12MP 原图全解码一遍」。用 PIL/libjpeg 的 draft() 在 DCT 域直接解到目标尺度，把解码+缩放成本砍掉一半以上。",
+      "implementation": "open_image_ex() 按 DECODE_MIN_LONG(默认 1600) 计算 2 的幂降采样档位后调 img.draft()，并把**真实原图尺寸**一并返回；Letterbox 新增 dec_scale 字段：r/size 一律按真实原图算（bbox 仍落在原图坐标系，FACE_MIN_PIX=48 的真值口径不变），只有 face_align 需要把关键点乘 dec_scale 折回解码图坐标。arbitrator 新增 src_size 参数，截图启发式的短边阈值也改用原图真值。",
+      "highlights": [
+        "decode+resize 实测（P=6，24 张 8~12MP）：全分辨率 194.9ms/张 → 长边≥1600 约 90~110ms/张（-50% 以上）",
+        "同进程交替 A/B（60 张，P=6，GPU 开）：decode 158.4 → 58.0 ms/张（-63%）",
+        "人脸链路数值验收（30 张人脸密集图 / 409 张脸，与全分辨率逐脸 IoU≥0.85 配对）：脸数完全一致，嵌入余弦均值 0.98440 / 最小 0.90314，bbox IoU 中位 1.000；而长边≥1024 档 cos 均值降到 0.94479（最小 0.72334）、长边≥640 档降到 0.81862（最小 0.12649）——所以默认取 1600，不要图快往下调",
+        "分类结论等价性（60 张 + 24 张两批）：category / sub_category / label / person_count 逐字一致；confidence 仅第 3~4 位小数变化（最大 0.003）；avg_luma 最大差 0.015（无一张跨 NIGHT_LUMA=45）；ocr area_ratio 最大差 0.0005",
+        "陷阱（踩过）：第一版只改了 letterbox 的 base，没把 r/size 与新原图尺寸对齐 —— FACE_MIN_PIX 在「降采样后的坐标」上比较，脸数从 16 掉到 0。必须让 bbox/阈值继续走真实原图口径。"
+      ],
+      "tests": "python/bench/pipeline_cost_probe.py（看 decode 均摊）；人脸与分类等价性用临时脚本逐脸/逐张比对，判据已写进本条目，复现方式见 highlights。",
+      "related_files": [
+        "python/vcr/preprocess.py",
+        "python/vcr/config.py",
+        "python/vcr/services/pipeline.py",
+        "python/vcr/services/face_service.py",
+        "python/vcr/services/arbitrator.py"
+      ],
+      "keywords": [
+        "decode",
+        "draft",
+        "解码",
+        "降采样",
+        "PIL",
+        "libjpeg",
+        "DCT",
+        "Letterbox",
+        "dec_scale",
+        "性能"
+      ],
+      "created_at": "2026-10-27T23:40:00+08:00",
+      "updated_at": "2026-10-27T23:40:00+08:00"
+    },
+    {
+      "id": "FEAT-127",
+      "name": "OCR 通道前置门（人物规则命中就不跑 OCR）",
+      "module": "python/vcr/services/pipeline.py · python/vcr/services/arbitrator.py · python/vcr/config.py（OCR_GATE）",
+      "status": "done",
+      "purpose": "仲裁优先级是「人物规则 > OCR > 截图 > 夜景」，人物规则一旦命中，OCR 结果永远不会被采纳 ——而旧实现每张图都无条件跑一次 OCR 推理。",
+      "implementation": "arbitrator 抽出 person_verdict()/person_rule_hits() 作为人物规则的**唯一**判定来源，arbitrate 与 pipeline._gpu_channels 共用它；det 之后若人物规则命中，OCR 直接返回 ready=False 的 OcrOutcome（与「模型缺失/未跑」同语义），仲裁器照旧跳过。config.OCR_GATE 可关（VCR_OCR_GATE=0）做 A/B。",
+      "highlights": [
+        "等价性：60 张硬字段（category/sub_category/label/person_count）不一致 0 张 —— 这是构造性等价（同一函数判定），不是「几乎等价」",
+        "前置门命中率：album=126 抽样 60 张中命中 20 张（33%），即三分之一的图省掉一次串行推理",
+        "收益（同进程交替 A/B，P=6，60 张）：wall 133.7 → 115.7 ms/张（-13.5%），ocr 段均摊 284.9 → 196.8",
+        "动机来自 pipeline_cost_probe 的实测：整批 55 次加锁里有 24 次是 OCR（占 44%），而持锁时间占墙钟 99% —— 加锁次数就是成本"
+      ],
+      "tests": "python/bench/pipeline_cost_probe.py 对比 ocr 段均摊与加锁次数；等价性用临时脚本对 60 张逐张比对硬字段。",
+      "related_files": [
+        "python/vcr/services/pipeline.py",
+        "python/vcr/services/arbitrator.py",
+        "python/vcr/config.py"
+      ],
+      "keywords": [
+        "OCR",
+        "前置门",
+        "gate",
+        "仲裁",
+        "person_rule_hits",
+        "性能",
+        "GPU锁"
+      ],
+      "created_at": "2026-10-27T23:40:00+08:00",
+      "updated_at": "2026-10-27T23:40:00+08:00"
+    },
+    {
+      "id": "FEAT-128",
+      "name": "CPU 线程默认值按真实拓扑取 P 核数",
+      "module": "python/vcr/config.py（_cpu_topology / physical_cores_guess / default_threads / threads_info）",
+      "status": "done",
+      "purpose": "旧实现用 logical//2 猜物理核，隐含「每个物理核都有超线程」；Intel 桌面（Alder Lake 起）是 P/E 大小核且**无超线程**，245K(6P+8E) 的 14 个逻辑核会被猜成 7 个「物理核」，而 intra_op 线程一旦越过 P 核数量就往 E 核溢出，越加越慢。",
+      "implementation": "用 Win32 GetLogicalProcessorInformationEx(RelationProcessorCore) 真读每个核的 EfficiencyClass：同质核 → 物理核数；混合核 → 取 EfficiencyClass 最大那档的数量作 P 核数。default_threads() 取 P 核数并夹在 [4,8]。threads_info() 新增 physical / p_cores / e_cores / hybrid。非 Windows 或调用失败回落旧口径 logical//2。",
+      "highlights": [
+        "实测（245K）：physical=14 · p_cores=6 · e_cores=8 · hybrid=true → default_threads=6（旧口径给 7）",
+        "实测同机 det 单次推理随线程数单调劣化：6 线程 32.8ms · 8 线程 39.9ms · 10 线程 54.2ms · 12 线程 88.9ms · 14 线程 110.2ms —— 6 线程比 14 线程快 3.4 倍",
+        "持久化值仍优先于默认值：models/current_threads.json 存在时不覆盖用户选择"
+      ],
+      "tests": "python -c \"from vcr import config; print(config.threads_info())\" 应显示 p_cores/e_cores/hybrid 且 default 等于 P 核数",
+      "related_files": [
+        "python/vcr/config.py"
+      ],
+      "keywords": [
+        "线程数",
+        "intra_op",
+        "P核",
+        "E核",
+        "大小核",
+        "混合核",
+        "EfficiencyClass",
+        "性能"
+      ],
+      "created_at": "2026-10-27T23:40:00+08:00",
+      "updated_at": "2026-10-27T23:40:00+08:00"
+    },
+    {
+      "id": "FEAT-129",
+      "name": "人物检测模型（yolov8n-det）纳入应用内下载 + 发布包自检",
+      "status": "done",
+      "purpose": "让「不带模型的轻量安装包」这条路线真正可用：新装用户能在应用内补齐人物检测（/health.ok 的唯一判据），并且以后再打出无模型包会被构建脚本拦住",
+      "module": "src-tauri/src/model_dl.rs、src-tauri/src/vision.rs、src/components/settings/*、src/components/ScanPanel.vue、src/components/GlobalScanPanel.vue、release.ps1",
+      "implementation": {
+        "backend": "DlSpec 新增 person-det（yolov8n-det.onnx 12.8MB，required=true，HF 双镜像 salim4n/yolov8n-detect-onnx 的 yolov8n-onnx-web/yolov8n.onnx）；poll_ready 在 load_errors 指明模型文件缺失时立即失败并给出可执行报错",
+        "frontend": "模型缺失弹窗新增 det 场景与文案；扫描面板缺失原因判定先认 yolov8n/人物检测再认 ocr；性能设置 ESSENTIAL_MODELS 加入 person-det；ClipTier/FaceTier 轮询改「仅切换后启动 + 60s 上限 + 手动刷新」",
+        "release": "release.ps1 第 5 步解包 NSIS 自检 resources 清单，缺项即构建失败（拦截无模型包误发）"
+      },
+      "highlights": [
+        "源等价性可复验：python/bench/verify_det_source_equiv.py 比对本地模型与候选源的 IO 签名 + 前向输出（本机 max|Δ|=0.000e+00）",
+        "端到端：镜像下载所得文件作为唯一模型放入空目录 → /health ok=true / det_ready=true",
+        "cargo test --lib 420 passed；vue-tsc + vite build 通过"
+      ],
+      "related_files": [
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/vision.rs",
+        "src/components/settings/ClipTierSection.vue",
+        "src/components/settings/FaceTierSection.vue",
+        "src/components/settings/ModelMissingDialog.vue",
+        "src/components/settings/PerfSettingsDialog.vue",
+        "src/components/ScanPanel.vue",
+        "src/components/GlobalScanPanel.vue",
+        "release.ps1",
+        "python/bench/verify_det_source_equiv.py"
+      ],
+      "keywords": [
+        "模型下载",
+        "人物检测",
+        "yolov8n-det",
+        "det",
+        "health.ok",
+        "发布包",
+        "轮询",
+        "性能设置"
+      ],
+      "tests": [
+        "cargo test --lib（含 model_dl::tests::face_and_ocr_specs_match_python_config 新增 DET_MODEL 断言）",
+        "python/bench/verify_det_source_equiv.py python/models/yolov8n-det.onnx <候选.onnx> → ✅ 等价",
+        "实际镜像 Range 探测：hf-mirror / aifasthub 均 206，12823637 字节"
+      ],
+      "created_at": "2026-10-28T22:55:00+08:00",
+      "updated_at": "2026-10-28T22:55:00+08:00"
+    },
+    {
+      "id": "FEAT-130",
+      "name": "人像（头像 + 封面）统一写入与时间线缩略图自愈",
+      "status": "done",
+      "purpose": "让「换这张照片当头像」在人物卡上真的可见；让时间线缩略图对「缓存表有行、磁盘没文件」的情况自愈，而不是长期空白",
+      "module": "src-tauri/src/avatar.rs、src-tauri/src/persons.rs、src-tauri/src/content.rs、src/stores/timeline.ts、src/utils/thumbQueue.ts、src/components/PersonGallery.vue、src/views/Timeline.vue",
+      "implementation": {
+        "backend": "新增 persons::crop_photo_cover_local（指定照片 → 480×600 封面，贴脸或中部兜底）+ decode_display/save_cover 共用步骤；set_person_avatar_from_photo / restore_person_avatar 改为一次写头像+封面并返回 {avatar, cover}；封面 .custom 标记与清理（remove_avatar_cache / clear_all_avatar_cache 覆盖 covers/）；timeline_month 用 drop_dead_thumb_links 过滤死链",
+        "frontend": "PersonGallery applyPortrait 同刷 avatarMap+coverMap；右键菜单「更换头像 / 封面…」；Timeline <img @error> → markThumbBroken（限一次重试）；ensureThumbs 支持 album_id=0；getThumbs 支持 onPair 逐张回调",
+        "tooling": "python/bench/diag_thumb_cache_health.py 只读诊断缩略图缓存表与磁盘一致性"
+      },
+      "highlights": [
+        "封面与头像共用同一套解码纪律（JPEG 分级降采样 / 非 JPEG 按魔数），没有复制两份解码代码",
+        "自选封面永不被后台重裁覆盖（.custom），且随人物删除/合并/重建一起清掉，杜绝 P 编号复用串照片",
+        "时间线修复不需要迁移脚本：置 None → 前端兜底 → get_photo_thumbs 重生成并 upsert，浏览即自愈"
+      ],
+      "related_files": [
+        "src-tauri/src/avatar.rs",
+        "src-tauri/src/persons.rs",
+        "src-tauri/src/content.rs",
+        "src/stores/timeline.ts",
+        "src/utils/thumbQueue.ts",
+        "src/components/PersonGallery.vue",
+        "src/views/Timeline.vue",
+        "python/bench/diag_thumb_cache_health.py"
+      ],
+      "keywords": [
+        "头像",
+        "封面",
+        "cover",
+        "crop_photo_cover_local",
+        "缩略图",
+        "thumb_path",
+        "时间线",
+        "自愈"
+      ],
+      "tests": [
+        "cargo test --lib 424 passed（新增 test_crop_photo_cover_local_real_data / test_cover_cache_validity_and_cleanup / test_cover_rect_center / drop_dead_thumb_links_nulls_missing_files_only）",
+        "npm run build（vue-tsc + vite）通过；npm test 164 passed",
+        "diag_thumb_cache_health.py 实测：修复前 53.3% 死链"
+      ],
+      "created_at": "2026-10-28T23:35:00+08:00",
+      "updated_at": "2026-10-28T23:35:00+08:00"
+    },
+    {
+      "id": "FEAT-131",
+      "name": "照片「处理方式」四分化：移除 / 改挂 / 清除数据库记录 / 删除文件",
+      "module": "src-tauri/src/photos.rs、src-tauri/src/db/content.rs、src-tauri/src/db/category.rs、src-tauri/src/category.rs、src/components/PhotoDeleteDialog.vue、src/components/PhotoGrid.vue、src/stores/album.ts",
+      "status": "done",
+      "purpose": "「删除相册记录」一个按钮同时干了三件语义完全不同的事：让照片从网格消失、删掉全部识别数据、有时还删文件。用户想「这张 AI 分错了、我只要它别出现在这个相册里」时没有对应的操作，只能整条记录删掉再重扫；分类页也有同样的问题（AI 把照片分错类，无法人工纠正，只能连照片一起清记录）。",
+      "implementation": {
+        "① 移除（remove）": "delete_photo_records 只写 album_photo_excluded，不再级联删 content —— EXIF / 阳光 / 分类 / 人物 / 语义向量全部保留，照片仍出现在时间线、回忆、搜索与人物相册里；可通过 restore_photo_records 撤销。这正是「从相册移除」与「清除记录」的区别。",
+        "② 清除（purge）": "新增 purge_photo_data 命令：先解析归属相册（photo_content_scan.album_id 优先，未入库的用「相册目录最长前缀」兜底，必须在使用扫描记录之前算）→ 清缩略图表行与磁盘文件 → 按相册分组写排除表 → delete_content_by_paths（content / 向量 / 分类命中同生命周期）→ persons::delete_faces_by_paths（独立库，必须在主库锁之外）。恢复方式只有「删相册重新导入」（新 album_id → 排除记录失效）。",
+        "③ 删除文件（trash）": "沿用 delete_photos_to_trash，语义不变（移入系统回收站 + 级联清记录）。",
+        "④ 分类人工纠错": "新增 remove_photos_from_category（db::remove_category_hits）：只删 photo_category_hits 里该分类的命中行，照片、其他分类、扫描记录全不动 —— 解决「AI 分错类不能只纠正一条判断」的问题。",
+        "⑤ 前端收敛": "PhotoDeleteDialog 的 DeleteMode 由 records|trash 改为 remove|reassign|purge|trash，新增 context（album / person / category / location）按语境裁剪选项，危险程度自下而上递增、最后一项永远是回收站；count 改为 computed（原先是函数式 props 读取，选项文案里的张数不会随 props 更新）。各画廊只负责「传路径 + 执行选定的方式」，删掉了此前散在四处、语义互有出入的 del-mask 弹窗。"
+      },
+      "highlights": [
+        "「删除」这个词把三件事混成一件：看不见了 / 数据没了 / 文件没了。分开命名后每个选项都能用一句话说清后果，且都有对应的可逆路径（撤销排除 / 重新导入 / 回收站）",
+        "purge 的顺序是被依赖关系逼出来的：归属相册要先算（删了 content 就只剩前缀兜底）、缩略图要先清（依赖原图仍可读）、persons.db 要放在主库锁外（独立连接，嵌套加锁会死锁）",
+        "「AI 分错类」的正确修法是删命中行而不是删照片记录 —— 命中行是「这张图属于这个分类」这一条判断，照片本身没有任何问题"
+      ],
+      "tests": "cargo check 通过（33 warnings，均为既有 dead_code）；npm run build 由用户侧验证。",
+      "related_files": [
+        "src-tauri/src/photos.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/db/category.rs",
+        "src-tauri/src/category.rs",
+        "src/components/PhotoDeleteDialog.vue",
+        "src/components/PhotoGrid.vue",
+        "src/stores/album.ts"
+      ],
+      "keywords": [
+        "purge_photo_data",
+        "delete_photo_records",
+        "remove_photos_from_category",
+        "相册移除",
+        "清除数据库记录",
+        "人工纠错",
+        "PhotoDeleteDialog",
+        "DeleteMode"
+      ]
+    },
+    {
+      "id": "FEAT-132",
+      "name": "人物人脸归属人工改挂 + face_overrides 覆盖表（重扫不覆盖人工修正）",
+      "module": "src-tauri/src/persons.rs、src-tauri/src/db/content.rs、python/vcr/persistence/person_store.py、src/components/PersonGallery.vue",
+      "status": "done",
+      "purpose": "AI 认错人（把 A 的脸聚到 B 名下）时用户完全无从纠正；且哪怕手动改了，下次重扫仍按旧质心把它认回去 —— 因为扫描端每次都是「匹配质心 → 插一行 faces」，只改行挡不住重扫。",
+      "implementation": {
+        "① 覆盖表": "persons.db 新增 face_overrides(photo_path, bbox, person_id, created_at)，主键 (photo_path,bbox)。person_id 为哨兵 __none__ 表示「明确不属于任何人」。与 faces 解耦：重建人物库清空 faces 时覆盖记录仍在，目标人物不存在则自动失效回退到正常匹配。",
+        "② 扫描端优先": "PersonStore.register() 先查 lookup_override，命中就不再跑质心匹配（override=__none__ 直接返回 None）；merge / delete / reset_registry 同步迁移或清理覆盖记录，避免把脸挂到已删除或已换人的 P 编号上。",
+        "③ 三种用法": "move_faces(from_pid, to_pid, new_name, paths)：to_pid 与 new_name 都为空 = 移出全部人物（删 faces 行 + 覆盖为无人）；to_pid=Some = 移到已有的人；new_name=Some = 新建人物并移入（编号取当前最大 +1）。单事务内完成建人物 → 改挂/删除 → 写覆盖 → 重算两方质心。",
+        "④ 质心重算": "recompute_person 从 faces 全量重算质心与 face_count（而不是从旧质心做减法），避免「移走典型脸 → 质心漂移」的累积误差；一张脸都不剩就把人物整行删掉。",
+        "⑤ 下游同步": "新增 db::sync_person_ids_for_paths 同步 photo_content_scan.person_ids（网格徽标 / 人物筛选 / 描述文本读这张表，不同步会出现「人物页已改、别处还是旧名字」）；两端头像缓存签名失配自动重裁；描述文本后台增量重建（与改名同一套机制）。"
+      },
+      "highlights": [
+        "「改了又被改回去」的根因不在更新语句，而在数据模型：扫描是 insert-only 的派生过程，人工修正必须作为**输入**存下来，而不是去改派生结果",
+        "覆盖表用 (photo_path, bbox) 而不是 faces.id：faces 行在重扫时会被重新插入、id 会变，只有「照片 + 框」在语义上稳定",
+        "__none__ 哨兵是必要的：没有它就无法区分「没有人工意见」（按质心重新认）和「用户明确说不是任何人」（永久排除）"
+      ],
+      "tests": "cargo check 通过。",
+      "related_files": [
+        "src-tauri/src/persons.rs",
+        "src-tauri/src/db/content.rs",
+        "python/vcr/persistence/person_store.py",
+        "src/components/PersonGallery.vue"
+      ],
+      "keywords": [
+        "move_person_faces",
+        "face_overrides",
+        "人脸改挂",
+        "移出人物",
+        "人工修正",
+        "重扫覆盖",
+        "recompute_person",
+        "sync_person_ids",
+        "NO_PERSON"
+      ]
+    },
+    {
+      "id": "FEAT-133",
+      "name": "语义索引上 NPU：OpenVINO 裁剪运行时按需下载 + 后端切换 + 性能设置「两条腿」说明",
+      "module": "python/vcr/ovrt.py、python/vcr/services/ov_clip.py、python/vcr/model_registry.py、python/vcr/config.py、python/server.py、python/scripts/build_ov_runtime_zip.py、src-tauri/src/model_dl.rs、src-tauri/src/vision.rs、src-tauri/src/vcr_settings.rs、src-tauri/src/lib.rs、src/components/ModelGpuSettings.vue、src/components/settings/OvRuntimeSection.vue、src/components/settings/GpuSection.vue、src/components/settings/ModelDownloadRows.vue、src/stores/content.ts、src/types/content.ts、release.ps1",
+      "status": "reverted",
+      "purpose": "用户问「扫描入库能不能用 NPU 加速」，并明确「不能只考虑当前电脑系统和硬件」「OpenVINO 组件有点大，能不能不进安装包」。实测结论：本机（Intel Ultra 5 245K + AI Boost）只有语义图像塔值得上 NPU（19.7ms vs 核显 26.1ms vs CPU 56.7ms），而 det（核显 7.0 最优）、face_det（NPU 115.9ms 慢 8 倍）、ocr（核显最优）上 NPU 全是负收益。于是只把语义图塔这一条腿做成可选的 OpenVINO 后端，组件裁剪成 15.5MB zip / 40.7MB 装后、按需下载，AMD/NVIDIA 机器完全不推荐也不受影响。",
+      "implementation": {
+        "只接一条腿": "vcr/services/ov_clip.py 只接管 clip_vision，静态 reshape 到 [1,3,224,224]（NPU 只吃静态 shape），对外仍是 (N,dim) —— embed_service 的 np.vstack 批量在内部按张循环。face_det 在 NPU 上的候选资格以注释永久排除（8 倍差距）。clip_text 也不接管：它的 attention_mask 带无界动态维，NPU 编译器会 LLVM abort 把整个进程带走（实测触发两次，不可 catch）。",
+        "裁剪依据": "完整 openvino 244.8MB，其中 npu_compiler 95.7MB（只编图用，我们启动时现编且有缓存）、cpu_plugin 44.2MB、gpu_plugin 33.1MB、多余前端 ~13MB、cache.json 8.4MB、.lib/.pdb 8MB+。裁剪后 45.4MB 装上 / 15.5MB zip，只认 NPU。",
+        "为什么走 model_dl 下载 zip 而不是在 Rust 里解压": "model_dl 的下载单元是「文件」，加归档解压会引 zip 依赖与新失败面。改为 Rust 只把 zip 落到 models/_runtime/，Python 首次使用时用标准库 zipfile 解压并注入 sys.path；解压先落 ovrt.partial 再改名，改名失败（杀毒软件占句柄，实测复现 WinError 5）不算失败，直接用中转目录跑并下次重试。",
+        "后端选择与退路": "config.CLIP_RUNTIME_PATH（models/current_clip_runtime.json）= auto | ort。auto 且有组件、有可用设备、模型文件在 → 才挂 OV；否则恒 None，一切走原 ORT 路径。新增 GET/POST /clip_runtime + Tauri get_vcr_clip_runtime / set_vcr_clip_runtime；POST 只清 clip_vision 槽位、后台重建。ort 是无需卸载组件的一键退路。",
+        "不破坏既有语义": "后端切换**不改变** photo_embeddings.model（那是模型档位 id，不是后端）；_session_info 用 providers=[\"OpenVINO:NPU\"] 的同一口径上报，/health 与实测诊断页读的是服务端事实；benchmark(\"clip_vision\") 通过最小垫片（run/get_providers/get_inputs）直接量 OV 这条腿，不再出现「NPU 生效后通道不可用」的自相矛盾。",
+        "性能设置可理解性": "新增顶部「这台机器现在怎么跑」摘要：语义索引 / 人物与文字两行，分别显示实际设备 —— 把「四个开关分属两条腿」这件事实摆在最前面。新增 OvRuntimeSection：Intel 才给下载按钮（AMD/unknown 直接显示不适用），已装则显示实际设备、编译耗时、一键切回 ORT；运行时组件从「模型下载」列表里过滤掉（RUNTIME_SPECS），避免两处入口各说一套状态。GpuSection 文案改为「本开关只管人物检测/人脸/OCR，语义索引见上方」。",
+        "交付": "release.ps1 新增 2b 步：缺组件就现跑 build_ov_runtime_zip.py，并明确提醒必须把 openvino-npu-win-x64.zip 作为 Release 资产上传（model_dl 用 releases/latest/download/ 抓）。VCR_API_VERSION 9 → 10（行为变更，宿主据此重启旧服务）。"
+      },
+      "highlights": [
+        "通道级实测（Intel Ultra 5 245K / OpenVINO 2026.4.1，单流）→ clip_vision：NPU 19.7ms / 核显 26.1ms / CPU 56.7ms；det：12.3 / 7.0 / 15.2；face_det：115.9 / 14.0 / 36.1；face_rec：8.2 / 6.5 / 22.1；ocr：33.1 / 24.4 / 25.8",
+        "数值等价：NPU vs CPU 余弦 0.99999779（fp16 档 0.999998、fp32 档 0.999997），不属于 BUG-2026-0910-006 同类；端到端 ORT(CPU) 与 OV(NPU) 在同一批真实输入上 cos=0.99999779 / max|Δ|=0.00055",
+        "端到端延迟（8 张一批，实测）：ORT CPU 50.8ms/张 → OV NPU 19.3ms/张（2.63×）；单张散跑 NPU 约 29ms，说明 NPU 有约 10ms 固定提交开销 —— 所以文案按「一批」口径说，不承诺单张倍数",
+        "组件体积：244.8MB → 45.4MB 装上 / 15.5MB zip；解压+探测在应用自身代码路径里跑通（不是探针脚本）",
+        "降级完备：组件缺失 / 非 Intel / 用户选 ort / 设备不可用 → 四种情况都实测回到原行为（backend=ort、embed 照常）",
+        "NPU 动态维会直接 LLVM abort 整个进程（不可 catch），因此静态 reshape 是硬前置条件，不是优化项"
+      ],
+      "tests": [
+        "python/bench/verify_ov_clip_equiv.py → cos=0.99999779 通过；auto 模式 backend=openvino device=NPU；benchmark 自洽",
+        "端到端 HTTP（VCR_PORT=8799）：/health api_version=10；POST /clip_runtime auto → clip_vision=OpenVINO:NPU、clip_text=CPU；切 ort → CPUExecutionProvider；再切回 auto → NPU；/embed_batch 4 张 962ms、/embed_text 正常、clip_ready=true",
+        "无组件端到端（VCR_PORT=8800，组件目录移走）：ok=true / backend=ort / installed=false / recommended=true（Intel）/ embed_batch 正常",
+        "cargo check --all-targets → 0 error（仅既有 dead_code/unused 警告）",
+        "npx vue-tsc --noEmit → 0 error",
+        "python/scripts/build_ov_runtime_zip.py → 45.4MB 裁剪、zip 15.5MB、内置自检 devices=['NPU']"
+      ],
+      "related_files": [
+        "python/vcr/ovrt.py",
+        "python/vcr/services/ov_clip.py",
+        "python/vcr/model_registry.py",
+        "python/vcr/config.py",
+        "python/server.py",
+        "python/scripts/build_ov_runtime_zip.py",
+        "python/bench/verify_ov_clip_equiv.py",
+        "python/bench/probe_npu_feasibility.py",
+        "python/bench/probe_npu_clip_tiers.py",
+        "python/bench/probe_npu_blob_size.py",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/vcr_settings.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/ModelGpuSettings.vue",
+        "src/components/settings/OvRuntimeSection.vue",
+        "src/components/settings/GpuSection.vue",
+        "src/components/settings/ModelDownloadRows.vue",
+        "src/stores/content.ts",
+        "src/types/content.ts",
+        "release.ps1",
+        "docs/推理后端多平台化-B方案设计与决策.md"
+      ],
+      "keywords": [
+        "NPU",
+        "OpenVINO",
+        "语义索引",
+        "clip_vision",
+        "图像塔",
+        "按需下载",
+        "裁剪运行时",
+        "clip_runtime",
+        "性能设置",
+        "Intel AI Boost",
+        "DirectML",
+        "feat133"
+      ],
+      "created_at": "2026-11-01T22:10:00+08:00",
+      "updated_at": "2026-11-01T23:59:00+08:00",
+      "reverted_at": "2026-11-01T23:59:00+08:00",
+      "revert_reason": "NPU 确实可用且比 CPU 快 2.4~2.9×（EXECUTION_DEVICES=NPU；NPU 推理时进程 CPU/墙钟=0.0 vs ORT-CPU 11.93；全核外部占满时 NPU 仅 1.49× 而 CPU 路径 10.5×），但语义腿在扫描里只占 0.2%（album=126 / 776 张：AI识别 99049ms 79% · 影调 26539ms 21% · 语义向量 224ms 0.2%），且三腿并发 ⇒ 加速被 79% 的 AI 腿完全掩盖，用户感知为零。保留代价是 40MB 必选组件 + 一条额外后端分支 + 两条仅此分支才有的 bug。保留：vcr/logutil.py（修了主链路上同类 stderr 隐患）、性能设置「这台机器现在怎么跑」摘要（改按档位说明）、四个纯证据探针 probe_npu_*.py。"
     }
   ],
-  "updated": "2026-10-27"
+  "updated": "2026-11-01T23:59:00+08:00"
 }

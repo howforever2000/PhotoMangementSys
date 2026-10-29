@@ -169,7 +169,7 @@ def _gpu_channels(img, lb, registry, path: str, use_face: bool) -> tuple:
             for f in faces:
                 # 质量闸门在这边：几何不过 → 直接丢（连嵌入都不算）；
                 # 边缘质量（极端侧脸/小脸/轻模糊）→ 只准并入旧簇，不准新建（防垃圾簇）
-                emb, verdict = svc.embed_checked(img, f)
+                emb, verdict = svc.embed_checked(img, f, lb.dec_scale)
                 if emb is None:
                     continue
                 with _FACE_STORE_LOCK:
@@ -184,20 +184,29 @@ def _gpu_channels(img, lb, registry, path: str, use_face: bool) -> tuple:
             face_hits = []          # 与串行版逐字一致的降级语义
     t_face = time.perf_counter()
 
-    ocr_out = ocr_service.get_ocr_service(registry).run(lb)
+    # OCR 前置门（P-OPT3）：人物规则已经在 det 上给出结论时，OCR 在仲裁里
+    # 永远不会被读到（优先级在人物规则之后），跳过这一次串行推理。
+    # 判定函数与仲裁器**共用** arbitrator.person_rule_hits，不存在口径漂移。
+    if config.OCR_GATE and arbitrator.person_rule_hits(det_out):
+        # ready=False 与「OCR 模型缺失/未跑」同语义，仲裁器照旧跳过 OCR 分支
+        ocr_out = ocr_service.OcrOutcome()
+    else:
+        ocr_out = ocr_service.get_ocr_service(registry).run(lb)
     t_ocr = time.perf_counter()
     return det_out, ocr_out, face_hits, face_used, (t_det_in, t_det, t_face, t_ocr)
 
 
 def classify_one(path: str, registry, use_face: bool = True) -> ClassifyResult | None:
     t0 = time.perf_counter()
-    img = preprocess.open_image(path)
+    # P-DEC1：open_image_ex 同时给出**真实原图尺寸** —— 解码可能已走 draft()
+    # 降采样（config.DECODE_MIN_LONG），而 bbox 与尺度阈值必须按原图真值算。
+    img, orig_size = preprocess.open_image_ex(path)
     if img is None:
         return None
     # 点 3：解码一次 + 缩放一次，det/ocr/face 三通道与影调共用同一份缩放结果。
     # 旧实现每个通道都从**原图**重新 resize 一次 —— 4096→640 实测 37.7ms、
     # 4096→256（影调）实测 35.6ms，同一张解码上排了 4 遍缩放、3 遍纯重复。
-    lb = preprocess.letterbox(img)
+    lb = preprocess.letterbox(img, orig_size)
     t_decode = time.perf_counter()
 
     meta = _meta_of(img, path)
@@ -223,7 +232,8 @@ def classify_one(path: str, registry, use_face: bool = True) -> ClassifyResult |
 
     t_det_in, t_det, t_face, t_ocr = gts
     result = arbitrator.arbitrate(
-        img, det_out, meta, face_hits, tone_out=tone_out, ocr_out=ocr_out
+        img, det_out, meta, face_hits, tone_out=tone_out, ocr_out=ocr_out,
+        src_size=lb.size,
     )
     t_arb = time.perf_counter()
     elapsed = (t_arb - t0) * 1000.0

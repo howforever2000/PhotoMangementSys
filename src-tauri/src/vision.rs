@@ -260,7 +260,7 @@ const ADOPT_WAIT_MAX: u32 = 3;
 ///     “清单加载失败/端点不存在”，排查起来白费半小时（本次实测踩到）。
 /// v9：人脸质量闸门（几何/尺寸/清晰度 + 边缘质量只准并入不准新建）。
 ///     —— **行为变更也要抬**：模型与端点都没变，但不重启服务就还是旧行为。
-const VCR_API_VERSION: u64 = 9;
+const VCR_API_VERSION: u64 = 12;
 /// FEAT-051：ensure 单飞锁 —— 并发命令共享一次「探测/重启/启动」流程，
 /// 邓免多进程同时拚 8765 端口（winerror 10048）
 static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -1091,6 +1091,18 @@ fn extract_detail(body: &str) -> String {
     }
 }
 
+/// 模型文件缺失的可执行报错：缺什么 / 去哪儿补。
+///
+/// 与「加载中」彻底分开：前者重试一万次也不会自愈，必须引导用户去下载；
+/// 后者才是「稍候再试」。文案里保留 `/health` 的 load_errors 原文（含文件名
+/// 与目录），排错时与日志可逐字对账。
+fn model_missing_err(digest: &str) -> String {
+    format!(
+        "识别服务缺少模型文件（人物/扫描不可用）：{digest}。\
+         请在「性能设置 → 模型管理」下载缺失的模型（人物检测为必需项），完成后重试"
+    )
+}
+
 /// 错误详情是否明确指出**模型文件缺失**
 ///
 /// 与「加载中」的关键区别：文件不在磁盘上，重试一万次也不会自愈（BUG-2026-1026-001：
@@ -1378,6 +1390,14 @@ async fn poll_ready(
             HealthProbe::OldVersion => {
                 perf_log(&format!("poll_ready 失败：服务为旧版本 | {last_digest}"));
                 return Err("识别服务为旧版本（缺 GPU/模型切换端点），请结束该进程后重试".into());
+            }
+            // 模型文件缺失是**确定性失败**：等满 90s 再报「正在加载模型」既费时又误导
+            //（BUG-2026-1028-011 现场：0.4.x 轻量包不含 yolov8n-det.onnx，每轮扫描都
+            // 先白等 90s，拿到一句「请稍候重试」，然后一模一样再来一次）。
+            // /health 的 load_errors 已把「缺哪个文件、在哪个目录找的」写全，直接透传。
+            HealthProbe::Loading if is_model_missing_detail(&last_digest) => {
+                perf_log(&format!("poll_ready 失败：模型文件缺失 | {last_digest}"));
+                return Err(model_missing_err(&last_digest));
             }
             _ => {}
         }

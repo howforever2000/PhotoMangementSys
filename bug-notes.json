@@ -4692,7 +4692,329 @@
       ],
       "created_at": "2026-10-27T22:00:00+08:00",
       "fixed_at": "2026-10-27T21:56:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1027-008",
+      "date": "2026-10-27",
+      "status": "wontfix",
+      "title": "GPU 串行锁不能拆成「每会话一把」—— 跨会话并发 DML 同样 ACCESS_VIOLATION",
+      "module": "python/vcr/model_registry.py（_GPU_RUN_LOCK）",
+      "symptom": [
+        "P=6 跑 classify_batch 时，持锁时间占墙钟 97.6%~99.0%（50~55 次加锁），GPU 串行就是天花板；于是很自然会想把一把全局锁拆成 det/ocr/face_det/face_rec 各一把，让不同会话并行。",
+        "实测拆开后进程**直接段错误**：Windows fatal exception: access violation，栈在 onnxruntime_inference_collection.py:296 run → detector.run / ocr_service.run / face_service.embed_checked，exit code -1073741819。"
+      ],
+      "root_cause": "DirectML 执行提供方的非线程安全不是「同一会话内」的问题，而是**同一设备上下文**层面的：多个 DML 会话并发 run 会在共享的 D3D12 设备上踩同一个资源。BUG-2026-0923-001 记的是「同会话并发」，本条把边界扩大到「跨会话并发也不行」。",
+      "evidence_log": [
+        "pipeline_cost_probe 实测：wall 11203ms · 持锁 11096ms（99.0%）· 加锁 55 次 · 单次持锁均摊 201.7ms",
+        "拆成每会话一把锁后：Windows fatal exception: access violation（多个线程栈同时停在 InferenceSession.run）· EXIT=-1073741819"
+      ],
+      "solution": "不改。全局锁是 DML 的硬约束，想并行只能换 EP（CUDA/TensorRT/OpenVINO）或减少加锁次数（已做：FEAT-127 OCR 前置门）。另：det 与 face_det 的 ONNX 是**静态 batch=1**（declared [1,3,640,640]，喂 batch=2 直接 INVALID_ARGUMENT），所以「合并推理 batch 减少调用次数」对这两条通道不可行，必须重新导出动态 batch 的模型；ocr 与 face_rec 是动态 batch，可以合。",
+      "lessons": [
+        "「GPU 加速反而更慢」的常见误判是先怀疑 CPU，其实要先量**持锁占比**：占比接近 1 说明墙钟全部落在串行段，优化 CPU 只能小幅改善（实测 decode 砍掉 100ms，墙钟只降 37ms）。",
+        "改锁粒度前必须先用 faulthandler 起一个探针跑一遍，否则线上表现为随机 RemoteDisconnected / 进程消失。"
+      ]
+    },
+    {
+      "id": "BUG-2026-1027-009",
+      "date": "2026-10-27",
+      "status": "fixed",
+      "title": "POST /threads 谎报生效：写文件失败被 except: pass 吞掉，返回 applied 但实际未变",
+      "module": "python/vcr/config.py（set_threads）",
+      "symptom": [
+        "POST /threads {threads:7} 返回 {\"applied\":7, \"threads\":12}，随后 GET /threads 仍是 12；手动把 models/current_threads.json 写成 7 之后 GET 立刻变 7 —— 说明是写入没落地。"
+      ],
+      "root_cause": "set_threads() 里 `except Exception: pass` 吞掉写失败，然后 `return n`（期望值而非实际值），调用方据此回报「已生效」。",
+      "evidence_log": [
+        "POST /threads → {\"ok\":true,\"loading\":true,\"threads\":12,\"applied\":7}",
+        "GET /threads → 12（写入未落地）"
+      ],
+      "solution": "写完回读一次，返回 config.threads() 的真实值；写失败/未生效各打一行 stderr。",
+      "lessons": [
+        "「静默降级」写在读路径上是鲁棒，写在写路径上就是谎报 —— 写操作失败必须外显。"
+      ]
+    },
+    {
+      "id": "BUG-2026-1027-010",
+      "date": "2026-10-27",
+      "status": "open",
+      "title": "服务端成本结构日志（[vcr.stat] classify_batch …）实际没有进 app.log",
+      "module": "src-tauri/src/vision.rs（attach_child_output / 子进程输出转存）· python/server.py（_log）",
+      "symptom": [
+        "server.py::_log 的 docstring 写「宿主 Rust 侧会转存到 app.log」，但 app.log 里 grep `vcr.stat` / `classify_batch 批=` 一条都没有；那条最有用的「decode · det · ocr · face 均摊」日志全丢，只能手动起服务抓子进程 stdout。"
+      ],
+      "root_cause": "未定位。vision.rs 的 attach_child_output 把子进程输出推进 CHILD_OUTPUT 环形缓冲（只在启动失败时回带），没有写进应用日志通道；_log 的目标却是 stdout 而非 stderr。",
+      "evidence_log": [
+        "Select-String app.log -Pattern 'vcr.stat|classify_batch' → 无匹配（33044 行日志）",
+        "手动 Start-Process … -RedirectStandardOutput 后立即可见 [vcr.stat] classify_batch 批=24张 …"
+      ],
+      "solution": "待修：让 attach_child_output 把子进程 stdout/stderr 逐行进应用日志（带 [vcr] 前缀），或把 _log 改成写 stderr 并在 Rust 侧转存。",
+      "lessons": [
+        "排「为什么慢」时，成本分解日志是否可见本身就是一等公民；不可观测的性能优化等于没做。"
+      ]
+    },
+    {
+      "id": "BUG-2026-1028-011",
+      "date": "2026-10-28",
+      "status": "fixed",
+      "title": "安装版「人物通道不可用」：发行包不含模型 + 应用内下载表漏了人物检测（yolov8n-det.onnx）",
+      "module": "发布流程（release.ps1 / src-tauri/release*.json）、src-tauri/src/model_dl.rs、src-tauri/src/vision.rs、python/vcr/model_registry.py",
+      "symptom": [
+        "0.4.3 安装版日志持续刷 det=模型文件缺失: ['%APPDATA%\\com.photomanagementsys.app\\vcr-models\\yolov8n-det.onnx']，/health.ok 恒为 false",
+        "人物/扫描链路不可用：每次调用 ensure_service_ready(wait_models=true) 白等 90s，最后报「识别服务正在加载模型（大模型首次加载较慢），请稍候重试」",
+        "模型管理里人脸（det_10g + w600k_r50）与语义（chinese-clip 两档）都能下载成功，所以用户看到「模型一直在」，唯独人物检测补不上"
+      ],
+      "root_cause": [
+        "0.4.1/0.4.2/0.4.3 用 src-tauri/release.tauri.conf.no-models.json 打包（resources 只有 vcr-server.exe）：0.3.1 安装包 467MB → 0.4.3 只有 110MB，解包可见仅 vcr\\vcr-server.exe",
+        "安装目录无 vcr\\models → vision::resolve_model_dir 回落到 app_data_dir/vcr-models，模型只能靠应用内下载",
+        "model_dl::specs() 只有 chinese-clip / chinese-clip-fp32 / face-precise / face-light / ocr —— **没有 yolov8n-det**，所以 det 永远补不齐",
+        "python/server.py::health 的 ok 定义为 reg.is_ready('det')，且 preload_main 只预热 det：det 文件不在则 ok 永远 false，人脸/语义虽齐全也救不了"
+      ],
+      "evidence_log": [
+        "7z l PhotoManagementSys_0.4.3_x64-setup.exe → 仅 vcr\\vcr-server.exe，无 vcr\\models\\*.onnx（0.3.1 则有 6 个模型）",
+        "%APPDATA%\\com.photomanagementsys.app\\vcr-models 实测：有 det_10g/det_500m/w600k_mbf/w600k_r50 + chinese-clip 两档，缺 yolov8n-det.onnx 与 paddleocr-det.onnx",
+        "同一份 vcr-server.exe 指该目录：/health → ok=false, load_errors.det='模型文件缺失: [...yolov8n-det.onnx]'；POST /face/warmup → ready=true（证明人脸通道本身无恙）",
+        "补上 yolov8n-det.onnx + paddleocr-det.onnx 后同一命令 → ok=true, det_ready=true, load_errors={}（用户现场确认人物通道恢复）"
+      ],
+      "solution": [
+        "model_dl::specs() 新增 person-det（yolov8n-det.onnx，12.8MB，required=true），源 salim4n/yolov8n-detect-onnx（仓库内 yolov8n-onnx-web/yolov8n.onnx → 本地 yolov8n-det.onnx），走 hf-mirror + aifasthub 双镜像",
+        "源选择经过等价性验证（python/bench/verify_det_source_equiv.py）：与该机 python/models/yolov8n-det.onnx 同一固定输入下 84×8400 输出 max|Δ|=0.000e+00、IO 签名一致；webml/yolov8n 是另一次导出（max|Δ|=3.66e-04）故不采用",
+        "端到端验证：把镜像下载到的文件作为唯一模型放进空目录 → /health.ok=true, det_ready=true",
+        "vision::poll_ready 增加确定性失败短路：/health 的 load_errors 已写明「模型文件缺失」时立即返回可执行报错（附文件名与目录、指路模型管理），不再白等 90s 后说「正在加载模型」",
+        "前端 ModelMissingDialog 新增 det 场景；ScanPanel / GlobalScanPanel 的缺失原因判定改为「先认 yolov8n/人物检测，再认 ocr」",
+        "PerfSettingsDialog 的 ESSENTIAL_MODELS 加入 person-det（缺它「模型管理」页签立刻出黄点）",
+        "release.ps1 新增第 5 步产物自检：解包 NSIS 安装包，逐个核对 release 配置声明 resources 是否真的在里面，缺则构建失败"
+      ],
+      "lessons": [
+        "「模型在不在」只有一个口径：vcr 服务实际读的那个目录 + /health 的 load_errors。用户看到的模型列表（人脸/语义）齐全，完全不代表主链路判据（det）就绪",
+        "发布包瘦身（去掉模型）必须同时补齐应用内下载清单，否则就是把用户堵死在没有出口的路上；打包后再解包自检一次是唯一可靠的拦截点",
+        "就绪超时需要区分「加载中（可等待）」与「文件缺失（永不就绪）」：前者等，后者必须立刻报错并指路"
+      ]
+    },
+    {
+      "id": "BUG-2026-1028-012",
+      "date": "2026-10-28",
+      "status": "fixed",
+      "title": "打开「性能设置」后 app.log 被无限刷：ClipTier/FaceTier 把惰性通道的 ready=false 当轮询开关",
+      "module": "src/components/settings/ClipTierSection.vue、src/components/settings/FaceTierSection.vue、python/server.py::health",
+      "symptom": [
+        "只要打开性能设置面板，日志就 1.5s 一轮地刷：ensure 请求 ×2 → 获得单飞锁 → ensure A段 → poll_alive 开始/就绪 → ensure 完成 → list_models → get_face_tier_info（约 700~800 行/分钟）",
+        "语义模型与人脸模型两处永久显示「模型加载中…」，哪怕档位模型早已下载齐全"
+      ],
+      "root_cause": [
+        "两个 Section 都用 watch(ready) + immediate 当轮询开关：ready===false 就 setInterval(load, 1500)，只有变成 true 才 clearInterval —— 没有次数上限也没有退避",
+        "CLIP 与人脸都是**惰性通道**：新进程里第一次语义请求/扫描之前 clip_ready / face_ready 恒为 false，所以健康的机器上也会无限轮询",
+        "每轮 list_vcr_models / get_face_tier_info 都要经过 ensure_service_ready（单飞锁 + /health 探测 + poll_alive），把设置面板的轻量轮询放大成整条保活链路",
+        "load(true) 静默刷新同样置 loading=true → 徽标每 1.5s 在「切换中…」与真实状态间闪烁"
+      ],
+      "evidence_log": [
+        "app.log 现场：06:58.768 两条 ensure 请求（两个 Section 同时触发）→ .811 get_face_tier_info END，一轮约 43ms，稳态 1.5s 一轮不停",
+        "面板截图：语义模型与人脸模型同时挂「模型加载中…」，而 /models 已显示 b16-fp32 双塔 754MB ✓下载、人脸 191.3MB ✓下载"
+      ],
+      "solution": [
+        "轮询只由**切换动作**启动（onConfirm 且后端返回 ready=false 时 startReadyPoll），带 60s 上限（40×1.5s），就绪或超限即停",
+        "手动刷新入口：超限后做「⟳」按钮（recheck），避免「点了没反应」",
+        "未加载与加载中分开表达：惰性未加载 → 「未加载（首次语义搜索/首次扫描时自动加载）」，仅轮询期间才显示「模型后台加载中…」",
+        "load(silent) 不再改写 loading，消除徽标闪烁"
+      ],
+      "lessons": [
+        "任何「轮询直到 ready」的写法都必须回答三个问题：谁启动、什么时候停、停了之后用户怎么办",
+        "惰性加载通道的 ready=false 是常态，不是错误态，更不是「加载中」—— 状态语义写错会连带写出无限循环与误导文案"
+      ]
+    },
+    {
+      "id": "BUG-2026-1028-013",
+      "date": "2026-10-28",
+      "status": "fixed",
+      "title": "人物侧「设置头像」无效果：改了 96×96 头像，人物卡画的是 4:5 封面",
+      "module": "src-tauri/src/avatar.rs（set_person_avatar_from_photo / restore_person_avatar）、src-tauri/src/persons.rs（crop_face_cover_local）、src/components/PersonGallery.vue",
+      "symptom": [
+        "在人物照片弹窗里点「设为头像」，提示条正常弹出（『已将所选照片设为 … 的头像』），但人物卡上的图完全没变",
+        "「恢复自动头像」同样看起来没生效"
+      ],
+      "root_cause": [
+        "FEAT-124 之后人物卡渲染的是 coverMap[p.id]（covers/cover_<pid>.jpg，480×600 的 4:5 裁切），不是 avatarMap（96×96）",
+        "而 set_person_avatar_from_photo 只写 avatars/avatar_<pid>.jpg + .custom，前端也只更新 avatarMap；封面仍是「代表脸」自动裁出来的那张",
+        "restore_person_avatar 同理：只恢复头像，自选封面留在原地",
+        "另：remove_avatar_cache / clear_all_avatar_cache 从不清理 covers/，删除/合并/重建后旧封面会随 P 编号复用串到下一个人（与 BUG-2026-1001-001 同类）"
+      ],
+      "evidence_log": [
+        "代码链路：PersonGallery 模板 648 行渲染 coverMap[p.id]；setAvatar 只写 avatarMap（旧实现）",
+        "persons.rs 只有 crop_face_cover_local(pid)（按代表脸裁），没有「按指定照片裁封面」的能力"
+      ],
+      "solution": [
+        "persons.rs 抽出 decode_display(JPEG 降采样 / 非 JPEG 按魔数) 与 save_cover 两个共用步骤，新增 crop_photo_cover_local(pid, photo_path, out)：优先用该照片里此人的人脸框贴脸裁，无脸则中部 4:5 兜底",
+        "set_person_avatar_from_photo 一次写两份（96×96 头像 + 480×600 封面）并落两个 .custom 标记，返回 {avatar, cover}；任一裁切失败整体报错，不留半成品",
+        "restore_person_avatar 一并恢复封面（清 .custom/jpg/sig 后按代表脸重裁两份）",
+        "cover_cache_valid 增加 .custom 判据：自选封面恒真，后台重裁不会覆盖用户选择",
+        "remove_avatar_cache / clear_all_avatar_cache 同时清 covers/（含 .custom），杜绝 P 编号复用时封面串人",
+        "PersonGallery：applyPortrait 同刷 avatarMap+coverMap 与两个时间戳；右键菜单改名「更换头像 / 封面…」，提示文案写明两处都更新"
+      ],
+      "lessons": [
+        "「设置了但没效果」先确认用户看的那块像素由哪个数据源渲染；FEAT-124 把人物卡的数据源从 avatar 换成 cover，旧写入路径就静默失效了",
+        "同一份用户意图（这张照片代表人）必须同时落到它影响的所有缓存上，否则就是半成品状态",
+        "缓存清理要按「命名空间」扫，而不是只扫记得的那几个文件：covers/ 子目录漏了两年"
+      ]
+    },
+    {
+      "id": "BUG-2026-1028-014",
+      "date": "2026-10-28",
+      "status": "fixed",
+      "title": "时间线缩略图大量空白：photo_thumb_cache 的死链被当作事实下发，前端兜底只看 null",
+      "module": "src-tauri/src/content.rs（timeline_month）、src-tauri/src/db/content.rs、src/stores/timeline.ts、src/views/Timeline.vue、src/utils/thumbQueue.ts",
+      "symptom": [
+        "智慧相册 → 时间线里大量卡片是空白/破图框，只显示地点标签；等很久也不出现",
+        "日志却是 timeline_month OK | rows=117 with_thumb=117 —— 后端认为「全都有缩略图」"
+      ],
+      "root_cause": [
+        "timeline_month 的 thumb_path 来自 LEFT JOIN photo_thumb_cache，那只是缓存表，行在 ≠ 文件在",
+        "实测该库 24,917 行里 13,292 行（53.3%）的 thumb_path 指向的文件已被清掉（全在 thumbs/grid），而 thumbs 目录实际只有 11,744 个文件",
+        "前端 adoptThumbs 直接把 thumb_path 塞进响应式表渲染 <img src=死路径>；ensureThumbs 兜底只看 thumb_path == null（全库仅 64 张），死路径永远进不了兜底队列",
+        "对照：get_photo_thumbs 有 is_file() 校验并当场重生成（所以相册网格能自愈），时间线走的是另一条不做校验的路径"
+      ],
+      "evidence_log": [
+        "python/bench/diag_thumb_cache_health.py：photo_thumb_cache 24,917 行 / 13,292 行文件不存在（53.3%）；抽样 2000 条磁盘命中率仅 34.0%",
+        "timeline_month 日志 with_thumb=rows（后端无校验），而截图里卡片大量空白"
+      ],
+      "solution": [
+        "后端 content.rs 新增纯函数 drop_dead_thumb_links(cards)：timeline_month 返回前逐条 is_file() 校验，死链置 None（每页 ≤300 次 stat，实测 <2ms），日志加 dead_thumb 计数",
+        "置 None 后前端 ensureThumbs 兜底自然接管，get_photo_thumbs 校验存活并 upsert，死行随浏览被覆盖 —— 越用越自愈（无需迁移脚本）",
+        "前端第二道防线：<img @error> → store.markThumbBroken(card) 把 path 从响应式表删掉并重走一次兜底（每张最多重试 1 次，避免死循环）",
+        "ensureThumbs 支持无归属照片（album_id=null → 0「无归属缓存命名空间」），此前这类照片永远进不了兜底",
+        "getThumbs 增加可选 onPair 回调：缩略图按到达顺序逐张出图，不再等整批（300 张）一起亮",
+        "新增取证工具 python/bench/diag_thumb_cache_health.py（只读统计缓存表 vs 磁盘）"
+      ],
+      "lessons": [
+        "任何「缓存表里的路径」在下发前都要校验存活；把缓存当事实用，就会在文件被清掉后长期显示空白，而且日志一片 OK",
+        "兜底条件不要写成 `== null`：还有第三种状态「有值但无效」，它才是缓存失效后的常态",
+        "同一个能力存在两条实现（timeline_month vs get_photo_thumbs）时，校验纪律只写在一处就等于没写"
+      ]
+    },
+    {
+      "id": "BUG-2026-1028-015",
+      "date": "2026-10-28",
+      "status": "fixed",
+      "title": "照片「处理方式」四分化提交 01c8612 运行即坏：构建失败 + 三处调用点未迁移导致「移除」真删文件",
+      "module": "src/components/PhotoDeleteDialog.vue、CategoryGallery.vue、LocationGallery.vue、PhotoActionMenu.vue、PhotoGrid.vue、src-tauri/src/lib.rs、src-tauri/src/photos.rs、src-tauri/src/persons.rs、src/stores/album.ts",
+      "symptom": [
+        "打开「处理这张照片」弹窗即报错（Vue 渲染抛 TypeError: count is not a function），弹窗出不来",
+        "npm run build 直接失败（vue-tsc 报 TS2349 ×2 + TS2367 ×3），打不出安装包",
+        "分类页 / 地点页 / 照片右键菜单里选「移除（只是不想在这里看到）」→ 文件被真删进回收站",
+        "相册页选「删除文件（移入回收站）」→ 实际走的是 delete_photo_files（std::fs::remove_file，永久删除）",
+        "分类页选「从这个分类移除」→ 后端 remove_photos_from_category 根本没注册，命令不存在"
+      ],
+      "root_cause": [
+        "① PhotoDeleteDialog 模板写成 `{{ count() }}`，而 count 是 computed ref（模板里已自动解包为 number）→ 调用不存在的方法",
+        "② DeleteMode 从 2 值（records|trash）扩成 4 值（remove|reassign|purge|trash），但 CategoryGallery / LocationGallery / PhotoActionMenu 三处仍按 `mode === \"records\" ? A : B` 分派 —— 条件恒假，任何选择都落到 delete_photos_to_trash",
+        "③ 三处又都没给弹窗传 context，文案全按「相册」渲染，用户根本看不出执行的是什么",
+        "④ 相册页 trash 分支走 albumStore.deletePhotoFiles → delete_photo_files（remove_file 永久删除），与弹窗文案「移入回收站可找回」相反",
+        "⑤ category::commands::remove_photos_from_category 新加后忘了加进 lib.rs 的 invoke_handler，前端一旦调用必然 unknown command"
+      ],
+      "evidence_log": [
+        "npm run build：PhotoDeleteDialog.vue(131,43)/(166,46) TS2349 表达式不可调用；CategoryGallery(384)/LocationGallery(255)/PhotoActionMenu(156) TS2367 类型无交集",
+        "git revert 01c8612 后 npm run build 通过 → 证明 5 处全部来自该提交",
+        "src-tauri/src/photos.rs::delete_photo_files 实现为 std::fs::remove_file（不进回收站）",
+        "lib.rs 的 invoke_handler 未含 remove_photos_from_category"
+      ],
+      "solution": [
+        "回退：git revert 01c8612（9010708）先让 dev 回到可构建可运行状态",
+        "重新落地并修：① count() → count；② 三处调用点按 mode 显式分派（分类 remove → remove_photos_from_category；purge → albumStore.purgePhotoData；trash → delete_photos_to_trash）；③ 弹窗新增 DeleteContext: album|person|category|location|generic，location/generic **不提供**「移除」；④ 相册页 trash 统一走 delete_photos_to_trash，albumStore.deletePhotoFiles 标注「UI 不再使用」；⑤ lib.rs 注册 remove_photos_from_category",
+        "顺手加固：PhotoDeleteDialog 补 Esc 关闭；purge_photo_data 改 async + spawn_blocking（几百张缩略图删除不再占主线程）；persons::open_db 加 5s busy_timeout（与 Python 微服务并发写时不再立刻 database is locked）；人物页 remove 的文案改成「修正会被记住，重扫不会再挂回此人」，不再承诺可重新移回（移出即删掉人脸行，UI 无撤销入口）"
+      ],
+      "lessons": [
+        "改共享类型（DeleteMode）时，编译器会替你找全所有分支 —— 前提是构建真的跑过。这次是「先推再验」，5 个错误一个都没拦住",
+        "三元表达式按『旧枚举值』分派是危险的：枚举扩容后条件恒假会静默落到 else 分支，而这个分支往往是破坏性的（删文件）",
+        "文案承诺（移入回收站可找回）必须与实现（remove_file）逐字对齐；不可逆操作不能写在可逆的措辞里",
+        "新增 tauri::command 必须同时改 lib.rs 的 invoke_handler，否则前端调用只会得到 unknown command"
+      ]
+    },
+    {
+      "id": "BUG-2026-1101-001",
+      "date": "2026-11-01",
+      "status": "fixed",
+      "title": "语义索引显示「NPU 加速中」但 NPU 占用恒为 0：stderr 写失败把成功的 OV 加载改写成了失败",
+      "module": "python/vcr/model_registry.py、python/vcr/services/ov_clip.py、python/vcr/ovrt.py、python/vcr/logutil.py（新增）、python/server.py、src-tauri/src/vision.rs",
+      "symptom": [
+        "性能设置显示「语义索引 · NPU 已启用」，任务管理器里 NPU 占用始终 0%",
+        "活服务 /health 三行自相矛盾：sessions.clip_vision=[\"OpenVINO:NPU\"]（会话建好了）、load_errors.clip_vision=\"OpenVINO: OSError: [Errno 22] Invalid argument\"、clip_ready=false",
+        "因为 clip_ready=false，宿主的语义腿整段跳过 ⇒ NPU 一次都没有被真正调用"
+      ],
+      "root_cause": [
+        "打包版对子进程用 Stdio::piped()（vision.rs::attach_child_output），管道在服务重启/宿主回收时关闭；此后 Python 往 sys.stderr 写一行日志就会抛 OSError: [Errno 22] Invalid argument",
+        "_ensure_ov_clip() 把诊断日志 print(..., file=sys.stderr) 写在「状态已提交」之后：_ov_clip 已赋值、_ready=True、_session_info 已写 → 然后那一行抛异常，被外层 except Exception 接住，于是把 success 改写成 failure",
+        "改写后 _ov_clip 没有被回滚 ⇒ clip_runtime_status().active=true（UI 显示加速中），而 is_ready(clip_vision)=false（宿主认为没就绪）—— 两个事实来源分叉",
+        "同一类隐患还有两处既有代码：_create_session 的「GPU 失败回退 CPU」提示、_load 的「模型加载失败」提示；_create_session 那处一旦抛在回退路径上会连 det 都起不来"
+      ],
+      "evidence_log": [
+        "活服务 /health（18765）：active=true / backend=openvino / device=NPU / load_ms=2498.7，同时 load_errors.clip_vision=\"OpenVINO: OSError: [Errno 22] Invalid argument\"、clip_ready=false",
+        "同一进程 sessions 表：det/face_det/face_rec/ocr 全是 DmlExecutionProvider（GPU 已开），唯独 clip_vision=OpenVINO:NPU —— 证明 OV 确实编译成功了，失败发生在日志那一行",
+        "app.log 里没有『[VCR] 语义图像塔后端 = OpenVINO:NPU』这一行（因为写不出去），但有 /clip_runtime 的 backend=ort —— 正是状态分叉的表现",
+        "python/bench/verify_ov_clip_broken_stderr.py：注入「每次写都抛 OSError(22)」的 stderr 后，修复前 is_ready=False + load_error 非空；修复后 is_ready=True + load_error='' + active=True"
+      ],
+      "solution": [
+        "新增 vcr/logutil.py：err()/out()/exc() 包住写 stream 的异常，永不抛；exc() 还会带栈（这次只留一行无栈信息，多花了一轮排查）",
+        "_ensure_ov_clip 重排为「先构造 → 再提交状态 → 最后打日志」；日志走 logutil；失败路径显式把 _ov_clip 置 None，杜绝 active 与 is_ready 分叉",
+        "clip_runtime_status().active 改为同时要求 _ov_clip.ready **且** _ready['clip_vision']，两个事实来源不允许再分叉",
+        "把既有两处 print(..., file=sys.stderr) 一并改成 logutil（_create_session 的 GPU 回退提示、_load 的加载失败提示）",
+        "补 OV 失败冷却（LOAD_RETRY_COOLDOWN 30s）：否则一次坏驱动会让每张图都重编 NPU（0.7~6.3s/次）",
+        "VCR_API_VERSION 10 16 → 11，让宿主自动换掉已加载旧代码的服务进程"
+      ],
+      "prevention": [
+        "纪律：凡「进度/诊断」输出一律走 logutil；凡「状态提交」必须在输出之前完成或与输出完全解耦",
+        "凡有「两个地方各自维护同一个事实」（对象状态 + 注册表 is_ready）的地方，对外暴露的 active 必须要求两者同时成立",
+        "回归脚本 python/bench/verify_ov_clip_broken_stderr.py 常驻：任何新增的 stderr 输出只要落在状态提交之前/之内，这条脚本就会红"
+      ],
+      "keywords": [
+        "stderr",
+        "OSError 22",
+        "Invalid argument",
+        "NPU 占用 0",
+        "clip_ready false",
+        "OpenVINO",
+        "状态分叉",
+        "logutil",
+        "pipe"
+      ],
+      "created_at": "2026-11-01T23:20:00+08:00",
+      "updated_at": "2026-11-01T23:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1101-002",
+      "date": "2026-11-01",
+      "status": "wontfix",
+      "title": "切换语义塔后端后 /health.clip_ready 恒为 false（宿主整段跳过语义腿，NPU 零痕迹）",
+      "module": "python/server.py（_rebuild_clip_vision）、python/vcr/model_registry.py",
+      "symptom": [
+        "POST /clip_runtime 之后 /health.clip_ready 永远是 false，且 load_errors 为空",
+        "宿主据此整段跳过语义腿 ⇒ 一次扫描里一张图都没编码 ⇒ 用户看到「NPU 没有任何痕迹」",
+        "UI 侧却显示语义索引已启用（active 只看图塔），两处结论不一致"
+      ],
+      "root_cause": [
+        "clip_ready 的判据是 is_ready(clip_vision) and is_ready(clip_text)，而 _rebuild_clip_vision 只加载了 clip_vision",
+        "文本塔是懒加载的（要等第一次 /embed_text），所以切换后端后它会一直缺席"
+      ],
+      "evidence_log": [
+        "app.log: embed_text_batch HTTP 503 | CLIP 未就绪（同一时段 scan.timing 里『语义向量 224ms』= 776 张等于什么都没做）",
+        "自测复现：切 auto 后轮询 clip_ready 180s 始终 false，load_errors 始终为空"
+      ],
+      "solution": [
+        "回退前已修：_rebuild_clip_vision 同时加载双塔并打印 clip_ready/backend",
+        "整个 OpenVINO 后端随后被回退（FEAT-133 reverted），该函数与端点一并删除，故本缺陷标 wontfix"
+      ],
+      "prevention": [
+        "凡「就绪」判据涉及多个子资源时，任何「重建」入口都必须把全部子资源一起建起来，不能只建热点的那个",
+        "同一状态若有两个可观测面（UI 的 active 与 health 的 clip_ready），对外必须要求两者同时成立"
+      ],
+      "keywords": [
+        "clip_ready",
+        "false",
+        "懒加载",
+        "rebuild",
+        "宿主跳过语义腿",
+        "NPU 无痕迹"
+      ],
+      "created_at": "2026-11-01T23:59:00+08:00",
+      "updated_at": "2026-11-01T23:59:00+08:00"
     }
   ],
-  "updated": "2026-10-27"
+  "updated": "2026-11-01T23:59:00+08:00"
 }

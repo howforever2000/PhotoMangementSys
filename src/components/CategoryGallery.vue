@@ -18,6 +18,7 @@ import { computed, onMounted, ref } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useNotify } from "../composables/useNotify";
 import { useContentStore } from "../stores/content";
+import { useAlbumStore } from "../stores/album";
 import { getThumbs } from "../utils/thumbQueue";
 import PhotoLightbox from "./PhotoLightbox.vue";
 import PhotoActionMenu from "./PhotoActionMenu.vue";
@@ -31,6 +32,7 @@ import { relToMatch } from "../utils/matchScore";
 
 const notify = useNotify();
 const contentStore = useContentStore();
+const albumStore = useAlbumStore();
 
 /* -------------------- 数据 -------------------- */
 const loading = ref(true);
@@ -380,16 +382,39 @@ const deleting = ref(false);
 
 async function executeDelete(paths: string[], mode: DeleteMode) {
   if (!paths.length || deleting.value) return;
+  const categoryId = activeCard.value?.id;
+  if (mode === "remove" && categoryId == null) return;
   deleting.value = true;
-  const cmd = mode === "records" ? "delete_photo_records_by_paths" : "delete_photos_to_trash";
   try {
-    const outcome = await invoke<{
-      requested: number;
-      deleted: number;
-      failed: number;
-      failed_paths: string[];
-    }>(cmd, { paths });
-    const removed = new Set(paths.filter((p) => !outcome.failed_paths.includes(p)));
+    // 三种方式彻底分开执行（BUG-2026-1028-015：旧实现只判断 mode === "records"，
+    // 而 DeleteMode 已改成 remove|reassign|purge|trash —— 于是**任何选择**都落到
+    // delete_photos_to_trash，「只想把这个分类里隐藏」会把文件真删进回收站）
+    let deleted = paths.length;
+    let failed = 0;
+    let failedPaths: string[] = [];
+    if (mode === "remove") {
+      // 只删本分类的命中行：照片、其他分类、人物、向量全留
+      deleted = await invoke<number>("remove_photos_from_category", {
+        categoryId,
+        paths,
+      });
+    } else if (mode === "purge") {
+      const out = await albumStore.purgePhotoData(paths);
+      deleted = out.deleted;
+      failed = out.failed;
+      failedPaths = out.failed_paths ?? [];
+    } else {
+      const out = await invoke<{
+        requested: number;
+        deleted: number;
+        failed: number;
+        failed_paths: string[];
+      }>("delete_photos_to_trash", { paths });
+      deleted = out.deleted;
+      failed = out.failed;
+      failedPaths = out.failed_paths;
+    }
+    const removed = new Set(paths.filter((p) => !failedPaths.includes(p)));
     // 同步本地列表与缩略图缓存
     photos.value = photos.value.filter((p) => !removed.has(p.path));
     const tm = { ...thumbMap.value };
@@ -406,19 +431,23 @@ async function executeDelete(paths: string[], mode: DeleteMode) {
     if (activeCard.value && !cards.value.some((t) => t.id === activeCard.value!.id)) {
       backToCards();
     }
-    if (outcome.failed > 0) {
+    if (failed > 0) {
       notify.warning(
-        `已删除 ${outcome.deleted} / ${outcome.requested} 张`,
-        `失败：${outcome.failed_paths.slice(0, 3).join("、")}${outcome.failed_paths.length > 3 ? "…" : ""}`,
+        `已处理 ${deleted} / ${paths.length} 张`,
+        `失败：${failedPaths.slice(0, 3).join("、")}${failedPaths.length > 3 ? "…" : ""}`,
       );
     } else {
       notify.success(
-        `已删除 ${outcome.deleted} 张`,
-        mode === "trash" ? "文件已移入系统回收站" : "本地文件保留，仅清除记录",
+        mode === "remove" ? `已从这个分类移除 ${deleted} 条命中` : `已处理 ${deleted} 张`,
+        mode === "trash"
+          ? "文件已移入系统回收站"
+          : mode === "purge"
+            ? "识别数据已清除，重新导入相册才能找回"
+            : "照片与其他识别数据都保留",
       );
     }
   } catch (e) {
-    notify.error("删除失败", String(e));
+    notify.error("处理失败", String(e));
   } finally {
     modeDialogPaths.value = null;
     deleting.value = false;
@@ -620,9 +649,10 @@ onMounted(load);
       @changed="onManagerChanged"
     />
 
-    <!-- FEAT-095（R7 / D1）：批量删除方式选择，复用共享弹窗 -->
+    <!-- FEAT-095（R7 / D1）：批量处理方式选择，复用共享弹窗 -->
     <PhotoDeleteDialog
       :paths="modeDialogPaths"
+      context="category"
       :busy="deleting"
       @pick="pickMode"
       @cancel="modeDialogPaths = null"

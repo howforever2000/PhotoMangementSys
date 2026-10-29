@@ -252,9 +252,13 @@ pub struct RecentlyExcludedItem {
 }
 
 
-/// 批量「相册记录删除」：从该相册网格浏览中移除 + 清除扫描/AI 记录，本地文件保留
+/// 批量「从相册移除」：只写排除表，让照片不再出现在该相册网格中
 ///
-/// 可通过 restore 命令撤销（排除表回滚）。
+/// **只写 `album_photo_excluded`，不动任何识别数据**（EXIF / 阳光 / 分类 / 人物 /
+/// 语义向量全部保留）。照片仍会出现在时间线、回忆、智能搜索与人物相册里 ——
+/// 这正是「从相册移除」与「清除数据库记录（purge_photo_data）」的区别。
+///
+/// 可通过 `restore_photo_records` 撤销（排除表回滚），撤销后照片原样回到网格。
 #[tauri::command]
 pub fn delete_photo_records(
     album_id: i64,
@@ -271,12 +275,115 @@ pub fn delete_photo_records(
         let db = state.0.lock().map_err(|e| e.to_string())?;
         // 归属校验在 exclude_album_photos 内（非本人相册 → NotFound）
         let excluded = db.exclude_album_photos(album_id, user_id, &paths).map_err(|e| e.to_string())?;
-        let removed = db.delete_content_by_paths(&paths).map_err(|e| e.to_string())?;
         crate::logger::log_call_end_with("delete_photo_records", _t,
-            &format!("OK | excluded={excluded} scan_removed={removed}"));
+            &format!("OK | excluded={excluded}"));
         PhotoDeleteOutcome { requested, deleted: excluded, failed: 0, failed_paths: Vec::new() }
     };
     Ok(outcome)
+}
+
+
+/// 解析一批照片各自归属的相册 id（相册网格过滤用）
+///
+/// 优先读 `photo_content_scan.album_id`（扫描时写入，最准）；未入库的照片
+/// 用「相册目录是最长前缀」兜底（与 `p_is_under` 同一套 Windows 归一化规则）。
+/// **必须在删除扫描记录之前调用**，否则只剩前缀兜底。
+fn owning_album_ids(
+    db: &crate::db::Database,
+    user_id: i64,
+    paths: &[String],
+) -> std::collections::HashMap<String, i64> {
+    let mut out = std::collections::HashMap::new();
+    let by_content = db.album_ids_by_paths(paths).unwrap_or_default();
+    let albums = db.get_albums(user_id).unwrap_or_default();
+    for p in paths {
+        if let Some(Some(id)) = by_content.get(p) {
+            out.insert(p.clone(), *id);
+            continue;
+        }
+        let mut best: Option<(usize, i64)> = None;
+        for a in &albums {
+            if crate::persons::commands::p_is_under(&a.path, p) {
+                let len = a.path.len();
+                if best.map_or(true, |(bl, _)| len > bl) {
+                    best = Some((len, a.id));
+                }
+            }
+        }
+        if let Some((_, id)) = best {
+            out.insert(p.clone(), id);
+        }
+    }
+    out
+}
+
+
+/// 批量「清除数据库记录」：可恢复的"重置照片"——删掉这张照片的全部识别数据
+///
+/// 与 `delete_photo_records`（只写排除表，数据全留）的区别是本命令**真删**：
+/// 1. 扫描记录 `photo_content_scan` + 语义向量 + 分类命中
+/// 2. 人物人脸 `faces`（persons.db）+ 人工修正覆盖
+/// 3. 缩略图缓存（表行 + 磁盘文件）
+/// 4. 写 `album_photo_excluded`，让照片立刻从相册网格消失
+///
+/// **恢复方式**：删除相册后重新导入（新 album_id → 排除记录随之失效）。
+/// 单纯重新扫描不会让它回来，这也是"清除"与"移除视图"的语义差别。
+#[tauri::command]
+pub async fn purge_photo_data(
+    paths: Vec<String>,
+    session: tauri::State<'_, crate::SessionState>,
+    app: tauri::AppHandle,
+) -> Result<PhotoDeleteOutcome, String> {
+    let _t = log_call!("purge_photo_data", &format!("paths={}", paths.len()));
+    let user_id = crate::require_user(&session)?;
+    let requested = paths.len();
+    if paths.is_empty() {
+        return Ok(PhotoDeleteOutcome { requested, deleted: 0, failed: 0, failed_paths: Vec::new() });
+    }
+    // async + spawn_blocking：一批最多几百张的缩略图文件删除 + 多表写入是磁盘 IO，
+    // 同步命令会跑在主线程上（UI 卡顿），也与「重活不占主线程」的约定一致。
+    let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<(usize, usize), String> {
+        use tauri::Manager;
+        let state = app.state::<crate::AppState>();
+        let (removed, faces) = {
+            let db = state.0.lock().map_err(|e| e.to_string())?;
+            // 1. 先解析归属相册 + 清缩略图（两步都依赖原图仍可读 / content 仍在）
+            let owners = owning_album_ids(&db, user_id, &paths);
+            crate::photos::cleanup_thumb_caches_for_paths(&db, &app, &paths);
+            // 2. 写排除记录：照片立刻从相册网格消失（静态目录浏览靠这张表过滤）
+            let mut grouped: std::collections::HashMap<i64, Vec<String>> =
+                std::collections::HashMap::new();
+            for (p, aid) in owners {
+                grouped.entry(aid).or_default().push(p);
+            }
+            for (aid, list) in grouped {
+                if let Err(e) = db.exclude_album_photos(aid, user_id, &list) {
+                    // 非本人相册 / 相册已删：照片本就不该出现在网格里，忽略即可
+                    crate::logger::log_warn(&format!("[purge_photo_data] 相册 {aid} 排除失败: {e}"));
+                }
+            }
+            // 3. 删扫描记录（content / 向量 / 分类命中同生命周期）
+            let removed = db.delete_content_by_paths(&paths).map_err(|e| e.to_string())?;
+            drop(db);
+            // 4. 删人物人脸（persons.db，独立库，不能放进上面的锁）
+            let faces = crate::persons::delete_faces_by_paths(&paths).unwrap_or(0);
+            (removed, faces)
+        };
+        crate::logger::log_info(&format!(
+            "[purge_photo_data] scan_removed={removed} faces_removed={faces}"
+        ));
+        Ok((removed, faces))
+    })
+    .await
+    .map_err(|e| format!("purge_photo_data 任务失败: {e}"))
+    .and_then(std::convert::identity)?;
+    let (removed, faces) = outcome;
+    crate::logger::log_call_end_with(
+        "purge_photo_data",
+        _t,
+        &format!("OK | scan_removed={removed} faces_removed={faces}"),
+    );
+    Ok(PhotoDeleteOutcome { requested, deleted: removed, failed: 0, failed_paths: Vec::new() })
 }
 
 

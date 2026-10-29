@@ -278,9 +278,15 @@ class FaceService:
 
     # ------------------------------------------------------------------
     def embed_checked(
-        self, img: Image.Image, face: Face
+        self, img: Image.Image, face: Face, dec_scale: float = 1.0
     ) -> tuple[np.ndarray | None, str]:
         """对齐 + 清晰度门槛 + 嵌入，返回 (嵌入向量|None, 质量档位)。
+
+        dec_scale：解码图长边 / 真实原图长边（preprocess.Letterbox.dec_scale）。
+        face.bbox / face.kps 是**真实原图**坐标系（Rust 侧按它裁头像），
+        而 face_align 直接在**解码图**上裁切 —— P-DEC1 引入 draft() 降采样后
+        两者不再相等，必须把关键点乘回解码图坐标，否则会采到脸旁边的一块。
+        dec_scale = 1.0 时与旧实现逐位等价。
 
         为什么要返回质量档位：垃圾簇是从「一张烂脸先开出一个新 P 编号」开始吸人的。
         边缘质量的脸（极端侧脸/小脸/轻模糊）本身是真脸，丢掉可惜，但让它们参与
@@ -295,7 +301,10 @@ class FaceService:
             return None, QUALITY_REJECT
         try:
             with timing.span("face.align"):
-                tensor = preprocess.face_align(img, face.kps)
+                kps = face.kps
+                if dec_scale != 1.0:
+                    kps = np.asarray(kps, dtype=np.float32) * dec_scale
+                tensor = preprocess.face_align(img, kps)
             # 清晰度门槛放在嵌入之前：模糊脸既省下 r50 前向（~39ms/脸），
             # 也避免给库里灌噪声向量。方差只算一次（硬门槛与边缘档共用）。
             blur = aligned_blur(tensor)

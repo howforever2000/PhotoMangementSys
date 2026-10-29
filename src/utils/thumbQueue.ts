@@ -108,11 +108,16 @@ function pump(): void {
  *
  * @param albumId 照片所属相册（后端按 album 组织缓存文件名）
  * @param paths   原图绝对路径（调用方负责只传需要的、通常是可见的那些）
+ * @param onPair  可选：每拿到一张就回调一次（批量进度可见，不必等整批）
  * @returns       本调用关心的 `[原图路径, 缩略图路径]`；失败项不在结果里
  *
  * 语义与原来的直接 invoke 一致（拿不到就不返回该项），因此调用点可以原样替换。
  */
-export function getThumbs(albumId: number, paths: string[]): Promise<[string, string][]> {
+export function getThumbs(
+  albumId: number,
+  paths: string[],
+  onPair?: (path: string, thumb: string) => void,
+): Promise<[string, string][]> {
   if (!paths.length) return Promise.resolve([]);
 
   const result: [string, string][] = [];
@@ -136,7 +141,15 @@ export function getThumbs(albumId: number, paths: string[]): Promise<[string, st
       new Promise<void>((resolve) => {
         const waiters = waiting.get(path) ?? [];
         waiters.push((thumb) => {
-          if (thumb) result.push([path, thumb]);
+          if (thumb) {
+            result.push([path, thumb]);
+            // 逐张回调：让调用方按到达顺序渐进渲染（与 invoke 返回批次无关）
+            try {
+              onPair?.(path, thumb);
+            } catch {
+              /* 回调抛错不影响其他张的结算 */
+            }
+          }
           resolve();
         });
         waiting.set(path, waiters);

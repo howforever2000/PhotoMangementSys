@@ -2352,7 +2352,33 @@ pub mod commands {
         r
     }
 
-    /// FEAT-122：取某个月的一页时间线卡片（带 `thumb_path`）
+    /// 把磁盘上已不存在的缩略图路径置 None，返回过滤条数（BUG-2026-1028-014）
+///
+/// 为什么必须做：`thumb_path` 来自 `photo_thumb_cache`，那只是一张**缓存表** ——
+/// 行在 ≠ 文件在。实测 24,917 行里 13,292 行（53.3%）指向的文件已被清掉。
+/// 时间线以前把它当事实直接下发，前端就渲染 `<img src=死路径>` → 空白卡片；
+/// 而前端的兜底 `ensureThumbs` 只看 `thumb_path == null`，死路径永远进不了兜底队列。
+///
+/// 成本：每页 ≤300 次 `is_file()`（实测 < 2ms），且只对带 thumb 的卡片做。
+/// 置 None 后前端会走 `get_photo_thumbs` 当场重生成，那条链路校验存活并 upsert，
+/// 所以死行会随着浏览被逐条覆盖，越用越自愈。
+pub(super) fn drop_dead_thumb_links(cards: &mut [db::TimelineCard]) -> usize {
+    let mut dropped = 0;
+    for c in cards.iter_mut() {
+        let dead = c
+            .thumb_path
+            .as_deref()
+            .map(|t| !Path::new(t).is_file())
+            .unwrap_or(false);
+        if dead {
+            c.thumb_path = None;
+            dropped += 1;
+        }
+    }
+    dropped
+}
+
+/// FEAT-122：取某个月的一页时间线卡片（带 `thumb_path`）
     ///
     /// - `year = "未记录"` → 无拍摄时间的那一组
     /// - `limit <= 0` → 不限（按月整包拉，最大月 952 张）
@@ -2367,16 +2393,20 @@ pub mod commands {
     ) -> Result<Vec<db::TimelineCard>, String> {
         let _t = log_call!("timeline_month", &format!("{year}-{month}"));
         let user_id = require_user(&session)?;
-        let r = (|| -> Result<Vec<db::TimelineCard>, String> {
+        let mut r = (|| -> Result<Vec<db::TimelineCard>, String> {
             let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
             db.timeline_month(user_id, &year, &month, limit.unwrap_or(0), offset.unwrap_or(0))
                 .map_err(|e| format!("{:?}", e))
         })();
+        let mut dead_links = 0usize;
+        if let Ok(cards) = r.as_mut() {
+            dead_links = drop_dead_thumb_links(cards);
+        }
         match &r {
             Ok(cards) => logger::log_call_end_with(
                 "timeline_month",
                 _t,
-                &format!("OK | rows={} with_thumb={}", cards.len(), cards.iter().filter(|c| c.thumb_path.is_some()).count()),
+                &format!("OK | rows={} with_thumb={} dead_thumb={dead_links}", cards.len(), cards.iter().filter(|c| c.thumb_path.is_some()).count()),
             ),
             Err(e) => logger::log_call_end_with("timeline_month", _t, &format!("ERR | {e}")),
         }
@@ -2888,6 +2918,39 @@ mod semantic_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// BUG-2026-1028-014：`thumb_path` 是**缓存表指路**，文件可能已不在磁盘上。
+    /// 死链必须当场置 None 交给前端兜底（否则前端只会渲染一张破图/空白卡）。
+    #[test]
+    fn drop_dead_thumb_links_nulls_missing_files_only() {
+        let dir = std::env::temp_dir().join(format!("thumb_deadlink_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let alive = dir.join("alive.jpg");
+        std::fs::write(&alive, b"x").unwrap();
+        let dead = dir.join("dead.jpg");
+
+        let card = |id: i64, thumb: Option<&str>| crate::db::TimelineCard {
+            id,
+            path: format!("/p/{id}.jpg"),
+            album_id: Some(1),
+            album_name: None,
+            shoot_time: None,
+            location: None,
+            label: None,
+            thumb_path: thumb.map(|t| t.to_string()),
+        };
+        let mut cards = vec![
+            card(1, Some(alive.to_str().unwrap())),
+            card(2, Some(dead.to_str().unwrap())),
+            card(3, None),
+        ];
+        let dropped = super::commands::drop_dead_thumb_links(&mut cards);
+        assert_eq!(dropped, 1, "只应过滤掉那个不存在的文件");
+        assert!(cards[0].thumb_path.is_some(), "存活文件不被改动");
+        assert!(cards[1].thumb_path.is_none(), "死链必须置 None");
+        assert!(cards[2].thumb_path.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// FEAT-067 步骤 3：地点补齐 —— EXIF 地名优先，其次 GPS 离线反查，都没有则 None
     #[test]

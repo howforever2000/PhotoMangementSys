@@ -29,6 +29,9 @@ from .. import config
 
 EMB_DIM = 128
 
+# face_overrides.person_id 的哨兵值：用户明确「这个人脸不属于任何人物」
+NO_PERSON = "__none__"
+
 
 class PersonStore:
     def __init__(self, db_path: str = config.PERSONS_DB):
@@ -64,6 +67,19 @@ class PersonStore:
                 """CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL)"""
+            )
+            # 人工修正覆盖表：用户把某张脸「移到别的人物 / 移出所有人物」后，
+            # 记录 (照片, 人脸框) → 目标人物，扫描时优先于质心匹配。
+            # person_id 为 NO_PERSON 表示「明确不属于任何人」。
+            # 为什么必须单开一张表：faces 表在重扫时是「再插一行」的，
+            # 光改 faces 的 person_id 挡不住下次扫描按质心重新认错。
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS face_overrides (
+                    photo_path TEXT NOT NULL,
+                    bbox TEXT NOT NULL,
+                    person_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (photo_path, bbox))"""
             )
             # 旧库迁移：历史库没有 meta.emb_model，但全部是 w600k_mbf 时代的向量。
             # 补记真实模型，让「换到 r50」的预检能正确报错，而不是把新旧向量
@@ -166,6 +182,54 @@ class PersonStore:
         return f"P{n:03d}"
 
     # ------------------------------------------------------------------
+    # 人工修正覆盖（宿主在人物页执行「移出 / 移动到其他人物」时写入）
+    #
+    # 为什么要有这张表：`register()` 每次扫描都是「匹配质心 → 插一行 faces」，
+    # 光改 faces.person_id 挡不住下次扫描按质心重新认错。覆盖表以
+    # (photo_path, bbox) 为主键，扫描时优先于质心匹配，且与 faces 解耦 ——
+    # 重建人物库清空 faces 时覆盖记录仍在（目标人物不存在则自动失效回退）。
+    # ------------------------------------------------------------------
+    def lookup_override(self, photo_path: str, bbox: str) -> str | None:
+        """返回该人脸的覆盖目标人物；无记录返回 None，NO_PERSON 表示移出全部人物。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT person_id FROM face_overrides WHERE photo_path=? AND bbox=?",
+                (photo_path, bbox),
+            ).fetchone()
+        return row["person_id"] if row else None
+
+    def set_overrides(self, items: list[tuple[str, str, str]]) -> int:
+        """批量写覆盖项 (photo_path, bbox, person_id)；person_id=NO_PERSON 表示移出。"""
+        if not items:
+            return 0
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO face_overrides(photo_path, bbox, person_id, created_at)"
+                " VALUES(?,?,?,?)",
+                [(p, b, pid, now) for (p, b, pid) in items],
+            )
+        return len(items)
+
+    def clear_overrides(self, photo_paths: list[str]) -> int:
+        """清掉这些照片的全部覆盖（清除识别数据时调用，让照片回到全新状态）。"""
+        n = 0
+        paths = [p for p in photo_paths if p]
+        with self._conn() as conn:
+            for i in range(0, len(paths), 400):
+                chunk = paths[i:i + 400]
+                holders = ",".join("?" * len(chunk))
+                n += conn.execute(
+                    f"DELETE FROM face_overrides WHERE photo_path IN ({holders})", chunk
+                ).rowcount
+        return n
+
+    def _person_exists(self, pid: str) -> bool:
+        with self._conn() as conn:
+            return conn.execute("SELECT 1 FROM persons WHERE id=?", (pid,)).fetchone() is not None
+
+
+    # ------------------------------------------------------------------
     def match(self, emb: np.ndarray) -> tuple[str | None, float]:
         """返回 (person_id, sim) 或 (None, 0)。只与质心比较。"""
         with self._conn() as conn:
@@ -200,7 +264,19 @@ class PersonStore:
         norm = np.linalg.norm(emb)
         if norm > 0:
             emb = emb / norm
-        person_id, sim = self.match(emb)
+        # 人工修正优先：用户把这个 (照片, 人脸框) 指定给了某个人物，或指定为
+        # 「不属于任何人」。命中覆盖就不再跑质心匹配 —— 这就是「重新扫描
+        # 不覆盖人工修正」的落点。目标人物已被删除（如重建人物库）时覆盖失效，
+        # 回退到正常匹配，避免把脸挂到不存在的编号上。
+        override = self.lookup_override(photo_path, bbox)
+        if override == NO_PERSON:
+            return None, 0.0
+        if override is not None and not self._person_exists(override):
+            override = None
+        if override is not None:
+            person_id, sim = override, 1.0
+        else:
+            person_id, sim = self.match(emb)
         if person_id is None and not allow_new:
             return None, sim
         now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -283,6 +359,8 @@ class PersonStore:
                 (self._to_blob(nc), t["face_count"] + s["face_count"], target),
             )
             conn.execute("UPDATE faces SET person_id=? WHERE person_id=?", (target, source))
+            # 覆盖记录跟着人脸走：否则下次扫描会被覆盖表拉回已删除的 source。
+            conn.execute("UPDATE face_overrides SET person_id=? WHERE person_id=?", (target, source))
             conn.execute("DELETE FROM persons WHERE id=?", (source,))
         return True
 
@@ -294,6 +372,8 @@ class PersonStore:
     def delete(self, person_id: str) -> bool:
         with self._conn() as conn:
             conn.execute("DELETE FROM faces WHERE person_id=?", (person_id,))
+            # 人物被删 = 放弃这组聚类，覆盖记录一并清掉，让这些脸能被重新聚类。
+            conn.execute("DELETE FROM face_overrides WHERE person_id=?", (person_id,))
             cur = conn.execute("DELETE FROM persons WHERE id=?", (person_id,))
             return cur.rowcount > 0
 

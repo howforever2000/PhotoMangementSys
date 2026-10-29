@@ -20,7 +20,18 @@ import PhotoDeleteDialog, { type DeleteMode } from "./PhotoDeleteDialog.vue";
 import { useAlbumStore } from "../stores/album";
 import { useNotify } from "../composables/useNotify";
 import { usePhotoActions } from "../composables/usePhotoActions";
-import type { PhotoMarkState, PhotoRating } from "../types/photo";
+import type { PhotoMarkState, PhotoRating, PhotoDeleteOutcome } from "../types/photo";
+
+/**
+ * 共享右键菜单里「处理方式」的语境：**只给两项**（清除数据 / 回收站）
+ *
+ * 为什么不给「移除」：本菜单在多个视图里复用（相册 / 分类 / 地点 / 人物），
+ * 而每个视图的「移除」语义都不同（排除表 / 分类命中表 / 人物归属），调用方
+ * 并没有把语境传进来。旧实现默认落到 `delete_photos_to_trash`：用户只想“隐藏”
+ * 却把文件真删进了回收站（BUG-2026-1028-015）。需要精确语境的操作请走各页
+ * 自己的批量入口（那里知道 albumId / categoryId / person）。
+ */
+const DELETE_CONTEXT = "generic" as const;
 
 const props = defineProps<{
   /** null = 菜单关闭；否则为右键坐标 */
@@ -152,29 +163,28 @@ async function pickDeleteMode(mode: DeleteMode) {
   const dlg = deleteDlg.value;
   deleteDlg.value = null;
   if (!dlg?.paths.length) return;
+  // 本菜单不提供这两项（见 DELETE_CONTEXT）；防御式忽略，避免未来误调用落到回收站
+  if (mode === "remove" || mode === "reassign") return;
   deleting.value = true;
-  const cmd = mode === "records" ? "delete_photo_records_by_paths" : "delete_photos_to_trash";
   try {
-    const outcome = await invoke<{
-      requested: number;
-      deleted: number;
-      failed: number;
-      failed_paths: string[];
-    }>(cmd, { paths: dlg.paths });
-    if (outcome.failed > 0) {
+    const out =
+      mode === "purge"
+        ? await albumStore.purgePhotoData(dlg.paths)
+        : await invoke<PhotoDeleteOutcome>("delete_photos_to_trash", { paths: dlg.paths });
+    if (out.failed > 0) {
       notify.warning(
-        `已删除 ${outcome.deleted} / ${outcome.requested} 张`,
-        `失败：${outcome.failed_paths.slice(0, 3).join("、")}`,
+        `已处理 ${out.deleted} / ${out.requested} 张`,
+        `失败：${out.failed_paths.slice(0, 3).join("、")}`,
       );
     } else {
       notify.success(
-        `已删除 ${outcome.deleted} 张`,
-        mode === "trash" ? "文件已移入系统回收站，可找回" : "本地文件保留，仅清除记录",
+        `已处理 ${out.deleted} 张`,
+        mode === "trash" ? "文件已移入系统回收站，可找回" : "识别数据已清除，重新导入相册才能找回",
       );
     }
     await afterChange();
   } catch (e) {
-    notify.error("删除失败", String(e));
+    notify.error("处理失败", String(e));
   } finally {
     deleting.value = false;
   }
@@ -297,9 +307,10 @@ const items = computed<ContextMenuEntry[]>(() => {
     </div>
   </Teleport>
 
-  <!-- FEAT-095（R7 / D1）：删除二次确认（相册记录删除 / 本地删除移入回收站） -->
+  <!-- FEAT-095（R7 / D1）：处理方式（清除数据 / 回收站），复用共享弹窗 -->
   <PhotoDeleteDialog
     :paths="deleteDlg?.paths ?? null"
+    :context="DELETE_CONTEXT"
     :in-virtual-album="inVirtual"
     :busy="deleting"
     @pick="pickDeleteMode"

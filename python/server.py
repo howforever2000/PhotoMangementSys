@@ -42,6 +42,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from vcr import config
+from vcr import logutil
 from vcr.model_registry import get_registry
 from vcr.persistence.person_store import get_store
 from vcr.schemas import (
@@ -97,7 +98,8 @@ def _health_dict() -> dict:
 #     B/16 ↔ L/14-336）；新增 /embed_text_batch。
 # v6：CPU 线程数可调（/threads 读写 + /benchmark 支持临时线程覆盖 + /benchmark_sweep 扫档），
 #     供「⚙ 性能设置」按不同硬件实测选优。
-VCR_API_VERSION = 9  # v9: 人脸质量闸门（几何/尺寸/清晰度 + 边缘质量限新建），行为变更须重启服务
+VCR_API_VERSION = 12  # v12: 回退 OpenVINO/NPU 语义塔后端（FEAT-133），回到纯 CPU + DirectML；
+#                        v9: 人脸质量闸门（几何/尺寸/清晰度 + 边缘质量限新建）
 
 
 @app.get("/health")
