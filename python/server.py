@@ -97,7 +97,8 @@ def _health_dict() -> dict:
 #     B/16 ↔ L/14-336）；新增 /embed_text_batch。
 # v6：CPU 线程数可调（/threads 读写 + /benchmark 支持临时线程覆盖 + /benchmark_sweep 扫档），
 #     供「⚙ 性能设置」按不同硬件实测选优。
-VCR_API_VERSION = 9  # v9: 人脸质量闸门（几何/尺寸/清晰度 + 边缘质量限新建），行为变更须重启服务
+VCR_API_VERSION = 10  # v10: 语义图像塔可走 OpenVINO 后端（FEAT-129，行为变更须重启服务）；
+#                        v9: 人脸质量闸门（几何/尺寸/清晰度 + 边缘质量限新建）
 
 
 @app.get("/health")
@@ -120,6 +121,9 @@ def health():
         "persons": d["persons"],
         "threads": config.threads(),
         "gpu": reg.gpu_info(),
+        # FEAT-129：语义塔后端（auto / ort，实际跑在 OpenVINO:NPU 还是 ORT）。
+        # 只读状态：`clip_runtime_status()` 不触发模型编译（/health 每 300ms 被探测）。
+        "clip_runtime": reg.clip_runtime_status(),
         "batch_max": config.BATCH_CHUNK_MAX,
         # 各通道最近一次加载失败原因：宿主据此在日志里直接写明「为何 ok=false」
         # （面板转圈排查要点——BUG-2026-0921-003）
@@ -178,6 +182,44 @@ def set_gpu(req: GpuRequest):
 def models():
     """语义模型档位候选清单（含是否已下载 / 当前生效 / 会话实测事实）。"""
     return get_registry().clip_models_info()
+
+
+@app.get("/clip_runtime")
+def get_clip_runtime():
+    """FEAT-129：语义图像塔的后端现状（OpenVINO 组件是否就位 / 设备 / 是否在用）。"""
+    return get_registry().clip_runtime_status()
+
+
+class ClipRuntimeRequest(BaseModel):
+    """语义塔后端：auto（有组件就用）/ ort（强制回 ONNX Runtime）。"""
+
+    mode: str
+
+
+@app.post("/clip_runtime")
+def set_clip_runtime(req: ClipRuntimeRequest):
+    """切换语义图像塔后端。只清空 `clip_vision` 槽位，后台重建。
+
+    切到 `ort` 是**兼容退路**：任何机器上只要觉得 NPU 输出可疑（数值漂移 /
+    驱动问题），一键就能回到 FEAT-SEM 以来的一贯行为，而不用卸载组件。
+    """
+    try:
+        info = get_registry().set_clip_runtime(req.mode)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    threading.Thread(target=_rebuild_clip_vision, name="vcr-clip-runtime", daemon=True).start()
+    return {"ok": True, **info}
+
+
+def _rebuild_clip_vision() -> None:
+    """后台加载语义图像塔（OV 或 ORT，按新选择）；文本塔不受影响。"""
+    reg = get_registry()
+    try:
+        _ = reg.clip_vision
+    except Exception as e:  # noqa: BLE001
+        import sys
+
+        print(f"[VCR] 语义塔重建失败: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 @app.post("/model")

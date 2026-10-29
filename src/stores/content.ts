@@ -23,6 +23,7 @@ import type {
   ScanReport,
   UnifiedScanRow,
   VcrGpuStatus,
+  VcrClipRuntime,
   VcrModelsInfo,
   FaceTiersInfo,
   VcrBenchmarkResult,
@@ -191,6 +192,8 @@ export const useContentStore = defineStore("content", {
     filterHits: [] as AlbumContentRow[],
     /** GPU 加速可行性状态 */
     gpuStatus: null as VcrGpuStatus | null,
+    /** FEAT-133：语义图像塔后端（OpenVINO 组件）现状 */
+    clipRuntime: null as VcrClipRuntime | null,
     /** FEAT-051：分类模型候选清单 */
     vcrModels: null as VcrModelsInfo | null,
     /** 人脸模型档位清单（高精度 / 轻量，可在性能设置里切换并持久化） */
@@ -252,6 +255,18 @@ export const useContentStore = defineStore("content", {
     async setVcrGpu(enabled: boolean): Promise<VcrGpuStatus> {
       this.gpuStatus = await invoke<VcrGpuStatus>("set_vcr_gpu", { enabled });
       return this.gpuStatus;
+    },
+
+    /** FEAT-133：语义图像塔后端现状（OpenVINO 组件是否就位 / 跑在什么设备） */
+    async fetchClipRuntime(): Promise<VcrClipRuntime> {
+      this.clipRuntime = await invoke<VcrClipRuntime>("get_vcr_clip_runtime");
+      return this.clipRuntime;
+    },
+
+    /** FEAT-133：切换语义图像塔后端（auto / ort）；ort 是「回到今天」的退路 */
+    async setClipRuntime(mode: "auto" | "ort"): Promise<VcrClipRuntime> {
+      this.clipRuntime = await invoke<VcrClipRuntime>("set_vcr_clip_runtime", { mode });
+      return this.clipRuntime;
     },
 
     /** FEAT-051：分类模型候选清单 */

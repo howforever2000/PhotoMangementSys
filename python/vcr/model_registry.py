@@ -15,6 +15,7 @@ import numpy as np
 import onnxruntime as ort
 
 from . import config
+from . import ovrt
 
 # 模型加载失败后的冷却期（秒）：
 # 冷启动瞬间的加载失败（显存/磁盘/驱动瞬时抖动）不应把该通道**永久**锁死
@@ -93,6 +94,11 @@ class ModelRegistry:
         if os.environ.get("VCR_PROVIDER", "").lower() == "auto":
             self._providers_sel = None
             self._gpu_forced_off = False
+        # 语义图像塔的 OpenVINO 后端（FEAT-133）：仅当「运行时组件已装 + 本机 Intel +
+        # 用户未强制 ort」时才挂载。不满足时 _ov_clip 恒为 None，一切走原 ORT 路径，
+        # 行为与组件出现前**逐字一致**。
+        self._ov_clip = None
+        self._ov_error = ""
 
     @staticmethod
     def _session_facts(sess: ort.InferenceSession, path: str, cpu_fallback: bool,
@@ -301,10 +307,97 @@ class ModelRegistry:
         return self._providers()
 
     # ------------------------------------------------------------------
+    # 语义图像塔的 OpenVINO 后端（FEAT-133）
+    #
+    # 设计红线（写在这里免得后人重犯）：
+    #   1. **只接 clip_vision 一条腿**。其余通道在 NPU 上全是负收益（face_det 慢 8 倍），
+    #      实测见 services/ov_clip.py 模块 docstring。
+    #   2. 组件缺失 / 非 Intel / 用户选 ort → 本组方法全部空转，`_ov_clip` 恒为 None，
+    #      调用方看到的仍然是原来那条 ORT 路径。**不允许有中间态**。
+    #   3. 后端切换**不改变** `photo_embeddings.model`（那是模型档位 id，不是后端）；
+    #      改 id 就成「库里向量与查询侧失配」那个老坑（content.rs:1125）。
+    # ------------------------------------------------------------------
+    def clip_runtime_status(self) -> dict:
+        """语义塔后端现状（/health、性能设置面板共用）。不触发模型加载。"""
+        st = ovrt.status()
+        mode = ovrt.read_mode()
+        active = self._ov_clip is not None and self._ov_clip.ready
+        return {
+            "mode": mode,
+            "active": active,
+            "backend": "openvino" if active else "ort",
+            "device": self._ov_clip.device if active else "",
+            "load_ms": round(self._ov_clip.load_ms, 1) if active else 0.0,
+            "error": self._ov_error or st.get("error", ""),
+            "runtime": st,
+        }
+
+    def _ov_eligible(self) -> bool:
+        """是否该把语义图像塔交给 OpenVINO（纯函数式判断，不产生副作用）。"""
+        if ovrt.read_mode() != "auto":
+            return False
+        st = ovrt.status()
+        if not st.get("usable"):
+            return False
+        p = config.clip_paths()
+        return os.path.isfile(p["vision"])
+
+    def _ensure_ov_clip(self) -> None:
+        """构建 OV 语义塔（幂等）；失败则记原因并保留 ORT 路径可用性。"""
+        with self._lock:
+            if self._ov_clip is not None:
+                return
+            if not self._ov_eligible():
+                return
+            from .services.ov_clip import OvClipVision
+
+            p = config.clip_paths()
+            st = ovrt.status()
+            prefer = st.get("preferred_device") or ""
+            try:
+                ov = OvClipVision(p["vision"], int(p["size"]), prefer)
+                if not ov.load():
+                    self._ov_error = ov.error or "编译失败"
+                    self._ready["clip_vision"] = False
+                    self._load_errors["clip_vision"] = f"OpenVINO: {self._ov_error}"
+                    return
+                self._ov_clip = ov
+                self._sessions.pop("clip_vision", None)   # 同时只保留一条腿
+                self._ready["clip_vision"] = True
+                self._session_info["clip_vision"] = ov.facts()
+                self._load_errors.pop("clip_vision", None)
+                self._ov_error = ""
+                print(
+                    f"[VCR] 语义图像塔后端 = OpenVINO:{ov.device}"
+                    f"（编译+预热 {ov.load_ms:.0f}ms）",
+                    file=__import__("sys").stderr,
+                )
+            except Exception as e:  # noqa: BLE001
+                self._ov_error = f"{type(e).__name__}: {e}"
+                self._ready["clip_vision"] = False
+                self._load_errors["clip_vision"] = f"OpenVINO: {self._ov_error}"
+
+    def set_clip_runtime(self, mode: str) -> dict:
+        """切换语义塔后端（auto / ort）：持久化 + 清空两侧会话，下次访问重建。"""
+        with self._lock:
+            ovrt.write_mode(mode)
+            self._ov_clip = None
+            self._ov_error = ""
+            for k in ("clip_vision",):
+                self._sessions.pop(k, None)
+                self._ready.pop(k, None)
+                self._load_errors.pop(k, None)
+                self._session_info.pop(k, None)
+        return self.clip_runtime_status()
+
+    # ------------------------------------------------------------------
     # 语义双塔（当前档位）：拆分件由 embed_service.ensure() 生成
     # ------------------------------------------------------------------
     @property
     def clip_vision(self) -> ort.InferenceSession | None:
+        if self._ov_eligible():
+            self._ensure_ov_clip()
+            return self._sessions.get("clip_vision")
         p = config.clip_paths()
         with self._lock:
             if "clip_vision" not in self._ready:
@@ -364,8 +457,16 @@ class ModelRegistry:
         return sess.run(None, {sess.get_inputs()[0].name: tensor})
 
     def run_clip_vision(self, pixel_values: np.ndarray) -> np.ndarray:
-        """图像塔前向 → (N,dim) fp32（fp16 图输出已 cast 回 fp32）。"""
-        sess = self._sessions["clip_vision"]
+        """图像塔前向 → (N,dim) fp32（fp16 图输出已 cast 回 fp32）。
+
+        优先走 OpenVINO 后端（如果挂载了）；否则原 ORT 路径，逻辑逐字不变。
+        """
+        ov = self._ov_clip
+        if ov is not None and ov.ready:
+            return ov.infer(pixel_values)
+        sess = self._sessions.get("clip_vision")
+        if sess is None:
+            raise RuntimeError("语义图像塔未就绪")
         feed = {sess.get_inputs()[0].name: pixel_values}
         if self._gpu_backed("clip_vision"):
             with _GPU_RUN_LOCK:
@@ -416,6 +517,10 @@ class ModelRegistry:
         """
         if threads is None:
             with self._lock:
+                # 语义图像塔走 OV 时，`_sessions` 里没有 ORT 会话；直接量 OV 这条腿，
+                # 否则「实测诊断」页签会在 NPU 生效后报「通道不可用」（自相矛盾）
+                if key == "clip_vision" and self._ov_clip is not None and self._ov_clip.ready:
+                    return self._ov_clip
                 sess = self._sessions.get(key)
                 if sess is None:
                     _ = getattr(self, key, None)
@@ -545,6 +650,8 @@ class ModelRegistry:
             "clip_ready": self.is_ready("clip_vision") and self.is_ready("clip_text"),
             "loaded": self._session_info.get("clip_vision"),
             "loaded_text": self._session_info.get("clip_text"),
+            # FEAT-133：语义塔后端（ort / openvino:Npu），UI 用它显示真实徽章
+            "runtime": self.clip_runtime_status(),
         }
 
     # ------------------------------------------------------------------
@@ -629,6 +736,9 @@ class ModelRegistry:
                 self._ready.pop(k, None)
                 self._load_errors.pop(k, None)
                 self._session_info.pop(k, None)
+            # 换档 = 换模型文件：OV 会话必须重建（否则还拿着上一档的 onnx）
+            self._ov_clip = None
+            self._ov_error = ""
             return self.clip_models_info()
 
     def finish_clip_switch(self, name: str) -> bool:
@@ -677,6 +787,10 @@ class ModelRegistry:
         self._session_info.clear()
         self._load_errors.clear()
         self._failed_at.clear()
+        # 语义塔 OV 后端同样作废（线程数/GPU 开关变更不影响它，但保持与其余槽位同生命周期，
+        # 避免出现「会话都重建了、只有语义塔还持着旧 device」的不一致）
+        self._ov_clip = None
+        self._ov_error = ""
 
     def is_ready(self, key: str) -> bool:
         # 无锁读（dict.get 原子）：调用方为 /health 高频探测，绝不能等加载锁

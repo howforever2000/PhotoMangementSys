@@ -37,6 +37,8 @@ python/models/*.zip
 python/models/categories_places365.txt
 # 运行态：用户当前选择的语义模型档位（POST /model 切换时写入，随机器不同）
 python/models/current_clip.json
+# FEAT-129：语义图像塔后端选择（auto / ort；组件装没装随机器不同）
+python/models/current_clip_runtime.json
 # 运行态：用户选择的 CPU 线程数（⚙ 性能设置里可改，随机器不同）
 python/models/current_threads.json
 # 旧版遗留运行态（v5 已不写；保留忽略以免历史文件误入库）
@@ -134,9 +136,16 @@ design/preview/proposal/*.png
 # 模型下载进度（.dl_*.meta，随机器与时间变化，不入库）
 python/models/.*.meta
 
+# FEAT-129：OpenVINO 裁剪运行时组件（按需下载的 zip + 解压后的运行时，
+# 40.7MB 装后；由 python/scripts/build_ov_runtime_zip.py 生成 / 应用内下载获取）
+python/models/_runtime/
+
 # NPU/OpenVINO 可行性探针的临时装置（pip --target 装的 openvino 运行时，~300MB，
 # 随时可重建：pip install --target python/.tmp-ovprobe openvino）
 python/.tmp-ovprobe/
+python/.tmp-ovtrim/
+python/.tmp-wml/
+python/.tmp-wml-rt/
 # 探针脚本运行时产生的 NPU 编译缓存（OpenVINO CACHE_DIR）
 python/bench/out/ov_cache/
 # 智能体一次性排障脚本（本地探针，无构建/运行引用）

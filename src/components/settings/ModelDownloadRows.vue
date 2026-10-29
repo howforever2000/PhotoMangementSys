@@ -16,7 +16,13 @@ import type { ModelDlStatus } from "../../types/content";
 const store = useContentStore();
 const notify = useNotify();
 
-const downloads = computed(() => store.modelDownloads);
+/** FEAT-133：运行时组件不进「模型下载」列表 —— 它在性能设置页的
+ *  「语义索引加速」卡片里管理（模型列表只放模型，避免两处入口各说一套状态）。 */
+const RUNTIME_SPECS = new Set(["openvino-runtime"]);
+
+const downloads = computed(() =>
+  store.modelDownloads.filter((d) => !RUNTIME_SPECS.has(d.name)),
+);
 const allReady = computed(() => downloads.value.length > 0 && downloads.value.every((d) => d.done));
 const missing = computed(() => downloads.value.filter((d) => !d.done));
 const missingBytes = computed(() =>

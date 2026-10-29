@@ -179,6 +179,27 @@ fn specs() -> Vec<DlSpec> {
         ),
         expect_min: 3_000_000,
     }];
+    // FEAT-133：OpenVINO 裁剪运行时（语义图像塔的 NPU 后端）——**可选组件**，不是模型。
+    //
+    // 为什么不分很多文件：组件是一个 zip（下载链路零改动），解压交给 Python 侧
+    // （标准库 zipfile，见 vcr/ovrt.py）—— 不在 Rust 里引 zip 依赖，失败面小。
+    //
+    // 为什么只给 Intel 推荐：OpenVINO 的 GPU/NPU 插件只认 Intel 硬件，AMD/NVIDIA
+    // 机器装了没有任何收益（UI 层按 CPU 厂商过滤推荐，不在这里硬编码）。
+    //
+    // 尺寸口径：完整 openvino 244.8MB，裁掉编译器(95.7MB)+CPU插件(44.2MB)+
+    // GPU插件(33.1MB)+多余前端后 40.7MB 装上；zip 压缩后 13~15MB 量级。
+    // 这里 expect_min 取宽松下限（防 HTML 错误页），不当作精确体积。
+    const OPENVINO_RUNTIME: &[DlFile] = &[DlFile {
+        remote: "",
+        local: "_runtime/openvino-npu-win-x64.zip",
+        // releases/latest/download 是 GitHub 的稳定别名，不必随版本号改 URL；
+        // 随 release 上传资产：python/scripts/build_ov_runtime_zip.py 产出。
+        abs_url: Some(
+            "https://github.com/howforever2000/PhotoMangementSys/releases/latest/download/openvino-npu-win-x64.zip",
+        ),
+        expect_min: 5_000_000,
+    }];
     // 人物检测（YOLOv8n COCO 80 类）：**主链路**，`/health.ok` 的唯一判据。
     // 仓库内路径 `yolov8n-onnx-web/yolov8n.onnx` ≠ 本地落位名，必须用 remote/local
     // 分开写（同 buffalo_l 的 detection/model.onnx → det_10g.onnx）。
@@ -250,6 +271,15 @@ fn specs() -> Vec<DlSpec> {
             files: OCR,
             required: false,
             expect_bytes: 4_745_517,
+        },
+        DlSpec {
+            name: "openvino-runtime",
+            label: "语义加速 · OpenVINO（Intel 可选）",
+            note: "14MB 下载 / 40.7MB 装后 · 仅 Intel：语义索引可走 NPU，实测 2.6× 于 CPU",
+            repo: "",
+            files: OPENVINO_RUNTIME,
+            required: false,
+            expect_bytes: 14_000_000,
         },
     ]
 }
@@ -1111,6 +1141,39 @@ mod tests {
                 "Rust 下载表缺少本地文件 {name}；现有 {locals:?}"
             );
         }
+    }
+
+    /// FEAT-133：OpenVINO 运行时组件的落地路径必须与 python 侧 `vcr/ovrt.py` 逐字一致。
+    ///
+    /// 这是跨语言约定：Rust 把 zip 下到哪个路径，Python 就必须从哪个路径解压。
+    /// 历史上 tokenizer 落错目录（BUG-2026-0920-002）就是同一类错 —— 两边各写一份常量。
+    #[test]
+    fn openvino_runtime_spec_matches_python_ovrt() {
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../python/vcr/ovrt.py"),
+        )
+        .expect("读不到 python/vcr/ovrt.py（跨语言约定测试依赖它存在）");
+        assert!(
+            text.contains("ZIP_NAME = \"openvino-npu-win-x64.zip\""),
+            "python 侧 ZIP_NAME 改名后须同步本测试"
+        );
+        assert!(
+            text.contains("RUNTIME_SUBDIR = \"_runtime\""),
+            "python 侧 RUNTIME_SUBDIR 改名后须同步本测试"
+        );
+
+        let spec = specs()
+            .into_iter()
+            .find(|s| s.name == "openvino-runtime")
+            .expect("下载表必须有 openvino-runtime（可选组件）");
+        assert!(!spec.required, "运行时组件不能标 required（缺它只是没有加速）");
+        let f = spec.main_file();
+        assert_eq!(f.local, "_runtime/openvino-npu-win-x64.zip");
+        assert!(
+            f.abs_url.unwrap_or("").ends_with("/releases/latest/download/openvino-npu-win-x64.zip"),
+            "必须走 releases/latest/download 稳定别名，否则每次发版都要改 URL"
+        );
     }
 
     /// 下载条目自洽性：命名/落位唯一、HF 文件走多镜像、绝对 URL 单源、体积下限合理。

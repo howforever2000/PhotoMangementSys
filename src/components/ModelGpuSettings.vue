@@ -17,13 +17,17 @@
  * 服务可用性：由 ClipTierSection 充当探针（`list_vcr_models` 最轻且必然依赖服务）。
  * 它失败 → 本组件显示横幅并锁定①③；模型管理页签不受影响（BUG-2026-0918-002）。
  */
-import { ref } from "vue";
+import { ref, computed, onMounted } from "vue";
 import CollapseSection from "./CollapseSection.vue";
 import HardwareSection from "./settings/HardwareSection.vue";
+import OvRuntimeSection from "./settings/OvRuntimeSection.vue";
 import ClipTierSection from "./settings/ClipTierSection.vue";
 import FaceTierSection from "./settings/FaceTierSection.vue";
 import ScanAdvancedSection from "./settings/ScanAdvancedSection.vue";
 import BenchmarkSection from "./settings/BenchmarkSection.vue";
+import { useContentStore } from "../stores/content";
+
+const store = useContentStore();
 
 /** 识别服务不可用 → 横幅 + 锁定依赖它的分区（不整块隐藏，用户仍能重试） */
 const initFailed = ref(false);
@@ -44,6 +48,38 @@ function retry() {
   initError.value = "";
   retryToken.value += 1;
 }
+
+// ---- FEAT-133：「这台机器现在怎么跑」摘要 ----
+//
+// 这一屏原来难懂的核心：四个开关分属**两条不同的腿**（GPU 加速 → 人物/人脸/OCR；
+// 语义索引 → 另一个后端），但 UI 上从没说清楚。现在在顶部用三行把“当前实际在哪跑”
+// 直接摆出来，开关变成“为什么这样”的解释而不是猜谜。
+//
+// 数据源：gpuStatus（人物链路的请求值）+ clipRuntime（语义链路的服务端事实）。
+// 两者都不触发模型加载，打开设置弹窗不会变慢。
+const accelOn = computed(() => store.gpuStatus?.use_gpu === true);
+const semantic = computed(() => {
+  const c = store.clipRuntime;
+  if (!c) return { text: "读取中…", tone: "dim" as const };
+  if (c.active) {
+    const dev = c.device === "NPU" ? "NPU" : c.device === "GPU" ? "核显" : c.device || "CPU";
+    return { text: `OpenVINO · ${dev}`, tone: "ok" as const };
+  }
+  if (c.mode === "ort" && c.runtime?.installed) {
+    return { text: "ONNX Runtime（已关加速）", tone: "dim" as const };
+  }
+  return { text: "ONNX Runtime · CPU", tone: "dim" as const };
+});
+const personChain = computed(() =>
+  accelOn.value
+    ? { text: "DirectML 加速", tone: "ok" as const }
+    : { text: "CPU（未开加速）", tone: "dim" as const },
+);
+
+onMounted(() => {
+  // 摘要只做展示：失败不弹错（下面的分区各自有自己的错误态与重试）
+  if (!store.clipRuntime) void store.fetchClipRuntime().catch(() => {});
+});
 </script>
 
 <template>
@@ -60,9 +96,28 @@ function retry() {
       </span>
     </p>
 
+    <!-- FEAT-133：这台机器现在怎么跑（把两条腿分开说清） -->
+    <div class="now" aria-label="这台机器当前的推理方式">
+      <div class="now-row">
+        <span class="now-k">语义索引</span>
+        <span class="now-v" :class="semantic.tone">{{ semantic.text }}</span>
+        <span class="now-note">照片编向量 · 以图搜图 · 语义分类</span>
+      </div>
+      <div class="now-row">
+        <span class="now-k">人物与文字</span>
+        <span class="now-v" :class="personChain.tone">{{ personChain.text }}</span>
+        <span class="now-note">人物检测 · 人脸 · OCR（由下方「GPU 加速」控制）</span>
+      </div>
+    </div>
+
     <!-- ① 本机硬件 -->
     <section class="block">
       <HardwareSection :locked="initFailed" />
+    </section>
+
+    <!-- ①b 语义索引加速（OpenVINO 可选组件；只作用于语义图像塔） -->
+    <section class="block">
+      <OvRuntimeSection :locked="initFailed" />
     </section>
 
     <section class="block">
@@ -132,6 +187,44 @@ function retry() {
 }
 .banner-sub {
   color: var(--color-text-2);
+}
+/* 「现在怎么跑」摘要：两条腿分两行，每行只回答“现在在哪” */
+.now {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--color-surface-2);
+}
+.now-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.now-k {
+  min-width: 72px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.now-v {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--color-text-2);
+}
+.now-v.ok {
+  color: var(--color-ok);
+}
+.now-v.dim {
+  color: var(--color-text-3);
+  font-weight: 600;
+}
+.now-note {
+  font-size: 11.5px;
+  color: var(--color-text-3);
 }
 .btn {
   min-height: 26px;

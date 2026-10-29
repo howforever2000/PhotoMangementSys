@@ -5068,7 +5068,79 @@
         "sync_person_ids",
         "NO_PERSON"
       ]
+    },
+    {
+      "id": "FEAT-133",
+      "name": "语义索引上 NPU：OpenVINO 裁剪运行时按需下载 + 后端切换 + 性能设置「两条腿」说明",
+      "module": "python/vcr/ovrt.py、python/vcr/services/ov_clip.py、python/vcr/model_registry.py、python/vcr/config.py、python/server.py、python/scripts/build_ov_runtime_zip.py、src-tauri/src/model_dl.rs、src-tauri/src/vision.rs、src-tauri/src/vcr_settings.rs、src-tauri/src/lib.rs、src/components/ModelGpuSettings.vue、src/components/settings/OvRuntimeSection.vue、src/components/settings/GpuSection.vue、src/components/settings/ModelDownloadRows.vue、src/stores/content.ts、src/types/content.ts、release.ps1",
+      "status": "done",
+      "purpose": "用户问「扫描入库能不能用 NPU 加速」，并明确「不能只考虑当前电脑系统和硬件」「OpenVINO 组件有点大，能不能不进安装包」。实测结论：本机（Intel Ultra 5 245K + AI Boost）只有语义图像塔值得上 NPU（19.7ms vs 核显 26.1ms vs CPU 56.7ms），而 det（核显 7.0 最优）、face_det（NPU 115.9ms 慢 8 倍）、ocr（核显最优）上 NPU 全是负收益。于是只把语义图塔这一条腿做成可选的 OpenVINO 后端，组件裁剪成 15.5MB zip / 40.7MB 装后、按需下载，AMD/NVIDIA 机器完全不推荐也不受影响。",
+      "implementation": {
+        "只接一条腿": "vcr/services/ov_clip.py 只接管 clip_vision，静态 reshape 到 [1,3,224,224]（NPU 只吃静态 shape），对外仍是 (N,dim) —— embed_service 的 np.vstack 批量在内部按张循环。face_det 在 NPU 上的候选资格以注释永久排除（8 倍差距）。clip_text 也不接管：它的 attention_mask 带无界动态维，NPU 编译器会 LLVM abort 把整个进程带走（实测触发两次，不可 catch）。",
+        "裁剪依据": "完整 openvino 244.8MB，其中 npu_compiler 95.7MB（只编图用，我们启动时现编且有缓存）、cpu_plugin 44.2MB、gpu_plugin 33.1MB、多余前端 ~13MB、cache.json 8.4MB、.lib/.pdb 8MB+。裁剪后 45.4MB 装上 / 15.5MB zip，只认 NPU。",
+        "为什么走 model_dl 下载 zip 而不是在 Rust 里解压": "model_dl 的下载单元是「文件」，加归档解压会引 zip 依赖与新失败面。改为 Rust 只把 zip 落到 models/_runtime/，Python 首次使用时用标准库 zipfile 解压并注入 sys.path；解压先落 ovrt.partial 再改名，改名失败（杀毒软件占句柄，实测复现 WinError 5）不算失败，直接用中转目录跑并下次重试。",
+        "后端选择与退路": "config.CLIP_RUNTIME_PATH（models/current_clip_runtime.json）= auto | ort。auto 且有组件、有可用设备、模型文件在 → 才挂 OV；否则恒 None，一切走原 ORT 路径。新增 GET/POST /clip_runtime + Tauri get_vcr_clip_runtime / set_vcr_clip_runtime；POST 只清 clip_vision 槽位、后台重建。ort 是无需卸载组件的一键退路。",
+        "不破坏既有语义": "后端切换**不改变** photo_embeddings.model（那是模型档位 id，不是后端）；_session_info 用 providers=[\"OpenVINO:NPU\"] 的同一口径上报，/health 与实测诊断页读的是服务端事实；benchmark(\"clip_vision\") 通过最小垫片（run/get_providers/get_inputs）直接量 OV 这条腿，不再出现「NPU 生效后通道不可用」的自相矛盾。",
+        "性能设置可理解性": "新增顶部「这台机器现在怎么跑」摘要：语义索引 / 人物与文字两行，分别显示实际设备 —— 把「四个开关分属两条腿」这件事实摆在最前面。新增 OvRuntimeSection：Intel 才给下载按钮（AMD/unknown 直接显示不适用），已装则显示实际设备、编译耗时、一键切回 ORT；运行时组件从「模型下载」列表里过滤掉（RUNTIME_SPECS），避免两处入口各说一套状态。GpuSection 文案改为「本开关只管人物检测/人脸/OCR，语义索引见上方」。",
+        "交付": "release.ps1 新增 2b 步：缺组件就现跑 build_ov_runtime_zip.py，并明确提醒必须把 openvino-npu-win-x64.zip 作为 Release 资产上传（model_dl 用 releases/latest/download/ 抓）。VCR_API_VERSION 9 → 10（行为变更，宿主据此重启旧服务）。"
+      },
+      "highlights": [
+        "通道级实测（Intel Ultra 5 245K / OpenVINO 2026.4.1，单流）→ clip_vision：NPU 19.7ms / 核显 26.1ms / CPU 56.7ms；det：12.3 / 7.0 / 15.2；face_det：115.9 / 14.0 / 36.1；face_rec：8.2 / 6.5 / 22.1；ocr：33.1 / 24.4 / 25.8",
+        "数值等价：NPU vs CPU 余弦 0.99999779（fp16 档 0.999998、fp32 档 0.999997），不属于 BUG-2026-0910-006 同类；端到端 ORT(CPU) 与 OV(NPU) 在同一批真实输入上 cos=0.99999779 / max|Δ|=0.00055",
+        "端到端延迟（8 张一批，实测）：ORT CPU 50.8ms/张 → OV NPU 19.3ms/张（2.63×）；单张散跑 NPU 约 29ms，说明 NPU 有约 10ms 固定提交开销 —— 所以文案按「一批」口径说，不承诺单张倍数",
+        "组件体积：244.8MB → 45.4MB 装上 / 15.5MB zip；解压+探测在应用自身代码路径里跑通（不是探针脚本）",
+        "降级完备：组件缺失 / 非 Intel / 用户选 ort / 设备不可用 → 四种情况都实测回到原行为（backend=ort、embed 照常）",
+        "NPU 动态维会直接 LLVM abort 整个进程（不可 catch），因此静态 reshape 是硬前置条件，不是优化项"
+      ],
+      "tests": [
+        "python/bench/verify_ov_clip_equiv.py → cos=0.99999779 通过；auto 模式 backend=openvino device=NPU；benchmark 自洽",
+        "端到端 HTTP（VCR_PORT=8799）：/health api_version=10；POST /clip_runtime auto → clip_vision=OpenVINO:NPU、clip_text=CPU；切 ort → CPUExecutionProvider；再切回 auto → NPU；/embed_batch 4 张 962ms、/embed_text 正常、clip_ready=true",
+        "无组件端到端（VCR_PORT=8800，组件目录移走）：ok=true / backend=ort / installed=false / recommended=true（Intel）/ embed_batch 正常",
+        "cargo check --all-targets → 0 error（仅既有 dead_code/unused 警告）",
+        "npx vue-tsc --noEmit → 0 error",
+        "python/scripts/build_ov_runtime_zip.py → 45.4MB 裁剪、zip 15.5MB、内置自检 devices=['NPU']"
+      ],
+      "related_files": [
+        "python/vcr/ovrt.py",
+        "python/vcr/services/ov_clip.py",
+        "python/vcr/model_registry.py",
+        "python/vcr/config.py",
+        "python/server.py",
+        "python/scripts/build_ov_runtime_zip.py",
+        "python/bench/verify_ov_clip_equiv.py",
+        "python/bench/probe_npu_feasibility.py",
+        "python/bench/probe_npu_clip_tiers.py",
+        "python/bench/probe_npu_blob_size.py",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/vcr_settings.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/ModelGpuSettings.vue",
+        "src/components/settings/OvRuntimeSection.vue",
+        "src/components/settings/GpuSection.vue",
+        "src/components/settings/ModelDownloadRows.vue",
+        "src/stores/content.ts",
+        "src/types/content.ts",
+        "release.ps1",
+        "docs/推理后端多平台化-B方案设计与决策.md"
+      ],
+      "keywords": [
+        "NPU",
+        "OpenVINO",
+        "语义索引",
+        "clip_vision",
+        "图像塔",
+        "按需下载",
+        "裁剪运行时",
+        "clip_runtime",
+        "性能设置",
+        "Intel AI Boost",
+        "DirectML",
+        "feat133"
+      ],
+      "created_at": "2026-11-01T22:10:00+08:00",
+      "updated_at": "2026-11-01T22:10:00+08:00"
     }
   ],
-  "updated": "2026-10-28T23:59:00+08:00"
+  "updated": "2026-11-01T22:10:00+08:00"
 }
