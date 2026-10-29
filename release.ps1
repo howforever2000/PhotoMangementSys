@@ -94,7 +94,6 @@ if ($SkipModels) {
     Write-Host "    模型校验通过（人物检测/人脸/OCR/语义模型齐全）" -ForegroundColor Green
 }
 
-
 # --- 3. 前端依赖 ---
 Write-Host "[3/5] 校验前端依赖..." -ForegroundColor Green
 if (-not (Test-Path (Join-Path $Root "node_modules"))) {

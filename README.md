@@ -162,13 +162,12 @@ python/
 
 ### 6.1 安装
 
-- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新稳定版 **v0.4.3**，约 108MB，内含 VCR 微服务但**不含 AI 模型**——模型与 v0.4.2 完全一致，见下方「模型放置说明」与「十一、版本历史」）：
-  - [`PhotoManagementSys_0.4.3_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.3/PhotoManagementSys_0.4.3_x64-setup.exe)（NSIS，按用户安装到 `%LOCALAPPDATA%`，无需管理员权限，推荐）
-  - 或 [`PhotoManagementSys_0.4.3_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.3/PhotoManagementSys_0.4.3_x64_en-US.msi)（MSI，按机器安装到 `Program Files`，需管理员权限）
-  - 模型（**本版未更新，沿用 v0.4.2**）：[`model.zip`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.2/model.zip)（528.9MB），右键解压到安装根目录即可；已装过 v0.4.2 的用户无需重新下载
+- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新稳定版 **v0.4.4**，约 105MB，内含 VCR 微服务但**不含 AI 模型**——模型与 v0.4.2 完全一致，见下方「模型放置说明」与「十一、版本历史」）：
+  - [`PhotoManagementSys_0.4.4_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.4/PhotoManagementSys_0.4.4_x64-setup.exe)（NSIS，按用户安装到 `%LOCALAPPDATA%`，无需管理员权限，推荐）
+  - 或 [`PhotoManagementSys_0.4.4_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.4/PhotoManagementSys_0.4.4_x64_en-US.msi)（MSI，按机器安装到 `Program Files`，需管理员权限）
+  - 模型（**未随本版更新，沿用 v0.4.2**）：[`model.zip`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.2/model.zip)（528.9MB），右键解压到安装根目录即可；也可在应用内 **性能设置 → 模型管理** 一键下载（人物检测 / 人脸 / OCR / 语义四类，国内双镜像）
   - 从旧版升级：建议先卸载旧版再安装（两种安装范围不同，否则会同时存在两份）
-  - ⚠ **2026-10-27 重打包**：上述文件名未变但内容已更新（修复 8 项缺陷，见「十一、版本历史 → v0.4.3」）。首发包请重新下载；覆盖安装即可，无需卸载，数据库与偏好不迁移
-  - 历史版本（v0.4.2 / v0.4.1 / v0.4.0-beta / v0.3.x / v0.2.0 / v0.1.0）见 [Releases](https://github.com/howforever2000/PhotoMangementSys/releases)
+  - 历史版本（v0.4.3 / v0.4.2 / v0.4.1 / v0.4.0-beta / v0.3.x / v0.2.0 / v0.1.0）见 [Releases](https://github.com/howforever2000/PhotoMangementSys/releases)
 - ⚠ **v0.4.3 起应用标识符改为 `com.photomanagementsys.app`**（原 `com.haoyuan.photo-management-sys` 会把作者姓名带进每台用户机的 `%APPDATA%` 目录名）。数据目录随之变化，首次启动会自动把 `photos.db` / `thumbs` / `vcr-data` / `app.key` 一次性迁移到新目录（优先 rename，失败则复制，**仅在复制成功后删旧目录**；新目录已有数据则不覆盖、只提示旧目录位置）。
 - 安装包不含 AI 模型（详见「七、构建与发布」）。请按「模型放置说明」将模型文件放入模型目录后再启动，否则识别与语义搜索不可用（看图 / 相册管理 / 调色编辑不受影响）。
 
@@ -323,6 +322,37 @@ PhotoMangementSys/
 ---
 
 ## 十一、版本历史
+
+### v0.4.4（2026-11-01）— 界面质感重做 / 时间线与概览三处实测提速 / 照片四分化处理（FEAT-113~133）
+
+一次集中整理，四个方向：
+
+- **界面质感**：顶栏带式化、概览改成「一面墙一块板」、卡片去四边硬线改「上亮下暗 + 接触影」、
+  图注压进封面底部渐变；人物卡从 86px 圆头像改成 **4:5 照片裁切封面**（480×600）并把文字嵌进封面；
+  **液态玻璃 v2** 修浅底可见性（填充向冷灰压暗 20% + 背景明度位移 + 补上被漏渲染的 1px 棱环）
+  与透明度滑块跟手（alpha 25%→50% 变化像素由 0% 变为 10.9%）；预定义外观 8 套收敛为 **4 套**；
+  取色器改圆形色盘 + 自定义预设可存可命名（上限 6）；概览「地点」块从装饰性点阵地图改成
+  **地点 Top5 + 年份 Top5** 排名统计。
+- **性能（均实测）**：时间线按月分页 + 高度账本窗口化（首包 14.10 MB → **3.91 KB**，DOM 2.5 万节点 → **40~47**，
+  跳转即定位而不 smooth 穿透）；全局概览改「数据变动才重算」快照（14,438 KB → **3.35 KB**，之后每次 **22 ms**）；
+  AI 腿用 libjpeg `draft()` 在 DCT 域解码（**158 → 58 ms/张**）；OCR 前置门让 33% 的图省掉一次推理
+  （墙钟 133.7 → 115.7 ms/张）；CPU 线程默认值改读真实 P 核数（245K 上 6 线程比 14 线程**快 3.4×**）；
+  扫描改三腿并发。
+- **照片与人物管理**：照片「处理方式」四分化（**移除** / **改挂** / **清除数据库记录** / **删除文件**，
+  默认最轻一档且可撤销）；分类人工纠错（只删命中行）；人物人脸人工改挂 + 覆盖表
+  （**人工修正存为扫描输入，重扫不再改回去**，移走人脸后质心全量重算）；换头像同时刷新封面。
+- **扫描与设置**：扫描单飞（修「点一次扫两遍」）+ 调用方留痕（`client=<窗口>/<会话>/<调用点>`）+
+  分类重建指纹短路（重扫已编码相册时 8.7~11.7 s → 毫秒级）；应用内补齐**全部**模型下载
+  （人物检测 12.8MB + 人脸两档 + OCR + 语义两档，双镜像竞速 + 断点续传）+ 缺模型弹窗；
+  性能设置新增「这台机器现在怎么跑」摘要，把**语义索引**与**人物与文字**两条腿分开显示各自跑在哪。
+
+另有 8 项稳定性修复：数据目录不可写给出可行动错误（不再是 SQLite panic）、图片格式按魔数判断
+（修「无法读取图片头信息」/ 缩略图 `Illegal start bytes`）、时间线缩略图死链自愈、头像与封面不同步、
+启动失败提示补完整性级别排查项、GPU 失败回退 CPU 的主链路不再因日志写入失败中断、性能设置会话实测显示旧值、
+扫描收尾数字不自洽。
+
+> 本版**不含 AI 模型**（约 105MB 轻量包），模型沿用 v0.4.2 的 `model.zip`；首次安装后在
+> 「性能设置 → 模型管理」一键下载，或解压 model.zip 到安装根目录。
 
 ### v0.4.3（2026-10-22 首发 / 2026-10-27 重打包）— 创意工坊调色台：非破坏编辑引擎 / 预览器与归档隐藏相册 / 界面材质收敛 / 隐私与数据目录修正
 
