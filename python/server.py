@@ -42,6 +42,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from vcr import config
+from vcr import logutil
 from vcr.model_registry import get_registry
 from vcr.persistence.person_store import get_store
 from vcr.schemas import (
@@ -212,14 +213,23 @@ def set_clip_runtime(req: ClipRuntimeRequest):
 
 
 def _rebuild_clip_vision() -> None:
-    """后台加载语义图像塔（OV 或 ORT，按新选择）；文本塔不受影响。"""
-    reg = get_registry()
-    try:
-        _ = reg.clip_vision
-    except Exception as e:  # noqa: BLE001
-        import sys
+    """后台加载语义双塔（OV 或 ORT，按新选择）。
 
-        print(f"[VCR] 语义塔重建失败: {type(e).__name__}: {e}", file=sys.stderr)
+    ⚠️ **必须两座塔都加载**（BUG-2026-1101-002）：`/health.clip_ready` 的判据是
+    `is_ready(clip_vision) and is_ready(clip_text)`。只重建图塔会让 clip_ready 一直为 false，
+    而宿主一旦看到 clip_ready=false 就会**整段跳过语义腿** —— 于是用户在 UI 上把开关
+    打开、下一次扫描却一张图都没编码，表现就是「NPU 没有任何痕迹」。
+    """
+    reg = get_registry()
+    for key in ("clip_vision", "clip_text"):
+        try:
+            _ = getattr(reg, key)
+        except Exception as e:  # noqa: BLE001
+            logutil.exc(f"[VCR] 语义塔 {key} 重建失败", e)
+    logutil.err(
+        f"[VCR] 语义塔重建完成 | clip_ready={get_embed_service().ready()}"
+        f" | backend={reg.clip_runtime_status().get('backend')}"
+    )
 
 
 @app.post("/model")
