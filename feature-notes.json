@@ -5073,7 +5073,7 @@
       "id": "FEAT-133",
       "name": "语义索引上 NPU：OpenVINO 裁剪运行时按需下载 + 后端切换 + 性能设置「两条腿」说明",
       "module": "python/vcr/ovrt.py、python/vcr/services/ov_clip.py、python/vcr/model_registry.py、python/vcr/config.py、python/server.py、python/scripts/build_ov_runtime_zip.py、src-tauri/src/model_dl.rs、src-tauri/src/vision.rs、src-tauri/src/vcr_settings.rs、src-tauri/src/lib.rs、src/components/ModelGpuSettings.vue、src/components/settings/OvRuntimeSection.vue、src/components/settings/GpuSection.vue、src/components/settings/ModelDownloadRows.vue、src/stores/content.ts、src/types/content.ts、release.ps1",
-      "status": "done",
+      "status": "reverted",
       "purpose": "用户问「扫描入库能不能用 NPU 加速」，并明确「不能只考虑当前电脑系统和硬件」「OpenVINO 组件有点大，能不能不进安装包」。实测结论：本机（Intel Ultra 5 245K + AI Boost）只有语义图像塔值得上 NPU（19.7ms vs 核显 26.1ms vs CPU 56.7ms），而 det（核显 7.0 最优）、face_det（NPU 115.9ms 慢 8 倍）、ocr（核显最优）上 NPU 全是负收益。于是只把语义图塔这一条腿做成可选的 OpenVINO 后端，组件裁剪成 15.5MB zip / 40.7MB 装后、按需下载，AMD/NVIDIA 机器完全不推荐也不受影响。",
       "implementation": {
         "只接一条腿": "vcr/services/ov_clip.py 只接管 clip_vision，静态 reshape 到 [1,3,224,224]（NPU 只吃静态 shape），对外仍是 (N,dim) —— embed_service 的 np.vstack 批量在内部按张循环。face_det 在 NPU 上的候选资格以注释永久排除（8 倍差距）。clip_text 也不接管：它的 attention_mask 带无界动态维，NPU 编译器会 LLVM abort 把整个进程带走（实测触发两次，不可 catch）。",
@@ -5139,8 +5139,10 @@
         "feat133"
       ],
       "created_at": "2026-11-01T22:10:00+08:00",
-      "updated_at": "2026-11-01T22:10:00+08:00"
+      "updated_at": "2026-11-01T23:59:00+08:00",
+      "reverted_at": "2026-11-01T23:59:00+08:00",
+      "revert_reason": "NPU 确实可用且比 CPU 快 2.4~2.9×（EXECUTION_DEVICES=NPU；NPU 推理时进程 CPU/墙钟=0.0 vs ORT-CPU 11.93；全核外部占满时 NPU 仅 1.49× 而 CPU 路径 10.5×），但语义腿在扫描里只占 0.2%（album=126 / 776 张：AI识别 99049ms 79% · 影调 26539ms 21% · 语义向量 224ms 0.2%），且三腿并发 ⇒ 加速被 79% 的 AI 腿完全掩盖，用户感知为零。保留代价是 40MB 必选组件 + 一条额外后端分支 + 两条仅此分支才有的 bug。保留：vcr/logutil.py（修了主链路上同类 stderr 隐患）、性能设置「这台机器现在怎么跑」摘要（改按档位说明）、四个纯证据探针 probe_npu_*.py。"
     }
   ],
-  "updated": "2026-11-01T22:10:00+08:00"
+  "updated": "2026-11-01T23:59:00+08:00"
 }

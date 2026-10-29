@@ -4976,7 +4976,45 @@
       ],
       "created_at": "2026-11-01T23:20:00+08:00",
       "updated_at": "2026-11-01T23:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1101-002",
+      "date": "2026-11-01",
+      "status": "wontfix",
+      "title": "切换语义塔后端后 /health.clip_ready 恒为 false（宿主整段跳过语义腿，NPU 零痕迹）",
+      "module": "python/server.py（_rebuild_clip_vision）、python/vcr/model_registry.py",
+      "symptom": [
+        "POST /clip_runtime 之后 /health.clip_ready 永远是 false，且 load_errors 为空",
+        "宿主据此整段跳过语义腿 ⇒ 一次扫描里一张图都没编码 ⇒ 用户看到「NPU 没有任何痕迹」",
+        "UI 侧却显示语义索引已启用（active 只看图塔），两处结论不一致"
+      ],
+      "root_cause": [
+        "clip_ready 的判据是 is_ready(clip_vision) and is_ready(clip_text)，而 _rebuild_clip_vision 只加载了 clip_vision",
+        "文本塔是懒加载的（要等第一次 /embed_text），所以切换后端后它会一直缺席"
+      ],
+      "evidence_log": [
+        "app.log: embed_text_batch HTTP 503 | CLIP 未就绪（同一时段 scan.timing 里『语义向量 224ms』= 776 张等于什么都没做）",
+        "自测复现：切 auto 后轮询 clip_ready 180s 始终 false，load_errors 始终为空"
+      ],
+      "solution": [
+        "回退前已修：_rebuild_clip_vision 同时加载双塔并打印 clip_ready/backend",
+        "整个 OpenVINO 后端随后被回退（FEAT-133 reverted），该函数与端点一并删除，故本缺陷标 wontfix"
+      ],
+      "prevention": [
+        "凡「就绪」判据涉及多个子资源时，任何「重建」入口都必须把全部子资源一起建起来，不能只建热点的那个",
+        "同一状态若有两个可观测面（UI 的 active 与 health 的 clip_ready），对外必须要求两者同时成立"
+      ],
+      "keywords": [
+        "clip_ready",
+        "false",
+        "懒加载",
+        "rebuild",
+        "宿主跳过语义腿",
+        "NPU 无痕迹"
+      ],
+      "created_at": "2026-11-01T23:59:00+08:00",
+      "updated_at": "2026-11-01T23:59:00+08:00"
     }
   ],
-  "updated": "2026-11-01T23:20:00+08:00"
+  "updated": "2026-11-01T23:59:00+08:00"
 }

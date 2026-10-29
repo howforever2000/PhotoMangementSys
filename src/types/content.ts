@@ -398,40 +398,6 @@ export interface ModelDlStatus {
   error: string | null;
 }
 
-/** FEAT-133：语义图像塔后端 —— OpenVINO 裁剪运行时的现状 */
-export interface VcrClipRuntime {
-  /** 'auto' 有组件就用 / 'ort' 强制回 ONNX Runtime */
-  mode: "auto" | "ort";
-  /** 当前是否真的在用 OpenVINO（服务端事实，不是请求值） */
-  active: boolean;
-  /** 'openvino' | 'ort' */
-  backend: string;
-  /** 实际设备：NPU / GPU / CPU（未启用时为空串） */
-  device: string;
-  /** 编译+预热耗时（ms） */
-  load_ms: number;
-  error: string;
-  runtime: {
-    /** 组件是否已解压就位 */
-    installed: boolean;
-    /** 下载的 zip 是否已在模型目录 */
-    zip_present: boolean;
-    /** CPU 厂商：intel / amd / unknown */
-    vendor: string;
-    /** 是否值得向这台机器推荐（Intel 才推荐） */
-    recommended: boolean;
-    /** 组件是否真的可用（已解压 + 有设备） */
-    usable: boolean;
-    version: string;
-    devices: string[];
-    npu: boolean;
-    igpu: boolean;
-    /** 首选设备：NPU / GPU / 空串 */
-    preferred_device: string;
-    error: string;
-  };
-}
-
 /** FEAT-061：单源连通性自检结果（对应 Rust `model_dl::SourceProbe`） */
 export interface ModelSourceProbe {
   url: string;

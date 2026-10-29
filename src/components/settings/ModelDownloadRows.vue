@@ -8,21 +8,14 @@
  * FEAT-114 起 Rust 侧下载表覆盖 语义两档 + 人脸两档 + OCR（此前只有 CLIP），
  * 因此每行展示 label（人类可读名）与 note（体积/取舍），而不是裸模型 id。
  */
-import { computed, onMounted, ref, watch } from "vue";
-import { useContentStore } from "../../stores/content";
+import { computed, onMounted, ref, watch } from "vue";import { useContentStore } from "../../stores/content";
 import { useNotify } from "../../composables/useNotify";
 import type { ModelDlStatus } from "../../types/content";
 
 const store = useContentStore();
 const notify = useNotify();
 
-/** FEAT-133：运行时组件不进「模型下载」列表 —— 它在性能设置页的
- *  「语义索引加速」卡片里管理（模型列表只放模型，避免两处入口各说一套状态）。 */
-const RUNTIME_SPECS = new Set(["openvino-runtime"]);
-
-const downloads = computed(() =>
-  store.modelDownloads.filter((d) => !RUNTIME_SPECS.has(d.name)),
-);
+const downloads = computed(() => store.modelDownloads);
 const allReady = computed(() => downloads.value.length > 0 && downloads.value.every((d) => d.done));
 const missing = computed(() => downloads.value.filter((d) => !d.done));
 const missingBytes = computed(() =>

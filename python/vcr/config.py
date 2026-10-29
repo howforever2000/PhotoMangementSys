@@ -80,12 +80,6 @@ FACE_TIERS = ["precise", "light"]
 FACE_DEFAULT_TIER = "precise"
 FACE_CURRENT_PATH = os.path.join(MODEL_DIR, "current_face.json")
 
-# 语义图像塔的**推理后端**选择（与「语义模型档位」正交，别混）：
-#   auto（默认）= 装了 OpenVINO 运行时组件就用它（优先 NPU），否则 ORT
-#   ort          = 强制走 ONNX Runtime（回到 FEAT-SEM 以来的一贯行为）
-# 该文件随机器不同（组件装没装），与 current_threads.json 同口径不入库。
-CLIP_RUNTIME_PATH = os.path.join(MODEL_DIR, "current_clip_runtime.json")
-
 
 def face_tier_files(tier: str | None = None) -> tuple[str, str]:
     """档位 → (检测模型文件名, 识别模型文件名)。未知/缺省 → 当前生效档。"""

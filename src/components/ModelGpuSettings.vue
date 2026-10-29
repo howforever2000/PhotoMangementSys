@@ -20,7 +20,6 @@
 import { ref, computed, onMounted } from "vue";
 import CollapseSection from "./CollapseSection.vue";
 import HardwareSection from "./settings/HardwareSection.vue";
-import OvRuntimeSection from "./settings/OvRuntimeSection.vue";
 import ClipTierSection from "./settings/ClipTierSection.vue";
 import FaceTierSection from "./settings/FaceTierSection.vue";
 import ScanAdvancedSection from "./settings/ScanAdvancedSection.vue";
@@ -49,26 +48,30 @@ function retry() {
   retryToken.value += 1;
 }
 
-// ---- FEAT-133：「这台机器现在怎么跑」摘要 ----
+// ---- 「这台机器现在怎么跑」摘要 ----
 //
 // 这一屏原来难懂的核心：四个开关分属**两条不同的腿**（GPU 加速 → 人物/人脸/OCR；
-// 语义索引 → 另一个后端），但 UI 上从没说清楚。现在在顶部用三行把“当前实际在哪跑”
-// 直接摆出来，开关变成“为什么这样”的解释而不是猜谜。
+// 语义索引 → 另受「语义档位」约束），但 UI 上从没说清楚。现在在顶部用两行把
+// “当前实际在哪跑”直接摆出来，开关变成“为什么这样”的解释而不是猜谜。
 //
-// 数据源：gpuStatus（人物链路的请求值）+ clipRuntime（语义链路的服务端事实）。
-// 两者都不触发模型加载，打开设置弹窗不会变慢。
+// 数据源：gpuStatus（人物链路的请求值）+ vcrModels.current（语义档位）。
+// 语义腿的真实规则写在 model_registry._clip_providers：fp16 档固定 CPU；
+// fp32 档才跟随 GPU 开关 —— 所以这里必须按档位说，不能笼统写一句“语义也走 GPU”。
 const accelOn = computed(() => store.gpuStatus?.use_gpu === true);
+const clipTier = computed(() => store.vcrModels?.current ?? "");
+const clipTierLabel = computed(() => {
+  const m = store.vcrModels?.models?.find((x) => x.name === store.vcrModels?.current);
+  return m?.label ?? clipTier.value ?? "";
+});
 const semantic = computed(() => {
-  const c = store.clipRuntime;
-  if (!c) return { text: "读取中…", tone: "dim" as const };
-  if (c.active) {
-    const dev = c.device === "NPU" ? "NPU" : c.device === "GPU" ? "核显" : c.device || "CPU";
-    return { text: `OpenVINO · ${dev}`, tone: "ok" as const };
+  if (!store.vcrModels) return { text: "读取中…", tone: "dim" as const };
+  if (clipTier.value.includes("fp16")) {
+    return { text: "CPU（fp16 档固定不走 GPU）", tone: "dim" as const };
   }
-  if (c.mode === "ort" && c.runtime?.installed) {
-    return { text: "ONNX Runtime（已关加速）", tone: "dim" as const };
+  if (accelOn.value) {
+    return { text: "DirectML 加速（跟随下方开关）", tone: "ok" as const };
   }
-  return { text: "ONNX Runtime · CPU", tone: "dim" as const };
+  return { text: "CPU（fp32 档可开 GPU）", tone: "dim" as const };
 });
 const personChain = computed(() =>
   accelOn.value
@@ -78,7 +81,7 @@ const personChain = computed(() =>
 
 onMounted(() => {
   // 摘要只做展示：失败不弹错（下面的分区各自有自己的错误态与重试）
-  if (!store.clipRuntime) void store.fetchClipRuntime().catch(() => {});
+  if (!store.vcrModels) void store.fetchVcrModels().catch(() => {});
 });
 </script>
 
@@ -101,7 +104,7 @@ onMounted(() => {
       <div class="now-row">
         <span class="now-k">语义索引</span>
         <span class="now-v" :class="semantic.tone">{{ semantic.text }}</span>
-        <span class="now-note">照片编向量 · 以图搜图 · 语义分类</span>
+        <span class="now-note">照片编向量 · 以图搜图 · 语义分类（当前档位：{{ clipTierLabel }}）</span>
       </div>
       <div class="now-row">
         <span class="now-k">人物与文字</span>
@@ -113,11 +116,6 @@ onMounted(() => {
     <!-- ① 本机硬件 -->
     <section class="block">
       <HardwareSection :locked="initFailed" />
-    </section>
-
-    <!-- ①b 语义索引加速（OpenVINO 可选组件；只作用于语义图像塔） -->
-    <section class="block">
-      <OvRuntimeSection :locked="initFailed" />
     </section>
 
     <section class="block">

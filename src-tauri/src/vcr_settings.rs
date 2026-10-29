@@ -815,54 +815,6 @@ pub async fn set_face_tier(tier: String, app: tauri::AppHandle) -> Result<serde_
 }
 
 
-/// FEAT-133：语义图像塔后端现状（auto / ort，实际跑在 OpenVINO:NPU 还是 ONNX Runtime）
-#[tauri::command]
-pub async fn get_vcr_clip_runtime(
-    app: tauri::AppHandle,
-) -> Result<serde_json::Value, String> {
-    let _t = log_call!("get_vcr_clip_runtime");
-    let r = crate::vision::vcr_clip_runtime(&app).await;
-    match &r {
-        Ok(v) => crate::logger::log_call_end_with(
-            "get_vcr_clip_runtime",
-            _t,
-            &format!(
-                "OK | backend={} device={} installed={}",
-                v.get("backend").and_then(|x| x.as_str()).unwrap_or("?"),
-                v.get("device").and_then(|x| x.as_str()).unwrap_or("-"),
-                v.pointer("/runtime/installed")
-                    .and_then(|x| x.as_bool())
-                    .unwrap_or(false)
-            ),
-        ),
-        Err(e) => crate::logger::log_call_end_with("get_vcr_clip_runtime", _t, &format!("ERR | {e}")),
-    }
-    r
-}
-
-/// FEAT-133：切换语义图像塔后端（auto = 有组件就用；ort = 强制回 ONNX Runtime）
-#[tauri::command]
-pub async fn set_vcr_clip_runtime(
-    mode: String,
-    app: tauri::AppHandle,
-) -> Result<serde_json::Value, String> {
-    let _t = log_call!("set_vcr_clip_runtime", &format!("mode={mode}"));
-    let r = crate::vision::vcr_set_clip_runtime(&app, &mode).await;
-    match &r {
-        Ok(v) => crate::logger::log_call_end_with(
-            "set_vcr_clip_runtime",
-            _t,
-            &format!(
-                "OK | backend={}",
-                v.get("backend").and_then(|x| x.as_str()).unwrap_or("?")
-            ),
-        ),
-        Err(e) => crate::logger::log_call_end_with("set_vcr_clip_runtime", _t, &format!("ERR | {e}")),
-    }
-    r
-}
-
-
 /// FEAT-051：分类模型候选清单（含是否已下载 / 当前生效）
 #[tauri::command]
 pub async fn list_vcr_models(app: tauri::AppHandle) -> Result<serde_json::Value, String> {

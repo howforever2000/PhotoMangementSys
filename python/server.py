@@ -98,7 +98,7 @@ def _health_dict() -> dict:
 #     B/16 ↔ L/14-336）；新增 /embed_text_batch。
 # v6：CPU 线程数可调（/threads 读写 + /benchmark 支持临时线程覆盖 + /benchmark_sweep 扫档），
 #     供「⚙ 性能设置」按不同硬件实测选优。
-VCR_API_VERSION = 11  # v11: 修 BUG-2026-1101-001（stderr 写失败把 OV 成功加载改写成失败）；v10: 语义图像塔可走 OpenVINO 后端（FEAT-129，行为变更须重启服务）；
+VCR_API_VERSION = 12  # v12: 回退 OpenVINO/NPU 语义塔后端（FEAT-133），回到纯 CPU + DirectML；
 #                        v9: 人脸质量闸门（几何/尺寸/清晰度 + 边缘质量限新建）
 
 
@@ -122,9 +122,6 @@ def health():
         "persons": d["persons"],
         "threads": config.threads(),
         "gpu": reg.gpu_info(),
-        # FEAT-129：语义塔后端（auto / ort，实际跑在 OpenVINO:NPU 还是 ORT）。
-        # 只读状态：`clip_runtime_status()` 不触发模型编译（/health 每 300ms 被探测）。
-        "clip_runtime": reg.clip_runtime_status(),
         "batch_max": config.BATCH_CHUNK_MAX,
         # 各通道最近一次加载失败原因：宿主据此在日志里直接写明「为何 ok=false」
         # （面板转圈排查要点——BUG-2026-0921-003）
@@ -183,53 +180,6 @@ def set_gpu(req: GpuRequest):
 def models():
     """语义模型档位候选清单（含是否已下载 / 当前生效 / 会话实测事实）。"""
     return get_registry().clip_models_info()
-
-
-@app.get("/clip_runtime")
-def get_clip_runtime():
-    """FEAT-129：语义图像塔的后端现状（OpenVINO 组件是否就位 / 设备 / 是否在用）。"""
-    return get_registry().clip_runtime_status()
-
-
-class ClipRuntimeRequest(BaseModel):
-    """语义塔后端：auto（有组件就用）/ ort（强制回 ONNX Runtime）。"""
-
-    mode: str
-
-
-@app.post("/clip_runtime")
-def set_clip_runtime(req: ClipRuntimeRequest):
-    """切换语义图像塔后端。只清空 `clip_vision` 槽位，后台重建。
-
-    切到 `ort` 是**兼容退路**：任何机器上只要觉得 NPU 输出可疑（数值漂移 /
-    驱动问题），一键就能回到 FEAT-SEM 以来的一贯行为，而不用卸载组件。
-    """
-    try:
-        info = get_registry().set_clip_runtime(req.mode)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    threading.Thread(target=_rebuild_clip_vision, name="vcr-clip-runtime", daemon=True).start()
-    return {"ok": True, **info}
-
-
-def _rebuild_clip_vision() -> None:
-    """后台加载语义双塔（OV 或 ORT，按新选择）。
-
-    ⚠️ **必须两座塔都加载**（BUG-2026-1101-002）：`/health.clip_ready` 的判据是
-    `is_ready(clip_vision) and is_ready(clip_text)`。只重建图塔会让 clip_ready 一直为 false，
-    而宿主一旦看到 clip_ready=false 就会**整段跳过语义腿** —— 于是用户在 UI 上把开关
-    打开、下一次扫描却一张图都没编码，表现就是「NPU 没有任何痕迹」。
-    """
-    reg = get_registry()
-    for key in ("clip_vision", "clip_text"):
-        try:
-            _ = getattr(reg, key)
-        except Exception as e:  # noqa: BLE001
-            logutil.exc(f"[VCR] 语义塔 {key} 重建失败", e)
-    logutil.err(
-        f"[VCR] 语义塔重建完成 | clip_ready={get_embed_service().ready()}"
-        f" | backend={reg.clip_runtime_status().get('backend')}"
-    )
 
 
 @app.post("/model")
