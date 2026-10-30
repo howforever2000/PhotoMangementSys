@@ -5142,7 +5142,50 @@
       "updated_at": "2026-11-01T23:59:00+08:00",
       "reverted_at": "2026-11-01T23:59:00+08:00",
       "revert_reason": "NPU 确实可用且比 CPU 快 2.4~2.9×（EXECUTION_DEVICES=NPU；NPU 推理时进程 CPU/墙钟=0.0 vs ORT-CPU 11.93；全核外部占满时 NPU 仅 1.49× 而 CPU 路径 10.5×），但语义腿在扫描里只占 0.2%（album=126 / 776 张：AI识别 99049ms 79% · 影调 26539ms 21% · 语义向量 224ms 0.2%），且三腿并发 ⇒ 加速被 79% 的 AI 腿完全掩盖，用户感知为零。保留代价是 40MB 必选组件 + 一条额外后端分支 + 两条仅此分支才有的 bug。保留：vcr/logutil.py（修了主链路上同类 stderr 隐患）、性能设置「这台机器现在怎么跑」摘要（改按档位说明）、四个纯证据探针 probe_npu_*.py。"
+    },
+    {
+      "id": "FEAT-134",
+      "name": "大图预览器版式重排（方案 A：右侧档案栏 + 全宽底栏，去掉压在照片上的浮层）",
+      "module": "src/components/PhotoLightbox.vue（只改 <template> 与 <style>，script 仅挪一行）、design/preview/proposal/lightbox-a.html、lightbox-rework.md、shoot-lightbox.cjs",
+      "status": "done",
+      "purpose": "用户反馈「照片预览界面不好看，重新布局即可（不改功能）」。逐条对到代码后的结论：不是照片不好看，而是照片周围常驻的东西太多且互不相识 —— ① 顶部快捷键胶囊与底部工具栏都用 position:absolute 压在图片区上；② 为了不盖图又给 .lb-body 加 padding-bottom:54px 提前让位，结果图变小了、浮层仍叠在上面（这是补丁不是布局）；③ 信息栏 17 行 dt/dd 平铺，拍摄/AI/文件/影调混在一起；④ 同一个文件名在标题栏和面板绝对路径里说两遍；⑤ 图标全是 emoji，与其他页面已统一的线性 SVG 不是一套语言；⑥ 翻页箭头是 56×80 整块半透明白片，比画面最亮处还抢眼；⑦ 同屏混用 .06/.12/.74/.88 四档材质；⑧ .lb-counter 在 CSS 里定义了两遍，倍率只有缩放后才出现；⑨ 翻图没有上下文。要求先出效果图确认（A/B 两版），用户选 A。",
+      "implementation": {
+        "骨架": "三行两列硬布局，任何元素都不再绝对定位压照片：标题栏 46px / 主体 1fr（照片区 │ 信息栏 344px）/ 底栏 60px。.lb-body 由 flex + padding-bottom:54px 改为 grid-template-columns:1fr 344px，54px 补丁整段删除；metaCollapsed 时降为 1fr，照片区吃满。",
+        "信息栏四段": "按「人怎么读一张照片」重排：大字日期（21px，2026 · 10 · 28 + 时分）→ 地点（主色可点）→ 相机 2×2 参数瓷砖（快门/光圈/ISO/焦距，值 15px/600）→ AI chips + 置信度条 → 文件三行（格式/分辨率/大小/影调）→ 直方图。原来的一把梭 dl 拆成带分节标题的组，保留全部字段与全部兜底文案（EXIF 未补全 / 无水印时间 / AI 服务未运行的重试出口）。",
+        "标题栏": "文件名 + 地点摘要 + 计数 chip + 三个 16px 线性 SVG 图标（信息/全屏/关闭）；emoji 全部换内联 SVG（stroke-width 1.7）。快捷键从常驻胶囊改为 hover 才出的 ? 气泡；缩放倍率变成 chip，且仅 scale≠1 时出现、点击复原 100%。",
+        "底栏": "原 .lb-toolbar 从 position:absolute 改为流内一行 60px：左侧星级（1-5，同星再点清除）→ 标签(n) / 编辑 / 在相册中查看，右侧归档 / 隐藏 / 删除（主色只给编辑、危险色只给删除）。",
+        "翻页导航": "56×80 方片 → 44 圆形玻璃按钮，贴照片区两侧 20px；顶部 .lb-zoombar 整块删除。",
+        "材质与字阶收敛": "一屏一种材质：1px rgba(255,255,255,.07) 发丝线 + rgba(255,255,255,.02) 玻璃底，不再混四种；层级只靠字号（11/12.5/21）、字重（400/500/600）、文字色三档。",
+        "顺手修掉的 TDZ": "void initForCurrentPhoto() 被后续插入的扫描逻辑挤到了 metaOverrides 声明之前，首次打开灯箱时 ensureExif → needsExifBackfill → metaOverrides.value 触发 TDZ（Cannot access 'metaOverrides' before initialization），EXIF 补全与单张 AI 扫描被静默放弃 —— 信息面板显示「未记录拍摄时间/地点」，翻到下一张再翻回来才正常。调用点挪回 script setup 末尾（见 BUG-2026-1030-001）。",
+        "不改的东西": "缩放/平移（Ctrl+滚轮、双击、拖拽）、全部快捷键（1-5 / ←→ / Esc / F11）、FEAT-D 静默扫描、评分/归档/隐藏/删除 emit、窗口拖边缩放与双击标题栏全屏 —— 一行未动。"
+      },
+      "highlights": [
+        "「不好看」的根因是浮层数量与层级，不是配色：同一块照片上叠两条 chrome，再怎么调透明度都还是两条；改成「照片四周只留一条常驻 chrome」后，照片区第一次真正空出来。",
+        "padding-bottom:54px 是补丁的典型症状 —— 用「提前让位」去躲「绝对定位」，结果是两头的代价都付了（图变小 + 浮层仍然压图）。改成 grid 后补丁和浮层一起消失。",
+        "信息栏的价值不在「显示全部字段」，而在分组：相机四参数用瓷砖并列（2×2 一眼扫），日期提到 21px，17 行平铺变成 4 段有标题的档案。",
+        "版式重排可以做到 script 零改动：方案把交互面（窗口范式、快捷键、emit）与视觉面（chrome 位置、材质、字阶）彻底切开，回滚只需还原 template + style。"
+      ],
+      "tests": "npx vue-tsc --noEmit 通过（0 error）。1280×800 / 1920×1080 两档窗口与全屏下，照片四周无覆盖物；信息栏收起后照片吃满、无跳动；快捷键与拖边缩放行为不变。",
+      "related_files": [
+        "src/components/PhotoLightbox.vue",
+        "design/preview/proposal/lightbox-a.html",
+        "design/preview/proposal/lightbox-rework.md",
+        "design/preview/proposal/shoot-lightbox.cjs"
+      ],
+      "keywords": [
+        "灯箱",
+        "大图预览",
+        "PhotoLightbox",
+        "布局重排",
+        "grid 三行两列",
+        "浮层压图",
+        "信息栏分组",
+        "SVG 图标替换 emoji",
+        "防抖动"
+      ],
+      "created_at": "2026-10-30T16:40:00+08:00",
+      "updated_at": "2026-10-30T16:40:00+08:00"
     }
   ],
-  "updated": "2026-11-01T23:59:00+08:00"
+  "updated": "2026-10-30T16:40:00+08:00"
 }

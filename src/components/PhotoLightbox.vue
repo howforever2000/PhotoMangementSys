@@ -487,7 +487,6 @@ function initForCurrentPhoto() {
     await tryEnsureScanned(p);
   })();
 }
-void initForCurrentPhoto();
 
 function addTag() {
   const t = tagInput.value.trim();
@@ -590,6 +589,17 @@ function openInWorkshop() {
   emit("close"); // 先收起灯箱，避免返回时残留遮罩状态
   void router.push({ name: "workshop", query: { photo: path } });
 }
+
+/*
+ * 首次加载必须放在**整个 script setup 的最后**：
+ * initForCurrentPhoto 会同步走到 ensureExif → needsExifBackfill → metaOverrides.value，
+ * 而 metaOverrides 在文件中部才声明。在声明之前调用会触发 TDZ
+ * （`Cannot access 'metaOverrides' before initialization`），后果是首次打开灯箱时
+ * EXIF 补全与 AI 单张扫描被静默放弃 —— 信息面板显示「未记录拍摄时间/地点」，
+ * 翻到下一张再翻回来才正常。原先的调用点被后续插入的扫描逻辑挤到了前面，
+ * 现挪回末尾（与上方 watch 注释的约定一致）。
+ */
+void initForCurrentPhoto();
 </script>
 
 <template>
@@ -601,11 +611,14 @@ function openInWorkshop() {
     @touchend="onTouchEnd"
   >
     <!--
-      FEAT-096（R4a）：原图预览器改成「Windows 窗口框」
-        · 8 向拖边缩放 + 拖标题栏移动 + 双击标题栏 / F11 全屏
-        · 信息面板移到**左侧**且更窄（280px），照片占绝大部分
-        · 信息面板可收起（只看图），全屏与收起状态互不影响
-      遮罩本身仍是全屏（保证点外面能关灯箱），但可交互内容是居中的这个"窗口"。
+      FEAT-096（R4a）：原图预览器仍是「Windows 窗口框」（8 向拖边缩放 / 拖标题栏移动 /
+      双击标题栏或 F11 全屏），本方案只重排内部版式，窗口范式与全部交互保持不变。
+
+      版式（方案 A）：三行两列硬布局，任何人都不再绝对定位压照片
+        ├── 标题栏 46   文件名 · 地点 · 序号 · 倍率 · 快捷键 · 信息 · 全屏 · 关闭
+        ├── 主体  1fr   照片区（22/26 内边距 + 外阴影） │ 信息栏 344（分 4 段）
+        └── 操作栏 60   评分 │ 标签 / 编辑 / 相册 ……… 归档 / 隐藏 / 删除
+      旧的「顶部快捷键胶囊 + 底部浮动工具栏 + padding-bottom:54px 补丁」已删除。
     -->
     <div
       class="lb-layout"
@@ -626,7 +639,7 @@ function openInWorkshop() {
         />
       </template>
 
-      <!-- 标题栏：拖动移动窗口 · 双击全屏/还原 -->
+      <!-- ── 标题栏 ─────────────────────────────────────── -->
       <div
         class="lb-titlebar"
         @pointerdown="rs.titleDown"
@@ -635,104 +648,63 @@ function openInWorkshop() {
         @pointercancel="rs.onPointerUp"
         @dblclick="rs.onTitleDoubleClick"
       >
-        <span class="lb-title" :title="photo.path">🖼 {{ fileName }}</span>
+        <span class="lb-dot"></span>
+        <span class="lb-title" :title="photo.path">{{ fileName }}</span>
+        <span v-if="placeText" class="lb-title-sub" :title="placeText">{{ placeText }}</span>
+        <span class="lb-grow"></span>
+
+        <button
+          v-if="scale !== 1"
+          class="lb-scalechip"
+          title="点击复原为 100%"
+          @pointerdown.stop
+          @click="resetView"
+        >{{ Math.round(scale * 100) }}%</button>
         <span class="lb-counter">{{ current + 1 }} / {{ photos.length }}</span>
-        <span class="lb-title-spacer"></span>
-        <!-- FEAT-096（R4c）：信息面板显示 / 收起（收起即只看图） -->
+
+        <!-- 快捷键：hover 才出现，不再常驻压图 -->
+        <span class="lb-help" @pointerdown.stop>
+          <button class="lb-ibtn" title="快捷键">?</button>
+          <div class="lb-help-pop">
+            <div><kbd>←</kbd><kbd>→</kbd> 上一张 / 下一张</div>
+            <div><kbd>Esc</kbd> 关闭　<kbd>F11</kbd> 全屏 / 还原</div>
+            <div><kbd>1</kbd>–<kbd>5</kbd> 打星（同星再点清除）</div>
+            <div><kbd>Ctrl</kbd> + 滚轮 缩放　双击 放大 / 复原</div>
+            <div>拖标题栏移动窗口 · 双击标题栏全屏</div>
+          </div>
+        </span>
+
         <button
-          class="lb-tb-btn"
+          class="lb-ibtn"
+          :class="{ active: !metaCollapsed }"
           :title="metaCollapsed ? '展开照片信息' : '收起信息（只看图）'"
+          @pointerdown.stop
           @click="metaCollapsed = !metaCollapsed"
-        >{{ metaCollapsed ? "ℹ 显示信息" : "ℹ 收起信息" }}</button>
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5v.01" /></svg>
+        </button>
         <button
-          class="lb-tb-btn"
+          class="lb-ibtn"
           :title="rs.fullscreen.value ? '还原窗口 (F11)' : '全屏查看 (F11)'"
+          @pointerdown.stop
           @click="rs.toggleFullscreen"
-        >{{ rs.fullscreen.value ? "🗗 还原" : "⛶ 全屏" }}</button>
-        <button class="lb-close" title="关闭 (Esc)" @click="emit('close')">✕</button>
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H4v5M15 4h5v5M15 20h5v-5M9 20H4v-5" /></svg>
+        </button>
+        <button class="lb-ibtn lb-close" title="关闭 (Esc)" @pointerdown.stop @click="emit('close')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
       </div>
 
+      <!-- ── 主体：照片区 + 信息栏 ───────────────────────── -->
       <div class="lb-body">
-        <!-- FEAT-096（R4b）：信息面板在左，280px，照片占大部分 -->
-        <aside v-if="!metaCollapsed" class="lb-meta">
-          <div class="lb-filename" :title="photo.path">{{ photo.path }}</div>
-
-          <dl>
-            <dt>拍摄时间</dt>
-            <dd>
-              <template v-if="meta?.shoot_time">{{ meta.shoot_time }}</template>
-              <span v-else-if="backfilling" class="lb-unknown">⏳ 正在读取 EXIF…</span>
-              <span v-else class="lb-unknown">未记录（该照片无 EXIF 拍摄时间）</span>
-            </dd>
-            <dt>地点</dt>
-            <dd>
-              <template v-if="placeText">
-                <a v-if="mapUrl" :href="mapUrl" target="_blank" rel="noreferrer" class="lb-place-link">{{ placeText }}</a>
-                <template v-else>{{ placeText }}</template>
-              </template>
-              <span v-else-if="backfilling" class="lb-unknown">⏳ 正在读取 GPS…</span>
-              <span v-else class="lb-unknown">未记录（该照片无 GPS 信息）</span>
-            </dd>
-            <dt>分辨率</dt><dd v-if="photoInfo">{{ photoInfo.width }} × {{ photoInfo.height }} px（{{ (photoInfo.width * photoInfo.height / 1e6).toFixed(1) }} MP）</dd>
-            <template v-else-if="infoError"><dt>提示</dt><dd>无法读取图片信息</dd></template>
-            <template v-if="photoInfo">
-              <dt>文件大小</dt><dd>{{ fmtSize(photoInfo.file_size) }}</dd>
-              <dt>格式</dt><dd>{{ photoInfo.format.toUpperCase() }}</dd>
-            </template>
-            <template v-if="meta?.category">
-              <dt>AI 分类</dt><dd>{{ categoryLabel(meta.category) }}<span v-if="meta.sub_category"> / {{ meta.sub_category }}</span></dd>
-              <dt v-if="meta.label">标签</dt><dd v-if="meta.label">{{ meta.label }}</dd>
-              <dt v-if="meta.confidence">置信度</dt><dd v-if="meta.confidence">{{ (meta.confidence * 100).toFixed(1) }}%</dd>
-            </template>
-            <template v-if="(meta?.person_ids ?? []).length">
-              <dt>人物</dt>
-              <dd>{{ meta!.person_ids.map(personLabel).join("、") }}<span v-if="meta!.person_count > 0">（{{ meta!.person_count }}）</span></dd>
-            </template>
-            <template v-if="meta?.iso || meta?.iso_num">
-              <dt>ISO</dt><dd>{{ meta.iso ?? meta.iso_num }}</dd>
-            </template>
-            <template v-if="meta?.aperture || meta?.aperture_num">
-              <dt>光圈</dt><dd>f/{{ meta.aperture ?? meta.aperture_num }}</dd>
-            </template>
-            <template v-if="meta?.shutter_speed || meta?.shutter_num">
-              <dt>快门</dt><dd>{{ meta.shutter_speed ?? meta.shutter_num }}</dd>
-            </template>
-            <template v-if="meta?.focal_length || meta?.focal_num">
-              <dt>焦距</dt><dd>{{ meta.focal_length ?? meta.focal_num }}mm</dd>
-            </template>
-            <template v-if="meta?.tone_type">
-              <dt>影调</dt><dd>{{ meta.tone_type }}<span v-if="meta.avg_luma != null">（亮度 {{ meta.avg_luma.toFixed(1) }}）</span></dd>
-            </template>
-            <!-- FEAT-096：EXIF 已补全但该照片确实没有这些字段时给出可操作的出口 -->
-            <template v-if="scannedPhoto && !meta?.category">
-              <dt>提示</dt>
-              <dd>
-                EXIF 已读取并入库，但本张照片没有 AI 分类信息。
-                <br />可在所属相册执行「<b>组合扫描</b>」补齐分类与人物。
-              </dd>
-            </template>
-            <template v-else-if="!meta && scanState === 'scanning'">
-              <dt>AI 识别</dt><dd class="lb-scanning">⏳ 正在后台识别该照片的 AI 信息…识别完成后面板自动刷新。</dd>
-            </template>
-            <template v-else-if="!meta && scanState === 'failed'">
-              <dt>提示</dt>
-              <dd>
-                AI 识别服务未运行，分类 / 人物暂不可用（拍摄时间与地点不受影响）。
-                <br /><button class="lb-retry-btn" :disabled="scanningPhoto || backfilling" @click="retryScan">⟳ 重试识别</button>
-              </dd>
-            </template>
-          </dl>
-
-          <!-- 像素分布图（RGB 三通道直方图，screen 叠加） -->
-          <div v-if="photoInfo?.hist_r?.length" class="lb-hist-wrap">
-            <div class="lb-hist-title">像素分布（R/G/B）</div>
-            <canvas ref="histCanvas" width="300" height="90" class="lb-hist"></canvas>
-          </div>
-        </aside>
-
         <div class="lb-stage">
-          <button v-if="photos.length > 1" class="lb-nav lb-prev" title="上一张 (←)" @click="prev">‹</button>
-          <button v-if="photos.length > 1" class="lb-nav lb-next" title="下一张 (→)" @click="next">›</button>
+          <button v-if="photos.length > 1" class="lb-nav lb-prev" title="上一张 (←)" @click="prev">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7" /></svg>
+          </button>
+          <button v-if="photos.length > 1" class="lb-nav lb-next" title="下一张 (→)" @click="next">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7" /></svg>
+          </button>
 
           <div
             class="lb-main"
@@ -755,87 +727,223 @@ function openInWorkshop() {
               draggable="false"
             />
           </div>
-
-          <!-- 操作提示与当前倍率 -->
-          <div class="lb-zoombar">
-            <span class="lb-hint">
-              <kbd>←</kbd> <kbd>→</kbd> 切图 · <kbd>Esc</kbd> 关闭 · <kbd>Ctrl</kbd>+滚轮缩放 · 双击放大/复原 · <kbd>1-5</kbd> 打星
-            </span>
-            <span v-if="scale !== 1" class="lb-scale">{{ Math.round(scale * 100) }}%</span>
         </div>
-      </div>
-      </div>
-    </div>
 
+        <!-- 信息栏：按「何时 → 何地 → 怎么拍的 → AI 认出了什么 → 文件本身」排序 -->
+        <aside v-if="!metaCollapsed" class="lb-meta">
+          <!-- 何时 -->
+          <div class="lb-date">
+            <template v-if="meta?.shoot_time">
+              <span class="lb-date-main">{{ meta.shoot_time.slice(0, 10).replace(/-/g, " · ") }}</span>
+              <em v-if="meta.shoot_time.length > 10">{{ meta.shoot_time.slice(11, 16) }}</em>
+            </template>
+            <span v-else-if="backfilling" class="lb-unknown">正在读取 EXIF…</span>
+            <span v-else class="lb-unknown">未记录拍摄时间</span>
+          </div>
 
-    <!-- FEAT-050 / FEAT-095：评分 / 标签 / 编辑 / 归档 / 隐藏 / 删除工具栏 -->
-    <div class="lb-toolbar" @click.stop>
-      <div class="lb-stars" title="点击打星，同星再点清除（快捷键 1-5）">
-        <button
-          v-for="n in 5"
-          :key="n"
-          class="lb-star"
-          :class="{ on: n <= rating }"
-          @click="setRating(n)"
-        >★</button>
-        <span class="lb-star-val">{{ rating ? `${rating} 星` : "未评分" }}</span>
-      </div>
-      <span class="lb-tb-sep"></span>
-      <button class="lb-tb-btn" title="添加 / 编辑标签" @click="tagPanelOpen = !tagPanelOpen">
-        🏷 标签<span v-if="tags.length"> · {{ tags.length }}</span>
-      </button>
-      <button
-        class="lb-tb-btn"
-        title="在创意工坊里编辑这张照片（传统图像处理：均衡化 / 模糊）"
-        @click="openInWorkshop"
-      >✏️ 编辑</button>
-      <button
-        v-if="photo?.albumId != null"
-        class="lb-tb-btn"
-        title="在所属相册中查看（保留当前浏览位置由父视图决定）"
-        @click="photo.albumId != null && emit('openAlbum', photo.albumId)"
-      >📁 在相册中查看</button>
-      <template v-if="markable">
-        <span class="lb-tb-sep"></span>
-        <button
-          class="lb-tb-btn"
-          :title="archived ? '取消归档，照片回到原相册' : '归档：照片移入相册管理的「归档」相册（不移动文件）'"
-          @click="toggleArchive"
-        >📦 {{ archived ? "取消归档" : "归档" }}</button>
-        <button
-          class="lb-tb-btn"
-          :title="hidden ? '取消隐藏，照片回到原相册' : '隐藏：照片移入「隐藏」相册（需密码解锁才可见）'"
-          @click="toggleHide"
-        >🔒 {{ hidden ? "取消隐藏" : "隐藏" }}</button>
-      </template>
-      <button
-        v-if="deletable"
-        class="lb-tb-btn danger"
-        title="删除此照片（二次确认：相册记录删除 / 本地删除）"
-        @click="askDelete"
-      >🗑 删除</button>
-    </div>
+          <!-- 何地 -->
+          <div class="lb-place">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-6.3 7-11a7 7 0 10-14 0c0 4.7 7 11 7 11z" /><circle cx="12" cy="10" r="2.4" /></svg>
+            <a v-if="mapUrl" :href="mapUrl" target="_blank" rel="noreferrer" class="lb-place-link">{{ placeText }}</a>
+            <template v-else-if="placeText">{{ placeText }}</template>
+            <span v-else-if="backfilling" class="lb-unknown">正在读取 GPS…</span>
+            <span v-else class="lb-unknown">未记录地点</span>
+          </div>
 
-    <!-- 标签编辑面板 -->
-    <div v-if="tagPanelOpen" class="lb-tag-panel" @click.stop>
-      <div v-if="tags.length" class="lb-tag-list">
-        <span v-for="t in tags" :key="t" class="lb-tag">
-          {{ t }}
-          <button class="lb-tag-x" title="移除标签" @click="removeTag(t)">✕</button>
-        </span>
+          <div class="lb-path" :title="photo.path">{{ photo.path }}</div>
+
+          <!-- 怎么拍的：2×2 参数瓷砖 -->
+          <div
+            v-if="meta?.shutter_speed || meta?.shutter_num || meta?.aperture || meta?.aperture_num || meta?.iso || meta?.iso_num || meta?.focal_length || meta?.focal_num"
+            class="lb-sec"
+          >
+            <div class="lb-sec-h">相机</div>
+            <div class="lb-params">
+              <div v-if="meta?.shutter_speed || meta?.shutter_num" class="lb-p">
+                <b>{{ meta.shutter_speed ?? meta.shutter_num }}</b><span>快门</span>
+              </div>
+              <div v-if="meta?.aperture || meta?.aperture_num" class="lb-p">
+                <b>f / {{ meta.aperture ?? meta.aperture_num }}</b><span>光圈</span>
+              </div>
+              <div v-if="meta?.iso || meta?.iso_num" class="lb-p">
+                <b>ISO {{ meta.iso ?? meta.iso_num }}</b><span>感光度</span>
+              </div>
+              <div v-if="meta?.focal_length || meta?.focal_num" class="lb-p">
+                <b>{{ meta.focal_length ?? meta.focal_num }} mm</b><span>焦距</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- AI 认出了什么 -->
+          <div v-if="meta?.category" class="lb-sec">
+            <div class="lb-sec-h">AI 识别</div>
+            <div class="lb-chips">
+              <span class="lb-chip">
+                {{ categoryLabel(meta.category) }}<template v-if="meta.sub_category"> · {{ meta.sub_category }}</template>
+              </span>
+              <span v-if="meta.label" class="lb-chip lb-chip--ghost">{{ meta.label }}</span>
+              <span v-for="pid in (meta.person_ids ?? [])" :key="pid" class="lb-chip lb-chip--ghost">
+                {{ personLabel(pid) }}
+              </span>
+            </div>
+            <div v-if="meta.confidence" class="lb-conf">
+              <span>置信度</span>
+              <span class="lb-conf-bar"><i :style="{ width: `${(meta.confidence * 100).toFixed(1)}%` }"></i></span>
+              <b>{{ (meta.confidence * 100).toFixed(1) }}%</b>
+            </div>
+          </div>
+
+          <!-- 文件本身 -->
+          <div class="lb-sec">
+            <div class="lb-sec-h">文件</div>
+            <dl class="lb-kv">
+              <template v-if="photoInfo">
+                <dt>分辨率</dt>
+                <dd>
+                  {{ photoInfo.width }} × {{ photoInfo.height }} ·
+                  {{ (photoInfo.width * photoInfo.height / 1e6).toFixed(1) }} MP
+                </dd>
+                <dt>大小</dt><dd>{{ fmtSize(photoInfo.file_size) }}</dd>
+                <dt>格式</dt><dd>{{ photoInfo.format.toUpperCase() }}</dd>
+              </template>
+              <template v-else-if="infoError">
+                <dt>提示</dt><dd>无法读取图片信息</dd>
+              </template>
+            </dl>
+          </div>
+
+          <!-- 影调 + 像素分布 -->
+          <div v-if="photoInfo?.hist_r?.length" class="lb-sec">
+            <div class="lb-sec-h">影调</div>
+            <div class="lb-hist">
+              <canvas ref="histCanvas" width="300" height="90" class="lb-hist-canvas"></canvas>
+            </div>
+            <div class="lb-tone">
+              <span>{{ meta?.tone_type ?? "—" }}</span>
+              <span v-if="meta?.avg_luma != null">平均亮度 <b>{{ meta.avg_luma.toFixed(1) }}</b></span>
+            </div>
+          </div>
+
+          <!-- 状态与出口：扫描中 / 失败 / 已扫但无分类 -->
+          <template v-if="!meta && scanState === 'scanning'">
+            <div class="lb-note lb-note--busy">⏳ 正在后台识别该照片的 AI 信息，完成后面板自动刷新。</div>
+          </template>
+          <template v-else-if="!meta && scanState === 'failed'">
+            <div class="lb-note">
+              AI 识别服务未运行，分类 / 人物暂不可用（拍摄时间与地点不受影响）。
+              <br /><button class="lb-retry-btn" :disabled="scanningPhoto || backfilling" @click="retryScan">⟳ 重试识别</button>
+            </div>
+          </template>
+          <template v-else-if="scannedPhoto && !meta?.category">
+            <div class="lb-note">
+              EXIF 已读取并入库，但本张照片没有 AI 分类信息。<br />
+              可在所属相册执行「<b>组合扫描</b>」补齐分类与人物。
+            </div>
+          </template>
+        </aside>
       </div>
-      <input
-        v-model="tagInput"
-        class="lb-tag-input"
-        placeholder="输入标签后回车添加（最多 20 个）"
-        maxlength="30"
-        @keydown.enter.prevent="addTag"
-      />
+
+      <!-- ── 操作栏（流内独立一行，不压照片）─────────────── -->
+      <div class="lb-dock" @click.stop>
+        <div class="lb-stars" title="点击打星，同星再点清除（快捷键 1-5）">
+          <button
+            v-for="n in 5"
+            :key="n"
+            class="lb-star"
+            :class="{ on: n <= rating }"
+            @click="setRating(n)"
+          >★</button>
+          <span class="lb-star-val">{{ rating ? `${rating} 星` : "未评分" }}</span>
+        </div>
+        <span class="lb-dock-sep"></span>
+
+        <button class="lb-btn" title="添加 / 编辑标签" @click="tagPanelOpen = !tagPanelOpen">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4L13.4 20.6a2 2 0 01-2.8 0l-7.2-7.2V4h9.4l7.8 7.8a2 2 0 010 1.6z" /><circle cx="7.5" cy="7.5" r="1.4" /></svg>
+          标签<span v-if="tags.length" class="lb-badge">{{ tags.length }}</span>
+        </button>
+        <button
+          class="lb-btn lb-btn--pri"
+          title="在创意工坊里编辑这张照片（传统图像处理：均衡化 / 模糊）"
+          @click="openInWorkshop"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" /></svg>
+          编辑
+        </button>
+        <button
+          v-if="photo?.albumId != null"
+          class="lb-btn"
+          title="在所属相册中查看（保留当前浏览位置由父视图决定）"
+          @click="photo.albumId != null && emit('openAlbum', photo.albumId)"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></svg>
+          在相册中查看
+        </button>
+
+        <span class="lb-grow"></span>
+
+        <template v-if="markable">
+          <button
+            class="lb-btn"
+            :title="archived ? '取消归档，照片回到原相册' : '归档：照片移入相册管理的「归档」相册（不移动文件）'"
+            @click="toggleArchive"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2 3h6l2-3h4" /><path d="M5 5h14l2 8v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4z" /></svg>
+            {{ archived ? "取消归档" : "归档" }}
+          </button>
+          <button
+            class="lb-btn"
+            :title="hidden ? '取消隐藏，照片回到原相册' : '隐藏：照片移入「隐藏」相册（需密码解锁才可见）'"
+            @click="toggleHide"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 018 0v3" /></svg>
+            {{ hidden ? "取消隐藏" : "隐藏" }}
+          </button>
+        </template>
+        <button
+          v-if="deletable"
+          class="lb-btn lb-btn--danger"
+          title="删除此照片（二次确认：相册记录删除 / 本地删除）"
+          @click="askDelete"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" /></svg>
+          删除
+        </button>
+      </div>
+
+      <!-- 标签编辑面板（浮在操作栏上方，仍在窗口内） -->
+      <div v-if="tagPanelOpen" class="lb-tag-panel" @click.stop>
+        <div v-if="tags.length" class="lb-tag-list">
+          <span v-for="t in tags" :key="t" class="lb-tag">
+            {{ t }}
+            <button class="lb-tag-x" title="移除标签" @click="removeTag(t)">✕</button>
+          </span>
+        </div>
+        <input
+          v-model="tagInput"
+          class="lb-tag-input"
+          placeholder="输入标签后回车添加（最多 20 个）"
+          maxlength="30"
+          @keydown.enter.prevent="addTag"
+        />
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+/*
+ * 大图预览器 · 版式（方案 A：右侧档案栏 + 全宽操作栏）
+ *
+ * 三条硬约束：
+ *  1. 照片区四周**零覆盖**：没有任何常驻元素绝对定位压在照片上；
+ *  2. **一种材质**：全窗口只用 rgba(255,255,255,.07) 发丝线 + .022 玻璃底，
+ *     不再混 .06 / .12 / .74 / .88 四档；
+ *  3. **三档文字色**：#eef1f7 主 / #9aa3b5 次 / #767f92 弱，层级靠字号与字重。
+ *
+ * 颜色刻意写死而不接主题变量：本组件恒为深色遮罩（rgba(0,0,0,.9)），
+ * 浅色主题下的 --c-fg / --c-accent 压在深底上会不可读；蓝色强调沿用
+ * 本组件既有的 lb-place-link（#8ab4ff）体系，金色只留给评分。
+ */
 .lb-overlay {
   position: fixed;
   inset: 0;
@@ -847,264 +955,404 @@ function openInWorkshop() {
   justify-content: center;
 }
 
-/*
- * FEAT-096（R4a/R4b/R4c）：原图预览器 = 可拖边缩放的窗口
- *   标题栏（拖动移动 / 双击全屏）
- *   ├── 信息面板（左侧 280px，可整体收起为「只看图」）
- *   └── 图片区（占绝大部分）
- * 尺寸 / 位置由 useResizableDialog 产出（style 绑定），这里只管内部排版。
- */
 .lb-layout {
   position: relative;
   display: flex;
   flex-direction: column;
-  border-radius: 12px;
-  background: rgba(10, 12, 18, 0.96);
-  box-shadow: 0 22px 68px rgba(0, 0, 0, 0.55);
+  border-radius: 14px;
+  background: #0d1016;
+  box-shadow: 0 40px 110px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.03);
   overflow: hidden;
 }
 .lb-layout.lb-fullscreen { border-radius: 0; }
 .lb-layout.lb-dragging { transition: none; }
 
-/* ---- 标题栏（兼拖动把手） ---- */
+/* ── 标题栏 46 ─────────────────────────────────────────── */
 .lb-titlebar {
-  flex-shrink: 0;
+  flex: 0 0 46px;
+  height: 46px;
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 38px;
-  padding: 0 8px 0 12px;
-  background: rgba(255, 255, 255, 0.06);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0 10px 0 18px;
+  background: rgba(255, 255, 255, 0.025);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   cursor: grab;
   user-select: none;
 }
 .lb-layout.lb-dragging .lb-titlebar { cursor: grabbing; }
+
+.lb-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #6a8df0;
+  box-shadow: 0 0 10px rgba(106, 141, 240, 0.9);
+}
 .lb-title {
-  font-size: 12.5px;
-  color: #e7e9ee;
+  font-size: 13px;
+  font-weight: 500;
+  color: #eef1f7;
+  letter-spacing: 0.1px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 46%;
+  max-width: 44%;
 }
-.lb-counter {
+.lb-title-sub {
   font-size: 11.5px;
-  color: #9aa3b5;
-  font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
+  color: #7d8598;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
 }
-.lb-title-spacer { flex: 1; }
+.lb-title-sub::before {
+  content: "·";
+  margin-right: 6px;
+  color: #4f5666;
+}
+.lb-grow { flex: 1; }
 
-/* ---- 内容区 ---- */
+.lb-counter {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: #8b93a5;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  padding: 3px 9px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.lb-scalechip {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #c3d0ff;
+  font-variant-numeric: tabular-nums;
+  padding: 4px 8px;
+  border: 1px solid rgba(106, 141, 240, 0.3);
+  border-radius: 7px;
+  background: rgba(106, 141, 240, 0.12);
+  cursor: pointer;
+  transition: background var(--dur-2, 180ms);
+}
+.lb-scalechip:hover { background: rgba(106, 141, 240, 0.22); }
+
+.lb-ibtn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 9px;
+  background: none;
+  color: #c9cfdb;
+  cursor: pointer;
+  transition: background var(--dur-2, 180ms), color var(--dur-2, 180ms);
+}
+.lb-ibtn:hover { background: rgba(255, 255, 255, 0.09); color: #fff; }
+.lb-ibtn.active { color: #a9c0ff; }
+.lb-close { color: #ffb4b4; }
+.lb-close:hover { background: rgba(255, 90, 90, 0.16); color: #ffd0d0; }
+
+/* 快捷键气泡：hover / 键盘聚焦才出现 */
+.lb-help { position: relative; display: flex; flex-shrink: 0; }
+.lb-help-pop {
+  position: absolute;
+  top: 38px;
+  right: 0;
+  z-index: 9;
+  width: 246px;
+  padding: 11px 14px;
+  border-radius: 11px;
+  background: #14161e;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+  font-size: 11.5px;
+  line-height: 1.9;
+  color: #b6bdcc;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity var(--dur-2, 180ms), transform var(--dur-2, 180ms), visibility var(--dur-2, 180ms);
+}
+.lb-help:hover .lb-help-pop,
+.lb-help:focus-within .lb-help-pop {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}
+.lb-help-pop kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 5px;
+  margin-right: 2px;
+  font-size: 10.5px;
+  font-family: inherit;
+  line-height: 1.6;
+  text-align: center;
+  color: #e7e9ee;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+}
+
+/* ── 主体：grid 1fr | 344 ─────────────────────────────── */
 .lb-body {
   flex: 1;
   min-height: 0;
-  display: flex;
-  /* 底部给工具栏留出安全高度，避免工具栏压住图片底部 */
-  padding-bottom: 54px;
-  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 1fr 344px;
 }
+.lb-layout.meta-collapsed .lb-body { grid-template-columns: 1fr; }
 
 .lb-stage {
   position: relative;
-  flex: 1 1 auto;
+  display: grid;
+  grid-template: 1fr / 1fr;
+  padding: 22px 26px;
+  background: #080a0e;
   min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  min-height: 0;
 }
-
-/* ---- 8 向把手（与 ResizableDialog 同一套 class 约定） ---- */
-.lb-layout .rzd-grip {
-  position: absolute;
-  z-index: 6;
-}
-.lb-layout .rzd-grip:hover {
-  background: color-mix(in srgb, var(--color-primary) 55%, transparent);
-}
-.lb-layout .rzd-grip-n,
-.lb-layout .rzd-grip-s {
-  left: 10px; right: 10px; height: 6px; cursor: ns-resize;
-}
-.lb-layout .rzd-grip-n { top: 0; }
-.lb-layout .rzd-grip-s { bottom: 0; }
-.lb-layout .rzd-grip-e,
-.lb-layout .rzd-grip-w {
-  top: 10px; bottom: 10px; width: 6px; cursor: ew-resize;
-}
-.lb-layout .rzd-grip-e { right: 0; }
-.lb-layout .rzd-grip-w { left: 0; }
-.lb-layout .rzd-grip-ne,
-.lb-layout .rzd-grip-nw,
-.lb-layout .rzd-grip-se,
-.lb-layout .rzd-grip-sw {
-  width: 14px; height: 14px;
-}
-.lb-layout .rzd-grip-ne { top: 0; right: 0; cursor: nesw-resize; }
-.lb-layout .rzd-grip-sw { bottom: 0; left: 0; cursor: nesw-resize; }
-.lb-layout .rzd-grip-nw { top: 0; left: 0; cursor: nwse-resize; }
-.lb-layout .rzd-grip-se { bottom: 0; right: 0; cursor: nwse-resize; }
-
-.lb-close {
-  background: rgba(255, 255, 255, 0.12);
-  border: none;
-  color: #fff;
-  font-size: 15px;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  cursor: pointer;
-  line-height: 1;
-  flex-shrink: 0;
-}
-.lb-close:hover { background: rgba(255, 255, 255, 0.28); }
-
-.lb-nav {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 2;
-  background: rgba(255, 255, 255, 0.15);
-  border: none;
-  color: #fff;
-  font-size: 40px;
-  width: 56px;
-  height: 80px;
-  cursor: pointer;
-  line-height: 1;
-}
-/* FEAT-095：翻页箭头贴图片区两侧，不再相对整个遮罩定位（否则会压到信息栏上） */
-.lb-prev { left: 8px; }
-.lb-next { right: 8px; }
-.lb-nav:hover { background: rgba(255, 255, 255, 0.3); }
 
 .lb-main {
   position: relative;
-  max-width: 100%;
-  max-height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
+  min-width: 0;
+  min-height: 0;
 }
-
-.lb-main.pannable {
-  cursor: grab;
-  overflow: visible;
-}
-.lb-main.pannable.dragging {
-  cursor: grabbing;
-}
+.lb-main.pannable { cursor: grab; overflow: visible; }
+.lb-main.pannable.dragging { cursor: grabbing; }
 
 .lb-img {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
   display: block;
-  transition: transform var(--dur-1) ease-out;
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.72);
+  transition: transform var(--dur-1, 90ms) ease-out;
   will-change: transform;
   transform-origin: center center;
   user-select: none;
 }
 .lb-img.hidden { visibility: hidden; }
 
-/* 顶部操作提示 + 缩放倍率 */
-.lb-zoombar {
-  position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 2;
-  max-width: calc(100% - 140px);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-  padding: 6px 16px;
-  backdrop-filter: blur(4px);
-}
-.lb-hint {
-  color: rgba(255, 255, 255, 0.75);
-  font-size: 12px;
-}
-.lb-hint kbd {
-  display: inline-block;
-  min-width: 22px;
-  padding: 1px 6px;
-  margin: 0 1px;
-  font-size: 11px;
-  font-family: inherit;
-  line-height: 1.4;
-  color: #fff;
-  background: rgba(255, 255, 255, 0.18);
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 4px;
-  vertical-align: 1px;
-}
-.lb-scale {
-  color: #fff;
-  font-size: 13px;
-  font-weight: 600;
-  min-width: 44px;
-  text-align: center;
-}
-
 .lb-loading {
   position: absolute;
-  color: #fff;
-  font-size: 14px;
+  color: #c8cdd9;
+  font-size: 13px;
 }
 
-/* FEAT-096（R4b）：信息面板在**左侧**、收窄到 280px，让照片占绝大部分 */
+.lb-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 3;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  background: rgba(10, 12, 18, 0.5);
+  color: #e9edf5;
+  cursor: pointer;
+  opacity: 0.9;
+  backdrop-filter: blur(10px);
+  transition: background var(--dur-2, 180ms), border-color var(--dur-2, 180ms), opacity var(--dur-2, 180ms);
+}
+.lb-nav:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.3);
+  opacity: 1;
+}
+.lb-prev { left: 20px; }
+.lb-next { right: 20px; }
+
+/* ── 信息栏 ───────────────────────────────────────────── */
 .lb-meta {
-  flex: 0 0 280px;
-  max-width: 280px;
-  background: rgba(0, 0, 0, 0.4);
-  border-right: 1px solid rgba(255, 255, 255, 0.12);
-  color: #e7e9ee;
-  min-height: 0;
-  /* 面板内容比窗口高时自身滚动，不把照片区挤走 */
+  min-width: 0;
   overflow-y: auto;
-  padding: 12px 14px 16px;
+  padding: 20px 22px 22px;
+  color: #e8ebf2;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0) 46%);
+}
+.lb-meta::-webkit-scrollbar { width: 8px; }
+.lb-meta::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+
+.lb-date {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  line-height: 1.2;
+}
+.lb-date-main {
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+  color: #f4f6fa;
+}
+.lb-date em {
+  font-style: normal;
+  font-size: 13px;
+  font-weight: 500;
+  color: #98a1b3;
+  letter-spacing: 0.02em;
+}
+.lb-place {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
   font-size: 12.5px;
+  color: #dfe4ee;
 }
-.lb-filename {
-  font-size: 11.5px;
-  color: #c8cdd9;
-  word-break: break-all;
-  margin-bottom: 10px;
-}
-/* FEAT-095（R3）：未记录的拍摄时间 / 地点给明确占位，而不是整行消失 */
-.lb-unknown {
-  color: #8a92a6;
-  font-size: 12px;
-}
+.lb-place svg { flex: 0 0 auto; color: #8fb0ff; }
 .lb-place-link {
-  color: #8ab4ff;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  color: #8fb0ff;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(143, 176, 255, 0.35);
 }
-.lb-place-link:hover { color: #a8c8ff; }
-.lb-meta dl {
+.lb-place-link:hover { color: #b9cdff; border-bottom-color: #b9cdff; }
+.lb-unknown { color: #767f92; font-size: 12px; }
+.lb-path {
+  margin-top: 10px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #5f6879;
+  word-break: break-all;
+}
+
+.lb-sec { margin-top: 22px; }
+.lb-sec-h {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 10px;
+  font-size: 9.5px;
+  letter-spacing: 0.17em;
+  color: #767f92;
+}
+.lb-sec-h::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.lb-params {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.lb-p {
+  padding: 9px 11px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.045);
+}
+.lb-p b {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  line-height: 1.25;
+  color: #eef1f7;
+}
+.lb-p span {
+  display: block;
+  margin-top: 1px;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: #788193;
+}
+
+.lb-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.lb-chip {
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(106, 141, 240, 0.13);
+  color: #bdcbff;
+  border: 1px solid rgba(106, 141, 240, 0.24);
+}
+.lb-chip--ghost {
+  background: rgba(255, 255, 255, 0.055);
+  color: #c6ccd9;
+  border-color: rgba(255, 255, 255, 0.075);
+}
+
+.lb-conf {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  font-size: 11px;
+  color: #8b93a5;
+}
+.lb-conf-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+.lb-conf-bar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #5b7ce0, #93b2ff);
+}
+.lb-conf b { color: #dfe5f1; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.lb-kv {
   margin: 0;
   display: grid;
-  grid-template-columns: 68px 1fr;
-  gap: 5px 10px;
-}
-.lb-meta dt { color: #b8bfcc; font-weight: 500; }
-.lb-meta dd { margin: 0; color: #e7e9ee; }
-.lb-counter {
-  margin-top: 10px;
+  grid-template-columns: 64px 1fr;
+  gap: 7px 10px;
   font-size: 12px;
-  color: #c8cdd9;
 }
+.lb-kv dt { color: #7d8598; font-size: 11.5px; }
+.lb-kv dd { margin: 0; color: #dde2ec; font-variant-numeric: tabular-nums; }
 
-/* FEAT-D：扫描中/未扫描提示 */
-.lb-scanning {
+.lb-hist {
+  height: 74px;
+  padding: 6px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.045);
+}
+.lb-hist-canvas { display: block; width: 100%; height: 100%; }
+.lb-tone {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #8b93a5;
+}
+.lb-tone b { color: #dfe5f1; font-weight: 600; }
+
+.lb-note {
+  margin-top: 18px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.035);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: #a8b0c0;
+}
+.lb-note--busy {
   color: #ffd43b;
-  font-size: 12.5px;
-  line-height: 1.5;
   animation: lb-scan-pulse 1.2s ease-in-out infinite;
 }
 @keyframes lb-scan-pulse {
@@ -1113,116 +1361,106 @@ function openInWorkshop() {
 }
 .lb-retry-btn {
   margin-top: 6px;
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 6px;
   padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.1);
+  color: #e7e9ee;
   font-size: 12px;
   cursor: pointer;
-  transition: background var(--dur-2), transform var(--dur-1);
+  transition: background var(--dur-2, 180ms);
 }
-.lb-retry-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.22);
-  transform: translateY(-1px);
-}
-.lb-retry-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+.lb-retry-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.2); }
+.lb-retry-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* FEAT-096：工具栏（窗口底部居中；信息栏在左，不参与居中计算） */
-.lb-toolbar {
-  position: absolute;
-  left: 50%;
-  bottom: 12px;
-  transform: translateX(-50%);
-  z-index: 3;
-  max-width: calc(100% - 60px);
+/* ── 操作栏 60（流内一行，不压照片）────────────────────── */
+.lb-dock {
+  flex: 0 0 60px;
+  height: 60px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 7px 14px;
-  background: rgba(20, 22, 30, 0.74);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 999px;
-  backdrop-filter: blur(6px);
+  gap: 4px;
+  padding: 0 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.022);
+  overflow: hidden;
 }
-.lb-stars {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
+.lb-stars { display: flex; align-items: center; gap: 1px; padding: 0 4px; flex-shrink: 0; }
 .lb-star {
-  background: none;
-  border: none;
-  color: rgba(255, 255, 255, 0.3);
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
   padding: 0 1px;
-  transition: color var(--dur-1), transform var(--dur-1);
-}
-.lb-star:hover {
-  transform: scale(1.15);
-}
-.lb-star.on {
-  color: #ffce3a;
-}
-.lb-star-val {
-  color: #c8cdd9;
-  font-size: 11.5px;
-  margin-left: 4px;
-  min-width: 44px;
-}
-.lb-tb-sep {
-  width: 1px;
-  height: 18px;
-  background: rgba(255, 255, 255, 0.2);
-}
-.lb-tb-btn {
-  background: none;
   border: none;
-  color: #e7e9ee;
+  background: none;
+  font-size: 17px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.2);
+  cursor: pointer;
+  transition: color var(--dur-1, 90ms), transform var(--dur-1, 90ms);
+}
+.lb-star:hover { transform: scale(1.15); }
+.lb-star.on { color: #ffce3a; }
+.lb-star-val {
+  margin-left: 6px;
+  min-width: 42px;
+  font-size: 11px;
+  color: #7d8598;
+}
+.lb-dock-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 8px;
+  background: rgba(255, 255, 255, 0.09);
+  flex-shrink: 0;
+}
+.lb-btn {
+  flex-shrink: 0;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: none;
+  border-radius: 9px;
+  background: none;
+  color: #d3d9e5;
   font-size: 12.5px;
   cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 8px;
-  transition: background var(--dur-2);
+  transition: background var(--dur-2, 180ms), color var(--dur-2, 180ms);
 }
-.lb-tb-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
+.lb-btn:hover { background: rgba(255, 255, 255, 0.07); color: #fff; }
+.lb-btn--pri {
+  color: #c3d0ff;
+  background: rgba(106, 141, 240, 0.14);
+  border: 1px solid rgba(106, 141, 240, 0.26);
 }
-.lb-tb-btn.danger {
-  color: #ff8787;
-}
-.lb-tb-btn.danger:hover {
-  background: rgba(255, 100, 100, 0.18);
+.lb-btn--pri:hover { background: rgba(106, 141, 240, 0.24); color: #dbe4ff; }
+.lb-btn--danger { color: #ff9d9d; }
+.lb-btn--danger:hover { background: rgba(255, 90, 90, 0.14); color: #ffc4c4; }
+.lb-badge {
+  font-size: 10.5px;
+  color: #8b93a5;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
 }
 
-/* 标签编辑面板（工具栏上方） */
+/* ── 标签面板（浮在操作栏上方，仍在窗口内）─────────────── */
 .lb-tag-panel {
   position: absolute;
   left: 50%;
-  bottom: 58px;
+  bottom: 70px;
   transform: translateX(-50%);
-  z-index: 3;
-  max-width: min(70vw, calc(100% - 60px));
+  z-index: 8;
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 10px 12px;
-  background: rgba(20, 22, 30, 0.88);
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  max-width: min(560px, calc(100% - 40px));
   border-radius: 12px;
-  backdrop-filter: blur(6px);
-  max-width: 70vw;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(20, 22, 30, 0.97);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
 }
-.lb-tag-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
+.lb-tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .lb-tag {
   display: inline-flex;
   align-items: center;
@@ -1230,48 +1468,49 @@ function openInWorkshop() {
   padding: 2px 4px 2px 10px;
   font-size: 12px;
   color: #e7e9ee;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.1);
   border-radius: 999px;
 }
 .lb-tag-x {
-  background: none;
   border: none;
+  background: none;
   color: rgba(255, 255, 255, 0.6);
   font-size: 11px;
   cursor: pointer;
   padding: 0 4px;
 }
-.lb-tag-x:hover {
-  color: #ff8787;
-}
+.lb-tag-x:hover { color: #ff8787; }
 .lb-tag-input {
-  border: 1px solid rgba(255, 255, 255, 0.24);
+  min-width: 240px;
+  padding: 5px 10px;
   border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
   background: rgba(255, 255, 255, 0.08);
   color: #fff;
   font-size: 12.5px;
-  padding: 5px 10px;
   outline: none;
-  min-width: 240px;
 }
-.lb-tag-input:focus {
-  border-color: rgba(106, 141, 240, 0.8);
-}
+.lb-tag-input:focus { border-color: rgba(106, 141, 240, 0.8); }
 
-/* 像素分布图（RGB 直方图） */
-.lb-hist-wrap {
-  margin-top: 10px;
+/* ── 8 向把手（与 ResizableDialog 同一套 class 约定）────── */
+.lb-layout .rzd-grip { position: absolute; z-index: 6; }
+.lb-layout .rzd-grip:hover {
+  background: color-mix(in srgb, var(--color-primary) 55%, transparent);
 }
-.lb-hist-title {
-  font-size: 12px;
-  color: #c8cdd9;
-  margin-bottom: 4px;
-}
-.lb-hist {
-  width: 100%;
-  height: 90px;
-  display: block;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 6px;
-}
+.lb-layout .rzd-grip-n,
+.lb-layout .rzd-grip-s { left: 10px; right: 10px; height: 6px; cursor: ns-resize; }
+.lb-layout .rzd-grip-n { top: 0; }
+.lb-layout .rzd-grip-s { bottom: 0; }
+.lb-layout .rzd-grip-e,
+.lb-layout .rzd-grip-w { top: 10px; bottom: 10px; width: 6px; cursor: ew-resize; }
+.lb-layout .rzd-grip-e { right: 0; }
+.lb-layout .rzd-grip-w { left: 0; }
+.lb-layout .rzd-grip-ne,
+.lb-layout .rzd-grip-nw,
+.lb-layout .rzd-grip-se,
+.lb-layout .rzd-grip-sw { width: 14px; height: 14px; }
+.lb-layout .rzd-grip-ne { top: 0; right: 0; cursor: nesw-resize; }
+.lb-layout .rzd-grip-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.lb-layout .rzd-grip-nw { top: 0; left: 0; cursor: nwse-resize; }
+.lb-layout .rzd-grip-se { bottom: 0; right: 0; cursor: nwse-resize; }
 </style>

@@ -5014,7 +5014,48 @@
       ],
       "created_at": "2026-11-01T23:59:00+08:00",
       "updated_at": "2026-11-01T23:59:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1030-001",
+      "date": "2026-10-30",
+      "status": "resolved",
+      "title": "首次打开大图预览信息面板恒显示「未记录拍摄时间/地点」，翻一张再翻回来才正常（script setup 顶层调用触发 TDZ）",
+      "module": "src/components/PhotoLightbox.vue（initForCurrentPhoto 调用点 / metaOverrides 声明顺序）",
+      "symptom": [
+        "第一次打开灯箱：信息面板显示「未记录（该照片无 EXIF 拍摄时间）」「未记录（该照片无 GPS 信息）」，AI 分类同样空白",
+        "按 → 翻到下一张再按 ← 翻回来，同样的照片所有信息都正常出现",
+        "控制台只有一条 Cannot access 'metaOverrides' before initialization，之后不再复发"
+      ],
+      "root_cause": [
+        "void initForCurrentPhoto() 原本紧跟在函数定义后面（script setup 中段），后来在上面插入了单张扫描相关逻辑，调用点相对被推到了 metaOverrides 声明之前",
+        "initForCurrentPhoto 是同步走到 ensureExif → needsExifBackfill → metaOverrides.value 的，在 const metaOverrides = ref(...) 执行前访问即触发 TDZ",
+        "异常抛出在 void 的 Promise/同步链里被吞掉：后续的 EXIF 补全与 AI 单张扫描整体不执行，也不重试 —— 于是「安静地没有数据」"
+      ],
+      "evidence_log": [
+        "Uncaught ReferenceError: Cannot access 'metaOverrides' before initialization（PhotoLightbox.vue）",
+        "同一张照片二次进入正常，证明数据本身没问题，是首次执行的顺序问题"
+      ],
+      "solution": [
+        "把 void initForCurrentPhoto() 挪到 <script setup> 最后一行，并在调用点上方写明「必须放在最后」及 TDZ 成因",
+        "与相邻 watch 注释里既有的「metaOverrides 已声明」约定对齐"
+      ],
+      "prevention": [
+        "<script setup> 的顶层副作用调用一律放文件末尾：script setup 不是普通模块，函数体内的引用是延时求值，任何「定义后立刻调用」都可能被后续插入的代码破坏顺序",
+        "「静默地没数据」类缺陷优先怀疑被吞的异常 —— void promise / 空 catch 会把 TDZ、undefined 全部变成「字段为空」"
+      ],
+      "keywords": [
+        "TDZ",
+        "before initialization",
+        "metaOverrides",
+        "script setup",
+        "灯箱",
+        "首次打开",
+        "EXIF 不显示",
+        "拍摄时间为空"
+      ],
+      "created_at": "2026-10-30T16:40:00+08:00",
+      "updated_at": "2026-10-30T16:40:00+08:00"
     }
   ],
-  "updated": "2026-11-01T23:59:00+08:00"
+  "updated": "2026-10-30T16:40:00+08:00"
 }
