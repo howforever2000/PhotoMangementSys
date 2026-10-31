@@ -300,22 +300,6 @@ export interface VcrThreadsInfo {
   applied?: number;
 }
 
-/** v6：线程扫档单行 —— 对应 model_registry.benchmark_sweep() 的元素 */
-export interface VcrSweepEntry {
-  channel: string;
-  threads: number;
-  /** 实测平均/最快/最慢（ms/次推理） */
-  avg_ms?: number;
-  min_ms?: number;
-  max_ms?: number;
-  providers?: string[];
-  /** 该档是否最快（服务端标记） */
-  best?: boolean;
-  /** 相对最慢档的提速倍数（前端计算，仅展示用） */
-  speedup?: number;
-  /** 该档测速失败原因 */
-  error?: string;
-}
 
 /** v5：语义模型档位清单 */
 export interface VcrModelsInfo {
@@ -522,10 +506,6 @@ export interface CategoryIndexStats {
   semantic_categories: number;
 }
 
-/** v6：线程扫档结果包装 —— 对应 POST /benchmark_sweep */
-export interface VcrSweepResult {
-  results: VcrSweepEntry[];
-}
 
 /**
  * FEAT-136：加速分配 —— 一张「通道 → 设备」表

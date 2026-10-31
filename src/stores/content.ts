@@ -28,8 +28,6 @@ import type {
   VcrModelsInfo,
   FaceTiersInfo,
   VcrBenchmarkResult,
-  VcrSweepEntry,
-  VcrSweepResult,
   VcrThreadsInfo,
 } from "../types/content";
 
@@ -322,17 +320,7 @@ export const useContentStore = defineStore("content", {
       return this.vcrThreads;
     },
 
-    /** 线程扫档：一次测多个线程数，返回 [{threads, avg_ms, best}]（不改变当前设置） */
-    async benchmarkVcrSweep(
-      channel = "clip_vision",
-      options: number[] = [],
-      runs = 8,
-      warmup = 2,
-    ): Promise<VcrSweepEntry[]> {
-      const r = await invoke<VcrSweepResult>("benchmark_vcr_sweep", { channel, options, runs, warmup });
-      return r.results ?? [];
-    },
-
+    
     // ------------------------------------------------------------------
     // v5 语义分类
     // ------------------------------------------------------------------

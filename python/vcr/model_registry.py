@@ -181,12 +181,15 @@ class ModelRegistry:
     def _so_clip(self) -> ort.SessionOptions:
         """CLIP 会话专用 SessionOptions。
 
-        - provider 由 _clip_providers() 按档位决定（fp16 固定 CPU / fp32 跟随开关）
-        - fp16 图在 DML 上有算子级数值 bug，且全量图优化会在 vision 塔初始化时崩溃
-          （BUG-2026-0910-006）→ 统一用 BASIC 优化：CPU 与 DML(fp32) 均已实测数值正确
+        - provider 由 _clip_providers() 决定（FEAT-137 起只剩 fp32 一档，跟随全局）
+        - 图优化统一用 BASIC：全量图优化会在 vision 塔初始化时崩溃（BUG-2026-0910-006）
+        - **线程数单独取 config.clip_threads()（默认 = 全局的一半）**：
+          CLIP 只占扫描 0.2~0.3%，却与占 79% 的 AI 腿并发；让它拿满全局线程
+          等于从主腿嘴里扇饭（FEAT-138）
         """
         so = self._so()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+        so.intra_op_num_threads = config.clip_threads()
         return so
 
     # ------------------------------------------------------------------
@@ -659,24 +662,6 @@ class ModelRegistry:
             "total_ms": round(total, 2),
             "throughput_per_s": round(runs / (total / 1000.0), 1) if total > 0 else None,
         }
-
-    def benchmark_sweep(self, key: str = "clip_vision", options: list[int] | None = None,
-                        runs: int = 8, warmup: int = 2) -> list[dict]:
-        """线程数扫档：对同一通道依次用不同线程数测速，供 UI 选最优（不改变当前设置）。"""
-        opts = options or config.threads_info()["options"]
-        out: list[dict] = []
-        for n in opts:
-            try:
-                r = self.benchmark(key, runs=runs, warmup=warmup, threads=int(n))
-                out.append(r)
-            except Exception as e:  # noqa: BLE001  某档失败不影响整体
-                out.append({"channel": key, "threads": int(n), "error": f"{type(e).__name__}: {e}"})
-        ok = [r for r in out if "avg_ms" in r]
-        if ok:
-            best = min(ok, key=lambda r: r["avg_ms"])
-            for r in out:
-                r["best"] = r is best
-        return out
 
     # ------------------------------------------------------------------
     # 语义模型档位切换（适配不同硬件）

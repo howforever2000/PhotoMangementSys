@@ -933,37 +933,7 @@ pub async fn set_vcr_threads(threads: i64, app: tauri::AppHandle) -> Result<serd
 }
 
 
-/// v6：线程数扫档（UI「对比测速」一键测得最优线程数）
-#[tauri::command]
-pub async fn benchmark_vcr_sweep(
-    channel: Option<String>,
-    options: Option<Vec<i64>>,
-    runs: Option<u32>,
-    warmup: Option<u32>,
-    app: tauri::AppHandle,
-) -> Result<serde_json::Value, String> {
-    let channel = channel.unwrap_or_else(|| "clip_vision".into());
-    let options = options.unwrap_or_default();
-    let runs = runs.unwrap_or(8);
-    let warmup = warmup.unwrap_or(2);
-    let _t = log_call!(
-        "benchmark_vcr_sweep",
-        &format!("channel={channel} options={options:?} runs={runs} warmup={warmup}")
-    );
-    let r = crate::vision::vcr_benchmark_sweep(&app, &channel, options, runs, warmup).await;
-    match &r {
-        Ok(v) => crate::logger::log_call_end_with(
-            "benchmark_vcr_sweep",
-            _t,
-            &format!("OK | {}", crate::vision::sweep_brief(v)),
-        ),
-        Err(e) => crate::logger::log_call_end_with("benchmark_vcr_sweep", _t, &format!("ERR | {e}")),
-    }
-    r
-}
 
-
-/// FEAT-053：固定张量测速（CPU/GPU 真实加速比一键对比；channel 默认 det）
 #[tauri::command]
 pub async fn benchmark_vcr(
     runs: Option<u32>,

@@ -13,21 +13,18 @@ import { computed, ref } from "vue";
 import { useContentStore } from "../../stores/content";
 import { useNotify } from "../../composables/useNotify";
 import { PERF_TIMEOUT, withTimeout } from "../../utils/withTimeout";
-import type { VcrBenchmarkResult, VcrSweepEntry } from "../../types/content";
+import type { VcrBenchmarkResult } from "../../types/content";
 
 defineProps<{ locked?: boolean }>();
 
 const store = useContentStore();
 const notify = useNotify();
 
-const threads = computed(() => store.vcrThreads);
 const loaded = computed(() => store.vcrModels?.loaded ?? null);
 // P20：文本塔事实也报上 —— 会话是**双塔分别加载**的，只报图塔体积会让人以为
 // 「档位 719MB 却只加载 345MB」，其实 345 + 390 = 719，只是口径没写清。
 const loadedText = computed(() => store.vcrModels?.loaded_text ?? null);
 
-const sweepBusy = ref(false);
-const sweepResults = ref<VcrSweepEntry[]>([]);
 const benchBusy = ref(false);
 const benchResult = ref<VcrBenchmarkResult | null>(null);
 
@@ -85,55 +82,6 @@ const benchText = computed(() => {
 /** 最近一次 CPU / GPU 测速各留一份，开加速前测过 CPU 才算得出提速比 */
 const benchMs = ref<{ cpu: number | null; gpu: number | null }>({ cpu: null, gpu: null });
 
-/** 线程扫档：对语义图塔依次用各线程数实测（不改变当前设置） */
-async function runSweep() {
-  sweepBusy.value = true;
-  try {
-    const opts = threads.value?.options ?? [];
-    const list = await withTimeout(
-      store.benchmarkVcrSweep("clip_vision", opts, 8, 2),
-      PERF_TIMEOUT.sweep,
-      "benchmark_vcr_sweep",
-    );
-    const ok = list.filter((r) => typeof r.avg_ms === "number");
-    const base = ok.length ? Math.max(...ok.map((r) => r.avg_ms as number)) : 0;
-    sweepResults.value = list
-      .slice()
-      .sort((a, b) => (a.avg_ms ?? 1e9) - (b.avg_ms ?? 1e9))
-      .map((r) => ({ ...r, speedup: r.avg_ms && base ? +(base / r.avg_ms).toFixed(2) : undefined }));
-    const best = sweepResults.value.find((r) => r.best);
-    if (best?.avg_ms) {
-      notify.info(
-        `实测最快：${best.threads} 线程（${best.avg_ms} ms/张）`,
-        "测速有 ±10% 波动，可点「采用」后跑一次扫描看实际感受",
-      );
-    }
-  } catch (e) {
-    notify.error("对比测速失败", String(e));
-  } finally {
-    sweepBusy.value = false;
-  }
-}
-
-/** 采用扫档给出的最快档（写入 store，① 本机硬件的下拉会同步） */
-async function applyThreads(n: number) {
-  try {
-    const info = await withTimeout(
-      store.setVcrThreads(n),
-      PERF_TIMEOUT.write,
-      "set_vcr_threads",
-    );
-    notify.success(`CPU 线程数已设为 ${info.threads}`, "对后续推理立即生效（会话已在后台重建）");
-    // P21：后端 set_threads 已 _reload_all() 销毁旧会话并按新线程数惰性重建，
-    // 「会话实测」的事实随之改变 —— 不重新拉就会继续展示**销毁前**那次会话的
-    // 线程/provider（实测矛盾：这边显示「4 线程 · 当前」，下面却写「8 线程」）。
-    // 与 runBenchmark() 的做法对齐（它 117 行就调了 fetchVcrModels）。
-    void store.fetchVcrModels();
-  } catch (e) {
-    notify.error("设置线程数失败", String(e));
-  }
-}
-
 /** 固定张量测速（同时会按当前 provider 重建会话 → 顺手刷新「会话实测」） */
 async function runBenchmark() {
   benchBusy.value = true;
@@ -159,41 +107,6 @@ async function runBenchmark() {
 </script>
 
 <template>
-  <!-- 线程对比测速 -->
-  <div class="bench-row">
-    <span class="lbl">线程测速</span>
-    <button class="btn" :disabled="locked || sweepBusy" @click="runSweep">
-      {{ sweepBusy ? "测速中…（最长约 6 分钟）" : "📊 对比各线程档" }}
-    </button>
-    <span class="stat">对语义图塔逐档实测，不改当前设置</span>
-  </div>
-
-  <div v-if="sweepBusy" class="bench-note">
-    正在按档位测量（含预热）。后端任务无法中途取消，跑完才出结果——请耐心等待，期间可以继续用软件。
-  </div>
-
-  <div v-if="sweepResults.length" class="sweep">
-    <div
-      v-for="r in sweepResults"
-      :key="r.threads"
-      class="sweep-row"
-      :class="{ best: r.best, cur: r.threads === threads?.threads }"
-    >
-      <span class="sweep-th">
-        {{ r.threads }} 线程<template v-if="r.threads === threads?.threads"> · 当前</template>
-        <template v-else-if="r.best"> · 最快</template>
-      </span>
-      <span class="sweep-ms">{{ r.avg_ms != null ? `${r.avg_ms} ms/张` : r.error ?? "失败" }}</span>
-      <button
-        v-if="r.best && r.threads !== threads?.threads"
-        class="btn btn-sm"
-        @click="applyThreads(r.threads)"
-      >
-        采用
-      </button>
-    </div>
-  </div>
-
   <!-- 推理测速 -->
   <div class="bench-row">
     <span class="lbl">推理测速</span>
@@ -283,33 +196,5 @@ async function runBenchmark() {
   border-radius: var(--radius-sm, 8px);
   background: var(--color-neutral-soft);
   color: var(--color-text-2);
-}
-.sweep {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.sweep-row {
-  display: grid;
-  grid-template-columns: 110px 110px auto;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-.sweep-th {
-  color: var(--color-text-2);
-}
-.sweep-ms {
-  color: var(--color-text-3);
-  font-family: Consolas, monospace;
-  font-size: 11.5px;
-}
-.sweep-row.best .sweep-th {
-  color: var(--color-ok);
-  font-weight: 600;
-}
-.sweep-row.cur .sweep-th::after {
-  content: " ←";
-  color: var(--color-primary-text);
 }
 </style>

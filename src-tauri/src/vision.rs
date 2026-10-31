@@ -253,7 +253,9 @@ const ADOPT_WAIT_MAX: u32 = 3;
 /// v3（FEAT-053）：/benchmark 端点 + /gpu /models /health 新增会话实测字段。
 /// v4（FEAT-SEM）：语义搜索 —— /embed_text /embed_batch /health.clip_ready。
 /// v5（语义分类）：分类模型/场景/专家通道下线；语义模型档位切换；新增 /embed_text_batch。
-/// v6：CPU 线程数可调（/threads）+ 测速可临时指定线程数（/benchmark）+ 线程扫档（/benchmark_sweep）。
+/// v6：CPU 线程数可调（/threads）+ 测速可临时指定线程数（/benchmark）。
+///     （FEAT-138 已删掉 /benchmark_sweep —— 那个 6 分钟的扫档测的是 CLIP 单跑曲线，
+///     却让人拿它去定**全局**线程数；实测这个旋钮对并发扫描无稳定影响）
 /// v7（BUG-2026-1001-016）：/face/warmup 人脸通道预检（模型缺失要吵起来，不能静默降级）+ /persons/emb_model /persons/rebuild。
 /// v8：人脸模型档位可切换（/face/tiers、/face/tier，选择持久化在 current_face.json）。
 ///     —— 每次新增端点都必须抬这个版本号：否则宿主不会重启旧服务进程，前端只会看到
@@ -1856,25 +1858,6 @@ pub fn bench_brief(v: &serde_json::Value) -> String {
     )
 }
 
-/// 扫档结果一行摘要（日志用）
-pub fn sweep_brief(v: &serde_json::Value) -> String {
-    let results = v.get("results").and_then(|x| x.as_array());
-    let Some(arr) = results else {
-        return "results=?".into();
-    };
-    let errors = arr.iter().filter(|r| r.get("error").is_some()).count();
-    let best = arr.iter().find(|r| r.get("best").and_then(|x| x.as_bool()) == Some(true));
-    let best_s = best
-        .map(|b| {
-            format!(
-                "best={}线程/{}ms",
-                b.get("threads").and_then(|x| x.as_i64()).unwrap_or(0),
-                b.get("avg_ms").and_then(|x| x.as_f64()).unwrap_or(0.0)
-            )
-        })
-        .unwrap_or_else(|| "best=无".into());
-    format!("档位 {} 个·失败 {errors} | {best_s}", arr.len())
-}
 
 /// 查询 GPU 加速可行性：确保服务进程可达后请求 /gpu（不等检测模型就绪）
 pub async fn vcr_gpu_status(app: &tauri::AppHandle) -> Result<VcrGpuStatus, String> {
@@ -2253,45 +2236,6 @@ pub async fn vcr_set_threads(app: &tauri::AppHandle, threads: i64) -> Result<ser
         "set_threads 完成（后台重建会话）| 耗时 {}ms | {}",
         t0.elapsed().as_millis(),
         threads_brief(&v)
-    ));
-    Ok(v)
-}
-
-/// v6：线程数扫档（一次请求测多个档位；可能十几秒，用长超时）
-pub async fn vcr_benchmark_sweep(
-    app: &tauri::AppHandle,
-    channel: &str,
-    options: Vec<i64>,
-    runs: u32,
-    warmup: u32,
-) -> Result<serde_json::Value, String> {
-    let t0 = Instant::now();
-    perf_log(&format!(
-        "benchmark_sweep 请求 | channel={channel} options={options:?} runs={runs} warmup={warmup}"
-    ));
-    let client = http_client().await?;
-    ensure_perf_ready(&client, app).await?;
-    let base = vcr_base();
-    let resp = client
-        .post(format!("{base}/benchmark_sweep"))
-        .timeout(Duration::from_secs(300))
-        .json(&serde_json::json!({
-            "channel": channel, "options": options, "runs": runs, "warmup": warmup
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("调用识别服务失败: {e}"))?;
-    let status = resp.status();
-    let v: serde_json::Value = resp.json().await.map_err(|e| format!("解析结果失败: {e}"))?;
-    if !status.is_success() {
-        let detail = v.get("detail").and_then(|x| x.as_str()).unwrap_or("扫档失败");
-        perf_log(&format!("benchmark_sweep 失败 | HTTP {} | {detail}", status.as_u16()));
-        return Err(detail.to_string());
-    }
-    perf_log(&format!(
-        "benchmark_sweep 完成 | 耗时 {}ms | {}",
-        t0.elapsed().as_millis(),
-        sweep_brief(&v)
     ));
     Ok(v)
 }

@@ -21,10 +21,10 @@ v5（语义分类）：分类模型（yolov8*-cls）、Places365 场景、花朵
   POST /persons/merge             → {target, source}
   DELETE /persons/{id}            → 删除人物
   GET  /gpu  POST /gpu            → GPU 加速状态 / 开关
-  GET  /models  POST /model       → 语义模型档位清单 / 切换（b16 / b16-fp32）
+  GET  /models  POST /model       → 语义模型清单（FEAT-137 起只剩一档 b16）
   GET  /threads POST /threads     → CPU 线程数现状 / 设置（性能设置里可调）
   POST /benchmark                 → 固定张量测速（CPU/GPU 加速比对比，可临时指定线程数）
-  POST /benchmark_sweep           → 线程数扫档（一次测多个档位，UI 选最优）
+  GET  /accel   POST /accel       → 加速分配表（通道 → 设备：NPU / GPU / CPU）
   GET  /embed_status              → CLIP 子系统诊断
   POST /embed_text                → 单条文本 → 向量
   POST /embed_text_batch          → 批量文本 → 向量（语义分类关键词一次编码）
@@ -96,7 +96,9 @@ def _health_dict() -> dict:
 # v4：语义搜索（Chinese-CLIP fp16）—— /embed_text /embed_batch /health.clip_ready。
 # v5：语义分类 —— 下线分类模型/场景/专家通道；语义模型档位选择（/models /model，
 #     B/16 ↔ L/14-336）；新增 /embed_text_batch。
-# v6：CPU 线程数可调（/threads 读写 + /benchmark 支持临时线程覆盖 + /benchmark_sweep 扫档），
+# v6：CPU 线程数可调（/threads 读写 + /benchmark 支持临时线程覆盖）；
+#     FEAT-138 删掉了 /benchmark_sweep（线程扫档）—— 它测的是 CLIP 单跑曲线，
+#     却让人拿它去定全局线程数；实测该旋钮对并发扫描无稳定影响。
 #     供「⚙ 性能设置」按不同硬件实测选优。
 VCR_API_VERSION = 13  # v13: FEAT-135 可选的 OpenVINO/NPU 执行设备（det/ocr/face_rec，
 #                        默认关闭，/health.ov 如实上报）；
@@ -286,26 +288,6 @@ def benchmark(req: BenchmarkRequest):
     try:
         return get_registry().benchmark(req.channel, runs=req.runs, warmup=req.warmup,
                                        threads=req.threads)
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-
-
-class SweepRequest(BaseModel):
-    channel: str = "clip_vision"
-    options: list[int] | None = None
-    runs: int = 8
-    warmup: int = 2
-
-
-@app.post("/benchmark_sweep")
-def benchmark_sweep(req: SweepRequest):
-    """线程数扫档：一次请求把若干线程数都测一遍，返回 [{threads, avg_ms, best}]。
-
-    可能触发多次会话创建与推理（秒级到十几秒），用长超时（Rust 侧独立 180s）。
-    """
-    try:
-        return {"results": get_registry().benchmark_sweep(
-            req.channel, req.options, runs=req.runs, warmup=req.warmup)}
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 

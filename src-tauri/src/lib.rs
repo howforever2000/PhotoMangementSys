@@ -153,7 +153,6 @@ use photos::{
 use tone::commands::{scan_album_tones};
 use vcr_settings::{
     benchmark_vcr,
-    benchmark_vcr_sweep,
     get_face_tier_info,
     get_vcr_accel,
     get_vcr_gpu_status,
@@ -630,7 +629,6 @@ pub fn run() {
             set_vcr_gpu,
             get_vcr_threads,
             set_vcr_threads,
-            benchmark_vcr_sweep,
             list_vcr_models,
             set_vcr_model,
             get_face_tier_info,
