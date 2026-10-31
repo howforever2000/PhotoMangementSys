@@ -5432,7 +5432,45 @@
       ],
       "created_at": "2026-11-03T00:30:00+08:00",
       "updated_at": "2026-11-03T00:30:00+08:00"
+    },
+    {
+      "id": "FEAT-140",
+      "name": "性能设置：删掉「语义模型」行（只剩一档），加速改为 NPU / 核显两个独立勾选（不可用则不显示）",
+      "module": "src/components/settings/AccelSection.vue（重写：两勾选 + channelsFor 映射）· src/components/ModelGpuSettings.vue（探针换人、删语义分区）· src/components/settings/ClipTierSection.vue（删除）· settings/FaceTierSection.vue（注释同步）",
+      "status": "done",
+      "purpose": "用户要求：①「语义模型 B/16 fp32 · 双塔 719MB · 已加载」那行去掉 —— 只剩一档、没有选择这件事；②「NPU 和 GPU 分开：有些用户没 NPU 或没下载组件就不显示；只勾 GPU 就全在 GPU；两个都勾就分开」。原界面是「一个开关 + 一张请求/实际两列的表」，用户需要从表里反推开关的作用范围；改成两个勾选后，勾选本身就是意图。",
+      "implementation": {
+        "两个勾选": "☑ NPU（检测·文字·人脸编码） / ☑ 核显（全部计算）。channelsFor(useNpu, useGpu) → 通道表：只勾核显=四条全 GPU；只勾 NPU=前三条 NPU 且 face_det 显式 CPU；都勾=前三条 NPU + face_det GPU；都不勾=enabled:false。",
+        "不可用不渲染": "没有 NPU 硬件 → 整行不出现；有 NPU 但运行时未装 → 只留一行「需先装运行时 [下载 15MB]」（不是假勾选框）；两个都没有 → 一行「没有可用的加速引擎，只跑 CPU」。",
+        "删语义模型行": "FEAT-137 已收敛为单档，没有可选项；ClipTierSection.vue 整文件删除（168 行）。它原本兼任「服务是否可用」的探针，改为由 AccelSection 调 /accel 兼任（emit failed/recovered），横幅与解锁语义不变。",
+        "只勾 NPU 的坑": "face_det 必须显式写 CPU。留空会走自动探测又跑回核显，勾选语义就破了（已在代码注释里标明，回归时最容易踩）。"
+      },
+      "highlights": {
+        "四组合实测（读 ORT 实际绑定，不是配置回显）": "只勾核显→{GPU,GPU,GPU,GPU}；只勾 NPU→{NPU,CPU,NPU,NPU}；两个都勾→{NPU,GPU,NPU,NPU}；都不勾→全 CPU",
+        "默认态": "current_accel.json 不存在 → mode=auto → 两个勾选都是勾上（NPU 3 条 + 核显 1 条）",
+        "删除量": "ClipTierSection.vue 168 行 + 语义模型分区与其 import/事件绑定",
+        "验收": "vue-tsc 0 error；vite build 通过；四组合逐通道断言通过"
+      },
+      "tests": {
+        ".pi/smoke_feat140.py": "用与前端逐字一致的 channelsFor 打 /accel，再逐通道 /benchmark 加载并读 /health 会话表，断言实际设备等于期望"
+      },
+      "related_files": [
+        "src/components/settings/AccelSection.vue",
+        "src/components/ModelGpuSettings.vue",
+        "src/components/settings/FaceTierSection.vue",
+        "docs/FEAT-140-加速勾选与语义模型行下线.md"
+      ],
+      "keywords": [
+        "性能设置",
+        "加速勾选",
+        "NPU",
+        "核显",
+        "语义模型行",
+        "服务探针"
+      ],
+      "created_at": "2026-11-03T01:30:00+08:00",
+      "updated_at": "2026-11-03T01:30:00+08:00"
     }
   ],
-  "updated": "2026-11-03T00:30:00+08:00"
+  "updated": "2026-11-03T01:30:00+08:00"
 }

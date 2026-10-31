@@ -9,7 +9,7 @@
  * ⚠ 换档 = 换人脸向量空间：服务端会拦住不匹配的扫描（persons.db 的 meta.emb_model），
  *   必须先去「人物」页点「重建人物库」再重新扫描 —— 二次确认里写明后果。
  *
- * 与 ClipTierSection 的分工：那边是「服务是否可用」的探针；本区**不重复探活**，
+ * 与 AccelSection 的分工：那边是「服务是否可用」的探针；本区**不重复探活**，
  * 由 locked 控制（服务不可用时不请求，避免两处同时报错）。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
@@ -54,7 +54,7 @@ async function load(silent = false) {
     selected.value = v.current ?? "";
     return true;
   } catch (e) {
-    // 服务不可用已由 ClipTierSection 报横幅，这里只置自身错误态，不重复上报
+    // 服务不可用已由 AccelSection 报横幅，这里只置自身错误态，不重复上报
     errMsg.value = String(e);
     return false;
   } finally {
