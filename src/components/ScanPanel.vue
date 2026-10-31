@@ -67,7 +67,7 @@ onMounted(() => {
 watch(
   () => job.value.running,
   (now, prev) => {
-    if (prev && !now && job.value.report) fetchGpuStatus();
+    if (prev && !now && job.value.report) refreshAccel();
   },
 );
 
@@ -113,13 +113,29 @@ function stopScan() {
   contentStore.stopCombinedScan(props.albumId);
 }
 
-// ---- GPU 加速状态（只读展示；改状态请去 ⚙ 性能设置） ----
-// 直接读 store：在弹窗里开/关加速后这里**立即**同步（旧实现存本地 ref，改完还是旧值）。
-const gpuStatus = computed(() => contentStore.gpuStatus);
-async function fetchGpuStatus() {
+// ---- 加速状态（只读展示；改状态请去 ⚙ 性能设置） ----
+// 直接读 store：在弹窗里开/关加速后这里**立即**同步。
+// FEAT-139：以前这里只看全局 GPU 开关，NPU 在干活也会显示「❌ CPU」——
+// 现在直接读「加速分配」的实际生效结果（NPU n 条 · 核显 m 条）。
+const accelInfo = computed(() => contentStore.accel);
+const accelText = computed(() => {
+  const a = accelInfo.value;
+  if (!a) return "";
+  if (!a.enabled) return "加速已关闭 · 全部 CPU";
+  const eff = a.effective ?? {};
+  const npu = Object.values(eff).filter((v) => v === "NPU").length;
+  const gpu = Object.values(eff).filter((v) => v === "GPU").length;
+  if (!npu && !gpu) return "加速重建中…";
+  return [npu ? `NPU ${npu} 条` : "", gpu ? `核显 ${gpu} 条` : ""].filter(Boolean).join(" + ");
+});
+const accelOn = computed(() => {
+  const eff = accelInfo.value?.effective ?? {};
+  return Object.values(eff).some((v) => v === "NPU" || v === "GPU");
+});
+async function refreshAccel() {
   try {
     // 带超时：避免后端未响应时水不返回（BUG-2026-0921-003）
-    await withTimeout(contentStore.fetchGpuStatus(), PERF_TIMEOUT.read, "get_vcr_gpu_status");
+    await withTimeout(contentStore.fetchAccel(), PERF_TIMEOUT.read, "get_vcr_accel");
   } catch {
     /* 拿不到就保持原值：不能把失败显示成「当前用 CPU」 */
   }
@@ -208,11 +224,11 @@ const openImage = trace("openImage", async (path: string) => {
           </label>
         </div>
         <div class="combo-meta">
-          <button class="btn btn-ghost" title="GPU 加速 / CPU 线程数 / 语义模型档位" @click="perfOpen = true">
+          <button class="btn btn-ghost" title="加速 / 语义模型 / 人脸模型" @click="perfOpen = true">
             ⚙ 性能设置
           </button>
-          <div v-if="gpuStatus" class="gpu-info" :class="{ ok: gpuStatus.use_gpu }">
-            GPU: {{ gpuStatus.use_gpu ? "✅ " + gpuStatus.provider : "❌ CPU (" + gpuStatus.provider + ")" }}
+          <div v-if="accelText" class="gpu-info" :class="{ ok: accelOn }">
+            {{ accelText }}
           </div>
         </div>
       </div>

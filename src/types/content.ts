@@ -290,6 +290,12 @@ export interface VcrThreadsInfo {
   default: number;
   /** 物理核推测（逻辑核 ÷ 2） */
   physical_guess: number;
+  /** 物理核数（服务端拓扑探测） */
+  physical?: number;
+  /** 混合核机器的 P 核 / E 核数（非混合核不返回） */
+  p_cores?: number;
+  e_cores?: number;
+  hybrid?: boolean;
   /** 逻辑核数 */
   logical: number;
   min: number;
@@ -518,8 +524,10 @@ export type AccelDevice = "CPU" | "GPU" | "NPU";
 
 /** 对应 Rust `vision::vcr_accel` → 服务端 GET /accel */
 export interface VcrAccel {
-  /** 分配表是否生效（false = 旧的全局 GPU 开关语义） */
+  /** 分配表是否生效（false = 全部走 CPU） */
   enabled: boolean;
+  /** 'auto' 未表态、按硬件推荐（默认）· 'on' 用户显式开 · 'off' 用户显式关 */
+  mode: "auto" | "on" | "off";
   /** 请求分配：通道 → 设备（服务端事实之上的“请求值”） */
   channels: Partial<Record<string, AccelDevice>>;
   /** 'env' | 'file' | 'default' */

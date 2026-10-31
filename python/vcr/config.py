@@ -597,9 +597,11 @@ def _parse_channel_devices(s: str) -> dict[str, str]:
 def accel_setting() -> dict:
     """当前加速分配 → {enabled, channels{}}。
 
-    优先级：env VCR_CHANNEL_DEVICES（调试）> 持久化文件 > 未启用。
-    未启用时返回空 channels，调用方回落旧的全局 GPU 开关 ——
-    这就是「组件没装 / 用户没开」时行为逐字不变的保证。
+    优先级：env VCR_CHANNEL_DEVICES（调试）> 持久化文件 > **auto（未表态）**。
+
+    `enabled is None` = 用户从未表态 → 由调用方按硬件推荐（有 NPU/核显就默认开启）。
+    这是 FEAT-139 的默认策略：模型不该默认跑在 CPU 上（CPU 留给缩略图/EXIF/地点）。
+    用户显式关掉会写成 enabled=False，此时行为逐字回到旧的“全 CPU + 全局开关”语义。
     """
     env = _parse_channel_devices(os.environ.get("VCR_CHANNEL_DEVICES", ""))
     if env:
@@ -612,9 +614,11 @@ def accel_setting() -> dict:
                   if k in CHANNEL_KEYS and str(v).upper() in DEVICE_CHOICES}
             if d.get("enabled") and ch:
                 return {"enabled": True, "channels": ch, "source": "file"}
-    except Exception:  # noqa: BLE001  坏文件当作未启用，绝不因此起不来
+            if d.get("enabled") is False:
+                return {"enabled": False, "channels": {}, "source": "file"}
+    except Exception:  # noqa: BLE001  坏文件当作未表态，绝不因此起不来
         pass
-    return {"enabled": False, "channels": {}, "source": "default"}
+    return {"enabled": None, "channels": {}, "source": "auto"}
 
 
 def set_accel_setting(enabled: bool, channels: dict[str, str] | None = None) -> dict:

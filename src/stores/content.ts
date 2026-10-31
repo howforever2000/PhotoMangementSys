@@ -22,7 +22,6 @@ import type {
   ScanOutcome,
   ScanReport,
   UnifiedScanRow,
-  VcrGpuStatus,
   VcrAccel,
   AccelDevice,
   VcrModelsInfo,
@@ -189,8 +188,6 @@ export const useContentStore = defineStore("content", {
     albumContentTotal: 0 as number,
     /** 过滤搜索命中 */
     filterHits: [] as AlbumContentRow[],
-    /** GPU 加速可行性状态 */
-    gpuStatus: null as VcrGpuStatus | null,
     /** FEAT-136：加速分配（通道 → 设备；GPU 与 NPU 各有加速对象） */
     accel: null as VcrAccel | null,
     /** FEAT-051：分类模型候选清单 */
@@ -242,18 +239,6 @@ export const useContentStore = defineStore("content", {
       } catch {
         /* 持久化失败不影响本次使用 */
       }
-    },
-
-    /** 查询 GPU 加速可行性（会确保识别服务就绪） */
-    async fetchGpuStatus(): Promise<VcrGpuStatus> {
-      this.gpuStatus = await invoke<VcrGpuStatus>("get_vcr_gpu_status");
-      return this.gpuStatus;
-    },
-
-    /** FEAT-051：GPU 加速开关（开 = GPU 优先 / 关 = 强制 CPU） */
-    async setVcrGpu(enabled: boolean): Promise<VcrGpuStatus> {
-      this.gpuStatus = await invoke<VcrGpuStatus>("set_vcr_gpu", { enabled });
-      return this.gpuStatus;
     },
 
     /** FEAT-136：加速分配现状（每通道 → 设备 + 实际生效） */

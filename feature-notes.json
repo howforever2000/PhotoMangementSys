@@ -5386,7 +5386,53 @@
       ],
       "created_at": "2026-11-02T23:30:00+08:00",
       "updated_at": "2026-11-02T23:30:00+08:00"
+    },
+    {
+      "id": "FEAT-139",
+      "name": "加速默认开启（模型不跑 CPU）+ 性能设置界面按「加速对象」重排、删掉重复开关与长文案",
+      "module": "python/vcr/config.py（accel_setting 三态）· python/vcr/model_registry.py（auto_channels / accel_info.mode）· src/components/ModelGpuSettings.vue（重写）· settings/{AccelSection,HardwareSection}.vue（重写）· settings/GpuSection.vue（删除）· ScanPanel.vue（徽章改读加速分配）· src/stores/content.ts（删 gpuStatus/setVcrGpu）",
+      "status": "done",
+      "purpose": "用户指出两个前提并要求改界面：①「一般默认 GPU 加速，所以用不到 CPU 跑模型，CPU 只是缩略图生成 / EXIF 扫描 / 地点解码」；②「现在每个按钮和加速对象是干什么的比较难理解，优化布局和说明、去除多余文字」。前者暴露了真问题：current_accel.json 不存在时等于不加速，只有用户手动点开关才生效（实测加速是 AI 腿 336.6→140.1 ms/张）。后者是界面有两个开关表达同一件事（全局 GPU 加速 + 通道分配），且第一眼看到的是最不重要的 CPU 线程数。",
+      "implementation": {
+        "三态默认": "config.accel_setting() 改为：文件不存在 → enabled=None（auto，按硬件推荐并直接生效）；enabled=true → on；enabled=false → off（逐字回到老行为）。auto 的推荐分配只在真有引擎可用时生效（全 CPU 的推荐视为不改动），避免把老机器静默钉成 CPU。",
+        "auto 分配": "有 NPU → det/ocr/face_rec 给 NPU、face_det 给核显（两个引擎都有对象）；只有核显 → 四条全给核显；都没有 → 空（等价未启用）。registry.auto_channels() 缓存结果。",
+        "界面重排": "本机硬件（一行事实，无按钮）→ 加速（唯一开关 + 五行对照表 + 明确划出「缩略图/EXIF/地点 始终 CPU」）→ 语义模型（一行状态）→ 人脸模型（下拉）→ 高级（扫描批次 / CPU 线程数 / 测速诊断）。",
+        "删掉的": "①旧「GPU 加速」开关整个 GpuSection.vue（与加速分区重复）；②顶部「这台机器现在怎么跑」摘要（与对照表重复）；③语义档位下拉与换档确认（FEAT-137 已单档）；④扫描面板的 `GPU: ❌ CPU (provider)` 徽章 —— NPU 在干活时它照样显示 ❌，改为读实际生效分配。",
+        "降级的": "CPU 线程数从第一屏挪进「高级」，文案改为「语义索引自己用这个数的一半」——模型走 GPU 后它对速度基本无影响，CPU 主要在做缩略图/EXIF/地点。"
+      },
+      "highlights": {
+        "默认行为": "全新安装 /accel：mode=auto enabled=true channels={det:NPU, ocr:NPU, face_rec:NPU, face_det:GPU}；会话表 det=['OpenVINO:NPU']、face_det=['DmlExecutionProvider']",
+        "开关收敛": "全页只剩一个「开启/关闭加速」按钮，加速对象在下面逐行列出（含触发频率与目标设备），不需要从文案里推断按钮管什么",
+        "边界写清": "表格最后一行固定列出「缩略图 · EXIF · 地点 → CPU」，明确告诉用户这个开关不影响什么",
+        "验收": "vue-tsc 0 error；vite build 通过；/accel 三态（auto → off → on）与 /health 会话表逐项断言通过"
+      },
+      "tests": {
+        ".pi/smoke_feat139.py": "全新安装 auto（四条分配 + 生效翻转）→ 显式关闭（mode=off、全 CPU）→ 再开启（mode=on）→ /health 会话表 det=NPU、face_det=Dml"
+      },
+      "related_files": [
+        "python/vcr/config.py",
+        "python/vcr/model_registry.py",
+        "src/components/ModelGpuSettings.vue",
+        "src/components/settings/AccelSection.vue",
+        "src/components/settings/HardwareSection.vue",
+        "src/components/ScanPanel.vue",
+        "src/stores/content.ts",
+        "src/types/content.ts",
+        "docs/FEAT-139-加速默认开启与性能设置重排.md"
+      ],
+      "keywords": [
+        "性能设置",
+        "加速默认",
+        "auto 模式",
+        "界面重排",
+        "加速对象",
+        "GPU",
+        "NPU",
+        "CPU 线程数"
+      ],
+      "created_at": "2026-11-03T00:30:00+08:00",
+      "updated_at": "2026-11-03T00:30:00+08:00"
     }
   ],
-  "updated": "2026-11-02T23:30:00+08:00"
+  "updated": "2026-11-03T00:30:00+08:00"
 }

@@ -236,10 +236,16 @@ class ModelRegistry:
     # 但各通道最优设备不同（det/ocr/face_rec → NPU；det_10g → GPU/CPU）。
     # 一个全局「GPU 开关」表达不了这件事，所以这里按通道取设备。
     # ------------------------------------------------------------------
-    @staticmethod
-    def _device_of(key: str) -> str:
-        """该通道被分配到的设备；"" = 未分配（沿用旧的全局 GPU 开关，行为不变）。"""
+    def _device_of(self, key: str) -> str:
+        """该通道被分配到的设备；"" = 未分配（沿用旧的全局 GPU 开关，行为不变）。
+
+        FEAT-139：未表态（enabled is None）时按硬件推荐 = **默认开启加速**。
+        理由：模型不该默认跑 CPU（CPU 要留给缩略图/EXIF/地点解码）。
+        硬件不支持（既无 NPU 又无 DML）时推荐为空，效果等于未启用。
+        """
         s = config.accel_setting()
+        if s["enabled"] is None:
+            return self.auto_channels().get(key, "")
         return s["channels"].get(key, "") if s["enabled"] else ""
 
     @staticmethod
@@ -374,12 +380,25 @@ class ModelRegistry:
                 out[k] = "CPU"
         return out
 
+    def auto_channels(self) -> dict[str, str]:
+        """auto 模式的分配（缓存）：没有可用引擎时返回空 = 不改任何东西。"""
+        cached = getattr(self, "_auto_channels", None)
+        if cached is None:
+            d = self.default_channels()
+            # 全是 CPU = 这台机器没有可加速的引擎，别把四个通道都钉成 CPU
+            # （钉了会让旧 GPU 开关失效，属于“静默改行为”）
+            cached = {} if all(v == "CPU" for v in d.values()) else d
+            self._auto_channels = cached
+        return cached
+
     def accel_info(self) -> dict:
         """加速分配现状（/health 与设置页用）：想给什么、实际跑在什么上。"""
         s = config.accel_setting()
         devs = ov_backend.probe_devices()
         npu_ok = ov_backend.available("NPU")
         dml_ok = "DmlExecutionProvider" in ort.get_available_providers()
+        auto = s["enabled"] is None
+        channels = self.auto_channels() if auto else s["channels"]
         effective: dict[str, str] = {}
         for k in config.CHANNEL_KEYS:
             provs = (self._session_info.get(k) or {}).get("providers") or []
@@ -392,8 +411,10 @@ class ModelRegistry:
             else:
                 effective[k] = "CPU"
         return {
-            "enabled": s["enabled"],
-            "channels": s["channels"],
+            "enabled": bool(channels) if auto else s["enabled"],
+            # mode：auto（未表态，按硬件推荐）/ on（用户显式开）/ off（用户显式关）
+            "mode": "auto" if auto else ("on" if s["enabled"] else "off"),
+            "channels": channels,
             "source": s["source"],
             "defaults": self.default_channels(),
             "effective": effective,
@@ -410,6 +431,8 @@ class ModelRegistry:
         with self._lock:
             ch = channels if channels is not None else self.default_channels()
             config.set_accel_setting(enabled, ch)
+            # 用户一旦表态，auto 缓存作废（下次按文件走）
+            self._auto_channels = None
             if enabled:
                 if self._accel_restore is None:
                     self._accel_restore = (self._gpu_forced_off,

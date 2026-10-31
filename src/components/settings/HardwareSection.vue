@@ -1,51 +1,66 @@
 <script setup lang="ts">
 /**
- * ① 本机硬件 —— 性能设置的第一段（只放「这台机器跑得更快」的开关）
+ * 本机硬件 —— 只读一行事实，不放任何按钮
  *
- * 本文件只负责分区标题与布局；两个子分区各自独立加载/报错/重试：
- *   GpuSection     运行硬件探测 + GPU 加速开关
- *   ThreadsSection CPU 线程数（ONNX intra_op）
- * 拆开是为了单一职责：一个组件只管一件事，且任一数据源失败不影响另一个。
+ * 以前这里挂着两个控件（GPU 加速开关 + CPU 线程数），而「GPU 加速」与本页的
+ * 「加速」分区重复表达同一件事，用户分不清谁管谁（FEAT-139 收掉）。
+ * 现在：硬件只报事实；开关统一在「加速」；线程数降级到「高级」（模型走 GPU 后
+ * 它基本不影响速度，CPU 主要在做缩略图 / EXIF / 地点解码）。
  */
-import GpuSection from "./GpuSection.vue";
-import ThreadsSection from "./ThreadsSection.vue";
+import { computed } from "vue";
+import { useContentStore } from "../../stores/content";
 
-/** 分区级 props：`locked` = 识别服务不可用时锁定本区 */
-defineProps<{ locked?: boolean }>();
+const store = useContentStore();
+
+const cores = computed(() => {
+  const t = store.vcrThreads;
+  if (!t) return "";
+  const hy = t.hybrid && t.p_cores ? `${t.p_cores}P+${t.e_cores}E` : `${t.physical ?? t.logical} 核`;
+  return hy;
+});
+
+const npu = computed(() => {
+  const a = store.accel;
+  if (!a) return "";
+  if (a.available?.NPU) return "NPU 可用";
+  if (a.ov?.installed) return "NPU 不可用";
+  return "NPU 未启用";
+});
+
+const gpu = computed(() => {
+  const a = store.accel;
+  if (!a) return "";
+  return a.available?.GPU ? "核显可用" : "无核显加速";
+});
 </script>
 
 <template>
-  <section class="sec">
-    <div class="sec-head">
-      <h3 class="sec-title">本机硬件</h3>
-      <span class="sec-sub">决定这台机器怎么跑得更快</span>
-    </div>
-
-    <GpuSection :locked="locked" />
-    <ThreadsSection :locked="locked" />
-  </section>
+  <div class="hw">
+    <h3 class="hw-title">本机硬件</h3>
+    <span v-if="cores" class="hw-item">CPU {{ cores }}</span>
+    <span v-if="npu" class="hw-item" :class="{ ok: store.accel?.available?.NPU }">{{ npu }}</span>
+    <span v-if="gpu" class="hw-item" :class="{ ok: store.accel?.available?.GPU }">{{ gpu }}</span>
+  </div>
 </template>
 
 <style scoped>
-.sec {
+.hw {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.sec-head {
-  display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
   flex-wrap: wrap;
 }
-.sec-title {
+.hw-title {
   margin: 0;
   font-size: 14px;
   font-weight: 700;
   color: var(--color-text);
 }
-.sec-sub {
-  font-size: 12px;
+.hw-item {
+  font-size: 12.5px;
   color: var(--color-text-3);
+}
+.hw-item.ok {
+  color: var(--color-text-2);
 }
 </style>
