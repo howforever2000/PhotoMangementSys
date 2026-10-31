@@ -69,6 +69,51 @@ def device_lock(device: str) -> threading.Lock:
         return lk
 
 
+# ---------------------------------------------------------------------------
+# 可选组件：运行时 zip 的解压
+#
+# Rust 只负责把一个 `.zip` 落到 `MODEL_DIR/_runtime/`（下载单元仍是「文件」，
+# 不引入 zip 依赖与新的失败面）；解压交给 Python 标准库 `zipfile`，首次使用时做一次。
+#
+# 解压不迷信改名：Windows 上杀毒会在刚写完 DLL 时占句柄，`os.rename` 实测会抛
+# `WinError 5`。所以策略是「改名失败不算失败」—— 直接用 `.partial` 目录跑，
+# 下次启动再试改名，避免用户每次都要重下 13MB。
+# ---------------------------------------------------------------------------
+ZIP_NAME = "openvino-npu-win-x64.zip"   # 与 build_ov_runtime_zip.py 逐字一致
+RT_DIR = "ovrt"
+
+
+def _runtime_root() -> str:
+    return os.path.join(config.MODEL_DIR, "_runtime")
+
+
+def ensure_runtime_extracted() -> str:
+    """确保 zip 已解压 → 返回可直接注入 sys.path 的目录（空串 = 没东西可解）。"""
+    root = _runtime_root()
+    final = os.path.join(root, RT_DIR)
+    if os.path.isdir(os.path.join(final, "openvino")):
+        return final
+    zp = os.path.join(root, ZIP_NAME)
+    if not os.path.isfile(zp):
+        return ""
+    partial = final + ".partial"
+    _ = partial
+    import zipfile
+
+    try:
+        os.makedirs(root, exist_ok=True)
+        with zipfile.ZipFile(zp) as zf:
+            zf.extractall(partial)
+    except Exception:  # noqa: BLE001
+        return ""
+    try:
+        os.rename(partial, final)      # 成功则下次直接用
+        return final
+    except OSError:
+        # 杀毒/句柄占用：直接用 .partial 跑，下次启动再试
+        return partial
+
+
 def _candidate_paths() -> list[str]:
     """隐式候选目录：**只放产品路径**，不放开发期目录。
 
@@ -85,7 +130,6 @@ def _candidate_paths() -> list[str]:
     out.append(os.path.join(config.MODEL_DIR, "_runtime", "ovrt"))
     _ = here
     return out
-
 
 def load_runtime():
     """加载 openvino 模块 → (module | None, 错误串, 来源标记)。
@@ -113,7 +157,18 @@ def load_runtime():
                 return _OV, "", _OV_SOURCE
             except Exception as e:  # noqa: BLE001
                 _OV_ERROR = f"{type(e).__name__}: {e}"
-        _OV_ERROR = _OV_ERROR or "openvino 未安装（pip install openvino，或 VCR_OV_PATH 指向运行时目录）"
+        # 候选都不在 → 看看是不是组件 zip 还没解压
+        rt = ensure_runtime_extracted()
+        if rt and os.path.isdir(os.path.join(rt, "openvino")):
+            if rt not in sys.path:
+                sys.path.append(rt)
+            try:
+                import openvino as ov
+                _OV, _OV_SOURCE = ov, rt
+                return _OV, "", _OV_SOURCE
+            except Exception as e:  # noqa: BLE001
+                _OV_ERROR = f"{type(e).__name__}: {e}"
+        _OV_ERROR = _OV_ERROR or "openvino 未安装（应用内下载「OpenVINO 运行时」组件，或 VCR_OV_PATH 指向运行时目录）"
         return None, _OV_ERROR, ""
 
 

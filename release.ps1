@@ -94,6 +94,32 @@ if ($SkipModels) {
     Write-Host "    模型校验通过（人物检测/人脸/OCR/语义模型齐全）" -ForegroundColor Green
 }
 
+# --- 2b. FEAT-136：OpenVINO 裁剪运行时（可选组件，不随 MSI 下发，走 Release 资产） ---
+#
+# 为什么单独存在：det / ocr / face_rec 上 NPU 需要一份 OpenVINO 运行时（实测整批 -58%）。
+# 完整包 244.8MB，裁掉编译器/CPU/GPU 插件后 zip 只有 ~15MB；但对 AMD/NVIDIA 用户
+# 完全无用，所以**不进 MSI**，由应用内按需下载（model_dl 的 openvino-runtime 规格）。
+# 没装 = 一切走 ONNX Runtime，行为与今天逐字一致。
+#
+# 这里只负责「确保产物存在 + 提醒上传」，不做自动上传（需要 GH token，且时机不总一致）。
+$OvZip = Join-Path $PythonDir "dist\openvino-npu-win-x64.zip"
+if (-not (Test-Path $OvZip)) {
+    Write-Host "[2b/5] 构建 OpenVINO 裁剪运行时组件..." -ForegroundColor Green
+    Push-Location $PythonDir
+    try {
+        & python scripts/build_ov_runtime_zip.py
+        if ($LASTEXITCODE -ne 0) { throw "build_ov_runtime_zip.py 执行失败" }
+    } finally { Pop-Location }
+} else {
+    Write-Host "[2b/5] OpenVINO 组件已存在（$([math]::Round((Get-Item $OvZip).Length/1MB,1)) MB）" -ForegroundColor Green
+}
+Write-Host @"
+    ⚠ 必须在 GitHub Release 里附上资产: openvino-npu-win-x64.zip
+      （model_dl 用 releases/latest/download/ 抓它；缺资产时用户点下载会 404，
+        所有通道静默留在 ONNX Runtime，不会崩，但加速用不到）
+      路径: $OvZip
+"@ -ForegroundColor Yellow
+
 # --- 3. 前端依赖 ---
 Write-Host "[3/5] 校验前端依赖..." -ForegroundColor Green
 if (-not (Test-Path (Join-Path $Root "node_modules"))) {

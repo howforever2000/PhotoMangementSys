@@ -179,6 +179,31 @@ fn specs() -> Vec<DlSpec> {
         ),
         expect_min: 3_000_000,
     }];
+    // FEAT-136：OpenVINO 裁剪运行时 —— **可选组件**，不是模型。
+    //
+    // 它服务的是 det / ocr / face_rec 三条热通道（实测 983 张真扫描 -58.4%，
+    // 见 docs/FEAT-135）。不装也完全正常：`config.accel_setting()` 返回未启用，
+    // 全部回落 ONNX Runtime，行为与今天逐字一致。
+    //
+    // 为什么是一个 zip：下载单元仍是「文件」，Rust 不引 zip 依赖；解压交给 Python
+    // 标准库 zipfile（见 vcr/ov_backend.py::ensure_runtime_extracted），失败面只有一处且可重试。
+    //
+    // 为什么只给 Intel 推荐：OpenVINO 的 NPU 插件只认 Intel 硬件（UI 层按 CPU 厂商过滤）。
+    //
+    // 尺寸口径：完整 openvino 244.8MB → 裁掉编译器(95.7MB)+CPU 插件(44.2MB)+GPU 插件(33.1MB)
+    // +多余前端后 **45.4MB 装上 / 15.5MB zip**；裁剪版已实测能 compile_model(onnx, "NPU")，
+    // 且输出与完整版一致（det 53/53 人框零差异、r50 cos 0.99997220）。
+    // expect_min 只防 HTML 错误页，不当作精确体积。
+    const OPENVINO_RUNTIME: &[DlFile] = &[DlFile {
+        remote: "",
+        local: "_runtime/openvino-npu-win-x64.zip",
+        // releases/latest/download 是 GitHub 的稳定别名，不随版本号改 URL；
+        // 资产由 python/scripts/build_ov_runtime_zip.py 产出并随 release 上传。
+        abs_url: Some(
+            "https://github.com/howforever2000/PhotoMangementSys/releases/latest/download/openvino-npu-win-x64.zip",
+        ),
+        expect_min: 5_000_000,
+    }];
     const PERSON_DET: &[DlFile] = &[DlFile {
         remote: "yolov8n-onnx-web/yolov8n.onnx",
         local: "yolov8n-det.onnx",
@@ -240,6 +265,15 @@ fn specs() -> Vec<DlSpec> {
             files: OCR,
             required: false,
             expect_bytes: 4_745_517,
+        },
+        DlSpec {
+            name: "openvino-runtime",
+            label: "推理加速 · OpenVINO（Intel 可选）",
+            note: "15MB 下载 / 45MB 装后 · 仅 Intel：检测/OCR/人脸编码可走 NPU，实测整批 -58%",
+            repo: "",
+            files: OPENVINO_RUNTIME,
+            required: false,
+            expect_bytes: 15_000_000,
         },
     ]
 }
@@ -1017,6 +1051,41 @@ mod tests {
             .join("vcr")
             .join("config.py");
         std::fs::read_to_string(&config_path).expect("应能读取 python/vcr/config.py")
+    }
+
+    /// FEAT-136：OpenVINO 运行时的落地路径必须与 python 侧逐字一致。
+    ///
+    /// 三处必须同名，任一处写错都只会在用户机器上表现为「下载完了但用不了」：
+    ///   1. 本文件的 DlFile.local
+    ///   2. python/vcr/ov_backend.py 的 ZIP_NAME
+    ///   3. python/scripts/build_ov_runtime_zip.py 产出的文件名
+    #[test]
+    fn openvino_runtime_spec_matches_python() {
+        let f = specs()
+            .into_iter()
+            .find(|s| s.name == "openvino-runtime")
+            .expect("下载表必须有 openvino-runtime（可选组件）");
+        assert!(!f.required, "组件必须是可选的，不能阻塞主流程");
+        assert_eq!(f.files.len(), 1);
+        assert_eq!(f.files[0].local, "_runtime/openvino-npu-win-x64.zip");
+        assert!(
+            f.files[0]
+                .abs_url
+                .unwrap_or("")
+                .ends_with("/releases/latest/download/openvino-npu-win-x64.zip"),
+            "必须走 releases/latest/download 稳定别名"
+        );
+        let py_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("python")
+            .join("vcr");
+        let backend = std::fs::read_to_string(py_dir.join("ov_backend.py"))
+            .expect("应能读取 python/vcr/ov_backend.py");
+        assert!(
+            backend.contains("ZIP_NAME = \"openvino-npu-win-x64.zip\""),
+            "ov_backend.py 的 ZIP_NAME 必须与 DlFile.local 同名"
+        );
     }
 
     /// CLIP 落位必须与 python/vcr/config.py::CLIP_MODEL_META 严格一致：

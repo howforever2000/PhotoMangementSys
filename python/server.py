@@ -127,6 +127,8 @@ def health():
         # FEAT-135：OV/NPU 后端现状（想接哪些通道 / 实际接上了哪些 / 设备可用性）。
         # 只读、不触发加载：ov_info() 里只碰已存在的会话。
         "ov": reg.ov_info(),
+        # FEAT-136：加速分配表（GPU 与 NPU 各自接管哪些通道 + 实际生效设备）
+        "accel": reg.accel_info(),
         "batch_max": config.BATCH_CHUNK_MAX,
         # 各通道最近一次加载失败原因：宿主据此在日志里直接写明「为何 ok=false」
         # （面板转圈排查要点——BUG-2026-0921-003）
@@ -153,6 +155,34 @@ def gpu():
 
 class GpuRequest(BaseModel):
     enabled: bool
+
+
+class AccelRequest(BaseModel):
+    """加速分配：enabled=False 清空分配（回到旧的全局 GPU 开关语义）。
+
+    channels 省略时用推荐分配（能上 NPU 的给 NPU，剩下的给 GPU）。
+    """
+    enabled: bool = True
+    channels: dict[str, str] | None = None
+
+
+@app.get("/accel")
+def accel():
+    """加速分配现状（设置页用）。只读，不触发任何模型加载。"""
+    return get_registry().accel_info()
+
+
+@app.post("/accel")
+def set_accel(req: AccelRequest):
+    """写入加速分配并后台重建会话（加载 NPU 编译可达秒级，不能占住 HTTP）。
+
+    与 /gpu、/threads 同一套交互：立即返回，重建交给后台线程。
+    """
+    reg = get_registry()
+    info = reg.set_accel(req.enabled, req.channels)
+    if req.enabled:
+        threading.Thread(target=_rebuild_all_channels, daemon=True).start()
+    return info
 
 
 class ModelRequest(BaseModel):
@@ -630,6 +660,22 @@ def _rebuild_main_chain() -> None:
         print(f"[VCR] 规则主链路模型状态: {st}", file=sys.stderr)
     except Exception as e:  # noqa: BLE001
         print(f"[VCR] 主链路模型加载失败: {e}", file=sys.stderr)
+
+
+def _rebuild_all_channels() -> None:
+    """后台重建 **四条** 规则通道（FEAT-136 加速分配切换后调用）。
+
+    与 `_rebuild_main_chain` 的区别：换了设备分配后，每条腿都要按新分配重建，
+    只预热 det 会让 face/ocr 拖到下一次扫描才生效 —— 用户会看到「切了但没变」。
+    逐条 try：某条腿失败（比如 NPU 驱动掉线）不能拖死其余三条。
+    """
+    reg = get_registry()
+    for name in ("det", "face_det", "face_rec", "ocr"):
+        try:
+            getattr(reg, name)
+        except Exception as e:  # noqa: BLE001
+            logutil.err(f"[VCR] 加速分配重建 {name} 失败: {type(e).__name__}: {e}")
+    logutil.err(f"[VCR] 加速分配生效: {reg.accel_info()['effective']}")
 
 
 def _quiet_proactor_noise() -> None:

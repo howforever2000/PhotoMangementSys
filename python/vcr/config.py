@@ -513,6 +513,80 @@ OV_SHAPES: dict[str, tuple[int, ...]] = {
 OV_CACHE_DIR = os.environ.get("VCR_OV_CACHE") or os.path.join(MODEL_DIR, "_ov_cache")
 
 # ---------------------------------------------------------------------------
+# FEAT-136：加速分配表（通道 → 设备）
+#
+# 为什么需要一张表而不是一个开关：GPU（DirectML）与 NPU（OpenVINO）是**两个独立
+# 引擎**，能同时干活且不争资源；但各通道最优设备不同：
+#
+#   det / ocr / face_rec → NPU（实测最优点，见 docs/FEAT-135）
+#   face_det(det_10g)    → GPU/CPU（NPU 慢 7 倍，116.5ms，永久排除）
+#   clip_*               → CPU（fp16 档在 DML 上有数值 bug；且只占扫描 0.2%）
+#
+# 一个全局「GPU 开关」表达不了这件事 —— 它要么全给 GPU，要么全不开。
+#
+# 取值：CPU | GPU（ORT DirectML）| NPU（OpenVINO，仅 Intel）
+# 持久化在 models/current_accel.json，由「⚙ 性能设置 → 加速分配」读写；
+# 文件缺失 = 与今天逐字一致（走旧的全局 GPU 开关）。
+# 环境变量 VCR_CHANNEL_DEVICES=det=NPU,ocr=NPU,face_rec=NPU,face_det=GPU 可强制覆盖（调试用）。
+# ---------------------------------------------------------------------------
+ACCEL_CURRENT_PATH = os.path.join(MODEL_DIR, "current_accel.json")
+CHANNEL_KEYS = ("det", "face_det", "face_rec", "ocr")
+# 设备取值合法性（"" = 未分配，回落旧的全局开关）
+DEVICE_CHOICES = ("CPU", "GPU", "NPU")
+
+
+def _parse_channel_devices(s: str) -> dict[str, str]:
+    """`det=NPU,ocr=Npu` → {"det":"NPU","ocr":"NPU"}（非法项直接丢弃）。"""
+    out: dict[str, str] = {}
+    for item in (s or "").replace(";", ",").split(","):
+        if "=" not in item:
+            continue
+        k, v = item.split("=", 1)
+        k, v = k.strip().lower(), v.strip().upper()
+        if k in CHANNEL_KEYS and v in DEVICE_CHOICES:
+            out[k] = v
+    return out
+
+
+def accel_setting() -> dict:
+    """当前加速分配 → {enabled, channels{}}。
+
+    优先级：env VCR_CHANNEL_DEVICES（调试）> 持久化文件 > 未启用。
+    未启用时返回空 channels，调用方回落旧的全局 GPU 开关 ——
+    这就是「组件没装 / 用户没开」时行为逐字不变的保证。
+    """
+    env = _parse_channel_devices(os.environ.get("VCR_CHANNEL_DEVICES", ""))
+    if env:
+        return {"enabled": True, "channels": env, "source": "env"}
+    try:
+        if os.path.isfile(ACCEL_CURRENT_PATH):
+            with open(ACCEL_CURRENT_PATH, encoding="utf-8") as f:
+                d = json.load(f)
+            ch = {k: str(v).upper() for k, v in (d.get("channels") or {}).items()
+                  if k in CHANNEL_KEYS and str(v).upper() in DEVICE_CHOICES}
+            if d.get("enabled") and ch:
+                return {"enabled": True, "channels": ch, "source": "file"}
+    except Exception:  # noqa: BLE001  坏文件当作未启用，绝不因此起不来
+        pass
+    return {"enabled": False, "channels": {}, "source": "default"}
+
+
+def set_accel_setting(enabled: bool, channels: dict[str, str] | None = None) -> dict:
+    """写入加速分配（先落盘再返回；清空 = 回到旧的全局开关语义）。"""
+    ch = {}
+    for k, v in (channels or {}).items():
+        k2, v2 = str(k).lower(), str(v).upper()
+        if k2 in CHANNEL_KEYS and v2 in DEVICE_CHOICES:
+            ch[k2] = v2
+    data = {"enabled": bool(enabled) and bool(ch), "channels": ch}
+    try:
+        with open(ACCEL_CURRENT_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:  # noqa: BLE001  写不进去只影响重启后不记得，不影响本次生效
+        pass
+    return {"enabled": data["enabled"], "channels": ch, "source": "file"}
+
+# ---------------------------------------------------------------------------
 # 阈值：人物检测 / 仲裁（F20 固化值 + 校准 2026-08-13）
 # ---------------------------------------------------------------------------
 PERSON_CONF_MIN = 0.35        # 人像检测最低置信度（F20 固化值）

@@ -5234,7 +5234,61 @@
       ],
       "created_at": "2026-11-02T12:00:00+08:00",
       "updated_at": "2026-11-02T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-136",
+      "name": "加速分配表（GPU 与 NPU 各有加速对象）+ OpenVINO 运行时做成可选组件",
+      "module": "python/vcr/config.py（accel_setting）· python/vcr/model_registry.py（_device_of / default_channels / accel_info / set_accel）· python/vcr/ov_backend.py（组件解压）· python/server.py（/accel）· src/components/settings/AccelSection.vue（新）· src-tauri/src/{model_dl,vision,vcr_settings,lib}.rs · release.ps1",
+      "status": "done",
+      "purpose": "FEAT-135 证明了 NPU 该接哪三条腿（det/ocr/face_rec），但只剩一个全局「GPU 开关」在表达设备，做不到「GPU 与 NPU 同时各有加速对象」。同时该特性依赖 45MB 的 OpenVINO 运行时，不能无条件塞进安装包（AMD/NVIDIA 完全用不上）。本轮把这两个缺口一起补上：通道→设备分配表（持久化 + UI 可开关），运行时做成按需下载的可选组件。",
+      "implementation": {
+        "分配表": "VCR 侧新增 config.accel_setting()/set_accel_setting()，持久化 models/current_accel.json；registry 在 _load 里按通道取设备（NPU→OvChannel，GPU→ORT+Dml，CPU→ORT），四条腿各自独立回落。默认分配由服务端算：能上 NPU 的给 NPU，剩下的给 GPU（face_det），所以两个引擎同时有活干。",
+        "为什么 face_det 给 GPU": "det_10g 在 NPU 上 116.5ms（慢 7 倍，永久排除）；DML 单次 92.9ms vs CPU 120.9ms。它只跑 15/53 次所以摊薄墙钟增量在噪声内（39.0 vs 38.6），但它给了 GPU 一个真实对象，且在「只有 DML 没有 NPU」的机器上就是主力（全 GPU 形态 -34.7%）。",
+        "不做的事": "clip 不给 GPU：语义腿只占扫描 0.2%，且 fp16 档在 DML 上有数值 bug（BUG-2026-0910-006）—— 那是 FEAT-133 栽过的同一个坑。",
+        "可选组件": "恢复 FEAT-133 的裁剪脚本（244.8→45.4MB / zip 15.5MB），Rust 只下载 zip（DlSpec openvino-runtime，releases/latest/download 稳定别名），Python 侧 standard library zipfile 首次解压到 models/_runtime/ovrt 并注入 sys.path；改名失败（杀毒占句柄 WinError 5）不算失败，用 .partial 目录继续跑。",
+        "Rust/UI": "vision::vcr_accel / vcr_set_accel（旧服务 404 → 重启重试）+ vcr_settings 命令 + lib.rs 注册；AccelSection.vue 显示「请求分配 vs 实际生效」两列、组件下载（复用 model_dl 进度）、启用/关闭；运行时组件从「模型下载」列表过滤（一处入口一个说法）。"
+      },
+      "highlights": {
+        "真扫描（300 张，AI∥语义，批 8 P6）": "全 CPU 87.7s（300.3 ms/张）→ 分配表 25.8s（88.4 ms/张）= **-70.6%**；会话表 det/ocr/face_rec=['OpenVINO:NPU']、face_det=['DmlExecutionProvider'] —— 两个引擎同时有对象",
+        "983 张全量（env 形态）": "336.6 → 140.1 ms/张 = -58.4%（相册画像不同，方向一致）",
+        "探针四方对比（53 张）": "cpu 136.2 · 全 GPU 88.9 · NPU×3+CPU人脸检测 38.6 · NPU×3+GPU人脸检测 39.0",
+        "组件等价": "裁剪运行时（删了 95.7MB 编译器）仍能 compile_model(onnx,'NPU')；det 53/53 人框零差异、r50 38 张脸 cos 最小 0.99997220",
+        "产品路径烟测（零环境变量）": "默认 enabled=false 不动任何东西 → POST /accel 后 effective=NPU×3+GPU×1（1~2s 后台重建）→ 关闭回 CPU 且组件仍在",
+        "静态检查": "cargo check --all-targets 0 error；cargo test --lib openvino_runtime 1 passed；vue-tsc --noEmit 0 error"
+      },
+      "tests": {
+        "python/bench/probe_npu_det_r50_e2e.py --modes cpu,gpu_all,accel_cpu,accel_gpu": "四配置对比 + 完整性校验（通道实跑次数 == timing 段调用次数）",
+        "python/bench/probe_npu_det_r50_e2e.py --equiv-only --runtime component": "走裁剪组件验数值等价（53 张 / 38 张脸）",
+        "cargo test --lib openvino_runtime": "DlFile.local / ov_backend.ZIP_NAME / abs_url 三处同名一致性",
+        "GET/POST /accel + /health.accel": "默认未启用 → 启用 → effective 翻转 → 关闭；全程零环境变量"
+      },
+      "related_files": [
+        "python/vcr/config.py",
+        "python/vcr/model_registry.py",
+        "python/vcr/ov_backend.py",
+        "python/server.py",
+        "python/scripts/build_ov_runtime_zip.py",
+        "src/components/settings/AccelSection.vue",
+        "src/components/ModelGpuSettings.vue",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/vcr_settings.rs",
+        "docs/FEAT-136-加速分配与可选组件.md",
+        "docs/FEAT-135-推理腿NPU执行设备.md"
+      ],
+      "keywords": [
+        "加速分配",
+        "通道→设备",
+        "OpenVINO",
+        "NPU",
+        "DirectML",
+        "可选组件",
+        "按需下载",
+        "FEAT-135"
+      ],
+      "created_at": "2026-11-02T18:00:00+08:00",
+      "updated_at": "2026-11-02T18:00:00+08:00"
     }
   ],
-  "updated": "2026-11-02T12:00:00+08:00"
+  "updated": "2026-11-02T18:00:00+08:00"
 }

@@ -526,3 +526,37 @@ export interface CategoryIndexStats {
 export interface VcrSweepResult {
   results: VcrSweepEntry[];
 }
+
+/**
+ * FEAT-136：加速分配 —— 一张「通道 → 设备」表
+ *
+ * 为什么要表而不是一个开关：GPU（DirectML）与 NPU（OpenVINO）是**两个独立引擎**，
+ * 能同时开工且不争资源；但各通道最优设备不同（det/ocr/face_rec → NPU，
+ * det_10g 这类大分辨率小通道的检测 → GPU/CPU，NPU 上慢 7 倍）。
+ */
+export type AccelDevice = "CPU" | "GPU" | "NPU";
+
+/** 对应 Rust `vision::vcr_accel` → 服务端 GET /accel */
+export interface VcrAccel {
+  /** 分配表是否生效（false = 旧的全局 GPU 开关语义） */
+  enabled: boolean;
+  /** 请求分配：通道 → 设备（服务端事实之上的“请求值”） */
+  channels: Partial<Record<string, AccelDevice>>;
+  /** 'env' | 'file' | 'default' */
+  source: string;
+  /** 服务端推荐分配（一键加速用） */
+  defaults: Partial<Record<string, AccelDevice>>;
+  /** 实际生效设备（读会话绑定的 provider，不是请求值） */
+  effective: Partial<Record<string, string>>;
+  /** 各设备是否可用 */
+  available: { NPU: boolean; GPU: boolean; CPU: boolean };
+  /** OpenVINO 运行时（可选组件）状态 */
+  ov: {
+    installed: boolean;
+    devices: string[];
+    error: string;
+    source: string;
+  };
+  /** 已编译通道 → 编译耗时（秒） */
+  compiled: Partial<Record<string, number>>;
+}

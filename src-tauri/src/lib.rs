@@ -155,10 +155,12 @@ use vcr_settings::{
     benchmark_vcr,
     benchmark_vcr_sweep,
     get_face_tier_info,
+    get_vcr_accel,
     get_vcr_gpu_status,
     get_vcr_threads,
     list_vcr_models,
     set_face_tier,
+    set_vcr_accel,
     set_vcr_gpu,
     set_vcr_model,
     set_vcr_threads,
@@ -633,6 +635,9 @@ pub fn run() {
             set_vcr_model,
             get_face_tier_info,
             set_face_tier,
+            // FEAT-136：加速分配（通道 → 设备；GPU 与 NPU 各有加速对象）
+            get_vcr_accel,
+            set_vcr_accel,
             benchmark_vcr,
             cancel_scan,
             // 开发者视角（实时日志副窗口）

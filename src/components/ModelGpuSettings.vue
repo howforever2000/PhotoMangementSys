@@ -20,6 +20,7 @@
 import { ref, computed, onMounted } from "vue";
 import CollapseSection from "./CollapseSection.vue";
 import HardwareSection from "./settings/HardwareSection.vue";
+import AccelSection from "./settings/AccelSection.vue";
 import ClipTierSection from "./settings/ClipTierSection.vue";
 import FaceTierSection from "./settings/FaceTierSection.vue";
 import ScanAdvancedSection from "./settings/ScanAdvancedSection.vue";
@@ -73,15 +74,26 @@ const semantic = computed(() => {
   }
   return { text: "CPU（fp32 档可开 GPU）", tone: "dim" as const };
 });
-const personChain = computed(() =>
-  accelOn.value
+const personChain = computed(() => {
+  // FEAT-136：分配表启用时按“实际生效设备”说话，不再用全局开关替它发言
+  const eff = store.accel?.effective;
+  if (store.accel?.enabled && eff) {
+    const npu = Object.entries(eff).filter(([, v]) => v === "NPU").length;
+    const gpu = Object.entries(eff).filter(([, v]) => v === "GPU").length;
+    if (npu > 0 || gpu > 0) {
+      const parts = [npu > 0 ? `NPU ${npu} 条` : "", gpu > 0 ? `DirectML ${gpu} 条` : ""].filter(Boolean);
+      return { text: parts.join(" + "), tone: "ok" as const };
+    }
+  }
+  return accelOn.value
     ? { text: "DirectML 加速", tone: "ok" as const }
-    : { text: "CPU（未开加速）", tone: "dim" as const },
-);
+    : { text: "CPU（未开加速）", tone: "dim" as const };
+});
 
 onMounted(() => {
   // 摘要只做展示：失败不弹错（下面的分区各自有自己的错误态与重试）
   if (!store.vcrModels) void store.fetchVcrModels().catch(() => {});
+  if (!store.accel) void store.fetchAccel().catch(() => {});
 });
 </script>
 
@@ -109,13 +121,18 @@ onMounted(() => {
       <div class="now-row">
         <span class="now-k">人物与文字</span>
         <span class="now-v" :class="personChain.tone">{{ personChain.text }}</span>
-        <span class="now-note">人物检测 · 人脸 · OCR（由下方「GPU 加速」控制）</span>
+        <span class="now-note">人物检测 · 人脸 · OCR（由下方「GPU 加速」/「加速分配」控制）</span>
       </div>
     </div>
 
     <!-- ① 本机硬件 -->
     <section class="block">
       <HardwareSection :locked="initFailed" />
+    </section>
+
+    <!-- ①b FEAT-136：加速分配（GPU 与 NPU 各有加速对象；组件可选） -->
+    <section class="block">
+      <AccelSection :locked="initFailed" />
     </section>
 
     <section class="block">

@@ -814,6 +814,56 @@ pub async fn set_face_tier(tier: String, app: tauri::AppHandle) -> Result<serde_
     r
 }
 
+/// FEAT-136：加速分配现状（每通道 → 设备 + 实际生效）
+#[tauri::command]
+pub async fn get_vcr_accel(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let _t = log_call!("get_vcr_accel");
+    let r = crate::vision::vcr_accel(&app).await;
+    match &r {
+        Ok(v) => crate::logger::log_call_end_with(
+            "get_vcr_accel",
+            _t,
+            &format!(
+                "OK | enabled={} channels={} effective={}",
+                v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false),
+                v.get("channels")
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "{}".into()),
+                v.get("effective")
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "{}".into()),
+            ),
+        ),
+        Err(e) => crate::logger::log_call_end_with("get_vcr_accel", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
+/// FEAT-136：写入加速分配（channels 不给 = 用服务端推荐分配）
+#[tauri::command]
+pub async fn set_vcr_accel(
+    enabled: bool,
+    channels: Option<serde_json::Value>,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    let _t = log_call!("set_vcr_accel", &format!("enabled={enabled}"));
+    let r = crate::vision::vcr_set_accel(&app, enabled, channels).await;
+    match &r {
+        Ok(v) => crate::logger::log_call_end_with(
+            "set_vcr_accel",
+            _t,
+            &format!(
+                "OK | 已接受，后台重建中 | channels={}",
+                v.get("channels")
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "{}".into()),
+            ),
+        ),
+        Err(e) => crate::logger::log_call_end_with("set_vcr_accel", _t, &format!("ERR | {e}")),
+    }
+    r
+}
+
 
 /// FEAT-051：分类模型候选清单（含是否已下载 / 当前生效）
 #[tauri::command]

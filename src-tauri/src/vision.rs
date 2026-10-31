@@ -260,7 +260,7 @@ const ADOPT_WAIT_MAX: u32 = 3;
 ///     “清单加载失败/端点不存在”，排查起来白费半小时（本次实测踩到）。
 /// v9：人脸质量闸门（几何/尺寸/清晰度 + 边缘质量只准并入不准新建）。
 ///     —— **行为变更也要抬**：模型与端点都没变，但不重启服务就还是旧行为。
-const VCR_API_VERSION: u64 = 12;
+const VCR_API_VERSION: u64 = 13;
 /// FEAT-051：ensure 单飞锁 —— 并发命令共享一次「探测/重启/启动」流程，
 /// 邓免多进程同时拚 8765 端口（winerror 10048）
 static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -2069,6 +2069,82 @@ pub async fn vcr_set_face_tier(
         "face_tier 完成（后台加载中）| 耗时 {}ms | current={}",
         t0.elapsed().as_millis(),
         v.get("current").and_then(|x| x.as_str()).unwrap_or(tier)
+    ));
+    Ok(v)
+}
+
+/// FEAT-136：加速分配现状（每通道被分到哪个设备 + 实际生效设备 + 组件状态）。
+///
+/// 与 `/accel` 一一对应。只读：服务端不触发编译（与 /health 同口径）。
+pub async fn vcr_accel(app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let client = http_client().await?;
+    ensure_perf_ready(&client, app).await?;
+    let base = vcr_base();
+    let resp = client
+        .get(format!("{base}/accel"))
+        .send()
+        .await
+        .map_err(|e| format!("调用识别服务失败: {e}"))?;
+    let status = resp.status();
+    let v: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析结果失败: {e}"))?;
+    if !status.is_success() {
+        let detail = v.get("detail").and_then(|x| x.as_str()).unwrap_or("获取失败");
+        return Err(detail.to_string());
+    }
+    Ok(v)
+}
+
+/// FEAT-136：写入加速分配（enabled=true 且不就给 channels 时用服务端推荐分配）。
+///
+/// 旧服务没有 /accel（回 404）→ 拉起新版后重试一次，与 FEAT-133 的 /clip_runtime 同策略。
+pub async fn vcr_set_accel(
+    app: &tauri::AppHandle,
+    enabled: bool,
+    channels: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let t0 = Instant::now();
+    perf_log(&format!("accel 切换请求 | enabled={enabled}"));
+    let client = http_client().await?;
+    ensure_perf_ready(&client, app).await?;
+    let post = |base: String| {
+        let client = client.clone();
+        let body = serde_json::json!({ "enabled": enabled, "channels": channels });
+        async move {
+            let resp = client
+                .post(format!("{base}/accel"))
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("调用识别服务失败: {e}"))?;
+            let status = resp.status();
+            let v: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("解析结果失败: {e}"))?;
+            Ok::<(reqwest::StatusCode, serde_json::Value), String>((status, v))
+        }
+    };
+    let (mut status, mut v) = post(vcr_base()).await?;
+    if status == reqwest::StatusCode::NOT_FOUND {
+        perf_log("accel 命中 404（服务版本过旧）→ 触发服务重启后重试");
+        ensure_service_ready(&client, app, true).await?;
+        let (s2, v2) = post(vcr_base()).await?;
+        status = s2;
+        v = v2;
+    }
+    if !status.is_success() {
+        let detail = v.get("detail").and_then(|x| x.as_str()).unwrap_or("切换失败");
+        perf_log(&format!("accel 失败 | HTTP {} | {detail}", status.as_u16()));
+        return Err(detail.to_string());
+    }
+    // 注意：这里是**请求已接受**，四条通道在后台重建（NPU 编译可达秒级）。
+    // UI 必须读 effective 才知道“真的生效没”，不能把这个返回值当结果。
+    perf_log(&format!(
+        "accel 完成（后台重建中）| 耗时 {}ms",
+        t0.elapsed().as_millis()
     ));
     Ok(v)
 }

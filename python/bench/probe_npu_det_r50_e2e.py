@@ -354,6 +354,10 @@ def main() -> int:
     ap.add_argument("--modes", default="cpu,dml,npu,npu_dml")
     ap.add_argument("--ov-device", default="NPU")
     ap.add_argument("--equiv-only", action="store_true")
+    ap.add_argument("--runtime", choices=("auto", "probe", "component"), default="auto",
+                    help="用哪份 OV 运行时：probe=python/.tmp-ovprobe（开发），"
+                         "component=models/_runtime/ovrt（应用内下载的裁剪组件），"
+                         "auto=有 probe 就用它")
     ap.add_argument("--ov-channels", default="det,face_rec",
                     help="哪些通道交给 OpenVINO（默认 det,face_rec；ocr 可加进来做对照）")
     ap.add_argument("--threads", type=int, default=0,
@@ -374,12 +378,20 @@ def main() -> int:
         log(f"[probe] VCR_DATA_DIR → {os.environ['VCR_DATA_DIR']}（临时，不碰真实人物库）")
     os.environ.setdefault("VCR_PHOTO_PARALLEL", str(args.photos_parallel))
 
-    if not os.path.isdir(OVPROBE):
+    if not os.path.isdir(OVPROBE) and args.runtime == "probe":
         log(f"缺少 OV 运行时：pip install --target {OVPROBE} openvino")
         return 2
-    sys.path.append(OVPROBE)   # append 而不是 insert：让 venv 的 numpy 优先
+    if args.runtime != "component":
+        sys.path.append(OVPROBE)   # append 而不是 insert：让 venv 的 numpy 优先
 
     import numpy as np  # noqa: F401
+
+    # 让 ov_backend 把运行时路径注入 sys.path（含「组件 zip 首次解压」这条路），
+    # 后面 build_ov 的 `import openvino` 才能成功；顺便把用的是哪份运行时打出来
+    from vcr import ov_backend as _ob
+    _dev = _ob.probe_devices()
+    log(f"[probe] OV 运行时 source={_dev['source'] or '-'} devices={_dev['devices']}"
+        f" installed={_dev['installed']} err={_dev['error'] or '-'}")
 
     paths = collect_paths(args.src, args.limit)
     if not paths:
@@ -420,7 +432,7 @@ def main() -> int:
     npu_lock = TimedLock()
     cm_cache: dict = {}
     ov_sessions: dict = {}
-    want_npu = [m for m in args.modes.split(",") if m.startswith("npu")]
+    want_npu = [m for m in args.modes.split(",") if m.strip() in ("npu", "npu_dml")]
     if want_npu:
         log(f"\n[probe] 预编译 {ov_keys} → {args.ov_device}")
         for key in ov_keys:
@@ -440,6 +452,14 @@ def main() -> int:
     NPU_MODES = {"npu", "npu_dml"}
     OV_MODES = {"ov", "ov_dml"}
     DML_MODES = {"dml", "npu_dml", "ov_dml"}
+    # FEAT-136：走**加速分配表**（GPU 与 NPU 各有对象）
+    # 刻意不用 npu* 前缀：early 判定曾用 startswith("npu")，会把 accel 模式
+    # 误当成探针自己的 monkeypatch 模式，校验对象串成另一批会话（踩过）。
+    ACCEL_MODES = {
+        "accel_gpu": "det=NPU,ocr=NPU,face_rec=NPU,face_det=GPU",
+        "accel_cpu": "det=NPU,ocr=NPU,face_rec=NPU,face_det=CPU",
+        "gpu_all": "det=GPU,ocr=GPU,face_rec=GPU,face_det=GPU",
+    }
 
     def _patch_dev_lock():
         """真实路径的设备锁是 ov_backend.device_lock()；换成计时锁才能量 NPU 饱和度。"""
@@ -465,13 +485,22 @@ def main() -> int:
             continue
 
         use_dml = mode in DML_MODES
+        if mode in ACCEL_MODES:
+            # 分配表：靠 env 覆盖（不写 current_accel.json，不污染用户设置）
+            os.environ["VCR_CHANNEL_DEVICES"] = ACCEL_MODES[mode]
+            npu_lock = _patch_dev_lock()
+            reg._reload_all()
+            log(f"  [accel] {os.environ['VCR_CHANNEL_DEVICES']}")
+        else:
+            os.environ.pop("VCR_CHANNEL_DEVICES", None)
         if mode in OV_MODES:
             # 真实开关：只在本次运行内改，不写任何配置文件
             config.OV_CHANNELS = list(ov_keys)
             npu_lock = _patch_dev_lock()
             log(f"  [ov] config.OV_CHANNELS={config.OV_CHANNELS} device={config.OV_DEVICE}")
-        # 1) 先按模式选 provider（这一步会清空所有会话）
-        reg.set_gpu_enabled(use_dml)
+        if mode not in ACCEL_MODES:
+            # 1) 先按模式选 provider（这一步会清空所有会话）
+            reg.set_gpu_enabled(use_dml)
         # 2) npu* 模式再把两条腿盖成 OV（必须在 set_gpu_enabled 之后，否则被清掉）
         if mode in NPU_MODES:
             install_ov(reg, mr, ov_sessions, ov_paths)
@@ -482,7 +511,7 @@ def main() -> int:
         from vcr import ov_backend as _ovb
         check_sessions = {k: v for k, v in reg._sessions.items()
                           if isinstance(v, _ovb.OvChannel)}
-        if mode.startswith("npu"):
+        if mode in NPU_MODES:
             check_sessions = dict(ov_sessions)
         prov = {k: reg._session_info.get(k, {}).get("providers") for k in
                 ("det", "face_det", "face_rec", "ocr")}
@@ -520,7 +549,8 @@ def main() -> int:
             # 完整性校验：OV 通道「实际成功次数」必须等于它那段的调用次数。
             # 不等 = 这个通道在静默失败（被服务层的 except 吞掉），读数不可用。
             invalid = []
-            for k, s in (check_sessions.items() if mode in (NPU_MODES | OV_MODES) else ()):
+            for k, s in (check_sessions.items()
+                          if mode in (NPU_MODES | OV_MODES) or mode in ACCEL_MODES else ()):
                 expect = t_cnt.get(OV_SPAN[k], 0)
                 if s.calls != expect:
                     invalid.append(
