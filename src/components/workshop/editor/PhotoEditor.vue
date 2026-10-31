@@ -463,7 +463,7 @@ async function chooseImage(): Promise<void> {
     multiple: false,
     directory: false,
     title: "选择要调色的照片",
-    filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff"] }],
+    filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff", "heic", "heif"] }],
   });
   if (typeof picked !== "string") return;
   await doOpen(picked);

@@ -181,14 +181,9 @@ fn load_jpeg(path: &Path, target_long_edge: u32) -> Result<SourceImage, LoadErro
     })
 }
 
-/// 非 JPEG：`image` 解码后缩放。
+/// 非 JPEG：`image` 解码后缩放（FEAT-142：HEIC/HEIF 由 `imgio` 分流给系统解码器）。
 fn load_generic(path: &Path, target_long_edge: u32) -> Result<SourceImage, LoadError> {
-    let img = image::ImageReader::open(path)
-        .map_err(|e| LoadError::Io(e.to_string()))?
-        .with_guessed_format()
-        .map_err(|e| LoadError::Decode(e.to_string()))?
-        .decode()
-        .map_err(|e| LoadError::Decode(e.to_string()))?;
+    let img = crate::imgio::open_any(path).map_err(LoadError::Decode)?;
     let (w, h) = (img.width(), img.height());
     if w > MAX_LONG_EDGE || h > MAX_LONG_EDGE {
         return Err(LoadError::TooLarge {

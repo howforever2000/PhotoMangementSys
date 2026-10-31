@@ -203,6 +203,25 @@ impl Database {
         .map_err(DbError::Sqlite)
     }
 
+    /// 该用户**行数最多的向量模型标识** + 行数（FEAT-143）
+    ///
+    /// 重复照片检测是离线批处理，不应该为了拿档位标识去启动 Python 微服务
+    /// （`clip_model_id` 会走 `ensure_service_ready`，等于为了读库先拉起一整套推理服务）。
+    /// 直接从库里取“存量最多的那套向量”即可：那是用户真正扫过的档位。
+    pub fn dominant_embedding_model(&self, user_id: i64) -> Result<Option<(String, i64)>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT model, COUNT(*) AS n FROM photo_embeddings
+             WHERE user_id = ?1 GROUP BY model ORDER BY n DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![user_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        match rows.next() {
+            Some(v) => v.map(Some).map_err(DbError::Sqlite),
+            None => Ok(None),
+        }
+    }
+
     /// FEAT-067 步骤 2：描述向量表（`photo_text_embeddings`）
     ///
     /// 与图像塔向量分开存：图像塔 1 图 1 向量（`photo_embeddings`），文本塔按

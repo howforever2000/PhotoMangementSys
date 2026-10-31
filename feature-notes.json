@@ -5509,7 +5509,130 @@
       ],
       "created_at": "2026-11-03T02:30:00+08:00",
       "updated_at": "2026-11-03T02:30:00+08:00"
+    },
+    {
+      "id": "FEAT-142",
+      "name": "HEIC/HEIF 支持：系统 WIC 解码 + 扫描白名单 + 大图预览缓存",
+      "module": "src-tauri/src/heic.rs（新增）· src-tauri/src/preview.rs（新增）· src-tauri/src/imgio.rs（HEIF 分流 + 尺寸探针）· photo_scan.rs / thumbnail.rs / vision.rs（扩展名白名单）· tone.rs / photo_info.rs / edit/source.rs（改走中央解码）· src/utils/photoSrc.ts（新增）· src/components/PhotoLightbox.vue · Cargo.toml（windows crate）",
+      "status": "done",
+      "purpose": "需求原文：「支持苹果 heic 格式图片扫描」。项目所有解码都基于 image crate，而它完全不支持 HEIF 容器 —— iPhone 照片既不进扫描列表，也出不了缩略图与向量（进而让相似去重对 iPhone 图完全失效）。",
+      "implementation": {
+        "解码通道": "走 Windows 系统编解码器 WIC（IWICImagingFactory → CreateDecoderFromFilename → IWICBitmapFrameDecode.GetSize → CreateFormatConverter → GUID_WICPixelFormat32bppBGRA → CopyPixels），本机实测命中 Microsoft HEIF Decoder，1440×960 样本解出正确像素与正确朝向。不走 libheif（要 vcpkg 编 C 库 + 分发 DLL）也不走 pure-rust heic crate（AGPL-3.0，与 PolyForm Noncommercial 分发冲突）。",
+        "魔数分流": "heic::is_heif_bytes 解析 ISO-BMFF ftyp box：major brand 或任一 compatible brand 命中 HEIF 家族（mif1/mif2/msf1/heic/heix/hevc/hevx/heim/heis/hevm/hevs）即视为 HEIF；显式排除 avif/avis（同样带 mif1 兼容 brand，但编码是 AV1，走 HEIC 路径会给用户错误的「装 HEIF 扩展」提示）。imgio::open_memory 只认魔数不认扩展名（延续 BUG-2026-1027-004 的口径：.heic 名字下装着 JPEG 也要能读）。",
+        "白名单": "photo_scan.rs / thumbnail.rs / vision.rs 三处 IMAGE_EXTS 各加 heic/heif（缩略图侧排在最后，避免抢 JPEG 当封面）；前端选图对话框（Home / SmartSearch / AlbumMeta / PhotoEditor）同步放开。",
+        "EXIF 免改造": "kamadak-exif 0.6 的 read_from_container 原生支持 HEIF 容器，photo_scan 早就在用这个入口 —— 即使系统缺 HEIF 解码器、像素解不出来，拍摄时间/GPS/机型照样能入库。",
+        "中央解码收口": "tone.rs / photo_info.rs / edit/source.rs 原先各自 image::open（按扩展名猜格式），统一改走 imgio::open_any；avatar.rs 早已走 imgio。缩略图 open_any_image 改为委托 imgio，ThumbError 新增 Other(String) 以保留「缺扩展」这类可操作错误串。",
+        "大图预览": "WebView2 不认 HEIC → preview::ensure 按需渲染缓存 JPEG（长边默认 2560、质量 88，缓存键 = thumb_photo_hash 前 2 位分目录 + hash + max_edge，临时文件 + rename 原子替换）；前端 photoSrc.resolvePhotoSrc 只对 heic/heif 走 invoke ensure_photo_preview，其余格式直连原文件零开销；Lightbox 预览失败时显示原因（不是白板）。",
+        "能力探针": "heic_support 命令枚举 WIC 解码器找 GUID_ContainerFormatHeif，返回 {available, codec, reason}；缺扩展时重复清理页顶部明示「装 HEIF 图像扩展」。"
+      },
+      "highlights": {
+        "许可": "选型是被许可与构建链逼出来的：pure-rust heic crate 是 AGPL-3.0，libheif 要 vcpkg 编 C 库；系统 WIC 零新增依赖、零分发体积，代价是依赖用户机器装了 HEIF 扩展 —— 所以要探针 + 降级提示，而不是假装能用。",
+        "EXIF 与像素解耦": "HEIF 的 EXIF 是容器内一个 item，kamadak-exif 直接可读；这条把「缺解码器」的损失从「照片完全不可用」压到「只影响缩略图/预览/向量」。",
+        "魔数优先": "AVIF 常把 mif1 写进兼容列表 —— 只按 compatible brand 判会把它错路由到 HEIC 路径，错误提示还会误导用户装错扩展，因此必须按 major brand 排除 avif/avis。",
+        "HEIC 不套 EXIF Orientation": "HEIC 的旋转是容器属性 irot/imir，系统解码器已烘焙；再套 EXIF Orientation 会二次旋转。预览链路按扩展名分流处理。"
+      },
+      "tests": [
+        "cargo test --lib heic / imgio / preview：12 项通过（含 ftyp brand 表、AVIF 排除、JPEG SOF/PNG IHDR/WebP 尺寸探针、garbage 拒绝）",
+        "PMS_HEIC_SAMPLE=… cargo test --lib -- --ignored preview：真实 HEIC → 预览 JPEG 落盘、长边限制生效、二次调用命中缓存不重写文件",
+        "PMS_HEIC_SAMPLE=… cargo test --lib -- --ignored heic：真实样本 codec=Microsoft HEIF Decoder、1440×960、头部尺寸与解码尺寸一致",
+        "独立对照：同一 HEIC 用 .NET WIC 渲染成 PNG 目视确认像素与朝向正常（非黑屏/花屏/倒置）",
+        "cargo test --lib 全量 441 通过 0 失败；cargo build --bin 链接通过；npx vue-tsc --noEmit 0 错误；npm test 164 通过；npx vite build 通过"
+      ],
+      "related_files": [
+        "src-tauri/src/heic.rs",
+        "src-tauri/src/preview.rs",
+        "src-tauri/src/imgio.rs",
+        "src-tauri/src/photo_scan.rs",
+        "src-tauri/src/thumbnail.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/tone.rs",
+        "src-tauri/src/photo_info.rs",
+        "src-tauri/src/edit/source.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/Cargo.toml",
+        "src/utils/photoSrc.ts",
+        "src/components/PhotoLightbox.vue",
+        "src/views/Home.vue",
+        "src/views/SmartSearch.vue",
+        "src/components/AlbumMeta.vue",
+        "src/components/workshop/editor/PhotoEditor.vue"
+      ],
+      "keywords": [
+        "HEIC",
+        "HEIF",
+        "WIC",
+        "iPhone",
+        "系统编解码器",
+        "Microsoft HEIF Decoder",
+        "AVIF排除",
+        "魔数分流",
+        "imgio",
+        "预览缓存",
+        "许可冲突",
+        "AGPL"
+      ],
+      "created_at": "2026-10-31T20:11:12+08:00",
+      "updated_at": "2026-10-31T20:11:12+08:00"
+    },
+    {
+      "id": "FEAT-143",
+      "name": "重复照片清理：内容哈希精确重复 + CLIP 向量相似分组 + 两档删除",
+      "module": "src-tauri/src/dedupe.rs（新增）· src-tauri/src/db/embedding.rs（dominant_embedding_model）· src-tauri/src/lib.rs（命令注册）· src/stores/dedupe.ts（新增）· src/components/DedupePanel.vue（新增）· src/components/dedupe/DupeGroupCard.vue（新增）· src/types/dedupe.ts（新增）· src/views/ScanHub.vue（启用置灰 tab）",
+      "status": "done",
+      "purpose": "需求原文：「扫描大组件中的重复照片清理：a. hash 一致的为重复照片 b. 图像塔模型的向量相似度 >0.9 为相似图形或者其他阈值，然后扫描完成后呈现所有重复照片，支持全选，默认保存一张原本的和自主勾选」。用户确认四点：范围=直接全库；阈值滑杆 0.80–1.00；删除分两档（仅删记录 / 移入回收站）；无向量的照片跳过并提示。",
+      "implementation": {
+        "精确重复": "项目的 photo_hash 是「路径+大小+mtime」组合哈希，天然把同一张照片的两个副本算成不同值，因此内容哈希必须另算：先按文件体积分组，只有「同尺寸出现 ≥2 次」的候选才流式读盘算 SHA-256（1MiB 分块、校验读取长度防止边扫边改）。报告里回报 hashed_files，让「体积预筛省了多少」可核对。",
+        "相似判定": "直接读已验证入库的 CLIP 图像塔向量（photo_embeddings，512 维、服务端已 L2 归一化）。不走 clip_model_id（它会 ensure_service_ready → 为读库先拉起整套 Python 推理服务），改用 db.dominant_embedding_model 取「行数最多的模型标识」——重复检测是离线批处理，不该被微服务生命周期绑架。",
+        "无损剪枝": "对单位向量有严格上界 cos≥t ⇒ |a_d−b_d| ≤ √(2−2t)（任意维 d）。选方差最大的那一维排序，每个 i 只比较窗口内的后续邻居（t=0.9 → 窗口 0.447），再算完整点积。这是数学上无损的剪枝，不是抽样近似；单测用 4 个阈值对比暴力两两比较，分组结果必须完全一致。",
+        "分组": "并查集连通分量（传递闭包，清理工具的常规语义）；相似组展示的 similarity 取「保留那张 vs 其余每一张的最低余弦」（最保守口径）。精确组与相似组互斥：已进精确组的照片不再参与相似聚类，避免同一张在两个组里重复出现导致误删或漏删（有单测断言全库路径不重复出现）。",
+        "保留策略": "分辨率（imgio::probe_dimensions 读头部，不解码像素）→ 体积 → 修改时间更早 → 路径序。为什么不是体积优先：iPhone 的 HEIC 原图与导出 JPEG 体积可能相近但分辨率差一档。用户可在组内点「设为保留」改选，换保留时旧的那张自动回到待删集合。",
+        "两档删除": "「仅删除记录」按相册分组调用 delete_photo_records（写排除表，照片从网格消失、文件保留，可在最近删除恢复）；「移入回收站」调 delete_photos_to_trash（回收站 + 级联清缩略图缓存与扫描记录）。两者都只处理勾选项，绝不触碰保留那张；失败项保留在列表可重试并如实提示张数。",
+        "界面": "扫描入库 Hub 里原本置灰的「重复扫描清理」tab 启用为内联面板：判据开关 + 阈值滑杆（带口径提示）+ 阶段进度 + 汇总带 + 分组卡片（横向缩略图条、默认勾选除保留外全部、组内全选）+ 分页（12 组/页）+ 底部常驻操作条（已选张数与体积、全选可删、两档删除、二次确认）。三态齐全：加载进度 / 空态（含「调低阈值重扫」「去扫描入库」两个出口）/ 错误态。"
+      },
+      "highlights": {
+        "photo_hash 不等于内容哈希": "项目里所有地方复用 photo_hash 做去重键（缩略图缓存、内容扫描 upsert），但它含路径，副本必然不同 —— 「hash 一致=重复」这条需求必须新增内容哈希，且不能改动既有 photo_hash 口径（会连带整库缓存失效）。",
+        "顺序即性能": "体积预筛让全库整读降到极小候选集；相似侧用方差最大维 + 柯西-施瓦茨窗口剪枝，阈值越高剪得越狠。两条都不牺牲正确性，且都能用「与暴力结果逐组比对」的单测钉住。",
+        "离线优先": "相似判定完全不依赖 Python 服务在线：向量在库里，模型标识从库里取。代价是换档后未重建向量的照片会被跳过 —— 这在报告与界面里如实报数并给出「去扫描入库」入口。",
+        "两档语义": "「仅删记录」与「移入回收站」不是措辞差异：前者文件还在、可从最近删除恢复；后者进系统回收站、并级联清缩略图与扫描记录。界面用两个独立按钮 + 各自独立的确认文案，避免用户点错档。"
+      },
+      "tests": [
+        "cargo test --lib dedupe：6 项通过（同内容不同名成组/同大小不同内容不成组、体积预筛只算碰撞候选、剪枝与暴力 4 个阈值逐组一致、保留策略三顺位、维度不一致不 panic、全流程两相册端到端、单飞锁释放）",
+        "端到端用例断言：total_photos=4 / exact_groups=1 / similar_groups=1 / hashed_files=3 / similar_candidates=2 / 全库路径不重复出现在两个组",
+        "cargo test --lib 全量 441 通过 0 失败；cargo build --bin 链接通过",
+        "npx vue-tsc --noEmit 0 错误；npm test 164 通过；npx vite build 通过"
+      ],
+      "related_files": [
+        "src-tauri/src/dedupe.rs",
+        "src-tauri/src/db/embedding.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/imgio.rs",
+        "src-tauri/src/photos.rs",
+        "src/stores/dedupe.ts",
+        "src/components/DedupePanel.vue",
+        "src/components/dedupe/DupeGroupCard.vue",
+        "src/types/dedupe.ts",
+        "src/views/ScanHub.vue",
+        "README.md"
+      ],
+      "keywords": [
+        "重复照片",
+        "去重",
+        "内容哈希",
+        "SHA-256",
+        "体积预筛",
+        "CLIP向量",
+        "余弦相似度",
+        "并查集",
+        "无损剪枝",
+        "柯西-施瓦茨",
+        "保留策略",
+        "回收站",
+        "仅删记录",
+        "全库扫描"
+      ],
+      "created_at": "2026-10-31T20:11:12+08:00",
+      "updated_at": "2026-10-31T20:11:12+08:00"
     }
   ],
-  "updated": "2026-11-03T02:30:00+08:00"
+  "updated": "2026-10-31T20:11:12+08:00"
 }

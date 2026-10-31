@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import type { AlbumContentRow } from "../types/content";
 import type { PhotoInfo } from "../types/photo";
 import { useAlbumStore } from "../stores/album";
@@ -9,6 +9,7 @@ import { useContentStore } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
 import { useResizableDialog } from "../composables/useResizableDialog";
 import { categoryLabel } from "../utils/categoryLabel";
+import { resolvePhotoSrc } from "../utils/photoSrc";
 
 /**
  * 大图查看器（Lightbox）
@@ -125,9 +126,32 @@ function toggleZoom() {
 
 const photo = computed<LightboxPhoto>(() => props.photos[current.value]);
 
-function fileUrl(p: string) {
-  return p ? convertFileSrc(p) : "";
+/* ---------------- FEAT-142：HEIC 大图（WebView2 不支持 HEIC） ----------------
+ * 非 HEIC 直接指向原文件（零开销）；HEIC 走 `ensure_photo_preview`
+ * 后端渲染一张缓存 JPEG 再显示。失败时把原因说清楚 —— 用户看到的不该是白板。 */
+const imgSrc = ref("");
+const imgError = ref("");
+
+async function loadDisplayable(p: string) {
+  imgLoading.value = true;
+  imgError.value = "";
+  imgSrc.value = "";
+  try {
+    imgSrc.value = await resolvePhotoSrc(p);
+  } catch (e) {
+    imgError.value = String(e);
+    imgLoading.value = false;
+  }
 }
+
+watch(
+  () => photo.value?.path,
+  (p) => {
+    if (!p) return;
+    void loadDisplayable(p);
+  },
+  { immediate: true },
+);
 
 function prev() {
   if (props.photos.length <= 1) return;
@@ -716,9 +740,10 @@ void initForCurrentPhoto();
             @dblclick.prevent="toggleZoom"
           >
             <div v-show="imgLoading" class="lb-loading">加载中…</div>
-            <!-- 直接指向原文件路径（convertFileSrc），非缩略图 -->
+            <!-- 直指原文件（convertFileSrc）；HEIC 由 resolvePhotoSrc 换成后端渲染的预览 JPEG -->
             <img
-              :src="fileUrl(photo.path)"
+              v-if="imgSrc"
+              :src="imgSrc"
               @load="imgLoading = false"
               class="lb-img"
               :class="{ hidden: imgLoading }"
@@ -726,6 +751,11 @@ void initForCurrentPhoto();
               alt=""
               draggable="false"
             />
+            <!-- FEAT-142：HEIC 预览失败（多为系统缺 HEIF 扩展）要说清原因，不能只留白板 -->
+            <div v-if="imgError" class="lb-img-error" role="alert">
+              <strong>这张照片无法显示</strong>
+              <span>{{ imgError }}</span>
+            </div>
           </div>
         </div>
 
@@ -1146,6 +1176,25 @@ void initForCurrentPhoto();
   position: absolute;
   color: #c8cdd9;
   font-size: 13px;
+}
+
+/* FEAT-142：HEIC 无法预览时的说明（深色舞台上的提示块） */
+.lb-img-error {
+  max-width: 460px;
+  padding: 16px 18px;
+  border-radius: 12px;
+  background: rgba(20, 22, 28, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #e6e9f0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  text-align: left;
+}
+.lb-img-error strong {
+  font-size: 13.5px;
 }
 
 .lb-nav {

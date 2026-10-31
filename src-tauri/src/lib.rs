@@ -20,6 +20,8 @@ mod category;
 mod content;
 mod crypto;
 mod db;
+// FEAT-143：重复照片检测与清理
+mod dedupe;
 mod devdata;
 mod devpath;
 mod devtools;
@@ -27,6 +29,8 @@ mod exif_orient;
 mod edit;
 mod folder;
 mod geo_index;
+// FEAT-142：HEIC/HEIF 解码（Windows 系统编解码器通道）
+mod heic;
 mod imgio;
 mod logger;
 mod model_dl;
@@ -34,6 +38,8 @@ mod photo_info;
 mod photo_scan;
 mod persons;
 mod photo_mark;
+// FEAT-142：HEIC 大图预览缓存（WebView2 不支持 HEIC）
+mod preview;
 mod scan_perf;
 mod scan_timing;
 mod session;
@@ -618,6 +624,12 @@ pub fn run() {
             textdesc::commands::rebuild_desc_index,
             textdesc::commands::get_desc_person_name,
             textdesc::commands::set_desc_person_name,
+            // FEAT-143：重复照片检测（全库：内容哈希 + CLIP 向量相似）
+            dedupe::commands::dedupe_scan,
+            dedupe::commands::dedupe_cancel,
+            // FEAT-142：HEIC 解码能力探针 + 大图预览
+            dedupe::commands::heic_support,
+            preview::commands::ensure_photo_preview,
             export_photos,
             get_vcr_gpu_status,
             start_model_download,

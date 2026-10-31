@@ -113,7 +113,7 @@ async function chooseAvatar() {
       multiple: false,
       directory: false,
       title: "选择头像图片",
-      filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif"] }],
+      filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif"] }],
     });
     if (typeof picked !== "string") return;
     await auth.setAvatar(picked);

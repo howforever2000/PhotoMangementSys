@@ -1,0 +1,449 @@
+import { computed, ref } from "vue";
+import { defineStore } from "pinia";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type {
+  DedupeDeleteMode,
+  DedupeDeleteOutcome,
+  DedupeProgress,
+  DedupeReport,
+  DupGroup,
+  DupItem,
+  HeicSupport,
+} from "../types/dedupe";
+import { useAlbumStore } from "./album";
+
+/**
+ * 重复照片清理（FEAT-143）状态
+ *
+ * 放在 Pinia 而不是页面里：全库扫描是**秒级到分钟级**的批处理，
+ * 用户切走标签页/离开 Hub 时不该丢掉结果与勾选状态。
+ *
+ * 与后端职责划分：
+ *   - 后端 `dedupe_scan` 只负责「算出分组」（无状态），进度走 `dedupe-progress` 事件
+ *   - store 负责「保留哪张、勾了哪些、删哪一档」这些**纯前端决策**
+ *
+ * 勾选语义：`selected` 里放的是**待删除**的照片路径。
+ * 扫描完成时的默认状态 = 每组除「保留」外全部勾上（用户要的是"默认留一张"，
+ * 剩下的本来就是要清掉的），再允许逐张取消。
+ */
+
+/** 相似阈值默认值（用户确认：滑杆范围 0.80–1.00） */
+export const DEFAULT_THRESHOLD = 0.9;
+
+/** 分组分页：一次渲染多少组（缩略图是逐张生成的，一次铺太多会打满 IO） */
+export const GROUPS_PER_PAGE = 12;
+
+/** 阈值语义提示（跟着滑杆走，讲清调高调低的后果） */
+export function thresholdHint(th: number): string {
+  if (th >= 0.99) return "几乎只认同一张画面（连裁切/缩放的差异都可能放过）";
+  if (th >= 0.95) return "很严格：同一张照片的不同压缩 / 尺寸才会命中";
+  if (th >= 0.9) return "推荐：同场景连拍、同图不同格式都能命中";
+  if (th >= 0.85) return "偏宽松：相似构图可能被并入同组，删除前请逐组确认";
+  return "宽松：会把同题材照片并组，只适合人工逐组筛选";
+}
+
+export const useDedupeStore = defineStore("dedupe", () => {
+  /* ---------------- 参数（跨会话记住：用户调过阈值就不用每次再调） ---------------- */
+  const threshold = ref(loadNumber("pms.dedupe.threshold", DEFAULT_THRESHOLD));
+  const includeExact = ref(loadBool("pms.dedupe.exact", true));
+  const includeSimilar = ref(loadBool("pms.dedupe.similar", true));
+
+  /* ---------------- 运行态 ---------------- */
+  const running = ref(false);
+  const stopping = ref(false);
+  const stage = ref<string>("");
+  const progressDone = ref(0);
+  const progressTotal = ref(0);
+  const progressText = ref("");
+  const error = ref("");
+  /** 后端算出的原始分组（删除后会被就地裁剪） */
+  const report = ref<DedupeReport | null>(null);
+  /** 用户改选的「保留」：groupKey → path */
+  const keepOverride = ref<Record<string, string>>({});
+  /** 待删除路径 */
+  const selected = ref<Set<string>>(new Set());
+  /** 删除中（防重复点击） */
+  const deleting = ref(false);
+  /** 上一轮删除的失败明细（要如实呈现，不能静默） */
+  const lastFailures = ref<string[]>([]);
+  /** HEIC 解码能力（缺 HEIF 扩展时顶部提示） */
+  const heic = ref<HeicSupport | null>(null);
+  /** 分组分页 */
+  const page = ref(0);
+
+  let unlisten: UnlistenFn | null = null;
+
+  /* ---------------- 派生 ---------------- */
+
+  const groups = computed<DupGroup[]>(() => report.value?.groups ?? []);
+
+  const pageCount = computed(() => Math.max(1, Math.ceil(groups.value.length / GROUPS_PER_PAGE)));
+
+  const pageGroups = computed<DupGroup[]>(() =>
+    groups.value.slice(page.value * GROUPS_PER_PAGE, (page.value + 1) * GROUPS_PER_PAGE),
+  );
+
+  /** 某组当前保留的那张 */
+  function keepOf(group: DupGroup): string {
+    return keepOverride.value[group.key] || group.keep_path;
+  }
+
+  /** 每组"可删"的那几张（除保留外） */
+  function deletableOf(group: DupGroup): DupItem[] {
+    const keep = keepOf(group);
+    return group.items.filter((it) => it.path !== keep);
+  }
+
+  const selectedCount = computed(() => selected.value.size);
+
+  /** 已勾选照片的总体积（用户最关心的"能省多少空间"） */
+  const selectedBytes = computed(() => {
+    let sum = 0;
+    for (const g of groups.value) {
+      for (const it of g.items) {
+        if (selected.value.has(it.path)) sum += it.size_bytes;
+      }
+    }
+    return sum;
+  });
+
+  /** 全部可删照片的总体积 */
+  const reclaimableBytes = computed(() =>
+    groups.value.reduce((n, g) => {
+      const keep = keepOf(g);
+      return n + g.items.filter((it) => it.path !== keep).reduce((m, it) => m + it.size_bytes, 0);
+    }, 0),
+  );
+
+  /** 是否有"未勾选任何可删项"的情况（底部按钮据此禁用） */
+  const canDelete = computed(() => !deleting.value && selectedCount.value > 0);
+
+  /* ---------------- actions ---------------- */
+
+  threshold.value = clampThreshold(threshold.value);
+
+  function clampThreshold(v: number): number {
+    if (!Number.isFinite(v)) return DEFAULT_THRESHOLD;
+    return Math.min(1, Math.max(0.8, Math.round(v * 100) / 100));
+  }
+
+  function setThreshold(v: number) {
+    threshold.value = clampThreshold(v);
+    localStorage.setItem("pms.dedupe.threshold", String(threshold.value));
+  }
+
+  function setIncludeExact(v: boolean) {
+    includeExact.value = v;
+    localStorage.setItem("pms.dedupe.exact", v ? "1" : "0");
+  }
+
+  function setIncludeSimilar(v: boolean) {
+    includeSimilar.value = v;
+    localStorage.setItem("pms.dedupe.similar", v ? "1" : "0");
+  }
+
+  async function refreshHeicSupport() {
+    try {
+      heic.value = await invoke<HeicSupport>("heic_support");
+    } catch {
+      heic.value = null;
+    }
+  }
+
+  /** 开扫：清空上一轮结果与勾选，注册事件监听 */
+  async function scan() {
+    if (running.value) return;
+    if (!includeExact.value && !includeSimilar.value) {
+      error.value = "请至少勾选一种判据（完全重复 / 画面相似）";
+      return;
+    }
+    error.value = "";
+    lastFailures.value = [];
+    report.value = null;
+    keepOverride.value = {};
+    selected.value = new Set();
+    page.value = 0;
+    running.value = true;
+    stopping.value = false;
+    stage.value = "collect";
+    progressDone.value = 0;
+    progressTotal.value = 0;
+    progressText.value = "正在准备…";
+
+    await ensureListener();
+    try {
+      const r = await invoke<DedupeReport>("dedupe_scan", {
+        threshold: threshold.value,
+        includeExact: includeExact.value,
+        includeSimilar: includeSimilar.value,
+      });
+      report.value = r;
+      heic.value = r.heic;
+      // 默认勾选：每组除"保留"外全部选中
+      const next = new Set<string>();
+      for (const g of r.groups) {
+        for (const it of g.items) {
+          if (it.path !== g.keep_path) next.add(it.path);
+        }
+      }
+      selected.value = next;
+    } catch (e) {
+      const msg = String(e);
+      // 用户主动停止不算错误（后端回 "已停止"）
+      if (msg.includes("已停止")) {
+        error.value = "";
+      } else {
+        error.value = msg;
+      }
+    } finally {
+      running.value = false;
+      stopping.value = false;
+      detachListener();
+    }
+  }
+
+  /** 停止当前扫描（后端在下一个检查点收手） */
+  async function stop() {
+    if (!running.value || stopping.value) return;
+    stopping.value = true;
+    progressText.value = "正在停止…";
+    try {
+      await invoke("dedupe_cancel");
+    } catch (e) {
+      error.value = String(e);
+    }
+  }
+
+  async function ensureListener() {
+    if (unlisten) return;
+    unlisten = await listen<DedupeProgress>("dedupe-progress", (ev) => {
+      const p = ev.payload;
+      stage.value = p.stage;
+      progressDone.value = p.done;
+      progressTotal.value = p.total;
+      progressText.value = p.message;
+    });
+  }
+
+  function detachListener() {
+    if (unlisten) {
+      unlisten();
+      unlisten = null;
+    }
+  }
+
+  /* ---------------- 勾选操作 ---------------- */
+
+  function isSelected(path: string): boolean {
+    return selected.value.has(path);
+  }
+
+  function toggle(path: string) {
+    const next = new Set(selected.value);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    selected.value = next;
+  }
+
+  /** 全选可删（每组保留那张永远不可删） */
+  function selectAll() {
+    const next = new Set<string>();
+    for (const g of groups.value) {
+      for (const it of deletableOf(g)) next.add(it.path);
+    }
+    selected.value = next;
+  }
+
+  function clearSelection() {
+    selected.value = new Set();
+  }
+
+  /** 组内全选 / 全不选 */
+  function selectGroup(group: DupGroup, on: boolean) {
+    const next = new Set(selected.value);
+    for (const it of deletableOf(group)) {
+      if (on) next.add(it.path);
+      else next.delete(it.path);
+    }
+    selected.value = next;
+  }
+
+  /**
+   * 改选「保留」
+   *
+   * 换保留时把"原来的保留"重新放进待删集合、把"新保留"移出待删集合 ——
+   * 否则用户会看到「新保留那张仍被勾选」这种自相矛盾的状态。
+   */
+  function setKeep(group: DupGroup, path: string) {
+    const prev = keepOf(group);
+    if (prev === path) return;
+    keepOverride.value = { ...keepOverride.value, [group.key]: path };
+    const next = new Set(selected.value);
+    next.delete(path);
+    // 原来的保留那张重新变成「可删」（用户换保留 = 认可旧那张可以清掉）
+    next.add(prev);
+    selected.value = next;
+  }
+
+  function setPage(p: number) {
+    page.value = Math.min(pageCount.value - 1, Math.max(0, p));
+  }
+
+  /* ---------------- 删除 ---------------- */
+
+  /**
+   * 删除已勾选照片
+   *
+   * - `records`：只删记录的展示资格（文件留在磁盘，可从「最近删除」恢复）
+   * - `trash`：把文件移入系统回收站（可从回收站恢复），同时级联清扫描记录与缩略图
+   *
+   * 删除成功后从内存里的分组中裁掉已删项，并重新计算可释放体积；
+   * 组内只剩 1 张时整组消失。
+   */
+  async function deleteSelected(mode: DedupeDeleteMode): Promise<DedupeDeleteOutcome | null> {
+    if (!canDelete.value) return null;
+    deleting.value = true;
+    error.value = "";
+    lastFailures.value = [];
+    const paths = [...selected.value];
+    try {
+      let outcome: DedupeDeleteOutcome;
+      if (mode === "trash") {
+        outcome = await invoke<DedupeDeleteOutcome>("delete_photos_to_trash", { paths });
+      } else {
+        // 「仅删记录」按相册分组调用：只有带 album 的删除才会把照片移出网格视图
+        const byAlbum = new Map<number, string[]>();
+        for (const g of groups.value) {
+          for (const it of g.items) {
+            if (!selected.value.has(it.path)) continue;
+            const list = byAlbum.get(it.album_id) ?? [];
+            list.push(it.path);
+            byAlbum.set(it.album_id, list);
+          }
+        }
+        outcome = { requested: paths.length, deleted: 0, failed: 0, failed_paths: [] };
+        for (const [albumId, list] of byAlbum) {
+          const r = await invoke<DedupeDeleteOutcome>("delete_photo_records", {
+            albumId,
+            paths: list,
+          });
+          outcome.deleted += r.deleted;
+          outcome.failed += r.failed;
+          outcome.failed_paths.push(...r.failed_paths);
+        }
+      }
+      lastFailures.value = outcome.failed_paths.slice(0, 50);
+
+      // 只裁掉**成功**的那些（失败项保留在结果里，用户可以重试）
+      const failed = new Set(outcome.failed_paths);
+      const removed = new Set(paths.filter((p) => !failed.has(p)));
+      applyRemoved(removed);
+      selected.value = new Set(paths.filter((p) => failed.has(p)));
+
+      // 相册张数变了 → 刷新主页/相册墙读数
+      try {
+        await useAlbumStore().fetchAlbums();
+      } catch {
+        /* 读数刷新失败不影响删除结果 */
+      }
+      return outcome;
+    } catch (e) {
+      error.value = String(e);
+      return null;
+    } finally {
+      deleting.value = false;
+    }
+  }
+
+  /** 把已删除的路径从分组里裁掉，并收拾空组 / 重新计算体积 */
+  function applyRemoved(removed: Set<string>) {
+    const r = report.value;
+    if (!r) return;
+    const nextGroups: DupGroup[] = [];
+    for (const g of r.groups) {
+      const items = g.items.filter((it) => !removed.has(it.path));
+      if (items.length < 2) continue;
+      const keep = items.some((it) => it.path === keepOf(g)) ? keepOf(g) : items[0].path;
+      nextGroups.push({
+        ...g,
+        keep_path: keep,
+        items,
+        reclaimable_bytes: items
+          .filter((it) => it.path !== keep)
+          .reduce((n, it) => n + it.size_bytes, 0),
+      });
+    }
+    report.value = { ...r, groups: nextGroups };
+    if (page.value > 0 && page.value >= pageCount.value) page.value = pageCount.value - 1;
+  }
+
+  /** 清空结果（重新扫描前由 UI 显式调用，避免误以为还有未处理组） */
+  function reset() {
+    report.value = null;
+    keepOverride.value = {};
+    selected.value = new Set();
+    error.value = "";
+    lastFailures.value = [];
+    page.value = 0;
+  }
+
+  return {
+    // 参数
+    threshold,
+    includeExact,
+    includeSimilar,
+    setThreshold,
+    setIncludeExact,
+    setIncludeSimilar,
+    // 运行态
+    running,
+    stopping,
+    stage,
+    progressDone,
+    progressTotal,
+    progressText,
+    error,
+    report,
+    heic,
+    deleting,
+    lastFailures,
+    selected,
+    page,
+    pageCount,
+    pageGroups,
+    groups,
+    // 派生
+    keepOf,
+    deletableOf,
+    selectedCount,
+    selectedBytes,
+    reclaimableBytes,
+    canDelete,
+    isSelected,
+    // actions
+    refreshHeicSupport,
+    scan,
+    stop,
+    toggle,
+    selectAll,
+    clearSelection,
+    selectGroup,
+    setKeep,
+    setPage,
+    deleteSelected,
+    reset,
+  };
+});
+
+function loadNumber(key: string, fallback: number): number {
+  const raw = localStorage.getItem(key);
+  const n = raw == null ? NaN : Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function loadBool(key: string, fallback: boolean): boolean {
+  const raw = localStorage.getItem(key);
+  if (raw == null) return fallback;
+  return raw === "1" || raw === "true";
+}

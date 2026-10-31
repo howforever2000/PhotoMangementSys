@@ -191,7 +191,7 @@ async function runImageSearch() {
     multiple: false,
     directory: false,
     title: "选择一张照片作为搜索样例",
-    filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif"] }],
+    filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif"] }],
   });
   if (typeof picked !== "string") return;
   searching.value = true;

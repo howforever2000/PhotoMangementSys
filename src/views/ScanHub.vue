@@ -9,7 +9,7 @@
  * 子功能（全在本模块内，不再有跨模块导航）：
  *   · 全局扫描入库：默认 tab，直接在 Hub 内渲染 GlobalScanPanel
  *   · 按年·地点浏览：待开发（置灰可见）
- *   · 重复扫描清理：待开发（置灰可见）
+ *   · 重复扫描清理：FEAT-143，直接在 Hub 内渲染 DedupePanel（全库：内容哈希 + 向量相似）
  *   · 相册扫描分组工具：独立子页 /scan/test
  *
  * 全局扫描任务状态在 Pinia store 中独立存活，切换 tab / 离开 Hub 不中断扫描。
@@ -19,6 +19,7 @@ import { useRouter } from "vue-router";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import GlobalScanPanel from "../components/GlobalScanPanel.vue";
+import DedupePanel from "../components/DedupePanel.vue";
 import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 
@@ -54,10 +55,11 @@ const tabs: ScanTab[] = [
   },
   {
     key: "dedupe",
+    // FEAT-143：全库重复照片清理（内容哈希 + 图像向量相似）
     label: "重复扫描清理",
     icon: "🧹",
-    inline: false,
-    enabled: false,
+    inline: true,
+    enabled: true,
   },
   {
     key: "test",
@@ -183,6 +185,9 @@ onMounted(async () => {
     <section class="scan-active-area">
       <div v-if="activeTab === 'global'">
         <GlobalScanPanel />
+      </div>
+      <div v-else-if="activeTab === 'dedupe'">
+        <DedupePanel />
       </div>
       <div v-else-if="activeDef?.path" class="scan-jump-placeholder">
         <p>该子功能以独立页面形式提供，点击下方按钮进入：</p>

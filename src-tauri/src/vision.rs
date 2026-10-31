@@ -394,7 +394,8 @@ async fn probe_base(client: &reqwest::Client, base: &str) -> (HealthProbe, Strin
 }
 
 /// 支持的图片扩展名（与 photo_scan/tone 一致；为解耦本地复制一份）
-const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp"];
+/// FEAT-142：heic/heif 纳入扫描（iPhone 默认格式）
+const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif"];
 
 /// Top3 单项
 #[derive(Debug, Clone, Serialize)]
