@@ -17,30 +17,51 @@
 //! 不触发模型加载 —— 重复检测是**离线批处理**，不该被微服务生命周期绑架。
 //! 代价是换档后未重建向量的那批照片可能被跳过，这在报告里如实报数。
 //!
-//! ## 性能：无损剪枝，不做抽样近似
+//! ## 性能：三段均并行，热循环走 SIMD（实测数据）
 //!
-//! 全库两两比对是 O(N²)。对**单位向量**有严格上界：
+//! 全库扫描分三段，每段的瓶颈不同（实测：2.5 万张真实图库 / 14 线程 / release）：
+//!
+//! | 阶段 | 原实现 | 现在 | 实测 |
+//! |------|--------|------|------|
+//! | 遍历 + stat | 逐相册串行 + **每张多开一次文件探尺寸** | 相册级 rayon 并行，尺寸延到入组时再探 | 6970 张：19.15s → 0.13s（含去掉无谓探尺寸） |
+//! | 精确重复 SHA-256 | 逐文件串行 | rayon 并行 | 1154 个文件：25.39s → 2.51s（10.1×） |
+//! | 画面相似（点积） | rayon 并行（已是） | + 摊平矩阵 + AVX2/FMA | 24905 张：单线程 76.1s → 14 线程 12.1s → AVX2 8.0s |
+//!
+//! ### 关于「一维窗口剪枝」——保留但它**不是**性能支柱
+//!
+//! 对单位向量有严格上界：
 //!
 //! ```text
 //! cos(a,b) ≥ t  ⇒  ‖a-b‖² = 2-2cos(a,b) ≤ 2-2t
 //!               ⇒  |a_d - b_d| ≤ ‖a-b‖ ≤ √(2-2t)   （任意维度 d）
 //! ```
 //!
-//! 于是：选**方差最大**的那一维把所有向量排序，对每个 i 只向后比较
-//! `|x_j - x_i| ≤ √(2-2t)` 的邻居。这是**数学上无损**的剪枝（不会漏掉任何
-//! 真配对），阈值越高剪得越狠（t=0.9 → 窗口 0.447）。
+//! 于是可以选方差最大的那一维排序、只比较窗口内的邻居（数学上无损）。
+//! **但实测（24905 张真实 CLIP 向量，t=0.9）只剪掉 0.0%**：512 维单位向量单个
+//! 坐标的分布极窄（≈1/√D ≈ 0.044），而窗口有 0.447，几乎全部点对都落在窗内。
+//! 它只在「某一维特别有区分度」的数据上有用（合成数据实测有效），所以留着（成本
+//! 很低），但**真正的提速来自并行与 SIMD，而不是剪枝**。日志会打出实际比较对数，
+//! 以便以后用真实数据核对这个结论是否仍成立。
 //!
-//! ## 分组语义
+//! 要再上一档就得上分块（tiling）：当前瓶颈已经是**内存带宽**（每对要扫 4KB，
+//! 3.1 亿对 = 620GB），按 256×256 块做矩阵乘法式分块能把这部分降一个量级。
 //!
-//! 相似分组用并查集（连通分量），即**传递闭包**：A~B、B~C 会把 A、B、C
-//! 放进同一组，即使 A 与 C 的相似度低于阈值。这是清理工具的常规语义
-//! （组内至少有一条链路），组内展示的 `similarity` 取
-//! **保留那张与其余每一张的最低相似度**，让用户看到最保守的那个数。
+//! ## 分组语义：完全链接，不是「串成一串」
+//!
+//! 一开始用的是并查集连通分量（传递闭包）。用真实图库实测后被推翻了：
+//! 24905 张、阈值 0.90 下有 29.3 万条 ≥0.90 的边，连通分量把 9328 张串成一组 ——
+//! 「留一张删 9327 张」在清理场景里毫无意义，而且链式传递会把明显不同的照片拉进来。
+//!
+//! 现在用**完全链接（complete-linkage）**：组内**任意两张**都必须 ≥ 阈值。
+//! 同一库实测：0.90 → 5029 组/最大 148 张；0.95 → 4497 组/最大 41 张；
+//! 0.99 → 3097 组/最大 10 张。
+//!
+//! 组内展示的 `similarity` 取**保留那张与其余每一张的最低余弦**（最保守的口径），
+//! 让用户看到的是组里最不像的那一对有多像。
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -54,8 +75,6 @@ struct Entry {
     album_id: i64,
     size_bytes: u64,
     mtime_secs: i64,
-    width: Option<u32>,
-    height: Option<u32>,
 }
 
 /// 组内一张照片（前端展示 + 勾选单位）
@@ -86,6 +105,17 @@ pub struct DupGroup {
     pub items: Vec<DupItem>,
 }
 
+/// 分阶段耗时（毫秒）
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct StageMs {
+    /// 遍历相册目录 + stat（收集候选）
+    pub collect: u64,
+    /// 精确重复：体积预筛后的 SHA-256
+    pub hash: u64,
+    /// 画面相似：向量聚类
+    pub similar: u64,
+}
+
 /// 一次重复扫描的结果
 #[derive(Debug, Clone, Serialize)]
 pub struct DedupeReport {
@@ -107,6 +137,8 @@ pub struct DedupeReport {
     /// 相似判定被跳过时的原因（无向量 / 无可读模型）
     pub similar_skipped_reason: Option<String>,
     pub elapsed_ms: u64,
+    /// 分阶段耗时（FEAT-143 性能基线：定位到底慢在遍历 / 哈希 / 聚类哪一段）
+    pub stage_ms: StageMs,
     /// HEIC 解码能力（缺 HEIF 扩展时前端提示装扩展）
     pub heic: crate::heic::HeicSupport,
     /// 内容哈希实际计算的文件数（体积预筛后剩下的碰撞候选）
@@ -175,7 +207,7 @@ pub fn scan_library(
     threshold: f32,
     include_exact: bool,
     include_similar: bool,
-    mut on_progress: impl FnMut(&str, usize, usize, &str),
+    on_progress: &(impl Fn(&str, usize, usize, &str) + Sync),
 ) -> Result<DedupeReport, String> {
     let t0 = std::time::Instant::now();
     let _guard = acquire_run().ok_or_else(|| "已有重复扫描在进行中，请等它结束再试".to_string())?;
@@ -189,56 +221,19 @@ pub fn scan_library(
         }
     };
 
-    // ---- 1. 收集全库照片 ----
+    // ---- 1. 收集全库照片（并行：遍历 + stat 是纯 IO，逐相册串行时 IO 队列填不满）----
     on_progress("collect", 0, albums.len(), "正在遍历相册目录…");
-    let mut entries: Vec<Entry> = Vec::new();
-    // 同一路径出现在多个（嵌套）相册目录时，归属取**最深**的相册（最具体）
-    let mut seen: HashMap<String, usize> = HashMap::new();
-    for (i, (album_id, dir)) in albums.iter().enumerate() {
-        if cancel("collect") {
-            break;
-        }
-        let paths = match crate::vision::walk_image_paths(dir) {
-            Ok(p) => p,
-            Err(e) => {
-                crate::logger::log_warn(&format!("[dedupe] 相册 {album_id} 遍历失败，跳过: {e}"));
-                on_progress("collect", i + 1, albums.len(), &format!("相册 {album_id} 跳过"));
-                continue;
-            }
-        };
-        for p in paths {
-            let Some(entry) = build_entry(&p, *album_id) else { continue };
-            match seen.get(&entry.key).copied() {
-                Some(idx) => {
-                    // 已有同路径：谁的相册目录更长（更具体）归谁
-                    let prev_dir_len = albums
-                        .iter()
-                        .find(|(id, _)| *id == entries[idx].album_id)
-                        .map(|(_, d)| d.len())
-                        .unwrap_or(0);
-                    if dir.len() > prev_dir_len {
-                        entries[idx].album_id = *album_id;
-                    }
-                }
-                None => {
-                    seen.insert(entry.key.clone(), entries.len());
-                    entries.push(entry);
-                }
-            }
-        }
-        on_progress(
-            "collect",
-            i + 1,
-            albums.len(),
-            &format!("已找到 {} 张照片", entries.len()),
-        );
-    }
+    let t_collect = std::time::Instant::now();
+    let entries: Vec<Entry> = collect_entries(albums, &|done, total, found| {
+        on_progress("collect", done, total, &format!("已找到 {found} 张照片"));
+    });
     if cancel("collect") {
         return Err("已停止".into());
     }
+    let collect_ms = t_collect.elapsed().as_millis() as u64;
     let total_photos = entries.len();
     crate::logger::log_info(&format!(
-        "[dedupe] 全库收集完成 {total_photos} 张 · {} 个相册",
+        "[dedupe] 全库收集完成 {total_photos} 张 · {} 个相册 · {collect_ms}ms",
         albums.len()
     ));
 
@@ -246,11 +241,14 @@ pub fn scan_library(
     let mut groups: Vec<DupGroup> = Vec::new();
     let mut in_exact: HashSet<String> = HashSet::new();
     let mut hashed_files = 0usize;
+    let mut hash_ms = 0u64;
     if include_exact {
         on_progress("hash", 0, total_photos, "正在比对文件内容…");
-        let (exact, hashed) = exact_groups(&entries, &cancel, |done, total| {
+        let t_hash = std::time::Instant::now();
+        let (exact, hashed) = exact_groups(&entries, &|done, total| {
             on_progress("hash", done, total, &format!("已比对 {done}/{total} 张"));
         })?;
+        hash_ms = t_hash.elapsed().as_millis() as u64;
         hashed_files = hashed;
         for g in &exact {
             for it in &g.items {
@@ -258,10 +256,13 @@ pub fn scan_library(
             }
         }
         crate::logger::log_info(&format!(
-            "[dedupe] 精确重复 {} 组 · 实际计算内容哈希 {hashed_files} 个文件",
+            "[dedupe] 精确重复 {} 组 · 实际计算内容哈希 {hashed_files} 个文件 · {hash_ms}ms",
             exact.len()
         ));
         groups.extend(exact);
+    }
+    if cancel("hash") {
+        return Err("已停止".into());
     }
 
     // ---- 3. 画面相似：向量余弦 ----
@@ -269,6 +270,7 @@ pub fn scan_library(
     let mut similar_candidates = 0usize;
     let mut similar_skipped_reason: Option<String> = None;
     let mut skipped_unencoded = 0usize;
+    let mut similar_ms = 0u64;
     if include_similar {
         // 向量按路径关联到 entry（路径口径与扫描时一致：原图绝对路径）
         let mut vec_by_path: HashMap<String, Vec<f32>> = HashMap::new();
@@ -302,6 +304,7 @@ pub fn scan_library(
             ));
         } else {
             on_progress("similar", 0, cand.len(), "正在按向量聚类…");
+            let t_sim = std::time::Instant::now();
             // 维度不一致（换档残留）按最短维处理并在日志里报数
             let dims: HashSet<usize> = cand.iter().map(|(_, v)| v.len()).collect();
             if dims.len() > 1 {
@@ -357,6 +360,7 @@ pub fn scan_library(
             crate::logger::log_info(&format!(
                 "[dedupe] 相似分组完成 {similar_groups} 组 · 候选 {similar_candidates} 张 · 阈值 {threshold:.2}"
             ));
+            similar_ms = t_sim.elapsed().as_millis() as u64;
         }
     }
 
@@ -371,7 +375,7 @@ pub fn scan_library(
     let elapsed_ms = t0.elapsed().as_millis() as u64;
     on_progress("done", 1, 1, "扫描完成");
     crate::logger::log_info(&format!(
-        "[dedupe] 完成 | 照片 {total_photos} 张 · 组 {} 个（精确 {exact_n} / 相似 {similar_groups}）· 跳过无向量 {skipped_unencoded} · {elapsed_ms}ms",
+        "[dedupe] 完成 | 照片 {total_photos} 张 · 组 {} 个（精确 {exact_n} / 相似 {similar_groups}）· 跳过无向量 {skipped_unencoded} · 总 {elapsed_ms}ms（遍历 {collect_ms} / 哈希 {hash_ms} / 相似 {similar_ms}）",
         groups.len()
     ));
 
@@ -386,6 +390,7 @@ pub fn scan_library(
         embedding_model,
         similar_skipped_reason,
         elapsed_ms,
+        stage_ms: StageMs { collect: collect_ms, hash: hash_ms, similar: similar_ms },
         heic: crate::heic::support(),
         hashed_files,
     })
@@ -402,22 +407,88 @@ fn build_entry(path: &Path, album_id: i64) -> Option<Entry> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let (width, height) = match crate::imgio::probe_dimensions(path) {
-        Some(d) => (Some(d.0), Some(d.1)),
-        None => (None, None),
-    };
     Some(Entry {
         path: path.to_string_lossy().into_owned(),
         key: path.to_string_lossy().to_lowercase(),
         album_id,
         size_bytes: md.len(),
         mtime_secs: modified_secs,
-        width,
-        height,
     })
 }
 
+/// 并行收集全库照片（FEAT-143 性能优化）
+///
+/// 原实现是「逐相册 walkdir → 逐张 stat → 逐张读文件头探尺寸」全串行：
+/// 2.5 万张实测这一步是主要瓶颈，且其中**探尺寸那一次 open + 4KB 读是白花花的**——
+/// 全库只有极少一部分照片最终会进重复组，尺寸只为「保留哪张」的排序服务。
+/// 现在：
+/// 1. `albums.par_iter()` 并行走目录（rayon 线程数 = 核数，不会把磁盘打爆）；
+/// 2. 展平后 `par_iter()` 并行 stat；
+/// 3. 串行合并去重；同一路径出现在嵌套相册时归属取**最深**的那个（最具体）。
+fn collect_entries(
+    albums: &[(i64, String)],
+    on_progress: &(impl Fn(usize, usize, usize) + Sync),
+) -> Vec<Entry> {
+    use rayon::prelude::*;
+
+    // 1. 并行遍历：rayon 的 collect 保序，结果与相册入参顺序一致
+    let per_album: Vec<(i64, usize, Vec<std::path::PathBuf>)> = albums
+        .par_iter()
+        .map(|(album_id, dir)| {
+            if DEDUPE_CANCEL.load(Ordering::Relaxed) {
+                return (*album_id, dir.len(), Vec::new());
+            }
+            match crate::vision::walk_image_paths(dir) {
+                Ok(paths) => (*album_id, dir.len(), paths),
+                Err(e) => {
+                    crate::logger::log_warn(&format!("[dedupe] 相册 {album_id} 遍历失败，跳过: {e}"));
+                    (*album_id, dir.len(), Vec::new())
+                }
+            }
+        })
+        .collect();
+
+    // 2. 并行 stat（每张一次 metadata；不在这里读文件头）
+    let flat: Vec<(i64, usize, &std::path::PathBuf)> = per_album
+        .iter()
+        .flat_map(|(id, dl, paths)| paths.iter().map(move |p| (*id, *dl, p)))
+        .collect();
+    let built: Vec<(i64, usize, Entry)> = flat
+        .par_iter()
+        .filter_map(|(id, dl, p)| build_entry(p, *id).map(|e| (*id, *dl, e)))
+        .collect();
+
+    // 3. 串行合并（保序 + 最深相册归属）
+    let mut entries: Vec<Entry> = Vec::with_capacity(built.len());
+    let mut seen: HashMap<String, usize> = HashMap::with_capacity(built.len());
+    let mut owner_dir_len: Vec<usize> = Vec::with_capacity(built.len());
+    for (album_id, dir_len, mut entry) in built {
+        match seen.get(&entry.key).copied() {
+            Some(idx) => {
+                if dir_len > owner_dir_len[idx] {
+                    entry.album_id = album_id;
+                    entries[idx].album_id = album_id;
+                    owner_dir_len[idx] = dir_len;
+                }
+            }
+            None => {
+                entry.album_id = album_id;
+                seen.insert(entry.key.clone(), entries.len());
+                entries.push(entry);
+                owner_dir_len.push(dir_len);
+            }
+        }
+    }
+    on_progress(albums.len(), albums.len(), entries.len());
+    entries
+}
+
+/// Entry → 前端展示项（**尺寸在这里才读**，只对真的进了组的照片付这一次 IO）
 fn to_item(e: &Entry) -> DupItem {
+    let (width, height) = match crate::imgio::probe_dimensions(Path::new(&e.path)) {
+        Some(d) => (Some(d.0), Some(d.1)),
+        None => (None, None),
+    };
     DupItem {
         path: e.path.clone(),
         album_id: e.album_id,
@@ -426,8 +497,8 @@ fn to_item(e: &Entry) -> DupItem {
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_default(),
         size_bytes: e.size_bytes,
-        width: e.width,
-        height: e.height,
+        width,
+        height,
         modified_secs: e.mtime_secs,
     }
 }
@@ -443,44 +514,60 @@ fn to_item(e: &Entry) -> DupItem {
 /// 极小的候选集上（返回实际哈希的文件数，供报告与日志核对）。
 fn exact_groups(
     entries: &[Entry],
-    cancel: &impl Fn(&str) -> bool,
-    mut on_progress: impl FnMut(usize, usize),
+    on_progress: &(impl Fn(usize, usize) + Sync),
 ) -> Result<(Vec<DupGroup>, usize), String> {
+    use rayon::prelude::*;
+    use std::sync::atomic::AtomicUsize;
+
     let mut by_size: HashMap<u64, Vec<usize>> = HashMap::new();
     for (i, e) in entries.iter().enumerate() {
         by_size.entry(e.size_bytes).or_default().push(i);
     }
-    let candidates: Vec<(u64, Vec<usize>)> = by_size
+    // 待哈希列表：(下标, 期望体积)；只含「同体积出现 ≥2 次」的候选
+    let todo: Vec<(usize, u64)> = by_size
         .into_iter()
         .filter(|(_, v)| v.len() >= 2)
+        .flat_map(|(size, v)| v.into_iter().map(move |i| (i, size)))
         .collect();
-    let total = candidates.iter().map(|(_, v)| v.len()).sum::<usize>();
+    let total = todo.len();
     on_progress(0, total);
 
-    let mut by_content: HashMap<String, Vec<usize>> = HashMap::new();
-    let mut hashed = 0usize;
-    for (size, idxs) in candidates {
-        if cancel("hash") {
-            return Err("已停止".into());
-        }
-        for idx in idxs {
-            let e = &entries[idx];
-            match sha256_file(Path::new(&e.path), size) {
-                Ok(h) => {
-                    by_content.entry(h).or_default().push(idx);
-                    hashed += 1;
-                }
+    // 并行哈希：SHA-256 是 CPU 密集 + 顺序读盘，两两阻塞在 rayon 线程上
+    // （rayon 线程数 = 核数，不会像手写线程池那样把磁盘打爆）
+    let done = AtomicUsize::new(0);
+    let hashed_rows: Vec<(String, usize)> = todo
+        .par_iter()
+        .filter_map(|(idx, size)| {
+            if DEDUPE_CANCEL.load(Ordering::Relaxed) {
+                return None;
+            }
+            let e = &entries[*idx];
+            let r = match sha256_file(Path::new(&e.path), *size) {
+                Ok(h) => Some((h, *idx)),
                 Err(err) => {
                     // 单个文件读失败不影响整批：记录后跳过（该照片不参与精确分组）
                     crate::logger::log_warn(&format!("[dedupe] 内容哈希失败 {} : {err}", e.path));
+                    None
                 }
+            };
+            // 进度：每 64 张报一次（多线程下只能靠原子计数粗略节流）
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if n % 64 == 0 || n == total {
+                on_progress(n, total);
             }
-            if hashed % 50 == 0 {
-                on_progress(hashed.min(total), total);
-            }
-        }
+            r
+        })
+        .collect();
+    if DEDUPE_CANCEL.load(Ordering::SeqCst) {
+        return Err("已停止".into());
     }
     on_progress(total, total);
+
+    let hashed = hashed_rows.len();
+    let mut by_content: HashMap<String, Vec<usize>> = HashMap::new();
+    for (hash, idx) in hashed_rows {
+        by_content.entry(hash).or_default().push(idx);
+    }
 
     let mut out: Vec<DupGroup> = Vec::new();
     for (hash, mut members) in by_content {
@@ -541,7 +628,112 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     s
 }
 
-/// 按阈值把候选聚成组（连通分量），返回每个组的 entry 下标
+/// 点积快速路径：8 路累加 + 固定长度块（消掉边界检查，编译器可自动向量化）
+///
+/// 为什么值得单写：相似判定是全库唯一的热循环（2.5 万张 = 3.1 亿次点积 × 512 维 ≈
+/// 1.6e11 次乘加）。原实现是逐元素累加的单累加器循环，存在两个问题：
+/// ① 每次下标访问都带边界检查；② 单累加器形成串行依赖链，CPU 的 FMA 吞吐用不上。
+/// 拆成 8 条独立累加链后，向量化与流水线都能吃满（release 构建效果最明显）。
+#[inline]
+fn dot_fast(a: &[f32], b: &[f32]) -> f32 {
+    let n = a.len().min(b.len());
+    let a = &a[..n];
+    let b = &b[..n];
+    let mut acc = [0.0f32; 8];
+    let mut ca = a.chunks_exact(8);
+    let mut cb = b.chunks_exact(8);
+    for (x, y) in ca.by_ref().zip(cb.by_ref()) {
+        acc[0] += x[0] * y[0];
+        acc[1] += x[1] * y[1];
+        acc[2] += x[2] * y[2];
+        acc[3] += x[3] * y[3];
+        acc[4] += x[4] * y[4];
+        acc[5] += x[5] * y[5];
+        acc[6] += x[6] * y[6];
+        acc[7] += x[7] * y[7];
+    }
+    let mut s = (acc[0] + acc[1]) + (acc[2] + acc[3]) + (acc[4] + acc[5]) + (acc[6] + acc[7]);
+    for (x, y) in ca.remainder().iter().zip(cb.remainder().iter()) {
+        s += x * y;
+    }
+    s
+}
+
+/// AVX2 + FMA 点积（8 路 float 一条指令喂两条累加链）
+///
+/// 为什么手写：`dot_fast` 的 8 累加器写法在 **release** 下仍然只跑到约 2 GMAC/s
+/// （≈ 标量吞吐），因为 Rust 默认以 baseline x86-64 为目标，不会自动发 AVX2。
+/// 而相似判定是全库最贵的循环（2.5 万张 = 3.1 亿对 × 512 维 ≈ 1.6e11 次乘加），
+/// 这里用「运行时探测 + 独立 target_feature 函数」拿到 AVX2，且不影响在老 CPU /
+/// 非 x86 上运行（不支持就回落 `dot_fast`）。
+///
+/// # Safety
+/// 调用前必须确认 `is_x86_feature_detected!("avx2")` 与 `("fma")` 都为真。
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma")]
+unsafe fn dot_avx2(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let mut i = 0usize;
+    let mut acc0 = _mm256_setzero_ps();
+    let mut acc1 = _mm256_setzero_ps();
+    // 一次 16 个元素：两条独立累加链，避开 FMA 的 4 周期延迟
+    while i + 16 <= n {
+        acc0 = _mm256_fmadd_ps(
+            _mm256_loadu_ps(a.as_ptr().add(i)),
+            _mm256_loadu_ps(b.as_ptr().add(i)),
+            acc0,
+        );
+        acc1 = _mm256_fmadd_ps(
+            _mm256_loadu_ps(a.as_ptr().add(i + 8)),
+            _mm256_loadu_ps(b.as_ptr().add(i + 8)),
+            acc1,
+        );
+        i += 16;
+    }
+    while i + 8 <= n {
+        acc0 = _mm256_fmadd_ps(
+            _mm256_loadu_ps(a.as_ptr().add(i)),
+            _mm256_loadu_ps(b.as_ptr().add(i)),
+            acc0,
+        );
+        i += 8;
+    }
+    let acc = _mm256_add_ps(acc0, acc1);
+    let mut s = _mm256_castps256_ps128(acc);
+    let hi = _mm256_extractf128_ps(acc, 1);
+    s = _mm_add_ps(s, hi);
+    // 4 路水平求和：先把高两路折到低两路，再把 lane1 加到 lane0
+    // （漏掉后一步会只累加一半通道 → 点积偏小、全部漏配，实测 16581 → 0 条就是这 bug）
+    let mut s = _mm_add_ps(s, _mm_movehl_ps(s, s));
+    s = _mm_add_ss(s, _mm_shuffle_ps(s, s, 0x55));
+    let mut sum = _mm_cvtss_f32(s);
+    // 收尾（512 维通常整除，但不能假设）
+    while i < n {
+        sum += a[i] * b[i];
+        i += 1;
+    }
+    sum
+}
+
+/// 本机是否可用 AVX2+FMA（只探测一次）
+#[inline]
+fn use_avx2() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| {
+            std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma")
+        })
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+/// 按阈值把候选聚成组（完全链接），返回每个组的 entry 下标
 fn cluster_by_similarity(
     cand: &[(usize, &Vec<f32>)],
     threshold: f32,
@@ -551,85 +743,169 @@ fn cluster_by_similarity(
     if n < 2 {
         return Vec::new();
     }
+    // 0) 摊平成连续矩阵：nxD 的 f32 一条连续内存。
+    //    原实现每个向量各自一次堆分配，热循环里每对都要跳两块互不相邻的内存，
+    //    L2/L3 命中率差；摊平后顺序扫描，硬件预取器能吃到整条 cache line。
+    let dims = cand.iter().map(|(_, v)| v.len()).min().unwrap_or(0);
+    let mut flat: Vec<f32> = Vec::with_capacity(n * dims);
+    for (_, v) in cand {
+        flat.extend_from_slice(&v[..dims]);
+    }
+
     // 1) 选方差最大的维度做排序键（区分度越高，窗口内的候选越少）
-    let dim = max_variance_dim(cand);
+    let dim = max_variance_dim_flat(&flat, n, dims);
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&x, &y| {
-        cand[x].1[dim]
-            .partial_cmp(&cand[y].1[dim])
+        flat[x * dims + dim]
+            .partial_cmp(&flat[y * dims + dim])
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| x.cmp(&y))
     });
     // 2) 由 cos ≥ t 推出的一维窗口上界
+    //
+    // ⚠️ 实测（2.5 万张真实 CLIP 向量，阈值 0.9）：这条剪枝**只剪掉 0.0%**。
+    // 原因：512 维单位向量任一坐标的分布极窄（≈1/√D ≈0.044），而窗口有 0.447，
+    // 几乎全部点对都落在窗口内。它只在「某一维特别有区分度」的数据上有用
+    // （如合成数据），保留是因为成本极低、且对这类数据确实有效，不当作性能支柱。
     let window = (2.0f32 * (1.0 - threshold)).max(0.0).sqrt() + 1e-6;
 
     // 3) 只在窗口内两两算点积（rayon 并行；结果按 (i,j) 收集，与线程调度无关）
     use rayon::prelude::*;
-    let pairs: Vec<(usize, usize, f32)> = (0..n)
+    let compared = std::sync::atomic::AtomicUsize::new(0);
+    let avx2 = use_avx2();
+    let pairs: Vec<(usize, usize)> = (0..n)
         .into_par_iter()
         .map(|i| {
             // 并行体内只能读进程级原子标记（闭包不能跨线程共享）
             if i % 512 == 0 && DEDUPE_CANCEL.load(Ordering::SeqCst) {
                 return Vec::new();
             }
-            let (ei, vi) = cand[order[i]];
-            let xi = vi[dim];
-            let mut local: Vec<(usize, usize, f32)> = Vec::new();
+            let ei = cand[order[i]].0;
+            let ai = &flat[order[i] * dims..order[i] * dims + dims];
+            let xi = ai[dim];
+            let mut local: Vec<(usize, usize)> = Vec::new();
+            let mut local_cmp = 0usize;
             for j in (i + 1)..n {
-                let (ej, vj) = cand[order[j]];
-                let dx = vj[dim] - xi;
-                // 升序：一旦超出窗口，后面更远，直接跳出（无损，见模块头注释）
+                let oj = order[j];
+                let bj = &flat[oj * dims..oj * dims + dims];
+                let dx = bj[dim] - xi;
+                // 升序：一旦超出窗口，后面更远，直接跳出（无损）
                 if dx > window {
                     break;
                 }
-                let s = cosine(vi, vj);
-                if s >= threshold {
-                    local.push((ei, ej, s));
+                local_cmp += 1;
+                // SAFETY: avx2 已在循环外做过运行时特性探测
+                let sim = if avx2 { unsafe { dot_avx2(ai, bj) } } else { dot_fast(ai, bj) };
+                if sim >= threshold {
+                    local.push((ei, cand[oj].0));
                 }
             }
+            compared.fetch_add(local_cmp, Ordering::Relaxed);
             local
         })
         .flatten()
         .collect();
     on_progress(n, n);
 
-    // 4) 并查集合并
-    let mut uf = UnionFind::new(n);
-    let mut idx_of: HashMap<usize, usize> = HashMap::new();
-    for (slot, (entry_idx, _)) in cand.iter().enumerate() {
-        idx_of.insert(*entry_idx, slot);
+    // 4) 完全链接聚类（**不是**并查集连通分量）
+    //
+    // 为什么不能用并查集（实测教训）：真实图库 24905 张、阈值 0.90 时有 29.3 万条
+    // 真配对，连通分量直接"串成一串"——最大一组 9328 张、覆盖 18786 张照片。
+    // 那对清理界面毫无意义（"留一张删 9327 张"），还会因为链式传递把明显不同的
+    // 照片并进来。清理工具的语义必须是「组内任意两张都真的像」，
+    // 所以改为完全链接（complete-linkage）贪心：只把**与组内每个成员都有边**的点加进来。
+    let mut adj: HashMap<usize, HashSet<usize>> = HashMap::with_capacity(n);
+    for (a, b) in &pairs {
+        adj.entry(*a).or_default().insert(*b);
+        adj.entry(*b).or_default().insert(*a);
     }
-    let mut linked = 0usize;
-    for (a, b, _) in &pairs {
-        if let (Some(&sa), Some(&sb)) = (idx_of.get(a), idx_of.get(b)) {
-            if uf.union(sa, sb) {
-                linked += 1;
-            }
-        }
-    }
+    let linked = pairs.len();
+    let cmp = compared.load(Ordering::Relaxed);
+    let all_pairs = n * (n.saturating_sub(1)) / 2;
     crate::logger::log_info(&format!(
-        "[dedupe] 相似判定：候选 {n} 张 · 真配对 {linked} 条（阈值 {threshold:.2}、窗口 {window:.3}）"
+        "[dedupe] 相似判定：候选 {n} 张 · 实际比较 {cmp} 对（全量 {all_pairs} 对，剪掉 {:.1}%）· 真配对 {linked} 条（阈值 {threshold:.2}、窗口 {window:.3}）",
+        if all_pairs == 0 { 0.0 } else { 100.0 * (1.0 - cmp as f64 / all_pairs as f64) }
     ));
 
-    let mut buckets: HashMap<usize, Vec<usize>> = HashMap::new();
-    for slot in 0..n {
-        let root = uf.find(slot);
-        buckets.entry(root).or_default().push(cand[slot].0);
+    let mut groups = complete_linkage_groups(&adj);
+    crate::logger::log_info(&format!(
+        "[dedupe] 完全链接分组：{} 组 · 最大 {} 张（连通分量口径会明显更大）",
+        groups.len(),
+        groups.iter().map(|g| g.len()).max().unwrap_or(0)
+    ));
+    // 保证输出顺序确定（同一批照片、同一阈值 → 同一结果，便于排查与比对）
+    for g in groups.iter_mut() {
+        g.sort_unstable();
     }
-    buckets.into_values().filter(|v| v.len() >= 2).collect()
+    groups.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    groups
 }
 
-/// 方差最大的维度（区分度最高，剪枝窗口里塞的候选最少）
-fn max_variance_dim(cand: &[(usize, &Vec<f32>)]) -> usize {
-    let n = cand.len();
-    let dim = cand.iter().map(|(_, v)| v.len()).min().unwrap_or(0);
+/// 完全链接贪心聚类：组内**任意两张**都必须 ≥ 阈值
+///
+/// 输入是相似图的邻接表（只看「≥ 阈值」的边，所以邻接表本身就是全部候选边）。
+/// 贪心顺序：度数高的点先成组（更容易长成真正的近重复簇），
+/// 然后只吸收「与当前组内每个成员都有边」的邻居 —— 这一步是链式传递的刹车。
+///
+/// 复杂度：边数 × 组大小。真实数据里近重复簇都很小（实测 p90=5），
+/// 所以它比全量两两验证便宜得多。
+fn complete_linkage_groups(adj: &HashMap<usize, HashSet<usize>>) -> Vec<Vec<usize>> {
+    let mut nodes: Vec<usize> = adj.keys().copied().collect();
+    // 度数降序：先处理"人缘最好"的点，簇质量更稳定；同度数用下标保证确定性
+    nodes.sort_by(|a, b| {
+        adj[b]
+            .len()
+            .cmp(&adj[a].len())
+            .then_with(|| a.cmp(b))
+    });
+    let mut used: HashSet<usize> = HashSet::with_capacity(nodes.len());
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    for u in nodes {
+        if used.contains(&u) {
+            continue;
+        }
+        used.insert(u);
+        let mut cluster = vec![u];
+        let mut cand: Vec<usize> = adj.get(&u).map(|s| s.iter().copied().collect()).unwrap_or_default();
+        cand.sort_by(|a, b| {
+            adj.get(b)
+                .map(|s| s.len())
+                .unwrap_or(0)
+                .cmp(&adj.get(a).map(|s| s.len()).unwrap_or(0))
+                .then_with(|| a.cmp(b))
+        });
+        for v in cand {
+            if used.contains(&v) {
+                continue;
+            }
+            // 完全链接判据：v 与簇内**每一个**成员都必须有边
+            let all_linked = cluster.iter().all(|m| {
+                adj.get(m).map(|s| s.contains(&v)).unwrap_or(false)
+            });
+            if all_linked {
+                cluster.push(v);
+                used.insert(v);
+            }
+        }
+        if cluster.len() >= 2 {
+            out.push(cluster);
+        }
+    }
+    out
+}
+
+/// 方差最大的维度（区分度最高，剪枝窗口里塞的候选最少）——直接扫摊平矩阵
+fn max_variance_dim_flat(flat: &[f32], n: usize, dims: usize) -> usize {
+    if n == 0 || dims == 0 {
+        return 0;
+    }
     let mut best = 0usize;
     let mut best_var = -1.0f64;
-    for d in 0..dim {
+    for d in 0..dims {
         let mut sum = 0.0f64;
         let mut sq = 0.0f64;
-        for (_, v) in cand {
-            let x = v[d] as f64;
+        for i in 0..n {
+            let x = flat[i * dims + d] as f64;
             sum += x;
             sq += x * x;
         }
@@ -641,42 +917,6 @@ fn max_variance_dim(cand: &[(usize, &Vec<f32>)]) -> usize {
         }
     }
     best
-}
-
-/// 并查集（按秩合并 + 路径压缩）
-struct UnionFind {
-    parent: Vec<usize>,
-    rank: Vec<u8>,
-}
-
-impl UnionFind {
-    fn new(n: usize) -> Self {
-        Self { parent: (0..n).collect(), rank: vec![0; n] }
-    }
-
-    fn find(&mut self, mut x: usize) -> usize {
-        while self.parent[x] != x {
-            self.parent[x] = self.parent[self.parent[x]];
-            x = self.parent[x];
-        }
-        x
-    }
-
-    /// 返回是否真的发生了合并
-    fn union(&mut self, a: usize, b: usize) -> bool {
-        let (mut ra, mut rb) = (self.find(a), self.find(b));
-        if ra == rb {
-            return false;
-        }
-        if self.rank[ra] < self.rank[rb] {
-            std::mem::swap(&mut ra, &mut rb);
-        }
-        self.parent[rb] = ra;
-        if self.rank[ra] == self.rank[rb] {
-            self.rank[ra] += 1;
-        }
-        true
-    }
 }
 
 /// "原本"排序：分辨率高 → 体积大 → 修改时间早 → 路径序
@@ -694,9 +934,6 @@ fn rank_items(items: &mut [DupItem]) {
             .then_with(|| a.path.cmp(&b.path))
     });
 }
-
-/// 供命令层在异步侧起任务时复用
-pub type ProgressFn = Arc<dyn Fn(&str, usize, usize, &str) + Send + Sync>;
 
 // ===========================================================================
 // 命令层（薄壳；lib.rs 只注册）
@@ -772,7 +1009,7 @@ pub mod commands {
                 threshold,
                 include_exact,
                 include_similar,
-                |stage, done, total, message| {
+                &|stage, done, total, message| {
                     let _ = app_for_task.emit(
                         "dedupe-progress",
                         DedupeProgress {
@@ -853,8 +1090,6 @@ mod tests {
             album_id: 1,
             size_bytes: size,
             mtime_secs: 0,
-            width: Some(100),
-            height: Some(100),
         }
     }
 
@@ -874,7 +1109,7 @@ mod tests {
             entry_of(&c, 15),
             entry_of(&d, 23),
         ];
-        let (groups, hashed) = exact_groups(&entries, &|_| false, |_, _| {}).unwrap();
+        let (groups, hashed) = exact_groups(&entries, &|_, _| {}).unwrap();
         assert_eq!(groups.len(), 1, "只有 a/b 是一组");
         assert_eq!(groups[0].items.len(), 2);
         assert_eq!(hashed, 3, "同尺寸的 3 个文件算了哈希，长度唯一的 d 不算");
@@ -908,8 +1143,8 @@ mod tests {
         let cand: Vec<(usize, &Vec<f32>)> = vecs.iter().enumerate().collect();
 
         for th in [0.80f32, 0.90, 0.95, 0.999] {
-            let mut fast = groups_of(cluster_by_similarity(&cand, th, |_, _| {}));
-            let mut slow = groups_of(bruteforce_clusters(&cand, th));
+            let fast = groups_of(cluster_by_similarity(&cand, th, |_, _| {}));
+            let slow = groups_of(bruteforce_clusters(&cand, th));
             assert_eq!(fast, slow, "阈值 {th} 下剪枝结果应与暴力一致");
         }
     }
@@ -922,22 +1157,20 @@ mod tests {
         g
     }
 
+    /// 暴力参照：不剪枝、不 SIMD，直接两两算全部边，再用**同一套**完全链接聚类
+    /// （这样这个用例只验证「剪枝/向量化是否改变了结果」）
     fn bruteforce_clusters(cand: &[(usize, &Vec<f32>)], th: f32) -> Vec<Vec<usize>> {
         let n = cand.len();
-        let mut uf = UnionFind::new(n);
+        let mut adj: HashMap<usize, HashSet<usize>> = HashMap::new();
         for i in 0..n {
             for j in (i + 1)..n {
                 if cosine(cand[i].1, cand[j].1) >= th {
-                    uf.union(i, j);
+                    adj.entry(cand[i].0).or_default().insert(cand[j].0);
+                    adj.entry(cand[j].0).or_default().insert(cand[i].0);
                 }
             }
         }
-        let mut buckets: HashMap<usize, Vec<usize>> = HashMap::new();
-        for i in 0..n {
-            let r = uf.find(i);
-            buckets.entry(r).or_default().push(cand[i].0);
-        }
-        buckets.into_values().filter(|v| v.len() >= 2).collect()
+        complete_linkage_groups(&adj)
     }
 
     /// 保留策略：分辨率高优先，其次体积，再次更早的修改时间
@@ -962,6 +1195,39 @@ mod tests {
         let mut items2 = vec![mk("x.jpg", 1920, 1440, 5_000_000, 1), mk("y.heic", 4032, 3024, 2_400_000, 9)];
         rank_items(&mut items2);
         assert_eq!(items2[0].path, "y.heic", "分辨率优先于体积");
+    }
+
+    /// AVX2 点积与标量点积必须一致（含非 8 倍数长度与短向量）
+    #[test]
+    fn avx2_dot_matches_scalar() {
+        if !use_avx2() {
+            eprintln!("本机无 AVX2，跳过（回落路径由 dot_fast 覆盖）");
+            return;
+        }
+        let mut seed = 0x1234_5678_9ABC_DEF0u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f32 / (1u64 << 53) as f32 * 2.0 - 1.0
+        };
+        for len in [1usize, 7, 8, 15, 16, 17, 63, 512, 513] {
+            let a: Vec<f32> = (0..len).map(|_| next()).collect();
+            let b: Vec<f32> = (0..len).map(|_| next()).collect();
+            let expect = cosine(&a, &b);
+            // SAFETY: 上面已确认 avx2+fma 可用
+            let got = unsafe { dot_avx2(&a, &b) };
+            assert!(
+                (got - expect).abs() <= 1e-4 * expect.abs().max(1.0),
+                "len={len}: avx2={got} scalar={expect}"
+            );
+            // dot_fast 与 scalar 也应一致
+            assert!(
+                (dot_fast(&a, &b) - expect).abs() <= 1e-4 * expect.abs().max(1.0),
+                "len={len}: dot_fast={} scalar={expect}",
+                dot_fast(&a, &b)
+            );
+        }
     }
 
     /// 维度不一致时按较短维比较，不 panic
@@ -1007,7 +1273,7 @@ mod tests {
             (1i64, d1.to_string_lossy().into_owned()),
             (2i64, d2.to_string_lossy().into_owned()),
         ];
-        let report = scan_library(&albums, emb, Some("test-model".into()), 0.9, true, true, |_, _, _, _| {})
+        let report = scan_library(&albums, emb, Some("test-model".into()), 0.9, true, true, &|_, _, _, _| {})
             .expect("扫描应成功");
 
         assert_eq!(report.total_photos, 4, "两个相册共 4 张");
@@ -1039,6 +1305,255 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// 真实图库性能基准（默认忽略）：前后对比（串行 vs 并行）
+    ///
+    /// `PMS_BENCH_DIRS="D:\a;D:\b" cargo test --lib -- --ignored --nocapture bench_real_library`
+    #[test]
+    #[ignore = "性能基准：需要 PMS_BENCH_DIRS 指向真实相册目录"]
+    fn bench_real_library() {
+        let Ok(raw) = std::env::var("PMS_BENCH_DIRS") else {
+            eprintln!("未设置 PMS_BENCH_DIRS，跳过");
+            return;
+        };
+        let albums: Vec<(i64, String)> = raw
+            .split(';')
+            .map(|d| d.trim())
+            .filter(|d| !d.is_empty() && Path::new(d).is_dir())
+            .enumerate()
+            .map(|(i, d)| (i as i64 + 1, d.to_string()))
+            .collect();
+        eprintln!(
+            "[bench] 相册 {} 个 · rayon 线程 {}",
+            albums.len(),
+            rayon::current_num_threads()
+        );
+
+        // ---- A. 收集阶段：旧（串行 + 每张探尺寸）vs 串行不探尺寸 vs 并行 ----
+        let t = std::time::Instant::now();
+        let mut old_entries: Vec<Entry> = Vec::new();
+        let mut old_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (album_id, dir) in albums.iter() {
+            if let Ok(paths) = crate::vision::walk_image_paths(dir) {
+                for p in paths {
+                    // 用 build_entry 保持同一套准入规则，再额外做旧版的冗余探尺寸
+                    let Some(mut e) = build_entry(&p, *album_id) else { continue };
+                    let _ = crate::imgio::probe_dimensions(&p);
+                    if old_seen.insert(e.key.clone()) {
+                        e.album_id = *album_id;
+                        old_entries.push(e);
+                    }
+                }
+            }
+        }
+        let old_collect = t.elapsed();
+        let serial_n = old_entries.len();
+
+        // 串行但**提前去掉探尺寸**（把「并行提速」与「少做无谓 IO」拆开看）
+        let t = std::time::Instant::now();
+        let mut serial_lean: Vec<Entry> = Vec::new();
+        let mut lean_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (album_id, dir) in albums.iter() {
+            if let Ok(paths) = crate::vision::walk_image_paths(dir) {
+                for p in paths {
+                    let Some(e) = build_entry(&p, *album_id) else { continue };
+                    if lean_seen.insert(e.key.clone()) {
+                        serial_lean.push(e);
+                    }
+                }
+            }
+        }
+        let lean_collect = t.elapsed();
+
+        let t = std::time::Instant::now();
+        let entries = collect_entries(&albums, &|_, _, _| {});
+        let new_collect = t.elapsed();
+        eprintln!(
+            "[bench collect] 旧串行(含探尺寸)={:?} · 串行不探尺寸={:?} · 新并行={:?} · 照片 {}/{}/{} · 并行提速(对比串行精简) {:.2}x",
+            old_collect,
+            lean_collect,
+            new_collect,
+            serial_n,
+            serial_lean.len(),
+            entries.len(),
+            lean_collect.as_secs_f64() / new_collect.as_secs_f64().max(1e-9)
+        );
+        assert_eq!(serial_n, entries.len(), "两种收集方式的照片数必须一致");
+
+        // ---- B. 哈希阶段：串行 vs 并行（同候选集）----
+        let mut by_size: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (i, e) in entries.iter().enumerate() {
+            by_size.entry(e.size_bytes).or_default().push(i);
+        }
+        let todo: Vec<(usize, u64)> = by_size
+            .into_iter()
+            .filter(|(_, v)| v.len() >= 2)
+            .flat_map(|(size, v)| v.into_iter().map(move |i| (i, size)))
+            .collect();
+        eprintln!("[bench hash] 体积碰撞候选 {} 个（全库 {}）", todo.len(), entries.len());
+
+        let t = std::time::Instant::now();
+        let mut serial_rows: Vec<(String, usize)> = Vec::new();
+        for (idx, size) in &todo {
+            let e = &entries[*idx];
+            if let Ok(h) = sha256_file(Path::new(&e.path), *size) {
+                serial_rows.push((h, *idx));
+            }
+        }
+        let serial_hash = t.elapsed();
+
+        let t = std::time::Instant::now();
+        let (groups, hashed) = exact_groups(&entries, &|_, _| {}).expect("并行哈希应成功");
+        let new_hash = t.elapsed();
+        eprintln!(
+            "[bench hash] 旧串行={:?} · 新并行={:?} · 写盘哈希 {} vs {} · 组 {} · 提速 {:.2}x",
+            serial_hash,
+            new_hash,
+            serial_rows.len(),
+            hashed,
+            groups.len(),
+            serial_hash.as_secs_f64() / new_hash.as_secs_f64().max(1e-9)
+        );
+
+        // 正确性：并行结果的组数必须与串行哈希算出来的分组一致
+        let mut m: HashMap<&str, usize> = HashMap::new();
+        for (h, _) in &serial_rows {
+            *m.entry(h.as_str()).or_insert(0) += 1;
+        }
+        let serial_groups = m.values().filter(|n| **n >= 2).count();
+        assert_eq!(serial_groups, groups.len(), "并行与串行的分组结果必须一致");
+    }
+
+    /// 真实 CLIP 向量的聚类基准（默认忽略）：
+    /// `PMS_BENCH_VEC=C:\...\vectors.bin cargo test --lib -- --ignored --nocapture bench_real_vectors`
+    /// 文件格式：u32 n · u32 d · n*d 个小端 f32（已 L2 归一化）
+    #[test]
+    #[ignore = "性能基准：需要 PMS_BENCH_VEC 向量文件"]
+    fn bench_real_vectors() {
+        let Ok(path) = std::env::var("PMS_BENCH_VEC") else {
+            eprintln!("未设置 PMS_BENCH_VEC，跳过");
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("读取向量文件失败");
+        let n = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let d = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let body = &bytes[8..];
+        let mut vecs: Vec<Vec<f32>> = Vec::with_capacity(n);
+        for i in 0..n {
+            let off = i * d * 4;
+            let mut v = Vec::with_capacity(d);
+            for k in 0..d {
+                let p = off + k * 4;
+                v.push(f32::from_le_bytes(body[p..p + 4].try_into().unwrap()));
+            }
+            vecs.push(v);
+        }
+        let cand: Vec<(usize, &Vec<f32>)> = vecs.iter().enumerate().collect();
+        eprintln!(
+            "[bench] 真实向量 n={n} dim={d} · rayon 线程 {}",
+            rayon::current_num_threads()
+        );
+        let one_only = std::env::var("PMS_BENCH_ONE").is_ok();
+        let thr: f32 = std::env::var("PMS_BENCH_TH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.9);
+        eprintln!("[bench] 阈值 {thr:.2}");
+        let modes: Vec<usize> = if one_only { vec![1, 0] } else { vec![0] };
+        for th in modes {
+            let t = std::time::Instant::now();
+            let groups = if th == 1 {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(1)
+                    .build()
+                    .unwrap()
+                    .install(|| cluster_by_similarity(&cand, thr, |_, _| {}))
+            } else {
+                cluster_by_similarity(&cand, thr, |_, _| {})
+            };
+            let label = if th == 1 {
+                "1".to_string()
+            } else {
+                format!("auto({})", rayon::current_num_threads())
+            };
+            let mut sizes: Vec<usize> = groups.iter().map(|g| g.len()).collect();
+            sizes.sort_unstable();
+            let total: usize = sizes.iter().sum();
+            eprintln!(
+                "[bench] workers={label} groups={} 覆盖照片={total} 组大小 max={} p50={} p90={} elapsed={:?}",
+                groups.len(),
+                sizes.last().copied().unwrap_or(0),
+                sizes.get(sizes.len() / 2).copied().unwrap_or(0),
+                sizes.get(sizes.len() * 9 / 10).copied().unwrap_or(0),
+                t.elapsed()
+            );
+        }
+    }
+
+    /// 相似聚类的线程缩放基准（合成向量，隔离磁盘 IO）
+    #[test]
+    #[ignore = "性能基准：合成 2 万 × 512 维向量"]
+    fn bench_cluster_scaling() {
+        let n: usize = std::env::var("PMS_BENCH_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20000);
+        let d = 512usize;
+        // 确定性伪随机（xorshift64），不引入 rand 依赖
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f32 / (1u64 << 53) as f32
+        };
+        let mut vecs: Vec<Vec<f32>> = (0..n)
+            .map(|_| {
+                let mut v: Vec<f32> = (0..d).map(|_| next() * 2.0 - 1.0).collect();
+                let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                for x in v.iter_mut() {
+                    *x /= norm;
+                }
+                v
+            })
+            .collect();
+        // 造 100 组近重复，确保结果里真有组（不是空跑）
+        for g in 0..100usize {
+            let base = vecs[g * 7].clone();
+            for k in 1..3 {
+                let idx = (g * 7 + k) % n;
+                let mut v: Vec<f32> = base.iter().map(|x| x + 0.005 * k as f32).collect();
+                let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                for x in v.iter_mut() {
+                    *x /= norm;
+                }
+                vecs[idx] = v;
+            }
+        }
+        let cand: Vec<(usize, &Vec<f32>)> = vecs.iter().enumerate().collect();
+        for workers in [1usize, 0] {
+            let t = std::time::Instant::now();
+            let groups = if workers == 1 {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(1)
+                    .build()
+                    .unwrap()
+                    .install(|| cluster_by_similarity(&cand, 0.9, |_, _| {}))
+            } else {
+                cluster_by_similarity(&cand, 0.9, |_, _| {})
+            };
+            let label = if workers == 1 {
+                "1".to_string()
+            } else {
+                format!("auto({})", rayon::current_num_threads())
+            };
+            eprintln!(
+                "[bench] n={n} dim={d} workers={label} groups={} elapsed={:?}",
+                groups.len(),
+                t.elapsed()
+            );
+        }
+    }
+
     /// 关掉两类判据后应拒绕；单飞锁在扫完后必须释放（否则第二次永远被拒）
     #[test]
     fn run_lock_is_released() {
@@ -1049,7 +1564,7 @@ mod tests {
         write_file(&d1, "x.jpg", b"abc");
         let albums = vec![(1i64, d1.to_string_lossy().into_owned())];
         for _ in 0..2 {
-            let r = scan_library(&albums, Vec::new(), None, 0.9, true, false, |_, _, _, _| {});
+            let r = scan_library(&albums, Vec::new(), None, 0.9, true, false, &|_, _, _, _| {});
             assert!(r.is_ok(), "连续两次扫描都应成功（锁必须释放）");
         }
         assert!(!is_running());

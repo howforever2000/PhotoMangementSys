@@ -39,6 +39,13 @@ export interface HeicSupport {
   reason: string | null;
 }
 
+/** 分阶段耗时（毫秒；FEAT-143 性能观测） */
+export interface DedupeStageMs {
+  collect: number;
+  hash: number;
+  similar: number;
+}
+
 /** 一次重复扫描结果 */
 export interface DedupeReport {
   groups: DupGroup[];
@@ -51,6 +58,8 @@ export interface DedupeReport {
   embedding_model: string | null;
   similar_skipped_reason: string | null;
   elapsed_ms: number;
+  /** 分阶段耗时（遍历 / 哈希 / 相似），旧版本后端可能不返回 */
+  stage_ms?: DedupeStageMs;
   heic: HeicSupport;
   hashed_files: number;
 }

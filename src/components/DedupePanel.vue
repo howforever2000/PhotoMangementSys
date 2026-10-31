@@ -283,6 +283,11 @@ function goScan() {
       </div>
       <div class="dp-sum-note">
         阈值 {{ report?.threshold.toFixed(2) }} · 耗时 {{ ((report?.elapsed_ms ?? 0) / 1000).toFixed(1) }}s
+        <template v-if="report?.stage_ms">
+          （遍历 {{ (report.stage_ms.collect / 1000).toFixed(1) }} / 哈希
+          {{ (report.stage_ms.hash / 1000).toFixed(1) }} / 相似
+          {{ (report.stage_ms.similar / 1000).toFixed(1) }}）
+        </template>
         <template v-if="report?.embedding_model"> · 向量 {{ report.embedding_model }}</template>
       </div>
     </div>
