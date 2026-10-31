@@ -5246,7 +5246,8 @@
         "为什么 face_det 给 GPU": "det_10g 在 NPU 上 116.5ms（慢 7 倍，永久排除）；DML 单次 92.9ms vs CPU 120.9ms。它只跑 15/53 次所以摊薄墙钟增量在噪声内（39.0 vs 38.6），但它给了 GPU 一个真实对象，且在「只有 DML 没有 NPU」的机器上就是主力（全 GPU 形态 -34.7%）。",
         "不做的事": "clip 不给 GPU：语义腿只占扫描 0.2%，且 fp16 档在 DML 上有数值 bug（BUG-2026-0910-006）—— 那是 FEAT-133 栽过的同一个坑。",
         "可选组件": "恢复 FEAT-133 的裁剪脚本（244.8→45.4MB / zip 15.5MB），Rust 只下载 zip（DlSpec openvino-runtime，releases/latest/download 稳定别名），Python 侧 standard library zipfile 首次解压到 models/_runtime/ovrt 并注入 sys.path；改名失败（杀毒占句柄 WinError 5）不算失败，用 .partial 目录继续跑。",
-        "Rust/UI": "vision::vcr_accel / vcr_set_accel（旧服务 404 → 重启重试）+ vcr_settings 命令 + lib.rs 注册；AccelSection.vue 显示「请求分配 vs 实际生效」两列、组件下载（复用 model_dl 进度）、启用/关闭；运行时组件从「模型下载」列表过滤（一处入口一个说法）。"
+        "Rust/UI": "vision::vcr_accel / vcr_set_accel（旧服务 404 → 重启重试）+ vcr_settings 命令 + lib.rs 注册；AccelSection.vue 显示「请求分配 vs 实际生效」两列、组件下载（复用 model_dl 进度）、启用/关闭；运行时组件从「模型下载」列表过滤（一处入口一个说法）。",
+        "修掉的 bug": "set_accel(False) 之前只重置分配表，没恢复启用前的全局 provider 状态，导致 fp32 档 CLIP 关闭后仍留在 DML。现在启用时快照 (_accel_restore)、关闭时原样恢复。"
       },
       "highlights": {
         "真扫描（300 张，AI∥语义，批 8 P6）": "全 CPU 87.7s（300.3 ms/张）→ 分配表 25.8s（88.4 ms/张）= **-70.6%**；会话表 det/ocr/face_rec=['OpenVINO:NPU']、face_det=['DmlExecutionProvider'] —— 两个引擎同时有对象",
@@ -5254,7 +5255,8 @@
         "探针四方对比（53 张）": "cpu 136.2 · 全 GPU 88.9 · NPU×3+CPU人脸检测 38.6 · NPU×3+GPU人脸检测 39.0",
         "组件等价": "裁剪运行时（删了 95.7MB 编译器）仍能 compile_model(onnx,'NPU')；det 53/53 人框零差异、r50 38 张脸 cos 最小 0.99997220",
         "产品路径烟测（零环境变量）": "默认 enabled=false 不动任何东西 → POST /accel 后 effective=NPU×3+GPU×1（1~2s 后台重建）→ 关闭回 CPU 且组件仍在",
-        "静态检查": "cargo check --all-targets 0 error；cargo test --lib openvino_runtime 1 passed；vue-tsc --noEmit 0 error"
+        "静态检查": "cargo check --all-targets 0 error；cargo test --lib openvino_runtime 1 passed；vue-tsc --noEmit 0 error",
+        "CLIP fp32 上 GPU（补测）": "能跑：fp16 档硬钉 CPU（DML 数值 bug），fp32 档跟随全局 provider，启用加速分配后 clip_vision=['DmlExecutionProvider',...]。实测 120 张全新建档：语义腿 85.5/121.8 → 75.7/79.8 ms/张（更快），但 AI 腿 8.3/9.0 → 11.6/12.1s（CLIP 整批前向长期持 DML 锁，和 face_det 抢）；合计 124.0/150.7 → 96.7/100.6 ms/张。重扫场景语义腿只处理新照片（0.2%），此时 AI 腿 +35% 是净亏 ⇒ 默认保持 fp16/CPU，能力仍留在旧 GPU 开关。"
       },
       "tests": {
         "python/bench/probe_npu_det_r50_e2e.py --modes cpu,gpu_all,accel_cpu,accel_gpu": "四配置对比 + 完整性校验（通道实跑次数 == timing 段调用次数）",
@@ -5287,8 +5289,8 @@
         "FEAT-135"
       ],
       "created_at": "2026-11-02T18:00:00+08:00",
-      "updated_at": "2026-11-02T18:00:00+08:00"
+      "updated_at": "2026-11-02T20:30:00+08:00"
     }
   ],
-  "updated": "2026-11-02T18:00:00+08:00"
+  "updated": "2026-11-02T20:30:00+08:00"
 }

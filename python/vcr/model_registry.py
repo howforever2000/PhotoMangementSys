@@ -95,6 +95,11 @@ class ModelRegistry:
         # _load 的 check-then-act 必须串行。注意：is_ready / gpu_info 故意不加锁
         # （/health 每 300ms 被宿主探测，等加载锁会被阻塞数分钟 → 宿主误判不可达）。
         self._lock = threading.RLock()
+        # FEAT-136：启用加速分配前的「全局 provider 状态」快照 ——
+        # 关掉分配时必须原样恢复。否则 `_providers_sel` 已被复位成自动探测，
+        # 而 fp32 档 CLIP 跟随 `_providers()` ⇒ 用户点了「关闭」却仍跑在 DirectML
+        # （实测过：关闭后 clip_vision 依旧 ['DmlExecutionProvider', ...]）。
+        self._accel_restore: tuple[bool, list[str] | None] | None = None
         if os.environ.get("VCR_PROVIDER", "").lower() == "auto":
             self._providers_sel = None
             self._gpu_forced_off = False
@@ -403,9 +408,17 @@ class ModelRegistry:
             ch = channels if channels is not None else self.default_channels()
             config.set_accel_setting(enabled, ch)
             if enabled:
+                if self._accel_restore is None:
+                    self._accel_restore = (self._gpu_forced_off,
+                                           list(self._providers_sel) if self._providers_sel else None)
                 # 分配表生效时，旧开关的「强制 CPU」不能再把 GPU 通道押回 CPU
                 self._gpu_forced_off = False
                 self._providers_sel = None
+            elif self._accel_restore is not None:
+                # 关闭 = 回到启用前的全局状态（含 fp32 档 CLIP 到底跟不跟 GPU）
+                self._gpu_forced_off, restore = self._accel_restore
+                self._providers_sel = list(restore) if restore else None
+                self._accel_restore = None
             global _OV_UNAVAIL_WARNED
             _OV_UNAVAIL_WARNED = False   # 允许换分配后重新告警
             self._reload_all()
