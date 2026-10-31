@@ -466,20 +466,12 @@ class ModelRegistry:
         return self._sessions.get("ocr")
 
     def _clip_providers(self) -> list[str]:
-        """CLIP 双塔的 provider：按档位决定（fp16 固定 CPU / fp32 跟随 GPU 开关）。
+        """CLIP 双塔的 provider：跟随全局 provider（与其它通道同一口径）。
 
-        为什么必须分开：
-          - fp16 档（model_fp16.onnx）在 AMD DirectML 上有**算子级数值 bug**
-            （实测输出错误，见 BUG-2026-0910-006）→ 无论 GPU 开关如何都固定 CPU；
-            此前这里直接用全局 provider，一旦用户打开 GPU 开关就会把 fp16 送到 DML
-            上进而静默产出错误向量（潜在缺陷，本次一并修掉）。
-          - fp32 档（model.onnx）实测 DML 与 CPU 数值完全一致（余弦 1.000000）
-            且快约 2 倍（53.3ms vs 108.2ms/张，见 python/bench/verify_clip_tiers.py），
-            故跟随用户的 GPU 开关（默认仍为 CPU，用户显式开启才用 GPU）。
+        FEAT-137 之前这里有一道「fp16 档硬钉 CPU」的特例，因为 fp16 权重在
+        DirectML 上有算子级数值 bug（BUG-2026-0910-006，会静默产出错向量）。
+        fp16 档下线后这份特例也一并删掉 —— 雷泉本身没了，不需要再守。
         """
-        p = config.clip_paths()
-        if "fp16" in p["onnx"]:
-            return ["CPUExecutionProvider"]
         return self._providers()
 
     # ------------------------------------------------------------------

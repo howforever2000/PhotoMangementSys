@@ -5290,7 +5290,59 @@
       ],
       "created_at": "2026-11-02T18:00:00+08:00",
       "updated_at": "2026-11-02T20:30:00+08:00"
+    },
+    {
+      "id": "FEAT-137",
+      "name": "语义模型收敛为单档（B/16 fp32 权重）——删掉 fp16 档，旧选择与旧向量标签自动迁移",
+      "module": "python/vcr/config.py（CLIP_MODEL_META/CLIP_RETIRED_*/clip_paths）· python/vcr/model_registry.py（_clip_providers）· src-tauri/src/model_dl.rs（删 fp16 规格）· src-tauri/src/db/embedding.rs（restamp_embedding_models）· src/components/settings/ClipTierSection.vue（下拉→状态行）· python/bench/verify_clip_tier_equiv.py（新守卫）",
+      "status": "done",
+      "purpose": "用户判断「b16（fp16，默认）这一档可以去掉了，核显加速 fp32 比 fp16 CPU 快得多」。实测证实：fp16 档在 CPU 上反而慢 18~33%（x86 上 ORT 要反复 cast），又永远拿不到 GPU（fp16 在 DirectML 上有算子级数值 bug BUG-2026-0910-006 所以旧代码硬钉 CPU），两档精度等价 cos≥0.9999993 —— 旧默认档是双输。收敛成一档后顺带干掉了那条特例分支与整颗数值 bug 的雷。",
+      "implementation": {
+        "实测（真实 256px 缩略图，批 8 / 批 32）": "fp16/CPU 74.4 / 113.7 ms/张；fp32/CPU 60.6 / 76.4；fp32/DML 61.3 / 63.7。守卫脚本复跑：fp16 79.7 vs fp32 65.9（1.21×）。",
+        "精度等价": "同批 32 张图 fp16 档 vs fp32 档 cos 最小 0.99999928、逐元素最大差 0.000316 —— 同一套权重只是导出精度不同。这是「旧向量标签可直接重打、不必全库重编码」的唯一依据。",
+        "迁移三条": "① current_clip.json 里的 b16-fp32/b16-fp16 由 CLIP_RETIRED_TIERS 映射到唯一档；② photo_embeddings/photo_text_embeddings 的旧 model 标签由宿主启动时 restamp_embedding_models() 重打成 chinese-clip-vit-b16（幂等，UPDATE OR REPLACE）；③ 老目录 chinese-clip/ 若已有 fp32 整图则自动回退使用，不让人白下 719MB。",
+        "为什么必须重打标签": "所有向量查询都是 WHERE model = ?；不迁移的话升级后一条也命中不了，语义搜索/分类变成「尚未建立索引」——不报错，只是搜不到，属静默失效。",
+        "新 id 为什么中性": "chinese-clip-vit-b16（不带精度后缀）——一套权重一个空间；以后换量化就换 id，那次才需要重建。",
+        "UI": "ClipTierSection 从「下拉 + 换档确认弹窗」收敛为一行状态（模型 / 双塔体积 / 就绪 / 刷新），换档确认弹窗随之删除；性能设置顶部「语义索引」摘要改为读实际 provider。"
+      },
+      "highlights": {
+        "代码净删": "删掉「fp16 硬钉 CPU」特例分支 + 一整条下载规格 + 一整个 bench 脚本；换档状态机（begin/finish_clip_switch 的 UI 侧）不再有入口",
+        "老用户零重建": "改标签不改数据：万张库约 13 分钟的重编码被完全避开",
+        "守卫脚本": "python/bench/verify_clip_tier_equiv.py 把「fp16 必须更慢」「两档必须 cos≥0.9999」「fp32 能上 DML」固化成可复跑判据，退出码可直接接发版前检查",
+        "验收": "cargo test --lib 427 passed（含新增 restamp 幂等单测、id 跨语言一致性单测）；vue-tsc 0 error；老档位文件 b16-fp32 实测正确解析为新 id 且 /embed_batch 4/4 出 512 维向量"
+      },
+      "tests": {
+        "python/bench/verify_clip_tier_equiv.py --n 32": "速度 + 精度 + 设备三项判定，通过",
+        "cargo test --lib embedding::tests::restamp_moves_old_labels_to_current_id": "两张表各 2 行重打、再跑一次 0 行（幂等）",
+        "cargo test --lib model_dl::tests::clip_model_ids_match_python": "python 的 id / CLIP_RETIRED_IDS 与 Rust 常量逐字一致，且 fp16 目录与 model_fp16.onnx 不再被引用",
+        "老用户路径烟测": "current_clip.json=b16-fp32 → /health.model_id=chinese-clip-vit-b16、/models 单档、/embed_batch 正常"
+      },
+      "related_files": [
+        "python/vcr/config.py",
+        "python/vcr/model_registry.py",
+        "python/vcr/services/clip_subgraph.py",
+        "python/bench/verify_clip_tier_equiv.py",
+        "python/download_models.py",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/db/embedding.rs",
+        "src-tauri/src/db/mod.rs",
+        "src/components/settings/ClipTierSection.vue",
+        "src/components/ModelGpuSettings.vue",
+        "docs/FEAT-137-语义模型收敛单档.md"
+      ],
+      "keywords": [
+        "CLIP",
+        "语义档位",
+        "fp16",
+        "fp32",
+        "向量迁移",
+        "重打标签",
+        "BUG-2026-0910-006",
+        "模型体积"
+      ],
+      "created_at": "2026-11-02T22:00:00+08:00",
+      "updated_at": "2026-11-02T22:00:00+08:00"
     }
   ],
-  "updated": "2026-11-02T20:30:00+08:00"
+  "updated": "2026-11-02T22:00:00+08:00"
 }

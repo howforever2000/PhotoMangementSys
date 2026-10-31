@@ -152,25 +152,17 @@ OCR_MODEL = "paddleocr-det.onnx"                        # PaddleOCR ch_PP-OCRv4 
 #     换档必须换标识（否则新旧向量会被误认为同一空间）
 # ---------------------------------------------------------------------------
 CLIP_MODEL_META: dict[str, dict] = {
+    # FEAT-137：只留一档，且用 **fp32 权重**。
+    #
+    # 为什么删掉 fp16 档（2026-11-02 实测，真实 256px 缩略图，批 8 / 批 32）：
+    #   fp16/CPU  74.4 / 113.7 ms/张
+    #   fp32/CPU  60.6 /  76.4 ms/张   ← 比 fp16 快 18%~33%
+    #   fp32/DML  61.3 /  63.7 ms/张
+    # x86 上 ORT 跑 fp16 权重必须反复 cast，纯亏；而 fp16 档又**永远拿不到 GPU**
+    # （fp16 在 DirectML 上有算子级数值 bug，BUG-2026-0910-006）⇒ 旧默认档是双输。
+    # 两档精度等价：32 张图 cos 最小 0.99999887（见 python/bench/verify_clip_tier_equiv.py）。
     "b16": {
-        "label": "B/16 · 默认（核显本推荐）",
-        "dim": 512,
-        "size": 224,
-        "max_len": 52,
-        "dir": "chinese-clip",
-        "onnx": "model_fp16.onnx",
-        "bytes": 377377730,
-        "repo": "Xenova/chinese-clip-vit-base-patch16",
-        "id": "chinese-clip-vit-b16-fp16",
-        "accuracy": "零样本 81.1%（53 张标注集）",
-        "speed": "CPU ~90ms/张（1 万张约 17 分钟）",
-        "note": "精度/速度平衡档，任何核显本都可跑",
-    },
-    "b16-fp32": {
-        # P20：原本写死「（719MB）」在 label 里，与 meta.bytes（754MB，整图时代体积）
-        # 以及会话实测的 clip_vision.onnx 单文件（345MB）三个数互相矛盾。
-        # 体积改由 `clip_disk_bytes()` 磁盘实算，label 不再携带硬编码体积。
-        "label": "B/16 fp32 · GPU 可加速",
+        "label": "B/16（fp32 权重）",
         "dim": 512,
         "size": 224,
         "max_len": 52,
@@ -178,11 +170,12 @@ CLIP_MODEL_META: dict[str, dict] = {
         "onnx": "model.onnx",
         "bytes": 753665706,
         "repo": "Xenova/chinese-clip-vit-base-patch16",
-        "id": "chinese-clip-vit-b16-fp32",
-        "accuracy": "与 B/16 fp16 同权重（数值略更精确，未单独实测）",
-        "speed": "CPU 约 2 倍于 fp16；DirectML 实测 37.9ms/张（约 fp16 CPU 的 2.4 倍快）",
-        "note": "体积换 GPU 加速可能（fp16 在 DirectML 上有算子级数值 bug，故只有 fp32 档能走 GPU）；"
-                "GPU 默认未开启，需先做数值一致性验证；切换后必须重建语义索引",
+        # 向量空间标签：从 ...-fp16 / ...-fp32 收拢成中性 id（旧标签由宿主启动时重打，
+        # 免全库重编码；等价性见 docs/FEAT-137）
+        "id": "chinese-clip-vit-b16",
+        "accuracy": "零样本 81.1%（53 张标注集，fp16 时期测值；两档 cos≥0.9999988）",
+        "speed": "CPU ~76ms/张（批 32）；核显可选加速（默认 CPU）",
+        "note": "唯一档。以前有两档（fp16 / fp32），实测 fp16 在 CPU 上反而更慢且拿不到 GPU，已下线。",
     },
 }
 
@@ -191,8 +184,15 @@ CLIP_MODEL_META: dict[str, dict] = {
 #     官方权重自行导出（数值自校验 cos=1.000000）69.8~71.7%、Xenova 版 67.9~69.8%，
 #     均低于 B/16 的 81.1~83.0%，且慢 3.5~10×；崩点在场景类（architecture 0~1/4、night 2~3/7）。
 #     证据与复现方式见 design/clip-accuracy-comparison.md（需要时可一键重下/重导）。
-CLIP_MODELS = ["b16", "b16-fp32"]
+CLIP_MODELS = ["b16"]
 CLIP_DEFAULT_MODEL = "b16"
+# 已退役档位 → 唯一档：持久化的 current_clip.json 里写着旧名字时自动迁移，
+# 不报错、不重建索引（旧标签由宿主重打，见下方 CLIP_RETIRED_IDS）。
+CLIP_RETIRED_TIERS = {"b16-fp32": "b16", "b16-fp16": "b16"}
+# 历史上存在过的两个向量空间标签（宿主启动时把它们重打成 "id"）
+CLIP_RETIRED_IDS = ("chinese-clip-vit-b16-fp16", "chinese-clip-vit-b16-fp32")
+# 老目录布局：里面如果已经有 fp32 整图/拆分件就直接用，不让用户重下 719MB
+CLIP_LEGACY_DIRS = ("chinese-clip",)
 CLIP_CURRENT_PATH = os.path.join(MODEL_DIR, "current_clip.json")
 # CLIP 标准归一化（b16 / b16-fp32 同协议）
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
@@ -200,10 +200,28 @@ CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 
 
 def clip_paths(model: str | None = None) -> dict:
-    """返回指定档位（默认当前生效档）的路径与超参。"""
+    """返回档位的路径与超参。
+
+    FEAT-137：只留一档。为不让人白下 719MB，若标准目录里还没有文件、而**老布局**
+    （`chinese-clip/`）里已经有 fp32 整图或拆分件，就直接用老目录。
+    """
     name = model or active_clip()
-    meta = CLIP_MODEL_META.get(name) or CLIP_MODEL_META[CLIP_DEFAULT_MODEL]
+    name = CLIP_RETIRED_TIERS.get(name, name)
+    if name not in CLIP_MODEL_META:
+        name = CLIP_DEFAULT_MODEL
+    meta = CLIP_MODEL_META[name]
     d = os.path.join(MODEL_DIR, meta["dir"])
+
+    def _has(dirpath: str) -> bool:
+        return (os.path.isfile(os.path.join(dirpath, "onnx", meta["onnx"]))
+                or os.path.isfile(os.path.join(dirpath, "clip_vision.onnx")))
+
+    if not _has(d):
+        for alt in CLIP_LEGACY_DIRS:
+            p2 = os.path.join(MODEL_DIR, alt)
+            if _has(p2):
+                d = p2
+                break
     return {
         "name": name,
         "id": meta["id"],
@@ -212,7 +230,6 @@ def clip_paths(model: str | None = None) -> dict:
         "size": meta["size"],
         "max_len": meta["max_len"],
         "dir": d,
-        # 整图文件名随档位不同（fp16 → model_fp16.onnx / fp32 → model.onnx）
         "onnx": meta["onnx"],
         "whole": os.path.join(d, "onnx", meta["onnx"]),
         "vision": os.path.join(d, "clip_vision.onnx"),
@@ -235,6 +252,8 @@ def active_clip() -> str:
         if os.path.isfile(CLIP_CURRENT_PATH):
             with open(CLIP_CURRENT_PATH, encoding="utf-8") as f:
                 name = json.load(f).get("name")
+            # FEAT-137：旧档位名（b16-fp32 / b16-fp16）自动映射到唯一档
+            name = CLIP_RETIRED_TIERS.get(name, name)
             if name in CLIP_MODEL_META and _clip_ready_files(name):
                 return name
     except Exception:  # noqa: BLE001

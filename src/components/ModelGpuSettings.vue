@@ -65,14 +65,16 @@ const clipTierLabel = computed(() => {
   return m?.label ?? clipTier.value ?? "";
 });
 const semantic = computed(() => {
-  if (!store.vcrModels) return { text: "读取中…", tone: "dim" as const };
-  if (clipTier.value.includes("fp16")) {
-    return { text: "CPU（fp16 档固定不走 GPU）", tone: "dim" as const };
+  // FEAT-137：只剩一档（fp32 权重），设备跟随全局 provider。
+  // 以前这里要按档位分情况（fp16 固定 CPU），现在只报实际绑定的 provider。
+  const prov = store.gpuStatus?.sessions?.clip_vision?.[0];
+  if (prov && !prov.startsWith("CPU")) {
+    return { text: prov.startsWith("Dml") ? "DirectML 加速" : prov, tone: "ok" as const };
   }
-  if (accelOn.value) {
-    return { text: "DirectML 加速（跟随下方开关）", tone: "ok" as const };
+  if (store.gpuStatus && !prov) {
+    return { text: "CPU（未加载，首次语义搜索时加载）", tone: "dim" as const };
   }
-  return { text: "CPU（fp32 档可开 GPU）", tone: "dim" as const };
+  return { text: "CPU（默认）", tone: "dim" as const };
 });
 const personChain = computed(() => {
   // FEAT-136：分配表启用时按“实际生效设备”说话，不再用全局开关替它发言
@@ -94,6 +96,7 @@ onMounted(() => {
   // 摘要只做展示：失败不弹错（下面的分区各自有自己的错误态与重试）
   if (!store.vcrModels) void store.fetchVcrModels().catch(() => {});
   if (!store.accel) void store.fetchAccel().catch(() => {});
+  if (!store.gpuStatus) void store.fetchGpuStatus().catch(() => {});
 });
 </script>
 

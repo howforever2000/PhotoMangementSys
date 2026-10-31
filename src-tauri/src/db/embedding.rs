@@ -13,7 +13,6 @@
 //! `content.rs` / `vision.rs` 完成，保持分层解耦。
 
 use std::collections::{HashMap, HashSet};
-
 use rusqlite::{params, Transaction};
 use serde::Serialize;
 
@@ -60,6 +59,13 @@ pub struct EmbeddingVersion {
     pub model: String,
 }
 
+/// 语义向量空间标签（与 `python/vcr/config.py::CLIP_MODEL_META[*].id` 逐字一致，
+/// 单测 `clip_model_ids_match_python` 把这三串钉住）。
+pub const CLIP_MODEL_ID: &str = "chinese-clip-vit-b16";
+/// FEAT-137：历史标签（两档时代）—— 启动时重打成 `CLIP_MODEL_ID`，免全库重编码。
+pub const CLIP_OLD_MODEL_IDS: &[&str] =
+    &["chinese-clip-vit-b16-fp16", "chinese-clip-vit-b16-fp32"];
+
 impl Database {
     /// 建表（FEAT-SEM）：`IF NOT EXISTS` 启动安全调用
     pub fn init_embedding_schema(&self) -> Result<(), DbError> {
@@ -81,6 +87,44 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_pe_path ON photo_embeddings(path);",
         );
         Ok(())
+    }
+
+    /// FEAT-137：把旧向量空间标签**重打**成当前 id（免全库重编码）。
+    ///
+    /// 背景：语义档位从两档（fp16 / fp32）收拢为一档（fp32 权重），向量空间标签
+    /// 从 `...-b16-fp16` / `...-b16-fp32` 统一为 `chinese-clip-vit-b16`。
+    /// 若不迁移，用户升级后 `WHERE model = ?` 一条都命中不了 ⇒ 语义搜索/分类会
+    /// 变成「尚未建立索引」，要么静默失效、要么逼着用户把整库重编码（万张 ~13 分钟）。
+    ///
+    /// 为什么重打标签在数值上成立（实测，见 python/bench/verify_clip_tier_equiv.py）：
+    ///   fp16 档 vs fp32 档同一批 32 张图 **cos 最小 0.99999887**、逐元素最大差 0.000429，
+    ///   同一套权重只是导出精度不同。余弦排序上 1e-6 级偏移只可能影响近乎并列的档位。
+    ///
+    /// 幂等：重复调用只会 0 行；`UPDATE OR REPLACE` 处理新旧标签共存时的主键冲突。
+    pub fn restamp_embedding_models(
+        &self,
+        old_ids: &[&str],
+        new_id: &str,
+    ) -> Result<usize, DbError> {
+        if old_ids.is_empty() || old_ids.contains(&new_id) {
+            return Ok(0);
+        }
+        let mut moved = 0usize;
+        for old in old_ids {
+            if old == &new_id {
+                continue;
+            }
+            let n1 = self.conn.execute(
+                "UPDATE OR REPLACE photo_embeddings SET model = ?1 WHERE model = ?2",
+                params![new_id, old],
+            )?;
+            let n2 = self.conn.execute(
+                "UPDATE OR REPLACE photo_text_embeddings SET model = ?1 WHERE model = ?2",
+                params![new_id, old],
+            )?;
+            moved += n1 + n2;
+        }
+        Ok(moved)
     }
 
     /// 批量 upsert（按 photo_hash 主键，500/批事务由调用方控制）
@@ -318,4 +362,82 @@ pub fn f32_vec_from_blob(blob: &[u8]) -> Vec<f32> {
     blob.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp_db(tag: &str) -> (Database, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "pms_emb_{tag}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::open(&dir.join("photos.db")).expect("应能建库");
+        (db, dir)
+    }
+
+    fn seed(db: &Database, model: &str, hash: &str) {
+        db.conn()
+            .execute(
+                "INSERT INTO photo_embeddings
+                 (photo_hash,user_id,album_id,path,dim,model,embedding,generated_at)
+                 VALUES (?1,1,1,'/p.jpg',512,?2,?3,'t')",
+                params![hash, model, f32_blob(&[0.1f32; 4])],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO photo_text_embeddings
+                 (photo_hash,kind,text,model,dim,embedding,source_hash,generated_at)
+                 VALUES (?1,'desc','x',?2,512,?3,'sh','t')",
+                params![hash, model, f32_blob(&[0.1f32; 4])],
+            )
+            .unwrap();
+    }
+
+    fn count(db: &Database, model: &str) -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM photo_embeddings WHERE model=?1)
+                      + (SELECT COUNT(*) FROM photo_text_embeddings WHERE model=?1)",
+                params![model],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// FEAT-137：两档收拢为一档时，旧向量空间标签要被重打，而不是逼用户重编码。
+    ///
+    /// 不迁移的后果：`WHERE model = ?` 一条也命中不了 → 语义搜索/分类变成
+    /// 「尚未建立索引」，不报错，只是搜不到。
+    #[test]
+    fn restamp_moves_old_labels_to_current_id() {
+        let (db, dir) = temp_db("restamp");
+        seed(&db, "chinese-clip-vit-b16-fp16", "h1");
+        seed(&db, "chinese-clip-vit-b16-fp32", "h2");
+        assert_eq!(count(&db, "chinese-clip-vit-b16-fp16"), 2);
+        assert_eq!(count(&db, "chinese-clip-vit-b16-fp32"), 2);
+
+        let moved = db
+            .restamp_embedding_models(CLIP_OLD_MODEL_IDS, CLIP_MODEL_ID)
+            .unwrap();
+        assert_eq!(moved, 4, "两张图 × 两张表");
+        assert_eq!(count(&db, CLIP_MODEL_ID), 4);
+        assert_eq!(count(&db, "chinese-clip-vit-b16-fp16"), 0);
+        assert_eq!(count(&db, "chinese-clip-vit-b16-fp32"), 0);
+
+        // 幂等：再跑一次不该动任何行
+        let again = db
+            .restamp_embedding_models(CLIP_OLD_MODEL_IDS, CLIP_MODEL_ID)
+            .unwrap();
+        assert_eq!(again, 0);
+        assert_eq!(count(&db, CLIP_MODEL_ID), 4);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

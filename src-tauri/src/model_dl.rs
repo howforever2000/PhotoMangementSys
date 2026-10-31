@@ -101,26 +101,16 @@ impl DlSpec {
 /// 所有源均为国内可直连：HF 走 hf-mirror / aifasthub 双路竞速，
 /// OCR 走阿里 ModelScope。体积取自各源 Content-Range 实测。
 fn specs() -> Vec<DlSpec> {
-    const CLIP_FP16: &[DlFile] = &[
-        DlFile {
-            remote: "onnx/model_fp16.onnx",
-            local: "chinese-clip/onnx/model_fp16.onnx",
-            abs_url: None,
-            expect_min: 100_000_000,
-        },
-        DlFile {
-            remote: "tokenizer.json",
-            local: "chinese-clip/tokenizer.json",
-            abs_url: None,
-            expect_min: 1_000,
-        },
-        DlFile {
-            remote: "vocab.txt",
-            local: "chinese-clip/vocab.txt",
-            abs_url: None,
-            expect_min: 100,
-        },
-    ];
+    // FEAT-137：语义模型只留一档，且用 **fp32 权重**。
+    //
+    // 删掉 fp16 档的依据（真实 256px 缩略图，批 8 / 批 32，实测）：
+    //   fp16/CPU  74.4 / 113.7 ms/张
+    //   fp32/CPU  60.6 /  76.4 ms/张   ← 比 fp16 快 18%~33%（x86 上 ORT 跑 fp16 要反复 cast）
+    //   两档精度等价：32 张图 cos 最小 0.99999887
+    // 且 fp16 档又永远拿不到 GPU（fp16 在 DirectML 上有算子级数值 bug）⇒ 旧默认档双输。
+    //
+    // 落位目录沿用 `chinese-clip-fp32/`：已经下过 fp32 档的用户不用重下 719MB；
+    // 下过 fp16 档的用户需重下一次（旧的文件成了垃圾，可在设置里清理）。
     const CLIP_FP32: &[DlFile] = &[
         DlFile {
             remote: "onnx/model.onnx",
@@ -222,18 +212,9 @@ fn specs() -> Vec<DlSpec> {
             expect_bytes: 12_823_637,
         },
         DlSpec {
-            name: "chinese-clip",
-            label: "语义 · B/16 fp16（推荐）",
-            note: "377MB · 零样本检索默认档，固定 CPU 推理；核显本首选",
-            repo: "Xenova/chinese-clip-vit-base-patch16",
-            files: CLIP_FP16,
-            required: false,
-            expect_bytes: 377_377_730 + 439_124 + 109_540,
-        },
-        DlSpec {
             name: "chinese-clip-fp32",
-            label: "语义 · B/16 fp32（GPU）",
-            note: "754MB · 体积换精度，可走 DirectML 加速",
+            label: "语义模型 · B/16",
+            note: "754MB · 零样本检索唯一档（fp32 权重；验收：CPU 比旧 fp16 快 18~33%）",
             repo: "Xenova/chinese-clip-vit-base-patch16",
             files: CLIP_FP32,
             required: false,
@@ -1051,6 +1032,34 @@ mod tests {
             .join("vcr")
             .join("config.py");
         std::fs::read_to_string(&config_path).expect("应能读取 python/vcr/config.py")
+    }
+
+    /// FEAT-137：向量空间标签（单档 fp32）必须与 python 侧逐字一致。
+    ///
+    /// 三个字符串跨语言对齐：python `CLIP_MODEL_META["b16"].id` 与 `CLIP_RETIRED_IDS`，
+    /// Rust `db::embedding::CLIP_MODEL_ID` / `CLIP_OLD_MODEL_IDS`。
+    /// 漂了会怎样：宿主重打标签的目标 id 与服务端回报的 model_id 不一致 →
+    /// 搜索结果全部落空，而这个 bug 不会报错，只会「搜不到」。
+    #[test]
+    fn clip_model_ids_match_python() {
+        let text = config_py();
+        assert!(
+            text.contains("\"id\": \"chinese-clip-vit-b16\""),
+            "python 侧唯一档的 id 应为 chinese-clip-vit-b16"
+        );
+        assert!(
+            text.contains("CLIP_RETIRED_IDS = (\"chinese-clip-vit-b16-fp16\"")
+                && text.contains("\"chinese-clip-vit-b16-fp32\")"),
+            "python 侧退役标签表变了，Rust 的迁移清单要同步"
+        );
+        assert_eq!(crate::db::embedding::CLIP_MODEL_ID, "chinese-clip-vit-b16");
+        assert_eq!(
+            crate::db::embedding::CLIP_OLD_MODEL_IDS,
+            &["chinese-clip-vit-b16-fp16", "chinese-clip-vit-b16-fp32"]
+        );
+        // 单一档位：旧的两档选择已下线
+        assert!(!text.contains("\"dir\": \"chinese-clip\""), "fp16 档目录已下线");
+        assert!(!text.contains("model_fp16.onnx"), "fp16 权重不应再被任何档位引用");
     }
 
     /// FEAT-136：OpenVINO 运行时的落地路径必须与 python 侧逐字一致。
