@@ -98,7 +98,9 @@ def _health_dict() -> dict:
 #     B/16 ↔ L/14-336）；新增 /embed_text_batch。
 # v6：CPU 线程数可调（/threads 读写 + /benchmark 支持临时线程覆盖 + /benchmark_sweep 扫档），
 #     供「⚙ 性能设置」按不同硬件实测选优。
-VCR_API_VERSION = 12  # v12: 回退 OpenVINO/NPU 语义塔后端（FEAT-133），回到纯 CPU + DirectML；
+VCR_API_VERSION = 13  # v13: FEAT-135 可选的 OpenVINO/NPU 执行设备（det/ocr/face_rec，
+#                        默认关闭，/health.ov 如实上报）；
+#                        v12: 回退 OpenVINO/NPU 语义塔后端（FEAT-133），回到纯 CPU + DirectML；
 #                        v9: 人脸质量闸门（几何/尺寸/清晰度 + 边缘质量限新建）
 
 
@@ -122,6 +124,9 @@ def health():
         "persons": d["persons"],
         "threads": config.threads(),
         "gpu": reg.gpu_info(),
+        # FEAT-135：OV/NPU 后端现状（想接哪些通道 / 实际接上了哪些 / 设备可用性）。
+        # 只读、不触发加载：ov_info() 里只碰已存在的会话。
+        "ov": reg.ov_info(),
         "batch_max": config.BATCH_CHUNK_MAX,
         # 各通道最近一次加载失败原因：宿主据此在日志里直接写明「为何 ok=false」
         # （面板转圈排查要点——BUG-2026-0921-003）

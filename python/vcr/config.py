@@ -482,6 +482,37 @@ PHOTO_PARALLEL = max(1, min(8, int(os.environ.get("VCR_PHOTO_PARALLEL", "6"))))
 VCR_PROVIDER = os.environ.get("VCR_PROVIDER", "auto").lower()  # auto | cpu | gpu
 
 # ---------------------------------------------------------------------------
+# FEAT-135：把选定的 ONNX 通道交给 OpenVINO（Intel NPU）执行
+#
+# 默认 **空 = 关闭**，语义与今天逐字一致；AMD / 非 Intel 机器永远走不到这条路。
+#
+# 为什么是这三条：DML 单队列才是 AI 腿的瓶颈（持锁占墙钟 98%），收益 ≈
+# 「从 DML 队列里拿走多少次加锁」，而不是单模型快多少毫秒。
+# 实测（53 张 / P=6 / threads=8，摊薄墙钟 ms/张）：
+#   cpu 145.2 · dml 85.7 · 仅这三条走 NPU 43.0 · 再加 face_det 留 DML 38.4
+# 只搬 det+face_rec（不加 ocr）只有 -20%；加不加上 ocr 是分水岭。
+#
+#   VCR_OV_CHANNELS=det,ocr,face_rec
+#   VCR_OV_DEVICE=NPU              # 也可填 GPU/CPU 做同机对照
+#   VCR_OV_PATH=<openvino 所在目录>  # 未装进解释器时指定运行时位置
+#
+# ⚠️ 形状必须与 preprocess.py 实际喂的一致：本仓库 OCR 是 640（与 det 共用同一
+# 份 letterbox 缩放），**不是**公开报告里常见的 960。写错会被 ocr_service 的
+# `except Exception` 吞成降级、通道静默不跑（探针曾因此把 -20% 误报成 -55%）。
+# ⚠️ NPU 只吃静态 shape；动态维会让编译器 LLVM abort 把整个进程带走（不可 catch）。
+# ---------------------------------------------------------------------------
+OV_CHANNELS = [s.strip().lower() for s in
+               os.environ.get("VCR_OV_CHANNELS", "").split(",") if s.strip()]
+OV_DEVICE = os.environ.get("VCR_OV_DEVICE", "NPU").upper()
+OV_SHAPES: dict[str, tuple[int, ...]] = {
+    "det": (1, 3, 640, 640),      # preprocess.det_tensor → DET_SIZE
+    "ocr": (1, 3, 640, 640),      # preprocess.ocr_tensor → 与 det 同一份缩放（不是 960！）
+    "face_rec": (1, 3, 112, 112),  # preprocess.face_align
+}
+# 编译缓存（首次编译可达秒级，之后毫秒级加载）。落 MODEL_DIR 下，与模型同生命周期。
+OV_CACHE_DIR = os.environ.get("VCR_OV_CACHE") or os.path.join(MODEL_DIR, "_ov_cache")
+
+# ---------------------------------------------------------------------------
 # 阈值：人物检测 / 仲裁（F20 固化值 + 校准 2026-08-13）
 # ---------------------------------------------------------------------------
 PERSON_CONF_MIN = 0.35        # 人像检测最低置信度（F20 固化值）

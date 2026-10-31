@@ -5185,7 +5185,56 @@
       ],
       "created_at": "2026-10-30T16:40:00+08:00",
       "updated_at": "2026-10-30T16:40:00+08:00"
+    },
+    {
+      "id": "FEAT-135",
+      "name": "推理腿可选的 OpenVINO/NPU 执行设备（det/ocr/face_rec 三条腿，默认关闭）",
+      "module": "python/vcr/ov_backend.py（新）· python/vcr/config.py（OV_* 开关）· python/vcr/model_registry.py（_load / run / _gpu_backed / ov_info）· python/server.py（/health.ov + API v13）· python/bench/probe_npu_det_r50_e2e.py（新探针）",
+      "status": "done",
+      "purpose": "用户拿 12 个 ONNX 在 NPU 上真编译跑了一遍，问「最小改动接 NPU 加速」。仓库已有结论是 FEAT-133（只接 clip_vision，快 2.9× 但只占扫描 0.2%，已回退）。本轮在 53 张真实相册上重测后发现**抓手完全不同**：DML 单队列才是 AI 腿的瓶颈（持锁占墙钟 98%，每张 116 次加锁；det_10g 单张 16ms 在 P=6 下次持锁实测 68~190ms），所以收益 ≈ 从 DML 队列里拿走多少次加锁，而不是单模型快多少毫秒。据此把加锁次数最多的三条腿（det 每张 1 次、ocr 约 72% 的图 1 次、face_rec 有脸时每脸 1 次）交给 NPU，face_det（det_10g，NPU 慢 7 倍）永久排除。",
+      "implementation": {
+        "为什么是这三条腿": "只搬 det+face_rec 是 -20%，再加 ocr 才到 -55%：DML 加锁 116→53→15 次。ocr 是分水岭，但它在本仓库喂的是 **640×640**（与 det 共用同一份 letterbox 缩放），不是公开报告常见的 960。",
+        "静态 shape 是硬前置": "NPU 编译器遇到动态维会 LLVM abort 把整个进程带走（不可 catch）。ov_backend.OvChannel 编译前 reshape 到 config.OV_SHAPES，并断言目标 shape 全为正整型，让将来换模型在 Python 层就炸。",
+        "设备锁": "OvChannel 自带按设备分的锁（ov_backend.device_lock），registry._gpu_backed 对 OvChannel 返回 False —— 否则会套上 _GPU_RUN_LOCK，让 NPU 与 DML 互相串行，「两个独立引擎并行」立即失效。",
+        "回退语义": "只在 config.OV_CHANNELS 命中且设备真可用（Core.available_devices 含该设备）时才编译；编译失败用 logutil 记下原因后原样落回 ONNX Runtime，绝不改 is_ready（避免 BUG-2026-1101 那类「显示已启用、占用恒为 0」）。",
+        "鸭子垫片": "OvChannel 实现 get_providers/get_inputs/get_session_options/run，_session_facts 与 _bench_feed 原样可用；服务层（detector/face_service/ocr_service）一行未改。",
+        "默认关闭": "OV_CHANNELS 默认空 = 行为与今天逐字一致；AMD/非 Intel 机器永远走不到这条路。UI/按需下载组件（45MB）留给下一阶段，本轮只做 env 开关。"
+      },
+      "highlights": {
+        "53 张探针（P=6 threads=8 摊薄墙钟 ms/张）": "cpu 145.2 / dml 85.7 / 三通道上 NPU 不开 DML 43.0 / 再加 face_det 留 DML 38.4；dml→npu 稳定 -55~-60%（两轮不同线程数与两次独立运行均复现）",
+        "983 张真扫描（HTTP + AI 腿 ∥ 语义腿并发，批 8 P6）": "328.2s → 136.6s = **-58.4%**（336.6 → 140.1 ms/张）；200 张子集 -55.5%，方向与量级一致",
+        "数值等价": "det 人框 53/53 零差异；w600k_r50 38 张真人脸 cos 最小 0.99997220；paddleocr 掩码 IoU 中位 1.0000、6/53 张差 1 个文本框；端到端 ClassifyResult 53/53 硬字段一致、confidence|Δ|≤0.0007",
+        "不需要 DML": "只接 NPU（不开 GPU 开关）已拿到最好结果，而 GPU 开关是纯内存态、重启回 CPU、DML 有段错误历史 —— 少一个开关",
+        "瓶颈已转移到 NPU": "NPU 持锁 87~89%（接近饱和），再加第四个模型无收益；DML 从 98% 降到 45%（只剩 face_det 15 次）"
+      },
+      "tests": {
+        "python/bench/probe_npu_det_r50_e2e.py": "四种配置对比 + 完整性校验（每个 OV 通道实跑次数必须等于 timing 段调用次数）+ --equiv-only 数值等价",
+        "python/.venv-vcr/Scripts/python.exe python/bench/probe_npu_det_r50_e2e.py <相册> --rounds 3 --photos-parallel 6 --threads 8 --modes cpu,dml,ov,ov_dml --ov-channels det,ocr,face_rec": "复核 -58%/-55%",
+        "/health": "v13；ov.active=['det','face_rec','ocr']、gpu.sessions 三条腿显示 OpenVINO:NPU，face_det 保持 CPU/DML"
+      },
+      "related_files": [
+        "python/vcr/ov_backend.py",
+        "python/vcr/model_registry.py",
+        "python/vcr/config.py",
+        "python/server.py",
+        "python/bench/probe_npu_det_r50_e2e.py",
+        "docs/FEAT-133-语义索引NPU加速.md（被本轮推翻的两条结论：ocr 无收益 / clip 是最佳候选）"
+      ],
+      "keywords": [
+        "OpenVINO",
+        "NPU",
+        "Intel AI Boost",
+        "推理后端",
+        "DML 单队列",
+        "静态 shape",
+        "det",
+        "ocr",
+        "face_rec",
+        "性能"
+      ],
+      "created_at": "2026-11-02T12:00:00+08:00",
+      "updated_at": "2026-11-02T12:00:00+08:00"
     }
   ],
-  "updated": "2026-10-30T16:40:00+08:00"
+  "updated": "2026-11-02T12:00:00+08:00"
 }

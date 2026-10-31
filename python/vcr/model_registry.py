@@ -16,6 +16,7 @@ import onnxruntime as ort
 
 from . import config
 from . import logutil
+from . import ov_backend
 
 # 模型加载失败后的冷却期（秒）：
 # 冷启动瞬间的加载失败（显存/磁盘/驱动瞬时抖动）不应把该通道**永久**锁死
@@ -43,6 +44,9 @@ LOAD_RETRY_COOLDOWN = 30.0
 # 纯 CPU 会话不过这把锁，零开销。
 # ---------------------------------------------------------------------------
 _GPU_RUN_LOCK = threading.Lock()
+
+# OV 设备不可用的告警只打一次（每通道各打一次会把日志刷满）
+_OV_UNAVAIL_WARNED = False
 
 
 def clip_disk_bytes(paths: dict) -> int:
@@ -229,6 +233,22 @@ class ModelRegistry:
             for p in paths:
                 if os.path.isfile(p):
                     attempted = True
+                    # FEAT-135：先试 OpenVINO（只在 config.OV_CHANNELS 命中且设备真可用时），
+                    # 失败则**原样落到下面的 ONNX Runtime 分支** —— 语义必须等于「没开这个开关」。
+                    ov_sess = self._try_ov(key, p)
+                    if ov_sess is not None:
+                        self._sessions[key] = ov_sess
+                        self._ready[key] = True
+                        self._session_info[key] = self._session_facts(
+                            ov_sess, p, False, None
+                        )
+                        self._failed_at.pop(key, None)
+                        self._load_errors.pop(key, None)
+                        logutil.err(
+                            f"[VCR] {key} 执行设备 = OpenVINO:{ov_sess.device} "
+                            f"(编译 {ov_sess.compile_s:.2f}s, shape={ov_sess.shape})"
+                        )
+                        return
                     try:
                         # 会话选项必须显式创建并复用：既保证会话按当前线程数创建，
                         # 也让 _session_facts 上报的 threads 与实际绑定一致
@@ -258,6 +278,55 @@ class ModelRegistry:
     def load_errors(self) -> dict[str, str]:
         """各通道最近一次加载失败原因（/health 暴露，供宿主日志定位「面板转圈」）。"""
         return dict(self._load_errors)
+
+    # ------------------------------------------------------------------
+    # FEAT-135：OpenVINO / NPU 后端
+    # ------------------------------------------------------------------
+    def _try_ov(self, key: str, path: str):
+        """该通道是否该走 OpenVINO；不适用返回 None，编译失败记日志后返回 None。
+
+        纪律：**不能用静默 except 吞掉编译失败的原因** —— 那就退化成
+        BUG-2026-1101 那种「界面显示 NPU 已启用、NPU 占用恒为 0」。
+        """
+        if key not in config.OV_CHANNELS:
+            return None
+        global _OV_UNAVAIL_WARNED
+        if not ov_backend.available():
+            if not _OV_UNAVAIL_WARNED:
+                _OV_UNAVAIL_WARNED = True
+                info = ov_backend.probe_devices()
+                logutil.err(
+                    f"[VCR] OV_CHANNELS={config.OV_CHANNELS} 但 {config.OV_DEVICE} "
+                    f"不可用（installed={info['installed']} devices={info['devices']} "
+                    f"error={info['error'] or '-'}），全部回落 ONNX Runtime"
+                )
+            return None
+        try:
+            return ov_backend.build(key, path)
+        except Exception as e:  # noqa: BLE001
+            logutil.err(
+                f"[VCR] {key} OpenVINO 编译失败，回落 ONNX Runtime: "
+                f"{type(e).__name__}: {e}"
+            )
+            return None
+
+    def ov_info(self) -> dict:
+        """OV 后端现状（/health 用）：想接哪些通道、实际接上了哪些。"""
+        dev = ov_backend.probe_devices()
+        on_ov = sorted(k for k, v in self._sessions.items()
+                       if isinstance(v, ov_backend.OvChannel))
+        return {
+            "channels": list(config.OV_CHANNELS),
+            "device": config.OV_DEVICE,
+            "installed": dev["installed"],
+            "devices": dev["devices"],
+            "available": bool(dev["installed"]) and any(
+                str(d).upper() == config.OV_DEVICE for d in dev["devices"]),
+            "source": dev["source"],
+            "error": dev["error"],
+            "active": on_ov,
+            "sessions": {k: v.get("providers") for k, v in self._session_info.items()},
+        }
 
     # ------------------------------------------------------------------
     # 规则通道
@@ -350,6 +419,10 @@ class ModelRegistry:
         info = self._session_info.get(key)
         if info is None:
             return True
+        # OpenVINO 通道自带设备锁（NPU 一把、与 DML 不共享），不能再套 _GPU_RUN_LOCK
+        # —— 套上就等于让 NPU 和 DML 互相串行，「两个独立引擎」这句话立刻失效。
+        if isinstance(self._sessions.get(key), ov_backend.OvChannel):
+            return False
         provs = info.get("providers")
         if not provs:
             return True
@@ -357,6 +430,8 @@ class ModelRegistry:
 
     def run(self, key: str, tensor) -> list[np.ndarray]:
         sess = self._sessions[key]
+        if isinstance(sess, ov_backend.OvChannel):
+            return sess.infer(tensor)      # 锁在 OvChannel 内部（按设备）
         if self._gpu_backed(key):
             with _GPU_RUN_LOCK:
                 return sess.run(None, {sess.get_inputs()[0].name: tensor})
