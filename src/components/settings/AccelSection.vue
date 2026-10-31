@@ -49,11 +49,21 @@ const npuOk = computed(() => accel.value?.available?.NPU === true);
 const gpuOk = computed(() => accel.value?.available?.GPU === true);
 const installed = computed(() => ov.value?.installed === true);
 
-/** 勾选态 = 当前分配里出现了该设备 */
+/** 勾选态 = 当前分配里出现了该设备（clip 不参与这两项，它自己有行内开关） */
 const npuChecked = computed(() =>
-  !saving.value && Object.values(accel.value?.channels ?? {}).includes("NPU"));
-const gpuChecked = computed(() =>
-  !saving.value && Object.values(accel.value?.channels ?? {}).includes("GPU"));
+  !saving.value && NPU_KEYS.some((k) => accel.value?.channels?.[k] === "NPU"));
+const gpuChecked = computed(
+  () =>
+    !saving.value &&
+    (["det", "ocr", "face_rec"] as const).some(
+      (k) => accel.value?.channels?.[k] === "GPU",
+    ),
+);
+
+/** 语义索引（CLIP）自己的设备：默认 CPU（上核显会拖慢 AI 腿，见 docs/FEAT-141） */
+const clipOnGpu = computed(() => accel.value?.channels?.clip === "GPU");
+const clipEff = computed(
+  () => accel.value?.effective?.clip ?? accel.value?.channels?.clip ?? "");
 
 const rows = computed(() =>
   ROWS.map((r) => ({
@@ -87,8 +97,14 @@ async function load(silent = false) {
 
 onMounted(() => void load(true));
 
-/** 按两个勾选算通道分配（顺序即优先级：NPU 拿前三，剩下的给核显） */
-function channelsFor(useNpu: boolean, useGpu: boolean): Record<string, AccelDevice> {
+/** 按勾选算通道分配（顺序即优先级：NPU 拿前三，剩下的给核显）。
+ *  CLIP 不跟 checkbox 走：它有自己的行内开关（默认 CPU，见下方 tip）。
+ */
+function channelsFor(
+  useNpu: boolean,
+  useGpu: boolean,
+  clipGpu = clipOnGpu.value,
+): Record<string, AccelDevice> {
   const out: Record<string, AccelDevice> = {};
   if (useNpu && useGpu) {
     for (const k of NPU_KEYS) out[k] = "NPU";
@@ -98,16 +114,21 @@ function channelsFor(useNpu: boolean, useGpu: boolean): Record<string, AccelDevi
     // 核显没勾：人脸检测明确回 CPU（不能留空，空会跟随自动探测又跑回核显）
     out.face_det = "CPU";
   } else if (useGpu) {
+    // 只勾核显 = “全在核显上”：连语义索引一起（用户显式选择，按它执行）
     for (const k of ALL_KEYS) out[k] = "GPU";
+    out.clip = gpuOk.value ? "GPU" : "CPU";
+    return out;
   }
+  // 其余情况：语义索引看它自己那一行（默认 CPU）
+  out.clip = clipGpu && gpuOk.value ? "GPU" : "CPU";
   return out;
 }
 
-async function apply(useNpu: boolean, useGpu: boolean) {
+async function apply(useNpu: boolean, useGpu: boolean, clipGpu?: boolean) {
   saving.value = true;
   busy.value = true;
   try {
-    const ch = channelsFor(useNpu, useGpu);
+    const ch = channelsFor(useNpu, useGpu, clipGpu);
     const on = Object.keys(ch).length > 0;
     await withTimeout(store.setAccel(on, on ? ch : undefined), PERF_TIMEOUT.write, "set_vcr_accel");
     notify.success(on ? "已更新加速分配" : "已关闭加速", on ? "通道正在后台重建，几秒后生效" : "全部计算回到 CPU");
@@ -123,6 +144,8 @@ async function apply(useNpu: boolean, useGpu: boolean) {
 
 const toggleNpu = () => apply(!npuChecked.value, gpuChecked.value);
 const toggleGpu = () => apply(npuChecked.value, !gpuChecked.value);
+/** 语义索引单独切：保持两个勾选不变 */
+const toggleClip = () => apply(npuChecked.value, gpuChecked.value, !clipOnGpu.value);
 
 async function download() {
   busy.value = true;
@@ -174,12 +197,21 @@ async function download() {
     <i :style="{ width: `${Math.min(100, dl.total ? (dl.bytes / dl.total) * 100 : 0)}%` }"></i>
   </div>
 
-  <!-- 对照表：勾选结果落到每条计算上 -->
+  <!-- 对照表：勾选结果落到每条计算上（CLIP 那一行的设备可点，单独切） -->
   <ul v-if="accel" class="map">
     <li v-for="r in rows" :key="r.key">
       <span class="m-name">{{ r.label }}</span>
       <span class="m-when">{{ r.when }}</span>
-      <span class="m-dev" :class="(r.eff || r.want).toLowerCase()">
+      <button
+        v-if="r.key === 'clip' && gpuOk"
+        class="m-dev link"
+        :disabled="locked || busy"
+        :title="clipOnGpu ? '切回 CPU：语义腿变慢，但不与识别抢核显' : '改用核显：首次导入大量照片时更快，日常增量反而拖慢识别'",
+        @click="toggleClip"
+      >
+        {{ devLabel(r.eff || r.want) }}
+      </button>
+      <span v-else class="m-dev" :class="(r.eff || r.want).toLowerCase()">
         {{ devLabel(r.eff || r.want) }}
       </span>
     </li>
@@ -189,6 +221,10 @@ async function download() {
       <span class="m-dev cpu">CPU</span>
     </li>
   </ul>
+  <p v-if="gpuOk && clipEff" class="tip">
+    语义索引默认走 CPU（{{ clipOnGpu ? "已改成核显" : "首次导入大量照片时可点右侧设备改用核显" }}）：
+    它整批编码会占住核显队列，日常增量扫描时反而把识别拖慢约 30%。
+  </p>
 </template>
 
 <style scoped>
@@ -280,6 +316,24 @@ async function download() {
 }
 .m-dev.gpu {
   color: var(--color-success, #3aa76d);
+}
+.m-dev.link {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.m-dev.link:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary-text);
+}
+.tip {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--color-text-3);
 }
 .cpu-only .m-name,
 .cpu-only .m-dev {

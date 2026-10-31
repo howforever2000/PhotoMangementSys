@@ -236,6 +236,25 @@ class ModelRegistry:
     # 但各通道最优设备不同（det/ocr/face_rec → NPU；det_10g → GPU/CPU）。
     # 一个全局「GPU 开关」表达不了这件事，所以这里按通道取设备。
     # ------------------------------------------------------------------
+    def _channels(self) -> dict[str, str]:
+        """生效中的通道表（已归一化）。
+
+        - auto：按硬件推荐
+        - off：空
+        - on：以持久化为准，但**新版本新增的可分配通道**（如 FEAT-141 的 `clip`）
+          在旧文件里没有 → 按推荐值补上。否则它会静默回落到「旧的全局 provider」
+          语义，UI 上就出现「勾了核显却写 CPU」这种对不上的状态。
+        """
+        s = config.accel_setting()
+        if s["enabled"] is None:
+            return self.auto_channels()
+        if not s["enabled"]:
+            return {}
+        ch = dict(s["channels"])
+        for k, v in self.default_channels().items():
+            ch.setdefault(k, v)
+        return ch
+
     def _device_of(self, key: str) -> str:
         """该通道被分配到的设备；"" = 未分配（沿用旧的全局 GPU 开关，行为不变）。
 
@@ -243,10 +262,7 @@ class ModelRegistry:
         理由：模型不该默认跑 CPU（CPU 要留给缩略图/EXIF/地点解码）。
         硬件不支持（既无 NPU 又无 DML）时推荐为空，效果等于未启用。
         """
-        s = config.accel_setting()
-        if s["enabled"] is None:
-            return self.auto_channels().get(key, "")
-        return s["channels"].get(key, "") if s["enabled"] else ""
+        return self._channels().get(key, "")
 
     @staticmethod
     def _ort_providers_for(device: str) -> list[str] | None:
@@ -366,13 +382,22 @@ class ModelRegistry:
 
         刻意不让 GPU 空着：在本机它接管 face_det（det_10g，NPU 上 116.5ms，
         比 DML 的 16.5ms 慢 7 倍）—— GPU 与 NPU 同时有活干，且两者不抢队列。
+
+        FEAT-141：`clip` 也在这张表里了，但它的**默认是 CPU**，不是核显 ——
+        这是量出来的取舍（两轮 200 张全新建档 vs 增量重扫）：
+          CLIP 在核显：语义腿 1.4~1.8x 快，但把 AI 腿拖慢 30~70%
+          （它整批编码会长时间占住 DML 队列，人脸检测在后面排队）
+        全新导入大量照片时换它划算，日常增量重扫则是纯亏 —— 常见的后者。
+        所以默认保守，UI 上那一行可一键切到核显。
         """
         npu_ok = ov_backend.available("NPU")
         dml_ok = any(p in ort.get_available_providers()
                      for p in ("DmlExecutionProvider", "CUDAExecutionProvider"))
         out: dict[str, str] = {}
         for k in config.CHANNEL_KEYS:
-            if npu_ok and k in config.OV_SHAPES:
+            if k == "clip":
+                out[k] = "CPU"
+            elif npu_ok and k in config.OV_SHAPES:
                 out[k] = "NPU"
             elif dml_ok:
                 out[k] = "GPU"
@@ -398,12 +423,14 @@ class ModelRegistry:
         npu_ok = ov_backend.available("NPU")
         dml_ok = "DmlExecutionProvider" in ort.get_available_providers()
         auto = s["enabled"] is None
-        channels = self.auto_channels() if auto else s["channels"]
+        channels = self._channels() if auto else self._channels()
         effective: dict[str, str] = {}
         for k in config.CHANNEL_KEYS:
-            provs = (self._session_info.get(k) or {}).get("providers") or []
+            # clip 是伪通道：实际看 clip_vision 会话（双塔同一套 provider 规则）
+            sess_key = "clip_vision" if k == "clip" else k
+            provs = (self._session_info.get(sess_key) or {}).get("providers") or []
             if not provs:
-                effective[k] = "" if not self.is_ready(k) else "?"
+                effective[k] = "" if not self.is_ready(sess_key) else "?"
             elif any(str(p).startswith("OpenVINO:") for p in provs):
                 effective[k] = "NPU"
             elif any(not str(p).startswith("CPU") for p in provs):
@@ -492,12 +519,24 @@ class ModelRegistry:
         return self._sessions.get("ocr")
 
     def _clip_providers(self) -> list[str]:
-        """CLIP 双塔的 provider：跟随全局 provider（与其它通道同一口径）。
+        """CLIP 双塔的 provider：按「加速分配」里 `clip` 那一项决定。
 
-        FEAT-137 之前这里有一道「fp16 档硬钉 CPU」的特例，因为 fp16 权重在
-        DirectML 上有算子级数值 bug（BUG-2026-0910-006，会静默产出错向量）。
-        fp16 档下线后这份特例也一并删掉 —— 雷泉本身没了，不需要再守。
+        历史：FEAT-137 之前这里是「fp16 档硬钉 CPU」（fp16 在 DML 上有算子级
+        数值 bug，BUG-2026-0910-006）；fp16 档下线后那道特例删了，改用全局
+        provider —— 但那留下一个**隐式状态**：CLIP 到底在 CPU 还是 DML 取决于
+        「用户有没有点过加速开关」（set_accel 会把 _providers_sel 复位成自动探测），
+        UI 里根本看不到。FEAT-141 把 `clip` 摆上分配表，这里按表执行。
+
+        `clip` 只能取 CPU / GPU：NPU 不接管它 —— OpenVINO 只编 det/ocr/face_rec
+        三个已静态化的通道（config.OV_SHAPES），CLIP 双塔是可变 batch 的整图。
+        分配到 NPU 时回落核显（有的话）否则 CPU。
         """
+        dev = self._device_of("clip")
+        if dev == "CPU":
+            return ["CPUExecutionProvider"]
+        if dev in ("GPU", "NPU"):
+            return self._ort_providers_for("GPU") or ["CPUExecutionProvider"]
+        # 未分配：沿用旧的全局 provider 语义（与 FEAT-141 之前逐字一致）
         return self._providers()
 
     # ------------------------------------------------------------------

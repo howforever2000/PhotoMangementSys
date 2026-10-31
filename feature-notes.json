@@ -5470,7 +5470,46 @@
       ],
       "created_at": "2026-11-03T01:30:00+08:00",
       "updated_at": "2026-11-03T01:30:00+08:00"
+    },
+    {
+      "id": "FEAT-141",
+      "name": "语义索引（CLIP）进入加速分配表：设备可看、可切；默认 CPU（量出来的取舍）",
+      "module": "python/vcr/config.py（CHANNEL_KEYS + clip）· python/vcr/model_registry.py（_channels 归一化 / _clip_providers 按表执行 / default_channels clip=CPU / accel_info 映射 clip_vision）· src/components/settings/AccelSection.vue（表格新增一行 + 行内切换）",
+      "status": "done",
+      "purpose": "用户看截图后指出「没有显示语义模型 CLIP 使用什么硬件」。查下去问题比“没显示”更深：CLIP 的实际设备取决于一个隐式状态 —— 点过加速开关（set_accel 会把 _providers_sel 复位成自动探测）就在 DirectML，从没点过就在 CPU，而界面两处都没写。同一台机器、同一个设置，跑在哪取决于用户点没点过开关。",
+      "implementation": {
+        "clip 成为可分配项": "config.CHANNEL_KEYS 追加 clip（伪通道，同时管 clip_vision/clip_text 双塔）；_clip_providers() 按分配表执行：CPU→CPU；GPU/NPU→DirectML（NPU 不接管 CLIP：双塔是可变 batch 整图，不在 OV_SHAPES 静态化名单里）；未分配→旧的全局语义。",
+        "旧文件归一化": "新增 _channels()：持久化文件里缺项（FEAT-140 时代的文件没有 clip）→ 按推荐值补齐，否则它会静默回落到旧语义，UI 上出现「勾了核显却写 CPU」这种对不上的状态。",
+        "默认 = CPU（量出来的）": "两轮各 200 张全新建档：CLIP 在核显语义腿快 1.4~1.8×（58.0→31.8s / 33.3→24.1s），但把 AI 腿拖慢 30~70%（17.5→29.9s / 17.1→22.3s）—— 它整批编码长时间占住 DML 队列，人脸检测在后面排队。净效果取决于新照片占比：首次导入划算，日常增量纯亏，后者是常态。",
+        "UI": "对照表新增「语义索引（CLIP）· 新照片」一行，右侧设备是可点按钮，单独切 CPU / 核显；例外：只勾核显 = 「全在核显上」，此时 CLIP 一起给核显（用户显式选择优先）。"
+      },
+      "highlights": {
+        "可见性": "表里现在有五条计算 + 一条「缩略图·EXIF·地点 始终 CPU」，CLIP 不再隐形",
+        "可切性": "点那一行即可切；实测切换后 /health 会话表在 CPUExecutionProvider ↔ DmlExecutionProvider 之间真实翻转，不是配置回显",
+        "默认值有依据": "默认 CPU 是因为「日常增量重扫」才是常态；首次导入大量照片时可一键改核显（−27%~−45%）",
+        "回归": "FEAT-140 四种勾选组合复跑通过；vue-tsc 0 error；vite build 通过"
+      },
+      "tests": {
+        ".pi/clip_device_probe.py": "clip=CPU vs clip=GPU 两轮 A/B（200 张，AI 腿 ∥ 语义腿并发），量语义腿、AI 腿与合计",
+        ".pi/smoke_feat141.py": "旧文件归一化→clip 有值；默认 CPU；切核显→会话变 Dml 且 effective=GPU；切回 CPU"
+      },
+      "related_files": [
+        "python/vcr/config.py",
+        "python/vcr/model_registry.py",
+        "src/components/settings/AccelSection.vue",
+        "docs/FEAT-141-语义索引进入加速分配表.md"
+      ],
+      "keywords": [
+        "CLIP",
+        "语义索引",
+        "加速分配",
+        "DML 队列",
+        "设备可见性",
+        "FEAT-140"
+      ],
+      "created_at": "2026-11-03T02:30:00+08:00",
+      "updated_at": "2026-11-03T02:30:00+08:00"
     }
   ],
-  "updated": "2026-11-03T01:30:00+08:00"
+  "updated": "2026-11-03T02:30:00+08:00"
 }

@@ -576,7 +576,10 @@ OV_CACHE_DIR = os.environ.get("VCR_OV_CACHE") or os.path.join(MODEL_DIR, "_ov_ca
 # 环境变量 VCR_CHANNEL_DEVICES=det=NPU,ocr=NPU,face_rec=NPU,face_det=GPU 可强制覆盖（调试用）。
 # ---------------------------------------------------------------------------
 ACCEL_CURRENT_PATH = os.path.join(MODEL_DIR, "current_accel.json")
-CHANNEL_KEYS = ("det", "face_det", "face_rec", "ocr")
+# 可分配的通道。"clip" 是一个**伪通道**：它同时管 clip_vision / clip_text 双塔
+# （FEAT-141：以前 CLIP 的设备取决于「有没有手动点过开关」——_providers() 的隐式状态，
+#   UI 里根本看不到它跑在哪；现在把它摆到同一张表上）。
+CHANNEL_KEYS = ("det", "face_det", "face_rec", "ocr", "clip")
 # 设备取值合法性（"" = 未分配，回落旧的全局开关）
 DEVICE_CHOICES = ("CPU", "GPU", "NPU")
 
