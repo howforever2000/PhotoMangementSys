@@ -292,6 +292,27 @@ impl Database {
         rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
     }
 
+    /// 描述向量的缓存版本信号（FEAT-154）：与 `embedding_version` 同口径
+    ///
+    /// 描述表本身没有 user_id，用户隔离靠 join `photo_content_scan`；版本信号也必须
+    /// 用同一个 join 口径，否则「别的用户新增了描述」会误让本用户的缓存失效。
+    pub fn text_embedding_version(
+        &self,
+        user_id: i64,
+        kind: &str,
+        model: &str,
+    ) -> Result<(i64, i64), DbError> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(t.rowid), 0) FROM photo_text_embeddings t
+                 JOIN photo_content_scan p ON p.photo_hash = t.photo_hash
+                 WHERE p.user_id = ?1 AND t.kind = ?2 AND t.model = ?3",
+                params![user_id, kind, model],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(DbError::Sqlite)
+    }
+
     /// 当前用户可用的描述向量（检索用）
     ///
     /// 表本身不带 user_id（与 `photo_content_scan` 同口径即可），这里 join 主表做

@@ -361,38 +361,44 @@ where
     let hashes: Vec<String> = source_hashes.iter().map(|(_, h)| h.clone()).collect();
     let hit_map = db_lookup(&hashes); // hash → thumb_path（已验证 alive）
 
-    // 2. 生成未命中项 —— **本函数一律串行**（BUG-2026-1023-009）。
+    // 2. 生成未命中项 —— 单请求内**并行**，并行度由**进程级固定线程池**定（FEAT-154）。
     //
-    // 这里原本是「misses 够多就 thread::scope 按核数开 min(核数,8) 个线程」。
-    // 单请求看是加速，多请求叠加时是灾难：时间线页一次点开就并发了 129 个
-    // 本函数调用（每个相册一路），129 × 8 ≈ 1000 个线程同时解码大 JPEG，
-    // 线程数实测冲到 732、内存 1.2GB，最后整进程以 0xC00000FD 退出。
+    // 历史（BUG-2026-1023-009）：这里原本是「misses 够多就 thread::scope 按核数开
+    // min(核数,8) 个线程」。单请求看是加速，多请求叠加时是灾难：时间线页一次点开就并发了
+    // 129 个本函数调用，129 × 8 ≈ 1000 个线程同时解码大 JPEG，线程数实测冲到 732、
+    // 内存 1.2GB，最后整进程以 0xC00000FD 退出。
     //
-    // 并行度改由**进程级**闸门（`save_thumbnail` 里的 `acquire_gen_permit`）
-    // 提供：多路请求天然并行，但真正同时解码的线程数恒定 ≤ gen_max()。
-    // 代价是单个请求变慢，收益是「请求再多也不会把进程打死」——这里选后者。
+    // 随后改成「本函数一律串行，并发交给 save_thumbnail 里的进程级闸门」—— 安全，
+    // 但**单个请求最多只能占 1 个名额**：智能搜索一次要补 60 张缩略图，
+    // 实测 28.7s（闸门允许 gen_max()=4 路并发，却只有 1 路在用）。
+    //
+    // 现在：整个进程只开**一个**缩略图线程池，线程数 = gen_max()，池子承接所有请求的任务。
+    // 于是「单请求能用满 4 路」与「请求再多也不会涨线程数」同时成立 —— 并行度与请求路数解耦。
+    // `acquire_gen_permit` 保留作第二层保险（其他调用方仍受同一上限约束）。
     let misses: Vec<(String, String)> = source_hashes
         .iter()
         .filter(|(_, hash)| !hit_map.contains_key(hash))
         .cloned()
         .collect();
+    // par_iter 的 collect 保序：generated 的顺序与 misses 一致（日志/写表可复现），
+    // 且不依赖线程完成顺序
+    let generated: Vec<(String, String, u64, u128)> = thumb_pool().install(|| {
+        use rayon::prelude::*;
+        misses
+            .par_iter()
+            .filter_map(|(source, _hash)| {
+                let path = std::path::Path::new(source.as_str());
+                let (len, mtime_ns) = read_file_meta(path)?;
+                // 单张失败不影响其余：跳过（与旧串行版一致）
+                ensure_grid_thumb(album_id, path, thumbs_dir, None, 0)
+                    .ok()
+                    .map(|thumb| (source.clone(), thumb, len, mtime_ns))
+            })
+            .collect()
+    });
     let mut gen_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut generated: Vec<(String, String, u64, u128)> = Vec::new(); // (source, thumb, len, mtime_ns)
-    for (source, _hash) in &misses {
-        let path = std::path::Path::new(source.as_str());
-        let (len, mtime_ns) = match read_file_meta(path) {
-            Some(m) => m,
-            None => continue,
-        };
-        match ensure_grid_thumb(album_id, path, thumbs_dir, None, 0) {
-            Ok(thumb) => {
-                gen_map.insert(source.clone(), thumb.clone());
-                generated.push((source.clone(), thumb, len, mtime_ns));
-            }
-            Err(_) => {
-                // 单张失败不影响其余：跳过
-            }
-        }
+    for (source, thumb, _len, _mtime) in &generated {
+        gen_map.insert(source.clone(), thumb.clone());
     }
     // 3. 按请求顺序组装结果（表命中项在前，新生成项按原顺序插入）
     let mut out: Vec<(String, String)> = Vec::with_capacity(sources.len());
@@ -986,6 +992,32 @@ fn gen_max() -> usize {
             .map(|n| n.get())
             .unwrap_or(4)
             .clamp(1, 4)
+    })
+}
+
+/// 缩略图生成专用线程池（FEAT-154）：线程数 = [`gen_max`]，全进程共享一个
+///
+/// 为什么不用 rayon 默认全局池：全局池线程数 = 核数，而缩略图生成是**内存敏感型**
+/// （一张 2000 万像素 JPEG 解码峰值上百 MB），并发上限必须锁在 `gen_max()`。
+/// 为什么不用「每次请求 thread::scope」：那正是 BUG-2026-1023-009 的线程风暴。
+static THUMB_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+/// 取（或初始化）缩略图线程池
+fn thumb_pool() -> &'static rayon::ThreadPool {
+    THUMB_POOL.get_or_init(|| {
+        let n = gen_max();
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .thread_name(|i| format!("thumb-gen-{i}"))
+            .build()
+            .unwrap_or_else(|e| {
+                // 池建不起来（极端环境）就退化成单线程池：功能不受影响，只是不加速
+                crate::logger::log_error("thumbnail", &format!("thumb pool build failed: {e}"));
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(1)
+                    .build()
+                    .expect("单线程池必然可建")
+            })
     })
 }
 

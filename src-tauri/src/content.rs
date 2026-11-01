@@ -25,14 +25,8 @@ use crate::AppState;
 
 use crate::db::PhotoContentRecord;
 
-/// FEAT-SEM：语义向量内存缓存（user_id → (版本信号, [(photo_hash, album_id, 向量)])）
-///
-/// - 向量为服务端已 L2 归一化的 512 维 f32，检索端点积即余弦
-/// - 版本信号 = photo_embeddings 的 (count, max_rowid)，任一变化（新扫描/删除）
-///   时懒重载，避免每次搜索全量读库
-/// - Arc 包装：读路径零拷贝（全库 1 万张 ≈ 23MB，clone 仅引用计数）
-type EmbedCacheEntry = Arc<(crate::db::EmbeddingVersion, Vec<(String, Option<i64>, String, Vec<f32>)>)>;
-static EMBED_CACHE: Mutex<Option<HashMap<i64, EmbedCacheEntry>>> = Mutex::new(None);
+// 语义向量缓存（`EmbedCacheEntry` / `EMBED_CACHE`）现定义在下方 `image_index` 旁边，
+// 与「取索引」逻辑同处一段 —— 改缓存形状时不用在文件两头来回跳。
 
 /// 扫描单飞锁：同一时刻只允许一个 `scan_album_combined` 在跑。
 ///
@@ -53,31 +47,30 @@ impl Drop for ScanSlotGuard {
     }
 }
 
-/// 语义召回置信度默认阈值（Phase 0 实测：相关命中集中 0.41~0.46，非相关背景值更低）
-const SEMANTIC_MIN_SIM_DEFAULT: f64 = 0.30;
-/// 语义召回硬上限（极端大库保护，按余弦降序截断）
-const SEMANTIC_MAX_CANDIDATES: usize = 2000;
+/// 语义召回置信度默认阈值
+///
+/// Phase 0 实测：相关命中集中在 0.41~0.46。旧值 0.30 低到「几乎全库都算命中」——
+/// 一个两字词就能把两路候选都打满上限（FEAT-154 实测：图像 1999 + 描述 2000 →
+/// 融合 3826 条），前端要为三千多张照片生成缩略图，用户感知就是「搜索很慢」。
+const SEMANTIC_MIN_SIM_DEFAULT: f64 = 0.45;
+/// 单路语义候选池上限（FEAT-154：原 2000）
+///
+/// 候选池只决定「谁来参与 RRF」，不决定展示条数（那个由调用方的 `limit` 定）。
+/// 每多一条候选就多一次 hash 回表 + 一次缩略图生成，600 与阈值 0.45 配套已足够。
+const SEMANTIC_MAX_CANDIDATES: usize = 600;
 /// RRF 融合常数（标准取值 60）
 const RRF_K: f64 = 60.0;
 
-/// 查询文本 → 语义召回列表（余弦 ≥ min_similarity，降序）
+/// 查询文本 → 语义查询向量（L2 归一化）
 ///
-/// 失败（服务未就绪/编码失败）返回 Err，调用方静默降级纯关键词。
-async fn semantic_recall(
-    keyword: &str,
-    min_similarity: f64,
-    user_id: i64,
-    state: &tauri::State<'_, AppState>,
-    app: &tauri::AppHandle,
-) -> Result<Vec<(crate::db::SmartHit, f64)>, String> {
-    // 退避窗口内直接降级（避免确定性失败反复拉起服务 + 等超时）
+/// FEAT-154：从「召回」里单独拆出来 —— 图像路与描述路用的是**同一个关键词**，
+/// 旧代码两路各调一次 `/embed_text`（实测 45ms/次，外加一次服务 ensure）。
+/// 现在整条搜索只编码一次，同一个向量喂给两路排名。
+async fn semantic_query_vector(keyword: &str, app: &tauri::AppHandle) -> Result<Vec<f32>, String> {
     if crate::vision::semantic_backoff_active() {
         return Err("CLIP 服务暂不可用（退避中）".into());
     }
-    // 直接编码：内部走「宽松就绪」（拉起服务但不等主链路模型），
-    // /embed_text 会触发 CLIP 懒加载——重启后首次搜索也能拿到向量（不再是必须
-    // 先做一次语义扫描才能搜索）。失败才标记退避。
-    let q = match crate::vision::embed_text_query(keyword, app).await {
+    let mut q = match crate::vision::embed_text_query(keyword, app).await {
         Ok(q) => {
             crate::vision::clear_semantic_down();
             q
@@ -91,15 +84,31 @@ async fn semantic_recall(
             return Err(e);
         }
     };
-    let mut q = q;
     let qnorm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
     if qnorm > 1e-6 {
         for x in q.iter_mut() {
             *x /= qnorm;
         }
     }
+    Ok(q)
+}
 
-    // 全库向量（版本变化懒重载；锁内不做 IO，db 读写均在 EMBED_CACHE 锁外）
+/// 图像向量索引内存缓存（user_id → (版本信号, 扁平索引)）
+///
+/// - 向量为服务端已 L2 归一化的 512 维 f32，检索端点积即余弦
+/// - 版本信号 = photo_embeddings 的 (count, max_rowid)，任一变化（新扫描/删除）时懒重载
+/// - FEAT-154：payload 由 `Vec<(hash, album, path, Vec<f32>)>` 换成 `VecIndex`
+///   （连续 f32 + rayon 并行点积）。album/path 在打分路径上从来没被用过，
+///   一并丢掉后内存不升反降（少了两万个 `Vec` 头与路径字符串）。
+type EmbedCacheEntry = Arc<(crate::db::EmbeddingVersion, crate::vecindex::VecIndex)>;
+static EMBED_CACHE: Mutex<Option<HashMap<i64, EmbedCacheEntry>>> = Mutex::new(None);
+
+/// 取（或构建）图像向量索引：版本信号未变时零 IO
+async fn image_index(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+    user_id: i64,
+) -> Result<EmbedCacheEntry, String> {
     // v5：按当前语义档位模型过滤 —— 换档后旧向量维度/空间不同，绝不能混用
     let model = crate::vision::clip_model_id(app).await?;
     let version = {
@@ -114,70 +123,82 @@ async fn semantic_recall(
             .filter(|e| e.0 == version)
             .cloned()
     };
-    let entry: EmbedCacheEntry = match cached {
-        Some(e) => e,
-        None => {
-            let list = {
-                let db = state.0.lock().map_err(|e| format!("{e}"))?;
-                db.load_all_embeddings(user_id, &model).map_err(|e| format!("{e}"))?
-            };
-            let e: EmbedCacheEntry = Arc::new((version, list));
-            if let Ok(mut cache) = EMBED_CACHE.lock() {
-                if let Some(map) = cache.as_mut() {
-                    map.insert(user_id, e.clone());
-                }
-            }
-            e
-        }
+    if let Some(e) = cached {
+        return Ok(e);
+    }
+    let list = {
+        let db = state.0.lock().map_err(|e| format!("{e}"))?;
+        db.load_all_embeddings(user_id, &model).map_err(|e| format!("{e}"))?
     };
-    continue_recall(entry, &q, min_similarity, user_id, state).await
+    let rows = list.into_iter().map(|(hash, _album, _path, v)| (hash, v));
+    let e: EmbedCacheEntry = Arc::new((version, crate::vecindex::VecIndex::from_rows(rows)));
+    // 索引是 100MB 级的常驻内存（2.5 万张 × 512 维 f32），重建时留一行台账
+    crate::logger::log_info(&format!(
+        "[smart_search] 图像向量索引重载：{} 条 · 维度 {} · {:.1} MB",
+        e.1.len(),
+        e.1.dim(),
+        e.1.heap_bytes() as f64 / 1048576.0
+    ));
+    if let Ok(mut cache) = EMBED_CACHE.lock() {
+        cache.get_or_insert_with(HashMap::new).insert(user_id, e.clone());
+    }
+    Ok(e)
 }
 
-/// 余弦过滤（≥ 阈值，降序，硬上限）→ hash 批量取展示字段
-async fn continue_recall(
-    entry: EmbedCacheEntry,
+/// 图像向量排名：`(photo_hash, 余弦)` 降序，截到 [`SEMANTIC_MAX_CANDIDATES`]
+async fn image_rank(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+    user_id: i64,
     q: &[f32],
     min_similarity: f64,
+) -> Result<Vec<(String, f32)>, String> {
+    let entry = image_index(app, state, user_id).await?;
+    let idx = &entry.1;
+    if idx.is_empty() {
+        return Err("图像向量索引为空（请先勾选「语义向量」做一次扫描）".into());
+    }
+    Ok(idx.rank(q, SEMANTIC_MAX_CANDIDATES, min_similarity as f32))
+}
+
+/// 两路排名 + FTS 榜 → **一次**回表 → 三路 RRF 融合（FEAT-154）
+///
+/// 旧版每条路各自调一次 `lookup_hits_by_hashes(2000)`（内部 4 分片 × 2 张表 = 8 条 SQL），
+/// 两路就是 16 条 SQL、两次结果构造。现在把两路 hash 取并集**只查一次**，
+/// 再把命中回填到各自的排名序列里。
+async fn fuse_ranked(
+    fts: Vec<crate::db::SmartHit>,
+    img: Vec<(String, f32)>,
+    desc: Vec<(String, f32)>,
     user_id: i64,
     state: &tauri::State<'_, AppState>,
-) -> Result<Vec<(crate::db::SmartHit, f64)>, String> {
-    let (_version, list) = entry.as_ref();
-    let mut scored: Vec<(f64, &String)> = list
-        .iter()
-        .filter_map(|(hash, _album, _path, v)| {
-            if v.len() != q.len() {
-                return None;
+) -> Result<Vec<crate::db::SmartHit>, String> {
+    // 并集（保序去重）：图像路在前，描述路在后
+    let mut union: Vec<String> = Vec::with_capacity(img.len() + desc.len());
+    {
+        let mut seen: std::collections::HashSet<&str> =
+            std::collections::HashSet::with_capacity(img.len() + desc.len());
+        for (h, _) in img.iter().chain(desc.iter()) {
+            if seen.insert(h.as_str()) {
+                union.push(h.clone());
             }
-            let dot = v.iter().zip(q.iter()).map(|(a, b)| (*a * *b) as f64).sum::<f64>();
-            if dot >= min_similarity {
-                Some((dot, hash))
-            } else {
-                None
-            }
-        })
-        .collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(SEMANTIC_MAX_CANDIDATES);
-
-    let hashes: Vec<String> = scored.iter().map(|(_, h)| (*h).clone()).collect();
-    let hits = {
-        let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
-        db.lookup_hits_by_hashes(user_id, &hashes)
+        }
+    }
+    let pairs = {
+        let db = state.0.lock().map_err(|e| format!("{e}"))?;
+        db.lookup_hits_keyed(user_id, &union)
             .map_err(|e| format!("{e}"))?
     };
-    let cos_by_hash: HashMap<&String, f64> = scored.iter().map(|(s, h)| (&**h, *s)).collect();
-    // lookup_hits_by_hashes 按 hashes 顺序返回，zip 后直接取对应余弦
-    let mut out: Vec<(crate::db::SmartHit, f64)> = hits
-        .into_iter()
-        .zip(hashes.iter())
-        .filter_map(|(h, hash)| {
-            let cos = cos_by_hash.get(hash).copied()?;
-            Some((h, cos))
-        })
-        .collect();
-    // 保证余弦降序（与召回榜同序）
-    out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(out)
+    let map: HashMap<String, crate::db::SmartHit> = pairs.into_iter().collect();
+    let lane = |ranked: Vec<(String, f32)>| -> Vec<(crate::db::SmartHit, f64)> {
+        ranked
+            .into_iter()
+            .filter_map(|(h, cos)| map.get(&h).map(|hit| (hit.clone(), cos as f64)))
+            .collect()
+    };
+    let img_lane = lane(img);
+    let desc_lane = lane(desc);
+    Ok(fuse_hits3(fts, img_lane, desc_lane))
 }
 
 /// RRF 融合：FTS 榜 + 语义榜（K=60），语义命中附加 semantic_score
@@ -2617,7 +2638,9 @@ pub(super) fn drop_dead_thumb_links(cards: &mut [db::TimelineCard]) -> usize {
         label: Option<String>,
         person_id: Option<String>,
         tone_type: Option<String>,
-        // FEAT-SEM：语义融合开关与置信度下限（默认开启 / 0.30）
+        // FEAT-154：结果条数上限（None = 不截断，老调用方行为不变）
+        limit: Option<usize>,
+        // FEAT-SEM：语义融合开关与置信度下限（默认开启 / 0.45）
         include_semantic: Option<bool>,
         min_similarity: Option<f64>,
         app: tauri::AppHandle,
@@ -2657,46 +2680,57 @@ pub(super) fn drop_dead_thumb_links(cards: &mut [db::TimelineCard]) -> usize {
             let min_sim = min_similarity
                 .unwrap_or(SEMANTIC_MIN_SIM_DEFAULT)
                 .clamp(0.05, 0.95);
-            // 第一路：图像向量语义（既有逻辑，一字不改）
-            let mut img_lane: Vec<(db::SmartHit, f64)> = Vec::new();
-            match semantic_recall(&kw, min_sim, user_id, &state, &app).await {
-                Ok(sem) if !sem.is_empty() => {
-                    img_lane = sem;
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    // 降级是预期行为（模型未下载/服务未启动/向量库为空），不打扰用户；
-                    // 但**必须落日志**：此前只 eprintln!，用户与排查者都看不到原因，
-                    // 导致「语义检索突然失效但无任何提示」（BUG-2026-0920-006）
-                    logger::log_info(&format!("[smart_search] 图像语义降级: {e}"));
+            // FEAT-154：整条搜索**只编码一次** —— 图像路与描述路共用同一个查询向量。
+            // 旧代码两路各调一次 /embed_text（实测 45ms/次 + 一次服务 ensure）。
+            match semantic_query_vector(&kw, &app).await {
+                Err(e) => logger::log_info(&format!("[smart_search] 语义编码降级: {e}")),
+                Ok(q) => {
+                    // 第一路：图像向量语义（扁平索引 + rayon 并行点积）
+                    let img_lane = match image_rank(&app, &state, user_id, &q, min_sim).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            // 降级是预期行为（模型未下载/服务未启动/向量库为空），不打扰用户；
+                            // 但**必须落日志**：此前只 eprintln!，用户与排查者都看不到原因，
+                            // 导致「语义检索突然失效但无任何提示」（BUG-2026-0920-006）
+                            logger::log_info(&format!("[smart_search] 图像语义降级: {e}"));
+                            Vec::new()
+                        }
+                    };
+                    // FEAT-067 第二路：描述向量语义（时间/地点/场景/标签/人物真名）
+                    // 融合公式与权重沿用既有 RRF；FEAT-154 起同样吃已编码好的向量 + 索引缓存
+                    let desc_lane = match crate::textdesc::rank_by_text_with_query(
+                        &app, &state, user_id, &q, min_sim,
+                    )
+                    .await
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            logger::log_info(&format!("[smart_search] 描述语义降级: {e}"));
+                            Vec::new()
+                        }
+                    };
+                    if !img_lane.is_empty() || !desc_lane.is_empty() {
+                        let (n_img, n_desc, before) = (img_lane.len(), desc_lane.len(), hits.len());
+                        hits = fuse_ranked(hits, img_lane, desc_lane, user_id, &state).await?;
+                        logger::log_call_end_with(
+                            "smart_search.semantic",
+                            _t,
+                            &format!(
+                                "OK | 图像语义 {} · 描述语义 {} · 融合 {} → {}",
+                                n_img,
+                                n_desc,
+                                before,
+                                hits.len()
+                            ),
+                        );
+                    }
                 }
             }
-            // FEAT-067 第二路：描述向量语义（时间/地点/场景/标签/人物真名）
-            // 只加一路，融合公式与权重沿用既有 RRF。
-            let mut desc_lane: Vec<(db::SmartHit, f64)> = Vec::new();
-            match crate::textdesc::recall_by_text(&app, &state, user_id, &kw, min_sim).await {
-                Ok(list) if !list.is_empty() => {
-                    desc_lane = list;
-                }
-                Ok(_) => {}
-                Err(e) => logger::log_info(&format!("[smart_search] 描述语义降级: {e}")),
-            }
-            if !img_lane.is_empty() || !desc_lane.is_empty() {
-                let n_img = img_lane.len();
-                let n_desc = desc_lane.len();
-                let before = hits.len();
-                hits = fuse_hits3(hits, img_lane, desc_lane);
-                logger::log_call_end_with(
-                    "smart_search.semantic",
-                    _t,
-                    &format!(
-                        "OK | 图像语义 {} · 描述语义 {} · 融合 {} → {}",
-                        n_img,
-                        n_desc,
-                        before,
-                        hits.len()
-                    ),
-                );
+        }
+        // FEAT-154：按需截断 —— 前端一页只渲染 limit 条，剩下的不查缩略图
+        if let Some(l) = limit {
+            if l > 0 && hits.len() > l {
+                hits.truncate(l);
             }
         }
         Ok(hits)

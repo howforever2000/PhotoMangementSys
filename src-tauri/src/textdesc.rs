@@ -21,8 +21,14 @@ use crate::db::embedding::TextEmbeddingRecord;
 use crate::db::SmartHit;
 use crate::{AppState, SessionState};
 
-/// 语义相似度下限（与 `content.rs` 既有语义通道同阈值口径）
-pub const MIN_SIM_DEFAULT: f64 = 0.30;
+/// 语义相似度下限
+///
+/// FEAT-154（实测）：这里原来是 0.30，低到「几乎全库都算命中」—— 搜一个两字词就能
+/// 把两路候选都打满上限（图像 1999 + 描述 2000 = 融合后 3826 条），前端随即要给
+/// 三千多张照片生成缩略图，用户感知就是「搜索慢」。抬到 0.45 后候选量降一个量级，
+/// 而相关命中（实测集中区 0.41~0.46）仍排在前面。
+/// 前端仍可显式传 `minSimilarity` 覆盖（clamp 0.05~0.95）。
+pub const MIN_SIM_DEFAULT: f64 = 0.45;
 /// 以图搜图默认返回条数
 const IMAGE_TOPK_DEFAULT: usize = 60;
 
@@ -209,11 +215,16 @@ pub fn source_hash(input: &DescInput) -> String {
     format!("{h:016x}")
 }
 
-/// 余弦 topK（纯函数，便于单测）
+/// 余弦 topK —— **参考实现（等价性基线，仅测试使用）**
+///
+/// FEAT-154 之后线上走 `crate::vecindex::VecIndex::rank`（f32 + 并行）；
+/// 本函数保留为「串行 f64」的可读基准，`vecindex::tests::vecindex_matches_f64_baseline`
+/// 用它逐条比对并行版的结果。不要在生产路径上再调用它。
 ///
 /// - 向量已由服务端 L2 归一化，点积即余弦
 /// - 维度不一致的行直接跳过（换档位/脏数据保护）
 /// - 返回按余弦降序，`limit` 截断、`min_sim` 过滤
+#[cfg(test)]
 fn rank_by_cosine(
     items: &[(String, Vec<f32>)],
     q: &[f32],
@@ -337,7 +348,13 @@ pub async fn recall_by_image(
     }
 
     // 3. 余弦 topK → 批量取展示字段（lookup_hits_by_hashes 按入参顺序返回）
-    let ranked = rank_by_cosine(&items, &q, limit.max(1), min_similarity);
+    //    FEAT-154：改走扁平索引（f32 累加 + rayon 并行），见 `vecindex` 模块
+    let idx = crate::vecindex::VecIndex::from_rows(items);
+    let ranked: Vec<(String, f64)> = idx
+        .rank(&q, limit.max(1), min_similarity as f32)
+        .into_iter()
+        .map(|(h, s)| (h, s as f64))
+        .collect();
     let hashes: Vec<String> = ranked.iter().map(|(h, _)| h.clone()).collect();
     let mut hits = {
         let db = state.0.lock().map_err(|e| format!("{e}"))?;
@@ -351,20 +368,76 @@ pub async fn recall_by_image(
 }
 
 /// 描述语义召回的硬上限（与图像塔同口径：极端大库保护）
-const DESC_MAX_CANDIDATES: usize = 2000;
-
-/// 描述向量召回：查询词 → 文本塔编码 → 与 `photo_text_embeddings` 余弦 → 命中
+/// FEAT-154：单路候选池上限（原 2000）
 ///
-/// 这是 FEAT-067 加进 RRF 的**第二路语义**（第一路是图像塔）。
-/// 描述里含时间/地点/场景/标签/人物真名，因此「2024年2月 成都」「夜景 小明」这类
-/// 结构化组合词能命中纯图像向量搜不到的照片。失败返回 Err，调用方静默降级。
-pub async fn recall_by_text(
+/// 2000 只是「池子」，融合后前端根本展示不了那么多；而每多一条候选就多一次 hash 回表
+/// （SQL）与一次缩略图生成。600 与阈值 0.45 配套：实测仍覆盖相关命中，开销降下来。
+/// 最终条数由调用方的 `limit` 截断。
+const DESC_MAX_CANDIDATES: usize = 600;
+
+/// 描述向量索引缓存（FEAT-154）：`(user_id, model) → (版本信号, 扁平索引)`
+///
+/// 与图像路的 `EMBED_CACHE` 同一套思路，但描述表此前**完全没有缓存**：
+/// 每次搜索都要全量读库 + 解码 2.2 万条 blob（实测读 165ms + 解码约 60ms）。
+/// 版本信号用 `text_embedding_version`（count + max rowid，同 join 口径），
+/// 只有扫描新增照片 / 重建描述索引之后才重载。
+type TextIndexEntry = std::sync::Arc<((i64, i64), crate::vecindex::VecIndex)>;
+static TEXT_INDEX_CACHE: std::sync::Mutex<Option<HashMap<(i64, String), TextIndexEntry>>> =
+    std::sync::Mutex::new(None);
+
+/// 取（或构建）描述向量索引：版本信号未变时零 IO
+async fn desc_index(
     app: &tauri::AppHandle,
     state: &AppState,
     user_id: i64,
-    keyword: &str,
+    model: &str,
+) -> Result<TextIndexEntry, String> {
+    let version = {
+        let db = state.0.lock().map_err(|e| format!("{e}"))?;
+        db.text_embedding_version(user_id, DESC_KIND, model)
+            .map_err(|e| format!("读取描述向量版本失败: {e}"))?
+    };
+    let key = (user_id, model.to_string());
+    let cached: Option<TextIndexEntry> = {
+        let cache = TEXT_INDEX_CACHE.lock().map_err(|e| format!("{e}"))?;
+        cache
+            .as_ref()
+            .and_then(|m| m.get(&key))
+            .filter(|e| e.0 == version)
+            .cloned()
+    };
+    if let Some(e) = cached {
+        return Ok(e);
+    }
+    let _ = app; // 保留参数位：缓存若将来按「服务实例」区分时要用
+    let rows = {
+        let db = state.0.lock().map_err(|e| format!("{e}"))?;
+        db.load_text_embeddings(user_id, DESC_KIND, model)
+            .map_err(|e| format!("读取描述向量失败: {e}"))?
+    };
+    let entry: TextIndexEntry =
+        std::sync::Arc::new((version, crate::vecindex::VecIndex::from_rows(rows)));
+    if let Ok(mut cache) = TEXT_INDEX_CACHE.lock() {
+        cache.get_or_insert_with(HashMap::new).insert(key, entry.clone());
+    }
+    Ok(entry)
+}
+
+/// 描述向量排名（FEAT-154）：**接收已编码好的查询向量**，不再自己调一次文本塔
+///
+/// 为什么把编码拿出来：智能搜索的图像路与描述路用的是**同一个关键词**，
+/// 旧代码把 `/embed_text` 调了两次（实测 45ms/次，外加一次服务 ensure）。
+/// 现在由调用方编码一次，两路共用。
+///
+/// 返回 `(photo_hash, 余弦)`，已降序并截到 [`DESC_MAX_CANDIDATES`]；
+/// 回表（`lookup_hits_by_hashes`）交给调用方与图像路合并成一次。
+pub async fn rank_by_text_with_query(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    user_id: i64,
+    q: &[f32],
     min_similarity: f64,
-) -> Result<Vec<(SmartHit, f64)>, String> {
+) -> Result<Vec<(String, f32)>, String> {
     if crate::vision::semantic_backoff_active() {
         return Err("CLIP 服务暂不可用（退避中）".into());
     }
@@ -375,37 +448,12 @@ pub async fn recall_by_text(
             return Err(e);
         }
     };
-    let mut q = match crate::vision::embed_text_query(keyword, app).await {
-        Ok(q) => q,
-        Err(e) => {
-            crate::vision::note_semantic_failure(&e);
-            return Err(e);
-        }
-    };
-    l2_normalize(&mut q);
-    crate::vision::clear_semantic_down();
-
-    let rows = {
-        let db = state.0.lock().map_err(|e| format!("{e}"))?;
-        db.load_text_embeddings(user_id, DESC_KIND, &model)
-            .map_err(|e| format!("读取描述向量失败: {e}"))?
-    };
-    if rows.is_empty() {
+    let entry = desc_index(app, state, user_id, &model).await?;
+    let idx = &entry.1;
+    if idx.is_empty() {
         return Err("描述向量索引为空（请先重建描述索引）".into());
     }
-    let ranked = rank_by_cosine(&rows, &q, DESC_MAX_CANDIDATES, min_similarity);
-    let hashes: Vec<String> = ranked.iter().map(|(h, _)| h.clone()).collect();
-    let mut hits = {
-        let db = state.0.lock().map_err(|e| format!("{e}"))?;
-        db.lookup_hits_by_hashes(user_id, &hashes)
-            .map_err(|e| format!("{e}"))?
-    };
-    let mut out = Vec::with_capacity(hits.len());
-    for (hit, (_h, score)) in hits.iter_mut().zip(ranked.iter()) {
-        hit.semantic_score = Some(*score);
-        out.push((hit.clone(), *score));
-    }
-    Ok(out)
+    Ok(idx.rank(q, DESC_MAX_CANDIDATES, min_similarity as f32))
 }
 
 /// 描述索引重建报告

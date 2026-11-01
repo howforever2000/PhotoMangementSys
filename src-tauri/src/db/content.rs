@@ -1414,16 +1414,20 @@ impl Database {
         rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
     }
 
-    /// FEAT-SEM：按 photo_hash 批量取展示字段（语义召回 → SmartHit）
+    /// FEAT-SEM：按 photo_hash 批量取展示字段（语义召回 → SmartHit），**带 hash 返回**
     ///
     /// 数据源两路合并，扫描行优先：
     /// - `photo_content_scan`（有 category/label/人物等完整字段）
     /// - `photo_thumb_cache` 兑底（未跑 AI 扫描的照片也有缩略图/向量，仅 path/相册名）
-    pub fn lookup_hits_by_hashes(
+    ///
+    /// FEAT-154：返回 `(photo_hash, SmartHit)` 而不是裸 `SmartHit`。
+    /// 调用方要把两路（图像塔 / 文本塔）的排名结果合并成一次回表，
+    /// 而 `SmartHit` 本身不带 photo_hash，只按位置 zip 会在「部分 hash 查不到」时错位。
+    pub fn lookup_hits_keyed(
         &self,
         user_id: i64,
         hashes: &[String],
-    ) -> Result<Vec<SmartHit>, DbError> {
+    ) -> Result<Vec<(String, SmartHit)>, DbError> {
         if hashes.is_empty() {
             return Ok(Vec::new());
         }
@@ -1482,7 +1486,23 @@ impl Database {
         };
         query(true)?;
         query(false)?;
-        Ok(hashes.iter().filter_map(|h| map.get(h).cloned()).collect())
+        Ok(hashes
+            .iter()
+            .filter_map(|h| map.get(h).cloned().map(|hit| (h.clone(), hit)))
+            .collect())
+    }
+
+    /// 按 photo_hash 批量取展示字段（只要 Hit，丢掉 hash）—— 既有调用方兼容壳
+    pub fn lookup_hits_by_hashes(
+        &self,
+        user_id: i64,
+        hashes: &[String],
+    ) -> Result<Vec<SmartHit>, DbError> {
+        Ok(self
+            .lookup_hits_keyed(user_id, hashes)?
+            .into_iter()
+            .map(|(_, h)| h)
+            .collect())
     }
 
     /// 带过滤条件的单相册内容搜索（FEAT-026）

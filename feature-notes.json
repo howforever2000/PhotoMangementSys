@@ -5872,7 +5872,60 @@
       ],
       "created_at": "2026-11-01T16:22:48+08:00",
       "updated_at": "2026-11-01T16:22:48+08:00"
+    },
+    {
+      "id": "FEAT-154",
+      "name": "智能搜索语义路提速：一次编码两路共用 / 向量与描述索引缓存 / 连续 f32 + rayon 并行点积 / 两路并集一次回表 / 默认阈值 0.45 + 按需截断 / 缩略图单请求并行",
+      "module": "src-tauri/src/vecindex.rs（新增）· src-tauri/src/content.rs（搜索链路）· src-tauri/src/textdesc.rs（描述路）· src-tauri/src/db/embedding.rs（描述向量版本信号）· src-tauri/src/db/content.rs（带 hash 回表）· src-tauri/src/thumbnail.rs（生成线程池）· src/views/SmartSearch.vue（limit + 提示）· README 性能段",
+      "status": "done",
+      "date": "2026-11-01",
+      "purpose": "用户反馈「现在智能搜索变得比较慢，可以考虑变为多线程向量匹配」。先按日志量出实情：app.log 里 smart_search.semantic 在 2026-10-28 同一操作是 485~946ms（7 次样本），2026-11-01 是 1597~1675ms（3 次，与缩略图生成并发）；库规模 photo_embeddings 24905 条×512 维（48.6MB blob）、photo_text_embeddings 22706 条。逐段量下来，单线程点积并不是大头：numpy f32 SIMD 单线程跑满 2.5 万条只要 22ms，真正的成本在 ① 同一个关键词被编码两次（图像路 + 描述路各一次 /embed_text，实测 45ms/次）、② 描述向量表每次搜索全量读库 + 解码（读 165ms + 解码约 60ms，没有缓存）、③ 两路各自回表 2000 条（每路 8 条 SQL，实测两路 266.5ms）、④ 阈值 0.30 低到「几乎全库命中」（图像 1999 + 描述 2000 → 融合 3826 条，前端要给三千多张照片生成缩略图，日志里 get_photo_thumbs 单次 28.7s）。用户确认按 1~6 全部执行。",
+      "implementation": {
+        "① 一次编码两路共用": "抽出 semantic_query_vector()：整条搜索只调一次 /embed_text 并 L2 归一化，向量喂给图像路 image_rank() 与描述路 textdesc::rank_by_text_with_query()；旧的 recall_by_text 专为「自己编码」设计，改为接收向量，顺带删掉一次服务 ensure。",
+        "② 描述向量索引缓存": "新增 db::embedding::text_embedding_version(user_id, kind, model)（COUNT + MAX(rowid)，与 photo_content_scan 同 join 口径做用户隔离），textdesc 侧加 TEXT_INDEX_CACHE（(user_id, model) → (版本信号, VecIndex)），版本未变时零 IO。",
+        "③ 并行点积": "新增 vecindex 模块：VecIndex 用连续 f32 存行（n*dim 扁平），rank() 按 256 行分块 par_chunks + fold/reduce，块内先过滤阈值，最后统一排序（分数降序、同分按行号升序保证可复现），只 clone topK 的 hash。累加改 f32 并用 4 路累加器打散依赖链。",
+        "④ 回表合并": "新增 db::content::lookup_hits_keyed() 返回 (photo_hash, SmartHit)（SmartHit 本身不带 hash，只按位置 zip 会在部分 hash 查不到时错位）；lookup_hits_by_hashes 保留为兼容壳。两路 hash 取并集只查一次（旧：2000×2 路 = 16 条 SQL → 新：并集 1200 一次 = 6 条）。",
+        "⑤ 阈值与截断": "SEMANTIC_MIN_SIM_DEFAULT 0.30 → 0.45（textdesc::MIN_SIM_DEFAULT 同步）；单路候选池 2000 → 600；smart_search 新增 limit 参数，融合后按需截断，前端传 limit=300 并在计数行提示「只显示前 300 条」。",
+        "⑥ 缩略图单请求并行": "thumbnail 侧新增进程级固定线程池 THUMB_POOL（线程数 = gen_max()，全进程共享），ensure_grid_thumbs_with_lookup 的 misses 改为 pool.install(par_iter)。单请求能用满 gen_max() 路，129 个请求同时来也只是在同一批线程上排队，不会重演 BUG-2026-1023-009 的线程风暴；acquire_gen_permit 保留作第二层保险。",
+        "内存": "图像缓存的 payload 从 Vec<(hash, album, path, Vec<f32>)> 换成 VecIndex —— album/path 在打分路径上从未被使用，一并丢掉后内存不升反降（少 2.5 万个 Vec 头与路径字符串）；新增的描述索引约 44MB（22706×512×4B + hash）。"
+      },
+      "highlights": {
+        "真实库实测（cargo test --lib bench_real_db -- --ignored --nocapture，debug 构建）": "排名 24905×512：旧串行 f64 127.8ms → f32 单线程 30.7ms → f32 并行 12.2ms（10.4×）；回表：旧 2000×2 路 266.5ms → 并集 1200 一次 97.0ms（2.7×）；读库+解码 24905 条 463.9ms、建索引 42.9ms（现在只在版本变化时付一次，不再是每次搜索）。",
+        "改前日志基线": "smart_search.semantic：2026-10-28 485~946ms（7 次）/ 2026-11-01 1597~1675ms（3 次，含并发干扰）；命中 图像 1999~2000 + 描述 2000 → 融合 3826 条。",
+        "改后预算": "编码 45ms + 图像排名 12ms + 描述排名 12ms + 回表 97ms + 融合/排序约 30ms ≈ 0.2s（缓存冷启首次另加图像索引 464ms + 描述索引约 230ms，此后零 IO）。",
+        "等价性": "vecindex_matches_f64_baseline 用同一批随机向量把「并行 f32」与「串行 f64」在 4 个阈值 × 4 个 limit 下逐条比对（条数、顺序、分数 1e-5 内），结果完全一致；同分按行号升序，避免同一查询两次顺序不同。",
+        "语义不变": "RRF 公式、权重、K=60、tie-break 一行未改；两路候选池变小只影响「谁参与融合」，不影响命中判据本身（阈值是显式参数，前端仍可覆盖）。"
+      },
+      "tests": "cargo test --lib 218 passed / 0 failed（含新增 vecindex 4 项：等价性、维度与空值、同分稳定、25k×512 吞吐守卫）；npm test 177 passed；vue-tsc --noEmit 0 error；vite build 通过。",
+      "related_files": [
+        "src-tauri/src/vecindex.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/textdesc.rs",
+        "src-tauri/src/db/embedding.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/thumbnail.rs",
+        "src-tauri/src/lib.rs",
+        "src/views/SmartSearch.vue",
+        "README.md"
+      ],
+      "keywords": [
+        "智能搜索",
+        "语义检索",
+        "向量匹配",
+        "多线程",
+        "rayon",
+        "SIMD",
+        "SoA",
+        "CLIP",
+        "描述向量",
+        "缓存",
+        "RRF",
+        "缩略图并行",
+        "FEAT-154"
+      ],
+      "created_at": "2026-11-01T19:53:20+08:00",
+      "updated_at": "2026-11-01T19:53:20+08:00"
     }
   ],
-  "updated": "2026-11-01T16:22:48+08:00"
+  "updated": "2026-11-01T19:53:20+08:00"
 }
