@@ -37,6 +37,7 @@ const ROWS = [
   { key: "ocr", label: "文字检测", when: "约 7 成" },
   { key: "face_rec", label: "人脸编码", when: "有脸时" },
   { key: "face_det", label: "人脸检测", when: "人物规则命中" },
+  { key: "clip", label: "语义索引（CLIP）", when: "新照片" },
 ];
 
 const busy = ref(false);
