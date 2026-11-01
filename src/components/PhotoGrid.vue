@@ -346,8 +346,8 @@ function openPhotoContextMenu(e: MouseEvent, path: string, index: number) {
         },
       },
       {
-        label: "在创意工坊编辑",
-        icon: "✏️",
+        label: "在创意工坊处理",
+        icon: "🧰",
         onClick: () => photoActions.openInWorkshop(path),
       },
       { divider: true },

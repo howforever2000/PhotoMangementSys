@@ -17,7 +17,7 @@ import { resolvePhotoSrc } from "../utils/photoSrc";
  * - 全屏遮罩展示当前照片原图
  * - 上一张/下一张（左右方向键）、关闭（ESC）
  * - 底部元数据面板：文件名、AI 分类/人物/置信度、EXIF、影调
- * - 工具栏：评分 / 标签 / 编辑（跳创意工坊）/ （可选）删除 / 在相册中查看（emit openAlbum，父视图接路由）
+ * - 工具栏：评分 / 标签 / 工具（送创意工坊）/ （可选）删除 / 在相册中查看（emit openAlbum，父视图接路由）
  *
  * FEAT-D：自动扫描复用
  *   若当前照片在 photo_content_scan 中尚无记录，watch photo 变化时静默调
@@ -67,7 +67,7 @@ const imgLoading = ref(true);
  * 故保留折叠能力（点标题右侧箭头）。默认展开 —— 需求明确要求信息页要有拍摄时间与地点。
  */
 const metaCollapsed = ref(false);
-/** FEAT-064：编辑按钮跳到创意工坊（不需要父视图参与，见 openInWorkshop 注释） */
+/** FEAT-064 / FEAT-150：工具按钮送创意工坊（不需要父视图参与，见 openInWorkshop 注释） */
 const router = useRouter();
 
 /* ---- 缩放/平移（原图查看）---- */
@@ -600,18 +600,21 @@ async function ensureExif(p: string): Promise<void> {
 }
 
 /**
- * 编辑当前照片（FEAT-064）：跳创意工坊并带上原图路径，工坊首页直接在
- * 「传统图像处理」小组件里载入它（默认算子：区域直方图均衡化），无需再手动选图。
+ * 把当前照片送去创意工坊（FEAT-064 / FEAT-150）
+ *
+ * 旧行为：跳工坊，在调色台里载入原图。调色台已下线，工坊现在只做
+ * 「对照片加工」（压缩 / 文字提取 / 画质增强），所以这里改成带 `tool=compress`
+ * 直接落到压缩工位，并把原图预填进素材托盘。
  *
  * 导航放在组件内部而非 emit 给父视图：PhotoLightbox 被相册详情 / 时间线 /
  * 智慧相册 / 回忆 / 搜索等多处复用，逐个改父视图既啰嗦又容易漏；
- * 而「去工坊编辑这张图」与父视图上下文无关，自带路由最原子。
+ * 而「把这张送去工坊」与父视图上下文无关，自带路由最原子。
  */
 function openInWorkshop() {
   const path = photo.value?.path;
   if (!path) return;
   emit("close"); // 先收起灯箱，避免返回时残留遮罩状态
-  void router.push({ name: "workshop", query: { photo: path } });
+  void router.push({ name: "workshop", query: { photo: path, tool: "compress" } });
 }
 
 /*
@@ -893,11 +896,11 @@ void initForCurrentPhoto();
         </button>
         <button
           class="lb-btn lb-btn--pri"
-          title="在创意工坊里编辑这张照片（传统图像处理：均衡化 / 模糊）"
+          title="在创意工坊处理这张照片（压缩 / 文字提取 / 画质增强）"
           @click="openInWorkshop"
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" /></svg>
-          编辑
+          工具
         </button>
         <button
           v-if="photo?.albumId != null"

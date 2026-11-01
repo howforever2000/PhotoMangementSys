@@ -69,7 +69,7 @@ const modules = [
   {
     id: "workshop",
     title: "创意工坊",
-    desc: "区域直方图均衡化、基准调色与图像处理算子",
+    desc: "图像压缩 · 文字提取 · 画质增强 · 主题手账",
     action: "打开工坊",
     icon: "🎨",
     path: "/workshop",

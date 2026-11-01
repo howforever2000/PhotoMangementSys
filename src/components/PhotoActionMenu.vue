@@ -213,8 +213,8 @@ const items = computed<ContextMenuEntry[]>(() => {
       },
     },
     {
-      label: "在创意工坊编辑",
-      icon: "✏️",
+      label: "在创意工坊处理",
+      icon: "🧰",
       onClick: () => photoActions.openInWorkshop(path),
     },
   ];

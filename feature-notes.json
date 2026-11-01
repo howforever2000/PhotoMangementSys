@@ -2279,7 +2279,7 @@
     {
       "id": "FEAT-063",
       "name": "创意工坊 · 区域直方图均衡化小组件",
-      "status": "done",
+      "status": "deprecated",
       "description": "主页原「图像处理（待开发）」板块升级为「创意工坊」图片编辑小组件入口（/workshop Hub 页），并落地第一个小组件：区域直方图均衡化。用户框选（拖拽矩形）或画笔涂抹/橡皮生成蒙版，只对选中区域做均衡化（全局均衡 / CLAHE 二选一，强度与羽化可调）。处理由独立 Python 微服务承担：python-studio/server.py（FastAPI + OpenCV，端口 STUDIO_PORT 可配默认 8790），LAB 亮度通道处理避免偏色，蒙版高斯羽化后按像素线性混合，未选中区域保持原样；超大图等比降采样保护。Rust 侧新增 studio.rs 精简版 ensure（探活→实例收养→启动→就绪等待，实例文件 studio-instance.json），复刻 vision.rs 的 VCR 服务管理模式；studio_ensure 返回基址后前端 fetch 直连（multipart：原图 asset 协议原始字节 + 蒙版 PNG），保存结果经 studio_save_result 落盘（前端无 fs 写权限）。",
       "related_files": [
         "src/views/Home.vue",
@@ -2318,7 +2318,8 @@
         "人工冒烟建议：主页进创意工坊 → 打开小组件 → 选图 → 框选暗部 → 应用 → 勾选对比 → 保存"
       ],
       "created_at": "2026-09-17T13:20:00+08:00",
-      "updated_at": "2026-09-17T13:20:00+08:00"
+      "updated_at": "2026-11-01T14:59:59+08:00",
+      "deprecated_reason": "FEAT-150：调色台与其 OpenCV 算子微服务整体下线（与 LR/PS 重复、偏离「相册管理」定位；且算子通道未随发布包分发，装给用户后不可用）。对应源码与 20 条 edit_*/studio_* 命令已删除，功能位改为「图像加工工具台」（压缩 / 文字提取 / 画质增强 / 主题手账）。"
     },
     {
       "id": "FEAT-064",
@@ -2352,7 +2353,7 @@
     {
       "id": "FEAT-065",
       "name": "灯箱「编辑」直达创意工坊（带图打开即用）",
-      "status": "done",
+      "status": "deprecated",
       "description": "照片原图查看（PhotoLightbox）工具栏在「🏷 标签」之后新增「✏️ 编辑」：点击后先收起灯箱，再路由到 /workshop?photo=<原图绝对路径>；创意工坊页读到 query 即直接打开「区域直方图均衡化」小组件，并把路径经 initialPath 传给小组件自动载入 —— 打开即用，不必再手动选一次图。导航放在灯箱组件内部而非 emit 给父视图：PhotoLightbox 被相册详情 / 时间线 / 智慧相册 / 回忆 / 智能搜索等多处复用，逐个改父视图既啰嗦又容易漏，而「去工坊编辑这张图」与父视图上下文无关，自带路由最原子。",
       "related_files": [
         "src/components/PhotoLightbox.vue",
@@ -2375,12 +2376,13 @@
         "widget": "WorkshopRegionEq.vue：新增可选 prop initialPath；onMounted 时若有值则 await nextTick() 后 loadImage(initialPath)。顺带给 fitDisplay 加兜底：父容器 clientWidth 为 0（帧未稳定/被隐藏）时按 800px 计算，避免自动载入算出 1×1 画布（原有 resize 监听仍会自我纠正）。"
       },
       "created_at": "2026-09-18T13:00:00+08:00",
-      "updated_at": "2026-09-18T13:00:00+08:00"
+      "updated_at": "2026-11-01T14:59:59+08:00",
+      "deprecated_reason": "FEAT-150：调色台与其 OpenCV 算子微服务整体下线（与 LR/PS 重复、偏离「相册管理」定位；且算子通道未随发布包分发，装给用户后不可用）。对应源码与 20 条 edit_*/studio_* 命令已删除，功能位改为「图像加工工具台」（压缩 / 文字提取 / 画质增强 / 主题手账）。"
     },
     {
       "id": "FEAT-066",
       "name": "创意工坊「传统图像处理」组件（算子注册表 + 5 个算子）",
-      "status": "done",
+      "status": "deprecated",
       "description": "原「区域直方图均衡化」卡片升级为「传统图像处理」。后端把写死的 /api/region-equalize 换成「算子注册表 + 单入口 API」：一张 OPS 注册表描述 5 个算子（区域直方图均衡化 + 高斯/方框/中值/双边四种模糊），蒙版羽化与强度混合抽成公共函数 _apply_masked，新增算子只需往注册表加一项、不再新增路由。前端拆出宿主组件 WorkshopImageProcess.vue（图片载入 / 画布缩放 / 蒙版编辑 / 结果对比 / 保存），算子切换与参数表单全部由 GET /api/ops 返回的 schema 自动渲染。蒙版沿用同一套编辑器（不复制第二套），整图为默认、蒙版为可选；灯箱 ✏️ 直达的默认算子仍是区域直方图均衡化，FEAT-065 行为不变。",
       "related_files": [
         "python-studio/server.py",
@@ -2429,7 +2431,8 @@
         "端到端（night_city.jpg 800×492，左半蒙版）：region-equalize L 均值 121.2 → 126.8（改动前实现 126.7）；4 个模糊算子带蒙版/不带蒙版各返回合法 JPEG（魔数 FFD8、尺寸 800×492）；未知算子 blur-magic → 400 并列出支持的算子；中值模糊传偶数核 8 不报错"
       ],
       "created_at": "2026-09-18T15:20:00+08:00",
-      "updated_at": "2026-09-18T18:20:00+08:00"
+      "updated_at": "2026-11-01T14:59:59+08:00",
+      "deprecated_reason": "FEAT-150：调色台与其 OpenCV 算子微服务整体下线（与 LR/PS 重复、偏离「相册管理」定位；且算子通道未随发布包分发，装给用户后不可用）。对应源码与 20 条 edit_*/studio_* 命令已删除，功能位改为「图像加工工具台」（压缩 / 文字提取 / 画质增强 / 主题手账）。"
     },
     {
       "id": "FEAT-067",
@@ -2484,7 +2487,7 @@
     {
       "id": "FEAT-068",
       "name": "创意工坊 · 修图前后对比（Lightroom 式并排 / 分割线拖动）",
-      "status": "done",
+      "status": "deprecated",
       "module": "创意工坊 / WorkshopImageProcess.vue",
       "description": "WorkshopImageProcess 新增三种视图模式：edit（编辑态，蒙版可画）/ side（左右并排，Lightroom Y/Y 快捷键再按回编辑态）/ split（单画布分割对比，分割线可拖动，左原图右结果）。『原图』指叠加链下当前底图 baseEl（最近基底），『结果』为最近一次应用输出；无结果时对比入口禁用，输入控件聚焦时不劫持 Y 键。",
       "related_files": [
@@ -2516,7 +2519,8 @@
         "cargo test --lib：108 passed / 0 failed / 2 ignored（同上复跑）"
       ],
       "created_at": "2026-09-19T23:40:00+08:00",
-      "updated_at": "2026-09-19T23:40:00+08:00"
+      "updated_at": "2026-11-01T14:59:59+08:00",
+      "deprecated_reason": "FEAT-150：调色台与其 OpenCV 算子微服务整体下线（与 LR/PS 重复、偏离「相册管理」定位；且算子通道未随发布包分发，装给用户后不可用）。对应源码与 20 条 edit_*/studio_* 命令已删除，功能位改为「图像加工工具台」（压缩 / 文字提取 / 画质增强 / 主题手账）。"
     },
     {
       "id": "FEAT-069",
@@ -3924,7 +3928,9 @@
         "撤销栈"
       ],
       "created_at": "2026-10-13T00:00:00+08:00",
-      "updated_at": "2026-10-22T22:25:00+08:00"
+      "updated_at": "2026-11-01T14:59:59+08:00",
+      "status": "deprecated",
+      "deprecated_reason": "FEAT-150：调色台与其 OpenCV 算子微服务整体下线（与 LR/PS 重复、偏离「相册管理」定位；且算子通道未随发布包分发，装给用户后不可用）。对应源码与 20 条 edit_*/studio_* 命令已删除，功能位改为「图像加工工具台」（压缩 / 文字提取 / 画质增强 / 主题手账）。"
     },
     {
       "id": "FEAT-102",
@@ -5667,7 +5673,87 @@
       ],
       "created_at": "2026-10-31T20:11:12+08:00",
       "updated_at": "2026-11-01T14:15:12+08:00"
+    },
+    {
+      "id": "FEAT-150",
+      "name": "创意工坊重做：调色台整体下线，改为按调用方式分区的图像加工工具台（压缩上线）",
+      "module": "src-tauri/src/tools.rs（新增：压缩 + 旧配方清理）· src-tauri/src/lib.rs（命令注册 / 摘除 20 条 edit_*/studio_*）· src-tauri/src/edit/**、src-tauri/src/studio.rs、python-studio/**（删除）· src/views/Workshop.vue（重写）· src/components/workshop/{CompressTool,PhotoTray,RecipeCleanup,ToolIcon}.vue（新增）· src/types/tools.ts、src/utils/bytes.ts、src/utils/pathParts.ts（新增）· src/components/workshop/editor/**、useStudioOps.ts、src/stores/edit.ts、src/composables/useEditEngine.ts、src/types/edit.ts(+test)（删除）· src/components/{PhotoLightbox,PhotoActionMenu,PhotoGrid}.vue、src/composables/usePhotoActions.ts、src/views/Home.vue、src/router/index.ts（入口文案）",
+      "status": "done",
+      "date": "2026-11-05",
+      "purpose": "用户判断：创意工坊里的组件违背软件定位、重复造轮子，建议改成 LR/PS 之外、管理相册时顺手的工具 —— ① 图像压缩 ② 图像超分 ③ OCR 识别 ④ AI 图像创作（图生图，如主题抽取制作手账，后续由 agent 执行）。要求：分析合理性 → 合理则删除现有工坊后端 → 前端预留为这些工具并重新排版。确认口径：压缩必须可用且支持指定大小与裁切（Q1=B）；旧 sidecar 提供一次性清理（Q2=B）；名称保留「创意工坊」；本轮创作区只做主题手账一张卡。",
+      "implementation": {
+        "为什么下线": "① 与 LR/PS 逐项重叠：曝光/对比/高光阴影/色温色调/曲线/裁剪拉直/饱和/锐化 + 蒙版，就是 LR 的核心面板，CLAHE 与四种模糊就是 PS 滤镜；Rust 侧 333 KB / 15 文件 + 一套独立 Python 微服务（独立端口/依赖/日志/冷启动），而 README §一 的四条定位（本地存储/离线 AI/文件夹抽象/检索优先）里没有修图。② 发布版里那半条腿是死的：studio.rs 要 resource_dir/studio/studio-server.exe，而 release.tauri.conf.json 的 bundle.resources 只有 VCR —— 装给用户后算子通道直接报「缺少 studio-server.exe」，只有开发机能跑（python-studio/server.py）。",
+        "删除范围": "Rust：src-tauri/src/edit/**（15 文件）、studio.rs、python-studio/；lib.rs 摘掉 mod 声明、EditState::manage 与 20 条命令注册。前端：components/workshop/editor/**（9 个）、useStudioOps.ts、stores/edit.ts、composables/useEditEngine.ts、types/edit.ts(+test)。删前核对过引用闭包：edit 子系统只被工坊引用，删掉不影响任何其他功能。",
+        "压缩（tools::image_compress）": {
+          "分层": "命令层只做鉴权 + spawn_blocking + 出入口日志；服务层 compress_one 编排 解码→裁切→缩长边→编码→落盘；编码细节拆成 encode_under_target / crop_rect_for / output_path 各自单测。",
+          "凑大小": "质量阶梯 [95,88,82,74,66,58,50,42,34,28] 命中即停，再向上 +4/+8 试探把预算用满；最低档仍超标就按长边 ×0.85 逐轮缩小（下限 480px，最多 6 轮），触底仍不达标则返回最低质量结果并由前端标「未达标」。为什么不用二分：12MP 单次 JPEG 编码约 150~300 ms，二分 7 次 × 批量 20 张就是半分钟起步。",
+          "裁切": "居中裁切，交叉相乘判比例（避免浮点误差），先裁再缩（缩完再裁会多一次大图重采样）。",
+          "不覆盖原图": "产物名 <stem>.jpg；输出目录等于源目录且该名正是原图时自动改 <stem>_compressed.jpg，重名再叠 _1/_2。压缩是破坏性操作，写回原图没有回头路。",
+          "透明与元数据": "输出固定 JPEG：透明底显式铺白（直接 to_rgb8 会让透明区变黑）、不携带 EXIF —— 两点都在 UI 上写明，不做隐式承诺。"
+        },
+        "旧配方清理（tools::recipe_sidecar_scan / purge）": "递归找 *.pmrecipe.json 与 *.pmmask.png，先报数量/体积/扫描文件数，确认后删除（trash::delete 进回收站，失败退回 remove_file）。产品判断：不自动删用户目录文件，但也不能装作没有。",
+        "排版": "按**调用方式**分区，而不是四张一样的卡：「处理」= 行式清单（高频、参数少、反复进；三枚 pill 固定写输入/输出/依赖，这是用户判断敢不敢按的依据）；「创作」= 大卡 + 竖排流程条（低频、有输出物、耗时长，要回答「作品怎么造出来」）。两区共用素材托盘 —— 四件事的输入都是「一组照片」，输入不该由每个工具各选一次。窄窗（≤1080）参数行改成「标签左/控件右」的表单行。",
+        "状态诚实": "只做两态徽标（可用 / 规划中），不做「需模型」的第三态 —— 画质增强与 OCR 本轮根本没实现，给个「下载模型就能用」的中间态等于承诺不存在的行为。规划中工具的入口禁用并在进入后说明「还在做 + 计划」。"
+      },
+      "highlights": {
+        "删对了一半的死代码": "发现「算子通道在发布包里根本没打包」比「定位错配」更硬：这不是取舍问题，是装给用户就不能用的功能在仓库里躺了两个月。",
+        "定位句要能挡需求": "README §一 的四条定位（本地/离线/文件夹抽象/检索优先）没有「修图」—— 有这句话，删调色台就不是拍脑袋，而是拿定位当判据。",
+        "图生图 ≠ 文生图": "用户要的「AI 图像创作」是图生图（主题抽取做手账），素材/主题/受众都在本机相册里，LR/PS 做不了 —— 这条是四项里差异化最强的；而文生图与相册无因果、要几 GB 模型，属于不该进这个 app 的需求。",
+        "手账不靠生成模型": "手账本质是选图 + 排布 + 文案，三件事用现成能力就能确定性完成（CLIP 语义分类 + 人脸聚合 + 去重 + 模板 + justifiedRows）；生成模型只在「单张插画化」出场 —— 版式与文字交给模型反而最不稳。",
+        "压缩的坑在「凑不到」": "指定大小必然存在凑不到的输入（噪点多的图、质量到底仍超标）。可选做法是静默返回、或降尺寸直到达标；这里的取舍是「先降长边、到底仍超标就如实标未达标」——用户拿去发邮件才发现超限，比显示一个红字更糟。",
+        "托盘是被结构逼出来的": "当四件事的输入都是「一组照片」时，输入区就不该属于某个工具。反过来，如果工具输入各不相同（有的要单张、有的要参数文本），共用托盘就会变成累赘 —— 结构要跟着输入的形状走。"
+      },
+      "tests": [
+        "cargo test --lib tools::：9 项通过（parse_aspect / crop_rect_for 宽高两向 / 比例已符不裁 / 输出不覆盖原图 / 重名去重 / sidecar 扫描 / 端到端压缩）",
+        "端到端压缩用例：1200×900 噪点 PNG → 裁 1:1 → 长边 500 → 目标 40KB，断言产物 ≤40KB、500×500、为 .jpg、原图字节数不变",
+        "cargo check --lib 通过（仅 5 条既有 warning，无新增）",
+        "npx vue-tsc --noEmit 0 错误；npm test 166 通过（含新增 bytes/pathParts 13 项）",
+        "npm run build（vue-tsc + vite build）通过",
+        "排版核对：Playwright 截图 5 张（列表深/浅 1440、压缩工位 1440 与 1024、规划中工位 1440），控制台 0 错误；浅色用陶砂预设（非只切 body 类）"
+      ],
+      "related_files": [
+        "README.md",
+        "docs/FEAT-099-基准调色-技术文档.md",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/tools.rs",
+        "src/views/Workshop.vue",
+        "src/components/workshop/CompressTool.vue",
+        "src/components/workshop/PhotoTray.vue",
+        "src/components/workshop/RecipeCleanup.vue",
+        "src/components/workshop/ToolIcon.vue",
+        "src/types/tools.ts",
+        "src/utils/bytes.ts",
+        "src/utils/pathParts.ts",
+        "src/components/PhotoLightbox.vue",
+        "src/components/PhotoActionMenu.vue",
+        "src/components/PhotoGrid.vue",
+        "src/composables/usePhotoActions.ts",
+        "src/views/Home.vue",
+        "src/router/index.ts"
+      ],
+      "keywords": [
+        "创意工坊",
+        "图像压缩",
+        "指定大小",
+        "裁切",
+        "JPEG",
+        "超分",
+        "画质增强",
+        "OCR",
+        "主题手账",
+        "图生图",
+        "agent 编排",
+        "素材托盘",
+        "旧配方清理",
+        "sidecar",
+        "pmrecipe",
+        "下线圈定",
+        "定位错配",
+        "发布包未打包"
+      ],
+      "created_at": "2026-11-01T14:59:59+08:00",
+      "updated_at": "2026-11-01T14:59:59+08:00"
     }
   ],
-  "updated": "2026-11-01T14:15:12+08:00"
+  "updated": "2026-11-01T14:59:59+08:00"
 }
