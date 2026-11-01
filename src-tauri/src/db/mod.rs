@@ -17,7 +17,7 @@ pub use category::{CategoryIndexStats, CategoryOverviewRow, CategoryPhotoRow};
 pub use content::{
     AlbumContentRow, CategoryGroupRow, ContentFilters, ContentSearchHit, FieldGroups,
     LocationGroupRow, PhotoContentRecord, SmartHit, TimelineCard, TimelineIndex,
-    TimelineMonthIndex,
+    TimelineMonthIndex, SEM_LANE_DESC, SEM_LANE_IMG,
 };
 pub use embedding::EmbeddingVersion;
 pub use health::{AlbumFacts, SAMPLE_PER_ALBUM};

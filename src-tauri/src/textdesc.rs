@@ -21,13 +21,13 @@ use crate::db::embedding::TextEmbeddingRecord;
 use crate::db::SmartHit;
 use crate::{AppState, SessionState};
 
-/// 语义相似度下限
+/// 语义相似度下限（**已下线口径**，仅旧单测参考）
 ///
-/// FEAT-154（实测）：这里原来是 0.30，低到「几乎全库都算命中」—— 搜一个两字词就能
-/// 把两路候选都打满上限（图像 1999 + 描述 2000 = 融合后 3826 条），前端随即要给
-/// 三千多张照片生成缩略图，用户感知就是「搜索慢」。抬到 0.45 后候选量降一个量级，
-/// 而相关命中（实测集中区 0.41~0.46）仍排在前面。
-/// 前端仍可显式传 `minSimilarity` 覆盖（clamp 0.05~0.95）。
+/// FEAT-154 曾把它抬到 0.45（0.30 低到「几乎全库命中」）。
+/// FEAT-155 后关键词搜索与以图搜图都改用「相对相关度下限」
+/// （`content::SEMANTIC_REL_FLOOR_DEFAULT` / `content::SEMANTIC_LANE_MIN_LIFT`），
+/// **绝对余弦阈值在语义检索里已无生产调用点** —— 图像塔与描述塔的余弦尺度差一倍以上，
+/// 同一个绝对值不可能同时对两路成立（BUG-2026-1101-007）。
 pub const MIN_SIM_DEFAULT: f64 = 0.45;
 /// 以图搜图默认返回条数
 const IMAGE_TOPK_DEFAULT: usize = 60;
@@ -299,14 +299,17 @@ fn query_image_input(state: &AppState, path: &str) -> String {
 /// 以图搜图：图片路径 → 图像塔编码 → 与 `photo_embeddings` 余弦 → topK
 ///
 /// - 复用现有图像向量，**不重建索引**（644 × 512 维全表点积为微秒级）
-/// - 阈值/硬上限沿用语义通道口径；失败（服务未就绪/编码失败）返回 Err，由调用方提示
+/// - FEAT-155：召回改走 [`crate::vecindex::VecIndex::rank_rel`]（与关键词搜索同一套
+///   相对相关度），`min_similarity` 的语义也随之变为「相对相关度下限」——
+///   否则以图搜图会留着最后一个绝对余弦阈值，页内徽标又没法用同一套口径。
+/// - 失败（服务未就绪/编码失败）返回 Err，由调用方提示
 pub async fn recall_by_image(
     app: &tauri::AppHandle,
     state: &AppState,
     user_id: i64,
     image_path: &str,
     limit: usize,
-    min_similarity: f64,
+    rel_floor: f64,
 ) -> Result<Vec<SmartHit>, String> {
     if crate::vision::semantic_backoff_active() {
         return Err("CLIP 服务暂不可用（退避中）".into());
@@ -347,40 +350,48 @@ pub async fn recall_by_image(
         return Err("图像向量索引为空（请先勾选「语义向量」做一次扫描）".into());
     }
 
-    // 3. 余弦 topK → 批量取展示字段（lookup_hits_by_hashes 按入参顺序返回）
+    // 3. 相对相关度 topK → 批量取展示字段（lookup_hits_by_hashes 按入参顺序返回）
     //    FEAT-154：改走扁平索引（f32 累加 + rayon 并行），见 `vecindex` 模块
+    //    FEAT-155：同模态（图→图）也走 rank_rel，徽标才能与关键词搜索同一套口径
     let idx = crate::vecindex::VecIndex::from_rows(items);
-    let ranked: Vec<(String, f64)> = idx
-        .rank(&q, limit.max(1), min_similarity as f32)
-        .into_iter()
-        .map(|(h, s)| (h, s as f64))
-        .collect();
-    let hashes: Vec<String> = ranked.iter().map(|(h, _)| h.clone()).collect();
+    let rank = idx.rank_rel(
+        &q,
+        limit.max(1),
+        rel_floor as f32,
+        0,
+        crate::content::SEMANTIC_LANE_MIN_LIFT as f32,
+    );
+    let denom = if rank.rel_max > 1e-6 { rank.rel_max } else { 1.0 };
+    let hashes: Vec<String> = rank.hits.iter().map(|(h, _)| h.clone()).collect();
     let mut hits = {
         let db = state.0.lock().map_err(|e| format!("{e}"))?;
         db.lookup_hits_by_hashes(user_id, &hashes)
             .map_err(|e| format!("{e}"))?
     };
-    for (hit, (_h, score)) in hits.iter_mut().zip(ranked.iter()) {
-        hit.semantic_score = Some(*score);
+    for (hit, (_h, rel)) in hits.iter_mut().zip(rank.hits.iter()) {
+        // 与关键词搜索一致：相对相关度 = rel / 本路峰值，来源标 img
+        let rel01 = (*rel / denom) as f64;
+        hit.semantic_score = Some(rel01);
+        hit.semantic_rel = Some(rel01);
+        hit.semantic_lane = Some(crate::db::SEM_LANE_IMG.to_string());
     }
     Ok(hits)
 }
 
 /// 描述语义召回的硬上限（与图像塔同口径：极端大库保护）
-/// FEAT-154：单路候选池上限（原 2000）
 ///
-/// 2000 只是「池子」，融合后前端根本展示不了那么多；而每多一条候选就多一次 hash 回表
-/// （SQL）与一次缩略图生成。600 与阈值 0.45 配套：实测仍覆盖相关命中，开销降下来。
-/// 最终条数由调用方的 `limit` 截断。
-const DESC_MAX_CANDIDATES: usize = 600;
-
+/// FEAT-154：单路候选池上限（原 2000）。
+/// FEAT-155：具体数值改由调用方传入（默认 [`crate::content::SEMANTIC_DESC_CANDIDATES`]），
+/// 本模块只负责「按相对相关度排 + 同文本折叠」。
+///
 /// 描述向量索引缓存（FEAT-154）：`(user_id, model) → (版本信号, 扁平索引)`
 ///
 /// 与图像路的 `EMBED_CACHE` 同一套思路，但描述表此前**完全没有缓存**：
 /// 每次搜索都要全量读库 + 解码 2.2 万条 blob（实测读 165ms + 解码约 60ms）。
 /// 版本信号用 `text_embedding_version`（count + max rowid，同 join 口径），
 /// 只有扫描新增照片 / 重建描述索引之后才重载。
+///
+/// FEAT-155：索引里多了「同一段描述文本」的分组 id（折叠用），见 `VecIndex::groups`。
 type TextIndexEntry = std::sync::Arc<((i64, i64), crate::vecindex::VecIndex)>;
 static TEXT_INDEX_CACHE: std::sync::Mutex<Option<HashMap<(i64, String), TextIndexEntry>>> =
     std::sync::Mutex::new(None);
@@ -412,32 +423,38 @@ async fn desc_index(
     let _ = app; // 保留参数位：缓存若将来按「服务实例」区分时要用
     let rows = {
         let db = state.0.lock().map_err(|e| format!("{e}"))?;
-        db.load_text_embeddings(user_id, DESC_KIND, model)
+        db.load_text_embeddings_grouped(user_id, DESC_KIND, model)
             .map_err(|e| format!("读取描述向量失败: {e}"))?
     };
-    let entry: TextIndexEntry =
-        std::sync::Arc::new((version, crate::vecindex::VecIndex::from_rows(rows)));
+    let entry: TextIndexEntry = std::sync::Arc::new((
+        version,
+        crate::vecindex::VecIndex::from_rows_grouped(rows),
+    ));
     if let Ok(mut cache) = TEXT_INDEX_CACHE.lock() {
         cache.get_or_insert_with(HashMap::new).insert(key, entry.clone());
     }
     Ok(entry)
 }
 
-/// 描述向量排名（FEAT-154）：**接收已编码好的查询向量**，不再自己调一次文本塔
+/// 描述向量排名（FEAT-154 / FEAT-155）：**接收已编码好的查询向量**，不再自己调一次文本塔
 ///
 /// 为什么把编码拿出来：智能搜索的图像路与描述路用的是**同一个关键词**，
 /// 旧代码把 `/embed_text` 调了两次（实测 45ms/次，外加一次服务 ensure）。
 /// 现在由调用方编码一次，两路共用。
 ///
-/// 返回 `(photo_hash, 余弦)`，已降序并截到 [`DESC_MAX_CANDIDATES`]；
-/// 回表（`lookup_hits_by_hashes`）交给调用方与图像路合并成一次。
+/// 返回 [`LaneRank`]：`hits` 里是 `(photo_hash, rel)`（rel = 余弦 − 本路中位余弦），
+/// 已降序并按 `max_per_group` 折叠；回表交给调用方与图像路合并成一次。
+///
+/// `max_per_group = 0` → 不折叠（结构化 query 用：同一段描述的整批照片就是答案）。
 pub async fn rank_by_text_with_query(
     app: &tauri::AppHandle,
     state: &AppState,
     user_id: i64,
     q: &[f32],
-    min_similarity: f64,
-) -> Result<Vec<(String, f32)>, String> {
+    rel_floor: f64,
+    candidates: usize,
+    max_per_group: usize,
+) -> Result<crate::vecindex::LaneRank, String> {
     if crate::vision::semantic_backoff_active() {
         return Err("CLIP 服务暂不可用（退避中）".into());
     }
@@ -453,7 +470,13 @@ pub async fn rank_by_text_with_query(
     if idx.is_empty() {
         return Err("描述向量索引为空（请先重建描述索引）".into());
     }
-    Ok(idx.rank(q, DESC_MAX_CANDIDATES, min_similarity as f32))
+    Ok(idx.rank_rel(
+        q,
+        candidates,
+        rel_floor as f32,
+        max_per_group,
+        crate::content::SEMANTIC_LANE_MIN_LIFT as f32,
+    ))
 }
 
 /// 描述索引重建报告

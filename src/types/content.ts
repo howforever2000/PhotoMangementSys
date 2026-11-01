@@ -191,8 +191,19 @@ export interface SmartHit {
   shoot_time: string | null;
   tone_type: string | null;
   person_ids: string[];
-  /** FEAT-SEM：语义命中余弦相似度（0~1）；纯关键词命中为 null（显示「AI 匹配」徽标用） */
+  /** FEAT-SEM：语义命中余弦相似度（0~1）；纯关键词命中为 null（显示「AI 匹配」徽标用）
+   *
+   * FEAT-155 起与 `semantic_rel` 同值（语义已从「原始余弦」改为「本路相对相关度」），
+   * 新代码请直接读 `semantic_rel` —— 两路余弦尺度本来不可比，原始余弦不再对外展示。
+   */
   semantic_score: number | null;
+  /** FEAT-155：本路**相对相关度**（0~1）=（余弦 − 本路中位余弦）/ 本路最大提升值
+   *
+   * 只在「同一路 + 同一条 query」内可比（榜首恒为 1.0）。徽标乘 100 展示。
+   */
+  semantic_rel: number | null;
+  /** FEAT-155：相关度来自哪一路 —— `img`（图像塔）/ `desc`（描述塔），徽标据此标来源 */
+  semantic_lane: "img" | "desc" | null;
 }
 
 /** FEAT-048：内容分类两级聚合行 —— 对应 Rust `db::CategoryGroupRow` */
