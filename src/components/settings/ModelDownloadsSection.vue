@@ -13,7 +13,7 @@ const notify = useNotify();
 
 /** 兜底通道：网络受限时的离线包（README 里同一份地址） */
 const MODEL_ZIP =
-  "https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.2/model.zip";
+  "https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.5/model.zip";
 
 async function openModelZip() {
   try {
