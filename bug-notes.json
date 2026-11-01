@@ -5179,7 +5179,47 @@
       ],
       "created_at": "2026-11-01T14:15:12+08:00",
       "updated_at": "2026-11-01T14:15:12+08:00"
+    },
+    {
+      "id": "BUG-2026-1101-006",
+      "date": "2026-11-01",
+      "status": "open",
+      "title": "带模型的发布配置仍内嵌已下线的 fp16 语义档：FEAT-137 只改了下载表与主配置，release.tauri.conf.json / release.ps1 的清单没跟着改",
+      "module": "src-tauri/release.tauri.conf.json（bundle.resources）· release.ps1（第 2 步 required 模型清单）",
+      "symptom": [
+        "v0.4.5 发版用的是 release.tauri.conf.no-models.json（轻量包），所以本次发布不受影响",
+        "但只要有人跑 release.ps1（或带模型的 tauri build），打进安装包的仍是 chinese-clip/onnx/model_fp16.onnx —— 而 config.py 的 CLIP_MODEL_META 已只留 chinese-clip-fp32/onnx/model.onnx",
+        "结果是「带模型的发行包」里语义档与代码期望的目录不一致：CLIP_LEGACY_DIRS 的兜底只看 chinese-clip/ 里有没有 fp32 整图或拆分件，fp16 整图不算，于是装完语义索引仍然不可用（需要用户再下 754MB）"
+      ],
+      "root_cause": [
+        "FEAT-137 收敛语义档时，改动面覆盖了 python 侧 config / model_registry、Rust 侧 model_dl.rs 的下载规格与前端设置，但漏了「发布配置的资源清单」这条旁支",
+        "这两处清单是硬编码字符串，没有任何单测或自检把它们与 config.CLIP_MODEL_META 对齐（release.ps1 第 5 步只校验「配置里写的资源在包里」，不会发现配置本身写的是退役模型）"
+      ],
+      "evidence_log": [
+        "src-tauri/release.tauri.conf.json 的 bundle.resources 里仍是 ../python/models/chinese-clip/onnx/model_fp16.onnx",
+        "release.ps1 的 $required 列表同样是 chinese-clip/onnx/model_fp16.onnx",
+        "python/vcr/config.py 的 CLIP_MODEL_META 只有一个 b16 档，dir = chinese-clip-fp32、onnx = model.onnx"
+      ],
+      "solution": [
+        "待办（下一版处理）：把两处清单的语义模型换成 chinese-clip-fp32/onnx/model.onnx + chinese-clip-fp32/tokenizer.json + chinese-clip-fp32/vocab.txt",
+        "更根本的做法：release.ps1 的自检从「配置 ↔ 包内容」扩成「配置 ↔ config.CLIP_MODEL_META 真值」，退役模型出现在清单里直接报错"
+      ],
+      "prevention": [
+        "「换档 / 下线某档」这类改动的检查清单里必须包含发布配置与打包脚本的资源清单（不只是运行时代码与下载表）",
+        "硬编码的资源清单要和真值源（config 常量）互相校验，否则退役项会安静地留在打包路径里"
+      ],
+      "keywords": [
+        "release.tauri.conf.json",
+        "release.ps1",
+        "fp16",
+        "chinese-clip-fp32",
+        "FEAT-137",
+        "退役模型",
+        "打包清单"
+      ],
+      "created_at": "2026-11-01T17:41:12+08:00",
+      "updated_at": "2026-11-01T17:41:12+08:00"
     }
   ],
-  "updated": "2026-11-01T14:15:12+08:00"
+  "updated": "2026-11-01T17:41:12+08:00"
 }
