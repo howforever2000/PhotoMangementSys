@@ -5757,6 +5757,87 @@
       "updated_at": "2026-11-01T15:40:00+08:00"
     },
     {
+      "id": "FEAT-151",
+      "name": "扫描入库分区统一：相册扫描分组工具改成路由型 tab 一跳直达，页头 / 数据带 / 工具栏 / 结果表与模块其余分区对齐",
+      "module": "src/utils/scanModuleTabs.ts（新增：分区唯一真值）· src/types/ui.ts（新增 HeaderTab 契约）· src/components/ui/AppHeader.vue（类型迁出）· src/views/ScanHub.vue（分区表同源 + ?tab= 深链）· src/views/TestScan.vue（页头/数据带/工具栏/结果表重排）· src/views/{Memories,SmartAlbum,SmartSearch,Timeline}.vue（HeaderTab 改为从 types/ui 引入）· src/views/Home.vue + README.md（文案同步）",
+      "status": "done",
+      "date": "2026-11-01",
+      "purpose": "用户需求：「扫描工具中 相册扫描分组工具的跳转方式和其他组件统一，并且优化界面」。改前两处不一致：① Hub 里点「相册扫描分组工具」只弹一句「该子功能以独立页面形式提供」再让用户点第二个按钮，而同模块/同站的其他路由型 tab（智慧相册的回忆 / 时间线 / 智能搜索）都是一跳直达；② 分组工具页自带一份硬编码分区，其中「重复清理」还写着「功能待开发」（实际早已上线），并且另加了一个「← 返回图片扫描」按钮 + h1 + 副标题，等于同一排导航做了两遍、还给出过期说明书。",
+      "implementation": {
+        "分区唯一真值": "新建 utils/scanModuleTabs.ts：三块页内分区（全局扫描 / 重复清理 / 入库体检）+ 一块路由型子页（扫描分组工具），Hub 与子页共用同一个 scanModuleTabs()。之前两份定义已经跑偏（子页那份停留在「待开发」）。",
+        "跳转方式统一": "路由型 tab 交给 AppHeader 渲染 <RouterLink>（与智慧相册的回忆 / 时间线 / 智能搜索完全一致），点 tab 直接到 /scan/test，不再有中转占位页；子页点页内分区则 router.push('/scan?tab=x')。",
+        "深链与高亮": "Hub 读 ?tab= 并把当前分区 replace 进 URL（沿用 FEAT-112 的双向同步口径），修掉「已经在 /scan 上再 push 同一路径时 vue-router 不重挂组件 → 点了没反应」这一类问题；刷新 / 分享链接也能回到同一块。",
+        "页头与配色统一": "删掉子页重复的「返回按钮 + h1 + 副标题」整块与自造的 --ts-* 局部配色（浅色预设下白字融进浅背景的老问题一并消失），统一用 AppHeader + 模块同一个数据带。",
+        "数据带": "StatBand：扫描照片 / 有时间 / 有 GPS / 有地点 / 任务状态（含线程数与后台执行提示），替代原来挤在结果条里的一行裸文字。",
+        "工具栏重排": "选目录独占一行；操作行按语义分组：主操作（扫描，primary）· 次操作（解析地名、⚙ 性能设置）· 危险操作（按年·地点组织移动，危险色 + 保留二次确认）；递归开关与操作同区（原来孤零零挂在目录输入框下面）。性能设置入口从「右上角」移到操作栏（README 同步）。",
+        "结果区": "表格补 <thead>（原来四列裸数据，用户不知道哪列是 GPS 坐标）、行 hover 态、文件名等宽字体、年/月分组标题带张数；空态改用全站 EmptyState，区分「未开始」与「扫到 0 张（含递归提示）」两种文案。"
+      },
+      "highlights": "同一份分区表喂两个页面，过期状态无处藏身；分组工具页从「独立小工具」回到「扫描入库的一个分区」；危险操作与普通操作在视觉与位置上彻底分开。",
+      "tests": "无新增单测（纯导航与呈现）。验证：npx vue-tsc --noEmit 通过；npm test 177 通过；npm run build 通过（TestScan chunk 25.11 kB / gzip 9.73 kB）。",
+      "related_files": [
+        "src/utils/scanModuleTabs.ts",
+        "src/types/ui.ts",
+        "src/components/ui/AppHeader.vue",
+        "src/views/ScanHub.vue",
+        "src/views/TestScan.vue",
+        "src/views/Home.vue",
+        "README.md"
+      ],
+      "keywords": [
+        "扫描入库",
+        "导航统一",
+        "AppHeader",
+        "RouterLink",
+        "scanModuleTabs",
+        "相册扫描分组工具",
+        "性能设置入口"
+      ],
+      "created_at": "2026-11-01T16:22:48+08:00",
+      "updated_at": "2026-11-01T16:22:48+08:00"
+    },
+    {
+      "id": "FEAT-152",
+      "name": "入库体检（替换未开发的「按年·地点浏览」）：只读诊断入库覆盖率 / 缩略图 / 向量 / 失效文件 / 缓存体积",
+      "module": "src-tauri/src/album_health.rs（新增命令 album_health_report）· src-tauri/src/db/health.rs（新增聚合 + OwnerMatcher）· src-tauri/src/db/mod.rs（mod 注册）· src-tauri/src/lib.rs（命令注册）· src-tauri/src/dedupe.rs（fmt_bytes 提升 pub(crate)）· src/types/health.ts（新增）· src/utils/albumHealth.ts + .test.ts（新增）· src/stores/albumHealth.ts（新增）· src/components/AlbumHealthPanel.vue（新增）· src/components/health/HealthAlbumCard.vue（新增）",
+      "status": "done",
+      "date": "2026-11-01",
+      "purpose": "用户需求：「扫描功能中的按年·地点浏览这未开发可以替换成什么与智慧相册无关但是与相册管理和照片数据有关的」——给出三个候选后用户选 A（入库体检）。理由：按年浏览与按地点浏览已分别由时间线（/timeline）与智慧相册的「地点」分区承担，在扫描模块里再做一遍是同一件事的第三个入口；而「扫描入库写下的数据是否还和磁盘对得上」在别处没有任何人做。本版边界经用户确认：只读 + 跳转，不做删除/重扫/重建这类写操作。",
+      "implementation": {
+        "统计口径": "按相册目录前缀聚合（与 count_scanned_by_prefix 完全同口径），不用 photo_content_scan / photo_thumb_cache / photo_embeddings 的 album_id 列 —— 那是写入时的快照，相册拆分/迁移/父子共享后会停在旧值（BUG-2026-0909-001 的根因）。",
+        "OwnerMatcher（性能）": "按父目录缓存「该目录属于哪些相册」，把「每行 × 每个相册」的 starts_with 比较降到「不同目录数 × 相册数」。真实库实测 173 个目录 / 128 个相册（2.5 万张照片），比较量从 325 万降到 2.2 万/表；口径等价于文件路径前缀匹配（文件直接放在相册根 / 更深子目录 / 嵌套相册父子同属都覆盖）。",
+        "磁盘读数": "photo_count / size_bytes 取 album_stats 缓存（不触发全量重扫）；相册根目录存在性逐册检查，并对最多 50 条/册已入库路径做 stat 抽样 —— 结论里如实带「抽样 n 条 / 失效 m 条」，不冒充全量。",
+        "只读": "不建表、不写缓存、不修库、不自动重扫；修复入口交回现有的「全局扫描」「预生成缩略图」等命令，由用户显式触发。",
+        "判定在前端（可测）": "结论（需处理 / 有缺口 / 正常）由 utils/albumHealth.ts 纯函数推导：整册未入库=需处理、入库缺口>10%=有缺口（差个位数不报警，避免狼来了）、根目录失联盖过一切、抽样缺失措辞必须带「抽样」；空相册不算故障。",
+        "界面": "口径说明 + 「重新体检」；三档计数（可点筛选）+ 总量读数（磁盘 / 已入库 / 入库覆盖 / 缓存）；逐册卡片（三条覆盖率 + 事实行 + 问题标签与原因 + 去扫描 / 打开相册）；加载骨架、错误态、两种空态；一次渲染 40 册，其余点开。"
+      },
+      "highlights": "把「智慧相册不需要的东西」换成「只有扫描模块能回答的问题」；判定口径是可单测的纯函数，改阈值不动 Rust；体检全程只读，动不了用户的照片库。",
+      "tests": "Rust：db::health 3 条（前缀与用户隔离、抽样上限、父目录归属含根目录/嵌套/大小写/兄弟目录）。前端：albumHealth.test.ts 11 条（空相册不算故障、根失联只报一条、抽样措辞、缺口阈值、分母口径、三档汇总、排序）。回归：cargo test --lib 214 通过；npm test 177 通过。",
+      "related_files": [
+        "src-tauri/src/album_health.rs",
+        "src-tauri/src/db/health.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/lib.rs",
+        "src/types/health.ts",
+        "src/utils/albumHealth.ts",
+        "src/utils/albumHealth.test.ts",
+        "src/stores/albumHealth.ts",
+        "src/components/AlbumHealthPanel.vue",
+        "src/components/health/HealthAlbumCard.vue",
+        "src/utils/scanModuleTabs.ts"
+      ],
+      "keywords": [
+        "入库体检",
+        "健康检查",
+        "覆盖率",
+        "失效文件",
+        "album_health_report",
+        "按年地点浏览替换",
+        "只读诊断"
+      ],
+      "created_at": "2026-11-01T16:22:48+08:00",
+      "updated_at": "2026-11-01T16:22:48+08:00"
+    },
+    {
       "id": "FEAT-153",
       "name": "重复扫描细粒度日志：六段台账（遍历/准入/预筛/哈希/相似/分组）+ 前端 AOP 出入口 + 进度分档",
       "module": "src-tauri/src/dedupe.rs（日志与台账）· src/stores/dedupe.ts（trace + 进度台账 + 结果裁剪日志）",

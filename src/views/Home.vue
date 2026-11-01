@@ -60,7 +60,7 @@ const modules = [
   {
     id: "scan",
     title: "图片扫描",
-    desc: "批量扫描入库（EXIF / 影调 / AI），支持按年·地点整理",
+    desc: "批量扫描入库（EXIF / 影调 / AI）· 重复清理 · 入库体检 · 按年地点整理",
     action: "开始扫描",
     icon: "🔍",
     path: "/scan",

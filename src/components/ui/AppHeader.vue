@@ -32,20 +32,7 @@
 import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "../../stores/auth";
-
-export interface HeaderTab {
-  /** 稳定 key（状态型分区用） */
-  key?: string;
-  label: string;
-  /** 计数徽标 */
-  count?: number | string;
-  /** 跳转路由（路由型分区用，如 /scan/test） */
-  to?: string;
-  /** 置灰但可见（"有这块功能，当前条件不可用"） */
-  disabled?: boolean;
-  /** 置灰原因，写进 title —— 灰掉必须讲原因 */
-  why?: string;
-}
+import type { HeaderTab } from "../../types/ui";
 
 const props = withDefaults(
   defineProps<{

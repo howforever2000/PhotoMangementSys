@@ -53,6 +53,7 @@ mod tools;
 mod vision;
 mod photos;
 mod album;
+mod album_health;
 mod vcr_settings;
 
 use std::path::{Path, PathBuf};
@@ -624,6 +625,8 @@ pub fn run() {
             // FEAT-143：重复照片检测（全库：内容哈希 + CLIP 向量相似）
             dedupe::commands::dedupe_scan,
             dedupe::commands::dedupe_cancel,
+            // FEAT-151：入库体检（只读诊断：入库率 / 缩略图 / 向量 / 失效文件 / 缓存体积）
+            album_health::commands::album_health_report,
             // FEAT-142：HEIC 解码能力探针 + 大图预览
             dedupe::commands::heic_support,
             preview::commands::ensure_photo_preview,

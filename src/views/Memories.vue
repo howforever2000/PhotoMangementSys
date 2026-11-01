@@ -22,7 +22,8 @@ import type { ContentSearchHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import PhotoLightbox from "../components/PhotoLightbox.vue";
 import EmptyState from "../components/EmptyState.vue";
-import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
+import type { HeaderTab } from "../types/ui";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 
 const router = useRouter();

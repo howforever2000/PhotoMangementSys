@@ -10,6 +10,7 @@
 pub mod category;
 pub mod content;
 pub mod embedding;
+pub mod health;
 pub mod overview;
 pub mod thumb_cache;
 pub use category::{CategoryIndexStats, CategoryOverviewRow, CategoryPhotoRow};
@@ -19,6 +20,7 @@ pub use content::{
     TimelineMonthIndex,
 };
 pub use embedding::EmbeddingVersion;
+pub use health::{AlbumFacts, SAMPLE_PER_ALBUM};
 pub use overview::{OverviewCard, OverviewStats};
 pub use thumb_cache::ThumbCacheRecord;
 pub use thumb_cache::ThumbCacheRow;

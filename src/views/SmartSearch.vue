@@ -8,7 +8,8 @@ import PhotoLightbox from "../components/PhotoLightbox.vue";
 import type { SmartHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import { getThumbs } from "../utils/thumbQueue";
-import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
+import type { HeaderTab } from "../types/ui";
 import ModelMissingDialog from "../components/settings/ModelMissingDialog.vue";
 
 /**

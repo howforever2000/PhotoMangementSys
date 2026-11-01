@@ -1,85 +1,88 @@
 <script setup lang="ts">
 /**
- * 扫描入库模块 Hub（FEAT-038，FEAT-105 重做）
+ * 扫描入库模块 Hub（FEAT-038，FEAT-105 重做，FEAT-151 统一分区来源）
  *
- * FEAT-105 改了什么：旧版顶部是「彩虹渐变 Hero + 4 张渐变入口卡 + 胶囊 tab」，
- * 同一组功能被写了两遍（卡一遍、tab 一遍），而且渐变吃掉了页面的注意力。
- * 现在：模块页头（你在哪） + 数据带（有多少） + ModuleTabs（看哪块） + 内容。
+ * 页内结构：模块页头（你在哪 + 分区导航） + 数据带（有多少） + 当前分区内容。
  *
- * 子功能（全在本模块内，不再有跨模块导航）：
- *   · 全局扫描入库：默认 tab，直接在 Hub 内渲染 GlobalScanPanel
- *   · 按年·地点浏览：待开发（置灰可见）
- *   · 重复扫描清理：FEAT-143，直接在 Hub 内渲染 DedupePanel（全库：内容哈希 + 向量相似）
- *   · 相册扫描分组工具：独立子页 /scan/test
+ * 分区（真值在 `utils/scanModuleTabs.ts`，本页与分组工具子页共用同一份）：
+ *   · 全局扫描：默认分区，直接渲染 GlobalScanPanel
+ *   · 重复清理：FEAT-143，直接渲染 DedupePanel
+ *   · 入库体检：FEAT-152，直接渲染 AlbumHealthPanel（替换掉未开发的「按年·地点浏览」）
+ *   · 扫描分组工具：独立子页 /scan/test —— 页头按**路由型 tab** 直接跳转，
+ *     不再需要"先点 tab、再点一个打开按钮"的中转占位
  *
- * 全局扫描任务状态在 Pinia store 中独立存活，切换 tab / 离开 Hub 不中断扫描。
+ * 全局扫描任务状态在 Pinia store 中独立存活，切换分区 / 离开 Hub 不中断扫描。
  */
 import { computed, onMounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import GlobalScanPanel from "../components/GlobalScanPanel.vue";
 import DedupePanel from "../components/DedupePanel.vue";
-import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
+import AlbumHealthPanel from "../components/AlbumHealthPanel.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
+import {
+  DEFAULT_SCAN_SECTION,
+  SCAN_SECTIONS,
+  scanModuleTabs,
+  type ScanSectionKey,
+} from "../utils/scanModuleTabs";
 
+const route = useRoute();
 const router = useRouter();
 const albumStore = useAlbumStore();
 const contentStore = useContentStore();
 
-interface ScanTab {
-  key: string;
-  label: string;
-  icon: string;
-  /** true = 在 Hub 内直接渲染组件；false = 跳转子页面（path） */
-  inline: boolean;
-  /** 跳转路径（inline=false 时必填） */
-  path?: string;
-  enabled: boolean;
+/** 页头分区：状态型（本页内切换）+ 路由型（/scan/test）由 AppHeader 自动分流 */
+const moduleTabs = scanModuleTabs();
+
+const activeTab = ref<ScanSectionKey>(DEFAULT_SCAN_SECTION);
+
+/** 是否是一个合法的页内分区 key */
+function isSectionKey(k: string): k is ScanSectionKey {
+  return SCAN_SECTIONS.some((s) => s.key === k);
 }
 
-const tabs: ScanTab[] = [
-  {
-    key: "global",
-    label: "全局照片扫描入库",
-    icon: "🗂️",
-    inline: true,
-    enabled: true,
-  },
-  {
-    key: "by-time-place",
-    label: "按年·地点浏览",
-    icon: "🗓️",
-    inline: false,
-    enabled: false,
-  },
-  {
-    key: "dedupe",
-    // FEAT-143：全库重复照片清理（内容哈希 + 图像向量相似）
-    label: "重复扫描清理",
-    icon: "🧹",
-    inline: true,
-    enabled: true,
-  },
-  {
-    key: "test",
-    label: "相册扫描分组工具",
-    icon: "🧪",
-    inline: false,
-    path: "/scan/test",
-    enabled: true,
-  },
-];
+/**
+ * 切换页内分区：状态 + URL 一起改（URL 是真源，刷新 / 分享链接不丢）
+ *
+ * 与智慧相册同一套口径（FEAT-112 的双向同步）：用 `replace` 而不是 `push`，
+ * 否则在几个分区之间来回切会把历史塞满，按返回键要按好几次才回得到 Home。
+ */
+function pickTab(key: string) {
+  if (!isSectionKey(key)) return;
+  activeTab.value = key;
+  syncTabQuery(key);
+}
 
-const activeTab = ref<string>("global");
-const activeDef = computed(() => tabs.find((t) => t.key === activeTab.value));
+function syncTabQuery(key: ScanSectionKey) {
+  if (String(route.query.tab ?? "") === key) return;
+  router.replace({ path: route.path, query: { ...route.query, tab: key } }).catch(() => {});
+}
 
-/* ---------------- Hero 统计 ---------------- */
+/**
+ * 响应 URL query 变化（不只 onMounted）
+ *
+ * 相册扫描分组工具子页的页头显示同一排分区：点「入库体检」时它是
+ * `router.push({ path: "/scan", query: { tab: "health" } })` —— 若我们本来就在 /scan，
+ * vue-router 不会重新挂载组件，只靠 onMounted 读一次就会出现「点了没反应」。
+ */
+watch(
+  () => route.query.tab,
+  (tab) => {
+    const key = String(tab ?? "");
+    if (!isSectionKey(key)) return;
+    if (key !== activeTab.value) activeTab.value = key;
+  },
+);
+
+/* ---------------- 数据带读数 ---------------- */
 const totalAlbums = ref(0);
 const totalPhotos = ref(0);
 const scannedAlbums = ref(0);
 const scannedIn = ref(0);
-/** 全局扫描任务状态（用于 Hero 副标题与卡片 badge） */
+/** 全局扫描任务状态（用于数据带与页头读数） */
 const globalRunning = computed(() => contentStore.globalScanJob.running);
 const globalDoneCount = computed(
   () => contentStore.globalScanJob.items.filter((i) => i.status === "done").length,
@@ -94,16 +97,14 @@ watch(
     totalPhotos.value = list.reduce((n, a) => n + (a.photo_count || 0), 0);
     totalAlbums.value = list.length;
     scannedAlbums.value = list.filter((a) => (a.scanned_photo_count || 0) > 0).length;
-    // BUG-2026-0917-002：此前 scannedIn 声明后从未赋值，Hero 第四格「已入库照片」永远显示 0，
+    // BUG-2026-0917-002：此前 scannedIn 声明后从未赋值，第四格「已入库照片」永远显示 0，
     // 与智慧相册页「653 已扫描入库照片」自相矛盾。这里按相册累加已入库照片数。
     scannedIn.value = list.reduce((n, a) => n + (a.scanned_photo_count || 0), 0);
   },
   { immediate: true },
 );
 
-/* ---------------- 数据带 / 二级导航 / 页头读数（FEAT-105） ---------------- */
-
-/** 数据带：把旧 hero 里的五格搬到带里。
+/** 数据带：旧 hero 里的五格搬过来。
  *  任务状态单占一格：它是这页唯一"会变"的值，放在带尾不会打乱前面四个静态读数。 */
 const statItems = computed<StatItem[]>(() => {
   const jobValue = globalRunning.value
@@ -136,17 +137,6 @@ const statItems = computed<StatItem[]>(() => {
   ];
 });
 
-/** 组件内部分区：四项全属于「扫描入库」 */
-const moduleTabs = computed<HeaderTab[]>(() =>
-  tabs.map((t) => ({
-    key: t.key,
-    label: t.label.replace("全局照片扫描入库", "全局扫描"),
-    to: t.inline ? undefined : t.path,
-    disabled: !t.enabled,
-    why: t.enabled ? undefined : "功能待开发：扫描写库后即可用",
-  })),
-);
-
 /** 页头读数：一行说清这页在干什么 */
 const headerMeta = computed(() => {
   const parts: string[] = [];
@@ -156,11 +146,17 @@ const headerMeta = computed(() => {
 });
 
 onMounted(async () => {
+  // 读 query 深链（子页跳回来 / 刷新 / 分享链接）；没带或非法值就把 URL 补齐，
+  // 这样页头那排分区能正确高亮「当前在哪一块」。
+  const q = String(route.query.tab ?? "");
+  if (isSectionKey(q)) activeTab.value = q;
+  else syncTabQuery(activeTab.value);
+
   if (!albumStore.albums.length) {
     try {
       await albumStore.fetchAlbums();
     } catch {
-      /* Hero 统计不可用也不阻塞 */
+      /* 数据带统计不可用也不阻塞 */
     }
   }
 });
@@ -168,36 +164,24 @@ onMounted(async () => {
 
 <template>
   <div class="scan-page" :style="{ color: 'var(--fg)' }">
-    <!-- 大组件页头：组件名 + 本组件内部分区（全局扫描 / 按年·地点 / 重复清理 / 分组工具） -->
+    <!-- 大组件页头：组件名 + 本组件内部分区（全局扫描 / 重复清理 / 入库体检 / 扫描分组工具） -->
     <AppHeader
       title="扫描入库"
       icon="📥"
       :meta="headerMeta"
       :tabs="moduleTabs"
       :active="activeTab"
-      @pick="(k) => (activeTab = k)"
+      @pick="pickTab"
     />
 
     <!-- 数据带：相册 / 照片 / 已入库 / 任务状态 -->
     <StatBand :items="statItems" class="scan-stats" />
 
-    <!-- 当前 tab 对应的子内容区（FEAT-038：默认 tab 即在 Hub 内渲染 GlobalScanPanel） -->
+    <!-- 当前分区内容：三项都在 Hub 内直接渲染（分组工具走路由，不占这里） -->
     <section class="scan-active-area">
-      <div v-if="activeTab === 'global'">
-        <GlobalScanPanel />
-      </div>
-      <div v-else-if="activeTab === 'dedupe'">
-        <DedupePanel />
-      </div>
-      <div v-else-if="activeDef?.path" class="scan-jump-placeholder">
-        <p>该子功能以独立页面形式提供，点击下方按钮进入：</p>
-        <button class="btn btn-primary" @click="activeDef.path && router.push(activeDef.path)">
-          打开「{{ activeDef.label }}」→
-        </button>
-      </div>
-      <div v-else class="scan-placeholder">
-        「{{ activeDef?.label }}」即将上线 —— 完成对应扫描后即可在此浏览与操作。
-      </div>
+      <GlobalScanPanel v-if="activeTab === 'global'" />
+      <DedupePanel v-else-if="activeTab === 'dedupe'" />
+      <AlbumHealthPanel v-else-if="activeTab === 'health'" />
     </section>
   </div>
 </template>
@@ -211,21 +195,11 @@ onMounted(async () => {
   padding-bottom: 48px;
 }
 
-/* 数据带：与顶栏保持 16px（板底缘与内容之间要留空气，否则读不出板的厚度） */
 /* 数据带（FEAT-107）自带 padding + 下缘发丝线，外层只控纵向节奏。 */
 .scan-stats { margin: 0 0 16px; }
 
 /* 内容区左右留白与页头/数据带对齐（--sp-8 = 52px） */
 .scan-active-area { padding: 0 var(--sp-8); }
-
-.scan-placeholder,
-.scan-jump-placeholder {
-  text-align: center;
-  padding: 60px 20px;
-  color: var(--c-fg-2);
-  font-size: var(--fs-body);
-}
-.scan-jump-placeholder .btn { margin-top: 14px; }
 
 /* 窄窗：页头收窄时内容区同步跟上 */
 @media (max-width: 900px) {
