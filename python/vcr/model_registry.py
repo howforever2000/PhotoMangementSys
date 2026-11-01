@@ -383,12 +383,11 @@ class ModelRegistry:
         刻意不让 GPU 空着：在本机它接管 face_det（det_10g，NPU 上 116.5ms，
         比 DML 的 16.5ms 慢 7 倍）—— GPU 与 NPU 同时有活干，且两者不抢队列。
 
-        FEAT-141：`clip` 也在这张表里了，但它的**默认是 CPU**，不是核显 ——
-        这是量出来的取舍（两轮 200 张全新建档 vs 增量重扫）：
-          CLIP 在核显：语义腿 1.4~1.8x 快，但把 AI 腿拖慢 30~70%
-          （它整批编码会长时间占住 DML 队列，人脸检测在后面排队）
-        全新导入大量照片时换它划算，日常增量重扫则是纯亏 —— 常见的后者。
-        所以默认保守，UI 上那一行可一键切到核显。
+        FEAT-141 / 2026-11-03 用户定调：**勾上核显时，语义索引默认也走核显**。
+        依据（`\".pi/clip_device_probe.py`，两轮各 200 张全新建档）：CLIP 在核显上
+        自己快 1.4~1.8x，但它整批编码会长时间占住 DML 队列，把 AI 腿拖慢
+        30~70%。所以它是“默跟随、可单独改回 CPU”：
+        全新建档 / 首次导入大相册 → 核显更快；只做增量重扫 → 点那一行改回 CPU。
         """
         npu_ok = ov_backend.available("NPU")
         dml_ok = any(p in ort.get_available_providers()
@@ -396,7 +395,8 @@ class ModelRegistry:
         out: dict[str, str] = {}
         for k in config.CHANNEL_KEYS:
             if k == "clip":
-                out[k] = "CPU"
+                # 语义索引跟核显走（没核显就 CPU）
+                out[k] = "GPU" if dml_ok else "CPU"
             elif npu_ok and k in config.OV_SHAPES:
                 out[k] = "NPU"
             elif dml_ok:

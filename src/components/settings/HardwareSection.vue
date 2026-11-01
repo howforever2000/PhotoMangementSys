@@ -30,7 +30,7 @@ const npu = computed(() => {
 const gpu = computed(() => {
   const a = store.accel;
   if (!a) return "";
-  return a.available?.GPU ? "核显可用" : "无核显加速";
+  return a.available?.GPU ? "GPU 可用" : "无 GPU 加速";
 });
 </script>
 

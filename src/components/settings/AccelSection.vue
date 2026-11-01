@@ -1,11 +1,14 @@
 <script setup lang="ts">
 /**
- * 加速 —— 两个独立勾选（NPU / 核显），勾谁就用谁
+ * 加速 —— 两个独立勾选（NPU / GPU），勾谁就用谁
+ *
+ * 叫「GPU」而不是「核显」：DirectML 同样跑**独显**（NVIDIA / AMD），
+ * 这一项管的是「用 DirectML 的那块 GPU」，不特指集成显卡。
  *
  * 交互规则（就是用户脑子里的那句话）：
- *   · 只勾核显 → 四条计算全在核显上
- *   · 只勾 NPU → 能在 NPU 上的三条走 NPU，人脸检测回 CPU（核显没勾就不占它）
- *   · 两个都勾 → 自动分工：NPU 拿触发最频繁的三条，核显拿人脸检测（两个引擎并行）
+ *   · 只勾 GPU → 四条计算全在 GPU 上
+ *   · 只勾 NPU → 能在 NPU 上的三条走 NPU，人脸检测回 CPU（GPU 没勾就不占它）
+ *   · 两个都勾 → 自动分工：NPU 拿触发最频繁的三条，GPU 拿人脸检测（两个引擎并行）
  *   · 都不勾 → 全部 CPU（老行为）
  *
  * 不可用的选项**不渲染**：没有 NPU 硬件 / 没装运行时 → 不出现 NPU 勾选项
@@ -61,7 +64,7 @@ const gpuChecked = computed(
     ),
 );
 
-/** 语义索引（CLIP）自己的设备：默认 CPU（上核显会拖慢 AI 腿，见 docs/FEAT-141） */
+/** 语义索引（CLIP）自己的设备：默认跟随 GPU，可单独改回 CPU */
 const clipOnGpu = computed(() => accel.value?.channels?.clip === "GPU");
 const clipEff = computed(
   () => accel.value?.effective?.clip ?? accel.value?.channels?.clip ?? "");
@@ -78,7 +81,7 @@ const dl = computed(() => store.modelDownloads.find((d) => d.name === RUNTIME_MO
 const downloading = computed(() => dl.value?.running === true);
 
 const devLabel = (d: string) =>
-  d === "NPU" ? "NPU" : d === "GPU" ? "核显" : d === "CPU" ? "CPU" : "—";
+  d === "NPU" ? "NPU" : d === "GPU" ? "GPU" : d === "CPU" ? "CPU" : "—";
 
 async function load(silent = false) {
   loading.value = true;
@@ -98,13 +101,14 @@ async function load(silent = false) {
 
 onMounted(() => void load(true));
 
-/** 按勾选算通道分配（顺序即优先级：NPU 拿前三，剩下的给核显）。
- *  CLIP 不跟 checkbox 走：它有自己的行内开关（默认 CPU，见下方 tip）。
+/** 按勾选算通道分配。
+ *  语义索引（CLIP）**默认跟随 GPU**：勾上 GPU 就一起走 GPU（用户 2026-11-03 定调），
+ *  那一行右侧仍可单独改回 CPU（`clipOverride=false`，用于只做增量重扫的场景）。
  */
 function channelsFor(
   useNpu: boolean,
   useGpu: boolean,
-  clipGpu = clipOnGpu.value,
+  clipOverride?: boolean,
 ): Record<string, AccelDevice> {
   const out: Record<string, AccelDevice> = {};
   if (useNpu && useGpu) {
@@ -112,24 +116,22 @@ function channelsFor(
     out.face_det = "GPU";
   } else if (useNpu) {
     for (const k of NPU_KEYS) out[k] = "NPU";
-    // 核显没勾：人脸检测明确回 CPU（不能留空，空会跟随自动探测又跑回核显）
+    // GPU 没勾：人脸检测明确回 CPU（不能留空，空会跟随自动探测又跑回 GPU）
     out.face_det = "CPU";
   } else if (useGpu) {
-    // 只勾核显 = “全在核显上”：连语义索引一起（用户显式选择，按它执行）
     for (const k of ALL_KEYS) out[k] = "GPU";
-    out.clip = gpuOk.value ? "GPU" : "CPU";
-    return out;
   }
-  // 其余情况：语义索引看它自己那一行（默认 CPU）
+  // 语义索引：跟随 GPU（可被行内开关显式改成 CPU）
+  const clipGpu = clipOverride ?? useGpu;
   out.clip = clipGpu && gpuOk.value ? "GPU" : "CPU";
   return out;
 }
 
-async function apply(useNpu: boolean, useGpu: boolean, clipGpu?: boolean) {
+async function apply(useNpu: boolean, useGpu: boolean, clipOverride?: boolean) {
   saving.value = true;
   busy.value = true;
   try {
-    const ch = channelsFor(useNpu, useGpu, clipGpu);
+    const ch = channelsFor(useNpu, useGpu, clipOverride);
     const on = Object.keys(ch).length > 0;
     await withTimeout(store.setAccel(on, on ? ch : undefined), PERF_TIMEOUT.write, "set_vcr_accel");
     notify.success(on ? "已更新加速分配" : "已关闭加速", on ? "通道正在后台重建，几秒后生效" : "全部计算回到 CPU");
@@ -186,7 +188,7 @@ async function download() {
 
     <label v-if="gpuOk" class="opt" :class="{ on: gpuChecked }">
       <input type="checkbox" :checked="gpuChecked" :disabled="locked || busy" @change="toggleGpu" />
-      <span class="o-name">核显</span>
+      <span class="o-name">GPU</span>
       <span class="o-note">全部计算</span>
     </label>
 
@@ -207,7 +209,7 @@ async function download() {
         v-if="r.key === 'clip' && gpuOk"
         class="m-dev link"
         :disabled="locked || busy"
-        :title="clipOnGpu ? '切回 CPU：语义腿变慢，但不与识别抢核显' : '改用核显：首次导入大量照片时更快，日常增量反而拖慢识别'",
+        :title="clipOnGpu ? '切回 CPU：语义腿变慢，但不与识别抢 GPU' : '改用 GPU：首次导入大量照片时更快，日常增量反而拖慢识别'",
         @click="toggleClip"
       >
         {{ devLabel(r.eff || r.want) }}
@@ -223,8 +225,8 @@ async function download() {
     </li>
   </ul>
   <p v-if="gpuOk && clipEff" class="tip">
-    语义索引默认走 CPU（{{ clipOnGpu ? "已改成核显" : "首次导入大量照片时可点右侧设备改用核显" }}）：
-    它整批编码会占住核显队列，日常增量扫描时反而把识别拖慢约 30%。
+    语义索引默认跟随 GPU（{{ clipOnGpu ? "现在走 GPU" : "现在走 CPU" }}）：
+    首次导入大量照片时更快；只做增量重扫时可点右侧设备改回 CPU（省下约 30% 识别时间）。
   </p>
 </template>
 

@@ -116,7 +116,7 @@ function stopScan() {
 // ---- 加速状态（只读展示；改状态请去 ⚙ 性能设置） ----
 // 直接读 store：在弹窗里开/关加速后这里**立即**同步。
 // FEAT-139：以前这里只看全局 GPU 开关，NPU 在干活也会显示「❌ CPU」——
-// 现在直接读「加速分配」的实际生效结果（NPU n 条 · 核显 m 条）。
+// 现在直接读「加速分配」的实际生效结果（NPU n 条 · GPU m 条）。
 const accelInfo = computed(() => contentStore.accel);
 const accelText = computed(() => {
   const a = accelInfo.value;
@@ -126,7 +126,7 @@ const accelText = computed(() => {
   const npu = Object.values(eff).filter((v) => v === "NPU").length;
   const gpu = Object.values(eff).filter((v) => v === "GPU").length;
   if (!npu && !gpu) return "加速重建中…";
-  return [npu ? `NPU ${npu} 条` : "", gpu ? `核显 ${gpu} 条` : ""].filter(Boolean).join(" + ");
+  return [npu ? `NPU ${npu} 条` : "", gpu ? `GPU ${gpu} 条` : ""].filter(Boolean).join(" + ");
 });
 const accelOn = computed(() => {
   const eff = accelInfo.value?.effective ?? {};
