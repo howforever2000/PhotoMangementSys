@@ -84,8 +84,12 @@ function cellTitle(cell: FolderCell): string {
 }
 
 /** 文件名列表（证明它们是不同文件，不是同一张被重复列出） */
+function namesOf(cell: FolderCell): string[] {
+  return cell.items.map((it) => it.file_name);
+}
+
 function fileList(cell: FolderCell): string {
-  return cell.items.map((it) => it.file_name).join("、");
+  return namesOf(cell).join("、");
 }
 
 /** 相似度展示：exact 组不必显示 1.000，读者会误以为"相似度算过" */
@@ -170,8 +174,10 @@ function simText(): string {
         <!-- 地址：完整显示（不再截断成 …\img\Pictures 这种认不出的样子） -->
         <p class="dg-addr" :title="cell.dir">{{ cell.dir || "地址未知" }}</p>
 
-        <!-- 文件名：同一文件夹里的多份靠这一行证明是不同文件 -->
-        <p class="dg-files" :title="fileList(cell)">{{ fileList(cell) }}</p>
+        <!-- 文件名：同一文件夹里的多份靠这几行证明是不同文件 -->
+        <p class="dg-files" :title="fileList(cell)">
+          <span v-for="name in namesOf(cell)" :key="name" class="dg-file-line">{{ name }}</span>
+        </p>
 
         <button
           v-if="!cell.isKeepFolder"
@@ -400,30 +406,33 @@ function simText(): string {
   opacity: 0.6;
 }
 
-/* 地址行：完整路径按词断开换行，最多 3 行（悬停看全） */
+/* 地址行：完整路径按词断开换行，最多 2 行（悬停看全） */
 .dg-addr {
   margin: 4px 0 0 21px;
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.45;
-  color: color-mix(in srgb, var(--c-fg) 60%, transparent);
+  color: var(--c-fg-2);
+  word-break: break-all;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 文件名：一行一个，最多 3 行（多份相同照片靠这里分辨） */
+.dg-files {
+  margin: 3px 0 0 21px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--c-fg-2);
   word-break: break-all;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-
-/* 文件名：证明同一文件夹里的多份是不同文件 */
-.dg-files {
-  margin: 3px 0 0 21px;
-  font-size: 10.5px;
-  line-height: 1.45;
-  color: color-mix(in srgb, var(--c-fg) 45%, transparent);
-  word-break: break-all;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+.dg-file-line {
+  display: block;
 }
 
 .dg-setkeep {
