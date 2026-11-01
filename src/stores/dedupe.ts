@@ -12,6 +12,7 @@ import type {
 } from "../types/dedupe";
 import { useAlbumStore } from "./album";
 import { deletablePathsOf, folderCells, reclaimableOf, sanitizeReport } from "../utils/dedupeGroups";
+import { trace } from "../utils/trace";
 
 /**
  * 重复照片清理（FEAT-143）状态
@@ -229,12 +230,23 @@ export const useDedupeStore = defineStore("dedupe", () => {
 
   async function ensureListener() {
     if (unlisten) return;
+    // 进度台账（FEAT-153）：阶段切换必记，阶段内按 10% 抽记
+    // —— 逐条 console.log 会在 2.5 万张的库上把控制台刷到卡。
+    let stamp = { stage: "", bucket: -1 };
     unlisten = await listen<DedupeProgress>("dedupe-progress", (ev) => {
       const p = ev.payload;
       stage.value = p.stage;
       progressDone.value = p.done;
       progressTotal.value = p.total;
       progressText.value = p.message;
+      const bucket = p.total > 0 ? Math.floor((p.done / p.total) * 10) : 0;
+      if (p.stage !== stamp.stage) {
+        stamp = { stage: p.stage, bucket };
+        console.log(`[dedupe] 阶段 → ${p.stage} | ${p.done}/${p.total} | ${p.message}`);
+      } else if (bucket !== stamp.bucket) {
+        stamp = { stage: p.stage, bucket };
+        console.log(`[dedupe] ${p.stage} ${p.done}/${p.total} · ${p.message}`);
+      }
     });
   }
 
@@ -404,6 +416,9 @@ export const useDedupeStore = defineStore("dedupe", () => {
     }
     report.value = { ...r, groups: nextGroups };
     if (page.value > 0 && page.value >= pageCount.value) page.value = pageCount.value - 1;
+    console.log(
+      `[dedupe] 结果裁剪：移除 ${removed.size} 张 · 剩余 ${nextGroups.length} 组（原 ${r.groups.length} 组）`,
+    );
   }
 
   /** 清空结果（重新扫描前由 UI 显式调用，避免误以为还有未处理组） */
@@ -452,8 +467,9 @@ export const useDedupeStore = defineStore("dedupe", () => {
     isSelected,
     // actions
     refreshHeicSupport,
-    scan,
-    stop,
+    // AOP 出入口日志（FEAT-153）：与后端 [dedupe] 台账同一条排障链路
+    scan: trace("dedupe.scan", scan),
+    stop: trace("dedupe.stop", stop),
     toggle,
     selectAll,
     clearSelection,
@@ -461,7 +477,7 @@ export const useDedupeStore = defineStore("dedupe", () => {
     selectCell,
     setKeep,
     setPage,
-    deleteSelected,
+    deleteSelected: trace("dedupe.deleteSelected", deleteSelected),
     reset,
   };
 });

@@ -223,6 +223,22 @@ pub fn scan_library(
     let t0 = std::time::Instant::now();
     let _guard = acquire_run().ok_or_else(|| "已有重复扫描在进行中，请等它结束再试".to_string())?;
     DEDUPE_CANCEL.store(false, Ordering::SeqCst);
+    // 服务层入口台账：命令层只知道参数，这里才能报“到底带了多少向量进来”
+    let emb_rows = embeddings.len();
+    let emb_dims: HashSet<usize> = embeddings.iter().map(|(_, _, _, v)| v.len()).collect();
+    // HashSet 的 Debug 会打成 `{4}`，读起来像集合而不是维度：排好序接成 `512` / `512/768`
+    let dims_txt = if emb_dims.is_empty() {
+        "—".to_string()
+    } else {
+        let mut ds: Vec<String> = emb_dims.iter().map(|d| d.to_string()).collect();
+        ds.sort();
+        ds.join("/")
+    };
+    crate::logger::log_info(&format!(
+        "[dedupe] 启动：{} 个相册 · 向量 {emb_rows} 条（维度 {dims_txt}）· 阈值 {threshold:.2} · 精确 {include_exact} · 相似 {include_similar} · rayon {} 线程",
+        albums.len(),
+        rayon::current_num_threads()
+    ));
     let cancel = |stage: &str| {
         if DEDUPE_CANCEL.load(Ordering::SeqCst) {
             crate::logger::log_info(&format!("[dedupe] 在 {stage} 阶段被用户停止"));
@@ -243,8 +259,15 @@ pub fn scan_library(
     }
     let collect_ms = t_collect.elapsed().as_millis() as u64;
     let total_photos = entries.len();
+    let collect_bytes: u64 = entries.iter().map(|e| e.size_bytes).sum();
+    let collect_mb_s = if collect_ms == 0 {
+        0.0
+    } else {
+        collect_bytes as f64 / (1024.0 * 1024.0) / (collect_ms as f64 / 1000.0)
+    };
     crate::logger::log_info(&format!(
-        "[dedupe] 全库收集完成 {total_photos} 张 · {} 个相册 · {collect_ms}ms",
+        "[dedupe] 全库收集完成 {total_photos} 张 · {} · {} 个相册 · {collect_ms}ms · {collect_mb_s:.0}MB/s",
+        fmt_bytes(collect_bytes),
         albums.len()
     ));
 
@@ -269,10 +292,6 @@ pub fn scan_library(
                 in_exact.insert(it.path.to_lowercase());
             }
         }
-        crate::logger::log_info(&format!(
-            "[dedupe] 精确重复 {} 组 · 实际计算内容哈希 {hashed_files} 个文件 · {hash_ms}ms",
-            exact.len()
-        ));
         groups.extend(exact);
     }
     if cancel("hash") {
@@ -305,6 +324,11 @@ pub fn scan_library(
             }
         }
         similar_candidates = cand.len();
+        crate::logger::log_info(&format!(
+            "[dedupe] 相似候选：全库 {total_photos} 张 → 已入精确组跳过 {} 张 · 无向量跳过 {skipped_unencoded} 张 · 实际参与 {} 张",
+            in_exact.len(),
+            cand.len()
+        ));
         if vec_by_path.is_empty() {
             similar_skipped_reason = Some(
                 "没有可用的图像向量：请先在「全局扫描入库」里对相册做一次扫描（勾选人物/文档识别或语义向量），再回来做相似检测"
@@ -380,7 +404,7 @@ pub fn scan_library(
                 similar_groups += 1;
             }
             crate::logger::log_info(&format!(
-                "[dedupe] 相似分组完成 {similar_groups} 组 · 候选 {similar_candidates} 张 · 阈值 {threshold:.2}"
+                "[dedupe] 相似成组 {similar_groups} 组（已滤掉单张与同址重复）· 候选 {similar_candidates} 张 · 阈值 {threshold:.2}"
             ));
             similar_ms = t_sim.elapsed().as_millis() as u64;
         }
@@ -396,6 +420,17 @@ pub fn scan_library(
     let exact_n = groups.iter().filter(|g| g.kind == "exact").count();
     let elapsed_ms = t0.elapsed().as_millis() as u64;
     on_progress("done", 1, 1, "扫描完成");
+    // Top3 组台账：结果对不上预期时，第一眼看的就是“最大的几组长什么样”
+    for (i, g) in groups.iter().take(3).enumerate() {
+        crate::logger::log_info(&format!(
+            "[dedupe]   Top{} {} 组 · {} 张 · 可释放 {} · 保留 {}",
+            i + 1,
+            g.kind,
+            g.items.len(),
+            fmt_bytes(g.reclaimable_bytes),
+            g.keep_path
+        ));
+    }
     crate::logger::log_info(&format!(
         "[dedupe] 完成 | 照片 {total_photos} 张 · 组 {} 个（精确 {exact_n} / 相似 {similar_groups}）· 跳过无向量 {skipped_unencoded} · 同址合并 {collapsed_same_file} · 总 {elapsed_ms}ms（遍历 {collect_ms} / 哈希 {hash_ms} / 相似 {similar_ms}）",
         groups.len()
@@ -419,10 +454,56 @@ pub fn scan_library(
     })
 }
 
+/// 单文件准入被拒的原因（细粒度日志要能说清「少掉的那些照片去哪了」）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Skip {
+    /// metadata 失败（权限 / 掉线盘 / 扫描期间被删）
+    Stat,
+    /// 不是普通文件（目录 / 符号链目标异常）
+    NotFile,
+    /// 0 字节（下载中断、占位文件）——不参与重复判定
+    Empty,
+}
+
+impl Skip {
+    fn label(self) -> &'static str {
+        match self {
+            Skip::Stat => "stat 失败",
+            Skip::NotFile => "非普通文件",
+            Skip::Empty => "0 字节",
+        }
+    }
+}
+
+/// 体积可读化（日志用：1.2GB / 340MB / 12KB）——体检日志也用同一口径
+pub(crate) fn fmt_bytes(bytes: u64) -> String {
+    const K: f64 = 1024.0;
+    let b = bytes as f64;
+    if b >= K * K * K {
+        format!("{:.2}GB", b / (K * K * K))
+    } else if b >= K * K {
+        format!("{:.1}MB", b / (K * K))
+    } else if b >= K {
+        format!("{:.0}KB", b / K)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
+/// 单文件准入（只需“能不能进”时用；要原因用 [`build_entry_ex`]）
+#[cfg(test)]
 fn build_entry(path: &Path, album_id: i64) -> Option<Entry> {
-    let md = std::fs::metadata(path).ok()?;
-    if !md.is_file() || md.len() == 0 {
-        return None;
+    build_entry_ex(path, album_id).ok()
+}
+
+/// 与 [`build_entry`] 同一套准入规则，但把拒绝原因带出来（收集阶段的统计口径）
+fn build_entry_ex(path: &Path, album_id: i64) -> Result<Entry, Skip> {
+    let md = std::fs::metadata(path).map_err(|_| Skip::Stat)?;
+    if !md.is_file() {
+        return Err(Skip::NotFile);
+    }
+    if md.len() == 0 {
+        return Err(Skip::Empty);
     }
     let modified_secs = md
         .modified()
@@ -431,7 +512,7 @@ fn build_entry(path: &Path, album_id: i64) -> Option<Entry> {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let raw = path.to_string_lossy().into_owned();
-    Some(Entry {
+    Ok(Entry {
         key: raw.to_lowercase(),
         // 占位：真正的 ident 由 collect_entries 按「相册真实根 + 相对路径」重算
         ident: normalize_path_key(&raw),
@@ -523,26 +604,67 @@ fn collect_entries(
         root: std::path::PathBuf,
         root_key: String,
         paths: Vec<std::path::PathBuf>,
+        /// 本册 walk 耗时（ms）——空册也记，否则分不出「没照片」与「没扫动」
+        walk_ms: u64,
+        /// 遍历失败原因（成功或用户停止为 None）
+        walk_err: Option<String>,
     }
 
     // 1. 并行遍历：rayon 的 collect 保序，结果与相册入参顺序一致
     let per_album: Vec<AlbumWalk> = albums
         .par_iter()
         .map(|(album_id, dir)| {
+            let t_walk = std::time::Instant::now();
             let root = std::path::PathBuf::from(dir);
             let root_key = canonical_dir_key(dir);
             if DEDUPE_CANCEL.load(Ordering::Relaxed) {
-                return AlbumWalk { album_id: *album_id, dir_len: dir.len(), root, root_key, paths: Vec::new() };
+                return AlbumWalk {
+                    album_id: *album_id,
+                    dir_len: dir.len(),
+                    root,
+                    root_key,
+                    paths: Vec::new(),
+                    walk_ms: 0,
+                    walk_err: Some("用户已停止".into()),
+                };
             }
             match crate::vision::walk_image_paths(dir) {
-                Ok(paths) => AlbumWalk { album_id: *album_id, dir_len: dir.len(), root, root_key, paths },
+                Ok(paths) => AlbumWalk {
+                    album_id: *album_id,
+                    dir_len: dir.len(),
+                    root,
+                    root_key,
+                    paths,
+                    walk_ms: t_walk.elapsed().as_millis() as u64,
+                    walk_err: None,
+                },
                 Err(e) => {
-                    crate::logger::log_warn(&format!("[dedupe] 相册 {album_id} 遍历失败，跳过: {e}"));
-                    AlbumWalk { album_id: *album_id, dir_len: dir.len(), root, root_key, paths: Vec::new() }
+                    crate::logger::log_warn(&format!(
+                        "[dedupe] 相册 {album_id} 遍历失败，跳过: {e} · {dir}"
+                    ));
+                    AlbumWalk {
+                        album_id: *album_id,
+                        dir_len: dir.len(),
+                        root,
+                        root_key,
+                        paths: Vec::new(),
+                        walk_ms: t_walk.elapsed().as_millis() as u64,
+                        walk_err: Some(e.to_string()),
+                    }
                 }
             }
         })
         .collect();
+
+    // 1.5 遍历台账（FEAT-153）：失败册 / 最慢册 / 最大册一律落日志，
+    // 否则「扫得慢」「某册没扫到」只能靠猜。
+    let walk_rows: Vec<(i64, usize, u64, Option<String>)> = per_album
+        .iter()
+        .map(|w| (w.album_id, w.paths.len(), w.walk_ms, w.walk_err.clone()))
+        .collect();
+    log_walk_ledger(&walk_rows);
+    let walked_total: usize = per_album.iter().map(|w| w.paths.len()).sum();
+    drop(walk_rows);
 
     // 2. 并行 stat（每张一次 metadata；不在这里读文件头）
     let flat: Vec<(i64, usize, &std::path::Path, &std::path::Path, &String)> = per_album
@@ -553,14 +675,28 @@ fn collect_entries(
                 .map(move |p| (w.album_id, w.dir_len, w.root.as_path(), p.as_path(), &w.root_key))
         })
         .collect();
+    // 准入被拒的分类计数（stat 失败 / 非普通文件 / 0 字节）
+    let skip_stat = std::sync::atomic::AtomicUsize::new(0);
+    let skip_not_file = std::sync::atomic::AtomicUsize::new(0);
+    let skip_empty = std::sync::atomic::AtomicUsize::new(0);
     let built: Vec<(i64, usize, Entry)> = flat
         .par_iter()
-        .filter_map(|(id, dl, root, p, root_key)| {
-            build_entry(p, *id).map(|mut e| {
+        .filter_map(|(id, dl, root, p, root_key)| match build_entry_ex(p, *id) {
+            Ok(mut e) => {
                 // 身份：真实相册根 + 相对路径（展示仍用盘上的原字符串）
                 e.ident = file_ident(root, root_key, p);
-                (*id, *dl, e)
-            })
+                Some((*id, *dl, e))
+            }
+            Err(reason) => {
+                // 准入被拒的分类计数（并行体内只能走原子）
+                match reason {
+                    Skip::Stat => &skip_stat,
+                    Skip::NotFile => &skip_not_file,
+                    Skip::Empty => &skip_empty,
+                }
+                .fetch_add(1, Ordering::Relaxed);
+                None
+            }
         })
         .collect();
 
@@ -593,8 +729,67 @@ fn collect_entries(
             entries.len()
         ));
     }
+    // 准入过滤台账：这行能直接回答“某张照片为何不在扫描结果里”
+    let (n_stat, n_not_file, n_empty) = (
+        skip_stat.load(Ordering::Relaxed),
+        skip_not_file.load(Ordering::Relaxed),
+        skip_empty.load(Ordering::Relaxed),
+    );
+    if n_stat + n_not_file + n_empty > 0 {
+        crate::logger::log_info(&format!(
+            "[dedupe] 准入过滤：walk 到 {walked_total} 条 → 剔除 {} 条（{} {n_stat} · {} {n_not_file} · {} {n_empty}）",
+            n_stat + n_not_file + n_empty,
+            Skip::Stat.label(),
+            Skip::NotFile.label(),
+            Skip::Empty.label()
+        ));
+    }
     on_progress(albums.len(), albums.len(), entries.len());
     entries
+}
+
+/// 遍历阶段台账：小库逐册全报，大库只报异常与极端值
+///
+/// 入参是 (相册 id, 候选条数, walk 耗时 ms, 失败原因)。
+/// 阈值 `PER_ALBUM_LOG_CAP` 是「日志可读性」与「排障信息量」的折中：
+/// 超过就只挑最值得看的那几册（失败 / 最慢 / 最大）。
+fn log_walk_ledger(rows: &[(i64, usize, u64, Option<String>)]) {
+    const PER_ALBUM_LOG_CAP: usize = 40;
+    let total: usize = rows.iter().map(|r| r.1).sum();
+    let failed = rows.iter().filter(|r| r.3.is_some()).count();
+    let slowest_ms = rows.iter().map(|r| r.2).max().unwrap_or(0);
+    let empty = rows.iter().filter(|r| r.1 == 0 && r.3.is_none()).count();
+
+    if rows.len() <= PER_ALBUM_LOG_CAP {
+        for (id, n, ms, err) in rows {
+            match err {
+                Some(e) => crate::logger::log_info(&format!(
+                    "[dedupe]   册 {id} · 失败（{e}） · {ms}ms"
+                )),
+                None => crate::logger::log_info(&format!("[dedupe]   册 {id} · {n} 张 · {ms}ms")),
+            }
+        }
+    } else {
+        // 失败册必报（最影响最终结果），其次最慢 5 册与最大 5 册
+        for (id, n, ms, e) in rows.iter().filter_map(|r| r.3.as_ref().map(|e| (r.0, r.1, r.2, e))) {
+            crate::logger::log_info(&format!("[dedupe]   册 {id} · 失败（{e}） · {n} 条 · {ms}ms"));
+        }
+        let mut slow: Vec<&(i64, usize, u64, Option<String>)> = rows.iter().collect();
+        slow.sort_by(|a, b| b.2.cmp(&a.2));
+        for (id, n, ms, _) in slow.into_iter().take(5) {
+            crate::logger::log_info(&format!("[dedupe]   最慢册 {id} · {ms}ms · {n} 张"));
+        }
+        let mut big: Vec<&(i64, usize, u64, Option<String>)> = rows.iter().collect();
+        big.sort_by(|a, b| b.1.cmp(&a.1));
+        for (id, n, ms, _) in big.into_iter().take(5) {
+            crate::logger::log_info(&format!("[dedupe]   最大册 {id} · {n} 张 · {ms}ms"));
+        }
+    }
+
+    crate::logger::log_info(&format!(
+        "[dedupe] 遍历台账：{} 册 · {total} 条候选 · 失败 {failed} 册 · 空册 {empty} 册 · 单册最慢 {slowest_ms}ms",
+        rows.len()
+    ));
 }
 
 /// Entry → 前端展示项（**尺寸在这里才读**，只对真的进了组的照片付这一次 IO）
@@ -643,6 +838,14 @@ fn exact_groups(
     for (i, e) in entries.iter().enumerate() {
         by_size.entry(e.size_bytes).or_default().push(i);
     }
+    // 预筛台账（FEAT-153）：这两行能直接回答「为什么只读了这么点文件 / 为什么这么慢」
+    let unique_sizes = by_size.len();
+    let candidate_sizes = by_size.values().filter(|v| v.len() >= 2).count();
+    let candidate_bytes: u64 = by_size
+        .iter()
+        .filter(|(_, v)| v.len() >= 2)
+        .map(|(size, v)| *size * v.len() as u64)
+        .sum();
     // 待哈希列表：(下标, 期望体积)；只含「同体积出现 ≥2 次」的候选
     let todo: Vec<(usize, u64)> = by_size
         .into_iter()
@@ -650,11 +853,19 @@ fn exact_groups(
         .flat_map(|(size, v)| v.into_iter().map(move |i| (i, size)))
         .collect();
     let total = todo.len();
+    let all = entries.len();
+    crate::logger::log_info(&format!(
+        "[dedupe] 精确预筛：{all} 张 → 唯一体积 {unique_sizes} 种 · 出现 ≥2 次的体积 {candidate_sizes} 种 · 待哈希 {total} 张 · 需读 {}（跳过 {} 张体积唯一的图，避免白读盘）",
+        fmt_bytes(candidate_bytes),
+        all.saturating_sub(total)
+    ));
     on_progress(0, total);
 
     // 并行哈希：SHA-256 是 CPU 密集 + 顺序读盘，两两阻塞在 rayon 线程上
     // （rayon 线程数 = 核数，不会像手写线程池那样把磁盘打爆）
     let done = AtomicUsize::new(0);
+    let hash_fail = AtomicUsize::new(0);
+    let t_hash = std::time::Instant::now();
     let hashed_rows: Vec<(String, usize)> = todo
         .par_iter()
         .filter_map(|(idx, size)| {
@@ -666,6 +877,7 @@ fn exact_groups(
                 Ok(h) => Some((h, *idx)),
                 Err(err) => {
                     // 单个文件读失败不影响整批：记录后跳过（该照片不参与精确分组）
+                    hash_fail.fetch_add(1, Ordering::Relaxed);
                     crate::logger::log_warn(&format!("[dedupe] 内容哈希失败 {} : {err}", e.path));
                     None
                 }
@@ -684,6 +896,19 @@ fn exact_groups(
     on_progress(total, total);
 
     let hashed = hashed_rows.len();
+    let fail = hash_fail.load(Ordering::Relaxed);
+    let hash_ms = t_hash.elapsed().as_millis() as u64;
+    let mb_s = if hash_ms == 0 {
+        0.0
+    } else {
+        candidate_bytes as f64 / (1024.0 * 1024.0) / (hash_ms as f64 / 1000.0)
+    };
+    crate::logger::log_info(&format!(
+        "[dedupe] 内容哈希：成功 {hashed} / 待算 {total} · 失败 {fail}（逐条 WARN）· 读 {} · {hash_ms}ms · {mb_s:.0}MB/s",
+        fmt_bytes(candidate_bytes)
+    ));
+
+    let t_group = std::time::Instant::now();
     let mut by_content: HashMap<String, Vec<usize>> = HashMap::new();
     for (hash, idx) in hashed_rows {
         by_content.entry(hash).or_default().push(idx);
@@ -721,6 +946,19 @@ fn exact_groups(
             items,
         });
     }
+    // 分组台账：组数 / 最大组 / 平均组 / 尺寸探测与排序耗时
+    let largest = out.iter().map(|g| g.items.len()).max().unwrap_or(0);
+    let avg = if out.is_empty() {
+        0.0
+    } else {
+        out.iter().map(|g| g.items.len()).sum::<usize>() as f64 / out.len() as f64
+    };
+    let group_ms = t_group.elapsed().as_millis();
+    crate::logger::log_info(&format!(
+        "[dedupe] 精确分组：{} 组 · 最大 {largest} 张 · 平均 {avg:.1} 张 · 可释放 {} · 成组+探尺寸 {group_ms}ms · 同址合并 {collapsed} 条",
+        out.len(),
+        fmt_bytes(out.iter().map(|g| g.reclaimable_bytes).sum())
+    ));
     Ok((out, hashed, collapsed))
 }
 
@@ -880,12 +1118,15 @@ fn cluster_by_similarity(
     //    原实现每个向量各自一次堆分配，热循环里每对都要跳两块互不相邻的内存，
     //    L2/L3 命中率差；摊平后顺序扫描，硬件预取器能吃到整条 cache line。
     let dims = cand.iter().map(|(_, v)| v.len()).min().unwrap_or(0);
+    let t_flat = std::time::Instant::now();
     let mut flat: Vec<f32> = Vec::with_capacity(n * dims);
     for (_, v) in cand {
         flat.extend_from_slice(&v[..dims]);
     }
+    let flat_ms = t_flat.elapsed().as_millis() as u64;
 
     // 1) 选方差最大的维度做排序键（区分度越高，窗口内的候选越少）
+    let t_sort = std::time::Instant::now();
     let dim = max_variance_dim_flat(&flat, n, dims);
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&x, &y| {
@@ -894,6 +1135,7 @@ fn cluster_by_similarity(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| x.cmp(&y))
     });
+    let sort_ms = t_sort.elapsed().as_millis() as u64;
     // 2) 由 cos ≥ t 推出的一维窗口上界
     //
     // ⚠️ 实测（2.5 万张真实 CLIP 向量，阈值 0.9）：这条剪枝**只剪掉 0.0%**。
@@ -906,6 +1148,7 @@ fn cluster_by_similarity(
     use rayon::prelude::*;
     let compared = std::sync::atomic::AtomicUsize::new(0);
     let avx2 = use_avx2();
+    let t_cmp = std::time::Instant::now();
     let pairs: Vec<(usize, usize)> = (0..n)
         .into_par_iter()
         .map(|i| {
@@ -954,17 +1197,34 @@ fn cluster_by_similarity(
     }
     let linked = pairs.len();
     let cmp = compared.load(Ordering::Relaxed);
+    let cmp_ms = t_cmp.elapsed().as_millis() as u64;
     let all_pairs = n * (n.saturating_sub(1)) / 2;
     crate::logger::log_info(&format!(
-        "[dedupe] 相似判定：候选 {n} 张 · 实际比较 {cmp} 对（全量 {all_pairs} 对，剪掉 {:.1}%）· 真配对 {linked} 条（阈值 {threshold:.2}、窗口 {window:.3}）",
+        "[dedupe] 相似判定：候选 {n} 张 · 维度 {dims} · {} · 实际比较 {cmp} 对（全量 {all_pairs} 对，剪掉 {:.1}%）· 真配对 {linked} 条（阈值 {threshold:.2}、窗口 {window:.4}）· 摊平 {flat_ms}ms / 排序 {sort_ms}ms / 比对数 {cmp_ms}ms",
+        if avx2 { "AVX2+FMA" } else { "标量回落（无 AVX2）" },
         if all_pairs == 0 { 0.0 } else { 100.0 * (1.0 - cmp as f64 / all_pairs as f64) }
     ));
 
+    let t_cluster = std::time::Instant::now();
     let mut groups = complete_linkage_groups(&adj);
+    let cluster_ms = t_cluster.elapsed().as_millis() as u64;
+    // 组规模分布：p50/p90 能直接说出“这些重复组到底多大”，
+    // 也能反向验证完全链接是否真的在抑住链式串接
+    let mut sizes: Vec<usize> = groups.iter().map(|g| g.len()).collect();
+    sizes.sort_unstable();
+    let pct = |p: f64| -> usize {
+        if sizes.is_empty() {
+            return 0;
+        }
+        let i = ((sizes.len() - 1) as f64 * p).round() as usize;
+        sizes[i]
+    };
     crate::logger::log_info(&format!(
-        "[dedupe] 完全链接分组：{} 组 · 最大 {} 张（连通分量口径会明显更大）",
+        "[dedupe] 完全链接分组：{} 组 · 最大 {} 张 · p50 {} / p90 {} 张 · 聚类 {cluster_ms}ms（连通分量口径会明显更大）",
         groups.len(),
-        groups.iter().map(|g| g.len()).max().unwrap_or(0)
+        sizes.last().copied().unwrap_or(0),
+        pct(0.5),
+        pct(0.9)
     ));
     // 保证输出顺序确定（同一批照片、同一阈值 → 同一结果，便于排查与比对）
     for g in groups.iter_mut() {
