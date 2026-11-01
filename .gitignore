@@ -155,3 +155,11 @@ python/models/current_accel.json
 # 智能体一次性排障脚本（本地探针，无构建/运行引用）
 .pi/*_probe.py
 .visual/out/
+
+# FEAT-155 检索评测台的中间产物（人审池 / 导出向量 / 逐条比对原文都能一条命令重建）
+# 重建：python python/bench/eval_search_quality.py --pool <query> 与 export_rust_probe.py
+.pi/search_eval/pool_*.json
+.pi/search_eval/rust_probe.json
+.pi/search_eval/rust_lanes.txt
+.pi/search_eval/last_metrics.json
+.pi/search_eval/eval_report.txt

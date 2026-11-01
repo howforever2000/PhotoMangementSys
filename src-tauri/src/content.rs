@@ -21,6 +21,8 @@ use std::time::UNIX_EPOCH;
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
+use crate::db::{SEM_LANE_DESC, SEM_LANE_IMG};
+use crate::vecindex::LaneRank;
 use crate::AppState;
 
 use crate::db::PhotoContentRecord;
@@ -49,17 +51,126 @@ impl Drop for ScanSlotGuard {
 
 /// 语义召回置信度默认阈值
 ///
-/// Phase 0 实测：相关命中集中在 0.41~0.46。旧值 0.30 低到「几乎全库都算命中」——
-/// 一个两字词就能把两路候选都打满上限（FEAT-154 实测：图像 1999 + 描述 2000 →
-/// 融合 3826 条），前端要为三千多张照片生成缩略图，用户感知就是「搜索很慢」。
-const SEMANTIC_MIN_SIM_DEFAULT: f64 = 0.45;
-/// 单路语义候选池上限（FEAT-154：原 2000）
+/// ⚠️ FEAT-155 起这个常量**不再用作召回闸**。旧实现用一个绝对余弦（0.30 → 0.45）
+/// 同时卡图像塔与描述塔，但两路的余弦绝对尺度差了一倍以上（本机实测：图像塔全库
+/// 中位 0.325、p99 0.392，「自行车」最像的那张只有 0.4501；描述塔全库中位 0.645，
+/// 「2019年6月」这种模板描述就 0.7104）：
+/// - 对图像塔，0.45 落在真命中簇的尾部 —— 一条 query 只能过 0~2 张；
+/// - 对描述塔，0.45 放过 99% 的行 —— 单路候选直接打满上限，整页被同分项占满。
 ///
-/// 候选池只决定「谁来参与 RRF」，不决定展示条数（那个由调用方的 `limit` 定）。
-/// 每多一条候选就多一次 hash 回表 + 一次缩略图生成，600 与阈值 0.45 配套已足够。
-const SEMANTIC_MAX_CANDIDATES: usize = 600;
+/// 现在召回改用 `rank_rel` 的**分路相对相关度**（见 [`crate::vecindex::LaneRank`]），
+/// 这个常量只保留为调用方显式传参时的**相对下限**默认值（语义已变，故重命名）。
+pub const SEMANTIC_REL_FLOOR_DEFAULT: f64 = 0.005;
+/// 单路相关度峰值低于此值 → 该路对这条 query 没有可信命中（整路不参与融合）
+///
+/// 依据：本机实测正例（「自行车」）的 rel 峰值为 0.125；无意义 query 的峰值只有
+/// 噪声级（0.01~0.02）。取 0.02 是「宁可这次不出语义结果，也不推噪声」的界线。
+pub const SEMANTIC_LANE_MIN_LIFT: f64 = 0.02;
+/// 图像路候选池（FEAT-155）
+///
+/// 只决定「谁来参与 RRF」，不决定展示条数（展示由调用方 `limit` 定）。
+/// 图像塔是物体词的主路，给到 300（≈ 一页）；描述塔是兜底路，给到 200 且叠加折叠。
+pub const SEMANTIC_IMG_CANDIDATES: usize = 300;
+/// 描述路候选池（FEAT-155：原 600，折叠后不需要那么大）
+pub const SEMANTIC_DESC_CANDIDATES: usize = 200;
+/// 物体词 query 下，同一段描述文本最多允许进入候选池的张数（FEAT-155）
+const DESC_FOLD_PER_TEXT_OBJECT: usize = 2;
 /// RRF 融合常数（标准取值 60）
 const RRF_K: f64 = 60.0;
+
+/// query 类型（FEAT-155）：决定三路权重与描述路是否折叠
+///
+/// 只在「同一个绝对阈值卡两路」被废弃后才有意义：像不像由像素回答的 query，
+/// 与「日期/地点/文档名」这种像素里根本不存在的 query，主路不是同一条。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryKind {
+    /// 日期（2024年 / 6月 / 春天 / 去年）
+    Date,
+    /// 地点（省市区县镇村路街 / 景区 / 旅游）
+    Place,
+    /// 文档类（文档 / 截图 / 发票 / 合同 / 扫描）
+    Document,
+    /// 其他一律当物体词（自行车 / 火锅 / 猫）
+    Object,
+}
+
+impl QueryKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            QueryKind::Date => "date",
+            QueryKind::Place => "place",
+            QueryKind::Document => "document",
+            QueryKind::Object => "object",
+        }
+    }
+}
+
+/// query 分类（纯函数，无 IO）
+///
+/// 与 `python/bench/eval_search_quality.py::query_kind` **必须同口径** —— 评测台离线
+/// 复算的是同一套规则，两边改一处必须改另一处（`query_kind_matches_eval_script` 单测
+/// 把这批样例钉住）。用 `contains` 而不是正则：整个项目没引 `regex` 依赖，
+/// 这几个词表已经足够覆盖中文 query 的常见结构。
+pub fn query_kind(q: &str) -> QueryKind {
+    let q = q.trim().to_lowercase();
+    if q.is_empty() {
+        return QueryKind::Object;
+    }
+    // 日期：4 位年 / N月 / 四季 / 相对时间
+    let is_date = q.contains('年')
+        && q.chars().any(|c| c.is_ascii_digit())
+        || (q.contains('月') && q.chars().any(|c| c.is_ascii_digit()))
+        || ["春天", "夏天", "秋天", "冬天", "今天", "昨天", "今年", "去年", "前天"]
+            .iter()
+            .any(|w| q.contains(w));
+    if is_date {
+        return QueryKind::Date;
+    }
+    // 地点：行政区划后缀 / 常见场所词
+    const PLACE_MARKS: &[&str] = &[
+        "省", "市", "区", "县", "镇", "村", "路", "街", "大道", "景区", "公园", "广场", "广州",
+        "旅游",
+    ];
+    if PLACE_MARKS.iter().any(|w| q.contains(w)) {
+        return QueryKind::Place;
+    }
+    // 文档
+    const DOC_MARKS: &[&str] = &[
+        "文档", "文件", "截图", "发票", "合同", "证件", "票据", "扫描", "paper", "document",
+    ];
+    if DOC_MARKS.iter().any(|w| q.contains(w)) {
+        return QueryKind::Document;
+    }
+    QueryKind::Object
+}
+
+/// 三路权重 `(图像路, 描述路)`（FEAT-155；关键字路恒 1.0）
+///
+/// 物体词：像不像由像素回答 → 图像 1.0，描述降为兜底 0.2（它的余弦主要来自日期/地点
+/// 这类模板文本，对物体词基本是噪声）。
+/// 结构化（日期/地点/文档）：日期、地点、文档名都不在像素里 → 图像降为 0.2，描述 0.5
+/// （关键字路仍以 1.0 主导精确匹配，比如「文档」有 3969 张内容命中）。
+///
+/// 图像路也要降权的原因（实测）：图像路每页都给 300 条候选，若它恒为 1.0，那么
+/// 「图像榜第 300 名」也压过「描述榜第 1 名」（1/361 > 0.5/61），结构化 query 会
+/// 被 300 条像素噪声冲掉（「2019年6月」P@10 从 100% 掉到 10%）。
+pub fn lane_weights(kind: QueryKind) -> (f64, f64) {
+    match kind {
+        QueryKind::Object => (1.0, 0.2),
+        _ => (0.2, 0.5),
+    }
+}
+
+/// 徽标取哪一路的相关度（FEAT-155「图像优先、描述兜底」）
+///
+/// 与 [`lane_weights`] 的主路一致：物体词先看图像路，结构化先看描述路；主路没命中
+/// 才用另一路，且徽标会标出来源。
+fn badge_lane(kind: QueryKind) -> &'static str {
+    match kind {
+        QueryKind::Object => SEM_LANE_IMG,
+        _ => SEM_LANE_DESC,
+    }
+}
 
 /// 查询文本 → 语义查询向量（L2 归一化）
 ///
@@ -145,40 +256,48 @@ async fn image_index(
     Ok(e)
 }
 
-/// 图像向量排名：`(photo_hash, 余弦)` 降序，截到 [`SEMANTIC_MAX_CANDIDATES`]
+/// 图像向量排名（FEAT-155）：走分路相对相关度，不再用绝对余弦当召回闸
 async fn image_rank(
     app: &tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
     user_id: i64,
     q: &[f32],
-    min_similarity: f64,
-) -> Result<Vec<(String, f32)>, String> {
+    rel_floor: f64,
+) -> Result<LaneRank, String> {
     let entry = image_index(app, state, user_id).await?;
     let idx = &entry.1;
     if idx.is_empty() {
         return Err("图像向量索引为空（请先勾选「语义向量」做一次扫描）".into());
     }
-    Ok(idx.rank(q, SEMANTIC_MAX_CANDIDATES, min_similarity as f32))
+    // 图像塔不存在同文本折叠（一图一向量），max_per_group 传 0
+    Ok(idx.rank_rel(
+        q,
+        SEMANTIC_IMG_CANDIDATES,
+        rel_floor as f32,
+        0,
+        SEMANTIC_LANE_MIN_LIFT as f32,
+    ))
 }
 
-/// 两路排名 + FTS 榜 → **一次**回表 → 三路 RRF 融合（FEAT-154）
+/// 两路排名 + FTS 榜 → **一次**回表 → 三路加权 RRF 融合（FEAT-154 / FEAT-155）
 ///
 /// 旧版每条路各自调一次 `lookup_hits_by_hashes(2000)`（内部 4 分片 × 2 张表 = 8 条 SQL），
 /// 两路就是 16 条 SQL、两次结果构造。现在把两路 hash 取并集**只查一次**，
 /// 再把命中回填到各自的排名序列里。
 async fn fuse_ranked(
     fts: Vec<crate::db::SmartHit>,
-    img: Vec<(String, f32)>,
-    desc: Vec<(String, f32)>,
+    img: LaneRank,
+    desc: LaneRank,
+    kind: QueryKind,
     user_id: i64,
     state: &tauri::State<'_, AppState>,
 ) -> Result<Vec<crate::db::SmartHit>, String> {
     // 并集（保序去重）：图像路在前，描述路在后
-    let mut union: Vec<String> = Vec::with_capacity(img.len() + desc.len());
+    let mut union: Vec<String> = Vec::with_capacity(img.hits.len() + desc.hits.len());
     {
         let mut seen: std::collections::HashSet<&str> =
-            std::collections::HashSet::with_capacity(img.len() + desc.len());
-        for (h, _) in img.iter().chain(desc.iter()) {
+            std::collections::HashSet::with_capacity(img.hits.len() + desc.hits.len());
+        for (h, _) in img.hits.iter().chain(desc.hits.iter()) {
             if seen.insert(h.as_str()) {
                 union.push(h.clone());
             }
@@ -193,62 +312,86 @@ async fn fuse_ranked(
     let lane = |ranked: Vec<(String, f32)>| -> Vec<(crate::db::SmartHit, f64)> {
         ranked
             .into_iter()
-            .filter_map(|(h, cos)| map.get(&h).map(|hit| (hit.clone(), cos as f64)))
+            .filter_map(|(h, rel)| map.get(&h).map(|hit| (hit.clone(), rel as f64)))
             .collect()
     };
-    let img_lane = lane(img);
-    let desc_lane = lane(desc);
-    Ok(fuse_hits3(fts, img_lane, desc_lane))
+    Ok(fuse_hits3_weighted(
+        fts,
+        lane(img.hits),
+        lane(desc.hits),
+        kind,
+    ))
 }
 
-/// RRF 融合：FTS 榜 + 语义榜（K=60），语义命中附加 semantic_score
-fn fuse_hits(fts: Vec<crate::db::SmartHit>, sem: Vec<(crate::db::SmartHit, f64)>) -> Vec<crate::db::SmartHit> {
-    fuse_hits3(fts, sem, Vec::new())
-}
-
-/// FEAT-067 步骤 5：三路 RRF（FTS + 图像向量语义 + 描述向量语义）
+/// FEAT-067 步骤 5 + FEAT-155：三路**加权** RRF（FTS + 图像向量语义 + 描述向量语义）
 ///
-/// 只是在既有两路融合上**加一路**，融合公式与权重完全复用（同 K、同 tie-break）。
-/// `desc` 传空列表时与 `fuse_hits` 行为完全一致（既有语义未回退）。
-fn fuse_hits3(
+/// 与旧版的差别：
+/// 1. 语义两路各自乘自己的权重（[`lane_weights`]），而不再是「两路同权、位置定生死」；
+/// 2. `rel` 是本路相对相关度，不是原始余弦 —— 写进 `semantic_rel` 并标出来源路，
+///    不再把两路取 max 当一个可比的数展示；
+/// 3. tie-break 补一条「主路优先」：同分时物体词优先图像命中、结构化优先描述命中，
+///    保证同一页不会因为哈希次序而反复跳动。
+///
+/// `desc` 传空时行为等价于两路（且权重对 fused 后的排序无影响以外的副作用）。
+fn fuse_hits3_weighted(
     fts: Vec<crate::db::SmartHit>,
     img: Vec<(crate::db::SmartHit, f64)>,
     desc: Vec<(crate::db::SmartHit, f64)>,
+    kind: QueryKind,
 ) -> Vec<crate::db::SmartHit> {
+    let (w_img, w_desc) = lane_weights(kind);
     let mut score: HashMap<String, f64> = HashMap::new();
     let mut rank: HashMap<String, usize> = HashMap::new();
-    let mut by_path: HashMap<String, (crate::db::SmartHit, Option<f64>)> = HashMap::new();
+    // (行, 图像路 rel, 描述路 rel)
+    let mut by_path: HashMap<String, (crate::db::SmartHit, Option<f64>, Option<f64>)> = HashMap::new();
     for (i, h) in fts.into_iter().enumerate() {
         *score.entry(h.path.clone()).or_default() += 1.0 / (RRF_K + i as f64 + 1.0);
         rank.insert(h.path.clone(), i);
-        by_path.insert(h.path.clone(), (h, None));
+        by_path.insert(h.path.clone(), (h, None, None));
     }
-    for lane in [img, desc] {
-        for (i, (h, cos)) in lane.into_iter().enumerate() {
-            *score.entry(h.path.clone()).or_default() += 1.0 / (RRF_K + i as f64 + 1.0);
+    for (lane_weight, is_img, lane) in [(w_img, true, img), (w_desc, false, desc)] {
+        for (i, (h, rel)) in lane.into_iter().enumerate() {
+            *score.entry(h.path.clone()).or_default() += lane_weight / (RRF_K + i as f64 + 1.0);
             rank.entry(h.path.clone()).or_insert(usize::MAX);
-            let e = by_path.entry(h.path.clone()).or_insert((h, None));
-            // 两路语义都命中时取较高者（前端只展示一个「AI 匹配」徽标）
-            e.1 = Some(match e.1 {
-                Some(c) => c.max(cos),
-                None => cos,
-            });
+            let e = by_path.entry(h.path.clone()).or_insert((h, None, None));
+            if is_img {
+                e.1 = Some(rel);
+            } else {
+                e.2 = Some(rel);
+            }
         }
     }
-    let mut merged: Vec<(f64, usize, crate::db::SmartHit)> = score
+    let primary = badge_lane(kind);
+    let mut merged: Vec<(f64, usize, usize, crate::db::SmartHit)> = score
         .into_iter()
         .map(|(path, s)| {
-            let (mut h, sem_score) = by_path.remove(&path).expect("path 已登记");
-            h.semantic_score = sem_score;
-            (s, rank.get(&path).copied().unwrap_or(usize::MAX), h)
+            let (mut h, img_rel, desc_rel) = by_path.remove(&path).expect("path 已登记");
+            // 徽标「图像优先、描述兜底」：主路有命中用主路，否则降到另一路
+            let (rel, lane) = match (primary == SEM_LANE_IMG, img_rel, desc_rel) {
+                (true, Some(v), _) => (Some(v), SEM_LANE_IMG),
+                (true, None, Some(v)) => (Some(v), SEM_LANE_DESC),
+                (false, _, Some(v)) => (Some(v), SEM_LANE_DESC),
+                (false, Some(v), None) => (Some(v), SEM_LANE_IMG),
+                _ => (None, primary),
+            };
+            h.semantic_rel = rel;
+            h.semantic_lane = rel.map(|_| lane.to_string());
+            // 旧调用方兼容：`semantic_score` 跟 `semantic_rel` 同值（语义已从「原始余弦」
+            // 变为「本路相对相关度」，两个字段只是历史命名）
+            h.semantic_score = rel;
+            // tie-break：同分且同 RRF 名次时，先推本条 query 的**主路**命中
+            let primary_hit = usize::from(lane == primary);
+            (s, rank.get(&path).copied().unwrap_or(usize::MAX), primary_hit, h)
         })
         .collect();
     merged.sort_by(|a, b| {
         b.0.partial_cmp(&a.0)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.1.cmp(&b.1))
+            .then(b.2.cmp(&a.2))
+            .then(a.3.path.cmp(&b.3.path))
     });
-    merged.into_iter().map(|(_, _, h)| h).collect()
+    merged.into_iter().map(|(_, _, _, h)| h).collect()
 }
 
 /// 支持向上游上报的扫描进度事件载荷
@@ -2640,7 +2783,7 @@ pub(super) fn drop_dead_thumb_links(cards: &mut [db::TimelineCard]) -> usize {
         tone_type: Option<String>,
         // FEAT-154：结果条数上限（None = 不截断，老调用方行为不变）
         limit: Option<usize>,
-        // FEAT-SEM：语义融合开关与置信度下限（默认开启 / 0.45）
+        // FEAT-SEM：语义融合开关与相对相关度下限（默认开启 / 0.005，见 SEMANTIC_REL_FLOOR_DEFAULT）
         include_semantic: Option<bool>,
         min_similarity: Option<f64>,
         app: tauri::AppHandle,
@@ -2677,41 +2820,76 @@ pub(super) fn drop_dead_thumb_links(cards: &mut [db::TimelineCard]) -> usize {
         // 任何环节不可用 → 静默降级纯关键词结果，对用户无感
         let kw = keyword.trim().to_string();
         if !kw.is_empty() && include_semantic != Some(false) {
-            let min_sim = min_similarity
-                .unwrap_or(SEMANTIC_MIN_SIM_DEFAULT)
-                .clamp(0.05, 0.95);
+            // FEAT-155：`minSimilarity` 的语义已从「绝对余弦」改为「本路相对相关度下限」。
+            // 旧语义（0.30/0.45 绝对余弦）已废弃：图像塔与描述塔的余弦尺度差一倍以上，
+            // 同一个绝对值不可能同时对两路成立。前端关键词搜索不传此参（只有以图搜图传）。
+            let rel_floor = min_similarity.unwrap_or(SEMANTIC_REL_FLOOR_DEFAULT).clamp(0.0, 0.5);
+            let kind = query_kind(&kw);
+            let (w_img, w_desc) = lane_weights(kind);
+            // FEAT-155：描述路折叠只对物体词生效。结构化 query（日期/地点/文档）下，
+            // 「同一段描述」的那一大批照片**就是答案**（「2019年6月」有 239 张），
+            // 折叠反而会把正确答案挡在门外（实测 P@10 从 100% 掉到 10%）。
+            let fold = match kind {
+                QueryKind::Object => DESC_FOLD_PER_TEXT_OBJECT,
+                _ => 0,
+            };
             // FEAT-154：整条搜索**只编码一次** —— 图像路与描述路共用同一个查询向量。
             // 旧代码两路各调一次 /embed_text（实测 45ms/次 + 一次服务 ensure）。
             match semantic_query_vector(&kw, &app).await {
                 Err(e) => logger::log_info(&format!("[smart_search] 语义编码降级: {e}")),
                 Ok(q) => {
                     // 第一路：图像向量语义（扁平索引 + rayon 并行点积）
-                    let img_lane = match image_rank(&app, &state, user_id, &q, min_sim).await {
+                    let img_lane = match image_rank(&app, &state, user_id, &q, rel_floor).await {
                         Ok(v) => v,
                         Err(e) => {
                             // 降级是预期行为（模型未下载/服务未启动/向量库为空），不打扰用户；
                             // 但**必须落日志**：此前只 eprintln!，用户与排查者都看不到原因，
                             // 导致「语义检索突然失效但无任何提示」（BUG-2026-0920-006）
                             logger::log_info(&format!("[smart_search] 图像语义降级: {e}"));
-                            Vec::new()
+                            LaneRank::default()
                         }
                     };
                     // FEAT-067 第二路：描述向量语义（时间/地点/场景/标签/人物真名）
-                    // 融合公式与权重沿用既有 RRF；FEAT-154 起同样吃已编码好的向量 + 索引缓存
                     let desc_lane = match crate::textdesc::rank_by_text_with_query(
-                        &app, &state, user_id, &q, min_sim,
+                        &app,
+                        &state,
+                        user_id,
+                        &q,
+                        rel_floor,
+                        SEMANTIC_DESC_CANDIDATES,
+                        fold,
                     )
                     .await
                     {
                         Ok(v) => v,
                         Err(e) => {
                             logger::log_info(&format!("[smart_search] 描述语义降级: {e}"));
-                            Vec::new()
+                            LaneRank::default()
                         }
                     };
-                    if !img_lane.is_empty() || !desc_lane.is_empty() {
-                        let (n_img, n_desc, before) = (img_lane.len(), desc_lane.len(), hits.len());
-                        hits = fuse_ranked(hits, img_lane, desc_lane, user_id, &state).await?;
+                    if !img_lane.hits.is_empty() || !desc_lane.hits.is_empty() {
+                        // 两路的基线/峰值必须落进日志：下一次「匹配度看着不对」时，
+                        // 第一件事就是看这两条值是不是又漂了（`median` 差一倍以上＝换档/换预处理）
+                        logger::log_info(&format!(
+                            "[smart_search] query类型={} 权重=图{:.1}/描{:.1} 折叠={} | \
+                             图像路 中位{:.4} 峰值rel{:.4} 命中{} / {} 行 | \
+                             描述路 中位{:.4} 峰值rel{:.4} 命中{} / {} 行",
+                            kind.as_str(),
+                            w_img,
+                            w_desc,
+                            fold,
+                            img_lane.median,
+                            img_lane.rel_max,
+                            img_lane.hits.len(),
+                            img_lane.total,
+                            desc_lane.median,
+                            desc_lane.rel_max,
+                            desc_lane.hits.len(),
+                            desc_lane.total,
+                        ));
+                        let (n_img, n_desc, before) =
+                            (img_lane.hits.len(), desc_lane.hits.len(), hits.len());
+                        hits = fuse_ranked(hits, img_lane, desc_lane, kind, user_id, &state).await?;
                         logger::log_call_end_with(
                             "smart_search.semantic",
                             _t,
@@ -2879,8 +3057,13 @@ pub async fn classify_album(
 
 #[cfg(test)]
 mod semantic_tests {
-    use super::{fuse_hits, fuse_hits3};
-    use crate::db::SmartHit;
+    use super::{fuse_hits3_weighted, lane_weights, query_kind, QueryKind};
+    use crate::db::{SmartHit, SEM_LANE_DESC, SEM_LANE_IMG};
+
+    /// 两路融合参考（FTS + 单路语义，权重恒 1.0）：钉住「加第三路之前」的排序语义
+    fn fuse_hits(fts: Vec<SmartHit>, sem: Vec<(SmartHit, f64)>) -> Vec<SmartHit> {
+        fuse_hits3_weighted(fts, sem, Vec::new(), QueryKind::Object)
+    }
 
     fn hit(path: &str) -> SmartHit {
         SmartHit {
@@ -2896,7 +3079,18 @@ mod semantic_tests {
             tone_type: None,
             person_ids: vec![],
             semantic_score: None,
+            semantic_rel: None,
+            semantic_lane: None,
         }
+    }
+
+    /// 三路融合（开关默认参数：物体词权重 1.0 / 0.2）
+    fn fuse_hits3(
+        fts: Vec<SmartHit>,
+        img: Vec<(SmartHit, f64)>,
+        desc: Vec<(SmartHit, f64)>,
+    ) -> Vec<SmartHit> {
+        fuse_hits3_weighted(fts, img, desc, QueryKind::Object)
     }
 
     #[test]
@@ -2939,13 +3133,66 @@ mod semantic_tests {
         for p in ["a.jpg", "b.jpg", "c.jpg", "d.jpg"] {
             assert!(paths.contains(&p), "融合后不应丢失任何一路的命中: {p}");
         }
-        // 两路都命中时取较高余弦
+        // FEAT-155：徽标「图像优先、描述兜底」——物体词下两路都命中时展示**图像路**的
+        // 相对相关度，并标出来源，不再把两路取 max 当一个可比的数。
         let both = fuse_hits3(
             vec![hit("x.jpg")],
             vec![(hit("x.jpg"), 0.40)],
             vec![(hit("x.jpg"), 0.61)],
         );
-        assert!((both[0].semantic_score.unwrap() - 0.61).abs() < 1e-9);
+        assert!((both[0].semantic_rel.unwrap() - 0.40).abs() < 1e-9, "物体词应取图像路的 rel");
+        assert_eq!(both[0].semantic_lane.as_deref(), Some(SEM_LANE_IMG));
+        // 结构化 query：同一张图两路都命中时应取描述路
+        let both = fuse_hits3_weighted(
+            vec![hit("x.jpg")],
+            vec![(hit("x.jpg"), 0.40)],
+            vec![(hit("x.jpg"), 0.61)],
+            QueryKind::Date,
+        );
+        assert!((both[0].semantic_rel.unwrap() - 0.61).abs() < 1e-9, "结构化 query 应取描述路的 rel");
+        assert_eq!(both[0].semantic_lane.as_deref(), Some(SEM_LANE_DESC));
+    }
+
+    /// query 分类与权重：与 `python/bench/eval_search_quality.py` 必须同口径
+    #[test]
+    fn query_kind_matches_eval_script() {
+        // (query, 期望类型, 图像权重, 描述权重)
+        let cases = [
+            ("自行车", QueryKind::Object, 1.0, 0.2),
+            ("火锅", QueryKind::Object, 1.0, 0.2),
+            ("雪山", QueryKind::Object, 1.0, 0.2),
+            ("2019年6月", QueryKind::Date, 0.2, 0.5),
+            ("2024", QueryKind::Object, 1.0, 0.2),
+            ("春天", QueryKind::Date, 0.2, 0.5),
+            ("成都市", QueryKind::Place, 0.2, 0.5),
+            ("四川省 · 成都市", QueryKind::Place, 0.2, 0.5),
+            ("文档", QueryKind::Document, 0.2, 0.5),
+            ("发票截图", QueryKind::Document, 0.2, 0.5),
+            ("", QueryKind::Object, 1.0, 0.2),
+        ];
+        for (q, kind, wi, wd) in cases {
+            assert_eq!(query_kind(q), kind, "query 分类不符: {q}");
+            let (i, d) = lane_weights(kind);
+            assert!((i - wi).abs() < 1e-9 && (d - wd).abs() < 1e-9, "权重不符: {q}");
+        }
+    }
+
+    /// 权重真的会改变顺序：同一批命中，描述路在物体词下不能把图像路顶掉
+    #[test]
+    fn object_query_prefers_image_lane_over_long_desc_lane() {
+        let fts: Vec<SmartHit> = Vec::new();
+        // 图像路第 1 名 vs 描述路第 1 名
+        let img = vec![(hit("img1.jpg"), 0.10), (hit("img2.jpg"), 0.09)];
+        let desc = vec![(hit("desc1.jpg"), 0.10)];
+        let out = fuse_hits3_weighted(fts.clone(), img, desc, QueryKind::Object);
+        let paths: Vec<&str> = out.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths[0], "img1.jpg", "物体词应图像优先: {paths:?}");
+        // 结构化 query 下反过来：描述路第 1 名应压过图像路第 1 名
+        let img = vec![(hit("img1.jpg"), 0.10)];
+        let desc = vec![(hit("desc1.jpg"), 0.10)];
+        let out = fuse_hits3_weighted(fts, img, desc, QueryKind::Date);
+        let paths: Vec<&str> = out.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths[0], "desc1.jpg", "日期 query 应描述优先: {paths:?}");
     }
 }
 

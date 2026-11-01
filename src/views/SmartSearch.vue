@@ -571,7 +571,19 @@ function showTag(r: SmartHit): string {
           >📁 {{ r.album_name ?? "相册" }}</button>
           <figcaption class="ss-cap">
             <span class="ss-tag">{{ showTag(r) }}</span>
-            <span v-if="r.semantic_score != null" class="ss-sem" title="语义相似度（CLIP 向量余弦）">✨ AI 匹配 {{ Math.round(r.semantic_score * 100) }}%</span>
+            <!-- FEAT-155：「AI 匹配」改读**本路相对相关度**并标出来源路。
+                 旧实现展示的是原始余弦（图像塔 0.45 vs 模板描述 0.71），两种尺度混在一起，
+                 结果是“不相干的照片显示得比对的还像”。 -->
+            <span
+              v-if="r.semantic_rel != null"
+              class="ss-sem"
+              :class="r.semantic_lane === 'desc' ? 'ss-sem-desc' : 'ss-sem-img'"
+              :title="
+                r.semantic_lane === 'desc'
+                  ? '描述相关度（时间/地点/场景/标签/人物名这条描述向量，同一查询内相对排序）'
+                  : '图像相关度（照片本身与关键词的视觉相似度，同一查询内相对排序）'
+              "
+            >{{ r.semantic_lane === "desc" ? "✨文" : "✨图" }} {{ Math.round(r.semantic_rel * 100) }}%</span>
             <span v-if="r.location" class="ss-loc">📍 {{ r.location }}</span>
             <span v-if="toneLabel(r.tone_type)" class="ss-tone">{{ toneLabel(r.tone_type) }}</span>
           </figcaption>
@@ -874,6 +886,14 @@ function showTag(r: SmartHit): string {
 .ss-sem {
   font-weight: 600;
   color: #ffd76a;
+}
+/* FEAT-155：徽标按来源路区分色相 —— 图像路（视觉相似）亮黄、描述路（时间/地点/标签）青蓝，
+   一眼能看出“这个百分比衡量的是像素还是元数据”。 */
+.ss-sem-img {
+  color: #ffd76a;
+}
+.ss-sem-desc {
+  color: #7fd3e8;
 }
 .ss-link {
   color: #6aa6ff;

@@ -257,8 +257,25 @@ pub struct SmartHit {
     pub tone_type: Option<String>,
     pub person_ids: Vec<String>,
     /// FEAT-SEM：语义命中余弦相似度（0~1）；纯关键词命中为 None（前端据此显示「AI 匹配」徽标）
+    ///
+    /// FEAT-155 起**不再用于展示**（保留字段是为了不破坏旧调用方）：两路余弦尺度不可比，
+    /// 图像塔「最像的」往往只有 0.45，而模板描述能到 0.71 —— 直接乘 100 当百分比会把
+    /// 不相干的照片显示得比对的还像。展示改读 [`Self::semantic_rel`]。
     pub semantic_score: Option<f64>,
+    /// FEAT-155：**本路相对相关度**（0~1）= (余弦 − 本路中位余弦) / 本路最大提升值
+    ///
+    /// 只在同一路、同一条 query 内可比（顶部恒为 1.0），前端乘 100 显示为「相关度」。
+    pub semantic_rel: Option<f64>,
+    /// FEAT-155：这个相关度来自哪一路 —— `"img"`（图像塔）/ `"desc"`（描述塔）
+    ///
+    /// 徽标据此标注来源：「图像优先、描述兜底」（物体词看像素；日期/地点/文档看描述），
+    /// 不再把两路取 max 当作一个可比的数。
+    pub semantic_lane: Option<String>,
 }
+
+/// 徽标来源标记（前端直接映射成「图 / 文」）
+pub const SEM_LANE_IMG: &str = "img";
+pub const SEM_LANE_DESC: &str = "desc";
 
 /// 内容搜索过滤条件（FEAT-026）：未设置（None）表示不启用该维度过滤
 #[derive(Debug)]
@@ -1409,6 +1426,8 @@ impl Database {
                 tone_type: r.get(9)?,
                 person_ids: r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
                 semantic_score: None,
+                semantic_rel: None,
+                semantic_lane: None,
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
@@ -1475,6 +1494,8 @@ impl Database {
                             .and_then(|s| serde_json::from_str(&s).ok())
                             .unwrap_or_default(),
                         semantic_score: None,
+                        semantic_rel: None,
+                        semantic_lane: None,
                     }))
                 })?;
                 for row in rows {

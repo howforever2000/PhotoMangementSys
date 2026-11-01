@@ -334,6 +334,40 @@ impl Database {
         rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
     }
 
+    /// 描述向量 + **同一段描述文本的分组 id**（FEAT-155 同文本折叠用）
+    ///
+    /// 分组键是 `text` 列本身，不是向量字节：文本相同 → 编码相同 → 余弦完全相等，
+    /// 在 RRF 里就是一批只会靠行号分先后的死结（实测「2019年6月」一次占 96 个位）。
+    /// 分组 id 在这里做成稠密的 0..n（按首次出现顺序），向量层只管“最多取几张”。
+    pub fn load_text_embeddings_grouped(
+        &self,
+        user_id: i64,
+        kind: &str,
+        model: &str,
+    ) -> Result<Vec<(String, Vec<f32>, u32)>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.photo_hash, t.text, t.embedding FROM photo_text_embeddings t
+             JOIN photo_content_scan p ON p.photo_hash = t.photo_hash
+             WHERE p.user_id = ?1 AND t.kind = ?2 AND t.model = ?3",
+        )?;
+        let rows = stmt.query_map(params![user_id, kind, model], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                f32_vec_from_blob(&r.get::<_, Vec<u8>>(2)?),
+            ))
+        })?;
+        let mut groups: HashMap<String, u32> = HashMap::new();
+        let mut out = Vec::new();
+        for r in rows {
+            let (hash, text, v) = r?;
+            let next = groups.len() as u32;
+            let g = *groups.entry(text).or_insert(next);
+            out.push((hash, v, g));
+        }
+        Ok(out)
+    }
+
     /// 按绝对路径批量删除（照片删除级联，对齐 delete_content_by_paths）
     pub fn delete_embeddings_by_paths(&self, paths: &[String]) -> Result<usize, DbError> {
         let mut n = 0usize;
