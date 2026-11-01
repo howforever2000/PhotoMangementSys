@@ -8,19 +8,24 @@
  *   ① 判据与阈值（一次说清「怎么判重复」）
  *   ② 进度 / 错误 / 能力提示（HEIC、未入库）
  *   ③ 汇总带（找到多少组、能省多少）
- *   ④ 分组列表（分页，每页 12 组；缩略图走全局排队）
+ *   ④ 分组列表（**滚动增量渲染**：先渲几屏，滚到底再追加；缩略图只在卡片进视口时排队）
  *   ⑤ 底部常驻操作条（已选张数/体积 + 全选 + 两档删除）
+ *
+ * 为什么不一次渲染全部组：扫描完成后可能有几千组，一次全铺 = 几千个卡片 DOM +
+ * 上千路缩略图请求，页面会“假死”十几秒。增量渲染 + 视口热加载把首屏开销压到 1~3 组。
  *
  * 删除决策全在 store（`useDedupeStore`）：本组件只负责呈现与二次确认。
  */
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useDedupeStore, thresholdHint } from "../stores/dedupe";
 import { useNotify } from "../composables/useNotify";
+import { useIncrementalReveal } from "../composables/useIncrementalReveal";
 import { getThumbs } from "../utils/thumbQueue";
 import { formatSize } from "../types/album";
-import type { DedupeDeleteMode } from "../types/dedupe";
+import type { DedupeDeleteMode, DupGroup } from "../types/dedupe";
 import DupeGroupCard from "./dedupe/DupeGroupCard.vue";
+import PhotoLightbox from "./PhotoLightbox.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import EmptyState from "./EmptyState.vue";
 
@@ -28,41 +33,128 @@ const store = useDedupeStore();
 const notify = useNotify();
 const router = useRouter();
 
-/* ---------------- 缩略图（按当前页取，走全局排队） ---------------- */
-const thumbs = ref<Record<string, string>>({});
+/* ---------------- ④ 增量渲染：只建当前几屏的卡片 ---------------- */
+/**
+ * 一组的渲染预算：卡片内边距 22 + 标题行 30 + 一条横向缩略图条 ≈ 210（横滚不增高）。
+ * 取 268 留一点余量，宁可少渲一组，也不要首屏把几千组一次性铺出去。
+ */
+const GROUP_COST_PX = 268;
 
-async function loadThumbs() {
-  const wanted = new Map<number, string[]>();
-  for (const g of store.pageGroups) {
-    for (const it of g.items) {
-      if (thumbs.value[it.path]) continue;
-      const list = wanted.get(it.album_id) ?? [];
-      list.push(it.path);
-      wanted.set(it.album_id, list);
-    }
+const { visible: visibleGroups, visibleCount, hasMore, loadMore } = useIncrementalReveal<DupGroup>({
+  units: computed(() => store.groups),
+  costOf: () => GROUP_COST_PX,
+  screens: 3,
+  stepScreens: 2,
+});
+
+/* ---------------- 缩略图：卡片进视口才排队（全局限流在 thumbQueue 里） ---------------- */
+const thumbs = shallowRef<Record<string, string>>({});
+/** 已经入过队的 path（避免滚动来回时重复请求） */
+const requested = new Set<string>();
+let pendingPairs: [string, string][] = [];
+let frame = 0;
+
+/** 按帧合并成一次渲染：一张卡动辄几十张，逐张写会抖 */
+function flushThumbs() {
+  frame = 0;
+  if (!pendingPairs.length) return;
+  const next = { ...thumbs.value };
+  for (const [path, thumb] of pendingPairs) next[path] = thumb;
+  pendingPairs = [];
+  thumbs.value = next;
+}
+
+function onThumbPair(path: string, thumb: string) {
+  pendingPairs.push([path, thumb]);
+  if (frame) return;
+  frame = requestAnimationFrame(flushThumbs);
+}
+
+async function loadThumbsFor(groupKey: string) {
+  const g = store.groups.find((x) => x.key === groupKey);
+  if (!g) return;
+  const byAlbum = new Map<number, string[]>();
+  for (const it of g.items) {
+    if (requested.has(it.path)) continue;
+    requested.add(it.path);
+    const list = byAlbum.get(it.album_id) ?? [];
+    list.push(it.path);
+    byAlbum.set(it.album_id, list);
   }
-  for (const [albumId, paths] of wanted) {
+  for (const [albumId, paths] of byAlbum) {
     try {
-      await getThumbs(albumId, paths, (path, thumb) => {
-        thumbs.value = { ...thumbs.value, [path]: thumb };
-      });
+      await getThumbs(albumId, paths, onThumbPair);
     } catch {
-      /* 缩略图取不到不阻塞勾选：卡片显示首字占位 */
+      /* 取不到不阻塞勾选：卡片显示首字占位 */
     }
   }
 }
 
-watch(
-  () => store.pageGroups.map((g) => g.key).join("|"),
-  () => {
-    void loadThumbs();
-  },
-  { immediate: true },
+const cardEls = new Map<string, Element>();
+let io: IntersectionObserver | null = null;
+
+function ensureObserver(): IntersectionObserver | null {
+  if (typeof IntersectionObserver === "undefined") return null;
+  if (io) return io;
+  io = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        const key = (e.target as HTMLElement).dataset.groupKey;
+        io?.unobserve(e.target);
+        if (key) void loadThumbsFor(key);
+      }
+    },
+    // 提前 400px 开始取：卡片真正滚进视口时图基本已就位
+    { rootMargin: "400px 0px" },
+  );
+  return io;
+}
+
+/** 卡片挂载/卸载时登记（组件实例取 $el，普通元素直接用） */
+function setCardEl(key: string, el: unknown) {
+  const prev = cardEls.get(key);
+  if (prev) {
+    io?.unobserve(prev);
+    cardEls.delete(key);
+  }
+  const node = (el as { $el?: unknown } | null)?.$el ?? el;
+  if (!(node instanceof Element)) return;
+  node.setAttribute("data-group-key", key);
+  cardEls.set(key, node);
+  ensureObserver()?.observe(node);
+}
+
+onBeforeUnmount(() => {
+  io?.disconnect();
+  io = null;
+  cardEls.clear();
+  if (frame) cancelAnimationFrame(frame);
+});
+
+/* ---------------- 大图预览（复用全站同一个灯箱） ---------------- */
+const previewGroup = ref<DupGroup | null>(null);
+const previewIndex = ref(0);
+
+const previewPhotos = computed(() =>
+  (previewGroup.value?.items ?? []).map((it) => ({ path: it.path, albumId: it.album_id })),
 );
 
-onMounted(() => {
-  void store.refreshHeicSupport();
-});
+function openPreview(group: DupGroup, path: string) {
+  const idx = group.items.findIndex((it) => it.path === path);
+  previewIndex.value = idx < 0 ? 0 : idx;
+  previewGroup.value = group;
+}
+
+/* 结果被清空 / 重新扫描时关掉灯箱（否则会在旧组上翻页） */
+watch(
+  () => store.groups.length,
+  (n) => {
+    if (n === 0) previewGroup.value = null;
+  },
+);
+
+void store.refreshHeicSupport();
 
 /* ---------------- 参数联动 ---------------- */
 const hint = computed(() => thresholdHint(store.threshold));
@@ -155,8 +247,6 @@ async function confirmDelete() {
       `共处理 ${outcome.deleted} 张`,
     );
   }
-  thumbs.value = {};
-  void loadThumbs();
 }
 
 function goScan() {
@@ -289,14 +379,18 @@ function goScan() {
           {{ (report.stage_ms.similar / 1000).toFixed(1) }}）
         </template>
         <template v-if="report?.embedding_model"> · 向量 {{ report.embedding_model }}</template>
+        <template v-if="(report?.collapsed_same_file ?? 0) > 0">
+          · 同址合并 {{ report?.collapsed_same_file }} 条
+        </template>
       </div>
     </div>
 
-    <!-- ④ 分组列表 -->
+    <!-- ④ 分组列表（只渲染当前几屏；卡片进视口才拉缩略图） -->
     <div v-if="groups.length" class="dp-groups">
       <DupeGroupCard
-        v-for="g in store.pageGroups"
+        v-for="g in visibleGroups"
         :key="g.key"
+        :ref="(el) => setCardEl(g.key, el)"
         :group="g"
         :keep-path="store.keepOf(g)"
         :thumbs="thumbs"
@@ -305,20 +399,12 @@ function goScan() {
         @toggle="store.toggle"
         @set-keep="(p: string) => store.setKeep(g, p)"
         @select-group="(on: boolean) => store.selectGroup(g, on)"
+        @preview="(p: string) => openPreview(g, p)"
       />
 
-      <div v-if="store.pageCount > 1" class="dp-pager">
-        <button class="dp-mini" :disabled="store.page <= 0" @click="store.setPage(store.page - 1)">
-          上一页
-        </button>
-        <span>{{ store.page + 1 }} / {{ store.pageCount }}</span>
-        <button
-          class="dp-mini"
-          :disabled="store.page >= store.pageCount - 1"
-          @click="store.setPage(store.page + 1)"
-        >
-          下一页
-        </button>
+      <div v-if="hasMore" class="dp-pager">
+        <span>已渲染 {{ visibleCount }} / {{ groups.length }} 组 · 滚到底会自动继续</span>
+        <button class="dp-mini" @click="loadMore()">立即加载</button>
       </div>
     </div>
 
@@ -361,6 +447,15 @@ function goScan() {
         </button>
       </div>
     </div>
+
+    <!-- 大图预览（与时间线 / 相册详情同一个灯箱） -->
+    <PhotoLightbox
+      v-if="previewGroup"
+      :key="`${previewGroup.key}:${previewIndex}`"
+      :photos="previewPhotos"
+      :index="previewIndex"
+      @close="previewGroup = null"
+    />
 
     <!-- 删除确认（两档各自一个文案） -->
     <ConfirmDialog

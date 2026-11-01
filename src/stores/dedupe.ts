@@ -12,6 +12,7 @@ import type {
   HeicSupport,
 } from "../types/dedupe";
 import { useAlbumStore } from "./album";
+import { sanitizeReport } from "../utils/dedupeGroups";
 
 /**
  * 重复照片清理（FEAT-143）状态
@@ -28,24 +29,28 @@ import { useAlbumStore } from "./album";
  * 剩下的本来就是要清掉的），再允许逐张取消。
  */
 
-/** 相似阈值默认值（用户确认：滑杆范围 0.80–1.00） */
-export const DEFAULT_THRESHOLD = 0.9;
+/** 相似阈值默认值（用户确认：默认 0.98，滑杆范围仍为 0.80–1.00） */
+export const DEFAULT_THRESHOLD = 0.98;
 
-/** 分组分页：一次渲染多少组（缩略图是逐张生成的，一次铺太多会打满 IO） */
-export const GROUPS_PER_PAGE = 12;
+/** 旧版本的默认值：用户没动过滑杆时，localStorage 里存的就是它，读到就迁到新默认 */
+const LEGACY_DEFAULT_THRESHOLD = 0.9;
+
+/** 阈值所在 localStorage 键（不换键名，避免把用户自己调过的值丢掉） */
+const THRESHOLD_KEY = "pms.dedupe.threshold";
 
 /** 阈值语义提示（跟着滑杆走，讲清调高调低的后果） */
 export function thresholdHint(th: number): string {
-  if (th >= 0.99) return "几乎只认同一张画面（连裁切/缩放的差异都可能放过）";
-  if (th >= 0.95) return "很严格：同一张照片的不同压缩 / 尺寸才会命中";
-  if (th >= 0.9) return "推荐：同场景连拍、同图不同格式都能命中";
-  if (th >= 0.85) return "偏宽松：相似构图可能被并入同组，删除前请逐组确认";
-  return "宽松：会把同题材照片并组，只适合人工逐组筛选";
+  if (th >= 0.995) return "几乎只认同一张画面：轻微裁切 / 重压缩的副本都可能漏过";
+  if (th >= 0.98) return "默认（推荐）：同一张照片的不同尺寸 / 不同压缩才会命中，几乎不会误并";
+  if (th >= 0.95) return "很严格：同图不同格式 / 尺寸能命中，同场景连拍基本不会进同一组";
+  if (th >= 0.9) return "偏宽松：同场景连拍可能被并入同组，删除前请逐组确认";
+  if (th >= 0.85) return "宽松：相似构图会被并入同组，只适合人工逐组筛选";
+  return "很宽松：会把同题材照片并组，仅适合逐组人工确认";
 }
 
 export const useDedupeStore = defineStore("dedupe", () => {
   /* ---------------- 参数（跨会话记住：用户调过阈值就不用每次再调） ---------------- */
-  const threshold = ref(loadNumber("pms.dedupe.threshold", DEFAULT_THRESHOLD));
+  const threshold = ref(loadThreshold());
   const includeExact = ref(loadBool("pms.dedupe.exact", true));
   const includeSimilar = ref(loadBool("pms.dedupe.similar", true));
 
@@ -69,20 +74,12 @@ export const useDedupeStore = defineStore("dedupe", () => {
   const lastFailures = ref<string[]>([]);
   /** HEIC 解码能力（缺 HEIF 扩展时顶部提示） */
   const heic = ref<HeicSupport | null>(null);
-  /** 分组分页 */
-  const page = ref(0);
 
   let unlisten: UnlistenFn | null = null;
 
   /* ---------------- 派生 ---------------- */
 
   const groups = computed<DupGroup[]>(() => report.value?.groups ?? []);
-
-  const pageCount = computed(() => Math.max(1, Math.ceil(groups.value.length / GROUPS_PER_PAGE)));
-
-  const pageGroups = computed<DupGroup[]>(() =>
-    groups.value.slice(page.value * GROUPS_PER_PAGE, (page.value + 1) * GROUPS_PER_PAGE),
-  );
 
   /** 某组当前保留的那张 */
   function keepOf(group: DupGroup): string {
@@ -130,7 +127,7 @@ export const useDedupeStore = defineStore("dedupe", () => {
 
   function setThreshold(v: number) {
     threshold.value = clampThreshold(v);
-    localStorage.setItem("pms.dedupe.threshold", String(threshold.value));
+    localStorage.setItem(THRESHOLD_KEY, String(threshold.value));
   }
 
   function setIncludeExact(v: boolean) {
@@ -163,7 +160,6 @@ export const useDedupeStore = defineStore("dedupe", () => {
     report.value = null;
     keepOverride.value = {};
     selected.value = new Set();
-    page.value = 0;
     running.value = true;
     stopping.value = false;
     stage.value = "collect";
@@ -178,11 +174,13 @@ export const useDedupeStore = defineStore("dedupe", () => {
         includeExact: includeExact.value,
         includeSimilar: includeSimilar.value,
       });
-      report.value = r;
-      heic.value = r.heic;
+      // 先清洗再入 store：组内同路径只留一张（旧构建的后端不会帮我们做这一步）
+      const cleaned = sanitizeReport(r);
+      report.value = cleaned;
+      heic.value = cleaned.heic;
       // 默认勾选：每组除"保留"外全部选中
       const next = new Set<string>();
-      for (const g of r.groups) {
+      for (const g of cleaned.groups) {
         for (const it of g.items) {
           if (it.path !== g.keep_path) next.add(it.path);
         }
@@ -286,10 +284,6 @@ export const useDedupeStore = defineStore("dedupe", () => {
     selected.value = next;
   }
 
-  function setPage(p: number) {
-    page.value = Math.min(pageCount.value - 1, Math.max(0, p));
-  }
-
   /* ---------------- 删除 ---------------- */
 
   /**
@@ -375,7 +369,6 @@ export const useDedupeStore = defineStore("dedupe", () => {
       });
     }
     report.value = { ...r, groups: nextGroups };
-    if (page.value > 0 && page.value >= pageCount.value) page.value = pageCount.value - 1;
   }
 
   /** 清空结果（重新扫描前由 UI 显式调用，避免误以为还有未处理组） */
@@ -385,7 +378,6 @@ export const useDedupeStore = defineStore("dedupe", () => {
     selected.value = new Set();
     error.value = "";
     lastFailures.value = [];
-    page.value = 0;
   }
 
   return {
@@ -409,9 +401,6 @@ export const useDedupeStore = defineStore("dedupe", () => {
     deleting,
     lastFailures,
     selected,
-    page,
-    pageCount,
-    pageGroups,
     groups,
     // 派生
     keepOf,
@@ -430,16 +419,21 @@ export const useDedupeStore = defineStore("dedupe", () => {
     clearSelection,
     selectGroup,
     setKeep,
-    setPage,
     deleteSelected,
     reset,
   };
 });
 
-function loadNumber(key: string, fallback: number): number {
-  const raw = localStorage.getItem(key);
+function loadThreshold(): number {
+  const raw = localStorage.getItem(THRESHOLD_KEY);
   const n = raw == null ? NaN : Number(raw);
-  return Number.isFinite(n) ? n : fallback;
+  if (!Number.isFinite(n)) return DEFAULT_THRESHOLD;
+  // 旧默认值（用户没动过滑杆）→ 迁到新默认；用户自己调过的其它值保留
+  if (Math.abs(n - LEGACY_DEFAULT_THRESHOLD) < 1e-6) {
+    localStorage.setItem(THRESHOLD_KEY, String(DEFAULT_THRESHOLD));
+    return DEFAULT_THRESHOLD;
+  }
+  return n;
 }
 
 function loadBool(key: string, fallback: boolean): boolean {

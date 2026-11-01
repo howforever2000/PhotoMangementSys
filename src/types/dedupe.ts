@@ -8,6 +8,8 @@
 /** 组内一张照片 */
 export interface DupItem {
   path: string;
+  /** 文件所在文件夹的完整路径（缩略图下方显示的「地址」） */
+  dir: string;
   album_id: number;
   file_name: string;
   size_bytes: number;
@@ -62,6 +64,8 @@ export interface DedupeReport {
   stage_ms?: DedupeStageMs;
   heic: HeicSupport;
   hashed_files: number;
+  /** 因为指向同一个真实文件而被合并掉的条目数（旧后端不返回，按 0 处理） */
+  collapsed_same_file?: number;
 }
 
 /** 扫描进度事件载荷（`dedupe-progress`） */

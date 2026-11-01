@@ -5594,14 +5594,19 @@
           "相似聚类": "原：已用 rayon 并行，但向量各自堆分配、内层用单累加器标量循环。现：nxD 摊平成连续矩阵（顺序访问、预取器友好）+ 8 累加器 dot_fast + 运行时探测的 AVX2/FMA 内积（不支持则回落标量，非 x86 直接走标量）。实测 24905 张真实 CLIP 向量（release）：单线程 76.1s → 14 线程 12.1s（6.3x）→ 加 AVX2 后 8.0s（相对单线程 9.5x）；debug 下 468s → 55.7s。",
           "一维窗口剪枝的真相": "模块头原本把「按方差最大维排序 + 柯西-施瓦茨窗口」当成性能支柱。实测（24905 张真实向量、阈值 0.90）**只剪掉 0.0%**：512 维单位向量任一坐标的标准差 ≈1/√512≈0.044，而窗口有 √(2-2*0.9)=0.447，几乎所有点对都落在窗内。它只在「某一维特别有区分度」的数据上有效（合成基准里确实有效）。代码保留（成本极低、无损），但已在模块头/注释/日志里写明不是性能来源；日志现在还打印「实际比较对数 / 全量对数 / 剪掉百分比」，以后可用真实数据复核这个结论。",
           "下一步（未做）": "瓶颈已转移到内存带宽（每对扫 4KB，3.1 亿对 ≈ 620GB）；要再上一档需按 256×256 块做矩阵乘法式分块（tiling），预估还能降一个量级。"
-        }
+        },
+        "同址去重（2026-11-01）": "用户反馈「相册 A 包含相册 B，两个都入库后同一张照片被显示成两条重复」。原口径是 Entry.key = 小写路径字符串，只对「同一相册根下的同一写法」有效；嵌套相册经 junction / 8.3 短名 / 斜杠方向 / 盘符大小写等写法差异会得到不同字符串。现在：①Entry 增加 ident = canonicalize(相册根) + 相对路径（小写、分隔符统一），相册根只 canonicalize 一次（代价与相册数同阶），收集阶段按 ident 去重并打印归并条数；②组内再按 canonicalize(文件) 合并一次（collapse_same_target），只对已入组的少量照片付系统调用；合并后不足 2 张的组直接丢弃；③DupItem 增加 dir（文件夹地址），卡片缩略图下方显示（长路径只留末尾两级、title 挂全路径）；④前端 utils/dedupeGroups.sanitizeReport 再兜一层按小写路径去重并重算组数/可释放体积（旧构建的后端不做这件事）；⑤报告新增 collapsed_same_file，汇总带在非 0 时显示「同址合并 N 条」。",
+        "列表渲染（2026-11-01）": "原实现是「分页 12 组/页 + 一次性为整页所有照片排队取缩略图」：扫描完成后首屏要建 12 组卡片、上千张缩略图入队，页面会卡住十几秒。现在改为滚动增量渲染：复用 composables/useIncrementalReveal，按「屏」算预算（3 屏起步、滚到底再追加 2 屏，单组预算 268px），只为已渲染的卡片建 DOM；缩略图改用 IntersectionObserver（rootMargin 400px）在卡片进视口时才排队，且按 rAF 合并写入，一张卡几十张图不会逐张触发重渲染。分页控件退役（store 的 page/pageCount/pageGroups/setPage 一并删除）。另接入 PhotoLightbox：点缩略图即开全站同一个灯箱，浏览序列 = 该组全部照片，可 ←/→ 翻页、Esc 关闭。",
+        "默认阈值 0.98（2026-11-01）": "阈值滑杆默认值 0.90 → 0.98（用户指定）。localStorage 键名不变（避免丢掉用户自己调过的值），读到旧默认 0.90 时自动迁移成 0.98；提示文案按档重写（0.98 档写明「同一张照片的不同尺寸/不同压缩才会命中」）。"
       },
       "highlights": {
         "photo_hash 不等于内容哈希": "项目里所有地方复用 photo_hash 做去重键（缩略图缓存、内容扫描 upsert），但它含路径，副本必然不同 —— 「hash 一致=重复」这条需求必须新增内容哈希，且不能改动既有 photo_hash 口径（会连带整库缓存失效）。",
         "顺序即性能": "体积预筛让全库整读降到极小候选集；相似侧用方差最大维 + 柯西-施瓦茨窗口剪枝，阈值越高剪得越狠。两条都不牺牲正确性，且都能用「与暴力结果逐组比对」的单测钉住。",
         "离线优先": "相似判定完全不依赖 Python 服务在线：向量在库里，模型标识从库里取。代价是换档后未重建向量的照片会被跳过 —— 这在报告与界面里如实报数并给出「去扫描入库」入口。",
         "两档语义": "「仅删记录」与「移入回收站」不是措辞差异：前者文件还在、可从最近删除恢复；后者进系统回收站、并级联清缩略图与扫描记录。界面用两个独立按钮 + 各自独立的确认文案，避免用户点错档。",
-        "顺序即性能 → 改为「先量再做」": "这轮优化的价值一半在代码、一半在证伪：①「探尺寸白读全库文件头」比多线程重要得多（98.8% 的时间在这里）；②一维窗口剪枝在真实高维数据上是 0% 效果，不能当卖点；③并查集传递闭包在真实相似图上会把 9328 张串成一组，属于语义错误而非性能问题。三件事都只有拿真实数据量过才会暴露。"
+        "顺序即性能 → 改为「先量再做」": "这轮优化的价值一半在代码、一半在证伪：①「探尺寸白读全库文件头」比多线程重要得多（98.8% 的时间在这里）；②一维窗口剪枝在真实高维数据上是 0% 效果，不能当卖点；③并查集传递闭包在真实相似图上会把 9328 张串成一组，属于语义错误而非性能问题。三件事都只有拿真实数据量过才会暴露。",
+        "「同一个文件」不能按路径字符串判": "路径字符串只是「用户/系统当时怎么写的」，同一个文件经嵌套相册、junction、8.3 短名、斜杠方向、盘符大小写可以写出好几种字符串。去重身份要用 canonicalize 的真实路径 —— 但只对相册根（每相册一次）与已入组的少量照片做，别对全库每张都付一次系统调用。",
+        "懒加载图片 ≠ 懒加载列表": "缩略图早就走 IntersectionObserver 了，但卡片 DOM 仍是一次建完的 —— 判断长列表是否真的懒，看的不是有没有 observer，而是 document.querySelectorAll(卡片).length 是不是等于总数。这次两层都补上：列表按屏增量建 DOM，缩略图按视口排队。"
       },
       "tests": [
         "端到端用例断言：total_photos=4 / exact_groups=1 / similar_groups=1 / hashed_files=3 / similar_candidates=2 / 全库路径不重复出现在两个组",
@@ -5609,21 +5614,27 @@
         "npx vue-tsc --noEmit 0 错误；npm test 164 通过；npx vite build 通过",
         "cargo test --lib dedupe：7 项通过（含 AVX2 点积 vs 标量一致性、剪枝 vs 暴力在同为完全链接下逐组一致、全流程端到端、单飞锁释放）",
         "基准（默认 #[ignore]，需真实数据）：bench_real_library —— 6970 张真实相册对比「旧串行+探尺寸 / 串行不探尺寸 / 新并行」与哈希 10.17x；bench_real_vectors —— 24905 条真实 CLIP 向量，阈值 0.90/0.95/0.99 的分组规模与耗时；bench_cluster_scaling —— 2 万合成向量的线程缩放",
-        "cargo test --lib 全量 442 通过 0 失败；cargo test --release 基准复跑一致；npx vue-tsc --noEmit 0 错误；npm test 164 通过；npx vite build 通过"
+        "cargo test --lib 全量 442 通过 0 失败；cargo test --release 基准复跑一致；npx vue-tsc --noEmit 0 错误；npm test 164 通过；npx vite build 通过",
+        "cargo test --lib dedupe：9 项通过 —— 新增 nested_album_same_file_counted_once（父/子相册都入库，同一文件只算一张且归属最深相册）、collapse_same_target_keeps_one（同址两写法只留一条）、exact_groups 断言 dir 已填",
+        "真实库校验（#[ignore]，需 PMS_DB）：cargo test --lib -- --ignored verify_real_library_same_path —— 130 相册 / 24,996 张，同址归并 75 条，精确重复 2,617 组，组内无重复路径、无重复地址、keep_path 在组内、可释放体积与逐项求和一致（7.4 GB），debug 32.5s",
+        "npm test 169 通过（新增 utils/dedupeGroups.test.ts 5 项：同路径去重 / 空组剔除 / keep 回落 / 可释放体积 / 地址缩写）；npx vue-tsc --noEmit 0 错误；npm run test:types 通过；npm run build 通过"
       ],
       "related_files": [
-        "src-tauri/src/dedupe.rs",
-        "src-tauri/src/db/embedding.rs",
-        "src-tauri/src/lib.rs",
-        "src-tauri/src/imgio.rs",
-        "src-tauri/src/photos.rs",
-        "src/stores/dedupe.ts",
-        "src/components/DedupePanel.vue",
-        "src/components/dedupe/DupeGroupCard.vue",
-        "src/types/dedupe.ts",
-        "src/views/ScanHub.vue",
         "README.md",
-        "src-tauri/src/dedupe.rs（基准用例）"
+        "src-tauri/src/db/embedding.rs",
+        "src-tauri/src/dedupe.rs",
+        "src-tauri/src/dedupe.rs（基准用例）",
+        "src-tauri/src/imgio.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/photos.rs",
+        "src/components/DedupePanel.vue",
+        "src/components/PhotoLightbox.vue",
+        "src/components/dedupe/DupeGroupCard.vue",
+        "src/composables/useIncrementalReveal.ts",
+        "src/stores/dedupe.ts",
+        "src/types/dedupe.ts",
+        "src/utils/dedupeGroups.ts",
+        "src/views/ScanHub.vue"
       ],
       "keywords": [
         "重复照片",
@@ -5651,8 +5662,8 @@
         "基准测试"
       ],
       "created_at": "2026-10-31T20:11:12+08:00",
-      "updated_at": "2026-10-31T22:56:34+08:00"
+      "updated_at": "2026-11-01T12:40:47+08:00"
     }
   ],
-  "updated": "2026-10-31T22:56:34+08:00"
+  "updated": "2026-11-01T12:40:47+08:00"
 }

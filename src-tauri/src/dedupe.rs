@@ -70,8 +70,15 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone)]
 struct Entry {
     path: String,
-    /// 小写路径（Windows 大小写不敏感，用于去重与关联）
+    /// 小写路径（Windows 大小写不敏感；用于与向量表按原图路径关联）
     key: String,
+    /// **真实文件身份** = `canonicalize(相册根)` + 相对路径（小写、分隔符统一）
+    ///
+    /// 与 `key` 的差别就是「同一张照片被两个嵌套相册各扫一遍」这一类问题的根：
+    /// `key` 是盘上那个字符串本身，同一个文件经嵌套相册 / junction / 8.3 短名 /
+    /// 斜杠方向 / 盘符大小写不同时会得到不同字符串，于是被当成两张照片。
+    /// 这里改走真实路径（相册根只 canonicalize 一次，代价与相册数同阶）。
+    ident: String,
     album_id: i64,
     size_bytes: u64,
     mtime_secs: i64,
@@ -81,6 +88,8 @@ struct Entry {
 #[derive(Debug, Clone, Serialize)]
 pub struct DupItem {
     pub path: String,
+    /// 文件所在文件夹的完整路径（前端在缩略图下方显示「地址」）
+    pub dir: String,
     pub album_id: i64,
     pub file_name: String,
     pub size_bytes: u64,
@@ -143,6 +152,8 @@ pub struct DedupeReport {
     pub heic: crate::heic::HeicSupport,
     /// 内容哈希实际计算的文件数（体积预筛后剩下的碰撞候选）
     pub hashed_files: usize,
+    /// 因为「指向同一个真实文件」而被合并掉的条目数（0 表示没有同址重复）
+    pub collapsed_same_file: usize,
 }
 
 /// 单飞锁：同一时刻只允许一个重复扫描在跑
@@ -242,14 +253,17 @@ pub fn scan_library(
     let mut in_exact: HashSet<String> = HashSet::new();
     let mut hashed_files = 0usize;
     let mut hash_ms = 0u64;
+    /// 同一真实文件被合并掉的条目数（全流程累计）
+    let mut collapsed_same_file = 0usize;
     if include_exact {
         on_progress("hash", 0, total_photos, "正在比对文件内容…");
         let t_hash = std::time::Instant::now();
-        let (exact, hashed) = exact_groups(&entries, &|done, total| {
+        let (exact, hashed, collapsed) = exact_groups(&entries, &|done, total| {
             on_progress("hash", done, total, &format!("已比对 {done}/{total} 张"));
         })?;
         hash_ms = t_hash.elapsed().as_millis() as u64;
         hashed_files = hashed;
+        collapsed_same_file += collapsed;
         for g in &exact {
             for it in &g.items {
                 in_exact.insert(it.path.to_lowercase());
@@ -326,6 +340,14 @@ pub fn scan_library(
                 // 组内最低相似度（相对保留那张）——最保守的展示口径
                 let mut items: Vec<DupItem> = members.iter().map(|i| to_item(&entries[*i])).collect();
                 rank_items(&mut items);
+                // 同一真实文件只留一张（否则用户会看到同一张照片并列成“重复”）
+                let merged = collapse_same_target(&mut items);
+                if merged > 0 {
+                    collapsed_same_file += merged;
+                    if items.len() < 2 {
+                        continue;
+                    }
+                }
                 let keep = items[0].path.clone();
                 let keep_vec = members
                     .iter()
@@ -375,7 +397,7 @@ pub fn scan_library(
     let elapsed_ms = t0.elapsed().as_millis() as u64;
     on_progress("done", 1, 1, "扫描完成");
     crate::logger::log_info(&format!(
-        "[dedupe] 完成 | 照片 {total_photos} 张 · 组 {} 个（精确 {exact_n} / 相似 {similar_groups}）· 跳过无向量 {skipped_unencoded} · 总 {elapsed_ms}ms（遍历 {collect_ms} / 哈希 {hash_ms} / 相似 {similar_ms}）",
+        "[dedupe] 完成 | 照片 {total_photos} 张 · 组 {} 个（精确 {exact_n} / 相似 {similar_groups}）· 跳过无向量 {skipped_unencoded} · 同址合并 {collapsed_same_file} · 总 {elapsed_ms}ms（遍历 {collect_ms} / 哈希 {hash_ms} / 相似 {similar_ms}）",
         groups.len()
     ));
 
@@ -393,6 +415,7 @@ pub fn scan_library(
         stage_ms: StageMs { collect: collect_ms, hash: hash_ms, similar: similar_ms },
         heic: crate::heic::support(),
         hashed_files,
+        collapsed_same_file,
     })
 }
 
@@ -407,13 +430,71 @@ fn build_entry(path: &Path, album_id: i64) -> Option<Entry> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    let raw = path.to_string_lossy().into_owned();
     Some(Entry {
-        path: path.to_string_lossy().into_owned(),
-        key: path.to_string_lossy().to_lowercase(),
+        key: raw.to_lowercase(),
+        // 占位：真正的 ident 由 collect_entries 按「相册真实根 + 相对路径」重算
+        ident: normalize_path_key(&raw),
+        path: raw,
         album_id,
         size_bytes: md.len(),
         mtime_secs: modified_secs,
     })
+}
+
+/// 路径字符串归一：分隔符统一成 `\`、去尾分隔符、小写
+///
+/// 只归一“写法”，不碰文件系统 —— 真正的同一文件判定靠 canonicalize。
+fn normalize_path_key(raw: &str) -> String {
+    raw.replace('/', "\\").trim_end_matches('\\').to_lowercase()
+}
+
+/// 相册根的「真实路径」键
+///
+/// canonicalize 会把 junction / 符号链 / 8.3 短名 / 盘符大小写 / `\\?\` 前缀
+/// 统统解成同一种写法；每个相册只调一次，代价与相册数同阶（不是与照片数）。
+/// 解不开（权限 / 网络盘掉线）就退回字符串归一 —— 宁可少合并，不能漏照片。
+fn canonical_dir_key(dir: &str) -> String {
+    match std::fs::canonicalize(dir) {
+        Ok(p) => normalize_path_key(&p.to_string_lossy()),
+        Err(_) => normalize_path_key(dir),
+    }
+}
+
+/// 文件身份 = 真实相册根 + 相对路径
+fn file_ident(root: &Path, root_key: &str, file: &Path) -> String {
+    match file.strip_prefix(root) {
+        Ok(rel) => {
+            let rel = normalize_path_key(&rel.to_string_lossy());
+            if rel.is_empty() {
+                root_key.to_string()
+            } else {
+                format!("{root_key}\\{rel}")
+            }
+        }
+        // 走目录时理论上一定拿得到相对路径；真拿不到就退回全路径归一键
+        Err(_) => normalize_path_key(&file.to_string_lossy()),
+    }
+}
+
+/// 单个文件的真实目标键（组内二次合并用）
+fn real_target_key(path: &str) -> String {
+    match std::fs::canonicalize(path) {
+        Ok(p) => normalize_path_key(&p.to_string_lossy()),
+        Err(_) => normalize_path_key(path),
+    }
+}
+
+/// 组内按「真实文件」再合一次：指向同一个文件的条目只保留排在前面的那个
+///
+/// 为什么收集阶段已经去过重还要再合一次：收集阶段只能保证「同一相册根下的写法
+/// 一致」，而一条记录可能经由别的相册根进来（junction / 网络盘影射 / 短名）。
+/// 这一步只对**已经入组**的少量照片调 canonicalize，成本可忽略。
+fn collapse_same_target(items: &mut Vec<DupItem>) -> usize {
+    let before = items.len();
+    let mut seen: HashSet<String> = HashSet::with_capacity(before);
+    items.retain(|it| seen.insert(real_target_key(&it.path)));
+    before - items.len()
 }
 
 /// 并行收集全库照片（FEAT-143 性能优化）
@@ -424,47 +505,74 @@ fn build_entry(path: &Path, album_id: i64) -> Option<Entry> {
 /// 现在：
 /// 1. `albums.par_iter()` 并行走目录（rayon 线程数 = 核数，不会把磁盘打爆）；
 /// 2. 展平后 `par_iter()` 并行 stat；
-/// 3. 串行合并去重；同一路径出现在嵌套相册时归属取**最深**的那个（最具体）。
+/// 3. 串行合并去重；同一文件出现在嵌套相册时归属取**最深**的那个（最具体）。
+///
+/// 去重口径是[`Entry::ident`]（真实路径身份），不是路径字符串：
+/// 「相册 A 包含相册 B、两个都被扫」这类嵌套场景下同一个文件只会留一条。
 fn collect_entries(
     albums: &[(i64, String)],
     on_progress: &(impl Fn(usize, usize, usize) + Sync),
 ) -> Vec<Entry> {
     use rayon::prelude::*;
 
+    /// 一个相册的遍历结果（带上真实根键，供并行 stat 时算文件身份）
+    struct AlbumWalk {
+        album_id: i64,
+        /// 相册路径字符串长度（嵌套时按“更长 = 更具体”判归属）
+        dir_len: usize,
+        root: std::path::PathBuf,
+        root_key: String,
+        paths: Vec<std::path::PathBuf>,
+    }
+
     // 1. 并行遍历：rayon 的 collect 保序，结果与相册入参顺序一致
-    let per_album: Vec<(i64, usize, Vec<std::path::PathBuf>)> = albums
+    let per_album: Vec<AlbumWalk> = albums
         .par_iter()
         .map(|(album_id, dir)| {
+            let root = std::path::PathBuf::from(dir);
+            let root_key = canonical_dir_key(dir);
             if DEDUPE_CANCEL.load(Ordering::Relaxed) {
-                return (*album_id, dir.len(), Vec::new());
+                return AlbumWalk { album_id: *album_id, dir_len: dir.len(), root, root_key, paths: Vec::new() };
             }
             match crate::vision::walk_image_paths(dir) {
-                Ok(paths) => (*album_id, dir.len(), paths),
+                Ok(paths) => AlbumWalk { album_id: *album_id, dir_len: dir.len(), root, root_key, paths },
                 Err(e) => {
                     crate::logger::log_warn(&format!("[dedupe] 相册 {album_id} 遍历失败，跳过: {e}"));
-                    (*album_id, dir.len(), Vec::new())
+                    AlbumWalk { album_id: *album_id, dir_len: dir.len(), root, root_key, paths: Vec::new() }
                 }
             }
         })
         .collect();
 
     // 2. 并行 stat（每张一次 metadata；不在这里读文件头）
-    let flat: Vec<(i64, usize, &std::path::PathBuf)> = per_album
+    let flat: Vec<(i64, usize, &std::path::Path, &std::path::Path, &String)> = per_album
         .iter()
-        .flat_map(|(id, dl, paths)| paths.iter().map(move |p| (*id, *dl, p)))
+        .flat_map(|w| {
+            w.paths
+                .iter()
+                .map(move |p| (w.album_id, w.dir_len, w.root.as_path(), p.as_path(), &w.root_key))
+        })
         .collect();
     let built: Vec<(i64, usize, Entry)> = flat
         .par_iter()
-        .filter_map(|(id, dl, p)| build_entry(p, *id).map(|e| (*id, *dl, e)))
+        .filter_map(|(id, dl, root, p, root_key)| {
+            build_entry(p, *id).map(|mut e| {
+                // 身份：真实相册根 + 相对路径（展示仍用盘上的原字符串）
+                e.ident = file_ident(root, root_key, p);
+                (*id, *dl, e)
+            })
+        })
         .collect();
 
     // 3. 串行合并（保序 + 最深相册归属）
     let mut entries: Vec<Entry> = Vec::with_capacity(built.len());
     let mut seen: HashMap<String, usize> = HashMap::with_capacity(built.len());
     let mut owner_dir_len: Vec<usize> = Vec::with_capacity(built.len());
+    let mut collapsed = 0usize;
     for (album_id, dir_len, mut entry) in built {
-        match seen.get(&entry.key).copied() {
+        match seen.get(&entry.ident).copied() {
             Some(idx) => {
+                collapsed += 1;
                 if dir_len > owner_dir_len[idx] {
                     entry.album_id = album_id;
                     entries[idx].album_id = album_id;
@@ -473,11 +581,17 @@ fn collect_entries(
             }
             None => {
                 entry.album_id = album_id;
-                seen.insert(entry.key.clone(), entries.len());
+                seen.insert(entry.ident.clone(), entries.len());
                 entries.push(entry);
                 owner_dir_len.push(dir_len);
             }
         }
+    }
+    if collapsed > 0 {
+        crate::logger::log_info(&format!(
+            "[dedupe] 同址归并 {collapsed} 条（嵌套相册 / 同一文件多种写法），实际照片 {} 张",
+            entries.len()
+        ));
     }
     on_progress(albums.len(), albums.len(), entries.len());
     entries
@@ -491,6 +605,10 @@ fn to_item(e: &Entry) -> DupItem {
     };
     DupItem {
         path: e.path.clone(),
+        dir: Path::new(&e.path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         album_id: e.album_id,
         file_name: Path::new(&e.path)
             .file_name()
@@ -512,10 +630,12 @@ fn to_item(e: &Entry) -> DupItem {
 /// 两段式：**先按文件大小分组**，只有「同尺寸出现 ≥2 次」的候选才真读文件算
 /// SHA-256。绝大多数图库里尺寸唯一的文件占绝大多数，这一步把全库整读降到
 /// 极小的候选集上（返回实际哈希的文件数，供报告与日志核对）。
+///
+/// 返回值第三项：组内「指向同一真实文件」而被合并掉的条目数（正常应为 0）。
 fn exact_groups(
     entries: &[Entry],
     on_progress: &(impl Fn(usize, usize) + Sync),
-) -> Result<(Vec<DupGroup>, usize), String> {
+) -> Result<(Vec<DupGroup>, usize, usize), String> {
     use rayon::prelude::*;
     use std::sync::atomic::AtomicUsize;
 
@@ -570,6 +690,7 @@ fn exact_groups(
     }
 
     let mut out: Vec<DupGroup> = Vec::new();
+    let mut collapsed = 0usize;
     for (hash, mut members) in by_content {
         if members.len() < 2 {
             continue;
@@ -577,6 +698,18 @@ fn exact_groups(
         members.sort_unstable();
         let mut items: Vec<DupItem> = members.iter().map(|i| to_item(&entries[*i])).collect();
         rank_items(&mut items);
+        // 同一真实文件只留一张：嵌套相册 / junction / 短名会让同一个文件出现两条
+        let merged = collapse_same_target(&mut items);
+        if merged > 0 {
+            collapsed += merged;
+            crate::logger::log_info(&format!(
+                "[dedupe] 精确组 {} 内合并了 {merged} 条同址条目",
+                &hash[..16.min(hash.len())]
+            ));
+            if items.len() < 2 {
+                continue;
+            }
+        }
         let keep = items[0].path.clone();
         let reclaimable = items.iter().skip(1).map(|i| i.size_bytes).sum();
         out.push(DupGroup {
@@ -588,7 +721,7 @@ fn exact_groups(
             items,
         });
     }
-    Ok((out, hashed))
+    Ok((out, hashed, collapsed))
 }
 
 /// 流式 SHA-256（1 MiB 分块，不整文件进内存）
@@ -1087,6 +1220,7 @@ mod tests {
         Entry {
             path: p.to_string_lossy().into_owned(),
             key: p.to_string_lossy().to_lowercase(),
+            ident: normalize_path_key(&p.to_string_lossy()),
             album_id: 1,
             size_bytes: size,
             mtime_secs: 0,
@@ -1109,11 +1243,82 @@ mod tests {
             entry_of(&c, 15),
             entry_of(&d, 23),
         ];
-        let (groups, hashed) = exact_groups(&entries, &|_, _| {}).unwrap();
+        let (groups, hashed, collapsed) = exact_groups(&entries, &|_, _| {}).unwrap();
         assert_eq!(groups.len(), 1, "只有 a/b 是一组");
         assert_eq!(groups[0].items.len(), 2);
         assert_eq!(hashed, 3, "同尺寸的 3 个文件算了哈希，长度唯一的 d 不算");
         assert_eq!(groups[0].reclaimable_bytes, 15);
+        assert_eq!(collapsed, 0, "四份不同文件没有可合并的同址项");
+        assert_eq!(groups[0].items[0].dir, dir.to_string_lossy(), "每项都要带地址（所在文件夹）");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 嵌套相册场景：相册 A 包含相册 B，两个都入库 → 同一个文件只能算一张
+    #[test]
+    fn nested_album_same_file_counted_once() {
+        let root = tmp_dir("nested");
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        write_file(&root, "top.jpg", b"top-level-photo");
+        write_file(&sub, "inner.jpg", b"inner-photo-bytes");
+        let albums = vec![
+            (1i64, root.to_string_lossy().into_owned()),
+            (2i64, sub.to_string_lossy().into_owned()),
+        ];
+        let entries = collect_entries(&albums, &|_, _, _| {});
+        assert_eq!(entries.len(), 2, "同一张 sub/inner.jpg 不得在 A/B 两个相册里各算一次");
+        // 归属取更具体的子相册
+        let inner = entries
+            .iter()
+            .find(|e| e.path.to_lowercase().ends_with("inner.jpg"))
+            .expect("inner.jpg 应在结果里");
+        assert_eq!(inner.album_id, 2, "同一文件的归属应取最深的相册");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 组内合并：同一个文件被两种写法指向时，组里只留一张
+    #[test]
+    fn collapse_same_target_keeps_one() {
+        let dir = tmp_dir("collapse");
+        let a = write_file(&dir, "a.jpg", b"abc");
+        let other = write_file(&dir, "b.jpg", b"abc");
+        let dir_str = dir.to_string_lossy().into_owned();
+        let mut items = vec![
+            DupItem {
+                path: a.to_string_lossy().into_owned(),
+                dir: dir_str.clone(),
+                album_id: 1,
+                file_name: "a.jpg".into(),
+                size_bytes: 3,
+                width: None,
+                height: None,
+                modified_secs: 0,
+            },
+            // 同一文件的另一种写法（大小写 + 斜杠方向不同）
+            DupItem {
+                path: a.to_string_lossy().replace('\\', "/").to_uppercase(),
+                dir: dir_str.clone(),
+                album_id: 2,
+                file_name: "A.JPG".into(),
+                size_bytes: 3,
+                width: None,
+                height: None,
+                modified_secs: 0,
+            },
+            DupItem {
+                path: other.to_string_lossy().into_owned(),
+                dir: dir_str,
+                album_id: 1,
+                file_name: "b.jpg".into(),
+                size_bytes: 3,
+                width: None,
+                height: None,
+                modified_secs: 0,
+            },
+        ];
+        let dropped = collapse_same_target(&mut items);
+        assert_eq!(dropped, 1, "同址的那条被合并掉");
+        assert_eq!(items.len(), 2, "两份不同文件仍保留");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1178,6 +1383,7 @@ mod tests {
     fn keeper_prefers_resolution_then_size_then_age() {
         let mk = |path: &str, w: u32, h: u32, size: u64, mtime: i64| DupItem {
             path: path.into(),
+            dir: String::new(),
             album_id: 1,
             file_name: path.into(),
             size_bytes: size,
@@ -1377,7 +1583,12 @@ mod tests {
             entries.len(),
             lean_collect.as_secs_f64() / new_collect.as_secs_f64().max(1e-9)
         );
-        assert_eq!(serial_n, entries.len(), "两种收集方式的照片数必须一致");
+        assert!(
+            entries.len() <= serial_n,
+            "新口径（真实路径身份）只能比旧的字符串口径合并得更多，不能变多：{} vs {}",
+            entries.len(),
+            serial_n
+        );
 
         // ---- B. 哈希阶段：串行 vs 并行（同候选集）----
         let mut by_size: HashMap<u64, Vec<usize>> = HashMap::new();
@@ -1402,7 +1613,7 @@ mod tests {
         let serial_hash = t.elapsed();
 
         let t = std::time::Instant::now();
-        let (groups, hashed) = exact_groups(&entries, &|_, _| {}).expect("并行哈希应成功");
+        let (groups, hashed, _collapsed) = exact_groups(&entries, &|_, _| {}).expect("并行哈希应成功");
         let new_hash = t.elapsed();
         eprintln!(
             "[bench hash] 旧串行={:?} · 新并行={:?} · 写盘哈希 {} vs {} · 组 {} · 提速 {:.2}x",
@@ -1569,5 +1780,74 @@ mod tests {
         }
         assert!(!is_running());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 真实图库的同址去重校验（默认忽略）：
+    ///
+    /// `PMS_DB="C:\Users\...\photos.db" cargo test --lib -- --ignored --nocapture verify_real_library_same_path`
+    ///
+    /// 钉死的是 BUG-2026-1101-003 的不变量：
+    /// ① 同一个真实文件（嵌套相册 / junction / 写法差异）不能在结果里出现两次；
+    /// ② 每项都带地址（`dir`），前端才能“照片底显示地址”；
+    /// ③ 保留项必须在组里，可释放体积与逐项求和一致。
+    #[test]
+    #[ignore = "真实图库校验：需要 PMS_DB 指向 photos.db"]
+    fn verify_real_library_same_path() {
+        let _gate = e2e_gate();
+        let db_path = std::env::var("PMS_DB").unwrap_or_else(|_| {
+            let appdata = std::env::var("APPDATA").unwrap_or_default();
+            format!("{appdata}\\com.photomanagementsys.app\\photos.db")
+        });
+        let conn = rusqlite::Connection::open(&db_path).expect("打开 photos.db 失败");
+        let mut stmt = conn.prepare("select id, path from albums").unwrap();
+        let albums: Vec<(i64, String)> = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        eprintln!("[verify] DB {db_path} · 相册 {} 个", albums.len());
+
+        let t = std::time::Instant::now();
+        let report = scan_library(&albums, Vec::new(), None, 0.98, true, false, &|_, _, _, _| {})
+            .expect("扫描应成功");
+        eprintln!(
+            "[verify] 耗时 {:?} · 照片 {} 张 · 组 {} 个 · 哈希 {} 个文件 · 同址合并 {} 条",
+            t.elapsed(),
+            report.total_photos,
+            report.groups.len(),
+            report.hashed_files,
+            report.collapsed_same_file
+        );
+
+        let mut reclaim = 0u64;
+        for g in &report.groups {
+            let mut seen_path = HashSet::new();
+            let mut seen_addr = HashSet::new();
+            for it in &g.items {
+                assert!(
+                    seen_path.insert(it.path.to_lowercase()),
+                    "组 {} 内出现同一路径两次：{}",
+                    g.key,
+                    it.path
+                );
+                assert!(!it.dir.is_empty(), "条目缺地址：{}", it.path);
+                let addr = format!("{}|{}", it.dir.to_lowercase(), it.file_name.to_lowercase());
+                assert!(
+                    seen_addr.insert(addr),
+                    "组 {} 内出现同一地址两次：{}",
+                    g.key,
+                    it.path
+                );
+            }
+            assert!(
+                g.items.iter().any(|it| it.path == g.keep_path),
+                "组 {} 的 keep_path 不在 items 里",
+                g.key
+            );
+            let sum: u64 = g.items.iter().filter(|it| it.path != g.keep_path).map(|it| it.size_bytes).sum();
+            assert_eq!(sum, g.reclaimable_bytes, "组 {} 的可释放体积不自洽", g.key);
+            reclaim += g.reclaimable_bytes;
+        }
+        eprintln!("[verify] 可释放合计 {:.1} GB", reclaim as f64 / 1e9);
     }
 }

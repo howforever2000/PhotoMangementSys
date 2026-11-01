@@ -5055,7 +5055,87 @@
       ],
       "created_at": "2026-10-30T16:40:00+08:00",
       "updated_at": "2026-10-30T16:40:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1101-003",
+      "date": "2026-11-01",
+      "status": "fixed",
+      "title": "重复照片把「相册 A 及其子相册 B」里的同一张照片显示成两条",
+      "module": "src-tauri/src/dedupe.rs（Entry.ident / collect_entries / collapse_same_target）· src/stores/dedupe.ts（sanitizeReport）· src/utils/dedupeGroups.ts（新增）· src/components/dedupe/DupeGroupCard.vue · src/types/dedupe.ts",
+      "symptom": [
+        "一个相册 A 包含相册 B，两个都入库（都扫过）后，重复扫描把 A 里和 B 里的同一张照片并成一组的两条并列显示",
+        "两条的地址完全一样，用户分不清该删哪条；勾选后会对同一个文件发两次删除指令，删除计数与可释放体积都跟着虚高"
+      ],
+      "root_cause": [
+        "去重口径是「小写路径字符串」（Entry.key = path.to_lowercase()），只对「同一相册根下的同一写法」有效：嵌套相册如果经 junction / 8.3 短名 / 斜杠方向 / 盘符大小写给出不同字符串，同一个文件就会被当成两个",
+        "组内也没有再按真实文件合并一次，前端更没有兜底；旧构建的串行收集版本同样只有字符串口径",
+        "现场实测：本机 130 个相册 / 24,996 个图片文件里，有 75 处是「同一路径被父相册与子相册各走一遍」（这一批旧口径能收敛），说明目录嵌套确实存在，只是收敛能力依赖路径写法完全一致"
+      ],
+      "evidence_log": [
+        "[dedupe] 同址归并 75 条（嵌套相册 / 同一文件多种写法），实际照片 24996 张",
+        "[verify] 130 相册 → 照片 24996 张 · 精确重复 2617 组 · 同址合并 0 条（组内已无残留）"
+      ],
+      "solution": [
+        "Entry 增加 ident = canonicalize(相册根) + 相对路径（小写、分隔符统一）：相册根每相册只 canonicalize 一次，收集阶段按 ident 去重并打印归并条数",
+        "组内再按 canonicalize(文件) 合并一次（collapse_same_target），只对已入组的少量照片付系统调用；合并后不足 2 张的组丢弃",
+        "DupItem 增加 dir（文件夹地址）；卡片缩略图下方显示地址（末尾两级 + title 全路径），点缩略图开 PhotoLightbox 预览",
+        "前端 sanitizeReport 兜底按小写路径去重、重算 exact_groups/similar_groups/reclaimable_bytes；报告新增 collapsed_same_file 并在汇总带显示"
+      ],
+      "prevention": [
+        "「是不是同一个文件」不要用路径字符串判，用 canonicalize 的真实路径；但要注意成本 —— 只对相册根与已入组候选做，不要对全库每张都调",
+        "「同一个文件出现两次」必须在三层都挡住：收集期（身份键）、分组期（组内合并）、渲染期（前端兜底），任何一层漏了都会变成用户可见的脏数据",
+        "同一路径出现两次在清理类功能里是危险状态（一次勾选 = 两次删除指令），要写成断言/单测而不是靠复查"
+      ],
+      "keywords": [
+        "重复照片",
+        "dedupe",
+        "同址重复",
+        "嵌套相册",
+        "canonicalize",
+        "路径身份",
+        "junction",
+        "短名",
+        "collapse_same_target"
+      ],
+      "created_at": "2026-11-01T12:40:47+08:00",
+      "updated_at": "2026-11-01T12:40:47+08:00"
+    },
+    {
+      "id": "BUG-2026-1101-004",
+      "date": "2026-11-01",
+      "status": "fixed",
+      "title": "重复扫描完成后界面长时间卡住：一次铺 12 组卡片 + 整页缩略图一起入队",
+      "module": "src/components/DedupePanel.vue · src/stores/dedupe.ts（删除分页状态）",
+      "symptom": [
+        "扫描完成的那一刻，结果区要「愣」很久才有反应，滚动手感也发涩",
+        "全库 2,617 组时，首屏一页 12 组里最多 148 张/组，一次要建上千个卡片 DOM 并排队上千张缩略图"
+      ],
+      "root_cause": [
+        "分页只限制了「组」的数量，没有限制「一次渲染多少」：一页仍会一次性建出全部卡片与缩略图 img",
+        "缩略图是在 watch(pageGroups) 里对整页所有照片一次性入队（虽然是全局限流，但入队与 DOM 构建本身就在主线程）"
+      ],
+      "solution": [
+        "改用 composables/useIncrementalReveal 按「屏」增量渲染（3 屏起步、滚到底追加 2 屏，单组预算 268px），只建当前几屏的卡片 DOM",
+        "缩略图改 IntersectionObserver（rootMargin 400px）按卡片进视口才排队，并按 rAF 合并写入 thumbs（一张卡几十张图不再逐张触发重渲染）",
+        "分页控件退役：store 的 page/pageCount/pageGroups/setPage 一并删除，避免两套渲染口径并存"
+      ],
+      "prevention": [
+        "「懒加载图片」和「懒加载列表」是两件事：判断长列表是否真的懒，看 document.querySelectorAll(卡片).length 是否等于总数，而不是看有没有 observer",
+        "分页 ≠ 节流：分页只减少「总量」，单页内一次全渲染仍然会卡；按屏幕数算预算才是与设备无关的口径"
+      ],
+      "keywords": [
+        "重复照片",
+        "卡顿",
+        "增量渲染",
+        "热加载",
+        "IntersectionObserver",
+        "useIncrementalReveal",
+        "分页",
+        "缩略图"
+      ],
+      "created_at": "2026-11-01T12:40:47+08:00",
+      "updated_at": "2026-11-01T12:40:47+08:00"
     }
   ],
-  "updated": "2026-10-30T16:40:00+08:00"
+  "updated": "2026-11-01T12:40:47+08:00"
 }

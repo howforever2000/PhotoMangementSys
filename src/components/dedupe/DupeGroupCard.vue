@@ -10,6 +10,7 @@ import { computed } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { DupGroup, DupItem } from "../../types/dedupe";
 import { formatSize } from "../../types/album";
+import { dedupeItemsByPath, shortDir } from "../../utils/dedupeGroups";
 
 const props = defineProps<{
   group: DupGroup;
@@ -27,14 +28,24 @@ const emit = defineEmits<{
   (e: "toggle", path: string): void;
   (e: "setKeep", path: string): void;
   (e: "selectGroup", on: boolean): void;
+  /** 点击缩略图：交给父组件开灯箱（本组件不做任何 IO） */
+  (e: "preview", path: string): void;
 }>();
+
+/**
+ * 展示用的条目列表：兜底按路径去重
+ *
+ * 后端已按真实路径归并过，这里只是防「同一张照片并排出现两次」再次回到界面上 ——
+ * 那个状态下用户会勾一次、删两次，属于必须守住的不变量。
+ */
+const items = computed<DupItem[]>(() => dedupeItemsByPath(props.group.items));
 
 const kindLabel = computed(() => (props.group.kind === "exact" ? "完全重复" : "画面相似"));
 
-const deletableCount = computed(() => props.group.items.filter((i) => i.path !== props.keepPath).length);
+const deletableCount = computed(() => items.value.filter((i) => i.path !== props.keepPath).length);
 
 const selectedInGroup = computed(
-  () => props.group.items.filter((i) => props.selected.has(i.path)).length,
+  () => items.value.filter((i) => props.selected.has(i.path)).length,
 );
 
 const allSelected = computed(() => deletableCount.value > 0 && selectedInGroup.value === deletableCount.value);
@@ -52,6 +63,11 @@ function fileName(p: string): string {
   return p.split(/[\\/]/).pop() || p;
 }
 
+/** 缩略图下方的「地址」：只留末尾两级，完整路径在 title 上 */
+function addrOf(it: DupItem): string {
+  return shortDir(it.dir);
+}
+
 /** 相似度展示：exact 组不必显示 1.000，读者会误以为"相似度算过" */
 function simText(): string {
   return props.group.similarity.toFixed(3);
@@ -62,7 +78,7 @@ function simText(): string {
   <article class="dg" :class="`dg-${group.kind}`">
     <header class="dg-head">
       <span class="dg-kind">{{ kindLabel }}</span>
-      <span class="dg-count">{{ group.items.length }} 张</span>
+      <span class="dg-count">{{ items.length }} 张</span>
       <span v-if="group.kind === 'similar'" class="dg-sim" :title="'组内与『保留』那张的最低相似度'">
         相似度 ≥ {{ simText() }}
       </span>
@@ -80,16 +96,23 @@ function simText(): string {
 
     <ul class="dg-strip">
       <li
-        v-for="it in group.items"
+        v-for="it in items"
         :key="it.path"
         class="dg-item"
         :class="{ 'is-keep': it.path === keepPath, 'is-checked': selected.has(it.path) && it.path !== keepPath }"
       >
-        <div class="dg-thumb">
+        <button
+          class="dg-thumb"
+          type="button"
+          :title="`${it.path}\n点击看大图`"
+          :aria-label="`预览 ${it.file_name}`"
+          @click="emit('preview', it.path)"
+        >
           <img v-if="thumbUrl(it.path)" :src="thumbUrl(it.path)" :alt="it.file_name" loading="lazy" />
           <span v-else class="dg-noimg">{{ it.file_name.slice(0, 1).toUpperCase() || "?" }}</span>
           <span v-if="it.path === keepPath" class="dg-badge">保留</span>
-        </div>
+          <span class="dg-zoom" aria-hidden="true">⤢</span>
+        </button>
 
         <label class="dg-pick">
           <input
@@ -107,6 +130,9 @@ function simText(): string {
           <span class="dg-dot">·</span>
           <span>{{ formatSize(it.size_bytes) }}</span>
         </div>
+
+        <!-- 地址：同一张照片出现在两个嵌套相册时，靠这一行就能看出是不是同一个文件夹 -->
+        <p class="dg-addr" :title="it.dir || it.path">{{ addrOf(it) }}</p>
 
         <button
           v-if="it.path !== keepPath"
@@ -219,13 +245,19 @@ function simText(): string {
 
 .dg-thumb {
   position: relative;
+  display: block;
   width: 100%;
+  padding: 0;
+  border: 0;
   aspect-ratio: 1;
   border-radius: 8px;
   overflow: hidden;
   background: color-mix(in srgb, var(--c-fg) 8%, transparent);
-  display: grid;
-  place-items: center;
+  cursor: zoom-in;
+}
+.dg-thumb:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 .dg-thumb img {
   width: 100%;
@@ -233,10 +265,44 @@ function simText(): string {
   object-fit: cover;
   display: block;
 }
+/* 可点击的提示：hover 才出现，不抢缩略图的注意力 */
+.dg-zoom {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #fff;
+  background: color-mix(in srgb, #000 55%, transparent);
+  opacity: 0;
+  transition: opacity var(--dur-2);
+}
+.dg-item:hover .dg-zoom,
+.dg-thumb:focus-visible .dg-zoom {
+  opacity: 1;
+}
 .dg-noimg {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
   font-size: 26px;
   font-weight: 600;
   color: color-mix(in srgb, var(--c-fg) 40%, transparent);
+}
+
+/* 地址行：长路径只留末尾两级（完整路径在 title），对得上「是不是同一个文件夹」 */
+.dg-addr {
+  margin: 4px 0 0 21px;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--c-fg) 52%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dg-badge {
@@ -291,7 +357,7 @@ function simText(): string {
 }
 
 .dg-setkeep {
-  margin: 6px 0 0 21px;
+  margin: 5px 0 0 21px;
   border: 1px solid var(--c-rule);
   background: transparent;
   color: var(--c-fg-2);
