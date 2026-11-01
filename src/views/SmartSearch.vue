@@ -215,6 +215,15 @@ async function runImageSearch() {
   }
 }
 
+/**
+ * FEAT-154：关键词搜索一次只取这么多条
+ *
+ * 旧版把融合后的全部命中（实测 3826 条）一次返回，前端随即给每一张都去生成缩略图 ——
+ * 这是「搜索很慢」的主因（日志实测 60 张就要 28.7s）。现在后端按需截断，
+ * 首屏先给一页；要更精确的集合请加筛选条件（阈值/时间/地点/人物）。
+ */
+const SEARCH_LIMIT = 300;
+
 async function runSearch() {
   searching.value = true;
   error.value = "";
@@ -229,6 +238,8 @@ async function runSearch() {
       label: filters.label || null,
       personId: filters.person || null,
       toneType: filters.toneType || null,
+      // FEAT-154：只取一页（后端截断，不多查缩略图）
+      limit: SEARCH_LIMIT,
     });
     queryImagePath.value = ""; // 回到关键词模式
     searched.value = true;
@@ -537,6 +548,9 @@ function showTag(r: SmartHit): string {
     <div v-else class="ss-results">
       <p class="ss-count">
         找到 {{ results.length }} 张照片{{ queryImagePath ? "（以图搜图，按相似度排序）" : "" }}
+        <span v-if="results.length >= SEARCH_LIMIT" class="ss-hint">
+          （只显示前 {{ SEARCH_LIMIT }} 条，加筛选条件可缩小范围）
+        </span>
       </p>
       <div class="ss-grid">
         <figure
@@ -800,6 +814,14 @@ function showTag(r: SmartHit): string {
   opacity: 0.8;
   font-size: 14px;
   margin: 0 0 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+.ss-hint {
+  font-size: 12px;
+  opacity: 0.7;
 }
 .ss-grid {
   display: grid;

@@ -45,6 +45,7 @@ mod session;
 mod test_scan;
 mod test_scan_job;
 mod textdesc;
+mod vecindex;
 mod thumb_migrate;
 mod thumbnail;
 mod tone;
