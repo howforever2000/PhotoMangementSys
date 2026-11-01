@@ -273,7 +273,8 @@ async function openDest() {
 /* ---------- 参数行 ---------- */
 .ct-opts {
   display: grid;
-  grid-template-columns: 300px 150px 150px minmax(220px, 1fr);
+  /* 宽屏下输出目录列限宽：路径框拉成 900px 只会让右侧变空 */
+  grid-template-columns: 300px 150px 150px minmax(220px, 460px);
   gap: 12px 18px;
   align-items: end;
   padding: 14px 16px 12px;
@@ -403,17 +404,18 @@ async function openDest() {
   margin: 14px 0 4px;
 }
 
-/* 主操作：全页唯一一处强调色实底，扫一眼就知道"按这里"。
-   字色用 --c-bg 而不是写死的深色：浅色主题下 --c-accent 会换成深赭色，
-   写死深字会变成"深字压深底"（不可读）；--c-bg 与 --c-accent 由同一套背景色推导，
-   永远是一深一浅的配对。 */
+/* 主操作：全页唯一一处实底主色按钮。
+   颜色用 --color-primary / --color-on-primary 这对**全局配对**，不自己拿 --c-accent 拼：
+   --c-accent 是"强调色"（浅色主题下会变成深赭 #7d571a），拿它当底色再配深色字
+   会变成深字压深底（实测 3.07:1，不达标）；而 --color-primary 在两套主题下都是落日金，
+   --color-on-primary 是配它的墨色 —— 和全站其它实底按钮一致。 */
 .run-btn {
   height: 34px;
   padding: 0 18px;
   border: none;
   border-radius: var(--r-pill);
-  background: var(--c-accent);
-  color: var(--c-bg, #0a090d);
+  background: var(--color-primary);
+  color: var(--color-on-primary, #2a1a08);
   font-size: var(--fs-body);
   font-weight: var(--fw-strong);
   cursor: pointer;

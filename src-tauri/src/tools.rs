@@ -1,22 +1,18 @@
 //! 创意工坊（FEAT-150）· 图像加工工具
 //!
 //! 定位：**对已有照片做加工**，不是修图画布。旧的非破坏调色引擎（FEAT-099）
-//! 已整体下线（见 README「创意工坊」条目），本模块只保留两类真正属于
+//! 已整体下线（见 README「创意工坊」条目），本模块只保留真的属于
 //! 「相册管理」语境的能力：
 //!
-//! 1. **压缩**：给分享/发送场景做体积瘦身。可指定目标大小（KB）、长边上限、
-//!    居中裁切比例。输出**永远是副本**（JPEG），绝不覆盖原图 —— 这一点是硬约束：
-//!    压缩是破坏性操作，一旦写回原图就没有回头路。
-//! 2. **旧调色配方清理**：编辑引擎下线后，用户照片目录里残留的
-//!    `*.pmrecipe.json` / `*.pmmask.png` 已成为惰性文件。这里提供一次性
-//!    扫描 + 删除（走系统回收站，可找回）。
+//! **压缩**：给分享/发送场景做体积瘦身。可指定目标大小（KB）、长边上限、
+//! 居中裁切比例。输出**永远是副本**（JPEG），绝不覆盖原图 —— 这一点是硬约束：
+//! 压缩是破坏性操作，一旦写回原图就没有回头路。
 //!
 //! ## 分层（CS1）
 //!
-//! - **命令层**（`image_compress` / `recipe_sidecar_scan` / `recipe_sidecar_purge`）：
-//!   参数校验、鉴权、`spawn_blocking`、出入口日志，不含业务算法。
-//! - **服务层**（`compress_one` / `scan_sidecars` / `purge_sidecars`）：
-//!   纯函数式编排，可单测，不碰 Tauri 类型。
+//! - **命令层**（`image_compress`）：参数校验、鉴权、`spawn_blocking`、出入口日志，
+//!   不含业务算法。
+//! - **服务层**（`compress_one`）：编排 解码 → 裁切 → 缩放 → 编码 → 落盘，可单测。
 //! - **编码细节**（`encode_under_target` / `crop_rect_for` / `output_path`）：
 //!   各自单一职责，便于替换编码策略。
 //!
@@ -88,32 +84,6 @@ pub struct CompressOutcome {
     pub total_before: u64,
     pub total_after: u64,
     pub dest_dir: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SidecarFile {
-    pub path: String,
-    pub bytes: u64,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SidecarScan {
-    pub recipe_count: usize,
-    pub mask_count: usize,
-    pub total_bytes: u64,
-    pub scanned_files: usize,
-    pub files: Vec<SidecarFile>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SidecarPurgeOutcome {
-    pub deleted: usize,
-    pub failed: usize,
-    pub freed_bytes: u64,
-    pub failed_paths: Vec<String>,
 }
 
 /* ============================ 命令层 ============================ */
@@ -209,52 +179,6 @@ pub async fn image_compress(
     .await
     .map_err(|e| format!("压缩任务异常: {e}"))??;
 
-    Ok(out)
-}
-
-/// 扫描目录下的旧调色配方残留（不删除，只统计）
-///
-/// async + spawn_blocking：整库 walkdir 是秒级 IO（上万张照片），同步命令会卡 UI
-#[tauri::command]
-pub async fn recipe_sidecar_scan(dir: String) -> Result<SidecarScan, String> {
-    let _t = log_call!("recipe_sidecar_scan", &format!("dir={dir}"));
-    let root = PathBuf::from(&dir);
-    if !root.is_dir() {
-        return Err("目录不存在或不是文件夹".to_string());
-    }
-    let scan = tauri::async_runtime::spawn_blocking(move || scan_sidecars(&root))
-        .await
-        .map_err(|e| format!("扫描任务异常: {e}"))??;
-    crate::logger::log_info(&format!(
-        "[tools] 配方残留扫描：配方 {} / 蒙版 {}，共 {} KB（扫 {} 个文件）",
-        scan.recipe_count,
-        scan.mask_count,
-        scan.total_bytes / 1024,
-        scan.scanned_files
-    ));
-    Ok(scan)
-}
-
-/// 删除目录下的旧调色配方残留（走系统回收站，误删可找回）
-#[tauri::command]
-pub async fn recipe_sidecar_purge(dir: String) -> Result<SidecarPurgeOutcome, String> {
-    let _t = log_call!("recipe_sidecar_purge", &format!("dir={dir}"));
-    let root = PathBuf::from(&dir);
-    if !root.is_dir() {
-        return Err("目录不存在或不是文件夹".to_string());
-    }
-    let out = tauri::async_runtime::spawn_blocking(move || -> Result<SidecarPurgeOutcome, String> {
-        let scan = scan_sidecars(&root)?;
-        Ok(purge_sidecars(&scan))
-    })
-    .await
-    .map_err(|e| format!("清理任务异常: {e}"))??;
-    crate::logger::log_info(&format!(
-        "[tools] 配方残留清理：删除 {} / 失败 {}，回收 {} KB",
-        out.deleted,
-        out.failed,
-        out.freed_bytes / 1024
-    ));
     Ok(out)
 }
 
@@ -475,80 +399,6 @@ fn output_path(dest: &Path, src: &Path, used: &mut HashSet<String>) -> PathBuf {
     dest.join(name)
 }
 
-/// 递归扫描 `*.pmrecipe.json` / `*.pmmask.png`（旧编辑引擎的 sidecar）
-fn scan_sidecars(root: &Path) -> Result<SidecarScan, String> {
-    let mut recipe_count = 0usize;
-    let mut mask_count = 0usize;
-    let mut total_bytes = 0u64;
-    let mut scanned_files = 0usize;
-    let mut files = Vec::new();
-
-    for entry in walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        scanned_files += 1;
-        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-        let is_recipe = name.ends_with("pmrecipe.json");
-        if !is_recipe && !name.ends_with("pmmask.png") {
-            continue;
-        }
-        let bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
-        if is_recipe {
-            recipe_count += 1;
-        } else {
-            mask_count += 1;
-        }
-        total_bytes += bytes;
-        files.push(SidecarFile {
-            path: entry.path().to_string_lossy().into_owned(),
-            bytes,
-        });
-    }
-
-    Ok(SidecarScan {
-        recipe_count,
-        mask_count,
-        total_bytes,
-        scanned_files,
-        files,
-    })
-}
-
-/// 删除扫描结果（回收站优先，失败退回直接删除）
-fn purge_sidecars(scan: &SidecarScan) -> SidecarPurgeOutcome {
-    let mut deleted = 0usize;
-    let mut failed = 0usize;
-    let mut freed_bytes = 0u64;
-    let mut failed_paths = Vec::new();
-
-    for f in &scan.files {
-        let p = Path::new(&f.path);
-        let ok = match trash::delete(p) {
-            Ok(()) => true,
-            Err(_) => std::fs::remove_file(p).is_ok(),
-        };
-        if ok {
-            deleted += 1;
-            freed_bytes += f.bytes;
-        } else {
-            failed += 1;
-            failed_paths.push(f.path.clone());
-        }
-    }
-
-    SidecarPurgeOutcome {
-        deleted,
-        failed,
-        freed_bytes,
-        failed_paths,
-    }
-}
-
 /* ============================ 单测 ============================ */
 
 #[cfg(test)]
@@ -648,24 +498,6 @@ mod tests {
         assert!(item.dst.ends_with(".jpg"));
         // 原图必须原封不动（压缩是破坏性操作，写回原图就没有回头路）
         assert_eq!(std::fs::metadata(&src).unwrap().len(), src_len);
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn sidecar_scan_finds_recipe_and_mask() {
-        let root = std::env::temp_dir().join(format!("pms_tools_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("a.jpg.pmrecipe.json"), b"{}").unwrap();
-        std::fs::write(root.join("a.jpg.pmmask.png"), b"png").unwrap();
-        std::fs::write(root.join("a.jpg"), b"jpg").unwrap();
-
-        let scan = scan_sidecars(&root).unwrap();
-        assert_eq!(scan.recipe_count, 1);
-        assert_eq!(scan.mask_count, 1);
-        assert_eq!(scan.files.len(), 2);
-        assert!(scan.total_bytes >= 5);
 
         let _ = std::fs::remove_dir_all(&root);
     }

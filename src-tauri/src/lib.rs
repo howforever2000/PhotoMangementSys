@@ -651,10 +651,8 @@ pub fn run() {
             tail_dev_log,
             open_dev_log_window,
             open_dev_data_window,
-            // 创意工坊（FEAT-150）：图像压缩（指定大小 / 裁切）+ 旧调色配方清理
+            // 创意工坊（FEAT-150）：图像压缩（指定大小 / 长边 / 裁切）
             tools::image_compress,
-            tools::recipe_sidecar_scan,
-            tools::recipe_sidecar_purge,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

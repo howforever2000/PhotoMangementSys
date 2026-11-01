@@ -5676,11 +5676,11 @@
     },
     {
       "id": "FEAT-150",
-      "name": "创意工坊重做：调色台整体下线，改为按调用方式分区的图像加工工具台（压缩上线）",
-      "module": "src-tauri/src/tools.rs（新增：压缩 + 旧配方清理）· src-tauri/src/lib.rs（命令注册 / 摘除 20 条 edit_*/studio_*）· src-tauri/src/edit/**、src-tauri/src/studio.rs、python-studio/**（删除）· src/views/Workshop.vue（重写）· src/components/workshop/{CompressTool,PhotoTray,RecipeCleanup,ToolIcon}.vue（新增）· src/types/tools.ts、src/utils/bytes.ts、src/utils/pathParts.ts（新增）· src/components/workshop/editor/**、useStudioOps.ts、src/stores/edit.ts、src/composables/useEditEngine.ts、src/types/edit.ts(+test)（删除）· src/components/{PhotoLightbox,PhotoActionMenu,PhotoGrid}.vue、src/composables/usePhotoActions.ts、src/views/Home.vue、src/router/index.ts（入口文案）",
+      "name": "创意工坊重做：调色台整体下线，改为「左栏选工具 + 右栏工作区」的图像加工工具台（压缩上线）",
+      "module": "src-tauri/src/tools.rs（图像压缩 image_compress）· src-tauri/src/lib.rs（命令注册 / 摘除 20 条 edit_*/studio_*）· src-tauri/src/edit/**、src-tauri/src/studio.rs、python-studio/**（删除）· src/views/Workshop.vue（重写：左栏工具导航 + 右栏工作区）· src/components/workshop/{CompressTool,PhotoTray,ToolIcon}.vue（新增）· src/types/tools.ts、src/utils/bytes.ts、src/utils/pathParts.ts（新增）· src/components/workshop/editor/**、useStudioOps.ts、src/stores/edit.ts、src/composables/useEditEngine.ts、src/types/edit.ts(+test)（删除）· src/components/{PhotoLightbox,PhotoActionMenu,PhotoGrid}.vue、src/composables/usePhotoActions.ts、src/views/Home.vue、src/router/index.ts（入口文案）",
       "status": "done",
       "date": "2026-11-05",
-      "purpose": "用户判断：创意工坊里的组件违背软件定位、重复造轮子，建议改成 LR/PS 之外、管理相册时顺手的工具 —— ① 图像压缩 ② 图像超分 ③ OCR 识别 ④ AI 图像创作（图生图，如主题抽取制作手账，后续由 agent 执行）。要求：分析合理性 → 合理则删除现有工坊后端 → 前端预留为这些工具并重新排版。确认口径：压缩必须可用且支持指定大小与裁切（Q1=B）；旧 sidecar 提供一次性清理（Q2=B）；名称保留「创意工坊」；本轮创作区只做主题手账一张卡。",
+      "purpose": "用户判断：创意工坊里的组件违背软件定位、重复造轮子，建议改成 LR/PS 之外、管理相册时顺手的工具 —— ① 图像压缩 ② 图像超分 ③ OCR 识别 ④ AI 图像创作（图生图，如主题抽取制作手账，后续由 agent 执行）。要求：分析合理性 → 合理则删除现有工坊后端 → 前端预留为这些工具并重新排版。第二轮口径（用户原话）：「菜单排布还是参考其他组件的设计，可以做成侧边栏选择工具，选择后进入对应的工具界面，UI 布局和风格沿用其他界面」「这是啥没用就删除」→ 改为左栏工具导航 + 右栏工作区，并下线「旧调色配方清理」入口。确认口径：压缩必须可用且支持指定大小与裁切（Q1=B）；名称保留「创意工坊」；创作区本轮只有主题手账。",
       "implementation": {
         "为什么下线": "① 与 LR/PS 逐项重叠：曝光/对比/高光阴影/色温色调/曲线/裁剪拉直/饱和/锐化 + 蒙版，就是 LR 的核心面板，CLAHE 与四种模糊就是 PS 滤镜；Rust 侧 333 KB / 15 文件 + 一套独立 Python 微服务（独立端口/依赖/日志/冷启动），而 README §一 的四条定位（本地存储/离线 AI/文件夹抽象/检索优先）里没有修图。② 发布版里那半条腿是死的：studio.rs 要 resource_dir/studio/studio-server.exe，而 release.tauri.conf.json 的 bundle.resources 只有 VCR —— 装给用户后算子通道直接报「缺少 studio-server.exe」，只有开发机能跑（python-studio/server.py）。",
         "删除范围": "Rust：src-tauri/src/edit/**（15 文件）、studio.rs、python-studio/；lib.rs 摘掉 mod 声明、EditState::manage 与 20 条命令注册。前端：components/workshop/editor/**（9 个）、useStudioOps.ts、stores/edit.ts、composables/useEditEngine.ts、types/edit.ts(+test)。删前核对过引用闭包：edit 子系统只被工坊引用，删掉不影响任何其他功能。",
@@ -5691,9 +5691,10 @@
           "不覆盖原图": "产物名 <stem>.jpg；输出目录等于源目录且该名正是原图时自动改 <stem>_compressed.jpg，重名再叠 _1/_2。压缩是破坏性操作，写回原图没有回头路。",
           "透明与元数据": "输出固定 JPEG：透明底显式铺白（直接 to_rgb8 会让透明区变黑）、不携带 EXIF —— 两点都在 UI 上写明，不做隐式承诺。"
         },
-        "旧配方清理（tools::recipe_sidecar_scan / purge）": "递归找 *.pmrecipe.json 与 *.pmmask.png，先报数量/体积/扫描文件数，确认后删除（trash::delete 进回收站，失败退回 remove_file）。产品判断：不自动删用户目录文件，但也不能装作没有。",
-        "排版": "按**调用方式**分区，而不是四张一样的卡：「处理」= 行式清单（高频、参数少、反复进；三枚 pill 固定写输入/输出/依赖，这是用户判断敢不敢按的依据）；「创作」= 大卡 + 竖排流程条（低频、有输出物、耗时长，要回答「作品怎么造出来」）。两区共用素材托盘 —— 四件事的输入都是「一组照片」，输入不该由每个工具各选一次。窄窗（≤1080）参数行改成「标签左/控件右」的表单行。",
-        "状态诚实": "只做两态徽标（可用 / 规划中），不做「需模型」的第三态 —— 画质增强与 OCR 本轮根本没实现，给个「下载模型就能用」的中间态等于承诺不存在的行为。规划中工具的入口禁用并在进入后说明「还在做 + 计划」。"
+        "状态诚实": "只做两态（可用 / 规划中）：左栏给不可用项标一个弱色「规划」，点开右栏说明「还在做 + 计划」，不做假入口。不在左栏底部汇总「N / M 个可用」—— 每项自己已标注，再汇总一次是同一件事说两遍。",
+        "排版（第一轮：按调用方式分区）": "初版把工坊分成「处理（行式清单）/ 创作（大卡 + 流程条）」两区，共用同一个素材托盘。问题：工具是**常驻切换**的对象（压完一批接着换下一个），不是「进入再退出」的目的地 —— 一屏卡片列表逼出「返回列表 → 再进下一个」两步，还要一个「返回」中间态。这一版已被下一条取代。",
+        "排版（第二轮：左栏选工具 + 右栏工作区，已落地）": "直接沿用相册页 / 时间线页那套左栏导航（AlbumList.vue 的 .album-side）：grid 176px + 30px gap + var(--gutter) 左右留白、左栏 sticky top:70px、分组小标 9.5px/.15em/600/--fg-2、行式条目高 27px、选中 = 左侧 2px --c-accent 金条（top/bottom 内缩 7px）+ 文字提亮、底只给 --hover。两页左栏的行高/金条内缩取同一组值，同屏切换不能差 3px，否则会被读成两个组件。右栏自上而下：工具标题行（图标 + 名字 + 一句话说明）→ 共用素材托盘 → 该工具的工作区 → 页脚立场句。分组按输入/输出性质：「处理」= 对单张/一组做变换、输出副本；「创作」= 从一组照片生成一件作品。窄窗 ≤900 左栏折成顶部横向工具条（与相册页同一断点），此时去掉左侧金条改描边，否则横排里读不出「左边」这个方向。",
+        "删除：旧调色配方清理": "原「维护」区提供 recipe_sidecar_scan / recipe_sidecar_purge（递归找 *.pmrecipe.json / *.pmmask.png，报数量体积后进回收站）。它存在的唯一理由是给 FEAT-099 的 sidecar 收尾；那套编辑链路已整条删除，再留一块「清理」面板等于把用户引向不存在的东西 —— 用户原话「这是啥没用就删除」。Rust 侧两个命令、SidecarScan/SidecarPurgeOutcome 类型、RecipeCleanup.vue 一并下线。残留风险：从 v0.4.4 升上来的用户，当年调过色的目录里可能还有这类小文件（约 2KB/个），现在没有入口可清 —— 需要时从 git 历史取回该命令，或按文件名手工删；已在 README 的 v0.4.5 小节写明。"
       },
       "highlights": {
         "删对了一半的死代码": "发现「算子通道在发布包里根本没打包」比「定位错配」更硬：这不是取舍问题，是装给用户就不能用的功能在仓库里躺了两个月。",
@@ -5701,15 +5702,17 @@
         "图生图 ≠ 文生图": "用户要的「AI 图像创作」是图生图（主题抽取做手账），素材/主题/受众都在本机相册里，LR/PS 做不了 —— 这条是四项里差异化最强的；而文生图与相册无因果、要几 GB 模型，属于不该进这个 app 的需求。",
         "手账不靠生成模型": "手账本质是选图 + 排布 + 文案，三件事用现成能力就能确定性完成（CLIP 语义分类 + 人脸聚合 + 去重 + 模板 + justifiedRows）；生成模型只在「单张插画化」出场 —— 版式与文字交给模型反而最不稳。",
         "压缩的坑在「凑不到」": "指定大小必然存在凑不到的输入（噪点多的图、质量到底仍超标）。可选做法是静默返回、或降尺寸直到达标；这里的取舍是「先降长边、到底仍超标就如实标未达标」——用户拿去发邮件才发现超限，比显示一个红字更糟。",
-        "托盘是被结构逼出来的": "当四件事的输入都是「一组照片」时，输入区就不该属于某个工具。反过来，如果工具输入各不相同（有的要单张、有的要参数文本），共用托盘就会变成累赘 —— 结构要跟着输入的形状走。"
+        "托盘是被结构逼出来的": "当四件事的输入都是「一组照片」时，输入区就不该属于某个工具。反过来，如果工具输入各不相同（有的要单张、有的要参数文本），共用托盘就会变成累赘 —— 结构要跟着输入的形状走。",
+        "侧栏 vs 卡片列表": "判断依据不是「哪种好看」，而是**操作的循环形态**：常驻切换（工具集要反复来回用）→ 侧栏，一次点击换工具；进入再退出（低频目的地，如某个相册详情）→ 列表。上一轮把「进入目的地」的排版套在「常驻切换」的对象上，才多出「返回」这一步。",
+        "删一个面板要连带删理由": "「清理残留」面板删掉后，残留文件就没人管了 —— 但这批残留是自家已下线功能产生的副产品（FEAT-099 sidecar），而不是用户的资产。所以正确做法是：面板下线 + 在 README 写明残留位置与手工处理方式，而不是为了「保底」留一个指向已不存在功能的面板。"
       },
       "tests": [
-        "cargo test --lib tools::：9 项通过（parse_aspect / crop_rect_for 宽高两向 / 比例已符不裁 / 输出不覆盖原图 / 重名去重 / sidecar 扫描 / 端到端压缩）",
+        "cargo test --lib tools::：8 项通过（parse_aspect 正反两向 / crop_rect_for 宽高两向 / 比例已符不裁 / 输出不覆盖原图 / 重名去重 / 端到端压缩）",
         "端到端压缩用例：1200×900 噪点 PNG → 裁 1:1 → 长边 500 → 目标 40KB，断言产物 ≤40KB、500×500、为 .jpg、原图字节数不变",
-        "cargo check --lib 通过（仅 5 条既有 warning，无新增）",
+        "cargo check --lib 通过（仅既有 warning，无新增）",
         "npx vue-tsc --noEmit 0 错误；npm test 166 通过（含新增 bytes/pathParts 13 项）",
         "npm run build（vue-tsc + vite build）通过",
-        "排版核对：Playwright 截图 5 张（列表深/浅 1440、压缩工位 1440 与 1024、规划中工位 1440），控制台 0 错误；浅色用陶砂预设（非只切 body 类）"
+        "排版核对：Playwright 截图 5 张（压缩工位 1440 / 1024、创作工位 1440、浅色 1440、空托盘 1440），控制台 0 错误；浅色用陶砂预设整页渲染（非只切 body 类）"
       ],
       "related_files": [
         "README.md",
@@ -5719,7 +5722,6 @@
         "src/views/Workshop.vue",
         "src/components/workshop/CompressTool.vue",
         "src/components/workshop/PhotoTray.vue",
-        "src/components/workshop/RecipeCleanup.vue",
         "src/components/workshop/ToolIcon.vue",
         "src/types/tools.ts",
         "src/utils/bytes.ts",
@@ -5744,15 +5746,15 @@
         "图生图",
         "agent 编排",
         "素材托盘",
-        "旧配方清理",
-        "sidecar",
-        "pmrecipe",
         "下线圈定",
         "定位错配",
-        "发布包未打包"
+        "发布包未打包",
+        "左栏工具导航",
+        "常驻切换",
+        "沿用相册页布局"
       ],
       "created_at": "2026-11-01T14:59:59+08:00",
-      "updated_at": "2026-11-01T14:59:59+08:00"
+      "updated_at": "2026-11-01T15:40:00+08:00"
     }
   ],
   "updated": "2026-11-01T14:59:59+08:00"

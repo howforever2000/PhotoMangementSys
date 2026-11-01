@@ -42,19 +42,3 @@ export interface CompressOutcome {
   totalAfter: number;
   destDir: string;
 }
-
-/** 旧调色配方残留扫描结果（`*.pmrecipe.json` / `*.pmmask.png`） */
-export interface SidecarScan {
-  recipeCount: number;
-  maskCount: number;
-  totalBytes: number;
-  scannedFiles: number;
-  files: { path: string; bytes: number }[];
-}
-
-export interface SidecarPurgeOutcome {
-  deleted: number;
-  failed: number;
-  freedBytes: number;
-  failedPaths: string[];
-}
