@@ -8,7 +8,8 @@ import PhotoLightbox from "../components/PhotoLightbox.vue";
 import type { SmartHit } from "../types/content";
 import type { PersonInfo } from "../types/photo";
 import { getThumbs } from "../utils/thumbQueue";
-import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
+import type { HeaderTab } from "../types/ui";
 import ModelMissingDialog from "../components/settings/ModelMissingDialog.vue";
 
 /**
@@ -191,7 +192,7 @@ async function runImageSearch() {
     multiple: false,
     directory: false,
     title: "选择一张照片作为搜索样例",
-    filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif"] }],
+    filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif"] }],
   });
   if (typeof picked !== "string") return;
   searching.value = true;

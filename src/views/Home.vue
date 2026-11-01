@@ -60,7 +60,7 @@ const modules = [
   {
     id: "scan",
     title: "图片扫描",
-    desc: "批量扫描入库（EXIF / 影调 / AI），支持按年·地点整理",
+    desc: "批量扫描入库（EXIF / 影调 / AI）· 重复清理 · 入库体检 · 按年地点整理",
     action: "开始扫描",
     icon: "🔍",
     path: "/scan",
@@ -69,7 +69,7 @@ const modules = [
   {
     id: "workshop",
     title: "创意工坊",
-    desc: "区域直方图均衡化、基准调色与图像处理算子",
+    desc: "图像压缩 · 文字提取 · 画质增强 · 主题手账",
     action: "打开工坊",
     icon: "🎨",
     path: "/workshop",
@@ -113,7 +113,7 @@ async function chooseAvatar() {
       multiple: false,
       directory: false,
       title: "选择头像图片",
-      filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif"] }],
+      filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif"] }],
     });
     if (typeof picked !== "string") return;
     await auth.setAvatar(picked);

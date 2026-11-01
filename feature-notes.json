@@ -2279,7 +2279,7 @@
     {
       "id": "FEAT-063",
       "name": "创意工坊 · 区域直方图均衡化小组件",
-      "status": "done",
+      "status": "deprecated",
       "description": "主页原「图像处理（待开发）」板块升级为「创意工坊」图片编辑小组件入口（/workshop Hub 页），并落地第一个小组件：区域直方图均衡化。用户框选（拖拽矩形）或画笔涂抹/橡皮生成蒙版，只对选中区域做均衡化（全局均衡 / CLAHE 二选一，强度与羽化可调）。处理由独立 Python 微服务承担：python-studio/server.py（FastAPI + OpenCV，端口 STUDIO_PORT 可配默认 8790），LAB 亮度通道处理避免偏色，蒙版高斯羽化后按像素线性混合，未选中区域保持原样；超大图等比降采样保护。Rust 侧新增 studio.rs 精简版 ensure（探活→实例收养→启动→就绪等待，实例文件 studio-instance.json），复刻 vision.rs 的 VCR 服务管理模式；studio_ensure 返回基址后前端 fetch 直连（multipart：原图 asset 协议原始字节 + 蒙版 PNG），保存结果经 studio_save_result 落盘（前端无 fs 写权限）。",
       "related_files": [
         "src/views/Home.vue",
@@ -2318,7 +2318,8 @@
         "人工冒烟建议：主页进创意工坊 → 打开小组件 → 选图 → 框选暗部 → 应用 → 勾选对比 → 保存"
       ],
       "created_at": "2026-09-17T13:20:00+08:00",
-      "updated_at": "2026-09-17T13:20:00+08:00"
+      "updated_at": "2026-11-01T14:59:59+08:00",
+      "deprecated_reason": "FEAT-150：调色台与其 OpenCV 算子微服务整体下线（与 LR/PS 重复、偏离「相册管理」定位；且算子通道未随发布包分发，装给用户后不可用）。对应源码与 20 条 edit_*/studio_* 命令已删除，功能位改为「图像加工工具台」（压缩 / 文字提取 / 画质增强 / 主题手账）。"
     },
     {
       "id": "FEAT-064",
@@ -2352,7 +2353,7 @@
     {
       "id": "FEAT-065",
       "name": "灯箱「编辑」直达创意工坊（带图打开即用）",
-      "status": "done",
+      "status": "deprecated",
       "description": "照片原图查看（PhotoLightbox）工具栏在「🏷 标签」之后新增「✏️ 编辑」：点击后先收起灯箱，再路由到 /workshop?photo=<原图绝对路径>；创意工坊页读到 query 即直接打开「区域直方图均衡化」小组件，并把路径经 initialPath 传给小组件自动载入 —— 打开即用，不必再手动选一次图。导航放在灯箱组件内部而非 emit 给父视图：PhotoLightbox 被相册详情 / 时间线 / 智慧相册 / 回忆 / 智能搜索等多处复用，逐个改父视图既啰嗦又容易漏，而「去工坊编辑这张图」与父视图上下文无关，自带路由最原子。",
       "related_files": [
         "src/components/PhotoLightbox.vue",
@@ -2375,12 +2376,13 @@
         "widget": "WorkshopRegionEq.vue：新增可选 prop initialPath；onMounted 时若有值则 await nextTick() 后 loadImage(initialPath)。顺带给 fitDisplay 加兜底：父容器 clientWidth 为 0（帧未稳定/被隐藏）时按 800px 计算，避免自动载入算出 1×1 画布（原有 resize 监听仍会自我纠正）。"
       },
       "created_at": "2026-09-18T13:00:00+08:00",
-      "updated_at": "2026-09-18T13:00:00+08:00"
+      "updated_at": "2026-11-01T14:59:59+08:00",
+      "deprecated_reason": "FEAT-150：调色台与其 OpenCV 算子微服务整体下线（与 LR/PS 重复、偏离「相册管理」定位；且算子通道未随发布包分发，装给用户后不可用）。对应源码与 20 条 edit_*/studio_* 命令已删除，功能位改为「图像加工工具台」（压缩 / 文字提取 / 画质增强 / 主题手账）。"
     },
     {
       "id": "FEAT-066",
       "name": "创意工坊「传统图像处理」组件（算子注册表 + 5 个算子）",
-      "status": "done",
+      "status": "deprecated",
       "description": "原「区域直方图均衡化」卡片升级为「传统图像处理」。后端把写死的 /api/region-equalize 换成「算子注册表 + 单入口 API」：一张 OPS 注册表描述 5 个算子（区域直方图均衡化 + 高斯/方框/中值/双边四种模糊），蒙版羽化与强度混合抽成公共函数 _apply_masked，新增算子只需往注册表加一项、不再新增路由。前端拆出宿主组件 WorkshopImageProcess.vue（图片载入 / 画布缩放 / 蒙版编辑 / 结果对比 / 保存），算子切换与参数表单全部由 GET /api/ops 返回的 schema 自动渲染。蒙版沿用同一套编辑器（不复制第二套），整图为默认、蒙版为可选；灯箱 ✏️ 直达的默认算子仍是区域直方图均衡化，FEAT-065 行为不变。",
       "related_files": [
         "python-studio/server.py",
@@ -2429,7 +2431,8 @@
         "端到端（night_city.jpg 800×492，左半蒙版）：region-equalize L 均值 121.2 → 126.8（改动前实现 126.7）；4 个模糊算子带蒙版/不带蒙版各返回合法 JPEG（魔数 FFD8、尺寸 800×492）；未知算子 blur-magic → 400 并列出支持的算子；中值模糊传偶数核 8 不报错"
       ],
       "created_at": "2026-09-18T15:20:00+08:00",
-      "updated_at": "2026-09-18T18:20:00+08:00"
+      "updated_at": "2026-11-01T14:59:59+08:00",
+      "deprecated_reason": "FEAT-150：调色台与其 OpenCV 算子微服务整体下线（与 LR/PS 重复、偏离「相册管理」定位；且算子通道未随发布包分发，装给用户后不可用）。对应源码与 20 条 edit_*/studio_* 命令已删除，功能位改为「图像加工工具台」（压缩 / 文字提取 / 画质增强 / 主题手账）。"
     },
     {
       "id": "FEAT-067",
@@ -2484,7 +2487,7 @@
     {
       "id": "FEAT-068",
       "name": "创意工坊 · 修图前后对比（Lightroom 式并排 / 分割线拖动）",
-      "status": "done",
+      "status": "deprecated",
       "module": "创意工坊 / WorkshopImageProcess.vue",
       "description": "WorkshopImageProcess 新增三种视图模式：edit（编辑态，蒙版可画）/ side（左右并排，Lightroom Y/Y 快捷键再按回编辑态）/ split（单画布分割对比，分割线可拖动，左原图右结果）。『原图』指叠加链下当前底图 baseEl（最近基底），『结果』为最近一次应用输出；无结果时对比入口禁用，输入控件聚焦时不劫持 Y 键。",
       "related_files": [
@@ -2516,7 +2519,8 @@
         "cargo test --lib：108 passed / 0 failed / 2 ignored（同上复跑）"
       ],
       "created_at": "2026-09-19T23:40:00+08:00",
-      "updated_at": "2026-09-19T23:40:00+08:00"
+      "updated_at": "2026-11-01T14:59:59+08:00",
+      "deprecated_reason": "FEAT-150：调色台与其 OpenCV 算子微服务整体下线（与 LR/PS 重复、偏离「相册管理」定位；且算子通道未随发布包分发，装给用户后不可用）。对应源码与 20 条 edit_*/studio_* 命令已删除，功能位改为「图像加工工具台」（压缩 / 文字提取 / 画质增强 / 主题手账）。"
     },
     {
       "id": "FEAT-069",
@@ -3924,7 +3928,9 @@
         "撤销栈"
       ],
       "created_at": "2026-10-13T00:00:00+08:00",
-      "updated_at": "2026-10-22T22:25:00+08:00"
+      "updated_at": "2026-11-01T14:59:59+08:00",
+      "status": "deprecated",
+      "deprecated_reason": "FEAT-150：调色台与其 OpenCV 算子微服务整体下线（与 LR/PS 重复、偏离「相册管理」定位；且算子通道未随发布包分发，装给用户后不可用）。对应源码与 20 条 edit_*/studio_* 命令已删除，功能位改为「图像加工工具台」（压缩 / 文字提取 / 画质增强 / 主题手账）。"
     },
     {
       "id": "FEAT-102",
@@ -5142,7 +5148,731 @@
       "updated_at": "2026-11-01T23:59:00+08:00",
       "reverted_at": "2026-11-01T23:59:00+08:00",
       "revert_reason": "NPU 确实可用且比 CPU 快 2.4~2.9×（EXECUTION_DEVICES=NPU；NPU 推理时进程 CPU/墙钟=0.0 vs ORT-CPU 11.93；全核外部占满时 NPU 仅 1.49× 而 CPU 路径 10.5×），但语义腿在扫描里只占 0.2%（album=126 / 776 张：AI识别 99049ms 79% · 影调 26539ms 21% · 语义向量 224ms 0.2%），且三腿并发 ⇒ 加速被 79% 的 AI 腿完全掩盖，用户感知为零。保留代价是 40MB 必选组件 + 一条额外后端分支 + 两条仅此分支才有的 bug。保留：vcr/logutil.py（修了主链路上同类 stderr 隐患）、性能设置「这台机器现在怎么跑」摘要（改按档位说明）、四个纯证据探针 probe_npu_*.py。"
+    },
+    {
+      "id": "FEAT-134",
+      "name": "大图预览器版式重排（方案 A：右侧档案栏 + 全宽底栏，去掉压在照片上的浮层）",
+      "module": "src/components/PhotoLightbox.vue（只改 <template> 与 <style>，script 仅挪一行）、design/preview/proposal/lightbox-a.html、lightbox-rework.md、shoot-lightbox.cjs",
+      "status": "done",
+      "purpose": "用户反馈「照片预览界面不好看，重新布局即可（不改功能）」。逐条对到代码后的结论：不是照片不好看，而是照片周围常驻的东西太多且互不相识 —— ① 顶部快捷键胶囊与底部工具栏都用 position:absolute 压在图片区上；② 为了不盖图又给 .lb-body 加 padding-bottom:54px 提前让位，结果图变小了、浮层仍叠在上面（这是补丁不是布局）；③ 信息栏 17 行 dt/dd 平铺，拍摄/AI/文件/影调混在一起；④ 同一个文件名在标题栏和面板绝对路径里说两遍；⑤ 图标全是 emoji，与其他页面已统一的线性 SVG 不是一套语言；⑥ 翻页箭头是 56×80 整块半透明白片，比画面最亮处还抢眼；⑦ 同屏混用 .06/.12/.74/.88 四档材质；⑧ .lb-counter 在 CSS 里定义了两遍，倍率只有缩放后才出现；⑨ 翻图没有上下文。要求先出效果图确认（A/B 两版），用户选 A。",
+      "implementation": {
+        "骨架": "三行两列硬布局，任何元素都不再绝对定位压照片：标题栏 46px / 主体 1fr（照片区 │ 信息栏 344px）/ 底栏 60px。.lb-body 由 flex + padding-bottom:54px 改为 grid-template-columns:1fr 344px，54px 补丁整段删除；metaCollapsed 时降为 1fr，照片区吃满。",
+        "信息栏四段": "按「人怎么读一张照片」重排：大字日期（21px，2026 · 10 · 28 + 时分）→ 地点（主色可点）→ 相机 2×2 参数瓷砖（快门/光圈/ISO/焦距，值 15px/600）→ AI chips + 置信度条 → 文件三行（格式/分辨率/大小/影调）→ 直方图。原来的一把梭 dl 拆成带分节标题的组，保留全部字段与全部兜底文案（EXIF 未补全 / 无水印时间 / AI 服务未运行的重试出口）。",
+        "标题栏": "文件名 + 地点摘要 + 计数 chip + 三个 16px 线性 SVG 图标（信息/全屏/关闭）；emoji 全部换内联 SVG（stroke-width 1.7）。快捷键从常驻胶囊改为 hover 才出的 ? 气泡；缩放倍率变成 chip，且仅 scale≠1 时出现、点击复原 100%。",
+        "底栏": "原 .lb-toolbar 从 position:absolute 改为流内一行 60px：左侧星级（1-5，同星再点清除）→ 标签(n) / 编辑 / 在相册中查看，右侧归档 / 隐藏 / 删除（主色只给编辑、危险色只给删除）。",
+        "翻页导航": "56×80 方片 → 44 圆形玻璃按钮，贴照片区两侧 20px；顶部 .lb-zoombar 整块删除。",
+        "材质与字阶收敛": "一屏一种材质：1px rgba(255,255,255,.07) 发丝线 + rgba(255,255,255,.02) 玻璃底，不再混四种；层级只靠字号（11/12.5/21）、字重（400/500/600）、文字色三档。",
+        "顺手修掉的 TDZ": "void initForCurrentPhoto() 被后续插入的扫描逻辑挤到了 metaOverrides 声明之前，首次打开灯箱时 ensureExif → needsExifBackfill → metaOverrides.value 触发 TDZ（Cannot access 'metaOverrides' before initialization），EXIF 补全与单张 AI 扫描被静默放弃 —— 信息面板显示「未记录拍摄时间/地点」，翻到下一张再翻回来才正常。调用点挪回 script setup 末尾（见 BUG-2026-1030-001）。",
+        "不改的东西": "缩放/平移（Ctrl+滚轮、双击、拖拽）、全部快捷键（1-5 / ←→ / Esc / F11）、FEAT-D 静默扫描、评分/归档/隐藏/删除 emit、窗口拖边缩放与双击标题栏全屏 —— 一行未动。"
+      },
+      "highlights": [
+        "「不好看」的根因是浮层数量与层级，不是配色：同一块照片上叠两条 chrome，再怎么调透明度都还是两条；改成「照片四周只留一条常驻 chrome」后，照片区第一次真正空出来。",
+        "padding-bottom:54px 是补丁的典型症状 —— 用「提前让位」去躲「绝对定位」，结果是两头的代价都付了（图变小 + 浮层仍然压图）。改成 grid 后补丁和浮层一起消失。",
+        "信息栏的价值不在「显示全部字段」，而在分组：相机四参数用瓷砖并列（2×2 一眼扫），日期提到 21px，17 行平铺变成 4 段有标题的档案。",
+        "版式重排可以做到 script 零改动：方案把交互面（窗口范式、快捷键、emit）与视觉面（chrome 位置、材质、字阶）彻底切开，回滚只需还原 template + style。"
+      ],
+      "tests": "npx vue-tsc --noEmit 通过（0 error）。1280×800 / 1920×1080 两档窗口与全屏下，照片四周无覆盖物；信息栏收起后照片吃满、无跳动；快捷键与拖边缩放行为不变。",
+      "related_files": [
+        "src/components/PhotoLightbox.vue",
+        "design/preview/proposal/lightbox-a.html",
+        "design/preview/proposal/lightbox-rework.md",
+        "design/preview/proposal/shoot-lightbox.cjs"
+      ],
+      "keywords": [
+        "灯箱",
+        "大图预览",
+        "PhotoLightbox",
+        "布局重排",
+        "grid 三行两列",
+        "浮层压图",
+        "信息栏分组",
+        "SVG 图标替换 emoji",
+        "防抖动"
+      ],
+      "created_at": "2026-10-30T16:40:00+08:00",
+      "updated_at": "2026-10-30T16:40:00+08:00"
+    },
+    {
+      "id": "FEAT-135",
+      "name": "推理腿可选的 OpenVINO/NPU 执行设备（det/ocr/face_rec 三条腿，默认关闭）",
+      "module": "python/vcr/ov_backend.py（新）· python/vcr/config.py（OV_* 开关）· python/vcr/model_registry.py（_load / run / _gpu_backed / ov_info）· python/server.py（/health.ov + API v13）· python/bench/probe_npu_det_r50_e2e.py（新探针）",
+      "status": "done",
+      "purpose": "用户拿 12 个 ONNX 在 NPU 上真编译跑了一遍，问「最小改动接 NPU 加速」。仓库已有结论是 FEAT-133（只接 clip_vision，快 2.9× 但只占扫描 0.2%，已回退）。本轮在 53 张真实相册上重测后发现**抓手完全不同**：DML 单队列才是 AI 腿的瓶颈（持锁占墙钟 98%，每张 116 次加锁；det_10g 单张 16ms 在 P=6 下次持锁实测 68~190ms），所以收益 ≈ 从 DML 队列里拿走多少次加锁，而不是单模型快多少毫秒。据此把加锁次数最多的三条腿（det 每张 1 次、ocr 约 72% 的图 1 次、face_rec 有脸时每脸 1 次）交给 NPU，face_det（det_10g，NPU 慢 7 倍）永久排除。",
+      "implementation": {
+        "为什么是这三条腿": "只搬 det+face_rec 是 -20%，再加 ocr 才到 -55%：DML 加锁 116→53→15 次。ocr 是分水岭，但它在本仓库喂的是 **640×640**（与 det 共用同一份 letterbox 缩放），不是公开报告常见的 960。",
+        "静态 shape 是硬前置": "NPU 编译器遇到动态维会 LLVM abort 把整个进程带走（不可 catch）。ov_backend.OvChannel 编译前 reshape 到 config.OV_SHAPES，并断言目标 shape 全为正整型，让将来换模型在 Python 层就炸。",
+        "设备锁": "OvChannel 自带按设备分的锁（ov_backend.device_lock），registry._gpu_backed 对 OvChannel 返回 False —— 否则会套上 _GPU_RUN_LOCK，让 NPU 与 DML 互相串行，「两个独立引擎并行」立即失效。",
+        "回退语义": "只在 config.OV_CHANNELS 命中且设备真可用（Core.available_devices 含该设备）时才编译；编译失败用 logutil 记下原因后原样落回 ONNX Runtime，绝不改 is_ready（避免 BUG-2026-1101 那类「显示已启用、占用恒为 0」）。",
+        "鸭子垫片": "OvChannel 实现 get_providers/get_inputs/get_session_options/run，_session_facts 与 _bench_feed 原样可用；服务层（detector/face_service/ocr_service）一行未改。",
+        "默认关闭": "OV_CHANNELS 默认空 = 行为与今天逐字一致；AMD/非 Intel 机器永远走不到这条路。UI/按需下载组件（45MB）留给下一阶段，本轮只做 env 开关。"
+      },
+      "highlights": {
+        "53 张探针（P=6 threads=8 摊薄墙钟 ms/张）": "cpu 145.2 / dml 85.7 / 三通道上 NPU 不开 DML 43.0 / 再加 face_det 留 DML 38.4；dml→npu 稳定 -55~-60%（两轮不同线程数与两次独立运行均复现）",
+        "983 张真扫描（HTTP + AI 腿 ∥ 语义腿并发，批 8 P6）": "328.2s → 136.6s = **-58.4%**（336.6 → 140.1 ms/张）；200 张子集 -55.5%，方向与量级一致",
+        "数值等价": "det 人框 53/53 零差异；w600k_r50 38 张真人脸 cos 最小 0.99997220；paddleocr 掩码 IoU 中位 1.0000、6/53 张差 1 个文本框；端到端 ClassifyResult 53/53 硬字段一致、confidence|Δ|≤0.0007",
+        "不需要 DML": "只接 NPU（不开 GPU 开关）已拿到最好结果，而 GPU 开关是纯内存态、重启回 CPU、DML 有段错误历史 —— 少一个开关",
+        "瓶颈已转移到 NPU": "NPU 持锁 87~89%（接近饱和），再加第四个模型无收益；DML 从 98% 降到 45%（只剩 face_det 15 次）"
+      },
+      "tests": {
+        "python/bench/probe_npu_det_r50_e2e.py": "四种配置对比 + 完整性校验（每个 OV 通道实跑次数必须等于 timing 段调用次数）+ --equiv-only 数值等价",
+        "python/.venv-vcr/Scripts/python.exe python/bench/probe_npu_det_r50_e2e.py <相册> --rounds 3 --photos-parallel 6 --threads 8 --modes cpu,dml,ov,ov_dml --ov-channels det,ocr,face_rec": "复核 -58%/-55%",
+        "/health": "v13；ov.active=['det','face_rec','ocr']、gpu.sessions 三条腿显示 OpenVINO:NPU，face_det 保持 CPU/DML"
+      },
+      "related_files": [
+        "python/vcr/ov_backend.py",
+        "python/vcr/model_registry.py",
+        "python/vcr/config.py",
+        "python/server.py",
+        "python/bench/probe_npu_det_r50_e2e.py",
+        "docs/FEAT-133-语义索引NPU加速.md（被本轮推翻的两条结论：ocr 无收益 / clip 是最佳候选）"
+      ],
+      "keywords": [
+        "OpenVINO",
+        "NPU",
+        "Intel AI Boost",
+        "推理后端",
+        "DML 单队列",
+        "静态 shape",
+        "det",
+        "ocr",
+        "face_rec",
+        "性能"
+      ],
+      "created_at": "2026-11-02T12:00:00+08:00",
+      "updated_at": "2026-11-02T12:00:00+08:00"
+    },
+    {
+      "id": "FEAT-136",
+      "name": "加速分配表（GPU 与 NPU 各有加速对象）+ OpenVINO 运行时做成可选组件",
+      "module": "python/vcr/config.py（accel_setting）· python/vcr/model_registry.py（_device_of / default_channels / accel_info / set_accel）· python/vcr/ov_backend.py（组件解压）· python/server.py（/accel）· src/components/settings/AccelSection.vue（新）· src-tauri/src/{model_dl,vision,vcr_settings,lib}.rs · release.ps1",
+      "status": "done",
+      "purpose": "FEAT-135 证明了 NPU 该接哪三条腿（det/ocr/face_rec），但只剩一个全局「GPU 开关」在表达设备，做不到「GPU 与 NPU 同时各有加速对象」。同时该特性依赖 45MB 的 OpenVINO 运行时，不能无条件塞进安装包（AMD/NVIDIA 完全用不上）。本轮把这两个缺口一起补上：通道→设备分配表（持久化 + UI 可开关），运行时做成按需下载的可选组件。",
+      "implementation": {
+        "分配表": "VCR 侧新增 config.accel_setting()/set_accel_setting()，持久化 models/current_accel.json；registry 在 _load 里按通道取设备（NPU→OvChannel，GPU→ORT+Dml，CPU→ORT），四条腿各自独立回落。默认分配由服务端算：能上 NPU 的给 NPU，剩下的给 GPU（face_det），所以两个引擎同时有活干。",
+        "为什么 face_det 给 GPU": "det_10g 在 NPU 上 116.5ms（慢 7 倍，永久排除）；DML 单次 92.9ms vs CPU 120.9ms。它只跑 15/53 次所以摊薄墙钟增量在噪声内（39.0 vs 38.6），但它给了 GPU 一个真实对象，且在「只有 DML 没有 NPU」的机器上就是主力（全 GPU 形态 -34.7%）。",
+        "不做的事": "clip 不给 GPU：语义腿只占扫描 0.2%，且 fp16 档在 DML 上有数值 bug（BUG-2026-0910-006）—— 那是 FEAT-133 栽过的同一个坑。",
+        "可选组件": "恢复 FEAT-133 的裁剪脚本（244.8→45.4MB / zip 15.5MB），Rust 只下载 zip（DlSpec openvino-runtime，releases/latest/download 稳定别名），Python 侧 standard library zipfile 首次解压到 models/_runtime/ovrt 并注入 sys.path；改名失败（杀毒占句柄 WinError 5）不算失败，用 .partial 目录继续跑。",
+        "Rust/UI": "vision::vcr_accel / vcr_set_accel（旧服务 404 → 重启重试）+ vcr_settings 命令 + lib.rs 注册；AccelSection.vue 显示「请求分配 vs 实际生效」两列、组件下载（复用 model_dl 进度）、启用/关闭；运行时组件从「模型下载」列表过滤（一处入口一个说法）。",
+        "修掉的 bug": "set_accel(False) 之前只重置分配表，没恢复启用前的全局 provider 状态，导致 fp32 档 CLIP 关闭后仍留在 DML。现在启用时快照 (_accel_restore)、关闭时原样恢复。"
+      },
+      "highlights": {
+        "真扫描（300 张，AI∥语义，批 8 P6）": "全 CPU 87.7s（300.3 ms/张）→ 分配表 25.8s（88.4 ms/张）= **-70.6%**；会话表 det/ocr/face_rec=['OpenVINO:NPU']、face_det=['DmlExecutionProvider'] —— 两个引擎同时有对象",
+        "983 张全量（env 形态）": "336.6 → 140.1 ms/张 = -58.4%（相册画像不同，方向一致）",
+        "探针四方对比（53 张）": "cpu 136.2 · 全 GPU 88.9 · NPU×3+CPU人脸检测 38.6 · NPU×3+GPU人脸检测 39.0",
+        "组件等价": "裁剪运行时（删了 95.7MB 编译器）仍能 compile_model(onnx,'NPU')；det 53/53 人框零差异、r50 38 张脸 cos 最小 0.99997220",
+        "产品路径烟测（零环境变量）": "默认 enabled=false 不动任何东西 → POST /accel 后 effective=NPU×3+GPU×1（1~2s 后台重建）→ 关闭回 CPU 且组件仍在",
+        "静态检查": "cargo check --all-targets 0 error；cargo test --lib openvino_runtime 1 passed；vue-tsc --noEmit 0 error",
+        "CLIP fp32 上 GPU（补测）": "能跑：fp16 档硬钉 CPU（DML 数值 bug），fp32 档跟随全局 provider，启用加速分配后 clip_vision=['DmlExecutionProvider',...]。实测 120 张全新建档：语义腿 85.5/121.8 → 75.7/79.8 ms/张（更快），但 AI 腿 8.3/9.0 → 11.6/12.1s（CLIP 整批前向长期持 DML 锁，和 face_det 抢）；合计 124.0/150.7 → 96.7/100.6 ms/张。重扫场景语义腿只处理新照片（0.2%），此时 AI 腿 +35% 是净亏 ⇒ 默认保持 fp16/CPU，能力仍留在旧 GPU 开关。"
+      },
+      "tests": {
+        "python/bench/probe_npu_det_r50_e2e.py --modes cpu,gpu_all,accel_cpu,accel_gpu": "四配置对比 + 完整性校验（通道实跑次数 == timing 段调用次数）",
+        "python/bench/probe_npu_det_r50_e2e.py --equiv-only --runtime component": "走裁剪组件验数值等价（53 张 / 38 张脸）",
+        "cargo test --lib openvino_runtime": "DlFile.local / ov_backend.ZIP_NAME / abs_url 三处同名一致性",
+        "GET/POST /accel + /health.accel": "默认未启用 → 启用 → effective 翻转 → 关闭；全程零环境变量"
+      },
+      "related_files": [
+        "python/vcr/config.py",
+        "python/vcr/model_registry.py",
+        "python/vcr/ov_backend.py",
+        "python/server.py",
+        "python/scripts/build_ov_runtime_zip.py",
+        "src/components/settings/AccelSection.vue",
+        "src/components/ModelGpuSettings.vue",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/vcr_settings.rs",
+        "docs/FEAT-136-加速分配与可选组件.md",
+        "docs/FEAT-135-推理腿NPU执行设备.md"
+      ],
+      "keywords": [
+        "加速分配",
+        "通道→设备",
+        "OpenVINO",
+        "NPU",
+        "DirectML",
+        "可选组件",
+        "按需下载",
+        "FEAT-135"
+      ],
+      "created_at": "2026-11-02T18:00:00+08:00",
+      "updated_at": "2026-11-02T20:30:00+08:00"
+    },
+    {
+      "id": "FEAT-137",
+      "name": "语义模型收敛为单档（B/16 fp32 权重）——删掉 fp16 档，旧选择与旧向量标签自动迁移",
+      "module": "python/vcr/config.py（CLIP_MODEL_META/CLIP_RETIRED_*/clip_paths）· python/vcr/model_registry.py（_clip_providers）· src-tauri/src/model_dl.rs（删 fp16 规格）· src-tauri/src/db/embedding.rs（restamp_embedding_models）· src/components/settings/ClipTierSection.vue（下拉→状态行）· python/bench/verify_clip_tier_equiv.py（新守卫）",
+      "status": "done",
+      "purpose": "用户判断「b16（fp16，默认）这一档可以去掉了，核显加速 fp32 比 fp16 CPU 快得多」。实测证实：fp16 档在 CPU 上反而慢 18~33%（x86 上 ORT 要反复 cast），又永远拿不到 GPU（fp16 在 DirectML 上有算子级数值 bug BUG-2026-0910-006 所以旧代码硬钉 CPU），两档精度等价 cos≥0.9999993 —— 旧默认档是双输。收敛成一档后顺带干掉了那条特例分支与整颗数值 bug 的雷。",
+      "implementation": {
+        "实测（真实 256px 缩略图，批 8 / 批 32）": "fp16/CPU 74.4 / 113.7 ms/张；fp32/CPU 60.6 / 76.4；fp32/DML 61.3 / 63.7。守卫脚本复跑：fp16 79.7 vs fp32 65.9（1.21×）。",
+        "精度等价": "同批 32 张图 fp16 档 vs fp32 档 cos 最小 0.99999928、逐元素最大差 0.000316 —— 同一套权重只是导出精度不同。这是「旧向量标签可直接重打、不必全库重编码」的唯一依据。",
+        "迁移三条": "① current_clip.json 里的 b16-fp32/b16-fp16 由 CLIP_RETIRED_TIERS 映射到唯一档；② photo_embeddings/photo_text_embeddings 的旧 model 标签由宿主启动时 restamp_embedding_models() 重打成 chinese-clip-vit-b16（幂等，UPDATE OR REPLACE）；③ 老目录 chinese-clip/ 若已有 fp32 整图则自动回退使用，不让人白下 719MB。",
+        "为什么必须重打标签": "所有向量查询都是 WHERE model = ?；不迁移的话升级后一条也命中不了，语义搜索/分类变成「尚未建立索引」——不报错，只是搜不到，属静默失效。",
+        "新 id 为什么中性": "chinese-clip-vit-b16（不带精度后缀）——一套权重一个空间；以后换量化就换 id，那次才需要重建。",
+        "UI": "ClipTierSection 从「下拉 + 换档确认弹窗」收敛为一行状态（模型 / 双塔体积 / 就绪 / 刷新），换档确认弹窗随之删除；性能设置顶部「语义索引」摘要改为读实际 provider。"
+      },
+      "highlights": {
+        "代码净删": "删掉「fp16 硬钉 CPU」特例分支 + 一整条下载规格 + 一整个 bench 脚本；换档状态机（begin/finish_clip_switch 的 UI 侧）不再有入口",
+        "老用户零重建": "改标签不改数据：万张库约 13 分钟的重编码被完全避开",
+        "守卫脚本": "python/bench/verify_clip_tier_equiv.py 把「fp16 必须更慢」「两档必须 cos≥0.9999」「fp32 能上 DML」固化成可复跑判据，退出码可直接接发版前检查",
+        "验收": "cargo test --lib 427 passed（含新增 restamp 幂等单测、id 跨语言一致性单测）；vue-tsc 0 error；老档位文件 b16-fp32 实测正确解析为新 id 且 /embed_batch 4/4 出 512 维向量"
+      },
+      "tests": {
+        "python/bench/verify_clip_tier_equiv.py --n 32": "速度 + 精度 + 设备三项判定，通过",
+        "cargo test --lib embedding::tests::restamp_moves_old_labels_to_current_id": "两张表各 2 行重打、再跑一次 0 行（幂等）",
+        "cargo test --lib model_dl::tests::clip_model_ids_match_python": "python 的 id / CLIP_RETIRED_IDS 与 Rust 常量逐字一致，且 fp16 目录与 model_fp16.onnx 不再被引用",
+        "老用户路径烟测": "current_clip.json=b16-fp32 → /health.model_id=chinese-clip-vit-b16、/models 单档、/embed_batch 正常"
+      },
+      "related_files": [
+        "python/vcr/config.py",
+        "python/vcr/model_registry.py",
+        "python/vcr/services/clip_subgraph.py",
+        "python/bench/verify_clip_tier_equiv.py",
+        "python/download_models.py",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/db/embedding.rs",
+        "src-tauri/src/db/mod.rs",
+        "src/components/settings/ClipTierSection.vue",
+        "src/components/ModelGpuSettings.vue",
+        "docs/FEAT-137-语义模型收敛单档.md"
+      ],
+      "keywords": [
+        "CLIP",
+        "语义档位",
+        "fp16",
+        "fp32",
+        "向量迁移",
+        "重打标签",
+        "BUG-2026-0910-006",
+        "模型体积"
+      ],
+      "created_at": "2026-11-02T22:00:00+08:00",
+      "updated_at": "2026-11-02T22:00:00+08:00"
+    },
+    {
+      "id": "FEAT-138",
+      "name": "删掉「线程测速」扫档（6 分钟却调错对象），CLIP 线程数与主链路解耦（默认一半，夹在 [4, 全局]）",
+      "module": "python/vcr/config.py（clip_threads）· python/vcr/model_registry.py（_so_clip / 删 benchmark_sweep）· python/server.py（删 /benchmark_sweep）· src-tauri/src/{vision,vcr_settings,lib}.rs（删 vcr_benchmark_sweep 等）· src/components/settings/{BenchmarkSection,ThreadsSection}.vue · src/stores/content.ts · src/types/content.ts · utils/withTimeout.ts",
+      "status": "done",
+      "purpose": "用户看到设置里「线程测速 … 最长约 6 分钟」按钮，问「这个多线程是干嘛的？如果是 CPU 语义模型多线程就去掉，默认取用户线程数的一半即可」。查清后确认：它对着 CLIP 图塔（扫描里只占 0.2%）按 1~16 七档各跑 8 次，然后让用户「采用」——而采用写的是 det/face/ocr 共用的**全局** intra_op 线程数。测的对象错了：CLIP 单独跑天然「线程越多越快」，按这条曲线调主链路是负收益，还附带 6 分钟不可取消的等待。",
+      "implementation": {
+        "删整层扫档": "前端按钮/结果表/「采用」→ store.benchmarkVcrSweep → Tauri benchmark_vcr_sweep → POST /benchmark_sweep → registry.benchmark_sweep，全链路删除；/benchmark_sweep 现返回 404。",
+        "CLIP 线程改独立": "_so_clip() 不再继承全局 intra_op，改用 config.clip_threads()：用户线程数的一半，夹在 [4, 用户线程数] 内；VCR_CLIP_THREADS 仅作对照实验用，不暴露 UI。用户 4/6/8 → CLIP 4；12 → 6；16 → 8。",
+        "为什么要下限 4": "/embed_batch 32 张实测（每档核实 32/32 真的出向量）：2 线程 213ms/张、4 线程 150、8 线程 106。语义腿在**全新建档**时是关键路径（4669 张：8 线程约 8 分钟，2 线程约 17 分钟），而 AI 腿加速后只要 ~88ms/张 —— 卡在 2 线程会把整次导入拖成 2 倍。所以「一半」只在大线程数下生效。",
+        "踩到的坑": "/embed_batch 对单张失败是内联返回 error、不报 500。第一轮 e2e 只看墙钟，把「一部分图没编码」误读成「线程少反而快」（1 线程算出 97ms/张，与单跑 300ms/张 矛盾）。作废重测时每档都断言 32/32 出向量，结论才站得住。"
+      },
+      "highlights": {
+        "删除量": "前后端一整条扫档链路（3 层接口 + UI 状态 + 样式 + 超时配置）",
+        "线程映射（实测校验）": "用户 1→1、2→2、4→4、6→4、8→4、12→6、16→8",
+        "验收": "cargo test --lib 427 passed；vue-tsc 0 error；会话实测 clip_vision/clip_text/det 的 intra_op 分别为 4/4/4（用户线程=4）；POST /benchmark_sweep → 404；/embed_batch 32/32 出向量"
+      },
+      "tests": {
+        ".pi/smoke_clip_threads.py": "对照 /threads 与 /benchmark 报告的 intra_op，断言 CLIP = 一半（含 4 下限）、det = 全局、/benchmark_sweep = 404",
+        ".pi/clip_nt_verify.py": "2/4/8 线程各跑 32 张 /embed_batch，断言成功数 32/32 并给 ms/张（213/150/106）"
+      },
+      "related_files": [
+        "python/vcr/config.py",
+        "python/vcr/model_registry.py",
+        "python/server.py",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/vcr_settings.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/settings/BenchmarkSection.vue",
+        "src/components/settings/ThreadsSection.vue",
+        "docs/FEAT-138-线程测速下线与CLIP线程解耦.md"
+      ],
+      "keywords": [
+        "线程测速",
+        "benchmark_sweep",
+        "intra_op",
+        "CLIP",
+        "语义腿",
+        "静默失败",
+        "性能设置"
+      ],
+      "created_at": "2026-11-02T23:30:00+08:00",
+      "updated_at": "2026-11-02T23:30:00+08:00"
+    },
+    {
+      "id": "FEAT-139",
+      "name": "加速默认开启（模型不跑 CPU）+ 性能设置界面按「加速对象」重排、删掉重复开关与长文案",
+      "module": "python/vcr/config.py（accel_setting 三态）· python/vcr/model_registry.py（auto_channels / accel_info.mode）· src/components/ModelGpuSettings.vue（重写）· settings/{AccelSection,HardwareSection}.vue（重写）· settings/GpuSection.vue（删除）· ScanPanel.vue（徽章改读加速分配）· src/stores/content.ts（删 gpuStatus/setVcrGpu）",
+      "status": "done",
+      "purpose": "用户指出两个前提并要求改界面：①「一般默认 GPU 加速，所以用不到 CPU 跑模型，CPU 只是缩略图生成 / EXIF 扫描 / 地点解码」；②「现在每个按钮和加速对象是干什么的比较难理解，优化布局和说明、去除多余文字」。前者暴露了真问题：current_accel.json 不存在时等于不加速，只有用户手动点开关才生效（实测加速是 AI 腿 336.6→140.1 ms/张）。后者是界面有两个开关表达同一件事（全局 GPU 加速 + 通道分配），且第一眼看到的是最不重要的 CPU 线程数。",
+      "implementation": {
+        "三态默认": "config.accel_setting() 改为：文件不存在 → enabled=None（auto，按硬件推荐并直接生效）；enabled=true → on；enabled=false → off（逐字回到老行为）。auto 的推荐分配只在真有引擎可用时生效（全 CPU 的推荐视为不改动），避免把老机器静默钉成 CPU。",
+        "auto 分配": "有 NPU → det/ocr/face_rec 给 NPU、face_det 给核显（两个引擎都有对象）；只有核显 → 四条全给核显；都没有 → 空（等价未启用）。registry.auto_channels() 缓存结果。",
+        "界面重排": "本机硬件（一行事实，无按钮）→ 加速（唯一开关 + 五行对照表 + 明确划出「缩略图/EXIF/地点 始终 CPU」）→ 语义模型（一行状态）→ 人脸模型（下拉）→ 高级（扫描批次 / CPU 线程数 / 测速诊断）。",
+        "删掉的": "①旧「GPU 加速」开关整个 GpuSection.vue（与加速分区重复）；②顶部「这台机器现在怎么跑」摘要（与对照表重复）；③语义档位下拉与换档确认（FEAT-137 已单档）；④扫描面板的 `GPU: ❌ CPU (provider)` 徽章 —— NPU 在干活时它照样显示 ❌，改为读实际生效分配。",
+        "降级的": "CPU 线程数从第一屏挪进「高级」，文案改为「语义索引自己用这个数的一半」——模型走 GPU 后它对速度基本无影响，CPU 主要在做缩略图/EXIF/地点。"
+      },
+      "highlights": {
+        "默认行为": "全新安装 /accel：mode=auto enabled=true channels={det:NPU, ocr:NPU, face_rec:NPU, face_det:GPU}；会话表 det=['OpenVINO:NPU']、face_det=['DmlExecutionProvider']",
+        "开关收敛": "全页只剩一个「开启/关闭加速」按钮，加速对象在下面逐行列出（含触发频率与目标设备），不需要从文案里推断按钮管什么",
+        "边界写清": "表格最后一行固定列出「缩略图 · EXIF · 地点 → CPU」，明确告诉用户这个开关不影响什么",
+        "验收": "vue-tsc 0 error；vite build 通过；/accel 三态（auto → off → on）与 /health 会话表逐项断言通过"
+      },
+      "tests": {
+        ".pi/smoke_feat139.py": "全新安装 auto（四条分配 + 生效翻转）→ 显式关闭（mode=off、全 CPU）→ 再开启（mode=on）→ /health 会话表 det=NPU、face_det=Dml"
+      },
+      "related_files": [
+        "python/vcr/config.py",
+        "python/vcr/model_registry.py",
+        "src/components/ModelGpuSettings.vue",
+        "src/components/settings/AccelSection.vue",
+        "src/components/settings/HardwareSection.vue",
+        "src/components/ScanPanel.vue",
+        "src/stores/content.ts",
+        "src/types/content.ts",
+        "docs/FEAT-139-加速默认开启与性能设置重排.md"
+      ],
+      "keywords": [
+        "性能设置",
+        "加速默认",
+        "auto 模式",
+        "界面重排",
+        "加速对象",
+        "GPU",
+        "NPU",
+        "CPU 线程数"
+      ],
+      "created_at": "2026-11-03T00:30:00+08:00",
+      "updated_at": "2026-11-03T00:30:00+08:00"
+    },
+    {
+      "id": "FEAT-140",
+      "name": "性能设置：删掉「语义模型」行（只剩一档），加速改为 NPU / 核显两个独立勾选（不可用则不显示）",
+      "module": "src/components/settings/AccelSection.vue（重写：两勾选 + channelsFor 映射）· src/components/ModelGpuSettings.vue（探针换人、删语义分区）· src/components/settings/ClipTierSection.vue（删除）· settings/FaceTierSection.vue（注释同步）",
+      "status": "done",
+      "purpose": "用户要求：①「语义模型 B/16 fp32 · 双塔 719MB · 已加载」那行去掉 —— 只剩一档、没有选择这件事；②「NPU 和 GPU 分开：有些用户没 NPU 或没下载组件就不显示；只勾 GPU 就全在 GPU；两个都勾就分开」。原界面是「一个开关 + 一张请求/实际两列的表」，用户需要从表里反推开关的作用范围；改成两个勾选后，勾选本身就是意图。",
+      "implementation": {
+        "两个勾选": "☑ NPU（检测·文字·人脸编码） / ☑ 核显（全部计算）。channelsFor(useNpu, useGpu) → 通道表：只勾核显=四条全 GPU；只勾 NPU=前三条 NPU 且 face_det 显式 CPU；都勾=前三条 NPU + face_det GPU；都不勾=enabled:false。",
+        "不可用不渲染": "没有 NPU 硬件 → 整行不出现；有 NPU 但运行时未装 → 只留一行「需先装运行时 [下载 15MB]」（不是假勾选框）；两个都没有 → 一行「没有可用的加速引擎，只跑 CPU」。",
+        "删语义模型行": "FEAT-137 已收敛为单档，没有可选项；ClipTierSection.vue 整文件删除（168 行）。它原本兼任「服务是否可用」的探针，改为由 AccelSection 调 /accel 兼任（emit failed/recovered），横幅与解锁语义不变。",
+        "只勾 NPU 的坑": "face_det 必须显式写 CPU。留空会走自动探测又跑回核显，勾选语义就破了（已在代码注释里标明，回归时最容易踩）。"
+      },
+      "highlights": {
+        "四组合实测（读 ORT 实际绑定，不是配置回显）": "只勾核显→{GPU,GPU,GPU,GPU}；只勾 NPU→{NPU,CPU,NPU,NPU}；两个都勾→{NPU,GPU,NPU,NPU}；都不勾→全 CPU",
+        "默认态": "current_accel.json 不存在 → mode=auto → 两个勾选都是勾上（NPU 3 条 + 核显 1 条）",
+        "删除量": "ClipTierSection.vue 168 行 + 语义模型分区与其 import/事件绑定",
+        "验收": "vue-tsc 0 error；vite build 通过；四组合逐通道断言通过"
+      },
+      "tests": {
+        ".pi/smoke_feat140.py": "用与前端逐字一致的 channelsFor 打 /accel，再逐通道 /benchmark 加载并读 /health 会话表，断言实际设备等于期望"
+      },
+      "related_files": [
+        "src/components/settings/AccelSection.vue",
+        "src/components/ModelGpuSettings.vue",
+        "src/components/settings/FaceTierSection.vue",
+        "docs/FEAT-140-加速勾选与语义模型行下线.md"
+      ],
+      "keywords": [
+        "性能设置",
+        "加速勾选",
+        "NPU",
+        "核显",
+        "语义模型行",
+        "服务探针"
+      ],
+      "created_at": "2026-11-03T01:30:00+08:00",
+      "updated_at": "2026-11-03T01:30:00+08:00"
+    },
+    {
+      "id": "FEAT-141",
+      "name": "语义索引（CLIP）进入加速分配表：设备可看、可切；默认 CPU（量出来的取舍）",
+      "module": "python/vcr/config.py（CHANNEL_KEYS + clip）· python/vcr/model_registry.py（_channels 归一化 / _clip_providers 按表执行 / default_channels clip=CPU / accel_info 映射 clip_vision）· src/components/settings/AccelSection.vue（表格新增一行 + 行内切换）",
+      "status": "done",
+      "purpose": "用户看截图后指出「没有显示语义模型 CLIP 使用什么硬件」。查下去问题比“没显示”更深：CLIP 的实际设备取决于一个隐式状态 —— 点过加速开关（set_accel 会把 _providers_sel 复位成自动探测）就在 DirectML，从没点过就在 CPU，而界面两处都没写。同一台机器、同一个设置，跑在哪取决于用户点没点过开关。",
+      "implementation": {
+        "clip 成为可分配项": "config.CHANNEL_KEYS 追加 clip（伪通道，同时管 clip_vision/clip_text 双塔）；_clip_providers() 按分配表执行：CPU→CPU；GPU/NPU→DirectML（NPU 不接管 CLIP：双塔是可变 batch 整图，不在 OV_SHAPES 静态化名单里）；未分配→旧的全局语义。",
+        "旧文件归一化": "新增 _channels()：持久化文件里缺项（FEAT-140 时代的文件没有 clip）→ 按推荐值补齐，否则它会静默回落到旧语义，UI 上出现「勾了核显却写 CPU」这种对不上的状态。",
+        "默认 = CPU（量出来的）": "两轮各 200 张全新建档：CLIP 在核显语义腿快 1.4~1.8×（58.0→31.8s / 33.3→24.1s），但把 AI 腿拖慢 30~70%（17.5→29.9s / 17.1→22.3s）—— 它整批编码长时间占住 DML 队列，人脸检测在后面排队。净效果取决于新照片占比：首次导入划算，日常增量纯亏，后者是常态。",
+        "UI": "对照表新增「语义索引（CLIP）· 新照片」一行，右侧设备是可点按钮，单独切 CPU / 核显；例外：只勾核显 = 「全在核显上」，此时 CLIP 一起给核显（用户显式选择优先）。"
+      },
+      "highlights": {
+        "可见性": "表里现在有五条计算 + 一条「缩略图·EXIF·地点 始终 CPU」，CLIP 不再隐形",
+        "可切性": "点那一行即可切；实测切换后 /health 会话表在 CPUExecutionProvider ↔ DmlExecutionProvider 之间真实翻转，不是配置回显",
+        "默认值有依据": "默认 CPU 是因为「日常增量重扫」才是常态；首次导入大量照片时可一键改核显（−27%~−45%）",
+        "回归": "FEAT-140 四种勾选组合复跑通过；vue-tsc 0 error；vite build 通过"
+      },
+      "tests": {
+        ".pi/clip_device_probe.py": "clip=CPU vs clip=GPU 两轮 A/B（200 张，AI 腿 ∥ 语义腿并发），量语义腿、AI 腿与合计",
+        ".pi/smoke_feat141.py": "旧文件归一化→clip 有值；默认 CPU；切核显→会话变 Dml 且 effective=GPU；切回 CPU"
+      },
+      "related_files": [
+        "python/vcr/config.py",
+        "python/vcr/model_registry.py",
+        "src/components/settings/AccelSection.vue",
+        "docs/FEAT-141-语义索引进入加速分配表.md"
+      ],
+      "keywords": [
+        "CLIP",
+        "语义索引",
+        "加速分配",
+        "DML 队列",
+        "设备可见性",
+        "FEAT-140"
+      ],
+      "created_at": "2026-11-03T02:30:00+08:00",
+      "updated_at": "2026-11-03T02:30:00+08:00"
+    },
+    {
+      "id": "FEAT-142",
+      "name": "HEIC/HEIF 支持：系统 WIC 解码 + 扫描白名单 + 大图预览缓存",
+      "module": "src-tauri/src/heic.rs（新增）· src-tauri/src/preview.rs（新增）· src-tauri/src/imgio.rs（HEIF 分流 + 尺寸探针）· photo_scan.rs / thumbnail.rs / vision.rs（扩展名白名单）· tone.rs / photo_info.rs / edit/source.rs（改走中央解码）· src/utils/photoSrc.ts（新增）· src/components/PhotoLightbox.vue · Cargo.toml（windows crate）",
+      "status": "done",
+      "purpose": "需求原文：「支持苹果 heic 格式图片扫描」。项目所有解码都基于 image crate，而它完全不支持 HEIF 容器 —— iPhone 照片既不进扫描列表，也出不了缩略图与向量（进而让相似去重对 iPhone 图完全失效）。",
+      "implementation": {
+        "解码通道": "走 Windows 系统编解码器 WIC（IWICImagingFactory → CreateDecoderFromFilename → IWICBitmapFrameDecode.GetSize → CreateFormatConverter → GUID_WICPixelFormat32bppBGRA → CopyPixels），本机实测命中 Microsoft HEIF Decoder，1440×960 样本解出正确像素与正确朝向。不走 libheif（要 vcpkg 编 C 库 + 分发 DLL）也不走 pure-rust heic crate（AGPL-3.0，与 PolyForm Noncommercial 分发冲突）。",
+        "魔数分流": "heic::is_heif_bytes 解析 ISO-BMFF ftyp box：major brand 或任一 compatible brand 命中 HEIF 家族（mif1/mif2/msf1/heic/heix/hevc/hevx/heim/heis/hevm/hevs）即视为 HEIF；显式排除 avif/avis（同样带 mif1 兼容 brand，但编码是 AV1，走 HEIC 路径会给用户错误的「装 HEIF 扩展」提示）。imgio::open_memory 只认魔数不认扩展名（延续 BUG-2026-1027-004 的口径：.heic 名字下装着 JPEG 也要能读）。",
+        "白名单": "photo_scan.rs / thumbnail.rs / vision.rs 三处 IMAGE_EXTS 各加 heic/heif（缩略图侧排在最后，避免抢 JPEG 当封面）；前端选图对话框（Home / SmartSearch / AlbumMeta / PhotoEditor）同步放开。",
+        "EXIF 免改造": "kamadak-exif 0.6 的 read_from_container 原生支持 HEIF 容器，photo_scan 早就在用这个入口 —— 即使系统缺 HEIF 解码器、像素解不出来，拍摄时间/GPS/机型照样能入库。",
+        "中央解码收口": "tone.rs / photo_info.rs / edit/source.rs 原先各自 image::open（按扩展名猜格式），统一改走 imgio::open_any；avatar.rs 早已走 imgio。缩略图 open_any_image 改为委托 imgio，ThumbError 新增 Other(String) 以保留「缺扩展」这类可操作错误串。",
+        "大图预览": "WebView2 不认 HEIC → preview::ensure 按需渲染缓存 JPEG（长边默认 2560、质量 88，缓存键 = thumb_photo_hash 前 2 位分目录 + hash + max_edge，临时文件 + rename 原子替换）；前端 photoSrc.resolvePhotoSrc 只对 heic/heif 走 invoke ensure_photo_preview，其余格式直连原文件零开销；Lightbox 预览失败时显示原因（不是白板）。",
+        "能力探针": "heic_support 命令枚举 WIC 解码器找 GUID_ContainerFormatHeif，返回 {available, codec, reason}；缺扩展时重复清理页顶部明示「装 HEIF 图像扩展」。"
+      },
+      "highlights": {
+        "许可": "选型是被许可与构建链逼出来的：pure-rust heic crate 是 AGPL-3.0，libheif 要 vcpkg 编 C 库；系统 WIC 零新增依赖、零分发体积，代价是依赖用户机器装了 HEIF 扩展 —— 所以要探针 + 降级提示，而不是假装能用。",
+        "EXIF 与像素解耦": "HEIF 的 EXIF 是容器内一个 item，kamadak-exif 直接可读；这条把「缺解码器」的损失从「照片完全不可用」压到「只影响缩略图/预览/向量」。",
+        "魔数优先": "AVIF 常把 mif1 写进兼容列表 —— 只按 compatible brand 判会把它错路由到 HEIC 路径，错误提示还会误导用户装错扩展，因此必须按 major brand 排除 avif/avis。",
+        "HEIC 不套 EXIF Orientation": "HEIC 的旋转是容器属性 irot/imir，系统解码器已烘焙；再套 EXIF Orientation 会二次旋转。预览链路按扩展名分流处理。"
+      },
+      "tests": [
+        "cargo test --lib heic / imgio / preview：12 项通过（含 ftyp brand 表、AVIF 排除、JPEG SOF/PNG IHDR/WebP 尺寸探针、garbage 拒绝）",
+        "PMS_HEIC_SAMPLE=… cargo test --lib -- --ignored preview：真实 HEIC → 预览 JPEG 落盘、长边限制生效、二次调用命中缓存不重写文件",
+        "PMS_HEIC_SAMPLE=… cargo test --lib -- --ignored heic：真实样本 codec=Microsoft HEIF Decoder、1440×960、头部尺寸与解码尺寸一致",
+        "独立对照：同一 HEIC 用 .NET WIC 渲染成 PNG 目视确认像素与朝向正常（非黑屏/花屏/倒置）",
+        "cargo test --lib 全量 441 通过 0 失败；cargo build --bin 链接通过；npx vue-tsc --noEmit 0 错误；npm test 164 通过；npx vite build 通过"
+      ],
+      "related_files": [
+        "src-tauri/src/heic.rs",
+        "src-tauri/src/preview.rs",
+        "src-tauri/src/imgio.rs",
+        "src-tauri/src/photo_scan.rs",
+        "src-tauri/src/thumbnail.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/tone.rs",
+        "src-tauri/src/photo_info.rs",
+        "src-tauri/src/edit/source.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/Cargo.toml",
+        "src/utils/photoSrc.ts",
+        "src/components/PhotoLightbox.vue",
+        "src/views/Home.vue",
+        "src/views/SmartSearch.vue",
+        "src/components/AlbumMeta.vue",
+        "src/components/workshop/editor/PhotoEditor.vue"
+      ],
+      "keywords": [
+        "HEIC",
+        "HEIF",
+        "WIC",
+        "iPhone",
+        "系统编解码器",
+        "Microsoft HEIF Decoder",
+        "AVIF排除",
+        "魔数分流",
+        "imgio",
+        "预览缓存",
+        "许可冲突",
+        "AGPL"
+      ],
+      "created_at": "2026-10-31T20:11:12+08:00",
+      "updated_at": "2026-10-31T20:11:12+08:00"
+    },
+    {
+      "id": "FEAT-143",
+      "name": "重复照片清理：内容哈希精确重复 + CLIP 向量相似分组 + 两档删除",
+      "module": "src-tauri/src/dedupe.rs（新增）· src-tauri/src/db/embedding.rs（dominant_embedding_model）· src-tauri/src/lib.rs（命令注册）· src/stores/dedupe.ts（新增）· src/components/DedupePanel.vue（新增）· src/components/dedupe/DupeGroupCard.vue（新增）· src/types/dedupe.ts（新增）· src/views/ScanHub.vue（启用置灰 tab）",
+      "status": "done",
+      "purpose": "需求原文：「扫描大组件中的重复照片清理：a. hash 一致的为重复照片 b. 图像塔模型的向量相似度 >0.9 为相似图形或者其他阈值，然后扫描完成后呈现所有重复照片，支持全选，默认保存一张原本的和自主勾选」。用户确认四点：范围=直接全库；阈值滑杆 0.80–1.00；删除分两档（仅删记录 / 移入回收站）；无向量的照片跳过并提示。",
+      "implementation": {
+        "精确重复": "项目的 photo_hash 是「路径+大小+mtime」组合哈希，天然把同一张照片的两个副本算成不同值，因此内容哈希必须另算：先按文件体积分组，只有「同尺寸出现 ≥2 次」的候选才流式读盘算 SHA-256（1MiB 分块、校验读取长度防止边扫边改）。报告里回报 hashed_files，让「体积预筛省了多少」可核对。",
+        "相似判定": "直接读已验证入库的 CLIP 图像塔向量（photo_embeddings，512 维、服务端已 L2 归一化）。不走 clip_model_id（它会 ensure_service_ready → 为读库先拉起整套 Python 推理服务），改用 db.dominant_embedding_model 取「行数最多的模型标识」——重复检测是离线批处理，不该被微服务生命周期绑架。",
+        "无损剪枝": "对单位向量有严格上界 cos≥t ⇒ |a_d−b_d| ≤ √(2−2t)（任意维 d）。选方差最大的那一维排序，每个 i 只比较窗口内的后续邻居（t=0.9 → 窗口 0.447），再算完整点积。这是数学上无损的剪枝，不是抽样近似；单测用 4 个阈值对比暴力两两比较，分组结果必须完全一致。",
+        "分组": "完全链接（complete-linkage）贪心：组内**任意两张**都必须 ≥ 阈值，不是并查集连通分量。教训来自实测——原用并查集时，24905 张真实图库在阈值 0.90 下有 29.3 万条 ≥0.90 的边，连通分量把 9328 张串成一组（覆盖 18786 张），「留一张删 9327 张」在清理场景毫无意义，且链式传递会把明显不同的照片拉进来。改完全链接后同一库：0.90 → 5029 组/最大 148 张；0.95 → 4497 组/最大 41 张；0.99 → 3097 组/最大 10 张。组内 similarity 取「保留那张 vs 其余每一张的最低余弦」。精确组与相似组互斥（已进精确组的不再参与相似聚类），有单测断言全库路径不重复出现在两个组。",
+        "保留策略": "分辨率（imgio::probe_dimensions 读头部，不解码像素）→ 体积 → 修改时间更早 → 路径序。为什么不是体积优先：iPhone 的 HEIC 原图与导出 JPEG 体积可能相近但分辨率差一档。用户可在组内点「设为保留」改选，换保留时旧的那张自动回到待删集合。",
+        "两档删除": "「仅删除记录」按相册分组调用 delete_photo_records（写排除表，照片从网格消失、文件保留，可在最近删除恢复）；「移入回收站」调 delete_photos_to_trash（回收站 + 级联清缩略图缓存与扫描记录）。两者都只处理勾选项，绝不触碰保留那张；失败项保留在列表可重试并如实提示张数。",
+        "界面": "扫描入库 Hub 里原本置灰的「重复扫描清理」tab 启用为内联面板：判据开关 + 阈值滑杆（带口径提示）+ 阶段进度 + 汇总带 + 分组卡片（横向缩略图条、默认勾选除保留外全部、组内全选）+ 分页（12 组/页）+ 底部常驻操作条（已选张数与体积、全选可删、两档删除、二次确认）。三态齐全：加载进度 / 空态（含「调低阈值重扫」「去扫描入库」两个出口）/ 错误态。",
+        "性能（2026-10-31 优化）": {
+          "遍历+stat": "原：逐相册串行 walkdir + 每张 stat + **每张多开一次文件读 4KB 探尺寸**。实测 6970 张（3 个真实相册、debug）：17.22s → 拆开看是「探尺寸」独占 17.0s（98.8%），串行不探尺寸只要 0.206s。所以真正的病灶不是线程，而是**对全库每张都白读一次文件头**（只有进组的极少一部分才需要分辨率）。现在：尺寸延到 to_item（只对入组照片读），walkdir 与 stat 都改成 rayon 并行 → 0.129s（并行相对串行精简版 1.59x）。",
+          "SHA-256": "原：逐文件串行。现：rayon 并行（进度用原子计数节流）。实测 1154 个体积碰撞候选（debug）：24.89s → 2.45s = **10.17x**；结果与串行逐组一致（基准里断言组数相等）。",
+          "相似聚类": "原：已用 rayon 并行，但向量各自堆分配、内层用单累加器标量循环。现：nxD 摊平成连续矩阵（顺序访问、预取器友好）+ 8 累加器 dot_fast + 运行时探测的 AVX2/FMA 内积（不支持则回落标量，非 x86 直接走标量）。实测 24905 张真实 CLIP 向量（release）：单线程 76.1s → 14 线程 12.1s（6.3x）→ 加 AVX2 后 8.0s（相对单线程 9.5x）；debug 下 468s → 55.7s。",
+          "一维窗口剪枝的真相": "模块头原本把「按方差最大维排序 + 柯西-施瓦茨窗口」当成性能支柱。实测（24905 张真实向量、阈值 0.90）**只剪掉 0.0%**：512 维单位向量任一坐标的标准差 ≈1/√512≈0.044，而窗口有 √(2-2*0.9)=0.447，几乎所有点对都落在窗内。它只在「某一维特别有区分度」的数据上有效（合成基准里确实有效）。代码保留（成本极低、无损），但已在模块头/注释/日志里写明不是性能来源；日志现在还打印「实际比较对数 / 全量对数 / 剪掉百分比」，以后可用真实数据复核这个结论。",
+          "下一步（未做）": "瓶颈已转移到内存带宽（每对扫 4KB，3.1 亿对 ≈ 620GB）；要再上一档需按 256×256 块做矩阵乘法式分块（tiling），预估还能降一个量级。"
+        },
+        "同址去重（2026-11-01）": "用户反馈「相册 A 包含相册 B，两个都入库后同一张照片被显示成两条重复」。原口径是 Entry.key = 小写路径字符串，只对「同一相册根下的同一写法」有效；嵌套相册经 junction / 8.3 短名 / 斜杠方向 / 盘符大小写等写法差异会得到不同字符串。现在：①Entry 增加 ident = canonicalize(相册根) + 相对路径（小写、分隔符统一），相册根只 canonicalize 一次（代价与相册数同阶），收集阶段按 ident 去重并打印归并条数；②组内再按 canonicalize(文件) 合并一次（collapse_same_target），只对已入组的少量照片付系统调用；合并后不足 2 张的组直接丢弃；③DupItem 增加 dir（文件夹地址），卡片缩略图下方显示（长路径只留末尾两级、title 挂全路径）；④前端 utils/dedupeGroups.sanitizeReport 再兜一层按小写路径去重并重算组数/可释放体积（旧构建的后端不做这件事）；⑤报告新增 collapsed_same_file，汇总带在非 0 时显示「同址合并 N 条」。",
+        "列表渲染（2026-11-01）": "分页（12 组/页，翻页才换）+ 页内视口热加载。中途试过「滚动增量渲染」（useIncrementalReveal 按屏算预算），用户明确要求「还是原来翻页设计，翻页热加载」——分页负责「一次渲染多少组」，视口加载负责「一次取多少缩略图」，两件事分开做：卡片挂载后由 IntersectionObserver（rootMargin 400px）在进视口时才把该组缩略图排队，缩略图写入按 requestAnimationFrame 合并，一张卡几十张图不会逐张触发重渲染。另接入 PhotoLightbox：点缩略图即开全站同一个灯箱，浏览序列 = 该组全部照片，可 ←/→ 翻页、Esc 关闭。",
+        "默认阈值 0.98（2026-11-01）": "阈值滑杆默认值 0.90 → 0.98（用户指定）。localStorage 键名不变（避免丢掉用户自己调过的值），读到旧默认 0.90 时自动迁移成 0.98；提示文案按档重写（0.98 档写明「同一张照片的不同尺寸/不同压缩才会命中」）。",
+        "按文件夹折卡（2026-11-01）": "展示与勾选单位从「文件」改成「文件夹」：一个文件夹一张卡、卡上标「N 份」并列出文件名。起因是实测用户的库——同一张照片在 img\\Pictures 有 3 份、img\\手机照片\\无地点 也有 3 份（内容逐字节相同、文件名 mmexport…957/…592/…866 不同），按文件铺开就是 6 张一模一样的缩略图，其中几张还与「保留」那张地址相同，用户会以为同一张照片被重复列出、更怕删除会删掉想留的那张。折卡后：卡片数 6→2；每张卡只对应一个地址；保留所在文件夹的卡整张不可勾选（store 的 selectCell 再卡一道）。地址与文件名都完整显示（不再截断成 …\\img\\Pictures）。保守取舍：保留文件夹里其余的副本不参与删除，卡上如实写「另有 N 份」，并在组内注脚说明本工具不动它们。"
+      },
+      "highlights": {
+        "photo_hash 不等于内容哈希": "项目里所有地方复用 photo_hash 做去重键（缩略图缓存、内容扫描 upsert），但它含路径，副本必然不同 —— 「hash 一致=重复」这条需求必须新增内容哈希，且不能改动既有 photo_hash 口径（会连带整库缓存失效）。",
+        "顺序即性能": "体积预筛让全库整读降到极小候选集；相似侧用方差最大维 + 柯西-施瓦茨窗口剪枝，阈值越高剪得越狠。两条都不牺牲正确性，且都能用「与暴力结果逐组比对」的单测钉住。",
+        "离线优先": "相似判定完全不依赖 Python 服务在线：向量在库里，模型标识从库里取。代价是换档后未重建向量的照片会被跳过 —— 这在报告与界面里如实报数并给出「去扫描入库」入口。",
+        "两档语义": "「仅删记录」与「移入回收站」不是措辞差异：前者文件还在、可从最近删除恢复；后者进系统回收站、并级联清缩略图与扫描记录。界面用两个独立按钮 + 各自独立的确认文案，避免用户点错档。",
+        "顺序即性能 → 改为「先量再做」": "这轮优化的价值一半在代码、一半在证伪：①「探尺寸白读全库文件头」比多线程重要得多（98.8% 的时间在这里）；②一维窗口剪枝在真实高维数据上是 0% 效果，不能当卖点；③并查集传递闭包在真实相似图上会把 9328 张串成一组，属于语义错误而非性能问题。三件事都只有拿真实数据量过才会暴露。",
+        "「同一个文件」不能按路径字符串判": "路径字符串只是「用户/系统当时怎么写的」，同一个文件经嵌套相册、junction、8.3 短名、斜杠方向、盘符大小写可以写出好几种字符串。去重身份要用 canonicalize 的真实路径 —— 但只对相册根（每相册一次）与已入组的少量照片做，别对全库每张都付一次系统调用。",
+        "懒加载图片 ≠ 懒加载列表": "第一次做这段时把「懒加载列表」当默认答案（滚动增量渲染），被用户否掉——他要的是翻页。结论：长列表的「一次渲染多少」与「一次取多少图」是两件事，分页与视口观察各管一件事；判断图片懒加载是否真生效，看的是缩略图请求数是否随滚动增长，而不是有没有 observer。",
+        "「同一个文件夹」也是一种展示单位": "去重粒度是文件，但用户的感知单位是「位置」。同一张照片在同一个文件夹里有 3 份，用户看到的是「同一张照片显示了 3 次」而不是「这里有 3 个可清的文件」——展示单位要跟着用户的感知走，删除单位可以更粗（整卡 N 份），但保护规则必须更细（保留那张 + 保留文件夹整卡不可勾）。"
+      },
+      "tests": [
+        "端到端用例断言：total_photos=4 / exact_groups=1 / similar_groups=1 / hashed_files=3 / similar_candidates=2 / 全库路径不重复出现在两个组",
+        "cargo test --lib 全量 441 通过 0 失败；cargo build --bin 链接通过",
+        "npx vue-tsc --noEmit 0 错误；npm test 164 通过；npx vite build 通过",
+        "cargo test --lib dedupe：7 项通过（含 AVX2 点积 vs 标量一致性、剪枝 vs 暴力在同为完全链接下逐组一致、全流程端到端、单飞锁释放）",
+        "基准（默认 #[ignore]，需真实数据）：bench_real_library —— 6970 张真实相册对比「旧串行+探尺寸 / 串行不探尺寸 / 新并行」与哈希 10.17x；bench_real_vectors —— 24905 条真实 CLIP 向量，阈值 0.90/0.95/0.99 的分组规模与耗时；bench_cluster_scaling —— 2 万合成向量的线程缩放",
+        "cargo test --lib 全量 442 通过 0 失败；cargo test --release 基准复跑一致；npx vue-tsc --noEmit 0 错误；npm test 164 通过；npx vite build 通过",
+        "cargo test --lib dedupe：9 项通过 —— 新增 nested_album_same_file_counted_once（父/子相册都入库，同一文件只算一张且归属最深相册）、collapse_same_target_keeps_one（同址两写法只留一条）、exact_groups 断言 dir 已填",
+        "真实库校验（#[ignore]，需 PMS_DB）：cargo test --lib -- --ignored verify_real_library_same_path —— 130 相册 / 24,996 张，同址归并 75 条，精确重复 2,617 组，组内无重复路径、无重复地址、keep_path 在组内、可释放体积与逐项求和一致（7.4 GB），debug 32.5s",
+        "npm test 169 通过（新增 utils/dedupeGroups.test.ts 5 项：同路径去重 / 空组剔除 / keep 回落 / 可释放体积 / 地址缩写）；npx vue-tsc --noEmit 0 错误；npm run test:types 通过；npm run build 通过",
+        "npm test：新增 src/utils/dedupeGroups.test.ts 5 项（同一照片散布两文件夹→折叠成 2 张卡且保留文件夹排第一；可删路径永不含保留那张与保留文件夹里的副本；同路径去重；折叠后无可删副本的组整组消失；保留项被去重掉时回落并重算体积）",
+        "组件级构建验证：用临时 vite 配置单独打包 DedupePanel.vue + DupeGroupCard.vue（绕开当时仓库里另一个未完成的编辑器模块改动），产物生成成功"
+      ],
+      "related_files": [
+        "README.md",
+        "src-tauri/src/db/embedding.rs",
+        "src-tauri/src/dedupe.rs",
+        "src-tauri/src/dedupe.rs（基准用例）",
+        "src-tauri/src/imgio.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/photos.rs",
+        "src/components/DedupePanel.vue",
+        "src/components/PhotoLightbox.vue",
+        "src/components/dedupe/DupeGroupCard.vue",
+        "src/composables/useIncrementalReveal.ts",
+        "src/stores/dedupe.ts",
+        "src/types/dedupe.ts",
+        "src/utils/dedupeGroups.ts",
+        "src/views/ScanHub.vue"
+      ],
+      "keywords": [
+        "重复照片",
+        "去重",
+        "内容哈希",
+        "SHA-256",
+        "体积预筛",
+        "CLIP向量",
+        "余弦相似度",
+        "并查集",
+        "无损剪枝",
+        "柯西-施瓦茨",
+        "保留策略",
+        "回收站",
+        "仅删记录",
+        "全库扫描",
+        "并行扫描",
+        "rayon",
+        "AVX2",
+        "dot_fast",
+        "摊平矩阵",
+        "完全链接",
+        "complete-linkage",
+        "内存带宽",
+        "基准测试"
+      ],
+      "created_at": "2026-10-31T20:11:12+08:00",
+      "updated_at": "2026-11-01T14:15:12+08:00"
+    },
+    {
+      "id": "FEAT-150",
+      "name": "创意工坊重做：调色台整体下线，改为「左栏选工具 + 右栏工作区」的图像加工工具台（压缩上线）",
+      "module": "src-tauri/src/tools.rs（图像压缩 image_compress）· src-tauri/src/lib.rs（命令注册 / 摘除 20 条 edit_*/studio_*）· src-tauri/src/edit/**、src-tauri/src/studio.rs、python-studio/**（删除）· src/views/Workshop.vue（重写：左栏工具导航 + 右栏工作区）· src/components/workshop/{CompressTool,PhotoTray,ToolIcon}.vue（新增）· src/types/tools.ts、src/utils/bytes.ts、src/utils/pathParts.ts（新增）· src/components/workshop/editor/**、useStudioOps.ts、src/stores/edit.ts、src/composables/useEditEngine.ts、src/types/edit.ts(+test)（删除）· src/components/{PhotoLightbox,PhotoActionMenu,PhotoGrid}.vue、src/composables/usePhotoActions.ts、src/views/Home.vue、src/router/index.ts（入口文案）",
+      "status": "done",
+      "date": "2026-11-05",
+      "purpose": "用户判断：创意工坊里的组件违背软件定位、重复造轮子，建议改成 LR/PS 之外、管理相册时顺手的工具 —— ① 图像压缩 ② 图像超分 ③ OCR 识别 ④ AI 图像创作（图生图，如主题抽取制作手账，后续由 agent 执行）。要求：分析合理性 → 合理则删除现有工坊后端 → 前端预留为这些工具并重新排版。第二轮口径（用户原话）：「菜单排布还是参考其他组件的设计，可以做成侧边栏选择工具，选择后进入对应的工具界面，UI 布局和风格沿用其他界面」「这是啥没用就删除」→ 改为左栏工具导航 + 右栏工作区，并下线「旧调色配方清理」入口。确认口径：压缩必须可用且支持指定大小与裁切（Q1=B）；名称保留「创意工坊」；创作区本轮只有主题手账。",
+      "implementation": {
+        "为什么下线": "① 与 LR/PS 逐项重叠：曝光/对比/高光阴影/色温色调/曲线/裁剪拉直/饱和/锐化 + 蒙版，就是 LR 的核心面板，CLAHE 与四种模糊就是 PS 滤镜；Rust 侧 333 KB / 15 文件 + 一套独立 Python 微服务（独立端口/依赖/日志/冷启动），而 README §一 的四条定位（本地存储/离线 AI/文件夹抽象/检索优先）里没有修图。② 发布版里那半条腿是死的：studio.rs 要 resource_dir/studio/studio-server.exe，而 release.tauri.conf.json 的 bundle.resources 只有 VCR —— 装给用户后算子通道直接报「缺少 studio-server.exe」，只有开发机能跑（python-studio/server.py）。",
+        "删除范围": "Rust：src-tauri/src/edit/**（15 文件）、studio.rs、python-studio/；lib.rs 摘掉 mod 声明、EditState::manage 与 20 条命令注册。前端：components/workshop/editor/**（9 个）、useStudioOps.ts、stores/edit.ts、composables/useEditEngine.ts、types/edit.ts(+test)。删前核对过引用闭包：edit 子系统只被工坊引用，删掉不影响任何其他功能。",
+        "压缩（tools::image_compress）": {
+          "分层": "命令层只做鉴权 + spawn_blocking + 出入口日志；服务层 compress_one 编排 解码→裁切→缩长边→编码→落盘；编码细节拆成 encode_under_target / crop_rect_for / output_path 各自单测。",
+          "凑大小": "质量阶梯 [95,88,82,74,66,58,50,42,34,28] 命中即停，再向上 +4/+8 试探把预算用满；最低档仍超标就按长边 ×0.85 逐轮缩小（下限 480px，最多 6 轮），触底仍不达标则返回最低质量结果并由前端标「未达标」。为什么不用二分：12MP 单次 JPEG 编码约 150~300 ms，二分 7 次 × 批量 20 张就是半分钟起步。",
+          "裁切": "居中裁切，交叉相乘判比例（避免浮点误差），先裁再缩（缩完再裁会多一次大图重采样）。",
+          "不覆盖原图": "产物名 <stem>.jpg；输出目录等于源目录且该名正是原图时自动改 <stem>_compressed.jpg，重名再叠 _1/_2。压缩是破坏性操作，写回原图没有回头路。",
+          "透明与元数据": "输出固定 JPEG：透明底显式铺白（直接 to_rgb8 会让透明区变黑）、不携带 EXIF —— 两点都在 UI 上写明，不做隐式承诺。"
+        },
+        "状态诚实": "只做两态（可用 / 规划中）：左栏给不可用项标一个弱色「规划」，点开右栏说明「还在做 + 计划」，不做假入口。不在左栏底部汇总「N / M 个可用」—— 每项自己已标注，再汇总一次是同一件事说两遍。",
+        "排版（第一轮：按调用方式分区）": "初版把工坊分成「处理（行式清单）/ 创作（大卡 + 流程条）」两区，共用同一个素材托盘。问题：工具是**常驻切换**的对象（压完一批接着换下一个），不是「进入再退出」的目的地 —— 一屏卡片列表逼出「返回列表 → 再进下一个」两步，还要一个「返回」中间态。这一版已被下一条取代。",
+        "排版（第二轮：左栏选工具 + 右栏工作区，已落地）": "直接沿用相册页 / 时间线页那套左栏导航（AlbumList.vue 的 .album-side）：grid 176px + 30px gap + var(--gutter) 左右留白、左栏 sticky top:70px、分组小标 9.5px/.15em/600/--fg-2、行式条目高 27px、选中 = 左侧 2px --c-accent 金条（top/bottom 内缩 7px）+ 文字提亮、底只给 --hover。两页左栏的行高/金条内缩取同一组值，同屏切换不能差 3px，否则会被读成两个组件。右栏自上而下：工具标题行（图标 + 名字 + 一句话说明）→ 共用素材托盘 → 该工具的工作区 → 页脚立场句。分组按输入/输出性质：「处理」= 对单张/一组做变换、输出副本；「创作」= 从一组照片生成一件作品。窄窗 ≤900 左栏折成顶部横向工具条（与相册页同一断点），此时去掉左侧金条改描边，否则横排里读不出「左边」这个方向。",
+        "删除：旧调色配方清理": "原「维护」区提供 recipe_sidecar_scan / recipe_sidecar_purge（递归找 *.pmrecipe.json / *.pmmask.png，报数量体积后进回收站）。它存在的唯一理由是给 FEAT-099 的 sidecar 收尾；那套编辑链路已整条删除，再留一块「清理」面板等于把用户引向不存在的东西 —— 用户原话「这是啥没用就删除」。Rust 侧两个命令、SidecarScan/SidecarPurgeOutcome 类型、RecipeCleanup.vue 一并下线。残留风险：从 v0.4.4 升上来的用户，当年调过色的目录里可能还有这类小文件（约 2KB/个），现在没有入口可清 —— 需要时从 git 历史取回该命令，或按文件名手工删；已在 README 的 v0.4.5 小节写明。"
+      },
+      "highlights": {
+        "删对了一半的死代码": "发现「算子通道在发布包里根本没打包」比「定位错配」更硬：这不是取舍问题，是装给用户就不能用的功能在仓库里躺了两个月。",
+        "定位句要能挡需求": "README §一 的四条定位（本地/离线/文件夹抽象/检索优先）没有「修图」—— 有这句话，删调色台就不是拍脑袋，而是拿定位当判据。",
+        "图生图 ≠ 文生图": "用户要的「AI 图像创作」是图生图（主题抽取做手账），素材/主题/受众都在本机相册里，LR/PS 做不了 —— 这条是四项里差异化最强的；而文生图与相册无因果、要几 GB 模型，属于不该进这个 app 的需求。",
+        "手账不靠生成模型": "手账本质是选图 + 排布 + 文案，三件事用现成能力就能确定性完成（CLIP 语义分类 + 人脸聚合 + 去重 + 模板 + justifiedRows）；生成模型只在「单张插画化」出场 —— 版式与文字交给模型反而最不稳。",
+        "压缩的坑在「凑不到」": "指定大小必然存在凑不到的输入（噪点多的图、质量到底仍超标）。可选做法是静默返回、或降尺寸直到达标；这里的取舍是「先降长边、到底仍超标就如实标未达标」——用户拿去发邮件才发现超限，比显示一个红字更糟。",
+        "托盘是被结构逼出来的": "当四件事的输入都是「一组照片」时，输入区就不该属于某个工具。反过来，如果工具输入各不相同（有的要单张、有的要参数文本），共用托盘就会变成累赘 —— 结构要跟着输入的形状走。",
+        "侧栏 vs 卡片列表": "判断依据不是「哪种好看」，而是**操作的循环形态**：常驻切换（工具集要反复来回用）→ 侧栏，一次点击换工具；进入再退出（低频目的地，如某个相册详情）→ 列表。上一轮把「进入目的地」的排版套在「常驻切换」的对象上，才多出「返回」这一步。",
+        "删一个面板要连带删理由": "「清理残留」面板删掉后，残留文件就没人管了 —— 但这批残留是自家已下线功能产生的副产品（FEAT-099 sidecar），而不是用户的资产。所以正确做法是：面板下线 + 在 README 写明残留位置与手工处理方式，而不是为了「保底」留一个指向已不存在功能的面板。"
+      },
+      "tests": [
+        "cargo test --lib tools::：8 项通过（parse_aspect 正反两向 / crop_rect_for 宽高两向 / 比例已符不裁 / 输出不覆盖原图 / 重名去重 / 端到端压缩）",
+        "端到端压缩用例：1200×900 噪点 PNG → 裁 1:1 → 长边 500 → 目标 40KB，断言产物 ≤40KB、500×500、为 .jpg、原图字节数不变",
+        "cargo check --lib 通过（仅既有 warning，无新增）",
+        "npx vue-tsc --noEmit 0 错误；npm test 166 通过（含新增 bytes/pathParts 13 项）",
+        "npm run build（vue-tsc + vite build）通过",
+        "排版核对：Playwright 截图 5 张（压缩工位 1440 / 1024、创作工位 1440、浅色 1440、空托盘 1440），控制台 0 错误；浅色用陶砂预设整页渲染（非只切 body 类）"
+      ],
+      "related_files": [
+        "README.md",
+        "docs/FEAT-099-基准调色-技术文档.md",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/tools.rs",
+        "src/views/Workshop.vue",
+        "src/components/workshop/CompressTool.vue",
+        "src/components/workshop/PhotoTray.vue",
+        "src/components/workshop/ToolIcon.vue",
+        "src/types/tools.ts",
+        "src/utils/bytes.ts",
+        "src/utils/pathParts.ts",
+        "src/components/PhotoLightbox.vue",
+        "src/components/PhotoActionMenu.vue",
+        "src/components/PhotoGrid.vue",
+        "src/composables/usePhotoActions.ts",
+        "src/views/Home.vue",
+        "src/router/index.ts"
+      ],
+      "keywords": [
+        "创意工坊",
+        "图像压缩",
+        "指定大小",
+        "裁切",
+        "JPEG",
+        "超分",
+        "画质增强",
+        "OCR",
+        "主题手账",
+        "图生图",
+        "agent 编排",
+        "素材托盘",
+        "下线圈定",
+        "定位错配",
+        "发布包未打包",
+        "左栏工具导航",
+        "常驻切换",
+        "沿用相册页布局"
+      ],
+      "created_at": "2026-11-01T14:59:59+08:00",
+      "updated_at": "2026-11-01T15:40:00+08:00"
+    },
+    {
+      "id": "FEAT-151",
+      "name": "扫描入库分区统一：相册扫描分组工具改成路由型 tab 一跳直达，页头 / 数据带 / 工具栏 / 结果表与模块其余分区对齐",
+      "module": "src/utils/scanModuleTabs.ts（新增：分区唯一真值）· src/types/ui.ts（新增 HeaderTab 契约）· src/components/ui/AppHeader.vue（类型迁出）· src/views/ScanHub.vue（分区表同源 + ?tab= 深链）· src/views/TestScan.vue（页头/数据带/工具栏/结果表重排）· src/views/{Memories,SmartAlbum,SmartSearch,Timeline}.vue（HeaderTab 改为从 types/ui 引入）· src/views/Home.vue + README.md（文案同步）",
+      "status": "done",
+      "date": "2026-11-01",
+      "purpose": "用户需求：「扫描工具中 相册扫描分组工具的跳转方式和其他组件统一，并且优化界面」。改前两处不一致：① Hub 里点「相册扫描分组工具」只弹一句「该子功能以独立页面形式提供」再让用户点第二个按钮，而同模块/同站的其他路由型 tab（智慧相册的回忆 / 时间线 / 智能搜索）都是一跳直达；② 分组工具页自带一份硬编码分区，其中「重复清理」还写着「功能待开发」（实际早已上线），并且另加了一个「← 返回图片扫描」按钮 + h1 + 副标题，等于同一排导航做了两遍、还给出过期说明书。",
+      "implementation": {
+        "分区唯一真值": "新建 utils/scanModuleTabs.ts：三块页内分区（全局扫描 / 重复清理 / 入库体检）+ 一块路由型子页（扫描分组工具），Hub 与子页共用同一个 scanModuleTabs()。之前两份定义已经跑偏（子页那份停留在「待开发」）。",
+        "跳转方式统一": "路由型 tab 交给 AppHeader 渲染 <RouterLink>（与智慧相册的回忆 / 时间线 / 智能搜索完全一致），点 tab 直接到 /scan/test，不再有中转占位页；子页点页内分区则 router.push('/scan?tab=x')。",
+        "深链与高亮": "Hub 读 ?tab= 并把当前分区 replace 进 URL（沿用 FEAT-112 的双向同步口径），修掉「已经在 /scan 上再 push 同一路径时 vue-router 不重挂组件 → 点了没反应」这一类问题；刷新 / 分享链接也能回到同一块。",
+        "页头与配色统一": "删掉子页重复的「返回按钮 + h1 + 副标题」整块与自造的 --ts-* 局部配色（浅色预设下白字融进浅背景的老问题一并消失），统一用 AppHeader + 模块同一个数据带。",
+        "数据带": "StatBand：扫描照片 / 有时间 / 有 GPS / 有地点 / 任务状态（含线程数与后台执行提示），替代原来挤在结果条里的一行裸文字。",
+        "工具栏重排": "选目录独占一行；操作行按语义分组：主操作（扫描，primary）· 次操作（解析地名、⚙ 性能设置）· 危险操作（按年·地点组织移动，危险色 + 保留二次确认）；递归开关与操作同区（原来孤零零挂在目录输入框下面）。性能设置入口从「右上角」移到操作栏（README 同步）。",
+        "结果区": "表格补 <thead>（原来四列裸数据，用户不知道哪列是 GPS 坐标）、行 hover 态、文件名等宽字体、年/月分组标题带张数；空态改用全站 EmptyState，区分「未开始」与「扫到 0 张（含递归提示）」两种文案。"
+      },
+      "highlights": "同一份分区表喂两个页面，过期状态无处藏身；分组工具页从「独立小工具」回到「扫描入库的一个分区」；危险操作与普通操作在视觉与位置上彻底分开。",
+      "tests": "无新增单测（纯导航与呈现）。验证：npx vue-tsc --noEmit 通过；npm test 177 通过；npm run build 通过（TestScan chunk 25.11 kB / gzip 9.73 kB）。",
+      "related_files": [
+        "src/utils/scanModuleTabs.ts",
+        "src/types/ui.ts",
+        "src/components/ui/AppHeader.vue",
+        "src/views/ScanHub.vue",
+        "src/views/TestScan.vue",
+        "src/views/Home.vue",
+        "README.md"
+      ],
+      "keywords": [
+        "扫描入库",
+        "导航统一",
+        "AppHeader",
+        "RouterLink",
+        "scanModuleTabs",
+        "相册扫描分组工具",
+        "性能设置入口"
+      ],
+      "created_at": "2026-11-01T16:22:48+08:00",
+      "updated_at": "2026-11-01T16:22:48+08:00"
+    },
+    {
+      "id": "FEAT-152",
+      "name": "入库体检（替换未开发的「按年·地点浏览」）：只读诊断入库覆盖率 / 缩略图 / 向量 / 失效文件 / 缓存体积",
+      "module": "src-tauri/src/album_health.rs（新增命令 album_health_report）· src-tauri/src/db/health.rs（新增聚合 + OwnerMatcher）· src-tauri/src/db/mod.rs（mod 注册）· src-tauri/src/lib.rs（命令注册）· src-tauri/src/dedupe.rs（fmt_bytes 提升 pub(crate)）· src/types/health.ts（新增）· src/utils/albumHealth.ts + .test.ts（新增）· src/stores/albumHealth.ts（新增）· src/components/AlbumHealthPanel.vue（新增）· src/components/health/HealthAlbumCard.vue（新增）",
+      "status": "done",
+      "date": "2026-11-01",
+      "purpose": "用户需求：「扫描功能中的按年·地点浏览这未开发可以替换成什么与智慧相册无关但是与相册管理和照片数据有关的」——给出三个候选后用户选 A（入库体检）。理由：按年浏览与按地点浏览已分别由时间线（/timeline）与智慧相册的「地点」分区承担，在扫描模块里再做一遍是同一件事的第三个入口；而「扫描入库写下的数据是否还和磁盘对得上」在别处没有任何人做。本版边界经用户确认：只读 + 跳转，不做删除/重扫/重建这类写操作。",
+      "implementation": {
+        "统计口径": "按相册目录前缀聚合（与 count_scanned_by_prefix 完全同口径），不用 photo_content_scan / photo_thumb_cache / photo_embeddings 的 album_id 列 —— 那是写入时的快照，相册拆分/迁移/父子共享后会停在旧值（BUG-2026-0909-001 的根因）。",
+        "OwnerMatcher（性能）": "按父目录缓存「该目录属于哪些相册」，把「每行 × 每个相册」的 starts_with 比较降到「不同目录数 × 相册数」。真实库实测 173 个目录 / 128 个相册（2.5 万张照片），比较量从 325 万降到 2.2 万/表；口径等价于文件路径前缀匹配（文件直接放在相册根 / 更深子目录 / 嵌套相册父子同属都覆盖）。",
+        "磁盘读数": "photo_count / size_bytes 取 album_stats 缓存（不触发全量重扫）；相册根目录存在性逐册检查，并对最多 50 条/册已入库路径做 stat 抽样 —— 结论里如实带「抽样 n 条 / 失效 m 条」，不冒充全量。",
+        "只读": "不建表、不写缓存、不修库、不自动重扫；修复入口交回现有的「全局扫描」「预生成缩略图」等命令，由用户显式触发。",
+        "判定在前端（可测）": "结论（需处理 / 有缺口 / 正常）由 utils/albumHealth.ts 纯函数推导：整册未入库=需处理、入库缺口>10%=有缺口（差个位数不报警，避免狼来了）、根目录失联盖过一切、抽样缺失措辞必须带「抽样」；空相册不算故障。",
+        "界面": "口径说明 + 「重新体检」；三档计数（可点筛选）+ 总量读数（磁盘 / 已入库 / 入库覆盖 / 缓存）；逐册卡片（三条覆盖率 + 事实行 + 问题标签与原因 + 去扫描 / 打开相册）；加载骨架、错误态、两种空态；一次渲染 40 册，其余点开。"
+      },
+      "highlights": "把「智慧相册不需要的东西」换成「只有扫描模块能回答的问题」；判定口径是可单测的纯函数，改阈值不动 Rust；体检全程只读，动不了用户的照片库。",
+      "tests": "Rust：db::health 3 条（前缀与用户隔离、抽样上限、父目录归属含根目录/嵌套/大小写/兄弟目录）。前端：albumHealth.test.ts 11 条（空相册不算故障、根失联只报一条、抽样措辞、缺口阈值、分母口径、三档汇总、排序）。回归：cargo test --lib 214 通过；npm test 177 通过。",
+      "related_files": [
+        "src-tauri/src/album_health.rs",
+        "src-tauri/src/db/health.rs",
+        "src-tauri/src/db/mod.rs",
+        "src-tauri/src/lib.rs",
+        "src/types/health.ts",
+        "src/utils/albumHealth.ts",
+        "src/utils/albumHealth.test.ts",
+        "src/stores/albumHealth.ts",
+        "src/components/AlbumHealthPanel.vue",
+        "src/components/health/HealthAlbumCard.vue",
+        "src/utils/scanModuleTabs.ts"
+      ],
+      "keywords": [
+        "入库体检",
+        "健康检查",
+        "覆盖率",
+        "失效文件",
+        "album_health_report",
+        "按年地点浏览替换",
+        "只读诊断"
+      ],
+      "created_at": "2026-11-01T16:22:48+08:00",
+      "updated_at": "2026-11-01T16:22:48+08:00"
+    },
+    {
+      "id": "FEAT-153",
+      "name": "重复扫描细粒度日志：六段台账（遍历/准入/预筛/哈希/相似/分组）+ 前端 AOP 出入口 + 进度分档",
+      "module": "src-tauri/src/dedupe.rs（日志与台账）· src/stores/dedupe.ts（trace + 进度台账 + 结果裁剪日志）",
+      "status": "done",
+      "date": "2026-11-01",
+      "purpose": "用户需求：「重复扫描功能中添加更细腻度的日志」。改前 dedupe.rs 全库只有 16 处日志埋点（同库 content.rs 有 89 处），一次扫描慢或结果异常时无法回答：哪一册最慢/失败、少掉的照片被哪条准入规则滤掉、预筛到底省了多少读盘、剪枝率是否仍是 0%、卷积聚类各组多大。",
+      "implementation": {
+        "启动台账": "相册数 · 向量条数与维度（多档混用会显形）· 阈值 · 两个判据开关 · rayon 线程数。",
+        "遍历台账": "逐册「候选数 + walk 耗时」；相册 ≤40 时全报，更多时只报失败册 + 最慢 5 册 + 最大 5 册 + 归纳行（失败/空册/单册最慢）。遍历失败日志带相册 id、原因与路径。",
+        "准入过滤": "stat 失败 / 非普通文件 / 0 字节 三类分类计数 —— 直接回答「某张照片为什么不在扫描结果里」。",
+        "精确预筛": "唯一体积种数 · 出现 ≥2 次的体积种数 · 待哈希张数 · 需读字节（并说明跳过了多少体积唯一的图，避免白读盘）。",
+        "内容哈希": "成功/待算/失败计数、读取字节、耗时、MB/s；单个文件失败保留逐条 WARN（含路径与原因）。",
+        "相似判定": "候选数 · 维度 · 走的是 AVX2 还是标量回落 · 实际比较对数与剪枝率 · 真配对数 · 摊平/排序/比对三段耗时。",
+        "分组": "完全链接组数 · 最大组 · p50/p90 组规模 · 聚类耗时；扫描结束打 Top3 组（类型/张数/可释放/保留路径）+ 最终总账。",
+        "前端": "trace() 包 dedupe.scan / stop / deleteSelected 记出入口与耗时；进度事件「阶段切换必记、阶段内按 10% 抽记」（避免 2.5 万张刷爆控制台）；删除后结果裁剪记一行。",
+        "节流纪律": "台账按相册数分档、进度按百分比分档 —— 日志文件 >5MB 会被 cleanup_logs 直接清空，逐张打印等于自毁证据。"
+      },
+      "highlights": "只加观测，不动判定逻辑与性能路径（完全链接、SIMD、体积预筛原样）；日志措辞自带口径（抽样/剪枝率/预筛省下的读盘量），可直接贴给用户或写进缺陷档案。",
+      "tests": "dedupe 单测 10 条全通过；cargo test --lib dedupe::tests::scan_library_end_to_end --nocapture 实测日志已逐行核对（启动台账 → 遍历 → 预筛 → 哈希 → 分组 → 完全链接 → Top3 → 总账）。",
+      "related_files": [
+        "src-tauri/src/dedupe.rs",
+        "src/stores/dedupe.ts"
+      ],
+      "keywords": [
+        "重复扫描",
+        "日志",
+        "台账",
+        "dedupe",
+        "AOP",
+        "trace",
+        "排障"
+      ],
+      "created_at": "2026-11-01T16:22:48+08:00",
+      "updated_at": "2026-11-01T16:22:48+08:00"
     }
   ],
-  "updated": "2026-11-01T23:59:00+08:00"
+  "updated": "2026-11-01T16:22:48+08:00"
 }

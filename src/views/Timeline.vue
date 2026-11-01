@@ -7,7 +7,8 @@ import PhotoLightbox from "../components/PhotoLightbox.vue";
 import EmptyState from "../components/EmptyState.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 import GroupStat from "../components/ui/GroupStat.vue";
-import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
+import type { HeaderTab } from "../types/ui";
 import type { TimelineCard, TimelineIndex } from "../types/timeline";
 import {
   cardsOf,

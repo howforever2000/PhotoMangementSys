@@ -13,7 +13,8 @@ use std::path::Path;
 use serde::Serialize;
 
 /// 支持的图片扩展名（与 thumbnail 模块保持一致；为解耦本地复制一份）
-const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp"];
+/// FEAT-142：加入 iPhone 默认格式 heic/heif（EXIF 由 kamadak-exif 原生支持 HEIF 容器）
+const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif"];
 
 /// 单张照片的 EXIF 扫描结果
 ///

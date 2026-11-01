@@ -2,8 +2,10 @@
 /**
  * ① 本机硬件 · CPU 线程数（ONNX intra_op，不同机器最优值不同）
  *
- * 数据读 Pinia `vcrThreads`：③ 区的「线程测速 → 采用」写的是同一份 store，
- * 这里用 watch 同步本地下拉值，两处显示不会出现「改了一处另一处还是旧值」。
+ * 数据读 Pinia `vcrThreads`；本地下拉用 watch 同步，两处不会出现「改了一处另一处还是旧值」。
+ *
+ * 注：以前③区还有个「线程测速 → 采用」会写同一份 store（扫 CLIP 逐档），FEAT-138 已删：
+ * 那个扫档测的是 CLIP 单跑曲线，却让人拿它去定**全局**线程数，而实测它对并发扫描无稳定影响。
  */
 import { computed, onMounted, ref, watch } from "vue";
 import { useContentStore } from "../../stores/content";
@@ -94,7 +96,7 @@ const threadsInfoText = computed(() => {
   </div>
   <p class="hint">
     推理线程数只影响<b>识别速度</b>：默认取物理核数（超线程的逻辑核收益低）。
-    想确认本机最优档，到下面的「高级选项 → 线程测速」跑一次。
+    语义索引（CLIP）自己用这个数的一半，不占满主链路的核。
   </p>
 </template>
 

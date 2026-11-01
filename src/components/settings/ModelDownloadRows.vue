@@ -15,7 +15,15 @@ import type { ModelDlStatus } from "../../types/content";
 const store = useContentStore();
 const notify = useNotify();
 
-const downloads = computed(() => store.modelDownloads);
+/**
+ * 运行时组件（FEAT-136）不进模型列表：它不是模型，只在「加速分配」分区里管。
+ * 两处入口各说一套状态是 FEAT-133 留下的教训。
+ */
+const RUNTIME_COMPONENTS = new Set(["openvino-runtime"]);
+
+const downloads = computed(() =>
+  store.modelDownloads.filter((d) => !RUNTIME_COMPONENTS.has(d.name)),
+);
 const allReady = computed(() => downloads.value.length > 0 && downloads.value.every((d) => d.done));
 const missing = computed(() => downloads.value.filter((d) => !d.done));
 const missingBytes = computed(() =>

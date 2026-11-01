@@ -22,12 +22,11 @@ import type {
   ScanOutcome,
   ScanReport,
   UnifiedScanRow,
-  VcrGpuStatus,
+  VcrAccel,
+  AccelDevice,
   VcrModelsInfo,
   FaceTiersInfo,
   VcrBenchmarkResult,
-  VcrSweepEntry,
-  VcrSweepResult,
   VcrThreadsInfo,
 } from "../types/content";
 
@@ -189,8 +188,8 @@ export const useContentStore = defineStore("content", {
     albumContentTotal: 0 as number,
     /** 过滤搜索命中 */
     filterHits: [] as AlbumContentRow[],
-    /** GPU 加速可行性状态 */
-    gpuStatus: null as VcrGpuStatus | null,
+    /** FEAT-136：加速分配（通道 → 设备；GPU 与 NPU 各有加速对象） */
+    accel: null as VcrAccel | null,
     /** FEAT-051：分类模型候选清单 */
     vcrModels: null as VcrModelsInfo | null,
     /** 人脸模型档位清单（高精度 / 轻量，可在性能设置里切换并持久化） */
@@ -242,16 +241,24 @@ export const useContentStore = defineStore("content", {
       }
     },
 
-    /** 查询 GPU 加速可行性（会确保识别服务就绪） */
-    async fetchGpuStatus(): Promise<VcrGpuStatus> {
-      this.gpuStatus = await invoke<VcrGpuStatus>("get_vcr_gpu_status");
-      return this.gpuStatus;
+    /** FEAT-136：加速分配现状（每通道 → 设备 + 实际生效） */
+    async fetchAccel(): Promise<VcrAccel> {
+      this.accel = await invoke<VcrAccel>("get_vcr_accel");
+      return this.accel;
     },
 
-    /** FEAT-051：GPU 加速开关（开 = GPU 优先 / 关 = 强制 CPU） */
-    async setVcrGpu(enabled: boolean): Promise<VcrGpuStatus> {
-      this.gpuStatus = await invoke<VcrGpuStatus>("set_vcr_gpu", { enabled });
-      return this.gpuStatus;
+    /**
+     * FEAT-136：写入加速分配（channels 省略 = 用服务端推荐分配）。
+     *
+     * ⚠️ 返回值是**请求已接受**：四条通道在后台重建（NPU 首次编译可达秒级），
+     * 想知道“真的生效没”必须再 `fetchAccel()` 看 `effective`。
+     */
+    async setAccel(enabled: boolean, channels?: Partial<Record<string, AccelDevice>>): Promise<VcrAccel> {
+      this.accel = await invoke<VcrAccel>("set_vcr_accel", {
+        enabled,
+        channels: enabled && channels ? channels : null,
+      });
+      return this.accel;
     },
 
     /** FEAT-051：分类模型候选清单 */
@@ -298,17 +305,7 @@ export const useContentStore = defineStore("content", {
       return this.vcrThreads;
     },
 
-    /** 线程扫档：一次测多个线程数，返回 [{threads, avg_ms, best}]（不改变当前设置） */
-    async benchmarkVcrSweep(
-      channel = "clip_vision",
-      options: number[] = [],
-      runs = 8,
-      warmup = 2,
-    ): Promise<VcrSweepEntry[]> {
-      const r = await invoke<VcrSweepResult>("benchmark_vcr_sweep", { channel, options, runs, warmup });
-      return r.results ?? [];
-    },
-
+    
     // ------------------------------------------------------------------
     // v5 语义分类
     // ------------------------------------------------------------------

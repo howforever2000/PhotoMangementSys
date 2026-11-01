@@ -1,6 +1,6 @@
 [package]
 name = "photo-management-sys"
-version = "0.4.4"
+version = "0.4.5"
 description = "Local photo album management app"
 # 个人/学习/非营利免费，商业用途需另行书面授权 —— 见仓库根 LICENSE
 # （PolyForm Noncommercial 1.0.0，SPDX 合法标识符）
@@ -19,6 +19,16 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+# FEAT-142 HEIC 解码：走 Windows 系统编解码器（WIC）。
+# 为什么不用 libheif / pure-rust heic crate：前者要 vcpkg 编 C 库并分发 DLL，
+# 后者是 AGPL-3.0（与本项目 PolyForm-Noncommercial 分发许可冲突）。见 src/heic.rs 头注释。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Imaging",
+    "Win32_System_Com",
+] }
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
@@ -44,7 +54,10 @@ walkdir = "2"
 # 用 rayon 而非手写线程池 —— 工作窃取调度对「张数不均（大小文件混合）」的负载更均衡
 rayon = "1.10"
 # 读取图片 EXIF（拍摄时间）
+# 注意：本 crate 原生支持 HEIF 容器（read_from_container），HEIC 的拍摄时间/GPS 无需额外依赖
 kamadak-exif = "0.6"
+# FEAT-143 重复照片清理：内容哈希用 SHA-256（已在依赖树中作为传递依赖，显式声明只是提升为直接依赖）
+sha2 = "0.10"
 # 密码哈希（多用户登录，Argon2id 抗 GPU 暴力破解）
 # password-hash 的 getrandom feature 启用 rand_core::OsRng（生成随机盐）
 argon2 = "0.5"

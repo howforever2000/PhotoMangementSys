@@ -1,6 +1,6 @@
 """CLIP 单文件双塔 → vision/text 拆分子图（一次性，幂等）
 
-Xenova/chinese-clip-* 的整图（model_fp16.onnx / model.onnx）是单文件双塔（输入 pixel_values /
+Xenova/chinese-clip-* 的整图（model_fp16.onnx / model.onnx，FEAT-137 起只用后者）是单文件双塔（输入 pixel_values /
 input_ids / attention_mask），直接 run 必须三输入齐喂（会白白跑另一塔）。
 首次使用前拆成：
   clip_vision.onnx  输入 pixel_values → 输出 image_embeds (N,dim)

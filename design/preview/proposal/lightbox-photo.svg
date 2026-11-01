@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">
+            <defs>
+              <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#141f36"/>
+                <stop offset=".34" stop-color="#3b3550"/>
+                <stop offset=".60" stop-color="#8a4f50"/>
+                <stop offset=".78" stop-color="#cf7a4e"/>
+                <stop offset="1" stop-color="#f0b271"/>
+              </linearGradient>
+              <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#c2814f"/>
+                <stop offset=".22" stop-color="#7c5347"/>
+                <stop offset=".62" stop-color="#2b2430"/>
+                <stop offset="1" stop-color="#14131c"/>
+              </linearGradient>
+              <radialGradient id="sunGlow" cx="50%" cy="50%" r="50%">
+                <stop offset="0" stop-color="#ffe6b0" stop-opacity=".95"/>
+                <stop offset="45%" stop-color="#ffb873" stop-opacity=".42"/>
+                <stop offset="100%" stop-color="#ff9d5c" stop-opacity="0"/>
+              </radialGradient>
+              <linearGradient id="mtFar" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#5c5266"/>
+                <stop offset="1" stop-color="#392f3f"/>
+              </linearGradient>
+              <linearGradient id="mtNear" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#221d2b"/>
+                <stop offset="1" stop-color="#0e0d15"/>
+              </linearGradient>
+              <filter id="soft"><feGaussianBlur stdDeviation="9"/></filter>
+            </defs>
+
+            <rect width="1200" height="800" fill="url(#sky)"/>
+            <ellipse cx="745" cy="452" rx="330" ry="210" fill="url(#sunGlow)"/>
+            <circle cx="745" cy="440" r="34" fill="#ffeec2"/>
+
+            <!-- 云带 -->
+            <g opacity=".5" filter="url(#soft)">
+              <ellipse cx="300" cy="250" rx="290" ry="26" fill="#6b5560"/>
+              <ellipse cx="880" cy="180" rx="330" ry="20" fill="#57455c"/>
+              <ellipse cx="560" cy="330" rx="380" ry="18" fill="#a06a5e"/>
+            </g>
+
+            <!-- 远山 -->
+            <path d="M0 470 L120 418 L230 452 L330 402 L430 448 L520 424 L640 462 L760 430 L880 456 L980 420 L1100 458 L1200 432 L1200 500 L0 500 Z" fill="url(#mtFar)" opacity=".85"/>
+            <!-- 近山 -->
+            <path d="M0 500 L90 462 L190 486 L300 440 L410 492 L500 470 L610 498 L720 466 L840 496 L950 458 L1060 492 L1200 470 L1200 540 L0 540 Z" fill="url(#mtNear)"/>
+
+            <!-- 水面 -->
+            <rect y="500" width="1200" height="300" fill="url(#water)"/>
+            <!-- 倒影光路 -->
+            <g>
+              <ellipse cx="745" cy="500" rx="105" ry="9" fill="#ffd79a" opacity=".55"/>
+              <ellipse cx="745" cy="530" rx="72" ry="5" fill="#ffcf90" opacity=".38"/>
+              <ellipse cx="745" cy="562" rx="52" ry="4" fill="#ffc384" opacity=".26"/>
+              <ellipse cx="745" cy="600" rx="36" ry="3" fill="#ffb877" opacity=".18"/>
+              <ellipse cx="745" cy="650" rx="26" ry="2.4" fill="#ffa96a" opacity=".12"/>
+            </g>
+            <!-- 波纹 -->
+            <g stroke="#e8c9a4" stroke-width="1" opacity=".15">
+              <path d="M120 556 H420"/><path d="M180 590 H360"/><path d="M60 620 H300"/>
+              <path d="M860 566 H1120"/><path d="M900 606 H1060"/><path d="M840 646 H1160"/>
+              <path d="M420 700 H760"/><path d="M300 740 H620"/>
+            </g>
+            <!-- 岸线 -->
+            <path d="M0 780 C180 760 300 792 470 776 C640 760 820 790 1000 772 L1200 782 L1200 800 L0 800 Z" fill="#0b0a12" opacity=".92"/>
+          </svg>

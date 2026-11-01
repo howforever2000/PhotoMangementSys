@@ -290,6 +290,12 @@ export interface VcrThreadsInfo {
   default: number;
   /** 物理核推测（逻辑核 ÷ 2） */
   physical_guess: number;
+  /** 物理核数（服务端拓扑探测） */
+  physical?: number;
+  /** 混合核机器的 P 核 / E 核数（非混合核不返回） */
+  p_cores?: number;
+  e_cores?: number;
+  hybrid?: boolean;
   /** 逻辑核数 */
   logical: number;
   min: number;
@@ -300,22 +306,6 @@ export interface VcrThreadsInfo {
   applied?: number;
 }
 
-/** v6：线程扫档单行 —— 对应 model_registry.benchmark_sweep() 的元素 */
-export interface VcrSweepEntry {
-  channel: string;
-  threads: number;
-  /** 实测平均/最快/最慢（ms/次推理） */
-  avg_ms?: number;
-  min_ms?: number;
-  max_ms?: number;
-  providers?: string[];
-  /** 该档是否最快（服务端标记） */
-  best?: boolean;
-  /** 相对最慢档的提速倍数（前端计算，仅展示用） */
-  speedup?: number;
-  /** 该档测速失败原因 */
-  error?: string;
-}
 
 /** v5：语义模型档位清单 */
 export interface VcrModelsInfo {
@@ -522,7 +512,39 @@ export interface CategoryIndexStats {
   semantic_categories: number;
 }
 
-/** v6：线程扫档结果包装 —— 对应 POST /benchmark_sweep */
-export interface VcrSweepResult {
-  results: VcrSweepEntry[];
+
+/**
+ * FEAT-136：加速分配 —— 一张「通道 → 设备」表
+ *
+ * 为什么要表而不是一个开关：GPU（DirectML）与 NPU（OpenVINO）是**两个独立引擎**，
+ * 能同时开工且不争资源；但各通道最优设备不同（det/ocr/face_rec → NPU，
+ * det_10g 这类大分辨率小通道的检测 → GPU/CPU，NPU 上慢 7 倍）。
+ */
+export type AccelDevice = "CPU" | "GPU" | "NPU";
+
+/** 对应 Rust `vision::vcr_accel` → 服务端 GET /accel */
+export interface VcrAccel {
+  /** 分配表是否生效（false = 全部走 CPU） */
+  enabled: boolean;
+  /** 'auto' 未表态、按硬件推荐（默认）· 'on' 用户显式开 · 'off' 用户显式关 */
+  mode: "auto" | "on" | "off";
+  /** 请求分配：通道 → 设备（服务端事实之上的“请求值”） */
+  channels: Partial<Record<string, AccelDevice>>;
+  /** 'env' | 'file' | 'default' */
+  source: string;
+  /** 服务端推荐分配（一键加速用） */
+  defaults: Partial<Record<string, AccelDevice>>;
+  /** 实际生效设备（读会话绑定的 provider，不是请求值） */
+  effective: Partial<Record<string, string>>;
+  /** 各设备是否可用 */
+  available: { NPU: boolean; GPU: boolean; CPU: boolean };
+  /** OpenVINO 运行时（可选组件）状态 */
+  ov: {
+    installed: boolean;
+    devices: string[];
+    error: string;
+    source: string;
+  };
+  /** 已编译通道 → 编译耗时（秒） */
+  compiled: Partial<Record<string, number>>;
 }

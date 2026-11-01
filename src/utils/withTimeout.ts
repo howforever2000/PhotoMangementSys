@@ -35,6 +35,4 @@ export const PERF_TIMEOUT = {
   write: 45_000,
   /** 单通道测速（服务端 60s 长超时） */
   benchmark: 120_000,
-  /** 线程扫档（服务端 300s 长超时，一次测多档） */
-  sweep: 360_000,
 } as const;

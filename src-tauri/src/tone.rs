@@ -184,7 +184,8 @@ fn decode_sampled(path: &Path) -> Option<image::RgbImage> {
         let info = decoder.info()?;
         return image::RgbImage::from_raw(info.width as u32, info.height as u32, pixels);
     }
-    let img = image::open(path).ok()?.thumbnail(SAMPLE_SIZE, SAMPLE_SIZE);
+    // FEAT-142：HEIC/HEIF 走 imgio 分流（image crate 不支持 HEIF 容器）
+    let img = crate::imgio::open_any(path).ok()?.thumbnail(SAMPLE_SIZE, SAMPLE_SIZE);
     Some(img.to_rgb8())
 }
 

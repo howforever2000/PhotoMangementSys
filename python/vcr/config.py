@@ -152,25 +152,17 @@ OCR_MODEL = "paddleocr-det.onnx"                        # PaddleOCR ch_PP-OCRv4 
 #     换档必须换标识（否则新旧向量会被误认为同一空间）
 # ---------------------------------------------------------------------------
 CLIP_MODEL_META: dict[str, dict] = {
+    # FEAT-137：只留一档，且用 **fp32 权重**。
+    #
+    # 为什么删掉 fp16 档（2026-11-02 实测，真实 256px 缩略图，批 8 / 批 32）：
+    #   fp16/CPU  74.4 / 113.7 ms/张
+    #   fp32/CPU  60.6 /  76.4 ms/张   ← 比 fp16 快 18%~33%
+    #   fp32/DML  61.3 /  63.7 ms/张
+    # x86 上 ORT 跑 fp16 权重必须反复 cast，纯亏；而 fp16 档又**永远拿不到 GPU**
+    # （fp16 在 DirectML 上有算子级数值 bug，BUG-2026-0910-006）⇒ 旧默认档是双输。
+    # 两档精度等价：32 张图 cos 最小 0.99999887（见 python/bench/verify_clip_tier_equiv.py）。
     "b16": {
-        "label": "B/16 · 默认（核显本推荐）",
-        "dim": 512,
-        "size": 224,
-        "max_len": 52,
-        "dir": "chinese-clip",
-        "onnx": "model_fp16.onnx",
-        "bytes": 377377730,
-        "repo": "Xenova/chinese-clip-vit-base-patch16",
-        "id": "chinese-clip-vit-b16-fp16",
-        "accuracy": "零样本 81.1%（53 张标注集）",
-        "speed": "CPU ~90ms/张（1 万张约 17 分钟）",
-        "note": "精度/速度平衡档，任何核显本都可跑",
-    },
-    "b16-fp32": {
-        # P20：原本写死「（719MB）」在 label 里，与 meta.bytes（754MB，整图时代体积）
-        # 以及会话实测的 clip_vision.onnx 单文件（345MB）三个数互相矛盾。
-        # 体积改由 `clip_disk_bytes()` 磁盘实算，label 不再携带硬编码体积。
-        "label": "B/16 fp32 · GPU 可加速",
+        "label": "B/16（fp32 权重）",
         "dim": 512,
         "size": 224,
         "max_len": 52,
@@ -178,11 +170,12 @@ CLIP_MODEL_META: dict[str, dict] = {
         "onnx": "model.onnx",
         "bytes": 753665706,
         "repo": "Xenova/chinese-clip-vit-base-patch16",
-        "id": "chinese-clip-vit-b16-fp32",
-        "accuracy": "与 B/16 fp16 同权重（数值略更精确，未单独实测）",
-        "speed": "CPU 约 2 倍于 fp16；DirectML 实测 37.9ms/张（约 fp16 CPU 的 2.4 倍快）",
-        "note": "体积换 GPU 加速可能（fp16 在 DirectML 上有算子级数值 bug，故只有 fp32 档能走 GPU）；"
-                "GPU 默认未开启，需先做数值一致性验证；切换后必须重建语义索引",
+        # 向量空间标签：从 ...-fp16 / ...-fp32 收拢成中性 id（旧标签由宿主启动时重打，
+        # 免全库重编码；等价性见 docs/FEAT-137）
+        "id": "chinese-clip-vit-b16",
+        "accuracy": "零样本 81.1%（53 张标注集，fp16 时期测值；两档 cos≥0.9999988）",
+        "speed": "CPU ~76ms/张（批 32）；核显可选加速（默认 CPU）",
+        "note": "唯一档。以前有两档（fp16 / fp32），实测 fp16 在 CPU 上反而更慢且拿不到 GPU，已下线。",
     },
 }
 
@@ -191,8 +184,15 @@ CLIP_MODEL_META: dict[str, dict] = {
 #     官方权重自行导出（数值自校验 cos=1.000000）69.8~71.7%、Xenova 版 67.9~69.8%，
 #     均低于 B/16 的 81.1~83.0%，且慢 3.5~10×；崩点在场景类（architecture 0~1/4、night 2~3/7）。
 #     证据与复现方式见 design/clip-accuracy-comparison.md（需要时可一键重下/重导）。
-CLIP_MODELS = ["b16", "b16-fp32"]
+CLIP_MODELS = ["b16"]
 CLIP_DEFAULT_MODEL = "b16"
+# 已退役档位 → 唯一档：持久化的 current_clip.json 里写着旧名字时自动迁移，
+# 不报错、不重建索引（旧标签由宿主重打，见下方 CLIP_RETIRED_IDS）。
+CLIP_RETIRED_TIERS = {"b16-fp32": "b16", "b16-fp16": "b16"}
+# 历史上存在过的两个向量空间标签（宿主启动时把它们重打成 "id"）
+CLIP_RETIRED_IDS = ("chinese-clip-vit-b16-fp16", "chinese-clip-vit-b16-fp32")
+# 老目录布局：里面如果已经有 fp32 整图/拆分件就直接用，不让用户重下 719MB
+CLIP_LEGACY_DIRS = ("chinese-clip",)
 CLIP_CURRENT_PATH = os.path.join(MODEL_DIR, "current_clip.json")
 # CLIP 标准归一化（b16 / b16-fp32 同协议）
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
@@ -200,10 +200,28 @@ CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 
 
 def clip_paths(model: str | None = None) -> dict:
-    """返回指定档位（默认当前生效档）的路径与超参。"""
+    """返回档位的路径与超参。
+
+    FEAT-137：只留一档。为不让人白下 719MB，若标准目录里还没有文件、而**老布局**
+    （`chinese-clip/`）里已经有 fp32 整图或拆分件，就直接用老目录。
+    """
     name = model or active_clip()
-    meta = CLIP_MODEL_META.get(name) or CLIP_MODEL_META[CLIP_DEFAULT_MODEL]
+    name = CLIP_RETIRED_TIERS.get(name, name)
+    if name not in CLIP_MODEL_META:
+        name = CLIP_DEFAULT_MODEL
+    meta = CLIP_MODEL_META[name]
     d = os.path.join(MODEL_DIR, meta["dir"])
+
+    def _has(dirpath: str) -> bool:
+        return (os.path.isfile(os.path.join(dirpath, "onnx", meta["onnx"]))
+                or os.path.isfile(os.path.join(dirpath, "clip_vision.onnx")))
+
+    if not _has(d):
+        for alt in CLIP_LEGACY_DIRS:
+            p2 = os.path.join(MODEL_DIR, alt)
+            if _has(p2):
+                d = p2
+                break
     return {
         "name": name,
         "id": meta["id"],
@@ -212,7 +230,6 @@ def clip_paths(model: str | None = None) -> dict:
         "size": meta["size"],
         "max_len": meta["max_len"],
         "dir": d,
-        # 整图文件名随档位不同（fp16 → model_fp16.onnx / fp32 → model.onnx）
         "onnx": meta["onnx"],
         "whole": os.path.join(d, "onnx", meta["onnx"]),
         "vision": os.path.join(d, "clip_vision.onnx"),
@@ -235,6 +252,8 @@ def active_clip() -> str:
         if os.path.isfile(CLIP_CURRENT_PATH):
             with open(CLIP_CURRENT_PATH, encoding="utf-8") as f:
                 name = json.load(f).get("name")
+            # FEAT-137：旧档位名（b16-fp32 / b16-fp16）自动映射到唯一档
+            name = CLIP_RETIRED_TIERS.get(name, name)
             if name in CLIP_MODEL_META and _clip_ready_files(name):
                 return name
     except Exception:  # noqa: BLE001
@@ -417,6 +436,33 @@ def set_threads(n: int) -> int:
     return actual
 
 
+# ---------------------------------------------------------------------------
+# FEAT-138：CLIP 双塔自己的线程数（与主链路解耦，默认 = 用户线程数的一半）
+#
+# 为什么单独定，而不是跟随全局 intra_op：
+#   1. CLIP 在扫描里只占 **0.2%~0.3%**（album=126：776 张只花了 224ms），
+#      却与占 79% 的 AI 腿**并发**跑。让它拿满全局线程数，就是从主腿嘴里扇饭。
+#   2. 只把 CLIP 单独开跑时，「线程越多越快」（本机批 8：1→300、6→72、12→48 ms/张，
+#      16 线程反而崩到 119），所以那条曲线不能用来调**全局**线程数 ——
+#      它推荐的一定是「把核全给我」，对其它通道是负收益。
+#   3. 默认取一半，但**不低于 4**。为什么要有下限（实测 /embed_batch 32 张，
+#      全部 32/32 出向量）：2 线程 213ms/张 · 4 线程 150ms/张 · 8 线程 106ms/张。
+#      语义腿在**全新建档**时是关键路径（首次导入 4669 张：8 线程 ≈ 8 分钟，
+#      2 线程 ≈ 17 分钟），而 AI 腿加速后只要 ~88ms/张 —— 2 线程会把总时长拖成 2 倍。
+#      所以「一半」只在大线程数下生效（用户 12 → 6，8 → 4，4 → 4 不再减）。
+#      可用 VCR_CLIP_THREADS 覆盖（对照实验用，不暴露 UI）。
+# ---------------------------------------------------------------------------
+def clip_threads() -> int:
+    """CLIP 会话的 intra_op 线程数：用户线程数的一半，夹在 [4, 用户线程数] 内。"""
+    env = os.environ.get("VCR_CLIP_THREADS", "").strip()
+    if env.isdigit():
+        n = int(env)
+        if THREADS_MIN <= n <= THREADS_MAX:
+            return n
+    t = threads()
+    return max(1, min(t, max(4, t // 2)))
+
+
 def threads_info() -> dict:
     """给 UI 的线程数现状（当前/默认/核数/可选档）。"""
     physical, p_cores, e_cores = _cpu_topology()
@@ -480,6 +526,118 @@ PHOTO_PARALLEL = max(1, min(8, int(os.environ.get("VCR_PHOTO_PARALLEL", "6"))))
 # GPU 加速（R3）
 # ---------------------------------------------------------------------------
 VCR_PROVIDER = os.environ.get("VCR_PROVIDER", "auto").lower()  # auto | cpu | gpu
+
+# ---------------------------------------------------------------------------
+# FEAT-135：把选定的 ONNX 通道交给 OpenVINO（Intel NPU）执行
+#
+# 默认 **空 = 关闭**，语义与今天逐字一致；AMD / 非 Intel 机器永远走不到这条路。
+#
+# 为什么是这三条：DML 单队列才是 AI 腿的瓶颈（持锁占墙钟 98%），收益 ≈
+# 「从 DML 队列里拿走多少次加锁」，而不是单模型快多少毫秒。
+# 实测（53 张 / P=6 / threads=8，摊薄墙钟 ms/张）：
+#   cpu 145.2 · dml 85.7 · 仅这三条走 NPU 43.0 · 再加 face_det 留 DML 38.4
+# 只搬 det+face_rec（不加 ocr）只有 -20%；加不加上 ocr 是分水岭。
+#
+#   VCR_OV_CHANNELS=det,ocr,face_rec
+#   VCR_OV_DEVICE=NPU              # 也可填 GPU/CPU 做同机对照
+#   VCR_OV_PATH=<openvino 所在目录>  # 未装进解释器时指定运行时位置
+#
+# ⚠️ 形状必须与 preprocess.py 实际喂的一致：本仓库 OCR 是 640（与 det 共用同一
+# 份 letterbox 缩放），**不是**公开报告里常见的 960。写错会被 ocr_service 的
+# `except Exception` 吞成降级、通道静默不跑（探针曾因此把 -20% 误报成 -55%）。
+# ⚠️ NPU 只吃静态 shape；动态维会让编译器 LLVM abort 把整个进程带走（不可 catch）。
+# ---------------------------------------------------------------------------
+OV_CHANNELS = [s.strip().lower() for s in
+               os.environ.get("VCR_OV_CHANNELS", "").split(",") if s.strip()]
+OV_DEVICE = os.environ.get("VCR_OV_DEVICE", "NPU").upper()
+OV_SHAPES: dict[str, tuple[int, ...]] = {
+    "det": (1, 3, 640, 640),      # preprocess.det_tensor → DET_SIZE
+    "ocr": (1, 3, 640, 640),      # preprocess.ocr_tensor → 与 det 同一份缩放（不是 960！）
+    "face_rec": (1, 3, 112, 112),  # preprocess.face_align
+}
+# 编译缓存（首次编译可达秒级，之后毫秒级加载）。落 MODEL_DIR 下，与模型同生命周期。
+OV_CACHE_DIR = os.environ.get("VCR_OV_CACHE") or os.path.join(MODEL_DIR, "_ov_cache")
+
+# ---------------------------------------------------------------------------
+# FEAT-136：加速分配表（通道 → 设备）
+#
+# 为什么需要一张表而不是一个开关：GPU（DirectML）与 NPU（OpenVINO）是**两个独立
+# 引擎**，能同时干活且不争资源；但各通道最优设备不同：
+#
+#   det / ocr / face_rec → NPU（实测最优点，见 docs/FEAT-135）
+#   face_det(det_10g)    → GPU/CPU（NPU 慢 7 倍，116.5ms，永久排除）
+#   clip_*               → CPU（fp16 档在 DML 上有数值 bug；且只占扫描 0.2%）
+#
+# 一个全局「GPU 开关」表达不了这件事 —— 它要么全给 GPU，要么全不开。
+#
+# 取值：CPU | GPU（ORT DirectML）| NPU（OpenVINO，仅 Intel）
+# 持久化在 models/current_accel.json，由「⚙ 性能设置 → 加速分配」读写；
+# 文件缺失 = 与今天逐字一致（走旧的全局 GPU 开关）。
+# 环境变量 VCR_CHANNEL_DEVICES=det=NPU,ocr=NPU,face_rec=NPU,face_det=GPU 可强制覆盖（调试用）。
+# ---------------------------------------------------------------------------
+ACCEL_CURRENT_PATH = os.path.join(MODEL_DIR, "current_accel.json")
+# 可分配的通道。"clip" 是一个**伪通道**：它同时管 clip_vision / clip_text 双塔
+# （FEAT-141：以前 CLIP 的设备取决于「有没有手动点过开关」——_providers() 的隐式状态，
+#   UI 里根本看不到它跑在哪；现在把它摆到同一张表上）。
+CHANNEL_KEYS = ("det", "face_det", "face_rec", "ocr", "clip")
+# 设备取值合法性（"" = 未分配，回落旧的全局开关）
+DEVICE_CHOICES = ("CPU", "GPU", "NPU")
+
+
+def _parse_channel_devices(s: str) -> dict[str, str]:
+    """`det=NPU,ocr=Npu` → {"det":"NPU","ocr":"NPU"}（非法项直接丢弃）。"""
+    out: dict[str, str] = {}
+    for item in (s or "").replace(";", ",").split(","):
+        if "=" not in item:
+            continue
+        k, v = item.split("=", 1)
+        k, v = k.strip().lower(), v.strip().upper()
+        if k in CHANNEL_KEYS and v in DEVICE_CHOICES:
+            out[k] = v
+    return out
+
+
+def accel_setting() -> dict:
+    """当前加速分配 → {enabled, channels{}}。
+
+    优先级：env VCR_CHANNEL_DEVICES（调试）> 持久化文件 > **auto（未表态）**。
+
+    `enabled is None` = 用户从未表态 → 由调用方按硬件推荐（有 NPU/核显就默认开启）。
+    这是 FEAT-139 的默认策略：模型不该默认跑在 CPU 上（CPU 留给缩略图/EXIF/地点）。
+    用户显式关掉会写成 enabled=False，此时行为逐字回到旧的“全 CPU + 全局开关”语义。
+    """
+    env = _parse_channel_devices(os.environ.get("VCR_CHANNEL_DEVICES", ""))
+    if env:
+        return {"enabled": True, "channels": env, "source": "env"}
+    try:
+        if os.path.isfile(ACCEL_CURRENT_PATH):
+            with open(ACCEL_CURRENT_PATH, encoding="utf-8") as f:
+                d = json.load(f)
+            ch = {k: str(v).upper() for k, v in (d.get("channels") or {}).items()
+                  if k in CHANNEL_KEYS and str(v).upper() in DEVICE_CHOICES}
+            if d.get("enabled") and ch:
+                return {"enabled": True, "channels": ch, "source": "file"}
+            if d.get("enabled") is False:
+                return {"enabled": False, "channels": {}, "source": "file"}
+    except Exception:  # noqa: BLE001  坏文件当作未表态，绝不因此起不来
+        pass
+    return {"enabled": None, "channels": {}, "source": "auto"}
+
+
+def set_accel_setting(enabled: bool, channels: dict[str, str] | None = None) -> dict:
+    """写入加速分配（先落盘再返回；清空 = 回到旧的全局开关语义）。"""
+    ch = {}
+    for k, v in (channels or {}).items():
+        k2, v2 = str(k).lower(), str(v).upper()
+        if k2 in CHANNEL_KEYS and v2 in DEVICE_CHOICES:
+            ch[k2] = v2
+    data = {"enabled": bool(enabled) and bool(ch), "channels": ch}
+    try:
+        with open(ACCEL_CURRENT_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:  # noqa: BLE001  写不进去只影响重启后不记得，不影响本次生效
+        pass
+    return {"enabled": data["enabled"], "channels": ch, "source": "file"}
 
 # ---------------------------------------------------------------------------
 # 阈值：人物检测 / 仲裁（F20 固化值 + 校准 2026-08-13）

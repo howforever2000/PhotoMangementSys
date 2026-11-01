@@ -15,7 +15,9 @@ use image::ImageFormat;
 use serde::{Deserialize, Serialize};
 
 /// 支持的图片扩展名（按优先级排列，作为"第一张图"的扫描顺序）
-const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp"];
+/// FEAT-142：heic/heif 排在最后 —— 它是相册里「原生格式」，但解码成本高于 JPEG，
+/// 仅当目录里没有常见格式时才当封面。
+const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif"];
 
 /// 缩略图边长（需求文档提到 256px 缩略图）
 const THUMB_SIZE: u32 = 256;
@@ -29,6 +31,8 @@ pub enum ThumbError {
     Jpeg(jpeg_decoder::Error),
     /// 解码结果尺寸信息缺失/像素缓冲无效
     Decode,
+    /// 其他解码错误（HEIC 等由系统编解码器提供的能力，错误串需要可读、可操作）
+    Other(String),
 }
 
 impl std::fmt::Display for ThumbError {
@@ -38,6 +42,7 @@ impl std::fmt::Display for ThumbError {
             ThumbError::Image(e) => write!(f, "图片处理错误: {e}"),
             ThumbError::Jpeg(e) => write!(f, "JPEG 解码错误: {e}"),
             ThumbError::Decode => write!(f, "图片解码结果无效"),
+            ThumbError::Other(m) => write!(f, "{m}"),
         }
     }
 }
@@ -924,9 +929,9 @@ pub fn cleanup_all_album_thumbs(album_id: i64, thumbs_dir: &Path) {
 }
 
 /// 按**内容**解码（`image::open` 按扩展名猜格式，会把 PNG 内容叫 .jpg 的文件判成 JPEG）
+/// FEAT-142：HEIC/HEIF 由 `imgio` 按魔数分流给系统解码器，本函数不单独处理。
 fn open_any_image(source: &Path) -> Result<image::DynamicImage, ThumbError> {
-    let bytes = std::fs::read(source).map_err(ThumbError::Io)?;
-    image::load_from_memory(&bytes).map_err(ThumbError::Image)
+    crate::imgio::open_any(source).map_err(ThumbError::Other)
 }
 
 /// 判断文件名是否为 JPEG（.jpg / .jpeg）

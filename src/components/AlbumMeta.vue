@@ -40,7 +40,7 @@ const chooseCover = trace("chooseCover", async () => {
       multiple: false,
       title: "选择封面图片",
       defaultPath: props.album.path ?? undefined,
-      filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp"] }],
+      filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "heic", "heif"] }],
     });
     if (typeof selected === "string") {
       const updated = await invoke<Album>("set_cover", {

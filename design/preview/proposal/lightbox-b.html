@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Lightbox · 方案 B</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:1600px;height:1000px;overflow:hidden}
+  body{
+    font-family:"Noto Sans CJK SC","Noto Sans",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;color:#e8ebf2;background:#05060a;
+  }
+  .screen{position:relative;width:1600px;height:1000px;
+    background:radial-gradient(120% 100% at 50% 40%, #14171f 0%, #08090d 60%, #030407 100%);
+    display:grid;place-items:center;overflow:hidden}
+
+  /* 图片铺满，仅留极窄边 */
+  .photo{width:1600px;height:1000px;display:grid;place-items:center;padding:26px 0}
+  .photo svg{max-width:100%;max-height:100%;display:block}
+  .vignette{position:absolute;inset:0;pointer-events:none;
+    background:
+      linear-gradient(180deg, rgba(3,4,7,.86) 0%, rgba(3,4,7,.28) 12%, rgba(3,4,7,0) 26%),
+      linear-gradient(0deg, rgba(3,4,7,.9) 0%, rgba(3,4,7,.25) 12%, rgba(3,4,7,0) 24%)}
+
+  /* 左上：文件名 / 日期 / 地点 —— 无底板，只靠暗角承托 */
+  .head{position:absolute;left:38px;top:30px;text-shadow:0 1px 12px rgba(0,0,0,.8)}
+  .h-name{font-size:13px;font-weight:500;color:#eef1f7;letter-spacing:.1px}
+  .h-sub{margin-top:4px;font-size:11.5px;color:#a2abbb}
+  .h-place{margin-top:6px;display:flex;align-items:center;gap:5px;font-size:11.5px;color:#8fb0ff}
+
+  /* 右上：圆形玻璃按钮组 */
+  .head-r{position:absolute;right:32px;top:26px;display:flex;align-items:center;gap:8px}
+  .cbtn{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;
+    color:#e3e8f1;background:rgba(14,17,24,.55);border:1px solid rgba(255,255,255,.12);
+    backdrop-filter:blur(10px)}
+  .cbtn.close{color:#ffb0b0}
+  .count{margin-right:4px;font-size:11.5px;color:#b6bdcc;letter-spacing:.05em;
+    padding:6px 11px;border-radius:999px;background:rgba(14,17,24,.55);
+    border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(10px);font-variant-numeric:tabular-nums}
+
+  /* 右侧竖向操作轨 */
+  .rail{position:absolute;right:32px;top:50%;transform:translateY(-50%);
+    display:flex;flex-direction:column;gap:6px;padding:7px;
+    background:rgba(14,17,24,.5);border:1px solid rgba(255,255,255,.1);
+    border-radius:16px;backdrop-filter:blur(14px)}
+  .rbtn{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;
+    color:#cbd2df;position:relative}
+  .rbtn:hover{background:rgba(255,255,255,.09);color:#fff}
+  .rbtn.pri{background:rgba(106,141,240,.18);color:#c6d3ff}
+  .rbtn.danger{color:#ff9d9d}
+  .rbtn .badge{position:absolute;top:3px;right:3px;font-size:9px;line-height:1;
+    padding:1px 3px;border-radius:4px;background:#6a8df0;color:#fff;font-style:normal}
+
+  /* 左侧翻页 */
+  .nav{position:absolute;top:50%;transform:translateY(-50%);width:46px;height:46px;
+    border-radius:50%;display:grid;place-items:center;color:#e9edf5;
+    background:rgba(14,17,24,.45);border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(12px)}
+  .nav.l{left:30px}.nav.r{right:98px}
+
+  /* 底部胶片条 */
+  .film{position:absolute;left:50%;bottom:26px;transform:translateX(-50%);
+    display:flex;align-items:center;gap:7px;padding:7px 9px;
+    background:rgba(10,12,18,.6);border:1px solid rgba(255,255,255,.1);
+    border-radius:14px;backdrop-filter:blur(14px)}
+  .th{width:66px;height:46px;border-radius:7px;overflow:hidden;position:relative;
+    border:1px solid rgba(255,255,255,.1);opacity:.55}
+  .th.cur{opacity:1;border-color:rgba(255,255,255,.85);box-shadow:0 0 0 2px rgba(106,141,240,.55)}
+  .th .s{width:100%;height:100%;display:block}
+  .film .idx{font-size:10.5px;color:#8b93a5;padding:0 6px;font-variant-numeric:tabular-nums}
+
+  /* 评分（胶片条上方居中，极简） */
+  .rate{position:absolute;left:50%;bottom:96px;transform:translateX(-50%);
+    display:flex;align-items:center;gap:3px;text-shadow:0 1px 10px rgba(0,0,0,.9)}
+  .star{font-size:17px;color:rgba(255,255,255,.28)}
+  .star.on{color:#ffce3a}
+  .rate span{margin-left:8px;font-size:11px;color:#c3c9d6}
+</style>
+</head>
+<body>
+<div class="screen">
+  <div class="photo">
+    <svg viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#141f36"/><stop offset=".34" stop-color="#3b3550"/>
+          <stop offset=".60" stop-color="#8a4f50"/><stop offset=".78" stop-color="#cf7a4e"/>
+          <stop offset="1" stop-color="#f0b271"/>
+        </linearGradient>
+        <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#c2814f"/><stop offset=".22" stop-color="#7c5347"/>
+          <stop offset=".62" stop-color="#2b2430"/><stop offset="1" stop-color="#14131c"/>
+        </linearGradient>
+        <radialGradient id="sunGlow" cx="50%" cy="50%" r="50%">
+          <stop offset="0" stop-color="#ffe6b0" stop-opacity=".95"/>
+          <stop offset="45%" stop-color="#ffb873" stop-opacity=".42"/>
+          <stop offset="100%" stop-color="#ff9d5c" stop-opacity="0"/>
+        </radialGradient>
+        <linearGradient id="mtFar" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#5c5266"/><stop offset="1" stop-color="#392f3f"/>
+        </linearGradient>
+        <linearGradient id="mtNear" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#221d2b"/><stop offset="1" stop-color="#0e0d15"/>
+        </linearGradient>
+        <filter id="soft"><feGaussianBlur stdDeviation="9"/></filter>
+      </defs>
+      <rect width="1200" height="800" fill="url(#sky)"/>
+      <ellipse cx="745" cy="452" rx="330" ry="210" fill="url(#sunGlow)"/>
+      <circle cx="745" cy="440" r="34" fill="#ffeec2"/>
+      <g opacity=".5" filter="url(#soft)">
+        <ellipse cx="300" cy="250" rx="290" ry="26" fill="#6b5560"/>
+        <ellipse cx="880" cy="180" rx="330" ry="20" fill="#57455c"/>
+        <ellipse cx="560" cy="330" rx="380" ry="18" fill="#a06a5e"/>
+      </g>
+      <path d="M0 470 L120 418 L230 452 L330 402 L430 448 L520 424 L640 462 L760 430 L880 456 L980 420 L1100 458 L1200 432 L1200 500 L0 500 Z" fill="url(#mtFar)" opacity=".85"/>
+      <path d="M0 500 L90 462 L190 486 L300 440 L410 492 L500 470 L610 498 L720 466 L840 496 L950 458 L1060 492 L1200 470 L1200 540 L0 540 Z" fill="url(#mtNear)"/>
+      <rect y="500" width="1200" height="300" fill="url(#water)"/>
+      <ellipse cx="745" cy="500" rx="105" ry="9" fill="#ffd79a" opacity=".55"/>
+      <ellipse cx="745" cy="530" rx="72" ry="5" fill="#ffcf90" opacity=".38"/>
+      <ellipse cx="745" cy="562" rx="52" ry="4" fill="#ffc384" opacity=".26"/>
+      <ellipse cx="745" cy="600" rx="36" ry="3" fill="#ffb877" opacity=".18"/>
+      <g stroke="#e8c9a4" stroke-width="1" opacity=".15">
+        <path d="M120 556 H420"/><path d="M180 590 H360"/><path d="M60 620 H300"/>
+        <path d="M860 566 H1120"/><path d="M900 606 H1060"/><path d="M840 646 H1160"/>
+        <path d="M420 700 H760"/><path d="M300 740 H620"/>
+      </g>
+      <path d="M0 780 C180 760 300 792 470 776 C640 760 820 790 1000 772 L1200 782 L1200 800 L0 800 Z" fill="#0b0a12" opacity=".92"/>
+    </svg>
+  </div>
+  <div class="vignette"></div>
+
+  <div class="head">
+    <div class="h-name">IMG_2043.ARW</div>
+    <div class="h-sub">2026-10-28 17:42 · 6000 × 4000 · 24.6 MB</div>
+    <div class="h-place">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-6.3 7-11a7 7 0 10-14 0c0 4.7 7 11 7 11z"/><circle cx="12" cy="10" r="2.4"/></svg>
+      云南省 大理市 · 洱海生态廊道
+    </div>
+  </div>
+
+  <div class="head-r">
+    <span class="count">12 / 348</span>
+    <div class="cbtn" title="照片信息 (I)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></svg>
+    </div>
+    <div class="cbtn" title="全屏 (F11)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H4v5M15 4h5v5M15 20h5v-5M9 20H4v-5"/></svg>
+    </div>
+    <div class="cbtn close" title="关闭 (Esc)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </div>
+  </div>
+
+  <div class="nav l">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+  </div>
+  <div class="nav r">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>
+  </div>
+
+  <div class="rail">
+    <div class="rbtn" title="标签">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4L13.4 20.6a2 2 0 01-2.8 0l-7.2-7.2V4h9.4l7.8 7.8a2 2 0 010 1.6z"/><circle cx="7.5" cy="7.5" r="1.4"/></svg>
+      <i class="badge">3</i>
+    </div>
+    <div class="rbtn pri" title="编辑">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>
+    </div>
+    <div class="rbtn" title="在相册中查看">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+    </div>
+    <div class="rbtn" title="归档">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5 5h14l2 8v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4z"/></svg>
+    </div>
+    <div class="rbtn" title="隐藏">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
+    </div>
+    <div class="rbtn danger" title="删除">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>
+    </div>
+  </div>
+
+  <div class="rate">
+    <span class="star on">★</span><span class="star on">★</span><span class="star on">★</span>
+    <span class="star on">★</span><span class="star">★</span>
+    <span>4 星</span>
+  </div>
+
+  <div class="film">
+    <span class="idx">9</span>
+    <div class="th"><svg class="s" viewBox="0 0 120 80" preserveAspectRatio="xMidYMid slice"><rect width="120" height="80" fill="#2b2436"/><circle cx="70" cy="40" r="12" fill="#c8814f" opacity=".7"/><path d="M0 56 L30 44 L55 56 L80 46 L120 58 L120 80 L0 80Z" fill="#141019"/></svg></div>
+    <div class="th"><svg class="s" viewBox="0 0 120 80" preserveAspectRatio="xMidYMid slice"><rect width="120" height="80" fill="#22303f"/><path d="M0 48 L40 30 L80 52 L120 36 L120 80 L0 80Z" fill="#16202b"/></svg></div>
+    <div class="th"><svg class="s" viewBox="0 0 120 80" preserveAspectRatio="xMidYMid slice"><rect width="120" height="80" fill="#3a3150"/><circle cx="40" cy="34" r="9" fill="#e6c9a5" opacity=".6"/><path d="M0 60 L36 46 L70 60 L100 48 L120 58 L120 80 L0 80Z" fill="#191524"/></svg></div>
+    <div class="th cur"><svg class="s" viewBox="0 0 120 80" preserveAspectRatio="xMidYMid slice"><rect width="120" height="80" fill="#8a4f50"/><circle cx="74" cy="44" r="7" fill="#ffeec2"/><path d="M0 50 L30 40 L60 50 L90 42 L120 50 L120 80 L0 80Z" fill="#1c1824"/><rect y="52" width="120" height="28" fill="#6d4a44" opacity=".8"/></svg></div>
+    <div class="th"><svg class="s" viewBox="0 0 120 80" preserveAspectRatio="xMidYMid slice"><rect width="120" height="80" fill="#1e2a35"/><path d="M0 44 L44 28 L88 50 L120 34 L120 80 L0 80Z" fill="#131b23"/></svg></div>
+    <div class="th"><svg class="s" viewBox="0 0 120 80" preserveAspectRatio="xMidYMid slice"><rect width="120" height="80" fill="#4a3b3f"/><circle cx="58" cy="40" r="11" fill="#d9a67a" opacity=".65"/><path d="M0 62 L40 50 L86 64 L120 54 L120 80 L0 80Z" fill="#191219"/></svg></div>
+    <span class="idx">348</span>
+  </div>
+</div>
+</body>
+</html>

@@ -4,7 +4,9 @@
 本脚本用于开发环境或离线部署一次拉齐。
 
 v5：分类模型（yolov8*-cls）与 Places365 场景模型已下线，不再下载；
-    语义档位 = b16（fp16，默认）/ b16-fp32（可走 DirectML）；L/14 已实测否决下架。
+    语义档位自 FEAT-137 起**只留一档** b16（fp32 权重）：实测 fp16 在 CPU 上反而慢
+    18~33%，且拿不到 GPU（fp16 在 DirectML 上有数值 bug），两档精度等价 cos≥0.9999988。
+    L/14 已实测否决下架。
 """
 import argparse
 import os
@@ -52,7 +54,7 @@ TASKS = {
 # 语义模型档位：**由 config.CLIP_MODEL_META 派生**（单一事实源 = 档位表，
 # 避免 CLI 与 App 内下载/Rust model_dl.rs 三处各写一份落位约定而漂移）。
 # 任务别名（CLI 习惯叫法）→ 档位 key
-_CLIP_TASK_ALIAS = {"b16": "clip", "b16-fp32": "clip-fp32"}
+_CLIP_TASK_ALIAS = {"b16": "clip"}
 for _tier in config.CLIP_MODELS:
     _meta = config.CLIP_MODEL_META[_tier]
     TASKS[_CLIP_TASK_ALIAS[_tier]] = {

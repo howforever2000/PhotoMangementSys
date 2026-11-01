@@ -20,13 +20,16 @@ mod category;
 mod content;
 mod crypto;
 mod db;
+// FEAT-143：重复照片检测与清理
+mod dedupe;
 mod devdata;
 mod devpath;
 mod devtools;
 mod exif_orient;
-mod edit;
 mod folder;
 mod geo_index;
+// FEAT-142：HEIC/HEIF 解码（Windows 系统编解码器通道）
+mod heic;
 mod imgio;
 mod logger;
 mod model_dl;
@@ -34,19 +37,23 @@ mod photo_info;
 mod photo_scan;
 mod persons;
 mod photo_mark;
+// FEAT-142：HEIC 大图预览缓存（WebView2 不支持 HEIC）
+mod preview;
 mod scan_perf;
 mod scan_timing;
 mod session;
-mod studio;
 mod test_scan;
 mod test_scan_job;
 mod textdesc;
 mod thumb_migrate;
 mod thumbnail;
 mod tone;
+// 创意工坊（FEAT-150）：压缩与旧调色配方清理
+mod tools;
 mod vision;
 mod photos;
 mod album;
+mod album_health;
 mod vcr_settings;
 
 use std::path::{Path, PathBuf};
@@ -153,12 +160,13 @@ use photos::{
 use tone::commands::{scan_album_tones};
 use vcr_settings::{
     benchmark_vcr,
-    benchmark_vcr_sweep,
     get_face_tier_info,
+    get_vcr_accel,
     get_vcr_gpu_status,
     get_vcr_threads,
     list_vcr_models,
     set_face_tier,
+    set_vcr_accel,
     set_vcr_gpu,
     set_vcr_model,
     set_vcr_threads,
@@ -444,9 +452,6 @@ pub fn run() {
                     app.manage(test_scan_job::ScanJobState::default());
                 }
             }
-            // FEAT-099 非破坏图像编辑引擎：编辑会话表（预览平面 + 工作区缓存）
-            // 与 app 生命周期同长，打开图片时惰性填充，关闭编辑器时整体释放
-            app.manage(edit::commands::EditState::new());
             // BUG-2026-1023-009 收尾：缩略图缓存键空间解耦后的**一次性迁移**
             // （重订键复用旧文件 + 回收孤儿），必须早于用户开始浏览；
             // 放后台线程跑，不阻塞窗口首帧；幂等（settings 标记控制）。
@@ -617,6 +622,14 @@ pub fn run() {
             textdesc::commands::rebuild_desc_index,
             textdesc::commands::get_desc_person_name,
             textdesc::commands::set_desc_person_name,
+            // FEAT-143：重复照片检测（全库：内容哈希 + CLIP 向量相似）
+            dedupe::commands::dedupe_scan,
+            dedupe::commands::dedupe_cancel,
+            // FEAT-151：入库体检（只读诊断：入库率 / 缩略图 / 向量 / 失效文件 / 缓存体积）
+            album_health::commands::album_health_report,
+            // FEAT-142：HEIC 解码能力探针 + 大图预览
+            dedupe::commands::heic_support,
+            preview::commands::ensure_photo_preview,
             export_photos,
             get_vcr_gpu_status,
             start_model_download,
@@ -628,41 +641,21 @@ pub fn run() {
             set_vcr_gpu,
             get_vcr_threads,
             set_vcr_threads,
-            benchmark_vcr_sweep,
             list_vcr_models,
             set_vcr_model,
             get_face_tier_info,
             set_face_tier,
+            // FEAT-136：加速分配（通道 → 设备；GPU 与 NPU 各有加速对象）
+            get_vcr_accel,
+            set_vcr_accel,
             benchmark_vcr,
             cancel_scan,
             // 开发者视角（实时日志副窗口）
             tail_dev_log,
             open_dev_log_window,
             open_dev_data_window,
-            // 创意工坊（FEAT-063）：Python 微服务生命周期 + 结果落盘
-            studio::studio_ensure,
-            studio::studio_save_result,
-            // FEAT-099：非破坏图像编辑引擎（Lightroom 基准调色）
-            edit::commands::edit_schema,
-            edit::commands::edit_open,
-            edit::commands::edit_close,
-            edit::commands::edit_close_all,
-            edit::commands::edit_render,
-            edit::commands::edit_histogram,
-            edit::commands::edit_autotune,
-            edit::commands::edit_save_recipe,
-            edit::commands::edit_load_recipe,
-            edit::commands::edit_reset_recipe,
-            edit::commands::edit_recipe_to_text,
-            edit::commands::edit_recipe_from_text,
-            edit::commands::edit_encode,
-            edit::commands::edit_output_size,
-            // 局部蒙版（FEAT-099 扩展）
-            edit::commands::edit_mask_set,
-            edit::commands::edit_mask_get,
-            edit::commands::edit_mask_clear,
-            edit::commands::edit_write_file,
-            edit::commands::edit_session_stats,
+            // 创意工坊（FEAT-150）：图像压缩（指定大小 / 长边 / 裁切）
+            tools::image_compress,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -8,7 +8,8 @@ import PersonGallery from "../components/PersonGallery.vue";
 import CategoryGallery from "../components/CategoryGallery.vue";
 import LocationGallery from "../components/LocationGallery.vue";
 import OverviewPane from "../components/OverviewPane.vue";
-import AppHeader, { type HeaderTab } from "../components/ui/AppHeader.vue";
+import AppHeader from "../components/ui/AppHeader.vue";
+import type { HeaderTab } from "../types/ui";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 
 /**

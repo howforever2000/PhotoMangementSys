@@ -10,6 +10,7 @@
 pub mod category;
 pub mod content;
 pub mod embedding;
+pub mod health;
 pub mod overview;
 pub mod thumb_cache;
 pub use category::{CategoryIndexStats, CategoryOverviewRow, CategoryPhotoRow};
@@ -19,6 +20,7 @@ pub use content::{
     TimelineMonthIndex,
 };
 pub use embedding::EmbeddingVersion;
+pub use health::{AlbumFacts, SAMPLE_PER_ALBUM};
 pub use overview::{OverviewCard, OverviewStats};
 pub use thumb_cache::ThumbCacheRecord;
 pub use thumb_cache::ThumbCacheRow;
@@ -531,6 +533,25 @@ impl Database {
         self.init_overview_schema()?;
         // FEAT-067：描述向量表（文本塔；与图像塔 photo_embeddings 分开存）
         self.init_text_embedding_schema()?;
+        // FEAT-137：语义档位从两档收拢为一档（fp32 权重），向量空间标签统一。
+        // 两件表都重打：不迁就会让「模型档位换了」变成「语义索引没了」（搜不到也建不了）。
+        // 数值依据：两档同批 cos 最小 0.99999887（同一套权重，导出精度不同）。
+        match self.restamp_embedding_models(
+            embedding::CLIP_OLD_MODEL_IDS,
+            embedding::CLIP_MODEL_ID,
+        ) {
+            Ok(n) if n > 0 => {
+                crate::logger::log_info(&format!(
+                    "语义向量标签迁移：{n} 行 → {}",
+                    embedding::CLIP_MODEL_ID
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                // 迁移失败不能阻断启动：极端情况下只是语义搜索暂时搜不到旧向量
+                crate::logger::log_warn(&format!("语义向量标签迁移失败（不阻断启动）: {e}"));
+            }
+        }
         // FEAT-067：应用级配置项（KV；如「描述是否嵌入人物真名」，默认开）
         self.init_settings_schema()?;
         // 迁移：将历史以明文存储的用户邮箱/手机号/密码哈希重加密（无历史明文则为空操作）

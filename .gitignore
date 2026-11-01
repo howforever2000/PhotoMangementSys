@@ -148,6 +148,10 @@ python/.tmp-wml/
 python/.tmp-wml-rt/
 # 探针脚本运行时产生的 NPU 编译缓存（OpenVINO CACHE_DIR）
 python/bench/out/ov_cache/
+# FEAT-135：OV 运行时编译缓存（models/_ov_cache，与模型同目录，可随时删重建）
+python/models/_ov_cache/
+# FEAT-136：加速分配表（通道 → 设备）的持久化状态，属运行时设置，不入库
+python/models/current_accel.json
 # 智能体一次性排障脚本（本地探针，无构建/运行引用）
 .pi/*_probe.py
 .visual/out/

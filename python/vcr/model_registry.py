@@ -16,6 +16,7 @@ import onnxruntime as ort
 
 from . import config
 from . import logutil
+from . import ov_backend
 
 # 模型加载失败后的冷却期（秒）：
 # 冷启动瞬间的加载失败（显存/磁盘/驱动瞬时抖动）不应把该通道**永久**锁死
@@ -43,6 +44,9 @@ LOAD_RETRY_COOLDOWN = 30.0
 # 纯 CPU 会话不过这把锁，零开销。
 # ---------------------------------------------------------------------------
 _GPU_RUN_LOCK = threading.Lock()
+
+# OV 设备不可用的告警只打一次（每通道各打一次会把日志刷满）
+_OV_UNAVAIL_WARNED = False
 
 
 def clip_disk_bytes(paths: dict) -> int:
@@ -91,6 +95,11 @@ class ModelRegistry:
         # _load 的 check-then-act 必须串行。注意：is_ready / gpu_info 故意不加锁
         # （/health 每 300ms 被宿主探测，等加载锁会被阻塞数分钟 → 宿主误判不可达）。
         self._lock = threading.RLock()
+        # FEAT-136：启用加速分配前的「全局 provider 状态」快照 ——
+        # 关掉分配时必须原样恢复。否则 `_providers_sel` 已被复位成自动探测，
+        # 而 fp32 档 CLIP 跟随 `_providers()` ⇒ 用户点了「关闭」却仍跑在 DirectML
+        # （实测过：关闭后 clip_vision 依旧 ['DmlExecutionProvider', ...]）。
+        self._accel_restore: tuple[bool, list[str] | None] | None = None
         if os.environ.get("VCR_PROVIDER", "").lower() == "auto":
             self._providers_sel = None
             self._gpu_forced_off = False
@@ -172,12 +181,15 @@ class ModelRegistry:
     def _so_clip(self) -> ort.SessionOptions:
         """CLIP 会话专用 SessionOptions。
 
-        - provider 由 _clip_providers() 按档位决定（fp16 固定 CPU / fp32 跟随开关）
-        - fp16 图在 DML 上有算子级数值 bug，且全量图优化会在 vision 塔初始化时崩溃
-          （BUG-2026-0910-006）→ 统一用 BASIC 优化：CPU 与 DML(fp32) 均已实测数值正确
+        - provider 由 _clip_providers() 决定（FEAT-137 起只剩 fp32 一档，跟随全局）
+        - 图优化统一用 BASIC：全量图优化会在 vision 塔初始化时崩溃（BUG-2026-0910-006）
+        - **线程数单独取 config.clip_threads()（默认 = 全局的一半）**：
+          CLIP 只占扫描 0.2~0.3%，却与占 79% 的 AI 腿并发；让它拿满全局线程
+          等于从主腿嘴里扇饭（FEAT-138）
         """
         so = self._so()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+        so.intra_op_num_threads = config.clip_threads()
         return so
 
     # ------------------------------------------------------------------
@@ -217,6 +229,55 @@ class ModelRegistry:
             "sessions": {k: v.get("providers", []) for k, v in self._session_info.items()},
         }
 
+    # ------------------------------------------------------------------
+    # FEAT-136：加速分配表（通道 → 设备）
+    #
+    # GPU（DirectML）与 NPU（OpenVINO）是两个独立引擎，能同时开工且不争资源，
+    # 但各通道最优设备不同（det/ocr/face_rec → NPU；det_10g → GPU/CPU）。
+    # 一个全局「GPU 开关」表达不了这件事，所以这里按通道取设备。
+    # ------------------------------------------------------------------
+    def _channels(self) -> dict[str, str]:
+        """生效中的通道表（已归一化）。
+
+        - auto：按硬件推荐
+        - off：空
+        - on：以持久化为准，但**新版本新增的可分配通道**（如 FEAT-141 的 `clip`）
+          在旧文件里没有 → 按推荐值补上。否则它会静默回落到「旧的全局 provider」
+          语义，UI 上就出现「勾了核显却写 CPU」这种对不上的状态。
+        """
+        s = config.accel_setting()
+        if s["enabled"] is None:
+            return self.auto_channels()
+        if not s["enabled"]:
+            return {}
+        ch = dict(s["channels"])
+        for k, v in self.default_channels().items():
+            ch.setdefault(k, v)
+        return ch
+
+    def _device_of(self, key: str) -> str:
+        """该通道被分配到的设备；"" = 未分配（沿用旧的全局 GPU 开关，行为不变）。
+
+        FEAT-139：未表态（enabled is None）时按硬件推荐 = **默认开启加速**。
+        理由：模型不该默认跑 CPU（CPU 要留给缩略图/EXIF/地点解码）。
+        硬件不支持（既无 NPU 又无 DML）时推荐为空，效果等于未启用。
+        """
+        return self._channels().get(key, "")
+
+    @staticmethod
+    def _ort_providers_for(device: str) -> list[str] | None:
+        """非 OV 设备的 ORT provider 列表；None = 交给旧的全局逻辑。"""
+        if device == "CPU":
+            return ["CPUExecutionProvider"]
+        if device == "GPU":
+            avail = ort.get_available_providers()
+            for g in ("DmlExecutionProvider", "CUDAExecutionProvider"):
+                if g in avail:
+                    return [g, "CPUExecutionProvider"]
+            # 分配了 GPU 但这台机器没有 → 回 CPU（不报错、不改分配）
+            return ["CPUExecutionProvider"]
+        return None
+
     def _load(self, key: str, paths: list[str], required: bool = False):
         with self._lock:
             if key in self._ready:
@@ -229,11 +290,29 @@ class ModelRegistry:
             for p in paths:
                 if os.path.isfile(p):
                     attempted = True
+                    # FEAT-135/136：先试 OpenVINO（仅当该通道被分配到 NPU），
+                    # 失败则**原样落到下面的 ONNX Runtime 分支** —— 语义必须等于「没开这个开关」。
+                    ov_sess = self._try_ov(key, p)
+                    if ov_sess is not None:
+                        self._sessions[key] = ov_sess
+                        self._ready[key] = True
+                        self._session_info[key] = self._session_facts(
+                            ov_sess, p, False, None
+                        )
+                        self._failed_at.pop(key, None)
+                        self._load_errors.pop(key, None)
+                        logutil.err(
+                            f"[VCR] {key} 执行设备 = OpenVINO:{ov_sess.device} "
+                            f"(编译 {ov_sess.compile_s:.2f}s, shape={ov_sess.shape})"
+                        )
+                        return
+                    dev = self._device_of(key)
+                    dev_prov = self._ort_providers_for(dev)
                     try:
                         # 会话选项必须显式创建并复用：既保证会话按当前线程数创建，
                         # 也让 _session_facts 上报的 threads 与实际绑定一致
                         opts = self._so()
-                        sess, cpu_fallback = self._create_session(p, opts)
+                        sess, cpu_fallback = self._create_session(p, opts, dev_prov)
                         self._sessions[key] = sess
                         self._ready[key] = True
                         self._session_info[key] = self._session_facts(
@@ -260,6 +339,163 @@ class ModelRegistry:
         return dict(self._load_errors)
 
     # ------------------------------------------------------------------
+    # FEAT-135：OpenVINO / NPU 后端
+    # ------------------------------------------------------------------
+    def _try_ov(self, key: str, path: str):
+        """该通道是否该走 OpenVINO；不适用返回 None，编译失败记日志后返回 None。
+
+        两条准入同时成立才走 OV：
+          1. 该通道被分配到 NPU（或环境变量 VCR_OV_CHANNELS 显式列了它）
+          2. 真的是 Intel + NPU 可用
+
+        纪律：**不能用静默 except 吞掉编译失败的原因** —— 那就退化成
+        BUG-2026-1101 那种「界面显示 NPU 已启用、NPU 占用恒为 0」。
+        """
+        dev = self._device_of(key)
+        if dev != "NPU" and key not in config.OV_CHANNELS:
+            return None
+        global _OV_UNAVAIL_WARNED
+        if not ov_backend.available("NPU"):
+            if not _OV_UNAVAIL_WARNED:
+                _OV_UNAVAIL_WARNED = True
+                info = ov_backend.probe_devices()
+                logutil.err(
+                    f"[VCR] 通道分配到 NPU，但 NPU 不可用（installed={info['installed']} "
+                    f"devices={info['devices']} error={info['error'] or '-'}），"
+                    f"这些通道回落 ONNX Runtime"
+                )
+            return None
+        try:
+            return ov_backend.build(key, path, "NPU")
+        except Exception as e:  # noqa: BLE001
+            logutil.err(
+                f"[VCR] {key} OpenVINO 编译失败，回落 ONNX Runtime: "
+                f"{type(e).__name__}: {e}"
+            )
+            return None
+
+    # ------------------------------------------------------------------
+    # FEAT-136：加速分配
+    # ------------------------------------------------------------------
+    def default_channels(self) -> dict[str, str]:
+        """推荐分配（UI 一键加速用）：能上 NPU 的给 NPU，剩下的给 GPU，最后 CPU。
+
+        刻意不让 GPU 空着：在本机它接管 face_det（det_10g，NPU 上 116.5ms，
+        比 DML 的 16.5ms 慢 7 倍）—— GPU 与 NPU 同时有活干，且两者不抢队列。
+
+        FEAT-141 / 2026-11-03 用户定调：**勾上核显时，语义索引默认也走核显**。
+        依据（`\".pi/clip_device_probe.py`，两轮各 200 张全新建档）：CLIP 在核显上
+        自己快 1.4~1.8x，但它整批编码会长时间占住 DML 队列，把 AI 腿拖慢
+        30~70%。所以它是“默跟随、可单独改回 CPU”：
+        全新建档 / 首次导入大相册 → 核显更快；只做增量重扫 → 点那一行改回 CPU。
+        """
+        npu_ok = ov_backend.available("NPU")
+        dml_ok = any(p in ort.get_available_providers()
+                     for p in ("DmlExecutionProvider", "CUDAExecutionProvider"))
+        out: dict[str, str] = {}
+        for k in config.CHANNEL_KEYS:
+            if k == "clip":
+                # 语义索引跟核显走（没核显就 CPU）
+                out[k] = "GPU" if dml_ok else "CPU"
+            elif npu_ok and k in config.OV_SHAPES:
+                out[k] = "NPU"
+            elif dml_ok:
+                out[k] = "GPU"
+            else:
+                out[k] = "CPU"
+        return out
+
+    def auto_channels(self) -> dict[str, str]:
+        """auto 模式的分配（缓存）：没有可用引擎时返回空 = 不改任何东西。"""
+        cached = getattr(self, "_auto_channels", None)
+        if cached is None:
+            d = self.default_channels()
+            # 全是 CPU = 这台机器没有可加速的引擎，别把四个通道都钉成 CPU
+            # （钉了会让旧 GPU 开关失效，属于“静默改行为”）
+            cached = {} if all(v == "CPU" for v in d.values()) else d
+            self._auto_channels = cached
+        return cached
+
+    def accel_info(self) -> dict:
+        """加速分配现状（/health 与设置页用）：想给什么、实际跑在什么上。"""
+        s = config.accel_setting()
+        devs = ov_backend.probe_devices()
+        npu_ok = ov_backend.available("NPU")
+        dml_ok = "DmlExecutionProvider" in ort.get_available_providers()
+        auto = s["enabled"] is None
+        channels = self._channels() if auto else self._channels()
+        effective: dict[str, str] = {}
+        for k in config.CHANNEL_KEYS:
+            # clip 是伪通道：实际看 clip_vision 会话（双塔同一套 provider 规则）
+            sess_key = "clip_vision" if k == "clip" else k
+            provs = (self._session_info.get(sess_key) or {}).get("providers") or []
+            if not provs:
+                effective[k] = "" if not self.is_ready(sess_key) else "?"
+            elif any(str(p).startswith("OpenVINO:") for p in provs):
+                effective[k] = "NPU"
+            elif any(not str(p).startswith("CPU") for p in provs):
+                effective[k] = "GPU"
+            else:
+                effective[k] = "CPU"
+        return {
+            "enabled": bool(channels) if auto else s["enabled"],
+            # mode：auto（未表态，按硬件推荐）/ on（用户显式开）/ off（用户显式关）
+            "mode": "auto" if auto else ("on" if s["enabled"] else "off"),
+            "channels": channels,
+            "source": s["source"],
+            "defaults": self.default_channels(),
+            "effective": effective,
+            "available": {"NPU": npu_ok, "GPU": dml_ok, "CPU": True},
+            "ov": {"installed": devs["installed"], "devices": devs["devices"],
+                   "error": devs["error"], "source": devs["source"]},
+            "compiled": {k: round(v.compile_s, 2)
+                         for k, v in self._sessions.items()
+                         if isinstance(v, ov_backend.OvChannel)},
+        }
+
+    def set_accel(self, enabled: bool, channels: dict[str, str] | None = None) -> dict:
+        """写入加速分配并重建全部会话（enabled=False = 回到旧的全局开关语义）。"""
+        with self._lock:
+            ch = channels if channels is not None else self.default_channels()
+            config.set_accel_setting(enabled, ch)
+            # 用户一旦表态，auto 缓存作废（下次按文件走）
+            self._auto_channels = None
+            if enabled:
+                if self._accel_restore is None:
+                    self._accel_restore = (self._gpu_forced_off,
+                                           list(self._providers_sel) if self._providers_sel else None)
+                # 分配表生效时，旧开关的「强制 CPU」不能再把 GPU 通道押回 CPU
+                self._gpu_forced_off = False
+                self._providers_sel = None
+            elif self._accel_restore is not None:
+                # 关闭 = 回到启用前的全局状态（含 fp32 档 CLIP 到底跟不跟 GPU）
+                self._gpu_forced_off, restore = self._accel_restore
+                self._providers_sel = list(restore) if restore else None
+                self._accel_restore = None
+            global _OV_UNAVAIL_WARNED
+            _OV_UNAVAIL_WARNED = False   # 允许换分配后重新告警
+            self._reload_all()
+        return self.accel_info()
+
+    def ov_info(self) -> dict:
+        """OV 后端现状（/health 用）：想接哪些通道、实际接上了哪些。"""
+        dev = ov_backend.probe_devices()
+        on_ov = sorted(k for k, v in self._sessions.items()
+                       if isinstance(v, ov_backend.OvChannel))
+        return {
+            "channels": list(config.OV_CHANNELS),
+            "device": config.OV_DEVICE,
+            "installed": dev["installed"],
+            "devices": dev["devices"],
+            "available": bool(dev["installed"]) and any(
+                str(d).upper() == config.OV_DEVICE for d in dev["devices"]),
+            "source": dev["source"],
+            "error": dev["error"],
+            "active": on_ov,
+            "sessions": {k: v.get("providers") for k, v in self._session_info.items()},
+        }
+
+    # ------------------------------------------------------------------
     # 规则通道
     # ------------------------------------------------------------------
     @property
@@ -283,20 +519,24 @@ class ModelRegistry:
         return self._sessions.get("ocr")
 
     def _clip_providers(self) -> list[str]:
-        """CLIP 双塔的 provider：按档位决定（fp16 固定 CPU / fp32 跟随 GPU 开关）。
+        """CLIP 双塔的 provider：按「加速分配」里 `clip` 那一项决定。
 
-        为什么必须分开：
-          - fp16 档（model_fp16.onnx）在 AMD DirectML 上有**算子级数值 bug**
-            （实测输出错误，见 BUG-2026-0910-006）→ 无论 GPU 开关如何都固定 CPU；
-            此前这里直接用全局 provider，一旦用户打开 GPU 开关就会把 fp16 送到 DML
-            上进而静默产出错误向量（潜在缺陷，本次一并修掉）。
-          - fp32 档（model.onnx）实测 DML 与 CPU 数值完全一致（余弦 1.000000）
-            且快约 2 倍（53.3ms vs 108.2ms/张，见 python/bench/verify_clip_tiers.py），
-            故跟随用户的 GPU 开关（默认仍为 CPU，用户显式开启才用 GPU）。
+        历史：FEAT-137 之前这里是「fp16 档硬钉 CPU」（fp16 在 DML 上有算子级
+        数值 bug，BUG-2026-0910-006）；fp16 档下线后那道特例删了，改用全局
+        provider —— 但那留下一个**隐式状态**：CLIP 到底在 CPU 还是 DML 取决于
+        「用户有没有点过加速开关」（set_accel 会把 _providers_sel 复位成自动探测），
+        UI 里根本看不到。FEAT-141 把 `clip` 摆上分配表，这里按表执行。
+
+        `clip` 只能取 CPU / GPU：NPU 不接管它 —— OpenVINO 只编 det/ocr/face_rec
+        三个已静态化的通道（config.OV_SHAPES），CLIP 双塔是可变 batch 的整图。
+        分配到 NPU 时回落核显（有的话）否则 CPU。
         """
-        p = config.clip_paths()
-        if "fp16" in p["onnx"]:
+        dev = self._device_of("clip")
+        if dev == "CPU":
             return ["CPUExecutionProvider"]
+        if dev in ("GPU", "NPU"):
+            return self._ort_providers_for("GPU") or ["CPUExecutionProvider"]
+        # 未分配：沿用旧的全局 provider 语义（与 FEAT-141 之前逐字一致）
         return self._providers()
 
     # ------------------------------------------------------------------
@@ -350,6 +590,10 @@ class ModelRegistry:
         info = self._session_info.get(key)
         if info is None:
             return True
+        # OpenVINO 通道自带设备锁（NPU 一把、与 DML 不共享），不能再套 _GPU_RUN_LOCK
+        # —— 套上就等于让 NPU 和 DML 互相串行，「两个独立引擎」这句话立刻失效。
+        if isinstance(self._sessions.get(key), ov_backend.OvChannel):
+            return False
         provs = info.get("providers")
         if not provs:
             return True
@@ -357,6 +601,8 @@ class ModelRegistry:
 
     def run(self, key: str, tensor) -> list[np.ndarray]:
         sess = self._sessions[key]
+        if isinstance(sess, ov_backend.OvChannel):
+            return sess.infer(tensor)      # 锁在 OvChannel 内部（按设备）
         if self._gpu_backed(key):
             with _GPU_RUN_LOCK:
                 return sess.run(None, {sess.get_inputs()[0].name: tensor})
@@ -478,24 +724,6 @@ class ModelRegistry:
             "total_ms": round(total, 2),
             "throughput_per_s": round(runs / (total / 1000.0), 1) if total > 0 else None,
         }
-
-    def benchmark_sweep(self, key: str = "clip_vision", options: list[int] | None = None,
-                        runs: int = 8, warmup: int = 2) -> list[dict]:
-        """线程数扫档：对同一通道依次用不同线程数测速，供 UI 选最优（不改变当前设置）。"""
-        opts = options or config.threads_info()["options"]
-        out: list[dict] = []
-        for n in opts:
-            try:
-                r = self.benchmark(key, runs=runs, warmup=warmup, threads=int(n))
-                out.append(r)
-            except Exception as e:  # noqa: BLE001  某档失败不影响整体
-                out.append({"channel": key, "threads": int(n), "error": f"{type(e).__name__}: {e}"})
-        ok = [r for r in out if "avg_ms" in r]
-        if ok:
-            best = min(ok, key=lambda r: r["avg_ms"])
-            for r in out:
-                r["best"] = r is best
-        return out
 
     # ------------------------------------------------------------------
     # 语义模型档位切换（适配不同硬件）

@@ -21,10 +21,10 @@ v5（语义分类）：分类模型（yolov8*-cls）、Places365 场景、花朵
   POST /persons/merge             → {target, source}
   DELETE /persons/{id}            → 删除人物
   GET  /gpu  POST /gpu            → GPU 加速状态 / 开关
-  GET  /models  POST /model       → 语义模型档位清单 / 切换（b16 / b16-fp32）
+  GET  /models  POST /model       → 语义模型清单（FEAT-137 起只剩一档 b16）
   GET  /threads POST /threads     → CPU 线程数现状 / 设置（性能设置里可调）
   POST /benchmark                 → 固定张量测速（CPU/GPU 加速比对比，可临时指定线程数）
-  POST /benchmark_sweep           → 线程数扫档（一次测多个档位，UI 选最优）
+  GET  /accel   POST /accel       → 加速分配表（通道 → 设备：NPU / GPU / CPU）
   GET  /embed_status              → CLIP 子系统诊断
   POST /embed_text                → 单条文本 → 向量
   POST /embed_text_batch          → 批量文本 → 向量（语义分类关键词一次编码）
@@ -96,9 +96,13 @@ def _health_dict() -> dict:
 # v4：语义搜索（Chinese-CLIP fp16）—— /embed_text /embed_batch /health.clip_ready。
 # v5：语义分类 —— 下线分类模型/场景/专家通道；语义模型档位选择（/models /model，
 #     B/16 ↔ L/14-336）；新增 /embed_text_batch。
-# v6：CPU 线程数可调（/threads 读写 + /benchmark 支持临时线程覆盖 + /benchmark_sweep 扫档），
+# v6：CPU 线程数可调（/threads 读写 + /benchmark 支持临时线程覆盖）；
+#     FEAT-138 删掉了 /benchmark_sweep（线程扫档）—— 它测的是 CLIP 单跑曲线，
+#     却让人拿它去定全局线程数；实测该旋钮对并发扫描无稳定影响。
 #     供「⚙ 性能设置」按不同硬件实测选优。
-VCR_API_VERSION = 12  # v12: 回退 OpenVINO/NPU 语义塔后端（FEAT-133），回到纯 CPU + DirectML；
+VCR_API_VERSION = 13  # v13: FEAT-135 可选的 OpenVINO/NPU 执行设备（det/ocr/face_rec，
+#                        默认关闭，/health.ov 如实上报）；
+#                        v12: 回退 OpenVINO/NPU 语义塔后端（FEAT-133），回到纯 CPU + DirectML；
 #                        v9: 人脸质量闸门（几何/尺寸/清晰度 + 边缘质量限新建）
 
 
@@ -122,6 +126,11 @@ def health():
         "persons": d["persons"],
         "threads": config.threads(),
         "gpu": reg.gpu_info(),
+        # FEAT-135：OV/NPU 后端现状（想接哪些通道 / 实际接上了哪些 / 设备可用性）。
+        # 只读、不触发加载：ov_info() 里只碰已存在的会话。
+        "ov": reg.ov_info(),
+        # FEAT-136：加速分配表（GPU 与 NPU 各自接管哪些通道 + 实际生效设备）
+        "accel": reg.accel_info(),
         "batch_max": config.BATCH_CHUNK_MAX,
         # 各通道最近一次加载失败原因：宿主据此在日志里直接写明「为何 ok=false」
         # （面板转圈排查要点——BUG-2026-0921-003）
@@ -148,6 +157,36 @@ def gpu():
 
 class GpuRequest(BaseModel):
     enabled: bool
+
+
+class AccelRequest(BaseModel):
+    """加速分配：enabled=False 清空分配（回到旧的全局 GPU 开关语义）。
+
+    channels 省略时用推荐分配（能上 NPU 的给 NPU，剩下的给 GPU）。
+    """
+    enabled: bool = True
+    channels: dict[str, str] | None = None
+
+
+@app.get("/accel")
+def accel():
+    """加速分配现状（设置页用）。只读，不触发任何模型加载。"""
+    return get_registry().accel_info()
+
+
+@app.post("/accel")
+def set_accel(req: AccelRequest):
+    """写入加速分配并后台重建会话（加载 NPU 编译可达秒级，不能占住 HTTP）。
+
+    与 /gpu、/threads 同一套交互：立即返回，重建交给后台线程。
+    """
+    reg = get_registry()
+    info = reg.set_accel(req.enabled, req.channels)
+    # 开/关都要重建：关闭后四条腿要从 NPU/GPU 重新变成 CPU 会话，
+    # 不重建的话 /health 会短暂停在「未加载」，UI 看起来就像「勾掉了没生效」
+    # （FEAT-141 用户反馈的那个现象）。
+    threading.Thread(target=_rebuild_all_channels, daemon=True).start()
+    return info
 
 
 class ModelRequest(BaseModel):
@@ -251,26 +290,6 @@ def benchmark(req: BenchmarkRequest):
     try:
         return get_registry().benchmark(req.channel, runs=req.runs, warmup=req.warmup,
                                        threads=req.threads)
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-
-
-class SweepRequest(BaseModel):
-    channel: str = "clip_vision"
-    options: list[int] | None = None
-    runs: int = 8
-    warmup: int = 2
-
-
-@app.post("/benchmark_sweep")
-def benchmark_sweep(req: SweepRequest):
-    """线程数扫档：一次请求把若干线程数都测一遍，返回 [{threads, avg_ms, best}]。
-
-    可能触发多次会话创建与推理（秒级到十几秒），用长超时（Rust 侧独立 180s）。
-    """
-    try:
-        return {"results": get_registry().benchmark_sweep(
-            req.channel, req.options, runs=req.runs, warmup=req.warmup)}
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -625,6 +644,22 @@ def _rebuild_main_chain() -> None:
         print(f"[VCR] 规则主链路模型状态: {st}", file=sys.stderr)
     except Exception as e:  # noqa: BLE001
         print(f"[VCR] 主链路模型加载失败: {e}", file=sys.stderr)
+
+
+def _rebuild_all_channels() -> None:
+    """后台重建 **四条** 规则通道（FEAT-136 加速分配切换后调用）。
+
+    与 `_rebuild_main_chain` 的区别：换了设备分配后，每条腿都要按新分配重建，
+    只预热 det 会让 face/ocr 拖到下一次扫描才生效 —— 用户会看到「切了但没变」。
+    逐条 try：某条腿失败（比如 NPU 驱动掉线）不能拖死其余三条。
+    """
+    reg = get_registry()
+    for name in ("det", "face_det", "face_rec", "ocr"):
+        try:
+            getattr(reg, name)
+        except Exception as e:  # noqa: BLE001
+            logutil.err(f"[VCR] 加速分配重建 {name} 失败: {type(e).__name__}: {e}")
+    logutil.err(f"[VCR] 加速分配生效: {reg.accel_info()['effective']}")
 
 
 def _quiet_proactor_noise() -> None:

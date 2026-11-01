@@ -1,27 +1,32 @@
 <script setup lang="ts">
 /**
- * 识别性能设置（⚙ 页签的内容）—— 分区式布局
+ * 识别性能设置（⚙ 页签）—— 只回答一个问题：**这台机器把哪些计算放在哪个引擎上**
  *
- * 这一屏**只放与「这台机器怎么跑得更快」有关的开关**（适配不同电脑）：
- *   ① 本机硬件   —— GPU 加速、CPU 线程数（依赖识别服务）
- *   ② 语义模型   —— 档位切换（依赖识别服务，换档要重建索引）
- *   ③ 高级选项   —— 扫描批次 + 实测诊断（默认折叠，不打扰首次使用者）
- * 与网络有关的模型下载 / 镜像源**不在这里**，由「📦 模型管理」页签单独提供
- * （见 settings/PerfSettingsDialog.vue）——服务挂了也能下载。
+ * 布局（自上而下 = 从「是什么」到「怎么调」）：
+ *   本机硬件   一行事实（核数 / NPU / GPU），无按钮
+ *   加速       两个独立勾选（NPU / GPU）+ 「哪条计算跑在哪个引擎」对照表
+ *   人脸模型   档位选择（精度 ↔ 速度，换档要重建人物库）
+ *   高级       扫描批次 / CPU 线程数 / 测速与诊断（默认折叠）
  *
- * 结构说明（组件拆分，单文件超 300 行即拆）：
- *   原来 1054 行的单体被拆成 4 个自包含分区，各自负责自己的加载/错误/重试，
- *   共享数据直接读 Pinia（gpuStatus / vcrThreads / vcrModels / modelDownloads），
- *   因此分区之间不需要 prop 传递，也不会出现「改了一处另一处还是旧值」。
+ * FEAT-140：语义模型那一行整块去掉 —— 只剩一档（FEAT-137），没有「选」这件事；
+ * 服务探针改由 AccelSection 承担（它必调 /accel，最轻且一定依赖服务）。
  *
- * 服务可用性：由 ClipTierSection 充当探针（`list_vcr_models` 最轻且必然依赖服务）。
- * 它失败 → 本组件显示横幅并锁定①③；模型管理页签不受影响（BUG-2026-0918-002）。
+ * FEAT-139 收掉的东西：
+ *   · 旧的「GPU 加速」开关 —— 与「加速」分区表达的是同一件事，留两个开关只会让人
+ *     猜「到底哪个生效」；现在分配表的默认值就包含「没有 NPU 时全部走 GPU」。
+ *   · 顶部「这台机器现在怎么跑」摘要 —— 与对照表重复。
+ *   · 顶部把 CPU 线程数摆在第一位 —— 模型默认走 GPU/NPU 后，这个旋钮基本不影响
+ *     速度（CPU 主要在生成缩略图、扫 EXIF、解地点），降级到「高级」。
+ *
+ * 服务可用性：AccelSection 充当探针（`/accel` 最轻且必然依赖服务）。
+ * 它失败 → 横幅 + 锁定依赖服务的分区；「📦 模型管理」页签不受影响。
  */
-import { ref, computed, onMounted } from "vue";
+import { ref, onMounted } from "vue";
 import CollapseSection from "./CollapseSection.vue";
 import HardwareSection from "./settings/HardwareSection.vue";
-import ClipTierSection from "./settings/ClipTierSection.vue";
+import AccelSection from "./settings/AccelSection.vue";
 import FaceTierSection from "./settings/FaceTierSection.vue";
+import ThreadsSection from "./settings/ThreadsSection.vue";
 import ScanAdvancedSection from "./settings/ScanAdvancedSection.vue";
 import BenchmarkSection from "./settings/BenchmarkSection.vue";
 import { useContentStore } from "../stores/content";
@@ -31,7 +36,7 @@ const store = useContentStore();
 /** 识别服务不可用 → 横幅 + 锁定依赖它的分区（不整块隐藏，用户仍能重试） */
 const initFailed = ref(false);
 const initError = ref("");
-/** 重试令牌：自增触发 ClipTierSection 重新加载（不把函数当 prop 传） */
+/** 重试令牌：自增触发下游分区重新加载（不把函数当 prop 传） */
 const retryToken = ref(0);
 
 function onServiceFail(msg: string) {
@@ -48,40 +53,11 @@ function retry() {
   retryToken.value += 1;
 }
 
-// ---- 「这台机器现在怎么跑」摘要 ----
-//
-// 这一屏原来难懂的核心：四个开关分属**两条不同的腿**（GPU 加速 → 人物/人脸/OCR；
-// 语义索引 → 另受「语义档位」约束），但 UI 上从没说清楚。现在在顶部用两行把
-// “当前实际在哪跑”直接摆出来，开关变成“为什么这样”的解释而不是猜谜。
-//
-// 数据源：gpuStatus（人物链路的请求值）+ vcrModels.current（语义档位）。
-// 语义腿的真实规则写在 model_registry._clip_providers：fp16 档固定 CPU；
-// fp32 档才跟随 GPU 开关 —— 所以这里必须按档位说，不能笼统写一句“语义也走 GPU”。
-const accelOn = computed(() => store.gpuStatus?.use_gpu === true);
-const clipTier = computed(() => store.vcrModels?.current ?? "");
-const clipTierLabel = computed(() => {
-  const m = store.vcrModels?.models?.find((x) => x.name === store.vcrModels?.current);
-  return m?.label ?? clipTier.value ?? "";
-});
-const semantic = computed(() => {
-  if (!store.vcrModels) return { text: "读取中…", tone: "dim" as const };
-  if (clipTier.value.includes("fp16")) {
-    return { text: "CPU（fp16 档固定不走 GPU）", tone: "dim" as const };
-  }
-  if (accelOn.value) {
-    return { text: "DirectML 加速（跟随下方开关）", tone: "ok" as const };
-  }
-  return { text: "CPU（fp32 档可开 GPU）", tone: "dim" as const };
-});
-const personChain = computed(() =>
-  accelOn.value
-    ? { text: "DirectML 加速", tone: "ok" as const }
-    : { text: "CPU（未开加速）", tone: "dim" as const },
-);
-
 onMounted(() => {
-  // 摘要只做展示：失败不弹错（下面的分区各自有自己的错误态与重试）
-  if (!store.vcrModels) void store.fetchVcrModels().catch(() => {});
+  // 只做展示：失败不弹错（分区各自有错误态与重试）
+  void store.fetchAccel().catch(() => {});
+  void store.fetchVcrModels().catch(() => {});
+  void store.fetchVcrThreads().catch(() => {});
 });
 </script>
 
@@ -89,57 +65,30 @@ onMounted(() => {
   <div class="mgps-wrap">
     <!-- 服务不可用：锁定而非隐藏（BUG-2026-0918-002） -->
     <p v-if="initFailed" class="banner">
-      <b>识别服务暂不可用。</b>
+      <b>识别服务暂不可用</b>
       <span v-if="initError" class="banner-err">{{ initError }}</span>
-      <span v-else>可能正在启动 / 加载模型，稍候重试。</span>
-      <button class="btn btn-sm" @click="retry">🔄 重试</button>
-      <br />
-      <span class="banner-sub">
-        下面①②③区依赖识别服务，已暂时锁定；<b>「📦 模型管理」页签不依赖服务，仍可正常使用</b>。
-      </span>
+      <button class="btn btn-sm" @click="retry">重试</button>
+      <span class="banner-sub">「📦 模型管理」页签不受影响，可正常下载。</span>
     </p>
 
-    <!-- FEAT-133：这台机器现在怎么跑（把两条腿分开说清） -->
-    <div class="now" aria-label="这台机器当前的推理方式">
-      <div class="now-row">
-        <span class="now-k">语义索引</span>
-        <span class="now-v" :class="semantic.tone">{{ semantic.text }}</span>
-        <span class="now-note">照片编向量 · 以图搜图 · 语义分类（当前档位：{{ clipTierLabel }}）</span>
-      </div>
-      <div class="now-row">
-        <span class="now-k">人物与文字</span>
-        <span class="now-v" :class="personChain.tone">{{ personChain.text }}</span>
-        <span class="now-note">人物检测 · 人脸 · OCR（由下方「GPU 加速」控制）</span>
-      </div>
-    </div>
-
-    <!-- ① 本机硬件 -->
     <section class="block">
-      <HardwareSection :locked="initFailed" />
+      <HardwareSection />
     </section>
 
     <section class="block">
-      <ClipTierSection
-        :locked="initFailed"
-        :retry-token="retryToken"
-        @failed="onServiceFail"
-        @recovered="onServiceOk"
-      />
+      <AccelSection :locked="initFailed" @failed="onServiceFail" @recovered="onServiceOk" />
     </section>
 
-    <!-- ②b 人脸模型档位（两档可切、选择持久化；换档后需重建人物库） -->
     <section class="block">
       <FaceTierSection :locked="initFailed" :retry-token="retryToken" />
     </section>
 
-    <!-- ③ 高级选项：默认折叠，状态记在 localStorage（下次进入保持） -->
-    <CollapseSection
-      title="高级选项"
-      subtitle="扫描批次 · 实测与诊断"
-      storage-key="perf-advanced"
-    >
+    <CollapseSection title="高级" subtitle="扫描批次 · 线程数 · 测速诊断" storage-key="perf-advanced">
       <section class="block">
         <ScanAdvancedSection />
+      </section>
+      <section class="block block-gap">
+        <ThreadsSection :locked="initFailed" />
       </section>
       <section class="block block-gap">
         <BenchmarkSection :locked="initFailed" />
@@ -164,84 +113,44 @@ onMounted(() => {
 }
 /* 分区间隔：用分隔线而不是再套一层卡片，避免「卡中卡」 */
 .block + .block {
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
   padding-top: 14px;
 }
 .block-gap {
-  margin-top: 6px;
+  margin-top: 12px;
 }
 .banner {
   margin: 0;
-  padding: 10px 12px;
-  border: 1px solid #f2c94c;
-  border-radius: var(--radius-sm, 8px);
-  background: var(--color-warn-soft);
-  color: var(--color-text);
-  font-size: 12.5px;
-  line-height: 1.7;
-}
-.banner-err {
-  color: var(--color-danger);
-}
-.banner-sub {
-  color: var(--color-text-2);
-}
-/* 「现在怎么跑」摘要：两条腿分两行，每行只回答“现在在哪” */
-.now {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm, 8px);
-  background: var(--color-surface-2);
-}
-.now-row {
-  display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-.now-k {
-  min-width: 72px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 8px);
+  background: var(--color-warn-soft, rgba(255, 180, 0, 0.12));
   font-size: 12.5px;
-  font-weight: 600;
-  color: var(--color-text);
 }
-.now-v {
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--color-text-2);
+.banner-err {
+  color: var(--color-danger, #d9534f);
+  overflow-wrap: anywhere;
 }
-.now-v.ok {
-  color: var(--color-ok);
-}
-.now-v.dim {
-  color: var(--color-text-3);
-  font-weight: 600;
-}
-.now-note {
-  font-size: 11.5px;
+.banner-sub {
+  font-size: 12px;
   color: var(--color-text-3);
 }
 .btn {
   min-height: 26px;
-  margin-left: 6px;
   padding: 3px 10px;
-  border: 1px solid var(--color-border);
   border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--color-border);
   background: var(--color-surface-2);
   color: var(--color-text);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
-.btn:hover {
-  border-color: var(--color-primary);
-  color: var(--color-primary-text);
-}
-.btn:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-primary) 55%, transparent);
-  outline-offset: 2px;
+.btn-sm {
+  min-height: 24px;
+  padding: 2px 8px;
 }
 </style>

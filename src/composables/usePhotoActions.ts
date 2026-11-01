@@ -100,10 +100,16 @@ export function usePhotoActions() {
   /** 取消隐藏 */
   const unhide = (paths: string[]) => apply("hidden", paths, false);
 
-  /** 在创意工坊里编辑某张照片（跳工坊并带上原图路径） */
+  /**
+   * 把某张照片送到创意工坊的工具上（FEAT-150）
+   *
+   * 带 `tool=compress` 直接落到压缩工位，并把照片预填进素材托盘 ——
+   * 旧版是跳到一个三栏调色台、再载入原图，现在工坊只做「对照片加工」，
+   * 用户点这项目的就是「把这张压一下发出去」。
+   */
   function openInWorkshop(path: string): void {
     if (!path) return;
-    void router.push({ name: "workshop", query: { photo: path } });
+    void router.push({ name: "workshop", query: { photo: path, tool: "compress" } });
   }
 
   /**

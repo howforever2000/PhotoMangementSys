@@ -32,7 +32,7 @@ const store = useContentStore();
 const notify = useNotify();
 
 const MODEL_ZIP =
-  "https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.2/model.zip";
+  "https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.5/model.zip";
 
 const title = computed(() => {
   if (props.reason === "det") return "人物检测模型缺失";
