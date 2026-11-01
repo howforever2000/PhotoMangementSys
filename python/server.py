@@ -182,8 +182,10 @@ def set_accel(req: AccelRequest):
     """
     reg = get_registry()
     info = reg.set_accel(req.enabled, req.channels)
-    if req.enabled:
-        threading.Thread(target=_rebuild_all_channels, daemon=True).start()
+    # 开/关都要重建：关闭后四条腿要从 NPU/GPU 重新变成 CPU 会话，
+    # 不重建的话 /health 会短暂停在「未加载」，UI 看起来就像「勾掉了没生效」
+    # （FEAT-141 用户反馈的那个现象）。
+    threading.Thread(target=_rebuild_all_channels, daemon=True).start()
     return info
 
 

@@ -52,6 +52,7 @@ const ov = computed(() => accel.value?.ov);
 const npuOk = computed(() => accel.value?.available?.NPU === true);
 const gpuOk = computed(() => accel.value?.available?.GPU === true);
 const installed = computed(() => ov.value?.installed === true);
+const enabled = computed(() => accel.value?.enabled === true);
 
 /** 勾选态 = 当前分配里出现了该设备（clip 不参与这两项，它自己有行内开关） */
 const npuChecked = computed(() =>
@@ -70,11 +71,14 @@ const clipEff = computed(
   () => accel.value?.effective?.clip ?? accel.value?.channels?.clip ?? "");
 
 const rows = computed(() =>
-  ROWS.map((r) => ({
-    ...r,
-    want: accel.value?.channels?.[r.key] ?? "",
-    eff: accel.value?.effective?.[r.key] ?? "",
-  })),
+  ROWS.map((r) => {
+    const want = accel.value?.channels?.[r.key] ?? "";
+    const eff = accel.value?.effective?.[r.key] ?? "";
+    // 加速关闭时一律显示 CPU：后端会重建为 CPU 会话，但重建前后的空档
+    // 不该显示成「—」，否则用户会以为「勾掉了却没生效」
+    const dev = enabled.value ? eff || want : "CPU";
+    return { ...r, want, eff, dev };
+  }),
 );
 
 const dl = computed(() => store.modelDownloads.find((d) => d.name === RUNTIME_MODEL) ?? null);
@@ -110,6 +114,10 @@ function channelsFor(
   useGpu: boolean,
   clipOverride?: boolean,
 ): Record<string, AccelDevice> {
+  // 两个都不勾 = 全部 CPU。必须返回**空表**：只要返回非空，后端就会把缺的通道
+  // 按推荐值补齐（_channels 归一化），于是又跑回 NPU/GPU —— 「勾掉却没生效」就是这个原因
+  // （之前这里总会塞一个 clip，于是空表永远不成立）。
+  if (!useNpu && !useGpu) return {};
   const out: Record<string, AccelDevice> = {};
   if (useNpu && useGpu) {
     for (const k of NPU_KEYS) out[k] = "NPU";
@@ -206,16 +214,16 @@ async function download() {
       <span class="m-name">{{ r.label }}</span>
       <span class="m-when">{{ r.when }}</span>
       <button
-        v-if="r.key === 'clip' && gpuOk"
+        v-if="r.key === 'clip' && gpuOk && enabled"
         class="m-dev link"
         :disabled="locked || busy"
         :title="clipOnGpu ? '切回 CPU：语义腿变慢，但不与识别抢 GPU' : '改用 GPU：首次导入大量照片时更快，日常增量反而拖慢识别'",
         @click="toggleClip"
       >
-        {{ devLabel(r.eff || r.want) }}
+        {{ devLabel(r.dev) }}
       </button>
-      <span v-else class="m-dev" :class="(r.eff || r.want).toLowerCase()">
-        {{ devLabel(r.eff || r.want) }}
+      <span v-else class="m-dev" :class="r.dev.toLowerCase()">
+        {{ devLabel(r.dev) }}
       </span>
     </li>
     <li class="cpu-only">
