@@ -5104,7 +5104,7 @@
       "id": "BUG-2026-1101-004",
       "date": "2026-11-01",
       "status": "fixed",
-      "title": "重复扫描完成后界面长时间卡住：一次铺 12 组卡片 + 整页缩略图一起入队",
+      "title": "重复扫描完成后界面长时间卡住：一次铺整页卡片 + 整页缩略图一起入队",
       "module": "src/components/DedupePanel.vue · src/stores/dedupe.ts（删除分页状态）",
       "symptom": [
         "扫描完成的那一刻，结果区要「愣」很久才有反应，滚动手感也发涩",
@@ -5115,9 +5115,9 @@
         "缩略图是在 watch(pageGroups) 里对整页所有照片一次性入队（虽然是全局限流，但入队与 DOM 构建本身就在主线程）"
       ],
       "solution": [
-        "改用 composables/useIncrementalReveal 按「屏」增量渲染（3 屏起步、滚到底追加 2 屏，单组预算 268px），只建当前几屏的卡片 DOM",
-        "缩略图改 IntersectionObserver（rootMargin 400px）按卡片进视口才排队，并按 rAF 合并写入 thumbs（一张卡几十张图不再逐张触发重渲染）",
-        "分页控件退役：store 的 page/pageCount/pageGroups/setPage 一并删除，避免两套渲染口径并存"
+        "分页保留（12 组/页），把「一次渲染多少组」交给翻页控制，不再一次铺全部组",
+        "页内缩略图改 IntersectionObserver（rootMargin 400px）按卡片进视口才排队，并按 rAF 合并写入 thumbs，一张卡几十张图不再逐张重渲染",
+        "中途试过用 useIncrementalReveal 做滚动增量渲染，被用户否掉（他要翻页），已回退；教训是「渲染节流」与「图片节流」要分开选方案"
       ],
       "prevention": [
         "「懒加载图片」和「懒加载列表」是两件事：判断长列表是否真的懒，看 document.querySelectorAll(卡片).length 是否等于总数，而不是看有没有 observer",
@@ -5134,8 +5134,52 @@
         "缩略图"
       ],
       "created_at": "2026-11-01T12:40:47+08:00",
-      "updated_at": "2026-11-01T12:40:47+08:00"
+      "updated_at": "2026-11-01T14:15:12+08:00"
+    },
+    {
+      "id": "BUG-2026-1101-005",
+      "date": "2026-11-01",
+      "status": "fixed",
+      "title": "重复组里同一文件夹的 3 份相同照片被平铺成 3 张一样的缩略图，且与「保留」那张地址相同，用户不敢点删除",
+      "module": "src/components/dedupe/DupeGroupCard.vue · src/stores/dedupe.ts（selectCell / deletableOf）· src/utils/dedupeGroups.ts（folderCells / deletablePathsOf）",
+      "symptom": [
+        "完全重复组里出现 6 个一模一样的缩略图（实测一张人像：img\\Pictures 3 份 + img\\手机照片\\无地点 3 份，文件名 mmexport…957/…592/…866 各不相同）",
+        "卡片地址只显示末尾两级（…\\img\\Pictures），其中几张与「保留」那张地址完全相同 → 用户以为同一张照片被重复列出，并担心「点删除会把想留的那张也删掉」",
+        "文件名被截断成 mmexport17225… ，几个不同文件看起来是同一个文件"
+      ],
+      "root_cause": [
+        "展示颗粒度用错了层：后端给的是「文件」，界面就按文件铺开；但用户的感知单位是「位置（文件夹）」，同一文件夹里的 3 份在他看来就是「同一张照片显示了 3 次」",
+        "地址被截断成只留末尾两级，丢掉了区分信息；文件名也被 CSS 截断，两个不同文件难以分辨",
+        "数据侧面已排除「同一路径重复」：canonicalize 后 6 条路径互不相同，确系 6 个不同文件（内容相同）"
+      ],
+      "evidence_log": [
+        "dump_big_exact_groups 输出：exact:b643a06c671b6393 6 张，canonical 路径两两不同，dir 只有 2 个（img\\Pictures / img\\手机照片\\无地点），每组 3 份",
+        "目录实测：Pictures 与 手机照片\\无地点 各含 mmexport1722568073957/8075592/8076866 三个文件，内容一致"
+      ],
+      "solution": [
+        "展示与勾选单位改成「文件夹」：folderCells() 折叠成每文件夹一张卡，卡上标「N 份」并列出该文件夹里的文件名",
+        "卡片完整显示文件夹路径（word-break 换行 + 3 行截断 + title 全量），文件名也完整给出，不再让两个不同文件看起来一样",
+        "保留所在文件夹的卡整张不可勾选；store 的 selectCell 再按 deletablePathsOf 过滤一遍，硬保证保留那张与保留文件夹里的副本不会进入待删集合",
+        "底部操作条与确认弹窗改成「已勾选 N 个文件夹 · 将删 M 张」，把卡片数与文件数分开说明"
+      ],
+      "prevention": [
+        "展示单位要跟着用户的感知走（位置/文件夹），删除单位可以更粗，但保护规则必须更细",
+        "一切「路径类文本的截断」都要先问：截断后还能不能区分两个不同对象？地址只留末尾两级、文件名省略中段，都会直接制造误判",
+        "清理类功能里「与保留项同址」是最容易引发误删恐惧的形状，要在数据层（可删集合）而不是仅在 UI 层排除"
+      ],
+      "keywords": [
+        "重复照片",
+        "dedupe",
+        "同一文件夹",
+        "折叠",
+        "误删",
+        "地址截断",
+        "folderCells",
+        "deletablePathsOf"
+      ],
+      "created_at": "2026-11-01T14:15:12+08:00",
+      "updated_at": "2026-11-01T14:15:12+08:00"
     }
   ],
-  "updated": "2026-11-01T12:40:47+08:00"
+  "updated": "2026-11-01T14:15:12+08:00"
 }

@@ -1782,6 +1782,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// 临时：把精确重复组里的完整路径打出来（查「同一张照片显示多次」到底是不是同一文件）
+    #[test]
+    #[ignore = "临时排查：需 PMS_DB"]
+    fn dump_big_exact_groups() {
+        let _gate = e2e_gate();
+        let db_path = std::env::var("PMS_DB").unwrap_or_else(|_| {
+            let appdata = std::env::var("APPDATA").unwrap_or_default();
+            format!("{appdata}\\com.photomanagementsys.app\\photos.db")
+        });
+        let conn = rusqlite::Connection::open(&db_path).expect("打开 photos.db 失败");
+        let mut stmt = conn.prepare("select id, path from albums").unwrap();
+        let albums: Vec<(i64, String)> = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        let report = scan_library(&albums, Vec::new(), None, 0.98, true, false, &|_, _, _, _| {})
+            .expect("扫描应成功");
+
+        let mut shown = 0usize;
+        for g in &report.groups {
+            if g.kind != "exact" || g.items.len() < 4 {
+                continue;
+            }
+            eprintln!("\n==== 组 {} · {} 张 · 可释放 {} ====", g.key, g.items.len(), g.reclaimable_bytes);
+            let mut canon = HashSet::new();
+            for it in &g.items {
+                let c = std::fs::canonicalize(&it.path)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|e| format!("<{e}>"));
+                eprintln!(
+                    "  keep={} size={} dir={} \n       path={}\n       canon={}",
+                    it.path == g.keep_path,
+                    it.size_bytes,
+                    it.dir,
+                    it.path,
+                    c
+                );
+                assert!(canon.insert(c.to_lowercase()), "同一 canonical 文件出现在同组: {}", it.path);
+            }
+            shown += 1;
+            if shown >= 4 {
+                break;
+            }
+        }
+        eprintln!("\n共展示 {shown} 组（每组内 canonical 路径均唯一）");
+    }
+
     /// 真实图库的同址去重校验（默认忽略）：
     ///
     /// `PMS_DB="C:\Users\...\photos.db" cargo test --lib -- --ignored --nocapture verify_real_library_same_path`

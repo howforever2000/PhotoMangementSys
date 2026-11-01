@@ -2,15 +2,23 @@
 /**
  * 一个重复组（FEAT-143）
  *
- * 只负责「把一组里的 N 张摊开 + 勾选/换保留」，不做任何 IO 与删除决策：
- * 缩略图由父组件统一排队取（`thumbQueue` 有全局在飞上限），删除由底部操作条统一下发。
- * 这样一组卡片就能独立预览、独立测（组件轻量 + 单一职责）。
+ * ## 一个文件夹一张卡（BUG-2026-1101-005）
+ *
+ * 后端给的粒度是「文件」。但同一个文件夹里常常躺着同一张照片的好几份（内容逐字节相同、
+ * 文件名不同），按文件铺开就会出现「6 张一模一样的缩略图」，其中几张还与「保留」那张
+ * 地址相同 —— 用户会以为同一张照片被重复列出，更怕点删除把想留的那张删掉。
+ *
+ * 所以展示与勾选单位都是 **文件夹**：一张卡 = 一个地址，卡上标「N 份」，并列出文件名。
+ * 点击卡片勾选 = 删除该文件夹里的全部副本；保留所在文件夹的卡整张不可勾选
+ * （`utils/dedupeGroups.deletablePathsOf` 在 store 里再兜一道，保证想留的那张删不到）。
+ *
+ * 组件本身不做任何 IO 与删除决策：缩略图由父组件按视口排队取，删除由底部操作条统一下发。
  */
 import { computed } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { DupGroup, DupItem } from "../../types/dedupe";
+import type { DupGroup } from "../../types/dedupe";
 import { formatSize } from "../../types/album";
-import { dedupeItemsByPath, shortDir } from "../../utils/dedupeGroups";
+import { cellBytes, folderCells, type FolderCell } from "../../utils/dedupeGroups";
 
 const props = defineProps<{
   group: DupGroup;
@@ -25,47 +33,59 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: "toggle", path: string): void;
+  (e: "toggleCell", dir: string, on: boolean): void;
   (e: "setKeep", path: string): void;
   (e: "selectGroup", on: boolean): void;
   /** 点击缩略图：交给父组件开灯箱（本组件不做任何 IO） */
   (e: "preview", path: string): void;
 }>();
 
-/**
- * 展示用的条目列表：兜底按路径去重
- *
- * 后端已按真实路径归并过，这里只是防「同一张照片并排出现两次」再次回到界面上 ——
- * 那个状态下用户会勾一次、删两次，属于必须守住的不变量。
- */
-const items = computed<DupItem[]>(() => dedupeItemsByPath(props.group.items));
-
 const kindLabel = computed(() => (props.group.kind === "exact" ? "完全重复" : "画面相似"));
 
-const deletableCount = computed(() => items.value.filter((i) => i.path !== props.keepPath).length);
+/** 一个文件夹一张卡（保留文件夹排第一） */
+const cells = computed<FolderCell[]>(() => folderCells(props.group, props.keepPath));
 
-const selectedInGroup = computed(
-  () => items.value.filter((i) => props.selected.has(i.path)).length,
+/** 本组可删的卡片数（保留文件夹那张不算） */
+const deletableCells = computed(() => cells.value.filter((c) => !c.isKeepFolder));
+
+const allSelected = computed(
+  () => deletableCells.value.length > 0 && deletableCells.value.every((c) => cellSelected(c)),
 );
 
-const allSelected = computed(() => deletableCount.value > 0 && selectedInGroup.value === deletableCount.value);
+/** 组内照片总数 / 文件夹数（给标题用：`6 张 · 2 个文件夹`） */
+const photoCount = computed(() => cells.value.reduce((n, c) => n + c.items.length, 0));
 
-function thumbUrl(p: string): string {
-  const t = props.thumbs[p];
+function cellSelected(cell: FolderCell): boolean {
+  if (cell.isKeepFolder) return false;
+  const del = cell.items.filter((it) => it.path !== props.keepPath);
+  return del.length > 0 && del.every((it) => props.selected.has(it.path));
+}
+
+function cellPartial(cell: FolderCell): boolean {
+  if (cell.isKeepFolder) return false;
+  const del = cell.items.filter((it) => it.path !== props.keepPath);
+  const hit = del.filter((it) => props.selected.has(it.path)).length;
+  return hit > 0 && hit < del.length;
+}
+
+function thumbUrl(cell: FolderCell): string {
+  const t = props.thumbs[cell.items[0].path];
   return t ? convertFileSrc(t) : "";
 }
 
-function dims(it: DupItem): string {
+function dims(cell: FolderCell): string {
+  const it = cell.items[0];
   return it.width && it.height ? `${it.width}×${it.height}` : "尺寸未知";
 }
 
-function fileName(p: string): string {
-  return p.split(/[\\/]/).pop() || p;
+/** 卡片主标题：几份相同照片 */
+function cellTitle(cell: FolderCell): string {
+  return cell.items.length > 1 ? `${cell.items.length} 份相同照片` : "1 份";
 }
 
-/** 缩略图下方的「地址」：只留末尾两级，完整路径在 title 上 */
-function addrOf(it: DupItem): string {
-  return shortDir(it.dir);
+/** 文件名列表（证明它们是不同文件，不是同一张被重复列出） */
+function fileList(cell: FolderCell): string {
+  return cell.items.map((it) => it.file_name).join("、");
 }
 
 /** 相似度展示：exact 组不必显示 1.000，读者会误以为"相似度算过" */
@@ -78,7 +98,7 @@ function simText(): string {
   <article class="dg" :class="`dg-${group.kind}`">
     <header class="dg-head">
       <span class="dg-kind">{{ kindLabel }}</span>
-      <span class="dg-count">{{ items.length }} 张</span>
+      <span class="dg-count">{{ photoCount }} 张 · {{ cells.length }} 个文件夹</span>
       <span v-if="group.kind === 'similar'" class="dg-sim" :title="'组内与『保留』那张的最低相似度'">
         相似度 ≥ {{ simText() }}
       </span>
@@ -87,7 +107,7 @@ function simText(): string {
       <button
         class="dg-mini"
         type="button"
-        :disabled="busy || deletableCount === 0"
+        :disabled="busy || deletableCells.length === 0"
         @click="emit('selectGroup', !allSelected)"
       >
         {{ allSelected ? "本组全不选" : "本组全选" }}
@@ -96,55 +116,79 @@ function simText(): string {
 
     <ul class="dg-strip">
       <li
-        v-for="it in items"
-        :key="it.path"
+        v-for="cell in cells"
+        :key="cell.dir"
         class="dg-item"
-        :class="{ 'is-keep': it.path === keepPath, 'is-checked': selected.has(it.path) && it.path !== keepPath }"
+        :class="{ 'is-keep': cell.isKeepFolder, 'is-checked': cellSelected(cell) }"
       >
         <button
           class="dg-thumb"
           type="button"
-          :title="`${it.path}\n点击看大图`"
-          :aria-label="`预览 ${it.file_name}`"
-          @click="emit('preview', it.path)"
+          :title="`${cell.items[0].path}\n点击看大图`"
+          :aria-label="`预览 ${cellTitle(cell)}`"
+          @click="emit('preview', cell.items[0].path)"
         >
-          <img v-if="thumbUrl(it.path)" :src="thumbUrl(it.path)" :alt="it.file_name" loading="lazy" />
-          <span v-else class="dg-noimg">{{ it.file_name.slice(0, 1).toUpperCase() || "?" }}</span>
-          <span v-if="it.path === keepPath" class="dg-badge">保留</span>
+          <img
+            v-if="thumbUrl(cell)"
+            :src="thumbUrl(cell)"
+            :alt="cellTitle(cell)"
+            loading="lazy"
+          />
+          <span v-else class="dg-noimg">{{ (cell.items[0].file_name.slice(0, 1) || "?").toUpperCase() }}</span>
+          <span v-if="cell.isKeepFolder" class="dg-badge">保留</span>
+          <span v-else-if="cell.items.length > 1" class="dg-badge dg-badge-count">
+            {{ cell.items.length }} 份
+          </span>
           <span class="dg-zoom" aria-hidden="true">⤢</span>
         </button>
 
-        <label class="dg-pick">
+        <!-- 保留所在文件夹：整张不可勾选（硬保证：想留的那张永远删不到） -->
+        <div v-if="cell.isKeepFolder" class="dg-pick dg-pick-locked" :title="`保留：${keepPath}`">
+          <span class="dg-lock" aria-hidden="true">🔒</span>
+          <span class="dg-name">{{ cellTitle(cell) }} · 保留</span>
+        </div>
+        <label v-else class="dg-pick">
           <input
             type="checkbox"
-            :checked="selected.has(it.path)"
-            :disabled="busy || it.path === keepPath"
-            :aria-label="`勾选删除 ${it.file_name}`"
-            @change="emit('toggle', it.path)"
+            :checked="cellSelected(cell)"
+            :indeterminate="cellPartial(cell)"
+            :disabled="busy"
+            :aria-label="`删除该文件夹的 ${cell.items.length} 份相同照片`"
+            @change="emit('toggleCell', cell.dir, !cellSelected(cell))"
           />
-          <span class="dg-name" :title="it.path">{{ fileName(it.path) }}</span>
+          <span class="dg-name" :title="`删掉这个文件夹里的 ${cell.items.length} 份`">
+            {{ cellTitle(cell) }}
+          </span>
         </label>
 
         <div class="dg-meta">
-          <span>{{ dims(it) }}</span>
+          <span>{{ dims(cell) }}</span>
           <span class="dg-dot">·</span>
-          <span>{{ formatSize(it.size_bytes) }}</span>
+          <span>{{ formatSize(cellBytes(cell)) }}</span>
         </div>
 
-        <!-- 地址：同一张照片出现在两个嵌套相册时，靠这一行就能看出是不是同一个文件夹 -->
-        <p class="dg-addr" :title="it.dir || it.path">{{ addrOf(it) }}</p>
+        <!-- 地址：完整显示（不再截断成 …\img\Pictures 这种认不出的样子） -->
+        <p class="dg-addr" :title="cell.dir">{{ cell.dir || "地址未知" }}</p>
+
+        <!-- 文件名：同一文件夹里的多份靠这一行证明是不同文件 -->
+        <p class="dg-files" :title="fileList(cell)">{{ fileList(cell) }}</p>
 
         <button
-          v-if="it.path !== keepPath"
+          v-if="!cell.isKeepFolder"
           class="dg-setkeep"
           type="button"
           :disabled="busy"
-          @click="emit('setKeep', it.path)"
+          @click="emit('setKeep', cell.items[0].path)"
         >
           设为保留
         </button>
       </li>
     </ul>
+
+    <p v-if="cells.some((c) => c.isKeepFolder && c.items.length > 1)" class="dg-note">
+      保留文件夹里还有
+      {{ cells.find((c) => c.isKeepFolder)!.items.length - 1 }} 份相同照片，本工具不动它们
+    </p>
   </article>
 </template>
 
@@ -221,8 +265,8 @@ function simText(): string {
 }
 
 .dg-item {
-  flex: 0 0 148px;
-  width: 148px;
+  flex: 0 0 168px;
+  width: 168px;
   border: 1px solid transparent;
   border-radius: 10px;
   padding: 6px;
@@ -295,16 +339,6 @@ function simText(): string {
   color: color-mix(in srgb, var(--c-fg) 40%, transparent);
 }
 
-/* 地址行：长路径只留末尾两级（完整路径在 title），对得上「是不是同一个文件夹」 */
-.dg-addr {
-  margin: 4px 0 0 21px;
-  font-size: 11px;
-  color: color-mix(in srgb, var(--c-fg) 52%, transparent);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .dg-badge {
   position: absolute;
   left: 6px;
@@ -316,10 +350,13 @@ function simText(): string {
   color: #fff;
   background: color-mix(in srgb, var(--color-primary) 88%, #000);
 }
+.dg-badge-count {
+  background: color-mix(in srgb, var(--color-danger, #d13438) 85%, #000);
+}
 
 .dg-pick {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   margin-top: 7px;
   cursor: pointer;
@@ -331,17 +368,24 @@ function simText(): string {
   accent-color: var(--color-danger, #d13438);
   cursor: pointer;
   flex: 0 0 auto;
+  margin-top: 2px;
 }
 .dg-pick input:disabled {
   cursor: not-allowed;
+}
+.dg-pick-locked {
+  cursor: default;
+  color: var(--c-fg-2);
+}
+.dg-lock {
+  font-size: 11px;
+  line-height: 18px;
 }
 
 .dg-name {
   font-size: 12px;
   color: var(--c-fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: var(--fw-em);
 }
 
 .dg-meta {
@@ -354,6 +398,32 @@ function simText(): string {
 }
 .dg-dot {
   opacity: 0.6;
+}
+
+/* 地址行：完整路径按词断开换行，最多 3 行（悬停看全） */
+.dg-addr {
+  margin: 4px 0 0 21px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--c-fg) 60%, transparent);
+  word-break: break-all;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 文件名：证明同一文件夹里的多份是不同文件 */
+.dg-files {
+  margin: 3px 0 0 21px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--c-fg) 45%, transparent);
+  word-break: break-all;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .dg-setkeep {
@@ -377,6 +447,13 @@ function simText(): string {
 }
 .dg-setkeep:disabled {
   cursor: not-allowed;
+}
+
+.dg-note {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--c-fg-2);
 }
 
 /* 触屏/无 hover：始终显示换保留入口，否则移动端无法操作 */

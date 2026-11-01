@@ -8,11 +8,12 @@
  *   ① 判据与阈值（一次说清「怎么判重复」）
  *   ② 进度 / 错误 / 能力提示（HEIC、未入库）
  *   ③ 汇总带（找到多少组、能省多少）
- *   ④ 分组列表（**滚动增量渲染**：先渲几屏，滚到底再追加；缩略图只在卡片进视口时排队）
+ *   ④ 分组列表（**一页 12 组**，翻页才换；页内缩略图按卡片进视口才排队）
  *   ⑤ 底部常驻操作条（已选张数/体积 + 全选 + 两档删除）
  *
- * 为什么不一次渲染全部组：扫描完成后可能有几千组，一次全铺 = 几千个卡片 DOM +
- * 上千路缩略图请求，页面会“假死”十几秒。增量渲染 + 视口热加载把首屏开销压到 1~3 组。
+ * 两张设计取舍：
+ *   · 分页解决「一次要渲染多少组」，视口热加载解决「一次要取多少缩略图」——两件事分开做；
+ *   · 卡片单位是**文件夹**而不是文件（见 DupeGroupCard 的说明），同一文件夹里的多份合成一张卡。
  *
  * 删除决策全在 store（`useDedupeStore`）：本组件只负责呈现与二次确认。
  */
@@ -20,7 +21,6 @@ import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useDedupeStore, thresholdHint } from "../stores/dedupe";
 import { useNotify } from "../composables/useNotify";
-import { useIncrementalReveal } from "../composables/useIncrementalReveal";
 import { getThumbs } from "../utils/thumbQueue";
 import { formatSize } from "../types/album";
 import type { DedupeDeleteMode, DupGroup } from "../types/dedupe";
@@ -32,20 +32,6 @@ import EmptyState from "./EmptyState.vue";
 const store = useDedupeStore();
 const notify = useNotify();
 const router = useRouter();
-
-/* ---------------- ④ 增量渲染：只建当前几屏的卡片 ---------------- */
-/**
- * 一组的渲染预算：卡片内边距 22 + 标题行 30 + 一条横向缩略图条 ≈ 210（横滚不增高）。
- * 取 268 留一点余量，宁可少渲一组，也不要首屏把几千组一次性铺出去。
- */
-const GROUP_COST_PX = 268;
-
-const { visible: visibleGroups, visibleCount, hasMore, loadMore } = useIncrementalReveal<DupGroup>({
-  units: computed(() => store.groups),
-  costOf: () => GROUP_COST_PX,
-  screens: 3,
-  stepScreens: 2,
-});
 
 /* ---------------- 缩略图：卡片进视口才排队（全局限流在 thumbQueue 里） ---------------- */
 const thumbs = shallowRef<Record<string, string>>({});
@@ -153,6 +139,13 @@ watch(
     if (n === 0) previewGroup.value = null;
   },
 );
+/* 结果被清空 / 重新扫描时关掉灯箱（否则会在旧组上翻页） */
+watch(
+  () => store.groups.length,
+  (n) => {
+    if (n === 0) previewGroup.value = null;
+  },
+);
 
 void store.refreshHeicSupport();
 
@@ -184,6 +177,17 @@ const report = computed(() => store.report);
 const groups = computed(() => store.groups);
 const hasResult = computed(() => !!report.value);
 const canScan = computed(() => !store.running && !store.deleting);
+
+/** 已勾选涉及的文件夹数（卡片单位是文件夹，光看张数容易吓到自己） */
+const selectedFolderCount = computed(() => {
+  const dirs = new Set<string>();
+  for (const g of store.groups) {
+    for (const it of g.items) {
+      if (store.selected.has(it.path)) dirs.add(it.dir.toLowerCase());
+    }
+  }
+  return dirs.size;
+});
 const needVectorHint = computed(
   () => !!report.value && (report.value.skipped_unencoded > 0 || !!report.value.similar_skipped_reason),
 );
@@ -216,10 +220,11 @@ const dialogTitle = computed(() =>
 const dialogMessage = computed(() => {
   const n = store.selectedCount;
   const size = formatSize(store.selectedBytes);
+  const folders = selectedFolderCount.value;
   if (pendingMode.value === "trash") {
-    return `将把已勾选的 ${n} 张照片（共 ${size}）移入系统回收站，同时清理缩略图缓存与扫描记录。\n每组『保留』的那张不会被删除；回收站里的文件可再恢复。`;
+    return `将把已勾选的 ${folders} 个文件夹里的 ${n} 张照片（共 ${size}）移入系统回收站，同时清理缩略图缓存与扫描记录。\n每组『保留』的那张、以及它所在文件夹里的其它副本都不会被删除；回收站里的文件可再恢复。`;
   }
-  return `将把已勾选的 ${n} 张照片（共 ${size}）从照片库中移除，磁盘文件保留不动。\n移除后可在「最近删除」恢复；每组『保留』的那张不会被处理。`;
+  return `将把已勾选的 ${folders} 个文件夹里的 ${n} 张照片（共 ${size}）从照片库中移除，磁盘文件保留不动。\n移除后可在「最近删除」恢复；每组『保留』的那张、以及它所在文件夹里的其它副本都不会被处理。`;
 });
 
 function askDelete(mode: DedupeDeleteMode) {
@@ -385,10 +390,10 @@ function goScan() {
       </div>
     </div>
 
-    <!-- ④ 分组列表（只渲染当前几屏；卡片进视口才拉缩略图） -->
+    <!-- ④ 分组列表（一页 12 组；页内卡片进视口才拉缩略图） -->
     <div v-if="groups.length" class="dp-groups">
       <DupeGroupCard
-        v-for="g in visibleGroups"
+        v-for="g in store.pageGroups"
         :key="g.key"
         :ref="(el) => setCardEl(g.key, el)"
         :group="g"
@@ -396,15 +401,26 @@ function goScan() {
         :thumbs="thumbs"
         :selected="store.selected"
         :busy="store.deleting"
-        @toggle="store.toggle"
+        @toggle-cell="(dir: string, on: boolean) => store.selectCell(g, dir, on)"
         @set-keep="(p: string) => store.setKeep(g, p)"
         @select-group="(on: boolean) => store.selectGroup(g, on)"
         @preview="(p: string) => openPreview(g, p)"
       />
 
-      <div v-if="hasMore" class="dp-pager">
-        <span>已渲染 {{ visibleCount }} / {{ groups.length }} 组 · 滚到底会自动继续</span>
-        <button class="dp-mini" @click="loadMore()">立即加载</button>
+      <div v-if="store.pageCount > 1" class="dp-pager">
+        <button class="dp-mini" :disabled="store.page <= 0" @click="store.setPage(store.page - 1)">
+          上一页
+        </button>
+        <span>
+          第 {{ store.page + 1 }} / {{ store.pageCount }} 页 · 共 {{ groups.length }} 组
+        </span>
+        <button
+          class="dp-mini"
+          :disabled="store.page >= store.pageCount - 1"
+          @click="store.setPage(store.page + 1)"
+        >
+          下一页
+        </button>
       </div>
     </div>
 
@@ -433,8 +449,8 @@ function goScan() {
     <!-- ⑤ 底部常驻操作条 -->
     <div v-if="groups.length && !store.running" class="dp-actions">
       <div class="dp-act-sum">
-        已勾选 <b>{{ store.selectedCount }}</b> 张 · 可释放
-        <b>{{ formatSize(store.selectedBytes) }}</b>
+        已勾选 <b>{{ selectedFolderCount }}</b> 个文件夹 · 将删
+        <b>{{ store.selectedCount }}</b> 张 · 可释放 <b>{{ formatSize(store.selectedBytes) }}</b>
       </div>
       <div class="dp-act-btns">
         <button class="dp-mini" :disabled="store.deleting" @click="store.selectAll()">全选可删</button>

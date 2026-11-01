@@ -8,11 +8,10 @@ import type {
   DedupeProgress,
   DedupeReport,
   DupGroup,
-  DupItem,
   HeicSupport,
 } from "../types/dedupe";
 import { useAlbumStore } from "./album";
-import { sanitizeReport } from "../utils/dedupeGroups";
+import { deletablePathsOf, folderCells, reclaimableOf, sanitizeReport } from "../utils/dedupeGroups";
 
 /**
  * 重复照片清理（FEAT-143）状态
@@ -34,6 +33,9 @@ export const DEFAULT_THRESHOLD = 0.98;
 
 /** 旧版本的默认值：用户没动过滑杆时，localStorage 里存的就是它，读到就迁到新默认 */
 const LEGACY_DEFAULT_THRESHOLD = 0.9;
+
+/** 分组分页：一次渲染多少组（翻页才换，页内缩略图再按卡片进视口才拉） */
+export const GROUPS_PER_PAGE = 12;
 
 /** 阈值所在 localStorage 键（不换键名，避免把用户自己调过的值丢掉） */
 const THRESHOLD_KEY = "pms.dedupe.threshold";
@@ -74,6 +76,8 @@ export const useDedupeStore = defineStore("dedupe", () => {
   const lastFailures = ref<string[]>([]);
   /** HEIC 解码能力（缺 HEIF 扩展时顶部提示） */
   const heic = ref<HeicSupport | null>(null);
+  /** 分组分页（一页 12 组；页内缩略图再按视口热加载） */
+  const page = ref(0);
 
   let unlisten: UnlistenFn | null = null;
 
@@ -81,15 +85,30 @@ export const useDedupeStore = defineStore("dedupe", () => {
 
   const groups = computed<DupGroup[]>(() => report.value?.groups ?? []);
 
+  const pageCount = computed(() => Math.max(1, Math.ceil(groups.value.length / GROUPS_PER_PAGE)));
+
+  const pageGroups = computed<DupGroup[]>(() =>
+    groups.value.slice(page.value * GROUPS_PER_PAGE, (page.value + 1) * GROUPS_PER_PAGE),
+  );
+
   /** 某组当前保留的那张 */
   function keepOf(group: DupGroup): string {
     return keepOverride.value[group.key] || group.keep_path;
   }
 
-  /** 每组"可删"的那几张（除保留外） */
-  function deletableOf(group: DupGroup): DupItem[] {
-    const keep = keepOf(group);
-    return group.items.filter((it) => it.path !== keep);
+  /**
+   * 某组「可删」的路径
+   *
+   * 硬规则（见 utils/dedupeGroups.deletablePathsOf）：保留那张永远不在里面，
+   * 保留所在文件夹里的其它副本也不在里面 —— 勾了也删不到想留的那张。
+   */
+  function deletableOf(group: DupGroup): string[] {
+    return deletablePathsOf(group, keepOf(group));
+  }
+
+  /** 某组的文件夹卡片（渲染单位：一个文件夹一张卡） */
+  function cellsOf(group: DupGroup) {
+    return folderCells(group, keepOf(group));
   }
 
   const selectedCount = computed(() => selected.value.size);
@@ -107,10 +126,7 @@ export const useDedupeStore = defineStore("dedupe", () => {
 
   /** 全部可删照片的总体积 */
   const reclaimableBytes = computed(() =>
-    groups.value.reduce((n, g) => {
-      const keep = keepOf(g);
-      return n + g.items.filter((it) => it.path !== keep).reduce((m, it) => m + it.size_bytes, 0);
-    }, 0),
+    groups.value.reduce((n, g) => n + reclaimableOf(g, keepOf(g)), 0),
   );
 
   /** 是否有"未勾选任何可删项"的情况（底部按钮据此禁用） */
@@ -174,16 +190,14 @@ export const useDedupeStore = defineStore("dedupe", () => {
         includeExact: includeExact.value,
         includeSimilar: includeSimilar.value,
       });
-      // 先清洗再入 store：组内同路径只留一张（旧构建的后端不会帮我们做这一步）
+      // 先清洗再入 store：组内同路径只留一张 + 掉掉没有可删副本的组
       const cleaned = sanitizeReport(r);
       report.value = cleaned;
       heic.value = cleaned.heic;
-      // 默认勾选：每组除"保留"外全部选中
+      // 默认勾选：除保留那张与保留文件夹里的其它副本外全部选中
       const next = new Set<string>();
       for (const g of cleaned.groups) {
-        for (const it of g.items) {
-          if (it.path !== g.keep_path) next.add(it.path);
-        }
+        for (const p of deletablePathsOf(g, g.keep_path)) next.add(p);
       }
       selected.value = next;
     } catch (e) {
@@ -244,11 +258,11 @@ export const useDedupeStore = defineStore("dedupe", () => {
     selected.value = next;
   }
 
-  /** 全选可删（每组保留那张永远不可删） */
+  /** 全选可删（保留那张与保留文件夹里的副本永远不可删） */
   function selectAll() {
     const next = new Set<string>();
     for (const g of groups.value) {
-      for (const it of deletableOf(g)) next.add(it.path);
+      for (const p of deletableOf(g)) next.add(p);
     }
     selected.value = next;
   }
@@ -260,27 +274,50 @@ export const useDedupeStore = defineStore("dedupe", () => {
   /** 组内全选 / 全不选 */
   function selectGroup(group: DupGroup, on: boolean) {
     const next = new Set(selected.value);
-    for (const it of deletableOf(group)) {
+    for (const p of deletableOf(group)) {
+      if (on) next.add(p);
+      else next.delete(p);
+    }
+    selected.value = next;
+  }
+
+  /**
+   * 整张文件夹卡片勾选 / 取消
+   *
+   * 只动该文件夹里**允许删**的路径：保留文件夹的卡片根本不给勾，这里再卡一道，
+   * 即使 UI 传了 isKeepFolder 的 dir 也不会误删想留的那张。
+   */
+  function selectCell(group: DupGroup, dir: string, on: boolean) {
+    const key = dir.toLowerCase();
+    const allowed = new Set(deletableOf(group));
+    const next = new Set(selected.value);
+    for (const it of group.items) {
+      if (it.dir.toLowerCase() !== key || !allowed.has(it.path)) continue;
       if (on) next.add(it.path);
       else next.delete(it.path);
     }
     selected.value = next;
   }
 
+  function setPage(p: number) {
+    page.value = Math.min(pageCount.value - 1, Math.max(0, p));
+  }
+
   /**
    * 改选「保留」
    *
-   * 换保留时把"原来的保留"重新放进待删集合、把"新保留"移出待删集合 ——
-   * 否则用户会看到「新保留那张仍被勾选」这种自相矛盾的状态。
+   * 换保留会把"可删集合"整体重算：旧保留所在文件夹变成普通文件夹、新保留所在文件夹变成保护文件夹，
+   * 所以直接按最新 kept 重建 —— 逐条加/删容易漏掉跨文件夹的那一批。
    */
   function setKeep(group: DupGroup, path: string) {
-    const prev = keepOf(group);
-    if (prev === path) return;
+    if (keepOf(group) === path) return;
     keepOverride.value = { ...keepOverride.value, [group.key]: path };
+    const keep = path;
+    const deletable = new Set(deletablePathsOf(group, keep));
+    // 已在别组勾选的项保持不动，只重算本组
     const next = new Set(selected.value);
-    next.delete(path);
-    // 原来的保留那张重新变成「可删」（用户换保留 = 认可旧那张可以清掉）
-    next.add(prev);
+    for (const it of group.items) next.delete(it.path);
+    for (const p of deletable) next.add(p);
     selected.value = next;
   }
 
@@ -359,16 +396,14 @@ export const useDedupeStore = defineStore("dedupe", () => {
       const items = g.items.filter((it) => !removed.has(it.path));
       if (items.length < 2) continue;
       const keep = items.some((it) => it.path === keepOf(g)) ? keepOf(g) : items[0].path;
-      nextGroups.push({
-        ...g,
-        keep_path: keep,
-        items,
-        reclaimable_bytes: items
-          .filter((it) => it.path !== keep)
-          .reduce((n, it) => n + it.size_bytes, 0),
-      });
+      const next: DupGroup = { ...g, keep_path: keep, items, reclaimable_bytes: 0 };
+      // 删完之后已经没有任何可删副本（剩下的都在保留文件夹里）→ 整组退场
+      if (deletablePathsOf(next, keep).length === 0) continue;
+      next.reclaimable_bytes = reclaimableOf(next, keep);
+      nextGroups.push(next);
     }
     report.value = { ...r, groups: nextGroups };
+    if (page.value > 0 && page.value >= pageCount.value) page.value = pageCount.value - 1;
   }
 
   /** 清空结果（重新扫描前由 UI 显式调用，避免误以为还有未处理组） */
@@ -378,6 +413,7 @@ export const useDedupeStore = defineStore("dedupe", () => {
     selected.value = new Set();
     error.value = "";
     lastFailures.value = [];
+    page.value = 0;
   }
 
   return {
@@ -402,9 +438,13 @@ export const useDedupeStore = defineStore("dedupe", () => {
     lastFailures,
     selected,
     groups,
+    page,
+    pageCount,
+    pageGroups,
     // 派生
     keepOf,
     deletableOf,
+    cellsOf,
     selectedCount,
     selectedBytes,
     reclaimableBytes,
@@ -418,7 +458,9 @@ export const useDedupeStore = defineStore("dedupe", () => {
     selectAll,
     clearSelection,
     selectGroup,
+    selectCell,
     setKeep,
+    setPage,
     deleteSelected,
     reset,
   };
