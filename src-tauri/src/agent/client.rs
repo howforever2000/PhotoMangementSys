@@ -10,6 +10,8 @@ use serde_json::Value;
 const T_STATUS_MS: u64 = 3_000;
 const T_SUBMIT_MS: u64 = 10_000;
 const T_CANCEL_MS: u64 = 3_000;
+/// 探针：内部可能要先解析 DNS、再走一次对话 ping，deep 还会真出一张图
+const T_PROBE_MS: u64 = 90_000;
 
 /// 状态查询的失败分类。
 ///
@@ -97,8 +99,7 @@ pub async fn status(base: &str, token: &str, job_id: i64) -> Result<Value, Statu
 }
 
 /// 请求取消。失败不致命（轮询循环另有取消标记双保险），所以只返回错误文案。
-pub async fn cancel(base: &str, token: &str, job_id: i64) -> Result<(), String> {
-    let resp = client(T_CANCEL_MS)?
+pub async fn cancel(base: &str, token: &str, job_id: i64) -> Result<(), String> {    let resp = client(T_CANCEL_MS)?
         .post(format!("{base}/agent/jobs/{job_id}/cancel"))
         .header("X-Agent-Token", token)
         .send()
@@ -109,6 +110,28 @@ pub async fn cancel(base: &str, token: &str, job_id: i64) -> Result<(), String> 
     } else {
         Err(format!("请求取消被拒绝（HTTP {}）", resp.status().as_u16()))
     }
+}
+
+/// 端点探针（`POST /agent/probe`）。返回原始报告（camelCase），前端直接渲染。
+pub async fn probe(base: &str, token: &str, body: &Value) -> Result<Value, String> {
+    let resp = client(T_PROBE_MS)?
+        .post(format!("{base}/agent/probe"))
+        .header("X-Agent-Token", token)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| format!("探测失败（连不上 Agent 服务）：{e}"))?;
+    let code = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !code.is_success() {
+        return Err(format!(
+            "探测被拒绝（HTTP {}）：{}",
+            code.as_u16(),
+            truncate(&text, 300)
+        ));
+    }
+    serde_json::from_str(&text)
+        .map_err(|e| format!("探测报告无法解析：{e}；原文：{}", truncate(&text, 200)))
 }
 
 fn truncate(s: &str, max: usize) -> String {

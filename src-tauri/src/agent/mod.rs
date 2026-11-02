@@ -11,6 +11,7 @@ pub mod assemble;
 pub mod client;
 pub mod job;
 pub mod ledger;
+pub mod provider;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -71,6 +72,78 @@ pub const RECIPES_CATALOG: &str = include_str!("../../../python/agent/recipes/ca
 #[tauri::command]
 pub fn agent_recipes() -> String {
     RECIPES_CATALOG.to_string()
+}
+
+// ------------------------------------------------------------------ 端点配置
+
+#[tauri::command]
+pub fn agent_providers_list(
+    app: tauri::AppHandle,
+    session: tauri::State<'_, crate::SessionState>,
+) -> Result<Vec<provider::ProviderPublic>, String> {
+    let uid = crate::require_user(&session)?;
+    // 先绑定 State 再取 guard：直接对临时值 .0 上锁会让 guard 借一个已释放的临时量
+    let state = app.state::<crate::AppState>();
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(provider::list_public(&db, uid))
+}
+
+#[tauri::command]
+pub fn agent_provider_save(
+    app: tauri::AppHandle,
+    session: tauri::State<'_, crate::SessionState>,
+    input: provider::ProviderConfig,
+) -> Result<Vec<provider::ProviderPublic>, String> {
+    let uid = crate::require_user(&session)?;
+    // 先绑定 State 再取 guard：直接对临时值 .0 上锁会让 guard 借一个已释放的临时量
+    let state = app.state::<crate::AppState>();
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let list = provider::upsert(&db, uid, input)?;
+    logger::log_info(&format!("agent | 端点配置已保存，共 {} 个", list.len()));
+    Ok(list)
+}
+
+#[tauri::command]
+pub fn agent_provider_delete(
+    app: tauri::AppHandle,
+    session: tauri::State<'_, crate::SessionState>,
+    id: String,
+) -> Result<Vec<provider::ProviderPublic>, String> {
+    let uid = crate::require_user(&session)?;
+    // 先绑定 State 再取 guard：直接对临时值 .0 上锁会让 guard 借一个已释放的临时量
+    let state = app.state::<crate::AppState>();
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    provider::delete(&db, uid, &id)
+}
+
+/// 端点探针：把（含 Key 的）端点配置发给 Python，由它用**真实调用同一套客户端**去测。
+/// `deep=true` 会真的出一张图（花钱），默认不出。
+#[tauri::command]
+pub async fn agent_provider_test(
+    app: tauri::AppHandle,
+    session: tauri::State<'_, crate::SessionState>,
+    sc: tauri::State<'_, SidecarState>,
+    input: provider::ProviderConfig,
+    deep: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let uid = crate::require_user(&session)?;
+    let mut cfg = input;
+    // 编辑已有端点时前端拿不到明文 Key（留空=沿用），探活需要真 Key
+    if cfg.api_key.trim().is_empty() && !cfg.id.trim().is_empty() {
+        let state = app.state::<crate::AppState>();
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        if let Some(old) = provider::find(&db, uid, &cfg.id) {
+            cfg.api_key = old.api_key;
+        }
+        drop(db);
+    }
+    let base = sc.ensure(&app).await?;
+    let token = sc.secret();
+    let body = serde_json::json!({
+        "endpoint": cfg.to_endpoint_json(),
+        "deep": deep.unwrap_or(false),
+    });
+    client::probe(&base, &token, &body).await
 }
 
 // ------------------------------------------------------------------ 开关
@@ -141,6 +214,57 @@ pub async fn agent_submit(
     let pool = assemble::assemble(&tray, assemble::DEFAULT_LIMIT);
     logger::log_info(&format!("agent | {}", assemble::brief(&pool)));
 
+    // ② 取出（并解密）本次要用的端点。作用域内拿锁，不得跨 await。
+    let (img_cfg, plan_cfg) = {
+        let state = app.state::<crate::AppState>();
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let img = req
+            .provider_id
+            .as_deref()
+            .and_then(|id| provider::find(&db, uid, id));
+        let plan = req
+            .planner_id
+            .as_deref()
+            .and_then(|id| provider::find(&db, uid, id));
+        drop(db);
+        (img, plan)
+    };
+    // 单端点两种活都能干：用户只存了一个 kind=both，就复用它
+    let plan_cfg = plan_cfg.or_else(|| {
+        img_cfg
+            .as_ref()
+            .filter(|p| p.kind == "both")
+            .cloned()
+    });
+
+    // ③ 预算硬闸（钱要在不会被 kill 的一侧拦）：超了连 Python 都不启
+    if req.needs_provider {
+        if img_cfg.is_none() && plan_cfg.is_none() {
+            return Err(
+                "该预设需要模型服务：请先在「模型服务」里添加你的端点（地址 + Key + 模型名）"
+                    .to_string(),
+            );
+        }
+        let mut est = 0.0f64;
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(p) = img_cfg.as_ref().filter(|p| p.unit_price > 0.0) {
+            let c = p.unit_price * pool.total as f64;
+            est += c;
+            parts.push(format!("出图 {:.2} × {} 张 = ¥{:.2}", p.unit_price, pool.total, c));
+        }
+        if let Some(p) = plan_cfg.as_ref().filter(|p| p.unit_price > 0.0) {
+            est += p.unit_price;
+            parts.push(format!("规划 ¥{:.4}", p.unit_price));
+        }
+        if req.budget.max_cost > 0.0 && est > req.budget.max_cost + 1e-9 {
+            return Err(format!(
+                "预计本次花费 ¥{est:.2}（{}），超过你设的上限 ¥{:.2}。\n可以：减少选中张数、换更低档位、或调高上限。",
+                parts.join(" + "),
+                req.budget.max_cost
+            ));
+        }
+    }
+
     let base = sc.ensure(&app).await?;
     let token = sc.secret();
 
@@ -164,8 +288,20 @@ pub async fn agent_submit(
         "paths": tray,
         "tier": req.tier,
         "outputDir": output_dir,
-        // 后续块会在这里补：provider（含 per-job 明文凭据）/ planner / priceTable / budget。
-        // candidates 一次给全 —— Python 执行期不回连 Rust。
+        // per-job 凭据：明文只在这一次请求体里出现，Python 用完即弃
+        "provider": img_cfg.as_ref().map(|p| p.to_endpoint_json()),
+        "planner": plan_cfg.as_ref().map(|p| p.to_endpoint_json()),
+        "priceTable": {
+            "image": img_cfg.as_ref().map(|p| p.unit_price).unwrap_or(0.0),
+            "planner": plan_cfg.as_ref().map(|p| p.unit_price).unwrap_or(0.0),
+        },
+        "budget": {
+            "maxCost": req.budget.max_cost,
+            "maxCalls": req.budget.max_calls,
+            "spent": req.budget.spent,
+            "calls": req.budget.calls,
+        },
+        // candidates 一次给全 —— Python 执行期不回连 Rust
         "candidates": pool,
     });
 
@@ -402,6 +538,26 @@ pub struct AgentRequest {
     pub tier: String,
     /// 产物目录（空则用 app_data_dir/agent-out）
     pub output_dir: Option<String>,
+    /// 图像端点 id（用户自填，Rust 侧解密后随请求传给 Python）
+    pub provider_id: Option<String>,
+    /// 规划端点 id
+    pub planner_id: Option<String>,
+    /// 预算（Rust 硬闸 + Python 软闸共用同一组数字）
+    pub budget: BudgetInput,
+    /// 前端按配方声明"本预设需要模型"：
+    /// 为什么由前端声明 —— 只有它手里有配方目录（`needsProvider`），
+    /// 让 Rust 再解析一遍 catalog 等于两套真相。
+    pub needs_provider: bool,
+}
+
+/// 预算输入。`spent/calls` 用于 P2 扩范围时继承已花额度。
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BudgetInput {
+    pub max_cost: f64,
+    pub max_calls: i64,
+    pub spent: f64,
+    pub calls: i64,
 }
 
 impl Default for AgentRequest {
@@ -412,8 +568,12 @@ impl Default for AgentRequest {
             user_edited_prompt: None,
             run_spec_override: None,
             paths: Vec::new(),
-            tier: "local".to_string(),
+            tier: "draft".to_string(),
             output_dir: None,
+            provider_id: None,
+            planner_id: None,
+            budget: BudgetInput::default(),
+            needs_provider: false,
         }
     }
 }

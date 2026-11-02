@@ -279,7 +279,16 @@ try {
     }
     Check ($cancelMs -ge 0 -and $cancelMs -lt 500) "取消在 500ms 内收敛" ("实测 ${cancelMs}ms")
 
-    # ------------------------------------------------------------ 6. 404 语义
+    # ------------------------------------------------------------ 6. 端点探针（不出网）
+    #                      参数不全时必须当场判不可用，而不是先发一堆请求
+    $probeBad = $null
+    try {
+        $probeBad = Api -Method Post -Path "/agent/probe" -Body @{ endpoint = @{ baseUrl = "https://example.invalid/v1"; model = "" } }
+    } catch { }
+    Check ($null -ne $probeBad -and $probeBad.ok -eq $false) "探针：缺模型名时判为不可用"
+    Check ((ApiStatus -Method Post -Path "/agent/probe" -Body @{ baseUrl = "" }) -eq 400) "探针：没填地址时 400"
+
+    # ------------------------------------------------------------ 7. 404 语义
     Check ((ApiStatus -Method Get -Path "/agent/jobs/999999") -eq 404) "未知 job 返回 404（收养判定依赖它）"
 }
 finally {

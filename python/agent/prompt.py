@@ -53,6 +53,8 @@ class CompileInput:
     user_edited_prompt: str | None = None
     person_names: list[str] = field(default_factory=list)
     run_spec_override: dict | None = None
+    # 端点是否已配置（决定“需要模型的预设”是直接拒还是继续走 P1b）
+    provider_ready: bool = False
 
 
 @dataclass
@@ -68,6 +70,10 @@ class CompileOutput:
     vision_used: int
     need_replan: dict | None
     hint: str = ""
+    # P1b：编译到此为止，槽位要等规划模型填（runtime 随后调 planner.fill_slots）
+    plan_pending: bool = False
+    # 原样保存用户描述：runtime 传给规划模型（编译器本身不出网）
+    user_text: str = ""
     # 供 UI「执行参数预览 / 这次会做什么」用的可序列化视图
     preview: dict = field(default_factory=dict)
 
@@ -83,6 +89,7 @@ class CompileOutput:
             "visionUsed": self.vision_used,
             "needReplan": self.need_replan,
             "hint": self.hint,
+            "planPending": self.plan_pending,
             "runSpec": self.run_spec.to_dict(),
             "preview": self.preview,
         }
@@ -331,20 +338,22 @@ def compile_prompt(inp: CompileInput) -> CompileOutput:
     elif not text:
         p1_path = "P0"
     elif recipe.engine_behavior == "remote_prompt":
-        # 需要规划层填参（P1b）；本版本尚未接入规划层
-        raise CompileError(
-            "该配方需要模型理解你的描述（P1b），当前版本还未接入规划层。"
-            "请先用带「本地算法」标记的预设，或用「完全自定义」以外的路径。"
-        )
+        # P1b：模型填参。具体槽位由 runtime 调 planner.fill_slots 后回填
+        p1_path = "P1b"
     elif recipe.engine_behavior == "local_rule_mapped":
         p1_path = "P1a"
     else:  # no_prompt
         p1_path = "P1c"
 
-    # 3) 出网需求闸：这一条在代码层拦住"没配 provider 却想跑远程"
-    if recipe.needs_provider or (spec.subject and spec.subject.mode == "extract"):
+    # 3) 出网需求闸：没配端点就在代码层拦住（不靠拒绝服务，而是“先告诉用户去哪配”）
+    needs_model = recipe.needs_provider or bool(spec.subject and spec.subject.mode == "extract")
+    if needs_model and not inp.provider_ready:
         raise CompileError(
             "该预设需要模型服务（AI 重绘 / 抠主体）。请先在设置里填写模型地址与 Key。"
+        )
+    if p1_path == "P1b" and not inp.provider_ready:
+        raise CompileError(
+            "该预设需要用模型理解你的描述（P1b），请先在设置里填写规划模型地址与 Key。"
         )
 
     slots: dict = {}
@@ -352,6 +361,7 @@ def compile_prompt(inp: CompileInput) -> CompileOutput:
     prompt_source = "none"
     hint = ""
     vision_used = 0
+    plan_pending = False
 
     if p1_path == "P0":
         assumptions.append("未填写描述：按预设默认参数执行")
@@ -359,7 +369,7 @@ def compile_prompt(inp: CompileInput) -> CompileOutput:
             slots = _default_slots(recipe.prompt_template)
             slots, slot_notes = _validate_slots(recipe.prompt_template, slots)
             assumptions.extend(slot_notes)
-            prompt, src_note = _finalize_prompt(recipe.prompt_template, slots, assumptions)
+            prompt = _finalize_prompt(recipe.prompt_template, slots, assumptions)
             prompt_source = "template"
 
     elif p1_path == "P1a":
@@ -382,6 +392,12 @@ def compile_prompt(inp: CompileInput) -> CompileOutput:
         prompt_source = "none"
         assumptions.append("该预设不消费文字描述：描述仅记录在轨迹里，不改变执行参数")
 
+    elif p1_path == "P1b":
+        # 编译到此，槽位等 runtime 调规划模型填（不在这里出网：编译器是纯函数）
+        plan_pending = True
+        prompt_source = "template"
+        assumptions.append("描述将交给规划模型填槽位（会产生一次很小的调用费）")
+
     else:  # P3
         prompt, assumptions2 = _finalize_user_prompt(inp, spec, assumptions)
         assumptions.extend(assumptions2)
@@ -403,15 +419,29 @@ def compile_prompt(inp: CompileInput) -> CompileOutput:
         vision_used=vision_used,
         need_replan=None,
         hint=hint,
+        plan_pending=plan_pending,
+        user_text=text,
         preview=build_preview(recipe, spec, p1_path),
     )
     return out
 
 
-def _finalize_prompt(
-    tpl: PromptTemplate, slots: dict, assumptions: list[str]
-) -> tuple[str, str]:
-    """模板渲染 + 长度降级 + 锚点补回 + 禁用词清理。"""
+def finalize_filled(
+    tpl: PromptTemplate, raw_slots: dict, assumptions: list[str]
+) -> tuple[dict, str]:
+    """把规划模型填的槽位“收口”成最终提示词。
+
+    模型只能影响槽位值：枚举越界回落默认、超长截断、禁用词剔除、锚点强制前置。
+    这四步全部在本地完成 —— 模型没有任何机会改写骨架。
+    """
+    slots, notes = _validate_slots(tpl, raw_slots)
+    assumptions.extend(notes)
+    text = _finalize_prompt(tpl, slots, assumptions)
+    return slots, text
+
+
+def _finalize_prompt(tpl: PromptTemplate, slots: dict, assumptions: list[str]) -> str:
+    """模板渲染 + 长度降级 + 锚点补回 + 禁用词清理。纯粹函数，不返回“来源”。"""
     slots, trunc_notes = V.truncate_slots(slots, tpl.max_chars, lambda s: render(tpl, s))
     assumptions.extend(trunc_notes)
     text = render(tpl, slots)
@@ -421,7 +451,7 @@ def _finalize_prompt(
     text, patched = V.ensure_anchor(text, tpl.anchor)
     if patched:
         assumptions.append("已把锚点补回提示词开头")
-    return text, "template"
+    return text
 
 
 def _finalize_user_prompt(

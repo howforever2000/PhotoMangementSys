@@ -34,6 +34,10 @@ a = Analysis(
         'agent.imaging', 'agent.imaging.compress', 'agent.imaging.style',
         'agent.imaging.style_presets', 'agent.imaging.beauty', 'agent.imaging.journal',
         'agent.imaging.probe', 'agent.imaging.imageio',
+        # 块 C：模型通道 / 规划层 / 预算
+        'agent.budget', 'agent.planner',
+        'agent.providers', 'agent.providers.base', 'agent.providers.openai_compat',
+        'agent.providers.registry', 'agent.providers.probe',
         # uvicorn 动态选择链
         'uvicorn', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.loops.asyncio',
         'uvicorn.protocols.http.auto', 'uvicorn.protocols.http.h11_impl',

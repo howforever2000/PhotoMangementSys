@@ -28,6 +28,34 @@
       "skeleton": "Grade the photograph toward the {look} look at {intensity} strength. {note}",
       "negative": "text, watermark, logo, extra limbs, distorted faces, oversaturation, HDR halo",
       "maxChars": 900
+    },
+    "style_illustrate.anime": {
+      "id": "tpl.style_illustrate.anime",
+      "version": 1,
+      "engine": "remote",
+      "anchor": "Preserve the subject, pose, framing and facial identity of the reference photo. Clean illustration look, no added text or watermark.",
+      "slots": {
+        "look": {
+          "type": "enum",
+          "values": ["anime_cel", "soft_paint", "ink_line"],
+          "default": "anime_cel",
+          "maxLen": 32
+        },
+        "intensity": {
+          "type": "enum",
+          "values": ["subtle", "moderate", "strong"],
+          "default": "moderate"
+        },
+        "note": {
+          "type": "text",
+          "maxLen": 120,
+          "default": "",
+          "hint": "用户补充的光线/气氛描述"
+        }
+      },
+      "skeleton": "Restyle the photo as a {look} illustration at {intensity} strength, keeping the original face and layout recognizable. {note}",
+      "negative": "text, watermark, signature, extra fingers, distorted anatomy, photorealistic skin",
+      "maxChars": 900
     }
   },
   "recipes": [
@@ -100,6 +128,25 @@
         "export": { "formats": ["pdf"], "pageSize": "a4", "maxPages": 12, "overwrite": false },
         "budget": { "maxCost": 0.0, "maxCalls": 0 }
       }
+    },
+    {
+      "id": "style.ai_reillustrate",
+      "group": "A.style",
+      "icon": "sunset",
+      "label": "AI 插画化",
+      "desc": "把你的描述交给模型理解，再按你的模型端点重绘成插画。会出网、按张计费。",
+      "status": "needs_key",
+      "engine_behavior": "remote_prompt",
+      "p1_path": "P1b",
+      "runSpec": {
+        "deliverable": "single_image",
+        "scope": { "mode": "tray" },
+        "style": { "preset": "anime_cel", "intensity": 0.6, "engine": "remote" },
+        "retouch": { "faces": false },
+        "export": { "formats": ["jpg"], "overwrite": false },
+        "budget": { "maxCost": 1.5, "maxCalls": 8 }
+      },
+      "promptTemplate": "style_illustrate.anime"
     },
     {
       "id": "batch.party_material",

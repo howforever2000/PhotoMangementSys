@@ -11,11 +11,13 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import io
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .imaging import beauty, compress as comp, journal, probe, style
-from .imaging.imageio import ImageIoError, make_thumb
+from .imaging.imageio import ImageIoError, make_thumb, open_rgb
+from .providers.base import EditRequest, ProviderError
 
 # 单次任务最多处理多少张（防手滑全选几千张把磁盘写满）
 MAX_IMAGES_PER_JOB = 60
@@ -23,11 +25,17 @@ MAX_IMAGES_PER_JOB = 60
 
 @dataclass
 class ToolContext:
-    """工具执行上下文。刻意不放 job 对象：工具是纯功能，进度由 runtime 记。"""
+    """工具执行上下文。刻意不放 job 对象：工具是纯功能，进度由 runtime 记。
+
+    `provider` / `budget` 只有会出网的工具用得到；纯本地工具不碰它们。
+    """
 
     out_dir: str
     thumbs_dir: str
     overwrite: bool = False
+    provider: object | None = None  # OpenAICompat；用 object 避免与 providers 强耦合
+    budget: object | None = None  # BudgetGuard
+    size: str = "1024x1024"
 
 
 def unique_path(path: str) -> str:
@@ -131,6 +139,78 @@ def beauty_render(paths: list[str], ctx: ToolContext, *, strength: str = "natura
     return {"ok": bool(outs), "items": outs, "failures": failures}
 
 
+# ------------------------------------------------------------------ 远程重绘
+
+
+def _to_png_bytes(src: str, edge: int = 0) -> bytes:
+    """把本地图转成待上传的 PNG 字节（顺带摆正 EXIF、透明底铺白）。"""
+    img = open_rgb(src)
+    if edge > 0:
+        img.thumbnail((edge, edge))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+async def style_transfer_remote(paths: list[str], ctx: ToolContext, *, prompt: str, size: str) -> dict:
+    """走用户配置的图像端点做重绘。**每一张都先过预算闸**。"""
+    if ctx.provider is None:
+        return {"ok": False, "error": "没有配置图像模型端点", "items": [], "failures": []}
+
+    outs: list[dict] = []
+    failures: list[str] = []
+    for src in paths:
+        try:
+            # 上传前限边：原图 6000px 直接上传既慢又容易超端点限制，
+            # 而且重绘模型本来就会重采样，传那么大没有意义。
+            data = await asyncio.to_thread(_to_png_bytes, src, 2048)
+        except ImageIoError as e:
+            failures.append(f"{Path(src).name}：{e}")
+            continue
+
+        reserved = 0.0
+        if ctx.budget is not None:
+            # 预算不足时这里抛 BudgetExceeded，由 runtime 收敛成 status=budget
+            reserved = ctx.budget.before("image")
+        try:
+            res = await ctx.provider.image_edit(
+                EditRequest(images=[data], prompt=prompt, size=size)
+            )
+        except ProviderError as e:
+            failures.append(f"{Path(src).name}：{e.kind} - {e}")
+            continue
+        if ctx.budget is not None:
+            ctx.budget.settle(reserved, res.cost)
+
+        dst = str(Path(ctx.out_dir) / f"{Path(src).stem}_ai.jpg")
+        if not ctx.overwrite:
+            dst = unique_path(dst)
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(dst, "wb") as f:
+                f.write(res.image_bytes)
+            if Path(dst).stat().st_size <= 0:
+                raise OSError("写入 0 字节")
+        except OSError as e:
+            failures.append(f"{Path(src).name}：保存失败 {e}")
+            continue
+
+        outs.append(
+            {
+                "src": src,
+                "out": dst,
+                "bytes": len(res.image_bytes),
+                "cost": res.cost if res.cost is not None else reserved,
+                "estimated": res.cost is None,
+                "model": res.model,
+                "route": res.route,
+                "latencyMs": res.latency_ms,
+                "thumb": _thumb(ctx, dst, "ai"),
+            }
+        )
+    return {"ok": bool(outs), "items": outs, "failures": failures}
+
+
 # ------------------------------------------------------------------ 组合交付物
 
 
@@ -195,6 +275,13 @@ async def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:
             preset=str(args.get("preset", "warm_dusk")),
             level=str(args.get("level", "moderate")),
         )
+    if name == "style_transfer_remote":
+        return await style_transfer_remote(
+            args.get("paths", []),
+            ctx,
+            prompt=str(args.get("prompt", "")),
+            size=str(args.get("size", ctx.size)),
+        )
     if name == "beauty_render":
         return await asyncio.to_thread(
             beauty_render, args.get("paths", []), ctx, strength=str(args.get("strength", "natural"))
@@ -216,4 +303,12 @@ async def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:
     raise ValueError(f"未知工具 {name!r}")
 
 
-TOOL_NAMES = ("select", "compress", "style_transfer", "beauty_render", "card_render", "probe")
+TOOL_NAMES = (
+    "select",
+    "compress",
+    "style_transfer",
+    "style_transfer_remote",
+    "beauty_render",
+    "card_render",
+    "probe",
+)

@@ -1,0 +1,9 @@
+# Agent sidecar dev/test deps (NOT packaged into the exe).
+# Keep this file pure ASCII: Windows pip decodes requirements files with the
+# system locale (GBK/cp936), non-ASCII comments break `pip install -r`
+# (BUG-2026-0920-001).
+#
+#   python/.venv-agent/Scripts/python.exe -m pip install -r python/requirements-agent-dev.txt
+#   python/.venv-agent/Scripts/python.exe -m pytest python/tests -q
+pytest>=8.0
+pytest-asyncio>=0.23

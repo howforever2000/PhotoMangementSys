@@ -6017,7 +6017,28 @@
    },
    "tests": "pytest 69 项：编译器（P0/P1a/P1c 判定、P1a 零出网、规则表、冲突 6 条、scope 冻结、锚点必在开头、禁用词/人名替换、P3 批量拒稿与超长截断、批量一致性 12 组锚点逐字相同）；图像（目标体积命中、凑不到如实上报、裁切比例、透明底铺白、中文路径非 0 字节、原图字节不变、调色与人像确定性、卡片同输入逐字节相同 + PDF 魔数 + 坏图不毁整页、体检能识别 0 字节与模糊）；执行器（真实产出 3 个文件且不超目标、成本恒 0、卡片出 PDF 2 页、批量先调色后压缩、空托盘可行动报错、取消即停、同名不覆盖）。Rust 22 项：assemble 去重/上限/年份视图/缺文件不丢候选；ledger 幂等与按用户隔离；跨进程契约测试（真起 Python → 真跑压缩 → 校验 camelCase 反序列化/成本/产物落盘/P1c）。smoke-agent.ps1 19 项：开发版与打包 exe 各跑一遍全绿（含“产出 3 个文件且不超体积”）。",
    "notes": "用户已拍板：抠主体走远程（card 默认 subject.mode=contain 零成本，card.subject_pop 需配 provider）；provider 不预设、用户填 baseUrl+key（本地 llama.cpp/Ollama 走同一份 OpenAI 兼容客户端）；任务允许后台跑（托盘常驻未做）。未完成：providers/（openai_compat + registry 档位）、planner 循环与 tools 的模型侧调度、needReplan（P2 扩范围 + 确认弹窗）、P3 手改提示词 UI、成本预估与预算硬闸、托盘后台常驻、随包中文字体、image_compress 收口到 Python。"
+  },
+  {
+   "id": "FEAT-158",
+   "name": "图像创作 Agent 块 C：模型通道（OpenAI 兼容单一协议）+ 端点探针 + 规划层填参（P1b）+ 预算双层闸 + 端点加密存储",
+   "module": "python/agent/providers/{base,openai_compat,registry,probe}.py；python/agent/{planner,budget}.py；python/agent/{app,runtime,tools,prompt,jobs}.py（P1b 分支 + 远程重绘 + 探针端点）；python/agent/recipes/catalog.json（style.ai_reillustrate + 插画模板）；src-tauri/src/agent/{provider,client,mod}.rs（端点加密存储 / 探针命令 / 预算硬闸 / per-job 凭据）；src/types/{agent}.ts；src/stores/agent.ts；src/components/workshop/agent/{ProviderPanel,RunSettings,AgentDock}.vue；python/tests/{test_providers,test_agent_remote}.py；python/requirements-agent-dev.txt；python/pytest.ini；docs/agent-provider-probe.md",
+   "status": "in-progress",
+   "date": "2026-11-02",
+   "purpose": "用户拍板「不预设 provider，自己填地址 + Key，本地模型也走地址端口接入」。这条决定让方案里很多东西失效（内嵌价格表、TIER_MAP 写死型号、seedream/混元写死协议分支），块 C 就是把这套『用户自填端点』的世界补齐：只实现一种 OpenAI 兼容协议（覆盖 APIMart/SiliconFlow/OpenRouter/llama.cpp/Ollama/LM Studio/ComfyUI 的 /v1），把『到底通不通』变成可点的一步（探针），把『会不会乱花钱』变成两道闸（Rust 硬闸 + Python 每次调用前软闸）。",
+   "implementation": {
+    "单一协议 + 一份客户端": "providers/openai_compat.py 同时服务图像（/images/edits 与 /images/generations，支持同步 b64/url 与异步 task 轮询）与规划（/chat/completions + tools）。探针直接复用这个客户端 —— 测的就是真实调用会走的那段代码，『测试通过但跑不通』从结构上消失。",
+    "错误必须分类": "auth / rate_limit / bad_shape / network / timeout / server 六类，每类给用户不同的下一步（改 Key / 稍等 / 检查地址是否指向 /v1 / 启动本地服务）。404 的错误文案直接写『地址应指向 OpenAI 兼容根路径，例如 https://host/v1』——这是自填端点最高频的错。",
+    "端点配置加密存储": "agent/provider.rs：一个用户一份加密 JSON 数组存 app_settings（crypto::encrypt）。前端只拿到 ProviderPublic（baseUrl/model/unitPrice/kind/hasKey/keyHint 打码尾号），明文 Key 永不回传；编辑时留空 = 沿用原 Key。明文只在一次 submit 的请求体里出现，Python 用完即弃（logutil.redact 兜底日志）。",
+    "探针（第 5 个端点）": "POST /agent/probe：参数自检 → GET /models（可选信息）→ 对话 ping（max_tokens=1）。**默认不真出图**（会花钱），要看这一项必须显式 deep。为什么放在 Python 而不是 Rust：见上『单一协议』——在 Rust 另写一套 HTTP 探测等于测了一条产品不用的路径。它不扩大权限面：不出图、不落盘、不碰 DB。",
+    "P1b（模型填参）": "fill_slots 的 schema 由模板槽位生成：enum 值直接来自模板，模型无从『创造性扩展』。tool_choice 强制走 fill_slots（一次调用、只填参不排管线）。回填后仍走本地收口：枚举越界回落默认、超长截断、禁用词剔除、锚点强制前置 —— 模型没有任何机会改写骨架。规划阶段只传 ≤4 张 512px 缩略图。",
+    "远程重绘": "tools.style_transfer_remote：逐张 上传前限边 2048 → 预算 before() → 调端点 → settle(实际成本)。上传统一用 PNG 字节（顺带摆正 EXIF、透明底铺白）；产物另存 _ai.jpg，不覆盖原图。",
+    "预算双层闸": "Rust 硬闸（submit 前）：前端按配方声明 needsProvider，Rust 用『单价 × 张数 + 规划一次』估总额，超过 maxCost 直接拒绝并给出算式（把 Python 都不启）。Python 软闸（每次调用前）：maxCalls=0 时任何模型调用直接抛 —— 这就是 P0/P1a/P1c『不可能花钱』的机制保证；有单价时叠金额闸，拿不到真实计费则保留预占价并由台账标 estimated。",
+    "档位重新定义": "『不预设』之后 TIER_MAP 不再映射型号，只映射出图尺寸（draft 1K / standard 2K / hq 2K）。工具调用只传 tier，dispatch 从 registry 解析尺寸 —— 换模型不改 Agent 循环。",
+    "前端": "「模型服务」面板（ProviderPanel）：端点增删改 + 保存即自动探测 + 逐项报告（参数/模型列表/对话端点/出图，带耗时）；Key 输入框在编辑态提示『留空 = 沿用』。「运行设置」（RunSettings）：出图端点 / 规划端点 / 档位 / 花费上限，单价超上限时就地警告。AgentDock 把设置合并进 submit，替零成本路径固定 maxCalls=0。"
+   },
+   "tests": "pytest 102 项（新增 33）：OpenAI 兼容六种返回形状 + 六类错误分类 + multipart 头正确性；异步轮询（running→completed）与任务失败；探针三项检查、默认不出图、参数不全时不发任何请求；预算（maxCalls=0 拦截、次数上限、金额预占、settle 替换估价）；规划层（fill_slots 解析 + 强制 tool_choice + 模型忽略工具时报错；工具循环执行到 finish；预算中止）；P1b 端到端（假端点：1 次规划 + 2 次出图、锚点在提示词开头、产物落盘、成本入账；预算不足时在发请求前中止为 status=budget；出图失败如实上报而非崩）。Rust 29 项（新增 7）：端点落盘是密文、前端拿不到 Key、留空沿用旧 Key、本地地址允许无 Key、按用户隔离、删除幂等性、endpoint_json 只随单次请求携带明文。smoke-agent.ps1 21 项：开发版与 24.2MB 打包 exe 各跑一遍全绿（新增探针两项，均不出网）。",
+   "notes": "真实端点尚未实测：开发环境没有 provider Key。探针与文档已就位，跑一次后按 docs/agent-provider-probe.md 的台账回填（异步路由 / size 上限 / 多图张数 / 是否支持 tools）。未完成：P2「完全自定义」入口（planner.run_loop 已实现并有单测，但还没配方与 UI 接上）、needReplan 扩范围确认弹窗、P3 手改提示词 UI、托盘后台常驻、随包中文字体、image_compress 收口到 Python、抠主体（subject_extract，用户已定走远程）。"
   }
  ],
- "updated": "2026-11-02T23:40:00+08:00"
+ "updated": "2026-11-03T00:20:00+08:00"
 }

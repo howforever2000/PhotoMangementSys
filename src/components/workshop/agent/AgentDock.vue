@@ -7,13 +7,16 @@
  *
  * 三态齐全：未开启（引导开关）/ 可提交 / 运行中（可取消）。
  */
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useAgentStore } from "../../../stores/agent";
 import { useToastStore } from "../../../stores/toast";
-import type { AgentSubmitRequest } from "../../../types/agent";
+import { needsProvider, type Recipe } from "../../../types/recipe";
+import type { AgentSnapshot, AgentSubmitRequest } from "../../../types/agent";
 import AgentTrail from "./AgentTrail.vue";
 import PromptPeek from "./PromptPeek.vue";
+import ProviderPanel from "./ProviderPanel.vue";
 import RecipeBar from "./RecipeBar.vue";
+import RunSettings from "./RunSettings.vue";
 
 const props = defineProps<{ paths: string[] }>();
 
@@ -24,13 +27,35 @@ const toast = useToastStore();
 const submitting = ref(false);
 const error = ref("");
 
+/** 运行设置：档位 / 预算 / 端点选择 */
+const tier = ref<"draft" | "standard" | "hq">("draft");
+const maxCost = ref(1.5);
+const providerId = ref("");
+const plannerId = ref("");
+
 const busy = computed(() => submitting.value || store.running !== null);
 
 /** 当前展示哪个 job：优先运行中的，其次最近一个 */
-const shown = computed(() => store.running ?? store.current);
+const shown = computed<AgentSnapshot | null>(() => store.running ?? store.current);
 
-const shownRecipe = computed(
+const shownRecipe = computed<Recipe | null>(
   () => store.recipes.find((r) => r.id === shown.value?.recipeId) ?? null,
+);
+
+/** 端点列表到手后给个默认值：没有比“未选择”更能拦住用户的默认值了 */
+watch(
+  () => store.providers,
+  (list) => {
+    if (!providerId.value) {
+      const p = list.find((x) => x.kind !== "planner");
+      if (p) providerId.value = p.id;
+    }
+    if (!plannerId.value) {
+      const p = list.find((x) => x.kind !== "image") ?? list[0];
+      if (p) plannerId.value = p.id;
+    }
+  },
+  { immediate: true },
 );
 
 async function onStart(req: AgentSubmitRequest) {
@@ -38,11 +63,25 @@ async function onStart(req: AgentSubmitRequest) {
   submitting.value = true;
   error.value = "";
   try {
-    await store.submit(req);
+    const recipe = store.recipes.find((r) => r.id === req.recipeId);
+    const needs = !!recipe && needsProvider(recipe);
+    const paths = req.paths ?? [];
+    await store.submit({
+      ...req,
+      tier: tier.value,
+      providerId: providerId.value || null,
+      plannerId: plannerId.value || null,
+      needsProvider: needs,
+      budget: {
+        maxCost: maxCost.value,
+        // 零成本路径：maxCalls=0 是“不可能发起模型请求”的机制保证，不是提示
+        maxCalls: needs ? paths.length + 1 : 0,
+      },
+    });
   } catch (e) {
     const msg = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
     error.value = msg;
-    // 编译失败（如"该预设需要模型服务"）必须说清楚怎么办，不能只弹"出错了"
+    // 编译失败（如“该预设需要模型服务”）必须说清楚怎么办，不能只弹“出错了”
     toast.error("任务没能开始", msg);
   } finally {
     submitting.value = false;
@@ -73,6 +112,14 @@ async function onCancel() {
     </div>
 
     <template v-else>
+      <ProviderPanel />
+      <RunSettings
+        v-model:tier="tier"
+        v-model:max-cost="maxCost"
+        v-model:provider-id="providerId"
+        v-model:planner-id="plannerId"
+        :needs-provider="!!shownRecipe && needsProvider(shownRecipe)"
+      />
       <RecipeBar :paths="props.paths" :busy="busy" @start="onStart" @cancel="onCancel" />
 
       <p v-if="error" class="dock-error">{{ error }}</p>

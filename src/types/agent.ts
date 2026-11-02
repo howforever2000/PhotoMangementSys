@@ -78,12 +78,16 @@ export interface AgentSnapshot {
   conflicts: string[];
   /** P1a 未命中时的行内提示 */
   hint: string;
+  /** P1b：模型填的槽位 */
+  slots?: Record<string, string>;
   preview: AgentPreview | null;
   /** 产物绝对路径 */
   outputs: string[];
+  /** 预算中止时的明细 */
+  budget?: { kind: string; message: string; spent: number; calls: number } | null;
 }
 
-/** 提交请求（字段只增不改；后续接 provider / 预算时在这里补） */
+/** 提交请求（字段只增不改；后续接预算/扩范围时在这里补） */
 export interface AgentSubmitRequest {
   recipeId: string;
   /** 附加描述（空 = P0 纯预设路径，零成本零等待） */
@@ -96,4 +100,57 @@ export interface AgentSubmitRequest {
   paths?: string[];
   tier?: "draft" | "standard" | "hq" | "local";
   outputDir?: string | null;
+  /** 图像端点 id（用户自填，Rust 解密后随请求传给 Python） */
+  providerId?: string | null;
+  /** 规划端点 id */
+  plannerId?: string | null;
+  /** 预算：Rust 硬闸与 Python 软闸共用同一组数字 */
+  budget?: { maxCost: number; maxCalls: number; spent?: number; calls?: number };
+  /** 前端按配方声明"本预设需要模型"（只有它手里有配方目录） */
+  needsProvider?: boolean;
+}
+
+/** 端点配置（前端可见字段：**不含 Key**） */
+export interface ProviderPublic {
+  id: string;
+  label: string;
+  baseUrl: string;
+  model: string;
+  unitPrice: number;
+  kind: "image" | "planner" | "both";
+  asyncPoll: boolean;
+  hasKey: boolean;
+  /** 打码尾号，帮用户辨认"是不是那把" */
+  keyHint: string;
+}
+
+/** 保存端点时提交的字段（`apiKey` 留空 = 沿用原 Key） */
+export interface ProviderInput {
+  id?: string;
+  label: string;
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+  unitPrice: number;
+  kind: "image" | "planner" | "both";
+  asyncPoll: boolean;
+}
+
+/** 端点探针报告（Rust 原样转发 Python 的返回） */
+export interface ProbeCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+  ms?: number;
+  optional?: boolean;
+  kind?: string;
+}
+
+export interface ProbeReport {
+  ok: boolean;
+  baseUrl: string;
+  model: string;
+  checks: ProbeCheck[];
+  models: string[];
+  error: { kind: string; message: string; status?: number | null } | null;
 }

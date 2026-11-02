@@ -7,6 +7,7 @@ import {
   type AgentSubmitRequest,
 } from "../types/agent";
 import type { Recipe, RecipeCatalog } from "../types/recipe";
+import type { ProbeReport, ProviderInput, ProviderPublic } from "../types/agent";
 
 /**
  * 图像创作 Agent：任务状态 store（docs/v5.md §3、§17）。
@@ -43,6 +44,8 @@ interface AgentStoreState {
   catalog: RecipeCatalog | null;
   /** 配方加载失败原因（下拉空态要能解释为什么） */
   recipesError: string;
+  /** 模型端点（**不含 Key**：只有打码尾号） */
+  providers: ProviderPublic[];
   /** 事件监听是否已注册 */
   _ready: boolean;
   /** 侧车预热中 */
@@ -63,6 +66,7 @@ export const useAgentStore = defineStore("agent", {
     jobs: [],
     catalog: null,
     recipesError: "",
+    providers: [],
     _ready: false,
     startingSidecar: false,
     lastError: "",
@@ -110,6 +114,7 @@ export const useAgentStore = defineStore("agent", {
         this.lastError = errText(e);
       }
       await this.loadRecipes();
+      await this.loadProviders();
       if (!this._ready) {
         unlistenFn = await listen<AgentSnapshot>("agent-progress", (ev) => {
           this.pushSnapshot(ev.payload);
@@ -178,7 +183,31 @@ export const useAgentStore = defineStore("agent", {
       }
     },
 
-    /** 提交任务。成功后立即把快照放进来（不等第一次事件）。 */
+    /** 模型端点列表（Key 永远不回传到前端） */
+    async loadProviders() {
+      try {
+        this.providers = await invoke<ProviderPublic[]>("agent_providers_list");
+      } catch (e) {
+        // 未登录时会报「请先登录」，属正常
+        this.providers = [];
+        console.debug("[agent] 读取端点配置失败：", e);
+      }
+    },
+
+    async saveProvider(input: ProviderInput) {
+      this.providers = await invoke<ProviderPublic[]>("agent_provider_save", { input });
+    },
+
+    async deleteProvider(id: string) {
+      this.providers = await invoke<ProviderPublic[]>("agent_provider_delete", { id });
+    },
+
+    /** 端点探针：默认不出图（不花钱）；要看真出图得显式 deep */
+    async testProvider(input: ProviderInput, deep = false): Promise<ProbeReport> {
+      return await invoke<ProbeReport>("agent_provider_test", { input, deep });
+    },
+
+    /** 提交任务 */
     async submit(req: AgentSubmitRequest): Promise<AgentSnapshot> {
       this.lastError = "";
       const snap = await invoke<AgentSnapshot>("agent_submit", { req });
