@@ -5976,7 +5976,27 @@
    ],
    "created_at": "2026-11-01T20:34:47+08:00",
    "updated_at": "2026-11-01T20:34:47+08:00"
+  },
+  {
+   "id": "FEAT-156",
+   "name": "图像创作 Agent 底座：独立 Python 侧车 + 只走回环的四端点契约 + 通用 sidecar 生命周期 + 打包链路（docs/v5.md 块 A）",
+   "module": "python/agent/{__init__,app,auth,jobs,logutil}.py；python/agent_server.py；python/agent_server.spec；python/requirements-agent.txt；python/build_agent_exe.ps1；python/tests/{conftest,test_agent_logutil,test_agent_jobs}.py；src-tauri/src/sidecar.rs；src-tauri/src/agent/{mod,client,job}.rs；src-tauri/src/lib.rs（模块注册 + RunEvent 退出清理）；src/stores/agent.ts；src/types/agent.ts；src/views/Workshop.vue（开关与三态）；scripts/smoke-agent.ps1；release{,-nomodel}.tauri.conf.json（agent 资源）",
+   "status": "in-progress",
+   "date": "2026-11-02",
+   "purpose": "docs/v5.md 的硬规矩是「先过打包验收再写业务代码」——studio 当年连 .spec 都没有，所以从来没进过 bundle.resources，用户机器上必然是死的。块 A 只做四件事：① 让 agent 成为一个能被 Rust 拉起、能被收养、能被干净杀掉的独立进程；② 定死只在 127.0.0.1 上的四个端点（/health、submit、status、cancel）；③ 把 per-job 能力凭据的通道做成一次性 token（请求体里会带 provider 明文 key）；④ 把 job 快照放在 Rust，使「Python 挂了也能说清中断在哪一步、已花多少钱」。同时刻意不接任何算法与模型：先把「装到用户机器上能跑」这件事变成事实。",
+   "implementation": {
+    "进程与复用边界": "不复用 VCR 进程（两条硬理由）：VCR 启动要加载 ONNX/CLIP，READY 最长 90s；且 VCR 的 ensure 带版本校验会 POST /shutdown 重启服务，任务会随重启蒸发。Agent 只是 HTTP + Pillow，独立侧车，端口每次向 0 要。",
+    "sidecar.rs 参数化": "从 4af7760^ 的 studio.rs 抽成 SidecarSpec（name/资源子目录/exe/开发入口/实例文件/health 路径/日志名/api 版本/env 构造器）。五条血账原样保留并各有测试：① 实例文件与内存缓存在探活成功后立刻写；② 输出读线程绝不 join（存活即无 EOF，join 会挂死 ensure —— BUG-2026-0918-009 有专门回归测试）；③ kill 必须带 /T；④ ensure 单飞（tokio Mutex）；⑤ 端口向 0 要 + 失败文案带 stderr 尾巴且不含构建机绝对路径。",
+    "per-process token 与收养": "token 用 rand_core::OsRng 生成 128bit hex（复用已有依赖），经 AGENT_TOKEN 注入子进程，Python 侧 hmac.compare_digest 常量时间比较；缺 token 时服务以 exit(2) 拒绝启动（不做免 token 后门）。收养遗留实例时我们还不知道它的 token，于是把 token 一并写进 agent-instance.json，并用「请求一个不存在的 job」验证：404=token 通过、401=token 不对，从而把「该收养」与「该杀掉重起」分开。",
+    "快照真相在 Rust": "agent/job.rs 的 AgentJobs 是前端唯一真相：begin/mark_running/merge/finish。两条防回退规则：终态不得被迟到的 running 覆盖；finish 幂等。轮询（400ms）在 Rust 里跑，前端只是订阅者 —— 因此关窗口不影响任务（后续接托盘常驻）。Python 侧 404 被单独分类（StatusErr::NotFound），对应文案是「服务重启过，任务已中断」，与「连不上」严格区分；连续 3 次失败判定 SidecarDown。",
+    "契约字段": "status 快照统一 camelCase（jobId/steps/costTotal/callsUsed/needReplan/p1Path/pythonSeen），Rust 侧 PythonStatus 用 serde rename_all=camelCase 反序列化。字段名错位不会报错、只会静默变 None —— 所以用「起真 Python 的跨进程测试」锁住它。",
+    "开关与回退": "agent.enabled 默认 false（app_settings KV），ensure/submit 都在 Rust 侧硬拦；agent 模块不被 tools.rs / 扫描链路反向依赖，关掉即退回纯工具台。",
+    "打包链路": "requirements-agent.txt 明确不含 onnxruntime/opencv/numpy（体积预算 ≤40MB，闸值 44MB）；agent_server.spec 的 hiddenimports 显式列出 agent.app 等（uvicorn 用字符串导入，静态分析看不见，漏掉的表现正是「/health 通但 /agent/submit 崩」）；build_agent_exe.ps1 打完立刻用 exe 自身起服务验 /health。release{,-nomodel}.tauri.conf.json 已加 agent/agent-server.exe，release.ps1 的自检按配置清单自动覆盖。",
+    "前端最小控制面": "stores/agent.ts 仿 scanTask：事件 120ms 节流 + 700ms 快照兜底 + 只在上行时开定时器；Workshop.vue 左栏加「启用 AI 创作」开关与三态（未开启 / 启动中 / 已就绪 | 不可用 + 重试），进页面后台预热侧车、失败静默（用户还没点开始，弹错只是噪声）。"
+   },
+   "tests": "python/tests（pytest，14 项）：redact 逐类断言密钥不进日志、快照字段名钉住 camelCase 契约、job 成本与调用数累加、终态集合、evict 不淘汰运行中。Rust（cargo test）：agent 9 项（合并/终态防回退/finish 幂等/取消标记/prune）+ sidecar 6 项（端口/随机 token/实例文件往返/输出缓冲封顶/探活失败/存活子进程取输出不阻塞）+ 1 项跨进程契约测试（真起 Python：submit 拿 jobId → 轮询到 done → 反序列化 3 步轨迹 → 验证 404 与 401 语义）。scripts/smoke-agent.ps1：15 项契约冒烟（health/token 拦截/单飞 409/进度逐步/终态/取消 <500ms/未知 job 404/强杀后端口释放），实测冷启动 ~0.7s。",
+   "notes": "未完成（后续块）：recipes 与 4 个配方、prompt 编译器与校验器、imaging（compress/journal/probe）、providers（OpenAI 兼容 + 档位映射）、planner 循环与工具、assemble 候选池、ledger 成本台账、AgentDock/AgentTrail 面板、托盘后台常驻。用户已拍板：抠主体走远程（故 exe 保持 Pillow-only）；provider 不预设、由用户填 baseUrl+key（含本地 llama.cpp/Ollama 地址）；任务允许后台跑（后续接托盘 + 关窗不退出）。"
   }
  ],
- "updated": "2026-11-01T20:34:47+08:00"
+ "updated": "2026-11-02T21:10:00+08:00"
 }

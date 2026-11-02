@@ -1,0 +1,15 @@
+# Agent sidecar packaging deps (minimal venv for PyInstaller).
+#
+# HARD CONSTRAINT (docs/v5.md section 3 / 25-3): NO onnxruntime / opencv / numpy / torch.
+# This service only does HTTP orchestration + Pillow image work. Heavy local work
+# (subject extraction) goes to the user-configured remote endpoint, which keeps the
+# exe budget under 40MB. build_agent_exe.ps1 enforces the size gate.
+#
+# KEEP THIS FILE PURE ASCII. Windows pip decodes requirements files with the system
+# locale (GBK/cp936); non-ASCII comments make `pip install -r` die with
+# UnicodeDecodeError: 'gbk' codec can't decode byte ... (BUG-2026-0920-001).
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
+Pillow>=10.0
+pyinstaller>=6.0
