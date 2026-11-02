@@ -6,6 +6,7 @@ import {
   type AgentSnapshot,
   type AgentSubmitRequest,
 } from "../types/agent";
+import type { Recipe, RecipeCatalog } from "../types/recipe";
 
 /**
  * 图像创作 Agent：任务状态 store（docs/v5.md §3、§17）。
@@ -38,6 +39,10 @@ interface AgentStoreState {
   enabled: boolean;
   /** 全部 job 快照（按 jobId 升序，最近的在最后） */
   jobs: AgentSnapshot[];
+  /** 配方目录（Rust 编进二进制的同一份 catalog.json） */
+  catalog: RecipeCatalog | null;
+  /** 配方加载失败原因（下拉空态要能解释为什么） */
+  recipesError: string;
   /** 事件监听是否已注册 */
   _ready: boolean;
   /** 侧车预热中 */
@@ -56,12 +61,28 @@ export const useAgentStore = defineStore("agent", {
   state: (): AgentStoreState => ({
     enabled: false,
     jobs: [],
+    catalog: null,
+    recipesError: "",
     _ready: false,
     startingSidecar: false,
     lastError: "",
   }),
 
   getters: {
+    /** 可跑的配方（planned / needs_key 仍列出，但 UI 置灰） */
+    recipes(state): Recipe[] {
+      return state.catalog?.recipes ?? [];
+    },
+    /** 按分组排列的下拉项（保持 catalog 原顺序，不重排） */
+    recipesByGroup(state): { group: string; items: Recipe[] }[] {
+      const out: { group: string; items: Recipe[] }[] = [];
+      for (const r of state.catalog?.recipes ?? []) {
+        const g = out.find((x) => x.group === r.group);
+        if (g) g.items.push(r);
+        else out.push({ group: r.group, items: [r] });
+      }
+      return out;
+    },
     /** 最近一个 job（面板默认展示它） */
     current(state): AgentSnapshot | null {
       return state.jobs.length ? state.jobs[state.jobs.length - 1] : null;
@@ -88,6 +109,7 @@ export const useAgentStore = defineStore("agent", {
         this.enabled = false;
         this.lastError = errText(e);
       }
+      await this.loadRecipes();
       if (!this._ready) {
         unlistenFn = await listen<AgentSnapshot>("agent-progress", (ev) => {
           this.pushSnapshot(ev.payload);
@@ -95,6 +117,18 @@ export const useAgentStore = defineStore("agent", {
         this._ready = true;
       }
       await this.refresh();
+    },
+
+    /** 配方目录（Rust `include_str!` 的同一份 catalog.json，侧车没起来也能读） */
+    async loadRecipes() {
+      try {
+        const raw = await invoke<string>("agent_recipes");
+        this.catalog = JSON.parse(raw) as RecipeCatalog;
+        this.recipesError = "";
+      } catch (e) {
+        this.catalog = null;
+        this.recipesError = errText(e);
+      }
     },
 
     /** 卸载时解绑（页面通常常驻，但热重载/退出要干净） */

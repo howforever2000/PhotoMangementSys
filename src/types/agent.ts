@@ -38,6 +38,18 @@ export interface AgentStep {
   note: string | null;
 }
 
+/** 执行参数预览（高级区用）。local 引擎不展示提示词，只展示这组参数。 */
+export interface AgentPreview {
+  deliverable?: string;
+  engine?: string;
+  /** 「这次会做什么」的人话列表 */
+  steps?: string[];
+  /** 执行参数（色温 +8 / 目标体积 200KB …） */
+  params?: Record<string, string>;
+  p1Path?: string;
+  needsProvider?: boolean;
+}
+
 /** 前端看到的 job 快照（真相在 Rust，不在 Python） */
 export interface AgentSnapshot {
   jobId: number;
@@ -55,13 +67,31 @@ export interface AgentSnapshot {
   pythonSeen: boolean;
   startedAt: number;
   updatedAt: number;
+  // ---- 编译器 / 执行器产出 ----
+  /** 目标提示词（local 引擎下为 null） */
+  prompt: string | null;
+  /** template | user_edited | rule_mapped | none */
+  promptSource: string | null;
+  /** 假设与降级记录（"描述已映射为 strong"…） */
+  assumptions: string[];
+  /** 冲突裁决（"已按你说的不出 PDF"） */
+  conflicts: string[];
+  /** P1a 未命中时的行内提示 */
+  hint: string;
+  preview: AgentPreview | null;
+  /** 产物绝对路径 */
+  outputs: string[];
 }
 
-/** 提交请求（字段只增不改；后续接配方/档位时在这里补） */
+/** 提交请求（字段只增不改；后续接 provider / 预算时在这里补） */
 export interface AgentSubmitRequest {
   recipeId: string;
   /** 附加描述（空 = P0 纯预设路径，零成本零等待） */
   userMsg?: string;
+  /** P3：手改的目标提示词（仅单图） */
+  userEditedPrompt?: string | null;
+  /** 对 RunSpec 的受限覆盖（白名单在 Python validators 里校验） */
+  runSpecOverride?: Record<string, Record<string, unknown>> | null;
   /** PhotoTray 手选的图（手选永远优先置顶） */
   paths?: string[];
   tier?: "draft" | "standard" | "hq" | "local";

@@ -18,6 +18,18 @@ TERMINAL = frozenset({"done", "error", "cancelled", "budget", "handoff"})
 # 保留的历史 job 数（超出淘汰最老的终态 job；只影响内存占用）
 KEEP_JOBS = 32
 
+# 快照里跟“编译器产出”相关的字段：由 runtime / app 在 job 开始与结束时就位。
+# 单独放一层 dict，是因为这些字段会随阶段增加，而“进度/成本”那几个字段的形状要稳。
+DEFAULT_META: dict = {
+    "prompt": None,
+    "promptSource": "none",
+    "assumptions": [],
+    "conflicts": [],
+    "hint": "",
+    "preview": {},
+    "outputs": [],
+}
+
 
 class Job:
     """单个 job 的可变状态。所有读写都在 `self.lock` 内。"""
@@ -35,7 +47,14 @@ class Job:
         self.created = time.time()
         self.updated = self.created
         self.cancelled = False
+        self.meta: dict = {k: (list(v) if isinstance(v, list) else dict(v) if isinstance(v, dict) else v) for k, v in DEFAULT_META.items()}
         self.lock = threading.Lock()
+
+    def set_meta(self, **kwargs) -> None:
+        """更新编译器/执行器产出（线程安全，不改未传的字段）。"""
+        with self.lock:
+            self.meta.update(kwargs)
+            self.updated = time.time()
 
     # ---- 写 ----
 
@@ -86,6 +105,7 @@ class Job:
 
     def snapshot(self) -> dict:
         with self.lock:
+            debug = dict(self.meta)
             return {
                 "jobId": self.job_id,
                 "recipeId": self.recipe_id,
@@ -98,6 +118,7 @@ class Job:
                 "error": self.error,
                 "startedAt": self.created,
                 "updatedAt": self.updated,
+                **debug,
             }
 
 

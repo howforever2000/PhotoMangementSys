@@ -671,6 +671,7 @@ pub fn run() {
             // 图像创作 Agent（docs/v5.md）：开关 / 预热 / 提交 / 快照 / 取消
             agent::agent_get_enabled,
             agent::agent_set_enabled,
+            agent::agent_recipes,
             agent::agent_ensure,
             agent::agent_submit,
             agent::agent_jobs_snapshot,

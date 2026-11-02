@@ -5996,7 +5996,28 @@
    },
    "tests": "python/tests（pytest，14 项）：redact 逐类断言密钥不进日志、快照字段名钉住 camelCase 契约、job 成本与调用数累加、终态集合、evict 不淘汰运行中。Rust（cargo test）：agent 9 项（合并/终态防回退/finish 幂等/取消标记/prune）+ sidecar 6 项（端口/随机 token/实例文件往返/输出缓冲封顶/探活失败/存活子进程取输出不阻塞）+ 1 项跨进程契约测试（真起 Python：submit 拿 jobId → 轮询到 done → 反序列化 3 步轨迹 → 验证 404 与 401 语义）。scripts/smoke-agent.ps1：15 项契约冒烟（health/token 拦截/单飞 409/进度逐步/终态/取消 <500ms/未知 job 404/强杀后端口释放），实测冷启动 ~0.7s。",
    "notes": "未完成（后续块）：recipes 与 4 个配方、prompt 编译器与校验器、imaging（compress/journal/probe）、providers（OpenAI 兼容 + 档位映射）、planner 循环与工具、assemble 候选池、ledger 成本台账、AgentDock/AgentTrail 面板、托盘后台常驻。用户已拍板：抠主体走远程（故 exe 保持 Pillow-only）；provider 不预设、由用户填 baseUrl+key（含本地 llama.cpp/Ollama 地址）；任务允许后台跑（后续接托盘 + 关窗不退出）。"
+  },
+  {
+   "id": "FEAT-157",
+   "name": "图像创作 Agent 块 B：配方与前缀编译器 + 确定性执行器 + 原子 Skill（压缩/调色/人像/卡片）+ 轨迹面板（P0/P1a/P1c 三条零成本路径）",
+   "module": "python/agent/recipes/{catalog.json,schema.py}；python/agent/{prompt,validators,tools,runtime}.py；python/agent/imaging/{imageio,compress,style,style_presets,beauty,journal,probe}.py；python/agent/{app,jobs}.py（submit 同步编译 + 真执行）；src-tauri/src/agent/{assemble,ledger}.rs；src-tauri/src/agent/mod.rs（候选池/台账/配方命令）；src/types/{recipe,agent}.ts；src/stores/agent.ts；src/components/workshop/agent/{AgentDock,RecipeBar,AgentTrail,PromptPeek}.vue；src/views/Workshop.vue（AI 创作工位）；python/assets/fonts/README.md；python/tests/{test_prompt_compile,test_imaging,test_runtime_flow}.py",
+   "status": "in-progress",
+   "date": "2026-11-02",
+   "purpose": "块 B 要兑现产品的核心承诺：**点一下就出活、断网可用、不花钱**。所以这一块刻意完全不接模型：路径判定、参数映射、排版、压缩全部是确定性的，同一输入必然得到同一输出（可回归测试）。同时把三条最容易退化的规则刻进代码与测试：① P1a「写了描述也不出网」；② P1 冻结 scope（不悄悄扩大处理范围）；③ 模板只读、模型只填槽位（本块还没有模型，但骨架已经按这个形状长）。",
+   "implementation": {
+    "配方单一真相": "配方与前缀模板收进 `recipes/catalog.json`（一个文件、templates 按 id 引用）。为什么不分文件：Rust 侧要用 `include_str!` 把同一份数据编进二进制给前端渲染下拉（侧车没起来也能选预设），拆目录就得靠 glob + 手维护清单。Python 侧加载时严格校验：未知字段直接报错（拼错字段名最坏结果是“配方静默不生效”）。",
+    "三个词的分离": "RunSpec（枚举/数值，执行器消费，UI 控件改）/ PromptTemplate（只读骨架，anchor + 槽位 + negative）/ TargetPrompt（渲染产物）。编译在 submit 里**同步**做（纯本地、毫秒级）：三条零成本路径若把编译塞进后台，用户会先看到 1~2 秒“running 但没反应”，恰好毁掉“点一下就出活”的观感。",
+    "P1a 规则映射": "关键词表（更强/更弱/暖/冷…）→ 强度三档；命中则改 intensity 并记 assumption，未命中则**不改参数**并返回原话提示（“当前预设仅支持调整强度…”）。全程零出网 —— 这条被 pytest 直接断言（prompt_source=rule_mapped、prompt=None）。",
+    "冲突表与冻结": "只有明确冲突才改交付物（“不要 PDF”才改 card_images，且用否定词排除避免“不要 PDF”被当成“要 PDF”来回翻转 —— 实测踩过）。scope 在 P1 一律冻结为 tray，用户说“处理 2023 年在杭州的全部”也不会扩范围。",
+    "执行器": "runtime.py 按 RunSpec 走确定路径：single_image + style → 本地调色；retouch → 人像润色；card_* → 排版导出 PDF；bundle → 调色后再统一压缩。每张图一条轨迹（耗时/缩略图/说明），每张之间查取消标记。产物一律另存（同名追加 _2），overwrite=false 绝不覆盖原图。",
+    "图像算法（Pillow only）": "compress：固定质量阶梯 + 不足则缩边，全程在内存里试编、最后一次落盘；写文件传**文件对象**（Pillow 传字符串路径在中文目录会静默 0 字节）。style：逐通道 LUT（色温/阴影/高光）+ HSV 饱和，参数表与高级区预览共用同一处。beauty：YCbCr 肤色掩膜 + 高斯模糊混合（不依赖人脸检测器，故不绑 VCR 的 90s 预热；代价是手部/颈部也会被处理，已在注释与轨迹假设里写明）。journal：A4@150dpi 固定几何，文字由代码画（模型画中文会乱码），PDF 走 Pillow 原生多页。",
+    "字体": "find_font 按 随包 assets/fonts → 系统字体 → 内置位图 降级，并把来源写进渲染结果（fontSource）。随包目录当前只有 README —— 需要放一款 OFL 中文字体；现在开发机走系统字体，**发布前必须补上**（分发系统字体是版权问题）。",
+    "Rust 侧": "assemble.rs 把托盘装配成候选池（去重按小写、上限 80/硬顶 200、文件级元数据 +按年视图），本轮只做 tray 范围 —— 语义召回/人物/地点属于 P2 扩大范围时才用到，结构不变。ledger.rs 建 agent_runs 并增量记账（UNIQUE(user_id,job_id,step_idx) +INSERT OR IGNORE，天然幂等，进程重启不会重复记）。配方目录经 agent_recipes 命令原样交给前端。",
+    "前端": "新增 AI 创作工位（左栏入口 + 右栏 AgentDock）：RecipeBar（下拉/描述/参数控件/开始·取消，按钮文案随“有没有描述”变）、PromptPeek（高级区按引擎类型切换：local 显示执行参数而非提示词）、AgentTrail（轨迹/冲突/假设/产物 + 打开文件夹）。store 沿用 scanTask 同构：事件 120ms 节流 + 700ms 快照兜底，且只在上行时开定时器。"
+   },
+   "tests": "pytest 69 项：编译器（P0/P1a/P1c 判定、P1a 零出网、规则表、冲突 6 条、scope 冻结、锚点必在开头、禁用词/人名替换、P3 批量拒稿与超长截断、批量一致性 12 组锚点逐字相同）；图像（目标体积命中、凑不到如实上报、裁切比例、透明底铺白、中文路径非 0 字节、原图字节不变、调色与人像确定性、卡片同输入逐字节相同 + PDF 魔数 + 坏图不毁整页、体检能识别 0 字节与模糊）；执行器（真实产出 3 个文件且不超目标、成本恒 0、卡片出 PDF 2 页、批量先调色后压缩、空托盘可行动报错、取消即停、同名不覆盖）。Rust 22 项：assemble 去重/上限/年份视图/缺文件不丢候选；ledger 幂等与按用户隔离；跨进程契约测试（真起 Python → 真跑压缩 → 校验 camelCase 反序列化/成本/产物落盘/P1c）。smoke-agent.ps1 19 项：开发版与打包 exe 各跑一遍全绿（含“产出 3 个文件且不超体积”）。",
+   "notes": "用户已拍板：抠主体走远程（card 默认 subject.mode=contain 零成本，card.subject_pop 需配 provider）；provider 不预设、用户填 baseUrl+key（本地 llama.cpp/Ollama 走同一份 OpenAI 兼容客户端）；任务允许后台跑（托盘常驻未做）。未完成：providers/（openai_compat + registry 档位）、planner 循环与 tools 的模型侧调度、needReplan（P2 扩范围 + 确认弹窗）、P3 手改提示词 UI、成本预估与预算硬闸、托盘后台常驻、随包中文字体、image_compress 收口到 Python。"
   }
  ],
- "updated": "2026-11-02T21:10:00+08:00"
+ "updated": "2026-11-02T23:40:00+08:00"
 }

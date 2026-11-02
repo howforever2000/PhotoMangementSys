@@ -19,16 +19,27 @@ a = Analysis(
     ['agent_server.py'],
     pathex=['.'],
     binaries=[],
-    datas=[],
+    datas=[
+        # 配方目录：Python 运行期要读它做校验与执行（Rust 侧另用 include_str! 编入同一份）
+        ('agent/recipes/catalog.json', 'agent/recipes'),
+        # 随包字体（卡片上的中文由代码画，必须有可再分发的字体文件）
+        ('assets/fonts', 'assets/fonts'),
+    ],
     hiddenimports=[
-        # 业务包（字符串导入，静态分析不可见）
+        # 业务包（uvicorn 用字符串 'agent.app:app' 导入，静态分析不可见）
         'agent', 'agent.app', 'agent.auth', 'agent.jobs', 'agent.logutil',
+        # 块 B：编译器 / 校验器 / 执行器 / 工具 / 图像算法 / 配方
+        'agent.prompt', 'agent.validators', 'agent.tools', 'agent.runtime',
+        'agent.recipes', 'agent.recipes.schema',
+        'agent.imaging', 'agent.imaging.compress', 'agent.imaging.style',
+        'agent.imaging.style_presets', 'agent.imaging.beauty', 'agent.imaging.journal',
+        'agent.imaging.probe', 'agent.imaging.imageio',
         # uvicorn 动态选择链
         'uvicorn', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.loops.asyncio',
         'uvicorn.protocols.http.auto', 'uvicorn.protocols.http.h11_impl',
         'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan.auto',
         # fastapi 依赖注入在运行期用 typing 反射，稳妥起见显式带上
-        'fastapi', 'pydantic', 'httpx', 'PIL.Image',
+        'fastapi', 'pydantic', 'httpx', 'PIL.Image', 'PIL.ImageDraw', 'PIL.ImageFont',
     ],
     hookspath=[],
     hooksconfig={},

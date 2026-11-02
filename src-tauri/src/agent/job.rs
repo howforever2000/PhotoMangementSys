@@ -60,6 +60,20 @@ pub struct PythonStatus {
     pub calls_used: i64,
     pub need_replan: Option<serde_json::Value>,
     pub error: Option<String>,
+    // ---- 编译器/执行器产出（块 B 新增） ----
+    /// 目标提示词（local 引擎下为 null）
+    pub prompt: Option<String>,
+    pub prompt_source: Option<String>,
+    /// 假设与降级记录（"描述已映射为 strong"、"已剔除禁用词"…）
+    pub assumptions: Vec<String>,
+    /// 冲突裁决（"已按你说的不出 PDF"）
+    pub conflicts: Vec<String>,
+    /// P1a 未命中时的行内提示文案
+    pub hint: String,
+    /// 执行参数预览（高级区显示；local 引擎不显示提示词）
+    pub preview: Option<serde_json::Value>,
+    /// 产物绝对路径
+    pub outputs: Vec<String>,
 }
 
 /// 前端看到的 job 快照
@@ -79,6 +93,14 @@ pub struct AgentSnapshot {
     pub python_seen: bool,
     pub started_at: i64,
     pub updated_at: i64,
+    // ---- 编译器/执行器产出 ----
+    pub prompt: Option<String>,
+    pub prompt_source: Option<String>,
+    pub assumptions: Vec<String>,
+    pub conflicts: Vec<String>,
+    pub hint: String,
+    pub preview: Option<serde_json::Value>,
+    pub outputs: Vec<String>,
 }
 
 impl AgentSnapshot {
@@ -97,6 +119,13 @@ impl AgentSnapshot {
             python_seen: false,
             started_at: now,
             updated_at: now,
+            prompt: None,
+            prompt_source: None,
+            assumptions: Vec::new(),
+            conflicts: Vec::new(),
+            hint: String::new(),
+            preview: None,
+            outputs: Vec::new(),
         }
     }
 }
@@ -200,6 +229,13 @@ impl AgentJobs {
         e.snap.calls_used = st.calls_used;
         e.snap.need_replan = st.need_replan.clone();
         e.snap.error = st.error.clone();
+        e.snap.prompt = st.prompt.clone();
+        e.snap.prompt_source = st.prompt_source.clone();
+        e.snap.assumptions = st.assumptions.clone();
+        e.snap.conflicts = st.conflicts.clone();
+        e.snap.hint = st.hint.clone();
+        e.snap.preview = st.preview.clone();
+        e.snap.outputs = st.outputs.clone();
         e.snap.python_seen = true;
         e.snap.updated_at = crate::now();
         Some(e.snap.clone())

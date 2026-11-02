@@ -39,6 +39,7 @@ import AppHeader from "../components/ui/AppHeader.vue";
 import PhotoTray from "../components/workshop/PhotoTray.vue";
 import CompressTool from "../components/workshop/CompressTool.vue";
 import ToolIcon from "../components/workshop/ToolIcon.vue";
+import AgentDock from "../components/workshop/agent/AgentDock.vue";
 import { useAgentStore } from "../stores/agent";
 
 const route = useRoute();
@@ -52,14 +53,14 @@ const route = useRoute();
  */
 const agent = useAgentStore();
 
-type ToolId = "compress" | "ocr" | "enhance" | "journal";
+type ToolId = "compress" | "ocr" | "enhance" | "journal" | "agent";
 
 interface ToolDef {
   id: ToolId;
   title: string;
   /** 右栏标题下方的一句话（说清"做什么"，不重复侧栏的名字） */
   desc: string;
-  icon: "compress" | "text" | "enhance" | "journal";
+  icon: "compress" | "text" | "enhance" | "journal" | "sparkle";
   /** 本轮是否真的能用。规划中的项不做假入口（点开必须明确说不能跑） */
   ready: boolean;
   /** 规划中工具的流程示意（只有创作类需要：它要回答"作品怎么造出来"） */
@@ -106,7 +107,21 @@ const creativeTool: ToolDef = {
   note: "选图与主题抽取用本机已有能力（语义索引 + 人脸聚合 + 去重 + CLIP 语义分类），套版走确定性模板 —— 版式与文字交给生成模型反而最不稳，生成模型只保留在「单张插画化」这一档。后续由 agent 编排执行。",
 };
 
-const allTools = computed<ToolDef[]>(() => [...processTools, creativeTool]);
+/**
+ * 图像创作 Agent（docs/v5.md）：进工位的第一个可跑项。
+ *
+ * 为什么不把入口做成“弹窗”：创作是反复调参数的过程（换个强度、换个预设再看一眼），
+ * 弹窗会每次打断。落在左栏就跟其它工位一样可以来回切，素材托盘也是同一份。
+ */
+const agentTool: ToolDef = {
+  id: "agent",
+  title: "AI 创作",
+  desc: "选一个预设，可选写一句描述；本地算法的预设不联网、不花钱，批量也走同一套",
+  icon: "sparkle",
+  ready: true,
+};
+
+const allTools = computed<ToolDef[]>(() => [...processTools, agentTool, creativeTool]);
 
 /* ---------------- 工具状态 / 素材托盘 ---------------- */
 
@@ -238,15 +253,17 @@ function selectTool(t: ToolDef) {
         <div class="side-group">
           <h3 class="side-h">创作</h3>
           <button
+            v-for="t in [agentTool, creativeTool]"
+            :key="t.id"
             class="side-item"
-            :class="{ on: active === creativeTool.id }"
+            :class="{ on: active === t.id }"
             type="button"
-            :title="`${creativeTool.desc}（规划中）`"
-            @click="selectTool(creativeTool)"
+            :title="t.ready ? t.desc : `${t.desc}（规划中）`"
+            @click="selectTool(t)"
           >
-            <span class="side-ico"><ToolIcon :name="creativeTool.icon" :size="15" /></span>
-            <span class="side-name">{{ creativeTool.title }}</span>
-            <span class="side-tag">规划</span>
+            <span class="side-ico"><ToolIcon :name="t.icon" :size="15" /></span>
+            <span class="side-name">{{ t.title }}</span>
+            <span v-if="!t.ready" class="side-tag">规划</span>
           </button>
         </div>
 
@@ -280,6 +297,9 @@ function selectTool(t: ToolDef) {
 
         <!-- 已实现：压缩 -->
         <CompressTool v-if="active === 'compress'" :paths="tray" />
+
+        <!-- 图像创作 Agent（docs/v5.md）：配方 + 轨迹 + 高级区 -->
+        <AgentDock v-else-if="active === 'agent'" :paths="tray" />
 
         <!-- 规划中：不假装能跑，把"将来会怎么用"写清楚 -->
         <section v-else class="planned">

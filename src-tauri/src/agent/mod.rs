@@ -7,8 +7,10 @@
 //! 前端只与这五个命令打交道，`invoke` 名字与契约保持稳定 —— 后续接规划层、
 //! 接图像算法都不改这里的方法名（只往 submit 体里加字段）。
 
+pub mod assemble;
 pub mod client;
 pub mod job;
+pub mod ledger;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -19,7 +21,6 @@ use tauri::{Emitter, Manager};
 use crate::logger;
 use crate::sidecar::{SidecarSpec, SidecarState};
 use job::{AgentJobs, AgentSnapshot};
-
 /// 必须与 `python/agent/__init__.py` 的 `API_VERSION` 一致；
 /// 不一致时 `ensure` 会把遗留实例杀掉重起（避免新旧契约混跑）。
 pub const API_VERSION: u64 = 1;
@@ -57,6 +58,19 @@ fn agent_env(port: u16, secret: &str) -> Vec<(String, String)> {
         ("PYTHONIOENCODING".to_string(), "utf-8".to_string()),
         ("PYTHONUTF8".to_string(), "1".to_string()),
     ]
+}
+
+/// 配方目录原始 JSON（`python/agent/recipes/catalog.json`）。
+///
+/// ��什么用 `include_str!` 而不用新端点：配方是**只读数据**，前端在侧车还没
+/// 起来时就要渲染下拉；让 Rust 把同一份文件编进二进制，就不存在
+/// “两处各存一份、改了忘了改另一处”的漂移。Python 则从包里读同一个文件做校验与执行。
+pub const RECIPES_CATALOG: &str = include_str!("../../../python/agent/recipes/catalog.json");
+
+/// 前端命令：把配方目录原样交给前端（不解析、不过滤，避免两套真相）。
+#[tauri::command]
+pub fn agent_recipes() -> String {
+    RECIPES_CATALOG.to_string()
 }
 
 // ------------------------------------------------------------------ 开关
@@ -117,21 +131,42 @@ pub async fn agent_submit(
             "已有 Agent 任务在运行（job #{running}），请等它结束或先取消"
         ));
     }
+    if req.recipe_id.trim().is_empty() {
+        return Err("没有选择预设".to_string());
+    }
     let started = std::time::Instant::now();
+
+    // ① 上下文装配（Rust 侧，确定性；Python 执行期不回连取数据）
+    let tray = assemble::normalize(&req.paths);
+    let pool = assemble::assemble(&tray, assemble::DEFAULT_LIMIT);
+    logger::log_info(&format!("agent | {}", assemble::brief(&pool)));
 
     let base = sc.ensure(&app).await?;
     let token = sc.secret();
 
     let (job_id, cancel) = jobs.begin(&req.recipe_id);
+
+    // 产物目录：由 Rust 决定（它才是负责路径权限的一侧），Python 只写不选
+    let output_dir = match req.output_dir.as_deref().map(str::trim) {
+        Some(d) if !d.is_empty() => d.to_string(),
+        _ => {
+            let dir = crate::app_data_dir(&app)?.join("agent-out").join(format!("job{job_id}"));
+            dir.to_string_lossy().to_string()
+        }
+    };
+
     let body = serde_json::json!({
         "jobId": job_id,
         "recipeId": req.recipe_id,
         "userMsg": req.user_msg,
-        "paths": req.paths,
+        "userEditedPrompt": req.user_edited_prompt,
+        "runSpecOverride": req.run_spec_override,
+        "paths": tray,
         "tier": req.tier,
-        "outputDir": req.output_dir,
-        // 后续块会在这里补：provider(含 per-job 明文凭据) / planner / priceTable /
-        // candidates（Rust 装配好的候选池）/ budget。字段只增不改，端点形状不变。
+        "outputDir": output_dir,
+        // 后续块会在这里补：provider（含 per-job 明文凭据）/ planner / priceTable / budget。
+        // candidates 一次给全 —— Python 执行期不回连 Rust。
+        "candidates": pool,
     });
 
     match client::submit(&base, &token, &body).await {
@@ -161,7 +196,22 @@ pub async fn agent_submit(
         .ok_or_else(|| "内部错误：job 状态丢失".to_string())?;
     emit(&app, &snap);
 
-    let handle = spawn_poller(app.clone(), base, token, job_id, cancel);
+    // 台账建表（幂等）：放在 submit 里而不是启动时，改 schema 不会卡住应用启动
+    if let Ok(db) = app.state::<crate::AppState>().0.lock() {
+        if let Err(e) = ledger::init(db.conn()) {
+            logger::log_error("agent_ledger", &e);
+        }
+    }
+
+    let handle = spawn_poller(
+        app.clone(),
+        base,
+        token,
+        job_id,
+        uid,
+        req.recipe_id.clone(),
+        cancel,
+    );
     // 句柄不保存：轮询循环自带退出条件（取消标记 / 终态 / 连续失败）。
     // 把它 abort 掉反而会让最后一次状态 emit 丢在取消路径上。
     drop(handle);
@@ -213,6 +263,8 @@ fn spawn_poller(
     base: String,
     token: String,
     job_id: i64,
+    uid: i64,
+    recipe_id: String,
     cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -247,14 +299,18 @@ fn spawn_poller(
                             break;
                         }
                     };
+                    // 成本增量落库：每轮把“见到的新步骤”写进去（幂等，只增不改）
+                    record_ledger(&app, uid, job_id, &recipe_id, &parsed.steps);
+
                     if let Some(snap) = jobs.merge(job_id, &parsed) {
                         emit(&app, &snap);
                         if job::is_terminal(&snap.status) {
                             logger::log_info(&format!(
-                                "agent | job {job_id} 终态={} 成本={:.4} 步数={}",
+                                "agent | job {job_id} 终态={} 成本={:.4} 步数={} 产物={}",
                                 snap.status,
                                 snap.cost_total,
-                                snap.steps.len()
+                                snap.steps.len(),
+                                snap.outputs.len()
                             ));
                             break;
                         }
@@ -306,6 +362,26 @@ fn emit(app: &tauri::AppHandle, snap: &AgentSnapshot) {
     }
 }
 
+/// 把本轮见到的步骤写进台账。失败只留痕、不中断轮询（记账不该比任务本身更“硬”）。
+fn record_ledger(app: &tauri::AppHandle, uid: i64, job_id: i64, recipe_id: &str, steps: &[job::AgentStep]) {
+    if steps.is_empty() {
+        return;
+    }
+    let state = app.state::<crate::AppState>();
+    let Ok(db) = state.0.lock() else {
+        return;
+    };
+    if let Err(e) = ledger::init(db.conn()) {
+        logger::log_error("agent_ledger", &e);
+        return;
+    }
+    match ledger::record(db.conn(), uid, job_id, recipe_id, steps, crate::now()) {
+        Ok(0) => {}
+        Ok(n) => logger::log_info(&format!("agent_ledger | job {job_id} 新增 {n} 行")),
+        Err(e) => logger::log_error("agent_ledger", &e),
+    }
+}
+
 // ------------------------------------------------------------------ 请求体
 
 /// 前端提交的请求。字段只增不改；`serde(default)` 让旧前端不会因为新增字段 500。
@@ -316,6 +392,10 @@ pub struct AgentRequest {
     pub recipe_id: String,
     /// 用户附加描述（可为空 = P0 纯预设路径）
     pub user_msg: String,
+    /// P3：用户手改的目标提示词（仅单图）
+    pub user_edited_prompt: Option<String>,
+    /// 前端对 RunSpec 的受限覆盖（白名单在 Python `validators.py` 里）
+    pub run_spec_override: Option<serde_json::Value>,
     /// PhotoTray 手选的图片路径（手选永远优先置顶）
     pub paths: Vec<String>,
     /// 档位：draft / standard / hq / local
@@ -329,6 +409,8 @@ impl Default for AgentRequest {
         Self {
             recipe_id: String::new(),
             user_msg: String::new(),
+            user_edited_prompt: None,
+            run_spec_override: None,
             paths: Vec::new(),
             tier: "local".to_string(),
             output_dir: None,
@@ -410,6 +492,16 @@ mod contract_tests {
             return;
         };
 
+        // 造一张真图：块 B 之后 submit 会真的跑图像管线，没图就会直接报错
+        let tmp = std::env::temp_dir().join(format!("pm-agent-contract-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let img_path = tmp.join("contract.jpg");
+        let img = image::RgbImage::from_fn(320, 240, |x, y| {
+            image::Rgb([(x % 255) as u8, (y % 255) as u8, ((x + y) % 255) as u8])
+        });
+        img.save(&img_path).unwrap();
+        let out_dir = tmp.join("out");
+
         let port = crate::sidecar::pick_free_port();
         let token = "contract-test-token";
         let mut child = Command::new(&py)
@@ -439,14 +531,21 @@ mod contract_tests {
             }
             assert!(up, "/health 未就绪（python={py:?}）");
 
-            // ① submit → jobId
-            let body = serde_json::json!({"jobId": 1, "recipeId": "style.warm_dusk"});
+            // ① submit → jobId（真跑一遍压缩管线）
+            let body = serde_json::json!({
+                "jobId": 1,
+                "recipeId": "compress.target_kb",
+                "userMsg": "压小一点",
+                "paths": [img_path.to_string_lossy()],
+                "outputDir": out_dir.to_string_lossy(),
+                "runSpecOverride": { "export": { "targetKb": 150 } }
+            });
             let id = client::submit(&base, token, &body).await.expect("submit 失败");
             assert_eq!(id, 1);
 
             // ② 轮询到终态，并验证反序列化（camelCase 契约）
             let mut last: Option<job::PythonStatus> = None;
-            for _ in 0..80 {
+            for _ in 0..150 {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 match client::status(&base, token, id).await {
                     Ok(v) => {
@@ -461,10 +560,16 @@ mod contract_tests {
                 }
             }
             let st = last.expect("job 未收敛");
-            assert_eq!(st.status, job::ST_DONE);
-            assert_eq!(st.steps.len(), 3, "骨架应有三步");
-            assert_eq!(st.steps[0].tool, "plan");
+            assert_eq!(st.status, job::ST_DONE, "error={:?}", st.error);
+            assert!(st.steps.len() >= 3, "至少要有 选图/压缩/体检，实得 {}", st.steps.len());
+            assert_eq!(st.steps[0].tool, "select");
             assert_eq!(st.steps[0].idx, 1);
+            assert_eq!(st.cost_total, 0.0, "零成本路径");
+            assert_eq!(st.calls_used, 0);
+            assert_eq!(st.outputs.len(), 1, "应产出一个文件");
+            assert!(std::path::Path::new(&st.outputs[0]).is_file(), "产物必须真的落盘");
+            assert_eq!(st.p1_path.as_deref(), Some("P1c"));
+            assert_eq!(st.prompt_source.as_deref(), Some("none"));
 
             // ③ 两种失败语义必须区分开（收养判定与用户文案都靠它）
             assert!(matches!(
@@ -480,6 +585,7 @@ mod contract_tests {
 
         kill_tree(pid);
         let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&tmp);
         result
     }
 }
