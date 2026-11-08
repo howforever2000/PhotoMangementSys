@@ -224,8 +224,44 @@ vcr/models/
    └─ openvino-npu-win-x64.zip               #   解压产物 _runtime/ovrt/ 由服务首次使用时生成
 ```
 
-可选组件：`_runtime/openvino-npu-win-x64.zip`（15.5MB 下载 / 45.4MB 装后，仅 Intel NPU）——
-应用内「性能设置 → 模型管理」一键下载；不装则全部通道走 ONNX Runtime。
+### 7.2.1 可选组件：OpenVINO NPU 运行时（仅 Intel）
+
+它**不是模型**，而是一份裁剪过的 OpenVINO 运行时，让检测 / OCR / 人脸编码三条热通道能跑在
+**Intel NPU** 上（真机实测 983 张扫描 -58.4%）。
+
+> **什么时候需要**：只有 **Intel Core Ultra（Meteor Lake 及以后）等带 NPU 的机器**才用得上。
+> AMD / NVIDIA / 老 Intel 机器**不需要下载**，装了也不会有 NPU 选项。
+> 不装 = 全部通道走 ONNX Runtime，行为与旧版逐字一致。
+
+**方式一：应用内一键（推荐，不会放错位置）**
+
+「⚙ 性能设置 → 模型管理 → 推理加速 · OpenVINO（Intel 可选）」点下载。
+下载完成后 NPU 勾选项会自动出现（没装运行时它是不渲染的）。
+
+**方式二：手动放 Release 里的 `openvino-npu-win-x64.zip`**
+
+1. **先确认模型目录在哪**：打开日志 `%APPDATA%\com.photomanagementsys.app\logs\app.log`，
+   搜 `模型目录:` 那一行 —— 后面就是当前实际生效的路径（以它为准，不要猜）。
+   两种常见情形：
+   - **NSIS 安装包（推荐，按用户安装，目录可写）**：`<安装目录>\vcr\models`
+     （默认 `%LOCALAPPDATA%\PhotoManagementSys\vcr\models`）
+   - **MSI 安装包（装到 `Program Files`，普通权限不可写）**：应用启动时已把模型目录改为可写副本
+     `%APPDATA%\com.photomanagementsys.app\vcr-models`，就放这里。
+2. 在模型目录下新建子目录 **`_runtime`**，把 zip **原样**（不要解压、不要改名）放进去：
+   ```
+   <模型目录>\_runtime\openvino-npu-win-x64.zip
+   ```
+   文件名必须是 `openvino-npu-win-x64.zip`（服务按这个字面名找）。
+3. **重启应用**（微服务启动时才探测运行时）。首次启用 NPU 时，Python 侧用标准库 zipfile
+   自动解压到同目录 `_runtime\ovrt\`，**这一步不用你动手**；以后只解压一次。
+4. 打开「⚙ 性能设置 → 加速分配」，此时 **NPU** 勾选框才会出现 —— 勾上即生效
+   （不勾 = 运行时装好了也不用）。
+
+**怎么确认真的在用 NPU**：加速分配表里那几行的「实际设备」列显示 `NPU`。
+NPU 首次编译 fp32 模型可能要几秒，编译缓存落在模型目录 `_ov_cache\`，之后毫秒级加载。
+若日志里看到 `NPU` 不可用：多半是 zip 放错目录 / 文件名不对 / 硬件不是 Intel。
+
+⚠ 安装包里**不含**这个运行时（可选、仅 Intel），必须自己下载；它也**不在** `model.zip` 里。
 
 ⚠ **v0.4.5 起 fp16 语义档已下线**：旧 `chinese-clip/`（含 `onnx/model_fp16.onnx`）不再被读取，
 升级用户需重新获取 fp32 档（754MB）——但**已有向量不用重建**（向量标签启动时自动重打，见「十一、版本历史」）。
@@ -235,7 +271,7 @@ vcr/models/
 ### 7.3 模型获取与更新
 
 - **应用内下载（v0.2.0+，推荐）**：「⚙ 性能设置 → 模型管理」可后台下载人物检测 / 人脸两档 / OCR / 语义（B/16 fp32）与 OpenVINO 可选组件，官方 / 镜像源双路竞速 + 断点续传。
-- **离线包**：Release 附件 `model.zip`（v0.4.5 起含 fp32 语义档）解压到安装根目录即可；旧 v0.4.2 的 model.zip 含已下线的 fp16 档，**不再适用**。
+- **离线包**：Release 附件 `model.zip`（v0.4.5 起含 fp32 语义档）解压到安装根目录即可；旧 v0.4.2 的 model.zip 含已下线的 fp16 档，**不再适用**。注意 `model.zip` **不含** OpenVINO 运行时（那是另一个附件，放法见 7.2.1）。
 - **人脸 + OCR**：执行 `python/download_models.py`（从 GitHub / ModelScope 下载）。
 - **检测 + 语义子图**：直接复制开发机 `python/models/` 下对应文件；语义双塔整图首次使用时由服务自动拆成 `clip_vision.onnx` / `clip_text.onnx`（幂等 + 与整图数值对齐校验，需模型目录**可写**，见 7.4）。前者失效时，服务会自动回退到旧布局 `chinese-clip/`（仅当里面已有 fp32 整图或拆分件）。
 - 模型不进入 git 仓库（体积过大），请通过 GitHub Release 附加资产（模型 zip）或 README 链接获取。
