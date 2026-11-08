@@ -56,6 +56,13 @@ mod photos;
 mod album;
 mod album_health;
 mod vcr_settings;
+// 图像创作 Agent（docs/v5.md）
+//   - sidecar.rs：通用 Python 侧车生命周期（agent 及后续服务共用）
+//   - agent/     ：命令层 / HTTP 客户端 / job 快照
+// 硬约束：agent 模块**不得**被 tools.rs、扫描链路反向依赖 —— 关掉
+//         agent.enabled 后工坊必须能退回纯工具台（docs/v5.md §23「整体回退」）。
+mod agent;
+mod sidecar;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -307,7 +314,7 @@ fn fatal_data_dir(dir: &Path, err: &std::io::Error) -> ! {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app_handle = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -453,6 +460,10 @@ pub fn run() {
                     app.manage(test_scan_job::ScanJobState::default());
                 }
             }
+            // 图像创作 Agent：job 快照（前端看到的唯一真相）+ 侧车生命周期状态。
+            // 在这里 manage 而不是在分支里：未登录也要能预热/查询（命令层自行校验身份）。
+            app.manage(agent::job::AgentJobs::new());
+            app.manage(sidecar::SidecarState::new(&agent::AGENT_SPEC));
             // BUG-2026-1023-009 收尾：缩略图缓存键空间解耦后的**一次性迁移**
             // （重订键复用旧文件 + 回收孤儿），必须早于用户开始浏览；
             // 放后台线程跑，不阻塞窗口首帧；幂等（settings 标记控制）。
@@ -657,9 +668,34 @@ pub fn run() {
             open_dev_data_window,
             // 创意工坊（FEAT-150）：图像压缩（指定大小 / 长边 / 裁切）
             tools::image_compress,
+            // 图像创作 Agent（docs/v5.md）：开关 / 预热 / 提交 / 快照 / 取消
+            agent::agent_get_enabled,
+            agent::agent_set_enabled,
+            agent::agent_recipes,
+            agent::agent_providers_list,
+            agent::agent_provider_save,
+            agent::agent_provider_delete,
+            agent::agent_provider_test,
+            agent::agent_ensure,
+            agent::agent_submit,
+            agent::agent_jobs_snapshot,
+            agent::agent_cancel,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    // 显式拿 RunEvent（而不是 `.run(ctx)` 直接跑）—— 为「后台运行」留出入口：
+    // 后续处理 ExitRequested（关窗口不退出 + 托盘）也加在这个闭包里。
+    // 目前只做一件事：真正退出时杀掉自己拉起的 Python 侧车，
+    // 避免遗留进程占端口。崩溃/被强杀走不到这里 —— 那时实例文件留在磁盘上，
+    // 下次启动靠它收养（而非重起一个）。
+    app_handle.run(|handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            if let Some(sc) = handle.try_state::<sidecar::SidecarState>() {
+                sc.shutdown(handle);
+            }
+        }
+    });
     // 事件循环正常退出（异常退出走 panic 钩子落盘）
     logger::log_info("==== APP EXIT ====");
 }

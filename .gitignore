@@ -65,6 +65,12 @@ python/*.pt
 
 # Python 视觉微服务打包产物（PyInstaller 生成，体积过大不入库；由 build_vcr_exe.ps1 重建）
 python/.venv-vcr/
+# Agent 侧车：独立的最小化 venv（只装 fastapi/uvicorn/httpx/Pillow，不含 onnxruntime/opencv）。
+# 重建：python/build_agent_exe.ps1（或手动 pip install -r python/requirements-agent.txt）
+python/.venv-agent/
+python/agent/**/__pycache__/
+python/tests/**/__pycache__/
+python/.pytest_cache/
 python/build/
 python/dist/
 python/staging/

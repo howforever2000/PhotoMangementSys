@@ -39,17 +39,28 @@ import AppHeader from "../components/ui/AppHeader.vue";
 import PhotoTray from "../components/workshop/PhotoTray.vue";
 import CompressTool from "../components/workshop/CompressTool.vue";
 import ToolIcon from "../components/workshop/ToolIcon.vue";
+import AgentDock from "../components/workshop/agent/AgentDock.vue";
+import { useAgentStore } from "../stores/agent";
 
 const route = useRoute();
 
-type ToolId = "compress" | "ocr" | "enhance" | "journal";
+/**
+ * 图像创作 Agent（docs/v5.md）。这里只放**最小可见控制面**：
+ * 开/关 + 侧车状态。真正的任务面板（AgentDock / 轨迹）在后续块落地。
+ *
+ * 为什么开关必须在 UI 上：`agent.enabled` 默认关，且有硬闸拦截提交 ——
+ * 没有入口就不能开启，这个功能在用户机器上等于不存在（也不能验证）。
+ */
+const agent = useAgentStore();
+
+type ToolId = "compress" | "ocr" | "enhance" | "journal" | "agent";
 
 interface ToolDef {
   id: ToolId;
   title: string;
   /** 右栏标题下方的一句话（说清"做什么"，不重复侧栏的名字） */
   desc: string;
-  icon: "compress" | "text" | "enhance" | "journal";
+  icon: "compress" | "text" | "enhance" | "journal" | "sparkle";
   /** 本轮是否真的能用。规划中的项不做假入口（点开必须明确说不能跑） */
   ready: boolean;
   /** 规划中工具的流程示意（只有创作类需要：它要回答"作品怎么造出来"） */
@@ -96,7 +107,21 @@ const creativeTool: ToolDef = {
   note: "选图与主题抽取用本机已有能力（语义索引 + 人脸聚合 + 去重 + CLIP 语义分类），套版走确定性模板 —— 版式与文字交给生成模型反而最不稳，生成模型只保留在「单张插画化」这一档。后续由 agent 编排执行。",
 };
 
-const allTools = computed<ToolDef[]>(() => [...processTools, creativeTool]);
+/**
+ * 图像创作 Agent（docs/v5.md）：进工位的第一个可跑项。
+ *
+ * 为什么不把入口做成“弹窗”：创作是反复调参数的过程（换个强度、换个预设再看一眼），
+ * 弹窗会每次打断。落在左栏就跟其它工位一样可以来回切，素材托盘也是同一份。
+ */
+const agentTool: ToolDef = {
+  id: "agent",
+  title: "AI 创作",
+  desc: "选一个预设，可选写一句描述；本地算法的预设不联网、不花钱，批量也走同一套",
+  icon: "sparkle",
+  ready: true,
+};
+
+const allTools = computed<ToolDef[]>(() => [...processTools, agentTool, creativeTool]);
 
 /* ---------------- 工具状态 / 素材托盘 ---------------- */
 
@@ -131,7 +156,44 @@ onMounted(() => {
   }
   // `?tool=` 优先于默认工位（也允许不带照片直接深链到某个工具）
   if (typeof q.tool === "string") active.value = q.tool as ToolId;
+
+  // 图像创作 Agent：懒启动 + 首次预热（docs/v5.md §4）。
+  // 进入工坊就在后台把侧车拉起来，不阻塞首帧；失败静默 ——
+  // 用户此时还没点「开始」，弹错只会制造噪声（真要用时会在提交处给可行动文案）。
+  void agent.init().then(() => agent.preheat());
 });
+
+/* ---------------- 图像创作 Agent：状态三态 + 开关 ---------------- */
+
+/** 只在开启后展示错误（未开启时的失败是预期的，不该吓人） */
+const agentError = computed(() => (agent.enabled ? agent.lastError : ""));
+
+const agentStateLabel = computed(() => {
+  if (!agent.enabled) return "未开启";
+  if (agent.startingSidecar) return "启动中…";
+  if (agent.lastError) return "不可用";
+  return "已就绪";
+});
+
+const agentStateClass = computed(() => ({
+  off: !agent.enabled,
+  busy: agent.enabled && agent.startingSidecar,
+  err: agent.enabled && !agent.startingSidecar && !!agent.lastError,
+  ok: agent.enabled && !agent.startingSidecar && !agent.lastError,
+}));
+
+async function toggleAgent(ev: Event) {
+  const on = (ev.target as HTMLInputElement).checked;
+  try {
+    await agent.setEnabled(on);
+  } catch (e) {
+    agent.lastError = String(e);
+  }
+}
+
+async function retryAgent() {
+  await agent.preheat();
+}
 
 function dedupe(list: string[]): string[] {
   return [...new Set(list)];
@@ -191,16 +253,34 @@ function selectTool(t: ToolDef) {
         <div class="side-group">
           <h3 class="side-h">创作</h3>
           <button
+            v-for="t in [agentTool, creativeTool]"
+            :key="t.id"
             class="side-item"
-            :class="{ on: active === creativeTool.id }"
+            :class="{ on: active === t.id }"
             type="button"
-            :title="`${creativeTool.desc}（规划中）`"
-            @click="selectTool(creativeTool)"
+            :title="t.ready ? t.desc : `${t.desc}（规划中）`"
+            @click="selectTool(t)"
           >
-            <span class="side-ico"><ToolIcon :name="creativeTool.icon" :size="15" /></span>
-            <span class="side-name">{{ creativeTool.title }}</span>
-            <span class="side-tag">规划</span>
+            <span class="side-ico"><ToolIcon :name="t.icon" :size="15" /></span>
+            <span class="side-name">{{ t.title }}</span>
+            <span v-if="!t.ready" class="side-tag">规划</span>
           </button>
+        </div>
+
+        <!-- 图像创作 Agent：开关 + 侧车状态（真正的工作区在右栏，后续块落地） -->
+        <div class="side-group">
+          <h3 class="side-h">Agent</h3>
+          <label class="agent-toggle" title="开启后，工坊可以用自然语言描述来编排创作任务（会出网时才花钱）">
+            <input type="checkbox" :checked="agent.enabled" @change="toggleAgent" />
+            <span>启用 AI 创作</span>
+          </label>
+          <p class="agent-state" :class="agentStateClass">
+            <span class="agent-dot" aria-hidden="true" />{{ agentStateLabel }}
+          </p>
+          <template v-if="agentError">
+            <p class="agent-err" :title="agentError">{{ agentError }}</p>
+            <button class="agent-retry" type="button" @click="retryAgent">重试启动</button>
+          </template>
         </div>
       </aside>
 
@@ -217,6 +297,9 @@ function selectTool(t: ToolDef) {
 
         <!-- 已实现：压缩 -->
         <CompressTool v-if="active === 'compress'" :paths="tray" />
+
+        <!-- 图像创作 Agent（docs/v5.md）：配方 + 轨迹 + 高级区 -->
+        <AgentDock v-else-if="active === 'agent'" :paths="tray" />
 
         <!-- 规划中：不假装能跑，把"将来会怎么用"写清楚 -->
         <section v-else class="planned">
@@ -318,6 +401,109 @@ function selectTool(t: ToolDef) {
   color: var(--fg);
   font-weight: 600;
   background: var(--hover);
+}
+
+/* ---- Agent 开关与状态（三态齐全：未开启 / 启动中 / 就绪 | 不可用） ---- */
+.agent-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 27px;
+  padding: 0 7px;
+  border-radius: 5px;
+  font-size: 12.5px;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
+}
+
+.agent-toggle:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.agent-toggle input {
+  width: 13px;
+  height: 13px;
+  accent-color: var(--gold, #c8a45c);
+  cursor: pointer;
+}
+
+/* 状态点：颜色即语义，文字另给一遍 —— 只靠颜色区分不满足无障碍 */
+.agent-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 0;
+  padding: 0 7px;
+  font-size: 11.5px;
+  color: var(--fg-3, var(--fg-2));
+}
+
+.agent-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-3, #6b6b6b);
+  flex: none;
+}
+
+.agent-state.ok .agent-dot {
+  background: #4caf7d;
+}
+
+.agent-state.busy .agent-dot {
+  background: #d5a642;
+  animation: agent-pulse 1.2s var(--ease-out) infinite;
+}
+
+.agent-state.err .agent-dot {
+  background: #d9534f;
+}
+
+@keyframes agent-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-state.busy .agent-dot {
+    animation: none;
+  }
+}
+
+/* 错误文案：最多两行，完整信息在 title 里（不让一句长报错撑破侧栏） */
+.agent-err {
+  margin: 4px 0 0;
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #d9534f;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.agent-retry {
+  margin: 5px 0 0 7px;
+  padding: 2px 9px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.14));
+  border-radius: 5px;
+  background: none;
+  font-size: 11.5px;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+
+.agent-retry:hover {
+  color: var(--fg);
+  border-color: var(--fg-3, rgba(255, 255, 255, 0.3));
 }
 
 .side-item.on::before {

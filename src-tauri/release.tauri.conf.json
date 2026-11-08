@@ -4,6 +4,7 @@
     "active": true,
     "resources": {
       "../python/dist/vcr-server.exe": "vcr/vcr-server.exe",
+      "../python/dist/agent-server.exe": "agent/agent-server.exe",
       "../python/models/yolov8n-det.onnx": "vcr/models/yolov8n-det.onnx",
       "../python/models/det_10g.onnx": "vcr/models/det_10g.onnx",
       "../python/models/w600k_r50.onnx": "vcr/models/w600k_r50.onnx",

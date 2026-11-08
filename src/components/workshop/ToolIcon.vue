@@ -8,7 +8,7 @@
  */
 withDefaults(
   defineProps<{
-    name: "compress" | "text" | "enhance" | "journal";
+    name: "compress" | "text" | "enhance" | "journal" | "sparkle";
     size?: number;
   }>(),
   { size: 20 },
@@ -46,10 +46,16 @@ withDefaults(
     </template>
 
     <!-- 主题手账：书脊 + 内页 -->
-    <template v-else>
+    <template v-else-if="name === 'journal'">
       <path d="M5.5 4.6A1.6 1.6 0 017.1 3H18a1 1 0 011 1v16a1 1 0 01-1 1H7.1a1.6 1.6 0 01-1.6-1.6z" />
       <path d="M9.4 3v18" opacity=".5" />
       <path d="M12.6 8h3.6M12.6 11.4h2.4" opacity=".7" />
+    </template>
+
+    <!-- AI 创作：一颗主星 + 一条小尾巴（与“画质增强”的星形区分开：这里是单星）+ -->
+    <template v-else>
+      <path d="M12 3.6l1.9 5.1 5.1 1.9-5.1 1.9L12 17.6l-1.9-5.1L5 10.6l5.1-1.9z" />
+      <path d="M17.6 16.4l.7 1.7 1.7.7-1.7.7-.7 1.7-.7-1.7-1.7-.7 1.7-.7z" opacity=".55" />
     </template>
   </svg>
 </template>

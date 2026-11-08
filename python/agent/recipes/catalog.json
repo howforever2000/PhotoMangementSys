@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "templates": {
+    "style_transfer.photographic": {
+      "id": "tpl.style_transfer.photographic",
+      "version": 3,
+      "engine": "remote",
+      "anchor": "Preserve the original composition, subjects, faces and geometry. Photographic realism, natural grain, no added text or watermark.",
+      "slots": {
+        "look": {
+          "type": "enum",
+          "values": ["warm_dusk", "film_kodak", "clean_air"],
+          "default": "warm_dusk",
+          "maxLen": 32
+        },
+        "intensity": {
+          "type": "enum",
+          "values": ["subtle", "moderate", "strong"],
+          "default": "moderate"
+        },
+        "note": {
+          "type": "text",
+          "maxLen": 120,
+          "default": "",
+          "hint": "用户补充的光线/气氛描述"
+        }
+      },
+      "skeleton": "Grade the photograph toward the {look} look at {intensity} strength. {note}",
+      "negative": "text, watermark, logo, extra limbs, distorted faces, oversaturation, HDR halo",
+      "maxChars": 900
+    },
+    "style_illustrate.anime": {
+      "id": "tpl.style_illustrate.anime",
+      "version": 1,
+      "engine": "remote",
+      "anchor": "Preserve the subject, pose, framing and facial identity of the reference photo. Clean illustration look, no added text or watermark.",
+      "slots": {
+        "look": {
+          "type": "enum",
+          "values": ["anime_cel", "soft_paint", "ink_line"],
+          "default": "anime_cel",
+          "maxLen": 32
+        },
+        "intensity": {
+          "type": "enum",
+          "values": ["subtle", "moderate", "strong"],
+          "default": "moderate"
+        },
+        "note": {
+          "type": "text",
+          "maxLen": 120,
+          "default": "",
+          "hint": "用户补充的光线/气氛描述"
+        }
+      },
+      "skeleton": "Restyle the photo as a {look} illustration at {intensity} strength, keeping the original face and layout recognizable. {note}",
+      "negative": "text, watermark, signature, extra fingers, distorted anatomy, photorealistic skin",
+      "maxChars": 900
+    }
+  },
+  "recipes": [
+    {
+      "id": "compress.target_kb",
+      "group": "P.process",
+      "icon": "compress",
+      "label": "压缩到目标大小",
+      "desc": "把照片压到指定体积以内（必要时缩边），输出 JPEG 副本，原图不动。目标大小用右栏的滑杆调，不靠写文字。",
+      "status": "ready",
+      "engine_behavior": "no_prompt",
+      "p1_path": "P1c",
+      "runSpec": {
+        "deliverable": "bundle",
+        "scope": { "mode": "tray" },
+        "export": { "formats": ["jpg"], "targetKb": 200, "maxEdge": 4096, "overwrite": false },
+        "budget": { "maxCost": 0.0, "maxCalls": 0 }
+      }
+    },
+    {
+      "id": "style.warm_dusk",
+      "group": "A.style",
+      "icon": "sunset",
+      "label": "黄昏暖调",
+      "desc": "把色温推向暖黄、压一点高光与阴影。本地算法，断网可用、不花钱。",
+      "status": "ready",
+      "engine_behavior": "local_rule_mapped",
+      "p1_path": "P1a",
+      "runSpec": {
+        "deliverable": "single_image",
+        "scope": { "mode": "tray" },
+        "style": { "preset": "warm_dusk", "intensity": 0.6, "engine": "local" },
+        "retouch": { "faces": false },
+        "export": { "formats": ["jpg"], "overwrite": false },
+        "budget": { "maxCost": 0.0, "maxCalls": 0 }
+      },
+      "promptTemplate": "style_transfer.photographic"
+    },
+    {
+      "id": "retouch.portrait_natural",
+      "group": "B.retouch",
+      "icon": "face",
+      "label": "人像自然润色",
+      "desc": "只对肤色区域做轻微磨皮与提亮，保留纹理与五官轮廓。本地算法，不花钱。",
+      "status": "ready",
+      "engine_behavior": "no_prompt",
+      "p1_path": "P1c",
+      "runSpec": {
+        "deliverable": "single_image",
+        "scope": { "mode": "tray" },
+        "retouch": { "faces": true, "strength": "natural" },
+        "export": { "formats": ["jpg"], "overwrite": false },
+        "budget": { "maxCost": 0.0, "maxCalls": 0 }
+      }
+    },
+    {
+      "id": "card.magazine_3up",
+      "group": "C.card",
+      "icon": "card",
+      "label": "杂志卡片（三联）",
+      "desc": "每页一张主图 + 两张辅图，导出 PDF。版式与文字由代码确定，同输入同排版。",
+      "status": "ready",
+      "engine_behavior": "no_prompt",
+      "p1_path": "P1c",
+      "runSpec": {
+        "deliverable": "card_pdf",
+        "scope": { "mode": "tray" },
+        "subject": { "mode": "contain", "background": "#f4efe6" },
+        "layout": { "template": "magazine_3up", "title": "", "subtitle": "" },
+        "export": { "formats": ["pdf"], "pageSize": "a4", "maxPages": 12, "overwrite": false },
+        "budget": { "maxCost": 0.0, "maxCalls": 0 }
+      }
+    },
+    {
+      "id": "style.ai_reillustrate",
+      "group": "A.style",
+      "icon": "sunset",
+      "label": "AI 插画化",
+      "desc": "把你的描述交给模型理解，再按你的模型端点重绘成插画。会出网、按张计费。",
+      "status": "needs_key",
+      "engine_behavior": "remote_prompt",
+      "p1_path": "P1b",
+      "runSpec": {
+        "deliverable": "single_image",
+        "scope": { "mode": "tray" },
+        "style": { "preset": "anime_cel", "intensity": 0.6, "engine": "remote" },
+        "retouch": { "faces": false },
+        "export": { "formats": ["jpg"], "overwrite": false },
+        "budget": { "maxCost": 1.5, "maxCalls": 8 }
+      },
+      "promptTemplate": "style_illustrate.anime"
+    },
+    {
+      "id": "batch.party_material",
+      "group": "D.batch",
+      "icon": "stack",
+      "label": "聚会素材统一",
+      "desc": "一批照片统一暖调并压到合适大小，方便发群里。本地算法，不花钱。",
+      "status": "ready",
+      "engine_behavior": "local_rule_mapped",
+      "p1_path": "P1a",
+      "runSpec": {
+        "deliverable": "bundle",
+        "scope": { "mode": "tray" },
+        "style": { "preset": "warm_dusk", "intensity": 0.35, "engine": "local" },
+        "retouch": { "faces": false },
+        "export": { "formats": ["jpg"], "maxEdge": 1600, "targetKb": 400, "overwrite": false },
+        "budget": { "maxCost": 0.0, "maxCalls": 0 }
+      },
+      "promptTemplate": "style_transfer.photographic"
+    }
+  ]
+}
