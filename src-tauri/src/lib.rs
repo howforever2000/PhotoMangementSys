@@ -51,6 +51,10 @@ mod thumbnail;
 mod tone;
 // 创意工坊（FEAT-150）：压缩与旧调色配方清理
 mod tools;
+// 创意工坊（FEAT-152）：AI 创作（Rust 命令层 + Python 工作流服务）
+mod ai_service;
+mod ai_settings;
+mod ai_studio;
 mod vision;
 mod photos;
 mod album;
@@ -172,6 +176,9 @@ use vcr_settings::{
     set_vcr_model,
     set_vcr_threads,
 };
+// FEAT-152：创意工坊 AI 创作命令
+use ai_settings::{ai_get_settings, ai_set_settings};
+use ai_studio::{ai_cancel_job, ai_job_status, ai_run_job, ai_test_provider};
 
 
 /// 缩略图缓存目录名（位于 app_data_dir 下）
@@ -657,6 +664,13 @@ pub fn run() {
             open_dev_data_window,
             // 创意工坊（FEAT-150）：图像压缩（指定大小 / 长边 / 裁切）
             tools::image_compress,
+            // 创意工坊（FEAT-152）：AI 创作（设置 + 作业）
+            ai_get_settings,
+            ai_set_settings,
+            ai_test_provider,
+            ai_run_job,
+            ai_job_status,
+            ai_cancel_job,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

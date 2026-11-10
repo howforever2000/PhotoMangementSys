@@ -163,3 +163,12 @@ python/models/current_accel.json
 .pi/search_eval/rust_lanes.txt
 .pi/search_eval/last_metrics.json
 .pi/search_eval/eval_report.txt
+
+# 本地 pnpm 安装产物（本项目以 npm package-lock.json 为准，pnpm 仅用于临时验证）
+/.pnpm-store/
+/pnpm-lock.yaml
+
+# 本地验证用的便携 git（MinGit，体积大，不入库；需要时 scripts 下载）
+/.visual/mingit/
+/.visual/mingit.zip
+/.visual/dl-mingit.mjs

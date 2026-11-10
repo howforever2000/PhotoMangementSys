@@ -1,0 +1,273 @@
+/* 创意工坊 · AI 创作通用样式（FEAT-152）
+ *
+ * 四个工具（手账/美颜/滤镜/超分）共用同一套外观，避免各写一份导致「同一屏里
+ * 三个工位长得不一样」。类名统一 .ai- 前缀，令牌全部复用全站设计系统。
+ */
+
+.ai-tool {
+  padding-top: 4px;
+}
+
+.ai-panel {
+  display: grid;
+  gap: 12px 18px;
+  padding: 14px 16px 12px;
+  border-radius: var(--r-ui);
+  border: 1px solid var(--c-rule);
+  background: var(--hover, rgba(120, 120, 130, 0.06));
+}
+
+.ai-2col {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.ai-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ai-label {
+  font-size: var(--fs-label);
+  letter-spacing: 0.14em;
+  color: var(--fg-2);
+}
+
+.ai-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.ai-seg {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  box-shadow: inset 0 0 0 1px var(--c-rule);
+}
+
+.ai-seg-btn {
+  height: 26px;
+  padding: 0 11px;
+  border: none;
+  background: none;
+  border-radius: 5px;
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
+}
+.ai-seg-btn:hover {
+  color: var(--fg);
+}
+.ai-seg-btn.on {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--c-accent) 16%, transparent);
+  font-weight: var(--fw-em);
+}
+
+.ai-inp,
+.ai-sel {
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--c-rule);
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--fs-body);
+  outline: none;
+  transition: border-color var(--dur-2) var(--ease-out);
+  min-width: 0;
+}
+.ai-inp:focus,
+.ai-sel:focus {
+  border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
+}
+.ai-inp-full {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.ai-ta {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 72px;
+  resize: vertical;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--c-rule);
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--fs-body);
+  line-height: 1.55;
+  outline: none;
+  font-family: inherit;
+}
+.ai-ta:focus {
+  border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
+}
+
+.ai-note {
+  margin: 8px 0 0;
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+  line-height: 1.5;
+}
+
+.ai-privacy {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 7px;
+  border-left: 2px solid var(--c-accent);
+  background: color-mix(in srgb, var(--c-accent) 7%, transparent);
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+  line-height: 1.55;
+}
+
+.ai-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 4px;
+  flex-wrap: wrap;
+}
+
+.ai-run {
+  height: 34px;
+  padding: 0 18px;
+  border: none;
+  border-radius: var(--r-pill);
+  background: var(--color-primary);
+  color: var(--color-on-primary, #2a1a08);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-strong);
+  cursor: pointer;
+  transition: filter var(--dur-2) var(--ease-out), opacity var(--dur-2) var(--ease-out);
+}
+.ai-run:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.ai-run:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ai-ghost {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 7px;
+  border: 1px solid var(--c-rule);
+  background: none;
+  color: var(--fg);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+  transition: border-color var(--dur-2) var(--ease-out), color var(--dur-2) var(--ease-out);
+}
+.ai-ghost:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--c-accent) 45%, transparent);
+  color: var(--c-accent);
+}
+.ai-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ai-hint {
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+}
+
+/* ---------- 结果 ---------- */
+.ai-result {
+  margin-top: 16px;
+  border-radius: var(--r-ui);
+  border: 1px solid var(--c-rule);
+  overflow: hidden;
+}
+
+.ai-result-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  font-size: var(--fs-body);
+  color: var(--fg);
+}
+
+.ai-bar {
+  height: 6px;
+  margin: 0 14px 10px;
+  border-radius: 3px;
+  background: var(--c-rule);
+  overflow: hidden;
+}
+.ai-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--c-accent);
+  transition: width 0.3s var(--ease-out);
+}
+
+.ai-out-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--c-rule);
+  font-size: var(--fs-meta);
+}
+
+.ai-out-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+
+.ai-out-badge {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  font-size: 10px;
+  color: var(--c-accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-accent) 45%, transparent);
+}
+
+.ai-warn {
+  color: var(--c-danger);
+}
+.ai-dim {
+  color: var(--fg-2);
+}
+
+.ai-ref-path {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px dashed var(--c-rule);
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1080px) {
+  .ai-2col {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

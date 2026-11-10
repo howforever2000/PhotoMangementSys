@@ -39,20 +39,32 @@ import AppHeader from "../components/ui/AppHeader.vue";
 import PhotoTray from "../components/workshop/PhotoTray.vue";
 import CompressTool from "../components/workshop/CompressTool.vue";
 import ToolIcon from "../components/workshop/ToolIcon.vue";
+import AiSettingsDialog from "../components/workshop/ai/AiSettingsDialog.vue";
+import JournalTool from "../components/workshop/ai/JournalTool.vue";
+import BeautyTool from "../components/workshop/ai/BeautyTool.vue";
+import StyleTransferTool from "../components/workshop/ai/StyleTransferTool.vue";
+import UpscaleTool from "../components/workshop/ai/UpscaleTool.vue";
+import "../assets/ai-tool.css";
 
 const route = useRoute();
 
-type ToolId = "compress" | "ocr" | "enhance" | "journal";
+type ToolId =
+  | "compress"
+  | "ocr"
+  | "ai_journal"
+  | "ai_beauty"
+  | "ai_style"
+  | "ai_upscale";
 
 interface ToolDef {
   id: ToolId;
   title: string;
   /** 右栏标题下方的一句话（说清"做什么"，不重复侧栏的名字） */
   desc: string;
-  icon: "compress" | "text" | "enhance" | "journal";
+  icon: "compress" | "text" | "enhance" | "journal" | "beauty" | "style" | "upscale";
   /** 本轮是否真的能用。规划中的项不做假入口（点开必须明确说不能跑） */
   ready: boolean;
-  /** 规划中工具的流程示意（只有创作类需要：它要回答"作品怎么造出来"） */
+  /** 规划中工具的流程示意 */
   steps?: string[];
   /** 规划中工具的路线说明 */
   note?: string;
@@ -75,41 +87,60 @@ const processTools: ToolDef[] = [
     ready: false,
     note: "复用扫描入库已下载的 PaddleOCR 检测模型，补齐识别（rec）模型后即可上线。",
   },
+];
+
+/** AI 创作类：调用外部 OpenAI 兼容模型（理解 / 编辑 / 超分） */
+const aiTools: ToolDef[] = [
   {
-    id: "enhance",
+    id: "ai_journal",
+    title: "主题手账",
+    desc: "从一组照片提炼主题、写配文并做风格化，排成一本手账（1 张 JPG / 多张 PDF）",
+    icon: "journal",
+    ready: true,
+  },
+  {
+    id: "ai_beauty",
+    title: "人物美颜",
+    desc: "预设美颜风格与级别，逐张人像精修，输出新 JPG",
+    icon: "beauty",
+    ready: true,
+  },
+  {
+    id: "ai_style",
+    title: "滤镜迁移",
+    desc: "输入内容图与参考图，迁移色调与影调；也支持仅凭提示词自主调色",
+    icon: "style",
+    ready: true,
+  },
+  {
+    id: "ai_upscale",
     title: "画质增强",
-    desc: "低分辨率照片放大 2×/4×，老照片去噪与轻度修复，输出新文件不覆盖原图",
-    icon: "enhance",
-    ready: false,
-    note: "超分/去噪是同一套图生图管线（分块推理 + 模型下载），排在 OCR 之后。",
+    desc: "低分辨率照片 2×/4× 超分放大，去噪与细节还原，输出新文件",
+    icon: "upscale",
+    ready: true,
   },
 ];
 
-/** 创作类：从一组照片生成一件作品 */
-const creativeTool: ToolDef = {
-  id: "journal",
-  title: "主题手账",
-  desc: "从一组照片里提炼主题，排成一本手账",
-  icon: "journal",
-  ready: false,
-  steps: ["选图 8–20 张", "抽主题", "套版", "长图 / 多页"],
-  note: "选图与主题抽取用本机已有能力（语义索引 + 人脸聚合 + 去重 + CLIP 语义分类），套版走确定性模板 —— 版式与文字交给生成模型反而最不稳，生成模型只保留在「单张插画化」这一档。后续由 agent 编排执行。",
-};
-
-const allTools = computed<ToolDef[]>(() => [...processTools, creativeTool]);
+const allTools = computed<ToolDef[]>(() => [...processTools, ...aiTools]);
+const isAiTool = (id: ToolId) => id.startsWith("ai_");
 
 /* ---------------- 工具状态 / 素材托盘 ---------------- */
 
-/** 默认落在压缩（唯一可用的工位）：进页面就能干活，不先看一遍空白 */
+/** 默认落在压缩：进页面就能干活，不先看一遍空白 */
 const active = ref<ToolId>("compress");
 const tray = ref<string[]>([]);
+/** AI 模型设置弹窗 */
+const settingsOpen = ref(false);
 
 const activeDef = computed<ToolDef>(
   () => allTools.value.find((t) => t.id === active.value) ?? processTools[0],
 );
 
 const headerMeta = computed(
-  () => `${activeDef.value.title} · 素材 ${tray.value.length} 张 · 本机处理`,
+  () =>
+    `${activeDef.value.title} · 素材 ${tray.value.length} 张 · ${
+      isAiTool(active.value) ? "AI 模型处理" : "本机处理"
+    }`,
 );
 
 /* ---------------- 入口：从相册/灯箱带照片进来 ---------------- */
@@ -189,17 +220,18 @@ function selectTool(t: ToolDef) {
         </div>
 
         <div class="side-group">
-          <h3 class="side-h">创作</h3>
+          <h3 class="side-h">AI 创作</h3>
           <button
+            v-for="t in aiTools"
+            :key="t.id"
             class="side-item"
-            :class="{ on: active === creativeTool.id }"
+            :class="{ on: active === t.id }"
             type="button"
-            :title="`${creativeTool.desc}（规划中）`"
-            @click="selectTool(creativeTool)"
+            :title="t.desc"
+            @click="selectTool(t)"
           >
-            <span class="side-ico"><ToolIcon :name="creativeTool.icon" :size="15" /></span>
-            <span class="side-name">{{ creativeTool.title }}</span>
-            <span class="side-tag">规划</span>
+            <span class="side-ico"><ToolIcon :name="t.icon" :size="15" /></span>
+            <span class="side-name">{{ t.title }}</span>
           </button>
         </div>
       </aside>
@@ -210,6 +242,9 @@ function selectTool(t: ToolDef) {
           <span class="main-ico"><ToolIcon :name="activeDef.icon" :size="18" /></span>
           <h2 class="main-title">{{ activeDef.title }}</h2>
           <span class="main-sub">{{ activeDef.desc }}</span>
+          <button class="ai-ghost" type="button" style="margin-left: auto" @click="settingsOpen = true">
+            ⚙ 模型设置
+          </button>
         </header>
 
         <!-- 素材托盘：所有工具共用一份输入 -->
@@ -217,6 +252,12 @@ function selectTool(t: ToolDef) {
 
         <!-- 已实现：压缩 -->
         <CompressTool v-if="active === 'compress'" :paths="tray" />
+
+        <!-- AI 创作：调用外部 OpenAI 兼容模型 -->
+        <JournalTool v-else-if="active === 'ai_journal'" :paths="tray" />
+        <BeautyTool v-else-if="active === 'ai_beauty'" :paths="tray" />
+        <StyleTransferTool v-else-if="active === 'ai_style'" :paths="tray" />
+        <UpscaleTool v-else-if="active === 'ai_upscale'" :paths="tray" />
 
         <!-- 规划中：不假装能跑，把"将来会怎么用"写清楚 -->
         <section v-else class="planned">
@@ -240,11 +281,12 @@ function selectTool(t: ToolDef) {
         </section>
 
         <p class="colophon">
-          加工都在本机跑：照片不上传，产物只写到你自己选的文件夹。
-          调色仍交给 Lightroom / Photoshop —— 这里只做相册管理顺手的加工。
+          「处理」类工具（图像压缩）全程在本机跑，照片不上传；「AI 创作」类会把所选照片发送到你配置的外部 API 服务，产物只写到你自己选的文件夹。
         </p>
       </div>
     </div>
+
+    <AiSettingsDialog v-model="settingsOpen" />
   </div>
 </template>
 

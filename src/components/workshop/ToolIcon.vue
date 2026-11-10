@@ -8,7 +8,7 @@
  */
 withDefaults(
   defineProps<{
-    name: "compress" | "text" | "enhance" | "journal";
+    name: "compress" | "text" | "enhance" | "journal" | "beauty" | "style" | "upscale";
     size?: number;
   }>(),
   { size: 20 },
@@ -46,10 +46,30 @@ withDefaults(
     </template>
 
     <!-- 主题手账：书脊 + 内页 -->
-    <template v-else>
+    <template v-else-if="name === 'journal'">
       <path d="M5.5 4.6A1.6 1.6 0 017.1 3H18a1 1 0 011 1v16a1 1 0 01-1 1H7.1a1.6 1.6 0 01-1.6-1.6z" />
       <path d="M9.4 3v18" opacity=".5" />
       <path d="M12.6 8h3.6M12.6 11.4h2.4" opacity=".7" />
+    </template>
+
+    <!-- 人物美颜：脸 + 亮点星辰 -->
+    <template v-else-if="name === 'beauty'">
+      <path d="M12 3.6c3.8 0 6.4 2.9 6.4 6.7 0 3.9-2.8 7.1-6.4 7.1S5.6 14.2 5.6 10.3C5.6 6.5 8.2 3.6 12 3.6Z" />
+      <path d="M9.2 10.1h.02M14.8 10.1h.02" />
+      <path d="M9.6 13c.8.6 1.5.9 2.4.9s1.6-.3 2.4-.9" opacity=".7" />
+      <path d="M18.4 3.1l.55 1.4 1.4.55-1.4.55-.55 1.4-.55-1.4-1.4-.55 1.4-.55z" />
+    </template>
+
+    <!-- 滤镜迁移：两层叠放的色块 -->
+    <template v-else-if="name === 'style'">
+      <rect x="3.6" y="3.6" width="9.6" height="9.6" rx="2" />
+      <rect x="10.8" y="10.8" width="9.6" height="9.6" rx="2" opacity=".55" />
+    </template>
+
+    <!-- 画质增强：四角外扩 -->
+    <template v-else>
+      <path d="M4 8.2V4h4.2M20 8.2V4h-4.2M4 15.8V20h4.2M20 15.8V20h-4.2" />
+      <rect x="8.4" y="8.4" width="7.2" height="7.2" rx="1.4" opacity=".5" />
     </template>
   </svg>
 </template>
