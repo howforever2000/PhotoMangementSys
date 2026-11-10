@@ -172,3 +172,12 @@ python/models/current_accel.json
 /.visual/mingit/
 /.visual/mingit.zip
 /.visual/dl-mingit.mjs
+
+# 本地推送凭据与临时文件（SSH 私钥 / known_hosts / 提交信息，严禁入库）
+/.visual/ai_ssh_key
+/.visual/ai_ssh_key.pub
+/.visual/ai_ssh_key.pub.txt
+/.visual/gh_known_hosts
+/.visual/githome/
+/.visual/_commitmsg*.txt
+/.visual/push*.log
