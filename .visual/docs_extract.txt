@@ -1,0 +1,163 @@
+﻿####################################################################################################
+PAGE: qwen-image-api textlen 17307
+
+----- [qwen-image-api] kw='图像编辑' @456 -----
+千问-文生图API参考 - 阿里云百炼 Documentation Index Fetch the complete documentation index at: /llms.txt Use this file to discover all available pages before exploring further. Skip to main content 阿里云百炼 home page 中文 搜索 ⌘K 控制台 控制台 Token Plan 模型 Agent 模型 API Agent API CLI 产品动态 模型 API 千问-文生图 使用 API 获取与配置 API Key 错误码 安装SDK SDK Expert SDK 1.x 历史用法参考 Base URL总览 文本生成 OpenAI兼容-Chat OpenAI兼容-Responses Anthropic兼容-Messages DashScope 图像生成 千问 千问-图像生成与编辑 千问-早期图像模型 千问-文生图 千问-图像编辑 万相 Z-Image 可灵 Vidu 创意工具 视频生成 HappyHorse 万相 人像驱动 爱诗 可灵 Vidu MiniMax Realtime API 概述 实时多模态 实时语音识别 实时语音合成 实时语音对话 实时音视频翻译 AOQ SDK 多模态交互开发套件 音频（非实时） 概述 语音识别 语音合成 音频生成 音视频翻译 音色定制 音色复刻 音色设计 世界模型 HappyOyster 3D模型生成 Tripo 向量与排序 通用文本向量 多模态向量 排序模型（Rerank） 翻译模型 文本翻译 图像翻译 全模态翻译 决策模型 决策模型 更多模型 意图理解 Qwen-Deep-Research 深入研究模型 Qwen-OCR 文字提取模型 GUI-Plus 界面交互专用模型 工具包/框架 OpenAI兼容-Chat OpenAI兼容-Responses OpenAI兼容-Vision OpenAI兼容-File OpenAI兼容-Batch（文件输入） OpenAI兼容-Batch Chat OpenAI兼容-Embedding OpenAI兼容-Conversations LangChain 模型生产 吞吐预留 API参考 模型调优 模型部署 模型压缩 文件管理 上传文件 查询和管理文件 账单 查询账单概览 查询账单趋势 模型管理 查询模型列表 查询模型限流 更新模型限流 查询模型授权 更新模型授权 更多 生成临时API Key 管理异步任务 配置异步任务回调 子业务空间的模型调用 上传文件获取临时URL DashScope SDK连接复用配置 模型 API 图像生成 千问 千问-早期图像模型 千问-文生图API参考 千问-文生图模型（Qwen-Image）是一款通用图像生成模型，支持多种艺术风格，尤其擅长 复杂文本渲染 。模型支持多行布局、段落级文本生成以及细粒度细节刻画，可实现复杂的图文混合布局设计。 
+ 快速入口： 使用指南 | 在线体验（ 北京 | 新加坡 ） | 技术博客 
+ ​ 效果展示 
+ 输入提示词 输出图像 冬日北京的都市街景，青灰
+
+----- [qwen-image-api] kw='图像编辑' @2042 -----
+第一幅写着“阿里巴巴”，第二幅写着“通义千问”，第三幅写着“图像生成”。一位白发苍苍的老人背对着镜头观赏。右侧为花店，牌匾上以鲜花做成文字“真实质感”；店内多层花架陈列红玫瑰、粉洋牡丹和绿植，门上贴了一个圆形花边标识，标识上写着“2k resolution”，门口摆放了一个彩色霓虹灯，上面写着“细腻刻画 人物 自然 建筑”。两家店中间堆放了一个雪人，举了一老式小黑板，上面用粉笔字写着“Qwen-Image-2.0 正式发布”。街道左侧，年轻情侣依偎在一起，女孩是瘦脸，身穿米白色羊绒大衣，肉色光腿神器。女孩举着心形透明气球，气球印有白色的字：“生图编辑二合一”。里面有一个毛茸茸的卡皮巴拉玩偶。男孩身着剪裁合体的深灰色呢子外套，内搭浅色高领毛衣。街道右侧，一个后背上写着“更小模型，更快速度”的骑手疾驰而过。整条街光影交织、动静相宜。 
+ ​ 模型概览 
+ 模型名称 模型简介 输出图像规格 qwen-image-2.0-pro 推荐 
+ 当前与qwen-image-2.0-pro-2026-04-22能力相同 
+ 千问图像生成与编辑模型Pro系列。文字渲染、真实质感、语义遵循能力更强。 
+ 图像编辑请参考 千问-图像编辑 。 
+ 图像分辨率：支持自由设置宽高，输出图像总像素需在512 512至2048 2048之间。默认分辨率为2048*2048。 图像格式：png 图像张数：1-6张 qwen-image-2.0-pro-2026-06-22 推荐 qwen-image-2.0-pro-2026-04-22 qwen-image-2.0-pro-2026-03-03 qwen-image-2.0 推荐 
+ 当前与qwen-image-2.0-2026-03-03能力相同 
+ 千问图像生成与编辑模型加速版，兼顾效果与响应速度。 
+ 图像编辑请参考 千问-图像编辑 。 
+ qwen-image-2.0-2026-03-03 推荐 
+ 各地域支持的模型请参见 百炼控制台 。 
+ ​ 前提条件 
+ 在调用前，先 获取与配置 API Key ，再 配置API Key到环境变量 。如需通过SDK进行调用，请 安装DashScope SDK 。 
+ 华北2（北京）和新加坡地域拥有独立的 API Key 与 请求地址 ，不可混用，跨地域调用将导致鉴权失败或服务报错。 
+ 阿里云百炼为华北2（北京）、新加坡地域推出了业务空间专属域名， 能够为推理请求提供卓越的性能和更高的稳定性 ，建议迁移至新域名： 
+ 华北2（北京）地域：从 https://dashscope.aliyuncs.com 迁移至 https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com 
+ 新加坡地域：从 https://dashscope-intl.aliyuncs.com 迁移至 https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com 
+ 其中 {WorkspaceId} 为您的业务空间 ID，可在阿里云百炼控制台的 业务空间详情 页面查看。现有域名仍可正常使用。 
+ ​ 同步接口 
+ ​ HTTP调用 
+ 千问图像模型支持同步接口，一次请求即可获得结果，调用流程简单，推荐用于多数场景。 
+ 北京地域 ：
+
+----- [qwen-image-api] kw='多图' @16325 -----
+24 小时，请及时下载保存）。图片URL的域名格式为 dashscope-{标识}.oss-accelerate.aliyuncs.com 或 dashscope-{标识}.oss-cn-{地域}.aliyuncs.com 。 若需要对该下载地址进行防火墙白名单配置 ，请注意：由于底层存储会动态变更，以下bucket名称仅供参考，可能随时更新：dashscope-a717、dashscope-66f3、dashscope-7c2c、dashscope-2522、dashscope-c72b、dashscope-0484、dashscope-7e0f、dashscope-5859、dashscope-5496、dashscope-35f9、dashscope-31d9、dashscope-7f1f、dashscope-cc75、dashscope-64e9。为避免过期信息影响访问，文档不提供固定的OSS域名白名单。如有安全管控需求，请联系客户经理获取最新OSS域名列表。API当前仅支持返回URL格式，不支持base64格式输出。 上一页 千问-图像编辑API参考 千问-图像编辑模型支持多图输入和多图输出，可精确修改图内文字、增删或移动物体、改变主体动作、迁移图片风格及增强画面细节。 下一页 Powered by Real Knowledge Buddy 阿里云百炼 home page 中文 模型 API 使用 API 获取与配置 API Key 错误码 安装SDK SDK Expert SDK 1.x 历史用法参考 Base URL总览 文本生成 OpenAI兼容-Chat OpenAI兼容-Responses Anthropic兼容-Messages DashScope 图像生成 千问 千问-图像生成与编辑 千问-早期图像模型 千问-文生图 千问-图像编辑 万相 Z-Image 可灵 Vidu 创意工具 视频生成 HappyHorse 万相 人像驱动 爱诗 可灵 Vidu MiniMax Realtime API 概述 实时多模态 实时语音识别 实时语音合成 实时语音对话 实时音视频翻译 AOQ SDK 多模态交互开发套件 音频（非实时） 概述 语音识别 语音合成 音频生成 音视频翻译 音色定制 音色复刻 音色设计 世界模型 HappyOyster 3D模型生成 Tripo 向量与排序 通用文本向量 多模态向量 排序模型（Rerank） 翻译模型 文本翻译 图像翻译 全模态翻译 决策模型 决策模型 更多模型 意图理解 Qwen-Deep-Research 深入研究模型 Qwen-OCR 文字提取模型 GUI-Plus 界面交互专用模型 工具包/框架 OpenAI兼容-Chat OpenAI兼容-Responses OpenAI兼容-Vision OpenAI兼容-File OpenAI兼容-Batch（文件输入） OpenAI兼容-Batch Chat OpenAI兼容-Embedding OpenAI兼容-Conversations LangChain 模型生产 吞吐预留 API参考 模型调优 模型部署 模型压缩 文件管理 上传文件 查询和管理文件 账单 查询账单概览 查询账单趋势 模型管理 查询模型列表 查询模型限流 更新模型限流 查询模型授权
+
+----- [qwen-image-api] kw='多图' @16330 -----
+时，请及时下载保存）。图片URL的域名格式为 dashscope-{标识}.oss-accelerate.aliyuncs.com 或 dashscope-{标识}.oss-cn-{地域}.aliyuncs.com 。 若需要对该下载地址进行防火墙白名单配置 ，请注意：由于底层存储会动态变更，以下bucket名称仅供参考，可能随时更新：dashscope-a717、dashscope-66f3、dashscope-7c2c、dashscope-2522、dashscope-c72b、dashscope-0484、dashscope-7e0f、dashscope-5859、dashscope-5496、dashscope-35f9、dashscope-31d9、dashscope-7f1f、dashscope-cc75、dashscope-64e9。为避免过期信息影响访问，文档不提供固定的OSS域名白名单。如有安全管控需求，请联系客户经理获取最新OSS域名列表。API当前仅支持返回URL格式，不支持base64格式输出。 上一页 千问-图像编辑API参考 千问-图像编辑模型支持多图输入和多图输出，可精确修改图内文字、增删或移动物体、改变主体动作、迁移图片风格及增强画面细节。 下一页 Powered by Real Knowledge Buddy 阿里云百炼 home page 中文 模型 API 使用 API 获取与配置 API Key 错误码 安装SDK SDK Expert SDK 1.x 历史用法参考 Base URL总览 文本生成 OpenAI兼容-Chat OpenAI兼容-Responses Anthropic兼容-Messages DashScope 图像生成 千问 千问-图像生成与编辑 千问-早期图像模型 千问-文生图 千问-图像编辑 万相 Z-Image 可灵 Vidu 创意工具 视频生成 HappyHorse 万相 人像驱动 爱诗 可灵 Vidu MiniMax Realtime API 概述 实时多模态 实时语音识别 实时语音合成 实时语音对话 实时音视频翻译 AOQ SDK 多模态交互开发套件 音频（非实时） 概述 语音识别 语音合成 音频生成 音视频翻译 音色定制 音色复刻 音色设计 世界模型 HappyOyster 3D模型生成 Tripo 向量与排序 通用文本向量 多模态向量 排序模型（Rerank） 翻译模型 文本翻译 图像翻译 全模态翻译 决策模型 决策模型 更多模型 意图理解 Qwen-Deep-Research 深入研究模型 Qwen-OCR 文字提取模型 GUI-Plus 界面交互专用模型 工具包/框架 OpenAI兼容-Chat OpenAI兼容-Responses OpenAI兼容-Vision OpenAI兼容-File OpenAI兼容-Batch（文件输入） OpenAI兼容-Batch Chat OpenAI兼容-Embedding OpenAI兼容-Conversations LangChain 模型生产 吞吐预留 API参考 模型调优 模型部署 模型压缩 文件管理 上传文件 查询和管理文件 账单 查询账单概览 查询账单趋势 模型管理 查询模型列表 查询模型限流 更新模型限流 查询模型授权 更新模型
+
+----- [qwen-image-api] kw='1:1' @4099 -----
+text string （必选） 正向提示词用于描述您期望生成的图像内容、风格和构图。 支持中英文，qwen-image-2.0系列模型长度上限为 1300 Token，其他模型为 800 Token，超出部分将自动截断。 注意 ：仅支持传入一个text，不传或传入多个将报错。 parameters object （可选） 图像处理参数。 属性 negative_prompt string （可选） 反向提示词，用于描述不希望在图像中出现的内容，对画面进行限制。 支持中英文，长度不超过500个字符，超出部分将自动截断。 示例值：低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。 size string （可选） 输出图像的分辨率，格式为 宽*高 。 qwen-image-2.0系列模型 ：输出图像总像素需在 512*512 至 2048*2048 之间，默认分辨率为 2048*2048 。推荐分辨率： 
+ 2688*1536 ：16:9 
+ 1536*2688 ：9:16 
+ 2048*2048 （ 默认值） ：1:1 
+ 2368*1728 ：4:3 
+ 1728*2368 ：3:4 
+ n integer （可选） 输出图像的数量，默认值为1。 对于qwen-image-2.0系列模型，可选择输出1-6张图片。 prompt_extend bool （可选） 是否开启 Prompt（提示词）智能改写功能。开启后模型将对正向提示词进行优化与润色。此功能不会修改反向提示词。 
+ true ： 默认值 ，开启智能改写。如果希望图像内容更多样化，由模型补充细节，建议开启此选项。 
+ false ：关闭智能改写。如果图像细节更可控，建议关闭此选项，并参考 文生图Prompt指南 进行优化， 
+ 点击查看改写示例 原始提示词（orig_prompt） ：一只坐着的橘黄色的猫，表情愉悦，活泼可爱，逼真准确。 实际提示词（actual_prompt） ：一只坐着的橘黄色猫咪，毛发蓬松柔软，阳光透过窗户洒在它身上，呈现出温暖的光泽。猫咪体型匀称，四肢自然弯曲，稳稳地坐在木质地板上，尾巴轻轻卷曲在身侧，显得格外放松而优雅。它的大眼睛圆润明亮，瞳孔微微收缩，流露出愉悦而灵动的神情，嘴角微扬，仿佛正享受着美好的时光。耳朵微微向前倾斜，透露出活泼与好奇。背景是一间温馨的现代家居客厅，浅色木地板、一扇半开的窗户透进柔和的自然光，窗外可见绿意盎然的庭院，窗台上摆放着几盆绿植。画面采用真实摄影风格，细节逼真，光影层次丰富，突出猫咪的毛发质感、眼神神态与整体姿态的生动自然，整体氛围轻松愉快，充满生活气息。 watermark bool （可选） 是否在图像右下角添加 "Qwen-Image" 水印。默认值为 false 。水印样式： seed integer （可选） 随机数种子，取值范围 [0,2147483647] 。 使用相同的 seed 参数值可使生成内容保持相对稳定。若不提供，算法将自动使用随机数种子。 注意 ：模型生成过程具有概率性，即使使用相同的 seed ，也不能保证每次生成结果完全一致。 文生图 Copy Copy curl --location 'https://{WorkspaceId
+
+----- [qwen-image-api] kw='size' @3929 -----
+mage-2.0-pro 。 input object （必选） 输入的基本信息。 属性 messages array （必选） 请求内容数组。 当前仅支持单轮对话 ，数组内 有且只有一个元素 。 属性 role string （必选） 消息的角色。此参数必须设置为 user 。 content array （必选） 消息内容数组。 属性 text string （必选） 正向提示词用于描述您期望生成的图像内容、风格和构图。 支持中英文，qwen-image-2.0系列模型长度上限为 1300 Token，其他模型为 800 Token，超出部分将自动截断。 注意 ：仅支持传入一个text，不传或传入多个将报错。 parameters object （可选） 图像处理参数。 属性 negative_prompt string （可选） 反向提示词，用于描述不希望在图像中出现的内容，对画面进行限制。 支持中英文，长度不超过500个字符，超出部分将自动截断。 示例值：低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。 size string （可选） 输出图像的分辨率，格式为 宽*高 。 qwen-image-2.0系列模型 ：输出图像总像素需在 512*512 至 2048*2048 之间，默认分辨率为 2048*2048 。推荐分辨率： 
+ 2688*1536 ：16:9 
+ 1536*2688 ：9:16 
+ 2048*2048 （ 默认值） ：1:1 
+ 2368*1728 ：4:3 
+ 1728*2368 ：3:4 
+ n integer （可选） 输出图像的数量，默认值为1。 对于qwen-image-2.0系列模型，可选择输出1-6张图片。 prompt_extend bool （可选） 是否开启 Prompt（提示词）智能改写功能。开启后模型将对正向提示词进行优化与润色。此功能不会修改反向提示词。 
+ true ： 默认值 ，开启智能改写。如果希望图像内容更多样化，由模型补充细节，建议开启此选项。 
+ false ：关闭智能改写。如果图像细节更可控，建议关闭此选项，并参考 文生图Prompt指南 进行优化， 
+ 点击查看改写示例 原始提示词（orig_prompt） ：一只坐着的橘黄色的猫，表情愉悦，活泼可爱，逼真准确。 实际提示词（actual_prompt） ：一只坐着的橘黄色猫咪，毛发蓬松柔软，阳光透过窗户洒在它身上，呈现出温暖的光泽。猫咪体型匀称，四肢自然弯曲，稳稳地坐在木质地板上，尾巴轻轻卷曲在身侧，显得格外放松而优雅。它的大眼睛圆润明亮，瞳孔微微收缩，流露出愉悦而灵动的神情，嘴角微扬，仿佛正享受着美好的时光。耳朵微微向前倾斜，透露出活泼与好奇。背景是一间温馨的现代家居客厅，浅色木地板、一扇半开的窗户透进柔和的自然光，窗外可见绿意盎然的庭院，窗台上摆放着几盆绿植。画面采用真实摄影风格，细节逼真，光影层次丰富，突出猫咪的毛发质感、眼神神态与整体姿态的生动自然，整体氛围轻松愉快，充满生活气息。 watermark bool （可选） 是否在图像右下角添加 "Qwen-Image" 水印。默认值为 false 。水印样式： seed integer （可选） 随机
+
+----- [qwen-image-api] kw='size' @6060 -----
+对着镜头观赏。右侧为花店，牌匾上以鲜花做成文字“真实质感”；店内多层花架陈列红玫瑰、粉洋牡丹和绿植，门上贴了一个圆形花边标识，标识上写着“2k resolution”，门口摆放了一个彩色霓虹灯，上面写着“细腻刻画 人物 自然 建筑”。两家店中间堆放了一个雪人，举了一老式小黑板，上面用粉笔字写着“Qwen-Image-2.0 正式发布”。街道左侧，年轻情侣依偎在一起，女孩是瘦脸，身穿米白色羊绒大衣，肉色光腿神器。女孩举着心形透明气球，气球印有白色的字：“生图编辑二合一”。里面有一个毛茸茸的卡皮巴拉玩偶。男孩身着剪裁合体的深灰色呢子外套，内搭浅色高领毛衣。街道右侧，一个后背上写着“更小模型，更快速度”的骑手疾驰而过。整条街光影交织、动静相宜。" 
+ } 
+ ] 
+ } 
+ ] 
+ }, 
+ "parameters": { 
+ "negative_prompt": "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。", 
+ "prompt_extend": true, 
+ "watermark": false, 
+ "size": "2048*2048" 
+ } 
+ }' 
+ 响应参数 output object 任务输出信息。 属性 choices array 模型生成的输出内容。此数组仅包含一个元素。 属性 finish_reason   string 任务停止原因，自然停止时为 stop 。 message object 模型返回的消息。 属性 role string 消息的角色，固定为 assistant 。 content array 属性 image string 生成图像的 URL，图像格式为PNG。 链接有效期为24小时 ，请及时下载并保存图像。 task_metric object 任务结果统计。使用qwen-image-2.0系列时无此返回值。 属性 TOTAL integer 总的任务数。 SUCCEEDED integer 任务状态为成功的任务数。 FAILED integer 任务状态为失败的任务数。 usage object 输出信息统计。只对成功的结果计数。 属性 image_count integer 模型生成图像的数量，当前固定为1。 width integer 模型生成图像的宽度（像素）。 height integer 模型生成图像的高度（像素）。 request_id string 请求唯一标识。可用于请求明细溯源和问题排查。 code string 请求失败的错误码。请求成功时不会返回此参数，详情请参见 错误码 。 message string 请求失败的详细信息。请求成功时不会返回此参数，详情请参见 错误码 。 任务执行成功 任务执行异常 图像URL仅保留24小时，超时后会被自动清除，请及时保存生成的图像。 Copy Copy { 
+ "output" : { 
+ "choices" : [ 
+ { 
+ "finish_reason" : "stop" , 
+ "message" : { 
+ "content" : [ 
+ { 
+ "image" : "https://dashscope-result-sh.oss-cn-shanghai.a
+####################################################################################################
+PAGE: chat-completions textlen 52739
+
+----- [chat-completions] kw='modalities' @10442 -----
+于标记 Tool Message 对应的工具。 stream boolean （可选） 默认值为 false 是否以流式输出方式回复。相关文档： 流式输出 可选值： 
+ false ：模型生成全部内容后一次性返回； 
+ true ：边生成边输出，每生成一部分内容即返回一个数据块（chunk）。需实时逐个读取这些块以拼接完整回复。 
+ 推荐设置为 true ，可提升阅读体验并降低超时风险。 非流式调用的最大超时时间不少于300秒，实际时长因部署区域与选用模型存在差异。若超时未完成，服务将中断请求并返回已生成的内容（而非报错）。建议输出较长的场景务必使用流式调用。详情请参见 文本生成模型概述 中的超时说明。 stream_options object （可选） 流式输出的配置项，仅在 stream 为 true 时生效。 属性 include_usage boolean （可选）默认值为 false 是否在响应的 最后一个数据块 包含Token消耗信息。 可选值： 
+ true ：包含； 
+ false ：不包含。 
+ 流式输出时，Token 消耗信息仅可出现在响应的最后一个数据块。 
+ modalities array （可选）默认值为 ["text"] 输出数据的模态，仅适用于 Qwen-Omni 模型。相关文档： 非实时（Qwen-Omni） 可选值： 
+ ["text","audio"] ：输出文本与音频，适用于支持音频输出的型号； 
+ ["text"] ：仅输出文本。 
+ qwen3.8-omni-flash 仅输出文本。示例见 Qwen3.8-Omni-Flash 。 audio object （可选） 输出音频的音色与格式，适用于支持音频输出的 Qwen-Omni 模型，且 modalities 参数需为 ["text","audio"] 。相关文档： 非实时（Qwen-Omni） 属性 voice string （必选） 输出音频的音色。请参见 非实时（Qwen-Omni） 。 format string （必选） 输出音频的格式，仅支持设定为 wav 。 temperature float （可选） 采样温度，控制模型生成文本的多样性。 temperature越高，生成的文本更多样，反之，生成的文本更确定。 取值范围： [0, 2) MiniMax/MiniMax-M3.1-Flash 和 MiniMax/MiniMax-M3 固定使用 1.0 ，不支持自定义；传入其他值时不会生效。 temperature与top_p均可以控制生成文本的多样性，建议只设置其中一个值。更多说明，请参见 概述 。 temperature默认值 
+ qwen4-max-preview/qwen3.8-max/qwen3.8-flash（思考模式）：视觉理解0.6，文本输入1.0，0.6以下的temperature值会默认改为0.6 
+ Qwen3.8-Omni-Flash：思考模式为 0.6，非思考模式为 0.7； 
+ Qwen4（非思考模式）、Qwen3.8（非思考模式）、Qwen3.7（非思考模式）、Qwen3.6（非思考模式）、Qwen3.5-Omni、Qwen3.5（非思考模式）、Qwen3（非思考模式）、Qwen3-Instruct系列、Qwen3
+
+----- [chat-completions] kw='modalities' @10697 -----
+的内容（而非报错）。建议输出较长的场景务必使用流式调用。详情请参见 文本生成模型概述 中的超时说明。 stream_options object （可选） 流式输出的配置项，仅在 stream 为 true 时生效。 属性 include_usage boolean （可选）默认值为 false 是否在响应的 最后一个数据块 包含Token消耗信息。 可选值： 
+ true ：包含； 
+ false ：不包含。 
+ 流式输出时，Token 消耗信息仅可出现在响应的最后一个数据块。 
+ modalities array （可选）默认值为 ["text"] 输出数据的模态，仅适用于 Qwen-Omni 模型。相关文档： 非实时（Qwen-Omni） 可选值： 
+ ["text","audio"] ：输出文本与音频，适用于支持音频输出的型号； 
+ ["text"] ：仅输出文本。 
+ qwen3.8-omni-flash 仅输出文本。示例见 Qwen3.8-Omni-Flash 。 audio object （可选） 输出音频的音色与格式，适用于支持音频输出的 Qwen-Omni 模型，且 modalities 参数需为 ["text","audio"] 。相关文档： 非实时（Qwen-Omni） 属性 voice string （必选） 输出音频的音色。请参见 非实时（Qwen-Omni） 。 format string （必选） 输出音频的格式，仅支持设定为 wav 。 temperature float （可选） 采样温度，控制模型生成文本的多样性。 temperature越高，生成的文本更多样，反之，生成的文本更确定。 取值范围： [0, 2) MiniMax/MiniMax-M3.1-Flash 和 MiniMax/MiniMax-M3 固定使用 1.0 ，不支持自定义；传入其他值时不会生效。 temperature与top_p均可以控制生成文本的多样性，建议只设置其中一个值。更多说明，请参见 概述 。 temperature默认值 
+ qwen4-max-preview/qwen3.8-max/qwen3.8-flash（思考模式）：视觉理解0.6，文本输入1.0，0.6以下的temperature值会默认改为0.6 
+ Qwen3.8-Omni-Flash：思考模式为 0.6，非思考模式为 0.7； 
+ Qwen4（非思考模式）、Qwen3.8（非思考模式）、Qwen3.7（非思考模式）、Qwen3.6（非思考模式）、Qwen3.5-Omni、Qwen3.5（非思考模式）、Qwen3（非思考模式）、Qwen3-Instruct系列、Qwen3-Coder系列、qwen-max系列、qwen-plus系列（非思考模式）、qwen-flash系列（非思考模式）、qwen开源系列、qwen-coder系列、qwen-doc-turbo、Qwen3-VL（非思考）：0.7； 
+ QVQ系列 : 0.5； 
+ qwen-audio-turbo系列：0.00001； 
+ qwen-vl系列：0.01； 
+ qwen-math系列：0； 
+ Qwen3.7（思考模式）、Qwen3.6（思考模式）、Qwen3.5（思考模式）、Qwen3（思考模式）、Qwen
+
+----- [chat-completions] kw='image_url' @3717 -----
+费，请参见 百炼控制台 。 messages array （必选） 传递给大模型的上下文，按对话顺序排列。 消息类型 System Message object （可选） 系统消息，用于设定大模型的角色、语气、任务目标或约束条件等。一般放在 messages 数组的第一位。 
+ QwQ 模型不建议设置 System Message，QVQ 模型设置 System Message不会生效。 
+ 属性 content string （必选） 系统指令，用于明确模型的角色、行为规范、回答风格和任务约束等。 role string （必选） 系统消息的角色，固定为 system 。 User Message object （必选） 用户消息，用于向模型传递问题、指令或上下文等。 属性 content string 或 array （必选） 消息内容。若输入只有文本，则为 string 类型；若输入包含图像等多模态数据，或启用显式缓存，则为 array 类型。 使用多模态模型或启用显式缓存时的属性 type string （必选） 可选值： 
+ text 
+ 输入文本时需设为 text 。 
+ image_url 
+ 输入图片时需设为 image_url 。 
+ input_audio 
+ 输入音频时需设为 input_audio 。 
+ video 
+ 输入图片列表形式的视频时需设为 video 。 
+ video_url 
+ 输入视频文件时需设为 video_url 。 
+ Qwen-VL仅部分模型可输入视频文件，详情参见 视频理解（Qwen-VL） ；QVQ与Qwen-Omni 模型支持直接传入视频文件。 
+ text string 输入的文本。当 type 为 text 时，是必选参数。 image_url object 输入的图片信息。当 type 为 image_url 时是必选参数。 属性 url string （必选） 图片的 URL或 Base64 Data URL。传入本地文件请参考 图像与视频理解 。 input_audio object 输入的音频信息。当 type 为 input_audio 时是必选参数。 属性 data string （必选） 音频的 URL 或Base64 Data URL。传入本地文件请参见： 输入 Base64 编码的本地文件 。 format string （必选） 输入音频的格式，如 mp3 、 wav 等。 video array 输入的 图片列表形式的视频信息 。当 type 为 video 时是必选参数。使用方法请参见： 视频理解（Qwen-VL、QVQ） 或 视频理解（Qwen-Omni） 。 示例值： Copy Copy [ 
+ "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20241108/xzsgiz/football1.jpg" , 
+ "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20241108/tdescd/football2.jpg" , 
+ "https://help-static-aliyun-d
+
+----- [chat-completions] kw='image_url' @3738 -----
+s array （必选） 传递给大模型的上下文，按对话顺序排列。 消息类型 System Message object （可选） 系统消息，用于设定大模型的角色、语气、任务目标或约束条件等。一般放在 messages 数组的第一位。 
+ QwQ 模型不建议设置 System Message，QVQ 模型设置 System Message不会生效。 
+ 属性 content string （必选） 系统指令，用于明确模型的角色、行为规范、回答风格和任务约束等。 role string （必选） 系统消息的角色，固定为 system 。 User Message object （必选） 用户消息，用于向模型传递问题、指令或上下文等。 属性 content string 或 array （必选） 消息内容。若输入只有文本，则为 string 类型；若输入包含图像等多模态数据，或启用显式缓存，则为 array 类型。 使用多模态模型或启用显式缓存时的属性 type string （必选） 可选值： 
+ text 
+ 输入文本时需设为 text 。 
+ image_url 
+ 输入图片时需设为 image_url 。 
+ input_audio 
+ 输入音频时需设为 input_audio 。 
+ video 
+ 输入图片列表形式的视频时需设为 video 。 
+ video_url 
+ 输入视频文件时需设为 video_url 。 
+ Qwen-VL仅部分模型可输入视频文件，详情参见 视频理解（Qwen-VL） ；QVQ与Qwen-Omni 模型支持直接传入视频文件。 
+ text string 输入的文本。当 type 为 text 时，是必选参数。 image_url object 输入的图片信息。当 type 为 image_url 时是必选参数。 属性 url string （必选） 图片的 URL或 Base64 Data URL。传入本地文件请参考 图像与视频理解 。 input_audio object 输入的音频信息。当 type 为 input_audio 时是必选参数。 属性 data string （必选） 音频的 URL 或Base64 Data URL。传入本地文件请参见： 输入 Base64 编码的本地文件 。 format string （必选） 输入音频的格式，如 mp3 、 wav 等。 video array 输入的 图片列表形式的视频信息 。当 type 为 video 时是必选参数。使用方法请参见： 视频理解（Qwen-VL、QVQ） 或 视频理解（Qwen-Omni） 。 示例值： Copy Copy [ 
+ "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20241108/xzsgiz/football1.jpg" , 
+ "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20241108/tdescd/football2.jpg" , 
+ "https://help-static-aliyun-doc.aliyuncs.com/file-

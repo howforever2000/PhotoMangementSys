@@ -5271,7 +5271,153 @@
       ],
       "created_at": "2026-11-01T20:34:47+08:00",
       "updated_at": "2026-11-01T20:34:47+08:00"
+    },
+    {
+      "id": "BUG-2026-1111-001",
+      "date": "2026-11-11",
+      "status": "fixed",
+      "title": "模型设置测试报「找不到可用的 Python 解释器」：项目 venv 丢失 + PATH 被 Store 别名劫持 + 唯一可用 Anaconda 缺 fastapi",
+      "module": "src-tauri/src/vision.rs（python_candidates / resolve_python_interpreter）· python/ai_studio（FEAT-152 服务）",
+      "symptom": [
+        "创意工坊 → AI 创作 →「⚙ 模型设置 → 测试连接」提示：找不到可用的 Python 解释器（识别服务依赖 fastapi/uvicorn）",
+        "已尝试路径全部失败：python\\.venv-vcr、python\\.venv（文件不存在），python/python3（Python was not found，Store 占位符）",
+        "报错提示让用 setup-env.ps1 建 venv，但项目里并没有这个脚本，用户无从下手"
+      ],
+      "root_cause": {
+        "summary": "本机项目自带 venv（python\\.venv-vcr / .venv）已不存在；PATH 上的 python/python3 均指向 Microsoft Store 应用执行别名占位符；唯一真实解释器是 Anaconda 3.14.6，但缺 fastapi。resolve_python_interpreter() 的候选只有「项目 venv + PATH 裸 python/python3」，既探不到 Anaconda，探针也因缺 fastapi 失败。",
+        "detail": [
+          "app.log 2026-11-06 还有 ensure ... base=http://127.0.0.1:18765 api=13（当时 .venv-vcr 可用），2026-11-11 起彻底解析失败 → venv 本体丢失",
+          "python/ai_studio/__pycache__ 是 cpython-312，说明旧 venv 为 Python 3.12；本机现只剩 Anaconda 3.14.6，无 Python 3.12、无 py 启动器",
+          "python_candidates() 仅有 .venv-vcr/.venv + 裸 python/python3；裸 python 命中 Store 占位符，永远不会走到 Anaconda",
+          "Anaconda 3.14.6 自带 uvicorn/Pillow/requests/python-multipart，仅缺 fastapi，因此探针 import fastapi 失败"
+        ]
+      },
+      "evidence_log": [
+        "探针实测：python -> 'Python was not found; run without arguments to install from the Microsoft Store'；anaconda python -c 'import fastapi' -> ModuleNotFoundError",
+        "where python -> %LOCALAPPDATA%\\Microsoft\\WindowsApps\\python.exe；where python3 -> 同；Get-Command py -> 不存在",
+        "anaconda 预装检测：uvicorn 0.40.0 / PIL 12.3.0 / requests 2.34.2 / multipart 0.0.32 均 OK，fastapi MISSING",
+        "装 fastapi 后 anaconda -c 'import sys,fastapi,uvicorn,multipart,PIL,requests' OK；python -m ai_studio.server 起服务 /health -> {\"ok\":true,\"api_version\":1}"
+      ],
+      "solution": [
+        "环境：向本机唯一真实解释器 Anaconda 3.14.6 安装 fastapi（python -m pip install fastapi python-multipart），探针通过",
+        "代码：python_candidates() 在项目 venv 之后、PATH 裸 python 之前，补 %USERPROFILE%/{anaconda3,miniconda3}、%LOCALAPPDATA%/Programs/Python/Python3xx、C:\\Python3xx 等绝对路径候选（仅收录真实存在的文件），不再只依赖 PATH",
+        "验证：cargo build 通过（仅既有 warning）；cargo test --lib test_python_candidates_prefers_project_venv / test_probe_interpreter_rejects_missing_path 2 passed；python -m ai_studio.server /health 返回 api_version=1"
+      ],
+      "prevention": [
+        "所有 Python 微服务的解释器解析都必须「项目 venv 优先 + 已知安装位置绝对路径兜底 + PATH 最后」，不要只信裸 python（Store 别名坑，历史上 BUG-2026-0918-007 已踩过）",
+        "报错提示里引用的脚本/路径必须是真实存在的；本次提示提到的 setup-env.ps1 在仓库中不存在，属误导",
+        "用户环境变动（换机/清 venv/换 Python 版本）会静默打断 dev 链路，交付前应至少探一次 /health 证明服务真的能起来"
+      ],
+      "keywords": [
+        "Python 解释器",
+        "resolve_python_interpreter",
+        "python_candidates",
+        "venv-vcr",
+        "Microsoft Store 占位符",
+        "应用执行别名",
+        "fastapi",
+        "Anaconda",
+        "AI 创作",
+        "FEAT-152"
+      ],
+      "created_at": "2026-11-11T12:20:00+08:00",
+      "updated_at": "2026-11-11T12:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1111-002",
+      "date": "2026-11-11",
+      "status": "resolved",
+      "title": "AI 创作图像编辑报 10054/404：代码调用 /images/edits multipart 端点而网关未实现，改为 /images/generations + image dataURL（1K 输入）",
+      "module": "AI 创作 / 图像编辑（FEAT-152）",
+      "symptom": [
+        "点击美化/滤镜/超分等图像编辑，报「调用图像编辑服务失败: ('Connection aborted.', ConnectionResetError(10054, '远程主机强迫关闭了一个现有的连接。'))」",
+        "tauri.log 堆栈：workflows/beauty.py:32 → providers/openai_compat.py:129/130 POST {base}/images/edits → urllib3 ProtocolError 10054，抛错在 getresponse()",
+        "小图偶尔仍返回 404/空 body"
+      ],
+      "root_cause": {
+        "summary": "代码把图像编辑写成 OpenAI 官方 `/images/edits` multipart；本网关 maas.qianwenaiapi.com 未实现该路由（各变体 404 空 body），且上传原分辨率大 PNG 打不存在路由被前置代理 RST → 10054。",
+        "detail": [
+          "/compatible-mode/v1/images/edits 及 /v1/ 前缀、根路径、/images/edit、/images/variations 全部 404 空 body",
+          "带 2MB/8MB multipart + dummy Bearer 打 /images/edits → ConnectionReset 10054",
+          "网关实际支持图生图：POST /compatible-mode/v1/images/generations，JSON body {model,prompt,n:1,size:\"宽x高\",image:\"data:image/...;base64,...\"}（单图 image / 多图 images 数组），返回 data[0].url（棋盘格 A/B 验证保留构图，是真图生图）",
+          "size 必须 '<width>x<height>'（小写 x），用 '*' → 400 Field 'size' must use '<width>x<height>'",
+          "chat/completions 的 modalities 官方只用于 Qwen-Omni，不适用图像生成"
+        ]
+      },
+      "evidence_log": [
+        "GET /compatible-mode/v1/models 带 key → 200，182 个模型含 qwen-image-3.0 / qwen-image-3.0-pro",
+        "probe A: POST /images/generations model=qwen-image-3.0 size=\"1024x768\" image=dataURL → 200，输出 1024x768 保留输入构图",
+        "chat/completions modalities [\"image\",\"text\"] → 400 Either 'text' or 'image' must be provided, but not both",
+        "beauty 端到端：输入 1200x1600 → edit_input_bytes 768x1024 → 输出 768x1024 构图保留；night_city.jpg 转水彩保留天际线（.visual/smoke_real_single.png）",
+        "双图 images 数组 → 200 但输出与内容图无关的场景（丢失原构图）"
+      ],
+      "solution": [
+        "openai_compat.py images_edit 改为 POST {base}/images/generations + JSON image dataURL（多图→images 数组），移除 /images/edits multipart",
+        "base.py 新增 edit_input_bytes(img, max_long_edge=1024, quality=88) 先降采样；upscale 用 max_long_edge=3072/quality=95",
+        "错误归一（404/401/403 insufficient_quota/429/400 size）+ 429/5xx 重试（3s/6s）+ ConnectionError 提示「上传图片过大或端点不可达（连接被重置 10054）」",
+        "style_transfer transfer 改为单图编辑 + 视觉模型描述参考图（_describe_reference 只算一次），避免双图丢构图",
+        "改的是 Python 侧，ai_service 以子进程 `python -m ai_studio.server` 运行（src-tauri/src/ai_service.rs:136-158，cwd=python），需重启 App 生效"
+      ],
+      "prevention": [
+        "不要假定第三方 OpenAI 兼容网关实现 /images/edits；先探 /models、/images/generations、/images/edits 真实路由再写代码",
+        "上传前统一降到模型建议尺寸（1K 级），避免超大 multipart 被网关前置代理 RST",
+        "图生图结果要用可控特征图 A/B（同图带 image vs 不带 image）证明真的在编辑，而非纯文生图",
+        "反复测试会消耗免费额度，可能返回 403 AccessDenied.Unpurchased / insufficient_quota，注意节流，勿在验证时刷爆额度"
+      ],
+      "keywords": [
+        "图像编辑",
+        "images/edits",
+        "images/generations",
+        "10054",
+        "ConnectionReset",
+        "qwen-image-3.0",
+        "OpenAI 兼容",
+        "图生图",
+        "edit_input_bytes",
+        "style_transfer",
+        "FEAT-152"
+      ],
+      "created_at": "2026-11-11T13:58:00+08:00",
+      "updated_at": "2026-11-11T13:58:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1111-003",
+      "date": "2026-11-11",
+      "status": "fixed",
+      "title": "小图图生图报 400：图像面积 222400 < 512×512 下限（edit_input_bytes 只降不升）",
+      "module": "AI 创作 / 图像编辑（FEAT-152）· python/ai_studio/workflows/base.py（edit_input_bytes / _fit_i2i_size）· python/ai_studio/providers/openai_compat.py（_norm_edit_error）",
+      "symptom": [
+        "主题手账对某张 400x556 照片风格化时报：landscape_010: 风格化失败，改用原图（图像编辑服务返回 HTTP 400: {\"error\":{\"message\":\"Image area must be between 262144 (512x512) and 6553600 (2560x2560) pixels for i2i requests. Got area=222400 (width=400, height=556).\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"InvalidParameter\"}}）",
+        "小尺寸图片（面积 < 262144）无法出图，workflow 降级改用原图。"
+      ],
+      "root_cause": "图生图网关对输入图有面积硬约束 [262144(512×512), 6553600(2560×2560)]；base.py edit_input_bytes 仅在『长边 > max_long_edge』时缩小，从不放大小图，400x556=222400 低于下限被 400 拒绝。另有隐患：upscale 传 max_long_edge=3072，单边放大后面积可达 9.4M，超过 6553600 上限同样会 400。",
+      "fix": "新增 _fit_i2i_size(w,h,max_long_edge) 纯函数：先按长边上限等比缩小，面积超上限等比缩到 MAX_I2I_AREA，面积不足则等比放大到 MIN_I2I_AREA（ceil 保证达标）；edit_input_bytes 改用该函数统一夹面积。四个工具（美颜/手账风格化/滤镜迁移/超分）都走 edit_input_bytes，一处修复全覆盖。openai_compat._norm_edit_error 增加该 400 的友好中文提示。",
+      "related_files": [
+        "python/ai_studio/workflows/base.py",
+        "python/ai_studio/providers/openai_compat.py",
+        "python/bench/verify_i2i_area.py"
+      ],
+      "verification": [
+        "py_compile base.py / openai_compat.py 通过",
+        "python/bench/verify_i2i_area.py：400x556→435x604(area 262740)、100x80→573x458、300x200→628x419、512x512 不变；常规图 1200x1600→768x1024、4000x3000→1024x768 无回归；超分 4000x3000@3072→2956x2217(area 6553452≤MAX)、3072x3072→2560x2560(=MAX)；RESULT: ALL OK"
+      ],
+      "keywords": [
+        "图像编辑",
+        "图生图",
+        "i2i",
+        "Image area",
+        "400 InvalidParameter",
+        "512x512",
+        "2560x2560",
+        "edit_input_bytes",
+        "_fit_i2i_size",
+        "小图放大",
+        "FEAT-152"
+      ],
+      "created_at": "2026-11-11T15:09:00+08:00",
+      "fixed_at": "2026-11-11T15:09:00+08:00",
+      "updated_at": "2026-11-11T15:09:00+08:00"
     }
   ],
-  "updated": "2026-11-01T21:07:42+08:00"
+  "updated": "2026-11-11T15:09:00+08:00"
 }

@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>智慧相册 · 全局概览 · 布局优化效果图</title>
+<link rel="stylesheet" href="mock-widgets.css" />
+<style>
+/* ══════════════════════════════════════════════════════════════════════
+   布局优化效果图（对应 OverviewPane.vue 重排提案）
+   一份文件四个变体（?v=current | a | b | c），同一份数据，只换栅格摆法：
+     current —— 线上现状 1:1 复刻（对照基准）
+     a       —— 方案 A「竖幅锚点」：那年今日贯通两行成竖幅照片卡
+     b       —— 方案 B「精排（保守）」：布局不动，只精修版式细节
+     c       —— 方案 C「记忆为冕」：那年今日升为通栏横幅
+   统计信息四个变体一条不少；金色预算仍然只有入库线 + 当月柱两处。
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ── 智慧相册外壳（沿用 mock-smart-overview 的悬浮玻璃头） ── */
+.wrap { padding: 0 0 40px; }
+.appheader {
+  position: sticky; top: 12px; z-index: 20; margin: 12px 52px 0;
+  border-radius: 18px; padding: 10px 12px 8px;
+  background-color: rgba(var(--float-tint), .55);
+  -webkit-backdrop-filter: blur(16px) saturate(1.25);
+  backdrop-filter: blur(16px) saturate(1.25);
+  border: 1px solid rgba(255,255,255,.10);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -1px 0 rgba(0,0,0,.30),
+    0 10px 28px -16px rgba(0,0,0,.7);
+  overflow: hidden;
+}
+.appheader::before { content:""; position:absolute; inset:0; pointer-events:none;
+  background: linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,255,255,.03) 26%, transparent 44%); }
+.ah-row { display: flex; align-items: center; gap: 12px; position: relative; z-index: 1; }
+.ah-back { display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px;
+  border-radius: 10px; font-size: 12px; color: var(--fg-2); cursor: pointer;
+  border: 1px solid rgba(255,255,255,.08); background: rgba(0,0,0,.14); text-decoration: none; }
+.ah-title { display: flex; align-items: center; gap: 9px; }
+.ah-ico { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-size: 17px;
+  background: var(--accent-soft); }
+.ah-title b { font-size: 15px; font-weight: 650; letter-spacing: -.01em; display: block; }
+.ah-title small { font-size: 10px; color: var(--fg-3); }
+.ah-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.ah-status { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--fg-2);
+  padding: 0 10px; height: 32px; border-radius: 999px; border: 1px solid var(--rule); background: rgba(0,0,0,.14); }
+.ah-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.ah-btn { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
+  border: 1px solid rgba(255,255,255,.08); background: rgba(0,0,0,.14); font-size: 14px; cursor: pointer; }
+.ah-tabs { display: flex; gap: 3px; margin-top: 9px; padding: 3px; position: relative; z-index: 1;
+  border-radius: 12px; background: rgba(0,0,0,.18); border: 1px solid rgba(255,255,255,.06); width: fit-content; }
+.ah-tabs a { padding: 6px 15px; border-radius: 9px; font-size: 12px; color: var(--fg-2);
+  text-decoration: none; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.ah-tabs a.active { color: var(--fg); font-weight: 600;
+  background: linear-gradient(180deg, rgba(var(--tint), .95), rgba(var(--tint), .78));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 3px 10px -4px rgba(0,0,0,.6); }
+.td { font-size: 9.5px; color: var(--fg-3); margin-left: 1px; }
+
+/* 变体说明条 */
+.variant-note { margin: 18px 52px 0; display: flex; align-items: baseline; gap: 14px; }
+.variant-note b { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+.variant-note span { font-size: 11px; color: var(--fg-2); }
+.v-link { font-size: 11px; color: var(--fg-2); text-decoration: none; padding: 4px 10px;
+  border-radius: 999px; border: 1px solid var(--rule); background: rgba(255,255,255,.04); }
+.v-link:hover { color: var(--fg); border-color: rgba(255,255,255,.2); }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; margin: 16px 52px 14px; }
+.ph-title { font-size: 20px; font-weight: 650; letter-spacing: -.02em; }
+.ph-sub { font-size: 11.5px; color: var(--fg-2); margin-top: 3px; }
+.grid { margin: 0 52px; display: grid; grid-template-columns: repeat(12, 1fr);
+  grid-auto-rows: 116px; gap: 14px; }
+.c4 { grid-column: span 4; } .c5 { grid-column: span 5; }
+.c7 { grid-column: span 7; } .c8 { grid-column: span 8; } .c12 { grid-column: span 12; }
+.r2 { grid-row: span 2; } .r4 { grid-row: span 4; }
+
+/* ── Widget 基类（1:1 对应 ui-widget--glass / --bare） ── */
+.widget {
+  position: relative; border-radius: 16px; padding: 13px 16px 12px;
+  display: flex; flex-direction: column; overflow: hidden; color: var(--fg);
+  min-width: 0;
+}
+.widget[data-mat="glass"] {
+  background-color: rgba(var(--tint), .52);
+  -webkit-backdrop-filter: blur(30px) saturate(1.45);
+  backdrop-filter: blur(30px) saturate(1.45);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.26), inset 0 -1px 0 rgba(0,0,0,.26),
+    0 10px 26px -16px rgba(0,0,0,.66);
+}
+.widget[data-mat="glass"]::before { content:""; position:absolute; inset:0; border-radius:inherit;
+  pointer-events:none;
+  background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 22%),
+    linear-gradient(132deg, rgba(255,255,255,.14) 0%, rgba(255,255,255,.04) 16%, transparent 32%); }
+.bare { box-shadow: none; padding: 2px 0 10px; overflow: visible;
+  text-shadow: 0 1px 2px rgba(0,0,0,.32); color: var(--fg); }
+.bare::before { display:none; }
+
+.w-head { display: flex; align-items: center; gap: 8px; position: relative; z-index: 1; }
+.w-label-cn { font-size: 11.5px; font-weight: 600; color: var(--fg-2); letter-spacing: .02em; }
+.w-right { margin-left: auto; font-size: 10.5px; color: var(--fg-3); }
+.w-body { position: relative; z-index: 1; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* ── 照片库 hero（bare，7 列）── */
+.ov-hero { flex: 1; display: flex; align-items: stretch; gap: 24px; min-height: 0; padding-top: 6px; }
+.ov-hero-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.ov-figure { display: flex; align-items: baseline; gap: 8px; }
+.w-num-xl { font-size: 54px; font-weight: 300; letter-spacing: -1.6px; line-height: 1;
+  font-variant-numeric: tabular-nums; }
+.w-stat-unit { font-size: 12px; color: var(--fg-2); }
+.w-meta-row { display: flex; font-size: 11px; color: var(--fg-2); margin-top: 10px; }
+.w-meta-row > span + span::before { content: "·"; margin: 0 7px; color: var(--fg-3); }
+.ov-ingest { display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  margin-top: auto; padding-top: 14px; font-size: 10.5px; color: var(--fg-2); }
+.ov-ingest b { color: var(--fg); font-weight: 600; }
+.pbar { height: 3px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; margin-top: 7px; }
+.pbar > i { display: block; height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.ov-hero-side { flex: 0 0 172px; display: flex; flex-direction: column; gap: 2px;
+  padding-left: 22px; border-left: 1px solid var(--rule); min-width: 0; }
+.ov-side-label { font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--fg-2); font-weight: 600; }
+.ov-side-num { margin-top: 4px; font-size: 34px; font-weight: 300; letter-spacing: -1.3px;
+  line-height: 1; color: var(--fg); font-variant-numeric: tabular-nums; }
+.ov-side-num em { font-style: normal; font-size: 15px; color: var(--fg-2); margin-left: 1px; }
+.ov-side-note { margin: 0; font-size: 10.5px; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.ov-side-note:first-of-type { margin-top: 8px; }
+.ov-side-note .hot { color: var(--accent-bright); }
+
+/* ── 今年月度（bare，5 列）── */
+.ov-months { flex: 1; display: flex; min-height: 0; padding: 14px 0 12px; }
+.bars { flex: 1; display: flex; align-items: flex-end; gap: 5px; }
+.bars i { flex: 1; border-radius: 2.5px 2.5px 1px 1px; background: rgba(255,255,255,.16); min-height: 4px; }
+.bars i.none { min-height: 0; background: none; }
+.bars i.on { background: linear-gradient(180deg, var(--accent-bright), var(--accent-2));
+  box-shadow: 0 0 10px -2px var(--accent); }
+
+/* ── 面板（glass）── */
+.ov-foot { margin-top: auto; padding-top: 8px; font-size: 10.5px; color: var(--fg-3);
+  font-variant-numeric: tabular-nums; }
+.ov-foot b { color: var(--fg); font-weight: 600; }
+
+/* 相册 mosaic */
+.covers2 { flex: 1; display: grid; grid-template-columns: 1.6fr 1fr; grid-template-rows: 1fr 1fr;
+  gap: 6px; margin-top: 10px; min-height: 0; }
+.covers2 .cv:first-child { grid-row: span 2; }
+.cv { border-radius: 10px; overflow: hidden; position: relative; min-height: 0;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
+.cv .ph { position: absolute; inset: 0; width: 100%; height: 100%; }
+.cv::after { content:""; position:absolute; inset:0; background: linear-gradient(to top, rgba(0,0,0,.35), transparent 45%); }
+.cv-n { position: absolute; left: 7px; bottom: 6px; z-index: 2; font-size: 9.5px; font-weight: 600;
+  color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.8); }
+
+/* 人物 */
+.faces { flex: 1; display: flex; align-items: center; margin-top: 8px; }
+.faces .face { width: 46px; height: 46px; border-radius: 50%; border: 2px solid rgba(var(--tint),.9);
+  margin-left: -12px; display: grid; place-items: center; font-size: 19px;
+  box-shadow: 0 3px 8px rgba(0,0,0,.35); }
+.faces .face:first-child { margin-left: 0; }
+.faces .face.more { background: rgba(0,0,0,.25); color: var(--fg-2); font-size: 12px; }
+
+/* 地点（宽板：左排行条 + 右年份柱）*/
+.ov-split { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 22px;
+  align-items: start; margin-top: 12px; flex: 1; min-height: 0; }
+.citybars { display: flex; flex-direction: column; gap: 10px; }
+.citybar { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 10px; font-size: 10.5px; }
+.citybar span { color: var(--fg-2); }
+.citybar i { height: 4px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; }
+.citybar i b { display: block; height: 100%; border-radius: 3px; background: rgba(255,255,255,.42); }
+.citybar em { font-style: normal; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.ov-split-r { display: flex; flex-direction: column; gap: 6px; height: 100%; }
+.ov-years { flex: 1; display: flex; align-items: flex-end; }
+.ov-years .bars { width: 100%; }
+.ov-years .bars i { max-width: 44px; }
+.yr-lab { display: flex; gap: 5px; margin-top: 5px; }
+.yr-lab s { flex: 1; max-width: 44px; text-decoration: none; text-align: center;
+  font-size: 9px; color: var(--fg-3); }
+.ov-years-note { margin: 0; font-size: 9px; color: var(--fg-3); }
+/* 年份通栏低带（方案 B 收尾行）：柱子放宽、标签随行 */
+.c12 .ov-years .bars { gap: 34px; justify-content: center; }
+.c12 .ov-years .bars i { max-width: 88px; }
+.c12 .yr-lab { gap: 34px; justify-content: center; margin-top: 6px; }
+.c12 .yr-lab s { max-width: 88px; font-size: 10px; }
+
+/* 最近导入（胶片条）*/
+.coverstrip { flex: 1; display: flex; gap: 2px; min-height: 0; }
+.coverstrip .cv { flex: 1; min-width: 0; border-radius: 0; box-shadow: none; }
+.bleed { margin-left: -16px; margin-right: -16px; margin-bottom: -12px; }
+
+/* 那年今日（cover：整块是照片）*/
+.memory-cv { position: absolute; inset: 0; z-index: 0; }
+.memory-cv .ph { position: absolute; inset: 0; width: 100%; height: 100%; }
+.memory-cv::after { content:""; position:absolute; inset:0;
+  background: linear-gradient(to top, rgba(0,0,0,.62) 0%, rgba(0,0,0,.12) 42%, transparent 60%); }
+.mc-meta { position: absolute; left: 14px; right: 14px; bottom: 12px; z-index: 2; }
+.mc-meta b { display: block; font-size: 14px; font-weight: 650; color: #fff;
+  text-shadow: 0 1px 4px rgba(0,0,0,.6); letter-spacing: -.01em; }
+.mc-meta span { font-size: 10.5px; color: rgba(255,255,255,.82); text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+/* 方案 C：通栏横幅的记忆，标题放大居左 */
+.mc-meta.wide b { font-size: 19px; }
+.mc-meta.wide span { font-size: 12px; }
+.foot-note { text-align: center; font-size: 10px; color: rgba(255,255,255,.28); margin: 22px 0 0; }
+
+/* ── 方案 B 专属精修（保守方向：栅格不动，只动版式细节） ── */
+body[data-v="b"] .grid { gap: 16px; }
+body[data-v="b"] .widget { padding: 15px 18px 14px; }
+body[data-v="b"] .w-num-xl { font-size: 62px; letter-spacing: -2px; }
+body[data-v="b"] .w-stat-unit { font-size: 13px; }
+body[data-v="b"] .ov-side-num { font-size: 38px; }
+body[data-v="b"] .w-label-cn { font-size: 12px; }
+body[data-v="b"] .w-meta-row { margin-top: 12px; font-size: 11.5px; }
+body[data-v="b"] .ov-foot { font-size: 11px; }
+body[data-v="b"] .faces .face { width: 50px; height: 50px; font-size: 21px; }
+body[data-v="b"] .citybar { font-size: 11px; }
+body[data-v="b"] .mc-meta b { font-size: 15px; }
+body[data-v="b"] .coverstrip { gap: 4px; }
+body[data-v="b"] .cv-n { font-size: 10px; bottom: 8px; left: 9px; }
+</style>
+</head>
+<body data-theme="dusk" data-mat="glass">
+
+<div class="wrap">
+  <header class="appheader">
+    <div class="ah-row">
+      <a class="ah-back">← 主页</a>
+      <div class="ah-title">
+        <div class="ah-ico">🧠</div>
+        <div><b>智慧相册</b><small>25,071 张照片 · 933 位人物 · 24 城</small></div>
+      </div>
+      <div class="ah-actions">
+        <span class="ah-status"><i></i>语义服务在线</span>
+        <button class="ah-btn" title="刷新">↻</button>
+        <button class="ah-btn" title="索引设置">⚙</button>
+      </div>
+    </div>
+    <nav class="ah-tabs">
+      <a class="active">◎ 全局概览</a>
+      <a>🏷 内容分类<span class="td">36</span></a>
+      <a>👤 人物<span class="td">933</span></a>
+      <a>📍 地点<span class="td">24</span></a>
+      <a>✨ 回忆</a>
+      <a>⏱ 时间线</a>
+      <a>🔍 智能搜索</a>
+    </nav>
+  </header>
+
+  <div class="variant-note">
+    <b id="v-name">—</b>
+    <span id="v-desc">—</span>
+    <nav style="margin-left:auto; display:flex; gap:4px">
+      <a href="?v=current" class="v-link">现状</a>
+      <a href="?v=a" class="v-link">A 竖幅锚点</a>
+      <a href="?v=b" class="v-link">B 精排</a>
+      <a href="?v=c" class="v-link">C 记忆为冕</a>
+      <a href="?v=a&amp;t=pine" class="v-link">A·松绿</a>
+    </nav>
+  </div>
+
+  <main class="grid" id="grid">
+
+    <!-- ① 照片库总览（bare） -->
+    <section class="widget bare" id="w-hero">
+      <div class="w-head"><span class="w-label-cn">照片库</span></div>
+      <div class="ov-hero">
+        <div class="ov-hero-main">
+          <div class="ov-figure"><span class="w-num-xl">25,071</span><span class="w-stat-unit">张照片</span></div>
+          <div class="w-meta-row"><span>81.3 GB</span><span>129 个相册</span><span>2017 – 2026</span></div>
+          <div class="ov-ingest">
+            <span>已入库 <b>24,980</b> / 25,071</span>
+            <span>99.6%</span>
+          </div>
+          <div class="pbar"><i style="width:99.6%"></i></div>
+        </div>
+        <aside class="ov-hero-side">
+          <span class="ov-side-label">语义索引</span>
+          <div class="ov-side-num">99.6<em>%</em></div>
+          <p class="ov-side-note">24,895 张已建索引 · 36 个分类</p>
+          <p class="ov-side-note"><span class="hot">9 张</span> 属其他模型档</p>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ② 今年月度（bare） -->
+    <section class="widget bare" id="w-months">
+      <div class="w-head">
+        <span class="w-label-cn">今年月度</span>
+        <span class="w-right">2026 · 当月 20 张</span>
+      </div>
+      <div class="ov-months">
+        <div class="bars">
+          <i style="height:46%"></i><i style="height:34%"></i><i style="height:54%"></i>
+          <i style="height:51%"></i><i style="height:64%"></i><i style="height:76%"></i>
+          <i style="height:52%"></i><i style="height:83%"></i><i style="height:90%"></i>
+          <i style="height:100%"></i><i class="on" style="height:11%"></i><i class="none"></i>
+        </div>
+      </div>
+      <div class="w-meta-row"><span>全年 1,062 张</span><span>月均 106 张</span></div>
+    </section>
+
+    <!-- ③ 相册 -->
+    <section class="widget" data-mat="glass" id="w-albums">
+      <div class="w-head"><span class="w-label-cn">相册</span><span class="w-right"><b>129</b>&nbsp;个</span></div>
+      <div class="covers2">
+        <div class="cv"><div class="ph ph-2"></div><span class="cv-n">日落晚霞</span></div>
+        <div class="cv"><div class="ph ph-3"></div></div>
+        <div class="cv"><div class="ph ph-4"></div></div>
+      </div>
+      <p class="ov-foot">共 25,071 张 · 平均 194 张/册</p>
+    </section>
+
+    <!-- ④ 人物 -->
+    <section class="widget" data-mat="glass" id="w-persons">
+      <div class="w-head"><span class="w-label-cn">人物</span><span class="w-right"><b>933</b>&nbsp;位</span></div>
+      <div class="faces">
+        <div class="face" style="background:linear-gradient(135deg,#e8a36f,#b85a4a)">👨</div>
+        <div class="face" style="background:linear-gradient(135deg,#7fa8d8,#4a6aa8)">👩</div>
+        <div class="face" style="background:linear-gradient(135deg,#9b8ad8,#5a4aa8)">👧</div>
+        <div class="face" style="background:linear-gradient(135deg,#d8b07f,#a87a4a)">👴</div>
+        <div class="face" style="background:linear-gradient(135deg,#7fd0a6,#3f8f6b)">👦</div>
+        <div class="face more">+928</div>
+      </div>
+      <p class="ov-foot"><b>96.2%</b> 的照片含人物 · 24,108 张</p>
+    </section>
+
+    <!-- ⑤ 地点（城市排行条） -->
+    <section class="widget" data-mat="glass" id="w-places">
+      <div class="w-head"><span class="w-label-cn">地点</span><span class="w-right"><b>24</b>&nbsp;城</span></div>
+      <div class="citybars solo">
+        <div class="citybar"><span>成都</span><i><b style="width:100%"></b></i><em>6,399</em></div>
+        <div class="citybar"><span>重庆</span><i><b style="width:6.3%"></b></i><em>402</em></div>
+        <div class="citybar"><span>杭州</span><i><b style="width:5.9%"></b></i><em>375</em></div>
+        <div class="citybar"><span>上海</span><i><b style="width:5.3%"></b></i><em>341</em></div>
+        <div class="citybar"><span>北京</span><i><b style="width:4.7%"></b></i><em>298</em></div>
+      </div>
+      <p class="ov-foot"><b>40.0%</b> 带 GPS · 9,988 张</p>
+    </section>
+
+    <!-- ⑤b 拍摄年份（柱阵） -->
+    <section class="widget" data-mat="glass" id="w-years">
+      <div class="w-head"><span class="w-label-cn">拍摄年份</span></div>
+      <div class="ov-years solo">
+        <div class="bars">
+          <i style="height:74%"></i><i style="height:87%"></i><i style="height:84%"></i>
+          <i class="on" style="height:100%"></i><i style="height:15%"></i>
+        </div>
+      </div>
+      <div class="yr-lab"><s>2022</s><s>2023</s><s>2024</s><s>2025</s><s>2026</s></div>
+      <p class="ov-years-note">已入库 24,980 张</p>
+    </section>
+
+    <!-- ⑥ 最近导入 -->
+    <section class="widget" data-mat="glass" id="w-recent">
+      <div class="w-head"><span class="w-label-cn">最近导入</span><span class="w-right">时间线 →</span></div>
+      <div class="coverstrip bleed">
+        <div class="cv"><div class="ph ph-5"></div><span class="cv-n">夜空 · 31</span></div>
+        <div class="cv"><div class="ph ph-6"></div><span class="cv-n">美食 · 57</span></div>
+        <div class="cv"><div class="ph ph-4"></div><span class="cv-n">森林徒步 · 42</span></div>
+        <div class="cv"><div class="ph ph-3"></div><span class="cv-n">自然风景 · 36</span></div>
+        <div class="cv"><div class="ph ph-1"></div><span class="cv-n">聚会合影 · 109</span></div>
+        <div class="cv"><div class="ph ph-8"></div><span class="cv-n">花 · 9</span></div>
+      </div>
+    </section>
+
+    <!-- ⑦ 那年今日（cover） -->
+    <section class="widget" data-mat="glass" id="w-memory">
+      <div class="memory-cv">
+        <div class="ph ph-6"></div>
+      </div>
+      <div class="mc-meta" id="mc-meta">
+        <b>3 年前的今天</b>
+        <span>2023 · 成都 · 共 57 张</span>
+      </div>
+    </section>
+
+  </main>
+
+  <p class="foot-note" id="foot">—</p>
+</div>
+
+<script>
+  // ?v=current | a | b | c   （另 ?t=pine 看松绿主题下的方案 A）
+  const v = new URLSearchParams(location.search).get("v") || "current";
+  const pine = new URLSearchParams(location.search).get("t") === "pine";
+  if (pine) document.body.dataset.theme = "pine";
+
+  const META = {
+    current: { name: "现状（对照基准）", desc: "线上版式 1:1 复刻（地点/年份已按反馈拆为两块）：7+5 裸读数 / 4+4+4 面板 / 4+8+4 收尾", foot: "全局概览 · 现状" },
+    a: { name: "方案 A · 竖幅锚点", desc: "那年今日贯通四行成竖幅照片卡 → 地点、年份各自独立成板 → 最近导入通栏胶片条", foot: "全局概览 · 方案 A" },
+    b: { name: "方案 B · 精排（保守）", desc: "面板行不动，年份升为通栏低带收尾；精修：字号层级 / 脚注基线统一 / 间距节奏", foot: "全局概览 · 方案 B" },
+    c: { name: "方案 C · 记忆为冕", desc: "那年今日升为通栏横幅（整屏第一眼看到的是一张照片）→ 面板行 → 年份 + 最近导入收尾", foot: "全局概览 · 方案 C" },
+  };
+
+  /* 每个变体 = 顺序（决定自动布行）+ 各块占位类名 */
+  const LAYOUTS = {
+    current: {
+      order: ["hero", "months", "albums", "persons", "places", "years", "recent", "memory"],
+      cls: { hero: "c7 r2", months: "c5 r2", albums: "c4 r2", persons: "c4 r2", places: "c4 r2", years: "c4 r2", recent: "c8 r2", memory: "c4 r2" },
+    },
+    a: {
+      order: ["hero", "months", "albums", "persons", "memory", "places", "years", "recent"],
+      cls: { hero: "c7 r2", months: "c5 r2", albums: "c4 r2", persons: "c4 r2", memory: "c4 r4", places: "c4 r2", years: "c4 r2", recent: "c12 r2" },
+    },
+    b: {
+      order: ["hero", "months", "albums", "persons", "places", "memory", "recent", "years"],
+      cls: { hero: "c7 r2", months: "c5 r2", albums: "c4 r2", persons: "c4 r2", places: "c4 r2", memory: "c4 r2", recent: "c8 r2", years: "c12 r1" },
+    },
+    c: {
+      order: ["hero", "months", "memory", "albums", "persons", "places", "years", "recent"],
+      cls: { hero: "c7 r2", months: "c5 r2", memory: "c12 r2", albums: "c4 r2", persons: "c4 r2", places: "c4 r2", years: "c4 r2", recent: "c8 r2" },
+    },
+  };
+
+  const cfg = LAYOUTS[v] || LAYOUTS.current;
+  document.body.dataset.v = v;
+  const grid = document.getElementById("grid");
+  const mem = document.getElementById("w-memory");
+  const recent = document.getElementById("w-recent");
+  const isBanner = v === "c";
+  document.getElementById("mc-meta").classList.toggle("wide", isBanner);
+
+  cfg.order.forEach((id) => {
+    const el = document.getElementById("w-" + id);
+    el.className = "widget " + (cfg.cls[id] || "c4 r2") + (id === "memory" ? " mem-cover" : "");
+    if (id === "memory") { el.dataset.mat = "glass"; }
+    grid.appendChild(el);
+  });
+  // 通栏 / 竖幅记忆：标题槽仍要浮在照片上 —— cover 类内自带 meta，不需要 w-head
+
+  document.getElementById("v-name").textContent = META[v].name;
+  document.getElementById("v-desc").textContent = META[v].desc;
+  document.getElementById("foot").textContent = "智慧相册 · " + META[v].foot + (pine ? " / 松绿" : " / 暮紫") + " · 玻璃";
+</script>
+</body>
+</html>
