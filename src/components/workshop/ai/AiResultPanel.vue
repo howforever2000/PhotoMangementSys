@@ -6,6 +6,7 @@
 import { computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { AiJobStatus } from "../../../types/ai";
+import { isQuotaError } from "../../../composables/useAiBilling";
 import { baseName, dirName } from "../../../utils/pathParts";
 
 const props = defineProps<{ job: AiJobStatus | null }>();
@@ -14,6 +15,9 @@ const emit = defineEmits<{ cancel: [] }>();
 const busy = computed(
   () => !!props.job && (props.job.status === "queued" || props.job.status === "running"),
 );
+
+/** 额度 / 权限不足：额外给出去服务商充值或开通的引导，而不是只显示一串 403 */
+const quotaHint = computed(() => !!props.job?.error && isQuotaError(props.job.error));
 
 const statusText = computed(() => {
   const j = props.job;
@@ -67,6 +71,9 @@ async function openDir(path: string) {
 
     <div v-if="job.error" class="ai-out-row">
       <span class="ai-warn">{{ job.error }}</span>
+    </div>
+    <div v-if="quotaHint" class="ai-out-row">
+      <span class="ai-hint">额度或权限不足：请到对应服务商控制台充值 / 开通该模型后重试（如阿里云百炼）；也可在「模型设置」对应模型卡片下核对计费单价。</span>
     </div>
     <div v-for="(w, i) in job.warnings" :key="i" class="ai-out-row">
       <span class="ai-warn">{{ w }}</span>

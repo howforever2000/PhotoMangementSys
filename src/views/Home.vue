@@ -94,7 +94,7 @@ function openModule(m: (typeof modules)[number]) {
 
 /* ---------------- 基本信息修改（需先验证当前密码） ---------------- */
 const profileOpen = ref(false);
-const profileForm = reactive({ email: "", phone: "", current_password: "" });
+const profileForm = reactive({ email: "", current_password: "" });
 const profileError = ref("");
 const profileSuccess = ref("");
 /** FEAT-045：头像资源 URL 时间戳（覆盖写同路径文件后破 webview 图片缓存） */
@@ -140,7 +140,6 @@ async function removeAvatar() {
 
 function openProfile() {
   profileForm.email = auth.user?.email ?? "";
-  profileForm.phone = auth.user?.phone ?? "";
   profileForm.current_password = "";
   profileError.value = "";
   profileSuccess.value = "";
@@ -193,10 +192,9 @@ async function submitProfile() {
   try {
     const updated = await auth.updateProfile({
       email: profileForm.email.trim(),
-      phone: profileForm.phone.trim(),
       current_password: profileForm.current_password,
     });
-    profileSuccess.value = "已更新，新邮箱/手机号即时生效";
+    profileSuccess.value = "已更新，新邮箱即时生效";
     setTimeout(() => {
       profileOpen.value = false;
       console.log("profile updated", updated);
@@ -410,10 +408,6 @@ onBeforeUnmount(() => {
             <div class="pm-field">
               <label>邮箱</label>
               <input v-model="profileForm.email" type="email" placeholder="用于登录 / 找回密码" />
-            </div>
-            <div class="pm-field">
-              <label>手机号</label>
-              <input v-model="profileForm.phone" placeholder="用于找回密码" />
             </div>
             <div class="pm-field">
               <label>当前密码</label>

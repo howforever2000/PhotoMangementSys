@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * OverviewPane —— 智慧相册「全局概览」仪表墙（FEAT-110 建 / FEAT-116 重排）
+ * OverviewPane —— 智慧相册「全局概览」仪表墙（FEAT-110 建 / FEAT-116 重排 / FEAT-153 方案 A）
  *
  * ══════════════════════════════════════════════════════════════════════════
  * FEAT-116 改了什么，为什么（对着截图指认）
@@ -22,6 +22,12 @@
  *    旧版 4 条金色进度条 + 金色环 + 金色排名条同屏。现在金色只出现在两处：
  *    「已入库」占比线（回答"库建好了吗"）与「今年月度」的当月柱（回答"这个月怎么样"）。
  *    其余一律 --w-fg2 弱色 —— 这是 tokens.css §2.7 的色彩预算第一次真正落地。
+ *
+ * FEAT-153（2026-11-11，用户确认效果图「方案 A · 竖幅锚点」后落码）：
+ *  · 那年今日 span4×rows4 竖幅照片卡，右侧贯通四行（全页视觉锚点）；
+ *  · 原「地点/年份两栏」拆成「地点」「拍摄年份」两块独立 widget（用户反馈太挤）；
+ *  · 最近导入升为 span12 通栏胶片条；统计信息一条未删，金色预算仍是两处。
+ *  · 点击那年今日带 ?day=YYYY-MM-DD 跳回忆页当日浏览框（不再泛跳 /memories）。
  *
  * 数据源全部为现有命令，零新增后端：
  *   list_timeline（跨相册已扫描照片，含 shoot_time/location/person_ids）
@@ -216,6 +222,17 @@ const memoryYearsAgo = computed(() =>
   memoryHero.value?.shoot_time ? year - Number(memoryHero.value.shoot_time.slice(0, 4)) : 0,
 );
 
+/**
+ * FEAT-153：那年今日按天跳转。
+ * 之前整块点击只跳 /memories 泛回忆页，用户到不了"那一天"；
+ * 现在带上那天的日期（YYYY-MM-DD），Memories 页读 ?day 自动弹出当日浏览框。
+ */
+const memoryDay = computed(() => memoryHero.value?.shoot_time?.slice(0, 10) ?? "");
+const memoryTo = computed(() => (memoryDay.value ? `/memories?day=${memoryDay.value}` : "/memories"));
+function goMemory() {
+  router.push(memoryTo.value);
+}
+
 async function loadThumb(paths: { albumId: number; path: string }[]) {
   const byAlbum = new Map<number, string[]>();
   for (const { albumId, path } of paths) {
@@ -292,7 +309,8 @@ function goAlbum(id?: number | null) {
     <!-- 骨架：仅首次构建（无任何缓存快照）时出现；
          之后再进概览直接渲染缓存，不会闪一下白块。 -->
     <div v-if="loading && !overview.snapshot" class="ov-skel" aria-label="正在汇总照片库">
-      <span v-for="i in 7" :key="i" class="ov-skel-card"></span>
+      <!-- FEAT-153：骨架占位与真实布行一致 —— 7+5 / 4×4 / 4×4 / 4×4 / 12（8 卡） -->
+      <span v-for="i in 8" :key="i" class="ov-skel-card"></span>
     </div>
 
     <!-- 失败：不阻塞智慧相册其他分区，给重试 -->
@@ -374,39 +392,46 @@ function goAlbum(id?: number | null) {
         <p class="w-stat-note ov-foot">{{ (faceRatio * 100).toFixed(1) }}% 的照片含人物 · {{ facePhotos.toLocaleString() }} 张</p>
       </UiWidget>
 
-      <!-- 地点 / 年份（FEAT-120）：原来这里是一张「假装的地图」（点阵 + 橙点），
-           在 400×168 里只能读出「有定位信息」这一个结论 —— 而那句话脚注已经说完了。
-           现在换成两个榜：左地点 Top5、右年份 Top5。
+      <!-- 那年今日（FEAT-153 竖幅锚点）：整块就是一张照片，span4×rows4 右侧贯通四行。
+           标题浮在照片上；点击带 ?day=YYYY-MM-DD 跳回忆页当日浏览框。 -->
+      <UiWidget :span="4" :rows="4" label-cn="那年今日" cover :to="memoryTo">
+        <MemoryCore
+          v-if="memoryHero"
+          :src="memoryCover"
+          :title="`${memoryYearsAgo} 年前的今天`"
+          :subtitle="`${memoryHero.shoot_time!.slice(0, 4)}${memoryHero.location ? ' · ' + memoryHero.location : ''}${onThisDayCount > 1 ? ' · 共 ' + onThisDayCount + ' 张' : ''}`"
+          @activate="goMemory"
+        />
+        <div v-else class="ov-empty ov-empty-mem">往年今天的照片会出现在这里</div>
+      </UiWidget>
 
-           **两栏之间不画分隔线**：406px 若是切出一根竖线，板里就多出一道假结构，
-           读成「两个小格子」；而这两栏其实是同一句话的两面 —— 照片都在哪、什么时候拍的。
-           不画线之后靠**形态差异**区分：左边横向排行条（地名是无序的，横条最省高度、
-           地名读得清），右边竖柱阵（年份是有序的，柱才看得出「哪几年多、哪几年空」）。
-
-           口径不同必须各自标明：地点来自 list_photo_locations（全库聚合），
-           年份只能从 list_timeline 算（已入库）。所以右栏自带「已入库 N 张」，
-           不与左栏相加、不共用一个百分比 —— 这正是不再出现「591.4% 带 GPS」的前提。 -->
+      <!-- 地点（FEAT-153 拆分）：FEAT-120 的两栏挤在一块 400px 板里，用户反馈太挤。
+           拆成两块独立 widget 后各占满 4 列宽：排行条行距放开、地名读得清。
+           仍是横排行条（地名无序）+ 弱色（金色预算不动）。 -->
       <UiWidget :span="4" :rows="2" label-cn="地点" clickable @click="goLocation()">
         <template #right>{{ namedLoc.length }} 城</template>
-        <div v-if="topPlaces.length || yearTop.labels.length" class="ov-split">
-          <RankBarsCore v-if="topPlaces.length" dense tone="muted" :items="topPlaces" />
-          <p v-else class="ov-split-none">无定位信息</p>
-          <div v-if="yearTop.labels.length" class="ov-split-r">
-            <div class="ov-years">
-              <BarsCore :values="yearTop.values" :labels="yearTop.labels" :active-indexes="[yearTop.peak]" />
-            </div>
-            <p class="ov-years-note">已入库 {{ yearTop.total.toLocaleString() }} 张</p>
-          </div>
-          <p v-else class="ov-split-none">无拍摄时间</p>
-        </div>
+        <RankBarsCore v-if="topPlaces.length" dense tone="muted" :items="topPlaces" />
         <div v-else class="ov-empty">照片里还没有定位信息</div>
         <p class="w-stat-note ov-foot">{{ (gpsRatio * 100).toFixed(1) }}% 带 GPS · {{ geoPhotos.toLocaleString() }} 张</p>
       </UiWidget>
 
-      <!-- ══ 行 3｜内容为主的两块 ════════════════════════════════════════ -->
+      <!-- 拍摄年份（FEAT-153 拆分）：年份是有序的，竖柱阵才看得出「哪几年多、哪几年空」，
+           峰值年仍高亮（但不是金色 —— 金色预算只属于入库线与当月柱）。
+           口径脚注随块走：年份只能从已入库照片统计（list_timeline 口径），
+           不与「地点」块的全库 GPS 聚合相加。 -->
+      <UiWidget :span="4" :rows="2" label-cn="拍摄年份">
+        <div v-if="yearTop.labels.length" class="ov-years">
+          <BarsCore :values="yearTop.values" :labels="yearTop.labels" :active-indexes="[yearTop.peak]" />
+        </div>
+        <div v-else class="ov-empty">照片还没有拍摄时间</div>
+        <p class="w-stat-note ov-foot">已入库 {{ yearTop.total.toLocaleString() }} 张</p>
+      </UiWidget>
 
-      <!-- 最近导入：照片下出血铺到板缘 —— 板是相框，不是"贴着照片的纸" -->
-      <UiWidget :span="8" :rows="2" label-cn="最近导入" bleed class="ov-film" :to="'/timeline'">
+      <!-- ══ 行末｜内容为主 ══════════════════════════════════════════════ -->
+
+      <!-- 最近导入（FEAT-153 升通栏）：span12 胶片条，照片下出血铺到板缘 ——
+           板是相框，不是"贴着照片的纸"；加宽后每张封面更接近真实比例 -->
+      <UiWidget :span="12" :rows="2" label-cn="最近导入" bleed class="ov-film" :to="'/timeline'">
         <template #right>时间线 →</template>
         <CoversCore
           v-if="recentCovers.length"
@@ -415,18 +440,6 @@ function goAlbum(id?: number | null) {
           @pick="(i: number) => goAlbum(recent[i]?.album_id)"
         />
         <div v-else class="ov-empty">还没有已入库的照片</div>
-      </UiWidget>
-
-      <!-- 那年今日：整块就是一张照片，标题浮在照片上（头部只留标题，不再重复"x 年前"） -->
-      <UiWidget :span="4" :rows="2" label-cn="那年今日" cover :to="'/memories'">
-        <MemoryCore
-          v-if="memoryHero"
-          :src="memoryCover"
-          :title="`${memoryYearsAgo} 年前的今天`"
-          :subtitle="`${memoryHero.shoot_time!.slice(0, 4)}${memoryHero.location ? ' · ' + memoryHero.location : ''}${onThisDayCount > 1 ? ' · 共 ' + onThisDayCount + ' 张' : ''}`"
-          @activate="router.push('/memories')"
-        />
-        <div v-else class="ov-empty ov-empty-mem">往年今天的照片会出现在这里</div>
       </UiWidget>
     </WidgetGrid>
   </div>
@@ -591,7 +604,8 @@ body:not(.theme-dark) .ui-widget--cover .ov-empty {
 }
 .ov-skel-card:nth-child(1) { grid-column: span 7; }
 .ov-skel-card:nth-child(2) { grid-column: span 5; }
-.ov-skel-card:nth-child(6) { grid-column: span 8; }
+/* FEAT-153：骨架与真实布行一致 —— 7+5 / 4×4 / 4×4 / 4×4 / 12（8 卡） */
+.ov-skel-card:nth-child(8) { grid-column: span 12; }
 @keyframes ov-shimmer {
   from { background-position: 200% 0; }
   to { background-position: -200% 0; }
@@ -618,26 +632,9 @@ body:not(.theme-dark) .ui-widget--cover .ov-empty {
   padding-top: 8px;
 }
 
-/* ── 地点 / 年份两栏（FEAT-120）─────────────────────────────────────────────
-   刻意**没有分隔线**：406px 宽的板里再切一根竖线，会被读成"两个小格子"，
-   而这两栏其实是同一句话的两面。靠形态（横排行 vs 竖柱阵）区分就够。
-   两栏等宽 + 18px 间距，左栏底端因此与右栏的柱基对齐。 */
-.ov-split {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 18px;
-  /* 顶对齐：两栏共用同一条顶线（左榜第一行 = 柱区顶）。
-     试过底对齐 —— 左榜最后一行会跟右栏的「已入库 N 张」撞在同一行上，
-     那行小字被读成"第 5 名的脚注"，比留白糟。 */
-  align-items: start;
-  margin-top: 12px;
-}
-.ov-split-r {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-/* 柱区固定高 + 底部留出 15px 给 BarsCore 绝对定位的年份小字，
+/* ── 地点 / 拍摄年份（FEAT-153，拆分自 FEAT-120 的两栏）─────────────────────
+   原两栏挤在 400px 板里，用户反馈太拥挤 → 拆成两块独立 widget（见模板）。
+   柱区固定高 + 底部留出 15px 给 BarsCore 绝对定位的年份小字，
    否则年份会被板的 padding 裁掉。 */
 .ov-years {
   display: flex;
@@ -648,17 +645,6 @@ body:not(.theme-dark) .ui-widget--cover .ov-empty {
    封顶到 34px 后，5 根柱刚好铺满一栏，1 根柱就只是一根柱。 */
 .ov-years :deep(.w-bars i) {
   max-width: 34px;
-}
-.ov-years-note {
-  margin: 0;
-  font-size: 9px;
-  color: var(--fg-3);
-  font-variant-numeric: tabular-nums;
-}
-.ov-split-none {
-  margin: 0;
-  font-size: 10px;
-  color: var(--fg-3);
 }
 
 /* 最近导入：出血后封面不再有独立圆角，整条读作"一条胶片" */

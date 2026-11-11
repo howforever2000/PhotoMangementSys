@@ -184,6 +184,16 @@
   color: var(--fg-2);
 }
 
+/* 运行前计费预估提示（feat: 前端计费规则） */
+.ai-billing-hint {
+  margin: 6px 0 0;
+  line-height: 1.5;
+}
+.ai-billing-hint strong {
+  color: var(--c-accent);
+  font-weight: var(--fw-em);
+}
+
 /* ---------- 结果 ---------- */
 .ai-result {
   margin-top: 16px;

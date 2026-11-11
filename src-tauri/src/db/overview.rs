@@ -296,7 +296,11 @@ impl super::Database {
         today_year: i32,
         force: bool,
     ) -> Result<OverviewStats, DbError> {
-        let sig = signature(self.conn(), user_id, model);
+        // 签名追加日期段（FEAT-153 修隐患）：此前缓存只看数据表签名，
+        // 跨日后 on_this_day 仍命中昨天的缓存行。带 |day:MM-DD 后每天首次
+        // 请求自动重算一次，其余命中照旧；写回的 signature 同样带日期，
+        // 旧日期的缓存行被自然覆盖。
+        let sig = format!("{}|day:{}", signature(self.conn(), user_id, model), today_md);
         if !force {
             if let Some(hit) = self.overview_cached(user_id, &sig) {
                 return Ok(hit);

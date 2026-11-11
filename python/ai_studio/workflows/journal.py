@@ -14,6 +14,7 @@ from .. import compose, presets
 from ..providers import openai_compat as oc
 from .base import (
     check_cancel,
+    edit_input_bytes,
     parse_json_loose,
     png_bytes,
     read_image,
@@ -84,7 +85,7 @@ def run(req, progress, cancel) -> dict:
         try:
             data = oc.images_edit(
                 ep.baseUrl, ep.apiKey, ep.model,
-                [png_bytes(img)],
+                [edit_input_bytes(img)],
                 presets.journal_style_prompt(style, theme),
             )
             styled.append(to_image(data[0]))

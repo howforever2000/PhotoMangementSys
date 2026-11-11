@@ -17,6 +17,7 @@
  * 默认态 = 服务端 auto：按硬件推荐（两个都有就都勾上）。
  */
 import { computed, onMounted, ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { useContentStore } from "../../stores/content";
 import { useNotify } from "../../composables/useNotify";
 import { PERF_TIMEOUT, withTimeout } from "../../utils/withTimeout";
@@ -53,6 +54,12 @@ const npuOk = computed(() => accel.value?.available?.NPU === true);
 const gpuOk = computed(() => accel.value?.available?.GPU === true);
 const installed = computed(() => ov.value?.installed === true);
 const enabled = computed(() => accel.value?.enabled === true);
+
+/**
+ * NPU 硬件探测（FEAT-153）：运行时未装时 available.NPU 恒为 false（鸡生蛋），
+ * 下载按钮的出现与否只能靠硬件探测 —— 有 NPU 硬件才显示「下载运行时」入口。
+ */
+const hwNpu = ref(false);
 
 /** 勾选态 = 当前分配里出现了该设备（clip 不参与这两项，它自己有行内开关） */
 const npuChecked = computed(() =>
@@ -103,7 +110,13 @@ async function load(silent = false) {
   }
 }
 
-onMounted(() => void load(true));
+onMounted(() => {
+  void load(true);
+  // 硬件探测独立于 /accel：探测失败按无 NPU 处理（不渲染下载入口）
+  void invoke<boolean>("detect_npu_hardware")
+    .then((v) => (hwNpu.value = v))
+    .catch(() => {});
+});
 
 /** 按勾选算通道分配。
  *  语义索引（CLIP）**默认跟随 GPU**：勾上 GPU 就一起走 GPU（用户 2026-11-03 定调），
@@ -185,7 +198,7 @@ async function download() {
       <span class="o-note">检测 · 文字 · 人脸编码</span>
     </label>
 
-    <div v-else-if="npuOk && !installed" class="opt ghost">
+    <div v-else-if="hwNpu && !installed" class="opt ghost">
       <span class="o-name">NPU</span>
       <span class="o-note">需先装运行时</span>
       <button class="btn btn-sm" :disabled="locked || busy || downloading" @click="download">
@@ -200,7 +213,8 @@ async function download() {
       <span class="o-note">全部计算</span>
     </label>
 
-    <span v-if="!npuOk && !gpuOk" class="none">这台机器没有可用的加速引擎，只跑 CPU</span>
+    <!-- hwNpu && !installed 时上面已有「下载运行时」入口，不再重复宣判「没有加速引擎」 -->
+    <span v-if="!hwNpu && !npuOk && !gpuOk" class="none">这台机器没有可用的加速引擎，只跑 CPU</span>
   </div>
 
   <div v-if="downloading && dl" class="bar" role="progressbar"

@@ -27,7 +27,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const DEFAULT_ADMIN_USERNAME: &str = "admin";
 pub const DEFAULT_ADMIN_PASSWORD: &str = "admin123";
 pub const DEFAULT_ADMIN_EMAIL: &str = "admin@local.dev";
-pub const DEFAULT_ADMIN_PHONE: &str = "13800000000";
 
 /// 用户实体（序列化给前端，不含 password_hash）
 #[derive(Debug, Clone, Serialize)]
@@ -37,8 +36,6 @@ pub struct User {
     pub username: String,
     /// 邮箱（唯一，小写存储）
     pub email: String,
-    /// 手机号（唯一）
-    pub phone: String,
     /// 注册时间戳（Unix 秒）
     pub created_at: i64,
     /// 头像文件绝对路径（FEAT-045；None = 未设置，前端回退占位图标）
@@ -52,36 +49,33 @@ pub struct UserRecord {
     pub id: i64,
     pub username: String,
     pub email: String,
-    pub phone: String,
     pub password_hash: String,
     pub created_at: i64,
     pub avatar_path: Option<String>,
 }
 
-/// 注册输入（需求：账户名、邮箱、手机号、密码、密码确认）
+/// 注册输入（FEAT-153：账户名、邮箱、密码、密码确认 —— 手机号已去除）
 #[derive(Debug, Deserialize)]
 pub struct RegisterInput {
     pub username: String,
     pub email: String,
-    pub phone: String,
     pub password: String,
     /// 密码确认（必须与 password 一致）
     pub confirm_password: String,
 }
 
-/// 登录输入：account 为账户名 / 邮箱 / 手机号 任一
+/// 登录输入：account 为账户名 / 邮箱 任一
 #[derive(Debug, Deserialize)]
 pub struct LoginInput {
     pub account: String,
     pub password: String,
 }
 
-/// 忘记密码重置输入（需求：填手机号、账户名、邮箱校验通过后重设密码）
+/// 忘记密码重置输入（FEAT-153：账户名 + 邮箱 双匹配后重设密码，无验证码）
 #[derive(Debug, Deserialize)]
 pub struct ResetPasswordInput {
     pub username: String,
     pub email: String,
-    pub phone: String,
     pub new_password: String,
     pub confirm_password: String,
 }
@@ -119,22 +113,6 @@ pub fn validate_email(raw: &str) -> Result<String, String> {
         return Err("邮箱格式不正确".into());
     }
     Ok(email)
-}
-
-/// 校验手机号：中国大陆 11 位手机号（1[3-9]xxxxxxxxx），允许中间带空格/短横线
-pub fn validate_phone(raw: &str) -> Result<String, String> {
-    let digits: String = raw
-        .trim()
-        .chars()
-        .filter(|c| c.is_ascii_digit())
-        .collect();
-    let valid = digits.len() == 11
-        && digits.starts_with('1')
-        && matches!(digits.as_bytes().get(1), Some(b'3'..=b'9'));
-    if !valid {
-        return Err("手机号格式不正确（需为 11 位大陆手机号）".into());
-    }
-    Ok(digits)
 }
 
 /// 校验密码强度：6-64 字符
@@ -179,7 +157,7 @@ fn now_secs() -> i64 {
 /// 字段在库中均以密文（或迁移前的历史明文）存储，这里统一解密为实际值。
 fn fetch_all_users(conn: &Connection) -> Result<Vec<UserRecord>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, username, email, phone, password_hash, created_at, avatar_path FROM users")
+        .prepare("SELECT id, username, email, password_hash, created_at, avatar_path FROM users")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -188,21 +166,19 @@ fn fetch_all_users(conn: &Connection) -> Result<Vec<UserRecord>, String> {
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, Option<String>>(6)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for r in rows {
-        let (id, username, email_enc, phone_enc, hash_enc, created_at, avatar_path) =
+        let (id, username, email_enc, hash_enc, created_at, avatar_path) =
             r.map_err(|e| e.to_string())?;
         out.push(UserRecord {
             id,
             username,
             email: crypto::decrypt(&email_enc)?,
-            phone: crypto::decrypt(&phone_enc)?,
             password_hash: crypto::decrypt(&hash_enc)?,
             created_at,
             avatar_path,
@@ -216,7 +192,6 @@ fn to_user(u: &UserRecord) -> User {
         id: u.id,
         username: u.username.clone(),
         email: u.email.clone(),
-        phone: u.phone.clone(),
         created_at: u.created_at,
         avatar: u.avatar_path.clone(),
     }
@@ -226,14 +201,13 @@ fn to_user(u: &UserRecord) -> User {
 pub fn register_user(conn: &Connection, input: RegisterInput) -> Result<User, String> {
     let username = validate_username(&input.username)?;
     let email = validate_email(&input.email)?;
-    let phone = validate_phone(&input.phone)?;
     validate_password(&input.password)?;
     if input.password != input.confirm_password {
         return Err("两次输入的密码不一致".into());
     }
 
     // 唯一性检查（本地单机应用，忽略并发注册竞争）
-    // 邮箱/手机号在库中为密文，无法用 SQL WHERE / UNIQUE 判断，改为全量解密后比对。
+    // 邮箱在库中为密文，无法用 SQL WHERE / UNIQUE 判断，改为全量解密后比对。
     let existing = fetch_all_users(conn)?;
     if existing.iter().any(|u| u.username == username) {
         return Err("该账户名已被注册".into());
@@ -241,20 +215,16 @@ pub fn register_user(conn: &Connection, input: RegisterInput) -> Result<User, St
     if existing.iter().any(|u| u.email.eq_ignore_ascii_case(&email)) {
         return Err("该邮箱已被注册".into());
     }
-    if existing.iter().any(|u| u.phone == phone) {
-        return Err("该手机号已被注册".into());
-    }
 
     // 双层防护：密码先 Argon2id 哈希，哈希串再加密落库
     let hash = hash_password(&input.password)?;
     let email_enc = crypto::encrypt(&email)?;
-    let phone_enc = crypto::encrypt(&phone)?;
     let hash_enc = crypto::encrypt(&hash)?;
     let now = now_secs();
     conn.execute(
-        "INSERT INTO users (username, email, phone, password_hash, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![username, email_enc, phone_enc, hash_enc, now],
+        "INSERT INTO users (username, email, password_hash, created_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![username, email_enc, hash_enc, now],
     )
     .map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
@@ -262,13 +232,12 @@ pub fn register_user(conn: &Connection, input: RegisterInput) -> Result<User, St
         id,
         username,
         email,
-        phone,
         created_at: now,
         avatar: None,
     })
 }
 
-/// 按账户名 / 邮箱 / 手机号 任一查找用户（带哈希，内部用）
+/// 按账户名 / 邮箱 任一查找用户（带哈希，内部用）
 ///
 /// 邮箱在库中为密文，无法用 SQL WHERE 匹配，改为全量解密后比对（本地用户数少）。
 pub fn find_user_by_account(conn: &Connection, account: &str) -> Result<Option<UserRecord>, String> {
@@ -279,11 +248,7 @@ pub fn find_user_by_account(conn: &Connection, account: &str) -> Result<Option<U
     let users = fetch_all_users(conn)?;
     Ok(users
         .into_iter()
-        .find(|u| {
-            u.username == account
-                || u.email.eq_ignore_ascii_case(account)
-                || u.phone == account
-        }))
+        .find(|u| u.username == account || u.email.eq_ignore_ascii_case(account)))
 }
 
 /// 按 id 查找用户（登录会话恢复用），返回不含哈希的用户
@@ -308,25 +273,24 @@ pub fn update_user_avatar(
     find_user_by_id(conn, user_id)?.ok_or_else(|| "用户不存在".to_string())
 }
 
-/// 校验登录凭据：account（账户名/邮箱/手机号）+ 密码
+/// 校验登录凭据：account（账户名/邮箱）+ 密码
 ///
-/// 失败统一返回「账户名/邮箱/手机号或密码错误」，不区分账户是否存在，避免枚举。
+/// 失败统一返回「账户名/邮箱或密码错误」，不区分账户是否存在，避免枚举。
 pub fn verify_login(conn: &Connection, account: &str, password: &str) -> Result<User, String> {
     let user = find_user_by_account(conn, account)?
-        .ok_or_else(|| "账户名/邮箱/手机号或密码错误".to_string())?;
+        .ok_or_else(|| "账户名/邮箱或密码错误".to_string())?;
     if !verify_password(&user.password_hash, password) {
-        return Err("账户名/邮箱/手机号或密码错误".into());
+        return Err("账户名/邮箱或密码错误".into());
     }
     Ok(to_user(&user))
 }
 
-/// 忘记密码重置：账户名 + 邮箱 + 手机号 全部匹配同一用户 → 更新密码哈希
+/// 忘记密码重置：账户名 + 邮箱 匹配同一用户 → 更新密码哈希（FEAT-153，无验证码）
 ///
-/// 三者任一不匹配（或用户不存在）统一提示校验未通过。
+/// 任一不匹配（或用户不存在）统一提示校验未通过。
 pub fn reset_password(conn: &Connection, input: ResetPasswordInput) -> Result<(), String> {
     let username = validate_username(&input.username)?;
     let email = validate_email(&input.email)?;
-    let phone = validate_phone(&input.phone)?;
     validate_password(&input.new_password)?;
     if input.new_password != input.confirm_password {
         return Err("两次输入的新密码不一致".into());
@@ -335,9 +299,9 @@ pub fn reset_password(conn: &Connection, input: ResetPasswordInput) -> Result<()
     let user = fetch_all_users(conn)?
         .into_iter()
         .find(|u| u.username == username)
-        .ok_or_else(|| "账户名、邮箱、手机号校验未通过".to_string())?;
-    if user.email != email || user.phone != phone {
-        return Err("账户名、邮箱、手机号校验未通过".into());
+        .ok_or_else(|| "账户名、邮箱校验未通过".to_string())?;
+    if user.email != email {
+        return Err("账户名、邮箱校验未通过".into());
     }
 
     let hash = hash_password(&input.new_password)?;
@@ -361,7 +325,7 @@ pub fn migrate_legacy_user_fields(conn: &Connection) -> Result<(), String> {
         return Ok(());
     }
     let mut stmt = conn
-        .prepare("SELECT id, username, email, phone, password_hash FROM users")
+        .prepare("SELECT id, username, email, password_hash FROM users")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -370,30 +334,25 @@ pub fn migrate_legacy_user_fields(conn: &Connection) -> Result<(), String> {
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
             ))
         })
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    for (id, username, email, phone, pass) in rows {
+    for (id, username, email, pass) in rows {
         // 任一字段仍是明文（非 v1: 前缀）→ 全部重加密
-        if crypto::is_encrypted(&email)
-            && crypto::is_encrypted(&phone)
-            && crypto::is_encrypted(&pass)
-        {
+        if crypto::is_encrypted(&email) && crypto::is_encrypted(&pass) {
             continue;
         }
         let email_enc = crypto::encrypt(&email)?;
-        let phone_enc = crypto::encrypt(&phone)?;
         let hash_enc = if crypto::is_encrypted(&pass) {
             pass
         } else {
             crypto::encrypt(&pass)?
         };
         conn.execute(
-            "UPDATE users SET email=?1, phone=?2, password_hash=?3 WHERE id=?4",
-            params![email_enc, phone_enc, hash_enc, id],
+            "UPDATE users SET email=?1, password_hash=?2 WHERE id=?3",
+            params![email_enc, hash_enc, id],
         )
         .map_err(|e| e.to_string())?;
         log_info_migrated(username.as_str());
@@ -411,7 +370,7 @@ pub mod commands {
 // 以下命令自 lib.rs 迁入（lib.rs 瘦身）：认证命令层
 // =====================================================================
 
-/// 注册新用户（需求：账户名、邮箱、手机号、密码、密码确认）
+/// 注册新用户（FEAT-153：账户名、邮箱、密码、密码确认 —— 手机号已去除）
 ///
 /// 校验通过后写入 users 表（密码存 Argon2id 哈希），并自动登录。
 #[tauri::command]
@@ -444,7 +403,7 @@ pub fn register(
 
 /// 登录（需求：同一 app 多用户登录）
 ///
-/// `account` 支持账户名 / 邮箱 / 手机号 任一 + 密码。
+/// `account` 支持账户名 / 邮箱 任一 + 密码（FEAT-153 手机号已去除）。
 /// 成功后写入会话，后续相册/分组命令均以该用户空间为准。
 #[tauri::command]
 pub fn login(
@@ -515,9 +474,9 @@ pub fn get_current_user(
 }
 
 
-/// 忘记密码重置（需求：填手机号、账户名、邮箱校验通过后重设密码）
+/// 忘记密码重置（FEAT-153：账户名 + 邮箱 双匹配后重设密码，无验证码）
 ///
-/// 无需登录即可调用；三者必须匹配同一用户。
+/// 无需登录即可调用；两者必须匹配同一用户。
 #[tauri::command]
 pub fn reset_password(
     input: crate::auth::ResetPasswordInput,
@@ -536,7 +495,7 @@ pub fn reset_password(
 }
 
 
-/// 修改当前用户基本信息（邮箱/手机号），需先验证当前密码
+/// 修改当前用户基本信息（邮箱），需先验证当前密码
 #[tauri::command]
 pub fn update_profile(
     input: crate::auth::UpdateProfileInput,
@@ -614,16 +573,15 @@ fn log_info_migrated(u: &str) {
     eprintln!("[auth] migrated legacy user: {u}");
 }
 
-/// 修改基本信息输入（当前密码验证通过后方可修改）
+/// 修改基本信息输入（当前密码验证通过后方可修改；FEAT-153 手机号已去除）
 #[derive(Debug, Deserialize)]
 pub struct UpdateProfileInput {
     pub email: String,
-    pub phone: String,
     /// 当前密码（必须与该用户匹配，防止他人替改）
     pub current_password: String,
 }
 
-/// 修改当前用户基本信息（邮箱 / 手机号），需先验证当前密码。
+/// 修改当前用户基本信息（邮箱），需先验证当前密码。
 ///
 /// 需求：修改基本信息前必须先输入密码（防他人通过数据库读取后直接改表）。
 pub fn update_profile(
@@ -640,30 +598,22 @@ pub fn update_profile(
         return Err("密码验证失败".into());
     }
     let email = validate_email(&input.email)?;
-    let phone = validate_phone(&input.phone)?;
     // 唯一性（排除自身）
     for u in fetch_all_users(conn)? {
-        if u.id != user_id {
-            if u.email.eq_ignore_ascii_case(&email) {
-                return Err("该邮箱已被其他账户使用".into());
-            }
-            if u.phone == phone {
-                return Err("该手机号已被其他账户使用".into());
-            }
+        if u.id != user_id && u.email.eq_ignore_ascii_case(&email) {
+            return Err("该邮箱已被其他账户使用".into());
         }
     }
     let email_enc = crypto::encrypt(&email)?;
-    let phone_enc = crypto::encrypt(&phone)?;
     conn.execute(
-        "UPDATE users SET email=?1, phone=?2 WHERE id=?3",
-        params![email_enc, phone_enc, user_id],
+        "UPDATE users SET email=?1 WHERE id=?2",
+        params![email_enc, user_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(User {
         id: user.id,
         username: user.username,
         email,
-        phone,
         created_at: user.created_at,
         avatar: user.avatar_path,
     })
@@ -673,7 +623,7 @@ pub fn update_profile(
 mod tests {
     use super::*;
 
-    /// 内存库建 users 表（与 db::init_schema 保持一致，供 auth 函数测试）
+    /// 内存库建 users 表（FEAT-153 后无 phone 列，与 db::init_schema 保持一致）
     fn test_conn() -> Connection {
         crypto::init_for_test();
         let conn = Connection::open_in_memory().unwrap();
@@ -682,7 +632,6 @@ mod tests {
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 username      TEXT    NOT NULL UNIQUE,
                 email         TEXT    NOT NULL UNIQUE,
-                phone         TEXT    NOT NULL UNIQUE,
                 password_hash TEXT    NOT NULL,
                 created_at    INTEGER NOT NULL,
                 avatar_path   TEXT
@@ -696,7 +645,6 @@ mod tests {
         RegisterInput {
             username: username.into(),
             email: format!("{username}@test.com"),
-            phone: "13812345678".into(),
             password: "pass123456".into(),
             confirm_password: "pass123456".into(),
         }
@@ -728,12 +676,6 @@ mod tests {
         assert!(validate_email("@b.com").is_err());
         assert!(validate_email("a@b").is_err(), "域名无点");
 
-        assert!(validate_phone("13812345678").is_ok());
-        assert!(validate_phone("138 1234 5678").is_ok(), "允许空格");
-        assert!(validate_phone("12812345678").is_err(), "第二位非法");
-        assert!(validate_phone("12345678901").is_err(), "非 1[3-9] 开头");
-        assert!(validate_phone("1381234567").is_err(), "位数不足");
-
         assert!(validate_password("123456").is_ok());
         assert!(validate_password("12345").is_err());
         assert!(validate_password(&"x".repeat(65)).is_err(), "过长");
@@ -748,45 +690,37 @@ mod tests {
         let user = register_user(&conn, reg_input("小明")).unwrap();
         assert_eq!(user.username, "小明");
         assert_eq!(user.email, "小明@test.com");
-        assert_eq!(user.phone, "13812345678");
 
-        // 重复账户名 / 邮箱 / 手机号均报错
+        // 重复账户名 / 邮箱均报错
         assert!(register_user(&conn, reg_input("小明")).is_err(), "重复账户名");
         let mut dup_email = reg_input("小红");
         dup_email.email = "小明@test.com".into();
         assert!(register_user(&conn, dup_email).is_err(), "重复邮箱");
-        let mut dup_phone = reg_input("小红");
-        dup_phone.phone = "13812345678".into();
-        assert!(register_user(&conn, dup_phone).is_err(), "重复手机号");
 
         // 密码确认不一致
         let mut bad = reg_input("小红");
         bad.confirm_password = "different".into();
         assert!(register_user(&conn, bad).is_err());
 
-        // 登录：账户名 / 邮箱 / 手机号 任一均可
+        // 登录：账户名 / 邮箱 任一均可
         let by_name = verify_login(&conn, "小明", "pass123456").unwrap();
         assert_eq!(by_name.id, user.id);
         let by_email = verify_login(&conn, "小明@test.com", "pass123456").unwrap();
         assert_eq!(by_email.id, user.id);
-        let by_phone = verify_login(&conn, "13812345678", "pass123456").unwrap();
-        assert_eq!(by_phone.id, user.id);
         // 错误密码 / 不存在账户统一报错（防枚举）
         assert!(verify_login(&conn, "小明", "wrong").is_err());
         assert!(verify_login(&conn, "不存在", "pass123456").is_err());
 
-        // 忘记密码：三者匹配才可重置
+        // 忘记密码：账户名+邮箱 双匹配才可重置
         assert!(reset_password(&conn, ResetPasswordInput {
             username: "小明".into(),
             email: "wrong@test.com".into(),
-            phone: "13812345678".into(),
             new_password: "newpass888".into(),
             confirm_password: "newpass888".into(),
         }).is_err(), "邮箱不匹配");
         reset_password(&conn, ResetPasswordInput {
             username: "小明".into(),
             email: "小明@test.com".into(),
-            phone: "13812345678".into(),
             new_password: "newpass888".into(),
             confirm_password: "newpass888".into(),
         }).unwrap();
@@ -795,24 +729,22 @@ mod tests {
         assert!(verify_login(&conn, "小明", "newpass888").is_ok());
     }
 
-    /// 落库即密文：读取到的 email/phone/password_hash 不再是原字段（防撞表窃取/篡改）
+    /// 落库即密文：读取到的 email/password_hash 不再是原字段（防撞表窃取/篡改）
     #[test]
     fn encryption_at_rest() {
         let conn = test_conn();
         register_user(&conn, reg_input("小明")).unwrap();
         // 读原始库值
-        let (raw_email, raw_phone, raw_pass): (String, String, String) = conn
+        let (raw_email, raw_pass): (String, String) = conn
             .query_row(
-                "SELECT email, phone, password_hash FROM users LIMIT 1",
+                "SELECT email, password_hash FROM users LIMIT 1",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
         // 不再是明文
         assert!(!raw_email.contains('@'), "邮箱不应以明文存储");
         assert!(raw_email.starts_with("v1:"), "邮箱应为密文");
-        assert_ne!(raw_phone, "13812345678", "手机号不应以明文存储");
-        assert!(raw_phone.starts_with("v1:"), "手机号应为密文");
         assert!(!raw_pass.starts_with("$argon2"), "密码哈希串不应明文可见");
         assert!(raw_pass.starts_with("v1:"));
         // 读回（解密）仍能登录
@@ -828,7 +760,6 @@ mod tests {
 
         let upd = |pw: &str| UpdateProfileInput {
             email: "new@test.com".into(),
-            phone: "13912345678".into(),
             current_password: pw.into(),
         };
         // 密码错误 → 拒绝
@@ -836,12 +767,11 @@ mod tests {
         // 密码正确 → 成功，新邮箱可登录
         let updated = update_profile(&conn, user.id, upd("pass123456")).unwrap();
         assert_eq!(updated.email, "new@test.com");
-        assert_eq!(updated.phone, "13912345678");
         assert!(verify_login(&conn, "new@test.com", "pass123456").is_ok());
         assert!(verify_login(&conn, "小明@test.com", "pass123456").is_err(), "旧邮箱失效");
     }
 
-    /// 历史明文迁移：把旧库明文邮箱/手机号/密码哈希重加密
+    /// 历史明文迁移：把旧库明文邮箱/密码哈希重加密
     #[test]
     fn legacy_migration_encrypts() {
         crypto::init_for_test();
@@ -851,7 +781,6 @@ mod tests {
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 username      TEXT    NOT NULL UNIQUE,
                 email         TEXT    NOT NULL UNIQUE,
-                phone         TEXT    NOT NULL UNIQUE,
                 password_hash TEXT    NOT NULL,
                 created_at    INTEGER NOT NULL
             );",
@@ -859,12 +788,11 @@ mod tests {
         .unwrap();
         // 手工插入明文行（模拟升级前旧库）
         conn.execute(
-            "INSERT INTO users (username, email, phone, password_hash, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO users (username, email, password_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
             params![
                 "老用户",
                 "old@test.com",
-                "13800000000",
                 hash_password("oldpass123").unwrap(),
                 1000
             ],

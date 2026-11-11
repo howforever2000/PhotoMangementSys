@@ -9,7 +9,6 @@ const router = useRouter();
 
 const username = ref("");
 const email = ref("");
-const phone = ref("");
 const password = ref("");
 const confirmPassword = ref("");
 const errorMsg = ref("");
@@ -26,10 +25,6 @@ function validate(): string {
   }
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.value.trim())) {
     return "邮箱格式不正确";
-  }
-  const digits = phone.value.replace(/\D/g, "");
-  if (!/^1[3-9]\d{9}$/.test(digits)) {
-    return "手机号格式不正确（需为 11 位大陆手机号）";
   }
   if (password.value.length < 6 || password.value.length > 64) {
     return "密码长度需为 6-64 个字符";
@@ -50,7 +45,6 @@ async function handleRegister() {
     await auth.register({
       username: username.value.trim(),
       email: email.value.trim(),
-      phone: phone.value.trim(),
       password: password.value,
       confirm_password: confirmPassword.value,
     });
@@ -85,17 +79,6 @@ async function handleRegister() {
           type="email"
           placeholder="example@mail.com"
           autocomplete="email"
-        />
-      </label>
-
-      <label class="field">
-        <span class="field-label">手机号</span>
-        <input
-          v-model="phone"
-          class="field-input"
-          type="tel"
-          placeholder="11 位大陆手机号"
-          autocomplete="tel"
         />
       </label>
 

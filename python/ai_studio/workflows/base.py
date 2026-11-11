@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from io import BytesIO
@@ -19,6 +20,10 @@ class Cancelled(Exception):
 
 
 Progress = Callable[[int, str, str], None]
+
+# 图生图（i2i）网关 qwen-image-3.0 的硬约束：图像面积须在 [512x512, 2560x2560] 像素之间
+MIN_I2I_AREA = 512 * 512      # 262144
+MAX_I2I_AREA = 2560 * 2560    # 6553600
 
 
 def check_cancel(cancel) -> None:
@@ -38,6 +43,52 @@ def read_image(path: str) -> Image.Image:
 def png_bytes(img: Image.Image) -> bytes:
     buf = BytesIO()
     img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _fit_i2i_size(w: int, h: int, max_long_edge: int) -> tuple:
+    """按图生图网关约束算出目标尺寸：长边 ≤ max_long_edge，且面积 ∈ [MIN, MAX]。
+
+    实测网关（qwen-image-3.0，i2i）硬约束：
+      `Image area must be between 262144 (512x512) and 6553600 (2560x2560)`。
+    - 先按长边上限等比缩小（不主动放大）；
+    - 面积超上限（如超分 3072 单边可达 9.4M）→ 等比缩小到上限；
+    - 面积不达下限（小图，如 400x556=222400）→ 等比放大到下限（ceil 保证达标）。
+    """
+    if w <= 0 or h <= 0:
+        return max(1, w), max(1, h)
+    m = max(w, h)
+    if max_long_edge and max_long_edge > 0 and m > max_long_edge:
+        s = max_long_edge / float(m)
+        w = max(1, int(round(w * s)))
+        h = max(1, int(round(h * s)))
+    area = w * h
+    if area > MAX_I2I_AREA:  # 面积超上限 → 缩小
+        s = math.sqrt(MAX_I2I_AREA / float(area))
+        w = max(1, int(w * s))
+        h = max(1, int(h * s))
+        area = w * h
+    if area < MIN_I2I_AREA:  # 面积不达下限 → 放大（ceil 保证 ≥ MIN）
+        s = math.sqrt(MIN_I2I_AREA / float(area))
+        w = max(1, int(math.ceil(w * s)))
+        h = max(1, int(math.ceil(h * s)))
+    return w, h
+
+
+def edit_input_bytes(img: Image.Image, max_long_edge: int = 1024, quality: int = 88) -> bytes:
+    """把图生图的输入图压成 JPEG 字节：长边 ≤ max_long_edge，且面积夹在网关允许区间。
+
+    - 美颜/风格/滤镜/手账：默认 1024（1K）输入，既省带宽也避免网关 RST；
+      小图会被等比放大到满足网关 512×512 面积下限（否则 400）；
+    - 超分：调用方传 max_long_edge=3072、quality=95，尽量保留细节，
+      但面积会被夹到 2560×2560 上限以内（否则 400）。
+    """
+    im = img.convert("RGB")
+    nw, nh = _fit_i2i_size(im.width, im.height, max_long_edge)
+    if (nw, nh) != im.size:
+        im = im.resize((nw, nh), Image.LANCZOS)
+    buf = BytesIO()
+    im.save(buf, "JPEG", quality=quality)
     return buf.getvalue()
 
 

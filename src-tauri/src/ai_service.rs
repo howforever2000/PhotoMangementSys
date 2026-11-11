@@ -109,6 +109,46 @@ fn kill_pid(pid: u32) {
     }
 }
 
+/// PID 是否属于本项目 AI 创作服务（FEAT-153，防 PID 复用误杀用户进程）：
+/// 打包版映像名 `ai-server.exe` 唯一；开发版是 python.exe，
+/// 需再校验命令行含 `ai_studio`（与 vision.rs 同一口径）。
+fn pid_is_our_service(pid: u32) -> bool {
+    match crate::vision::pid_image_name(pid) {
+        Some(img) if img.eq_ignore_ascii_case("ai-server.exe") => true,
+        Some(img) if img.eq_ignore_ascii_case("python.exe") => {
+            crate::vision::pid_cmdline_has(pid, "ai_studio")
+        }
+        _ => false,
+    }
+}
+
+/// 应用退出时调用（lib.rs 的 RunEvent::Exit，FEAT-153）：
+/// 优雅 /shutdown → 验明正身后强杀本进程拉起的 AI 创作服务，不再残留后台。
+pub fn shutdown() {
+    let pid = AI_PID.lock().ok().and_then(|g| *g);
+    let Some(pid) = pid else { return };
+    if pid_alive(pid) && pid_is_our_service(pid) {
+        // 优雅路径：base 形如 http://127.0.0.1:52341，取端口发 /shutdown
+        if let Some(port) = current_base()
+            .and_then(|b| b.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()))
+        {
+            crate::vision::graceful_shutdown(port);
+            for _ in 0..10 {
+                if !pid_alive(pid) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        if pid_alive(pid) {
+            kill_pid(pid);
+        }
+    }
+    if let Ok(mut g) = AI_PID.lock() {
+        *g = None;
+    }
+}
+
 fn spawn(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
     // 打包版入口（预留）：资源目录下有 ai/ai-server.exe 则优先用它
     let resource_exe = app

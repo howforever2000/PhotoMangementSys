@@ -1006,6 +1006,72 @@ pub fn set_model_sources(sources: Vec<String>) -> Result<(), String> {
     crate::model_dl::save_custom_sources(sources)
 }
 
+/// FEAT-153：NPU 硬件探测（结果进程内缓存，只探一次）。
+/// 供性能设置决定是否显示 openvino-runtime 下载按钮 —— 运行时未装时
+/// Python 侧 /accel 的 available.NPU 恒为 false（鸡生蛋），必须走硬件探测。
+#[tauri::command]
+pub fn detect_npu_hardware() -> bool {
+    crate::model_dl::npu_hardware_cached()
+}
+
+}
+
+// =====================================================================
+// NPU 硬件探测（FEAT-153）
+// =====================================================================
+
+/// NPU 硬件探测缓存：本会话只探一次（CPU/设备热插拔不作为场景）
+pub fn npu_hardware_cached() -> bool {
+    static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(npu_hardware_probe)
+}
+
+/// 探测本体：OpenVINO 的 NPU 插件只认 Intel（上面 specs() 注释落地的实现），
+/// 故先验 CPU 厂商，再查设备管理器里是否有 NPU 设备。
+fn npu_hardware_probe() -> bool {
+    cpu_is_intel() && npu_device_present()
+}
+
+/// CPU 厂商是否 GenuineIntel（reg query 读注册表，开销小于拉起 PowerShell）
+fn cpu_is_intel() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("reg")
+            .args([
+                "query",
+                r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+                "/v",
+                "VendorIdentifier",
+            ])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("GenuineIntel"))
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::fs::read_to_string("/proc/cpuinfo")
+            .map(|s| s.contains("GenuineIntel"))
+            .unwrap_or(false)
+    }
+}
+
+/// 设备管理器是否存在 NPU 设备：Intel NPU 在 Win11「神经处理器」类下
+/// 名为「Intel(R) AI Boost」，部分驱动版本显示为含 NPU 的名称 —— 两种口径都认。
+/// 用 WQL 服务端过滤（-Filter），避免枚举全部 PnP 实体的数秒级开销。
+fn npu_device_present() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let script = "Get-CimInstance Win32_PnPEntity -Filter \"Name LIKE '%AI Boost%' OR Name LIKE '%NPU%'\" | Select-Object -First 1 -ExpandProperty Name";
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .output()
+            .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
 }
 
 #[cfg(test)]

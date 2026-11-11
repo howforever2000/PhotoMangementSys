@@ -10,6 +10,7 @@ import { dirName, joinPath } from "../../../utils/pathParts";
 import { BEAUTY_LEVELS, BEAUTY_STYLES } from "../../../utils/aiPresets";
 import AiPromptPanel from "./AiPromptPanel.vue";
 import AiResultPanel from "./AiResultPanel.vue";
+import AiCostHint from "./AiCostHint.vue";
 
 const props = defineProps<{ paths: string[] }>();
 const store = useAiStudioStore();
@@ -120,6 +121,8 @@ async function onCancel() {
         {{ busy ? "处理中…" : `开始美颜（${paths.length} 张）` }}
       </button>
     </div>
+
+    <AiCostHint tool="beauty" :count="paths.length" />
 
     <AiResultPanel :job="job" @cancel="onCancel" />
   </section>

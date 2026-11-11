@@ -35,7 +35,7 @@ export const useAuthStore = defineStore("auth", {
       return this.user;
     },
 
-    /** 登录（账户名/邮箱/手机号 + 密码），成功后写入当前用户 */
+    /** 登录（账户名/邮箱 + 密码），成功后写入当前用户 */
     async login(input: LoginInput): Promise<User> {
       this.user = await invoke<User>("login", { input });
       this.checked = true;
@@ -56,7 +56,7 @@ export const useAuthStore = defineStore("auth", {
       this.checked = true;
     },
 
-    /** 忘记密码重置（账户名 + 邮箱 + 手机号校验通过后重设密码） */
+    /** 忘记密码重置（账户名 + 邮箱 双匹配后重设密码） */
     async resetPassword(input: ResetPasswordInput): Promise<void> {
       await invoke("reset_password", { input });
     },

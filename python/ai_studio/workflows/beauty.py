@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from .. import presets
 from ..providers import openai_compat as oc
-from .base import check_cancel, png_bytes, read_image, save_image, stem_of, to_image
+from .base import check_cancel, edit_input_bytes, read_image, save_image, stem_of, to_image
 
 
 def run(req, progress, cancel) -> dict:
@@ -29,7 +29,7 @@ def run(req, progress, cancel) -> dict:
         check_cancel(cancel)
         progress(3 + int(i / n * 92), "美颜处理中", f"{i + 1}/{n}")
         img = read_image(path)
-        data = oc.images_edit(prov.baseUrl, prov.apiKey, prov.model, [png_bytes(img)], prompt)
+        data = oc.images_edit(prov.baseUrl, prov.apiKey, prov.model, [edit_input_bytes(img)], prompt)
         out = save_image(to_image(data[0]), out_dir, f"{stem_of(path)}_美颜", ".jpg", quality=95)
         outputs.append(out)
     progress(100, "完成", f"{len(outputs)} 张")

@@ -4,14 +4,15 @@
   - transfer：输入「内容图 + 参考图」，把参考图的色调/影调迁移到内容图
   - autograde：只凭提示词对内容图做专业调色
 
-多图编辑多数服务商只稳定支持单图；transfer 若一次送两张失败，则退化：
-先用视觉模型描述参考图风格，再用单图编辑 + 风格描述完成迁移。
+多图编辑实测（本网关 qwen-image-3.0）：送两张图会被当作「风格参考」重绘、
+丢原图构图；因此 transfer 固定采用「视觉模型描述参考图风格 → 单图编辑 + 风格描述」，
+以保证内容图的构图/主体不变、只迁移色调影调。
 """
 from __future__ import annotations
 
 from .. import presets
 from ..providers import openai_compat as oc
-from .base import check_cancel, png_bytes, read_image, save_image, stem_of, to_image
+from .base import check_cancel, edit_input_bytes, png_bytes, read_image, save_image, stem_of, to_image
 
 
 def _describe_reference(vision, ref_img) -> str:
@@ -48,6 +49,11 @@ def run(req, progress, cancel) -> dict:
         ref_img = read_image(ref_path)
 
     extra = (req.prompt or "").strip()
+    ref_desc = ""
+    if mode == "transfer":
+        ref_desc = _describe_reference(req.providers.vision, ref_img) if req.providers.vision else ""
+        if not ref_desc:
+            warnings.append("未能从参考图提取风格描述，仅按提示词迁移色调")
     outputs: list[str] = []
     n = len(req.paths)
     for i, path in enumerate(req.paths):
@@ -55,21 +61,16 @@ def run(req, progress, cancel) -> dict:
         progress(3 + int(i / n * 92), "滤镜处理中", f"{i + 1}/{n}")
         img = read_image(path)
         if mode == "transfer":
-            try:
-                data = oc.images_edit(
-                    prov.baseUrl, prov.apiKey, prov.model,
-                    [png_bytes(img), png_bytes(ref_img)],
-                    presets.STYLE_TRANSFER_PROMPT + (f" {extra}" if extra else ""),
-                )
-            except Exception as e:
-                warnings.append(f"{stem_of(path)}: 双图迁移失败，改用参考图风格描述回退（{e}）")
-                desc = _describe_reference(req.providers.vision, ref_img) if req.providers.vision else ""
-                fb_prompt = presets.STYLE_TRANSFER_PROMPT + (f" Reference style: {desc}." if desc else "") + (f" {extra}" if extra else "")
-                data = oc.images_edit(prov.baseUrl, prov.apiKey, prov.model, [png_bytes(img)], fb_prompt)
+            prompt = presets.STYLE_TRANSFER_PROMPT
+            if ref_desc:
+                prompt += f" Reference style: {ref_desc}."
+            if extra:
+                prompt += f" {extra}"
+            data = oc.images_edit(prov.baseUrl, prov.apiKey, prov.model, [edit_input_bytes(img)], prompt)
             suffix = "_滤镜"
         else:
             prompt = presets.AUTOGRADE_BASE_PROMPT + (f" {extra}" if extra else "")
-            data = oc.images_edit(prov.baseUrl, prov.apiKey, prov.model, [png_bytes(img)], prompt)
+            data = oc.images_edit(prov.baseUrl, prov.apiKey, prov.model, [edit_input_bytes(img)], prompt)
             suffix = "_调色"
         out = save_image(to_image(data[0]), out_dir, f"{stem_of(path)}{suffix}", ".jpg", quality=95)
         outputs.append(out)

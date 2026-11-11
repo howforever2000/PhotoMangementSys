@@ -289,22 +289,64 @@ impl Database {
         Ok(db)
     }
 
+    /// FEAT-153：老库 users 表去掉 phone 列（整表重建；无外键引用 users，重建安全）。
+    /// 事务内完成 重命名→建新表→拷贝→删旧表：任一步失败整体回滚，不丢用户数据。
+    fn migrate_drop_users_phone(conn: &Connection) -> Result<(), DbError> {
+        // 老库无 avatar_path 列（auth::migrate_legacy_user_fields 才补），按实际列拼 SELECT
+        let has_avatar: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('users') WHERE name = 'avatar_path'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        let has_phone: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('users') WHERE name = 'phone'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if !has_phone {
+            return Ok(()); // 新库（建表即无 phone）无需迁移
+        }
+        let avatar_sel = if has_avatar { ", avatar_path" } else { "" };
+        conn.execute_batch(&format!(
+            "BEGIN;
+             ALTER TABLE users RENAME TO users_drop_phone;
+             CREATE TABLE users (
+                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                 username      TEXT    NOT NULL UNIQUE,
+                 email         TEXT    NOT NULL UNIQUE,
+                 password_hash TEXT    NOT NULL,
+                 created_at    INTEGER NOT NULL,
+                 avatar_path   TEXT
+             );
+             INSERT INTO users (id, username, email, password_hash, created_at{avatar_sel})
+                 SELECT id, username, email, password_hash, created_at{avatar_sel}
+                 FROM users_drop_phone;
+             DROP TABLE users_drop_phone;
+             COMMIT;"
+        ))
+        .map_err(DbError::Sqlite)
+    }
+
     /// 建表 —— 对应 schema.sql
     ///
     /// 使用 `IF NOT EXISTS`，应用每次启动安全调用
-    fn init_schema(&self) -> Result<(), DbError> {
-        // 用户表（多用户登录：账户名/邮箱/手机号三者唯一，密码只存 Argon2id 哈希）
+    fn init_schema(&self) -> Result<(), DbError> {        // 用户表（多用户登录：账户名/邮箱唯一，密码只存 Argon2id 哈希）。
+        // FEAT-153：去除手机号 —— 新库不再建 phone 列；老库由下方迁移重建掉列。
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS users (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 username      TEXT    NOT NULL UNIQUE,
                 email         TEXT    NOT NULL UNIQUE,
-                phone         TEXT    NOT NULL UNIQUE,
                 password_hash TEXT    NOT NULL,
                 created_at    INTEGER NOT NULL,
                 avatar_path   TEXT
             );",
         )?;
+        Self::migrate_drop_users_phone(&self.conn)?;
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS albums (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -485,20 +527,17 @@ impl Database {
             if !admin_exists {
                 let hash = crate::auth::hash_password(crate::auth::DEFAULT_ADMIN_PASSWORD)
                     .map_err(|e| DbError::Other(e))?;
-                // 落库前加密（邮箱/手机号/密码哈希不以原字段存在）
+                // 落库前加密（邮箱/密码哈希不以原字段存在）
                 let email_enc = crate::crypto::encrypt(crate::auth::DEFAULT_ADMIN_EMAIL)
-                    .map_err(|e| DbError::Other(e))?;
-                let phone_enc = crate::crypto::encrypt(crate::auth::DEFAULT_ADMIN_PHONE)
                     .map_err(|e| DbError::Other(e))?;
                 let hash_enc = crate::crypto::encrypt(&hash).map_err(|e| DbError::Other(e))?;
                 let now = Self::now_secs();
                 self.conn.execute(
-                    "INSERT INTO users (username, email, phone, password_hash, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    "INSERT INTO users (username, email, password_hash, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
                     params![
                         crate::auth::DEFAULT_ADMIN_USERNAME,
                         email_enc,
-                        phone_enc,
                         hash_enc,
                         now
                     ],
@@ -554,7 +593,7 @@ impl Database {
         }
         // FEAT-067：应用级配置项（KV；如「描述是否嵌入人物真名」，默认开）
         self.init_settings_schema()?;
-        // 迁移：将历史以明文存储的用户邮箱/手机号/密码哈希重加密（无历史明文则为空操作）
+        // 迁移：将历史以明文存储的用户邮箱/密码哈希重加密（无历史明文则为空操作）
         let _ = crate::auth::migrate_legacy_user_fields(self.conn());
         Ok(())
     }
@@ -2210,6 +2249,55 @@ mod tests {
 
         // 未存在路径返回 None
         assert!(db.find_any_album_by_path("/no/such/path").unwrap().is_none());
+    }
+
+    /// FEAT-153：migrate_drop_users_phone 回归 ——
+    /// 老库（含 phone 列）迁移后 phone 列消失、用户数据完整保留；
+    /// 新库（无 phone 列）重复调用应为幂等 no-op。
+    #[test]
+    fn migrate_drop_users_phone_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        // 手工造一个"老库"：带 phone 列的 users 表 + 两行数据（其一有头像）
+        conn.execute_batch(
+            "CREATE TABLE users (
+                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                 username      TEXT    NOT NULL UNIQUE,
+                 email         TEXT    NOT NULL UNIQUE,
+                 phone         TEXT    UNIQUE,
+                 password_hash TEXT    NOT NULL,
+                 created_at    INTEGER NOT NULL
+             );
+             INSERT INTO users (username, email, phone, password_hash, created_at) VALUES
+                 ('alice', 'a@x.com', '13800000000', 'hash-a', 100),
+                 ('bob',   'b@x.com', NULL,          'hash-b', 200);",
+        )
+        .unwrap();
+
+        Database::migrate_drop_users_phone(&conn).unwrap();
+
+        // phone 列已消失
+        let has_phone: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('users') WHERE name = 'phone'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!has_phone, "迁移后 users 表不应再有 phone 列");
+
+        // 数据完整保留（无 phone 列所以查其余字段）
+        let (n, alice_id): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(id) FROM users WHERE username IN ('alice','bob')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(n, 2, "两个用户都应完整保留");
+        assert_eq!(alice_id, 2, "AUTOINCREMENT id 不应重排");
+
+        // 幂等：对已迁移的新库再跑一次应为 no-op 不报错
+        Database::migrate_drop_users_phone(&conn).unwrap();
     }
 
 }

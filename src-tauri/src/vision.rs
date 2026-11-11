@@ -140,7 +140,7 @@ fn parse_tasklist_image(out: &str) -> Option<String> {
 }
 
 /// 查询 PID 的映像名（Windows tasklist / Unix /proc 的 comm）
-fn pid_image_name(pid: u32) -> Option<String> {
+pub(crate) fn pid_image_name(pid: u32) -> Option<String> {
     #[cfg(target_os = "windows")]
     {
         let out = std::process::Command::new("tasklist")
@@ -154,6 +154,28 @@ fn pid_image_name(pid: u32) -> Option<String> {
         std::fs::read_to_string(format!("/proc/{pid}/comm"))
             .ok()
             .map(|s| s.trim().to_string())
+    }
+}
+
+/// PID 的命令行是否含指定片段（FEAT-153 抽出复用：vcr / ai_studio 判属共用）。
+/// 仅开发版 python.exe 判属需要；打包版映像名唯一，不走这里。
+pub(crate) fn pid_cmdline_has(pid: u32, needle: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let script = format!(
+            "$c = (Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' | Select-Object -ExpandProperty CommandLine); if ($c -like '*{needle}*') {{ 'YES' }} else {{ 'NO' }}"
+        );
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("YES"))
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::fs::read_to_string(format!("/proc/{pid}/cmdline"))
+            .map(|c| c.contains(needle))
+            .unwrap_or(false)
     }
 }
 
@@ -174,14 +196,7 @@ fn pid_is_our_service(pid: u32) -> bool {
             Some(img) if img.eq_ignore_ascii_case("vcr-server.exe") => true,
             Some(img) if img.eq_ignore_ascii_case("python.exe") => {
                 // 开发版：映像名不唯一，必须看命令行，避免把用户的其他 python 当成服务
-                let script = format!(
-                    "$c = (Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' | Select-Object -ExpandProperty CommandLine); if ($c -like '*server.py*') {{ 'YES' }} else {{ 'NO' }}"
-                );
-                std::process::Command::new("powershell")
-                    .args(["-NoProfile", "-Command", &script])
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).contains("YES"))
-                    .unwrap_or(false)
+                pid_cmdline_has(pid, "server.py")
             }
             _ => false,
         }
@@ -232,6 +247,47 @@ fn kill_our_orphans() {
             .args(["-c", "pkill -f 'vcr-server' 2>/dev/null; pkill -f 'server.py' 2>/dev/null; true"])
             .output();
     }
+}
+
+/// 优雅停机：向 127.0.0.1:port POST /shutdown（裸 TCP 写 HTTP，不引依赖）。
+/// vcr 与 ai_studio 两服务均有该端点（python/server.py:141、ai_studio/server.py:34）。
+pub(crate) fn graceful_shutdown(port: u16) {
+    use std::io::{Read, Write};
+    let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+        return;
+    };
+    let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = s.set_write_timeout(Some(Duration::from_millis(500)));
+    let _ = s.write_all(
+        b"POST /shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    );
+    let mut buf = [0u8; 128];
+    let _ = s.read(&mut buf);
+}
+
+/// 应用退出时的识别服务清理（FEAT-153，由 lib.rs 的 RunEvent::Exit 调用）。
+///
+/// 此前应用没有任何退出钩子，点叉后 vcr-server / python server.py 残留后台。
+/// 次序：优雅 /shutdown（留它收尾）→ 短暂等待自退 → 验明正身后 taskkill /T /F
+/// （PID 复用防护）→ 孤儿口径兜底清场（仅 vcr-server.exe / 命令行含 server.py
+/// 的 python，不触碰用户自己的其他 Python 程序）。
+pub fn shutdown_on_exit(app: &tauri::AppHandle) {
+    if let Some((pid, port, _)) = load_instance(app) {
+        graceful_shutdown(port);
+        // 给服务最多 1s 自行退出（/shutdown 是优雅路径）
+        for _ in 0..10 {
+            if !pid_alive(pid) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if pid_alive(pid) && pid_is_our_service(pid) {
+            kill_pid(pid);
+        }
+        clear_instance(app);
+    }
+    // 兜底：覆盖「实例文件丢失 / 收养的外部遗留实例」
+    kill_our_orphans();
 }
 /// 服务就绪等待上限（FEAT-051 后需加载 l/m 全通道模型，DML 首次初始化较慢）
 const READY_TIMEOUT: Duration = Duration::from_secs(90);
@@ -1498,7 +1554,13 @@ static INTERP_CACHE: LazyLock<Mutex<Option<(Instant, Result<PathBuf, String>)>>>
     LazyLock::new(|| Mutex::new(None));
 const INTERP_FAIL_TTL: Duration = Duration::from_secs(30);
 
-/// 开发模式候选解释器（按优先级）：项目自带 venv → PATH 上的 python / python3
+/// 开发模式候选解释器（按优先级）：项目自带 venv → 常见安装位置的绝对路径 →
+/// PATH 上的 python / python3。
+///
+/// 为什么不直接信任 PATH：Windows「应用执行别名」会把 PATH 上的 python.exe 指向
+/// Microsoft Store 占位符（能执行、运行即退出），此时即便本机装了可用的 Anaconda /
+/// Python，裸 `python` 也只会探到占位符。这里显式补几个绝对路径兜底
+/// （BUG-2026-0918-007 的同类环境坑，本次见 BUG-2026-1111-001）。
 fn python_candidates() -> Vec<PathBuf> {
     let py = project_python_dir();
     let mut v = Vec::new();
@@ -1506,6 +1568,32 @@ fn python_candidates() -> Vec<PathBuf> {
     {
         v.push(py.join(".venv-vcr").join("Scripts").join("python.exe"));
         v.push(py.join(".venv").join("Scripts").join("python.exe"));
+        // 绝对路径兜底：顺序在项目 venv 之后、PATH 之前；仅收录真实存在的文件。
+        for key in ["USERPROFILE", "LOCALAPPDATA", "ProgramData"] {
+            if let Ok(base) = std::env::var(key) {
+                let base = PathBuf::from(base);
+                for c in [
+                    base.join("anaconda3").join("python.exe"),
+                    base.join("miniconda3").join("python.exe"),
+                    base.join("Programs").join("Python").join("Python312").join("python.exe"),
+                    base.join("Programs").join("Python").join("Python311").join("python.exe"),
+                    base.join("Programs").join("Python").join("Python310").join("python.exe"),
+                ] {
+                    if c.is_file() && !v.iter().any(|x| x == &c) {
+                        v.push(c);
+                    }
+                }
+            }
+        }
+        for c in [
+            PathBuf::from("C:\\Python312\\python.exe"),
+            PathBuf::from("C:\\Python311\\python.exe"),
+            PathBuf::from("C:\\Python310\\python.exe"),
+        ] {
+            if c.is_file() && !v.iter().any(|x| x == &c) {
+                v.push(c);
+            }
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {

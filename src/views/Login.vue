@@ -21,7 +21,7 @@ const isSubmitting = ref(false);
 async function handleLogin() {
   errorMsg.value = "";
   if (!account.value.trim()) {
-    errorMsg.value = "请输入账户名 / 邮箱 / 手机号";
+    errorMsg.value = "请输入账户名 / 邮箱";
     return;
   }
   if (!password.value) {
@@ -49,12 +49,12 @@ async function handleLogin() {
   <AuthShell title="本地相册搭子" subtitle="登录后管理你的相册空间">
     <form class="auth-form" @submit.prevent="handleLogin">
       <label class="field">
-        <span class="field-label">账户名 / 邮箱 / 手机号</span>
+        <span class="field-label">账户名 / 邮箱</span>
         <input
           v-model="account"
           class="field-input"
           type="text"
-          placeholder="输入账户名、邮箱或手机号"
+          placeholder="输入账户名或邮箱"
           autocomplete="username"
         />
       </label>

@@ -148,6 +148,8 @@ body:not(.theme-dark) .ui-widget--glass {
 .ui-widget.rows-1 { grid-row: span 1; }
 .ui-widget.rows-2 { grid-row: span 2; }
 .ui-widget.rows-3 { grid-row: span 3; }
+/* FEAT-153：竖幅锚点（那年今日贯通四行）——行高预算 4×116+3×gap */
+.ui-widget.rows-4 { grid-row: span 4; }
 
 /* 窄屏：全部降为整行，高度交给内容（仪表墙只在桌面端并排，移动端纵向排） */
 @media (max-width: 1000px) {

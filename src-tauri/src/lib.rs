@@ -122,6 +122,7 @@ use folder::commands::{
 };
 use model_dl::commands::{
     cancel_model_download,
+    detect_npu_hardware,
     get_model_sources,
     list_model_downloads,
     probe_model_sources,
@@ -646,6 +647,7 @@ pub fn run() {
             probe_model_sources,
             get_model_sources,
             set_model_sources,
+            detect_npu_hardware,
             set_vcr_gpu,
             get_vcr_threads,
             set_vcr_threads,
@@ -672,8 +674,15 @@ pub fn run() {
             ai_job_status,
             ai_cancel_job,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // FEAT-153：点叉/正常退出时终止 Python 服务，不再残留后台占资源
+            if let tauri::RunEvent::Exit = event {
+                vision::shutdown_on_exit(app);
+                ai_service::shutdown();
+            }
+        });
     // 事件循环正常退出（异常退出走 panic 钩子落盘）
     logger::log_info("==== APP EXIT ====");
 }

@@ -7,14 +7,13 @@ const auth = useAuthStore();
 
 const username = ref("");
 const email = ref("");
-const phone = ref("");
 const newPassword = ref("");
 const confirmPassword = ref("");
 const errorMsg = ref("");
 const successMsg = ref("");
 const isSubmitting = ref(false);
 
-/** 客户端校验（与后端 auth.rs 规则一致） */
+/** 客户端校验（与后端 auth.rs 规则一致：账户名 + 邮箱 双匹配） */
 function validate(): string {
   const name = username.value.trim();
   if (name.length < 2 || name.length > 30) {
@@ -22,10 +21,6 @@ function validate(): string {
   }
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.value.trim())) {
     return "邮箱格式不正确";
-  }
-  const digits = phone.value.replace(/\D/g, "");
-  if (!/^1[3-9]\d{9}$/.test(digits)) {
-    return "手机号格式不正确（需为 11 位大陆手机号）";
   }
   if (newPassword.value.length < 6 || newPassword.value.length > 64) {
     return "新密码长度需为 6-64 个字符";
@@ -50,7 +45,6 @@ async function handleReset() {
     await auth.resetPassword({
       username: username.value.trim(),
       email: email.value.trim(),
-      phone: phone.value.trim(),
       new_password: newPassword.value,
       confirm_password: confirmPassword.value,
     });
@@ -64,7 +58,7 @@ async function handleReset() {
 </script>
 
 <template>
-  <AuthShell title="忘记密码" subtitle="填写账户名、邮箱、手机号校验通过后重设密码">
+  <AuthShell title="忘记密码" subtitle="填写账户名与注册邮箱，校验通过后重设密码">
     <form class="auth-form" @submit.prevent="handleReset">
       <label class="field">
         <span class="field-label">账户名</span>
@@ -85,17 +79,6 @@ async function handleReset() {
           type="email"
           placeholder="注册时的邮箱"
           autocomplete="email"
-        />
-      </label>
-
-      <label class="field">
-        <span class="field-label">手机号</span>
-        <input
-          v-model="phone"
-          class="field-input"
-          type="tel"
-          placeholder="注册时的手机号"
-          autocomplete="tel"
         />
       </label>
 

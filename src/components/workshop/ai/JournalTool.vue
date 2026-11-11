@@ -10,6 +10,7 @@ import { dirName, joinPath } from "../../../utils/pathParts";
 import { JOURNAL_STYLES, JOURNAL_TEMPLATES } from "../../../utils/aiPresets";
 import AiPromptPanel from "./AiPromptPanel.vue";
 import AiResultPanel from "./AiResultPanel.vue";
+import AiCostHint from "./AiCostHint.vue";
 
 const props = defineProps<{ paths: string[] }>();
 const store = useAiStudioStore();
@@ -124,6 +125,8 @@ async function onCancel() {
       </button>
       <span v-if="paths.length > 10" class="ai-hint">张数较多，逐张风格化耗时较长</span>
     </div>
+
+    <AiCostHint tool="journal" :count="paths.length" />
 
     <AiResultPanel :job="job" @cancel="onCancel" />
   </section>

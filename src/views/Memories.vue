@@ -13,7 +13,7 @@
  *  - Hero：紫蓝渐变 + 关键统计（总照片/总人物/总相册/本月）
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getThumbs } from "../utils/thumbQueue";
 import { useAlbumStore } from "../stores/album";
@@ -27,6 +27,7 @@ import type { HeaderTab } from "../types/ui";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
 
 const router = useRouter();
+const route = useRoute();
 const store = useAlbumStore();
 const notify = useNotify();
 
@@ -316,6 +317,36 @@ function gotoYear(y: YearGroup) {
   router.push({ path: "/timeline", query: { year: String(y.year) } });
 }
 
+/* -------------------- 「那年今日」按天直达（概览 ?day=YYYY-MM-DD，FEAT-153） -------------------- */
+/**
+ * 概览「那年今日」widget 点击带 ?day=YYYY-MM-DD 跳到本页。
+ * 之前是泛跳 /memories，用户到不了"那一天"；现在复用月度浏览框的全部机制
+ * （懒缩略图 / ESC 拦截 / 灯箱 / 回到顶部），只是聚合口径收窄为单日。
+ * 数据未就绪、日期格式不对或那天没有照片时保持关闭，不打扰用户。
+ */
+function openDayBox(day: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
+  const items = rows.value
+    .filter((r) => (r.shoot_time || "").slice(0, 10) === day)
+    .sort((a, b) => (a.shoot_time || "").localeCompare(b.shoot_time || ""));
+  if (!items.length) return;
+  const yearsAgo = new Date().getFullYear() - Number(day.slice(0, 4));
+  const locCount = new Map<string, number>();
+  for (const it of items) if (it.location) locCount.set(it.location, (locCount.get(it.location) ?? 0) + 1);
+  let topLocation = "";
+  let topCount = 0;
+  for (const [loc, n] of locCount) if (n > topCount) { topLocation = loc; topCount = n; }
+  void openMonthBox({
+    key: day.slice(0, 7), // 复用 MonthGroup：gotoMonth 取 slice(5,7) 仍成立
+    year: Number(day.slice(0, 4)),
+    month: Number(day.slice(5, 7)),
+    label: `${yearsAgo} 年前的今天 · ${day}`,
+    items,
+    hero: pickHero(items),
+    topLocation,
+  });
+}
+
 /* -------------------- 初始化 -------------------- */
 onMounted(async () => {
   try {
@@ -332,6 +363,9 @@ onMounted(async () => {
       store.fetchAlbums().catch(() => {});
     }
     await loadThumbs(initialThumbItems());
+    // FEAT-153：概览「那年今日」?day=YYYY-MM-DD 直达当日浏览框（数据就绪后再弹）
+    const dayQuery = String(route.query.day ?? "");
+    if (dayQuery) openDayBox(dayQuery);
   } catch (e) {
     error.value = String(e);
     notify.error("加载回忆失败", String(e));

@@ -46,6 +46,16 @@ export interface AiTestResult {
 
 export type AiTool = "journal" | "beauty" | "style_transfer" | "upscale";
 
+/** 计费规则（FEAT-152 / FEAT-157 前端本地保存，仅用于「费用预估」展示，不参与后端结算） */
+export interface AiBillingRule {
+  /** 币种符号，如 ¥ / $ */
+  currency: string;
+  /** 各模型（按能力位：图像理解 / 图像编辑 / 图像超分）「每张生成」单价；0 表示未配置 */
+  modelPrices: Record<AiProviderKind, number>;
+  /** 可选备注（例如所用模型、结算口径） */
+  note?: string;
+}
+
 export type AiJobStatusKind = "queued" | "running" | "done" | "failed" | "cancelled";
 
 export interface AiJobStatus {
