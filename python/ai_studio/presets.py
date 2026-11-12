@@ -158,3 +158,50 @@ def beauty_prompt(style: str, level: str, extra: str = "") -> str:
 
 def upscale_prompt(scale: int) -> str:
     return UPSCALE_PROMPT.format(scale=scale)
+
+
+# ---------------- 智能修图：规划 / 复核 / 微调（FEAT-152 扩展） ----------------
+# 规划器可用算子目录：告诉模型有哪些白名单算子与参数，避免它凭空发明算子。
+# 实际强约束在 pipeline.validate_plan（白名单 + 参数夹取 + 顺序规范化），此文本只是「告知」。
+OP_CATALOG = """可用算子（线性执行，后一步吃前一步输出；1~4 步，多数需求单步即可）：
+- beauty：人物美颜。params: {style: natural|crisp|film, level: light|medium|strong}
+- style_transfer：调色/滤镜迁移。params: {mode: autograde|transfer, extra?: string}
+    mode=autograde 仅按意图专业调色；transfer 需在 params.referenceDesc 给出参考风格描述，否则按 autograde。
+- upscale：画质增强/超分。params: {scale: 1..4}
+顺序会被规范化为 美颜 → 调色 → 超分；只有确实需要组合时才多步，避免叠加失真。"""
+
+
+def planner_prompt(user_intent: str) -> str:
+    """给规划模型（多模态）的提示：看意图 + 照片，产出受约束 JSON 计划。"""
+    intent = (user_intent or "").strip() or "自然、得体地优化这张照片"
+    return (
+        "你是照片后期编排助手。根据用户意图和这张照片，规划一个线性、可复现的修图步骤序列。\n"
+        f"{OP_CATALOG}\n"
+        f"用户意图：{intent}\n"
+        "只输出 JSON，不要解释，格式："
+        '{"intent":"简述意图","steps":[{"op":"style_transfer","params":{"mode":"autograde","extra":"..."}}]}'
+    )
+
+
+def verifier_prompt(intent: str, extra: str = "") -> str:
+    """给复核模型（多模态）的提示：对照意图判断结果是否达标，只输出 {pass,issues}。"""
+    intent = (intent or "").strip() or "自然、得体地优化这张照片"
+    tail = f" 额外要求：{extra.strip()}。" if (extra or "").strip() else ""
+    return (
+        "你是严格的修图质量审核员。这是修图结果，请对照用户意图判断是否已经达标。"
+        "只关注是否满足意图，以及是否有明显失真、畸形、文字乱码、构图或主体被破坏。\n"
+        f"用户意图：{intent}。{tail}\n"
+        '只输出 JSON，不要解释：{"pass": true/false, "issues": ["问题1","问题2"]}；'
+        "pass 为 true 时 issues 留空。"
+    )
+
+
+def refine_prompt(issues, extra: str = "") -> str:
+    """给图像编辑模型的微调提示：按复核问题点重绘，保持身份/构图。"""
+    items = [str(x).strip() for x in (issues or []) if str(x).strip()]
+    lines = "；".join(f"（{i + 1}）{t}" for i, t in enumerate(items)) or "整体再自然、干净一些"
+    tail = f" 若无冲突可兼顾：{extra.strip()}。" if (extra or "").strip() else ""
+    return (
+        f"在保持原始主体身份、构图与真实感的前提下，修正这张图上的以下问题：{lines}。"
+        f"不要改变人物长相，不要新增文字或水印，输出修好的整张图。{tail}"
+    )

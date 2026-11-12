@@ -44,7 +44,16 @@ export interface AiTestResult {
   latencyMs: number;
 }
 
-export type AiTool = "journal" | "beauty" | "style_transfer" | "upscale";
+export type AiTool =
+  | "journal"
+  | "beauty"
+  | "style_transfer"
+  | "upscale"
+  | "smart_edit"
+  // 本地增强（FEAT-163）：纯本机推理，免费、离线
+  | "film_sim"
+  | "color_transfer"
+  | "restore";
 
 /** 计费规则（FEAT-152 / FEAT-157 前端本地保存，仅用于「费用预估」展示，不参与后端结算） */
 export interface AiBillingRule {
@@ -76,4 +85,35 @@ export interface AiRunRequest {
   prompt: string;
   outputDir: string;
   options?: Record<string, unknown>;
+}
+
+/* ---------------- 本地增强（FEAT-163）资源状态 ---------------- */
+
+export interface LocalModelEntry {
+  id: string;
+  name: string;
+  file: string;
+  /** 期望大小（MB），仅用于展示 */
+  sizeMb: number;
+  /** 下载地址（GitHub release） */
+  url: string;
+  /** 是否核心模型（缺失即无法使用对应能力） */
+  required: boolean;
+  path: string;
+  exists: boolean;
+  sizeBytes: number;
+}
+
+export interface LocalLutEntry {
+  id: string;
+  name: string;
+  file: string;
+  exists: boolean;
+}
+
+export interface LocalModelsStatus {
+  models: LocalModelEntry[];
+  luts: LocalLutEntry[];
+  modelsDir: string;
+  lutsDir: string;
 }

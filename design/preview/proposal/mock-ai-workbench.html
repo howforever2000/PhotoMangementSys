@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>AI 修图工作台 · 效果图</title>
+<link rel="stylesheet" href="../../../src/assets/tokens.css" />
+<style>
+  :root{
+    --font: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; }
+  body{
+    font-family:var(--font);
+    background:var(--c-bg);
+    background-image:var(--wash-1), var(--wash-2);
+    background-attachment:fixed;
+    color:var(--c-fg);
+    letter-spacing:.006em;
+    font-variant-numeric:tabular-nums;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------- 顶栏 ---------- */
+  .topbar{
+    height:56px; display:flex; align-items:center; gap:18px;
+    padding:0 var(--gutter);
+    border-bottom:1px solid var(--c-rule);
+  }
+  .brand{ display:flex; align-items:center; gap:9px; font-size:var(--fs-title); font-weight:650; }
+  .logo{ width:18px; height:18px; border-radius:5px;
+    background:linear-gradient(135deg,#d4a24a,#8a5f22);
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.25); }
+  .crumb{ font-size:var(--fs-body); color:var(--c-fg-2); }
+  .crumb i{ font-style:normal; color:var(--c-fg-3); margin:0 6px; }
+  .crumb b{ color:var(--c-fg); font-weight:560; }
+  .top-right{ margin-left:auto; display:flex; align-items:center; gap:12px; }
+  .btn-ghost{ font:inherit; font-size:var(--fs-body); color:var(--c-fg-2);
+    background:transparent; border:1px solid var(--ctrl-line); border-radius:var(--r-ui);
+    padding:8px 14px; cursor:pointer; }
+  .btn-primary{ font:inherit; font-size:var(--fs-body); font-weight:560; color:#221803;
+    background:var(--c-accent); border:0; border-radius:var(--r-ui);
+    padding:9px 16px; cursor:pointer; }
+  .avatar{ width:26px; height:26px; border-radius:999px;
+    background:linear-gradient(135deg,#5a6a86,#2b3448); box-shadow:inset 0 0 0 1px rgba(255,255,255,.16); }
+
+  /* ---------- 三栏 ---------- */
+  .workbench{
+    display:grid; grid-template-columns:236px minmax(0,1fr) 322px;
+    height:calc(100vh - 56px);
+  }
+
+  /* 左栏：导入 / 工具 / 输出 */
+  .rail{ padding:18px 16px 24px; overflow:auto; border-right:1px solid var(--c-rule); }
+  .rail h4{ margin:0 0 10px; font-size:var(--fs-label); letter-spacing:var(--ls-label);
+    text-transform:uppercase; color:var(--c-fg-3); font-weight:650; }
+  .rail .sec{ margin-bottom:22px; }
+  .ws-count{ display:flex; align-items:baseline; gap:6px; margin-bottom:10px; }
+  .ws-count b{ font-size:var(--fs-metric); font-weight:340; letter-spacing:var(--ls-metric); }
+  .ws-count span{ font-size:var(--fs-meta); color:var(--c-fg-3); }
+  .io-btns{ display:flex; flex-direction:column; gap:6px; }
+  .io-btn{ display:flex; align-items:center; gap:9px; font:inherit; font-size:var(--fs-body);
+    color:var(--c-fg-2); background:transparent; border:1px solid var(--ctrl-line);
+    border-radius:var(--r-ui); padding:9px 11px; cursor:pointer; text-align:left; }
+  .io-btn .ic{ color:var(--c-accent); font-size:13px; }
+  .src{ margin-top:10px; display:flex; flex-direction:column; gap:6px; }
+  .src-item{ display:flex; align-items:center; gap:8px; font-size:var(--fs-meta); color:var(--c-fg-2); }
+  .src-item .dot{ width:5px; height:5px; border-radius:999px; background:var(--c-fg-3); }
+
+  .tools{ display:flex; flex-direction:column; gap:1px; }
+  .tool{ position:relative; display:flex; align-items:center; gap:10px; height:34px;
+    padding:0 9px 0 11px; border-radius:var(--r-ui); font-size:var(--fs-body);
+    color:var(--c-fg-2); cursor:pointer; }
+  .tool .ti{ width:16px; text-align:center; opacity:.8; }
+  .tool:hover{ background:var(--hover); color:var(--c-fg); }
+  .tool.on{ color:var(--c-fg); font-weight:560; }
+  .tool.on::before{ content:""; position:absolute; left:0; top:6px; bottom:6px; width:2px;
+    border-radius:2px; background:var(--c-accent); }
+  .tool .tag-new{ margin-left:auto; font-size:9.5px; color:var(--c-accent); letter-spacing:.08em; }
+
+  .out-card{ border:1px solid var(--ctrl-line); border-radius:var(--r-ui); padding:11px 12px; }
+  .out-row{ display:flex; align-items:center; gap:9px; font-size:var(--fs-body); color:var(--c-fg); }
+  .sw{ margin-left:auto; width:30px; height:17px; border-radius:999px; background:var(--c-accent);
+    position:relative; }
+  .sw::after{ content:""; position:absolute; right:2px; top:2px; width:13px; height:13px;
+    border-radius:999px; background:#fff; }
+  .out-map{ margin-top:8px; font-size:var(--fs-meta); color:var(--c-fg-3); line-height:1.5; }
+  .out-map code{ font-family:var(--font); color:var(--c-fg-2); }
+
+  /* 中栏 */
+  .stage{ display:flex; flex-direction:column; min-width:0; padding:16px var(--sp-5) 0; overflow:auto; }
+  .stage-head{ display:flex; align-items:center; gap:14px; margin-bottom:14px; }
+  .stage-head .title{ font-size:var(--fs-head); letter-spacing:var(--ls-head); font-weight:650; }
+  .stage-head .sub{ font-size:var(--fs-meta); color:var(--c-fg-3); }
+  .seg{ margin-left:auto; display:flex; gap:2px; background:var(--slip-fill);
+    border:1px solid var(--c-rule); border-radius:999px; padding:3px; }
+  .seg span{ font-size:var(--fs-meta); color:var(--c-fg-2); padding:5px 12px; border-radius:999px; cursor:pointer; }
+  .seg span.on{ background:var(--hover); color:var(--c-fg); }
+
+  /* 前后对比 */
+  .compare{ margin-bottom:18px; }
+  .cmp-head{ display:flex; align-items:baseline; gap:10px; margin-bottom:8px; }
+  .cmp-head b{ font-size:var(--fs-label); letter-spacing:var(--ls-label); text-transform:uppercase;
+    color:var(--c-fg-3); font-weight:650; }
+  .cmp-head span{ font-size:var(--fs-meta); color:var(--c-fg-3); }
+  .cmp-body{ position:relative; height:286px; border-radius:var(--r-ui); overflow:hidden;
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.09); }
+  .cmp-img{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  .cmp-img.before{ filter:saturate(.72) brightness(.96) contrast(.96); }
+  .cmp-img.after{ clip-path:inset(0 0 0 50%); filter:saturate(1.28) contrast(1.08) sepia(.12) brightness(1.05) hue-rotate(-6deg); }
+  .cmp-divider{ position:absolute; top:0; bottom:0; left:50%; width:2px; background:rgba(255,255,255,.9);
+    box-shadow:0 0 10px rgba(0,0,0,.5); }
+  .cmp-divider .handle{ position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    width:34px; height:34px; border-radius:999px; background:var(--float-fill);
+    border:1px solid var(--float-border); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px);
+    display:grid; place-items:center; color:#fff; font-size:14px; }
+  .cmp-tag{ position:absolute; top:10px; font-size:9.5px; letter-spacing:.1em; color:#fff;
+    padding:3px 8px; border-radius:999px; background:rgba(0,0,0,.42); }
+  .cmp-tag.left{ left:10px; } .cmp-tag.right{ right:10px; }
+
+  /* 群图网格 */
+  .grid-head{ display:flex; align-items:center; gap:12px; margin:2px 0 10px; }
+  .grid-head .gh{ font-size:var(--fs-body); color:var(--c-fg-2); }
+  .grid-head .gh b{ color:var(--c-fg); font-weight:560; }
+  .grid-head .filters{ margin-left:auto; display:flex; gap:14px; font-size:var(--fs-meta); color:var(--c-fg-3); }
+  .grid-head .filters .on{ color:var(--c-fg); }
+  .grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; padding-bottom:76px; }
+  .tile{ position:relative; margin:0; cursor:pointer; }
+  .thumb{ position:relative; aspect-ratio:1.5; border-radius:var(--r-cover); overflow:hidden;
+    box-shadow:var(--cover-inset), var(--cover-topline); background:#15141a; }
+  .thumb img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .thumb .flat{ filter:saturate(.7) brightness(.95); }
+  .thumb .warm{ filter:saturate(1.2) contrast(1.05) sepia(.08) brightness(1.04); }
+  .chk{ position:absolute; left:7px; top:7px; width:16px; height:16px; border-radius:4px;
+    border:1.5px solid rgba(255,255,255,.85); background:rgba(0,0,0,.25); }
+  .chk.on{ background:var(--c-accent); border-color:var(--c-accent); }
+  .chk.on::after{ content:"✓"; position:absolute; inset:0; display:grid; place-items:center;
+    color:#221803; font-size:11px; font-weight:700; }
+  .status{ position:absolute; right:7px; top:7px; font-size:9.5px; letter-spacing:.04em;
+    padding:2px 7px; border-radius:999px; color:#fff; background:rgba(0,0,0,.5); }
+  .status.done{ background:rgba(74,120,74,.92); }
+  .status.run{ background:rgba(30,27,34,.82); }
+  .status.fail{ background:rgba(160,70,70,.92); }
+  .status.wait{ background:rgba(0,0,0,.45); color:var(--c-fg-2); }
+  .pbar{ position:absolute; left:0; right:0; bottom:0; height:3px; background:rgba(0,0,0,.35); }
+  .pbar i{ display:block; height:100%; background:var(--c-accent); }
+  .cap{ padding-top:8px; font-size:var(--fs-meta); color:var(--c-fg-2);
+    display:flex; align-items:baseline; gap:6px; }
+  .cap em{ font-style:normal; color:var(--c-fg-3); }
+  .tile.dim .thumb img{ filter:grayscale(.4) brightness(.85); }
+
+  /* 批量条（浮层） */
+  .batchbar{ position:fixed; left:calc(236px + (100vw - 236px - 322px)/2); transform:translateX(-50%);
+    bottom:22px; display:flex; align-items:center; gap:20px; padding:12px 16px 12px 20px;
+    border-radius:999px; z-index:var(--z-sticky);
+    background:var(--float-fill); border:1px solid var(--float-border); box-shadow:var(--float-shadow);
+    -webkit-backdrop-filter:blur(var(--float-blur)) saturate(var(--float-saturate));
+    backdrop-filter:blur(var(--float-blur)) saturate(var(--float-saturate)); }
+  .batchbar .info{ font-size:var(--fs-body); color:var(--c-fg-2); }
+  .batchbar .info b{ color:var(--c-fg); font-weight:560; }
+  .batchbar .cost{ font-size:var(--fs-meta); color:var(--c-fg-3); }
+  .batchbar .cost b{ color:var(--c-accent); font-weight:560; }
+  .batchbar .go{ font:inherit; font-size:var(--fs-body); font-weight:560; color:#221803;
+    background:var(--c-accent); border:0; border-radius:999px; padding:10px 20px; cursor:pointer; }
+
+  /* 右栏：工具参数 */
+  .panel{ border-left:1px solid var(--c-rule); padding:18px 18px 24px; overflow:auto; }
+  .p-title{ display:flex; align-items:center; gap:8px; font-size:var(--fs-title); font-weight:650; }
+  .p-title .badge{ font-size:9.5px; color:var(--c-accent); letter-spacing:.1em; font-weight:650;
+    border:1px solid var(--c-accent); border-radius:999px; padding:2px 7px; }
+  .p-sub{ margin-top:6px; font-size:var(--fs-meta); color:var(--c-fg-3); line-height:1.55; }
+  .field{ margin-top:18px; }
+  .field > label{ display:block; font-size:var(--fs-label); letter-spacing:var(--ls-label);
+    text-transform:uppercase; color:var(--c-fg-3); font-weight:650; margin-bottom:8px; }
+  .intent{ width:100%; min-height:78px; resize:none; font:inherit; font-size:var(--fs-body);
+    line-height:1.55; color:var(--c-fg); background:var(--slip-fill);
+    border:1px solid var(--ctrl-line); border-radius:var(--r-ui); padding:10px 12px; }
+  .chips{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .chip{ font-size:var(--fs-meta); color:var(--c-fg-2); border:1px solid var(--ctrl-line);
+    border-radius:999px; padding:4px 10px; cursor:pointer; }
+  .chip:hover{ border-color:var(--c-accent); color:var(--c-fg); }
+  .slider{ display:flex; align-items:center; gap:12px; }
+  .track{ position:relative; flex:1; height:3px; border-radius:999px; background:var(--c-gauge-track); }
+  .track i{ position:absolute; left:0; top:0; height:100%; width:64%; background:var(--c-accent); border-radius:999px; }
+  .track b{ position:absolute; left:64%; top:50%; transform:translate(-50%,-50%);
+    width:13px; height:13px; border-radius:999px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.5); }
+  .slider .val{ font-size:var(--fs-meta); color:var(--c-fg-2); width:34px; text-align:right; }
+  .toggle-row{ display:flex; align-items:center; gap:10px; font-size:var(--fs-body); color:var(--c-fg-2); }
+  .toggle-row .sw2{ margin-left:auto; width:30px; height:17px; border-radius:999px;
+    background:var(--c-accent); position:relative; }
+  .toggle-row .sw2::after{ content:""; position:absolute; right:2px; top:2px; width:13px; height:13px;
+    border-radius:999px; background:#fff; }
+  .costbox{ margin-top:6px; padding:11px 12px; border-radius:var(--r-ui);
+    background:var(--slip-fill); box-shadow:inset 0 0 0 1px var(--c-rule); }
+  .costbox .line{ display:flex; justify-content:space-between; font-size:var(--fs-meta); color:var(--c-fg-2); }
+  .costbox .line b{ color:var(--c-fg); font-weight:560; }
+  .costbox .line.total b{ color:var(--c-accent); }
+  .costbox .note{ margin-top:7px; font-size:var(--fs-meta); color:var(--c-fg-3); }
+  .apply{ margin-top:14px; width:100%; font:inherit; font-size:var(--fs-body); font-weight:560;
+    color:#221803; background:var(--c-accent); border:0; border-radius:var(--r-ui);
+    padding:11px; cursor:pointer; }
+  .hr{ height:1px; background:var(--c-rule); margin:20px 0 0; }
+  .export .row{ display:flex; justify-content:space-between; font-size:var(--fs-body); color:var(--c-fg-2);
+    padding:6px 0; }
+  .export .row b{ color:var(--c-fg); font-weight:560; }
+
+  /* Toast */
+  .toast{ position:fixed; right:22px; bottom:22px; z-index:var(--z-toast);
+    display:flex; align-items:center; gap:10px; padding:11px 16px; border-radius:var(--r-ui);
+    background:var(--float-fill); border:1px solid var(--float-border); box-shadow:var(--float-shadow);
+    -webkit-backdrop-filter:blur(var(--float-blur)); backdrop-filter:blur(var(--float-blur));
+    font-size:var(--fs-body); color:var(--c-fg); }
+  .toast .ok{ width:18px; height:18px; border-radius:999px; background:var(--c-accent);
+    color:#221803; display:grid; place-items:center; font-size:11px; font-weight:700; }
+  .toast em{ font-style:normal; color:var(--c-fg-2); }
+</style>
+</head>
+<body class="theme-dark">
+  <header class="topbar">
+    <div class="brand"><span class="logo"></span>本地相册搭子</div>
+    <div class="crumb">创意工坊 <i>/</i> <b>AI 修图工作台</b></div>
+    <div class="top-right">
+      <button class="btn-ghost">导出设置</button>
+      <button class="btn-primary">导出 12 张</button>
+      <div class="avatar"></div>
+    </div>
+  </header>
+
+  <div class="workbench">
+    <!-- 左栏 -->
+    <aside class="rail">
+      <div class="sec">
+        <h4>本次工作集</h4>
+        <div class="ws-count"><b>42</b><span>张 · 来自 2 个来源</span></div>
+        <div class="io-btns">
+          <button class="io-btn"><span class="ic">＋</span>从相册选择</button>
+          <button class="io-btn"><span class="ic">▤</span>导入文件夹</button>
+          <button class="io-btn"><span class="ic">⊕</span>添加照片</button>
+        </div>
+        <div class="src">
+          <div class="src-item"><span class="dot"></span>相册「旅行 2024」 · 28 张</div>
+          <div class="src-item"><span class="dot"></span>文件夹「D:\Photos\婚礼」 · 14 张</div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h4>AI 工具</h4>
+        <div class="tools">
+          <div class="tool on"><span class="ti">✦</span>智能修图<span class="tag-new">新</span></div>
+          <div class="tool"><span class="ti">◑</span>人物美颜</div>
+          <div class="tool"><span class="ti">◐</span>滤镜迁移</div>
+          <div class="tool"><span class="ti">⤢</span>画质增强</div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h4>输出</h4>
+        <div class="out-card">
+          <div class="out-row"><span>自动导入相册</span><span class="sw"></span></div>
+          <div class="out-map">映射到 <code>D:\Photos\创意工坊</code><br/>成品写入即入册「创意工坊」</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 中栏 -->
+    <main class="stage">
+      <div class="stage-head">
+        <span class="title">工作集</span>
+        <span class="sub">42 张 · 已处理 21 · 进行中 2 · 失败 1</span>
+        <div class="seg"><span class="on">网格</span><span>单张</span></div>
+      </div>
+
+      <div class="compare">
+        <div class="cmp-head"><b>前后对比</b><span>IMG_2033.JPG · 智能修图 · 效果预览</span></div>
+        <div class="cmp-body">
+          <img class="cmp-img before" src="../../../covers/login-sunset.jpg" alt="原图" />
+          <img class="cmp-img after" src="../../../covers/login-sunset.jpg" alt="效果" />
+          <div class="cmp-divider"><span class="handle">⇔</span></div>
+          <span class="cmp-tag left">原图</span>
+          <span class="cmp-tag right">效果</span>
+        </div>
+      </div>
+
+      <div class="grid-head">
+        <span class="gh">工作集图片 <b>42</b></span>
+        <div class="filters"><span class="on">全部 42</span><span>已完成 21</span><span>失败 1</span></div>
+      </div>
+
+      <div class="grid">
+        <!-- 12 -->
+        <figure class="tile">
+          <div class="thumb"><img class="warm" src="../../../covers/login-sunset.jpg" style="object-position:40% 50%" />
+            <span class="chk on"></span><span class="status done">✓ 完成</span></div>
+          <figcaption class="cap">IMG_2033.JPG <em>12.4 MB</em></figcaption>
+        </figure>
+        <figure class="tile">
+          <div class="thumb"><img class="warm" src="../../../covers/cover.jpg" style="object-position:20% 40%" />
+            <span class="chk on"></span><span class="status done">✓ 完成</span></div>
+          <figcaption class="cap">IMG_2034.JPG <em>9.8 MB</em></figcaption>
+        </figure>
+        <figure class="tile">
+          <div class="thumb"><img class="flat" src="../../../covers/login-sunset.jpg" style="object-position:70% 50%" />
+            <span class="chk on"></span><span class="status run">处理中 62%</span>
+            <div class="pbar"><i style="width:62%"></i></div></div>
+          <figcaption class="cap">IMG_2035.JPG <em>11.2 MB</em></figcaption>
+        </figure>
+        <figure class="tile dim">
+          <div class="thumb"><img src="../../../covers/cover.jpg" style="object-position:60% 60%" />
+            <span class="chk"></span><span class="status wait">待处理</span></div>
+          <figcaption class="cap">IMG_2036.JPG <em>8.1 MB</em></figcaption>
+        </figure>
+
+        <figure class="tile">
+          <div class="thumb"><img class="warm" src="../../../covers/cover.jpg" style="object-position:80% 30%" />
+            <span class="chk on"></span><span class="status done">✓ 完成</span></div>
+          <figcaption class="cap">IMG_2037.JPG <em>13.6 MB</em></figcaption>
+        </figure>
+        <figure class="tile">
+          <div class="thumb"><img class="flat" src="../../../covers/login-sunset.jpg" style="object-position:15% 70%" />
+            <span class="chk"></span><span class="status fail">⚠ 失败</span></div>
+          <figcaption class="cap">IMG_2038.JPG <em>10.0 MB</em></figcaption>
+        </figure>
+        <figure class="tile">
+          <div class="thumb"><img class="warm" src="../../../covers/login-sunset.jpg" style="object-position:55% 45%" />
+            <span class="chk on"></span><span class="status done">✓ 完成</span></div>
+          <figcaption class="cap">IMG_2039.JPG <em>12.9 MB</em></figcaption>
+        </figure>
+        <figure class="tile dim">
+          <div class="thumb"><img src="../../../covers/cover.jpg" style="object-position:35% 55%" />
+            <span class="chk"></span><span class="status wait">待处理</span></div>
+          <figcaption class="cap">IMG_2040.JPG <em>7.4 MB</em></figcaption>
+        </figure>
+
+        <figure class="tile">
+          <div class="thumb"><img class="warm" src="../../../covers/login-sunset.jpg" style="object-position:85% 55%" />
+            <span class="chk on"></span><span class="status done">✓ 完成</span></div>
+          <figcaption class="cap">IMG_2041.JPG <em>11.7 MB</em></figcaption>
+        </figure>
+        <figure class="tile">
+          <div class="thumb"><img class="warm" src="../../../covers/cover.jpg" style="object-position:50% 20%" />
+            <span class="chk on"></span><span class="status done">✓ 完成</span></div>
+          <figcaption class="cap">IMG_2042.JPG <em>14.2 MB</em></figcaption>
+        </figure>
+        <figure class="tile">
+          <div class="thumb"><img class="flat" src="../../../covers/login-sunset.jpg" style="object-position:30% 30%" />
+            <span class="chk on"></span><span class="status run">处理中 28%</span>
+            <div class="pbar"><i style="width:28%"></i></div></div>
+          <figcaption class="cap">IMG_2043.JPG <em>9.1 MB</em></figcaption>
+        </figure>
+        <figure class="tile dim">
+          <div class="thumb"><img src="../../../covers/cover.jpg" style="object-position:75% 70%" />
+            <span class="chk"></span><span class="status wait">待处理</span></div>
+          <figcaption class="cap">IMG_2044.JPG <em>8.8 MB</em></figcaption>
+        </figure>
+      </div>
+    </main>
+
+    <!-- 右栏 -->
+    <aside class="panel">
+      <div class="p-title">智能修图 <span class="badge">AI</span></div>
+      <div class="p-sub">用一句话描述想要的效果，AI 规划步骤并执行；只输出成品，不覆盖原图。</div>
+
+      <div class="field">
+        <label>修图意图</label>
+        <textarea class="intent">把照片调成温暖通透的胶片感，皮肤自然通透一点，天空压暗但保留层次。</textarea>
+        <div class="chips">
+          <span class="chip">胶片暖调</span><span class="chip">通透人像</span>
+          <span class="chip">夜景降噪</span><span class="chip">通透风景</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>强度</label>
+        <div class="slider"><div class="track"><i></i><b></b></div><span class="val">64%</span></div>
+      </div>
+
+      <div class="field">
+        <div class="toggle-row">反思复核（多轮自检）<span class="sw2"></span></div>
+      </div>
+
+      <div class="field">
+        <label>花费预估</label>
+        <div class="costbox">
+          <div class="line"><span>单张（理解 + 编辑 + 复核）</span><b>¥0.03</b></div>
+          <div class="line"><span>工作集 42 张</span><b>¥1.26</b></div>
+          <div class="line total"><span>本次预估合计</span><b>≈ ¥1.26</b></div>
+          <div class="note">按调用次数估算；外部模型计费，实际以账单为准。</div>
+        </div>
+      </div>
+
+      <button class="apply">批量套用到 42 张</button>
+
+      <div class="hr"></div>
+      <div class="field export">
+        <label>导出</label>
+        <div class="row"><span>格式</span><b>JPG · 品质高</b></div>
+        <div class="row"><span>尺寸</span><b>保持原图</b></div>
+        <div class="row"><span>命名</span><b>{原名}_edit</b></div>
+        <div class="row"><span>自动导入</span><b>「创意工坊」相册</b></div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="batchbar">
+    <div class="info"><b>12</b> 张已选</div>
+    <div class="cost">预计 <b>≈ ¥0.36</b> · 复用意图「胶片暖调」</div>
+    <button class="go">批量套用</button>
+  </div>
+
+  <div class="toast">
+    <span class="ok">✓</span>
+    已导出 12 张并自动导入 <em>「创意工坊」相册</em>
+  </div>
+</body>
+</html>

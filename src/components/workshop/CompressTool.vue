@@ -13,17 +13,20 @@
  *
  * 后端契约见 `src-tauri/src/tools.rs::image_compress`（输出永远是副本，不覆盖原图）。
  */
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useNotify } from "../../composables/useNotify";
-import type { CompressOutcome, CompressedItem } from "../../types/tools";
+import { useCompressTaskStore } from "../../stores/compressTask";
+import type { CompressedItem } from "../../types/tools";
 import { baseName, dirName, joinPath } from "../../utils/pathParts";
 import { formatBytes, savedPercent } from "../../utils/bytes";
 
 const props = defineProps<{ paths: string[] }>();
 
 const notify = useNotify();
+/** 压缩任务状态提在 store：切走页面任务在后端继续，切回来靠它恢复进度/结果 */
+const task = useCompressTaskStore();
 
 /** 压缩方式：按质量（固定 q）/ 按大小（后端搜索质量凑到目标 KB） */
 const mode = ref<"quality" | "size">("size");
@@ -48,8 +51,43 @@ watch(
   { immediate: true },
 );
 
-const running = ref(false);
-const outcome = ref<CompressOutcome | null>(null);
+const running = computed(() => task.running);
+const snap = computed(() => task.snapshot);
+
+/* 重新进入页面：拉一次后端权威状态；若仍在跑就续轮询，否则读回已完成的结果 */
+onMounted(async () => {
+  try {
+    await task.refresh();
+  } catch {
+    /* 后端不可达时保持现状 */
+  }
+  if (task.running) task.startPolling();
+});
+
+// 离开页面只停轮询、保留状态（任务在后端继续，回来再续）
+onUnmounted(() => task.disposeKeepState());
+
+// 任务从「运行中」收敛到终态时给一次提示（部分结果保留在 snapshot 里）
+watch(
+  () => task.snapshot.status,
+  (st, prev) => {
+    if (prev !== "running") return;
+    const s = task.snapshot;
+    if (st === "done") {
+      const pct = savedPercent(s.totalBefore, s.totalAfter);
+      notify.success(
+        "压缩完成",
+        `${s.items.length} 张 · ${formatBytes(s.totalBefore)} → ${formatBytes(s.totalAfter)}` +
+          (pct ? `（${pct}）` : "") +
+          (s.failed.length ? `，${s.failed.length} 张失败` : ""),
+      );
+    } else if (st === "failed") {
+      notify.error("压缩失败", s.error || "请检查照片是否可读");
+    } else if (st === "cancelled") {
+      notify.warning("已停止", `已完成 ${s.items.length}/${s.total} 张，保留已产出的部分结果`);
+    }
+  },
+);
 
 const cropOptions = [
   { value: "", label: "保持原比例" },
@@ -105,42 +143,29 @@ async function run() {
     notify.warning("还没有输出目录", "先选择压缩结果要放在哪个文件夹");
     return;
   }
-  running.value = true;
-  outcome.value = null;
   try {
-    const res = await invoke<CompressOutcome>("image_compress", {
-      paths: props.paths,
-      destDir: destDir.value,
-      opts: {
-        targetKb: mode.value === "size" ? safeTargetKb.value : null,
-        quality: mode.value === "quality" ? safeQuality.value : null,
-        maxEdge: Number(maxEdge.value) || 0,
-        cropAspect: cropAspect.value || null,
-      },
+    // 提交为后端进程级任务，立即返回；进度/结果由 store 轮询对齐
+    await task.start(props.paths, destDir.value, {
+      targetKb: mode.value === "size" ? safeTargetKb.value : null,
+      quality: mode.value === "quality" ? safeQuality.value : null,
+      maxEdge: Number(maxEdge.value) || 0,
+      cropAspect: cropAspect.value || null,
     });
-    outcome.value = res;
-    if (res.items.length) {
-      const pct = savedPercent(res.totalBefore, res.totalAfter);
-      notify.success(
-        "压缩完成",
-        `${res.items.length} 张 · ${formatBytes(res.totalBefore)} → ${formatBytes(res.totalAfter)}` +
-          (pct ? `（${pct}）` : "") +
-          (res.failed.length ? `，${res.failed.length} 张失败` : ""),
-      );
-    } else {
-      notify.error("一张都没成功", res.failed[0]?.reason ?? "请检查照片是否可读");
-    }
   } catch (e) {
     notify.error("压缩失败", String(e));
-  } finally {
-    running.value = false;
   }
 }
 
+/** 停止当前后台任务（粒度=单张之间；已产出的部分结果保留） */
+async function onStop() {
+  await task.cancel();
+}
+
 async function openDest() {
-  if (!destDir.value) return;
+  const dir = destDir.value || snap.value.destDir;
+  if (!dir) return;
   try {
-    await invoke("open_folder", { path: destDir.value });
+    await invoke("open_folder", { path: dir });
   } catch (e) {
     notify.error("打不开目录", String(e));
   }
@@ -210,12 +235,22 @@ async function openDest() {
       输出为 JPEG 副本（透明底铺白、不含拍摄信息），原图不动；同目录重名自动加后缀。
     </p>
 
+    <!-- 运行中：进度条 + 当前张 + 停止（切页任务不会断，回到本页自动续上） -->
+    <div v-if="running" class="ct-progress">
+      <div class="ct-bar"><i :style="{ width: task.percent + '%' }" /></div>
+      <span class="ct-progress-text">
+        {{ task.statusText }} · {{ snap.done }}/{{ snap.total }}
+        <template v-if="snap.current"> · {{ baseName(snap.current) }}</template>
+      </span>
+      <button class="btn btn-sm" type="button" @click="onStop">停止</button>
+    </div>
+
     <div class="ct-actions">
-      <button class="run-btn" type="button" :disabled="!canRun" @click="run">
-        {{ running ? "处理中…" : `压缩 ${paths.length} 张` }}
+      <button v-if="!running" class="run-btn" type="button" :disabled="!canRun" @click="run">
+        {{ `压缩 ${paths.length} 张` }}
       </button>
       <button
-        v-if="destDir"
+        v-if="destDir || snap.destDir"
         class="btn btn-sm"
         type="button"
         :disabled="running"
@@ -228,21 +263,22 @@ async function openDest() {
       </span>
     </div>
 
-    <!-- 结果：摘要 + 逐张明细（不折叠，用户要核对自己那几张） -->
-    <div v-if="outcome" class="res">
+    <!-- 结果：摘要 + 逐张明细（不折叠，用户要核对自己那几张；停止后仍保留已完成的） -->
+    <div v-if="task.hasResult" class="res">
       <div class="res-sum">
-        <strong>{{ outcome.items.length }} 张完成</strong>
+        <strong>{{ snap.items.length }} 张完成</strong>
         <span class="res-dim">
-          {{ formatBytes(outcome.totalBefore) }} → {{ formatBytes(outcome.totalAfter) }}
+          {{ formatBytes(snap.totalBefore) }} → {{ formatBytes(snap.totalAfter) }}
         </span>
-        <span v-if="savedPercent(outcome.totalBefore, outcome.totalAfter)" class="res-save">
-          {{ savedPercent(outcome.totalBefore, outcome.totalAfter) }}
+        <span v-if="savedPercent(snap.totalBefore, snap.totalAfter)" class="res-save">
+          {{ savedPercent(snap.totalBefore, snap.totalAfter) }}
         </span>
-        <span v-if="outcome.failed.length" class="res-err">{{ outcome.failed.length }} 张失败</span>
+        <span v-if="snap.failed.length" class="res-err">{{ snap.failed.length }} 张失败</span>
+        <span v-if="snap.cancelled" class="res-err">已停止</span>
       </div>
 
       <ul class="res-list">
-        <li v-for="it in outcome.items" :key="it.dst" class="res-row">
+        <li v-for="it in snap.items" :key="it.dst" class="res-row">
           <span class="res-name" :title="it.dst">{{ baseName(it.src) }}</span>
           <span class="res-dim">{{ it.width }} × {{ it.height }}</span>
           <span class="res-size">
@@ -255,8 +291,8 @@ async function openDest() {
         </li>
       </ul>
 
-      <ul v-if="outcome.failed.length" class="res-list res-list-fail">
-        <li v-for="f in outcome.failed" :key="f.src" class="res-row">
+      <ul v-if="snap.failed.length" class="res-list res-list-fail">
+        <li v-for="f in snap.failed" :key="f.src" class="res-row">
           <span class="res-name" :title="f.src">{{ baseName(f.src) }}</span>
           <span class="res-err">{{ f.reason }}</span>
         </li>
@@ -512,6 +548,42 @@ async function openDest() {
 
 .res-list-fail .res-row {
   grid-template-columns: minmax(120px, 1fr) auto;
+}
+
+/* ---------- 后台进度（运行中） ---------- */
+.ct-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0 4px;
+}
+
+.ct-bar {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--hover, rgba(120, 120, 130, 0.12));
+  overflow: hidden;
+}
+
+.ct-bar > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  border-radius: inherit;
+  background: var(--color-primary);
+  transition: width var(--dur-2) var(--ease-out);
+}
+
+.ct-progress-text {
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 窄窗（≤1080）：参数从"四列并排"改成"标签左 / 控件右"的表单行。

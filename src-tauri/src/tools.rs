@@ -57,7 +57,7 @@ pub struct CompressOptions {
     pub crop_aspect: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompressedItem {
     pub src: String,
@@ -69,7 +69,7 @@ pub struct CompressedItem {
     pub quality: u8,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompressFailure {
     pub src: String,
@@ -185,7 +185,7 @@ pub async fn image_compress(
 /* ============================ 服务层 ============================ */
 
 /// 压一张：解码 → 裁切 → 缩放 → 编码 → 落盘
-fn compress_one(
+pub(crate) fn compress_one(
     src: &Path,
     dest: &Path,
     opts: &CompressOptions,
@@ -334,7 +334,7 @@ fn to_rgb_white(img: &DynamicImage) -> image::RgbImage {
 }
 
 /// `1:1` / `4:3` … → `(1,1)` / `(4,3)`；非法返回 None
-fn parse_aspect(s: &str) -> Option<(u32, u32)> {
+pub(crate) fn parse_aspect(s: &str) -> Option<(u32, u32)> {
     let (a, b) = s.split_once(':')?;
     let w: u32 = a.trim().parse().ok()?;
     let h: u32 = b.trim().parse().ok()?;

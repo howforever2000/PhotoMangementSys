@@ -33,7 +33,7 @@
  * 所以输入不该由每个工具自己再选一遍（`PhotoTray.vue` 顶部有详细理由）。
  */
 import { computed, onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import AppHeader from "../components/ui/AppHeader.vue";
 import PhotoTray from "../components/workshop/PhotoTray.vue";
@@ -44,17 +44,24 @@ import JournalTool from "../components/workshop/ai/JournalTool.vue";
 import BeautyTool from "../components/workshop/ai/BeautyTool.vue";
 import StyleTransferTool from "../components/workshop/ai/StyleTransferTool.vue";
 import UpscaleTool from "../components/workshop/ai/UpscaleTool.vue";
+import SmartEditTool from "../components/workshop/ai/SmartEditTool.vue";
+import FilmSimTool from "../components/workshop/ai/FilmSimTool.vue";
+import ColorTransferTool from "../components/workshop/ai/ColorTransferTool.vue";
+import RestoreTool from "../components/workshop/ai/RestoreTool.vue";
+import { useWorkshopUiStore, type WorkshopToolId } from "../stores/workshopUi";
+import { useCompressTaskStore } from "../stores/compressTask";
+import { useAiStudioStore } from "../stores/aiStudio";
 import "../assets/ai-tool.css";
 
 const route = useRoute();
+const router = useRouter();
 
-type ToolId =
-  | "compress"
-  | "ocr"
-  | "ai_journal"
-  | "ai_beauty"
-  | "ai_style"
-  | "ai_upscale";
+/** 进入独立的「AI 修图工作台」视图（群图批量修图；本页保持原样） */
+function goWorkbench() {
+  router.push("/workshop/workbench");
+}
+
+type ToolId = WorkshopToolId;
 
 interface ToolDef {
   id: ToolId;
@@ -89,6 +96,31 @@ const processTools: ToolDef[] = [
   },
 ];
 
+/** 本地增强：纯本机推理（免费、离线），与「处理」类同属本机处理 */
+const localTools: ToolDef[] = [
+  {
+    id: "local_film",
+    title: "胶片模拟",
+    desc: "内置多款胶片 LUT，一键套用，可加颗粒与暗角，输出新 JPG",
+    icon: "style",
+    ready: true,
+  },
+  {
+    id: "local_ctransfer",
+    title: "参考图调色",
+    desc: "把参考图的色调与影调迁移到素材图，输出新 JPG",
+    icon: "style",
+    ready: true,
+  },
+  {
+    id: "local_restore",
+    title: "画质修复",
+    desc: "Real-ESRGAN 2×/4× 超分 + 人脸修复，输出高清 JPG 副本",
+    icon: "enhance",
+    ready: true,
+  },
+];
+
 /** AI 创作类：调用外部 OpenAI 兼容模型（理解 / 编辑 / 超分） */
 const aiTools: ToolDef[] = [
   {
@@ -119,18 +151,59 @@ const aiTools: ToolDef[] = [
     icon: "upscale",
     ready: true,
   },
+  {
+    id: "ai_smart",
+    title: "智能修图",
+    desc: "一句话描述效果，AI 规划修图步骤并逐步执行；可开启多轮反思，只输出终图",
+    icon: "enhance",
+    ready: true,
+  },
 ];
 
-const allTools = computed<ToolDef[]>(() => [...processTools, ...aiTools]);
+const allTools = computed<ToolDef[]>(() => [...processTools, ...localTools, ...aiTools]);
 const isAiTool = (id: ToolId) => id.startsWith("ai_");
 
 /* ---------------- 工具状态 / 素材托盘 ---------------- */
 
-/** 默认落在压缩：进页面就能干活，不先看一遍空白 */
-const active = ref<ToolId>("compress");
-const tray = ref<string[]>([]);
+/** 工具选择与素材托盘提在 store：离开页面再回来不重置，任务状态也不丢 */
+const ui = useWorkshopUiStore();
+const active = computed<ToolId>({
+  get: () => ui.active,
+  set: (v) => {
+    ui.active = v;
+  },
+});
+const tray = computed<string[]>({
+  get: () => ui.tray,
+  set: (v) => {
+    ui.tray = v;
+  },
+});
 /** AI 模型设置弹窗 */
 const settingsOpen = ref(false);
+
+/* 左侧运行中圆点：哪个工具还有后台作业在跑（压缩 store + AI store 各自暴露状态） */
+const compressTask = useCompressTaskStore();
+const aiStore = useAiStudioStore();
+const AI_TOOL_NAME: Record<string, string> = {
+  ai_journal: "journal",
+  ai_beauty: "beauty",
+  ai_style: "style_transfer",
+  ai_upscale: "upscale",
+  ai_smart: "smart_edit",
+  local_film: "film_sim",
+  local_ctransfer: "color_transfer",
+  local_restore: "restore",
+};
+function toolBusy(id: ToolId): boolean {
+  if (id === "compress") return compressTask.running;
+  const name = AI_TOOL_NAME[id];
+  if (!name) return false;
+  const jobId = aiStore.activeJobId(name);
+  if (!jobId) return false;
+  const j = aiStore.jobs[jobId];
+  return !!j && (j.status === "queued" || j.status === "running");
+}
 
 const activeDef = computed<ToolDef>(
   () => allTools.value.find((t) => t.id === active.value) ?? processTools[0],
@@ -215,7 +288,25 @@ function selectTool(t: ToolDef) {
           >
             <span class="side-ico"><ToolIcon :name="t.icon" :size="15" /></span>
             <span class="side-name">{{ t.title }}</span>
+            <span v-if="toolBusy(t.id)" class="side-dot" title="任务运行中" aria-label="任务运行中" />
             <span v-if="!t.ready" class="side-tag">规划</span>
+          </button>
+        </div>
+
+        <div class="side-group">
+          <h3 class="side-h">本地增强</h3>
+          <button
+            v-for="t in localTools"
+            :key="t.id"
+            class="side-item"
+            :class="{ on: active === t.id }"
+            type="button"
+            :title="t.desc"
+            @click="selectTool(t)"
+          >
+            <span class="side-ico"><ToolIcon :name="t.icon" :size="15" /></span>
+            <span class="side-name">{{ t.title }}</span>
+            <span v-if="toolBusy(t.id)" class="side-dot" title="任务运行中" aria-label="任务运行中" />
           </button>
         </div>
 
@@ -232,6 +323,7 @@ function selectTool(t: ToolDef) {
           >
             <span class="side-ico"><ToolIcon :name="t.icon" :size="15" /></span>
             <span class="side-name">{{ t.title }}</span>
+            <span v-if="toolBusy(t.id)" class="side-dot" title="任务运行中" aria-label="任务运行中" />
           </button>
         </div>
       </aside>
@@ -247,6 +339,19 @@ function selectTool(t: ToolDef) {
           </button>
         </header>
 
+        <!-- 入口：AI 修图工作台（独立视图，群图批量修图） -->
+        <section class="wb-entry">
+          <span class="wb-entry-ico" aria-hidden="true">🖼</span>
+          <div class="wb-entry-body">
+            <span class="wb-entry-kicker">新 · 群图批量修图</span>
+            <h3 class="wb-entry-title">AI 修图工作台</h3>
+            <p class="wb-entry-desc">
+              把一组照片一次导入，逐张套用同一种修图风格，前后对比着看，成品自动导入「创意工坊」相册，原图不动。
+            </p>
+          </div>
+          <button class="wb-entry-btn" type="button" @click="goWorkbench">进入工作台 →</button>
+        </section>
+
         <!-- 素材托盘：所有工具共用一份输入 -->
         <PhotoTray :paths="tray" @add="addPhotos" @remove="removePhoto" @clear="clearTray" />
 
@@ -258,6 +363,12 @@ function selectTool(t: ToolDef) {
         <BeautyTool v-else-if="active === 'ai_beauty'" :paths="tray" />
         <StyleTransferTool v-else-if="active === 'ai_style'" :paths="tray" />
         <UpscaleTool v-else-if="active === 'ai_upscale'" :paths="tray" />
+        <SmartEditTool v-else-if="active === 'ai_smart'" :paths="tray" />
+
+        <!-- 本地增强：纯本机推理 -->
+        <FilmSimTool v-else-if="active === 'local_film'" :paths="tray" />
+        <ColorTransferTool v-else-if="active === 'local_ctransfer'" :paths="tray" />
+        <RestoreTool v-else-if="active === 'local_restore'" :paths="tray" />
 
         <!-- 规划中：不假装能跑，把"将来会怎么用"写清楚 -->
         <section v-else class="planned">
@@ -399,6 +510,28 @@ function selectTool(t: ToolDef) {
   font-variant-numeric: tabular-nums;
 }
 
+/* 运行中圆点：轻微脉动，只提示"这个工具还有后台任务在跑"，不抢工具名的注意力 */
+.side-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  flex-shrink: 0;
+  animation: side-dot-pulse 1.6s ease-out infinite;
+}
+
+@keyframes side-dot-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--c-accent) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
 /* ---------- 右栏 ---------- */
 .ws-main {
   min-width: 0;
@@ -436,6 +569,77 @@ function selectTool(t: ToolDef) {
   color: var(--fg-2);
   line-height: 1.5;
   min-width: 0;
+}
+
+/* ---------- 入口：AI 修图工作台 ---------- */
+.wb-entry {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border-radius: var(--r-ui);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--c-accent) 8%, transparent), transparent 70%),
+    var(--hover, rgba(120, 120, 130, 0.05));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-accent) 32%, var(--c-rule));
+}
+
+.wb-entry-ico {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  font-size: 20px;
+  color: var(--c-accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-accent) 40%, transparent);
+  flex-shrink: 0;
+}
+
+.wb-entry-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.wb-entry-kicker {
+  display: inline-block;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--c-accent);
+  font-weight: 600;
+}
+
+.wb-entry-title {
+  margin: 2px 0 3px;
+  font-size: var(--fs-title);
+  font-weight: var(--fw-strong);
+  color: var(--fg);
+}
+
+.wb-entry-desc {
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.55;
+  color: var(--fg-2);
+}
+
+.wb-entry-btn {
+  flex-shrink: 0;
+  height: 34px;
+  padding: 0 16px;
+  border-radius: var(--r-pill);
+  border: none;
+  background: var(--c-accent);
+  color: #1a1608;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter var(--dur-2) var(--ease-out);
+}
+.wb-entry-btn:hover {
+  filter: brightness(1.06);
 }
 
 /* ---------- 规划中 ---------- */

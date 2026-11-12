@@ -181,3 +181,13 @@ python/models/current_accel.json
 /.visual/githome/
 /.visual/_commitmsg*.txt
 /.visual/push*.log
+
+# 本地增强（FEAT-163）：模型二进制 / 原型实验产物不入库（体积大，可由面板下载或脚本重建）
+python/models/local/
+.venv-proto/
+prototype/grade_lab/models/
+prototype/grade_lab/out/
+prototype/grade_lab/samples/
+# pip 下载临时目录（本地安装残留，勿入库）
+pip-metadata-*/
+pip-unpack-*/

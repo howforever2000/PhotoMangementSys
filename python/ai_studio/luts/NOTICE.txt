@@ -1,0 +1,23 @@
+Fujifilm Camera Profiles — 3D LUT (.cube)
+=========================================
+
+来源 (Source): https://github.com/abpy/FujifilmCameraProfiles
+作者 (Author): abpy（及原始 LUT 贡献者）
+许可 (License): Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+                国际许可协议 (CC BY-NC-SA 4.0)
+                https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+用途 (Usage):
+  本项目「本地相册搭子」创意工坊「胶片模拟」内置滤镜。
+  仅限非商业用途；如再分发，请保留本 NOTICE，并以相同方式共享 (ShareAlike)。
+
+文件 (Files in this directory):
+  provia.cube           — Fujifilm Provia / Standard
+  velvia.cube           — Fujifilm Velvia / Vivid
+  astia.cube            — Fujifilm Astia / Soft
+  classic_chrome.cube   — Fujifilm Classic Chrome
+  classic_neg.cube      — Fujifilm Classic Negative
+  eterna.cube           — Fujifilm Eterna / Cinema
+  nostalgic_neg.cube    — Fujifilm Nostalgic Neg.
+
+说明：以上为 sRGB 输入的 Adobe .cube 3D LUT（red 变化最快，轴序 [b,g,r]）。

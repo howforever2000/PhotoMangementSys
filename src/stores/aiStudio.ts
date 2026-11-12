@@ -20,6 +20,7 @@ import type {
   AiSettings,
   AiSettingsInput,
   AiTestResult,
+  LocalModelsStatus,
 } from "../types/ai";
 
 /** 轮询句柄（非响应式，放模块级） */
@@ -29,6 +30,14 @@ export const useAiStudioStore = defineStore("aiStudio", () => {
   const settings = ref<AiSettings | null>(null);
   const settingsLoading = ref(false);
   const jobs = ref<Record<string, AiJobStatus>>({});
+  /**
+   * 每个工具「当前挂着的作业」（工具名 → jobId）。
+   *
+   * 为什么不放组件局部 ref：作业是长任务，切走工具/切走页面再回来要能看到仍在跑、
+   * 或在跑完后看到结果。把「该工具当前作业」也提进 store（脱离组件生命周期），
+   * 工具组件重挂载时按工具名取回 jobId 重连即可（配合后端进程级作业）。
+   */
+  const activeByTool = ref<Record<string, string>>({});
 
   /* ---------------- 设置 ---------------- */
 
@@ -56,6 +65,11 @@ export const useAiStudioStore = defineStore("aiStudio", () => {
       kind,
       provider: provider ?? null,
     });
+  }
+
+  /** 本地增强资源状态（模型是否就绪 + 下载地址、内置 LUT 清单）。 */
+  async function localModels(): Promise<LocalModelsStatus> {
+    return await invoke<LocalModelsStatus>("local_models_status");
   }
 
   /* ---------------- 作业 ---------------- */
@@ -113,6 +127,7 @@ export const useAiStudioStore = defineStore("aiStudio", () => {
       warnings: [],
       error: null,
     };
+    activeByTool.value[req.tool] = jobId;
     startPoll(jobId);
     return jobId;
   }
@@ -129,15 +144,30 @@ export const useAiStudioStore = defineStore("aiStudio", () => {
     return jobId ? jobs.value[jobId] ?? null : null;
   }
 
+  /** 该工具当前挂着的 jobId（无则 null） */
+  function activeJobId(tool: string): string | null {
+    return activeByTool.value[tool] ?? null;
+  }
+
+  /** 该工具当前作业的状态（用于工具重挂载后重连展示） */
+  function jobOfTool(tool: string): AiJobStatus | null {
+    const id = activeByTool.value[tool];
+    return id ? jobs.value[id] ?? null : null;
+  }
+
   return {
     settings,
     settingsLoading,
     jobs,
+    activeByTool,
     loadSettings,
     saveSettings,
     testProvider,
+    localModels,
     run,
     cancel,
     jobOf,
+    activeJobId,
+    jobOfTool,
   };
 });

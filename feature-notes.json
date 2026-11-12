@@ -6239,7 +6239,86 @@
    "keywords": ["全局概览", "方案A", "竖幅锚点", "rows-4", "地点年份拆分", "那年今日", "按天跳转", "day参数", "月度浏览框", "MonthGroup", "概览缓存", "SWR", "localStorage", "overview.snapshot.v1", "先渲染后校验", "签名缓存", "today_md", "OverviewPane", "Memories"],
    "created_at": "2026-11-11T16:46:00+08:00",
    "updated_at": "2026-11-11T16:46:00+08:00"
- }
+ },
+  {
+   "id": "FEAT-162",
+   "name": "AI 修图工作台（独立视图）：创意工坊新增「进入工作台」批量修图空间，复用 smart_edit 作业 + 产物自动导入相册",
+   "module": "src/views/AiWorkbench.vue（新建）、src/stores/workbench.ts（新建）、src/router/index.ts、src/views/Workshop.vue（入口卡）",
+   "status": "done",
+   "date": "2026-11-12",
+   "purpose": "用户需求：给创意工坊图像编辑做一个类 Lightroom 的图像编辑工作台。先出效果图确认结构，用户定「现在模式依然保留，新加一个工作台视图，可以进入工作台」（m00117），随后「执行」（m00163）。定位：原创意工坊 /workshop 工具台零改动；新增独立视图 /workshop/workbench 做群图批量修图——一次导入一组 → 逐图状态 → 前后对比 → 批量套用同一修图风格 → 导出并自动导入「创意工坊」相册（映射），原图不动。可行性结论：AI 修图引擎 FEAT-152 已具备，缺的只是 LR 式外壳，v1 ≈5~8 人日；发布前仍需把 ai-server.exe 补进 release.tauri.conf.json 的 bundle.resources（否则装机版 AI 修图起不来，同 FEAT-150 删 studio-server.exe 的坑）。",
+   "implementation": {
+    "路由与入口": "src/router/index.ts 新增 /workshop/workbench（name ai-workbench，懒加载 AiWorkbench.vue）；src/views/Workshop.vue 加 useRouter + goWorkbench()，在 main-head 之后、PhotoTray 之前加金色入口卡「AI 修图工作台 · 群图批量修图 / 进入工作台 →」，原工坊其余不动。",
+    "工作集状态（workbench.ts）": "defineStore('workbench')：WbItem{path,name,status:idle|queued|running|done|failed,progress,outputPath?,error?}；state items/selected/runningBatch/prompt/strength(64)/reflect(true)/rounds(1)/outputDir/albumDir/albumName('创意工坊')/autoImport；getters total/doneCount/runningCount/failedCount/selectedCount/busy；actions addPaths(去重+默认勾选)/removePath/clearAll/patch/toggleSelect/selectAll/clearSelection。状态提到 store 因 router-view 无 keep-alive，切页不丢进度。",
+    "视图（AiWorkbench.vue）": "AppHeader + 返回创意工坊面包屑；三栏 grid 232/1fr/300。左栏工作集数 + 三导入（文件多选 / 导入文件夹→invoke scan_album_photos 列目录图 / 载入工坊素材 workshopUi.tray）+ 输出（autoImport、albumDir、outputDir，pickDir 目录选择）。中栏 前后对比（slider 用 clip-path inset 分屏，afterSrc 取 outputPath）+ 群图网格（勾选/状态徽标/进度条/文件名，点选设当前）。右栏 意图 textarea + 预设 chips + 强度 + reflect/rounds + 导出 spec + 估费 + 批量套用/取消。底部浮动批量条。",
+    "批量套用与回填": "applyBatch：确认弹窗后 ai.run({tool:'smart_edit',paths,prompt,outputDir,options:{reflect,rounds}})，设 runningBatch 并置 queued；watch 作业 `${status}|${progress}|${outputs.length}` → running 回填 running+progress、done 按 outputs 顺序回填 outputPath 并 afterBatchDone、failed/cancelled 置 failed。复用 aiStudio 700ms 轮询与 jobOfTool('smart_edit')。",
+    "自动导入相册（映射）": "afterBatchDone：autoImport && albumDir 时 ensureAlbum()（fetchAlbums 按路径规整匹配，无则 createAlbum{name,path,description}），再 try contentStore.scanAlbumContent(id) 让成品入库（VCR 未启动时降级，打开相册可再扫），最后 fetchAlbums + toast。映射本质=固定输出目录建 folder/相册记录，成品写入即入册。",
+    "估费": "useAiBilling modelPrice('vision'/'edit')；每张 v=1+(reflect?rounds:0)、e=1+(reflect?max(0,rounds-1):0)，总额=(v*vision+e*edit)*张数；未配单价提示去创意工坊「模型设置」填计费。"
+   },
+   "highlights": "原创意工坊零改动，新增独立视图 + 入口卡，两页互补（单图精修 vs 群图批量）；复用现有 smart_edit 作业与相册/扫描命令，前端即可完成映射，未改 Rust；工作集状态提到 Pinia，切页不丢进度与参数。",
+   "tests": "npx vue-tsc --noEmit 0 错误；npx vite build 成功（342 modules，产物含 AiWorkbench chunk；沙箱下 esbuild spawn EPERM 需 danger-full-access 才能跑 vite build）。未做真人界面点击联调（需 tauri dev + 已登录 + 配置外部模型）。",
+   "related_files": [
+    "src/views/AiWorkbench.vue",
+    "src/stores/workbench.ts",
+    "src/router/index.ts",
+    "src/views/Workshop.vue"
+   ],
+   "keywords": ["AI修图工作台", "Lightroom", "批量修图", "群图", "smart_edit", "AiWorkbench", "workbench", "相册映射", "自动导入", "创意工坊", "前后对比", "scan_album_photos", "vite build"],
+   "created_at": "2026-11-12T14:00:00+08:00",
+   "updated_at": "2026-11-12T14:00:00+08:00"
+  },
+  {
+   "id": "FEAT-163",
+   "name": "创意工坊 · 本地增强三工具：胶片模拟 / 参考图调色 / 画质修复（纯本机 ONNX + LUT，离线免费）",
+   "module": "python/ai_studio/{lutcube,colortransfer,facedetect,localmodels,config,server}.py、python/ai_studio/workflows/{film_sim,color_transfer,restore}.py、python/ai_studio/luts/*.cube、src-tauri/src/ai_studio.rs、src-tauri/src/lib.rs、src/types/ai.ts、src/stores/aiStudio.ts、src/stores/workshopUi.ts、src/utils/aiPresets.ts、src/composables/useAiBilling.ts、src/views/Workshop.vue、src/components/workshop/ai/{FilmSimTool,ColorTransferTool,RestoreTool,OutputDirField,LocalModelHint}.vue",
+   "status": "done",
+   "date": "2026-11-12",
+   "purpose": "用户要三功能（非商用开源）：1) 胶片模拟 2) 参考图颜色迁移 3) 通用超分/真实场景修复（含人脸），RAW 不考虑；要求轻量、可离线、轻薄本核显可跑、不做 LR 职责，并明确「创意工坊里面提供模型下载链接」（m00308）。定位为创意工坊新增「本地增强」组（与图像压缩同属本机处理），纯本机推理、免费、不上传。",
+   "implementation": {
+    "架构": "重计算全在 Python ai_studio；新增 4 个纯 numpy/onnxruntime 模块 + 3 个 workflow 并注册进 REGISTRY；Rust 只在 ai_studio.rs 的 match req.tool 加 film_sim|color_transfer|restore => {} 免 provider 分支并新增 local_models_status 命令（转调 Python GET /local/models）；前端复用 aiStudio store 的 700ms 轮询与 AiResultPanel，新增本地增强组与三组件，local_* 归「本机处理」。",
+    "胶片模拟": "lutcube.py 解析 Adobe .cube（red 最快 → 轴序 [b,g,r]）并三线性插值；workflows/film_sim.py 套内置 LUT + 强度/颗粒/暗角；内置 7 个 abpy/FujifilmCameraProfiles 富士 sRGB LUT（provia/velvia/astia/classic_chrome/classic_neg/eterna/nostalgic_neg，CC-BY-NC-SA 非商用）。",
+    "参考图调色": "colortransfer.py 提供 rgb_to_lab/lab_to_rgb + Reinhard 均值方差迁移 + 逐通道直方图匹配 + build_cube_text 导出 .cube；workflows/color_transfer.py 取 options.referencePath，method=reinhard|histogram，strength，exportCube。",
+    "画质修复": "localmodels.py 惰性加载 onnxruntime（DirectML→CPU 回退），run_esrgan 分块 4×、run_gfpgan 512、detect_faces + restore_faces 羽化贴回；restore.py 先 ESRGAN x4（可选缩到 2×），face 开且检测到人脸再 GFPGAN；长边>2000px 先缩小控体积。模型 real_esrgan_x4.onnx(69MB)/gfpgan_1.4.onnx(340MB) 从 facefusion-assets models-3.0.0 下载，缺失明确报错不假跑。",
+    "资源与下载": "config.py 增 LOCAL_MODELS/LUTS 清单与 local_model_path/lut_path；server.py 增 GET /local/models 返回模型 exists/sizeBytes/url/path + LUT 清单 + modelsDir/lutsDir；前端 LocalModelHint.vue 展示就绪/缺失 + openUrl 下载 + open_folder 打开模型目录。"
+   },
+   "highlights": [
+    "本地三工具零新前端依赖：复用 aiStudio store 轮询与 AiResultPanel，只加一个 tool 分支与组件；Rust 只需放行 tool 名 + 一个状态命令。",
+    "人脸检测（SCRFD det_10g）需周边上下文：紧裁 512 人脸最高分仅 0.336 不检出，补边到 1.8× 后 0.88 稳定检出——真实照片有场景上下文，正常可检出。",
+    ".cube 轴序坑：Adobe 规范 red 变化最快，扁平索引 k=r+N*g+N^2*b，reshape 后数组轴序为 [b,g,r]，务必用 lut[b,g,r] 取样。",
+    "LUT 走 CC-BY-NC-SA：仅非商用可用；发布包须附 NOTICE 归属（python/ai_studio/luts/NOTICE.txt）。",
+    "GPU 走 DirectML 需 onnxruntime-directml；本机 CPU provider 联调：ESRGAN 200×123→4× 约 6.8s、GFPGAN 512 约 3.1s。"
+   ],
+   "tests": "python 单测 prototype/grade_lab/test_local.py：lut size32、ct、film_sim/color_transfer 产出文件、restore face=False/True 均成功；目视验收四对比图 prototype/grade_lab/out/demo/{film,ct,sr,face}_compare.jpg；npx vue-tsc --noEmit 0 错误；cargo check EXIT=0 NO_ERRORS。",
+   "related_files": [
+    "python/ai_studio/lutcube.py",
+    "python/ai_studio/colortransfer.py",
+    "python/ai_studio/facedetect.py",
+    "python/ai_studio/localmodels.py",
+    "python/ai_studio/config.py",
+    "python/ai_studio/server.py",
+    "python/ai_studio/workflows/film_sim.py",
+    "python/ai_studio/workflows/color_transfer.py",
+    "python/ai_studio/workflows/restore.py",
+    "python/ai_studio/workflows/__init__.py",
+    "python/ai_studio/luts/NOTICE.txt",
+    "src-tauri/src/ai_studio.rs",
+    "src-tauri/src/lib.rs",
+    "src/types/ai.ts",
+    "src/stores/aiStudio.ts",
+    "src/stores/workshopUi.ts",
+    "src/utils/aiPresets.ts",
+    "src/composables/useAiBilling.ts",
+    "src/views/Workshop.vue",
+    "src/components/workshop/ai/FilmSimTool.vue",
+    "src/components/workshop/ai/ColorTransferTool.vue",
+    "src/components/workshop/ai/RestoreTool.vue",
+    "src/components/workshop/ai/OutputDirField.vue",
+    "src/components/workshop/ai/LocalModelHint.vue"
+   ],
+   "keywords": ["本地增强", "胶片模拟", "LUT", "cube", "参考图调色", "Reinhard", "直方图匹配", "颜色迁移", "超分", "Real-ESRGAN", "GFPGAN", "人脸修复", "onnxruntime", "DirectML", "SCRFD", "det_10g", "离线", "免费", "创意工坊"],
+   "created_at": "2026-11-12T16:55:00+08:00",
+   "updated_at": "2026-11-12T16:55:00+08:00"
+  }
  ],
- "updated": "2026-11-11T16:46:00+08:00"
+ "updated": "2026-11-12T16:55:00+08:00"
 }

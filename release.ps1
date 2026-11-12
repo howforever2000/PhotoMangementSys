@@ -3,6 +3,7 @@
 #
 # 流程：
 #   1. 构建 VCR 视觉识别微服务单文件 exe（python/build_vcr_exe.ps1）
+#   1b. 构建 AI 创作微服务单文件 exe（python/build_ai_exe.ps1）→ ai-server.exe
 #   2. 校验/补齐模型文件（python/models/，download_models.py 下载 face+ocr+clip；
 #      cls/det 需 ultralytics 导出，缺失则给出提示）
 #   3. 校验前端构建依赖（node_modules）
@@ -19,13 +20,15 @@
 #   powershell -ExecutionPolicy Bypass -File release.ps1 [-SkipExe] [-SkipModels]
 #
 # 可选参数：
-#   -SkipExe    : 跳过 PyInstaller 重建（用 python/dist/vcr-server.exe 现有产物）
+#   -SkipExe    : 跳过 VCR PyInstaller 重建（用 python/dist/vcr-server.exe 现有产物）
+#   -SkipAiExe  : 跳过 AI PyInstaller 重建（用 python/dist/ai-server.exe 现有产物）
 #   -SkipModels : 跳过模型校验（不推荐，MSI 将不含模型）
 # ============================================================================
 
 param(
     [string]$Mirror = "https://pypi.tuna.tsinghua.edu.cn/simple",
     [switch]$SkipExe,
+    [switch]$SkipAiExe,
     [switch]$SkipModels
 )
 
@@ -45,6 +48,20 @@ if ($SkipExe) {
     Write-Host "[1/5] 构建 VCR 微服务 exe..." -ForegroundColor Green
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PythonDir "build_vcr_exe.ps1") -Mirror $Mirror
     if ($LASTEXITCODE -ne 0) { throw "VCR exe 构建失败" }
+}
+
+# --- 1b. 构建 AI 创作微服务 exe（FEAT-152 打包修复）---
+if ($SkipAiExe) {
+    Write-Host "[1b/5] 跳过 AI exe 构建（使用现有 python/dist/ai-server.exe）" -ForegroundColor Yellow
+} else {
+    Write-Host "[1b/5] 构建 AI 创作微服务 exe..." -ForegroundColor Green
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PythonDir "build_ai_exe.ps1") -Mirror $Mirror
+    if ($LASTEXITCODE -ne 0) { throw "AI 创作服务 exe 构建失败" }
+}
+# 预检：release 配置已声明 ai/ai-server.exe，产物缺失会让 tauri build 在打包阶段失败
+$AiExe = Join-Path $PythonDir "dist\ai-server.exe"
+if (-not (Test-Path $AiExe)) {
+    throw "缺少 AI 创作服务产物：$AiExe（请先运行 python/build_ai_exe.ps1，或确认 -SkipAiExe 下已有产物）"
 }
 
 # --- 2. 校验模型 ---

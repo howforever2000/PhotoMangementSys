@@ -5417,7 +5417,85 @@
       "created_at": "2026-11-11T15:09:00+08:00",
       "fixed_at": "2026-11-11T15:09:00+08:00",
       "updated_at": "2026-11-11T15:09:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1112-001",
+      "date": "2026-11-12",
+      "status": "fixed",
+      "title": "装机版 AI 创作/修图全部不可用：ai-server.exe 未进 bundle.resources，且 project_python_dir 用 CARGO_MANIFEST_DIR 把构建机路径写死",
+      "module": "发布打包 / AI 创作微服务（FEAT-152）· src-tauri/release.tauri.conf.json · src-tauri/src/ai_service.rs · python/build_ai_exe.ps1 · release.ps1",
+      "symptom": [
+        "装机版（MSI/NSIS）打开任意 AI 创作工具（美颜/滤镜迁移/超分/主题手账/智能修图）或 AI 修图工作台批量，服务起不来",
+        "开发机一切正常 —— 典型的『我这能跑』；仅安装包版本失效",
+        "release 日志报「AI 创作服务脚本缺失：D:\\…\\python\\ai_studio\\server.py」（含构建机绝对路径）或「启动 AI 创作服务失败」"
+      ],
+      "root_cause": {
+        "summary": "两层叠加：① release.tauri.conf.json 的 bundle.resources 只声明 vcr-server.exe，无 ai/ai-server.exe；② spawn 拿不到内置 exe 时回退开发分支，project_python_dir() 用 env!(CARGO_MANIFEST_DIR) 把构建机源码路径写进二进制，用户机无此目录 → 报错。",
+        "detail": [
+          "ai_service.rs spawn 先找 resource_dir()/ai/ai-server.exe，缺失即回退 `python -m ai_studio.server`（cwd=python）",
+          "project_python_dir() 原实现 PathBuf::from(env!(\"CARGO_MANIFEST_DIR\")).parent().join(\"python\") —— 编译期宏，release 泄露构建机路径，且违反 devpath.rs:16-22 纪律（BUG-2026-1013-001 同类）",
+          "python/ 下只有 vcr-server.spec/build_vcr_exe.ps1，无 ai 的 spec/构建脚本，dist 无 ai-server.exe；release.ps1 全程只处理 VCR",
+          "与 FEAT-150 删调色台同因：studio-server.exe 没进 bundle.resources，装机版算子通道是死的"
+        ]
+      },
+      "evidence_log": [
+        "release.tauri.conf.json resources 原只有 vcr/vcr-server.exe + 7 个 vcr 模型",
+        "ai_service.rs:152-159 resource_exe = resource_dir/ai/ai-server.exe.filter(is_file)；缺失回退 python -m ai_studio.server",
+        "报错原文：AI 创作服务脚本缺失：{}（开发版请确认项目 python/ai_studio 存在）"
+      ],
+      "solution": [
+        "新增 python/ai_studio_entry.py（顶层启动器，导入 ai_studio.server 保留包上下文）+ python/ai-studio.spec + python/requirements-ai-packaging.txt（纯 ASCII）+ python/build_ai_exe.ps1（.venv-ai，输出 dist/ai-server.exe，只清 ai 自身产物不动 vcr-server.exe）",
+        "release.tauri.conf.json / .no-models.json / -nomodel.json 的 bundle.resources 均加 \"../python/dist/ai-server.exe\": \"ai/ai-server.exe\"",
+        "release.ps1 加 1b 步构建 ai-server.exe（-SkipAiExe 可跳过）+ 产物预检；第 5 步自检按 release 配置自动覆盖 ai/ai-server.exe",
+        "ai_service.rs project_python_dir() 改走 crate::devpath::dev_project_dir().join(\"python\")；缺组件报错改 dev_component_missing_err(\"AI 创作服务脚本\",\"ai/ai-server.exe\")，release 下不再拼路径；spawn 失败文案补打包/开发两路提示"
+      ],
+      "prevention": [
+        "任何随包下发的 Python 微服务，必须同时具备：spec + 构建脚本 + release 配置 resources 条目 + release.ps1 构建/自检 —— 四件齐套，否则装机版必瘫",
+        "生产 Rust 代码一律不得直接 env!(CARGO_MANIFEST_DIR)，只能走 devpath::dev_project_dir()（release 返回空路径）",
+        "新增微服务时对照 vision.rs（VCR）的完整落地清单逐一核对，避免只做开发分支"
+      ],
+      "keywords": ["打包", "bundle.resources", "ai-server.exe", "CARGO_MANIFEST_DIR", "devpath", "PyInstaller", "ai_studio", "FEAT-152", "装机版", "FEAT-150"],
+      "created_at": "2026-11-12T14:20:00+08:00",
+      "updated_at": "2026-11-12T14:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1112-002",
+      "date": "2026-11-12",
+      "status": "fixed",
+      "title": "开发包扫描死循环：VCR 误用缺 onnxruntime 的 Anaconda 解释器，import 即崩→poll_alive 无限超时",
+      "module": "开发运行环境 / VCR 解释器解析 · src-tauri/src/vision.rs · python/.venv-vcr",
+      "symptom": [
+        "开发包点『扫描』后日志无限刷 [PERF] ensure 请求 / poll_alive 等待中 / poll_alive 超时（约 27s×3 轮，单次 ensure 87s），扫描任务卡死",
+        "app.log 出现 [VCR:py] import onnxruntime as ort → ModuleNotFoundError: No module named 'onnxruntime'"
+      ],
+      "root_cause": {
+        "summary": "resolve_python_interpreter 的探针 INTERP_PROBE 只 import fastapi,uvicorn，不校验 onnxruntime；项目 venv 缺失时唯一通过探针的是 Anaconda 3.14.6（有 fastapi、无 onnxruntime），server.py 在绑定端口前 import onnxruntime 崩溃 → 端口永不监听 → poll_alive 超时、C 段重试 3 轮、ensure 失败，前端扫描反复触发 ensure 形成死循环。",
+        "detail": [
+          "app.log:1386 解释器解析成功 | 候选=C:\\Users\\Admin\\anaconda3\\python.exe；1394-1395 import onnxruntime ModuleNotFoundError",
+          "python\\.venv-vcr 与 .venv 均不存在（BUG-2026-1111-001 遗留：venv 丢失）；PATH python 是 Store 占位符；仅 Anaconda 3.14.6 有 fastapi/uvicorn",
+          "vision.rs INTERP_PROBE 只查 fastapi/uvicorn，无法区分『能跑 AI 创作』与『能跑 VCR』的解释器",
+          "server.py:46 顶层 from vcr.model_registry import get_registry → model_registry.py:15 import onnxruntime，发生在 uvicorn.run 绑定端口之前，故进程立即退出、端口不可达"
+        ]
+      },
+      "evidence_log": [
+        "[PERF] poll_alive 等待中… 13331ms / 20139ms；poll_alive 超时 26948/26981/26942ms",
+        "[PERF] ensure C段 第2轮 冷启动 port=18765 pid=12944；ensure 失败（冷启动重试耗尽）耗时87422ms",
+        "[VCR:py] ModuleNotFoundError: No module named 'onnxruntime'（server.py:46 / model_registry.py:15）"
+      ],
+      "solution": [
+        "环境：用本机 Python 3.12（DSH 自带 runtime）创建 python\\.venv-vcr，pip install -r python/requirements.txt（onnxruntime-directml 1.24.4 / opencv 5.0 / tokenizers 0.23 / onnx 1.23 / fastapi 0.162 / numpy 2.5.4 等）。注意该 runtime 的 ensurepip 不可用，pip 由 base 的 pip 目录离线复制进 venv（详见知识库条目）",
+        "代码：vision.rs 新增 VCR_INTERP_PROBE（额外 import onnxruntime,cv2,tokenizers,onnx,numpy,PIL,pydantic,requests）+ VCR_INTERP_CACHE；抽出 resolve_interpreter_with(probe_src,cache,hint) 复用；新增 resolve_vcr_interpreter()，spawn_server 开发分支改用它；resolve_python_interpreter（AI 创作/工坊）仍用 INTERP_PROBE 不受影响",
+        "效果：缺依赖时在 spawn 前即返回『请创建 .venv-vcr 并 pip install -r python/requirements.txt』的明确错误，不再空转 87s 死循环；依赖齐全时正常起服务（冒烟 /health ok:true, api_version=13, det_ready:true）"
+      ],
+      "prevention": [
+        "判定『某解释器能否跑某 Python 微服务』的探针，必须 import 该服务真实运行依赖全集，不能只查公共依赖（fastapi/uvicorn）",
+        "生产/开发共用的 resolve_python_interpreter 不要塞服务专属依赖，按服务拆专用解析函数 + 专用缓存，避免两种口径成功/失败互相污染",
+        "解释器在端口绑定前 import 失败会导致 poll_alive 空转；启动前置校验依赖可把 87s 死循环降为秒级明确报错"
+      ],
+      "keywords": ["onnxruntime", "VCR", "解释器解析", "INTERP_PROBE", "venv-vcr", "poll_alive", "死循环", "开发包", "vision.rs", "Anaconda", "ensurepip"],
+      "created_at": "2026-11-12T16:33:00+08:00",
+      "updated_at": "2026-11-12T16:33:00+08:00"
     }
   ],
-  "updated": "2026-11-11T15:09:00+08:00"
+  "updated": "2026-11-12T16:33:00+08:00"
 }

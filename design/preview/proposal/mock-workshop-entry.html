@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>创意工坊 · 新入口</title>
+<style>
+  :root{
+    --c-bg:#0a090d; --c-fg:#f2f0f4;
+    --c-fg-2:rgba(242,240,244,.58); --c-fg-3:rgba(242,240,244,.44);
+    --c-rule:rgba(255,255,255,.075); --c-accent:#d4a24a; --c-danger:#d96a6a;
+    --hover:rgba(255,255,255,.045);
+    --r-ui:8px; --r-cover:5px; --r-pill:999px;
+    --gutter:52px;
+    --font:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--c-bg);color:var(--c-fg);font-family:var(--font);
+    -webkit-font-smoothing:antialiased;}
+  body{width:1440px;}
+
+  /* ---------- 顶栏 ---------- */
+  .top{height:56px;display:flex;align-items:center;gap:34px;
+    padding:0 var(--gutter);border-bottom:1px solid var(--c-rule);}
+  .brand{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;}
+  .brand .mark{width:22px;height:22px;border-radius:6px;background:var(--c-accent);
+    display:grid;place-items:center;color:#1a1608;font-size:12px;}
+  .nav{display:flex;gap:22px;font-size:12.5px;color:var(--c-fg-2);}
+  .nav a{color:inherit;text-decoration:none;padding:18px 0;position:relative;}
+  .nav a.on{color:var(--c-fg);font-weight:600;}
+  .nav a.on::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;
+    border-radius:2px;background:var(--c-accent);}
+  .top .sp{flex:1;}
+  .avatar{width:26px;height:26px;border-radius:50%;
+    background:linear-gradient(135deg,#5b6b7a,#39424c);box-shadow:inset 0 0 0 1px var(--c-rule);}
+
+  /* ---------- 页面标题 ---------- */
+  .head{padding:26px var(--gutter) 6px;}
+  .head h1{margin:0;font-size:33px;font-weight:700;letter-spacing:-.01em;}
+  .head .meta{margin-top:8px;font-size:11.5px;color:var(--c-fg-2);}
+
+  /* ---------- 三栏 ---------- */
+  .ws{display:grid;grid-template-columns:176px minmax(0,1fr);gap:30px;
+    padding:14px var(--gutter) 40px;align-items:start;}
+
+  /* 左栏 */
+  .side{position:sticky;top:70px;}
+  .grp+.grp{margin-top:18px;}
+  .grp h3{margin:0 0 6px;font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;
+    font-weight:600;color:var(--c-fg-2);}
+  .item{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:27px;
+    padding:0 7px 0 9px;border-radius:5px;font-size:12.5px;color:var(--c-fg-2);}
+  .item .ico{display:grid;place-items:center;width:15px;height:15px;font-size:12px;flex:0 0 auto;}
+  .item .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .item .tag{font-size:10.5px;color:var(--c-fg-3);}
+  .item.on{color:var(--c-fg);font-weight:600;background:var(--hover);}
+  .item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;
+    border-radius:2px;background:var(--c-accent);}
+
+  /* 右栏主区 */
+  .main{min-width:0;}
+  .mhead{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+  .mhead .mi{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;
+    color:var(--c-accent);box-shadow:inset 0 0 0 1px var(--c-rule);font-size:15px;flex:0 0 auto;}
+  .mhead h2{margin:0;font-size:19px;font-weight:700;flex:0 0 auto;}
+  .mhead .sub{font-size:11px;color:var(--c-fg-2);line-height:1.5;}
+  .ghost{margin-left:auto;height:28px;padding:0 12px;border-radius:var(--r-pill);
+    border:1px solid var(--c-rule);background:none;color:var(--c-fg-2);font-size:11.5px;}
+
+  /* ★ 新增：工作台入口卡 */
+  .entry{position:relative;display:flex;align-items:center;gap:18px;
+    margin:2px 0 18px;padding:18px 20px;border-radius:var(--r-ui);
+    background:linear-gradient(100deg,rgba(212,162,74,.12),rgba(212,162,74,.03) 62%);
+    box-shadow:inset 0 0 0 1px rgba(212,162,74,.34),0 14px 34px -22px rgba(212,162,74,.5);
+    overflow:hidden;}
+  .entry::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+    background:var(--c-accent);}
+  .entry .ei{width:42px;height:42px;border-radius:11px;flex:0 0 auto;display:grid;place-items:center;
+    font-size:20px;color:var(--c-accent);background:rgba(212,162,74,.1);
+    box-shadow:inset 0 0 0 1px rgba(212,162,74,.3);}
+  .entry .etxt{flex:1;min-width:0;}
+  .entry .kicker{font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--c-accent);font-weight:600;}
+  .entry .etitle{font-size:16px;font-weight:700;margin:3px 0 4px;}
+  .entry .edesc{font-size:11.5px;color:var(--c-fg-2);line-height:1.6;}
+  .entry .eact{display:flex;align-items:center;gap:10px;flex:0 0 auto;}
+  .btn-primary{height:34px;padding:0 16px;border:none;border-radius:var(--r-pill);
+    background:var(--c-accent);color:#1a1608;font-size:12px;font-weight:600;
+    font-family:var(--font);display:inline-flex;align-items:center;gap:7px;}
+  .btn-line{height:34px;padding:0 14px;border-radius:var(--r-pill);
+    border:1px solid var(--c-rule);background:none;color:var(--c-fg-2);font-size:12px;}
+
+  /* 素材托盘 */
+  .tray{display:flex;align-items:center;gap:8px;margin-bottom:18px;}
+  .tray .tlabel{font-size:9.5px;letter-spacing:.14em;color:var(--c-fg-2);}
+  .tray .tcount{font-size:11px;color:var(--c-fg-3);}
+  .thumb{width:60px;height:60px;border-radius:var(--r-cover);object-fit:cover;
+    box-shadow:inset 0 0 0 1px var(--c-rule);}
+  .tadd{width:60px;height:60px;border-radius:var(--r-cover);border:1px dashed var(--c-rule);
+    background:none;color:var(--c-fg-2);font-size:18px;display:grid;place-items:center;}
+
+  /* 当前工具面板（智能修图） */
+  .tool{border-radius:var(--r-ui);border:1px solid var(--c-rule);padding:16px 18px;
+    background:rgba(255,255,255,.012);}
+  .tool .rowtop{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+  .tool .rowtop .dot{width:6px;height:6px;border-radius:50%;background:var(--c-accent);}
+  .tool .rowtop span{font-size:11px;color:var(--c-fg-2);}
+  .tool textarea{width:100%;min-height:52px;resize:none;border-radius:8px;
+    border:1px solid var(--c-rule);background:rgba(0,0,0,.25);color:var(--c-fg);
+    font-family:var(--font);font-size:12px;line-height:1.6;padding:10px 12px;}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 4px;}
+  .chip{height:26px;padding:0 11px;border-radius:var(--r-pill);font-size:11px;color:var(--c-fg-2);
+    box-shadow:inset 0 0 0 1px var(--c-rule);display:inline-flex;align-items:center;}
+  .chip.on{color:var(--c-fg);box-shadow:inset 0 0 0 1px rgba(212,162,74,.5);}
+  .foot{display:flex;align-items:center;gap:14px;margin-top:14px;padding-top:14px;
+    border-top:1px solid var(--c-rule);}
+  .foot .hint{font-size:11px;color:var(--c-fg-2);flex:1;}
+  .foot .hint b{color:var(--c-accent);font-weight:600;}
+</style>
+</head>
+<body>
+  <!-- 顶栏 -->
+  <div class="top">
+    <div class="brand"><span class="mark">◧</span>本地相册搭子</div>
+    <nav class="nav">
+      <a>相册</a><a>时间线</a><a>人物</a><a class="on">创意工坊</a><a>搜索</a>
+    </nav>
+    <div class="sp"></div>
+    <div class="avatar"></div>
+  </div>
+
+  <div class="head">
+    <h1>创意工坊</h1>
+    <div class="meta">对已有照片做加工 —— 图像压缩 · 文字提取（规划） · AI 创作（手账/美颜/滤镜/超分/智能修图）</div>
+  </div>
+
+  <div class="ws">
+    <!-- 左栏：原有工具导航，保持不变 -->
+    <aside class="side">
+      <div class="grp">
+        <h3>处理</h3>
+        <div class="item"><span class="ico">⤓</span><span class="nm">图像压缩</span></div>
+        <div class="item"><span class="ico">T</span><span class="nm">文字提取</span><span class="tag">规划</span></div>
+      </div>
+      <div class="grp">
+        <h3>AI 创作</h3>
+        <div class="item"><span class="ico">▤</span><span class="nm">主题手账</span></div>
+        <div class="item"><span class="ico">◐</span><span class="nm">人物美颜</span></div>
+        <div class="item"><span class="ico">◑</span><span class="nm">滤镜迁移</span></div>
+        <div class="item"><span class="ico">✦</span><span class="nm">画质增强</span></div>
+        <div class="item on"><span class="ico">✧</span><span class="nm">智能修图</span></div>
+      </div>
+    </aside>
+
+    <!-- 右栏 -->
+    <div class="main">
+      <div class="mhead">
+        <span class="mi">✧</span>
+        <h2>智能修图</h2>
+        <span class="sub">一句话描述效果，AI 规划修图步骤并逐步执行；可开启多轮反思，只输出终图</span>
+        <button class="ghost">⚙ 模型设置</button>
+      </div>
+
+      <!-- ★ 新增入口：进入独立的工作台视图 -->
+      <div class="entry">
+        <div class="ei">⧉</div>
+        <div class="etxt">
+          <div class="kicker">新 · 群图批量修图</div>
+          <div class="etitle">AI 修图工作台</div>
+          <div class="edesc">把一组照片一次导入，逐图套用同一种修图风格，前后对比着看；成品自动导入「创意工坊」相册，原图不动。</div>
+        </div>
+        <div class="eact">
+          <button class="btn-line">查看效果图</button>
+          <button class="btn-primary">进入工作台 →</button>
+        </div>
+      </div>
+
+      <!-- 素材托盘 -->
+      <div class="tray">
+        <span class="tlabel">素材</span><span class="tcount">4 张</span>
+        <img class="thumb" src="../../../covers/login-sunset.jpg" />
+        <img class="thumb" src="../../../covers/cover.jpg" />
+        <img class="thumb" src="../../../covers/login-sunset.jpg" />
+        <img class="thumb" src="../../../covers/cover.jpg" />
+        <button class="tadd">＋</button>
+      </div>
+
+      <!-- 原有单图智能修图面板保留 -->
+      <div class="tool">
+        <div class="rowtop"><span class="dot"></span><span>单图智能修图 · 一句话执行</span></div>
+        <textarea>把照片调成温暖通透的胶片感，皮肤自然通透一点，天空压暗但保留层次。</textarea>
+        <div class="chips">
+          <span class="chip on">胶片暖调</span><span class="chip">通透人像</span>
+          <span class="chip">夜景降噪</span><span class="chip">通透风景</span>
+        </div>
+        <div class="foot">
+          <span class="hint">单张预估 <b>≈¥0.03</b> · 需逐张发送，适合精修单张</span>
+          <button class="btn-primary">开始修图</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

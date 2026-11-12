@@ -19,7 +19,7 @@ import { trace } from "../utils/trace.ts";
 const STORAGE_KEY = "aiStudio:billing:v2";
 const LEGACY_STORAGE_KEY = "aiStudio:billing:v1";
 
-export const AI_TOOLS: AiTool[] = ["journal", "beauty", "style_transfer", "upscale"];
+export const AI_TOOLS: AiTool[] = ["journal", "beauty", "style_transfer", "upscale", "smart_edit"];
 export const AI_MODELS: AiProviderKind[] = ["vision", "edit", "upscale"];
 
 /** 工具中文名（运行区提示共用） */
@@ -28,6 +28,11 @@ export const AI_TOOL_LABELS: Record<AiTool, string> = {
   beauty: "人物美颜",
   style_transfer: "滤镜迁移",
   upscale: "画质增强",
+  smart_edit: "智能修图",
+  // 本地增强（FEAT-163）：本机免费，仅用于统一展示文案
+  film_sim: "胶片模拟",
+  color_transfer: "参考图调色",
+  restore: "画质修复",
 };
 
 /** 模型能力位中文名（计费填写用） */
@@ -48,6 +53,12 @@ export const TOOL_MODEL: Record<AiTool, AiProviderKind> = {
   beauty: "edit",
   style_transfer: "edit",
   upscale: "upscale",
+  // 智能修图出图走图像编辑；规划/复核另调图像理解，其额外成本在工具内单独估算
+  smart_edit: "edit",
+  // 本地增强（FEAT-163）：纯本机、免费，不参与计费；占位以满足类型，不会被估算
+  film_sim: "edit",
+  color_transfer: "edit",
+  restore: "edit",
 };
 
 function defaultRule(): AiBillingRule {

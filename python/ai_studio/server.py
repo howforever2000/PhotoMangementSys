@@ -66,6 +66,35 @@ def test_provider(req: TestProviderRequest) -> dict:
     return openai_compat.test_provider(req.kind, p.baseUrl, p.apiKey, p.model)
 
 
+@app.get("/local/models")
+def local_models() -> dict:
+    """本地增强资源状态：大模型是否就绪 + 下载地址、内置 LUT 清单。
+
+    供前端「本地模型」面板展示下载链接与「模型未就绪」提示。
+    """
+    models = []
+    for m in config.LOCAL_MODELS:
+        p = config.local_model_path(m["file"])
+        exists = os.path.isfile(p)
+        models.append(
+            {
+                **m,
+                "path": p,
+                "exists": exists,
+                "sizeBytes": os.path.getsize(p) if exists else 0,
+            }
+        )
+    luts = []
+    for lut in config.LUTS:
+        luts.append({**lut, "exists": os.path.isfile(config.lut_path(lut["file"]))})
+    return {
+        "models": models,
+        "luts": luts,
+        "modelsDir": config.LOCAL_MODELS_DIR,
+        "lutsDir": config.LUTS_DIR,
+    }
+
+
 def main() -> None:
     port = config.port()
     log(f"启动 AI 创作服务 port={port}")

@@ -3,6 +3,7 @@
   "bundle": {
     "active": true,
     "resources": {
+      "../python/dist/ai-server.exe": "ai/ai-server.exe",
       "../python/dist/vcr-server.exe": "vcr/vcr-server.exe"
     },
     "windows": {

@@ -1539,11 +1539,21 @@ fn attach_child_output(stdout: Option<std::process::ChildStdout>, stderr: Option
     }
 }
 
-/// 探针：一次性确认候选**既是真解释器、又带识别服务依赖**。
+/// 探针：一次性确认候选**既是真解释器、又带 AI 创作/工坊所需依赖**（fastapi/uvicorn）。
 /// - Microsoft Store 占位符 → 非零退出（"Python was not found…"）
 /// - 系统 python / anaconda / C:\Python312 → `ModuleNotFoundError: fastapi`
 /// - 项目 venv → 打印 sys.executable 且 0 退出
 const INTERP_PROBE: &str = "import sys, fastapi, uvicorn; print(sys.executable)";
+
+/// VCR（识别服务）专用探针：除 fastapi/uvicorn 外，还要求能导入识别链路真正用到的
+/// 运行依赖（onnxruntime / opencv / tokenizers / onnx / numpy / PIL / pydantic）。
+/// 关键：不能用 INTERP_PROBE 判 VCR——否则会选中「有 fastapi 却没有 onnxruntime」的
+/// 解释器（Anaconda 3.14.6，见 BUG-2026-1112-002），server.py 在绑定端口前即
+/// `import onnxruntime` 崩溃，导致 poll_alive 空转超时的死循环。
+/// 注意：AI 创作不走本探针，故不要把它并入 INTERP_PROBE。
+const VCR_INTERP_PROBE: &str =
+    "import sys, fastapi, uvicorn, pydantic, numpy, onnxruntime, cv2, tokenizers, onnx, PIL, requests; print(sys.executable)";
+
 const INTERP_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// 解释器解析结果缓存：成功永久有效；失败保留 30s。
@@ -1552,6 +1562,11 @@ const INTERP_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 /// 用户修好环境不必重启应用。
 static INTERP_CACHE: LazyLock<Mutex<Option<(Instant, Result<PathBuf, String>)>>> =
     LazyLock::new(|| Mutex::new(None));
+
+/// VCR 专用缓存（与 AI 创作分离，避免两种口径的成功/失败互相污染）。
+static VCR_INTERP_CACHE: LazyLock<Mutex<Option<(Instant, Result<PathBuf, String>)>>> =
+    LazyLock::new(|| Mutex::new(None));
+
 const INTERP_FAIL_TTL: Duration = Duration::from_secs(30);
 
 /// 开发模式候选解释器（按优先级）：项目自带 venv → 常见安装位置的绝对路径 →
@@ -1606,13 +1621,13 @@ fn python_candidates() -> Vec<PathBuf> {
 }
 
 /// 跑一次探针；成功返回子进程 stdout（内含 sys.executable）
-fn probe_interpreter(cand: &Path) -> Result<String, String> {
+fn probe_interpreter(cand: &Path, probe_src: &str) -> Result<String, String> {
     if cand.is_absolute() && !cand.is_file() {
         return Err("文件不存在".into());
     }
     let mut cmd = std::process::Command::new(cand);
     cmd.arg("-c")
-        .arg(INTERP_PROBE)
+        .arg(probe_src)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1678,14 +1693,14 @@ fn first_nonempty_line(s: &str) -> String {
         .to_string()
 }
 
-/// 解析开发模式解释器。**不能直接用 PATH 上的 `python`**：
-/// Windows「应用执行别名」会把它指向 Microsoft Store 占位符（spawn 成功、
-/// 运行即退出），这台机器上 PATH 顺序恰好是 占位符 → anaconda → Python312，
-/// 三者要么秒退要么没有 fastapi，只有项目 venv 可用。
-/// 失败时返回「试过哪些候选、各自为什么不行」的完整说明。
-/// （studio.rs 的工坊微服务同机同坑，复用本函数：BUG-2026-0918-007）
-pub(crate) fn resolve_python_interpreter() -> Result<PathBuf, String> {
-    if let Ok(g) = INTERP_CACHE.lock() {
+/// 通用解释器解析：按 python_candidates 顺序逐个跑 `probe_src` 探针，返回首个通过者。
+/// 结果写入 `cache`（成功永久、失败 30s），失败时拼出「试过哪些候选、各自为什么不行」。
+fn resolve_interpreter_with(
+    probe_src: &'static str,
+    cache: &'static LazyLock<Mutex<Option<(Instant, Result<PathBuf, String>)>>>,
+    missing_hint: &str,
+) -> Result<PathBuf, String> {
+    if let Ok(g) = cache.lock() {
         if let Some((at, res)) = g.as_ref() {
             if res.is_ok() || at.elapsed() < INTERP_FAIL_TTL {
                 return res.clone();
@@ -1695,7 +1710,7 @@ pub(crate) fn resolve_python_interpreter() -> Result<PathBuf, String> {
     let mut reasons: Vec<String> = Vec::new();
     let mut chosen: Option<PathBuf> = None;
     for cand in python_candidates() {
-        match probe_interpreter(&cand) {
+        match probe_interpreter(&cand, probe_src) {
             Ok(exe) => {
                 perf_log(&format!(
                     "解释器解析成功 | 候选={} | sys.executable={exe}",
@@ -1709,18 +1724,40 @@ pub(crate) fn resolve_python_interpreter() -> Result<PathBuf, String> {
     }
     let result = match chosen {
         Some(p) => Ok(p),
-        None => Err(format!(
-            "找不到可用的 Python 解释器（识别服务依赖 fastapi/uvicorn）。已尝试：\n  - {}\n\
-             提示：开发模式请使用项目自带虚拟环境 python\\.venv-vcr（由 setup-env.ps1 / \
-             build_vcr_exe.ps1 创建）。若系统 `python` 指向 Microsoft Store 占位符，\
-             请在「设置 → 应用 → 高级应用设置 → 应用执行别名」里关闭 python.exe / python3.exe。",
-            reasons.join("\n  - ")
-        )),
+        None => Err(format!("{missing_hint}\n已尝试：\n  - {}", reasons.join("\n  - "))),
     };
-    if let Ok(mut g) = INTERP_CACHE.lock() {
+    if let Ok(mut g) = cache.lock() {
         *g = Some((Instant::now(), result.clone()));
     }
     result
+}
+
+/// 解析 AI 创作/工坊用解释器（只需 fastapi/uvicorn，不含 onnxruntime）。
+/// **不能直接用 PATH 上的 `python`**：Windows「应用执行别名」会把它指向
+/// Microsoft Store 占位符（spawn 成功、运行即退出）。失败时返回完整诊断。
+/// （studio.rs 的工坊微服务同机同坑，复用本函数：BUG-2026-0918-007）
+pub(crate) fn resolve_python_interpreter() -> Result<PathBuf, String> {
+    resolve_interpreter_with(
+        INTERP_PROBE,
+        &INTERP_CACHE,
+        "找不到可用的 Python 解释器（AI 创作/工坊依赖 fastapi/uvicorn）。\n\
+         提示：开发模式请使用项目自带虚拟环境 python\\.venv-vcr（由 setup-env.ps1 / \
+         build_vcr_exe.ps1 创建）。若系统 `python` 指向 Microsoft Store 占位符，\
+         请在「设置 → 应用 → 高级应用设置 → 应用执行别名」里关闭 python.exe / python3.exe。",
+    )
+}
+
+/// 解析 VCR 识别服务用解释器：必须同时能导入 onnxruntime/opencv/tokenizers/onnx 等
+/// 识别依赖，避免选中「有 fastapi 却缺 onnxruntime」的解释器导致启动即崩、空转超时。
+fn resolve_vcr_interpreter() -> Result<PathBuf, String> {
+    resolve_interpreter_with(
+        VCR_INTERP_PROBE,
+        &VCR_INTERP_CACHE,
+        "找不到可用的 VCR Python 解释器（识别服务需要 fastapi/uvicorn 以及 onnxruntime、\
+         opencv-python、tokenizers、onnx、numpy、Pillow、pydantic 等运行依赖）。\n\
+         提示：请创建项目虚拟环境 python\\.venv-vcr 并执行 `pip install -r python/requirements.txt` 后重试\
+         （失败结果会缓存 30s，安装完依赖后稍等再试）。",
+    )
 }
 
 /// 启动识别微服务（打包版优先内置 exe；开发版 python server.py）。
@@ -1781,7 +1818,7 @@ fn spawn_server(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
         let py_dir = project_python_dir();
         workdir = py_dir.clone();
         // 不能用裸 `python`（PATH 上常被 Store 占位符/无依赖解释器占据）
-        let interp = resolve_python_interpreter()?;
+        let interp = resolve_vcr_interpreter()?;
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
@@ -2525,7 +2562,7 @@ mod tests {
             .join(".venv-vcr")
             .join("Scripts")
             .join("__definitely_not_here__.exe");
-        assert!(probe_interpreter(&missing).is_err());
+        assert!(probe_interpreter(&missing, INTERP_PROBE).is_err());
     }
 
     /// venv 存在时，解析结果必须就是它（本机验证；无 venv 的机器跳过）

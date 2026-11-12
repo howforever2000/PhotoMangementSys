@@ -158,6 +158,7 @@ def images_edit(
     prompt: str,
     timeout: int = config.REQUEST_TIMEOUT,
     size: Optional[str] = None,
+    steps: Optional[int] = None,
 ) -> List[bytes]:
     """图生图：把 1~N 张图 + 提示词发给 `/images/generations`（本网关实测协议），返回结果图字节。
 
@@ -180,6 +181,8 @@ def images_edit(
     body: dict = {"model": model, "prompt": prompt, "n": 1}
     if size:
         body["size"] = size
+    if steps:
+        body["steps"] = int(steps)  # 可选采样步数：不填不传，保持对既有网关的兼容
     data_urls = [_image_data_url(b) for b in images]
     if len(data_urls) == 1:
         body["image"] = data_urls[0]
@@ -228,6 +231,7 @@ def images_generate(
     prompt: str,
     timeout: int = config.REQUEST_TIMEOUT,
     size: Optional[str] = None,
+    steps: Optional[int] = None,
 ) -> List[bytes]:
     """文生图：/images/generations（预留，本期工具未直接使用）。"""
     if not _norm(base) or not model:
@@ -235,6 +239,8 @@ def images_generate(
     body = {"model": model, "prompt": prompt, "n": 1}
     if size:
         body["size"] = size
+    if steps:
+        body["steps"] = int(steps)  # 可选采样步数：不填不传
     try:
         r = requests.post(
             f"{_norm(base)}/images/generations",

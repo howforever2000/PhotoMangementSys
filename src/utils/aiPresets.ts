@@ -50,3 +50,15 @@ export const UPSCALE_SCALES: AiOption[] = [
   { value: "2", label: "2×" },
   { value: "4", label: "4×" },
 ];
+
+/** 参考图调色（本地）：算法 */
+export const CT_METHODS: AiOption[] = [
+  { value: "reinhard", label: "自然", hint: "按均值/方差迁移，柔和自然（推荐）" },
+  { value: "histogram", label: "强匹配", hint: "逐通道直方图匹配，风格更强烈" },
+];
+
+/** 画质修复（本地）：放大倍数（模型固定 4× 推理，2× 会再缩到目标） */
+export const RESTORE_SCALES: AiOption[] = [
+  { value: "2", label: "2×" },
+  { value: "4", label: "4×" },
+];

@@ -1,0 +1,12 @@
+# AI studio packaging-time runtime deps for the PyInstaller ai-server.exe.
+# NOTE: keep this file pure ASCII. Windows pip decodes requirements files with the
+# system locale (GBK/cp936); non-ASCII comments break `pip install -r` with a
+# UnicodeDecodeError. See BUG-2026-0920-001.
+# Used by python/build_ai_exe.ps1 to build a minimal venv for the AI studio exe.
+# The AI studio service only needs these (no onnx/cv2/numpy -- that is VCR only).
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+requests>=2.31
+Pillow>=10.0
+pyinstaller>=6.0

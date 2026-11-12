@@ -8,6 +8,7 @@
 //!   - beauty        需要 edit
 //!   - style_transfer 需要 edit（vision 仅用于参考图描述回退）
 //!   - upscale       需要 upscale（未配则回落 edit）
+//!   - smart_edit    需要 vision（规划/复核）+ edit（执行/微调）
 
 use std::time::Duration;
 
@@ -99,6 +100,21 @@ pub async fn ai_run_job(
                 return Err("请先在「模型设置」配置『超分』或『图像编辑』模型".to_string());
             }
         }
+        "smart_edit" => {
+            // 智能修图 = 多模态模型「规划/复核」 + 图像编辑模型「执行/微调」，两者都必须有
+            if vision.is_none() {
+                return Err(
+                    "智能修图需要『图像理解』模型（规划与复核），请先在「模型设置」配置".to_string(),
+                );
+            }
+            if edit.is_none() {
+                return Err(
+                    "智能修图需要『图像编辑』模型（执行），请先在「模型设置」配置".to_string(),
+                );
+            }
+        }
+        // 本地增强（FEAT-163）：纯本机推理，无需任何外部 provider
+        "film_sim" | "color_transfer" | "restore" => {}
         other => return Err(format!("未知的 AI 工具: {other}")),
     }
 
@@ -240,4 +256,23 @@ pub async fn ai_test_provider(
     resp.json::<serde_json::Value>()
         .await
         .map_err(|e| format!("解析连通性测试结果失败: {e}"))
+}
+
+/// 本地增强资源状态：转调 Python `/local/models`，返回模型是否就绪 + 下载地址 + 内置 LUT 清单。
+/// 供前端「本地模型」面板展示下载链接与未就绪提示（FEAT-163）。
+#[tauri::command]
+pub async fn local_models_status(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let base = ai_service::ensure_ready(&app).await?;
+    let client = http_client(15)?;
+    let resp = client
+        .get(format!("{base}/local/models"))
+        .send()
+        .await
+        .map_err(|e| format!("读取本地模型状态失败: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("读取本地模型状态失败: HTTP {}", resp.status()));
+    }
+    resp.json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("解析本地模型状态失败: {e}"))
 }
