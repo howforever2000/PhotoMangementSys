@@ -42,3 +42,37 @@ export interface CompressOutcome {
   totalAfter: number;
   destDir: string;
 }
+
+/** 压缩后台任务状态（对应 src-tauri/src/compress_job.rs `CompressJobStatus`） */
+export type CompressJobStatus =
+  | "idle"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+/**
+ * 压缩后台任务快照（对应 src-tauri/src/compress_job.rs `CompressJobSnapshot`）
+ *
+ * 任务状态提升到后端进程后，前端任何时刻（含重新进入创意工坊）靠它恢复完整视图；
+ * 取消时 `items` 保留已完成的部分结果。
+ */
+export interface CompressJobSnapshot {
+  status: CompressJobStatus;
+  destDir: string;
+  /** 待压缩总张数 */
+  total: number;
+  /** 已完成张数（= items.length） */
+  done: number;
+  items: CompressedItem[];
+  failed: CompressFailure[];
+  totalBefore: number;
+  totalAfter: number;
+  /** 正在处理的源文件路径 */
+  current: string;
+  error: string;
+  startedAt: number;
+  finishedAt: number;
+  /** 是否被用户中途停止 */
+  cancelled: boolean;
+}
