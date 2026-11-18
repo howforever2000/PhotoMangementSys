@@ -1,0 +1,25 @@
+# AI studio packaging-time runtime deps for the PyInstaller ai-server.exe.
+# NOTE: keep this file pure ASCII. Windows pip decodes requirements files with the
+# system locale (GBK/cp936); non-ASCII comments break `pip install -r` with a
+# UnicodeDecodeError. See BUG-2026-0920-001.
+# Used by python/build_ai_exe.ps1 to build a minimal venv for the AI studio exe.
+#
+# numpy and onnxruntime are REQUIRED (not optional):
+#   jobs.py imports workflows/__init__.py at startup, which imports film_sim
+#   (imports numpy) and restore (lazy-imports onnxruntime). Without them the
+#   whole ai-server.exe dies on import, taking the cloud tools down with it.
+#
+# onnxruntime pin rationale: matches the VCR side (onnxruntime-directml==1.24.4)
+# so both sidecars share one abi/version story. Do NOT float the version --
+# BUG-2026-0921-002 showed 1.25+ regresses CLIP fp16 CPU inference ~2.9x.
+# onnxruntime-directml is a same-name drop-in that adds DmlExecutionProvider
+# (DirectX 12), so face parsing benefits from the GPU when available and still
+# falls back to CPUExecutionProvider on machines without DX12.
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+requests>=2.31
+Pillow>=10.0
+numpy>=1.26
+onnxruntime-directml==1.24.4
+pyinstaller>=6.0
