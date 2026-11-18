@@ -4,10 +4,14 @@
  *
  * URL 不可达时不再静默挂起：一键自检各源连通性 + 自定义源模板（自定义优先于内置）。
  * 独立成组件是为了与「下载进度」各管一摊 —— 源治理是网络配置，下载是任务执行。
+ *
+ * FEAT-165：探测对象只从**识别链路**模型里挑（本分区属扫描侧）。创意工坊的
+ * 本地增强模型走绝对 URL（GitHub release），换 HuggingFace 镜像对它没有意义。
  */
 import { computed, ref } from "vue";
 import { useContentStore } from "../../stores/content";
 import { useNotify } from "../../composables/useNotify";
+import { modelsInArea } from "../../utils/modelCatalog";
 import type { ModelSourceProbe } from "../../types/content";
 
 const store = useContentStore();
@@ -23,7 +27,7 @@ const probeTarget = ref("");
 
 /** 探测对象：优先拿第一个还没下的（它最需要换源），没有就用清单第一个 */
 const targetName = computed(() => {
-  const list = store.modelDownloads;
+  const list = modelsInArea(store.modelDownloads, "scan");
   return (list.find((d) => !d.done) ?? list[0])?.name ?? "";
 });
 

@@ -1,25 +1,71 @@
 <script setup lang="ts">
 /**
- * AI 模型设置弹窗（FEAT-152 / FEAT-157）
+ * AI 模型设置弹窗（FEAT-152 / FEAT-157 / FEAT-164 / FEAT-165）
  *
  * 多 profile：图像理解 / 图像编辑 / 超分 三个能力，各自可指向不同服务商的模型
- * （baseUrl + apiKey + model 全 OpenAI 兼容格式）。
+ * （baseUrl + apiKey + model 全 OpenAI 兼容格式）。baseUrl 也可指向本机服务
+ * （Ollama / LM Studio），即「工作台调用本地大模型」——预设按钮直接填地址。
  * apiKey 由后端加密存储、只回传掩码；此处留空或保持掩码即「沿用旧密钥」。
  *
  * 计费（FEAT-157）：从「按工具」改为「按模型」登记——每个模型卡片内可展开填写
  * 该模型的单价（元/张），同一模型被多个工具复用时只填一次。规则仍只存本机
  * localStorage，仅用于运行前的费用预估展示，不代扣费、不改后端。
+ *
+ * 本地增强模型（FEAT-164）：Real-ESRGAN / GFPGAN 不再是「外链 + 手动放目录」，
+ * 改为复用扫描那套应用内下载（多镜像、断点续传、进度、取消、一键补全）。
+ * FEAT-165：下载列表按 `area="workshop"` 只列创意工坊模型 —— 这也是它们唯一的
+ * 下载入口，扫描侧的 📦 模型管理不再混入。
  */
 import { reactive, ref, watch } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
 import { useAiBilling, AI_MODELS } from "../../../composables/useAiBilling";
 import type { AiBillingRule, AiProviderKind } from "../../../types/ai";
+import ModelDownloadRows from "../../settings/ModelDownloadRows.vue";
 
 const open = defineModel<boolean>({ required: true });
 const store = useAiStudioStore();
 const notify = useNotify();
 const billing = useAiBilling();
+
+/**
+ * 常见 OpenAI 兼容服务：一键填 baseUrl。
+ * Ollama / LM Studio 是「本地模型」的直接落点（本机端口，无需联网）。
+ */
+const BASE_PRESETS: { key: string; label: string; baseUrl: string }[] = [
+  { key: "ollama", label: "Ollama（本机）", baseUrl: "http://127.0.0.1:11434/v1" },
+  { key: "lmstudio", label: "LM Studio（本机）", baseUrl: "http://127.0.0.1:1234/v1" },
+  {
+    key: "local-gateway",
+    label: "本地图生图网关",
+    baseUrl: "http://127.0.0.1:8000/v1",
+  },
+  {
+    key: "bailian",
+    label: "阿里百炼",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  },
+];
+
+function applyPreset(kind: AiProviderKind, preset: { baseUrl: string }) {
+  form[kind].baseUrl = preset.baseUrl;
+}
+
+/** 打开本地模型目录（与下载落位同一个 models/local） */
+const modelsDir = ref("");
+async function openModelsDir() {
+  try {
+    if (!modelsDir.value) modelsDir.value = (await store.localModels()).modelsDir;
+    if (!modelsDir.value) {
+      notify.info("模型目录未知", "下载任一本地模型后可再次尝试；也可在创意工坊的画质修复里查看目录");
+      return;
+    }
+    await invoke("open_folder", { path: modelsDir.value });
+  } catch (e) {
+    notify.error("打开模型目录失败", String(e));
+  }
+}
 
 /** 计费规则表单（本地保存，仅用于运行前的费用预估展示；按模型登记） */
 const billingForm = reactive<AiBillingRule>({
@@ -187,7 +233,9 @@ async function test(kind: AiProviderKind) {
         <div class="asd-body">
           <p class="asd-intro">
             三个能力各自填写一个 <strong>OpenAI 兼容</strong> 服务商的 baseUrl / apiKey / 模型名。
-            可指向同一服务商的不同模型，也可分别指向不同服务商。
+            可指向同一服务商的不同模型，也可分别指向不同服务商；baseUrl 填本机地址即走本地服务
+            （Ollama / LM Studio 用于理解类，本机图生图网关用于编辑类 —— 后者通常不实现对话端点，
+            图像理解仍需支持对话的视觉模型）。
           </p>
 
           <section class="asd-card asd-billing">
@@ -207,6 +255,24 @@ async function test(kind: AiProviderKind) {
             </label>
           </section>
 
+          <!-- 本地增强模型（FEAT-164）：复用扫描的下载机制，不再只给外链 -->
+          <section class="asd-card asd-local">
+            <div class="asd-card-head">
+              <h3 class="asd-card-title">本地增强模型</h3>
+              <span class="asd-card-need">本机推理 · 免费 · 离线</span>
+            </div>
+            <p class="asd-billing-note">
+              「工具」组的画质修复与 AI 智能修图的本地组件共用这两个模型：应用内直接下载（多镜像 /
+              断点续传 / 可取消 / 一键补全），下完即用。不下载也能用胶片模拟与参考图调色
+              （内置 LUT + 纯算法，不依赖任何模型）。
+            </p>
+            <ModelDownloadRows area="workshop" />
+            <div class="asd-card-foot">
+              <button class="ai-ghost" type="button" @click="openModelsDir">打开模型目录</button>
+              <span class="asd-test">与相册识别模型同一模型根（models/local）</span>
+            </div>
+          </section>
+
           <section v-for="k in KINDS" :key="k.key" class="asd-card">
             <div class="asd-card-head">
               <h3 class="asd-card-title">{{ k.title }}</h3>
@@ -223,6 +289,19 @@ async function test(kind: AiProviderKind) {
                   spellcheck="false"
                 />
               </label>
+              <div class="asd-presets">
+                <span class="asd-presets-label">快捷填入</span>
+                <button
+                  v-for="p in BASE_PRESETS"
+                  :key="p.key"
+                  type="button"
+                  class="asd-preset"
+                  :title="p.baseUrl"
+                  @click="applyPreset(k.key, p)"
+                >
+                  {{ p.label }}
+                </button>
+              </div>
 
               <label class="asd-field">
                 <span class="asd-label">模型</span>
@@ -393,6 +472,40 @@ async function test(kind: AiProviderKind) {
 /* 计费规则（feat: 按模型登记） */
 .asd-billing {
   border-color: color-mix(in srgb, var(--c-accent) 32%, var(--c-rule));
+}
+/* 本地模型卡：与计费卡同等的强调（两者都是"设置里的独立子域"） */
+.asd-local {
+  border-color: color-mix(in srgb, var(--c-accent) 24%, var(--c-rule));
+}
+
+/* 快捷填入本机/常用服务：小而密的一排，不抢输入框的注意力 */
+.asd-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  grid-column: 1 / -1;
+  margin-top: -4px;
+}
+.asd-presets-label {
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  color: var(--fg-2);
+}
+.asd-preset {
+  height: 22px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--r-pill);
+  box-shadow: inset 0 0 0 1px var(--c-rule);
+  background: none;
+  color: var(--fg-2);
+  font-size: 11px;
+  cursor: pointer;
+}
+.asd-preset:hover {
+  color: var(--fg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-accent) 45%, transparent);
 }
 .asd-billing-note {
   margin: 0 0 10px;

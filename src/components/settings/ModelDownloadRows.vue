@@ -1,29 +1,41 @@
 <script setup lang="ts">
 /**
- * 模型下载列表（FEAT-052 / FEAT-114）
+ * 模型下载列表（FEAT-052 / FEAT-114 / FEAT-164 / FEAT-165）
  *
- * 纯展示 + 操作，不含标题/外框：设置页与「模型缺失」弹窗共用同一份列表，
- * 避免两处各写一套进度/重试逻辑而漂移。
+ * 纯展示 + 操作，不含标题/外框：设置页、「模型缺失」弹窗与创意工坊「本地模型」
+ * 共用同一份列表，避免多处各写一套进度/重试逻辑而漂移。
  *
  * FEAT-114 起 Rust 侧下载表覆盖 语义两档 + 人脸两档 + OCR（此前只有 CLIP），
  * 因此每行展示 label（人类可读名）与 note（体积/取舍），而不是裸模型 id。
+ *
+ * FEAT-165 起按 `area` 分区呈现：下载表是一张表（共用下载器），但入口不共用 ——
+ * 扫描侧只看识别链路模型，创意工坊的本地增强模型只在工坊里出现。
+ * 分区判定在 `utils/modelCatalog.ts`（含运行时组件的剔除），本组件不自己写前缀判断。
+ * `onlyNames` 仍可用于在分区内再收窄（工坊按工具需要的子集列）。
  */
-import { computed, onMounted, ref, watch } from "vue";import { useContentStore } from "../../stores/content";
+import { computed, onMounted, ref, watch } from "vue";
+import { useContentStore } from "../../stores/content";
 import { useNotify } from "../../composables/useNotify";
+import { isWorkshopModel, modelsInArea, type ModelArea } from "../../utils/modelCatalog";
 import type { ModelDlStatus } from "../../types/content";
+
+const props = withDefaults(
+  defineProps<{
+    /** 归属分区：scan（缺省，识别链路）/ workshop（创意工坊本地增强） */
+    area?: ModelArea;
+    /** 只列这些下载项（缺省 = 该分区全部） */
+    onlyNames?: string[];
+  }>(),
+  { area: "scan", onlyNames: undefined },
+);
 
 const store = useContentStore();
 const notify = useNotify();
 
-/**
- * 运行时组件（FEAT-136）不进模型列表：它不是模型，只在「加速分配」分区里管。
- * 两处入口各说一套状态是 FEAT-133 留下的教训。
- */
-const RUNTIME_COMPONENTS = new Set(["openvino-runtime"]);
-
-const downloads = computed(() =>
-  store.modelDownloads.filter((d) => !RUNTIME_COMPONENTS.has(d.name)),
-);
+const downloads = computed(() => {
+  const inArea = modelsInArea(store.modelDownloads, props.area);
+  return props.onlyNames ? inArea.filter((d) => props.onlyNames?.includes(d.name)) : inArea;
+});
 const allReady = computed(() => downloads.value.length > 0 && downloads.value.every((d) => d.done));
 const missing = computed(() => downloads.value.filter((d) => !d.done));
 const missingBytes = computed(() =>
@@ -31,9 +43,17 @@ const missingBytes = computed(() =>
 );
 const anyRunning = computed(() => downloads.value.some((d) => d.running));
 
+/** 就绪文案按分区说自己的话：扫描侧是「识别模型」，工坊侧是「本地增强模型」 */
+const readyText = computed(() =>
+  props.area === "workshop"
+    ? "✓ 本地增强模型已全部就绪，无需再下载。"
+    : "✓ 识别模型已全部就绪，无需再下载。",
+);
+
 onMounted(() => void store.listModelDownloads());
 
-// 某个模型刚下完 → 刷新语义档位清单，让「未下载」的选项立刻可选
+// 某个模型刚下完 → 刷新语义档位清单，让「未下载」的选项立刻可选。
+// 本地增强模型（local-*）不参与 VCR 档位，不必去问识别服务。
 const prevDone = ref(new Set<string>());
 watch(
   () => store.modelDownloads,
@@ -41,7 +61,7 @@ watch(
     for (const d of list) {
       if (d.done && !prevDone.value.has(d.name)) {
         prevDone.value.add(d.name);
-        void store.fetchVcrModels();
+        if (!isWorkshopModel(d.name)) void store.fetchVcrModels();
       }
       if (!d.done) prevDone.value.delete(d.name);
     }
@@ -85,7 +105,7 @@ defineExpose({ allReady, missing, downloadAllMissing });
 <template>
   <div class="mdr">
     <div class="mdr-toolbar">
-      <p v-if="allReady" class="hint ok">✓ 本地模型已全部就绪，无需再下载。</p>
+      <p v-if="allReady" class="hint ok">{{ readyText }}</p>
       <p v-else class="hint">
         缺失 {{ missing.length }} 项 · 共 {{ fmtMB(missingBytes) }} · 支持断点续传与多镜像择优
       </p>

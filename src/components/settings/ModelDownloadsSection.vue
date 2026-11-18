@@ -1,10 +1,14 @@
 <script setup lang="ts">
 /**
- * 📦 模型管理 · 下载（FEAT-052 / FEAT-114）
+ * 📦 模型管理 · 下载（FEAT-052 / FEAT-114 / FEAT-165）
  *
  * 后台下载 + 进度 + 官方/镜像择优；列表本身抽到 ModelDownloadRows，
  * 与「模型缺失」弹窗共用（两处不各写一套进度/重试逻辑）。
  * **不依赖识别服务** —— 服务没起来也能下。
+ *
+ * FEAT-165：这里只列**识别链路**模型（area="scan"）。创意工坊的本地增强模型
+ * 走同一个下载器，但入口在创意工坊里（模型设置 › 本地增强模型 / 画质修复面板），
+ * 免得扫描侧列表里混进与扫描无关的超分 / 修脸模型。
  */
 import ModelDownloadRows from "./ModelDownloadRows.vue";
 import { useNotify } from "../../composables/useNotify";
@@ -29,11 +33,11 @@ async function openModelZip() {
   <div class="dl-head">
     <h4 class="sub-title">📥 模型下载</h4>
     <span class="hint">
-      语义 / 人脸 / OCR 均可在此直接下载 · 多镜像候选逐个尝试、失败自动换源 · 支持断点续传
+      语义 / 人脸 / OCR / 人物检测均可在此直接下载 · 多镜像候选逐个尝试、失败自动换源 · 支持断点续传
     </span>
   </div>
 
-  <ModelDownloadRows />
+  <ModelDownloadRows area="scan" />
 
   <p class="hint fallback">
     网络下载总是失败？可下载离线包

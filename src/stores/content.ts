@@ -358,6 +358,9 @@ export const useContentStore = defineStore("content", {
 
     /** FEAT-052：模型下载状态列表（含未启动 idle） */
     async listModelDownloads(): Promise<ModelDlStatus[]> {
+      // 先把进度监听挂上：设置页 / 创意工坊的「本地模型」面板不一定先经过扫描页，
+      // 少了这一步就只剩点击瞬间的快照，进度条不会动（BUG-2026-1112-006）。
+      this.ensureProgressListener();
       this.modelDownloads = await invoke<ModelDlStatus[]>("list_model_downloads");
       return this.modelDownloads;
     },

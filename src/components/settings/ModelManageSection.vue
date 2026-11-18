@@ -18,6 +18,10 @@ import ModelSourcesSection from "./ModelSourcesSection.vue";
       模型缺失会导致对应识别通道降级（例如没有 SCRFD 就不给人脸标号）。这里只负责把模型取到本机，
       <b>与「这台机器怎么跑得更快」无关</b>的设置在隔壁页签。
     </p>
+    <p class="lead">
+      创意工坊（胶片 / 调色 / 画质修复）的本地增强模型不在这里 —— 它们走同一套下载器，
+      入口在创意工坊的「⚙ 模型设置 › 本地增强模型」与画质修复面板里。
+    </p>
 
     <ModelDownloadsSection />
 

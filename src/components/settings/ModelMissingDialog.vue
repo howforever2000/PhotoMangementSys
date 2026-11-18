@@ -10,11 +10,16 @@
  * 现在缺它时直接弹到这里，列表里第一行就是「人物检测 · YOLOv8n（必需）」。
  *
  * 列表与设置页共用 ModelDownloadRows；这里只负责场景化文案与兜底通道。
+ *
+ * FEAT-165：本弹窗是**识别链路**的缺模型自救入口，因此列表按 `area="scan"` 只列
+ * 识别模型 —— 创意工坊的本地增强模型不在这里出现（它们去工坊里下），
+ * 下面的「已全部就绪」也只按识别链路判定，否则本地模型没下就永远等不到这句。
  */
 import { computed } from "vue";
 import { useThemeStore } from "../../stores/theme";
 import { useContentStore } from "../../stores/content";
 import { useNotify } from "../../composables/useNotify";
+import { modelsInArea } from "../../utils/modelCatalog";
 import ModelDownloadRows from "./ModelDownloadRows.vue";
 
 const props = defineProps<{
@@ -58,8 +63,10 @@ const reasonText = computed(() => {
   return "识别通道所需的模型文件不完整，对应功能会静默降级。";
 });
 
+/** 只按识别链路模型判断就绪：工坊的本地增强模型与本弹窗的场景无关（FEAT-165） */
+const scanModels = computed(() => modelsInArea(store.modelDownloads, "scan"));
 const allReady = computed(
-  () => store.modelDownloads.length > 0 && store.modelDownloads.every((d) => d.done),
+  () => scanModels.value.length > 0 && scanModels.value.every((d) => d.done),
 );
 
 async function refresh() {
@@ -107,7 +114,7 @@ defineExpose({ open });
 
         <p v-if="allReady" class="mmd-ok">✓ 模型已全部就绪，可以关闭窗口继续使用。</p>
 
-        <ModelDownloadRows />
+        <ModelDownloadRows area="scan" />
 
         <p class="mmd-fallback">
           网络受限时，也可下载离线包
