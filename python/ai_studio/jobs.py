@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -40,6 +41,9 @@ def create(req) -> str:
             "warnings": [],
             "error": None,
             "meta": {},
+            # 结构化步骤进度（FEAT-168）：由工作流经 progress(..., steps=[...]) 上报，
+            # 前端据此显示「第 N/M 步 · 耗时」；旧工作流不传时保持空数组。
+            "steps": [],
             "_cancel": cancel,
         }
     fn = REGISTRY.get(req.tool)
@@ -49,18 +53,24 @@ def create(req) -> str:
         return job_id
 
     def worker() -> None:
+        t0 = time.perf_counter()  # 作业总耗时起点（FEAT-178）
         with _lock:
             _jobs[job_id]["status"] = "running"
             _jobs[job_id]["stage"] = "开始"
         log(f"job {job_id} 启动 tool={req.tool} n={len(req.paths)}")
 
-        def progress(pct: int, stage: str, message: str = "") -> None:
+        def progress(
+            pct: int, stage: str, message: str = "", steps: list | None = None
+        ) -> None:
+            # 第 4 参可选：既有工作流仍按 3 参调用，不破坏兼容性。
             with _lock:
                 j = _jobs.get(job_id)
                 if j and j["status"] == "running":
                     j["progress"] = max(0, min(100, int(pct)))
                     j["stage"] = stage
                     j["message"] = message
+                    if steps is not None:
+                        j["steps"] = steps
 
         try:
             res = fn(req, progress, cancel)
@@ -72,13 +82,13 @@ def create(req) -> str:
                 j["outputs"] = res.get("outputs", []) or []
                 j["warnings"] = res.get("warnings", []) or []
                 j["meta"] = res.get("meta", {}) or {}
-            log(f"job {job_id} 完成 outputs={len(_jobs[job_id]['outputs'])}")
+            log(f"job {job_id} 完成 tool={req.tool} outputs={len(_jobs[job_id]['outputs'])} | 总耗时 {int((time.perf_counter()-t0)*1000)}ms")
         except Cancelled:
             with _lock:
                 _jobs[job_id].update(status="cancelled", stage="已取消")
-            log(f"job {job_id} 已取消")
+            log(f"job {job_id} 已取消 tool={req.tool} | 总耗时 {int((time.perf_counter()-t0)*1000)}ms")
         except Exception as e:  # noqa: BLE001 —— 作业边界必须兜住一切，转成失败态
-            elog(f"job {job_id} 失败: {e}\n{traceback.format_exc()}")
+            elog(f"job {job_id} 失败 tool={req.tool} | 总耗时 {int((time.perf_counter()-t0)*1000)}ms: {e}\n{traceback.format_exc()}")
             with _lock:
                 _jobs[job_id].update(status="failed", stage="失败", error=str(e))
 

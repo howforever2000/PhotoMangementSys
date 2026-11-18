@@ -18,6 +18,7 @@ import requests
 from PIL import Image
 
 from .. import config
+from ..logutil import call_model
 
 
 class ProviderError(RuntimeError):
@@ -130,12 +131,13 @@ def chat_vision(
         "temperature": 0.6,
     }
     try:
-        r = requests.post(
-            f"{_norm(base)}/chat/completions",
-            headers={**_headers(api_key), "Content-Type": "application/json"},
-            json=body,
-            timeout=timeout,
-        )
+        with call_model("cloud", model, f"chat_vision images={len(images)}"):
+            r = requests.post(
+                f"{_norm(base)}/chat/completions",
+                headers={**_headers(api_key), "Content-Type": "application/json"},
+                json=body,
+                timeout=timeout,
+            )
     except Exception as e:  # 网络层
         raise ProviderError(f"调用图像理解服务失败: {e}") from e
     if r.status_code != 200:
@@ -158,6 +160,7 @@ def images_edit(
     prompt: str,
     timeout: int = config.REQUEST_TIMEOUT,
     size: Optional[str] = None,
+    steps: Optional[int] = None,
 ) -> List[bytes]:
     """图生图：把 1~N 张图 + 提示词发给 `/images/generations`（本网关实测协议），返回结果图字节。
 
@@ -180,6 +183,8 @@ def images_edit(
     body: dict = {"model": model, "prompt": prompt, "n": 1}
     if size:
         body["size"] = size
+    if steps:
+        body["steps"] = int(steps)  # 可选采样步数：不填不传，保持对既有网关的兼容
     data_urls = [_image_data_url(b) for b in images]
     if len(data_urls) == 1:
         body["image"] = data_urls[0]
@@ -190,26 +195,29 @@ def images_edit(
     headers = {**_headers(api_key), "Content-Type": "application/json"}
     r: Optional[requests.Response] = None
     last_err: Optional[Exception] = None
-    for attempt in range(3):
-        try:
-            r = requests.post(url, headers=headers, json=body, timeout=timeout)
-        except requests.exceptions.ConnectionError as e:
-            # 10054 / 连接被重置：多半是上传体过大或网关前置代理拒绝
-            raise ProviderError(
-                "上传图片过大或端点不可达（连接被重置 10054），请减小输入分辨率或检查 baseUrl"
-            ) from e
-        except Exception as e:
-            last_err = e
-            if attempt < 2:
-                time.sleep(2 * (attempt + 1))
+    # 单次 images_edit 内含最多 3 次 HTTP 重试：整段记一行（含图片数与尺寸），
+    # 实测尝试次数在 detail 里补记，避免一次调用刷多行。
+    with call_model("cloud", model, f"images_edit n={len(images)} size={size}"):
+        for attempt in range(3):
+            try:
+                r = requests.post(url, headers=headers, json=body, timeout=timeout)
+            except requests.exceptions.ConnectionError as e:
+                # 10054 / 连接被重置：多半是上传体过大或网关前置代理拒绝
+                raise ProviderError(
+                    "上传图片过大或端点不可达（连接被重置 10054），请减小输入分辨率或检查 baseUrl"
+                ) from e
+            except Exception as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                raise ProviderError(f"调用图像编辑服务失败: {e}") from e
+            if r.status_code == 200:
+                break
+            if r.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                time.sleep(3 * (attempt + 1))
                 continue
-            raise ProviderError(f"调用图像编辑服务失败: {e}") from e
-        if r.status_code == 200:
-            break
-        if r.status_code in (429, 500, 502, 503, 504) and attempt < 2:
-            time.sleep(3 * (attempt + 1))
-            continue
-        raise ProviderError(_norm_edit_error(r))
+            raise ProviderError(_norm_edit_error(r))
     if r is None or r.status_code != 200:
         raise ProviderError(f"图像编辑服务重试后仍失败: {last_err}")
     try:
@@ -228,6 +236,7 @@ def images_generate(
     prompt: str,
     timeout: int = config.REQUEST_TIMEOUT,
     size: Optional[str] = None,
+    steps: Optional[int] = None,
 ) -> List[bytes]:
     """文生图：/images/generations（预留，本期工具未直接使用）。"""
     if not _norm(base) or not model:
@@ -235,6 +244,8 @@ def images_generate(
     body = {"model": model, "prompt": prompt, "n": 1}
     if size:
         body["size"] = size
+    if steps:
+        body["steps"] = int(steps)  # 可选采样步数：不填不传
     try:
         r = requests.post(
             f"{_norm(base)}/images/generations",

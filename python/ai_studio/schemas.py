@@ -39,3 +39,17 @@ class TestProviderRequest(BaseModel):
 
     kind: str = "vision"
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
+
+
+class PreviewRequest(BaseModel):
+    """单张同步预览请求（修图工作台拖滑杆时调用）。
+
+    `plan` 优先于 `recipeId`；`paramsOverride` 形状为 `{op: {param: value}}`。
+    `maxEdge` 由服务层夹到 320..2048（缺省 1280），这里只收原始值。
+    """
+
+    path: str
+    recipeId: Optional[str] = None
+    paramsOverride: Optional[Dict[str, Any]] = None
+    plan: Optional[Dict[str, Any]] = None
+    maxEdge: Optional[int] = None
