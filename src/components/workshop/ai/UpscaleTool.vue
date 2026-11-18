@@ -32,8 +32,8 @@ watch(
   { immediate: true },
 );
 
-const jobId = ref<string | null>(null);
-const job = computed(() => store.jobOf(jobId.value));
+// 作业归属提在 store（activeByTool）：切走页面/工具再回来能按工具名取回作业重连
+const job = computed(() => store.jobOfTool("upscale"));
 const busy = computed(
   () => !!job.value && (job.value.status === "queued" || job.value.status === "running"),
 );
@@ -45,7 +45,7 @@ async function run() {
     return;
   }
   try {
-    jobId.value = await store.run({
+    await store.run({
       tool: "upscale",
       paths: props.paths,
       prompt: prompt.value,
@@ -63,7 +63,8 @@ function onDir(v: string) {
 }
 
 async function onCancel() {
-  if (jobId.value) await store.cancel(jobId.value);
+  const id = store.activeJobId("upscale");
+  if (id) await store.cancel(id);
 }
 </script>
 

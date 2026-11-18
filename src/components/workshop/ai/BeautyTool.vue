@@ -1,13 +1,23 @@
 <script setup lang="ts">
 /**
- * 人物美颜工具（FEAT-152）
+ * 人物美颜工具（FEAT-152 → FEAT-169）
  * 预设风格 × 级别 + 可选提示词 → 逐张美颜，输出 JPG。
+ *
+ * ## 形状纪律（FEAT-169）
+ *
+ * 用户规则：「美颜保持当前人体形状不变，只做分区磨皮和细节」。这个工具走的是
+ * 云端整幅重绘，**不可能**像本机分区磨皮那样给出数学保证，所以：
+ *   1. 后端提示词只描述皮肤质感并强制追加结构保全硬段；
+ *   2. 后端出图后用 `critic.structure_compare` 校验，检出改形状就回退原图并告警；
+ *   3. 面板上直接给出「要绝对不变走本地美颜」的直达入口，不把判断留给用户猜。
  */
 import { computed, ref, watch } from "vue";
 import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
 import { dirName, joinPath } from "../../../utils/pathParts";
 import { BEAUTY_LEVELS, BEAUTY_STYLES } from "../../../utils/aiPresets";
+import { STRUCTURE_LOCK_ZH } from "../../../utils/structureLock";
+import { localBeautyTarget, routeToLocalTool } from "../../../composables/useLocalToolHandoff";
 import AiPromptPanel from "./AiPromptPanel.vue";
 import AiResultPanel from "./AiResultPanel.vue";
 import AiCostHint from "./AiCostHint.vue";
@@ -22,6 +32,9 @@ const prompt = ref("");
 const outputDir = ref("");
 const outputTouched = ref(false);
 
+/** 「要形状绝对不变」的直接出口：切到本机分区磨皮，并把素材一起带过去 */
+const goLocal = routeToLocalTool(localBeautyTarget());
+
 watch(
   () => props.paths,
   (paths) => {
@@ -33,8 +46,8 @@ watch(
   { immediate: true },
 );
 
-const jobId = ref<string | null>(null);
-const job = computed(() => store.jobOf(jobId.value));
+// 作业归属提在 store（activeByTool）：切走页面/工具再回来能按工具名取回作业重连
+const job = computed(() => store.jobOfTool("beauty"));
 const busy = computed(
   () => !!job.value && (job.value.status === "queued" || job.value.status === "running"),
 );
@@ -46,7 +59,7 @@ async function run() {
     return;
   }
   try {
-    jobId.value = await store.run({
+    await store.run({
       tool: "beauty",
       paths: props.paths,
       prompt: prompt.value,
@@ -64,7 +77,8 @@ function onDir(v: string) {
 }
 
 async function onCancel() {
-  if (jobId.value) await store.cancel(jobId.value);
+  const id = store.activeJobId("beauty");
+  if (id) await store.cancel(id);
 }
 </script>
 
@@ -114,7 +128,17 @@ async function onCancel() {
       />
     </div>
 
-    <p class="ai-note">美颜会保留人物身份与五官特征，仅按所选风格与级别调整肤质、光线与整体质感；输出为新 JPG，不覆盖原图。</p>
+    <p class="ai-note">
+      只按所选风格与级别调整肤质、瑕疵与光线，<strong class="lock">{{ STRUCTURE_LOCK_ZH }}</strong>
+      每张出图后会做结构校验，检出脸型或体型被改会改用原图并提示。
+      要绝对保证形状不变，用下面这条路。
+    </p>
+
+    <p class="ai-hint-row">
+      <button class="ai-ghost" type="button" :disabled="busy" @click="goLocal(props.paths)">
+        改用本地美颜（只磨皮肤，形状不动、免费）
+      </button>
+    </p>
 
     <div class="ai-actions">
       <button class="ai-run" type="button" :disabled="!canRun" @click="run">
@@ -127,3 +151,13 @@ async function onCancel() {
     <AiResultPanel :job="job" @cancel="onCancel" />
   </section>
 </template>
+
+<style scoped>
+.lock {
+  font-weight: 600;
+  color: var(--fg);
+}
+.ai-hint-row {
+  margin: 10px 0 0;
+}
+</style>

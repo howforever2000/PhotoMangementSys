@@ -44,7 +44,11 @@ export interface AiTestResult {
   latencyMs: number;
 }
 
-export type AiTool = "journal" | "beauty" | "style_transfer" | "upscale";
+/**
+ * AI 作业工具 id：由 `op_catalog.json`（经 `utils/toolCatalog.ts`）派生。
+ * 不再手抄联合类型 —— 新增工具只改那一份 JSON，这里自动跟上。
+ */
+export type AiTool = string;
 
 /** 计费规则（FEAT-152 / FEAT-157 前端本地保存，仅用于「费用预估」展示，不参与后端结算） */
 export interface AiBillingRule {
@@ -58,6 +62,40 @@ export interface AiBillingRule {
 
 export type AiJobStatusKind = "queued" | "running" | "done" | "failed" | "cancelled";
 
+/** 结构化步骤事件（FEAT-168）：后端 jobs.py 的 steps[]，替代自由文本 stage。 */
+export interface RunStep {
+  index: number;
+  total: number;
+  op: string;
+  label: string;
+  status: "running" | "done" | "skipped" | "failed";
+  ms: number;
+  issues?: string[];
+}
+
+/** 大模型/配方的受约束计划，与 Python `pipeline.validate_plan` 输出同形。 */
+export interface RunPlan {
+  intent: string;
+  steps: Array<{ op: string; params: Record<string, unknown>; optional?: boolean }>;
+}
+
+/** 复核结果：verdict 三态，unknown 不冒充通过（旧版 fail-open 已修）。 */
+export interface Verification {
+  verdict: "pass" | "fail" | "unknown";
+  score?: number;
+  dims?: Record<string, number>;
+  issues: string[];
+}
+
+export interface AiJobMeta {
+  plans?: RunPlan[];
+  verifications?: Verification[];
+  steps?: RunStep[];
+  recipeId?: string;
+  stats?: Record<string, number>;
+  [key: string]: unknown;
+}
+
 export interface AiJobStatus {
   jobId: string;
   status: AiJobStatusKind;
@@ -67,7 +105,9 @@ export interface AiJobStatus {
   outputs: string[];
   warnings: string[];
   error?: string | null;
-  meta?: Record<string, unknown>;
+  /** 结构化步骤进度；旧工作流不传时为空数组（后端 jobs.py 保证） */
+  steps?: RunStep[];
+  meta?: AiJobMeta;
 }
 
 export interface AiRunRequest {
@@ -76,4 +116,35 @@ export interface AiRunRequest {
   prompt: string;
   outputDir: string;
   options?: Record<string, unknown>;
+}
+
+/* ---------------- 本地增强（FEAT-163）资源状态 ---------------- */
+
+export interface LocalModelEntry {
+  id: string;
+  name: string;
+  file: string;
+  /** 期望大小（MB），仅用于展示 */
+  sizeMb: number;
+  /** 下载地址（GitHub release） */
+  url: string;
+  /** 是否核心模型（缺失即无法使用对应能力） */
+  required: boolean;
+  path: string;
+  exists: boolean;
+  sizeBytes: number;
+}
+
+export interface LocalLutEntry {
+  id: string;
+  name: string;
+  file: string;
+  exists: boolean;
+}
+
+export interface LocalModelsStatus {
+  models: LocalModelEntry[];
+  luts: LocalLutEntry[];
+  modelsDir: string;
+  lutsDir: string;
 }

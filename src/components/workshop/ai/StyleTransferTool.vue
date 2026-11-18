@@ -1,8 +1,17 @@
 <script setup lang="ts">
 /**
- * 图像滤镜迁移 / 自主调色工具（FEAT-152）
- * - 参考图迁移：输入内容图（素材托盘）+ 参考图，迁移色调/影调
- * - 自主调色：仅凭提示词对素材图调色
+ * 滤镜迁移（FEAT-152 → FEAT-171）
+ *
+ * 参考图来源：从参考图提取影调描述后迁移；不选参考图时按提示词自动调色
+ * （mode=autograde）。原「风格预设」云端来源已随 FEAT-171 移除，本机预设链路
+ * 也已下线 —— 想要固定影调就选一张参考图。
+ *
+ * ## 形状纪律（FEAT-169）
+ *
+ * 后端提示词一律追加 `presets.STRUCTURE_LOCK` 硬段，出图后再经
+ * `critic.structure_compare` 校验，检出结构漂移会在结果里告警。
+ * 界面因此要提前把「要绝对不变就用本机」讲清楚：本机是逐色查表，
+ * 几何恒等是数学保证；云端是整幅重绘，只能靠约束 + 校验逼近。
  */
 import { computed, ref, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -10,6 +19,7 @@ import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
 import { baseName, dirName, joinPath } from "../../../utils/pathParts";
 import { STYLE_MODES } from "../../../utils/aiPresets";
+import { STRUCTURE_LOCK_ZH } from "../../../utils/structureLock";
 import AiPromptPanel from "./AiPromptPanel.vue";
 import AiResultPanel from "./AiResultPanel.vue";
 import AiCostHint from "./AiCostHint.vue";
@@ -35,12 +45,15 @@ watch(
   { immediate: true },
 );
 
-const jobId = ref<string | null>(null);
-const job = computed(() => store.jobOf(jobId.value));
+// 作业归属提在 store（activeByTool）：切走页面/工具再回来能按工具名取回作业重连
+const job = computed(() => store.jobOfTool("style_transfer"));
 const busy = computed(
   () => !!job.value && (job.value.status === "queued" || job.value.status === "running"),
 );
-const canRun = computed(() => props.paths.length > 0 && !busy.value);
+
+/** transfer 模式必须有参考图 */
+const needSource = computed(() => mode.value === "transfer" && !referencePath.value);
+const canRun = computed(() => props.paths.length > 0 && !busy.value && !needSource.value);
 
 async function pickRef() {
   const picked = await openDialog({
@@ -57,17 +70,20 @@ async function run() {
     notify.warning("还没有输出目录", "先选择结果要放在哪个文件夹");
     return;
   }
-  if (mode.value === "transfer" && !referencePath.value) {
-    notify.warning("缺少参考图", "参考图迁移需要选择一张参考图");
+  if (needSource.value) {
+    notify.warning("缺少迁移来源", "先指定一张参考图，或切换到「自动调色」模式");
     return;
   }
   try {
-    jobId.value = await store.run({
+    await store.run({
       tool: "style_transfer",
       paths: props.paths,
       prompt: prompt.value,
       outputDir: outputDir.value,
-      options: { mode: mode.value, referencePath: referencePath.value },
+      options: {
+        mode: mode.value,
+        referencePath: referencePath.value,
+      },
     });
   } catch (e) {
     notify.error("提交失败", String(e));
@@ -80,7 +96,8 @@ function onDir(v: string) {
 }
 
 async function onCancel() {
-  if (jobId.value) await store.cancel(jobId.value);
+  const id = store.activeJobId("style_transfer");
+  if (id) await store.cancel(id);
 }
 </script>
 
@@ -104,8 +121,8 @@ async function onCancel() {
         </div>
       </div>
 
-      <div v-if="mode === 'transfer'" class="ai-field">
-        <label class="ai-label">参考图</label>
+      <div class="ai-field">
+        <label class="ai-label">参考图{{ mode === "transfer" ? "" : "（可选）" }}</label>
         <div class="ai-row">
           <span class="ai-ref-path" :title="referencePath || '尚未选择'">
             {{ referencePath ? baseName(referencePath) : "尚未选择参考图" }}
@@ -127,7 +144,9 @@ async function onCancel() {
     </div>
 
     <p class="ai-note">
-      参考图迁移会把参考图的色调与影调迁移到素材图；自主调色仅凭提示词调色。两者都保留原构图，输出为新 JPG。
+      参考图只改变色调与影调；<strong class="lock">{{ STRUCTURE_LOCK_ZH }}</strong>
+      模型每张出图后会做结构校验，检出脸型或构图被改会告警。要绝对保证形状不变，
+      请用「影调与滤镜」里的本机工具——那条链路是逐色查表，几何恒等。
     </p>
 
     <div class="ai-actions">
@@ -141,3 +160,10 @@ async function onCancel() {
     <AiResultPanel :job="job" @cancel="onCancel" />
   </section>
 </template>
+
+<style scoped>
+.lock {
+  font-weight: 600;
+  color: var(--fg);
+}
+</style>
