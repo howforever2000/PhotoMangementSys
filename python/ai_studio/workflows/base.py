@@ -101,6 +101,35 @@ def stem_of(path: str) -> str:
     return os.path.splitext(base)[0] or "image"
 
 
+# 本系统各工作流的产物后缀（与各 save_image 调用点一一对应）。
+# 用于识别「上一次跑出的成品又被当成这次的输入」——叠加调色/形变会把
+# 效果滚 2~3 层（实测：同一张图被跑出 `_胶片_…_自适应调色_出片` 四层后缀）。
+OUTPUT_SUFFIXES = (
+    "_出片", "_智能修图", "_自适应调色", "_胶片", "_迁移", "_修复",
+    "_美颜", "_形变", "_edit",
+)
+
+
+def is_pipeline_output(path: str) -> bool:
+    """判断一个路径是不是本系统产出的成品（按文件名后缀）。"""
+    stem = stem_of(path)
+    return any(stem.endswith(s) for s in OUTPUT_SUFFIXES)
+
+
+def filter_inputs(paths: list[str], warnings: list[str]) -> list[str]:
+    """把历史产物从输入里摘掉并记 warning；全部是产物时抛错（明确提示，不静默）。"""
+    keep = [p for p in paths if not is_pipeline_output(p)]
+    dropped = len(paths) - len(keep)
+    if dropped:
+        warnings.append(
+            f"已跳过 {dropped} 张历史产物（文件名带 _出片/_智能修图 等后缀），"
+            "避免效果叠加；如确需二次处理，请先重命名原图"
+        )
+    if not keep:
+        raise ValueError("所选照片全部是本系统产出的成品，二次处理会叠加效果；请选择原始照片")
+    return keep
+
+
 def unique_path(out_dir: str, name: str, ext: str) -> str:
     os.makedirs(out_dir, exist_ok=True)
     p = os.path.join(out_dir, f"{name}{ext}")
