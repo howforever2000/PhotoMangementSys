@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "note": "懒人配方：一条线性有序的算子列表 + 参数。人工选配方与大模型产出同构，共用 pipeline.execute_plan。optional 步由 ops.local_op_ready 判资源，缺资源只摘该步 + warning，不整单失败。2026-11-17：全配方移除 local_upscale —— 它把 6000 长边先压到 2000 再放大 2 倍，净效果是丢 33% 像素且每张多耗 21 秒（BUG-2026-1117-003）。",
+  "recipes": [
+    {
+      "id": "natural",
+      "label": "自然",
+      "desc": "只做自适应调色，最轻、最不容易过火",
+      "steps": [
+        { "op": "auto_grade", "params": { "style": "natural", "strength": 0.85 } }
+      ]
+    },
+    {
+      "id": "clear",
+      "label": "通透",
+      "desc": "自适应调色打底 + 轻胶片，画面更干净；2026-11-18：降叠加饱和（第二步 astia 的 Δsat 从 +0.035 降到 +0.022），胶片强度 0.45→0.30、调色力度 0.9→0.8；不加 anchor——astia 不抬黑位，anchor 的黑场拉伸反会推高饱和",
+      "steps": [
+        { "op": "auto_grade", "params": { "style": "cool", "strength": 0.8 } },
+        { "op": "local_film", "params": { "lut": "astia", "strength": 0.30, "anchor": 0.0, "grain": 0.0, "vignette": 0.0 } }
+      ]
+    },
+    {
+      "id": "film",
+      "label": "胶片",
+      "desc": "经典负片打底，带一点颗粒与暗角；2026-11-18：加 anchor 0.4 把 LUT 抬起的黑位按比例拉回，修「胶片过后发灰」",
+      "steps": [
+        { "op": "auto_grade", "params": { "style": "warm", "strength": 0.8 } },
+        { "op": "local_film", "params": { "lut": "classic_neg", "strength": 0.75, "anchor": 0.4, "grain": 0.12, "vignette": 0.15 } }
+      ]
+    },
+    {
+      "id": "portrait",
+      "label": "人像",
+      "desc": "调色 → 轻胶片 → 瘦脸大眼 → 磨皮；形变严格先于磨皮。参数为保守档，用户可在样片上微调",
+      "steps": [
+        { "op": "auto_grade", "params": { "style": "natural", "strength": 0.85 } },
+        { "op": "local_film", "params": { "lut": "classic_neg", "strength": 0.22, "grain": 0.0, "vignette": 0.0 } },
+        { "op": "face_reshape", "params": { "slim": 0.3, "eyes": 0.15 }, "optional": true },
+        { "op": "skin_smooth", "params": { "strength": 0.45, "texture": 0.55 }, "optional": true }
+      ]
+    }
+  ]
+}
