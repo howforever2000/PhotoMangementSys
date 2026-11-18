@@ -17,6 +17,12 @@ $root = Split-Path -Parent $PSScriptRoot
 $runDir = Join-Path $env:LOCALAPPDATA "pms-run"
 $exeSrc = Join-Path $root "src-tauri\target\debug\photo-management-sys.exe"
 
+# 0) 完整性标签自检（BUG-2026-1027-007 复发防护）：
+#    工作区根目录被打 Low 标签时，这里构建出的 exe 是 Low IL，即使拷到工作区外
+#    也照样写不进 Medium 的 %APPDATA% —— 所以必须在构建前先查。
+#    本脚本直接调 npx vite，不经过 `npm run dev`，因此拿不到 predev 钩子，需显式调用。
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "fix-workspace-integrity.ps1")
+
 function Test-Port([int]$port) {
     return [bool](Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
         Where-Object { $_.LocalPort -eq $port })
