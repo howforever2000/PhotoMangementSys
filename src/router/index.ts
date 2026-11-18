@@ -106,6 +106,13 @@ const router = createRouter({
       name: "workshop",
       component: () => import("../views/Workshop.vue"),
     },
+    {
+      // AI 修图工作台（独立视图）：从创意工坊「进入工作台」进入的批量修图空间
+      // 两页按新定位互补（FEAT-168）：单张一键出片 vs 群图批量套用，共用 RecipePicker
+      path: "/workshop/workbench",
+      name: "ai-workbench",
+      component: () => import("../views/AiWorkbench.vue"),
+    },
   ],
 });
 
