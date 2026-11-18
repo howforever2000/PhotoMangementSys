@@ -7,7 +7,9 @@
 //!   - 先起进程后绑端口：启动期端口不可达属正常，探不到就等，不误杀。
 //!
 //! 开发版：`python -m ai_studio.server`（复用 VCR 的 Python 解释器解析）；
-//! 打包版：后续补 `resources/ai/ai-server.exe`，本模块预留了判定入口（见 spawn）。
+//! 打包版：优先用内置 `resources/ai/ai-server.exe`（见 spawn）；
+//! 该 exe 由 python/build_ai_exe.ps1 构建、经 release.tauri.conf.json 的
+//! `ai/ai-server.exe` 资源条目随安装包下发。
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -30,6 +32,12 @@ fn current_base() -> Option<String> {
     AI_BASE.lock().ok().and_then(|g| g.clone())
 }
 
+/// 只读查询本进程拉起的 AI 创作服务 PID（FEAT-178 资源面板）：不拉起、不杀死服务。
+pub(crate) fn current_ai_pid() -> Option<u32> {
+    let pid = AI_PID.lock().ok().and_then(|g| *g)?;
+    if pid_alive(pid) { Some(pid) } else { None }
+}
+
 fn set_base(base: &str) {
     if let Ok(mut g) = AI_BASE.lock() {
         *g = Some(base.to_string());
@@ -43,10 +51,9 @@ fn clear_base() {
 }
 
 fn project_python_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(|p| p.join("python"))
-        .unwrap_or_else(|| PathBuf::from("python"))
+    // 收口到 devpath：release 下返回空路径，绝不把构建机绝对路径带进二进制
+    // （BUG-2026-1013-001，详见 devpath.rs 模块文档；与 vision.rs 同口径）。
+    crate::devpath::dev_project_dir().join("python")
 }
 
 fn pick_port() -> Result<u16, String> {
@@ -149,6 +156,13 @@ pub fn shutdown() {
     }
 }
 
+/// 资源面板「运行态停止」AI 创作服务（FEAT-179）：shutdown 已含验身强杀与 PID 清理，
+/// 这里补清内存态 base，保证下次 ensure 不复用已死 base。
+pub fn stop_for_monitor() {
+    shutdown();
+    clear_base();
+}
+
 fn spawn(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
     // 打包版入口（预留）：资源目录下有 ai/ai-server.exe 则优先用它
     let resource_exe = app
@@ -176,9 +190,10 @@ fn spawn(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
         // 开发版：python -m ai_studio.server（cwd=python，保证包导入）
         let script = python_dir.join("ai_studio").join("server.py");
         if !script.is_file() {
-            return Err(format!(
-                "AI 创作服务脚本缺失：{}（开发版请确认项目 python/ai_studio 存在）",
-                script.display()
+            // 缺内置组件：release 下绝不拼接构建机路径，只提示重装（BUG-2026-1013-001）。
+            return Err(crate::devpath::dev_component_missing_err(
+                "AI 创作服务脚本",
+                "ai/ai-server.exe",
             ));
         }
         let interp = crate::vision::resolve_python_interpreter()?;
@@ -196,6 +211,12 @@ fn spawn(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
     }
 
     cmd.env("AI_STUDIO_PORT", port.to_string());
+    // 本地增强模型目录：与 model_dl 的下载落位同一口径。
+    //
+    // 不注入的话 Python 侧按 `python/models` 自行推算：开发态恰好相同，打包态
+    // （ai-server.exe 单文件解包到临时目录）会算到临时目录，表现为「设置里下载完成，
+    // 画质修复仍说模型未就绪」（BUG-2026-1112-005）。
+    cmd.env("AI_STUDIO_MODELS_DIR", crate::model_dl::models_dir().to_string_lossy().to_string());
     cmd.stdin(Stdio::null());
 
     // 子进程输出转存 app_data_dir/ai_studio_service.log（启动失败靠它定位依赖缺失）
@@ -213,7 +234,9 @@ fn spawn(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
 
     let child = cmd
         .spawn()
-        .map_err(|e| format!("启动 AI 创作服务失败: {e}（请确认 python 依赖已安装）"))?;
+        .map_err(|e| format!(
+            "启动 AI 创作服务失败: {e}（打包版请确认安装目录 ai/ai-server.exe 存在；开发版请 pip install -r python/requirements.txt）"
+        ))?;
     let pid = child.id();
     crate::logger::log_info(&format!(
         "[ai-studio] 启动服务 pid={pid} port={port} log={}",
