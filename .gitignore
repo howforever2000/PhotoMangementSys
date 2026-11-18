@@ -19,8 +19,7 @@ src-tauri/gen
 *.rs.bk
 
 # Editor directories and files
-.vscode/*
-!.vscode/extensions.json
+.vscode/
 .idea
 .DS_Store
 *.suo
@@ -65,6 +64,8 @@ python/*.pt
 
 # Python 视觉微服务打包产物（PyInstaller 生成，体积过大不入库；由 build_vcr_exe.ps1 重建）
 python/.venv-vcr/
+# AI 创作侧的独立虚拟环境（本地调试用，可由 requirements 重建，勿入库）
+python/.venv-agent/
 python/build/
 python/dist/
 python/staging/
@@ -181,3 +182,25 @@ python/models/current_accel.json
 /.visual/githome/
 /.visual/_commitmsg*.txt
 /.visual/push*.log
+
+# 本地增强（FEAT-163）：模型二进制 / 原型实验产物不入库（体积大，可由面板下载或脚本重建）
+python/models/local/
+.venv-proto/
+prototype/grade_lab/models/
+prototype/grade_lab/out/
+prototype/grade_lab/samples/
+# pip 下载临时目录（本地安装残留，勿入库）
+pip-metadata-*/
+pip-unpack-*/
+
+# ---- 本地智能体 / 设计实验产物（与 exe 打包无关，纯本地，不入库）----
+# 开发记忆（.dsh）、智能体会话笔记与验证输出（.pi）、视觉探针/截图（.visual）
+/.dsh/
+/.pi/
+/.visual/
+# 仅忽略设计预览与提案产物；design/app-icon.png 是图标母版（tauri icon 再生成），保留
+/design/preview/
+# 调色原型实验（真正的 LUT 资产在 python/ai_studio/luts/，已入库）
+/prototype/
+# 临时测试图（已删除，防止再次误入库）
+/workshop-test.png
