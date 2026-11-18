@@ -201,6 +201,66 @@ fn specs() -> Vec<DlSpec> {
         expect_min: 11_000_000,
     }];
 
+    // 本地增强大模型（FEAT-164）：创意工坊「工具」组的画质修复 + AI 智能修图的
+    // 本地组件共用同一批权重。
+    //
+    // 为什么进本表而不是继续「给外链让用户放文件」：
+    //   - 扫描侧已经有的能力（后台下载 / 进度 / 断点续传 / 取消 / 自定义源）在这里
+    //     全部复用，用户不必自己找目录、手动改名；
+    //   - 落位目录 `local/` 与 python/ai_studio/config.py 的 LOCAL_MODELS_DIR 严格一致，
+    //     且 ai_service 会把同一个模型根注入 AI_STUDIO_MODELS_DIR，避免「下完找不到」。
+    //
+    // 源为 facefusion-assets 的稳定 release 资产（与 python/ai_studio/config.py 的
+    // _RELEASE 同一条），体积取自 release 页实测。
+    const LOCAL_ESRGAN: &[DlFile] = &[DlFile {
+        remote: "",
+        local: "local/real_esrgan_x4.onnx",
+        abs_url: Some(
+            "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/real_esrgan_x4.onnx",
+        ),
+        expect_min: 60_000_000,
+    }];
+    const LOCAL_GFPGAN: &[DlFile] = &[DlFile {
+        remote: "",
+        local: "local/gfpgan_1.4.onnx",
+        abs_url: Some(
+            "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gfpgan_1.4.onnx",
+        ),
+        expect_min: 250_000_000,
+    }];
+    // 本地美颜（FEAT-165）：BiSeNet ResNet-34 十九类人脸解析。
+    // 源为 yakhyo/face-parsing 的 weights tag（MIT，与 facefusion 的
+    // bisenet_resnet_34.onnx 同一套权重，但许可标注更明确）。
+    const LOCAL_FACEPARSE: &[DlFile] = &[DlFile {
+        remote: "",
+        local: "local/face_parsing_bisenet_r34.onnx",
+        abs_url: Some(
+            "https://github.com/yakhyo/face-parsing/releases/download/weights/resnet34.onnx",
+        ),
+        expect_min: 80_000_000,
+    }];
+    // 本地形变（FEAT-167）：peppa_wutz 68 点人脸关键点。
+    // 与 python/ai_studio/config.py 的 LOCAL_MODELS 条目一一对应（落位同为 local/）。
+    const LOCAL_LANDMARK: &[DlFile] = &[DlFile {
+        remote: "",
+        local: "local/peppa_wutz.onnx",
+        abs_url: Some(
+            "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/peppa_wutz.onnx",
+        ),
+        expect_min: 12_000_000,
+    }];
+    // 文字提取（FEAT-171）：PP-OCRv4 识别小模型（工坊区，local- 前缀）。
+    // CTC 字典 ppocr_keys_v1.txt 随包内置不下载（换字典是漂移源）；
+    // det 模型不在这里 —— 它是扫描区共享件（rust 名 "ocr"）。
+    const LOCAL_OCR_REC: &[DlFile] = &[DlFile {
+        remote: "",
+        local: "local/paddleocr-rec.onnx",
+        abs_url: Some(
+            "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile.onnx",
+        ),
+        expect_min: 9_000_000,
+    }];
+
     vec![
         DlSpec {
             name: "person-det",
@@ -256,6 +316,55 @@ fn specs() -> Vec<DlSpec> {
             required: false,
             expect_bytes: 15_000_000,
         },
+        // 本地增强：创意工坊「工具」组画质修复与 AI 本地组件共用（FEAT-164）
+        DlSpec {
+            name: "local-esrgan",
+            label: "本地增强 · Real-ESRGAN ×4 超分",
+            note: "69MB · 本机超分（画质修复 / AI 本地组件），无需联网、免费",
+            repo: "",
+            files: LOCAL_ESRGAN,
+            required: false,
+            expect_bytes: 69_000_000,
+        },
+        DlSpec {
+            name: "local-gfpgan",
+            label: "本地增强 · GFPGAN 人脸修复",
+            note: "340MB · 本机人脸修复（配合超分用，可选）",
+            repo: "",
+            files: LOCAL_GFPGAN,
+            required: false,
+            expect_bytes: 340_000_000,
+        },
+        // 本地美颜（FEAT-165）：只做磨皮时也能单独装，不强制连带超分
+        DlSpec {
+            name: "local-faceparse",
+            label: "本地美颜 · 人脸解析",
+            note: "93MB · 分区磨皮用（识别人脸皮肤/五官），只影响本地美颜",
+            repo: "",
+            files: LOCAL_FACEPARSE,
+            required: false,
+            expect_bytes: 93_632_554,
+        },
+        // 本地形变（FEAT-167）：瘦脸 / 大眼的关键点
+        DlSpec {
+            name: "local-landmark",
+            label: "本地形变 · 68 点关键点",
+            note: "14MB · 瘦脸/大眼用（定位下颌线与五官），只影响人像形变",
+            repo: "",
+            files: LOCAL_LANDMARK,
+            required: false,
+            expect_bytes: 13_755_190,
+        },
+        // 文字提取（FEAT-171）：工坊区识别小模型（det 在扫描区，模型管理下载）
+        DlSpec {
+            name: "local-ocr-rec",
+            label: "文字提取 · OCR 识别",
+            note: "10.4MB · 文字提取用（认字，配合检测模型出可复制文本），只影响文字提取",
+            repo: "",
+            files: LOCAL_OCR_REC,
+            required: false,
+            expect_bytes: 10_857_958,
+        },
     ]
 }
 
@@ -307,7 +416,11 @@ struct Store {
 }
 static STORE: std::sync::LazyLock<Mutex<Store>> = std::sync::LazyLock::new(|| Mutex::new(Store::default()));
 
-fn models_dir() -> PathBuf {
+/// 模型根目录（下载落位与各 Python 服务读取的唯一口径）
+///
+/// `pub` 的原因：ai_service 拉起 ai_studio 子进程时要把同一个根注入
+/// `AI_STUDIO_MODELS_DIR`，否则打包版两侧各算一套路径（下完找不到）。
+pub fn models_dir() -> PathBuf {
     // VCR_MODEL_DIR 优先：打包版由 lib.rs::setup 指向 resource_dir/vcr/models，
     // 子进程（vcr-server.exe）也按同一路径注入；未设置时回落源码目录
     // python/models（开发态）。
@@ -1098,6 +1211,66 @@ mod tests {
             .join("vcr")
             .join("config.py");
         std::fs::read_to_string(&config_path).expect("应能读取 python/vcr/config.py")
+    }
+
+    fn ai_studio_config_py() -> String {
+        let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("python")
+            .join("ai_studio")
+            .join("config.py");
+        std::fs::read_to_string(&config_path).expect("应能读取 python/ai_studio/config.py")
+    }
+
+    /// 截取 `LOCAL_MODELS = [` 到下一个顶层 `]` 之间的文本。
+    ///
+    /// 必须限定范围：`LUTS` 清单里也有 `"file"` 键（`.cube` 文件名），
+    /// 全局扫 `"file"` 会把胶片 LUT 误判成模型权重。
+    fn local_models_block(text: &str) -> String {
+        let start = text.find("LOCAL_MODELS = [").expect("python 侧应有 LOCAL_MODELS 清单");
+        let rest = &text[start..];
+        let end = rest.find("\n]").map(|i| i + 2).unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+
+    /// 本地增强模型三处同步守卫（`knowledge/local-enhance.md` §5 的纪律）。
+    ///
+    /// 新增本地模型必须在三处登记：`python/ai_studio/config.py` 的 LOCAL_MODELS、
+    /// 本文件的 `LOCAL_*` 下载表、前端 `LocalModelHint.vue` 的 `DL_NAMES`。
+    /// 漏了会怎样：设置里显示「已下载」但工具报「模型未就绪」，或者根本找不到下载入口 ——
+    /// 两者都不报错，只表现为功能性缺失（BUG-2026-1112-005 就是这么来的）。
+    #[test]
+    fn local_models_match_ai_studio_config() {
+        let block = local_models_block(&ai_studio_config_py());
+        let all = specs();
+        let locals: Vec<String> = all
+            .iter()
+            .flat_map(|s| s.files.iter().map(|f| f.local.to_string()))
+            .collect();
+
+        // Python 侧 LOCAL_MODELS 的每个 "file" 都必须在 Rust 下载表里可下载
+        let files = quoted_values(&block, "file");
+        assert!(!files.is_empty(), "LOCAL_MODELS 解析为空，测试本身失效");
+        for file in &files {
+            let want = format!("local/{file}");
+            assert!(
+                locals.iter().any(|l| l == &want),
+                "python LOCAL_MODELS 声明了 {file}，但 Rust 下载表没有 {want}；现有 {locals:?}"
+            );
+        }
+
+        // 反向：Rust 的 local-* 条目必须都能在 python 侧找到同名 file
+        for spec in all.iter().filter(|s| s.name.starts_with("local-")) {
+            for file in spec.files {
+                let name = file.local.trim_start_matches("local/");
+                assert!(
+                    files.iter().any(|f| f == name),
+                    "Rust 下载项 {} 的 {name} 未在 python LOCAL_MODELS 登记；现有 {files:?}",
+                    spec.name
+                );
+            }
+        }
     }
 
     /// FEAT-137：向量空间标签（单档 fp32）必须与 python 侧逐字一致。
