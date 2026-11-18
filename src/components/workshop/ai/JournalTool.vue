@@ -2,12 +2,15 @@
 /**
  * 主题手账工具（FEAT-152）
  * 版式模板 × 画面风格 + 提示词 → 生成手账（1 张 JPG / 多张 PDF）。
+ *
+ * FEAT-170：画面风格按 `group` 分组呈现（绘画 / 卡通形象）。分组只是排版 ——
+ * 提交给后端的仍只有 style key，后端不按组做任何分支。
  */
 import { computed, ref, watch } from "vue";
 import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
 import { dirName, joinPath } from "../../../utils/pathParts";
-import { JOURNAL_STYLES, JOURNAL_TEMPLATES } from "../../../utils/aiPresets";
+import { JOURNAL_STYLES, JOURNAL_STYLE_GROUPS, JOURNAL_TEMPLATES } from "../../../utils/aiPresets";
 import AiPromptPanel from "./AiPromptPanel.vue";
 import AiResultPanel from "./AiResultPanel.vue";
 import AiCostHint from "./AiCostHint.vue";
@@ -33,8 +36,16 @@ watch(
   { immediate: true },
 );
 
-const jobId = ref<string | null>(null);
-const job = computed(() => store.jobOf(jobId.value));
+// 作业归属提在 store（activeByTool）：切走页面/工具再回来能按工具名取回作业重连
+const job = computed(() => store.jobOfTool("journal"));
+
+/** 按分组切好的风格选项：空组不渲染（后端新增了组、前端还没登记时不会出现空标题） */
+const styleGroups = computed(() =>
+  JOURNAL_STYLE_GROUPS.map((g) => ({
+    ...g,
+    items: JOURNAL_STYLES.filter((s) => s.group === g.value),
+  })).filter((g) => g.items.length > 0),
+);
 const busy = computed(
   () => !!job.value && (job.value.status === "queued" || job.value.status === "running"),
 );
@@ -46,7 +57,7 @@ async function run() {
     return;
   }
   try {
-    jobId.value = await store.run({
+    await store.run({
       tool: "journal",
       paths: props.paths,
       prompt: prompt.value,
@@ -64,7 +75,8 @@ function onDir(v: string) {
 }
 
 async function onCancel() {
-  if (jobId.value) await store.cancel(jobId.value);
+  const id = store.activeJobId("journal");
+  if (id) await store.cancel(id);
 }
 </script>
 
@@ -89,17 +101,21 @@ async function onCancel() {
       </div>
       <div class="ai-field">
         <label class="ai-label">画面风格</label>
-        <div class="ai-seg">
-          <button
-            v-for="s in JOURNAL_STYLES"
-            :key="s.value"
-            type="button"
-            class="ai-seg-btn"
-            :class="{ on: style === s.value }"
-            @click="style = s.value"
-          >
-            {{ s.label }}
-          </button>
+        <div v-for="g in styleGroups" :key="g.value" class="ai-style-group">
+          <span class="ai-style-group-label">{{ g.label }}</span>
+          <div class="ai-seg">
+            <button
+              v-for="s in g.items"
+              :key="s.value"
+              type="button"
+              class="ai-seg-btn"
+              :class="{ on: style === s.value }"
+              :title="s.hint"
+              @click="style = s.value"
+            >
+              {{ s.label }}
+            </button>
+          </div>
         </div>
       </div>
     </div>

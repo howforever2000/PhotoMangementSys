@@ -72,6 +72,25 @@
   font-weight: var(--fw-em);
 }
 
+/* 分组呈现（FEAT-170）：同一字段内多组选项竖排，每组前一行小标题。
+ * 只服务「选项多到一屏铺开会混」的字段（手账画面风格），不是通用布局。 */
+.ai-style-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.ai-style-group + .ai-style-group {
+  margin-top: 6px;
+}
+.ai-style-group-label {
+  flex: none;
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+  letter-spacing: 0.08em;
+}
+
 .ai-inp,
 .ai-sel {
   height: 30px;
