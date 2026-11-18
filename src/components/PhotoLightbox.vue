@@ -8,6 +8,7 @@ import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
 import { useResizableDialog } from "../composables/useResizableDialog";
+import { useImageZoom } from "../composables/useImageZoom";
 import { categoryLabel } from "../utils/categoryLabel";
 import { resolvePhotoSrc } from "../utils/photoSrc";
 
@@ -70,59 +71,19 @@ const metaCollapsed = ref(false);
 /** FEAT-064 / FEAT-150：工具按钮送创意工坊（不需要父视图参与，见 openInWorkshop 注释） */
 const router = useRouter();
 
-/* ---- 缩放/平移（原图查看）---- */
-const scale = ref(1);
-const tx = ref(0);
-const ty = ref(0);
-const dragging = ref(false);
+/* ---- 缩放/平移（原图查看，FEAT-181 起与工作台共用 useImageZoom）---- */
 const overlayEl = ref<HTMLElement | null>(null);
-let dragLastX = 0;
-let dragLastY = 0;
-
-function resetView() {
-  scale.value = 1;
-  tx.value = 0;
-  ty.value = 0;
-  dragging.value = false;
-}
-
-/** Ctrl + 滚轮：以 15% 步长缩放（范围 20% ~ 800%） */
-function onWheel(e: WheelEvent) {
-  if (!e.ctrlKey) return;
-  e.preventDefault(); // 阻止 WebView 页面缩放
-  const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-  const next = Math.min(8, Math.max(0.2, scale.value * factor));
-  scale.value = next;
-  if (next === 1) {
-    tx.value = 0;
-    ty.value = 0;
-  }
-}
-
-function onDragStart(e: PointerEvent) {
-  if (scale.value <= 1) return;
-  dragging.value = true;
-  dragLastX = e.clientX;
-  dragLastY = e.clientY;
-  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-}
-
-function onDragMove(e: PointerEvent) {
-  if (!dragging.value) return;
-  tx.value += e.clientX - dragLastX;
-  ty.value += e.clientY - dragLastY;
-  dragLastX = e.clientX;
-  dragLastY = e.clientY;
-}
-
-function onDragEnd() {
-  dragging.value = false;
-}
-
-function toggleZoom() {
-  if (scale.value > 1) resetView();
-  else scale.value = 2.5;
-}
+const {
+  scale,
+  dragging,
+  transform,
+  resetView,
+  onWheel,
+  onDragStart,
+  onDragMove,
+  onDragEnd,
+  toggleZoom,
+} = useImageZoom({ min: 0.2, max: 8, requireCtrl: true, toggleTarget: 2.5 });
 
 const photo = computed<LightboxPhoto>(() => props.photos[current.value]);
 
@@ -750,7 +711,7 @@ void initForCurrentPhoto();
               @load="imgLoading = false"
               class="lb-img"
               :class="{ hidden: imgLoading }"
-              :style="{ transform: `translate(${tx}px, ${ty}px) scale(${scale})` }"
+              :style="{ transform }"
               alt=""
               draggable="false"
             />
