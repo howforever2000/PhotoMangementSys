@@ -14,21 +14,24 @@
  */
 import { ref } from "vue";
 import type { AiBillingRule, AiProviderKind, AiTool } from "../types/ai";
+import { costModelOf, toolLabel } from "../utils/toolCatalog.ts";
 import { trace } from "../utils/trace.ts";
 
 const STORAGE_KEY = "aiStudio:billing:v2";
 const LEGACY_STORAGE_KEY = "aiStudio:billing:v1";
 
-export const AI_TOOLS: AiTool[] = ["journal", "beauty", "style_transfer", "upscale"];
 export const AI_MODELS: AiProviderKind[] = ["vision", "edit", "upscale"];
 
-/** 工具中文名（运行区提示共用） */
-export const AI_TOOL_LABELS: Record<AiTool, string> = {
-  journal: "主题手账",
-  beauty: "人物美颜",
-  style_transfer: "滤镜迁移",
-  upscale: "画质增强",
-};
+/**
+ * 工具中文名：由 `op_catalog.json` 派生（FEAT-168）。
+ * 原来的手写 Record 是死导出 + 加工具必漏改，已删除。用 Proxy 保留「按 key 取值」
+ * 的调用方式而不冻结一份快照，新增工具自动有名字。
+ */
+export const AI_TOOL_LABELS: Record<string, string> = new Proxy({} as Record<string, string>, {
+  get: (_t, key: string) => (typeof key === "string" ? toolLabel(key) : undefined),
+  ownKeys: () => [],
+  getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }),
+});
 
 /** 模型能力位中文名（计费填写用） */
 export const AI_MODEL_LABELS: Record<AiProviderKind, string> = {
@@ -39,16 +42,28 @@ export const AI_MODEL_LABELS: Record<AiProviderKind, string> = {
 
 /**
  * 工具 → 所用模型（决定费用预估取哪个模型的单价）。
- * - 手账风格化 / 美颜 / 滤镜迁移 都走「图像编辑」出图；
- * - 画质增强走「图像超分」（未配置时后端回落编辑，这里按超分价展示）；
- * - 主题手账虽还会调「图像理解」写配文，但按约定只计图像编辑出图成本。
+ * 本机工具一律不计费（local-free）；云端工具按既有口径：
+ * 画质增强走超分、智能修图/手账走编辑（规划的视觉调用在工具内单独估算）。
  */
-export const TOOL_MODEL: Record<AiTool, AiProviderKind> = {
+const CLOUD_TOOL_MODEL: Record<string, AiProviderKind> = {
+  upscale: "upscale",
+  smart_edit: "edit",
   journal: "edit",
   beauty: "edit",
   style_transfer: "edit",
-  upscale: "upscale",
 };
+
+export const TOOL_MODEL: Record<string, AiProviderKind> = new Proxy(
+  {} as Record<string, AiProviderKind>,
+  {
+    get: (_t, key: string) =>
+      typeof key === "string" && costModelOf(key) === "cloud"
+        ? CLOUD_TOOL_MODEL[key] ?? "edit"
+        : "edit",
+    ownKeys: () => [],
+    getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }),
+  },
+);
 
 function defaultRule(): AiBillingRule {
   return {
@@ -137,9 +152,9 @@ function modelPrice(kind: AiProviderKind): number {
   return Number.isFinite(v) && v > 0 ? v : 0;
 }
 
-/** 某工具的每张单价：取其所用模型的单价 */
+/** 某工具的每张单价：本机工具恒为 0，不展示费用 */
 function unitPrice(tool: AiTool): number {
-  return modelPrice(TOOL_MODEL[tool]);
+  return costModelOf(tool) === "cloud" ? modelPrice(TOOL_MODEL[tool]) : 0;
 }
 
 export interface AiCostEstimate {
@@ -157,7 +172,7 @@ export interface AiCostEstimate {
 /** 估算一次作业的费用：张数 × 该工具所用模型的每张单价 */
 const estimate = trace("aiBilling.estimate", function estimate(tool: AiTool, count: number): AiCostEstimate {
   const model = TOOL_MODEL[tool];
-  const unit = modelPrice(model);
+  const unit = unitPrice(tool);
   const n = Math.max(0, Math.floor(Number(count) || 0));
   return {
     tool,
