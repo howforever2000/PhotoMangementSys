@@ -51,6 +51,8 @@ mod thumbnail;
 mod tone;
 // 创意工坊（FEAT-150）：压缩与旧调色配方清理
 mod tools;
+// 创意工坊（FEAT-150）：图像压缩后台任务状态（退出页面不中断 + 可停止）
+mod compress_job;
 // 创意工坊（FEAT-152）：AI 创作（Rust 命令层 + Python 工作流服务）
 mod ai_service;
 mod ai_settings;
@@ -60,6 +62,8 @@ mod photos;
 mod album;
 mod album_health;
 mod vcr_settings;
+// FEAT-178：资源使用情况面板（全量进程 PID/CPU/内存 + GPU 配置态）
+mod sys_monitor;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -179,7 +183,11 @@ use vcr_settings::{
 };
 // FEAT-152：创意工坊 AI 创作命令
 use ai_settings::{ai_get_settings, ai_set_settings};
-use ai_studio::{ai_cancel_job, ai_job_status, ai_run_job, ai_test_provider};
+use ai_studio::{
+    ai_cancel_job, ai_job_status, ai_preview, ai_run_job, ai_test_provider, local_models_status,
+};
+// FEAT-178：资源使用情况面板命令（FEAT-179：+ service_control 启停）
+use sys_monitor::{open_dev_resource_window, resource_usage_snapshot, service_control};
 
 
 /// 缩略图缓存目录名（位于 app_data_dir 下）
@@ -444,6 +452,8 @@ pub fn run() {
                     app.manage(ScanState::default());
                     // FEAT-064：扫描分组工具的异步任务状态（进程级，页面切换不丢）
                     app.manage(test_scan_job::ScanJobState::default());
+                    // FEAT-150：图像压缩后台任务状态（进程级，页面切换不丢 + 可停止）
+                    app.manage(compress_job::CompressJobState::default());
                 }
                 None => {
                     // token 缺失/失效 → 清理磁盘文件，按未登录启动
@@ -459,6 +469,8 @@ pub fn run() {
                     app.manage(ScanState::default());
                     // FEAT-064：扫描分组工具的异步任务状态（进程级，页面切换不丢）
                     app.manage(test_scan_job::ScanJobState::default());
+                    // FEAT-150：图像压缩后台任务状态（进程级，页面切换不丢 + 可停止）
+                    app.manage(compress_job::CompressJobState::default());
                 }
             }
             // BUG-2026-1023-009 收尾：缩略图缓存键空间解耦后的**一次性迁移**
@@ -664,8 +676,17 @@ pub fn run() {
             tail_dev_log,
             open_dev_log_window,
             open_dev_data_window,
+            // FEAT-178/179：资源使用情况面板 + 服务启停
+            resource_usage_snapshot,
+            service_control,
+            open_dev_resource_window,
             // 创意工坊（FEAT-150）：图像压缩（指定大小 / 长边 / 裁切）
             tools::image_compress,
+            // 创意工坊（FEAT-150）：图像压缩后台任务（退出页面不中断 + 停止）
+            compress_job::start_compress_job,
+            compress_job::get_compress_job,
+            compress_job::cancel_compress_job,
+            compress_job::clear_compress_job,
             // 创意工坊（FEAT-152）：AI 创作（设置 + 作业）
             ai_get_settings,
             ai_set_settings,
@@ -673,6 +694,8 @@ pub fn run() {
             ai_run_job,
             ai_job_status,
             ai_cancel_job,
+            ai_preview,
+            local_models_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
