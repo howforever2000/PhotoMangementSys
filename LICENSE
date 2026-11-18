@@ -176,6 +176,8 @@ of your licenses.
 | YOLOv8（`yolov8n-det.onnx`） | Ultralytics（上游 AGPL-3.0 / 商业双许可，请自行核对所用版本条款） |
 | PaddleOCR（`paddleocr-det.onnx`） | 百度（Apache-2.0） |
 | SCRFD / ArcFace（`det_500m.onnx`、`w600k_mbf.onnx`） | InsightFace |
+| BiSeNet 人脸解析（`face_parsing_bisenet_r34.onnx`） | yakhyo/face-parsing（MIT） |
+| 68 点人脸关键点（`peppa_wutz.onnx`） | facefusion-assets（Apache-2.0） |
 
 **运行时与依赖**
 
