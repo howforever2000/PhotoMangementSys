@@ -15,6 +15,7 @@ import "./assets/auth.css"; /* FEAT-093：三张鉴权页共用样式（.auth-*�
  * 多窗口入口：Rust 侧创建的副窗口加载同一份 index.html，这里按窗口 label 分流：
  *   - "dev-logs" → 开发者视角 · 实时日志（LogWindowApp）
  *   - "dev-data" → 开发者视角 · 数据与路径（DataWindowApp）
+ *   - "dev-resources" → 开发者视角 · 资源使用情况（ResourceWindowApp，FEAT-178）
  * 副窗口只挂各自组件 + pinia（主题 store 初始化需要），不装 router
  * ——避开登录守卫把副窗口重定向到 /login。
  */
@@ -27,7 +28,8 @@ const winLabel = (() => {
 })();
 const isLogWindow = winLabel === "dev-logs";
 const isDataWindow = winLabel === "dev-data";
-const isDevWindow = isLogWindow || isDataWindow;
+const isResourceWindow = winLabel === "dev-resources";
+const isDevWindow = isLogWindow || isDataWindow || isResourceWindow;
 
 /**
  * 副窗口显式报错（BUG-2026-0910-001 诊断增强）：之前任何加载/执行异常都表现为
@@ -36,7 +38,13 @@ const isDevWindow = isLogWindow || isDataWindow;
 function showFatal(msg: string) {
   const el = document.getElementById("app");
   if (!el) return;
-  const name = isLogWindow ? "日志窗口" : isDataWindow ? "数据与路径窗口" : "主窗口";
+  const name = isLogWindow
+    ? "日志窗口"
+    : isDataWindow
+      ? "数据与路径窗口"
+      : isResourceWindow
+        ? "资源使用情况窗口"
+        : "主窗口";
   const prefix = isDevWindow ? "[开发者视角] " : "";
   el.innerHTML = "";
   const box = document.createElement("pre");
@@ -111,6 +119,11 @@ async function bootstrap() {
     } else if (isDataWindow) {
       const { default: DataWindowApp } = await import("./dev/DataWindowApp.vue");
       const app = createApp(DataWindowApp);
+      app.use(createPinia());
+      app.mount("#app");
+    } else if (isResourceWindow) {
+      const { default: ResourceWindowApp } = await import("./dev/ResourceWindowApp.vue");
+      const app = createApp(ResourceWindowApp);
       app.use(createPinia());
       app.mount("#app");
     } else {

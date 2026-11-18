@@ -234,6 +234,16 @@ async function openDevData() {
   }
 }
 
+/** 打开「资源使用情况」副窗口（全量进程 PID/CPU/内存 + GPU 配置态；后端保证单例） */
+async function openDevResources() {
+  settingsOpen.value = false;
+  try {
+    await invoke("open_dev_resource_window");
+  } catch (e) {
+    console.error("打开资源使用情况窗口失败:", e);
+  }
+}
+
 /* ---------------- Esc 关闭打开的弹窗（不依赖 mask focus） ---------------- */
 function onGlobalKey(e: KeyboardEvent) {
   if (e.key !== "Escape") return;
@@ -320,6 +330,13 @@ onBeforeUnmount(() => {
                   <span>
                     <b>数据与路径</b>
                     <i>DB / 缓存 / 模型位置 · 只读预览</i>
+                  </span>
+                </button>
+                <button class="settings-item" type="button" role="menuitem" @click="openDevResources">
+                  <span class="settings-item-icon">📊</span>
+                  <span>
+                    <b>资源使用情况</b>
+                    <i>进程 PID / CPU / 内存 / GPU 配置态</i>
                   </span>
                 </button>
               </div>
@@ -469,9 +486,13 @@ onBeforeUnmount(() => {
 .home-content {
   position: relative;
   z-index: 2;
-  max-width: 1000px;
+  display: flex;
+  flex-direction: column;
+  /* 比原 1000 略宽：四张卡各自更大、四卡之间也再开一点 */
+  max-width: 1040px;
   margin: 0 auto;
-  padding: 48px 24px 64px;
+  /* 底部留白大于顶部：配合 module-grid 的 auto 边距，把四卡整体再往上提一段 */
+  padding: 48px 24px 140px;
   min-height: 100vh;
 }
 
@@ -741,13 +762,22 @@ onBeforeUnmount(() => {
 .module-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
+  /* 两行等高：一行里有 2 行描述、另一行只有 1 行时，卡片也不会一大一小 */
+  grid-auto-rows: 1fr;
+  /* 横竖都再开一些（原 20），四张卡不挤在一起 */
+  gap: 28px;
+  /* 页头留在顶部，四张卡在剩余空间里垂直居中（水平已由 max-width + margin:auto 居中）。
+     内容高于视口时 auto 边距自动归零，页面照常滚动，不会裁掉页头。 */
+  margin-top: auto;
+  margin-bottom: auto;
 }
 
 .module-card {
   display: flex;
   align-items: center;
   gap: 16px;
+  /* 四张卡统一的最小框高：描述行数不同也不会让某张卡变矮 */
+  min-height: 120px;
   padding: 22px 20px;
   /* 玻璃材质（模糊/高光/阴影）由 :style="cardStyle" 下发，不再写死 blur */
   border-radius: var(--radius-card);
@@ -826,6 +856,8 @@ onBeforeUnmount(() => {
   font-size: 13px;
   line-height: 1.55;
   color: var(--color-text-2);
+  /* 预留两行描述的高度：一行/两行描述的卡，标题、图标、箭头都落在同一基线 */
+  min-height: 40px;
 }
 
 .pending-badge {

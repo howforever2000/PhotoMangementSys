@@ -68,4 +68,6 @@ password-hash = { version = "0.5", features = ["getrandom"] }
 aes-gcm = { version = "0.10", features = ["getrandom"] }
 base64 = "0.22"
 rand_core = { version = "0.6", features = ["getrandom"] }
+# FEAT-178：资源使用情况面板（全量进程 PID / CPU / 内存采样）
+sysinfo = "0.33"
 
