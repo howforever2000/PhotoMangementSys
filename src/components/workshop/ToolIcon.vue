@@ -8,7 +8,8 @@
  */
 withDefaults(
   defineProps<{
-    name: "compress" | "text" | "enhance" | "journal" | "beauty" | "style" | "upscale";
+    /** 图标名：由 op_catalog.json 提供；宽为 string 以便清单新增图标不逼改这里 */
+    name: "compress" | "text" | "enhance" | "journal" | "beauty" | "style" | "upscale" | (string & {});
     size?: number;
   }>(),
   { size: 20 },

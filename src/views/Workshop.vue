@@ -1,145 +1,140 @@
 <script setup lang="ts">
 /**
- * 创意工坊（FEAT-150，替代 FEAT-063/099 的调色台）
+ * 创意工坊（FEAT-150 → FEAT-168 三层 IA → FEAT-169 按类型分组）
  * ===================================================================
- * ## 这页是什么
+ * ## 定位
  *
- * **对已有照片做加工的工具台**：图像压缩、文字提取（OCR）、画质增强，
- * 以及后续由 agent 编排的创作类工具（主题手账）。
+ * **LR 导出 JPEG 之后的快速出图站**：懒人快速出图，不做精修。
+ * 判断标准：从导入到出图 ≤3 次点击、全程不出现调参面板。
+ * 硬约束见 `.dsh/knowledge/workshop-positioning.md`。
  *
- * ## 为什么重做（上一版的定位错在哪）
+ * ## 三层 IA（按「要不要自己选步骤」分，不按本机/云端分）
  *
- * 上一版工坊是一台 Lightroom 式的非破坏调色台（曝光/曲线/裁剪/蒙版/锐化 +
- * OpenCV 算子）。对一款**相册管理**软件来说：
- *   ① 与 LR/PS 逐项重复，赢不了的战场（Rust 侧 333KB 编辑引擎 + 一套独立
- *      Python 微服务，见 README 定位四条：本地存储 / 离线 AI / 文件夹抽象 / 检索优先）；
- *   ② 那套 Python 算子通道在**发布版根本没打包**（release.tauri.conf.json 无
- *      studio 资源），装了也只有开发机能跑通 —— 一半功能在用户机器上是死的。
- * 所以整条编辑链路连同其后端一起删掉了（git 历史里可取回）。
+ *   ① 一键出片（默认落地页）：选图 → 选配方 → 出片，不暴露任何单算子
+ *   ② 批量套用：独立路由 /workshop/workbench，前后对比交互不同，但共用配方选择器
+ *   ③ 单步工具：默认折叠，按**类型**分组（影调与滤镜 / 人像 / 画质 / 创作 / 处理），
+ *      规划中项沉底
  *
- * ## 结构：左栏选工具 + 右栏是该工具的工作区
+ * FEAT-169 把三层里的第 ③ 层从「本机 / 模型 / 规划中」改成按类型分组：运行位置
+ * 是用户不关心的技术口径，同一件事「本机」「模型」各出现一次时用户还得先理解
+ * 后者才能选。分组口径集中在 `op_catalog.json` 的 `groups`，这里只渲染。
  *
- * 沿用相册页 / 时间线页那套「左栏导航 + 右栏内容」的布局（AlbumList.vue 的
- * `.album-side`）：176px 左栏吸顶、分组小标 + 行式条目、选中用左侧 2px 金条。
- * 为什么不沿用上一版的"一屏卡片列表"：工具是**常驻切换**的对象（压完一批接着
- * 换 OCR），不是"进入再退出"的目的地 —— 侧栏让切换只花一次点击，而不是
- * 「返回列表 → 再进下一个」两步，也不需要"返回小组件"这类中间态。
+ * ## 结构保全（FEAT-169）
  *
- * 左栏按**输入/输出的性质**分组：
- *   - 处理：对单张或一组照片做变换，输出副本。高频、参数少、反复用。
- *   - 创作：从一组照片生成一件作品（主题手账）。低频、有输出物、耗时长。
+ * 用户规则：滤镜迁移与美颜不得改变物体形状。本机工具天然满足（逐色查表 +
+ * 局部 ROI）；云端工具靠 `presets.STRUCTURE_LOCK` 提示词硬段 + `critic.structure_compare`
+ * 出图后校验双保险。界面在页脚把这句承诺写出来，不让用户去猜哪个工具安全。
  *
- * 两区共用同一个**素材托盘**：这几件事的输入都是"一组照片"，
- * 所以输入不该由每个工具自己再选一遍（`PhotoTray.vue` 顶部有详细理由）。
+ * 工具定义全部来自 `op_catalog.json`（经 `utils/toolCatalog.ts`），新增工具只改那一份 JSON。
+ *
+ * 布局沿用相册页/时间线页的「左栏导航 + 右栏内容」，视觉沿用既有设计系统
+ * （design/design-system.md），只做 refinement 不 redesign。
  */
 import { computed, onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { useRoute, useRouter } from "vue-router";
 import AppHeader from "../components/ui/AppHeader.vue";
 import PhotoTray from "../components/workshop/PhotoTray.vue";
 import CompressTool from "../components/workshop/CompressTool.vue";
 import ToolIcon from "../components/workshop/ToolIcon.vue";
 import AiSettingsDialog from "../components/workshop/ai/AiSettingsDialog.vue";
+import RecipeTool from "../components/workshop/ai/RecipeTool.vue";
 import JournalTool from "../components/workshop/ai/JournalTool.vue";
 import BeautyTool from "../components/workshop/ai/BeautyTool.vue";
 import StyleTransferTool from "../components/workshop/ai/StyleTransferTool.vue";
 import UpscaleTool from "../components/workshop/ai/UpscaleTool.vue";
+import SmartEditTool from "../components/workshop/ai/SmartEditTool.vue";
+import FilmSimTool from "../components/workshop/ai/FilmSimTool.vue";
+import ColorTransferTool from "../components/workshop/ai/ColorTransferTool.vue";
+import RestoreTool from "../components/workshop/ai/RestoreTool.vue";
+import AutoGradeTool from "../components/workshop/ai/AutoGradeTool.vue";
+import LocalBeautyTool from "../components/workshop/ai/LocalBeautyTool.vue";
+import LocalReshapeTool from "../components/workshop/ai/LocalReshapeTool.vue";
+import OcrTool from "../components/workshop/ai/OcrTool.vue";
+import { pickPhotos } from "../composables/useOpenDialog";
+import {
+  primaryTool,
+  singleToolsByGroup,
+  toolById,
+  TOOLS,
+  type ToolDef as CatalogToolDef,
+} from "../utils/toolCatalog";
+import { isWorkshopTool, type WorkshopToolId } from "../stores/workshopUi";
+import { useWorkshopUiStore } from "../stores/workshopUi";
+import { useCompressTaskStore } from "../stores/compressTask";
+import { useAiStudioStore } from "../stores/aiStudio";
 import "../assets/ai-tool.css";
 
 const route = useRoute();
+const router = useRouter();
 
-type ToolId =
-  | "compress"
-  | "ocr"
-  | "ai_journal"
-  | "ai_beauty"
-  | "ai_style"
-  | "ai_upscale";
-
-interface ToolDef {
-  id: ToolId;
-  title: string;
-  /** 右栏标题下方的一句话（说清"做什么"，不重复侧栏的名字） */
-  desc: string;
-  icon: "compress" | "text" | "enhance" | "journal" | "beauty" | "style" | "upscale";
-  /** 本轮是否真的能用。规划中的项不做假入口（点开必须明确说不能跑） */
-  ready: boolean;
-  /** 规划中工具的流程示意 */
-  steps?: string[];
-  /** 规划中工具的路线说明 */
-  note?: string;
+/** 进入 ② 批量套用（独立视图，前后对比交互不同） */
+function goWorkbench() {
+  router.push("/workshop/workbench");
 }
 
-/** 处理类：对单张/一组做变换，输出副本 */
-const processTools: ToolDef[] = [
-  {
-    id: "compress",
-    title: "图像压缩",
-    desc: "体积瘦身：指定目标大小、长边上限与居中裁切，输出 JPEG 副本，原图不动",
-    icon: "compress",
-    ready: true,
-  },
-  {
-    id: "ocr",
-    title: "文字提取",
-    desc: "识别照片里的文字，可复制、可加入搜索词条",
-    icon: "text",
-    ready: false,
-    note: "复用扫描入库已下载的 PaddleOCR 检测模型，补齐识别（rec）模型后即可上线。",
-  },
-];
+type ToolId = WorkshopToolId;
 
-/** AI 创作类：调用外部 OpenAI 兼容模型（理解 / 编辑 / 超分） */
-const aiTools: ToolDef[] = [
-  {
-    id: "ai_journal",
-    title: "主题手账",
-    desc: "从一组照片提炼主题、写配文并做风格化，排成一本手账（1 张 JPG / 多张 PDF）",
-    icon: "journal",
-    ready: true,
-  },
-  {
-    id: "ai_beauty",
-    title: "人物美颜",
-    desc: "预设美颜风格与级别，逐张人像精修，输出新 JPG",
-    icon: "beauty",
-    ready: true,
-  },
-  {
-    id: "ai_style",
-    title: "滤镜迁移",
-    desc: "输入内容图与参考图，迁移色调与影调；也支持仅凭提示词自主调色",
-    icon: "style",
-    ready: true,
-  },
-  {
-    id: "ai_upscale",
-    title: "画质增强",
-    desc: "低分辨率照片 2×/4× 超分放大，去噪与细节还原，输出新文件",
-    icon: "upscale",
-    ready: true,
-  },
-];
+/** 工具 id → 面板组件（唯一分发表，取代 12 分支 v-else-if 链） */
+const TOOL_COMPONENTS: Record<string, unknown> = {
+  recipe: RecipeTool,
+  compress: CompressTool,
+  journal: JournalTool,
+  beauty: BeautyTool,
+  style_transfer: StyleTransferTool,
+  upscale: UpscaleTool,
+  smart_edit: SmartEditTool,
+  film_sim: FilmSimTool,
+  ocr: OcrTool,
+  color_transfer: ColorTransferTool,
+  restore: RestoreTool,
+  auto_grade: AutoGradeTool,
+  local_beauty: LocalBeautyTool,
+  face_reshape: LocalReshapeTool,
+};
 
-const allTools = computed<ToolDef[]>(() => [...processTools, ...aiTools]);
-const isAiTool = (id: ToolId) => id.startsWith("ai_");
+const primary = primaryTool();
+const grouped = singleToolsByGroup();
+const singleOpen = ref(false);
 
 /* ---------------- 工具状态 / 素材托盘 ---------------- */
 
-/** 默认落在压缩：进页面就能干活，不先看一遍空白 */
-const active = ref<ToolId>("compress");
-const tray = ref<string[]>([]);
+/** 工具选择与素材托盘提在 store：离开页面再回来不重置，任务状态也不丢 */
+const ui = useWorkshopUiStore();
+const active = computed<ToolId>({
+  get: () => ui.active,
+  set: (v) => {
+    ui.active = v;
+  },
+});
+const tray = computed<string[]>({
+  get: () => ui.tray,
+  set: (v) => {
+    ui.tray = v;
+  },
+});
 /** AI 模型设置弹窗 */
 const settingsOpen = ref(false);
 
-const activeDef = computed<ToolDef>(
-  () => allTools.value.find((t) => t.id === active.value) ?? processTools[0],
+/* 左侧运行中圆点：catalog id 与 Python 作业名同域，不再需要映射表 */
+const compressTask = useCompressTaskStore();
+const aiStore = useAiStudioStore();
+function toolBusy(id: ToolId): boolean {
+  if (id === "compress") return compressTask.running;
+  const jobId = aiStore.activeJobId(id);
+  if (!jobId) return false;
+  const j = aiStore.jobs[jobId];
+  return !!j && (j.status === "queued" || j.status === "running");
+}
+
+const activeDef = computed<CatalogToolDef>(
+  () => toolById(active.value) ?? primary,
 );
+const activeComponent = computed(() => TOOL_COMPONENTS[active.value] ?? null);
 
 const headerMeta = computed(
   () =>
-    `${activeDef.value.title} · 素材 ${tray.value.length} 张 · ${
-      isAiTool(active.value) ? "AI 模型处理" : "本机处理"
+    `${activeDef.value.label} · 素材 ${tray.value.length} 张 · ${
+      activeDef.value.backend === "cloud" ? "模型处理" : "本机处理"
     }`,
 );
 
@@ -149,7 +144,7 @@ const headerMeta = computed(
  * 兼容两种带入方式：
  * - `?photo=<绝对路径>`：灯箱/右键菜单「在创意工坊处理」
  * - `?photos=a|b|c`：批量入口（多选用 `|` 分隔，避免与 Windows 路径里的字符冲突）
- * 带照片就直接落在压缩工位 —— 「打开即用」，不让用户再看一遍侧栏。
+ * 带照片直接落在 ①一键出片 —— 「打开即用」，不让用户再看一遍侧栏。
  */
 onMounted(() => {
   const q = route.query;
@@ -157,29 +152,16 @@ onMounted(() => {
   const many = typeof q.photos === "string" ? q.photos.split("|") : [];
   const incoming = [one, ...many].map((p) => p.trim()).filter(Boolean);
   if (incoming.length) {
-    tray.value = dedupe([...tray.value, ...incoming]);
-    active.value = "compress";
+    tray.value = [...new Set([...tray.value, ...incoming])];
+    active.value = primary.id;
   }
-  // `?tool=` 优先于默认工位（也允许不带照片直接深链到某个工具）
-  if (typeof q.tool === "string") active.value = q.tool as ToolId;
+  // `?tool=` 优先于默认工位（校验合法性，避免深链把界面切到不存在的工具）
+  if (typeof q.tool === "string" && isWorkshopTool(q.tool)) active.value = q.tool;
 });
 
-function dedupe(list: string[]): string[] {
-  return [...new Set(list)];
-}
-
 async function addPhotos() {
-  const picked = await openDialog({
-    multiple: true,
-    directory: false,
-    title: "选择照片（可多选）",
-    filters: [
-      { name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif"] },
-    ],
-  });
-  if (!picked) return;
-  const list = Array.isArray(picked) ? picked : [picked];
-  tray.value = dedupe([...tray.value, ...list.filter((p): p is string => typeof p === "string")]);
+  const list = await pickPhotos();
+  if (list.length) tray.value = [...new Set([...tray.value, ...list])];
 }
 
 function removePhoto(path: string) {
@@ -190,7 +172,7 @@ function clearTray() {
   tray.value = [];
 }
 
-function selectTool(t: ToolDef) {
+function selectTool(t: CatalogToolDef) {
   active.value = t.id;
 }
 </script>
@@ -200,39 +182,55 @@ function selectTool(t: ToolDef) {
     <AppHeader title="创意工坊" icon="🎨" :meta="headerMeta" />
 
     <div class="ws-layout">
-      <!-- 左栏：工具导航（同样是"本页内部的分区"，与相册页筛选栏同一套结构） -->
-      <aside class="ws-side" aria-label="工具">
+      <!-- 左栏：三层 IA。分区是展示口径，工具集合仍是一张 catalog 表 -->
+      <aside class="ws-side" aria-label="功能">
         <div class="side-group">
-          <h3 class="side-h">处理</h3>
+          <h3 class="side-h">快速出图</h3>
           <button
-            v-for="t in processTools"
-            :key="t.id"
             class="side-item"
-            :class="{ on: active === t.id }"
+            :class="{ on: active === primary.id }"
             type="button"
-            :title="t.ready ? t.desc : `${t.desc}（规划中）`"
-            @click="selectTool(t)"
+            :title="primary.desc"
+            @click="selectTool(primary)"
           >
-            <span class="side-ico"><ToolIcon :name="t.icon" :size="15" /></span>
-            <span class="side-name">{{ t.title }}</span>
-            <span v-if="!t.ready" class="side-tag">规划</span>
+            <span class="side-ico"><ToolIcon :name="primary.icon" :size="15" /></span>
+            <span class="side-name">{{ primary.label }}</span>
+            <span v-if="toolBusy(primary.id)" class="side-dot" title="任务运行中" aria-label="任务运行中" />
+          </button>
+          <button class="side-item" type="button" title="一批图套用同一配方" @click="goWorkbench">
+            <span class="side-ico"><ToolIcon name="upscale" :size="15" /></span>
+            <span class="side-name">批量套用</span>
+            <span class="side-arrow" aria-hidden="true">↗</span>
           </button>
         </div>
 
         <div class="side-group">
-          <h3 class="side-h">AI 创作</h3>
-          <button
-            v-for="t in aiTools"
-            :key="t.id"
-            class="side-item"
-            :class="{ on: active === t.id }"
-            type="button"
-            :title="t.desc"
-            @click="selectTool(t)"
-          >
-            <span class="side-ico"><ToolIcon :name="t.icon" :size="15" /></span>
-            <span class="side-name">{{ t.title }}</span>
+          <button class="side-toggle" type="button" :aria-expanded="singleOpen" @click="singleOpen = !singleOpen">
+            <h3 class="side-h">单步工具</h3>
+            <span class="side-chevron" :class="{ open: singleOpen }" aria-hidden="true">›</span>
           </button>
+
+          <template v-if="singleOpen">
+            <!-- 按类型分组（FEAT-169）：用户想的是「我要改什么」，不是「跑在哪」 -->
+            <template v-for="g in grouped" :key="g.id">
+              <h4 class="side-sub" :title="g.desc">{{ g.label }}</h4>
+              <button
+                v-for="t in g.items"
+                :key="t.id"
+                class="side-item"
+                :class="{ on: active === t.id }"
+                type="button"
+                :title="t.ready ? t.desc : `${t.desc}（规划中）`"
+                @click="selectTool(t)"
+              >
+                <span class="side-ico"><ToolIcon :name="t.icon" :size="15" /></span>
+                <span class="side-name">{{ t.label }}</span>
+                <span v-if="toolBusy(t.id)" class="side-dot" title="任务运行中" aria-label="任务运行中" />
+                <span v-else-if="!t.ready" class="side-tag">规划</span>
+                <span v-else-if="t.backend === 'cloud'" class="side-tag" title="调用你配置的模型">模型</span>
+              </button>
+            </template>
+          </template>
         </div>
       </aside>
 
@@ -240,7 +238,7 @@ function selectTool(t: ToolDef) {
       <div class="ws-main">
         <header class="main-head">
           <span class="main-ico"><ToolIcon :name="activeDef.icon" :size="18" /></span>
-          <h2 class="main-title">{{ activeDef.title }}</h2>
+          <h2 class="main-title">{{ activeDef.label }}</h2>
           <span class="main-sub">{{ activeDef.desc }}</span>
           <button class="ai-ghost" type="button" style="margin-left: auto" @click="settingsOpen = true">
             ⚙ 模型设置
@@ -250,38 +248,38 @@ function selectTool(t: ToolDef) {
         <!-- 素材托盘：所有工具共用一份输入 -->
         <PhotoTray :paths="tray" @add="addPhotos" @remove="removePhoto" @clear="clearTray" />
 
-        <!-- 已实现：压缩 -->
-        <CompressTool v-if="active === 'compress'" :paths="tray" />
-
-        <!-- AI 创作：调用外部 OpenAI 兼容模型 -->
-        <JournalTool v-else-if="active === 'ai_journal'" :paths="tray" />
-        <BeautyTool v-else-if="active === 'ai_beauty'" :paths="tray" />
-        <StyleTransferTool v-else-if="active === 'ai_style'" :paths="tray" />
-        <UpscaleTool v-else-if="active === 'ai_upscale'" :paths="tray" />
+        <!-- 由 catalog 分发表驱动，取代 12 分支 v-else-if -->
+        <component :is="activeComponent" v-if="activeComponent" :paths="tray" />
 
         <!-- 规划中：不假装能跑，把"将来会怎么用"写清楚 -->
-        <section v-else class="planned">
-          <p class="planned-title">「{{ activeDef.title }}」还在做，当前版本不可用。</p>
-
-          <!-- 流程条：创作类必须回答"作品是怎么造出来的" -->
+        <section v-else-if="!activeDef.ready" class="planned">
+          <p class="planned-title">「{{ activeDef.label }}」还在做，当前版本不可用。</p>
           <ol v-if="activeDef.steps?.length" class="steps">
             <template v-for="(s, i) in activeDef.steps" :key="s">
               <li class="step">
                 <span class="step-n">{{ i + 1 }}</span>
                 <span class="step-t">{{ s }}</span>
               </li>
-              <li v-if="i < activeDef.steps.length - 1" class="step-arrow" aria-hidden="true">›</li>
+              <li v-if="i < (activeDef.steps?.length ?? 0) - 1" class="step-arrow" aria-hidden="true">›</li>
             </template>
           </ol>
-
           <p v-if="activeDef.note" class="planned-note">{{ activeDef.note }}</p>
-          <p class="planned-note dim">
-            功能上线后，这里会直接在同一个素材托盘上工作，不需要重新选照片。
-          </p>
+          <p class="planned-note dim">功能上线后，这里会直接在同一个素材托盘上工作，不需要重新选照片。</p>
+        </section>
+
+        <section v-else class="planned">
+          <p class="planned-title">「{{ activeDef.label }}」暂未接入面板。</p>
+          <p class="planned-note dim">工具已在清单中登记（{{ TOOLS.length }} 项），面板组件待补齐。</p>
         </section>
 
         <p class="colophon">
-          「处理」类工具（图像压缩）全程在本机跑，照片不上传；「AI 创作」类会把所选照片发送到你配置的外部 API 服务，产物只写到你自己选的文件夹。
+          这里只接 LR 导出的 JPG/PNG：本机步骤免费离线、照片不上传；模型步骤会把所选照片发到你配置的服务
+          （可用本机 Ollama / LM Studio，也可用云端 API）。产物只写进你自己选的文件夹，原图不动。
+        </p>
+        <p class="colophon lock-note">
+          <span class="lock-h">形状不变</span>
+          影调与滤镜类工具只改颜色与质感，不改任何物体的形状：本机走逐色查表天然几何恒等；
+          模型步骤会额外做结构校验，一旦检出脸型或构图被改就告警并回退。
         </p>
       </div>
     </div>
@@ -315,6 +313,42 @@ function selectTool(t: ToolDef) {
 
 .side-group + .side-group {
   margin-top: 18px;
+}
+
+/* ③ 单步工具默认折叠：一个折叠开关，不是再加一层分组壳 */
+.side-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+}
+.side-toggle .side-h {
+  margin-bottom: 0;
+}
+.side-chevron {
+  margin-left: auto;
+  font-size: var(--fs-body);
+  color: var(--fg-2);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+.side-chevron.open {
+  transform: rotate(90deg);
+}
+.side-sub {
+  margin: 10px 0 4px 9px;
+  font-size: var(--fs-label);
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  color: var(--fg-3, var(--fg-2));
+}
+.side-arrow {
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
 }
 
 /* 分组小标：与全站小标同一字阶（9.5px / .15em / 600 / --fg-2） */
@@ -397,6 +431,28 @@ function selectTool(t: ToolDef) {
   font-size: 10.5px;
   color: var(--fg-3, var(--fg-2));
   font-variant-numeric: tabular-nums;
+}
+
+/* 运行中圆点：轻微脉动，只提示"这个工具还有后台任务在跑"，不抢工具名的注意力 */
+.side-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  flex-shrink: 0;
+  animation: side-dot-pulse 1.6s ease-out infinite;
+}
+
+@keyframes side-dot-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--c-accent) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
 }
 
 /* ---------- 右栏 ---------- */
@@ -515,6 +571,27 @@ function selectTool(t: ToolDef) {
   font-size: var(--fs-meta);
   color: var(--fg-2);
   line-height: 1.65;
+}
+
+/* 第二条旁注接着排，不再重复一条分隔线（同一段承诺的两句） */
+.colophon + .colophon {
+  margin-top: 8px;
+  padding-top: 0;
+  border-top: none;
+}
+
+/* 「形状不变」这句是硬承诺，不是补充说明：用小标 + 提亮一词点出来，
+   不做成彩色徽标 —— 它不该抢走工具列表的注意力。 */
+.lock-h {
+  margin-right: 7px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.lock-h::after {
+  content: "·";
+  margin-left: 7px;
+  color: var(--fg-3, var(--fg-2));
 }
 
 /* ---------- 窄窗：左栏折成横向工具条 ---------- */
