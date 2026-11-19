@@ -5,10 +5,12 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import math
 import os
 import re
+import threading
 from io import BytesIO
 from typing import Any, Callable, Dict, Optional
 
@@ -44,6 +46,48 @@ def png_bytes(img: Image.Image) -> bytes:
     buf = BytesIO()
     img.save(buf, "PNG")
     return buf.getvalue()
+
+
+# 云端「理解」调用的输入短边上限（规划器看图、多模态复核）。
+# 为什么按**短边**而不是长边：理解类调用关心的是画面里的全部内容与位置关系，
+# 按短边定档能保证竖图/横图得到的细节密度一致；按长边定档会让 3:2 横图
+# 的短边只剩 720，细小的文字/表情/构图元素会先糊掉。
+UNDERSTAND_SHORT_EDGE = 1080
+
+
+def _fit_short_edge(img: Image.Image, short_edge: int) -> Image.Image:
+    """把**短边**缩到 `short_edge`（只缩不放：放大会更慢且不增加信息）。"""
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        return img
+    cur = min(w, h)
+    if cur <= short_edge:
+        return img
+    s = short_edge / float(cur)
+    size = (max(1, int(round(w * s))), max(1, int(round(h * s))))
+    return img.resize(size, Image.LANCZOS)
+
+
+def understand_bytes(img: Image.Image, short_edge: int = UNDERSTAND_SHORT_EDGE) -> bytes:
+    """云端「理解」调用的输入图字节：短边 ≤ `short_edge` 的 JPEG。
+
+    为什么不是直接把原图存成 PNG（旧行为）：实测 24MP 照片 `img.save(PNG)` 要
+    **5140 ms**、产出 37.9MB，base64 后 50.5MB —— 每次规划/复核都要付一遍，
+    而且视觉模型的输入分辨率远小于 24MP，多出来的像素纯粹是上传与编码浪费。
+    缩到短边 1080 后同样一张图约 **0.2MB / 120ms**。
+
+    用 JPEG 而不是 PNG：理解调用只看内容，JPEG 的 12:1 压缩不改变判断；而
+    PNG 在照片类内容上是无损但体积 3~5 倍 —— 上行带宽与网关超时都更危险。
+    """
+    im = _fit_short_edge(img.convert("RGB"), short_edge)
+    buf = BytesIO()
+    im.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
+def understand_data_url(img: Image.Image, short_edge: int = UNDERSTAND_SHORT_EDGE) -> str:
+    """`understand_bytes` 的 data URL 形态（providers 层要的就是这个）。"""
+    return "data:image/jpeg;base64," + base64.b64encode(understand_bytes(img, short_edge)).decode("ascii")
 
 
 def _fit_i2i_size(w: int, h: int, max_long_edge: int) -> tuple:
@@ -130,15 +174,42 @@ def filter_inputs(paths: list[str], warnings: list[str]) -> list[str]:
     return keep
 
 
+_PATH_LOCK = threading.Lock()
+
+
 def unique_path(out_dir: str, name: str, ext: str) -> str:
+    """在 `out_dir` 下取一个**不存在的**文件名，并原子地占住它。
+
+    并发安全（照片级并行后这是真需求）：`os.path.exists` 判定与后续写盘之间有窗口，
+    两个线程同批处理同名文件（`IMG_1.jpg` 与 `IMG_1.png` 会归一成同一个 stem）时
+    会拿到同一个目标路径、互相覆盖。这里用 `O_CREAT|O_EXCL` 原子创建占位，
+    谁创建成功谁拿到这个路径；调用方随后正常写入覆盖空文件即可。
+
+    占位失败（父目录不可写等）时退回「只算路径不占位」的旧行为，让真正的写盘
+    去报那个更可读的错误。
+    """
     os.makedirs(out_dir, exist_ok=True)
-    p = os.path.join(out_dir, f"{name}{ext}")
-    if not os.path.exists(p):
-        return p
-    i = 1
-    while os.path.exists(os.path.join(out_dir, f"{name}_{i}{ext}")):
-        i += 1
-    return os.path.join(out_dir, f"{name}_{i}{ext}")
+    with _PATH_LOCK:
+        candidate = os.path.join(out_dir, f"{name}{ext}")
+        index = 1
+        while True:
+            if _reserve(candidate):
+                return candidate
+            candidate = os.path.join(out_dir, f"{name}_{index}{ext}")
+            index += 1
+
+
+def _reserve(path: str) -> bool:
+    """原子占位：成功（含「已被别人占住」）返回 False 表示要换下一个名字。"""
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+    except FileExistsError:
+        return False
+    except OSError:
+        # 目录不可写等：不在这里报，交给真正写盘的那一步给出上下文错误
+        return not os.path.exists(path)
+    os.close(fd)
+    return True
 
 
 def save_image(img: Image.Image, out_dir: str, name: str, ext: str = ".jpg", quality: int = 95) -> str:

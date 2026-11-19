@@ -38,6 +38,18 @@ def _png_data_url(data: bytes) -> str:
 
 
 def _image_data_url(data: bytes) -> str:
+    """按**魔数**判断图片格式，别把 JPEG 标成 PNG。
+
+    理解类调用的输入已改成短边 1080 的 JPEG（`workflows/base.understand_bytes`）：
+    体积是 PNG 的 1/3~1/5。但有些网关按 data URL 的 mime 决定解码器，标错会
+    要么报 400、要么按 PNG 解 JPEG 得花屏。这里只看前几字节，不引入图像库。
+    """
+    if data[:3] == b"\xff\xd8\xff":
+        return "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
+    return _png_data_url(data)
+
+
+def _image_data_url(data: bytes) -> str:
     """把任意图片字节包成带正确 MIME 的 data URL（按真实格式推断，不写死 png）。"""
     try:
         with Image.open(BytesIO(data)) as im:
@@ -126,7 +138,7 @@ def chat_vision(
         raise ProviderError("图像理解 provider 未配置（baseUrl / model 为空）")
     content: List[dict] = [{"type": "text", "text": prompt}]
     for img in images:
-        content.append({"type": "image_url", "image_url": {"url": _png_data_url(img)}})
+        content.append({"type": "image_url", "image_url": {"url": _image_data_url(img)}})
     body = {
         "model": model,
         "messages": [{"role": "user", "content": content}],

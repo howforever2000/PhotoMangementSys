@@ -5441,6 +5441,38 @@
       "verification": "cargo test --lib model_dl 8 passed（新增 begin_inflight_rejects_concurrent_start：首次成功 / 二次被拒 / 清掉后可重下）。",
       "created_at": "2026-11-19T09:45:00+08:00",
       "updated_at": "2026-11-19T09:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1119-003",
+      "date": "2026-11-19",
+      "status": "fixed",
+      "title": "照片级并行下 unique_path 竞态：同名 stem 的两个文件拿到同一目标路径互相覆盖，且不报错",
+      "module": "python/ai_studio/workflows/base.py",
+      "symptom": "批量出片后产物比输入少几张；或产物名多出 _1 后缀却找不到对应源图；日志无任何错误。",
+      "root_cause": "unique_path 用「os.path.exists 判定 → 返回路径」两步，判定与真正的写盘之间有时窗。串行时无害；改成照片级并行后，IMG_1.jpg 与 IMG_1.png 归一成同一 stem、同时进入 unique_path，两边都判定「不存在」→ 拿到同一路径 → 后写者覆盖先写者，全程无异常。",
+      "solution": "改为 O_CREAT|O_EXCL 原子占位：谁创建成功谁拿到该名字，失败就换 _1/_2；父目录不可写时退回旧行为让写盘报可读错误。",
+      "prevention": "「判定可用 → 使用」这对操作只要可能并发，就必须合成一个原子动作（O_EXCL / 唯一名分配 / 数据库唯一约束），不能靠「串行时没问题」推断。",
+      "keywords": ["并发竞态", "TOCTOU", "文件命名", "unique_path", "照片级并行"],
+      "related_files": ["python/ai_studio/workflows/base.py"],
+      "verification": "python/tests/test_ai_studio_unique_path.py：16 线程并发取同名路径拿到 16 个互不相同的路径且全部已占位。",
+      "created_at": "2026-11-19T10:45:00+08:00",
+      "updated_at": "2026-11-19T10:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1119-004",
+      "date": "2026-11-19",
+      "status": "fixed",
+      "title": "大图预览把 max_edge 悄悄抬到 512：384 的工坊缩略图请求拿不到自己的缓存条目",
+      "module": "src-tauri/src/preview.rs",
+      "symptom": "请求 384px 缩略图实际得到 512px；缓存文件名写着 512，导致同一张图按 384 请求永远命中不了、每次重新解码。",
+      "root_cause": "ensure_into 写死 max_edge.clamp(512, 8192)（当时只有大图预览一个调用方）。新增 384 的工坊缩略图后，clamp 把请求值抬到 512 并写进缓存文件名，缓存键与请求参数分叉。",
+      "solution": "下限降到 64；合法区间由各调用方自己声明（workbench_thumb 再 clamp 到 [64, 1024]）。",
+      "prevention": "「输入参数的静默修正」必须写在调用方或显式回传 —— 在下层悄悄改值会让缓存键与调用方认知分叉，症状是「缓存永远不命中」而不是报错。",
+      "keywords": ["缓存键", "静默修正", "preview", "缩略图", "clamp"],
+      "related_files": ["src-tauri/src/preview.rs"],
+      "verification": "cargo test --lib preview：different_max_edge_uses_different_cache_file 与 workbench_thumb_renders_any_format_and_caches 通过。",
+      "created_at": "2026-11-19T10:45:00+08:00",
+      "updated_at": "2026-11-19T10:45:00+08:00"
     }
   ],
   "updated": "2026-11-19T09:45:00+08:00"

@@ -1022,7 +1022,7 @@ fn thumb_pool() -> &'static rayon::ThreadPool {
 }
 
 /// 生成名额的 RAII 句柄：drop 即归还并唤醒一个等待者
-struct GenPermit;
+pub(crate) struct GenPermit;
 
 impl Drop for GenPermit {
     fn drop(&mut self) {
@@ -1034,7 +1034,11 @@ impl Drop for GenPermit {
 }
 
 /// 申请一个生成名额（超出上限时阻塞等待，不是丢弃任务）
-fn acquire_gen_permit() -> GenPermit {
+///
+/// `pub(crate)`：`preview::ensure_into` 也复用同一道闸。大图预览与缩略图是
+/// **同一种资源**（一次全量解码 + 缩放 + 编码，24MP 峰值上百 MB），若各开一道闸，
+/// 「导入 200 张 HEIC」时两边的并发会叠加，内存立刻翻倍。
+pub(crate) fn acquire_gen_permit() -> GenPermit {
     let max = gen_max();
     let mut cur = GEN_GATE.lock().unwrap_or_else(|e| e.into_inner());
     while *cur >= max {
@@ -1062,6 +1066,15 @@ fn temp_thumb_path(thumb_path: &Path) -> PathBuf {
 /// 前端更换封面/生成缩略图卡顿。jpeg-decoder 0.3.1+ 的 `scale` API 直接
 /// 请求目标尺寸（内部自动选择 IDCT 降采样），输出接近目标后由调用方
 /// `thumbnail` 收尾到精确尺寸。
+///
+/// `pub(crate)`：`preview::decode_limited` 也复用它（工坊缩略图表与 HEIC 预览
+/// 都要把 24MP 图降到 ≤384/2560，走 DCT 域比全解码省一个数量级）。
+pub(crate) fn decode_jpeg_scaled_pub(
+    source: &Path, target_px: u32
+) -> Result<image::RgbImage, ThumbError> {
+    decode_jpeg_scaled(source, target_px)
+}
+
 fn decode_jpeg_scaled(source: &Path, target_px: u32) -> Result<image::RgbImage, ThumbError> {
     use std::io::BufReader;
     let file = std::fs::File::open(source)?;

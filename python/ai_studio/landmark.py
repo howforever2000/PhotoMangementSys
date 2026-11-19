@@ -116,7 +116,7 @@ def detect_68(img: Image.Image, bbox, kps=None) -> tuple[np.ndarray, float] | No
         Image.BILINEAR,
     )
 
-    sess = localmodels.get_session(config_path())
+    sess = localmodels.get_session(config_path(), intra=config_small_intra())
     blob = (np.asarray(crop, dtype=np.float32) / 255.0).transpose(2, 0, 1)[None]
     with call_model("onnx", "peppa_wutz.onnx (landmark68)", "68pts"):
         raw = gpu_lock.run(sess, {sess.get_inputs()[0].name: blob})[0][0]
@@ -135,6 +135,13 @@ def config_path() -> str:
     from . import config
 
     return config.local_model_path(MODEL_FILE)
+
+
+def config_small_intra() -> int:
+    """小模型 intra_op 线程数（256 输入的单次前向只有几毫秒，铺满线程纯亏）。"""
+    from . import config
+
+    return config.ONNX_INTRA_OP_SMALL
 
 
 def face_metrics(landmarks: np.ndarray) -> dict:

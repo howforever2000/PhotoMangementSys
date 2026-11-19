@@ -181,11 +181,13 @@ def render(
     """同步预览主入口：返回 `{image,width,height,ms,dropped,warnings}`。
 
     编排顺序（本层是唯一的编排点，供接口层直接调用）：
-      选计划 → 摘非本机/重模型步 → 摘本机未就绪步 → 缩到预览长边 → 单图执行 →
-      内存 JPEG。
-    为什么先缩边再执行：预览最终只 deliver 长边 1280，算子在全分辨率上跑完再缩
-    等于白算（滑杆级高频调用，24MP 上是数倍浪费）；先缩边也让重算子不再有机会
-    处理原图。
+      选计划 → 摘非本机/重模型步 → 摘本机未就绪步 → 单图执行 → 缩边 → 内存 JPEG。
+
+    **算子必须在原分辨率上执行**（不要为了省时间把缩边提到执行之前）：
+    人脸类算子带「绝对像素」闸门 —— `facewarp._MIN_PIXELS=120`、磨皮
+    `_MIN_FACE_PX=48` 判的是脸宽像素，不是占图比例。预览先缩到 1280 会让
+    原本合格的脸掉到闸门以下，被静默跳过 → 表现为「形变/磨皮在预览里不起作用」。
+    性能由「摘掉重模型步」和前端防抖/LRU 兜住，不能动执行分辨率。
     """
     t0 = time.perf_counter()
     src_path = str(path or "").strip()
@@ -197,7 +199,7 @@ def render(
         f"plan={'yes' if plan is not None else 'no'} maxEdge={edge}"
     )
 
-    src = _fit_long_edge(_load_source(src_path), edge)
+    src = _load_source(src_path)
     plan_in = _plan_from_request(plan, recipe_id, params_override)
     local_plan, dropped, warnings = _local_only(plan_in)
 

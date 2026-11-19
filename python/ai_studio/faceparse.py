@@ -52,7 +52,9 @@ def ready() -> bool:
 
 def predict(face_rgb: Image.Image) -> np.ndarray:
     """对一张人脸图做解析，返回 [H,W] 的 uint8 类别图（原图尺寸）。"""
-    sess = localmodels.get_session(config.local_model_path(MODEL_FILE))
+    sess = localmodels.get_session(
+        config.local_model_path(MODEL_FILE), intra=config.ONNX_INTRA_OP_SMALL
+    )
     src = face_rgb.convert("RGB")
     w, h = src.size
     small = src.resize((_INPUT_SIZE, _INPUT_SIZE), Image.LANCZOS)

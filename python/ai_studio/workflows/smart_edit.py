@@ -20,10 +20,10 @@ from .base import (
     check_cancel,
     filter_inputs,
     parse_json_loose,
-    png_bytes,
     read_image,
     save_image,
     stem_of,
+    understand_bytes,
 )
 
 _MAX_ROUNDS = 4
@@ -36,7 +36,9 @@ def _plan_one(vp, img, user_prompt: str, warnings, stats, local_first: bool = Fa
     for attempt in range(2):
         try:
             stats["visionCalls"] += 1
-            text = oc.chat_vision(vp.baseUrl, vp.apiKey, vp.model, [png_bytes(img)], prompt)
+            text = oc.chat_vision(
+                vp.baseUrl, vp.apiKey, vp.model, [understand_bytes(img)], prompt
+            )
             return pipeline.validate_plan(parse_json_loose(text))
         except Exception as e:
             if attempt == 0:
@@ -104,8 +106,13 @@ def run(req, progress, cancel) -> dict:
             label = (catalog.op_spec(op) or {}).get("label", op)
             trace.skipped(-(j + 1), len(skipped), op, label, "资源未就绪")
         progress(int(base_pct + span * 0.15), "执行编辑", f"{i + 1}/{n}", trace.snapshot())
+
+        def emit(pct: int, stage: str, steps) -> None:
+            """把计划内步骤的结构化进度并入总进度（与 recipe 同一形态）。"""
+            progress(max(0, min(100, pct)), stage, f"{i + 1}/{n}", steps)
+
         result = recipe_flow.run_plan(
-            img, plan, providers, cancel, trace, progress, base_pct, span
+            img, plan, providers, cancel, trace, emit, base_pct, span
         )
         steps_all.extend(trace.snapshot())
 

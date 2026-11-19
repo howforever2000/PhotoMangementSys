@@ -6,7 +6,12 @@
 设计纪律：
   - 检不到人脸 / 模型缺失 → 记 warning 继续下一张，**绝不整批失败**（与 FEAT-164 一致）；
   - 检测或解析失败时该张原样输出并告警，不产出「半张糊掉」的结果；
-  - 逐张的检测框外扩边距，遵循 `local-enhance.md` §2「紧裁人脸检出率低」的既有经验。
+  - 逐张的检测框外扩边距，遵循 `local-enhance.md` §2「紧裁人脸检出率低」的既有经验；
+  - `_MIN_FACE_PX` 判的是**原图像素**（不是预览缩放后的比例），所以预览链路也不能
+    先把图缩了再进来（见 `preview.py` 的同类说明）。
+
+并行：照片级但按「ONNX 链路」折半取线程 —— 每张图要跑 1 次 SCRFD + 每张脸 1 次
+BiSeNet，会话自身已有 intra_op 线程，两层叠满会超订。
 """
 from __future__ import annotations
 
@@ -16,13 +21,16 @@ import numpy as np
 from PIL import Image
 
 from .. import faceparse, localmodels, skinretouch
-from .base import check_cancel, filter_inputs, read_image, save_image, stem_of
+from .base import filter_inputs, read_image, save_image, stem_of
+from .batch import Outcome, run_batch
 
 # 送进解析模型前，在检测框外扩的比例。紧裁人脸会让分割碎裂，
 # 留出脸颊/发际/下巴上下文才稳（与 SCRFD 检测的既有坑同源）。
 _CONTEXT_MARGIN = 0.30
 # 过小的人脸不做处理：解析在 512 上跑，再缩回去细节已不可信，磨了反而糊。
 _MIN_FACE_PX = 48
+
+_ONNX_HEAVY = True
 
 
 def run(req, progress, cancel) -> dict:
@@ -48,35 +56,34 @@ def run(req, progress, cancel) -> dict:
             "请在创意工坊「本地增强模型」里下载后重试"
         )
 
-    outputs: list[str] = []
     warnings: list[str] = []
     req.paths = filter_inputs(list(req.paths), warnings)
-    n = len(req.paths)
-    faces_total = 0
 
-    for i, p in enumerate(req.paths):
-        check_cancel(cancel)
-        progress(3 + int(i / n * 92), "美颜处理中", f"{i + 1}/{n}")
+    def process(index: int, p: str) -> Outcome:
         img = read_image(p)
         arr = np.asarray(img, dtype=np.uint8)
+        w: list[str] = []
+        out_name = f"{stem_of(p)}_美颜"
 
         try:
             faces = localmodels.detect_faces(img)
         except Exception as e:  # noqa: BLE001 —— 单张失败不拖垮整批
-            warnings.append(f"{os.path.basename(p)}: 人脸检测失败，已跳过（{e}）")
-            outputs.append(save_image(img, out_dir, f"{stem_of(p)}_美颜", ".jpg", 95))
-            continue
+            w.append(f"{os.path.basename(p)}: 人脸检测失败，已跳过（{e}）")
+            return Outcome(
+                outputs=[save_image(img, out_dir, out_name, ".jpg", 95)], warnings=w
+            )
 
         usable = [f for f in faces if min(f["bbox"][2] - f["bbox"][0],
                                           f["bbox"][3] - f["bbox"][1]) >= _MIN_FACE_PX]
         if not usable:
-            warnings.append(f"{os.path.basename(p)}: 未检测到可用人脸，已原样输出")
-            outputs.append(save_image(img, out_dir, f"{stem_of(p)}_美颜", ".jpg", 95))
-            continue
+            w.append(f"{os.path.basename(p)}: 未检测到可用人脸，已原样输出")
+            return Outcome(
+                outputs=[save_image(img, out_dir, out_name, ".jpg", 95)], warnings=w
+            )
 
         result = arr
+        faces_touched = 0
         for f in usable:
-            check_cancel(cancel)
             box = _context_box(f["bbox"], arr.shape[1], arr.shape[0], _CONTEXT_MARGIN)
             if box is None:
                 continue
@@ -85,16 +92,17 @@ def run(req, progress, cancel) -> dict:
             try:
                 cls_map = faceparse.predict(crop)
             except Exception as e:  # noqa: BLE001
-                warnings.append(f"{os.path.basename(p)}: 人脸解析失败，该脸已跳过（{e}）")
+                w.append(f"{os.path.basename(p)}: 人脸解析失败，该脸已跳过（{e}）")
                 continue
             mask = faceparse.skin_mask(cls_map)
             if mask.max() <= 0:
                 continue
+            radius = skinretouch.radius_for_face(f["bbox"][2] - f["bbox"][0])
             patch = skinretouch.smooth_skin(
                 arr[y1:y2, x1:x2],
                 mask,
                 strength=strength,
-                radius=skinretouch.radius_for_face(f["bbox"][2] - f["bbox"][0]),
+                radius=radius,
                 keep_texture=keep_texture,
             )
             # 贴回时用同一张 mask 做 alpha，块边界不出现硬接缝
@@ -102,24 +110,33 @@ def run(req, progress, cancel) -> dict:
                 result,
                 patch,
                 box,
-                skinretouch._feather(
-                    mask,
-                    max(1, int(round(skinretouch.radius_for_face(f["bbox"][2] - f["bbox"][0])))),
-                ),
+                skinretouch._feather(mask, max(1, int(round(radius)))),
             )
-            faces_total += 1
+            faces_touched += 1
 
-        out = save_image(Image.fromarray(result), out_dir, f"{stem_of(p)}_美颜", ".jpg", 95)
-        outputs.append(out)
+        out = save_image(Image.fromarray(result), out_dir, out_name, ".jpg", 95)
+        return Outcome(outputs=[out], warnings=w, meta={"faces": faces_touched})
 
-    progress(100, "完成", f"{len(outputs)} 张")
+    stats = {"faces": 0}
+    res = run_batch(
+        req.paths,
+        process,
+        progress,
+        cancel,
+        stage="美颜处理中",
+        onnx_heavy=_ONNX_HEAVY,
+        initial_warnings=warnings,
+        stats=stats,
+    )
+
+    progress(100, "完成", f"{len(res.outputs)} 张")
     return {
-        "outputs": outputs,
-        "warnings": warnings,
+        "outputs": res.outputs,
+        "warnings": res.warnings,
         "meta": {
             "strength": round(strength, 4),
             "texture": round(keep_texture, 4),
-            "faces": faces_total,
+            "faces": stats.get("faces", 0),
         },
     }
 

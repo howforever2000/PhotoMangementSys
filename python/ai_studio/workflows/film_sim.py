@@ -2,6 +2,8 @@
 
 纯本机、零网络、零付费。LUT 随包内置在 python/ai_studio/luts/，
 通过 config.LUTS 声明；真正的查表计算在 lutcube.py。
+
+并行：照片级（无 ONNX，GIL 在 numpy 大数组运算时释放），整批接近线性加速。
 """
 from __future__ import annotations
 
@@ -11,7 +13,12 @@ import numpy as np
 from PIL import Image
 
 from .. import config, lutcube
-from .base import check_cancel, filter_inputs, read_image, save_image, stem_of
+from .base import filter_inputs, read_image, save_image, stem_of
+from .batch import Outcome, run_batch
+
+# LUT 查询是纯 CPU 大数组运算（np.take + 整数算术），实测 4 线程 2.37x，
+# 可以放心取满槽位（见 parallel.workers_for）。
+_ONNX_HEAVY = False
 
 
 def run(req, progress, cancel) -> dict:
@@ -37,24 +44,35 @@ def run(req, progress, cancel) -> dict:
     if not os.path.isfile(path):
         raise FileNotFoundError(f"内置 LUT 缺失: {entry['file']}")
 
-    outputs: list[str] = []
-    n = len(req.paths)
-    for i, p in enumerate(req.paths):
-        check_cancel(cancel)
-        progress(3 + int(i / n * 92), "胶片模拟中", f"{i + 1}/{n}")
+    # 颗粒的种子用**照片下标**而不是完成顺序：并行后同一个文件多次运行应得到
+    # 同一张颗粒图（可复现），而 seed=i 的语义与旧串行版逐位一致。
+    def process(index: int, p: str) -> Outcome:
         img = read_image(p)
         arr = np.asarray(img, dtype=np.uint8)
         arr = lutcube.apply_cube(arr, path, strength=strength)
         if anchor > 0:
             arr = lutcube.restore_black_white(arr, anchor)
         if grain > 0:
-            arr = lutcube.apply_grain(arr, grain, seed=i)
+            arr = lutcube.apply_grain(arr, grain, seed=index)
         if vignette > 0:
             arr = lutcube.apply_vignette(arr, vignette)
         out = save_image(
             Image.fromarray(arr), out_dir, f"{stem_of(p)}_胶片_{entry['id']}", ".jpg", 95
         )
-        outputs.append(out)
+        return Outcome(outputs=[out])
 
-    progress(100, "完成", f"{len(outputs)} 张")
-    return {"outputs": outputs, "warnings": warnings, "meta": {"lut": lut_id}}
+    res = run_batch(
+        req.paths,
+        process,
+        progress,
+        cancel,
+        stage="胶片模拟中",
+        onnx_heavy=_ONNX_HEAVY,
+        initial_warnings=warnings,
+    )
+    progress(100, "完成", f"{len(res.outputs)} 张")
+    return {
+        "outputs": res.outputs,
+        "warnings": res.warnings,
+        "meta": {"lut": lut_id},
+    }

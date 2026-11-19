@@ -59,6 +59,7 @@ import { useNotify } from "../composables/useNotify";
 import { useAiBilling } from "../composables/useAiBilling";
 import { useWorkbenchPreview } from "../composables/useWorkbenchPreview";
 import { usePhotoSrcMap } from "../composables/usePhotoSrcMap";
+import { useWorkbenchThumbs } from "../composables/useWorkbenchThumbs";
 import { baseName } from "../utils/pathParts";
 import { qcHeadline, qcTone, summarizeQc, verdictLabel } from "../utils/workbenchQc";
 import { pickSample } from "../utils/samplePick";
@@ -86,7 +87,12 @@ const billing = useAiBilling();
 const preview = useWorkbenchPreview();
 
 /* ---------------- 缩略图 ---------------- */
+// 两套地址表，用途完全不同：
+//   - srcMap      → **原图**：对比框「原图」层要看清细节，只有它该用原图；
+//   - thumbSrcMap → **≤384px 缩略图**：胶片条（96×64）与网格（148px）用。
+// 过去三者共用 srcMap，等于让 96px 的格子去解码 24MP 原图（一屏 10~18 次）。
 const { srcMap, ensureSrc, prune } = usePhotoSrcMap();
+const { srcMap: thumbSrcMap, ensure: ensureThumb, prune: pruneThumbs } = useWorkbenchThumbs();
 const neededPaths = computed(() => {
   const s = new Set<string>();
   for (const it of wb.items) {
@@ -95,6 +101,8 @@ const neededPaths = computed(() => {
   }
   return [...s];
 });
+/** 只有原图路径需要大图地址（产物路径只喂对比框用它自己的解析） */
+const neededPhotoPaths = computed(() => wb.items.map((it) => it.path));
 watch(
   neededPaths,
   (list) => {
@@ -104,13 +112,22 @@ watch(
   },
   { immediate: true },
 );
+watch(
+  neededPhotoPaths,
+  (list) => {
+    pruneThumbs(list);
+    list.forEach((p) => ensureThumb(p));
+  },
+  { immediate: true },
+);
 
 /** 胶片条 / 网格共用的行数据（状态机仍在 store 里） */
 const thumbs = computed<WbThumbItem[]>(() =>
   wb.items.map((it) => ({
     path: it.path,
     name: it.name,
-    src: srcMap.value[it.path] ?? "",
+    // 胶片条/网格用缩略图（≤384px），不是原图 —— 见 useWorkbenchThumbs 头注
+    src: thumbSrcMap.value[it.path] ?? "",
     status: it.status,
     progress: it.progress,
     selected: wb.selected.includes(it.path),

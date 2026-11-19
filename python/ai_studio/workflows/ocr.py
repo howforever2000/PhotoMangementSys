@@ -9,15 +9,22 @@
 
 产物：`<输出目录>/<原名>_文字.txt`（UTF-8，按阅读顺序一行一行）。
 识别不出文字时不是错误 —— 照片本来可能没有文字，给 warning 并跳过。
+
+并行：照片级（ONNX 链路折半）。rec 已钉 CPU provider，不吃 GPU 串行锁，
+所以 OCR 批次的并行度比磨皮/形变更高也不会互相堵。
+meta.text 仍按**照片顺序**拼接（并行完成顺序乱序，不能用完成顺序）。
 """
 from __future__ import annotations
 
 import os
 
 from .. import config, ocr_engine
-from .base import check_cancel, filter_inputs, read_image, stem_of, unique_path
+from .base import filter_inputs, read_image, stem_of, unique_path
+from .batch import Outcome, run_batch
 
 TXT_SUFFIX = "_文字"
+
+_ONNX_HEAVY = True
 
 
 def run(req, progress, cancel) -> dict:
@@ -42,34 +49,46 @@ def run(req, progress, cancel) -> dict:
     warnings: list[str] = []
     paths = filter_inputs(list(req.paths), warnings)
 
-    outputs: list[str] = []
-    all_lines: list[str] = []
-    empty = 0
-    n = len(paths)
-    for i, p in enumerate(paths):
-        check_cancel(cancel)
-        progress(3 + int(i / n * 92), "识别文字中", f"{i + 1}/{n}")
+    def process(index: int, p: str) -> Outcome:
         img = read_image(p)
         lines, score, boxes = ocr_engine.recognize(img)
         if not lines:
-            empty += 1
-            warnings.append(f"{stem_of(p)}：未识别到文字（共检出 {boxes} 个候选区域）")
-            continue
+            return Outcome(
+                warnings=[f"{stem_of(p)}：未识别到文字（共检出 {boxes} 个候选区域）"]
+            )
         txt_path = unique_path(out_dir, f"{stem_of(p)}{TXT_SUFFIX}", ".txt")
         with open(txt_path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
-        outputs.append(txt_path)
-        all_lines.extend(lines)
-        progress(
-            3 + int((i + 1) / n * 92),
-            "识别文字中",
-            f"{i + 1}/{n} · {len(lines)} 行 · 置信度 {score:.2f}",
-        )
+        return Outcome(outputs=[txt_path], meta={"lines": len(lines), "text": "\n".join(lines)})
 
-    progress(100, "完成", f"{len(outputs)} 个文本")
+    # 按照片顺序收全文（并行完成顺序乱序，必须在收尾阶段按 index 拼）
+    per_photo: dict[int, list[str]] = {}
+
+    def collect(index: int, outcome: Outcome) -> None:
+        text = outcome.meta.get("text") or ""
+        per_photo[index] = text.splitlines() if text else []
+
+    res = run_batch(
+        paths,
+        process,
+        progress,
+        cancel,
+        stage="识别文字中",
+        onnx_heavy=_ONNX_HEAVY,
+        initial_warnings=warnings,
+        on_result=collect,
+    )
+
+    all_lines: list[str] = []
+    for i in range(len(paths)):
+        all_lines.extend(per_photo.get(i) or [])
+    # 无文字的张数从「按序收上来的结果」数出来：并行下不能用完成顺序计数
+    empty = sum(1 for i in range(len(paths)) if not per_photo.get(i, []))
+
+    progress(100, "完成", f"{len(res.outputs)} 个文本")
     return {
-        "outputs": outputs,
-        "warnings": warnings,
+        "outputs": res.outputs,
+        "warnings": res.warnings,
         "meta": {
             "text": "\n".join(all_lines),
             "lines": len(all_lines),

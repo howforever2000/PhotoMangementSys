@@ -651,6 +651,7 @@ pub fn run() {
             // FEAT-142：HEIC 解码能力探针 + 大图预览
             dedupe::commands::heic_support,
             preview::commands::ensure_photo_preview,
+            preview::commands::workbench_thumb,
             export_photos,
             get_vcr_gpu_status,
             start_model_download,

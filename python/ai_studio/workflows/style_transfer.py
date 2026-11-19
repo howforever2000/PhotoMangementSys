@@ -22,11 +22,11 @@ from .base import (
     check_cancel,
     edit_input_bytes,
     filter_inputs,
-    png_bytes,
     read_image,
     save_image,
     stem_of,
     to_image,
+    understand_bytes,
 )
 
 
@@ -36,7 +36,7 @@ def _describe_reference(vision, ref_img) -> str:
             vision.baseUrl,
             vision.apiKey,
             vision.model,
-            [png_bytes(ref_img)],
+            [understand_bytes(ref_img)],
             "用不超过 60 字的中文描述这张参考图的色调、光线与整体影调风格。只输出描述本身。",
         ).strip()
     except Exception:

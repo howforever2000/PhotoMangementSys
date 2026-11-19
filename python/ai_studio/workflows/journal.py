@@ -16,10 +16,10 @@ from .base import (
     check_cancel,
     edit_input_bytes,
     parse_json_loose,
-    png_bytes,
     read_image,
     stem_of,
     to_image,
+    understand_bytes,
 )
 
 
@@ -58,7 +58,7 @@ def run(req, progress, cancel) -> dict:
         try:
             text = oc.chat_vision(
                 vp.baseUrl, vp.apiKey, vp.model,
-                [png_bytes(img) for img in images],
+                [understand_bytes(img) for img in images],
                 _vision_prompt(n, req.prompt),
             )
             data = parse_json_loose(text)

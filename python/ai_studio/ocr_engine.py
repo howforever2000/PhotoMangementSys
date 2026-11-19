@@ -33,6 +33,12 @@ PROB_THRESH = 0.5           # 概率图二值化阈值（与扫描侧 OCR_PROB_T
 BOX_THRESH = 0.5            # 框内平均概率阈值（DB box_thresh）
 MIN_BOX_PIX = 6             # 文本框最小边长（原图像素）
 _REC_H, _REC_W = 48, 320    # PP-OCRv4 rec 输入尺寸
+# 前景占比超过此值直接判「无文字」：纹理连片时连通域爆炸，实测 637ms（空图 27ms），
+# 而这些连片快照本来也会被「单框超 20% 画面」闸门丢掉。
+_MAX_FG_RATIO = 0.25
+# rec 合批上限：rec 是动态 batch 模型（实测 batch=8 可跑），一次最多喂这么多行。
+# 批太大时填充到 320 宽的空行会拖慢短行（CTC 解码逐行独立，合批不改变结果）。
+_REC_BATCH = 8
 
 _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -122,7 +128,9 @@ def _reading_order(boxes: list[tuple[float, float, float, float]]) -> list[tuple
 
 def find_text_lines(img: Image.Image) -> list[tuple[float, float, float, float]]:
     """det：返回原图坐标系的横向文本行框 [(x1,y1,x2,y2)]（已按阅读顺序排序）。"""
-    sess = localmodels.get_session(config.OCR_MODELS["paddleocr_det"])
+    sess = localmodels.get_session(
+        config.OCR_MODELS["paddleocr_det"], intra=config.ONNX_INTRA_OP_SMALL
+    )
     tensor, scale, pad_x, pad_y = _det_tensor(img)
     with call_model("onnx", "paddleocr-det.onnx", f"{img.size[0]}x{img.size[1]}"):
         out = gpu_lock.run(sess, {sess.get_inputs()[0].name: tensor})[0]
@@ -133,6 +141,11 @@ def find_text_lines(img: Image.Image) -> list[tuple[float, float, float, float]]
     stride = max(1, DET_SIZE // prob.shape[0])
 
     bitmap = (prob > PROB_THRESH).astype(np.uint8)
+    # 前景占比早退：纹理连片（布料 / 树叶 / 建筑）时连通域数暴涨，实测 640² 图上
+    # 双层 Python 扫描 + 栈式 BFS 要 637ms（空图只要 27ms）。这类图即便标出来，
+    # 也会在下面的「单框超 20% 画面」闸门被丢掉，属于纯白算。
+    if float(bitmap.mean()) > _MAX_FG_RATIO:
+        return []
     bitmap = _dilate3x3(bitmap)                     # 修补断笔（与扫描侧同参数）
     labels, n = _label_components(bitmap)
 
@@ -210,27 +223,57 @@ def ctc_decode(logits: np.ndarray, chars: list[str]) -> tuple[str, float]:
     return text, score
 
 
+def _rec_session():
+    """rec 会话：**强制 CPU**。
+
+    实测（本机，`1×48×320` 单框）：DML 16.1ms / CPU 5.8ms —— 小模型过 DML 的
+    调度与显存往返开销远大于收益，CPU 反而快 2.8×；而且 CPU 会话不过 `gpu_lock`，
+    不会把正在跑的 ESRGAN/GFPGAN 挡在 GPU 队列后面（那是几十秒级的）。
+    """
+    return localmodels.get_session(
+        config.OCR_MODELS["paddleocr_rec"],
+        intra=config.ONNX_INTRA_OP_SMALL,
+        cpu_only=True,
+    )
+
+
+def _rec_batch(sess, crops: list[Image.Image]) -> list[tuple[str, float]]:
+    """一组合批推理 + CTC 解码；返回与 crops 同序的 (文本, 置信度)。
+
+    rec 的 ONNX 是动态 batch（输入 `[?,3,48,?]`），合批只减少 `sess.run` 次数与
+    加锁次数，CTC 逐行独立解码，结果与逐框调用逐字相同。
+    """
+    if not crops:
+        return []
+    iname = sess.get_inputs()[0].name
+    batch = np.concatenate([_rec_tensor(c) for c in crops], axis=0)
+    logits = gpu_lock.run(sess, {iname: batch})[0]
+    chars = _load_keys()
+    return [ctc_decode(np.asarray(logits[i:i + 1]), chars) for i in range(len(crops))]
+
+
 def recognize(img: Image.Image) -> tuple[list[str], float, int]:
     """完整识别：det 找框 → rec 认字。返回 (按阅读顺序的文本行, 平均置信度, 框数)。"""
     boxes = find_text_lines(img)
     if not boxes:
         return [], 0.0, 0
-    chars = _load_keys()
-    sess = localmodels.get_session(config.OCR_MODELS["paddleocr_rec"])
-    iname = sess.get_inputs()[0].name
+    sess = _rec_session()
     lines: list[str] = []
     scores: list[float] = []
     # 一张图可能切出几十行：整段 rec 记一行（带行数），不逐行刷日志。
     with call_model("onnx", "paddleocr-rec.onnx", f"lines={len(boxes)}"):
-        for x1, y1, x2, y2 in boxes:
-            crop = img.crop(
-                (int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2)))
-            )
-            logits = gpu_lock.run(sess, {iname: _rec_tensor(crop)})[0]
-            text, conf = ctc_decode(np.asarray(logits), chars)
-            text = text.strip()
-            if text:
-                lines.append(text)
-                scores.append(conf)
+        for start in range(0, len(boxes), _REC_BATCH):
+            group = boxes[start:start + _REC_BATCH]
+            crops = [
+                img.crop(
+                    (int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2)))
+                )
+                for x1, y1, x2, y2 in group
+            ]
+            for text, conf in _rec_batch(sess, crops):
+                text = text.strip()
+                if text:
+                    lines.append(text)
+                    scores.append(conf)
     score = sum(scores) / len(scores) if scores else 0.0
     return lines, score, len(boxes)

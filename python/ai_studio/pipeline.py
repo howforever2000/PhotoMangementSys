@@ -21,7 +21,7 @@ from PIL import Image
 
 from . import catalog, critic, ops
 from .providers import openai_compat as oc
-from .workflows.base import check_cancel, parse_json_loose, png_bytes
+from .workflows.base import check_cancel, parse_json_loose, understand_bytes
 
 # 超分同族：云端/本地各一次即可，同族多步会重复放大、反而不如单步
 _SUPERRES_OPS = frozenset({"upscale", "local_upscale"})
@@ -171,7 +171,12 @@ def verify_result(
     from . import presets
 
     prompt = presets.verifier_prompt(intent, extra)
-    images = [png_bytes(img)] + ([png_bytes(source)] if source is not None else [])
+    # 复核属于「理解」类调用：喂短边 1080 的 JPEG，而不是 24MP 原图的 PNG。
+    # 旧行为实测 24MP 每张 `img.save(PNG)` 要 5140ms、上行 50MB；而复核要同时喂
+    # 结果图与原图，等于一次付两份。
+    images = [understand_bytes(img)] + (
+        [understand_bytes(source)] if source is not None else []
+    )
     try:
         text = oc.chat_vision(vp.baseUrl, vp.apiKey, vp.model, images, prompt)
     except Exception:

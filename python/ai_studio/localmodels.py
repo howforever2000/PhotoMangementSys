@@ -22,8 +22,10 @@ from . import config, facedetect, gpu_lock
 from .logutil import call_model
 
 # 会话缓存 + 文件指纹：模型被重新下载/替换后自动重建（否则旧会话会一直用旧权重）。
-_sessions: dict[str, object] = {}
-_session_stamp: dict[str, tuple[float, int]] = {}
+# 键是 (绝对路径, intra 线程数, 是否强制 CPU)：同模型不同配置必须是不同会话，
+# 否则后一种请求会静默拿到前一种的线程数 / 设备（见 get_session 的 docstring）。
+_sessions: dict[tuple[str, int, bool], object] = {}
+_session_stamp: dict[tuple[str, int, bool], tuple[float, int]] = {}
 _sessions_lock = threading.Lock()
 
 
@@ -41,14 +43,18 @@ def _providers() -> list[str]:
     return chosen or ["CPUExecutionProvider"]
 
 
-def _session_options(ort) -> "object":
-    """统一 SessionOptions：intra 固定档、inter=1（对齐 VCR 的线程口径）。
+def _session_options(ort, intra: int | None = None) -> "object":
+    """统一 SessionOptions：intra 按档位、inter=1（对齐 VCR 的线程口径）。
 
-    为什么必须显式设：ai_studio 同时有「作业 worker ×2 + 预览线程池」，
+    为什么必须显式设：ai_studio 同时有「照片并行 P + 预览线程池」，
     ORT 默认按满核开 intra 线程，多会话叠加会 CPU 超订、互相抢核反而更慢。
+
+    `intra` 缺省走 `config.ONNX_INTRA_OP`（大模型口径）。小模型传
+    `config.ONNX_INTRA_OP_SMALL`：SCRFD/peppa/BiSeNet/rec 单次前向 3~60ms，
+    线程铺满时调度开销占大头，实测反而更慢。
     """
     so = ort.SessionOptions()
-    so.intra_op_num_threads = config.ONNX_INTRA_OP
+    so.intra_op_num_threads = int(intra) if intra and intra > 0 else config.ONNX_INTRA_OP
     so.inter_op_num_threads = 1
     return so
 
@@ -58,36 +64,50 @@ def _file_stamp(path: str) -> tuple[float, int]:
     return (st.st_mtime, st.st_size)
 
 
-def get_session(path: str):
+def get_session(path: str, intra: int | None = None, cpu_only: bool = False):
     """按绝对路径缓存会话；文件缺失时抛出带中文提示的 FileNotFoundError。
 
-    并发首次加载会被 `_sessions_lock` 串行化：两个作业线程 + 预览线程同时要同一个
+    并发首次加载会被 `_sessions_lock` 串行化：多个作业线程 + 预览线程同时要同一个
     模型时，只建一份会话（否则后建者覆盖前者，DML 显存要等 GC 才回收）。
     文件 mtime/size 变化（用户重新下载模型）时重建会话，避免拿旧权重跑到进程重启。
+
+    两个可选参数都进了缓存键 —— 同一模型用不同线程数/设备建会话是**两个不同会话**，
+    否则第二次请求会静默拿到第一次的配置：
+      - `intra`：intra_op 线程数，缺省走全局大模型口径（见 `_session_options`）；
+      - `cpu_only`：强制 CPU（OCR rec 专用：实测单框 CPU 5.8ms vs DML 16.1ms，
+        且 CPU 会话不过 `gpu_lock`，不会把大模型的 GPU 队列堵住）。
     """
     if not os.path.isfile(path):
         raise FileNotFoundError(os.path.basename(path))
     key = os.path.abspath(path)
+    intra_eff = int(intra) if intra and intra > 0 else config.ONNX_INTRA_OP
+    cache_key = (key, intra_eff, bool(cpu_only))
     try:
         stamp = _file_stamp(key)
     except OSError:
         # isfile 与 stat 之间文件被移走 / 权限变化：统一报「缺失」而不是裸 OSError
         raise FileNotFoundError(os.path.basename(path)) from None
     with _sessions_lock:
-        sess = _sessions.get(key)
-        if sess is not None and _session_stamp.get(key) == stamp:
+        sess = _sessions.get(cache_key)
+        if sess is not None and _session_stamp.get(cache_key) == stamp:
             return sess
         ort = _ort()
+        providers = ["CPUExecutionProvider"] if cpu_only else _providers()
         try:
             sess = ort.InferenceSession(
-                key, sess_options=_session_options(ort), providers=_providers()
+                key,
+                sess_options=_session_options(ort, intra_eff),
+                providers=providers,
             )
         except Exception:
+            # DML 建会话失败（驱动 / DX12 不可用）→ 回落 CPU，功能不受影响
             sess = ort.InferenceSession(
-                key, sess_options=_session_options(ort), providers=["CPUExecutionProvider"]
+                key,
+                sess_options=_session_options(ort, intra_eff),
+                providers=["CPUExecutionProvider"],
             )
-        _sessions[key] = sess
-        _session_stamp[key] = stamp
+        _sessions[cache_key] = sess
+        _session_stamp[cache_key] = stamp
         return sess
 
 
@@ -170,8 +190,11 @@ def run_gfpgan(face512: Image.Image) -> Image.Image:
 
 
 def detect_faces(img: Image.Image) -> list[dict]:
-    """SCRFD 检测，返回 [{bbox,kps,score}]。"""
-    sess = get_session(config.FACE_DET_MODEL)
+    """SCRFD 检测，返回 [{bbox,kps,score}]。
+
+    小模型档位：单次 640 前向只有 10ms 级，铺满线程是纯亏（见 config.ONNX_INTRA_OP_SMALL）。
+    """
+    sess = get_session(config.FACE_DET_MODEL, intra=config.ONNX_INTRA_OP_SMALL)
     return facedetect.detect(sess, img)
 
 

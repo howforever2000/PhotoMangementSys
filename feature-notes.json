@@ -7283,7 +7283,69 @@
       ],
       "created_at": "2026-11-19T09:45:00+08:00",
       "updated_at": "2026-11-19T09:45:00+08:00"
+    },
+    {
+      "id": "FEAT-185",
+      "name": "创意工坊性能优化：照片级并行 + P 核线程口径 + LUT 查表缓存 + 理解调用降采样",
+      "module": "python/ai_studio/{cputopo,parallel,config,localmodels,landmark,faceparse,ocr_engine,lutcube,pipeline}.py、python/ai_studio/workflows/{batch,base,film_sim,auto_grade,color_transfer,reshape,local_beauty,ocr,restore,recipe,smart_edit,journal,style_transfer}.py、python/ai_studio/providers/openai_compat.py、src-tauri/src/{preview,thumbnail,lib}.rs、src/{views/AiWorkbench.vue,composables/useWorkbenchThumbs.ts,composables/useWorkbenchPreview.ts,utils/previewCache.ts}",
+      "status": "done",
+      "date": "2026-11-19",
+      "purpose": "工坊批量链路过去是「作业池 2 线程 + workflow 内逐张串行」，整批只用 1~2 核；预览每帧重建 97³ LUT 稠密表（330~578ms，而真正查表只要 3.8ms）；云端规划/复核把 24MP 原图编成 PNG 上传（5140ms / 50.5MB）；胶片条/网格用 96px 的格子解码 24MP 原图；OCR rec 走 DML 反而比 CPU 慢 2.8×；线程数口径 cpu//2 在大小核机器上会溢到 E 核。目标：批量吞吐 ≥1.8x、预览 ≤350ms，且除明确标注的分档外输出像素逐位不变。",
+      "implementation": {
+        "照片级并行": "新增 parallel.py（map_photos：保序 + 单张失败隔离 + 取消 + 全局名额闸）与 workflows/batch.py（run_batch：进度按完成计数推进、warning/outputs 按输入下标重组）。纯 CPU 链路取满槽位，带 ONNX 的链路折半（会话自身有 intra_op 线程，两层叠满会超订）；全局 BoundedSemaphore 兜住「2 个工具 × P 张」的双层叠加。",
+        "并发正确性": "workflows/base.py::unique_path 改 O_CREAT|O_EXCL 原子占位 —— 并行下「查存在→写盘」是真竞态，同名 stem（IMG_1.jpg / IMG_1.png）会拿到同一路径互相覆盖且不报错。",
+        "线程口径": "新增 cputopo.py：真读 Windows 拓扑按 EfficiencyClass 分 P/E 核，threads() = min(P 核数, 逻辑核//2)（本机 245K：旧 7 → 新 6）。localmodels.get_session 增 intra= / cpu_only= 并纳入缓存键；小模型用小线程档，OCR rec 强制 CPU。",
+        "LUT 查表": "apply_cube 改两类缓存键：路径 LUT 用路径、运行时 LUT 用内容摘要（_lut_digest：uint8 量化 + blake2b），LRU 8 条；_apply_nearest 改 _gather_rows 按 256 行分条 gather；restore_black_white 改 256 项 uint8 查表。后两项均 np.array_equal 逐位相同。",
+        "理解调用降采样": "新增 understand_bytes：短边 ≤1080 的 JPEG q90（24MP：5140ms→~120ms、37.9MB→0.2MB）；verify_result / smart_edit 规划 / journal 主题 / style_transfer 参考图四处改用；providers._image_data_url 按魔数标 mime。",
+        "参考图统计": "color_transfer 参考图先缩到长边 1024 再转 Lab（只为 mean/std）：2145ms → 24ms，且不再每张图重复算。",
+        "OCR": "rec 合批（_REC_BATCH=8，动态 batch 模型，CTC 逐行独立解码结果不变）；det 前景占比 >25% 早退（纹理误检 637ms→0ms，这类图本来也会被「单框超 20% 画面」丢掉）。",
+        "Rust 预览": "ensure_photo_preview 改 async + spawn_blocking（原本同步跑在 Tauri 主线程，导入 200 张 HEIC 会把 UI 与 IPC 一起冻死）；复用 thumbnail::acquire_gen_permit 生成名额闸；max_edge 下限 512→64（原会把 384 请求悄悄抬到 512）；JPEG 源按魔数走 DCT 域降采样。",
+        "缩略图": "新增 preview::commands::workbench_thumb（任意格式 → ≤384px 缓存 JPEG）+ composables/useWorkbenchThumbs.ts（3 路并发上限 + 按工作集剪枝）；AiWorkbench 拆两套地址表：对比框用原图、胶片条/网格用缩略图。",
+        "预览单飞": "useWorkbenchPreview 加 in-flight=1（在飞期间只记最新待发），缓存改真 LRU 且降到 8 条；键计算抽成 utils/previewCache.stableKey（按键名排序，避免同参数因键序不同而不命中）。"
+      },
+      "bugfixes": [
+        "BUG-2026-1119-003",
+        "BUG-2026-1119-004"
+      ],
+      "highlights": [
+        "批量 CPU 段实测：单线程 618ms/张 → P=4 1.72x → P=6 1.95x，结果逐字节一致",
+        "同一批并发写同一块盘时端到端只有 1.02x —— 并行收益在 CPU 段不在磁盘，必须分段测",
+        "LUT 稠密表按内容摘要缓存后，滑杆预览 685ms → ~350ms",
+        "restore_black_white 875→264ms、分条 gather 600→447ms，均逐位相同",
+        "理解调用 24MP：5140ms/50.5MB → 120ms/0.2MB",
+        "OCR rec 钉 CPU：单框 16.1ms→5.8ms，且不再占 GPU 串行锁",
+        "线程口径按 P 核数：本机 14 逻辑核，旧 cpu//2=7 溢出到 E 核，新 min(6, 7)=6",
+        "跨 GPU adapter 并发实测可行但不作默认：核显慢 2.6×、可用显存 128MB，合计仅 1.35x"
+      ],
+      "tests": "python：新增 test_ai_studio_parallel.py（14 例）、test_ai_studio_understand_input.py（9 例）、test_ai_studio_unique_path.py（4 例），test_ai_studio_lut_cache.py 按新语义重写（4 例）；全量 47 passed（5 个 test_ov_runtime_discovery 为改动前既有失败）。rust：cargo test --lib 227 passed（新增 2 例缩略图）。前端：npm test 264 passed（新增 previewCache.test.ts 12 例）、vue-tsc 0 错误、build 通过。端到端：recipe 一键出片 6 张 —— 产物保序、步骤事件按图隔离、verifications 对齐、进度到 100。",
+      "related_files": [
+        "python/ai_studio/cputopo.py",
+        "python/ai_studio/parallel.py",
+        "python/ai_studio/workflows/batch.py",
+        "python/ai_studio/workflows/base.py",
+        "python/ai_studio/lutcube.py",
+        "python/ai_studio/ocr_engine.py",
+        "src-tauri/src/preview.rs",
+        "src-tauri/src/thumbnail.rs",
+        "src/composables/useWorkbenchThumbs.ts",
+        "src/utils/previewCache.ts"
+      ],
+      "keywords": [
+        "性能优化",
+        "多线程",
+        "照片级并行",
+        "P 核",
+        "大小核",
+        "LUT 缓存",
+        "降采样",
+        "短边 1080",
+        "OCR 合批",
+        "缩略图",
+        "工坊"
+      ],
+      "created_at": "2026-11-19T10:45:00+08:00",
+      "updated_at": "2026-11-19T10:45:00+08:00"
     }
   ],
-  "updated": "2026-11-19T09:45:00+08:00"
+  "updated": "2026-11-19T10:45:00+08:00"
 }

@@ -11,6 +11,10 @@
 顺序纪律：本工具必须**先于**本地美颜（磨皮）执行。磨皮的皮肤掩码是按人脸框在
 原图上算出来的（`workflows/local_beauty.py`），形变后再磨会「掩码与像素对不上」，
 表现是皮肤没磨到、背景被磨。
+
+并行：照片级但按「ONNX 链路」折半取线程（每个会话自己还有 intra_op 线程，
+两层叠满会超订；实测 ORT 并发只有 1.66x）。推理本身仍受 `gpu_lock` 串行，
+排队期间其它线程的解码/形变 numpy 运算照常推进。
 """
 from __future__ import annotations
 
@@ -19,11 +23,14 @@ import os
 from PIL import Image
 
 from .. import facewarp, landmark, localmodels
-from .base import check_cancel, filter_inputs, read_image, save_image, stem_of
+from .base import filter_inputs, read_image, save_image, stem_of
+from .batch import Outcome, run_batch
 
 # 默认强度：实测在「自然」区间中段（见 facewarp.py 头注释的 sweep 结论）
 _DEFAULT_SLIM = 0.5
 _DEFAULT_EYES = 0.30
+
+_ONNX_HEAVY = True
 
 
 def _ensure_models() -> None:
@@ -37,17 +44,18 @@ def _ensure_models() -> None:
         )
 
 
-def _reshape_one(img: Image.Image, slim: float, eyes: float, name: str, warnings: list[str], stats: dict) -> Image.Image:
-    """对单张图做形变；出任何问题都返回原图 + warning（不抛）。"""
+def _reshape_one(img: Image.Image, slim: float, eyes: float, name: str) -> tuple[Image.Image, int, list[str]]:
+    """对单张图做形变；出任何问题都返回原图（不抛）。返回 (图, 成功脸数, warnings)。"""
+    warnings: list[str] = []
     try:
         faces = localmodels.detect_faces(img)
     except Exception as e:  # noqa: BLE001 —— 检测失败不拖垮整批
         warnings.append(f"{name}: 人脸检测失败，已跳过（{e}）")
-        return img
+        return img, 0, warnings
 
     if not faces:
         warnings.append(f"{name}: 未检测到人脸，已原样输出")
-        return img
+        return img, 0, warnings
 
     result = img
     touched = 0
@@ -69,8 +77,7 @@ def _reshape_one(img: Image.Image, slim: float, eyes: float, name: str, warnings
 
     if touched == 0 and not warnings:
         warnings.append(f"{name}: 没有可处理的人脸")
-    stats["faces"] += touched
-    return result
+    return result, touched, warnings
 
 
 def run(req, progress, cancel) -> dict:
@@ -94,25 +101,30 @@ def run(req, progress, cancel) -> dict:
 
     _ensure_models()
 
-    outputs: list[str] = []
     warnings: list[str] = []
     req.paths = filter_inputs(list(req.paths), warnings)
-    stats = {"images": 0, "faces": 0}
-    total = len(req.paths)
 
-    for index, path in enumerate(req.paths):
-        check_cancel(cancel)
-        progress(3 + int(index / total * 92), "人像形变中", f"{index + 1}/{total}")
+    def process(index: int, path: str) -> Outcome:
         img = read_image(path)
-        stats["images"] += 1
-
-        result = _reshape_one(img, slim, eyes, os.path.basename(path), warnings, stats)
+        result, faces, w = _reshape_one(img, slim, eyes, os.path.basename(path))
         out = save_image(result, out_dir, f"{stem_of(path)}_形变", ".jpg", 95)
-        outputs.append(out)
+        return Outcome(outputs=[out], warnings=w, meta={"images": 1, "faces": faces})
 
-    progress(100, "完成", f"{len(outputs)} 张")
+    stats = {"images": 0, "faces": 0}
+    res = run_batch(
+        req.paths,
+        process,
+        progress,
+        cancel,
+        stage="人像形变中",
+        onnx_heavy=_ONNX_HEAVY,
+        initial_warnings=warnings,
+        stats=stats,
+    )
+
+    progress(100, "完成", f"{len(res.outputs)} 张")
     return {
-        "outputs": outputs,
-        "warnings": warnings,
+        "outputs": res.outputs,
+        "warnings": res.warnings,
         "meta": {"slim": round(slim, 4), "eyes": round(eyes, 4), **stats},
     }

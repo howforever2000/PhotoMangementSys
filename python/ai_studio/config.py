@@ -6,6 +6,8 @@ Python 侧绝不落盘 api_key。这里只放进程级常量与端口解析。
 import os
 import sys
 
+from . import cputopo
+
 # /health 里回给 Rust 的协议版本：Rust 侧据此判定服务是否需要重启（与 VCR 的 api_version 同思路）
 API_VERSION = 1
 SERVICE_NAME = "ai-studio"
@@ -15,10 +17,17 @@ JOB_WORKERS = 2
 
 # 本机 ONNX 会话的 CPU 线程口径（与 VCR 的 `config.threads()` 同一纪律）：
 #   - intra_op：单个算子内部并行度。默认按 ORT 满核开，而本服务同时有
-#     「作业 worker ×2 + 预览线程池」，多会话叠加会 CPU 超订、互相抢核反而更慢；
+#     「照片并行 P + 预览线程池」，多会话叠加会 CPU 超订、互相抢核反而更慢；
 #   - inter_op 固定 1（算子级并行同样会和并发会话打架，见 vcr/model_registry.py）。
-# 取半核、上限 8：既能吃满中低核机器，又不会在 16 核以上把线程铺满。
-ONNX_INTRA_OP = max(1, min(8, (os.cpu_count() or 4) // 2))
+#
+# 取 `min(P 核数, 逻辑核 // 2)`（见 `cputopo.py`）：
+#   旧口径是 `cpu_count // 2`，在大小核机器上会**越过 P 核溢到 E 核**——
+#   本机 245K（6P+8E，14 逻辑核）旧值算出 7，而实测 6 线程 32.8ms、8 线程 39.9ms、
+#   14 线程 110.2ms（越加越慢，BUG-2026-1027-003）。现按 P 核数取 6。
+ONNX_INTRA_OP = cputopo.threads()
+# 小模型（SCRFD / peppa / BiSeNet / OCR rec）用更少线程：单次前向只有 3~60ms，
+# 线程铺满时调度开销占大头。按模型分档见 `localmodels.get_session(intra=...)`。
+ONNX_INTRA_OP_SMALL = cputopo.small_model_threads()
 
 # 单次 provider 请求超时（秒）：图像编辑可能较慢，给足。
 # 本地网关（image2_1turbo / sd.cpp，qwen-image-2.1-turbo）在 1K 尺寸上一张要 2~5
