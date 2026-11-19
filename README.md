@@ -168,7 +168,7 @@ python/
 
 ### 6.1 安装
 
-- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新正式版 **v5.0.0**，约 166MB，内含 VCR / AI 双微服务，**不含可下载模型**——装完按下方说明补齐模型即可离线使用）：
+- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新正式版 **v5.0.0**，NSIS 约 169MB / MSI 约 172MB，内含 VCR / AI 双微服务，**不含可下载模型**——装完按下方说明补齐模型即可离线使用）：
   - [`PhotoManagementSys_5.0.0_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v5.0.0/PhotoManagementSys_5.0.0_x64-setup.exe)（NSIS，按用户安装到 `%LOCALAPPDATA%`，无需管理员权限，推荐）
   - 或 [`PhotoManagementSys_5.0.0_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v5.0.0/PhotoManagementSys_5.0.0_x64_en-US.msi)（MSI，按机器安装到 `Program Files`，需管理员权限）
   - 模型（**单独下载**）：[`model.zip`](https://github.com/howforever2000/PhotoMangementSys/releases/latest/download/model.zip)（**解压后约 979MB**，含语义模型 **B/16 fp32 单档** + 人脸两档 + 人物检测 + OCR），解压到模型目录即可（落点见 7.2，三种安装方式不同）；也可在应用内 **性能设置 → 模型管理** 一键下载（国内双镜像 + 分段并行）——**这是推荐方式**，装完再下需要的模型即可
@@ -176,7 +176,7 @@ python/
   - 从旧版升级：建议先卸载旧版再安装（两种安装范围不同，否则会同时存在两份）；数据目录与模型目录不变，覆盖安装即可保留全部相册与账户
   - 历史版本（v0.4.5 / v0.4.4 / v0.4.3 / v0.4.2 / v0.4.1 / v0.4.0-beta / v0.3.x / v0.2.0 / v0.1.0）见 [Releases](https://github.com/howforever2000/PhotoMangementSys/releases)
 - ⚠ **v0.4.3 起应用标识符改为 `com.photomanagementsys.app`**（原 `com.haoyuan.photo-management-sys` 会把作者姓名带进每台用户机的 `%APPDATA%` 目录名）。数据目录随之变化，首次启动会自动把 `photos.db` / `thumbs` / `vcr-data` / `app.key` 一次性迁移到新目录（优先 rename，失败则复制，**仅在复制成功后删旧目录**；新目录已有数据则不覆盖、只提示旧目录位置）。
-- **v5.0.0 安装包不含可下载模型**（约 166MB，含 VCR / AI 双微服务）。首次启动后请在 **性能设置 → 模型管理** 按需下载（推荐），或解压 `model.zip` 到模型目录；模型到位前看图 / 相册管理 / 压缩 / 本机编辑可用，识别与语义搜索不可用。
+- **v5.0.0 安装包不含可下载模型**（NSIS 约 169MB / MSI 约 172MB，含 VCR / AI 双微服务）。首次启动后请在 **性能设置 → 模型管理** 按需下载（推荐），或解压 `model.zip` 到模型目录；模型到位前看图 / 相册管理 / 压缩 / 本机编辑可用，识别与语义搜索不可用。
 
 ### 6.2 首次使用
 
@@ -463,7 +463,7 @@ PhotoMangementSys/
 
 **七、安装与升级**
 
-- 安装包（NSIS / MSI）只含 VCR 与 AI 创作两个微服务，**不含可下载模型**，约 166MB；
+- 安装包（NSIS / MSI）只含 VCR 与 AI 创作两个微服务，**不含可下载模型**，约 170MB；
   模型由应用内「性能设置 → 模型管理」按需下载，或用离线包 `model.zip` 补齐。
 - 数据目录（`%APPDATA%\com.photomanagementsys.app`）与模型目录口径未变，覆盖安装即保留全部相册与账户。
 - 从 4.x 升级：账户体系未变（邮箱与密码哈希原样保留），无需重建相册或人物库；
