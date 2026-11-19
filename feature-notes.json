@@ -7456,14 +7456,172 @@
         "常量不另抄一份": "_lab_to_linear 直接复用 colortransfer._MINV / _WHITE，本文件只定义函数不定义矩阵常量。起因见 BUG-2026-1119-006：第一版自己抄了矩阵数值但漏写转置。",
         "容差不可省": "_GAMUT_EPS = 1e-5：sRGB 原色（纯红/纯蓝等）正好落在色域边界上，Lab 往返的浮点误差有 1e-7 量级越界，不留容差会被判为「已越界」→ headroom 归零 → 纯色完全失去饱和度。"
       },
-      "highlights": ["明度解耦成立：拉饱和后 ΔL 带符号由 +0.202（系统性提亮）变为 −0.054（≈0），方向性偏差消失", "色相更稳：|ΔHue| 0.836° → 0.397°（全链路 6.858° → 6.687°）", "饱和素材上量级改善：色轮 |ΔL| 0.3082 → 0.0171、|ΔHue| 0.336° → 0.043°；色卡 0.1677 → 0.0053、0.541° → 0.035°", "纯色色相严格不变：6 个 sRGB 原色在 k=1.6 下 |Δhue| < 0.5°（守卫测试锁死）", "力度 0 时 eval_colors 直算严格恒等（成片差异 ≤1 级，仅来自 LUT 8bit 量化，属项目既有行为）", "架构零改动：LUT 预计算、内容摘要缓存、.cube 导出、97³ 稠密表全部照旧；无新依赖（不引入 scipy）"],
+      "highlights": [
+        "明度解耦成立：拉饱和后 ΔL 带符号由 +0.202（系统性提亮）变为 −0.054（≈0），方向性偏差消失",
+        "色相更稳：|ΔHue| 0.836° → 0.397°（全链路 6.858° → 6.687°）",
+        "饱和素材上量级改善：色轮 |ΔL| 0.3082 → 0.0171、|ΔHue| 0.336° → 0.043°；色卡 0.1677 → 0.0053、0.541° → 0.035°",
+        "纯色色相严格不变：6 个 sRGB 原色在 k=1.6 下 |Δhue| < 0.5°（守卫测试锁死）",
+        "力度 0 时 eval_colors 直算严格恒等（成片差异 ≤1 级，仅来自 LUT 8bit 量化，属项目既有行为）",
+        "架构零改动：LUT 预计算、内容摘要缓存、.cube 导出、97³ 稠密表全部照旧；无新依赖（不引入 scipy）"
+      ],
       "tests": "python/tests/test_autograde_lch_sat.py 新增 8 例：中性档逐字节不变 / 力度 0 恒等（直算严格、成片≤1 级）/ |ΔL| 显著小于 RGB（<0.6 倍）/ ΔL 带符号 |<0.08| / 色相偏移不劣于 RGB / 纯色色相严格不变 / 同色同输出（证明无空间运算）/ LUT 查表与直算均值差 <2 级。全部 OK。回归：test_autograde_vibrance 5 例、test_ai_studio_lut_cache、test_recipe_overrides、test_restore_black_white 等 python 单测全部 OK。既有 test_ov_runtime_discovery 失败与本次无关（ModuleNotFoundError: No module named 'vcr'，纯路径问题，不 import autograde）。",
       "not_done": "四条配方（natural/clear/film/portrait）的出图已变 —— 这是必然结果不是缺陷，但未做人工目视验收；建表开销 +33ms/张（4→38ms，批量 100 张 +3.3 秒），运行时查表不变，未做进一步优化（二分开销可降到 4 次迭代）。",
-      "related_files": ["python/ai_studio/autograde.py", "python/ai_studio/colortransfer.py", "python/tests/test_autograde_lch_sat.py"],
-      "keywords": ["LCh", "CIELAB", "饱和度", "saturation", "vibrance", "自然饱和度", "恒色相", "色域回收", "chroma headroom", "auto_grade", "智能调色", "明度解耦", "逐色映射", "LUT"],
+      "related_files": [
+        "python/ai_studio/autograde.py",
+        "python/ai_studio/colortransfer.py",
+        "python/tests/test_autograde_lch_sat.py"
+      ],
+      "keywords": [
+        "LCh",
+        "CIELAB",
+        "饱和度",
+        "saturation",
+        "vibrance",
+        "自然饱和度",
+        "恒色相",
+        "色域回收",
+        "chroma headroom",
+        "auto_grade",
+        "智能调色",
+        "明度解耦",
+        "逐色映射",
+        "LUT"
+      ],
       "created_at": "2026-11-19T16:20:00+08:00",
       "updated_at": "2026-11-19T16:20:00+08:00"
+    },
+    {
+      "id": "FEAT-188",
+      "name": "首页版式：页头顶部锚定 96px（不再随窗口高度漂移），页头与四卡之间收成固定 44px 缝",
+      "module": "src/views/Home.vue（仅 <style scoped>，模板仅改标题文案）",
+      "status": "done",
+      "date": "2026-11-19",
+      "purpose": "用户诉求：首页顶部导航区「向下一点」并优化布局，随后要求在方案 C 基础上再往上收，同时把首页标题改为「拾影匣」。盘查发现根因不是 padding 太小：.home-content 是 flex 列，.module-grid 用 margin-top/bottom:auto 在剩余空间里垂直居中，于是页头永远吊在顶部 48px，而页头底到卡片顶的缝随窗口高度一起变大（实测 1260/1440/1600 下页头 y = 198/235/283，缝 = 126/205/175）。只加 padding 治不了这条缝，只调缝又会让页头贴顶。",
+      "implementation": {
+        "顶部锚定替代整块居中": ".home-content padding 由 48/140 改为 96px 24px 88px，并显式 justify-content: flex-start。页头离窗口顶恒为 96px，三档视口实测均为 96（改前 198/235/283）。",
+        "取消 auto 边距": ".module-grid 从 margin-top:auto; margin-bottom:auto 改为 margin-top:0; margin-bottom:auto。剩余空间全部由底部吸收，窗口变高时多出来的白落在卡片下方，页头与卡片的相对关系不再变。",
+        "页头缝固定": ".home-header margin-bottom 48 → 44，成为页头与卡片之间唯一的缝（实测三档视口均 44px）。",
+        "标题字号": ".app-title 32 → 28px、下边距 8 → 6px。改名后标题宽度由 294px 缩到约 110px，32px 会让页头左轻右重。",
+        "改名": "首页 h1「本地相册管理」→「拾影匣」。按用户本轮确认范围，仅改首页标题；index.html <title>、tauri.conf.json 窗口 title、Login.vue AuthShell title 仍为「本地相册搭子」，未动。",
+        "窄窗补偿": "@media (max-width:640px) 下 padding-top 由 32 提到 72，保「页头不贴顶」的读数同时不把四卡挤出短屏。"
+      },
+      "highlights": [
+        "锚定而非居中：同一套样式在不同窗口高度下版式一致，避免「用户机器比我高，页头位置就不一样」这类只有换机器才发现的漂移。",
+        "改的是布局机制不是数字：真正的元凶是 module-grid 的 auto 边距，只调 padding 会让缝继续随窗口高度变大。",
+        "窄窗回归护栏保住：BUG-2026-1010-001（窗口收窄时标题把 user-box 顶出视口）所依赖的 flex-wrap + min-width:0 未改动，600x800 实测药丸换行且未溢出。",
+        "⚠ 2026-11-19 后续：本条记录的「改名拾影匣」已被 FEAT-189 覆盖 —— 最终品牌名为「栖影 LumaPerch」，标题由 BrandMark 组件渲染。本条的版式结论（顶部锚定 96px / 缝 44px）继续有效，只是 .app-title 样式已随模板改造删除。"
+      ],
+      "tests": "Playwright 实测 5 档视口（1260x822 / 1440x900 / 1600x1000 / 900x760 / 600x800）：headerTop 恒 96（600 宽下 72）、header→grid 缝恒 44、docW == winW 无横向溢出、标题文本为「拾影匣」、user-box 完整落在视口内，5/5 全通过。npx vue-tsc --noEmit：0 错误。npx vite build：构建通过（2.09s）。",
+      "related_files": [
+        "src/views/Home.vue"
+      ],
+      "keywords": [
+        "首页",
+        "Home",
+        "页头",
+        "顶部锚定",
+        "版式",
+        "拾影匣",
+        "module-grid",
+        "padding",
+        "FEAT-188"
+      ],
+      "created_at": "2026-11-19T12:50:00+08:00",
+      "updated_at": "2026-11-19T14:05:00+08:00"
+    },
+    {
+      "id": "FEAT-189",
+      "name": "品牌改名「栖影 LumaPerch」+ 双语标语：品牌文案收口到单一事实源，首页与登录页共用 BrandMark",
+      "module": "src/utils/brand.ts（新建）、src/components/ui/BrandMark.vue（新建）、src/components/AuthShell.vue、src/views/{Home,Login}.vue、src/assets/auth.css、index.html、src-tauri/tauri.conf.json、src-tauri/src/sys_monitor.rs",
+      "status": "done",
+      "date": "2026-11-19",
+      "purpose": "用户诉求：把产品名改成「栖影 LumaPerch」，并把标语「影栖本机，静享私藏。/ Your memories perch locally.」放到合适的地方；确认方案 A（中英同行）且登录页一起改。此前品牌名在 4 处各写一份（首页 h1 / 登录页 AuthShell title / index.html title / tauri.conf.json 窗口标题），上一轮只改了首页，登录页仍是「本地相册搭子」，已经出现两个产品名的漂移。",
+      "implementation": {
+        "文案单一事实源（新建 brand.ts）": "导出 BRAND_CN='栖影'、BRAND_EN='LumaPerch'、BRAND_FULL='栖影 LumaPerch'、SLOGAN_CN、SLOGAN_EN。中文是主名、拉丁是辅助标识，BRAND_FULL 只在需要纯文本单行的场合（<title> / 窗口标题）使用。",
+        "品牌标识组件（新建 BrandMark.vue）": "把「中文大 + 拉丁小基线对齐 + 竖线分隔的中英标语」这套版式收成一个组件，两个尺寸档：size='home'（28px，首页）/ size='auth'（24px，登录页）。颜色一律走 currentColor 派生，组件不写死色值——页面各自下发 on-bg 色或登录页白色，避免两处各维护一套配色。",
+        "AuthShell 新增 header 插槽": "品牌块是带主次层级的结构，纯 title 字符串装不下。加 header 插槽：传了用插槽，没传就退回 title/subtitle 两个 prop。注册页与忘记密码页零改动，行为不变（已实测回归）。",
+        "Home 接入": "模板里 h1 + p 换成 <BrandMark size=\"home\" />；删除随之失效的 .app-title / .app-subtitle 样式；.header-text 改为下发 color（on-bg 对比色）+ 用 :deep(.brand-slogan) 给标语次级色。D1 的顶部锚定 96px 未动。",
+        "Login 接入": "AuthShell 去掉 title/subtitle prop，改用 #header 插槽传 <BrandMark size=\"auth\" />；auth.css 增加 .auth-header .brand / .brand-slogan 两条配色（--auth-title / --auth-sub）。",
+        "静态标题同步": "index.html <title> 与 tauri.conf.json 窗口 title 改为「栖影 LumaPerch」；sys_monitor.rs 的资源面板组件名「本地相册搭子（主程序）」同步改名。前者是前端静态文本、后者由 Rust 侧显示，都不在 brand.ts 覆盖范围内，已就地改成一致。"
+      },
+      "highlights": [
+        "改名从「4 处各改一次」变成「1 份常量 + 1 个组件」：以后调整品牌文案只动 brand.ts 与两个静态标题，页头版式不会再两处各漂一次。",
+        "颜色与版式解耦：BrandMark 全用 currentColor，首页下发 on-bg 色、登录页下发壁纸高对比白，同一组件在两种完全不同底色上都成立，不需要再写第二份样式。",
+        "向后兼容的插槽扩展：AuthShell 的 header 插槽是可选增强，注册页/忘记密码页仍走 title/subtitle prop，实测两页标题与副标题逐字未变。",
+        "未动发布标识：Cargo.toml / package.json 的 photo-management-sys 与 identifier com.photomanagementsys.app 保持原样——它们是数据目录与安装包身份的锚点，改名会导致老用户数据目录失联。"
+      ],
+      "tests": "Playwright 实测 8 个用例全通过：首页 1260/1440/1600/600 四档视口 + 登录页 1260/1440 两档，均校验 document.title === '栖影 LumaPerch'、.brand-cn/.brand-en/.brand-slogan-cn/.brand-slogan-en 四个文本逐字正确、无横向溢出、无 console/page error；注册页与忘记密码页回归：.auth-title 仍为「注册新账户」「忘记密码」且不出现 .brand 块。npx vue-tsc --noEmit：0 错误。npx vite build：通过（2.32s）。",
+      "related_files": [
+        "src/utils/brand.ts",
+        "src/components/ui/BrandMark.vue",
+        "src/components/AuthShell.vue",
+        "src/views/Home.vue",
+        "src/views/Login.vue",
+        "src/assets/auth.css",
+        "index.html",
+        "src-tauri/tauri.conf.json",
+        "src-tauri/src/sys_monitor.rs"
+      ],
+      "keywords": [
+        "品牌改名",
+        "栖影",
+        "LumaPerch",
+        "标语",
+        "BrandMark",
+        "brand.ts",
+        "AuthShell header 插槽",
+        "双语",
+        "FEAT-189"
+      ],
+      "created_at": "2026-11-19T14:05:00+08:00",
+      "updated_at": "2026-11-19T14:05:00+08:00"
+    },
+    {
+      "id": "FEAT-191",
+      "name": "创意工坊模型下载提速：GitHub 直链展开加速镜像 + 大文件分段并行（4 路轮转多源）",
+      "module": "src-tauri/src/model_dl.rs（expand_github_mirrors / probe_size_any / download_first_wins / download_segmented）、src-tauri/src/model_dl_seg.rs（新增）、src-tauri/src/lib.rs（模块注册）",
+      "status": "done",
+      "date": "2026-11-19",
+      "purpose": "用户问「创意工坊中模型下载有没有更快的路径」。盘查发现创意工坊 4 个本地增强模型（ESRGAN 69MB / GFPGAN 340MB / 人脸解析 93MB / 关键点 14MB / OCR rec 10MB）全是 GitHub Release 绝对直链，走的是 abs_url 单源分支 —— 所谓「官方+镜像双路竞速」对它们根本不生效，而 GitHub 直连在本机实测只有 0.06~0.14 MB/s 且频繁 ConnectionReset，340MB 的 GFPGAN 量级是 90 分钟。",
+      "implementation": {
+        "绝对 URL 也展开镜像": "新增 expand_github_mirrors()：is_github_download() 判定为 github.com / objects.githubusercontent.com / raw.githubusercontent.com 的直链时，展开成「ghfast.top → gh-proxy.com → 直连兜底」三候选；非 GitHub 绝对 URL（ModelScope、本仓库 Release 资产）原样单源返回，避免给已经 4.1MB/s 的源套无谓前缀。",
+        "直连必须留作兜底": "镜像站是第三方公益服务，随时可能下线或限流；直连虽慢但永远权威。单测 github_links_expand_to_mirrors_with_direct_fallback 锁死「直连是最后一项」。",
+        "大文件分段并行": "新增 model_dl_seg 模块（只负责切段→并发拉→按序拼，不碰注册表/UI/落位）。≥16MB 且源支持 Range 时切成 4 段，段之间轮转分配到不同镜像，多图同时吃带宽。",
+        "并发上限锁 4 并写明依据": "实测 ghfast.top 在 8 路并发开始 429，4 路稳定且吞吐最高；常量 SEG_MAX_CONNS 带单测 concurrency_cap_is_four 守住，改大之前必须先重测。",
+        "探测也要容错": "probe_size_any() 按候选顺序挨个探测总长 —— 首个镜像可能刚好在限流（实测 403/429/502），单靠首源探测会让分段路径被整体跳过。",
+        "单流路径保留为兜底": "分段失败（源不支持 Range / 分片不完整 / 429）自动回落到原来的「逐个候选源单流、先完成者赢」，并把失败原因写进日志，不改变既有断点续传与取消语义。",
+        "进度节流": "4 路并发每 64KB 回调会刷爆事件通道，ProgressThrottle 统一按 150ms 节流；续传时已完成分片也计入进度，避免进度条从 0 跳。"
+      },
+      "highlights": [
+        "端到端实测（8MB 等量样本，本机 2026-11-19）：GitHub 直连单流 43.9s 后连接被重置（0 MB/s）；仅换镜像单流 38.8s / 0.22 MB/s；镜像+4 段并行 20.9s / 0.40 MB/s —— 相对镜像单流 1.9x，相对「直连能用时」的理论值提升更大。",
+        "只改传输层：断点续传、取消、落地校验、分区展示、三处同步守卫（config.py ↔ model_dl.rs ↔ LocalModelHint.DL_NAMES）全部沿用既有实现，没有第二套下载器。",
+        "非 GitHub 源零影响：ModelScope 的 OCR rec / det 仍走单源直连（本身就是 4.1MB/s 快源），单测 non_github_links_stay_single_source 锁死。",
+        "分段正确性有单测护栏：segments_cover_total_without_gap_or_overlap 覆盖「无缝、无重叠、合计等于总长」这一拼文件关键不变量。"
+      ],
+      "tests": "cargo test --lib 全量 236 passed / 11 ignored，其中 model_dl + model_dl_seg 共 17 例（新增 6 例：镜像展开与直连兜底、非 GitHub 单源、rotate 轮转、dedup、分段覆盖不变量、分段轮转分源、并发上限）；npm run build（含 vue-tsc）通过。",
+      "not_done": "未做「装包后真实点下载」的端到端 UI 验收（本机 340MB 即使 0.4MB/s 也要 14 分钟，留待内测包验证）；未给镜像加自动测速排名（当前顺序为实测静态排序，若某镜像长期劣化需手工调整 GITHUB_MIRRORS）。",
+      "related_files": [
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/model_dl_seg.rs",
+        "src-tauri/src/lib.rs"
+      ],
+      "keywords": [
+        "模型下载",
+        "创意工坊",
+        "本地增强",
+        "下载提速",
+        "GitHub 镜像",
+        "ghfast",
+        "gh-proxy",
+        "分段下载",
+        "Range",
+        "多源竞速",
+        "断点续传",
+        "model_dl"
+      ],
+      "created_at": "2026-11-19T16:45:00+08:00",
+      "updated_at": "2026-11-19T16:45:00+08:00"
     }
-],
-  "updated": "2026-11-19T12:40:00+08:00"
+  ],
+  "updated": "2026年11月19日 16:45:00"
 }

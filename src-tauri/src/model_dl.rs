@@ -79,15 +79,23 @@ impl DlSpec {
     fn repo_file(&self) -> String {
         self.main_file().remote.to_string()
     }
-    /// 某文件的全部候选地址（HF 走内置多源；绝对 URL 单源）
+    /// 某文件的全部候选地址（HF 走内置多源；GitHub 直链展开加速镜像；其余单源）
+    ///
+    /// 顺序 = 实测吞吐从快到慢（2026-11-19 本机实测，单连接 / 4 连接）：
+    ///   ghfast.top      0.30~0.33 / 0.77 MB/s
+    ///   gh-proxy.com    0.17 / 0.41 MB/s
+    ///   github.com 直连 0.06~0.14 MB/s
+    ///
+    /// 为什么必须展开而不是只用直连：创意工坊 4 个本地增强模型全是 GitHub Release
+    /// 直链（`abs_url`），单源路径下「双路竞速」根本不生效，340MB 的 GFPGAN 要下 90 分钟。
     fn file_urls(&self, f: &DlFile) -> Vec<String> {
-        if let Some(u) = f.abs_url {
-            return vec![u.to_string()];
-        }
-        source_templates()
-            .iter()
-            .map(|t| fill_source(t, self.repo, f.remote))
-            .collect()
+        let Some(u) = f.abs_url else {
+            return source_templates()
+                .iter()
+                .map(|t| fill_source(t, self.repo, f.remote))
+                .collect();
+        };
+        expand_github_mirrors(u)
     }
     /// 主文件官方地址（测试与自检用）
     #[cfg(test)]
@@ -626,7 +634,14 @@ fn emit_status(app: &AppHandle, spec: &DlSpec, stage: &str, bytes: u64, total: u
     );
 }
 
-/// 两路并行下载，先完成者赢；返回赢家临时文件路径（带正确扩展名）
+/// 下载一个文件：**大文件走分段并行（多镜像同时出力）**，其余走单流竞速。
+///
+/// 快路径顺序（2026-11-19 实测为依据）：
+///   1. 探测总长 + 是否支持 Range；
+///   2. ≥16MB 且支持 Range → 切成 4 段、轮转分给各镜像并发拉，再按序拼回
+///      （实测 ghfast 单连接 0.33 MB/s → 4 连接 0.77 MB/s）；
+///   3. 否则 / 失败 → 逐个候选源单流下载，先完成者赢（原有行为，保留作兜底）。
+/// 返回赢家临时文件路径（带正确扩展名）。
 async fn download_first_wins(
     app: &AppHandle,
     spec: &DlSpec,
@@ -641,14 +656,40 @@ async fn download_first_wins(
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("bin");
-    let d0 = dir.join(format!(".dl_{key}_0.{ext}"));
-    let d1 = dir.join(format!(".dl_{key}_1.{ext}"));
-    let urls = spec.file_urls(file);
-    let url0 = urls[0].clone();
-    let url1 = urls.get(1).cloned().unwrap_or_else(|| url0.clone());
+    let urls = dedup_urls(spec.file_urls(file));
+    if urls.is_empty() {
+        return Err(format!("{} 没有可用下载地址", spec.name));
+    }
 
-    // hf-mirror 对同一来源的密集请求会瞬时 403（实测：连续 HEAD/Range/GET 后 403，稍候恢复），
-    // 而这里是 16MB~800MB 的大文件 —— 失败即白下，故加有限重试（3 次，退避 2s/4s）。
+    // --- 快路径：分段并行（仅大文件，且源必须支持 Range）---
+    // 探测也要容错：首个镜像可能刚好被限流（实测 403/429/502），
+    // 因此按候选顺序挨个试，任一源能给出总长即可进入分段。
+    match probe_size_any(client, &urls).await {
+        Ok(total) if total >= crate::model_dl_seg::SEG_MIN_BYTES => {
+            logger_info(&format!(
+                "[model_dl] {} 分段并行：{:.1}MB / {} 源",
+                spec.name,
+                total as f64 / 1e6,
+                urls.len()
+            ));
+            match download_segmented(app, spec, &urls, total, dir, &key, ext, client, base_bytes)
+                .await
+            {
+                Ok(p) => return Ok(p),
+                Err(e) if is_cancelled(spec.name) => return Err(e),
+                Err(e) => logger_info(&format!(
+                    "[model_dl] {} 分段失败，回落单流：{e}",
+                    spec.name
+                )),
+            }
+        }
+        Ok(_) => {}
+        Err(e) => logger_info(&format!("[model_dl] {} 体积探测失败，继续尝试单流：{e}", spec.name)),
+    }
+
+    // --- 兜底：逐个候选源单流下载，先完成者赢 ---
+    // hf-mirror / 加速镜像对密集请求会瞬时 403/429（实测），大文件失败即白下，
+    // 故加有限重试（3 次，退避 2s/4s）。
     let mut last_err = String::from("下载失败");
     for attempt in 0..3u32 {
         if attempt > 0 {
@@ -658,27 +699,19 @@ async fn download_first_wins(
                 spec.name, file.local
             ));
         }
-        let f0 = download_one(
-            app.clone(),
-            spec,
-            base_bytes,
-            url0.clone(),
-            d0.clone(),
-            client.clone(),
-        );
-        // 先完成者赢：tokio::select 返回第一个完成的 future，对位的另一路被取消；
-        // 单源直链（官方 == 镜像）降为单路，避免同 URL 双倍流量
-        let r = if url0 == url1 {
+        // 每轮从「本轮该优先的源」开始轮转，让各镜像都得到机会
+        let order = rotate(&urls, attempt as usize);
+        let d0 = dir.join(format!(".dl_{key}_0.{ext}"));
+        let d1 = dir.join(format!(".dl_{key}_1.{ext}"));
+        let u0 = order[0].clone();
+        let u1 = order.get(1).cloned().unwrap_or_else(|| u0.clone());
+        let f0 = download_one(app.clone(), spec, base_bytes, u0.clone(), d0.clone(), client.clone());
+        // 先完成者赢：任一成功即返回；单源直链（u0 == u1）退化为单路，避免双倍流量
+        let r = if u0 == u1 {
             f0.await.map(|_| 0u8)
         } else {
-            let f1 = download_one(
-                app.clone(),
-                spec,
-                base_bytes,
-                url1.clone(),
-                d1.clone(),
-                client.clone(),
-            );
+            let f1 =
+                download_one(app.clone(), spec, base_bytes, u1.clone(), d1.clone(), client.clone());
             tokio::select! {
                 r0 = f0 => r0.map(|_| 0u8),
                 r1 = f1 => r1.map(|_| 1u8),
@@ -704,6 +737,157 @@ async fn download_first_wins(
         }
     }
     Err(last_err)
+}
+
+/// 去掉重复地址（同一 URL 出现两次会让两路竞速变成「自己跟自己抢」）
+fn dedup_urls(urls: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(urls.len());
+    for u in urls {
+        if !out.contains(&u) {
+            out.push(u);
+        }
+    }
+    out
+}
+
+/// 把候选源轮转 `n` 位（让重试/多轮不再永远先试同一个最慢的源）
+fn rotate(urls: &[String], n: usize) -> Vec<String> {
+    if urls.is_empty() {
+        return Vec::new();
+    }
+    let k = n % urls.len();
+    urls[k..].iter().chain(urls[..k].iter()).cloned().collect()
+}
+
+/// 探测文件总大小，并验证源确实支持 Range 分段（返回 `(总长, 是否支持 Range)`）。
+///
+/// 只发 1 字节的 Range 请求：既拿到总长（`Content-Range: bytes 0-0/TOTAL`），
+/// 又顺带验证「服务器会不会老实返回 206」——不支持分段的源在这里就被识别出来，
+/// 免得把整个文件切成 4 段后才发现每段都拿回完整文件。
+async fn probe_size(client: &reqwest::Client, url: &str) -> Result<(u64, bool), String> {
+    let resp = tokio::time::timeout(
+        FIRST_BYTE_TIMEOUT,
+        client.get(url).header("Range", "bytes=0-0").send(),
+    )
+    .await
+    .map_err(|_| format!("体积探测超时（{}s）: {url}", FIRST_BYTE_TIMEOUT.as_secs()))?
+    .map_err(|e| format!("体积探测失败: {e}"))?;
+    let status = resp.status().as_u16();
+    if status != 206 {
+        return Err(format!("体积探测没有得到 206（HTTP {status}）: {url}"));
+    }
+    let total = resp
+        .headers()
+        .get("content-range")
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_content_range_total)
+        .ok_or_else(|| format!("响应缺少 Content-Range，无法确定大小: {url}"))?;
+    Ok((total, true))
+}
+
+/// 按候选顺序探测总长：任一源能给出大小即可（首个镜像可能正被限流）。
+async fn probe_size_any(client: &reqwest::Client, urls: &[String]) -> Result<u64, String> {
+    let mut last = String::from("没有可用下载地址");
+    for url in urls {
+        match probe_size(client, url).await {
+            Ok((total, _)) => return Ok(total),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+/// 分段并行下载编排：切段 → 并发拉 → 按序拼 → 返回合并后的临时文件。
+///
+/// 进度按 150ms 节流上报（4 路并发每 64KB 回调一次，不节流会刷爆事件通道）。
+async fn download_segmented(
+    app: &AppHandle,
+    spec: &DlSpec,
+    urls: &[String],
+    total: u64,
+    dir: &Path,
+    key: &str,
+    ext: &str,
+    client: &reqwest::Client,
+    base_bytes: u64,
+) -> Result<PathBuf, String> {
+    let plan = crate::model_dl_seg::plan_segments(total, urls);
+    if plan.is_empty() {
+        return Err("分段计划为空".into());
+    }
+    let counter = Arc::new(crate::model_dl_seg::ByteCounter::default());
+    let throttle = Arc::new(crate::model_dl_seg::ProgressThrottle::default());
+    // 起手先报一次，点下去界面立刻有反应
+    emit_progress(app, spec, base_bytes);
+
+    let name = spec.name.to_string();
+    let app_cb = app.clone();
+    // 进度回调需要跨线程持有 spec 的最小信息（label/note/总量），
+    // 直接把 DlSpec 的静态字段搬进一个轻量快照，避免在闭包里借住 spec 生命周期。
+    let snap = ProgressSnapshot::from_spec(spec);
+    let counter_cb = counter.clone();
+    let on_bytes: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |delta: u64| {
+        counter_cb.add(delta);
+        if throttle.should_emit() {
+            snap.emit(&app_cb, base_bytes + counter_cb.get());
+        }
+    });
+    let cancel_name = name.clone();
+    let cancel: Arc<dyn Fn() -> bool + Send + Sync> =
+        Arc::new(move || is_cancelled(&cancel_name));
+
+    let merged =
+        crate::model_dl_seg::fetch_and_concat(client, plan, dir, key, ext, cancel, on_bytes).await?;
+    // 收尾补报一次，避免最后一小段没赶上节流窗口
+    emit_progress(app, spec, base_bytes + counter.get());
+    // 合并完成后清掉所有分片与续传元数据（清理键与单流路径共用同一前缀）
+    cleanup_partials(dir, &spec.name);
+    Ok(merged)
+}
+
+/// 进度上报所需的 spec 快照（跨线程闭包持有，避免借住 `&DlSpec` 的生命周期）
+struct ProgressSnapshot {
+    name: &'static str,
+    label: &'static str,
+    note: &'static str,
+    file: String,
+    files: Vec<String>,
+    required: bool,
+    total: u64,
+}
+
+impl ProgressSnapshot {
+    fn from_spec(spec: &DlSpec) -> Self {
+        Self {
+            name: spec.name,
+            label: spec.label,
+            note: spec.note,
+            file: spec.rel_file(),
+            files: spec.files.iter().map(|f| f.local.to_string()).collect(),
+            required: spec.required,
+            total: spec.expect_bytes,
+        }
+    }
+
+    fn emit(&self, app: &AppHandle, bytes: u64) {
+        let _ = app.emit(
+            "model-dl-progress",
+            &ModelDlStatus {
+                name: self.name.to_string(),
+                label: self.label.to_string(),
+                note: self.note.to_string(),
+                file: self.file.clone(),
+                files: self.files.clone(),
+                required: self.required,
+                running: true,
+                done: false,
+                stage: "downloading".into(),
+                bytes,
+                total: self.total,
+                error: None,
+            },
+        );
+    }
 }
 
 /// 单路流式下载（带进度 + 可取消）
@@ -809,6 +993,41 @@ const BUILTIN_SOURCES: [&str; 2] = [
     "https://hf-mirror.com/{repo}/resolve/main/{path}",
     "https://aifasthub.com/models/{repo}/resolve/main/{path}",
 ];
+
+/// GitHub Release 资产的加速前缀（按实测吞吐从快到慢排列，2026-11-19 本机）
+///
+/// 只有 `github.com` / `objects.githubusercontent.com` 的直链才套用；
+/// ModelScope 等其它绝对 URL 原样返回（它们本身就是国内直连快源）。
+const GITHUB_MIRRORS: [&str; 2] = [
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
+];
+
+/// 把 GitHub 绝对直链展开成「加速镜像优先 + 直连兜底」的候选列表。
+///
+/// 为什么不只留镜像：镜像站是第三方公益服务，随时可能下线或限流；
+/// 直连虽慢（0.06~0.14 MB/s）但永远是最权威的兜底，保住它才不会把下载能力押在别人身上。
+fn expand_github_mirrors(url: &str) -> Vec<String> {
+    if !is_github_download(url) {
+        return vec![url.to_string()];
+    }
+    let mut out: Vec<String> = GITHUB_MIRRORS
+        .iter()
+        .map(|p| format!("{p}{url}"))
+        .collect();
+    out.push(url.to_string());
+    out
+}
+
+/// 判断是否为 GitHub 上可被通用代理加速的下载直链
+fn is_github_download(url: &str) -> bool {
+    const HOSTS: [&str; 3] = [
+        "https://github.com/",
+        "https://objects.githubusercontent.com/",
+        "https://raw.githubusercontent.com/",
+    ];
+    HOSTS.iter().any(|h| url.starts_with(h))
+}
 
 /// 按模板拼下载地址
 fn fill_source(tpl: &str, repo: &str, path: &str) -> String {
@@ -1471,8 +1690,29 @@ mod tests {
                 }
                 match file.abs_url {
                     Some(u) => {
-                        assert_eq!(urls.len(), 1, "绝对 URL 不应再套镜像模板：{u}");
-                        assert_eq!(urls[0], u);
+                        // 绝对 URL 不套 HF 镜像模板：结果里每一项都必须「包含」原始地址
+                        // （GitHub 直链会被展开成 `<加速前缀>+原地址`，直连是最后一项兜底）
+                        assert!(!urls.is_empty(), "{} 没有可用下载地址", spec.name);
+                        if is_github_download(u) {
+                            assert!(
+                                urls.len() >= 2,
+                                "GitHub 直链应展开出加速镜像：{urls:?}"
+                            );
+                            assert_eq!(
+                                urls.last().map(String::as_str),
+                                Some(u),
+                                "直连必须保留为最后兜底：{urls:?}"
+                            );
+                        } else {
+                            assert_eq!(urls.len(), 1, "非 GitHub 绝对 URL 应单源：{u}");
+                            assert_eq!(urls[0], u);
+                        }
+                        for url in &urls {
+                            assert!(
+                                url.ends_with(u),
+                                "绝对 URL 的每个变体都应指向同一路径：{url}"
+                            );
+                        }
                     }
                     None => {
                         assert!(spec.repo.contains('/'), "{} 缺少 HF 仓库名", spec.name);
@@ -1522,5 +1762,60 @@ mod tests {
             assert!(tpl.starts_with("https://"), "内置源必须是 https：{tpl}");
             assert!(tpl.contains("{repo}") && tpl.contains("{path}"), "模板缺占位符：{tpl}");
         }
+    }
+
+    /// GitHub 直链必须展开成「加速镜像在前、直连兜底在后」。
+    ///
+    /// 这条守的是创意工坊四个本地增强模型的下载速度：它们全是 GitHub Release 直链，
+    /// 单源路径下双路竞速不生效，340MB 的 GFPGAN 实测要 90 分钟（0.06MB/s）。
+    #[test]
+    fn github_links_expand_to_mirrors_with_direct_fallback() {
+        let direct = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gfpgan_1.4.onnx";
+        let urls = expand_github_mirrors(direct);
+        assert_eq!(
+            urls.len(),
+            GITHUB_MIRRORS.len() + 1,
+            "应为「每个镜像 + 直连」：{urls:?}"
+        );
+        assert_eq!(urls.last().map(String::as_str), Some(direct), "直连必须留作兜底");
+        for (i, m) in GITHUB_MIRRORS.iter().enumerate() {
+            assert_eq!(urls[i], format!("{m}{direct}"), "镜像应当前缀拼接");
+        }
+        // 去重后仍能覆盖所有候选（同一 URL 不重复尝试）
+        assert_eq!(dedup_urls(urls.clone()).len(), urls.len());
+    }
+
+    /// 非 GitHub 的绝对 URL（ModelScope / 本仓库 Release 资产）保持单源，不套加速前缀。
+    #[test]
+    fn non_github_links_stay_single_source() {
+        for url in [
+            "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile.onnx",
+            "https://example.com/models/foo.onnx",
+        ] {
+            let urls = expand_github_mirrors(url);
+            assert_eq!(urls, vec![url.to_string()], "非 GitHub 源不应被改写：{url}");
+        }
+        assert!(!is_github_download("https://example.com/x.onnx"));
+        assert!(is_github_download(
+            "https://github.com/a/b/releases/download/t/x.onnx"
+        ));
+    }
+
+    /// 重试轮转：第 n 轮从第 n 个候选源开始，避免永远先撞同一个最慢的源。
+    #[test]
+    fn rotate_shifts_候选源() {
+        let urls: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(rotate(&urls, 0), urls);
+        assert_eq!(rotate(&urls, 1), vec!["b", "c", "a"]);
+        assert_eq!(rotate(&urls, 4), vec!["b", "c", "a"], "超出长度应取模");
+        assert!(rotate(&[], 3).is_empty());
+    }
+
+    /// 去重：重复地址只保留一份，且不改变顺序。
+    #[test]
+    fn dedup_urls_keeps_order() {
+        let dup: Vec<String> = ["x", "y", "x"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(dedup_urls(dup), vec!["x", "y"]);
+        assert!(dedup_urls(Vec::new()).is_empty());
     }
 }

@@ -33,6 +33,8 @@ mod heic;
 mod imgio;
 mod logger;
 mod model_dl;
+// 模型下载的分段并行传输层（只管「切段 → 并发拉 → 按序拼」，不碰注册表/UI）
+mod model_dl_seg;
 mod photo_info;
 mod photo_scan;
 mod persons;
