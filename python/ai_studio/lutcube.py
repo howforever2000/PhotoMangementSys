@@ -28,7 +28,13 @@ _CACHE: dict[str, Tuple[np.ndarray, int]] = {}
 
 # 高密度查表缓存：(id(lut), n) -> (lut 引用, 扁平常量表, 边长)
 # 存 lut 引用是为了校验身份：只按 id 做 key 时 GC 后 id 可能被复用，会命中别的表。
+#
+# 只缓存「路径 LUT」（内置 .cube，路径稳定、一批照片反复用）。运行时生成的 LUT
+# （autograde 每张照片新建）只查一次就丢，缓存它们等于每次泄漏一张 11MB 表 ——
+# 这是本模块唯一的内存无界点，必须靠 `apply_cube` 的 cacheable=False 关掉。
 _DENSE_CACHE: dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray, int]] = {}
+# 缓存条数上限：内置 LUT 只有 7 个，正常永远到不了；纯粹防未来新增路径 LUT 无界。
+_DENSE_CACHE_MAX = 24
 # 恒等表缓存：边长 -> 扁平常量表
 _IDENTITY_CACHE: dict[int, np.ndarray] = {}
 # 量化后的高密度表缓存：(id(lut), n, strength) -> (lut 引用, uint8 扁平表, 边长)
@@ -85,13 +91,18 @@ def apply_cube(img_u8: np.ndarray, path_or_lut, strength: float = 1.0) -> np.nda
     strength<1 的混合在 LUT 域完成 —— 与像素域混合数学等价（三线性是线性的），
     精度差只来自离散化，实测真实照片平均通道误差 <1.1。
     需要 LUT 文件时传路径；需要运行时生成的 LUT 时传 (lut, n) 元组。
+
+    缓存口径：只有「路径 LUT」进稠密表缓存；运行时生成的 LUT（autograde 逐图新建）
+    不缓存 —— 它们只套一次，缓存等于每次泄漏一张 11MB 表。
     """
     if isinstance(path_or_lut, str):
         lut, n = get_cube(path_or_lut)
+        cacheable = True
     else:
         lut, n = path_or_lut
+        cacheable = False
     strength = float(max(0.0, min(1.0, strength)))
-    return _apply_nearest(img_u8, lut, n, strength)
+    return _apply_nearest(img_u8, lut, n, strength, cacheable)
 
 
 # 高密度查表立方体的边长：源 LUT 多为 32³/33³，直接最近邻会在天空等平滑渐变上
@@ -125,26 +136,31 @@ def _sample_trilinear(lut: np.ndarray, n: int, coords: np.ndarray) -> np.ndarray
     return c0 * (1 - fb) + c1 * fb
 
 
-def _dense_flat(lut: np.ndarray, n: int) -> tuple[np.ndarray, int]:
+def _dense_flat(lut: np.ndarray, n: int, cache: bool = True) -> tuple[np.ndarray, int]:
     """源 LUT → (高密度扁平常量表, 边长)，按 LUT 缓存，与 strength 无关。
 
     建表一次 ~0.9s（D=97），之后的强度混合在常量表上做（11MB，几毫秒），
-    这样同一批照片里切强度也不必重建。
+    这样同一批照片里切强度也不必重建。`cache=False` 用于运行时生成、只套一次的 LUT
+    （autograde 逐图新建）：不写缓存，避免每次泄漏一张 11MB 表。
 
     缓存条目同时持有 `lut` 本身：只按 `id(lut)` 做 key 时，LUT 被 GC 后新数组
     可能复用同一个 id，从而命中旧表、套用**别的照片的调色参数**（静默错色）。
     持有引用 + 身份比对后不可能发生；一条 LUT 仅 33³×3×4 ≈ 431KB。
     """
     key = (id(lut), n)
-    hit = _DENSE_CACHE.get(key)
-    if hit is not None and hit[0] is lut:
-        return hit[1], hit[2]
+    if cache:
+        hit = _DENSE_CACHE.get(key)
+        if hit is not None and hit[0] is lut:
+            return hit[1], hit[2]
     line = np.linspace(0.0, 1.0, _DENSE, dtype=np.float32)
     b, g, r = np.meshgrid(line, line, line, indexing="ij")
     coords = np.stack([r, g, b], axis=-1)                 # [b,g,r] 轴序，坐标顺序 [r,g,b]
     dense = _sample_trilinear(lut, n, coords)
     flat = np.ascontiguousarray(dense.reshape(-1, 3), dtype=np.float32)
-    _DENSE_CACHE[key] = (lut, flat, _DENSE)
+    if cache:
+        if len(_DENSE_CACHE) >= _DENSE_CACHE_MAX:
+            _DENSE_CACHE.pop(next(iter(_DENSE_CACHE)))
+        _DENSE_CACHE[key] = (lut, flat, _DENSE)
     return flat, _DENSE
 
 
@@ -173,29 +189,35 @@ def _index_table(d: int) -> np.ndarray:
     return hit
 
 
-def _dense_u8(lut: np.ndarray, n: int, strength: float) -> tuple[np.ndarray, int]:
+def _dense_u8(
+    lut: np.ndarray, n: int, strength: float, cache: bool = True
+) -> tuple[np.ndarray, int]:
     """(高密度扁平表, 边长)，表项已量化为 uint8 —— gather 出来即成品，无需二次转换。
 
     量化放在**建表时**（97³×3 约 27 万次）而不是**套用时**（24MP×3 约 7200 万次），
     这是本函数存在的唯一理由。strength 混合仍在 float 域完成后再量化，
-    与旧实现（float 混合 → 末端量化）逐位一致。
+    与旧实现（float 混合 → 末端量化）逐位一致。`cache=False` 时只算不存。
     """
     key = (id(lut), n, round(float(strength), 4))
-    hit = _DENSE_U8_CACHE.get(key)
-    if hit is not None and hit[0] is lut:
-        return hit[1], hit[2]
-    flat, d = _dense_flat(lut, n)
+    if cache:
+        hit = _DENSE_U8_CACHE.get(key)
+        if hit is not None and hit[0] is lut:
+            return hit[1], hit[2]
+    flat, d = _dense_flat(lut, n, cache)
     if strength < 1.0:
         flat = flat * strength + _identity_flat(d) * (1.0 - strength)
     u8 = np.clip(flat * 255.0 + 0.5, 0, 255).astype(np.uint8)
-    # 强度可连续变化，缓存按最近使用淘汰，避免 2.7MB/条无限堆积
-    if len(_DENSE_U8_CACHE) >= _DENSE_U8_CACHE_MAX:
-        _DENSE_U8_CACHE.pop(next(iter(_DENSE_U8_CACHE)))
-    _DENSE_U8_CACHE[key] = (lut, u8, d)
+    if cache:
+        # 强度可连续变化，缓存按最近使用淘汰，避免 2.7MB/条无限堆积
+        if len(_DENSE_U8_CACHE) >= _DENSE_U8_CACHE_MAX:
+            _DENSE_U8_CACHE.pop(next(iter(_DENSE_U8_CACHE)))
+        _DENSE_U8_CACHE[key] = (lut, u8, d)
     return u8, d
 
 
-def _apply_nearest(img_u8: np.ndarray, lut: np.ndarray, n: int, strength: float) -> np.ndarray:
+def _apply_nearest(
+    img_u8: np.ndarray, lut: np.ndarray, n: int, strength: float, cache: bool = True
+) -> np.ndarray:
     """查表：把三维索引压成一维后一次 np.take。
 
     轴序仍是 [b,g,r]（见模块头），所以索引 = (b*d + g)*d + r。
@@ -203,7 +225,7 @@ def _apply_nearest(img_u8: np.ndarray, lut: np.ndarray, n: int, strength: float)
     全程无浮点：索引走 256 项预计算表，输出表已量化成 uint8，`np.take` 直接
     返回成品。实测 24MP 1213ms → 473ms，与旧实现逐位一致（最大差 0 级）。
     """
-    flat, d = _dense_u8(lut, n, strength)
+    flat, d = _dense_u8(lut, n, strength, cache)
     idx = _index_table(d)[img_u8]                      # (H,W,3) int32，三次整数查表
     flat_idx = (idx[..., 2] * d + idx[..., 1]) * d + idx[..., 0]
     return np.take(flat, flat_idx.ravel(), axis=0).reshape(img_u8.shape)

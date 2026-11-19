@@ -22,6 +22,43 @@ _pool = ThreadPoolExecutor(max_workers=config.JOB_WORKERS, thread_name_prefix="a
 
 _TERMINAL = ("done", "failed", "cancelled")
 
+# 终态作业的保留时长与注册表上限：服务是常驻进程，不清理就单调增长
+# （meta 里含 plans/verifications/steps，单条并不小）。取 10 分钟是为了
+# 「跑完再看一眼结果」仍能拿到，同时不让一批几千张的作业永久驻留。
+_JOB_TTL_SEC = 600.0
+_JOBS_MAX = 200
+
+
+def _sweep_locked(now: float | None = None) -> None:
+    """清掉过期终态作业 + 把总量压到上限内（调用方必须已持 `_lock`）。"""
+    now = time.time() if now is None else now
+    for job_id in [
+        jid
+        for jid, j in _jobs.items()
+        if j.get("status") in _TERMINAL
+        and now - float(j.get("_finished_at") or now) > _JOB_TTL_SEC
+    ]:
+        _jobs.pop(job_id, None)
+    overflow = len(_jobs) - _JOBS_MAX
+    if overflow <= 0:
+        return
+    # 只淘汰终态里最旧的；运行中的作业不动（否则前端轮询会 404）
+    terminal = sorted(
+        (jid for jid, j in _jobs.items() if j.get("status") in _TERMINAL),
+        key=lambda jid: float(_jobs[jid].get("_finished_at") or 0),
+    )
+    for job_id in terminal[:overflow]:
+        _jobs.pop(job_id, None)
+
+
+def _mark_terminal(job_id: str, **fields) -> None:
+    """终态落库并打上完成时间（调用方必须已持 `_lock`）。"""
+    j = _jobs.get(job_id)
+    if j is None:
+        return
+    j.update(fields)
+    j["_finished_at"] = time.time()
+
 
 def _new_id() -> str:
     return uuid.uuid4().hex[:12]
@@ -31,6 +68,7 @@ def create(req) -> str:
     job_id = _new_id()
     cancel = threading.Event()
     with _lock:
+        _sweep_locked()
         _jobs[job_id] = {
             "jobId": job_id,
             "status": "queued",
@@ -49,7 +87,9 @@ def create(req) -> str:
     fn = REGISTRY.get(req.tool)
     if fn is None:
         with _lock:
-            _jobs[job_id].update(status="failed", stage="失败", error=f"未知工具: {req.tool}")
+            _mark_terminal(
+                job_id, status="failed", stage="失败", error=f"未知工具: {req.tool}"
+            )
         return job_id
 
     def worker() -> None:
@@ -75,22 +115,24 @@ def create(req) -> str:
         try:
             res = fn(req, progress, cancel)
             with _lock:
-                j = _jobs[job_id]
-                j["status"] = "done"
-                j["progress"] = 100
-                j["stage"] = "完成"
-                j["outputs"] = res.get("outputs", []) or []
-                j["warnings"] = res.get("warnings", []) or []
-                j["meta"] = res.get("meta", {}) or {}
+                _mark_terminal(
+                    job_id,
+                    status="done",
+                    progress=100,
+                    stage="完成",
+                    outputs=res.get("outputs", []) or [],
+                    warnings=res.get("warnings", []) or [],
+                    meta=res.get("meta", {}) or {},
+                )
             log(f"job {job_id} 完成 tool={req.tool} outputs={len(_jobs[job_id]['outputs'])} | 总耗时 {int((time.perf_counter()-t0)*1000)}ms")
         except Cancelled:
             with _lock:
-                _jobs[job_id].update(status="cancelled", stage="已取消")
+                _mark_terminal(job_id, status="cancelled", stage="已取消")
             log(f"job {job_id} 已取消 tool={req.tool} | 总耗时 {int((time.perf_counter()-t0)*1000)}ms")
         except Exception as e:  # noqa: BLE001 —— 作业边界必须兜住一切，转成失败态
             elog(f"job {job_id} 失败 tool={req.tool} | 总耗时 {int((time.perf_counter()-t0)*1000)}ms: {e}\n{traceback.format_exc()}")
             with _lock:
-                _jobs[job_id].update(status="failed", stage="失败", error=str(e))
+                _mark_terminal(job_id, status="failed", stage="失败", error=str(e))
 
     _pool.submit(worker)
     return job_id
@@ -98,6 +140,7 @@ def create(req) -> str:
 
 def get(job_id: str):
     with _lock:
+        _sweep_locked()
         j = _jobs.get(job_id)
         if j is None:
             return None
