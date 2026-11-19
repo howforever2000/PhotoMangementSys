@@ -1,4 +1,8 @@
-# PhotoManagementSys — Local Photo Management System
+# 栖影 LumaPerch (PhotoManagementSys) — Local Photo Management System
+
+> **v5.0.0 (image editing) is documented in the Chinese README: [README.md](README.md).**
+> This English file is a legacy translation (last fully synced around v0.3.1); sections below may lag behind
+> the current release. For installers, version history and the 5.0 image-editing pipeline, use `README.md`.
 
 > A local-first desktop photo management application with a built-in AI visual recognition microservice. Photos are automatically classified, faces, scenes and text are recognized — all locally, fully offline-capable.
 
@@ -160,16 +164,17 @@ Notable optimizations implemented during development:
 
 ### 6.1 Installation
 
-- **Method 1 (recommended)**: Download an installer from the Release and run it (latest stable: **v0.3.1**, ~460 MB, bundles the VCR microservice and all runtime-required AI models; **v0.4.0-beta** is a pre-release — tag published, installers pending build, see the release notes):
-  - [`PhotoManagementSys_0.3.1_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64-setup.exe) (NSIS, per-user install into `%LOCALAPPDATA%`, no admin rights, recommended)
-  - or [`PhotoManagementSys_0.3.1_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.3.1/PhotoManagementSys_0.3.1_x64_en-US.msi) (MSI, per-machine install into `Program Files`, admin rights required)
+- **Method 1 (recommended)**: Download an installer from the Release and run it (latest stable: **v5.0.0**, NSIS ~169 MB / MSI ~172 MB, bundles the VCR and AI microservices, **models are NOT bundled** — download them in-app or from `model.zip`):
+  - [`PhotoManagementSys_5.0.0_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v5.0.0/PhotoManagementSys_5.0.0_x64-setup.exe) (NSIS, per-user install into `%LOCALAPPDATA%`, no admin rights, recommended)
+  - or [`PhotoManagementSys_5.0.0_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v5.0.0/PhotoManagementSys_5.0.0_x64_en-US.msi) (MSI, per-machine install into `Program Files`, admin rights required)
+  - Models: [`model.zip`](https://github.com/howforever2000/PhotoMangementSys/releases/latest/download/model.zip) (~979 MB unpacked), or download in-app via **Settings → Model management**
   - Upgrading: uninstall the old version first (the two installers use different install scopes; otherwise both copies remain)
-  - Previous versions (v0.2.0 / v0.1.0) are available on the [Releases](https://github.com/howforever2000/PhotoMangementSys/releases) page
-- Installers include the AI models by default (see Section 7). If a given installer does not include the models, place the model files into the model directory (see the model-placement instructions) before starting the application.
+  - Previous versions are available on the [Releases](https://github.com/howforever2000/PhotoMangementSys/releases) page
+- Installers do not bundle the downloadable models (v5.0.0). Place the model files into the model directory (see Section 7) or download them in-app before starting AI features.
 
 ### 6.2 First Use
 
-1. **Register an account**: Register with a username / email / phone and a password (multi-user on the same machine; albums are isolated per user).
+1. **Register an account**: Register with an **email and password** (the email is a local-only account identifier; a display name can be set separately). Registration and sign-in are fully offline: no verification email, no network check, no phone number. The email is used only to isolate multiple users on the same machine; keep your password safe — there is no cloud recovery.
 2. **Import photos**: On the Album Management page, create an album and select a local photo folder. The system scans images in it (jpg / jpeg / png / webp / gif / bmp are supported).
 3. **Start AI recognition**: On the album detail page, run Content Recognition / Combined Scan. When the progress bar completes, each photo is automatically categorized (animals / food / buildings / night scenes / portraits, etc.) and people are clustered automatically.
 
