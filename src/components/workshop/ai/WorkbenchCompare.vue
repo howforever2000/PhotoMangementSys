@@ -156,13 +156,31 @@ function onPointerUp(e: PointerEvent): void {
   }
 }
 
-/** Ctrl+滚轮：以光标为不动点缩放（页面不滚动，普通滚轮不拦截） */
+/** Ctrl+滚轮：以光标为不动点缩放（页面不滚动，普通滚轮不拦截）。
+    必须**同步** preventDefault（否则默认滚动已经发生），缩放本体按 rAF 合并 ——
+    触控板的 wheel 密度远高于刷新率，逐事件 applyScale 会白算好几次。 */
+let wheelEvent: WheelEvent | null = null;
+let wheelRaf = 0;
 function onViewerWheel(e: WheelEvent): void {
-  const el = frame.value;
-  if (!el) return;
-  const r = el.getBoundingClientRect();
-  onWheel(e, { x: e.clientX, y: e.clientY }, { x: r.left + r.width / 2, y: r.top + r.height / 2 });
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  wheelEvent = e;
+  if (wheelRaf) return;
+  wheelRaf = requestAnimationFrame(() => {
+    wheelRaf = 0;
+    const ev = wheelEvent;
+    wheelEvent = null;
+    const el = frame.value;
+    if (!ev || !el) return;
+    const r = el.getBoundingClientRect();
+    onWheel(ev, { x: ev.clientX, y: ev.clientY }, { x: r.left + r.width / 2, y: r.top + r.height / 2 });
+  });
 }
+
+onBeforeUnmount(() => {
+  if (wheelRaf) cancelAnimationFrame(wheelRaf);
+  wheelRaf = 0;
+});
 
 /** 键盘替代路径：拉不开时用方向键也能比 */
 function onKey(e: KeyboardEvent): void {

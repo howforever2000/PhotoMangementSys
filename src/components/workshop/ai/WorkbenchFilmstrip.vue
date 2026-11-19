@@ -10,9 +10,10 @@
  *
  * 纯展示 + 事件：状态、顺序、样片归属都由页面/store 决定。
  */
-import { nextTick, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 
 import type { WbThumbItem } from "../../../types/workbench";
+import { thumbStatusText } from "../../../utils/workbenchThumb";
 
 const props = withDefaults(
   defineProps<{
@@ -33,18 +34,7 @@ const emit = defineEmits<{
 const strip = ref<HTMLElement | null>(null);
 
 function statusText(it: WbThumbItem): string {
-  switch (it.status) {
-    case "queued":
-      return "排队";
-    case "running":
-      return `${it.progress}%`;
-    case "done":
-      return "✓";
-    case "failed":
-      return "!";
-    default:
-      return "";
-  }
+  return thumbStatusText(it, "compact");
 }
 
 /** 当前图滚到可视区中间：换图后不需要用户自己去找它 */
@@ -68,12 +58,27 @@ watch(
   { immediate: true },
 );
 
-/** 竖向滚轮 → 横向滑动（触控板横向手势本来就是 deltaX，直接相加） */
+/** 竖向滚轮 → 横向滑动（触控板横向手势本来就是 deltaX，直接相加）。
+    触控板的 wheel 事件密度远高于刷新率，按 rAF 合并成每帧一次写入。 */
+let wheelPending = 0;
+let wheelRaf = 0;
 function onWheel(e: WheelEvent): void {
   const box = strip.value;
   if (!box) return;
-  box.scrollLeft += Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+  wheelPending += Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+  if (wheelRaf) return;
+  wheelRaf = requestAnimationFrame(() => {
+    wheelRaf = 0;
+    const delta = wheelPending;
+    wheelPending = 0;
+    if (strip.value) strip.value.scrollLeft += delta;
+  });
 }
+
+onBeforeUnmount(() => {
+  if (wheelRaf) cancelAnimationFrame(wheelRaf);
+  wheelRaf = 0;
+});
 
 function scrollByPage(dir: -1 | 1): void {
   const box = strip.value;

@@ -11,6 +11,7 @@
  * 纯展示 + 事件：勾选/样片语义由页面与 store 决定。
  */
 import type { WbThumbItem } from "../../../types/workbench";
+import { thumbStatusText } from "../../../utils/workbenchThumb";
 
 withDefaults(
   defineProps<{
@@ -29,18 +30,7 @@ const emit = defineEmits<{
 }>();
 
 function statusText(it: WbThumbItem): string {
-  switch (it.status) {
-    case "queued":
-      return "排队";
-    case "running":
-      return `处理中 ${it.progress}%`;
-    case "done":
-      return "完成";
-    case "failed":
-      return "失败";
-    default:
-      return "待处理";
-  }
+  return thumbStatusText(it, "verbose");
 }
 </script>
 
