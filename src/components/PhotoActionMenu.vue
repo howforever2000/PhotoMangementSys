@@ -215,7 +215,8 @@ const items = computed<ContextMenuEntry[]>(() => {
     {
       label: "在创意工坊处理",
       icon: "🧰",
-      onClick: () => photoActions.openInWorkshop(path),
+      // FEAT-187：多选右键时带走全部选中路径（此前只送 paths[0]，多选等于白选）
+      onClick: () => photoActions.openInWorkshop(targetPaths.value),
     },
   ];
   // 调用方自定义条目（插在分隔线之后，便于与通用项区分）

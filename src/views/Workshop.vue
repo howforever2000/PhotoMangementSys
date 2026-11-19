@@ -62,6 +62,7 @@ import { isWorkshopTool, type WorkshopToolId } from "../stores/workshopUi";
 import { useWorkshopUiStore } from "../stores/workshopUi";
 import { useCompressTaskStore } from "../stores/compressTask";
 import { useAiStudioStore } from "../stores/aiStudio";
+import { dedupePhotoPaths, splitPhotoPaths } from "../utils/workshopHandoff";
 import "../assets/ai-tool.css";
 
 const route = useRoute();
@@ -141,16 +142,15 @@ const headerMeta = computed(
 /* ---------------- 入口：从相册/灯箱带照片进来 ---------------- */
 
 /**
- * 兼容两种带入方式：
- * - `?photo=<绝对路径>`：灯箱/右键菜单「在创意工坊处理」
- * - `?photos=a|b|c`：批量入口（多选用 `|` 分隔，避免与 Windows 路径里的字符冲突）
+ * 兼容两种带入方式（拼/拆统一走 `utils/workshopHandoff`，入口侧不再各写一份）：
+ * - `?photos=a|b|c`：单张与多选统一用这个键（FEAT-187）
+ * - `?photo=<绝对路径>`：旧链接兜底（FEAT-150 曾用），保留以免历史书签失效
  * 带照片直接落在 ①一键出片 —— 「打开即用」，不让用户再看一遍侧栏。
  */
 onMounted(() => {
   const q = route.query;
-  const one = typeof q.photo === "string" ? q.photo : "";
-  const many = typeof q.photos === "string" ? q.photos.split("|") : [];
-  const incoming = [one, ...many].map((p) => p.trim()).filter(Boolean);
+  const legacyOne = typeof q.photo === "string" ? q.photo : "";
+  const incoming = dedupePhotoPaths([legacyOne, ...splitPhotoPaths(q.photos)]);
   if (incoming.length) {
     tray.value = [...new Set([...tray.value, ...incoming])];
     active.value = primary.id;

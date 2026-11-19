@@ -2,6 +2,7 @@ import { ref } from "vue";
 import { useRouter } from "vue-router";
 import { useAlbumStore } from "../stores/album";
 import { useNotify } from "./useNotify";
+import { dedupePhotoPaths, workshopRouteTarget } from "../utils/workshopHandoff";
 import type { PhotoMarkState } from "../types/photo";
 
 /**
@@ -101,15 +102,25 @@ export function usePhotoActions() {
   const unhide = (paths: string[]) => apply("hidden", paths, false);
 
   /**
-   * 把某张照片送到创意工坊的工具上（FEAT-150）
+   * 把照片送到创意工坊（FEAT-150 / FEAT-187）
    *
-   * 带 `tool=compress` 直接落到压缩工位，并把照片预填进素材托盘 ——
-   * 旧版是跳到一个三栏调色台、再载入原图，现在工坊只做「对照片加工」，
-   * 用户点这项目的就是「把这张压一下发出去」。
+   * 单一编排入口：原图预览、缩略图右键菜单、四个画廊的多选条都调这一个函数，
+   * 免得「单张送 A 工位、多张送 B 工位」这种分裂（早期归档逻辑就曾在 5 处各写一遍
+   * 而漂移，见 `PhotoActionMenu` 头注释）。
+   *
+   * 行为：
+   *   - 传单张（`tool` 缺省为 `compress`）→ 与旧行为逐字一致：落到压缩工位；
+   *   - 传多张 → 不带 `tool`，由工坊落到默认工位（①一键出片，批量加工的主路径），
+   *     因为「我勾了 20 张」的诉求是批量出片，不是批量压缩。
+   *
+   * 空输入直接返回 false，调用方（按钮 `disabled`）不该依赖这个兜底。
    */
-  function openInWorkshop(path: string): void {
-    if (!path) return;
-    void router.push({ name: "workshop", query: { photo: path, tool: "compress" } });
+  function openInWorkshop(paths: string | readonly string[], tool?: string): boolean {
+    const list = dedupePhotoPaths(typeof paths === "string" ? [paths] : paths);
+    const target = workshopRouteTarget(list, tool ?? (list.length === 1 ? "compress" : undefined));
+    if (!target) return false;
+    void router.push(target);
+    return true;
   }
 
   /**

@@ -858,6 +858,13 @@ const vFocus: Directive<HTMLElement> = {
                 <button class="mini-btn" :disabled="!selected.size || photoActions.busy.value" @click="doHide([...selected], true)">
                   🔒 隐藏（{{ selected.size }}）
                 </button>
+                <!-- FEAT-187：选中照片一起送进创意工坊 -->
+                <button
+                  class="mini-btn"
+                  :disabled="!selected.size"
+                  :title="selected.size ? `把选中的 ${selected.size} 张送到创意工坊` : '请先勾选照片'"
+                  @click="photoActions.openInWorkshop([...selected])"
+                >🧰 工坊（{{ selected.size }}）</button>
                 <button class="mini-btn danger" :disabled="!selected.size || deleting" @click="openDeleteDialog">
                   🗑 删除选中（{{ selected.size }}）
                 </button>

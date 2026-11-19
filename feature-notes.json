@@ -7345,7 +7345,54 @@
       ],
       "created_at": "2026-11-19T10:45:00+08:00",
       "updated_at": "2026-11-19T10:45:00+08:00"
+    },
+    {
+      "id": "FEAT-187",
+      "name": "多选照片批量送创意工坊：四个画廊多选条 + 右键菜单统一入口",
+      "module": "src/utils/workshopHandoff.ts（新建）、src/composables/usePhotoActions.ts、src/views/Workshop.vue、src/components/{PhotoGrid,PersonGallery,CategoryGallery,LocationGallery,PhotoActionMenu,PhotoLightbox}.vue",
+      "status": "done",
+      "date": "2026-11-19",
+      "purpose": "用户诉求：其他相册预览界面在多勾选照片后应能「添加到创意工坊处理」，此前这个入口只有单张原图浏览（灯箱）有。盘查发现接收端其实早就支持批量（Workshop.vue 的 ?photos=a|b|c 一直是现成的），缺的只是入口侧没人把多选结果送过去：四个画廊的多选条没有工坊项，两处右键菜单只取 paths[0]，多选等于白选。目标：在多选态下点一次，把选中的 N 张一起带进工坊素材托盘并落到可用工位。",
+      "implementation": {
+        "携带协议收敛（新建 workshopHandoff.ts）": "URL 里怎么表达「一组路径」只留一份实现。导出 WORKSHOP_PATH_SEP、dedupePhotoPaths（去空白/去空串/Set 保序）、joinPhotoPaths、splitPhotoPaths（入参 unknown，兼容 vue-router 的 string|string[]|null）、workshopRouteTarget（返回 {name:'workshop', query} 或 null）。纯函数、无副作用、可单测。分隔符仍用 `|`：Windows 文件名禁用字符，永远不会出现在真实路径中，把 Workshop.vue 原注释里的口头约定固化成实现。",
+        "单一编排入口（usePhotoActions.openInWorkshop）": "签名从 openInWorkshop(path: string) 扩为 openInWorkshop(paths: string | readonly string[], tool?): boolean。单张缺省 tool='compress'（与旧行为逐字一致，灯箱点「创意工坊」仍直接落压缩工位）；多张不带 tool，由工坊落默认工位（①一键出片，批量加工的主路径）—— 因为「勾了 20 张」的诉求是批量出片而不是批量压缩。空输入返回 false，不做假成功。",
+        "接收端去重": "Workshop.vue onMounted 改走 dedupePhotoPaths + splitPhotoPaths，并保留 ?photo= 旧键兜底（历史书签/深链不失效），入口与接收端从此同一份协议，不再各写一遍 split('|')。",
+        "五个入口接入": "PhotoGrid 多选条、PersonGallery 多选条、CategoryGallery 多选条、LocationGallery 多选条各加一枚按钮（图标 🧰、文案「创意工坊（N）」，未选中时 disabled 并给 title 提示）；PhotoActionMenu 的「在创意工坊处理」改为送 targetPaths 全部；PhotoGrid 自己的右键菜单新增 contextMenuPaths()：多选态且右键的那张确实被勾选才带走全部选中，否则只送这一张。",
+        "灯箱文案对齐": "PhotoLightbox 工具栏按钮从「工具」改为「创意工坊」，与其它五个入口措辞统一；实现改调同一编排函数，删除组件内手写的 router.push 与因此失效的 useRouter。"
+      },
+      "highlights": [
+        "接收端零改动即可承载批量：?photos= 契约早已存在，本次只补入口侧，没有新增 Tauri 命令 / HTTP 端点 / op_catalog 条目。",
+        "五个入口共用 usePhotoActions.openInWorkshop 一处编排，与 FEAT-095「归档/隐藏单一事实源」同一条纪律，避免再出现「5 处各写一遍然后漂移」。",
+        "分隔符选择有据可查：`|` 是 Windows 文件名非法字符，因此多路径拼接不可能与真实路径冲突；守卫测试把这个前提锁死。",
+        "delete 语义未被牵连：本次只加工坊入口，各画廊的删除/归档仍走原有链路（PhotoActionMenu 的 DELETE_CONTEXT='generic' 约束不变）。"
+      ],
+      "tests": "node --experimental-strip-types src/utils/workshopHandoff.test.ts：9 passed（分隔符合法性 / 去重保序 / 空串清理 / unknown 容错 / 单张与多张同键 / 空输入 null / tool 可选 / 路由名）。全量前端单测 25 个文件 0 失败。npx vue-tsc --noEmit：0 错误。tsc -p tsconfig.test.json --noEmit：0 错误。npm run build：vite 构建通过（Workshop 71.16 kB / PhotoLightbox 27.14 kB 等产物正常产出）。注：沙箱默认模式下 esbuild 起子进程报 spawn EPERM，构建在放宽访问后通过，属环境限制非代码问题。",
+      "related_files": [
+        "src/utils/workshopHandoff.ts",
+        "src/utils/workshopHandoff.test.ts",
+        "src/composables/usePhotoActions.ts",
+        "src/views/Workshop.vue",
+        "src/components/PhotoGrid.vue",
+        "src/components/PersonGallery.vue",
+        "src/components/CategoryGallery.vue",
+        "src/components/LocationGallery.vue",
+        "src/components/PhotoActionMenu.vue",
+        "src/components/PhotoLightbox.vue"
+      ],
+      "keywords": [
+        "创意工坊",
+        "批量送工坊",
+        "多选",
+        "素材托盘",
+        "?photos=",
+        "workshopHandoff",
+        "openInWorkshop",
+        "单一编排入口",
+        "FEAT-187"
+      ],
+      "created_at": "2026-11-19T13:10:00+08:00",
+      "updated_at": "2026-11-19T13:10:00+08:00"
     }
   ],
-  "updated": "2026-11-19T10:45:00+08:00"
+  "updated": "2026-11-19T13:10:00+08:00"
 }

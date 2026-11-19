@@ -475,6 +475,13 @@ onMounted(load);
             :total-count="photos.length"
             @toggle="selectAll"
           />
+          <!-- FEAT-187：选中照片一起送进创意工坊（与单张入口同一份编排） -->
+          <button
+            class="btn"
+            :disabled="!selected.size"
+            :title="selected.size ? `把选中的 ${selected.size} 张送到创意工坊` : '请先勾选照片'"
+            @click="photoActions.openInWorkshop([...selected])"
+          >🧰 创意工坊（{{ selected.size }}）</button>
           <button class="btn btn-danger" :disabled="!selected.size" @click="openModeDialog([...selected])">
             🗑 删除选中（{{ selected.size }}）
           </button>

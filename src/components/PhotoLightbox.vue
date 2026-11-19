@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
 import { invoke } from "@tauri-apps/api/core";
 import type { AlbumContentRow } from "../types/content";
 import type { PhotoInfo } from "../types/photo";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
+import { usePhotoActions } from "../composables/usePhotoActions";
 import { useResizableDialog } from "../composables/useResizableDialog";
 import { useImageZoom } from "../composables/useImageZoom";
 import { categoryLabel } from "../utils/categoryLabel";
@@ -68,8 +68,8 @@ const imgLoading = ref(true);
  * 故保留折叠能力（点标题右侧箭头）。默认展开 —— 需求明确要求信息页要有拍摄时间与地点。
  */
 const metaCollapsed = ref(false);
-/** FEAT-064 / FEAT-150：工具按钮送创意工坊（不需要父视图参与，见 openInWorkshop 注释） */
-const router = useRouter();
+/** FEAT-064 / FEAT-150 / FEAT-187：工具按钮送创意工坊（编排集中在 usePhotoActions） */
+const photoActions = usePhotoActions();
 
 /* ---- 缩放/平移（原图查看，FEAT-181 起与工作台共用 useImageZoom）---- */
 const overlayEl = ref<HTMLElement | null>(null);
@@ -561,11 +561,12 @@ async function ensureExif(p: string): Promise<void> {
 }
 
 /**
- * 把当前照片送去创意工坊（FEAT-064 / FEAT-150）
+ * 把当前照片送去创意工坊（FEAT-064 / FEAT-150 → FEAT-187）
  *
  * 旧行为：跳工坊，在调色台里载入原图。调色台已下线，工坊现在只做
- * 「对照片加工」（压缩 / 文字提取 / 画质增强），所以这里改成带 `tool=compress`
- * 直接落到压缩工位，并把原图预填进素材托盘。
+ * 「对照片加工」（压缩 / 文字提取 / 画质增强），所以这里带 `tool=compress`
+ * 直接落到压缩工位，并把原图预填进素材托盘。FEAT-187 起多选入口共用
+ * `usePhotoActions.openInWorkshop`，单张仍走同一函数（内部按张数选工位）。
  *
  * 导航放在组件内部而非 emit 给父视图：PhotoLightbox 被相册详情 / 时间线 /
  * 智慧相册 / 回忆 / 搜索等多处复用，逐个改父视图既啰嗦又容易漏；
@@ -575,7 +576,7 @@ function openInWorkshop() {
   const path = photo.value?.path;
   if (!path) return;
   emit("close"); // 先收起灯箱，避免返回时残留遮罩状态
-  void router.push({ name: "workshop", query: { photo: path, tool: "compress" } });
+  photoActions.openInWorkshop([path], "compress");
 }
 
 /*
@@ -861,7 +862,7 @@ void initForCurrentPhoto();
           @click="openInWorkshop"
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" /></svg>
-          工具
+          创意工坊
         </button>
         <button
           v-if="photo?.albumId != null"

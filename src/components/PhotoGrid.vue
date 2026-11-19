@@ -348,7 +348,8 @@ function openPhotoContextMenu(e: MouseEvent, path: string, index: number) {
       {
         label: "在创意工坊处理",
         icon: "🧰",
-        onClick: () => photoActions.openInWorkshop(path),
+        // FEAT-187：多选态右键已勾选的照片 → 带走全部选中；否则只送这一张
+        onClick: () => photoActions.openInWorkshop(contextMenuPaths(path)),
       },
       { divider: true },
       {
@@ -391,6 +392,17 @@ function openPhotoContextMenu(e: MouseEvent, path: string, index: number) {
 
 function closeCtxMenu() {
   ctxMenu.value = null;
+}
+
+/**
+ * FEAT-187：右键菜单「送到创意工坊」要带哪些照片
+ *
+ * 多选态且这张确实被勾选 → 带走全部选中（用户勾了 20 张再右键，意思就是要这 20 张）；
+ * 否则只送右键的这一张（单选态、或勾选后右键了未勾选的照片）。
+ */
+function contextMenuPaths(fallbackPath: string): string[] {
+  const picked = [...selectedPaths.value];
+  return selectMode.value && picked.includes(fallbackPath) ? picked : [fallbackPath];
 }
 
 function closeLightbox() {
@@ -865,6 +877,13 @@ function onKey(e: KeyboardEvent) {
         <button class="btn" :disabled="!selectedPaths.size || merging" @click="openMerge">合并到相册…</button>
         <button class="btn" :disabled="!selectedPaths.size || busyRating" @click="openRating">打分…</button>
         <button class="btn" :disabled="!selectedPaths.size || exporting" @click="doExport">导出选中…</button>
+        <!-- FEAT-187：选中照片一起送进创意工坊（与单张入口同一份编排） -->
+        <button
+          class="btn"
+          :disabled="!selectedPaths.size"
+          :title="selectedPaths.size ? `把选中的 ${selectedPaths.size} 张送到创意工坊` : '请先勾选照片'"
+          @click="photoActions.openInWorkshop([...selectedPaths])"
+        >🧰 创意工坊（{{ selectedPaths.size }}）</button>
         <!-- FEAT-095：归档 / 隐藏（批量，针对照片） -->
         <button
           class="btn"
