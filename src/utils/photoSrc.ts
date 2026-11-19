@@ -20,6 +20,20 @@ const NEEDS_PREVIEW = /\.(heic|heif|hif)$/i;
 const urlCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string>>();
 
+/**
+ * HEIC 预览缓存条数上限：只缓存 HEIC（其余格式零开销直连），但长会话里
+ * 「打开过多少张 HEIC」仍是无界的；按最近使用淘汰，命中时刷新顺序。
+ */
+const URL_CACHE_MAX = 200;
+
+function putCached(path: string, url: string): void {
+  if (urlCache.has(path)) urlCache.delete(path); // 重新插入 → 变成最新的
+  urlCache.set(path, url);
+  if (urlCache.size <= URL_CACHE_MAX) return;
+  const oldest = urlCache.keys().next().value;
+  if (oldest !== undefined) urlCache.delete(oldest);
+}
+
 /** 该路径是否必须走后端预览 */
 export function needsPreview(path: string): boolean {
   return NEEDS_PREVIEW.test(path);
@@ -30,14 +44,17 @@ export async function resolvePhotoSrc(path: string): Promise<string> {
   if (!path) return "";
   if (!needsPreview(path)) return convertFileSrc(path);
   const cached = urlCache.get(path);
-  if (cached) return cached;
+  if (cached) {
+    putCached(path, cached); // 命中刷新为最近使用
+    return cached;
+  }
   const running = inflight.get(path);
   if (running) return running;
 
   const task = invoke<string>("ensure_photo_preview", { path })
     .then((preview) => {
       const url = convertFileSrc(preview);
-      urlCache.set(path, url);
+      putCached(path, url);
       return url;
     })
     .finally(() => {

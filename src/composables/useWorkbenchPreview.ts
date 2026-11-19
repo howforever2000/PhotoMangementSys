@@ -11,7 +11,7 @@
  *   - 只对**本机算子**的配方 / 步骤链开放；AI 模型模式逐张走云端计费，不做实时预览；
  *   - 预览长边固定 1280（够看清晰度，又快）；全量出片仍按原图尺寸。
  */
-import { ref } from "vue";
+import { onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { trace } from "../utils/trace";
 import type { RunPlan } from "../types/ai";
@@ -133,6 +133,13 @@ export function useWorkbenchPreview() {
     dropped.value = [];
     error.value = "";
   }
+
+  // 页面卸载后防抖定时器仍会到点发请求（220ms 窗口），还会把 data URL 缓存留在
+  // 闭包里；这里统一清掉，避免「离开工作台还在算预览」。
+  onUnmounted(() => {
+    reset();
+    cache.clear();
+  });
 
   return { src, previewing, lastMs, dropped, error, schedule, run, reset };
 }

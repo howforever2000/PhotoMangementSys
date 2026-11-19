@@ -11,8 +11,8 @@
  *
  * 纯展示组件：不 invoke、不弹窗，增删都 emit 给 Workshop.vue。
  */
-import { ref, watch } from "vue";
-import { resolvePhotoSrc } from "../../utils/photoSrc";
+import { watch } from "vue";
+import { usePhotoSrcMap } from "../../composables/usePhotoSrcMap";
 import { baseName } from "../../utils/pathParts";
 
 const props = withDefaults(
@@ -33,23 +33,16 @@ const emit = defineEmits<{
 /**
  * 缩略图地址：HEIC/HEIF 必须走后端预览缓存（WebView2 不认识），
  * 其余格式 `resolvePhotoSrc` 直接返回 asset URL，等于零开销。
+ * 与工作台共用 `usePhotoSrcMap`（增量写入 + 按当前素材剪枝）。
  */
-const srcMap = ref<Record<string, string>>({});
-
-async function ensureSrc(path: string) {
-  if (srcMap.value[path] !== undefined) return;
-  try {
-    const url = await resolvePhotoSrc(path);
-    srcMap.value = { ...srcMap.value, [path]: url };
-  } catch {
-    // 解析失败留空 → 模板回落成占位块，不阻断整条托盘
-    srcMap.value = { ...srcMap.value, [path]: "" };
-  }
-}
+const { srcMap, ensureSrc, prune } = usePhotoSrcMap();
 
 watch(
   () => props.paths,
-  (list) => list.forEach((p) => void ensureSrc(p)),
+  (list) => {
+    prune(list);
+    list.forEach((p) => void ensureSrc(p));
+  },
   { immediate: true },
 );
 </script>

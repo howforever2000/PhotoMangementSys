@@ -58,7 +58,7 @@ import { useContentStore } from "../stores/content";
 import { useNotify } from "../composables/useNotify";
 import { useAiBilling } from "../composables/useAiBilling";
 import { useWorkbenchPreview } from "../composables/useWorkbenchPreview";
-import { resolvePhotoSrc } from "../utils/photoSrc";
+import { usePhotoSrcMap } from "../composables/usePhotoSrcMap";
 import { baseName } from "../utils/pathParts";
 import { qcHeadline, qcTone, summarizeQc, verdictLabel } from "../utils/workbenchQc";
 import { pickSample } from "../utils/samplePick";
@@ -86,16 +86,7 @@ const billing = useAiBilling();
 const preview = useWorkbenchPreview();
 
 /* ---------------- 缩略图 ---------------- */
-const srcMap = ref<Record<string, string>>({});
-async function ensureSrc(path: string) {
-  if (!path || srcMap.value[path] !== undefined) return;
-  try {
-    const url = await resolvePhotoSrc(path);
-    srcMap.value = { ...srcMap.value, [path]: url };
-  } catch {
-    srcMap.value = { ...srcMap.value, [path]: "" };
-  }
-}
+const { srcMap, ensureSrc, prune } = usePhotoSrcMap();
 const neededPaths = computed(() => {
   const s = new Set<string>();
   for (const it of wb.items) {
@@ -104,7 +95,15 @@ const neededPaths = computed(() => {
   }
   return [...s];
 });
-watch(neededPaths, (list) => list.forEach((p) => void ensureSrc(p)), { immediate: true });
+watch(
+  neededPaths,
+  (list) => {
+    // 先剪掉已移出工作集的地址，再补齐新增的；条目数不会随「导入过多少张」单调增长
+    prune(list);
+    list.forEach((p) => void ensureSrc(p));
+  },
+  { immediate: true },
+);
 
 /** 胶片条 / 网格共用的行数据（状态机仍在 store 里） */
 const thumbs = computed<WbThumbItem[]>(() =>
@@ -121,26 +120,36 @@ const thumbs = computed<WbThumbItem[]>(() =>
 
 /* ---------------- 当前对比项 ---------------- */
 const currentPath = ref<string>("");
+/**
+ * 只依赖「路径序列」：当前图被移出时改选第一张。
+ * 不用 `deep:true` —— 进度回填每 700ms 改一次 items 内层字段，deep 会跟着整表遍历；
+ * 也不能只看 `items.length` —— 先删后加同一批（长度不变）会漏掉。
+ */
+const itemPaths = computed(() => wb.items.map((i) => i.path));
 watch(
-  () => wb.items,
+  itemPaths,
   (list) => {
-    if (!list.find((i) => i.path === currentPath.value)) {
-      currentPath.value = list[0]?.path ?? "";
+    if (!list.includes(currentPath.value)) {
+      currentPath.value = list[0] ?? "";
     }
   },
-  { immediate: true, deep: true },
+  { immediate: true },
 );
 const current = computed(() => wb.items.find((i) => i.path === currentPath.value) ?? null);
 const beforeSrc = computed(() => (current.value ? srcMap.value[current.value.path] ?? "" : ""));
 
 /** 对比框按当前照片真实宽高比排版（3:2 / 4:5 都不裁切） */
 const aspect = ref(16 / 9);
+let aspectSeq = 0;
 watch(
   beforeSrc,
   (src) => {
     if (!src) return;
+    // 只认最后一次：快速切图时旧的 onload 后到会覆盖新图的宽高比
+    const mine = ++aspectSeq;
     const img = new Image();
     img.onload = () => {
+      if (mine !== aspectSeq) return;
       if (img.naturalWidth && img.naturalHeight) aspect.value = img.naturalWidth / img.naturalHeight;
     };
     img.src = src;
@@ -509,11 +518,12 @@ async function applyBatch(): Promise<boolean> {
 }
 
 /* 预览触发：参数/方案/当前图任一变化就重算（防抖在 composable 里）。
+   `previewReq` 已经把「步骤链 / 配方 / 引擎 / 当前图 / 预览开关」全部读进依赖，
+   不再额外拼 `JSON.stringify(wb.chain)` 当 watch 源（每次改参数都做一次全链序列化）。
    放在这里而不是文件靠前位置 —— 这里所有被依赖的 computed 都已定义。 */
 watch(
-  () => [previewReq.value, JSON.stringify(wb.chain), wb.recipeId, wb.engine],
-  () => {
-    const req = previewReq.value;
+  previewReq,
+  (req) => {
     if (req) preview.schedule(req);
     else preview.reset();
   },
@@ -843,6 +853,7 @@ const previewNote = computed(() => {
           />
 
           <WorkbenchFilmstrip
+            v-if="wb.viewMode !== 'grid'"
             :items="thumbs"
             :current-path="currentPath"
             :picking="wb.samplePhase === 'picking'"
