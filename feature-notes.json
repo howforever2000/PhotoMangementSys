@@ -7226,7 +7226,64 @@
       ],
       "created_at": "2026-11-18T23:00:00+08:00",
       "updated_at": "2026-11-18T23:00:00+08:00"
+    },
+    {
+      "id": "FEAT-184",
+      "name": "创意工坊 AI 链路风险治理：GPU 串行锁 / 缓存上限 / 并发竞态 / 预览降采样",
+      "module": "python/ai_studio/{gpu_lock,localmodels,config,lutcube,jobs,preview,facedetect,faceparse,landmark,ocr_engine,op_catalog}.py|json、python/ai_studio/workflows/base.py、python/ai_studio/providers/openai_compat.py、src-tauri/src/{model_dl,ai_studio,ai_service}.rs、src/{views/AiWorkbench.vue,components/workshop/PhotoTray.vue,components/workshop/ai/WorkbenchFilmstrip.vue,components/workshop/ai/WorkbenchGrid.vue,components/workshop/ai/WorkbenchCompare.vue,composables/useWorkbenchPreview.ts,composables/usePhotoSrcMap.ts,utils/photoSrc.ts,utils/workbenchThumb.ts}",
+      "status": "done",
+      "date": "2026-11-19",
+      "purpose": "对创意工坊（工作台 + ai_studio 服务 + model_dl）做只读代码审核后，按 ROI 分批修复已核实的 P0/P1 风险：本地 ONNX 推理缺 GPU 串行锁（可能段错误）、自适应调色每次泄漏约 11MB、模型下载并发 start 竞态写坏大文件、作业注册表与前端图片缓存无上限、预览在全分辨率上白算、700ms 轮询触发全表重绘。要求不改对外契约（Tauri 命令名、HTTP 端点、op_catalog 工具白名单语义）。",
+      "implementation": {
+        "GPU 串行锁": "新增 python/ai_studio/gpu_lock.py（GPU_RUN_LOCK + is_gpu + run），按 sess.get_providers() 判定是否串行，7 处 sess.run 全部收口。独立成模块避开 facedetect ↔ localmodels 的导入环；provider 事实读不到时保守加锁（错锁只慢一档，漏锁是段错误）。与 python/vcr/model_registry.py 的 _GPU_RUN_LOCK 同口径。",
+        "会话管理": "get_session 加锁双检（两个作业线程 + 预览线程并发首载只建一份会话），并按 mtime+size 指纹在模型重下后自动重建会话，避免旧权重跑到进程重启。统一 SessionOptions：ONNX_INTRA_OP（半核、上限 8）+ inter_op=1。",
+        "LUT 缓存": "apply_cube 区分路径 LUT（内置 .cube，进稠密表缓存）与运行时 LUT（autograde 逐图新建，cache=False 算完即丢）；_DENSE_CACHE 另加 24 条安全上限。不用 LRU 淘汰一次性对象：命中率恒为 0，且会挤掉 7 个内置 LUT 的稠密表导致胶片强度滑杆变慢。",
+        "作业注册表": "jobs：终态 10 分钟 TTL + 200 条上限，create/get 惰性清理；运行中作业永不因上限被淘汰（否则前端轮询 404）。_mark_terminal 统一打 _finished_at。",
+        "下载竞态": "model_dl：新增 Store.inflight: HashSet 与 begin_inflight，在持锁的同一临界区登记，终态统一 remove。原因：首次下载前 status 里没有该模型条目，只看 status.running 的守卫对连点两次完全失明 → 双开写坏 .dl_* 分片、cancel 标记互相覆盖。",
+        "预览效率": "preview.render 先按 maxEdge 降采样再执行算子；_local_only 增加第二类摘除 —— op_catalog.json 标记 preview:false 的重模型算子（local_upscale），由 catalog 驱动而非硬编码算子名，24MP 上 4× 中间图的 OOM 风险一并消除。",
+        "HTTP 客户端": "ai_studio.rs / ai_service.rs 改为 OnceLock<reqwest::Client> 复用连接池，超时按请求设（作业 120s / 预览 60s / 状态与取消 15s / 连通性 60s / 探活 2s）。未做「跳过每轮 /health」：探活是服务被外部杀掉时的唯一发现机制。",
+        "前端缓存与渲染": "新增 usePhotoSrcMap（增量写 + 按 live 集合 prune + 并发去重），AiWorkbench 与 PhotoTray 共用；photoSrc 的 HEIC 缓存加 200 条 LRU；watch(wb.items, deep) 改看路径序列；网格模式不再渲染底部胶片条；预览 watch 源去掉 JSON.stringify(wb.chain)。",
+        "重复实现收敛": "statusText 收口到 utils/workbenchThumb.ts（compact/verbose 两种格式，文案不变，带单测）；宽高比探测加请求序号防旧 onload 覆盖；胶片条与对比框滚轮改 rAF 合并（对比框保留同步preventDefault）。",
+        "句柄关闭": "workflows/base.read_image 用 with 关解码器；openai_compat 的 Image.open / requests.get 同样收口。"
+      },
+      "bugfixes": [
+        "自适应调色每次泄漏约 11MB（_DENSE_CACHE 无上限且缓存一次性 LUT）",
+        "并发 start_model_download 可绕过防重入 → 双开写坏 .dl_* 分片且取消失效",
+        "作业注册表与前端图片 URL 缓存无上限，长会话单调增长",
+        "预览先全分辨率跑算子再缩边（24MP 上是数倍白算，超分还有 OOM 风险）"
+      ],
+      "highlights": "全部改动保持对外契约不变（命令名 / 端点 / op_catalog 工具白名单；仅给 local_upscale 加了一个 preview 标记）。修复思路优先复用项目既有范式：GPU 锁抄 VCR 的 _GPU_RUN_LOCK、缓存上限沿用 lutcube 既有 FIFO、HEIC 缓存复用 useWorkbenchPreview 的 LRU 写法。",
+      "tests": "python -m py_compile（ai_studio 全量）exit 0；pytest 新增 test_ai_studio_gpu_lock / test_ai_studio_lut_cache / test_ai_studio_jobs + 既有 LUT/配方共 18 passed；cargo check 通过（仅 4 条既有 warning）；cargo test --lib model_dl 8 passed（含新增 begin_inflight_rejects_concurrent_start）；npm test 253 passed（含新增 workbenchThumb 2 项）；vue-tsc 0 错误；npm run build 通过。冒烟：natural 连续 5 次预览后稠密表缓存 0 条；film 首次 722ms、之后 336~342ms（内置 LUT 缓存命中 1 条）。",
+      "related_files": [
+        "python/ai_studio/gpu_lock.py",
+        "python/ai_studio/localmodels.py",
+        "python/ai_studio/config.py",
+        "python/ai_studio/lutcube.py",
+        "python/ai_studio/jobs.py",
+        "python/ai_studio/preview.py",
+        "python/ai_studio/op_catalog.json",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/ai_studio.rs",
+        "src-tauri/src/ai_service.rs",
+        "src/views/AiWorkbench.vue",
+        "src/composables/usePhotoSrcMap.ts",
+        "src/utils/workbenchThumb.ts"
+      ],
+      "keywords": [
+        "创意工坊",
+        "工作台",
+        "GPU 串行锁",
+        "DirectML",
+        "内存泄漏",
+        "缓存上限",
+        "并发竞态",
+        "预览降采样",
+        "ONNX 线程",
+        "性能优化"
+      ],
+      "created_at": "2026-11-19T09:45:00+08:00",
+      "updated_at": "2026-11-19T09:45:00+08:00"
     }
   ],
-  "updated": "11/18/2026 23:05:00"
+  "updated": "2026-11-19T09:45:00+08:00"
 }

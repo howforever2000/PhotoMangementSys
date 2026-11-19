@@ -5409,7 +5409,39 @@
       "keywords": ["工作台", "单步微调", "死链路", "参数覆盖", "paramsOverride", "WorkbenchTune", "入口盘点"],
       "created_at": "2026-11-18T18:20:00+08:00",
       "updated_at": "2026-11-18T18:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1119-001",
+      "date": "2026-11-19",
+      "status": "fixed",
+      "title": "自适应调色每张照片泄漏约 11MB：一次性 LUT 被写进无上限的稠密表缓存",
+      "module": "python/ai_studio/lutcube.py、python/ai_studio/autograde.py",
+      "symptom": "工坊里连续拖动调色滑杆或批量跑几十张后，ai_studio 进程 RSS 涨到 GB 级且不回落；重启服务才恢复。日志无异常。",
+      "root_cause": "lutcube._DENSE_CACHE 以 (id(lut), n) 为 key 且无淘汰；autograde 每张照片都 build_lut 新建一张 33³ LUT，再经 apply_cube 生成 97³ 稠密表（约 11MB）常驻。同一文件里 _DENSE_U8_CACHE 却有 8 条上限，两处口径不一致才被忽略。",
+      "solution": "apply_cube 区分「路径 LUT」（内置 .cube，可复用）与「运行时 LUT」（cache=False，算完即丢）：按 isinstance(path_or_lut, str) 判定，cache 标志一路传到 _dense_flat/_dense_u8/_apply_nearest。_DENSE_CACHE 另加 24 条安全上限。",
+      "prevention": "给一次性对象设 LRU/FIFO 不是修复：命中率恒为 0，还会挤掉真正可复用的条目（7 个内置 LUT 的稠密表），表现为胶片强度滑杆越拖越慢。正确做法是在入口区分「可复用 / 一次性」并让一次性路径不进缓存。",
+      "keywords": ["内存泄漏", "LUT", "缓存上限", "autograde", "ai_studio", "RSS"],
+      "related_files": ["python/ai_studio/lutcube.py", "python/ai_studio/autograde.py"],
+      "verification": "新增 python/tests/test_ai_studio_lut_cache.py；冒烟 natural 连续 5 次预览后 _DENSE_CACHE 与 _DENSE_U8_CACHE 均为 0 条；film 首次 722ms、之后 336~342ms（内置 LUT 缓存命中 1 条，未被挤掉）。",
+      "created_at": "2026-11-19T09:45:00+08:00",
+      "updated_at": "2026-11-19T09:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1119-002",
+      "date": "2026-11-19",
+      "status": "fixed",
+      "title": "连点两次「下载」可绕过防重入：双开写坏 .dl_* 分片，且其中一个任务永久无法取消",
+      "module": "src-tauri/src/model_dl.rs",
+      "symptom": "模型下载面板出现两条并列进度、百分比来回跳；下载结束后模型校验失败且无错误提示；点取消后任务仍在写盘。",
+      "root_cause": "start() 的防重入只读 STORE.status[name].running，但首次下载前 status 里根本没有该条目（list() 只 clone 不 insert，set_status 才 insert），两次快速调用都读到 false；running=true 由锁外的 set_status 写入，补不上这个窗口。两个任务交错写同一份 .dl_* 分片，cancel 标记互相覆盖，先完成者 remove cancel 后另一个永久不可取消。",
+      "solution": "Store 增加独立的 inflight: HashSet<String>，在持同一把锁的临界区内 insert，终态（done/failed/cancelled）在同一临界区 remove；守卫抽成 begin_inflight 以便单测（不构造 AppHandle）。",
+      "prevention": "防重入状态要选「一定先于业务副作用存在」的载体，不能用可能尚未初始化的状态表字段；判断与置位必须在同一临界区，放在锁外等于没加。",
+      "keywords": ["并发竞态", "TOCTOU", "模型下载", "防重入", "model_dl"],
+      "related_files": ["src-tauri/src/model_dl.rs"],
+      "verification": "cargo test --lib model_dl 8 passed（新增 begin_inflight_rejects_concurrent_start：首次成功 / 二次被拒 / 清掉后可重下）。",
+      "created_at": "2026-11-19T09:45:00+08:00",
+      "updated_at": "2026-11-19T09:45:00+08:00"
     }
   ],
-  "updated": "2026-11-18T18:20:00+08:00"
+  "updated": "2026-11-19T09:45:00+08:00"
 }
