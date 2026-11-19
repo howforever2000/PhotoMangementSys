@@ -84,10 +84,14 @@ def _plan_from_request(
 
 
 def _local_only(plan: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str], List[str]]:
-    """摘掉非本机算子，返回 `(计划, 被摘 op, warnings)`。
+    """摘掉非本机算子与重模型算子，返回 `(计划, 被摘 op, warnings)`。
 
     为什么在服务层而非法路由层做：这属于「预览能跑什么」的业务语义，
     路由层只该转发请求体。云端步必须摘掉——一次拖滑杆 = 一次计费调用。
+
+    重模型步（`op_catalog.json` 的 `preview:false`，如 Real-ESRGAN 超分）也摘掉：
+    预览最终只保留长边 1280，先跑 4× 超分再缩回去纯属浪费；24MP 图上 4× 的
+    中间图还有 OOM 风险。摘除名单由 catalog 标记驱动，不在这里硬编码算子名。
     """
     kept: List[Dict[str, Any]] = []
     dropped: List[str] = []
@@ -101,6 +105,14 @@ def _local_only(plan: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str], List[s
                 dropped.append(op)
                 warnings.append(
                     f"「{label}」是云端算子，预览只跑本机免费算子，已跳过（正式出片时仍会执行）"
+                )
+            continue
+        if spec.get("preview") is False:
+            label = spec.get("label") or op
+            if op not in dropped:
+                dropped.append(op)
+                warnings.append(
+                    f"「{label}」是重模型算子，预览已跳过（正式出片时仍会执行）"
                 )
             continue
         kept.append(st)
@@ -169,7 +181,11 @@ def render(
     """同步预览主入口：返回 `{image,width,height,ms,dropped,warnings}`。
 
     编排顺序（本层是唯一的编排点，供接口层直接调用）：
-      选计划 → 摘非本机步 → 摘本机未就绪步 → 单图执行 → 缩边 → 内存 JPEG。
+      选计划 → 摘非本机/重模型步 → 摘本机未就绪步 → 缩到预览长边 → 单图执行 →
+      内存 JPEG。
+    为什么先缩边再执行：预览最终只 deliver 长边 1280，算子在全分辨率上跑完再缩
+    等于白算（滑杆级高频调用，24MP 上是数倍浪费）；先缩边也让重算子不再有机会
+    处理原图。
     """
     t0 = time.perf_counter()
     src_path = str(path or "").strip()
@@ -181,7 +197,7 @@ def render(
         f"plan={'yes' if plan is not None else 'no'} maxEdge={edge}"
     )
 
-    src = _load_source(src_path)
+    src = _fit_long_edge(_load_source(src_path), edge)
     plan_in = _plan_from_request(plan, recipe_id, params_override)
     local_plan, dropped, warnings = _local_only(plan_in)
 

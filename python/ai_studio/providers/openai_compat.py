@@ -40,7 +40,8 @@ def _png_data_url(data: bytes) -> str:
 def _image_data_url(data: bytes) -> str:
     """把任意图片字节包成带正确 MIME 的 data URL（按真实格式推断，不写死 png）。"""
     try:
-        fmt = (Image.open(BytesIO(data)).format or "PNG").upper()
+        with Image.open(BytesIO(data)) as im:
+            fmt = (im.format or "PNG").upper()
     except Exception:
         fmt = "PNG"
     mime = {
@@ -52,7 +53,8 @@ def _image_data_url(data: bytes) -> str:
 
 def _image_dims(data: bytes):
     try:
-        return Image.open(BytesIO(data)).size
+        with Image.open(BytesIO(data)) as im:
+            return im.size
     except Exception:
         return (0, 0)
 
@@ -72,9 +74,9 @@ def _decode_image_items(payload: dict, api_key: str) -> List[bytes]:
                 pass
         url = item.get("url")
         if url:
-            r = requests.get(url, timeout=config.REQUEST_TIMEOUT)
-            if r.status_code == 200:
-                out.append(r.content)
+            with requests.get(url, timeout=config.REQUEST_TIMEOUT) as r:
+                if r.status_code == 200:
+                    out.append(r.content)
     return out
 
 

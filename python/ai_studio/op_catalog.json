@@ -177,6 +177,7 @@
       "label": "本机超分",
       "desc": "Real-ESRGAN 2×/4×，最贵，放链路最后避免前面都跑在高分辨率上",
       "backend": "local",
+      "preview": false,
       "stage": 4,
       "module": "ai_studio.ops",
       "params": {

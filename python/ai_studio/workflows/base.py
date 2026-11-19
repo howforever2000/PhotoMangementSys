@@ -35,9 +35,9 @@ def read_image(path: str) -> Image.Image:
     """读图并按 EXIF 摆正、转 RGB（统一交给模型/排版）。"""
     if not os.path.isfile(path):
         raise FileNotFoundError(f"照片不存在: {path}")
-    img = Image.open(path)
-    img = ImageOps.exif_transpose(img)
-    return img.convert("RGB")
+    # with 确保解码器句柄关闭：批量作业里成千上万张开着不关会累积文件句柄。
+    with Image.open(path) as img:
+        return ImageOps.exif_transpose(img).convert("RGB")
 
 
 def png_bytes(img: Image.Image) -> bytes:
