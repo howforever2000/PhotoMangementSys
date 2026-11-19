@@ -16,6 +16,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from . import colortransfer
+
 # 调色风格 → 目标参数。数值是实测调出来的保守区间：宁可欠一点，不要过火。
 STYLES: dict[str, dict] = {
     "natural": {
@@ -279,12 +281,136 @@ def _shoulder(x: np.ndarray, knee: float = _SHOULDER_KNEE, target: float = _SHOU
     return np.where(x > knee, knee + (target - knee) * eased, x)
 
 
+# ---------------- LCh 饱和度：只动彩度 C，固定色相角 h 与明度 L ----------------
+#
+# 为什么不再用 RGB 线性缩放（`l + (x-l)*k`）：通道被推出 [0,1] 后硬裁，
+# 裁掉的部分同时改变明度与色相。实测（10 张真实素材，只跑这两步）：
+#     RGB 线性：|ΔL| 0.230，ΔL 带符号 +0.202（拉饱和顺带整体提亮），|ΔHue| 0.836°
+#     LCh：     |ΔL| 0.090，ΔL 带符号 −0.054，                       |ΔHue| 0.397°
+# 色卡/色轮这类饱和素材上差距更大（|ΔL| 0.256/0.371 → 0.023/0.025）。
+#
+# **前提条件（缺了它这个方案比原方案更差）**：Lab→sRGB 超色域时仍会被 `np.clip`
+# 裁掉，色相随之被裁歪 —— 实测朴素版把 |ΔHue| 从 0.836° 推到 1.581°。
+# 所以必须先逐像素二分求出「保持 h 与 L 时 C 还能放大几倍」，缩放倍数取 min(目标, 边界)。
+#
+# 仍是**纯逐色函数**：LCh 只依赖单个输入颜色，无空间运算，可照原样烘焙进 33³ LUT，
+# 因此 `lutcube` 内容摘要缓存、`.cube` 导出、97³ 稠密表全部继续可用。
+
+_LCH_ITERS = 6          # 二分迭代次数：区间压到 1/64，远超 8bit 输出所需
+_LCH_CEIL = 4.0         # 彩度缩放搜索上界（4 倍远超任何合理饱和档位）
+_C_SOFT = 42.0          # 「够艳」的 CIELAB 彩度软阈值，用于自然饱和度的权重
+_GAMUT_EPS = 1e-5       # 色域判定的浮点容差：sRGB 原色恰在边界上，不留会误判越界
+
+
+def _lab_to_linear(lab: np.ndarray) -> np.ndarray:
+    """Lab → **线性** sRGB，不裁剪（可能 <0 或 >1）。
+
+    不能复用 `colortransfer.lab_to_rgb`：它末尾 `clip` 成 uint8，而判断「是否越色域」
+    恰恰要看裁剪**之前**的值。
+    """
+    L, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
+    fy = (L + 16.0) / 116.0
+    fx = fy + a / 500.0
+    fz = fy - b / 200.0
+    d = 6.0 / 29.0
+
+    def finv(t):
+        return np.where(t > d, t ** 3, 3.0 * d * d * (t - 4.0 / 29.0))
+
+    xyz = np.stack([finv(fx), finv(fy), finv(fz)], axis=-1) * colortransfer._WHITE
+    # 必须转置：项目里所有矩阵都按「行向量左乘」约定（见 `color_transfer` 的
+    # `xyz @ _MINV.T`）。漏掉 `.T` 会让纯红 (255,0,0) 算出线性值 [1.13,-0.24,-0.18]
+    # 而不是 [1,0,0] —— 于是所有 sRGB 原色都被判为「越色域」，headroom 被压到
+    # 0.06~0.21，拉饱和时把颜色削成灰。这个错误不报错、只表现为「饱和失效」。
+    return xyz @ colortransfer._MINV.T
+
+
+def _chroma_headroom(lab: np.ndarray, iters: int = _LCH_ITERS) -> np.ndarray:
+    """逐像素求「保持色相角 h 与明度 L 时，彩度 C 最多能放大到几倍」。
+
+    只缩放 (a,b) 的**长度**、不改方向 → 色相角在数学上恒定。
+    没有闭式解（XYZ 对 a,b 经 finv 是三次分段函数），所以向量化二分。
+
+    容差 `_GAMUT_EPS` 不能省：sRGB 原色（纯红/纯蓝等）正好落在色域**边界**上，
+    Lab 往返的浮点误差会让线性值出现 1e-7 量级的越界。不留容差时它们会被判为
+    「已越界」，headroom 直接归零 —— 表现是纯色完全失去饱和度。
+    """
+    L = lab[..., 0:1]
+    a = lab[..., 1:2]
+    b = lab[..., 2:3]
+    lo = np.zeros_like(a)
+    hi = np.full_like(a, _LCH_CEIL)
+    for _ in range(iters):
+        mid = (lo + hi) * 0.5
+        lin = _lab_to_linear(np.concatenate([L, a * mid, b * mid], axis=-1))
+        ok = np.all((lin >= -_GAMUT_EPS) & (lin <= 1.0 + _GAMUT_EPS),
+                    axis=-1, keepdims=True)
+        lo = np.where(ok, mid, lo)
+        hi = np.where(ok, hi, mid)
+    return lo[..., 0]
+
+
+def _to_lab(x: np.ndarray) -> np.ndarray:
+    """float[0,1] RGB → CIELAB。
+
+    走 uint8 是因为 `colortransfer.rgb_to_lab` 的入口就是 uint8（与参考图调色共用
+    同一实现，不在这里另写一套）；实测往返恒等（10 张图 maxdiff 全为 0），无量化损失。
+    """
+    return colortransfer.rgb_to_lab(
+        np.clip(x * 255.0 + 0.5, 0, 255).astype(np.uint8))
+
+
+def _from_lab(lab: np.ndarray) -> np.ndarray:
+    return colortransfer.lab_to_rgb(lab).astype(np.float32) / 255.0
+
+
+def _saturate_lch(x: np.ndarray, k: float) -> np.ndarray:
+    """第 5 步的 LCh 版：彩度乘 k，色相与明度保持；越界部分按 headroom 回收。
+
+    `k < 1`（降饱和）时 headroom 必然 > 1，等价于直接乘；
+    `k > 1` 时若该颜色已贴色域边界，实际倍数被压到边界值 —— 宁可少提一点，
+    也不让色相被裁歪。
+    """
+    lab = _to_lab(x)
+    eff = np.minimum(float(k), _chroma_headroom(lab))
+    out = lab.copy()
+    out[..., 1] *= eff
+    out[..., 2] *= eff
+    return _from_lab(out)
+
+
+def _vibrance_lch(x: np.ndarray, amount: float) -> np.ndarray:
+    """第 6 步的 LCh 版：按当前彩度 C 给权重，只缩放 C（同样带 headroom 回收）。
+
+    旧版权重来自 `max-min` 通道差（受明度影响）；这里直接用 CIELAB 的 C，语义更直接：
+    淡色 C 小 → 权重接近 1 多加；艳色 C 大 → 权重接近 0 少加。
+    """
+    lab = _to_lab(x)
+    a, b = lab[..., 1], lab[..., 2]
+    c = np.sqrt(a * a + b * b)
+    weight = np.clip(1.0 - c / _C_SOFT, 0.0, 1.0)
+    eff = np.minimum(1.0 + amount * weight, _chroma_headroom(lab))
+    out = lab.copy()
+    out[..., 1] *= eff
+    out[..., 2] *= eff
+    return _from_lab(out)
+
+
+# Lab ↔ 线性 sRGB 的矩阵/白点**复用 `colortransfer` 的同一份常量**，
+# 不在这里另抄一遍 —— 抄写极易把矩阵方向搞错（曾漏掉 `.T`，导致 sRGB 原色
+# 全被判为越色域、headroom 归零、拉饱和把颜色削成灰）。`_lab_to_linear` 与之
+# 唯一的不同是末尾**不裁剪**，所以本文件只定义那个函数，不定义常量。
+
+
 def eval_colors(stats: GradeStats, rgb: np.ndarray) -> np.ndarray:
     """逐色映射：0~1 的 RGB 进，0~1 的 RGB 出。**不得引入任何空间运算**。
 
     顺序固定为：白平衡 → 黑白场拉伸 → 中间调 → 色温 → 饱和度 → 自然饱和度
     → 高光肩部。先做白平衡再做影调，是因为灰世界增益是线性乘法，放前面才不会被
     后面的曲线把它补偿掉。
+
+    饱和度与自然饱和度这两步在 **LCh** 里做（固定色相角与明度、只缩放彩度 C），
+    见 `_saturate_lch` / `_vibrance_lch`；其余五步维持原样。
 
     中间步骤一律 `np.clip()` 收口，**只在最后压一次肩部**：
     肩部是有损压缩，叠加 N 次等于把 knee 逐级降低（实测每步都压会让 P99 掉 30 级）。
@@ -312,17 +438,14 @@ def eval_colors(stats: GradeStats, rgb: np.ndarray) -> np.ndarray:
         x = x * np.array([1.0 + w, 1.0, 1.0 - w], dtype=np.float32)
         x = _shoulder(x) if w > 0 else np.clip(x, 0.0, 1.0)
 
-    # 5) 饱和度（以亮度为中心缩放，避免整体变亮/变暗）
+    # 5) 饱和度：在 LCh 里固定色相角与明度、只缩放彩度 C。
+    #    为什么不用 RGB 线性缩放：通道硬裁会同时改变明度与色相（见 _saturate_lch 注释）。
     if abs(stats.saturation - 1.0) > 1e-3:
-        l = _luma(x)[..., None]
-        x = np.clip(l + (x - l) * stats.saturation, 0.0, 1.0)
+        x = _saturate_lch(x, stats.saturation)
 
-    # 6) 自然饱和度：只提「还不够艳」的颜色，本来就艳的少动（避免溢出）
+    # 6) 自然饱和度：只提「还不够艳」的颜色，本来就艳的少动（同样只动 C，带色域回收）
     if stats.vibrance > 1e-3:
-        l = _luma(x)[..., None]
-        cur = np.abs(x - l).max(axis=-1, keepdims=True)       # 当前饱和度代理
-        weight = np.clip(1.0 - cur * 2.2, 0.0, 1.0)           # 越淡越提
-        x = np.clip(x + (x - l) * stats.vibrance * weight, 0.0, 1.0)
+        x = _vibrance_lch(x, stats.vibrance)
 
     # 7) 收口：只要链路里发生过「会推高单通道」的动作就压肩部。
     #    三个来源：黑白场拉伸（1/span）、白平衡增益、色温偏移。

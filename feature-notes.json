@@ -7440,7 +7440,30 @@
       ],
       "created_at": "2026-11-19T13:10:00+08:00",
       "updated_at": "2026-11-19T13:10:00+08:00"
+    },
+    {
+      "id": "FEAT-190",
+      "name": "auto_grade 饱和度改走 LCh：只缩放彩度 C，固定色相角与明度（含色域感知回收）",
+      "module": "python/ai_studio/autograde.py（eval_colors 第 5/6 步 + 4 个新函数）、python/tests/test_autograde_lch_sat.py（新增 8 例）、python/bench/{grade_lch_only,grade_lch_saturation,grade_sat_ab_report}.py（实验产物，未进产品链路）",
+      "status": "done",
+      "date": "2026-11-19",
+      "purpose": "用户对照一份外部技术路线建议后要求「调色保持原有方案，只看 Lab 饱和改为恒色相（LCh 只动 C）」的变化。原实现第 5、6 步在 RGB 里以 luma 为中心线性缩放：通道被推出 [0,1] 后硬裁，裁掉的部分同时改变明度与色相。实测（10 张真实素材，只跑这两步）：RGB 的 |ΔL| 0.230、ΔL 带符号 +0.202（拉饱和顺带整体提亮）、|ΔHue| 0.836°；改 LCh 后 0.090 / −0.054 / 0.397°。色卡与色轮这类饱和素材上差距是量级级别（|ΔL| 0.256/0.371 → 0.023/0.025）。",
+      "implementation": {
+        "只换色彩空间不改链路": "eval_colors 的第 5、6 步从 RGB 线性缩放换成 _saturate_lch / _vibrance_lch，其余五步（白平衡、黑白场拉伸、gamma、色温、肩部收口）与 STYLES 阈值、analyze 统计口径全部未动。因此两组成片差异可 100% 归因于饱和度这一步。",
+        "色域感知回收是前提不是优化": "Lab→sRGB 超色域时仍会被 np.clip 裁掉，色相随之被裁歪。不加回收时实测 |ΔHue| 反而从 0.836° 涨到 1.581°（比原 RGB 方案更差）。所以 _chroma_headroom 逐像素二分求「保持 h 与 L 时 C 还能放大几倍」（6 次迭代、上界 4 倍），缩放倍数取 min(目标, 边界)：宁可少提一点，也不让色相被裁歪。",
+        "自然饱和度的权重口径同步换": "旧权重来自 max-min 通道差（受明度影响），改为直接用 CIELAB 的 C：weight = clip(1 - C/42, 0, 1)，即 C 超过 42 视为「已经够艳」不再加。",
+        "仍是逐色纯函数": "LCh 只依赖单个输入颜色、无空间运算，所以只在建 33³ LUT 时对 35937 个格点求值，之后照旧走 lutcube 查表 —— _lut_digest 内容摘要缓存、.cube 导出、97³ 稠密表全部继续可用。",
+        "常量不另抄一份": "_lab_to_linear 直接复用 colortransfer._MINV / _WHITE，本文件只定义函数不定义矩阵常量。起因见 BUG-2026-1119-006：第一版自己抄了矩阵数值但漏写转置。",
+        "容差不可省": "_GAMUT_EPS = 1e-5：sRGB 原色（纯红/纯蓝等）正好落在色域边界上，Lab 往返的浮点误差有 1e-7 量级越界，不留容差会被判为「已越界」→ headroom 归零 → 纯色完全失去饱和度。"
+      },
+      "highlights": ["明度解耦成立：拉饱和后 ΔL 带符号由 +0.202（系统性提亮）变为 −0.054（≈0），方向性偏差消失", "色相更稳：|ΔHue| 0.836° → 0.397°（全链路 6.858° → 6.687°）", "饱和素材上量级改善：色轮 |ΔL| 0.3082 → 0.0171、|ΔHue| 0.336° → 0.043°；色卡 0.1677 → 0.0053、0.541° → 0.035°", "纯色色相严格不变：6 个 sRGB 原色在 k=1.6 下 |Δhue| < 0.5°（守卫测试锁死）", "力度 0 时 eval_colors 直算严格恒等（成片差异 ≤1 级，仅来自 LUT 8bit 量化，属项目既有行为）", "架构零改动：LUT 预计算、内容摘要缓存、.cube 导出、97³ 稠密表全部照旧；无新依赖（不引入 scipy）"],
+      "tests": "python/tests/test_autograde_lch_sat.py 新增 8 例：中性档逐字节不变 / 力度 0 恒等（直算严格、成片≤1 级）/ |ΔL| 显著小于 RGB（<0.6 倍）/ ΔL 带符号 |<0.08| / 色相偏移不劣于 RGB / 纯色色相严格不变 / 同色同输出（证明无空间运算）/ LUT 查表与直算均值差 <2 级。全部 OK。回归：test_autograde_vibrance 5 例、test_ai_studio_lut_cache、test_recipe_overrides、test_restore_black_white 等 python 单测全部 OK。既有 test_ov_runtime_discovery 失败与本次无关（ModuleNotFoundError: No module named 'vcr'，纯路径问题，不 import autograde）。",
+      "not_done": "四条配方（natural/clear/film/portrait）的出图已变 —— 这是必然结果不是缺陷，但未做人工目视验收；建表开销 +33ms/张（4→38ms，批量 100 张 +3.3 秒），运行时查表不变，未做进一步优化（二分开销可降到 4 次迭代）。",
+      "related_files": ["python/ai_studio/autograde.py", "python/ai_studio/colortransfer.py", "python/tests/test_autograde_lch_sat.py"],
+      "keywords": ["LCh", "CIELAB", "饱和度", "saturation", "vibrance", "自然饱和度", "恒色相", "色域回收", "chroma headroom", "auto_grade", "智能调色", "明度解耦", "逐色映射", "LUT"],
+      "created_at": "2026-11-19T16:20:00+08:00",
+      "updated_at": "2026-11-19T16:20:00+08:00"
     }
-  ],
+],
   "updated": "2026-11-19T12:40:00+08:00"
 }

@@ -5473,7 +5473,25 @@
       "verification": "cargo test --lib preview：different_max_edge_uses_different_cache_file 与 workbench_thumb_renders_any_format_and_caches 通过。",
       "created_at": "2026-11-19T10:45:00+08:00",
       "updated_at": "2026-11-19T10:45:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1119-006",
+      "date": "2026-11-19",
+      "status": "fixed",
+      "title": "Lab→线性 sRGB 漏写矩阵转置：所有 sRGB 原色被判为越色域，拉饱和把颜色削成灰",
+      "module": "python/ai_studio/autograde.py::_lab_to_linear / _chroma_headroom",
+      "severity": "high",
+      "symptom": ["守卫测试 test_gamut_corner_hue_exact 失败，纯色色相角偏移达 -102.85° / +163.62°", "纯红 (255,0,0) 经 _saturate_lch(k=1.6) 输出 (160,117,106) —— 颜色被削成灰", "test_hue_shift_not_worse_than_rgb 失败：|ΔHue| 36.20°，远大于 RGB 版的 0.63°", "过程无任何报错、无异常日志：只在成片上表现为「饱和度失效 / 颜色变脏」"],
+      "root_cause": "第一版 _lab_to_linear 写成 `xyz @ M`（自己抄了一份 XYZ→sRGB 矩阵数值），漏了转置。项目里所有矩阵都按「行向量左乘」约定（colortransfer 用的是 `xyz @ _MINV.T`）。结果：纯红 (255,0,0) 的线性值算出 [1.13, -0.24, -0.18] 而不是 [1,0,0]；于是 _chroma_headroom 把 6 个 sRGB 原色的 headroom 判成 [0.188, 0.875, 0.062, 0, 0, 0.062]，缩放倍数被压到 0.06~0.19，彩度几乎全被削掉。",
+      "fix": "1) 改为 `xyz @ colortransfer._MINV.T`；2) **删掉自己抄的 _WHITE_XYZ / _XYZ_TO_RGB_LIN 常量**，直接复用 colortransfer 的同一份 —— 常量只存一份就不可能再抄错；3) 补 _GAMUT_EPS=1e-5 容差：sRGB 原色正好落在色域边界，浮点误差 1e-7 量级越界会让 headroom 归零。",
+      "verification": "修复后 6 个 sRGB 原色 Lab→linear 精确得到 [1,0,0]/[0,1,0]/[0,0,1]/[1,1,0]/[0,1,1]/[1,0,1]，headroom 全为 1.0；守卫测试 test_gamut_corner_hue_exact 通过（|Δh| < 0.5°）。",
+      "lesson": "矩阵/色彩空间常量的转置方向错误**不报错**，只表现为效果失效。凡是需要同一套矩阵的多个函数，必须共用一份常量，不允许按数值手抄第二份。",
+      "related_files": ["python/ai_studio/autograde.py", "python/ai_studio/colortransfer.py", "python/tests/test_autograde_lch_sat.py"],
+      "keywords": ["Lab", "sRGB", "矩阵转置", "色域", "gamut", "headroom", "色相偏移", "饱和度失效", "静默错误", "LCh"],
+      "log_hint": "无报错、无日志；只能靠守卫测试（纯色色相角）发现",
+      "created_at": "2026-11-19T16:20:00+08:00",
+      "fixed_at": "2026-11-19T16:20:00+08:00"
     }
-  ],
+],
   "updated": "2026-11-19T09:45:00+08:00"
 }
