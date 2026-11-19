@@ -413,8 +413,24 @@ impl ModelDlStatus {
 struct Store {
     status: HashMap<String, ModelDlStatus>,
     cancel: HashMap<String, Arc<AtomicBool>>,
+    /// 「正在下载」的权威集合（与 status.running 的区别见 `begin_inflight`）
+    inflight: std::collections::HashSet<String>,
 }
 static STORE: std::sync::LazyLock<Mutex<Store>> = std::sync::LazyLock::new(|| Mutex::new(Store::default()));
+
+/// 在持锁状态下登记「正在下载」，防止并发 `start` 双开（TOCTOU）。
+///
+/// 为什么不能只看 `status.running`：首次下载时 `status` 里**还没有**该模型的条目
+/// （`list()` 只做 clone，`set_status` 才 insert），两次快速调用都会读到 false，
+/// 于是同一模型起两个任务交错写同一份 `.dl_*` 分片、cancel 标记互相覆盖。
+fn begin_inflight(st: &mut Store, name: &str) -> Result<(), String> {
+    if st.inflight.contains(name) || st.status.get(name).map(|s| s.running).unwrap_or(false) {
+        return Err("该模型正在下载中".into());
+    }
+    st.inflight.insert(name.to_string());
+    st.cancel.insert(name.to_string(), Arc::new(AtomicBool::new(false)));
+    Ok(())
+}
 
 /// 模型根目录（下载落位与各 Python 服务读取的唯一口径）
 ///
@@ -471,10 +487,7 @@ pub async fn start(app: &AppHandle, name: &str) -> Result<(), String> {
     }
     {
         let mut st = STORE.lock().map_err(|e| e.to_string())?;
-        if st.status.get(name).map(|s| s.running).unwrap_or(false) {
-            return Err("该模型正在下载中".into());
-        }
-        st.cancel.insert(name.to_string(), Arc::new(AtomicBool::new(false)));
+        begin_inflight(&mut st, name)?;
     }
     set_status(
         app,
@@ -492,6 +505,7 @@ pub async fn start(app: &AppHandle, name: &str) -> Result<(), String> {
         // 更新终态
         let status = {
             let mut st = STORE.lock().unwrap_or_else(|e| e.into_inner());
+            st.inflight.remove(&name);
             st.cancel.remove(&name);
             if let Some(s) = st.status.get_mut(&name) {
                 s.running = false;
@@ -1476,6 +1490,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// 并发 start 的防重入守卫：首次登记成功，第二次必须被拒；任务结束清掉后可再开。
+    /// 只测纯逻辑（不构造 AppHandle），避免把网络/进程依赖拖进单测。
+    #[test]
+    fn begin_inflight_rejects_concurrent_start() {
+        let mut st = Store::default();
+        assert!(begin_inflight(&mut st, "chinese-clip-fp32").is_ok());
+        assert!(
+            begin_inflight(&mut st, "chinese-clip-fp32").is_err(),
+            "同一模型第二次 start 必须被拒（否则双开写坏分片）"
+        );
+        st.inflight.remove("chinese-clip-fp32");
+        st.cancel.remove("chinese-clip-fp32");
+        assert!(
+            begin_inflight(&mut st, "chinese-clip-fp32").is_ok(),
+            "上一轮结束清掉 inflight 后应允许重下"
+        );
     }
 
     /// 内置源：至少两个、互不重复，且都是国内可连的镜像模板。
