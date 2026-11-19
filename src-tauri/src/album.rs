@@ -80,6 +80,11 @@ fn fill_virtual_album_stats(
         )
     };
     album.photo_count = count;
+    // 虚拟相册（归档/隐藏）按「照片标记」统计，不区分媒体类型：
+    // 标记表 photo_marks 只记路径，判类型要逐条读文件系统，代价与收益不成正比。
+    // 因此这里把全部计入 photo_count，另两格保持 0（前端据此显示为纯图片相册）。
+    album.animated_count = 0;
+    album.video_count = 0;
     album.size_bytes = 0;
     album.shoot_time = None;
     if album.cover_path.is_some() {
@@ -140,12 +145,31 @@ pub fn fill_album_stats(
         // 2. 文件数一致 → 目录未变，直接用 SQL 里的统计与封面（cover_path 已持久化）
         if stats.file_count == file_count as i64 {
             album.photo_count = stats.photo_count;
+            album.animated_count = stats.animated_count;
+            album.video_count = stats.video_count;
             album.size_bytes = stats.size_bytes;
             album.shoot_time = stats.shoot_time.clone();
-            // 封面兜底：photo_count>0 但 albums.cover_path 为空（旧库未持久化自动封面
+            // 封面兜底：有媒体但 albums.cover_path 为空（旧库未持久化自动封面
             // /封面异常丢失）→ 落入重扫路径，生成封面并写回 SQL，一次性自愈。
-            // 相册无图（photo_count==0）则正常返回（无封面是正确状态）。
-            if album.cover_path.is_none() && stats.photo_count > 0 {
+            //
+            // ⚠️ 视频封面必须短路，不能无限重试：首帧提取依赖系统解码器，
+            // Windows 精简版可能根本没有 H.264 解码器（本项目开发机实测缺失，
+            // 见 knowledge/video-first-frame.md）。那种环境下 cover_path 会永远是
+            // None，只判 `cover_path.is_none() && has_media` 会让**每次列表加载都对
+            // 该相册做一次全目录 walkdir**，相册一多直接把列表拖死。
+            //
+            // 判据：上一次挑中的封面源是视频 → 说明已尝试过视频首帧。
+            //       试过就认命（回退图标占位），把重试机会留给「目录真变了」。
+            // 图片不动：图片解码不依赖外部解码器，失败多为瞬时 IO，
+            //       保留原有的「每次加载尝试自愈」语义。
+            let has_media =
+                stats.photo_count > 0 || stats.animated_count > 0 || stats.video_count > 0;
+            let video_cover_exhausted = stats
+                .cover_source
+                .as_deref()
+                .map(|s| crate::media_kind::kind_of(s).map(|k| k.is_video()).unwrap_or(false))
+                .unwrap_or(false);
+            if album.cover_path.is_none() && has_media && !video_cover_exhausted {
                 // fall through 到全量重扫
             } else {
                 return;
@@ -157,15 +181,30 @@ pub fn fill_album_stats(
     // 4. 全量扫描（单次 walkdir 完成全部统计）
     let scan = crate::thumbnail::scan_album_dir(dir);
     album.photo_count = scan.photo_count as i64;
+    album.animated_count = scan.animated_count as i64;
+    album.video_count = scan.video_count as i64;
     album.size_bytes = scan.size_bytes;
 
-    // 无封面时自动用第一张图片的缩略图作为封面，并持久化到 SQL（albums.cover_path）
+    // 无封面时自动用第一个媒体文件的封面帧，并持久化到 SQL（albums.cover_path）
+    // 「第一个媒体」= 图片 > 动图 > 视频（见 thumbnail::scan_album_dir）。
+    // 视频走 Media Foundation 取首帧，产物与图片缩略图同一套缓存与命名。
     if album.cover_path.is_none() {
         if let Some(src) = &scan.first_image {
-            if let Ok(res) = crate::thumbnail::ensure_thumbnail_from_source(album.id, src, thumbs_dir) {
-                album.cover_path = Some(res.thumb_path.clone());
-                if let Ok(db) = state.0.lock() {
-                    let _ = db.update_album_cover(album.id, album.cover_path.clone());
+            match crate::thumbnail::ensure_thumbnail_from_source(album.id, src, thumbs_dir) {
+                Ok(res) => {
+                    album.cover_path = Some(res.thumb_path.clone());
+                    if let Ok(db) = state.0.lock() {
+                        let _ = db.update_album_cover(album.id, album.cover_path.clone());
+                    }
+                }
+                Err(e) => {
+                    // 视频首帧失败（缺解码器等）不是错误状态，但要留痕：
+                    // 否则用户只看到「相册没封面」，无从判断是缺解码器还是文件坏了。
+                    crate::logger::log_warn(&format!(
+                        "[album] 封面生成失败 album_id={} src={} err={e:?}",
+                        album.id,
+                        src.display()
+                    ));
                 }
             }
         }
@@ -182,6 +221,8 @@ pub fn fill_album_stats(
         let _ = db.upsert_album_stats(
             album.id,
             album.photo_count,
+            album.animated_count,
+            album.video_count,
             album.size_bytes,
             album.shoot_time.clone(),
             scan.first_image.map(|p| p.to_string_lossy().into_owned()),

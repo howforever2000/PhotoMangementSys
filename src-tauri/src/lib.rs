@@ -32,6 +32,7 @@ mod geo_index;
 mod heic;
 mod imgio;
 mod logger;
+mod media_kind;
 mod model_dl;
 // 模型下载的分段并行传输层（只管「切段 → 并发拉 → 按序拼」，不碰注册表/UI）
 mod model_dl_seg;
@@ -48,6 +49,10 @@ mod test_scan;
 mod test_scan_job;
 mod textdesc;
 mod vecindex;
+mod video_frame;
+
+#[cfg(test)]
+mod tests_video_frame;
 mod thumb_migrate;
 mod thumbnail;
 mod tone;
@@ -66,6 +71,8 @@ mod album_health;
 mod vcr_settings;
 // FEAT-178：资源使用情况面板（全量进程 PID/CPU/内存 + GPU 配置态）
 mod sys_monitor;
+// BUG-2026-1119-001：子进程统一无窗口口径（发布版弹控制台窗口的根因）
+mod proc_cmd;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -131,6 +138,7 @@ use model_dl::commands::{
     detect_npu_hardware,
     get_model_sources,
     list_model_downloads,
+    model_dir,
     probe_model_sources,
     set_model_sources,
     start_model_download,
@@ -410,6 +418,19 @@ pub fn run() {
                     let _ = open_dev_log_window(h);
                 });
             }
+            // 开发诊断：PMS_AUTO_OPEN_DEV_RESOURCES=1 时自动打开「资源使用情况」副窗口。
+            // 存在理由同上面的 DEVLOG：该面板的闪烁类缺陷（BUG-2026-1119-001）只在
+            // 发布版可复现（开发态父进程是控制台程序，子进程继承控制台不弹窗），
+            // 没有这个开关就无法在发布版上免点击复现与回归验证。
+            if std::env::var("PMS_AUTO_OPEN_DEV_RESOURCES").as_deref() == Ok("1") {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    // open_dev_resource_window 是 async 命令：直接调用只得到未执行的
+                    // future，必须在本线程的运行时上跑起来
+                    let _ = tauri::async_runtime::block_on(open_dev_resource_window(h));
+                });
+            }
             // 初始化用户敏感字段加密密钥（必须早于数据库迁移，迁移需用密钥加密历史明文）
             crypto::init(&data_dir).expect("初始化应用加密密钥失败");
             let db_path = data_dir.join("photos.db");
@@ -663,6 +684,7 @@ pub fn run() {
             get_model_sources,
             set_model_sources,
             detect_npu_hardware,
+            model_dir,
             set_vcr_gpu,
             get_vcr_threads,
             set_vcr_threads,

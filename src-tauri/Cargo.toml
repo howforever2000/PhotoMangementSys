@@ -1,6 +1,6 @@
 [package]
 name = "photo-management-sys"
-version = "5.0.0-beta.1"
+version = "5.0.0"
 description = "Local photo album management app"
 # 个人/学习/非营利免费，商业用途需另行书面授权 —— 见仓库根 LICENSE
 # （PolyForm Noncommercial 1.0.0，SPDX 合法标识符）
@@ -27,7 +27,10 @@ tauri-build = { version = "2", features = [] }
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Imaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_MediaFoundation",
     "Win32_System_Com",
+    "Win32_UI_Shell",
 ] }
 
 [dependencies]

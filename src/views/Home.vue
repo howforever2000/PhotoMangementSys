@@ -8,6 +8,8 @@ import { useThemeStore } from "../stores/theme";
 import { useAlbumStore } from "../stores/album";
 import { useVaultStore } from "../stores/vault";
 import ThemeDialog from "../components/ThemeDialog.vue";
+import SupportDialog from "../components/SupportDialog.vue";
+import BrandMark from "../components/ui/BrandMark.vue";
 
 const router = useRouter();
 const auth = useAuthStore();
@@ -214,6 +216,17 @@ function openTheme() {
 /* ---------------- 设置菜单（⚙） ---------------- */
 const settingsOpen = ref(false);
 
+/**
+ * 打赏弹窗（FEAT-199）：入口放在设置菜单末尾，与上面的开发者工具用一条分隔线隔开。
+ * Esc 由 SupportDialog 自持（capture 监听），这里不接管，也不与 settingsOpen 联动。
+ */
+const supportOpen = ref(false);
+
+function openSupport() {
+  settingsOpen.value = false;
+  supportOpen.value = true;
+}
+
 /** 打开开发者视角日志窗口（后端保证单例：已开则聚焦） */
 async function openDevLog() {
   settingsOpen.value = false;
@@ -275,9 +288,9 @@ onBeforeUnmount(() => {
   >
     <div class="home-content">
       <header class="home-header">
+        <!-- 品牌标识（FEAT-189）：文案来自 utils/brand.ts，版式由 BrandMark 统一 -->
         <div class="header-text">
-          <h1 class="app-title">本地相册管理</h1>
-          <p class="app-subtitle">照片留在本机，按时间、人物与地点重新翻出来</p>
+          <BrandMark size="home" />
         </div>
         <div class="user-box glass-card" :style="cardStyle">
           <button
@@ -337,6 +350,14 @@ onBeforeUnmount(() => {
                   <span>
                     <b>资源使用情况</b>
                     <i>进程 PID / CPU / 内存 / GPU 配置态</i>
+                  </span>
+                </button>
+
+                <button class="settings-item settings-item-sep" type="button" role="menuitem" @click="openSupport">
+                  <span class="settings-item-icon">💗</span>
+                  <span>
+                    <b>支持栖影</b>
+                    <i>爱发电 · 自愿赞助，不解锁任何功能</i>
                   </span>
                 </button>
               </div>
@@ -471,6 +492,7 @@ onBeforeUnmount(() => {
 
       <!-- 主题 / 皮肤设置弹窗（FEAT-086：抽为独立组件，双页签） -->
       <ThemeDialog v-if="themeOpen" @close="themeOpen = false" />
+      <SupportDialog v-if="supportOpen" @close="supportOpen = false" />
     </teleport>
   </div>
 </template>
@@ -491,9 +513,17 @@ onBeforeUnmount(() => {
   /* 比原 1000 略宽：四张卡各自更大、四卡之间也再开一点 */
   max-width: 1040px;
   margin: 0 auto;
-  /* 底部留白大于顶部：配合 module-grid 的 auto 边距，把四卡整体再往上提一段 */
-  padding: 48px 24px 140px;
+  /* 顶部锚定（D1，2026-11-19）：页头离窗口顶恒为 96px，不随窗口高度漂移。
+     改前是「整块居中」的思路（靠 module-grid 的 auto 边距），页头 y 在
+     1260/1440/1600 下分别是 198/235/283 —— 窗口越大页头越往下掉，
+     同一套样式在不同机器上看到的版式不是同一个。锚定后三档视口页头都在 96。
+     底部 88px 只做「滚到底时不贴边」的安全垫，不参与定位。 */
+  padding: 96px 24px 88px;
   min-height: 100vh;
+  /* 显式声明：内容从顶部开始排，剩余空间交给 module-grid 的 margin-bottom 吸收。
+     不写也能生效（flex 默认 flex-start），但写下是为了防止以后有人再加
+     justify-content:center 把页头又推下去。 */
+  justify-content: flex-start;
 }
 
 .home-header {
@@ -501,7 +531,10 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 48px;
+  /* D1（2026-11-19）：页头与卡片组之间收成固定 44px 的节奏。
+     改前是 48，而真正的缝来自 module-grid 的 auto 边距（实测 1440 下页头
+     底到卡片顶有 205px）—— 现在那条 auto 边距已经取消，这里才是唯一的缝。 */
+  margin-bottom: 44px;
   /* 抬到主内容之上（BUG-2026-0918-005）：user-box 带 backdrop-filter，
      自成层叠上下文；若 header 不抬层，⚙ 下拉菜单会被后面的 module-card
      （同样带 backdrop-filter、且 DOM 在后）盖住，看不见也点不到 */
@@ -517,23 +550,14 @@ onBeforeUnmount(() => {
   /* 标题是弹性项里的可变长内容：允许收缩（min-width:0），
      否则它会拒绝收缩并把 user-box 挤出容器（BUG-2026-1010-001） */
   min-width: 0;
-}
-
-.app-title {
-  font-size: 32px;
-  font-weight: 700;
-  margin: 0 0 8px;
-  letter-spacing: 0;
-  /* 不靠模糊/阴影"假装通透"，靠字重 + 字距 + 颜色对比 */
-  /* BUG-2026-0919-004：标题直接落在页面背景上，用 on-bg 对比色（深色模式+浅背景也可读） */
+  /* 品牌标识的颜色（FEAT-189）：标题/标语的字号与版式在 BrandMark 内部，
+     这里只负责下发「坐在什么背景上该用什么色」——
+     落在壁纸/渐变之上，用 on-bg 对比色（BUG-2026-0919-004：
+     深色模式 + 浅背景时用普通 text 色会被吃掉）。 */
   color: var(--color-on-bg, var(--color-text));
 }
-
-.app-subtitle {
-  margin: 0;
-  max-width: 46ch;
-  font-size: 14px;
-  line-height: 1.65;
+/* 标语比主名弱一档：同一个 on-bg 系但取次级色 */
+.header-text :deep(.brand-slogan) {
   color: var(--color-on-bg-2, var(--color-text-2));
 }
 
@@ -736,6 +760,12 @@ onBeforeUnmount(() => {
   margin-top: 1px;
 }
 
+/* 打赏入口与开发者工具之间的分隔：border-top 比插一个空 div 更省 DOM */
+.settings-item-sep {
+  margin-top: 6px;
+  border-top: 1px solid var(--pm-soft-border);
+}
+
 .logout-btn {
   height: 32px;
   padding: 0 14px;
@@ -766,9 +796,12 @@ onBeforeUnmount(() => {
   grid-auto-rows: 1fr;
   /* 横竖都再开一些（原 20），四张卡不挤在一起 */
   gap: 28px;
-  /* 页头留在顶部，四张卡在剩余空间里垂直居中（水平已由 max-width + margin:auto 居中）。
-     内容高于视口时 auto 边距自动归零，页面照常滚动，不会裁掉页头。 */
-  margin-top: auto;
+  /* D1（2026-11-19）：原来是 margin-top/bottom: auto —— 四卡在"剩余空间"里
+     垂直居中，于是页头与卡片之间的缝随窗口高度一起变大（1260 下 126px、
+     1600 下 175px），页头永远孤零零吊在顶上。
+     现在顶部方向归零（紧跟页头的 44px 缝），剩余空间全部由 bottom:auto 吸收 ——
+     窗口变高时多出来的白留在卡片下方，页头与卡片的相对关系不动。 */
+  margin-top: 0;
   margin-bottom: auto;
 }
 
@@ -886,7 +919,9 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
   .home-content {
-    padding: 32px 16px 48px;
+    /* 窄窗（手机竖屏）：96px 的锚定间距在短屏上会把四卡挤出首屏，
+       收到 72 仍保留「页头不贴顶」的读数 */
+    padding: 72px 16px 48px;
   }
   .home-header {
     flex-direction: column;

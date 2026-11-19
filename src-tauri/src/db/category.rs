@@ -41,13 +41,28 @@ pub const SOURCE_PRESET: &str = "preset";
 #[allow(dead_code)]
 pub const SOURCE_USER: &str = "user";
 
+/// 截图规则分类的 slug（命中**不**来自 `photo_content_scan`，而由文件名规则现算）
+///
+/// 之所以独立成 slug 而不是复用 `document` 的子类：`document` 的命中由
+/// `python/vcr/services/arbitrator.py::is_screenshot` 按「PNG + 无 EXIF + 屏幕比例」
+/// 判定，那条腿对**重命名过 / 非 PNG / 有 EXIF 的截图**全部漏召回；而文件名里的
+/// `Screenshot` 恰恰是最稳的线索。两者互补，各占一个分类，互不覆盖。
+pub const SCREENSHOT_SLUG: &str = "screenshot";
+
 /// 系统（规则）分类定义：slug → (名称, 图标, 说明)
 /// slug 与 python/vcr/services/arbitrator.py 的 category 取值严格一致
+/// （`screenshot` 例外：它只在宿主侧按文件名现算，Python 仲裁器不产出这个 slug）
 pub const BUILTIN_CATEGORIES: &[(&str, &str, &str, &str)] = &[
     ("portrait", "人物", "👤", "人物特写 / 合影（YOLOv8n-det 人脸检测）"),
     ("street", "扫街", "🚶", "街头多人 / 街拍（人数≥3 且人框较小）"),
     ("night_scene", "夜景", "🌃", "低照度照片（影调 avg_luma < 45）"),
     ("document", "文档", "📄", "文字 / 截图（PaddleOCR 检测 + 截图启发式）"),
+    (
+        SCREENSHOT_SLUG,
+        "截图",
+        "🖼️",
+        "文件名含 Screenshot / 截屏 等字样（不依赖 AI 索引）",
+    ),
 ];
 
 /// 分类定义（读表结果）
@@ -455,6 +470,26 @@ impl Database {
         }
         tx.commit()?;
         Ok(n)
+    }
+
+    /// 该用户已知的全部照片路径（去重，跨三张表取并集）
+    ///
+    /// 用途：文件名型规则分类（如「截图」）的候选集。**不能只读 `photo_content_scan`**
+    /// —— 那张表只覆盖「扫过内容/EXIF」的照片（见 `db/content.rs` 建表注释），没扫过的
+    /// 照片会漏召回；`photo_thumb_cache` 覆盖「看过缩略图」的，`photo_embeddings` 覆盖
+    /// 「建过向量」的。三表并集才接近「用户相册里实际有多少张」。
+    ///
+    /// 本函数**不做任何匹配**，只负责取数据；匹配规则在服务层（`crate::category`）。
+    pub fn list_known_photo_paths(&self, user_id: i64) -> Result<Vec<String>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path FROM photo_content_scan WHERE user_id = ?1
+             UNION
+             SELECT source_path FROM photo_thumb_cache WHERE user_id = ?1
+             UNION
+             SELECT path FROM photo_embeddings WHERE user_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![user_id], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
     }
 
     /// 分类总览（计数 + 封面：命中集内语义强度最高的一张）

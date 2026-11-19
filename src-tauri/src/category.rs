@@ -290,6 +290,97 @@ fn percentile(sorted: &[f32], q: f64) -> f64 {
     sorted[idx.min(sorted.len() - 1)] as f64
 }
 
+// ---------------------------------------------------------------------------
+// 文件名规则：截图（不依赖 CLIP，也不依赖 photo_content_scan）
+// ---------------------------------------------------------------------------
+
+/// 截图文件名特征（**全部小写**，对完整路径做小写包含匹配）
+///
+/// 覆盖范围：
+/// - `screenshot` —— Windows 截图工具 / Android / iOS / GNOME 的通用前缀，
+///   实测也是用户库里最普遍的形态（`Screenshot_20240115-101500.png`）
+/// - `截屏` / `截图` / `屏幕截图` —— 中文系统与国产工具（微信 / QQ / 钉钉）
+/// - `snipaste` —— Windows 上常见的第三方截图工具，输出名即 `Snipaste_2024-01-15.png`
+/// - `scr_` —— 部分相机 / 车机 / 老式工具的前缀（`SCR_0012.jpg`）
+///
+/// 为什么匹配**整条路径**而不只是文件名：用户常把截图按 `Screenshot/2024/`
+/// 这类目录归档，只匹配文件名会漏掉整个目录；而普通相册目录不会叫 screenshot。
+const SCREENSHOT_MARKERS: &[&str] = &[
+    "screenshot",
+    "截屏",
+    "截图",
+    "屏幕截图",
+    "snipaste",
+    "scr_",
+];
+
+/// 判断一个路径是否是截图（按文件名规则，大小写不敏感）
+///
+/// 纯函数、无 IO、无副作用。生产链路走 [`screenshot_marker`]（要拿命中的标记文案），
+/// 本函数给外部/测试提供布尔口径，避免调用方各自 `is_some()`。
+#[cfg(test)]
+pub fn path_looks_like_screenshot(path: &str) -> bool {
+    screenshot_marker(path).is_some()
+}
+
+/// 返回命中的那个标记（供 `matched_keyword` 展示），未命中返回 None
+fn screenshot_marker(path: &str) -> Option<&'static str> {
+    let lower = path.to_lowercase();
+    SCREENSHOT_MARKERS
+        .iter()
+        .find(|m| lower.contains(*m))
+        .copied()
+}
+
+/// 重建「截图」规则分类的命中（按文件名现算，不跑 CLIP）
+///
+/// 两个设计要点：
+/// 1. `matched_keyword` 记录实际命中的标记，前端关键词 chips 与卡片副标题据此展示。
+/// 2. `photo_hash` 必须用 `crate::content::photo_hash`（路径+大小+mtime）而不是
+///    任何自造键 —— `list_category_photos` 靠这个哈希 LEFT JOIN `photo_thumb_cache`
+///    / `photo_content_scan` 取缩略图与相册归属，键不一致会导致分类里全是灰块。
+///
+/// `score` 固定 1.0：规则命中是「确定」而非「语义强度」，给满分让它在
+/// `ORDER BY score DESC` 时稳定压过语义命中，也避免前端显示成「匹配度 0」。
+fn rebuild_screenshot_hits(
+    state: &AppState,
+    user_id: i64,
+    category_id: i64,
+) -> Result<usize, String> {
+    let paths = {
+        let db = state.0.lock().map_err(|e| format!("{e}"))?;
+        db.list_known_photo_paths(user_id)
+            .map_err(|e| format!("{e}"))?
+    };
+    let mut hits: Vec<CategoryHitRecord> = Vec::new();
+    for path in paths {
+        let Some(marker) = screenshot_marker(&path) else {
+            continue;
+        };
+        // 与扫描侧同源的哈希；stat 失败（文件已删）就跳过，交给健康体检报告
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let mtime_ns = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        hits.push(CategoryHitRecord {
+            category_id,
+            user_id,
+            photo_hash: crate::content::photo_hash(&path, meta.len(), mtime_ns),
+            path,
+            score: 1.0,
+            matched_keyword: marker.to_string(),
+        });
+    }
+    let db = state.0.lock().map_err(|e| format!("{e}"))?;
+    db.replace_category_hits(category_id, user_id, &hits)
+        .map_err(|e| format!("{e}"))
+}
+
 /// 当前生效语义档位标识（服务不可达时报错，调用方据此提示）
 pub async fn current_model_id(app: &tauri::AppHandle) -> Result<String, String> {
     crate::vision::clip_model_id(app).await
@@ -437,12 +528,16 @@ async fn rebuild_inner(
         .filter(|c| only.map(|id| id == c.id).unwrap_or(true))
         .collect();
 
-    // 1. builtin（规则分类）：SQL 直算，不跑 CLIP —— 毫秒级，永久重算
-    //    （它的输入是 content 表，与语义向量的指纹无关）
+    // 1. builtin（规则分类）：SQL 直算 / 文件名现算，不跑 CLIP —— 毫秒级，永久重算
+    //    （它的输入是 content 表或路径，与语义向量的指纹无关，故不进指纹短路）
     let mut total_hits = 0usize;
     let mut semantic_count = 0usize;
     for c in targets.iter().filter(|c| c.source == category::SOURCE_BUILTIN) {
-        let n = {
+        // 「截图」是文件名规则腿：不走 `photo_content_scan`（那条腿只有 Python
+        // 仲裁器的 PNG+无EXIF+屏幕比例启发式，漏召回严重），改按路径现算。
+        let n = if c.slug == category::SCREENSHOT_SLUG {
+            rebuild_screenshot_hits(state, user_id, c.id)?
+        } else {
             let db = state.0.lock().map_err(|e| format!("{e}"))?;
             db.replace_builtin_hits(c.id, user_id, &c.slug)
                 .map_err(|e| format!("{e}"))?
@@ -932,6 +1027,46 @@ mod tests {
 
     fn vecs(items: &[(&str, [f32; 2])]) -> HashMap<String, Vec<f32>> {
         items.iter().map(|(k, v)| ((*k).to_string(), v.to_vec())).collect()
+    }
+
+    /// 截图文件名规则：常见命名都要命中，普通照片不能误伤
+    #[test]
+    fn screenshot_marker_matches_common_naming() {
+        // 命中：Windows/手机/中文/第三方工具
+        for p in [
+            "C:/Users/u/Pictures/Screenshot_20240115-101500.png",
+            "C:/截图/2024/屏幕截图 2024-01-15.png",
+            "D:/album/微信截屏_001.png",
+            "D:/album/Snipaste_2024-01-15_10-15-00.png",
+            "D:/camera/SCR_0012.jpg",
+        ] {
+            assert!(path_looks_like_screenshot(p), "应命中: {p}");
+        }
+        // 反例：普通照片。特别注意 IMG_/DSC_/微信图片_ 不该被 `scr_` 之类误伤
+        for p in [
+            "D:/album/IMG_0001.jpg",
+            "D:/album/DSC_0042.NEF",
+            "D:/album/微信图片_20240115.jpg",
+            "D:/album/2024-01-15 家庭聚会.jpg",
+        ] {
+            assert!(!path_looks_like_screenshot(p), "不应命中: {p}");
+        }
+    }
+
+    /// 目录名也算：按 `Screenshot/` 归档的整目录要能命中
+    #[test]
+    fn screenshot_marker_matches_directory_name() {
+        assert!(path_looks_like_screenshot("D:/Pictures/Screenshot/a1b2.png"));
+        // 反向：普通目录 + 普通文件名
+        assert!(!path_looks_like_screenshot("D:/Pictures/Travel/a1b2.png"));
+    }
+
+    /// 大小写不敏感（Windows 文件名常为大写开头）
+    #[test]
+    fn screenshot_marker_is_case_insensitive() {
+        assert!(path_looks_like_screenshot("D:/a/ScreenShot_1.png"));
+        assert!(path_looks_like_screenshot("D:/a/SCREENSHOT.PNG"));
+        assert_eq!(screenshot_marker("D:/a/SCREENSHOT.PNG"), Some("screenshot"));
     }
 
     /// 打分公式：score = max_kw cos(x,kw) - 中性基线；阈值过滤 + 记录命中关键词

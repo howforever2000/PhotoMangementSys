@@ -99,11 +99,21 @@ fn physical_cores_for(logical: usize, model_raw: &str) -> (usize, bool) {
 }
 
 /// CPU 型号（Windows: WMI 不可用 → 读注册表 ProcessorNameString；其他平台 best-effort）
+///
+/// 进程内缓存（OnceLock）：CPU 型号在进程生命周期内不变，而这个函数会被
+/// `topology()` 反复调用（设置页 / 实测校准 / 每次扫描启动的 effective_threads）。
+/// 不缓存时每次都要拉一个 `reg` 子进程，发布版（GUI 子系统）还会闪一下控制台窗口
+/// （BUG-2026-1119-001 的「面板外偶发闪」）。
 fn cpu_model() -> String {
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE.get_or_init(cpu_model_probe).clone()
+}
+
+fn cpu_model_probe() -> String {
     #[cfg(windows)]
     {
         // reg query 比 WMI 轻（无 COM 初始化），失败则返回空串走保守推断
-        if let Ok(out) = std::process::Command::new("reg")
+        if let Ok(out) = crate::proc_cmd::command("reg")
             .args([
                 "query",
                 r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
@@ -141,10 +151,18 @@ fn is_hybrid(model: &str) -> bool {
 /// EXIF 扫描是随机小读：SSD 上线程越多吞吐越高（并行度直接换速度）；
 /// HDD 上过多线程导致磁头频繁寻道，反而**变慢** —— 这是推荐值必须区分盘型的根本原因。
 /// Windows 用 PowerShell 的 `Get-PhysicalDisk` 取 MediaType（一次 ~80ms，可接受）。
+///
+/// 进程内缓存（OnceLock）：盘型在进程生命周期内不变，而 PowerShell 冷启动是
+/// 数百毫秒级且会闪控制台窗口，不能跟着 `topology()` 每次都拉（BUG-2026-1119-001）。
 fn disk_kind() -> String {
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE.get_or_init(disk_kind_probe).clone()
+}
+
+fn disk_kind_probe() -> String {
     #[cfg(windows)]
     {
-        let out = std::process::Command::new("powershell")
+        let out = crate::proc_cmd::command("powershell")
             .args([
                 "-NoProfile",
                 "-NonInteractive",

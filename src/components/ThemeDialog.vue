@@ -283,7 +283,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
           aria-labelledby="tab-preset"
         >
           <p class="pm-hint" style="margin: -4px 0 12px">
-            默认外观 = 启动封面（与登录页同一张壁纸 + 落日紫金）；下面预设按**深浅分组**，
+            默认外观 = 启动封面（与登录页同一张壁纸 + 星空蓝白）；下面预设按**深浅分组**，
             点一下整套应用（渐变 + 组件色 + 模式）。「松绿混色」等彩色预设还会改变
             智慧相册「全局概览」仪表墙的强调色与光晕。
           </p>
@@ -296,8 +296,10 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKey, true));
                材质属于「自定义效果」的个人口味；且两者的材质语义不同，
                放在预设页容易让人以为会随预设一起换）。见自定义页「卡片材质」。 -->
 
-          <!-- 默认卡（FEAT-094）：点一下回到「启动封面 + 落日紫金」，与底部的「恢复默认」等价。
-               以前重置后 5 张预设卡会全部掉高亮（选中态判据只认渐变），这里把默认态补成一张卡。 -->
+          <!-- 默认卡（FEAT-094）：点一下回到「启动封面 + 落日金」，与底部的「恢复默认」等价。
+               以前重置后 5 张预设卡会全部掉高亮（选中态判据只认渐变），这里把默认态补成一张卡。
+               注（FEAT-192）：只有登录三页换星空蓝白；卡片/按钮/链接的全站强调色仍是落日金，
+               所以这里的色点保持原样 —— 它表达的是**应用默认外观**，不是登录页配色。 -->
           <button
             class="pm-preset pm-preset-default"
             :class="{ on: theme.isStartupCover }"

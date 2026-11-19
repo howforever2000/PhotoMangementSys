@@ -110,7 +110,7 @@ fn seed_components() -> Vec<ComponentUsage> {
     vec![
         ComponentUsage {
             key: "app".into(),
-            name: "本地相册搭子（主程序）".into(),
+            name: "栖影 LumaPerch（主程序）".into(),
             kind: ComponentKind::App,
             running: true, // 主程序必然在跑
             pid: Some(std::process::id()),
@@ -177,10 +177,19 @@ fn seed_components() -> Vec<ComponentUsage> {
 }
 
 /// 按已知 PID 与进程特征，把采样值写回对应组件（阻塞函数，须在 spawn_blocking 内调用）
+///
+/// 返回 `(组件列表, 系统CPU%, 已用内存, 总内存)`。
+/// 每轮只补一次 `refresh_memory` + `refresh_cpu_usage`：`System::new()` 是
+/// `RefreshKind::nothing()`，不补刷新就拿不到系统内存与整机 CPU（此前恒为 0）。
 fn collect_components(known: &KnownPids) -> (Vec<ComponentUsage>, f32, u64, u64) {
     let mut guard = SAMPLER.lock().unwrap_or_else(|e| e.into_inner());
     let sys = guard.get_or_insert_with(System::new);
     sys.refresh_processes(ProcessesToUpdate::All, true);
+    // 内存 / 整机 CPU 必须显式刷新：System::new() 什么都不带，
+    // 只 refresh_processes 会让 total_memory/used_memory/global_cpu_usage 恒为 0
+    // （BUG-2026-1119-001 附带项：面板「系统内存 0MB、系统CPU 0.0%」）
+    sys.refresh_memory();
+    sys.refresh_cpu_usage();
 
     let total_mem = sys.total_memory();
     let used_mem = sys.used_memory();
@@ -248,8 +257,12 @@ fn collect_components(known: &KnownPids) -> (Vec<ComponentUsage>, f32, u64, u64)
 }
 
 /// GPU 配置态：仅当识别服务已在跑时才读 /gpu，避免为了「查看」而拉起服务
-async fn gpu_status_readonly(app: &tauri::AppHandle) -> GpuUsage {
-    if vision::current_vcr_pid(app).is_none() {
+///
+/// `vcr_pid` 由调用方从本轮采样里带进来，**不在这里重新核验 PID**：
+/// 核验要走 tasklist / powershell 子进程（发布版还会闪窗口），每轮做两次
+/// 纯属浪费（BUG-2026-1119-001：单轮 2.3s 的元凶）。
+async fn gpu_status_readonly(app: &tauri::AppHandle, vcr_pid: Option<u32>) -> GpuUsage {
+    if vcr_pid.is_none() {
         return GpuUsage {
             enabled: false,
             provider: String::new(),
@@ -284,14 +297,17 @@ async fn gpu_status_readonly(app: &tauri::AppHandle) -> GpuUsage {
 pub async fn resource_usage_snapshot(app: tauri::AppHandle) -> Result<ResourceUsageSnapshot, String> {
     let _t = log_call!("resource_usage_snapshot");
     let app_bg = app.clone();
+    // 本轮把「本系统服务的 PID」一次性核验出来，随快照一起用：
+    // GPU 段不再重新核验（每轮两次核验 = 两次 tasklist/powershell 子进程）
     let sampled = tauri::async_runtime::spawn_blocking(move || {
         let known = known_pids(&app_bg);
-        collect_components(&known)
+        let vcr_pid = known.vcr;
+        (vcr_pid, collect_components(&known))
     })
     .await
     .map_err(|e| format!("资源采样执行失败: {e}"))?;
 
-    let (components, system_cpu_percent, system_memory_used, system_memory_total) = sampled;
+    let (vcr_pid, (components, system_cpu_percent, system_memory_used, system_memory_total)) = sampled;
 
     let interval_ms = {
         let mut guard = LAST_SAMPLE.lock().unwrap_or_else(|e| e.into_inner());
@@ -301,7 +317,7 @@ pub async fn resource_usage_snapshot(app: tauri::AppHandle) -> Result<ResourceUs
         ms
     };
 
-    let gpu = gpu_status_readonly(&app).await;
+    let gpu = gpu_status_readonly(&app, vcr_pid).await;
 
     let snapshot = ResourceUsageSnapshot {
         components,

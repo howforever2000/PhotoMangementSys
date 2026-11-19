@@ -336,24 +336,24 @@ const calibMaxRate = computed(() =>
 }
 .sps-label {
   min-width: 76px;
-  color: var(--ts-muted, #888);
+  color: var(--color-text-3, #4b5b6e);
   font-size: 12.5px;
 }
 .sps-select {
   padding: 5px 10px;
   border-radius: 7px;
-  border: 1px solid var(--ts-btn-border, #ddd);
-  background: var(--ts-btn-bg, #fff);
-  color: var(--ts-text, #2c3e50);
+  border: 1px solid var(--color-border, #e6e8ee);
+  background: var(--color-surface-2, #f8f9fa);
+  color: var(--color-text, #1f2733);
   font-size: 13px;
   min-width: 150px;
 }
 .sps-btn {
   padding: 6px 12px;
   border-radius: 7px;
-  border: 1px solid var(--ts-btn-border, #ddd);
-  background: var(--ts-btn-bg, #fff);
-  color: var(--ts-text, #2c3e50);
+  border: 1px solid var(--color-border, #e6e8ee);
+  background: var(--color-surface-2, #f8f9fa);
+  color: var(--color-text, #1f2733);
   cursor: pointer;
   font-size: 12.5px;
 }
@@ -380,19 +380,19 @@ const calibMaxRate = computed(() =>
 }
 .sps-status {
   font-size: 12.5px;
-  color: var(--ts-text, #2c3e50);
+  color: var(--color-text, #1f2733);
 }
 .sps-status b {
   color: var(--color-primary-text);
 }
 .sps-dim {
   font-size: 12px;
-  color: var(--ts-muted, #888);
+  color: var(--color-text-3, #4b5b6e);
 }
 .sps-hint {
   font-size: 12px;
   line-height: 1.65;
-  color: var(--ts-muted, #888);
+  color: var(--color-text-3, #4b5b6e);
   margin: 0;
 }
 .sps-hint code {
@@ -406,7 +406,7 @@ const calibMaxRate = computed(() =>
   color: var(--color-danger);
 }
 .sps-note {
-  border-top: 1px dashed var(--ts-panel-border, rgba(127, 127, 127, 0.25));
+  border-top: 1px dashed var(--color-border, rgba(127, 127, 127, 0.25));
   padding-top: 8px;
 }
 /* 实测区 */
@@ -417,7 +417,7 @@ const calibMaxRate = computed(() =>
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border: 1px solid var(--ts-panel-border, rgba(127, 127, 127, 0.25));
+  border: 1px solid var(--color-border, rgba(127, 127, 127, 0.25));
   border-radius: 9px;
   padding: 10px 12px;
 }
@@ -428,11 +428,11 @@ const calibMaxRate = computed(() =>
   font-size: 12.5px;
 }
 .sps-calib-sum .kpi {
-  color: var(--ts-muted, #888);
+  color: var(--color-text-3, #4b5b6e);
 }
 .sps-calib-sum .kpi b {
   font-size: 14px;
-  color: var(--ts-text, #2c3e50);
+  color: var(--color-text, #1f2733);
 }
 .sps-calib-sum .kpi b.ok {
   color: var(--color-ok-vivid);
@@ -450,7 +450,7 @@ const calibMaxRate = computed(() =>
   font-size: 12px;
 }
 .sps-calib-th {
-  color: var(--ts-muted, #888);
+  color: var(--color-text-3, #4b5b6e);
 }
 .sps-bar {
   height: 8px;
@@ -465,7 +465,7 @@ const calibMaxRate = computed(() =>
   transition: width var(--dur-3) ease;
 }
 .sps-calib-rate {
-  color: var(--ts-muted, #888);
+  color: var(--color-text-3, #4b5b6e);
   font-family: "Consolas", monospace;
   font-size: 11.5px;
   text-align: right;

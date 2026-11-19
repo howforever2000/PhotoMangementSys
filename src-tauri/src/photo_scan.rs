@@ -12,8 +12,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
-/// 支持的图片扩展名（与 thumbnail 模块保持一致；为解耦本地复制一份）
-/// FEAT-142：加入 iPhone 默认格式 heic/heif（EXIF 由 kamadak-exif 原生支持 HEIF 容器）
+/// 支持的图片扩展名（**已废弃**：唯一真相点移到 [`crate::media_kind`]）
+#[allow(dead_code)]
 const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif"];
 
 /// 单张照片的 EXIF 扫描结果
@@ -483,9 +483,12 @@ fn pair_to_f64<T: Copy + Into<f64>>(v: &[T]) -> Option<f64> {
     }
 }
 
+/// 是否可解码的图片（静态图 / 动图，**不含视频**）
+///
+/// 历史注释说「为解耦本地复制一份」，但三份副本已漂移过（见 `media_kind` 模块文档），
+/// 现统一委托给 [`crate::media_kind`]，本函数只保留旧名字给既有调用点。
 pub(crate) fn is_image_file(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    IMAGE_EXTS.iter().any(|ext| lower.ends_with(&format!(".{ext}")))
+    crate::media_kind::is_decodable_image_name(name)
 }
 
 fn format_iso(v: u32) -> String {

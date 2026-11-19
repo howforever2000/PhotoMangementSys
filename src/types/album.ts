@@ -48,8 +48,15 @@ export interface Album {
   created_at: number;
   /** 最后更新时间戳（Unix 秒） */
   updated_at: number;
-  /** 相册内照片数量（从文件系统统计） */
+  /** 相册内照片数量（从文件系统统计）
+   *
+   *  FEAT-194 起语义收紧为**静态图片数**（不含动图、不含视频），
+   *  动图与视频分列在 `animated_count` / `video_count`。 */
   photo_count: number;
+  /** 动图数（gif / webp），从文件系统统计 */
+  animated_count: number;
+  /** 视频数（mp4 / mov / m4v ...），从文件系统统计 */
+  video_count: number;
   /** 相册拍摄时间（相册内图片 EXIF，格式 YYYY-MM-DD） */
   shoot_time: string | null;
   /** 相册文件夹总大小（字节） */

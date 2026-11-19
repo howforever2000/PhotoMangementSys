@@ -25,6 +25,8 @@ const LABELS: Record<string, string> = {
   cityscape: "城市风光",
   night_scene: "夜景",
   document: "文档",
+  /** 规则分类（文件名腿）：命中记录里的 matched_keyword 也是 "screenshot"，同映射 */
+  screenshot: "截图",
 
   // 中间 key（ImageNet / Places365 通道直接输出）
   landscape_nature: "自然风景",
@@ -59,6 +61,7 @@ export function categoryLabel(key: string | null | undefined): string {
 const SUB_LABELS: Record<string, string> = {
   paper: "纸张文档",
   document: "文档",
+  screenshot: "截图",
   bird: "鸟类",
   dog: "狗",
   cat: "猫",
@@ -108,6 +111,7 @@ const TONES: Record<string, { bg: string; fg: string; border: string }> = {
   night_scene:   { bg: "#2a2f44", fg: "#cfd6f5", border: "#4a5170" },
   document:      { bg: "#eef1f5", fg: "#475569", border: "#cad0db" },
   text:          { bg: "#eef1f5", fg: "#475569", border: "#cad0db" },
+  screenshot:    { bg: "#e8f1fb", fg: "#2563a8", border: "#bfd8f0" },
   plant:         { bg: "#ecf6e9", fg: "#5c8b3a", border: "#cae0b6" },
   plant_flower:  { bg: "#ecf6e9", fg: "#5c8b3a", border: "#cae0b6" },
   sports:        { bg: "#e6f6fb", fg: "#1f7a96", border: "#b6e0ec" },

@@ -3,12 +3,13 @@ import { ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "../stores/auth";
 import AuthShell from "../components/AuthShell.vue";
+import BrandMark from "../components/ui/BrandMark.vue";
 
-// 登录页固定使用启动壁纸（covers/login-sunset.jpg），不随主题/皮肤变化。
-// FEAT-093：壁纸与落日紫金配色的单一事实来源是
+// 登录页固定使用启动壁纸（covers/login-starfield.jpg），不随主题/皮肤变化。
+// FEAT-093：壁纸与星空蓝白配色的单一事实来源是
 //   · src/assets/auth.css（.auth-cover 的 url）
 //   · src/utils/loginTheme.ts（色值 + 对比度断言）
-// 换图只需改上面两处，本组件不再持有图片资源。
+// 换图只需改上面两处（外加 theme.ts 的 DEFAULT_WALLPAPER），本组件不再持有图片资源。
 const auth = useAuthStore();
 const router = useRouter();
 const route = useRoute();
@@ -46,7 +47,11 @@ async function handleLogin() {
 </script>
 
 <template>
-  <AuthShell title="本地相册搭子" subtitle="登录后管理你的相册空间">
+  <AuthShell>
+    <!-- 品牌标识（FEAT-189）：与首页页头同一组件，尺寸档换成 auth -->
+    <template #header>
+      <BrandMark size="auth" />
+    </template>
     <form class="auth-form" @submit.prevent="handleLogin">
       <label class="field">
         <span class="field-label">账户名 / 邮箱</span>

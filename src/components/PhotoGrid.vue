@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
 import { useToastStore } from "../stores/toast";
@@ -10,6 +11,14 @@ import { useNotify } from "../composables/useNotify";
 import type { AlbumContentRow } from "../types/content";
 import type { PersonInfo, PhotoDeleteOutcome } from "../types/photo";
 import { categoryLabel } from "../utils/categoryLabel";
+import {
+  MEDIA_FILTER_LABELS,
+  filterByMedia,
+  isAnimated,
+  isVideo,
+  mediaKindOf,
+  type MediaFilter,
+} from "../utils/mediaKind";
 import PhotoLightbox from "./PhotoLightbox.vue";
 import ContextMenu from "./ContextMenu.vue";
 import type { ContextMenuEntry } from "./ContextMenu.vue";
@@ -63,6 +72,36 @@ const thumbMap = ref<Record<string, string>>({});
 /** 当前筛选：null=全部，或指定大类（人物筛选已移至主页「智慧相册」板块） */
 const activeCategory = ref<string | null>(null);
 
+/** FEAT-194：媒体类型分栏（全部 / 图片 / 动图 / 视频）
+ *
+ *  为什么单独一维而不并进上面的「分类」：分类来自 AI 扫描（是「内容是什么」），
+ *  媒体类型来自扩展名（是「这是什么文件」）。两者正交，合并成一排 chips 会让
+ *  「视频」与「夜景」看起来是同一层级的东西。 */
+const activeMedia = ref<MediaFilter>("all");
+
+/** 各媒体类型的实际张数（用于分栏按钮上的计数，0 的分栏不显示） */
+const mediaCounts = computed(() => {
+  const c = { image: 0, animated: 0, video: 0 };
+  for (const ph of photos.value) {
+    const k = mediaKindOf(ph.path);
+    if (k) c[k] += 1;
+  }
+  return c;
+});
+
+/** 媒体分栏按钮（只出有内容的档位；全为空时整条不显示） */
+const mediaTabs = computed(() => {
+  const out: { key: MediaFilter; label: string; count: number }[] = [
+    { key: "all", label: MEDIA_FILTER_LABELS.all, count: photos.value.length },
+  ];
+  for (const k of ["image", "animated", "video"] as const) {
+    if (mediaCounts.value[k] > 0) {
+      out.push({ key: k, label: MEDIA_FILTER_LABELS[k], count: mediaCounts.value[k] });
+    }
+  }
+  return out;
+});
+
 /** 大图查看器状态 */
 const lightboxOpen = ref(false);
 const lightboxIndex = ref(0);
@@ -114,10 +153,13 @@ function fileUrl(p: string) {
   return p ? convertFileSrc(p) : "";
 }
 
-/** 过滤后用于网格展示的照片（仅按大类筛选） */
+/** 过滤后用于网格展示的照片（媒体类型 + 大类两维叠加） */
 const visiblePhotos = computed<GridPhoto[]>(() => {
-  if (!activeCategory.value) return photos.value;
-  return photos.value.filter((ph) => ph.meta?.category === activeCategory.value);
+  let list = filterByMedia(photos.value, activeMedia.value);
+  if (activeCategory.value) {
+    list = list.filter((ph) => ph.meta?.category === activeCategory.value);
+  }
+  return list;
 });
 
 /** 从已扫描元数据推导出的可选大类（用于筛选 chips） */
@@ -262,10 +304,22 @@ function backToTop() {
   scrollEl.value?.scrollTo({ top: 0, behavior: "smooth" });
 }
 
-function openLightbox(index: number) {
+async function openLightbox(index: number) {
   // 多选模式下点击格子是选中/取消选中，不打开大图
   if (selectMode.value) {
     toggleSelect(visiblePhotos.value[index].path);
+    return;
+  }
+  // FEAT-194：视频不走大图查看器 —— 查看器的舞台是 <img>，视频进去只会是一块坏图。
+  // 本轮明确「不做内嵌播放」，所以交给系统默认播放器（用户装什么解码器就播什么，
+  // 避免 WebView2 对 HEVC/mov 的兼容坑）。
+  const target = visiblePhotos.value[index]?.path;
+  if (isVideo(target)) {
+    try {
+      await openPath(target);
+    } catch (e) {
+      notify.error("无法打开视频", String(e));
+    }
     return;
   }
   lightboxIndex.value = index;
@@ -905,6 +959,22 @@ function onKey(e: KeyboardEvent) {
       <p>💡 照片已可浏览。运行「综合扫描」（EXIF/影调/AI）后，网格将叠加分类与人物标签，并支持智能筛选。</p>
     </div>
 
+    <!-- FEAT-194：媒体类型分栏（全部 / 图片 / 动图 / 视频）。
+         与下面的「分类」是两个正交维度：媒体类型看扩展名，分类看 AI 扫描结果。
+         只有一种媒体时整条不显示（没有可切换的东西）。 -->
+    <div v-if="!loading && mediaTabs.length > 1" class="pg-filters pg-media-filters">
+      <div class="pg-filter-row">
+        <span class="pg-filter-label">类型</span>
+        <button
+          v-for="t in mediaTabs"
+          :key="t.key"
+          class="chip"
+          :class="{ active: activeMedia === t.key }"
+          @click="activeMedia = t.key"
+        >{{ t.label }} <span class="pg-chip-n">{{ t.count }}</span></button>
+      </div>
+    </div>
+
     <!-- 筛选条：仅大类 chips -->
     <div v-if="hasAnyMeta()" class="pg-filters">
       <div class="pg-filter-row">
@@ -977,6 +1047,18 @@ function onKey(e: KeyboardEvent) {
           <div v-else class="pg-thumb-placeholder">
             <div class="pg-thumb-shimmer"></div>
           </div>
+          <!-- FEAT-194：视频 / 动图角标。视频封面是后端抽的首帧，
+               点击不在此处播放（走系统播放器），所以角标只表达「这不是一张静态图」。 -->
+          <span
+            v-if="isVideo(ph.path)"
+            class="pg-media-badge pg-media-video"
+            title="视频（点击用系统播放器打开）"
+          >▶ 视频</span>
+          <span
+            v-else-if="isAnimated(ph.path)"
+            class="pg-media-badge pg-media-anim"
+            title="动图"
+          >GIF</span>
         </div>
         <!-- 打分星标（>0 才显示，左上角） -->
         <span v-if="ratingMap[ph.path] > 0" class="pg-rating" :title="`打分 ${ratingMap[ph.path]} 星`">{{ "★".repeat(ratingMap[ph.path]) }}</span>
@@ -1244,8 +1326,10 @@ function onKey(e: KeyboardEvent) {
 }
 
 .chip {
-  border: 1px solid #ddd;
-  background: #fff;
+  border: 1px solid var(--color-border, #e6e8ee);
+  /* 同 BUG-2026-1119-001：写死 #fff 时，深色预设下 chip 上的继承文字变白 → 白字白底 */
+  background: var(--popup-bg, #ffffff);
+  color: var(--popup-fg, #1f2733);
   border-radius: 999px;
   padding: 3px 12px;
   font-size: 12px;
@@ -1287,6 +1371,35 @@ function onKey(e: KeyboardEvent) {
   aspect-ratio: 1 / 1;
   overflow: hidden;
   background: #f2f4f7;
+  /* FEAT-194：媒体角标用绝对定位贴在角上，wrap 必须是定位上下文 */
+  position: relative;
+}
+
+/* FEAT-194：视频 / 动图角标（左下角，避开右上的归档角标与左上的打分星标） */
+.pg-media-badge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 600;
+  color: #fff;
+  /* 封面是任意画面：恒定深色底 + 轻微阴影，保证在任何底图上都读得清 */
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(2px);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+.pg-media-video {
+  /* 视频用强调色区分「点了会调起播放器」 */
+  background: rgba(28, 96, 190, 0.82);
+}
+.pg-chip-n {
+  margin-left: 4px;
+  opacity: 0.66;
+  font-variant-numeric: tabular-nums;
 }
 .pg-thumb-wrap img,
 .pg-thumb-img {
@@ -1567,7 +1680,11 @@ function onKey(e: KeyboardEvent) {
   justify-content: center;
 }
 .pg-dialog {
-  background: #fff;
+  /* BUG-2026-1119-001：原为写死 `#fff`，而标题/正文继承 body 的 --color-text
+     （深色档 #f5f7ff）—— 深色预设下就是「白字白底」。改用 --popup-* 这对
+     **不透明**的底/字令牌（由 theme store 按玻璃等效底色双档下发）。 */
+  background: var(--popup-bg, #ffffff);
+  color: var(--popup-fg, #1f2733);
   border-radius: 14px;
   padding: 18px 20px;
   width: min(460px, 92vw);
@@ -1576,7 +1693,7 @@ function onKey(e: KeyboardEvent) {
   flex-direction: column;
 }
 .pg-dialog h4 { margin: 0 0 6px; }
-.pg-dialog-tip { font-size: 12px; color: #667085; margin: 0 0 12px; }
+.pg-dialog-tip { font-size: 12px; color: var(--color-text-2, #475569); margin: 0 0 12px; }
 .pg-dialog-empty { text-align: center; opacity: 0.6; font-size: 13px; padding: 20px 0; }
 .pg-target-list { overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 .pg-target-item {

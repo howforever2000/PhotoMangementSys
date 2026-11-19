@@ -59,6 +59,13 @@
   /* 软色板（BUG-2026-0921-005）：面板/徽标/悬停态使用，
      与 --color-surface 配套；深色模式在 body.theme-dark 中整体翻暗 */
   --color-surface-2: #f8f9fa;   /* 次级面板 / 控件底色 */
+  /* 原生下拉展开层（<option> 弹层）专用：**必须不透明**。
+     --color-surface* 带 alpha（theme store 按组件透明度下发），拿它做弹层底色
+     会透出桌面/壁纸，选项与背景同色就直接隐形。判据：弹层是浏览器原生窗口，
+     它不吃 backdrop-filter，也不能半透明。
+     由 theme store 的 applyCompColor 按玻璃等效底色重推（浅底深字/深底浅字）。 */
+  --popup-bg: #ffffff;
+  --popup-fg: #1f2733;
   --color-soft-accent: #fdf2e0; /* 选中 / 悬停软金底（FEAT-094 随强调色改金） */
   --color-neutral-soft: #eef1f6;/* 中性徽标底 */
   --color-danger-soft: #fef2f2; /* 危险提示底 */
@@ -199,6 +206,9 @@ body.theme-dark {
   --shadow-hover: var(--shadow-2);
   /* 软色板深色对应值（BUG-2026-0921-005） */
   --color-surface-2: rgba(255, 255, 255, 0.05);
+  /* 原生下拉展开层：深色档必须给不透明深底 + 浅字（见 :root 处注释）。 */
+  --popup-bg: #1e222e;
+  --popup-fg: #f5f7ff;
   --color-soft-accent: rgba(232, 163, 61, 0.22);
   --color-neutral-soft: rgba(255, 255, 255, 0.08);
   --color-danger-soft: rgba(229, 72, 77, 0.16);
@@ -583,6 +593,39 @@ body.theme-dark .input::placeholder,
 body.theme-dark input::placeholder,
 body.theme-dark textarea::placeholder {
   color: rgba(219, 226, 245, 0.55);
+}
+
+/* ── 原生下拉展开层（BUG-2026-1119-001）─────────────────────────────────
+   症状：部分界面「字体和背景都是白色」，创意工坊下拉选预设滤镜时最明显。
+
+   根因不是文字色下发错，而是**背景没下发**：全仓 27 个 <select> 里 26 个只给
+   <select> 元素本身设了 color/background，没有一条 <option> 规则；而主窗口从未
+   声明 color-scheme（src/main.ts 只给 dev 副窗口设了）。WebView2/Chromium 在
+   没有 color-scheme 时用 **UA 浅色** 绘制弹出列表的底（近白），选项文字却继承
+   <select> 的近白 color → 白字白底。闭合态反而正常（有 .ai-panel / .wt-select
+   的微亮底），所以只有「点开那一下」看不见。
+
+   修法两层，缺一不可：
+     ① color-scheme 交给 theme store 按主题下发 → UA 自己接管 popup 配色；
+     ② 这条兜底显式给 option 上不透明底与字色（兜住 UA 不听话 / 主题错配的组合）。
+
+   为什么用 --popup-bg 而不是 --color-surface：后者带 alpha（按组件透明度下发，
+   卡片上可能低到 .5 以下），拿它做原生弹层底色会透出桌面，等于没修。
+   为什么不需要 body.theme-dark 前缀：--popup-* 已按玻璃等效底色双档下发，
+   浅底浅字 / 深底深字的错配在令牌层就消掉了，选择器层不必再分叉（也避免了
+   (0,2,1) 压过各组件 scoped 规则的另一种老坑）。 */
+select option,
+select optgroup {
+  background-color: var(--popup-bg, #ffffff);
+  color: var(--popup-fg, #1f2733);
+}
+/* 让 UA 按主题绘制 select 的附属件（弹层滚动条、焦点环、原生箭头）。
+   只挂在 select 上而不是 :root —— 全局 color-scheme 会连带改掉 range / checkbox /
+   系统滚动条的外观，那是另一批已按令牌标定过的控件，不该被这条修复顺带改动。
+   var() 若在某些实现里不被 color-scheme 接受，本行整体失效退回原状，
+   而上面的 option 规则仍然兜住「白字白底」这个真问题。 */
+select {
+  color-scheme: var(--popup-scheme, light);
 }
 
 /* 灰色提示文字（友列表/空状态） */

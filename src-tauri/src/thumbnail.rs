@@ -14,11 +14,6 @@ use std::time::UNIX_EPOCH;
 use image::ImageFormat;
 use serde::{Deserialize, Serialize};
 
-/// 支持的图片扩展名（按优先级排列，作为"第一张图"的扫描顺序）
-/// FEAT-142：heic/heif 排在最后 —— 它是相册里「原生格式」，但解码成本高于 JPEG，
-/// 仅当目录里没有常见格式时才当封面。
-const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif"];
-
 /// 缩略图边长（需求文档提到 256px 缩略图）
 const THUMB_SIZE: u32 = 256;
 
@@ -63,22 +58,20 @@ impl From<jpeg_decoder::Error> for ThumbError {
     }
 }
 
-/// 判断文件名是否是支持的图片
-fn is_image_file(file_name: &str) -> bool {
-    let lower = file_name.to_lowercase();
-    IMAGE_EXTS.iter().any(|ext| lower.ends_with(&format!(".{ext}")))
-}
-
-/// 相册目录单次扫描结果（一次 walkdir 同时完成数量/大小/首图三项统计）
+/// 相册目录单次扫描结果（一次 walkdir 同时完成各类型计数/大小/首图）
 ///
 /// 替代原先 count_images + folder_size + find_first_image 的三次独立遍历，
 /// 列表加载时每相册从 3~4 次全目录遍历降为 1 次。
 pub struct AlbumScan {
-    /// 支持的图片文件数
+    /// 静态图片数（**不含**动图与视频，与历史 `photo_count` 语义一致）
     pub photo_count: usize,
+    /// 动图数（gif / webp）
+    pub animated_count: usize,
+    /// 视频数
+    pub video_count: usize,
     /// 目录真实占用空间（字节，累加所有文件）
     pub size_bytes: u64,
-    /// 扫描到的第一张图片路径（无图片则为 None）
+    /// 可作封面的第一个媒体文件（图片优先，其次动图，最后视频）
     pub first_image: Option<PathBuf>,
 }
 
@@ -133,12 +126,18 @@ pub fn count_files_recursive(dir: &Path) -> u64 {
 pub fn scan_album_dir(dir: &Path) -> AlbumScan {
     let mut scan = AlbumScan {
         photo_count: 0,
+        animated_count: 0,
+        video_count: 0,
         size_bytes: 0,
         first_image: None,
     };
     if !dir.is_dir() {
         return scan;
     }
+    // 封面候选：图片优先级最高（解码最便宜、观感最稳），动图次之，视频最后。
+    // 只在同级类型内取第一个，避免「相册里明明有大量照片，封面却是一段视频首帧」。
+    let mut first_animated: Option<PathBuf> = None;
+    let mut first_video: Option<PathBuf> = None;
     for entry in walkdir::WalkDir::new(dir)
         .follow_links(false)
         .into_iter()
@@ -148,18 +147,39 @@ pub fn scan_album_dir(dir: &Path) -> AlbumScan {
         if !entry_is_file(&e) {
             continue;
         }
-        // 大小：累加所有文件（不限于图片，保持与旧 folder_size 语义一致）
+        // 大小：累加所有文件（不限于媒体，保持与旧 folder_size 语义一致）
         if let Ok(meta) = e.metadata() {
             scan.size_bytes += meta.len();
         }
-        // 图片计数 + 首图：仅图片文件
+        // 按媒体类型分别计数（图片 / 动图 / 视频口径各自独立）
         let name = e.file_name().to_string_lossy().to_string();
-        if is_image_file(&name) {
-            scan.photo_count += 1;
-            if scan.first_image.is_none() {
-                scan.first_image = Some(e.into_path());
+        let Some(kind) = crate::media_kind::kind_of_name(&name) else {
+            continue;
+        };
+        match kind {
+            crate::media_kind::MediaKind::Image => {
+                scan.photo_count += 1;
+                if scan.first_image.is_none() {
+                    scan.first_image = Some(e.into_path());
+                }
+            }
+            crate::media_kind::MediaKind::AnimatedImage => {
+                scan.animated_count += 1;
+                if first_animated.is_none() {
+                    first_animated = Some(e.into_path());
+                }
+            }
+            crate::media_kind::MediaKind::Video => {
+                scan.video_count += 1;
+                if first_video.is_none() {
+                    first_video = Some(e.into_path());
+                }
             }
         }
+    }
+    // 没有图片时退到动图，再退到视频 —— 保证「只有视频的相册」也有封面
+    if scan.first_image.is_none() {
+        scan.first_image = first_animated.or(first_video);
     }
     scan
 }
@@ -561,10 +581,13 @@ pub fn remove_grid_thumb_files(names: &[String], thumbs_dir: &Path) {
     }
 }
 
-/// 递归收集相册文件夹内所有图片的绝对路径（无需扫描/入库即可展示照片）
+/// 递归收集相册文件夹内所有**可视媒体**的绝对路径（图片 + 动图 + 视频）
 ///
-/// 用于照片网格浏览：轻量 walkdir 遍历（只取路径不读图），过滤隐藏目录与图片扩展名。
+/// 用于照片网格浏览：轻量 walkdir 遍历（只取路径不读图），过滤隐藏目录与媒体扩展名。
 /// 返回按路径字典序稳定排序，便于前端分页/对比。
+///
+/// 媒体类型判定统一走 [`crate::media_kind`]（不再维护本地扩展名副本）。
+/// 前端按路径自行分「图片 / 视频 / 动图」三档（`src/utils/mediaKind.ts`，同一套规则）。
 pub fn list_album_images(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
     if !dir.is_dir() {
@@ -579,9 +602,9 @@ pub fn list_album_images(dir: &Path) -> Vec<String> {
         if !entry_is_file(&e) {
             continue;
         }
-        let name = e.file_name().to_string_lossy().to_string();
-        if is_image_file(&name) {
-            out.push(e.into_path().to_string_lossy().into_owned());
+        let path = e.into_path();
+        if crate::media_kind::is_media(&path) {
+            out.push(path.to_string_lossy().into_owned());
         }
     }
     out.sort();
@@ -1105,7 +1128,14 @@ fn save_thumbnail(source: &Path, thumb_path: &Path) -> Result<(), ThumbError> {
     // 放置点选在解码之前、参数准备之后，保证「排在闸门外的请求」不占 CPU 与内存。
     let _permit = acquire_gen_permit();
 
-    let thumb = if is_jpeg_path(
+    let kind = crate::media_kind::kind_of(source);
+    let thumb = if kind.map(|k| k.is_video()).unwrap_or(false) {
+        // 视频：走系统 Shell 缩略图通道拿首帧。
+        // 产物层（WebP 编码 / 原子落盘 / 指纹缓存）与图片完全共用，不另建缓存。
+        let frame = crate::video_frame::extract_first_frame(source)
+            .map_err(ThumbError::Other)?;
+        image::DynamicImage::ImageRgba8(frame).thumbnail(THUMB_SIZE, THUMB_SIZE)
+    } else if is_jpeg_path(
         source
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())

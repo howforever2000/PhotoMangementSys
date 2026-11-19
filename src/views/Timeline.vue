@@ -940,10 +940,10 @@ function applyJumpQuery() {
 .tl-year-select:focus {
   border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
 }
-.tl-year-select option {
-  background: #1e1b22;
-  color: #f2f0f4;
-}
+/* BUG-2026-1119-001：这里曾写死 `#1e1b22 / #f2f0f4`（唯 一一处给 option 上色的地方）。
+   写死的后果不是「白字白底」，而是**浅色预设下一块孤立的深色列表**，与本页其余
+   控件不同色系。现在全站统一走 --popup-*（由 theme store 按玻璃等效底色双档下发），
+   组件层不再各写一套。所以本规则被显式删除，不是漏改。 */
 
 /* ══ 两栏壳 ══════════════════════════════════════════════════════════ */
 .tl-shell {

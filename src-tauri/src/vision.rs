@@ -113,7 +113,8 @@ fn clear_instance(app: &tauri::AppHandle) {
 fn pid_alive(pid: u32) -> bool {
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("tasklist")
+        // 必须走 proc_cmd：发布版是 GUI 子系统，裸 Command 会弹出控制台窗口
+        crate::proc_cmd::command("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH"])
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
@@ -154,7 +155,7 @@ fn parse_tasklist_image(out: &str) -> Option<String> {
 pub(crate) fn pid_image_name(pid: u32) -> Option<String> {
     #[cfg(target_os = "windows")]
     {
-        let out = std::process::Command::new("tasklist")
+        let out = crate::proc_cmd::command("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH"])
             .output()
             .ok()?;
@@ -176,7 +177,7 @@ pub(crate) fn pid_cmdline_has(pid: u32, needle: &str) -> bool {
         let script = format!(
             "$c = (Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' | Select-Object -ExpandProperty CommandLine); if ($c -like '*{needle}*') {{ 'YES' }} else {{ 'NO' }}"
         );
-        std::process::Command::new("powershell")
+        crate::proc_cmd::command("powershell")
             .args(["-NoProfile", "-Command", &script])
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).contains("YES"))
@@ -226,7 +227,7 @@ fn kill_pid(pid: u32) {
     #[cfg(target_os = "windows")]
     {
         // /T 连子进程一起结束（PyInstaller 运行期若派生子进程不留孤儿）
-        let _ = std::process::Command::new("taskkill")
+        let _ = crate::proc_cmd::command("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .output();
     }
@@ -244,11 +245,11 @@ fn kill_our_orphans() {
     eprintln!("[VCR][ensure] 清理本项目遗留识别服务进程…");
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("taskkill")
+        let _ = crate::proc_cmd::command("taskkill")
             .args(["/F", "/IM", "vcr-server.exe"])
             .output();
         let script = "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
-        let _ = std::process::Command::new("powershell")
+        let _ = crate::proc_cmd::command("powershell")
             .args(["-NoProfile", "-Command", script])
             .output();
     }
@@ -474,10 +475,6 @@ async fn probe_base(client: &reqwest::Client, base: &str) -> (HealthProbe, Strin
     }
 }
 
-/// 支持的图片扩展名（与 photo_scan/tone 一致；为解耦本地复制一份）
-/// FEAT-142：heic/heif 纳入扫描（iPhone 默认格式）
-const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif"];
-
 /// Top3 单项
 #[derive(Debug, Clone, Serialize)]
 pub struct VisionTopItem {
@@ -666,10 +663,11 @@ pub fn walk_image_paths(dir: &str) -> Result<Vec<std::path::PathBuf>, String> {
         if !crate::thumbnail::entry_is_file(&e) {
             continue;
         }
-        let name = e.file_name().to_string_lossy().to_string();
-        let lower = name.to_lowercase();
-        if IMAGE_EXTS.iter().any(|ext| lower.ends_with(&format!(".{ext}"))) {
-            photos.push(e.into_path());
+        let path = e.into_path();
+        // 只要「能按单帧解码」的图片（静态图 + 动图）：视频丢给 EXIF / 影调 / AI
+        // 三条腿只会解码失败并静默跳过落库，见 media_kind 模块文档。
+        if crate::media_kind::is_decodable_image(&path) {
+            photos.push(path);
         }
     }
     photos.sort();
@@ -1650,17 +1648,12 @@ fn probe_interpreter(cand: &Path, probe_src: &str) -> Result<String, String> {
     if cand.is_absolute() && !cand.is_file() {
         return Err("文件不存在".into());
     }
-    let mut cmd = std::process::Command::new(cand);
+    let mut cmd = crate::proc_cmd::command(cand);
     cmd.arg("-c")
         .arg(probe_src)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
 
     let mut child = cmd.spawn().map_err(|e| format!("无法执行: {e}"))?;
     let buf = Arc::new(Mutex::new(String::new()));
@@ -1811,17 +1804,8 @@ fn spawn_server(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
     let mut workdir = bundled_dir.clone(); // 打包版默认工作目录
 
     if bundled_exe.is_file() {
-        // 打包版：直接启动内置单文件 exe
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd = std::process::Command::new(&bundled_exe);
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW（隐藏控制台窗口）
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            cmd = std::process::Command::new(&bundled_exe);
-        }
+        // 打包版：直接启动内置单文件 exe（无窗口口径见 proc_cmd）
+        cmd = crate::proc_cmd::command(&bundled_exe);
         // 模型目录由 lib.rs::setup 统一解析（内置目录只读时指向 app_data 下的可写副本）；
         // 人物库目录同样统一（VCR_DATA_DIR，见 setup）——二者均写盘在 app_data
         let model_dir = std::env::var("VCR_MODEL_DIR")
@@ -1844,16 +1828,7 @@ fn spawn_server(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
         workdir = py_dir.clone();
         // 不能用裸 `python`（PATH 上常被 Store 占位符/无依赖解释器占据）
         let interp = resolve_vcr_interpreter()?;
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd = std::process::Command::new(&interp);
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            cmd = std::process::Command::new(&interp);
-        }
+        cmd = crate::proc_cmd::command(&interp);
         cmd.arg(&server_script);
     }
 

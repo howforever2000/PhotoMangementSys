@@ -11,8 +11,8 @@ import assert from "node:assert/strict";
 import { hexToRgb, rgbToHsl } from "./color.ts";
 import { DEFAULTS, isDefaultLook, normalizePrefs } from "./prefs.ts";
 
-test("FEAT-094 默认外观 = 启动封面（壁纸 + 落日紫金）", () => {
-  // 背景回到「背景图」模式，且默认字就是壁纸；颜色为落日紫金
+test("FEAT-094/192 默认外观 = 启动封面（背景图模式 + 低饱和中性卡片底色）", () => {
+  // 背景回到「背景图」模式，且默认字就是壁纸
   assert.equal(DEFAULTS.bgStyle, "image");
   // 素化 C7：组件色调由 #2b2140（S≈0.34，带明显紫）降为 #2a2630（S≈0.14，近中性灰紫）。
   // 这里钉的是「低饱和」这条口径而不是字面量 —— 换壁纸/换底色时不必回来改测试，
@@ -24,7 +24,8 @@ test("FEAT-094 默认外观 = 启动封面（壁纸 + 落日紫金）", () => {
     assert.ok(h > 240 || h < 60, `默认组件色色相 ${h.toFixed(0)} 应落在中性紫区间（260~300 或其对侧）`);
   }
   assert.equal(DEFAULTS.compAlpha, 0.64);
-  assert.equal(DEFAULTS.bgOpacity, 0.55);
+  // FEAT-192：星空壁纸极暗（中位亮度 0.017），图片层从 55% 提到 75% 才看得见银河
+  assert.equal(DEFAULTS.bgOpacity, 0.75);
   assert.equal(DEFAULTS.material, "plain");
 });
 

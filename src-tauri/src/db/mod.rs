@@ -56,8 +56,17 @@ pub struct Album {
     /// 最后更新时间戳（Unix 秒）
     pub updated_at: i64,
     /// 相册内照片数量（从文件系统统计，非数据库字段）
+    ///
+    /// FEAT-194 起语义收紧为**静态图片数**（不含动图、不含视频），
+    /// 动图与视频分列在 `animated_count` / `video_count`。
     #[serde(default)]
     pub photo_count: i64,
+    /// 动图数（gif / webp），从文件系统统计
+    #[serde(default)]
+    pub animated_count: i64,
+    /// 视频数（mp4 / mov / m4v ...），从文件系统统计
+    #[serde(default)]
+    pub video_count: i64,
     /// 相册拍摄时间（封面照片的 EXIF 拍摄时间，格式 YYYY-MM-DD）
     #[serde(default)]
     pub shoot_time: Option<String>,
@@ -203,6 +212,10 @@ pub struct UpdateAlbumInput {
 #[derive(Debug, Clone)]
 pub struct AlbumStats {
     pub photo_count: i64,
+    /// 动图数（gif / webp）。与 photo_count 分开，见 `thumbnail::AlbumScan` 注释
+    pub animated_count: i64,
+    /// 视频数（mp4 / mov / m4v ...）
+    pub video_count: i64,
     pub size_bytes: u64,
     pub shoot_time: Option<String>,
     /// 封面源图绝对路径（无封面时用于生成/复用缩略图）
@@ -407,13 +420,15 @@ impl Database {
         // 文件系统统计结果缓存，避免每次列表加载都全目录遍历（详见 fill_album_stats）
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS album_stats (
-                album_id     INTEGER PRIMARY KEY,
-                photo_count  INTEGER NOT NULL DEFAULT 0,
-                size_bytes   INTEGER NOT NULL DEFAULT 0,
-                shoot_time   TEXT,
-                cover_source TEXT,
-                scanned_at   INTEGER NOT NULL,
-                file_count   INTEGER NOT NULL DEFAULT -1
+                album_id       INTEGER PRIMARY KEY,
+                photo_count    INTEGER NOT NULL DEFAULT 0,
+                animated_count INTEGER NOT NULL DEFAULT 0,
+                video_count    INTEGER NOT NULL DEFAULT 0,
+                size_bytes     INTEGER NOT NULL DEFAULT 0,
+                shoot_time     TEXT,
+                cover_source   TEXT,
+                scanned_at     INTEGER NOT NULL,
+                file_count     INTEGER NOT NULL DEFAULT -1
             );",
         )?;
         // 相册照片排除表（「记录删除」：从相册浏览中移除但保留本地文件）
@@ -460,6 +475,10 @@ impl Database {
         let _ = self.conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_photo_ratings_path ON photo_ratings(path);");
         // 迁移：为旧库 album_stats 补充 file_count 列（变更探测信号，旧行默认 -1 即强制首次重扫）
         let _ = self.conn.execute_batch("ALTER TABLE album_stats ADD COLUMN file_count INTEGER NOT NULL DEFAULT -1;");
+        // FEAT-194：媒体类型分栏统计（动图 / 视频）。旧库缺列时 ALTER 报错被忽略，
+        // 历史行自动取默认 0；下次 fill_album_stats 全量重扫即补齐真实值。
+        let _ = self.conn.execute_batch("ALTER TABLE album_stats ADD COLUMN animated_count INTEGER NOT NULL DEFAULT 0;");
+        let _ = self.conn.execute_batch("ALTER TABLE album_stats ADD COLUMN video_count INTEGER NOT NULL DEFAULT 0;");
         // 迁移：为旧库补充 albums 新列（若已存在则忽略）
         let _ = self.conn.execute_batch("ALTER TABLE albums ADD COLUMN location TEXT;");
         let _ = self.conn.execute_batch("ALTER TABLE albums ADD COLUMN folder_id INTEGER;");
@@ -658,6 +677,8 @@ impl Database {
             location: row.get(7)?,
             kind: kind.filter(|k| !k.is_empty()).unwrap_or_else(default_album_kind),
             photo_count: 0,
+            animated_count: 0,
+            video_count: 0,
             shoot_time: None,
             size_bytes: 0,
             scanned_photo_count: 0,
@@ -1651,16 +1672,18 @@ impl Database {
     /// 读取相册文件系统统计缓存（photo_count/size_bytes/shoot_time/封面源图）
     pub fn get_album_stats(&self, album_id: i64) -> Result<Option<AlbumStats>, DbError> {
         let result = self.conn.query_row(
-            "SELECT photo_count, size_bytes, shoot_time, cover_source, file_count
+            "SELECT photo_count, animated_count, video_count, size_bytes, shoot_time, cover_source, file_count
              FROM album_stats WHERE album_id = ?1",
             params![album_id],
             |r| {
                 Ok(AlbumStats {
                     photo_count: r.get::<_, i64>(0)?,
-                    size_bytes: r.get::<_, u64>(1)?,
-                    shoot_time: r.get(2)?,
-                    cover_source: r.get(3)?,
-                    file_count: r.get(4)?,
+                    animated_count: r.get::<_, i64>(1)?,
+                    video_count: r.get::<_, i64>(2)?,
+                    size_bytes: r.get::<_, u64>(3)?,
+                    shoot_time: r.get(4)?,
+                    cover_source: r.get(5)?,
+                    file_count: r.get(6)?,
                 })
             },
         );
@@ -1678,6 +1701,8 @@ impl Database {
         &self,
         album_id: i64,
         photo_count: i64,
+        animated_count: i64,
+        video_count: i64,
         size_bytes: u64,
         shoot_time: Option<String>,
         cover_source: Option<String>,
@@ -1685,11 +1710,14 @@ impl Database {
     ) -> Result<(), DbError> {
         self.conn.execute(
             "INSERT OR REPLACE INTO album_stats
-             (album_id, photo_count, size_bytes, shoot_time, cover_source, scanned_at, file_count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (album_id, photo_count, animated_count, video_count, size_bytes,
+              shoot_time, cover_source, scanned_at, file_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 album_id,
                 photo_count,
+                animated_count,
+                video_count,
                 size_bytes,
                 shoot_time,
                 cover_source,
@@ -1968,20 +1996,42 @@ mod tests {
         // 初始无记录
         assert!(db.get_album_stats(1).unwrap().is_none());
 
-        // 写入含 file_count
-        db.upsert_album_stats(1, 10, 2048, Some("2026-01-01".into()), Some("/x/a.jpg".into()), 42)
-            .unwrap();
+        // 写入含 file_count 与媒体类型分列计数（FEAT-194）
+        db.upsert_album_stats(
+            1,
+            10,
+            2,
+            3,
+            2048,
+            Some("2026-01-01".into()),
+            Some("/x/a.jpg".into()),
+            42,
+        )
+        .unwrap();
         let s = db.get_album_stats(1).unwrap().unwrap();
         assert_eq!(s.photo_count, 10);
+        assert_eq!(s.animated_count, 2, "动图数独立成列");
+        assert_eq!(s.video_count, 3, "视频数独立成列");
         assert_eq!(s.size_bytes, 2048);
         assert_eq!(s.file_count, 42);
         assert_eq!(s.cover_source.as_deref(), Some("/x/a.jpg"));
 
         // 更新 file_count（目录变化后重扫写回）
-        db.upsert_album_stats(1, 12, 4096, Some("2026-02-02".into()), Some("/x/b.jpg".into()), 44)
-            .unwrap();
+        db.upsert_album_stats(
+            1,
+            12,
+            0,
+            1,
+            4096,
+            Some("2026-02-02".into()),
+            Some("/x/b.jpg".into()),
+            44,
+        )
+        .unwrap();
         let s = db.get_album_stats(1).unwrap().unwrap();
         assert_eq!(s.photo_count, 12);
+        assert_eq!(s.animated_count, 0, "重扫后旧计数必须被覆盖而非累加");
+        assert_eq!(s.video_count, 1);
         assert_eq!(s.file_count, 44, "file_count 应反映目录文件数变化");
 
         // 删除（降级重扫路径）

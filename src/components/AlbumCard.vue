@@ -84,11 +84,31 @@ const tileTime = computed(() => {
 });
 
 /**
+ * FEAT-194：相册内容摘要「N 张 · M 视频」。
+ *
+ * 为什么不直接相加成一个总数：`photo_count` 的语义已被钉死为**静态图片数**
+ * （后端 `thumbnail::scan_album_dir`），把视频算进「张」会让既有的
+ * 「24,980 张」这类读数口径漂移。分开列也不占地方。
+ *
+ * 动图默认不单列（它本来就是「一张会动的图」，用户预期里算在张数内）；
+ * 只在同时存在静态图片时才补一句，纯动图相册显示为「0 张」。
+ */
+const countLabel = computed(() => {
+  const p = props.album.photo_count || 0;
+  const a = props.album.animated_count || 0;
+  const v = props.album.video_count || 0;
+  const parts: string[] = [`${p} 张`];
+  if (a > 0 && p > 0) parts.push(`${a} 动图`);
+  if (v > 0) parts.push(`${v} 视频`);
+  return parts.join(" · ");
+});
+
+/**
  * 封面左下角落款的元信息行：张数 · 时间（· 地点）。
  * 图注已嵌入封面内部（海报落款），时间不再单独占一个胶囊。
  */
 const tileMeta = computed(() => {
-  const parts: string[] = [`${props.album.photo_count} 张`];
+  const parts: string[] = [countLabel.value];
   if (tileTime.value) parts.push(tileTime.value);
   // 地点（仅地点视图有意义）跟在时间后面
   if (props.showLocation && props.album.location) parts.push(props.album.location);
@@ -97,7 +117,7 @@ const tileMeta = computed(() => {
 
 /** tile 的 title：把 card 里有但 tile 省掉的字段补回来（悬停可查） */
 const tileTitle = computed(() => {
-  const lines = [props.album.name, `${props.album.photo_count} 张 · ${formatSize(props.album.size_bytes)}`];
+  const lines = [props.album.name, `${countLabel.value} · ${formatSize(props.album.size_bytes)}`];
   if (props.album.shoot_time) lines.push(`拍摄：${props.album.shoot_time}`);
   if (props.album.location) lines.push(`地点：${props.album.location}`);
   lines.push(props.album.path);
@@ -240,6 +260,8 @@ function emitSourcePath(src: { id: number; path: string }, ev: MouseEvent) {
 
       <div class="card-stats">
         <span class="stat-item">🖼️ {{ album.photo_count }} 张</span>
+        <span v-if="album.video_count" class="stat-item">🎬 {{ album.video_count }} 视频</span>
+        <span v-if="album.animated_count && album.photo_count" class="stat-item">🎞 {{ album.animated_count }} 动图</span>
         <span class="stat-item">💾 {{ formatSize(album.size_bytes) }}</span>
         <span v-if="album.shoot_time" class="stat-item">📅 {{ album.shoot_time }}</span>
       </div>

@@ -18,10 +18,10 @@ import {
 } from "../utils/color";
 import { DEFAULTS, isDefaultLook, normalizePrefs, type BackgroundStyle, type Material, type Prefs, type ThemeMode, type WidgetMaterial } from "../utils/prefs";
 import { ALL_PRESETS, matchesPreset, presetPrefs, type Preset } from "../utils/presets";
-/* FEAT-094：默认背景图 = 登录页那张启动封面。作为构建产物里的内置资源引用
-   （Vite 会给出带哈希的 URL），**不写 localStorage** —— 否则 176KB 的 data URL
-   很容易撞上存储配额，进而把整套偏好保存都拖掉（本文件开头的键分离就是这么来的）。 */
-import defaultWallpaper from "../../covers/login-sunset.jpg";
+/* FEAT-192：默认背景图 = 登录页那张启动封面（星空银河）。作为构建产物里的内置资源引用
+   （Vite 会给出带哈希的 URL），**不写 localStorage** —— 否则 1MB 的 data URL
+   必然撞上存储配额，进而把整套偏好保存都拖掉（本文件开头的键分离就是这么来的）。 */
+import defaultWallpaper from "../../covers/login-starfield.jpg";
 
 /** 偏好设置与背景图分开存储：
  *  - 背景图 data URL 可能几百 KB，若和偏好一起写，超出 localStorage 配额时会导致
@@ -41,9 +41,12 @@ const LIGHT_GRAD: [string, string, string] = ["#faf8f5", "#f0ece6", "#ddd7cd"];
 /** 默认背景图（启动封面）的构建产物 URL */
 export const DEFAULT_WALLPAPER = defaultWallpaper;
 
-/** 背景图遮罩的取色与四个端点（layerScrim 与「可读性读数」共用，避免两处漂移） */
+/** 背景图遮罩的取色与四个端点（layerScrim 与「可读性读数」共用，避免两处漂移）。
+ *  FEAT-192 换星空壁纸后整体调轻（旧值 0.52/0.34/0.26/0.38）：新壁纸本身极暗
+ *  （全图中位相对亮度 0.017，旧落日图最亮处 0.55），旧口径会把银河压成一片纯深蓝。
+ *  即便如此，最亮星团处白字仍有 8.7:1 以上，远高于 4.5:1 的 AA 门槛。 */
 const SCRIM_RGB: Rgb = [10, 8, 20];
-const SCRIM_STOPS = [0.52, 0.34, 0.26, 0.38];
+const SCRIM_STOPS = [0.34, 0.18, 0.12, 0.22];
 /** 遮罩的等效不透明度（四端点均值）：把背景图折算成「等效色带」时用它 */
 const SCRIM_MEAN_ALPHA = SCRIM_STOPS.reduce((a, b) => a + b, 0) / SCRIM_STOPS.length;
 
@@ -671,6 +674,20 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--glass-bg", compFill(containerAlpha.value));
     body.style.setProperty("--liquid-bg", compFill(panelAlpha.value));
     body.style.setProperty("--glass-border", tone.border);
+    /* ---------- 原生下拉展开层（BUG-2026-1119-001） ----------
+       <option> 的弹出列表是**浏览器原生窗口**，不吃 CSS 背景（除了 option 的
+       background-color），也不吃 backdrop-filter。所以要给它一对**不透明**的
+       底色/字色 —— 不能用 --color-surface*（带 alpha，按组件透明度下发）。
+
+       字色取 tone.text（对玻璃等效底色算过对比度），底色取该文字的**反向**实色：
+       深底（onDark）→ 深实底 + 浅字；浅底 → 白实底 + 深字。两者永远同向，
+       不会出现「白底白字」这种底色与字色都偏亮的组合。 */
+    body.style.setProperty("--popup-bg", tone.onDark ? "#1e222e" : "#ffffff");
+    body.style.setProperty("--popup-fg", tone.text);
+    /* 同时告诉 UA「这个控件该按深色/浅色绘制」：select 的弹层、滚动条、焦点环
+       都吃这个值。用 dark 档的字面色而非 mode —— 浅色预设 + 深色模式这种错配下，
+       popup 应该跟**实际底色**走，而不是跟用户选的模式开关走。 */
+    body.style.setProperty("--popup-scheme", tone.onDark ? "dark" : "light");
     /* ---------- FEAT-121：液态玻璃的光学令牌（按**背景实际明度**给，不按 mode） ----------
        本轮的两个用户反馈（浅底看不出玻璃 / 拖透明度没反应）中，前者根因不在模糊半径：
        四套预定义背景都是平滑渐变，模糊在平滑面上不产生任何可读差异；而旧值的
