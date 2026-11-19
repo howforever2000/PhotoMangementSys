@@ -1750,6 +1750,76 @@ mod tests {
         );
     }
 
+    /// 精简包（不含模型）的**安全前提**：安装包移出的每个模型都必须能从应用内下载补齐。
+    ///
+    /// 守卫对象 = `src-tauri/release-5.0-beta-no-models.tauri.conf.json` 不再内置、
+    /// 而全量包 `release-5.0-beta.tauri.conf.json` 原本内置的那些 onnx。
+    ///
+    /// 为什么必须测：BUG-2026-1028-011 就是「发行包不带模型 + 下载表漏了
+    /// yolov8n-det.onnx」→ 新装用户 /health.ok 恒为 false、人物与扫描永远不可用，
+    /// 且人脸/语义都能下载成功，用户完全看不出缺的是哪一项。这类事故不报错、只缺功能。
+    #[test]
+    fn slim_package_moved_models_are_all_downloadable() {
+        // 全量包内置、精简包移出的模型（落位相对模型根目录）
+        const MOVED: [&str; 9] = [
+            "yolov8n-det.onnx",
+            "det_10g.onnx",
+            "w600k_r50.onnx",
+            "det_500m.onnx",
+            "w600k_mbf.onnx",
+            "paddleocr-det.onnx",
+            "chinese-clip-fp32/onnx/model.onnx",
+            "chinese-clip-fp32/tokenizer.json",
+            "chinese-clip-fp32/vocab.txt",
+        ];
+        let locals: Vec<String> = specs()
+            .iter()
+            .flat_map(|s| s.files.iter().map(|f| f.local.to_string()))
+            .collect();
+        for m in MOVED {
+            assert!(
+                locals.iter().any(|l| l == m),
+                "精简包移出了 {m}，但下载表无法补齐它 —— 用户将永远缺这个模型。现有可下载落位: {locals:?}"
+            );
+        }
+    }
+
+    /// 精简包配置自洽：只允许「微服务 + 非模型资源」，不得再混入任何 .onnx。
+    ///
+    /// 直接读配置文件本身，避免有人手改配置把模型加回去 / 把微服务删掉。
+    #[test]
+    fn slim_package_config_only_ships_sidecars() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("release-5.0-beta-no-models.tauri.conf.json");
+        let text = std::fs::read_to_string(&path)
+            .expect("精简包配置应存在于 src-tauri/release-5.0-beta-no-models.tauri.conf.json");
+        let cfg: serde_json::Value = serde_json::from_str(&text).expect("精简包配置必须是合法 JSON");
+        let resources = cfg["bundle"]["resources"]
+            .as_object()
+            .expect("精简包配置必须声明 bundle.resources");
+
+        for (src, dst) in resources {
+            let dst = dst.as_str().unwrap_or_default();
+            assert!(
+                !dst.ends_with(".onnx"),
+                "精简包不得内置模型（BUG-2026-1028-011 的反向要求）：{src} -> {dst}"
+            );
+        }
+        // 两个微服务必须仍在包里，否则装完连服务都起不来
+        let targets: Vec<&str> = resources
+            .values()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            targets.iter().any(|t| t.ends_with("vcr-server.exe")),
+            "精简包必须内置 vcr-server.exe：{targets:?}"
+        );
+        assert!(
+            targets.iter().any(|t| t.ends_with("ai-server.exe")),
+            "精简包必须内置 ai-server.exe：{targets:?}"
+        );
+    }
+
     /// 内置源：至少两个、互不重复，且都是国内可连的镜像模板。
     #[test]
     fn builtin_sources_are_sane() {
