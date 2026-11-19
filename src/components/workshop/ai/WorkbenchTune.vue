@@ -30,6 +30,7 @@ import {
   paramViews,
   sliderOf,
   stepSummary,
+  tuneOffKey,
   type TuneOff,
   type WbChainStep,
 } from "../../../utils/workbenchPlan";
@@ -55,42 +56,42 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   "update:open": [value: boolean];
-  param: [op: string, key: string, value: number | string | boolean];
+  param: [uid: string, key: string, value: number | string | boolean];
   /** 下拉选「不处理」= 整步不参与；选回真实枚举值 = 恢复 */
-  off: [op: string, key: string, off: boolean];
-  "reset-step": [op: string];
+  off: [uid: string, key: string, off: boolean];
+  "reset-step": [uid: string];
   "reset-all": [];
 }>();
 
 /** 下拉里的「不处理」哨兵值（不会与 LUT/风格的真实 id 撞车） */
 const OFF = "__off";
 
-/** 手风琴：一次只展开一步，面板不会长到视口外 */
-const openOp = ref<string | null>(null);
+/** 手风琴：一次只展开一步，面板不会长到视口外（按 uid，同名算子各展开各的） */
+const openUid = ref<string | null>(null);
 
-const baseMap = computed(() => new Map(props.base.map((s) => [s.op, s.params])));
+const baseMap = computed(() => new Map(props.base.map((s) => [s.uid, s.params])));
 
-function isOff(op: string, key: string): boolean {
-  return Boolean(props.off[`${op}.${key}`]);
+function isOff(uid: string, key: string): boolean {
+  return Boolean(props.off[tuneOffKey(uid, key)]);
 }
 
 /** 这一步是否有参数被改过或被标为不处理（决定「复位」是否出现） */
-function opChanged(op: string): boolean {
-  const step = props.steps.find((s) => s.op === op);
+function opChanged(uid: string): boolean {
+  const step = props.steps.find((s) => s.uid === uid);
   if (!step) return false;
-  const before = baseMap.value.get(op);
+  const before = baseMap.value.get(uid);
   for (const [key, value] of Object.entries(step.params)) {
-    if (isOff(op, key)) return true;
+    if (isOff(uid, key)) return true;
     if (!before || before[key] !== value) return true;
   }
   return false;
 }
 
 /** 枚举参数被标不处理 → 整步不参与出片（与实际下发语义一致） */
-function stepOff(op: string): boolean {
-  const spec = opById(op);
+function stepOff(step: WbChainStep): boolean {
+  const spec = opById(step.op);
   return Object.entries(spec?.params ?? {}).some(
-    ([key, p]) => p.type === "enum" && isOff(op, key),
+    ([key, p]) => p.type === "enum" && isOff(step.uid, key),
   );
 }
 
@@ -113,22 +114,22 @@ const changeText = computed(() =>
 watch(
   () => props.open,
   (v) => {
-    if (!v || openOp.value) return;
-    openOp.value = props.steps.find((s) => paramViews(s).length)?.op ?? null;
+    if (!v || openUid.value) return;
+    openUid.value = props.steps.find((s) => paramViews(s).length)?.uid ?? null;
   },
   { immediate: true },
 );
 
 /** 换配方后步骤集合会变：当前展开的步不存在时退回第一步 */
 watch(
-  () => props.steps.map((s) => s.op),
-  (ops) => {
-    if (!openOp.value || !ops.includes(openOp.value)) openOp.value = ops[0] ?? null;
+  () => props.steps.map((s) => s.uid),
+  (uids) => {
+    if (!openUid.value || !uids.includes(openUid.value)) openUid.value = uids[0] ?? null;
   },
 );
 
-function toggleOpen(op: string): void {
-  openOp.value = openOp.value === op ? null : op;
+function toggleOpen(uid: string): void {
+  openUid.value = openUid.value === uid ? null : uid;
 }
 
 function togglePanel(): void {
@@ -138,18 +139,18 @@ function togglePanel(): void {
 function onRange(step: WbChainStep, key: string, e: Event): void {
   const slider = Number((e.target as HTMLInputElement).value);
   const raw = applySlider(step, key, slider)[key];
-  emit("param", step.op, key, raw);
+  emit("param", step.uid, key, raw);
 }
 
 function onSelect(step: WbChainStep, key: string, e: Event): void {
   const raw = (e.target as HTMLSelectElement).value;
   if (raw === OFF) {
-    emit("off", step.op, key, true);
+    emit("off", step.uid, key, true);
     return;
   }
   // 从「不处理」选回任一真实值：先解除整步跳过，再写入该值
-  if (isOff(step.op, key)) emit("off", step.op, key, false);
-  emit("param", step.op, key, coerceEnum(step.op, key, raw));
+  if (isOff(step.uid, key)) emit("off", step.uid, key, false);
+  emit("param", step.uid, key, coerceEnum(step.op, key, raw));
 }
 </script>
 
@@ -169,37 +170,37 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
       <ol v-else class="wt-list">
         <li
           v-for="(step, i) in steps"
-          :key="step.op"
+          :key="step.uid"
           class="wt-step"
-          :class="{ on: openOp === step.op, dirty: opChanged(step.op), off: stepOff(step.op) }"
+          :class="{ on: openUid === step.uid, dirty: opChanged(step.uid), off: stepOff(step) }"
         >
           <div class="wt-step-top">
             <span class="wt-n">{{ i + 1 }}</span>
-            <button class="wt-name" type="button" :aria-expanded="openOp === step.op" @click="toggleOpen(step.op)">
+            <button class="wt-name" type="button" :aria-expanded="openUid === step.uid" @click="toggleOpen(step.uid)">
               {{ opLabel(step.op) }}
               <span class="wt-sum">{{ summaryOf(step) }}</span>
-              <span class="wt-chev2" aria-hidden="true">{{ openOp === step.op ? "▾" : "▸" }}</span>
+              <span class="wt-chev2" aria-hidden="true">{{ openUid === step.uid ? "▾" : "▸" }}</span>
             </button>
             <button
-              v-if="opChanged(step.op)"
+              v-if="opChanged(step.uid)"
               class="wt-reset"
               type="button"
               title="这一步恢复配方默认值与「不处理」标记"
               :disabled="disabled"
-              @click="emit('reset-step', step.op)"
+              @click="emit('reset-step', step.uid)"
             >
               复位
             </button>
           </div>
 
-          <div v-if="openOp === step.op" class="wt-params">
+          <div v-if="openUid === step.uid" class="wt-params">
             <div v-for="p in paramViews(step)" :key="p.key" class="wt-field">
               <div class="wt-field-h">
                 <span>{{ p.label }}</span>
                 <span class="wt-val">
                   {{
                     p.kind === "select"
-                      ? isOff(step.op, p.key)
+                      ? isOff(step.uid, p.key)
                         ? "不处理"
                         : enumText(step, p.key)
                       : `${sliderOf(step, p.key)}%`
@@ -209,7 +210,7 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
               <select
                 v-if="p.kind === 'select' && p.options.length"
                 class="wt-select"
-                :value="isOff(step.op, p.key) ? OFF : p.value"
+                :value="isOff(step.uid, p.key) ? OFF : p.value"
                 :disabled="disabled"
                 @change="onSelect(step, p.key, $event)"
               >
@@ -224,12 +225,12 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
                 min="0"
                 max="100"
                 :value="sliderOf(step, p.key)"
-                :disabled="disabled || stepOff(step.op)"
+                :disabled="disabled || stepOff(step)"
                 @input="onRange(step, p.key, $event)"
               />
               <span v-else class="wt-val">{{ p.value }}</span>
             </div>
-            <p v-if="stepOff(step.op)" class="wt-step-note">
+            <p v-if="stepOff(step)" class="wt-step-note">
               本步已选「不处理」；在下拉里选回任一真实值即可恢复。
             </p>
             <p v-if="!paramViews(step).length" class="wt-tip">这一步没有可调参数。</p>

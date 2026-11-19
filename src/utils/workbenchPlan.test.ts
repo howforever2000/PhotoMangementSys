@@ -3,22 +3,27 @@
  *
  * 钉死的语义：
  *   1. 链条顺序由 catalog 的 stage 决定，插入不看点击顺序（后端 validate_plan 会拒逆序）；
- *   2. 同一算子只能出现一次；
- *   3. 链条 → 计划只带启用的步，参数原样（滑杆换算在界面层，不在计划里）；
- *   4. 滑杆 0~100 ↔ catalog 值域（slim 上限 0.8 → 滑杆 80）；
- *   5. 从配方起步要带上配方自己的参数，不是 catalog 默认值。
+ *   2. **同一算子可以出现多次**（FEAT-197），各步 uid 不同、互不影响；
+ *   3. 步骤上限 10 步（与后端 `pipeline.MAX_STEPS` 同口径）；
+ *   4. 链条 → 计划只带启用的步，参数原样（滑杆换算在界面层，不在计划里）；
+ *   5. 滑杆 0~100 ↔ catalog 值域（slim 上限 0.8 → 滑杆 80）；
+ *   6. 从配方起步要带上配方自己的参数，不是 catalog 默认值。
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
   chainFromRecipe,
+  chainHasCloud,
   chainPlan,
   chainSummary,
   chainableOps,
+  canAddOp,
   defaultStep,
   enumText,
   insertOp,
+  isCloudOp,
+  MAX_CHAIN_STEPS,
   orderIssues,
   paramViews,
   planRunnable,
@@ -33,6 +38,7 @@ import {
   effectiveTuneSteps,
   paramsOverride,
   restoreTune,
+  tuneOffKey,
   tunePlan,
   type TuneOff,
   type WbChainStep,
@@ -42,16 +48,31 @@ const opsOf = (steps: WbChainStep[]) => steps.map((s) => s.op);
 
 /* ---------------- 可串联算子清单 ---------------- */
 
-test("链条只收本机、有图像产物的算子", () => {
+test("链条收全部非 internal 且能出图的算子（本机 + 云端）", () => {
   const ids = chainableOps().map((o) => o.id);
+  // 本机
   assert.ok(ids.includes("auto_grade"));
   assert.ok(ids.includes("local_film"));
   assert.ok(ids.includes("face_reshape"));
   assert.ok(ids.includes("skin_smooth"));
+  // 云端（FEAT-197 放开）
+  assert.ok(ids.includes("beauty"));
+  assert.ok(ids.includes("style_transfer"));
+  assert.ok(ids.includes("upscale"));
   // 文字提取产物是 txt，没有图可比对
   assert.ok(!ids.includes("ocr"));
-  // 云端算子一律不进链条（一次拖滑杆 = 一次计费调用）
-  for (const o of chainableOps()) assert.equal(o.backend, "local");
+  // internal 算子（refine）不允许被直接编排
+  assert.ok(!ids.includes("refine"));
+});
+
+test("isCloudOp / chainHasCloud 按 backend 判定", () => {
+  assert.equal(isCloudOp("beauty"), true);
+  assert.equal(isCloudOp("auto_grade"), false);
+  const s = insertOp([], "beauty");
+  assert.equal(chainHasCloud(s), true);
+  assert.equal(chainHasCloud(insertOp([], "auto_grade")), false);
+  // 停用的云端步不算
+  assert.equal(chainHasCloud(setEnabled(s, s[0].uid, false)), false);
 });
 
 /* ---------------- 插入与顺序 ---------------- */
@@ -63,19 +84,39 @@ test("插入按依赖排序：先加磨皮再加形变，形变会排到前面",
   assert.deepEqual(opsOf(s), ["face_reshape", "skin_smooth"]);
 });
 
-test("同一算子只加一次（幂等）", () => {
+test("同一算子可以加多次，uid 各不相同（FEAT-197）", () => {
   let s = insertOp([], "local_film");
-  const before = s;
   s = insertOp(s, "local_film");
-  assert.equal(s, before); // 原样返回，不产生新数组
-  assert.equal(opsOf(s).length, 1);
+  assert.equal(s.length, 2);
+  assert.deepEqual(opsOf(s), ["local_film", "local_film"]);
+  assert.notEqual(s[0].uid, s[1].uid);
+});
+
+test("同名算子只改/删被点的那一步", () => {
+  let s = insertOp(insertOp([], "local_film"), "local_film");
+  const [first, second] = s;
+  s = setParam(s, first.uid, "grain", 0.5);
+  assert.equal(s.find((x) => x.uid === first.uid)!.params.grain, 0.5);
+  assert.equal(s.find((x) => x.uid === second.uid)!.params.grain, 0);
+  s = removeOp(s, first.uid);
+  assert.deepEqual(opsOf(s), ["local_film"]);
+  assert.equal(s[0].uid, second.uid);
+});
+
+test("步数上限 10：到顶后不再插入", () => {
+  let s: WbChainStep[] = [];
+  for (let i = 0; i < MAX_CHAIN_STEPS + 3; i++) s = insertOp(s, "auto_grade");
+  assert.equal(s.length, MAX_CHAIN_STEPS);
+  assert.equal(canAddOp(s), false);
+  assert.equal(canAddOp(s.slice(0, MAX_CHAIN_STEPS - 1)), true);
 });
 
 test("删除与停用", () => {
   let s = insertOp(insertOp([], "auto_grade"), "local_film");
-  s = removeOp(s, "auto_grade");
+  const grade = s.find((x) => x.op === "auto_grade")!;
+  s = removeOp(s, grade.uid);
   assert.deepEqual(opsOf(s), ["local_film"]);
-  s = setEnabled(s, "local_film", false);
+  s = setEnabled(s, s[0].uid, false);
   assert.equal(s[0].enabled, false);
 });
 
@@ -89,13 +130,21 @@ test("顺序满足 requiresBefore，且 sortChain 稳定", () => {
   assert.deepEqual(orderIssues(s), []);
 });
 
+test("同名算子重复也满足依赖（按首次出现位置判定）", () => {
+  let s = insertOp(insertOp([], "auto_grade"), "local_film");
+  s = insertOp(s, "auto_grade");
+  assert.deepEqual(orderIssues(s), []);
+});
+
 /* ---------------- 链条 → 计划 ---------------- */
 
 test("计划只带启用的步，参数原样透传", () => {
   let s = insertOp([], "auto_grade");
-  s = setParam(s, "auto_grade", "strength", 0.8);
+  const gradeUid = s[0].uid;
+  s = setParam(s, gradeUid, "strength", 0.8);
   s = insertOp(s, "local_film");
-  s = setEnabled(s, "local_film", false);
+  const film = s.find((x) => x.op === "local_film")!;
+  s = setEnabled(s, film.uid, false);
 
   const plan = chainPlan(s);
   assert.equal(plan.steps.length, 1);
@@ -112,10 +161,21 @@ test("计划里的顺序即执行顺序（乱序输入也会被排好）", () =>
   );
 });
 
+test("同名算子两次都进计划（「跑两遍」不会被去重）", () => {
+  let s = insertOp(insertOp([], "local_film"), "local_film");
+  s = setParam(s, s[1].uid, "strength", 0.4);
+  const plan = chainPlan(s);
+  assert.deepEqual(
+    plan.steps.map((x) => x.op),
+    ["local_film", "local_film"],
+  );
+  assert.equal(plan.steps[1].params.strength, 0.4);
+});
+
 test("没有启用的步时不可提交", () => {
   let s = insertOp([], "auto_grade");
   assert.equal(planRunnable(s), true);
-  s = setEnabled(s, "auto_grade", false);
+  s = setEnabled(s, s[0].uid, false);
   assert.equal(planRunnable(s), false);
   assert.equal(chainPlan(s).steps.length, 0);
 });
@@ -124,7 +184,7 @@ test("没有启用的步时不可提交", () => {
 
 test("滑杆与值域互转：slim 上限 0.8 → 滑杆 80", () => {
   let s = insertOp([], "face_reshape");
-  s = setParam(s, "face_reshape", "slim", 0.8);
+  s = setParam(s, s[0].uid, "slim", 0.8);
   assert.equal(sliderOf(s[0], "slim"), 100);
   const params = applySlider(s[0], "slim", 50);
   assert.equal(params.slim, 0.4);
@@ -142,6 +202,16 @@ test("枚举参数带中文标签（复用 aiPresets / LUT 表）", () => {
   assert.equal(enumText(grade, "style"), "自然");
 });
 
+test("云端算子的枚举也有中文标签（美颜 / 滤镜迁移 / 云端超分）", () => {
+  const beauty = defaultStep("beauty");
+  assert.equal(enumText(beauty, "style"), "自然");
+  assert.equal(enumText(beauty, "level"), "中");
+  const transfer = defaultStep("style_transfer");
+  assert.equal(enumText(transfer, "mode"), "一句话调色");
+  const up = defaultStep("upscale");
+  assert.equal(enumText(up, "scale"), "2×");
+});
+
 test("步骤摘要先枚举后滑杆，且不超过两项滑杆", () => {
   const film = defaultStep("local_film");
   const s = stepSummary(film);
@@ -149,10 +219,13 @@ test("步骤摘要先枚举后滑杆，且不超过两项滑杆", () => {
   assert.ok(s.split("·").length <= 3);
 });
 
-test("整条链摘要按执行顺序串起来", () => {
+test("整条链摘要按执行顺序串起来，重复算子各列一次", () => {
   const s = insertOp(insertOp([], "local_film"), "auto_grade");
   assert.equal(chainSummary(s), "智能调色 → 胶片模拟");
   assert.equal(chainSummary([]), "自定义组合");
+  let dup = insertOp(insertOp([], "local_film"), "local_film");
+  dup = setParam(dup, dup[0].uid, "strength", 0.5);
+  assert.equal(chainSummary(dup), "胶片模拟 → 胶片模拟");
 });
 
 /* ---------------- 从配方起步 ---------------- */
@@ -206,17 +279,15 @@ test("基线里没有的新参数也算改动", () => {
 
 test("复位单步：参数与启用状态都回基线，其他步不动", () => {
   const base = chainFromRecipe("portrait");
-  const baseMap = new Map(base.map((s) => [s.op, s.params]));
+  const baseMap = new Map(base.map((s) => [s.uid, s.params]));
   const steps = cloneSteps(base);
   for (const s of steps) s.params.strength = 0.01;
   steps[0].enabled = false;
 
-  const one = restoreTune(steps, base, "skin_smooth");
+  const smoothUid = steps.find((s) => s.op === "skin_smooth")!.uid;
+  const one = restoreTune(steps, base, smoothUid);
   assert.equal(one.length, steps.length);
-  assert.equal(
-    one.find((s) => s.op === "skin_smooth")!.params.strength,
-    baseMap.get("skin_smooth")!.strength,
-  );
+  assert.equal(one.find((s) => s.op === "skin_smooth")!.params.strength, baseMap.get(smoothUid)!.strength);
   // 其他步仍是被改过的值/停用态
   assert.equal(one.find((s) => s.op === "auto_grade")!.params.strength, 0.01);
   assert.equal(one[0].enabled, false);
@@ -224,7 +295,7 @@ test("复位单步：参数与启用状态都回基线，其他步不动", () =>
 
   const all = restoreTune(steps, base);
   for (const s of all) {
-    for (const [k, v] of Object.entries(s.params)) assert.equal(v, baseMap.get(s.op)![k]);
+    for (const [k, v] of Object.entries(s.params)) assert.equal(v, baseMap.get(s.uid)![k]);
   }
   assert.ok(all.every((s) => s.enabled));
 });
@@ -246,16 +317,32 @@ test("滑杆拉到 0 只是参数值，不会让步骤消失", () => {
 test("枚举参数不处理：整步不参与（LUT / 风格没有中性值）", () => {
   const base = chainFromRecipe("portrait");
   const steps = cloneSteps(base);
-  const off: TuneOff = { "local_film.lut": true, "auto_grade.style": true };
+  const film = steps.find((s) => s.op === "local_film")!;
+  const grade = steps.find((s) => s.op === "auto_grade")!;
+  const off: TuneOff = {
+    [tuneOffKey(film.uid, "lut")]: true,
+    [tuneOffKey(grade.uid, "style")]: true,
+  };
   const out = effectiveTuneSteps(steps, off);
   assert.ok(!out.some((s) => s.op === "local_film"));
   assert.ok(!out.some((s) => s.op === "auto_grade"));
   assert.ok(out.some((s) => s.op === "skin_smooth"));
 });
 
+test("同名算子的「不处理」互不影响（按 uid 定位）", () => {
+  let s = insertOp(insertOp([], "local_film"), "local_film");
+  const [a, b] = s;
+  s = setParam(s, b.uid, "lut", "velvia");
+  const out = effectiveTuneSteps(s, { [tuneOffKey(a.uid, "lut")]: true });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].uid, b.uid);
+  assert.equal(out[0].params.lut, "velvia");
+});
+
 test("tunePlan 只收启用步、按依赖排序并带上 intent", () => {
   const base = chainFromRecipe("portrait");
-  const off: TuneOff = { "local_film.lut": true };
+  const film = base.find((s) => s.op === "local_film")!;
+  const off: TuneOff = { [tuneOffKey(film.uid, "lut")]: true };
   const plan = tunePlan(base, off, "人像");
   assert.equal(plan.intent, "人像");
   assert.deepEqual(

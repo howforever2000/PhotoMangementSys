@@ -17,6 +17,7 @@ import numpy as np
 from PIL import Image
 
 from . import autograde, faceparse, facewarp, landmark, localmodels, skinretouch
+from .renderopts import EMPTY as EMPTY_CTX, RunContext
 
 Warn = Optional[Callable[[str], None]]
 
@@ -151,7 +152,9 @@ def smooth_image(
 # ---------------- OPS 形态包装（签名与 ops.py 既有算子一致） ----------------
 
 
-def op_auto_grade(img: Image.Image, params: Dict[str, Any], providers: Any) -> Image.Image:
+def op_auto_grade(
+    img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
+) -> Image.Image:
     out, _, _ = grade_image(
         img,
         str(params.get("style", "natural")),
@@ -161,7 +164,9 @@ def op_auto_grade(img: Image.Image, params: Dict[str, Any], providers: Any) -> I
     return out
 
 
-def op_face_reshape(img: Image.Image, params: Dict[str, Any], providers: Any) -> Image.Image:
+def op_face_reshape(
+    img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
+) -> Image.Image:
     return reshape_image(
         img,
         float(params.get("slim", 0.3)),
@@ -169,7 +174,9 @@ def op_face_reshape(img: Image.Image, params: Dict[str, Any], providers: Any) ->
     )
 
 
-def op_skin_smooth(img: Image.Image, params: Dict[str, Any], providers: Any) -> Image.Image:
+def op_skin_smooth(
+    img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
+) -> Image.Image:
     return smooth_image(
         img,
         float(params.get("strength", 0.45)),

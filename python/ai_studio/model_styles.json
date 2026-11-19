@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "note": "模型风格提示词唯一真相源（FEAT-198）。每条 = 中文原文（用户提供）+ 英文要点（发给网关的稳定段）。前端 src/utils/modelStylePresets.ts 只镜像 id/label，守卫测试 modelStylePresets.test.ts 双向校验。zh 与 en 都会被拼进图像编辑提示词，且统一由 presets.with_style() 追加结构保全硬段。",
+  "styles": [
+    {
+      "id": "hk90",
+      "label": "90 年代港片",
+      "zh": "电影剧照，1990 年代港片质感，35mm 胶片。它的标志是颗粒感胶片上温暖钨丝灯和绿色日光灯的混合。高光温暖明亮，中间调带黄绿调，暗部浓、略偏绿。饱和温暖的钨丝灯光混着偏绿的日光灯光；红色强烈，绿色是荧光绿，黄色温暖，蓝色退居其次。肤色温暖，日光灯照到的地方略偏黄绿。饱和度高。曝光明亮、人脸清晰，画面里能看到灯泡和灯管。反差有力，暗部浓。35mm 胶片颗粒明显，略带柔焦。轻微的运动模糊，手持的能量。怀旧的江湖或爱情氛围，复古电影质感，曝光明亮充足。",
+      "en": "Cinematic film still, 1990s Hong Kong cinema look on 35mm film. Mixed warm tungsten practicals and green fluorescent daylight: warm bright highlights, yellow-green midtones, deep slightly green-tinted shadows. Strong reds, fluorescent green, warm yellows, restrained blues. Warm skin tones, high saturation, punchy contrast, visible 35mm grain, slight softness, mild handheld motion blur, nostalgic mood, bright generous exposure."
+    },
+    {
+      "id": "kodak_gold_200",
+      "label": "柯达金 200",
+      "zh": "柯达金 200 民用彩色负片。它的标志是平凡回忆里的那层金色光泽：即使在阴影里，一切看起来也像午后温暖的阳光。高光金黄，中间调是温暖的琥珀色，暗部是暖棕色而不是黑色。整个画面蒙着一层金黄色的暖调。红色温暖饱和，橙色发亮，黄色浓郁、金灿灿，绿色略偏黄、收敛，蓝色偏淡、柔和、略发灰。肤色像被阳光晒过，温暖发亮。暖色饱和度中等偏高，冷色克制。反差中等，黑位略微抬起、偏软，高光过渡柔和。颗粒可见、略粗，暗部更明显。民用镜头偏软，边缘略糊，带轻微暗角。像在老相册里翻到的 90 年代快照：怀旧的暖阳感，曝光明亮充足。",
+      "en": "Kodak Gold 200 consumer color negative. A golden glow over ordinary memories, like warm afternoon sunlight even in the shade. Golden-yellow highlights, warm amber midtones, warm brown shadows instead of black, an overall amber cast. Warm saturated reds, glowing oranges, rich golden yellows, olive-leaning restrained greens, pale soft slightly greyish blues. Sun-kissed warm bright skin. Warm saturation medium-high, cool colors restrained. Medium contrast, slightly lifted soft blacks, smooth highlight rolloff, visible slightly coarse grain that shows more in the shadows, soft consumer-lens rendering with gently blurred edges and a light vignette."
+    },
+    {
+      "id": "wong_kar_wai",
+      "label": "王家卫式",
+      "zh": "电影剧照，1990 年代香港文艺片风格，35mm 胶片，手持广角镜头贴近主体。它的标志是狂热饱和的颜色和被拖拽的运动，仿佛记忆本身是模糊的。高光是发光的霓虹，中间调是饱和的绿和红，暗部深沉、带着彩色光。饱和的霓虹绿、红和琥珀色统治画面；日光灯的绿色混着钨丝灯的暖光，深红色点缀。肤色在彩色光下温暖发亮。饱和度高、有情绪。朦胧发光的彩色光落在脸上，画面里能看到实景光源，光线被雾气柔化。反差中等偏高，暗部浓郁深沉但仍带颜色。抽帧造成的运动拖影，光线被拉长成条，动作略带卡顿感。35mm 胶片颗粒粗重，略带柔焦。画面倾斜，前景有遮挡，主体偏离中心。渴望与孤独，浓烈而浪漫的忧郁，人脸被清楚照亮。",
+      "en": "Cinematic film still, 1990s Hong Kong art-house style, 35mm film, handheld wide-angle lens close to the subject. Feverishly saturated color and smeared motion, as if memory itself were blurred. Glowing neon highlights, saturated green and red midtones, deep shadows that still carry colored light. Saturated neon green, red and amber dominate; fluorescent green mixed with tungsten warmth, deep red accents. Warm luminous skin under colored light. High emotional saturation, hazy glowing colored light falling on the face, visible practical light sources softened by haze. Medium-high contrast, rich deep shadows that keep their color, step-printed motion trails, light stretched into streaks, heavy 35mm grain, slight softness, tilted frame, foreground obstruction, subject off-center, intimate and melancholic mood."
+    },
+    {
+      "id": "cinestill_800t",
+      "label": "CineStill 800T",
+      "zh": "CineStill 800T 灯光型胶卷。它的标志是每一盏灯周围的红橙色光晕，以及灯光型胶卷的冷青色调。高光暖亮，带红色光晕，中间调偏青，暗部是冷蓝青色但通透。每一个光源和明亮的高光周围都有发光的红橙色光晕。环境光和暗部整体是冷青蓝的灯光色温，光源则发出温暖的琥珀色和橙色。红色发光，绿色偏向青色，蓝色深、偏青。被照亮的肤色偏暖。饱和度浓郁、有情绪。反差中等，暗部深但保留细节、曝光充足。颗粒柔和可见。高光周围有柔和的泛光，略微柔化。梦幻的电影氛围，曝光明亮充足，人脸被清楚照亮。",
+      "en": "CineStill 800T tungsten-balanced film. Signature red-orange halation around every light source, plus the cool cyan-teal cast of tungsten balance. Warm bright highlights with red halation, cyan-shifted midtones, deep cool blue-teal shadows that stay transparent. Every light source and bright specular has a glowing red-orange halo. Ambient and shadow areas read cool cyan-blue while the sources themselves emit warm amber and orange. Red glows, cyan-leaning greens, deep cyan-tinted blues. Warm-lit skin. Rich emotional saturation, medium contrast, deep shadows that retain detail, generous exposure, soft visible grain, gentle bloom around highlights, dreamy cinematic mood."
+    },
+    {
+      "id": "portra_400",
+      "label": "柯达 Portra 400",
+      "zh": "柯达 Portra 400 彩色负片，多给一档曝光，画面明亮通透、略偏高调，富士 Frontier 扫描。它的标志是毫不费力的好肤色：人脸温暖、均匀、透亮，却没有修图的油光；混合光源会被中和成一种柔和统一的暖意。高光带淡淡的奶油蜜桃色，中间调保持中性，暗部略微偏暖棕。整体白平衡中性略暖。红色柔和、略偏珊瑚色，橙色温暖，绿色明显收敛、略偏橄榄色，蓝色柔和偏浅、略带青，黄色像奶油一样。肤色温暖、自然、讨喜，细腻顺滑，透出健康的红润。饱和度偏低，但看起来依然饱满。反差低：暗部像奶油一样柔和抬起、从不死黑，中间调通透，高光肩部又长又顺，没有任何死白。颗粒细腻但清楚可见、分布均匀，在中间调和平滑区域最明显。镜头成像柔和自然，锐度温和，边缘不生硬。通透、真实、经典的胶片质感，曝光明亮通透。",
+      "en": "Kodak Portra 400 color negative, exposed one stop over, bright airy slightly high-key, Fuji Frontier scan. Effortless flattering skin: warm, even and luminous without any retouched grease, mixed light sources neutralised into one soft unified warmth. Creamy peach-tinted highlights, neutral midtones, slightly warm brown shadows. White balance neutral leaning warm. Soft coral-leaning reds, warm oranges, clearly restrained olive-leaning greens, soft pale slightly cyan blues, buttery yellows. Skin warm, natural, flattering, smooth with healthy rosiness. Low saturation that still reads rich. Low contrast: creamy lifted blacks that never crush, transparent midtones, long smooth highlight shoulder with no clipped whites. Fine but clearly visible grain, evenly distributed, most obvious in the midtones and smooth areas. Soft natural lens rendering, gentle sharpness, no hard edges."
+    },
+    {
+      "id": "fuji_pro_160ns",
+      "label": "富士 Pro 160NS",
+      "zh": "富士 Pro 160NS 彩色负片，富士 Frontier 扫描。它的标志是一种柔和、中性偏冷的平静：白色干净，肤色温和，颜色上不制造任何戏剧性。高光是干净的白，中间调中性柔和，暗部中性偏冷、通透。整体中性略冷、柔和，白色干净。绿色温和偏冷，蓝色柔和清澈，红色克制，黄色偏淡。肤色干净自然，带一点淡粉。饱和度低。反差低，影调过渡又长又顺，暗部通透，高光柔和。颗粒细，细节干净均匀。成像均匀精致，没有明显偏色。克制、干净、专业的质感，平静低调，曝光明亮均匀。",
+      "en": "Fuji Pro 160NS color negative, Fuji Frontier scan. A soft, neutral and slightly cool calm: clean whites, gentle skin, no drama in the color. Clean white highlights, neutral soft midtones, neutral slightly cool but transparent shadows. Overall neutral leaning cool and soft with clean whites. Cool gentle greens, soft clear blues, restrained reds, pale yellows. Clean natural skin with a faint pastel pink. Low saturation, low contrast, long smooth tonal transitions, transparent shadows, soft highlights, fine clean even grain, immaculate uniform rendering with no noticeable color cast, understated professional mood."
+    }
+  ]
+}

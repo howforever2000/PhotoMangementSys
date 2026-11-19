@@ -11,21 +11,34 @@
 
 本模块不含 provider 协议细节（在 `providers/openai_compat.py`）、不含提示词文本
 （在 `presets.py`）、不含作业/进度框架（在 `workflows/*.py`）。
+
+## 重复算子（FEAT-197）
+
+链条里允许**同一算子出现多次**（自己组合支持「同一组件多次插入」）。三条相关纪律：
+  - 步骤的**位置**不再由 op 唯一，依赖校验按「是否存在更早的同名步」判断；
+  - 超分同族**不再静默丢弃**第二个（旧 `_one_superres` 会把 4×=2×跑两遍的设计
+    悄悄吃掉，用户看到「选了两次只放大一次」）；改为超过 2 次直接报错，
+    因为 3 次以上必定是误操作；
+  - 步数上限 `MAX_STEPS` 从静默截断改为**报错**：截断会让用户精心排的后几步消失，
+    而界面上明明还显示着。
 """
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, FrozenSet, List
 
 from PIL import Image
 
 from . import catalog, critic, ops
 from .providers import openai_compat as oc
+from .renderopts import EMPTY as EMPTY_CTX, RunContext
 from .workflows.base import check_cancel, parse_json_loose, understand_bytes
 
-# 超分同族：云端/本地各一次即可，同族多步会重复放大、反而不如单步
+# 超分同族：云端/本地各算一次有效放大。4× 由「2× 跑两遍」实现，所以允许 2 次；
+# 3 次以上是误操作（×8 起步，体积与伪影都失控），在校验期直接拒。
 _SUPERRES_OPS = frozenset({"upscale", "local_upscale"})
-MAX_STEPS = 6  # 配方比单步计划多（调色→滤镜→形变→磨皮→超分），放宽到 6
+_MAX_SUPERRES = 2
+MAX_STEPS = 10  # 自己组合的上限（FEAT-197：与前端 stepper 上限同一口径）
 
 StepEvent = Callable[[Dict[str, Any]], None]
 
@@ -34,15 +47,13 @@ class PlanError(ValueError):
     """计划非法（planner 输出不满足白名单/约束）。planner 可据此错误重试一次。"""
 
 
-def _norm_step(raw: Any) -> Dict[str, Any]:
+def _norm_step(raw: Any, allowed: tuple[str, ...]) -> Dict[str, Any]:
     """单步归一：白名单 + schema 夹取；保留 optional 等编排字段。"""
     if not isinstance(raw, dict):
         raise PlanError("步骤必须是对象")
     op = str(raw.get("op") or "").strip()
-    if op not in catalog.allowed_ops():
-        raise PlanError(
-            f"不支持的算子: {op or '(空)'}，仅允许 {', '.join(catalog.allowed_ops())}"
-        )
+    if op not in allowed:
+        raise PlanError(f"不支持的算子: {op or '(空)'}，仅允许 {', '.join(allowed)}")
     step: Dict[str, Any] = {
         "op": op,
         "params": catalog.norm_params(op, raw.get("params")),
@@ -52,41 +63,49 @@ def _norm_step(raw: Any) -> Dict[str, Any]:
     return step
 
 
-def _one_superres(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """超分同族只留第一步（云端/本地不叠加）：两次 ×4 会变成 ×16，体积与伪影都失控。"""
-    out: List[Dict[str, Any]] = []
-    seen = False
-    for step in steps:
-        if step["op"] in _SUPERRES_OPS:
-            if seen:
-                continue
-            seen = True
-        out.append(step)
-    return out
+def _check_superres(steps: List[Dict[str, Any]]) -> None:
+    """超分同族最多 2 次（4× = 2× 跑两遍）；3 次以上报错而不是静默丢弃。"""
+    n = sum(1 for s in steps if s["op"] in _SUPERRES_OPS)
+    if n > _MAX_SUPERRES:
+        raise PlanError(
+            f"超分最多 2 步（4× 用 2× 跑两遍），当前 {n} 步；再多就是误操作"
+        )
 
 
-def validate_plan(raw: Dict[str, Any]) -> Dict[str, Any]:
+def validate_plan(raw: Dict[str, Any], allowed: FrozenSet[str] | None = None) -> Dict[str, Any]:
     """宽松 JSON → 受约束计划。非法抛 PlanError。
 
     顺序不再靠 `sorted(_ORDER[op])` 悄悄改写：前置依赖必须**显式出现在前面**，
     否则报错让 planner 重试。理由：用排序代替依赖无法表达「磨皮必须在形变之后」。
+
+    `allowed` 给出时只接受该算子集合（「模型理解」路线只允许云端算子，
+    见 `catalog.cloud_ops()`）；缺省用 `catalog.allowed_ops()`。
     """
     if not isinstance(raw, dict):
         raise PlanError("计划必须是 JSON 对象")
     steps_raw = raw.get("steps")
     if not isinstance(steps_raw, list) or not steps_raw:
         raise PlanError("计划缺少 steps 或为空")
-    steps = [_norm_step(s) for s in steps_raw]
-    steps = _one_superres(steps)
-    if len(steps) > MAX_STEPS:
-        steps = steps[:MAX_STEPS]
+    allow = tuple(sorted(allowed)) if allowed is not None else catalog.allowed_ops()
 
-    # 依赖是「相对顺序」约束：若两个算子都出现，前置者必须排在前面；
+    steps = [_norm_step(s, allow) for s in steps_raw]
+    _check_superres(steps)
+    if len(steps) > MAX_STEPS:
+        raise PlanError(
+            f"步骤最多 {MAX_STEPS} 步，当前 {len(steps)} 步；请删减后再提交"
+        )
+
+    # 依赖是「相对顺序」约束：若两个算子都出现，前置者必须排在**每一次**同名步之前；
     # 前置者缺席不算非法（单步计划、配方里的 optional 步都要能成立）。
-    positions = {st["op"]: i for i, st in enumerate(steps)}
+    # 同一算子可重复出现，所以用「每个算子的首次出现位置」判断：只要某个前置算子
+    # 全部出现在本步之后，就是逆序。
+    first_pos: Dict[str, int] = {}
+    for i, st in enumerate(steps):
+        first_pos.setdefault(st["op"], i)
     for i, st in enumerate(steps):
         for dep in catalog.requires_before(st["op"]):
-            if dep in positions and positions[dep] > i:
+            j = first_pos.get(dep)
+            if j is not None and j > i:
                 raise PlanError(f"算子 {st['op']} 必须排在 {dep} 之后，当前顺序相反")
 
     intent = str(raw.get("intent") or "").strip()
@@ -99,11 +118,15 @@ def execute_plan(
     providers: Any,
     cancel=None,
     on_step: StepEvent | None = None,
+    ctx: RunContext | None = None,
 ) -> Image.Image:
     """按计划逐步执行；每步前检查取消、每步发一次结构化事件。返回终图。
 
     `on_step({index,total,op,label,status,ms,issues})` 由入口层（workflow）转成
     job meta.steps，前端据此显示「第 N/M 步 · 耗时」。本函数不碰作业状态。
+
+    `ctx` 是作业级渲染参数（文生图采样步数等），原样交给每个算子；本机算子收下
+    但不使用。缺省等于「不向网关声明步数」。
 
     FEAT-169 结构保全：云端步（整幅重绘）执行后用 `critic.structure_compare` 硬验收；
     一旦检出几何被改动，**以该步输入回退**并把原因写进 issues。为什么是回退而不是
@@ -111,6 +134,7 @@ def execute_plan(
     回退既保住形状，也保住其余步骤的成果。
     """
     cur = img
+    context = ctx or EMPTY_CTX
     steps = plan.get("steps") or []
     total = len(steps)
     for i, st in enumerate(steps, start=1):
@@ -129,7 +153,7 @@ def execute_plan(
                      "status": "running", "ms": 0})
         before = cur
         try:
-            cur = fn(cur, st.get("params") or {}, providers)
+            cur = fn(cur, st.get("params") or {}, providers, context)
             status = "done"
             issues: List[str] = []
             # 只对云端步做结构验收：本机算子已在实现层保证几何恒等（查表 / 局部 ROI），

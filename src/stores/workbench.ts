@@ -30,6 +30,7 @@ import {
   restoreTune,
   setEnabled,
   setParam,
+  tuneOffKey,
   tunePlan as buildTunePlan,
   chainFromRecipe,
   type TuneOff,
@@ -39,10 +40,10 @@ import {
 export type WbItemStatus = "idle" | "queued" | "running" | "done" | "failed";
 
 /**
- * 批量套用的方案（FEAT-177）：
+ * 出片方案（FEAT-177 / FEAT-197）：
  *   - recipe ：现成配方（懒人主路径，与创意工坊「一键出片」同一条链路）
- *   - ai     ：模型理解意图后规划步骤（按调用计费）
- *   - chain  ：自己勾算子串成链（本机、免费，与首页单步工具同一批能力）
+ *   - ai     ：模型理解意图后规划步骤（语言模型 + 文生图模型，按调用计费）
+ *   - chain  ：自己组合原子组件（本机 + 云端都能插，同名组件可重复，最多 10 步）
  * 三者共用同一套「导入 → 群图状态 → 前后对比 → 导出并配册」流程。
  */
 export type WbEngine = "recipe" | "ai" | "chain";
@@ -87,14 +88,20 @@ interface WbState {
   /* ---------------- AI 引擎 ---------------- */
   /** 修图意图（一句话） */
   prompt: string;
-  /** 强度 0~100 */
+  /** 强度 0~100（进入规划提示词的补充要求） */
   strength: number;
-  /** 是否多轮反思 */
+  /** 是否做一轮反思自检（免费本地 critic + 云端复核，不改出图质量） */
   reflect: boolean;
-  /** 反思轮次 */
+  /** 反思轮次（界面固定 1；保留字段供旧作业 / 接口兼容） */
   rounds: number;
-  /** 是否偏好本地组件（AI 规划时优先 local_*） */
-  localFirst: boolean;
+  /** 文生图采样步数（FEAT-197：界面「步数」；默认 1，不写进请求体） */
+  renderSteps: number;
+  /** 影调风格预设 id（FEAT-198；空串 = 不追加风格） */
+  styleId: string;
+  /** 上采样：默认不勾（每张多一次云端调用） */
+  upsample: boolean;
+  /** 上采样倍率：2 或 4（4 由「2× 跑两遍」实现） */
+  upsampleScale: number;
   /* ---------------- 输出 ---------------- */
   /** 输出目录：产物写到这里；「创意工坊」相册也指向这里 */
   outputDir: string;
@@ -135,7 +142,10 @@ export const useWorkbenchStore = defineStore("workbench", {
     strength: 64,
     reflect: true,
     rounds: 1,
-    localFirst: false,
+    renderSteps: 1,
+    styleId: "",
+    upsample: false,
+    upsampleScale: 2,
     outputDir: "",
     autoImport: true,
     samplePhase: "idle",
@@ -165,12 +175,12 @@ export const useWorkbenchStore = defineStore("workbench", {
     tuneOverrides: (s) => paramsOverride(s.tuneSteps, s.tuneBase),
     /** 改过的参数个数（不含被标为「不处理」的键，避免与「跳过」重复计数） */
     tuneChangedCount: (s) => {
-      const base = new Map(s.tuneBase.map((x) => [x.op, x.params]));
+      const base = new Map(s.tuneBase.map((x) => [x.uid, x.params]));
       let n = 0;
       for (const st of s.tuneSteps) {
-        const before = base.get(st.op);
+        const before = base.get(st.uid);
         for (const [k, v] of Object.entries(st.params)) {
-          if (s.tuneOff[`${st.op}.${k}`]) continue;
+          if (s.tuneOff[tuneOffKey(st.uid, k)]) continue;
           if (!before || before[k] !== v) n++;
         }
       }
@@ -240,18 +250,19 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.selected = [];
     },
     /* ---------------- 步骤链（自己组合） ---------------- */
+    /** 加一步（允许同一组件多次插入；到 10 步上限时原样返回） */
     addChainOp(op: string): void {
       this.chain = insertOp(this.chain, op);
     },
-    removeChainOp(op: string): void {
-      this.chain = removeOp(this.chain, op);
+    removeChainOp(uid: string): void {
+      this.chain = removeOp(this.chain, uid);
     },
-    toggleChainOp(op: string): void {
-      const cur = this.chain.find((s) => s.op === op);
-      if (cur) this.chain = setEnabled(this.chain, op, !cur.enabled);
+    toggleChainOp(uid: string): void {
+      const cur = this.chain.find((s) => s.uid === uid);
+      if (cur) this.chain = setEnabled(this.chain, uid, !cur.enabled);
     },
-    setChainParam(op: string, key: string, value: number | string | boolean): void {
-      this.chain = setParam(this.chain, op, key, value);
+    setChainParam(uid: string, key: string, value: number | string | boolean): void {
+      this.chain = setParam(this.chain, uid, key, value);
     },
     loadChainFromRecipe(recipeId: string): void {
       this.chain = chainFromRecipe(recipeId);
@@ -291,22 +302,22 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.tuneOff = {};
     },
     /** 改一个算子参数（值域与 catalog 一致，滑杆换算在组件层） */
-    setTuneParam(op: string, key: string, value: number | string | boolean): void {
-      this.tuneSteps = setParam(this.tuneSteps, op, key, value);
+    setTuneParam(uid: string, key: string, value: number | string | boolean): void {
+      this.tuneSteps = setParam(this.tuneSteps, uid, key, value);
     },
     /** 下拉「不处理」：只对枚举参数生效（数值参数直接拉到 0，不占标记） */
-    setTuneOff(op: string, key: string, off: boolean): void {
-      const k = `${op}.${key}`;
+    setTuneOff(uid: string, key: string, off: boolean): void {
+      const k = tuneOffKey(uid, key);
       const next: TuneOff = { ...this.tuneOff };
       if (off) next[k] = true;
       else delete next[k];
       this.tuneOff = next;
     },
     /** 复位单步：参数与「不处理」标记都回基线 */
-    resetTuneStep(op: string): void {
-      this.tuneSteps = restoreTune(this.tuneSteps, this.tuneBase, op);
+    resetTuneStep(uid: string): void {
+      this.tuneSteps = restoreTune(this.tuneSteps, this.tuneBase, uid);
       this.tuneOff = Object.fromEntries(
-        Object.entries(this.tuneOff).filter(([k]) => !k.startsWith(`${op}.`)),
+        Object.entries(this.tuneOff).filter(([k]) => !k.startsWith(`${uid}.`)),
       );
     },
     /** 复位全部：参数与「不处理」标记都回基线 */

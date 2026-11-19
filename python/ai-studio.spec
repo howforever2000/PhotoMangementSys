@@ -58,6 +58,8 @@ a = Analysis(
         # 必须随包分发（漏一份 → 启动或首次使用该工具时 FileNotFoundError）
         ('ai_studio/op_catalog.json', 'ai_studio'),
         ('ai_studio/recipes.json', 'ai_studio'),
+        # 模型风格提示词（FEAT-198）：modelstyle.py 读取，漏了 → 启动即 FileNotFoundError
+        ('ai_studio/model_styles.json', 'ai_studio'),
         # OCR 的 CTC 字典（FEAT-171）：config._bundled_file 读取，漏了 → 文字提取报「字典缺失」
         ('ai_studio/ppocr_keys_v1.txt', 'ai_studio'),
     ],

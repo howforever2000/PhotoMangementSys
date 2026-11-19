@@ -1,27 +1,41 @@
 <script setup lang="ts">
 /**
- * 工作台步骤链编辑器（FEAT-177）
+ * 工作台步骤链编辑器（FEAT-177 / FEAT-197）
  * ===================================================================
- * 「自己组合」就是一条有序的算子链：勾选即加入、参数就地改、不要的删掉。
+ * 「自己组合」是一条有序的原子组件链：点「添加」即加入、参数就地改、不要的删掉。
  *
- * 为什么没有排序控件：
- *   现有 5 个本机算子在 `op_catalog.json` 里是**全序依赖**（stage 0→4，
- *   requiresBefore 串成 调色→胶片→形变→磨皮），人工排序没有任何合法位置，
- *   给了就是死控件（同类教训：FEAT-168 里绑定了却不提交的 strength 滑杆）。
- *   所以「勾选」负责选哪些步，顺序由依赖决定，后端 `validate_plan` 不会拒。
+ * ## FEAT-197 的三处变化
  *
- * 为什么不是 graph：一条链已经够用，节点连线只会让「懒人主路径」变重。
+ * ① **同一组件可以多次插入**：每一步有稳定 `uid`，`:key` / 事件 / 手风琴状态全部
+ *    按 uid 走（用 op 会触发 Vue 重复 key，且删一步会连坐同名的另一步）。
+ * ② **云端组件也能进链**：候选表从「只收本机」放开到全部非 internal 算子；
+ *    云端步会标来源并说明「预览里不跑」，避免用户以为滑杆没生效。
+ * ③ **上限 10 步**：到顶后「添加」按钮禁用并给出原因，不在提交时才报错
+ *    （后端 `validate_plan` 到 10 步会直接拒单）。
+ *
+ * FEAT-199：来源标签不再一律写「模型」，改按 `utils/modelOrigin` 的四档
+ * （本机算法 / 本机模型 / 云端 API / 未配置模型）—— 链条里可以同时存在
+ * 「绑在本机 Ollama 的云端步」与「要本地 ONNX 模型的本机步」，一律写「模型」
+ * 等于什么都没说。判定是纯函数，`settings` 由页面传入，本组件仍不发请求。
+ *
+ * 为什么仍然没有排序控件：链条顺序由 catalog 的 `stage` 决定（全序依赖），
+ * 人工排序没有任何合法位置，给了就是死控件（同类教训：FEAT-168 的 strength 滑杆）。
  *
  * 纯展示 + 事件：不改自己的 props，所有变更 emit 给页面 → store。
  */
 import { computed, ref, watch } from "vue";
 
 import { GROUPS, localToolDefs } from "../../../utils/toolCatalog";
+import { originOfOp, type OriginInfo } from "../../../utils/modelOrigin";
+import type { AiSettings } from "../../../types/ai";
 import {
   applySlider,
+  canAddOp,
   chainableOps,
   coerceEnum,
   enumText,
+  isCloudOp,
+  MAX_CHAIN_STEPS,
   opGroup,
   opLabel,
   paramViews,
@@ -33,39 +47,47 @@ import {
 const props = defineProps<{
   steps: WbChainStep[];
   disabled?: boolean;
+  /** 已绑定的供应商（FEAT-199）：用于判「云端步」到底是云端 API 还是本机服务 */
+  settings?: AiSettings | null;
 }>();
 
 const emit = defineEmits<{
+  /** 加一步（允许同一组件多次；上限由本组件拦） */
   add: [op: string];
-  remove: [op: string];
-  toggle: [op: string];
-  param: [op: string, key: string, value: number | string | boolean];
+  remove: [uid: string];
+  toggle: [uid: string];
+  param: [uid: string, key: string, value: number | string | boolean];
 }>();
 
-/** 手风琴：同时只展开一步，步骤多了卡片也不会长到视口外 */
-const openOp = ref<string | null>(props.steps[0]?.op ?? null);
+/** 手风琴：同时只展开一步，步骤多了卡片也不会长到视口外（按 uid） */
+const openUid = ref<string | null>(props.steps[0]?.uid ?? null);
 const candOpen = ref(false);
 
 /** 手风琴状态与链条保持一致：当前展开的步被删掉时，退回第一步 */
 watch(
-  () => props.steps.map((s) => s.op),
-  (ops) => {
-    if (!openOp.value || !ops.includes(openOp.value)) openOp.value = ops[0] ?? null;
+  () => props.steps.map((s) => s.uid),
+  (uids) => {
+    if (!openUid.value || !uids.includes(openUid.value)) openUid.value = uids[0] ?? null;
   },
 );
 
 const ops = computed(() => chainableOps());
+const atLimit = computed(() => !canAddOp(props.steps));
 
-/** 候选按 catalog 的展示分组（影调与滤镜 / 人像 / 画质 …），顺序即左栏顺序 */
+/** 候选按 catalog 的展示分组（影调与滤镜 / 人像 / 画质 / 创作），顺序即左栏顺序 */
 const groups = computed(() => {
-  const map = new Map<string, { label: string; items: { id: string; label: string; added: boolean }[] }>();
+  const map = new Map<
+    string,
+    { label: string; items: { id: string; label: string; origin: OriginInfo; count: number }[] }
+  >();
   for (const o of ops.value) {
     const gid = opGroup(o.id);
     if (!map.has(gid)) map.set(gid, { label: groupLabel(gid), items: [] });
     map.get(gid)!.items.push({
       id: o.id,
       label: opLabel(o.id),
-      added: props.steps.some((s) => s.op === o.id),
+      origin: originOfOp(o.id, props.settings),
+      count: props.steps.filter((s) => s.op === o.id).length,
     });
   }
   return [...map.values()];
@@ -90,18 +112,23 @@ const excluded = computed(() => {
     .map((t) => ({ label: t.label, why: reason[t.id] ?? "独立工具" }));
 });
 
-function toggleOpen(op: string): void {
-  openOp.value = openOp.value === op ? null : op;
+function toggleOpen(uid: string): void {
+  openUid.value = openUid.value === uid ? null : uid;
 }
 
 function onRange(step: WbChainStep, key: string, e: Event): void {
   const slider = Number((e.target as HTMLInputElement).value);
   const raw = applySlider(step, key, slider)[key];
-  emit("param", step.op, key, raw);
+  emit("param", step.uid, key, raw);
 }
 
 function onSelect(step: WbChainStep, key: string, e: Event): void {
-  emit("param", step.op, key, coerceEnum(step.op, key, (e.target as HTMLSelectElement).value));
+  emit("param", step.uid, key, coerceEnum(step.op, key, (e.target as HTMLSelectElement).value));
+}
+
+function addOp(op: string): void {
+  if (atLimit.value) return;
+  emit("add", op);
 }
 </script>
 
@@ -110,9 +137,9 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
     <ol class="wbs-list">
       <li
         v-for="(step, i) in steps"
-        :key="step.op"
+        :key="step.uid"
         class="wbs-step"
-        :class="{ open: openOp === step.op, off: !step.enabled }"
+        :class="{ open: openUid === step.uid, off: !step.enabled }"
       >
         <span class="wbs-n">{{ i + 1 }}</span>
         <div class="wbs-body">
@@ -120,12 +147,13 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
             <button
               type="button"
               class="wbs-name"
-              :aria-expanded="openOp === step.op"
-              @click="toggleOpen(step.op)"
+              :aria-expanded="openUid === step.uid"
+              @click="toggleOpen(step.uid)"
             >
               {{ opLabel(step.op) }}
+              <span v-if="isCloudOp(step.op)" class="wbs-tag" title="云端模型，按调用计费">模型</span>
               <span class="wbs-sum">{{ stepSummary(step) }}</span>
-              <span class="wbs-chev">{{ openOp === step.op ? "▾" : "▸" }}</span>
+              <span class="wbs-chev">{{ openUid === step.uid ? "▾" : "▸" }}</span>
             </button>
             <button
               type="button"
@@ -133,7 +161,7 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
               :class="{ off: !step.enabled }"
               :title="step.enabled ? '停用这一步' : '启用这一步'"
               :disabled="disabled"
-              @click="emit('toggle', step.op)"
+              @click="emit('toggle', step.uid)"
             >
               {{ step.enabled ? "◉" : "○" }}
             </button>
@@ -142,13 +170,13 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
               class="wbs-x"
               title="移除这一步"
               :disabled="disabled"
-              @click="emit('remove', step.op)"
+              @click="emit('remove', step.uid)"
             >
               ✕
             </button>
           </div>
 
-          <div v-if="openOp === step.op" class="wbs-params">
+          <div v-if="openUid === step.uid" class="wbs-params">
             <div v-for="p in paramViews(step)" :key="p.key" class="wbs-field">
               <div class="wbs-field-h">
                 <span>{{ p.label }}</span>
@@ -176,6 +204,9 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
               />
             </div>
             <p v-if="!paramViews(step).length" class="wbs-tip">这一步没有可调参数。</p>
+            <p v-if="isCloudOp(step.op)" class="wbs-tip">
+              云端步：即时预览里不跑（每次预览都是计费调用），出片时照常执行。
+            </p>
           </div>
         </div>
       </li>
@@ -183,11 +214,19 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
 
     <p v-if="!steps.length" class="wbs-tip">还没有步骤，点下面「添加步骤」。</p>
 
-    <button type="button" class="wbs-add" :disabled="disabled" @click="candOpen = !candOpen">
+    <button
+      type="button"
+      class="wbs-add"
+      :disabled="disabled || atLimit"
+      :title="atLimit ? `最多 ${MAX_CHAIN_STEPS} 步，先删掉一些` : ''"
+      @click="candOpen = !candOpen"
+    >
       ＋ 添加步骤
+      <span class="wbs-count">{{ steps.length }}/{{ MAX_CHAIN_STEPS }}</span>
     </button>
+    <p v-if="atLimit" class="wbs-tip">已到 {{ MAX_CHAIN_STEPS }} 步上限。</p>
 
-    <div v-if="candOpen" class="wbs-cands">
+    <div v-if="candOpen && !atLimit" class="wbs-cands">
       <div v-for="g in groups" :key="g.label" class="wbs-group">
         <h4>{{ g.label }}</h4>
         <button
@@ -195,11 +234,11 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
           :key="o.id"
           type="button"
           class="wbs-cand"
-          :disabled="o.added"
-          @click="emit('add', o.id)"
+          :disabled="disabled"
+          @click="addOp(o.id)"
         >
           {{ o.label }}
-          <em>{{ o.added ? "已添加" : "本机" }}</em>
+          <em>{{ o.count ? `已加 ${o.count}` : isCloudOp(o.id) ? "模型" : "本机" }}</em>
         </button>
       </div>
       <div v-if="excluded.length" class="wbs-group">
@@ -219,7 +258,7 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
     </div>
 
     <p class="wbs-note">
-      勾选即加入，顺序由依赖自动决定（调色 → 胶片 → 形变 → 磨皮 → 放大），不用手动排。
+      同一个组件可以加多次（各自调参数），顺序由依赖自动决定，不用手动排。
     </p>
   </div>
 </template>
@@ -281,6 +320,15 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
   color: var(--fg);
   text-align: left;
   cursor: pointer;
+}
+.wbs-tag {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  line-height: 14px;
+  color: var(--c-accent);
+  border: 1px solid color-mix(in srgb, var(--c-accent) 45%, transparent);
 }
 .wbs-sum {
   margin-left: auto;
@@ -360,6 +408,10 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
 }
 
 .wbs-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   width: 100%;
   height: 27px;
   margin-top: 4px;
@@ -377,6 +429,11 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
 .wbs-add:disabled {
   opacity: 0.4;
   cursor: default;
+}
+.wbs-count {
+  font-size: 9.5px;
+  color: var(--fg-3, var(--fg-2));
+  font-variant-numeric: tabular-nums;
 }
 
 .wbs-cands {
@@ -432,7 +489,3 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
   color: var(--fg-3, var(--fg-2));
 }
 </style>
-
-
-
-

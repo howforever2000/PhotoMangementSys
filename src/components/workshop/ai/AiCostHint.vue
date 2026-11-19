@@ -1,20 +1,33 @@
 <script setup lang="ts">
 /**
- * 运行前「计费预估」提示（FEAT-152 / FEAT-157）
- * 四个 AI 工具共用：按该工具所用模型的单价 × 张数显示预估金额与调用次数。
- * 单价未配置时提示去「模型设置」对应模型卡片下展开「计费」填写。
+ * 运行前「计费预估」提示（FEAT-152 / FEAT-157 / FEAT-199）
+ * 四个云端工具共用：按该工具所用模型的单价 × 张数显示预估金额与调用次数。
+ *
+ * FEAT-199 起先判来源再说钱：
+ *   - 本机（算法 / 模型 / 绑到本机地址的本地服务）→ 直接说「免费、照片不出本机」，
+ *     不再提示「去填单价」—— 对免费链路要求填价只会让用户以为哪里没配好；
+ *   - 未配置模型 → 说清「现在运行会报未配置」，而不是让用户去填单价；
+ *   - 云端 API → 保持原口径（已填单价显示预估，未填提示去填）。
+ * 判据来自 `useAiBilling.estimate`，与工坊角标同源，不在两处各判一次。
  */
 import { computed } from "vue";
-import type { AiTool } from "../../../types/ai";
+import type { AiSettings, AiTool } from "../../../types/ai";
 import { useAiBilling } from "../../../composables/useAiBilling";
 
-const props = defineProps<{ tool: AiTool; count: number }>();
+const props = defineProps<{ tool: AiTool; count: number; settings?: AiSettings | null }>();
 const billing = useAiBilling();
-const cost = computed(() => billing.estimate(props.tool, props.count));
+const cost = computed(() => billing.estimate(props.tool, props.count, props.settings));
+const local = computed(() => !cost.value.origin.leavesDevice && cost.value.origin.origin !== "unconfigured");
 </script>
 
 <template>
-  <p v-if="cost.configured" class="ai-hint ai-billing-hint">
+  <p v-if="cost.origin.origin === 'unconfigured'" class="ai-hint ai-billing-hint">
+    ⚠ {{ cost.origin.detail }}
+  </p>
+  <p v-else-if="local" class="ai-hint ai-billing-hint">
+    ✓ {{ cost.origin.detail }}
+  </p>
+  <p v-else-if="cost.configured" class="ai-hint ai-billing-hint">
     💡 本次 {{ cost.count }} 张 × {{ billing.formatMoney(cost.unit, cost.currency) }}/张 ≈
     <strong>{{ billing.formatMoney(cost.total, cost.currency) }}</strong>（预估，实际以服务商账单为准）
   </p>

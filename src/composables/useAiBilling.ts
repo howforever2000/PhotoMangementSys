@@ -13,8 +13,9 @@
  * aiStudio:billing:v1 并自动迁移，避免升级后丢已填数据。
  */
 import { ref } from "vue";
-import type { AiBillingRule, AiProviderKind, AiTool } from "../types/ai";
+import type { AiBillingRule, AiProviderKind, AiSettings, AiTool } from "../types/ai";
 import { costModelOf, toolLabel } from "../utils/toolCatalog.ts";
+import { originOfTool, type OriginInfo } from "../utils/modelOrigin.ts";
 import { trace } from "../utils/trace.ts";
 
 const STORAGE_KEY = "aiStudio:billing:v2";
@@ -152,9 +153,23 @@ function modelPrice(kind: AiProviderKind): number {
   return Number.isFinite(v) && v > 0 ? v : 0;
 }
 
-/** 某工具的每张单价：本机工具恒为 0，不展示费用 */
-function unitPrice(tool: AiTool): number {
-  return costModelOf(tool) === "cloud" ? modelPrice(TOOL_MODEL[tool]) : 0;
+/**
+ * 某工具的每张单价：本机工具恒为 0，不展示费用。
+ *
+ * FEAT-199：云端工具若把供应商绑到**本机回环地址**（Ollama / LM Studio / 本地
+ * 图生图网关），也不再计费 —— 原来的判据只看 `costModelOf`，于是「换成免费
+ * 本地 Ollama」后界面仍按云端单价预估，与旁边「本机模型」的角标自相矛盾。
+ * 判据与来源标注同源（`utils/modelOrigin`），不在两处各判一次。
+ *
+ * `settings` 缺省时退回旧口径（只按工具判），保证没传设置的调用点行为不变。
+ */
+function unitPrice(tool: AiTool, settings?: AiSettings | null): number {
+  if (costModelOf(tool) !== "cloud") return 0;
+  if (settings) {
+    const info = originOfTool(tool, settings);
+    if (!info.billable) return 0;
+  }
+  return modelPrice(TOOL_MODEL[tool]);
 }
 
 export interface AiCostEstimate {
@@ -167,23 +182,39 @@ export interface AiCostEstimate {
   currency: string;
   /** 是否已配置单价（false 时界面提示去设置，不显示金额） */
   configured: boolean;
+  /** 来源判定（FEAT-199）：决定文案说「按量计费」还是「本机免费」 */
+  origin: OriginInfo;
 }
 
-/** 估算一次作业的费用：张数 × 该工具所用模型的每张单价 */
-const estimate = trace("aiBilling.estimate", function estimate(tool: AiTool, count: number): AiCostEstimate {
-  const model = TOOL_MODEL[tool];
-  const unit = unitPrice(tool);
-  const n = Math.max(0, Math.floor(Number(count) || 0));
-  return {
-    tool,
-    model,
-    count: n,
-    unit,
-    total: unit * n,
-    currency: rule.value.currency || "¥",
-    configured: unit > 0,
-  };
-});
+/**
+ * 估算一次作业的费用：张数 × 该工具所用模型的每张单价。
+ *
+ * `settings` 只用于判断「这家供应商是不是本机地址」，不参与计价本身 ——
+ * 计费规则仍由用户在「计费」里登记（FEAT-157 的结构不变）。
+ */
+const estimate = trace(
+  "aiBilling.estimate",
+  function estimate(
+    tool: AiTool,
+    count: number,
+    settings?: AiSettings | null,
+  ): AiCostEstimate {
+    const model = TOOL_MODEL[tool];
+    const origin = originOfTool(tool, settings);
+    const unit = unitPrice(tool, settings);
+    const n = Math.max(0, Math.floor(Number(count) || 0));
+    return {
+      tool,
+      model,
+      count: n,
+      unit,
+      total: unit * n,
+      currency: rule.value.currency || "¥",
+      configured: unit > 0,
+      origin,
+    };
+  },
+);
 
 /** 格式化金额：¥0.6 / ¥12.00（去掉多余尾零） */
 function formatMoney(amount: number, currency?: string): string {

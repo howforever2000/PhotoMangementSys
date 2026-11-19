@@ -27,6 +27,7 @@ from PIL import Image
 
 from . import catalog, config, faceparse, landmark, localmodels, lutcube, ocr_engine, presets
 from .providers import openai_compat as oc
+from .renderopts import EMPTY as EMPTY_CTX, RunContext
 from .workflows.base import edit_input_bytes, to_image
 
 # 本地超分输入的长边上限：与 workflows/restore.py 同一口径，避免几百 MP 的内存峰值
@@ -41,18 +42,44 @@ def _edit_provider(providers: Any) -> Any:
     return p
 
 
-def _run_edit(prov: Any, img: Image.Image, prompt: str) -> Image.Image:
-    data = oc.images_edit(prov.baseUrl, prov.apiKey, prov.model, [edit_input_bytes(img)], prompt)
+def _run_edit(
+    prov: Any,
+    img: Image.Image,
+    prompt: str,
+    ctx: RunContext = EMPTY_CTX,
+    styled: bool = True,
+) -> Image.Image:
+    """云端编辑一次：输入走 1K 压缩（`edit_input_bytes` 默认长边 1024），
+    采样步数由作业级 `ctx` 下发（默认档不写进请求体，见 `renderopts`）。
+
+    `styled=True` 时把作业级风格段落（`ctx.style_prompt`）追加到提示词末尾 ——
+    这是风格提示词**唯一真正生效**的位置（塞进 `params.extra` 会被 500 字截断）。
+    超分步（`op_upscale`）显式传 `styled=False`：那一步只负责分辨率，把影调段落
+    再叠一遍等于把已经调好的颜色重刷一次，而且会让「4× = 2× 跑两遍」各自带一次
+    风格重绘，颜色逐遍漂移。
+    """
+    data = oc.images_edit(
+        prov.baseUrl,
+        prov.apiKey,
+        prov.model,
+        [edit_input_bytes(img)],
+        ctx.apply_style(prompt) if styled else prompt,
+        steps=ctx.gateway_steps(),
+    )
     return to_image(data[0])
 
 
-def op_beauty(img: Image.Image, params: Dict[str, Any], providers: Any) -> Image.Image:
+def op_beauty(
+    img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
+) -> Image.Image:
     prov = _edit_provider(providers)
     prompt = presets.beauty_prompt(str(params.get("style", "natural")), str(params.get("level", "medium")))
-    return _run_edit(prov, img, prompt)
+    return _run_edit(prov, img, prompt, ctx)
 
 
-def op_style_transfer(img: Image.Image, params: Dict[str, Any], providers: Any) -> Image.Image:
+def op_style_transfer(
+    img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
+) -> Image.Image:
     """滤镜迁移 / 自主调色（仅参考图来源）：提示词一律带结构保全硬段。"""
     prov = _edit_provider(providers)
     mode = str(params.get("mode", "autograde"))
@@ -62,10 +89,14 @@ def op_style_transfer(img: Image.Image, params: Dict[str, Any], providers: Any) 
         prompt = presets.transfer_prompt(desc, extra)
     else:
         prompt = presets.auto_grade_prompt(extra)
-    return _run_edit(prov, img, prompt)
+    return _run_edit(prov, img, prompt, ctx)
 
 
-def op_upscale(img: Image.Image, params: Dict[str, Any], providers: Any) -> Image.Image:
+def op_upscale(
+    img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
+) -> Image.Image:
+    """云端超分一次。`scale` 只进提示词（网关没有倍率参数），所以「4×」由**两次 2×**
+    组合实现（见 `ai_studio/upsample.py`），比一次写 4× 更接近真实细节增益。"""
     prov = getattr(providers, "upscale", None) or getattr(providers, "edit", None)
     if not prov or not getattr(prov, "baseUrl", "") or not getattr(prov, "model", ""):
         raise ValueError("未配置超分 provider（设置里填写 baseUrl / model）")
@@ -79,21 +110,24 @@ def op_upscale(img: Image.Image, params: Dict[str, Any], providers: Any) -> Imag
         prov.model,
         [edit_input_bytes(img, max_long_edge=3072, quality=95)],
         presets.upscale_prompt(scale),
+        steps=ctx.gateway_steps(),
     )
     return to_image(data[0])
 
 
-def op_refine(img: Image.Image, params: Dict[str, Any], providers: Any) -> Image.Image:
+def op_refine(
+    img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
+) -> Image.Image:
     """反思轮微调：按复核给出的问题点重绘（保持身份/构图）。"""
     prov = _edit_provider(providers)
     prompt = presets.refine_prompt(params.get("issues") or [], str(params.get("extra", "") or ""))
-    return _run_edit(prov, img, prompt)
+    return _run_edit(prov, img, prompt, ctx)
 
 
 # ---------------- 本地组件（FEAT-164）：纯本机、免费、离线 ----------------
 #
-# 与上面四个算子的区别只有「不看 providers、不发网络请求」；签名保持一致，
-# 这样 pipeline 的白名单解释器不需要区分云端 / 本地。
+# 与上面四个算子的区别只有「不看 providers、不发网络请求」；签名保持一致
+# （含 `ctx`，本机算子收下不使用），这样 pipeline 的白名单解释器不需要区分云端 / 本地。
 
 
 def _clamp01(v: Any, default: float) -> float:
@@ -112,8 +146,10 @@ def _limit_long_edge(img: Image.Image, max_long: int) -> Image.Image:
     return img.resize((max(1, int(round(w * s))), max(1, int(round(h * s)))), Image.LANCZOS)
 
 
-def op_local_film(img: Image.Image, params: Dict[str, Any], providers: Any) -> Image.Image:
-    """本机胶片模拟：内置 .cube 查表 + 可选颗粒/暗角。不读 providers。"""
+def op_local_film(
+    img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
+) -> Image.Image:
+    """本机胶片模拟：内置 .cube 查表 + 可选颗粒/暗角。不读 providers / ctx。"""
     lut_id = str(params.get("lut", "provia") or "provia")
     entry = next((lut for lut in config.LUTS if lut["id"] == lut_id), None)
     if entry is None:
@@ -138,7 +174,9 @@ def op_local_film(img: Image.Image, params: Dict[str, Any], providers: Any) -> I
     return Image.fromarray(arr)
 
 
-def op_local_upscale(img: Image.Image, params: Dict[str, Any], providers: Any) -> Image.Image:
+def op_local_upscale(
+    img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
+) -> Image.Image:
     """本机 Real-ESRGAN ×4 超分（2× 时再降采样）。模型未就绪抛 FileNotFoundError。"""
     if not localmodels.esrgan_ready():
         raise FileNotFoundError(

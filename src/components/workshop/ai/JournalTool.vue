@@ -142,7 +142,7 @@ async function onCancel() {
       <span v-if="paths.length > 10" class="ai-hint">张数较多，逐张风格化耗时较长</span>
     </div>
 
-    <AiCostHint tool="journal" :count="paths.length" />
+    <AiCostHint tool="journal" :count="paths.length" :settings="store.settings" />
 
     <AiResultPanel :job="job" @cancel="onCancel" />
   </section>

@@ -1,5 +1,5 @@
 /**
- * 工作台「自己组合」步骤链 —— 纯计算层（FEAT-177）
+ * 工作台「自己组合」步骤链 —— 纯计算层（FEAT-177 / FEAT-197）
  * ===================================================================
  * 职责只有一件事：**链条 ⇄ 执行计划** 的转换，以及围绕它的纯函数
  * （默认值、依赖排序、参数视图、摘要、配方导入）。
@@ -8,8 +8,18 @@
  *   - 组件只负责画，store 只负责存；转换逻辑必须能被单测直接钉住
  *     （顺序错一步，后端 `pipeline.validate_plan` 会直接拒单）。
  *   - 链条的合法顺序由 `op_catalog.json` 的 `stage` / `requiresBefore` 决定，
- *     前端不在界面上给排序控件（现状 5 个本机算子是**全序**，人工排序没有
- *     合法自由度，给了就是死控件）。
+ *     前端不在界面上给排序控件（本机算子是**全序**，人工排序没有合法自由度）。
+ *
+ * ## FEAT-197：每一步有自己的 uid
+ *
+ * 用户要「同一组件多次插入」（例如连做两次胶片模拟看叠加效果），所以 `op` 不再是
+ * 唯一键 —— 每一步有稳定 `uid`，增删改一律按 uid 定位。连带影响：
+ *   - `:key` 用 uid（用 op 会触发 Vue 重复 key）；
+ *   - 单步微调的基线 / 「不处理」标记也按 uid 对齐；
+ *   - 排序仍按 stage 稳定排序，同 stage 的多次插入保持用户插入顺序。
+ *
+ * 另外放开了算子来源：云端模型（美颜 / 滤镜迁移 / 画质增强）与本地组件都能进链条。
+ * 预览只跑本机步（`preview.py` 会摘掉云端步并给提示），提交时云端步照常执行。
  *
  * 不发请求、不碰 store、不 import 任何组件。
  */
@@ -25,11 +35,24 @@ import {
 import { AUTOGRADE_STYLES, UPSCALE_SCALES } from "./aiPresets.ts";
 import type { RunPlan } from "../types/ai";
 
-/** 链条里的一步：算子 id + 是否启用 + 原始参数（与 catalog 同值域） */
+/** 链条里的一步：稳定 uid + 算子 id + 是否启用 + 原始参数（与 catalog 同值域） */
 export interface WbChainStep {
+  /** 稳定 id：增删改与 UI key 都按它定位（允许同一算子出现多次） */
+  uid: string;
   op: string;
   enabled: boolean;
   params: Record<string, number | string | boolean>;
+}
+
+/** 自己组合的步骤上限（与后端 `pipeline.MAX_STEPS` 同一口径） */
+export const MAX_CHAIN_STEPS = 10;
+
+/** uid 计数器：模块级自增，保证同一次会话内不重复（测试可预测） */
+let uidSeq = 0;
+
+function nextUid(op: string): string {
+  uidSeq += 1;
+  return `${op}#${uidSeq}`;
 }
 
 /** 参数在界面上的形态：range 统一折成 0~100 的整数滑杆 */
@@ -47,13 +70,22 @@ export interface ChainParamView {
 }
 
 /**
- * 可进链条的本机算子。
- * 判据：catalog 里 backend=local 且**有图像产物**。
- * 排掉 ocr（产物是 txt，没有可比对的图）；参考图调色 / 图像压缩根本不是
- * plan 里的算子（一个是独立工作流要参考图，一个在 Rust 侧），所以不会出现在这里。
+ * 可进链条的原子组件。
+ * 判据：catalog 里非 internal、且**有图像产物**（ocr 的产物是 txt，没有可比对的图）。
+ * 云端与本地一视同仁 —— 预览层会摘掉云端步并给提示，出片时照常执行。
  */
 export function chainableOps(): OpSpec[] {
-  return OPS.filter((o) => o.backend === "local" && o.id !== "ocr");
+  return OPS.filter((o) => !o.internal && o.id !== "ocr");
+}
+
+/** 该算子是不是云端（决定「本机免费 / 按模型计费」文案与预览能力） */
+export function isCloudOp(op: string): boolean {
+  return opById(op)?.backend === "cloud";
+}
+
+/** 链条里是否存在云端步（费用文案、预览提示共用的判据） */
+export function chainHasCloud(steps: WbChainStep[]): boolean {
+  return steps.some((s) => s.enabled && isCloudOp(s.op));
 }
 
 export function opSpec(op: string): OpSpec | undefined {
@@ -62,7 +94,7 @@ export function opSpec(op: string): OpSpec | undefined {
 
 /**
  * 算子所属的展示分组。分组声明在**工具**上（`op_catalog.json` 的 tools[].group），
- * 算子本身没有 group；链条按「影调与滤镜 / 人像 / 画质」分组时走这里查。
+ * 算子本身没有 group；链条按「影调与滤镜 / 人像 / 画质 / 创作」分组时走这里查。
  */
 export function opGroup(op: string): string {
   return TOOLS.find((t) => t.op === op)?.group ?? "utility";
@@ -76,7 +108,6 @@ export function opStage(op: string): number {
  * 算子在界面上的名字。
  * 优先取「映射到这个算子的工具名」——用户认识的是工坊里那个入口（智能调色 / 胶片模拟 /
  * 本地美颜 / 画质修复），不是算子内部名（自适应调色 / 分区磨皮 / 本机超分）。
- * 这正是「首页单步工具」与「工作台步骤」是同一批能力（R5）的落点。
  */
 export function opLabel(op: string): string {
   const tool = TOOLS.find((t) => t.op === op);
@@ -86,53 +117,71 @@ export function opLabel(op: string): string {
 /** 单步默认值：直接取 catalog 的 default，不手抄 */
 export function defaultStep(op: string): WbChainStep {
   const spec = opById(op);
-  return { op, enabled: true, params: defaultParams(spec) as WbChainStep["params"] };
+  return {
+    uid: nextUid(op),
+    op,
+    enabled: true,
+    params: defaultParams(spec) as WbChainStep["params"],
+  };
 }
 
-/** 按依赖 stage 升序（稳定排序，同 stage 保持原顺序） */
+/** 按依赖 stage 升序（稳定排序，同 stage 保持原顺序 —— 同算子多次插入靠这个保序） */
 export function sortChain(steps: WbChainStep[]): WbChainStep[] {
   return [...steps].sort((a, b) => opStage(a.op) - opStage(b.op));
 }
 
+/** 该算子还能再加几步（受总上限约束） */
+export function canAddOp(steps: WbChainStep[]): boolean {
+  return steps.length < MAX_CHAIN_STEPS;
+}
+
 /**
- * 加入一步：已存在则原样返回（幂等），否则插到依赖位。
- * 用户看到的「勾选」即这里发生的事 —— 顺序由 catalog 决定，不由点击顺序决定。
+ * 加入一步：**允许同一算子多次插入**（各步 uid 不同）。
+ * 插到依赖位（按 stage 稳定排序），所以用户不用管先后。
  */
 export function insertOp(steps: WbChainStep[], op: string): WbChainStep[] {
-  if (steps.some((s) => s.op === op)) return steps;
+  if (!canAddOp(steps)) return steps;
   return sortChain([...steps, defaultStep(op)]);
 }
 
-export function removeOp(steps: WbChainStep[], op: string): WbChainStep[] {
-  return steps.filter((s) => s.op !== op);
+/** 按 uid 删除（不是按 op：同名算子只删被点的那一步） */
+export function removeOp(steps: WbChainStep[], uid: string): WbChainStep[] {
+  return steps.filter((s) => s.uid !== uid);
 }
 
-export function setEnabled(steps: WbChainStep[], op: string, enabled: boolean): WbChainStep[] {
-  return steps.map((s) => (s.op === op ? { ...s, enabled } : s));
+export function setEnabled(steps: WbChainStep[], uid: string, enabled: boolean): WbChainStep[] {
+  return steps.map((s) => (s.uid === uid ? { ...s, enabled } : s));
 }
 
 /** 写一个参数（值域与 catalog 一致，不在此处换算滑杆） */
 export function setParam(
   steps: WbChainStep[],
-  op: string,
+  uid: string,
   key: string,
   value: number | string | boolean,
 ): WbChainStep[] {
-  return steps.map((s) => (s.op === op ? { ...s, params: { ...s.params, [key]: value } } : s));
+  return steps.map((s) => (s.uid === uid ? { ...s, params: { ...s.params, [key]: value } } : s));
 }
 
-/** 当前顺序是否满足 requiresBefore（正常情况下永远成立，用于防御与测试） */
+/**
+ * 当前顺序是否满足 requiresBefore（正常情况下永远成立，用于防御与测试）。
+ * 与后端 `pipeline.validate_plan` 同一口径：按「前置算子的首次出现位置」判断，
+ * 这样同名算子重复出现时判定依然正确。
+ */
 export function orderIssues(steps: WbChainStep[]): string[] {
-  const pos = new Map(steps.map((s, i) => [s.op, i]));
+  const firstPos = new Map<string, number>();
+  steps.forEach((s, i) => {
+    if (!firstPos.has(s.op)) firstPos.set(s.op, i);
+  });
   const out: string[] = [];
-  for (const s of steps) {
+  steps.forEach((s, i) => {
     for (const dep of opById(s.op)?.requiresBefore ?? []) {
-      const j = pos.get(dep);
-      if (j !== undefined && j > (pos.get(s.op) ?? 0)) {
+      const j = firstPos.get(dep);
+      if (j !== undefined && j > i) {
         out.push(`${opLabel(s.op)} 必须排在 ${opLabel(dep)} 之后`);
       }
     }
-  }
+  });
   return out;
 }
 
@@ -182,8 +231,28 @@ function enumOptions(op: string, key: string): { value: string; label: string }[
   if (op === "auto_grade" && key === "style") {
     return AUTOGRADE_STYLES.map((o) => ({ value: o.value, label: o.label }));
   }
-  if (op === "local_upscale" && key === "scale") {
-    return UPSCALE_SCALES.map((o) => ({ value: o.value, label: o.label }));
+  if ((op === "local_upscale" || op === "upscale") && key === "scale") {
+    return UPSCALE_SCALES.map((o) => ({ value: String(o.value), label: o.label }));
+  }
+  if (op === "beauty" && key === "style") {
+    return [
+      { value: "natural", label: "自然" },
+      { value: "crisp", label: "清晰" },
+      { value: "film", label: "胶片" },
+    ];
+  }
+  if (op === "beauty" && key === "level") {
+    return [
+      { value: "light", label: "轻" },
+      { value: "medium", label: "中" },
+      { value: "strong", label: "强" },
+    ];
+  }
+  if (op === "style_transfer" && key === "mode") {
+    return [
+      { value: "autograde", label: "一句话调色" },
+      { value: "transfer", label: "按参考图迁移" },
+    ];
   }
   return [];
 }
@@ -232,7 +301,7 @@ export function paramViews(step: WbChainStep): ChainParamView[] {
         value: "",
       };
     }
-    // bool / string 暂不进链条界面（现有算子没有这类参数字段）
+    // bool / string 参数按只读文本展示（云端算子的说明性字段）
     return {
       key,
       label: p.label,
@@ -301,7 +370,10 @@ export function stepSummary(step: WbChainStep): string {
   return parts.join(" · ");
 }
 
-/** 整条链的一句话（用作 plan.intent 与界面提示） */
+/**
+ * 整条链的一句话（用作 plan.intent 与界面提示）。
+ * 同名算子多次出现时各自列一遍 —— 用户要看到「跑了两遍」这件事。
+ */
 export function chainSummary(steps: WbChainStep[]): string {
   const list = sortChain(steps.filter((s) => s.enabled));
   return list.length ? list.map((s) => opLabel(s.op)).join(" → ") : "自定义组合";
@@ -330,6 +402,7 @@ export function chainFromRecipe(id: string): WbChainStep[] {
   if (!r) return [];
   return sortChain(
     r.steps.map((s) => ({
+      uid: nextUid(s.op),
       op: s.op,
       enabled: true,
       params: { ...(defaultStep(s.op).params as Record<string, number | string | boolean>), ...(s.params ?? {}) },
@@ -341,7 +414,7 @@ export function chainFromRecipe(id: string): WbChainStep[] {
 
 /** 深拷贝一份链条：微调基线必须与用户正在编辑的那份互不共享 params 对象。 */
 export function cloneSteps(steps: WbChainStep[]): WbChainStep[] {
-  return steps.map((s) => ({ op: s.op, enabled: s.enabled, params: { ...s.params } }));
+  return steps.map((s) => ({ uid: s.uid, op: s.op, enabled: s.enabled, params: { ...s.params } }));
 }
 
 /**
@@ -350,15 +423,18 @@ export function cloneSteps(steps: WbChainStep[]): WbChainStep[] {
  * 为什么不整条计划重发：配方里可能含后端会夹取/补默认的参数，整发等于替后端做决定；
  * 只发改动项则「没动过 = 完全走配方原值」，与后端 `apply_overrides` 的语义一致。
  * 基线里没有的键也算改动（未来 catalog 新增参数不会丢）。
+ *
+ * 按 uid 对齐基线（同名算子各算各的），但输出仍按 op 汇总成后端口径；
+ * 同名算子多次出现时后写覆盖先写 —— 配方本身不含重复算子，这是已知边界。
  */
 export function paramsOverride(
   steps: WbChainStep[],
   base: WbChainStep[],
 ): Record<string, Record<string, number | string | boolean>> {
-  const baseMap = new Map(base.map((s) => [s.op, s.params]));
+  const baseMap = new Map(base.map((s) => [s.uid, s.params]));
   const out: Record<string, Record<string, number | string | boolean>> = {};
   for (const s of steps) {
-    const before = baseMap.get(s.op);
+    const before = baseMap.get(s.uid);
     for (const [key, value] of Object.entries(s.params)) {
       if (before && before[key] === value) continue;
       (out[s.op] ??= {})[key] = value;
@@ -368,24 +444,24 @@ export function paramsOverride(
 }
 
 /**
- * 复位：传 `op` 只复位那一步，否则全部复位。参数与启用状态都回到基线。
+ * 复位：传 `uid` 只复位那一步，否则全部复位。参数与启用状态都回到基线。
  * 复位不是「删掉这一步」，而是回到进入微调时冻结的配方默认值。
  */
-export function restoreTune(steps: WbChainStep[], base: WbChainStep[], op?: string): WbChainStep[] {
-  const baseMap = new Map(base.map((s) => [s.op, { enabled: s.enabled, params: s.params }]));
+export function restoreTune(steps: WbChainStep[], base: WbChainStep[], uid?: string): WbChainStep[] {
+  const baseMap = new Map(base.map((s) => [s.uid, { enabled: s.enabled, params: s.params }]));
   return steps.map((s) => {
-    if (op && s.op !== op) return s;
-    const before = baseMap.get(s.op);
+    if (uid && s.uid !== uid) return s;
+    const before = baseMap.get(s.uid);
     return before ? { ...s, enabled: before.enabled, params: { ...before.params } } : s;
   });
 }
 
 /* ---------------- 单参数「不处理」 ---------------- */
 
-/** 扁平键：`op.key` → 是否不处理（与参数覆盖的键形状一致） */
+/** 扁平键：`uid.key` → 是否不处理（按步定位，同名算子互不干扰） */
 export type TuneOff = Record<string, boolean>;
 
-const paramKey = (op: string, key: string): string => `${op}.${key}`;
+export const tuneOffKey = (uid: string, key: string): string => `${uid}.${key}`;
 
 /**
  * 「不处理」→ 真正下发到计划里的步骤。
@@ -405,7 +481,7 @@ export function effectiveTuneSteps(steps: WbChainStep[], off: TuneOff): WbChainS
     if (!s.enabled) continue;
     const spec = opById(s.op);
     const skipStep = Object.entries(spec?.params ?? {}).some(
-      ([key, p]) => p.type === "enum" && Boolean(off[paramKey(s.op, key)]),
+      ([key, p]) => p.type === "enum" && Boolean(off[tuneOffKey(s.uid, key)]),
     );
     if (!skipStep) out.push({ ...s, params: { ...s.params } });
   }
@@ -425,8 +501,3 @@ export function tunePlan(steps: WbChainStep[], off: TuneOff, intent = ""): RunPl
     })),
   };
 }
-
-
-
-
-

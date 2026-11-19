@@ -1,15 +1,17 @@
 <script setup lang="ts">
 /**
- * AI 修图工作台（独立视图 · FEAT-160 系列 / FEAT-177 重构 / FEAT-180 布局重排）
+ * AI 修图工作台（独立视图 · FEAT-160 系列 / FEAT-177 重构 / FEAT-180 布局重排 / FEAT-197）
  * ===================================================================
- * 创意工坊（`/workshop`）里点「批量套用」到达本页。工坊保持原样；本页是
- * 一个**专门的批量修图空间**：导入一批 → 逐图状态 → 前后对比 → 批量套用 →
- * 导出并自动进「创意工坊」相册。
+ * 创意工坊（`/workshop`）左栏的「工作台」到达本页（FEAT-197 之前叫「批量套用」）。
+ * 工坊保持原样；本页是一个**专门的修图工作空间**：导入一批 → 逐图状态 →
+ * 前后对比 → 批量出片 → 导出并自动进「创意工坊」相册。
  *
- * ## 三条出片路线（FEAT-177）
+ * ## 三条出片路线（FEAT-177 / FEAT-197）
  *   ① 配方：与 ①一键出片共用 `RecipePicker` 与同一个 recipe 作业（默认，懒人主路径）
- *   ② 模型理解：多模态模型规划 + 编辑（按调用计费，可勾「优先本地组件」）
- *   ③ 自己组合：勾算子串成一条链（本机、免费），与首页「单步工具」同一批能力
+ *   ② 模型理解：语言模型规划 + 文生图模型执行（按调用计费）。
+ *      **只用云端模型**：原图 → 短边 1080 → 规划 → 执行 → 1K 出图 →（可选）上采样。
+ *      可调「文生图步数」与「上采样」（默认不勾、默认 2×、4× 用 2× 跑两遍）。
+ *   ③ 自己组合：原子组件串成链，本机与云端都能插、同一组件可重复、上限 10 步。
  * 三者只换「提交哪个作业、带什么参数」，导入/进度回填/前后对比/导出配册完全共用。
  *
  * ## 固定工作区（FEAT-180）
@@ -49,8 +51,7 @@ import WorkbenchTune from "../components/workshop/ai/WorkbenchTune.vue";
 import WorkbenchFilmstrip from "../components/workshop/ai/WorkbenchFilmstrip.vue";
 import WorkbenchGrid from "../components/workshop/ai/WorkbenchGrid.vue";
 import { pickPhotos, pickDirectory } from "../composables/useOpenDialog";
-import { toolLabel } from "../utils/toolCatalog";
-import { useWorkbenchStore, type WbEngine } from "../stores/workbench";
+import { opById, toolLabel } from "../utils/toolCatalog";import { useWorkbenchStore, type WbEngine } from "../stores/workbench";
 import { useWorkshopUiStore } from "../stores/workshopUi";
 import { useAiStudioStore } from "../stores/aiStudio";
 import { useAlbumStore } from "../stores/album";
@@ -61,19 +62,34 @@ import { useWorkbenchPreview } from "../composables/useWorkbenchPreview";
 import { usePhotoSrcMap } from "../composables/usePhotoSrcMap";
 import { useWorkbenchThumbs } from "../composables/useWorkbenchThumbs";
 import { baseName } from "../utils/pathParts";
+import { dedupePhotoPaths, splitPhotoPaths } from "../utils/workshopHandoff";
 import { qcHeadline, qcTone, summarizeQc, verdictLabel } from "../utils/workbenchQc";
 import { pickSample } from "../utils/samplePick";
+import {
+  MODEL_STYLES,
+  modelStyleLabel,
+  switchStyleText,
+  toggleStyle,
+} from "../utils/modelStylePresets";
 import type { RunPlan } from "../types/ai";
 import type { WbThumbItem } from "../types/workbench";
 import {
+  chainHasCloud,
   chainPlan,
   chainSummary,
+  isCloudOp,
   opLabel,
   planRunnable,
   recipeById,
   RECIPES,
   chainFromRecipe,
 } from "../utils/workbenchPlan";
+import {
+  originOfChain,
+  originOfRecipe,
+  originOfTool,
+  type OriginInfo,
+} from "../utils/modelOrigin";
 
 const route = useRoute();
 const router = useRouter();
@@ -193,16 +209,28 @@ const previewOn = ref(true);
  *   - 自己组合 → 显式 plan；
  *   - 配方且存在「不处理」→ 显式 plan（recipeId + 覆盖参数无法跳过步骤）；
  *   - 配方且没有不处理 → recipeId + 差量覆盖（保持原路径与后端白名单语义）。
+ *
+ * `steps` 是文生图采样步数：只有自己组合里出现云端步时才随配方通道下发
+ * （纯本机链条无云端调用，传了也没人读）。
  */
 type EditOptions =
-  | { plan: RunPlan }
+  | { plan: RunPlan; steps?: number }
   | { recipeId: string; plan: RunPlan }
-  | { recipeId: string; paramsOverride: Record<string, Record<string, number | string | boolean>> };
+  | {
+      recipeId: string;
+      paramsOverride: Record<string, Record<string, number | string | boolean>>;
+      steps?: number;
+    };
 
 const editOptions = computed<EditOptions>(() => {
-  if (wb.engine === "chain") return { plan: chainPlan(wb.chain) };
+  if (wb.engine === "chain") {
+    // 纯本机链条不传步数：免得「选了步数」给人一种云端真的跑了的错觉
+    return chainHasCloud(wb.chain)
+      ? { plan: chainPlan(wb.chain), steps: wb.renderSteps }
+      : { plan: chainPlan(wb.chain) };
+  }
   if (wb.tuneUsesPlan) return { recipeId: wb.recipeId, plan: wb.tunePlan };
-  return { recipeId: wb.recipeId, paramsOverride: wb.tuneOverrides };
+  return { recipeId: wb.recipeId, paramsOverride: wb.tuneOverrides, steps: wb.renderSteps };
 });
 
 const previewReq = computed(() => {
@@ -211,7 +239,9 @@ const previewReq = computed(() => {
   const opts = editOptions.value;
   // 所有步都不处理 → 没有可执行计划，交给空态而不是让后端报「计划为空」
   if ("plan" in opts && !opts.plan.steps.length) return null;
-  return { path: p, ...opts };
+  // 预览只跑本机算子，`steps`（文生图步数）在预览链路里没有消费者，不往请求里塞
+  if ("plan" in opts) return { path: p, plan: opts.plan };
+  return { path: p, recipeId: opts.recipeId, paramsOverride: opts.paramsOverride };
 });
 
 /** 产物图（批量跑出来的） */
@@ -229,12 +259,25 @@ const slider = ref(52);
 const viewerZoom = ref(1);
 
 /* ---------------- 入口：带入照片 ---------------- */
+/**
+ * 进入工作台时的照片来源，按优先级合并（全部去重保序）：
+ *   1. `?photos=a|b|c` / 旧键 `?photo=`：从相册/灯箱/多选条带进来的；
+ *   2. 工坊素材托盘：**工作台模式默认载入**（FEAT-197）。只在本次工作集为空时载入，
+ *      否则「离开再回来」会把已经调过参数的批次和托盘混在一起。
+ */
 onMounted(async () => {
   const q = route.query;
   const one = typeof q.photo === "string" ? q.photo : "";
-  const many = typeof q.photos === "string" ? q.photos.split("|") : [];
-  const incoming = [one, ...many].map((p) => p.trim()).filter(Boolean);
+  const incoming = dedupePhotoPaths([one, ...splitPhotoPaths(q.photos)]);
   if (incoming.length) wb.addPaths(incoming);
+
+  if (!wb.items.length && ui.tray.length) {
+    wb.addPaths(dedupePhotoPaths(ui.tray));
+    notify.info("已载入工坊素材", `${ui.tray.length} 张照片进入工作集`);
+  }
+
+  // 来源标注（FEAT-199）要读已绑定的供应商地址；读失败静默（标注只是提示）
+  void ai.loadSettings().catch(() => undefined);
 });
 
 async function addPhotos() {
@@ -258,7 +301,13 @@ function loadFromWorkshop() {
     notify.info("工坊素材是空的", "先到创意工坊里添加照片，再回这里载入");
     return;
   }
-  wb.addPaths(ui.tray);
+  const before = wb.total;
+  wb.addPaths(dedupePhotoPaths(ui.tray));
+  const added = wb.total - before;
+  notify.info(
+    added ? `已载入 ${added} 张` : "没有新照片",
+    added ? "已在工作集里的不会重复加入" : "工坊素材都已经在工作集里了",
+  );
 }
 
 async function pickOutputDir() {
@@ -283,20 +332,53 @@ function removeSelected() {
 /* ---------------- 花费预估 ---------------- */
 const visionPrice = computed(() => billing.modelPrice("vision"));
 const editPrice = computed(() => billing.modelPrice("edit"));
+const upscalePrice = computed(() => billing.modelPrice("upscale"));
 const targetCount = computed(() => (wb.selectedCount > 0 ? wb.selectedCount : wb.total));
-function expectedCalls() {
-  const v = 1 + (wb.reflect ? wb.rounds : 0);
-  const e = 1 + (wb.reflect ? Math.max(0, wb.rounds - 1) : 0);
-  return { v, e };
+
+/**
+ * 每张预计调用次数（**必须与后端真实调用一致**，否则用户在确认框里看到的是假价）：
+ *   - 模型理解：规划 1 次理解；规划出的云端步各 1 次编辑（步数在跑之前未知，
+ *     所以按「最少 1 次」估下限，并在文案里标明「按实际步数」）；上采样 N 遍超分；
+ *     反思再 +1 次理解。
+ *   - 配方 / 自己组合：按计划里云端步的数量算（本机步 0 元）。
+ */
+function expectedCalls(): { v: number; e: number; u: number } {
+  if (wb.engine === "ai") {
+    const ups = wb.upsample ? (wb.upsampleScale === 4 ? 2 : 1) : 0;
+    return { v: 1 + (wb.reflect ? 1 : 0), e: 1, u: ups };
+  }
+  const plan = "plan" in editOptions.value ? editOptions.value.plan : null;
+  let e = 0;
+  let u = 0;
+  for (const st of plan?.steps ?? []) {
+    if (!isCloudOp(st.op)) continue;
+    if (st.op === "upscale") u += 1;
+    else e += 1;
+  }
+  return { v: 0, e, u };
 }
+
 const estimateText = computed(() => {
   const n = targetCount.value;
-  if (wb.engine !== "ai") return "免费（本机算子，不调用外部模型）";
-  const { v, e } = expectedCalls();
-  if (visionPrice.value <= 0 && editPrice.value <= 0)
+  // 未配置模型（FEAT-199）：比「多少钱」更该先说「现在还跑不起来」
+  if (engineOrigin.value.origin === "unconfigured") return `⚠ ${engineOrigin.value.detail}`;
+  // 整条路线都不出本机（含绑到本机地址的本地服务）→ 直接说免费，不摆价格栏
+  if (!engineOrigin.value.leavesDevice) {
+    return `免费（${engineOrigin.value.detail}）`;
+  }
+  if (wb.engine === "chain" && !chainHasCloud(wb.chain))
+    return "免费（整条链都是本机算子，不调用外部模型）";
+  const { v, e, u } = expectedCalls();
+  if (wb.engine === "recipe" && !e && !u) return "免费（本机算子，不调用外部模型）";
+  if (visionPrice.value <= 0 && editPrice.value <= 0 && upscalePrice.value <= 0)
     return "未配置模型单价，无法预估（在创意工坊 › 模型设置 › 计费里填写）";
-  const total = (v * visionPrice.value + e * editPrice.value) * n;
-  return `≈ ${billing.formatMoney(total)}（${n} 张 × [理解 ${v} + 编辑 ${e}]）`;
+  const total = (v * visionPrice.value + e * editPrice.value + u * upscalePrice.value) * n;
+  const parts = [
+    v ? `理解 ${v}` : "",
+    wb.engine === "ai" ? `编辑 ≥${e}` : e ? `编辑 ${e}` : "",
+    u ? `超分 ${u}` : "",
+  ].filter(Boolean);
+  return `≈ ${billing.formatMoney(total)}（${n} 张 × [${parts.join(" + ")}]）`;
 });
 
 /* ---------------- 样片两阶段 ---------------- */
@@ -459,11 +541,11 @@ const chainModelIds = computed(() => {
   const ids = new Set<string>();
   for (const s of wb.chain) {
     if (!s.enabled) continue;
-    if (s.op === "skin_smooth") ids.add("face_parsing_r34");
-    if (s.op === "face_reshape") ids.add("face_landmark_68");
-    if (s.op === "local_upscale") {
-      ids.add("real_esrgan_x4");
-      ids.add("gfpgan_1.4");
+    // 依赖由 catalog 的 requires.models 声明，这里不另抄一份映射（漏抄会静默不提示）
+    const models = (opById(s.op)?.requires?.models ?? []) as unknown[];
+    for (const m of models) {
+      // det_10g 是扫描区共享件，不在工坊下载表里
+      if (typeof m === "string" && m !== "det_10g") ids.add(m);
     }
   }
   return [...ids];
@@ -474,7 +556,19 @@ function loadRecipeIntoChain(id: string) {
   notify.info(`已载入「${recipeById(id)?.label}」`, `${chainFromRecipe(id).length} 步，可继续增减`);
 }
 
-/* ---------------- 批量套用 ---------------- */
+/**
+ * 选中一款影调风格（FEAT-198）：把它的中文原文接在用户描述后面，界面可见可编辑。
+ * 再点同一款 = 取消（摘回那段原文；用户已手改过则原样保留，不擅自删他的字）。
+ */
+function pickStyle(id: string): void {
+  if (busy.value) return;
+  const next = toggleStyle(wb.styleId, id);
+  if (next === wb.styleId) return;
+  wb.prompt = switchStyleText(wb.prompt, wb.styleId, next);
+  wb.styleId = next;
+}
+
+/* ---------------- 批量出片 ---------------- */
 const activeTool = computed(() => (wb.engine === "ai" ? "smart_edit" : "recipe"));
 const busy = computed(
   () =>
@@ -486,7 +580,7 @@ async function applyBatch(): Promise<boolean> {
   if (busy.value) return false;
   const target = wb.targets;
   if (!target.length) {
-    notify.warning("还没有照片", "先导入一批照片再批量套用");
+    notify.warning("还没有照片", "先导入一批照片再出片");
     return false;
   }
   if (!guardReady()) return false;
@@ -512,8 +606,11 @@ async function applyBatch(): Promise<boolean> {
             outputDir: wb.outputDir,
             options: {
               reflect: wb.reflect,
-              rounds: wb.rounds,
-              localFirst: wb.localFirst,
+              rounds: 1,
+              steps: wb.renderSteps,
+              upsample: wb.upsample,
+              upsampleScale: wb.upsampleScale,
+              styleId: wb.styleId,
               strength: wb.strength / 100,
             },
           }
@@ -642,9 +739,24 @@ function toggleAll() {
 
 const modeNotes: Record<WbEngine, string> = {
   recipe: "选一个配方整批跑完；主路径两次点击出片。",
-  ai: "一句话说需求，模型规划步骤；按调用计费。",
-  chain: "自己勾算子串成链，全部本机、免费离线。",
+  ai: "一句话说需求：语言模型规划 → 文生图模型执行 → 1K 出图；按调用计费。",
+  chain: "自己组合原子组件：本机与云端都能插，同一组件可重复；本机步免费。",
 };
+
+/**
+ * 当前路线的模型来源（FEAT-199）：路线按钮旁与卡头都用它。
+ *
+ * 三条路线分别按「它实际会跑什么」判：
+ *   - 配方 → 该配方的算子集合（「人像」要本地形变/磨皮，「自然」是纯算法）；
+ *   - 模型理解 → 只用云端（FEAT-197 已锁死），但仍可能被绑到本机网关，所以照常
+ *     走 `originOfTool` 读绑定地址，而不是硬编码「云端 API」；
+ *   - 自己组合 → 只看启用中的步。
+ */
+const engineOrigin = computed<OriginInfo>(() => {
+  if (wb.engine === "ai") return originOfTool("smart_edit", ai.settings);
+  if (wb.engine === "chain") return originOfChain(wb.chain, ai.settings);
+  return originOfRecipe(wb.recipeId, ai.settings);
+});
 
 function setMode(m: WbEngine) {
   if (busy.value || wb.engine === m) return;
@@ -850,7 +962,11 @@ const previewNote = computed(() => {
                   <input v-model="previewOn" type="checkbox" />
                   即时预览
                 </label>
-                <span v-if="preview.dropped.value.length" class="pv-warn" :title="preview.error.value">
+                <span
+                  v-if="preview.dropped.value.length"
+                  class="pv-warn"
+                  :title="preview.error.value || '云端步每次都是计费调用，预览只跑本机算子；正式出片时仍会执行'"
+                >
                   未包含 {{ preview.dropped.value.map(opLabel).join("、") }}
                 </span>
               </span>
@@ -922,7 +1038,7 @@ const previewNote = computed(() => {
                 <span class="card-extra">
                   {{
                     wb.engine === "chain"
-                      ? `${wb.chain.filter((s) => s.enabled).length} 步 · 本机免费`
+                      ? `${wb.chain.filter((s) => s.enabled).length} 步 · ${chainHasCloud(wb.chain) ? "含云端步" : "全本机免费"}`
                       : wb.engine === "ai"
                         ? "按模型计费"
                         : tuneSummary || "配方级"
@@ -955,30 +1071,75 @@ const previewNote = computed(() => {
                   placeholder="用一句话描述想要的统一风格，例如：把整组照片调成温暖通透的胶片感，皮肤自然通透一点，天空压暗但保留层次。"
                 />
                 <div class="chips">
-                  <button class="chip" type="button" @click="wb.prompt = '温暖通透的胶片感，皮肤自然通透一点，天空压暗但保留层次。'">胶片暖调</button>
-                  <button class="chip" type="button" @click="wb.prompt = '通透的人像肤色，柔和补光，背景轻微虚化。'">通透人像</button>
-                  <button class="chip" type="button" @click="wb.prompt = '夜景降噪、提亮暗部，保留灯光层次与色彩。'">夜景降噪</button>
+                  <button
+                    v-for="s in MODEL_STYLES"
+                    :key="s.id"
+                    class="chip"
+                    type="button"
+                    :class="{ on: wb.styleId === s.id }"
+                    :disabled="busy"
+                    :title="s.zh"
+                    @click="pickStyle(s.id)"
+                  >
+                    {{ s.label }}
+                  </button>
+                  <button v-if="wb.styleId" class="chip" type="button" :disabled="busy" @click="pickStyle('')">
+                    清空风格
+                  </button>
                 </div>
+                <p v-if="wb.styleId" class="side-note">
+                  已把「{{ modelStyleLabel(wb.styleId) }}」的描述接在下面这段文字后面（可直接改）。
+                  它描述影调与光线，不改构图与物体形状。
+                </p>
                 <div class="field">
                   <div class="field-head"><span>强度</span><span class="field-val">{{ wb.strength }}%</span></div>
                   <input v-model.number="wb.strength" class="strength" type="range" min="0" max="100" />
                 </div>
-                <label class="row-check"><input v-model="wb.localFirst" type="checkbox" />优先本地组件</label>
-                <label class="row-check" style="margin-top: 8px">
-                  <input v-model="wb.reflect" type="checkbox" />反思复核（多轮自检）
+
+                <!-- 文生图采样步数（FEAT-197）：不可设置时默认 1，默认档不写进请求体 -->
+                <div class="field">
+                  <div class="field-head"><span>步数</span><span class="field-val">{{ wb.renderSteps }}</span></div>
+                  <input
+                    v-model.number="wb.renderSteps"
+                    class="strength"
+                    type="range"
+                    min="1"
+                    max="30"
+                    step="1"
+                    :disabled="busy"
+                  />
+                  <p class="side-note">文生图的采样步数，越大越细但越慢越贵；默认 1。</p>
+                </div>
+
+                <label class="row-check">
+                  <input v-model="wb.upsample" type="checkbox" :disabled="busy" />
+                  上采样（出图后再放大）
                 </label>
-                <div v-if="wb.reflect" class="seg">
+                <div v-if="wb.upsample" class="seg">
                   <button
-                    v-for="r in [1, 2, 3, 4]"
-                    :key="r"
+                    v-for="s in [2, 4]"
+                    :key="s"
                     type="button"
                     class="seg-btn"
-                    :class="{ on: wb.rounds === r }"
-                    @click="wb.rounds = r"
+                    :class="{ on: wb.upsampleScale === s }"
+                    :disabled="busy"
+                    @click="wb.upsampleScale = s"
                   >
-                    {{ r }} 轮
+                    {{ s }}×
                   </button>
                 </div>
+                <p v-if="wb.upsample" class="side-note">
+                  默认 2×；4× 用 2× 跑两遍，细节比一次写 4× 更实，但费用也是两倍。
+                </p>
+
+                <label class="row-check" style="margin-top: 8px">
+                  <input v-model="wb.reflect" type="checkbox" :disabled="busy" />
+                  反思复核（出图后自检一轮）
+                </label>
+                <p class="side-note">
+                  这条路线只用云端模型：原图 → 短边 1080 → 语言模型规划 → 文生图执行 → 1K 出图。
+                  想用本机免费组件请切「自己组合」。
+                </p>
               </template>
 
               <template v-else>
@@ -1814,6 +1975,15 @@ const previewNote = computed(() => {
 .chip:hover {
   color: var(--fg);
   border-color: color-mix(in srgb, var(--c-accent) 45%, transparent);
+}
+/* 选中的影调风格（FEAT-198）：用金色描边而不是填充，与左栏「已选用」一致 */
+.chip.on {
+  color: var(--fg);
+  box-shadow: inset 0 0 0 1px var(--c-accent);
+}
+.chip:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .field {
   margin: 12px 0;

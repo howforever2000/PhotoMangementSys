@@ -1,41 +1,65 @@
-/** 创意工坊 · AI 创作类型（FEAT-152）
+/** 创意工坊 · AI 创作类型（FEAT-152 → FEAT-196 供应商库）
  *
  * 与 Rust `ai_settings.rs` / `ai_studio.rs` 及 Python `ai_studio/schemas.py` 三方一一对应
  * （均 camelCase）。apiKey 后端只回传掩码，保存时留空/掩码表示「沿用旧密钥」。
+ *
+ * ## FEAT-196 的形状变化
+ *
+ * 旧形状是三个能力位各自内联 `baseUrl + apiKey + model` —— 同一家服务商被三个
+ * 能力位复用时要把地址和密钥填三遍。新形状拆成两层：
+ *   - `providers`：供应商库（服务商 + 凭证），只存一份，可被多个能力位共用；
+ *   - `vision/edit/upscale`：能力位 → `{providerId, model}` 的绑定。
+ * 模型名留在绑定上而不是供应商上：同一家服务商在「图像理解」和「图像编辑」
+ * 用不同模型是常态。
  */
 
+/** 能力位（不是供应商）：决定某个工具该用哪一组模型 */
 export type AiProviderKind = "vision" | "edit" | "upscale";
 
-export interface AiProviderView {
+/** 供应商库条目（读回时 apiKey 是掩码） */
+export interface AiProviderEntryView {
+  /** 稳定 id（`p1`/`p2`…）；新建但未保存的条目为空串 */
+  id: string;
+  /** 展示名；空时后端回落 baseUrl 的 host */
+  name: string;
   baseUrl: string;
   /** 掩码（前 4 + … + 后 4），不是明文 */
   apiKey: string;
-  model: string;
   hasKey: boolean;
 }
 
-export interface AiProvidersView {
-  vision?: AiProviderView | null;
-  edit?: AiProviderView | null;
-  upscale?: AiProviderView | null;
+/** 能力位绑定：指向某个供应商 + 该能力位要用的模型名 */
+export interface AiBindingView {
+  /** 供应商 id；空 = 该能力位未配置 */
+  providerId: string;
+  model: string;
 }
 
 export interface AiSettings {
-  providers: AiProvidersView;
+  providers: AiProviderEntryView[];
+  vision?: AiBindingView | null;
+  edit?: AiBindingView | null;
+  upscale?: AiBindingView | null;
 }
 
-export interface AiProviderInput {
+/** 供应商库条目（写入）：apiKey 留空或掩码 = 沿用已保存密钥 */
+export interface AiProviderEntryInput {
+  id: string;
+  name: string;
   baseUrl: string;
   apiKey: string;
+}
+
+export interface AiBindingInput {
+  providerId: string;
   model: string;
 }
 
 export interface AiSettingsInput {
-  providers: {
-    vision?: AiProviderInput;
-    edit?: AiProviderInput;
-    upscale?: AiProviderInput;
-  };
+  providers: AiProviderEntryInput[];
+  vision?: AiBindingInput | null;
+  edit?: AiBindingInput | null;
+  upscale?: AiBindingInput | null;
 }
 
 export interface AiTestResult {

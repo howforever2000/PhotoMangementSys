@@ -1,28 +1,41 @@
 <script setup lang="ts">
 /**
- * AI 模型设置弹窗（FEAT-152 / FEAT-157 / FEAT-164 / FEAT-165）
+ * AI 模型设置弹窗（FEAT-152 / FEAT-157 / FEAT-164 / FEAT-165 / FEAT-196）
  *
- * 多 profile：图像理解 / 图像编辑 / 超分 三个能力，各自可指向不同服务商的模型
- * （baseUrl + apiKey + model 全 OpenAI 兼容格式）。baseUrl 也可指向本机服务
- * （Ollama / LM Studio），即「工作台调用本地大模型」——预设按钮直接填地址。
+ * ## FEAT-196：从「三格各填一套地址」改为「供应商库 + 下拉选择」
+ *
+ * 旧界面是三个能力卡（图像理解 / 图像编辑 / 图像超分），每张卡里手填
+ * baseUrl + apiKey + model。真实使用中同一家服务商会被三个能力位复用，于是
+ * 同一个地址要填三遍、换 key 要改三处，而且没有任何「可选项」可言。
+ *
+ * 新界面分两块：
+ *   1) 供应商库：每条 = 一个服务商（名称 + baseUrl + apiKey），只存一份；
+ *      「快捷填入」按钮保留，作用变成**填充新建供应商的地址**，不再覆盖已存配置。
+ *   2) 能力位绑定：每张能力卡里一个**下拉框选供应商** + 一个模型名输入。
+ *
+ * 模型名留在能力位上而不是供应商上 —— 同一家服务商在「图像理解」用 qwen-vl-max、
+ * 在「图像编辑」用 qwen-image-edit 是常态，模型名跟着供应商走会表达不出来。
+ *
  * apiKey 由后端加密存储、只回传掩码；此处留空或保持掩码即「沿用旧密钥」。
  *
- * 计费（FEAT-157）：从「按工具」改为「按模型」登记——每个模型卡片内可展开填写
- * 该模型的单价（元/张），同一模型被多个工具复用时只填一次。规则仍只存本机
- * localStorage，仅用于运行前的费用预估展示，不代扣费、不改后端。
- *
- * 本地增强模型（FEAT-164）：Real-ESRGAN / GFPGAN 不再是「外链 + 手动放目录」，
- * 改为复用扫描那套应用内下载（多镜像、断点续传、进度、取消、一键补全）。
- * FEAT-165：下载列表按 `area="workshop"` 只列创意工坊模型 —— 这也是它们唯一的
- * 下载入口，扫描侧的 📦 模型管理不再混入。
+ * 计费（FEAT-157）：仍是按能力位登记单价（元/张），不随供应商变化而改结构 ——
+ * 切换供应商后单价需要用户自己按新服务商的价格改一次。理由：供应商库是
+ * 「凭证管理」，计费是「我用多少钱一张」的估算口径，两者强行耦合会让
+ * 用户换个本地 Ollama（免费）之后单价仍残留云端价格，反而误导。
  */
-import { reactive, ref, watch } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
 import { useAiBilling, AI_MODELS } from "../../../composables/useAiBilling";
-import type { AiBillingRule, AiProviderKind } from "../../../types/ai";
+import type {
+  AiBillingRule,
+  AiProviderEntryInput,
+  AiProviderKind,
+  AiSettingsInput,
+} from "../../../types/ai";
 import ModelDownloadRows from "../../settings/ModelDownloadRows.vue";
+import { hostOf } from "../../../utils/urlHost";
 
 const open = defineModel<boolean>({ required: true });
 const store = useAiStudioStore();
@@ -33,71 +46,109 @@ const billing = useAiBilling();
  * 常见 OpenAI 兼容服务：一键填 baseUrl。
  * Ollama / LM Studio 是「本地模型」的直接落点（本机端口，无需联网）。
  */
-const BASE_PRESETS: { key: string; label: string; baseUrl: string }[] = [
-  { key: "ollama", label: "Ollama（本机）", baseUrl: "http://127.0.0.1:11434/v1" },
-  { key: "lmstudio", label: "LM Studio（本机）", baseUrl: "http://127.0.0.1:1234/v1" },
+const BASE_PRESETS: { key: string; label: string; baseUrl: string; name: string }[] = [
+  { key: "ollama", label: "Ollama（本机）", baseUrl: "http://127.0.0.1:11434/v1", name: "Ollama（本机）" },
+  { key: "lmstudio", label: "LM Studio（本机）", baseUrl: "http://127.0.0.1:1234/v1", name: "LM Studio（本机）" },
   {
     key: "local-gateway",
     label: "本地图生图网关",
     baseUrl: "http://127.0.0.1:8000/v1",
+    name: "本地图生图网关",
   },
   {
     key: "bailian",
     label: "阿里百炼",
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    name: "阿里百炼",
   },
 ];
 
-function applyPreset(kind: AiProviderKind, preset: { baseUrl: string }) {
-  form[kind].baseUrl = preset.baseUrl;
+/* ---------------- 供应商库表单 ---------------- */
+
+interface ProviderRow {
+  /** 稳定 key：已存条目用后端 id，新建的用本地临时 key（保存后由后端替换） */
+  uid: string;
+  /** 后端 id；新建条目为空串 */
+  id: string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  hasKey: boolean;
+  /** 展开编辑（默认收起，列表行只显示名称与地址） */
+  expanded: boolean;
+  testing: boolean;
+  testMsg: string;
+  testOk: boolean | null;
 }
 
-/** 打开本地模型目录（与下载落位同一个 models/local） */
-const modelsDir = ref("");
-async function openModelsDir() {
-  try {
-    if (!modelsDir.value) modelsDir.value = (await store.localModels()).modelsDir;
-    if (!modelsDir.value) {
-      notify.info("模型目录未知", "下载任一本地模型后可再次尝试；也可在创意工坊的画质修复里查看目录");
-      return;
-    }
-    await invoke("open_folder", { path: modelsDir.value });
-  } catch (e) {
-    notify.error("打开模型目录失败", String(e));
+let tempSeq = 0;
+function blankProvider(preset?: { baseUrl: string; name: string }): ProviderRow {
+  tempSeq += 1;
+  return {
+    uid: `tmp-${tempSeq}`,
+    id: "",
+    name: preset?.name ?? "",
+    baseUrl: preset?.baseUrl ?? "",
+    apiKey: "",
+    hasKey: false,
+    expanded: true,
+    testing: false,
+    testMsg: "",
+    testOk: null,
+  };
+}
+
+const providers = ref<ProviderRow[]>([]);
+
+/** 供应商展示名：自填名称 → baseUrl 的 host → 兜底文案（host 取不到时不显示空白） */
+function providerName(p: { name: string; baseUrl: string }): string {
+  return p.name.trim() || hostOf(p.baseUrl) || "未命名供应商";
+}
+
+/** 下拉框的选项：供应商库 + 一个「未配置」占位 */
+const providerOptions = computed(() =>
+  providers.value
+    .filter((p) => p.baseUrl.trim())
+    .map((p) => ({
+      uid: p.uid,
+      label: providerName(p),
+    })),
+);
+
+/** 新增供应商：可带一个快捷填入的预设 */
+function addProvider(preset?: { baseUrl: string; name: string }) {
+  providers.value.push(blankProvider(preset));
+}
+
+function removeProvider(uid: string) {
+  const idx = providers.value.findIndex((p) => p.uid === uid);
+  if (idx < 0) return;
+  providers.value.splice(idx, 1);
+  // 被删的供应商一旦还被能力位引用，绑定必须同步清空 —— 否则保存后后端会把
+  // 这条绑定判为「指向不存在的供应商」而丢弃，用户看到的是「刚选的又没了」。
+  for (const k of KINDS) {
+    if (bindings[k.key].providerUid === uid) bindings[k.key].providerUid = "";
   }
 }
 
-/** 计费规则表单（本地保存，仅用于运行前的费用预估展示；按模型登记） */
-const billingForm = reactive<AiBillingRule>({
-  currency: "¥",
-  modelPrices: { vision: 0, edit: 0, upscale: 0 },
-  note: "",
+function toggleProvider(uid: string) {
+  const p = providers.value.find((x) => x.uid === uid);
+  if (p) p.expanded = !p.expanded;
+}
+
+/* ---------------- 能力位绑定 ---------------- */
+
+/** 每张能力卡：选哪个供应商（用 uid，未保存的也能选）+ 模型名 */
+interface BindingRow {
+  providerUid: string;
+  model: string;
+}
+
+const bindings = reactive<Record<AiProviderKind, BindingRow>>({
+  vision: { providerUid: "", model: "" },
+  edit: { providerUid: "", model: "" },
+  upscale: { providerUid: "", model: "" },
 });
-
-/** 每个模型卡片内的「计费」折叠状态（默认收起，展开才填写） */
-const billingOpen = reactive<Record<AiProviderKind, boolean>>({
-  vision: false,
-  edit: false,
-  upscale: false,
-});
-
-function toggleBilling(k: AiProviderKind) {
-  billingOpen[k] = !billingOpen[k];
-}
-
-function applyBilling() {
-  const r = billing.rule.value;
-  billingForm.currency = r.currency;
-  for (const k of AI_MODELS) billingForm.modelPrices[k] = r.modelPrices[k] ?? 0;
-  billingForm.note = r.note ?? "";
-}
-
-/** 折叠条上显示当前单价文案 */
-function priceText(k: AiProviderKind): string {
-  const v = Number(billingForm.modelPrices[k] ?? 0);
-  if (!Number.isFinite(v) || v <= 0) return "未配置";
-  return `${billingForm.currency || "¥"}${v}/张`;
-}
 
 const KINDS: { key: AiProviderKind; title: string; need: string; hint: string }[] = [
   {
@@ -120,36 +171,64 @@ const KINDS: { key: AiProviderKind; title: string; need: string; hint: string }[
   },
 ];
 
-interface Row {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  hasKey: boolean;
-  testing: boolean;
-  testMsg: string;
-  testOk: boolean | null;
-}
+/* ---------------- 计费规则（按能力位，结构不变） ---------------- */
 
-function blank(): Row {
-  return { baseUrl: "", apiKey: "", model: "", hasKey: false, testing: false, testMsg: "", testOk: null };
-}
-
-const form = reactive<Record<AiProviderKind, Row>>({
-  vision: blank(),
-  edit: blank(),
-  upscale: blank(),
+const billingForm = reactive<AiBillingRule>({
+  currency: "¥",
+  modelPrices: { vision: 0, edit: 0, upscale: 0 },
+  note: "",
 });
 
+const billingOpen = reactive<Record<AiProviderKind, boolean>>({
+  vision: false,
+  edit: false,
+  upscale: false,
+});
+
+function toggleBilling(k: AiProviderKind) {
+  billingOpen[k] = !billingOpen[k];
+}
+
+function applyBilling() {
+  const r = billing.rule.value;
+  billingForm.currency = r.currency;
+  for (const k of AI_MODELS) billingForm.modelPrices[k] = r.modelPrices[k] ?? 0;
+  billingForm.note = r.note ?? "";
+}
+
+function priceText(k: AiProviderKind): string {
+  const v = Number(billingForm.modelPrices[k] ?? 0);
+  if (!Number.isFinite(v) || v <= 0) return "未配置";
+  return `${billingForm.currency || "¥"}${v}/张`;
+}
+
+/* ---------------- 读取 / 保存 ---------------- */
+
+/** 把后端设置铺进表单：先建供应商行（保留它们的 uid），再按 id 找回绑定 */
 function applySettings() {
   const s = store.settings;
+  const rows: ProviderRow[] = (s?.providers ?? []).map((p, i) => {
+    tempSeq += 1;
+    return {
+      uid: p.id || `tmp-restore-${i}-${tempSeq}`,
+      id: p.id,
+      name: p.name,
+      baseUrl: p.baseUrl,
+      apiKey: "",
+      hasKey: !!p.hasKey,
+      expanded: false,
+      testing: false,
+      testMsg: "",
+      testOk: null,
+    };
+  });
+  providers.value = rows;
+
+  const byId = new Map(rows.map((r) => [r.id, r.uid]));
   for (const k of KINDS) {
-    const p = s?.providers?.[k.key] ?? null;
-    form[k.key].baseUrl = p?.baseUrl ?? "";
-    form[k.key].apiKey = "";
-    form[k.key].model = p?.model ?? "";
-    form[k.key].hasKey = !!p?.hasKey;
-    form[k.key].testMsg = "";
-    form[k.key].testOk = null;
+    const b = s?.[k.key] ?? null;
+    bindings[k.key].providerUid = b?.providerId ? byId.get(b.providerId) ?? "" : "";
+    bindings[k.key].model = b?.model ?? "";
   }
 }
 
@@ -173,25 +252,30 @@ const saving = ref(false);
 async function save() {
   saving.value = true;
   try {
-    const pick = (k: AiProviderKind) => ({
-      baseUrl: form[k].baseUrl,
-      apiKey: form[k].apiKey,
-      model: form[k].model,
-    });
-    await store.saveSettings({
-      providers: {
-        vision: pick("vision"),
-        edit: pick("edit"),
-        upscale: pick("upscale"),
-      },
-    });
+    const payload: AiSettingsInput = {
+      providers: providers.value
+        .filter((p) => p.baseUrl.trim())
+        .map<AiProviderEntryInput>((p) => ({
+          id: p.id,
+          name: p.name.trim(),
+          baseUrl: p.baseUrl.trim(),
+          apiKey: p.apiKey,
+        })),
+      ...bindingPayload("vision"),
+      ...bindingPayload("edit"),
+      ...bindingPayload("upscale"),
+    };
+    await store.saveSettings(payload);
     billing.save({
       currency: billingForm.currency,
       modelPrices: { ...billingForm.modelPrices },
       note: billingForm.note,
     });
     applySettings();
-    notify.success("已保存", "模型配置已加密保存在本机当前账号下；计费规则已保存在本机");
+    notify.success(
+      "已保存",
+      "供应商与密钥已加密保存在本机当前账号下；计费规则已保存在本机",
+    );
   } catch (e) {
     notify.error("保存失败", String(e));
   } finally {
@@ -199,24 +283,69 @@ async function save() {
   }
 }
 
-async function test(kind: AiProviderKind) {
-  const f = form[kind];
-  f.testing = true;
-  f.testMsg = "测试中…";
-  f.testOk = null;
+/**
+ * 组装一个能力位的绑定请求。
+ *
+ * 注意「没选供应商」要显式传 `null` 而不是省略字段：省略字段在后端语义是
+ * 「保留旧值」，而用户清空下拉的意图是「解除绑定」。两者混同会让用户改不掉配置。
+ */
+function bindingPayload(
+  k: AiProviderKind,
+): Pick<AiSettingsInput, "vision" | "edit" | "upscale"> {
+  const uid = bindings[k].providerUid;
+  const row = providers.value.find((p) => p.uid === uid);
+  const providerId = row?.id ?? "";
+  const value =
+    row && providerId
+      ? { providerId, model: bindings[k].model.trim() }
+      : null;
+  return { [k]: value } as Pick<AiSettingsInput, "vision" | "edit" | "upscale">;
+}
+
+/* ---------------- 测试连通性 ---------------- */
+
+async function testProvider(p: ProviderRow) {
+  p.testing = true;
+  p.testMsg = "测试中…";
+  p.testOk = null;
   try {
-    const r = await store.testProvider(kind, {
-      baseUrl: f.baseUrl,
-      apiKey: f.apiKey,
-      model: f.model,
+    // 测试用「该供应商 + 任一已绑定它的能力位的模型名」。
+    // 没有绑定就没有模型名，此时让后端报「请先填写模型名」比乱猜一个模型更诚实。
+    const boundModel =
+      KINDS.map((k) => (bindings[k.key].providerUid === p.uid ? bindings[k.key].model : ""))
+        .find((m) => m.trim()) ?? "";
+    const r = await store.testProvider({
+      providerId: p.id,
+      baseUrl: p.baseUrl,
+      model: boundModel,
+      apiKey: p.apiKey,
     });
-    f.testOk = r.ok;
-    f.testMsg = `${r.message}（${r.latencyMs}ms）`;
+    p.testOk = r.ok;
+    p.testMsg = `${r.message}（${r.latencyMs}ms）`;
   } catch (e) {
-    f.testOk = false;
-    f.testMsg = String(e);
+    p.testOk = false;
+    p.testMsg = String(e);
   } finally {
-    f.testing = false;
+    p.testing = false;
+  }
+}
+
+/* ---------------- 本地增强模型 / 模型目录 ---------------- */
+
+const modelsDir = ref("");
+async function openModelsDir() {
+  try {
+    if (!modelsDir.value) {
+      const { invoke: inv } = await import("@tauri-apps/api/core");
+      modelsDir.value = await inv<string>("model_dir");
+    }
+    if (!modelsDir.value) {
+      notify.info("模型目录未知", "下载任一本地模型后可再次尝试；也可在创意工坊的画质修复里查看目录");
+      return;
+    }
+    await invoke("open_folder", { path: modelsDir.value });
+  } catch (e) {
+    notify.error("打开模型目录失败", String(e));
   }
 }
 </script>
@@ -232,22 +361,108 @@ async function test(kind: AiProviderKind) {
 
         <div class="asd-body">
           <p class="asd-intro">
-            三个能力各自填写一个 <strong>OpenAI 兼容</strong> 服务商的 baseUrl / apiKey / 模型名。
-            可指向同一服务商的不同模型，也可分别指向不同服务商；baseUrl 填本机地址即走本地服务
-            （Ollama / LM Studio 用于理解类，本机图生图网关用于编辑类 —— 后者通常不实现对话端点，
-            图像理解仍需支持对话的视觉模型）。
+            先在<strong>供应商库</strong>里登记服务商（OpenAI 兼容格式：baseUrl + apiKey），
+            再在下方三个能力位<strong>下拉选择</strong>用哪一家。同一家服务商只需登记一次，
+            可被三个能力位共用；模型名跟着能力位走，因为同一家在「图像理解」和「图像编辑」
+            通常要用不同模型。baseUrl 填本机地址即走本地服务（Ollama / LM Studio 用于理解类）。
           </p>
 
+          <!-- ══ 供应商库 ══ -->
+          <section class="asd-card asd-providers">
+            <div class="asd-card-head">
+              <h3 class="asd-card-title">供应商库</h3>
+              <span class="asd-card-need">{{ providers.length }} 个 · 密钥加密存本机</span>
+            </div>
+
+            <div v-if="!providers.length" class="asd-empty">
+              还没有登记供应商。点下面「＋ 新增供应商」，或直接用快捷填入建一个。
+            </div>
+
+            <div v-for="p in providers" :key="p.uid" class="asd-prov">
+              <button class="asd-prov-head" type="button" @click="toggleProvider(p.uid)">
+                <span class="asd-prov-caret">{{ p.expanded ? "▾" : "▸" }}</span>
+                <span class="asd-prov-name">{{ providerName(p) }}</span>
+                <span class="asd-prov-url">{{ p.baseUrl || "（未填地址）" }}</span>
+                <span v-if="p.hasKey" class="asd-prov-key" title="已保存密钥">🔑</span>
+              </button>
+
+              <div v-if="p.expanded" class="asd-prov-body">
+                <div class="asd-grid">
+                  <label class="asd-field">
+                    <span class="asd-label">名称</span>
+                    <input
+                      v-model="p.name"
+                      class="ai-inp ai-inp-full"
+                      :placeholder="hostOf(p.baseUrl) || 'https://…/v1'"
+                      spellcheck="false"
+                    />
+                  </label>
+                  <label class="asd-field">
+                    <span class="asd-label">baseUrl</span>
+                    <input
+                      v-model="p.baseUrl"
+                      class="ai-inp ai-inp-full"
+                      placeholder="https://…/compatible-mode/v1"
+                      spellcheck="false"
+                    />
+                  </label>
+                  <label class="asd-field asd-field-wide">
+                    <span class="asd-label">apiKey</span>
+                    <input
+                      v-model="p.apiKey"
+                      class="ai-inp ai-inp-full"
+                      type="password"
+                      autocomplete="off"
+                      :placeholder="p.hasKey ? '已保存，留空则不修改' : '粘贴 API Key'"
+                      spellcheck="false"
+                    />
+                  </label>
+                </div>
+
+                <div class="asd-prov-foot">
+                  <button class="ai-ghost" type="button" :disabled="p.testing" @click="testProvider(p)">
+                    {{ p.testing ? "测试中…" : "测试连接" }}
+                  </button>
+                  <button class="asd-del" type="button" @click="removeProvider(p.uid)">删除</button>
+                  <span
+                    v-if="p.testMsg"
+                    class="asd-test"
+                    :class="p.testOk === true ? 'ok' : p.testOk === false ? 'bad' : ''"
+                  >
+                    {{ p.testMsg }}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div class="asd-prov-add">
+              <button class="ai-ghost" type="button" @click="addProvider()">＋ 新增供应商</button>
+              <span class="asd-presets-label">快捷填入</span>
+              <button
+                v-for="ps in BASE_PRESETS"
+                :key="ps.key"
+                type="button"
+                class="asd-preset"
+                :title="ps.baseUrl"
+                @click="addProvider(ps)"
+              >
+                {{ ps.label }}
+              </button>
+            </div>
+          </section>
+
+          <!-- ══ 计费规则（按能力位，结构不变） ══ -->
           <section class="asd-card asd-billing">
             <div class="asd-card-head">
               <h3 class="asd-card-title">计费规则</h3>
-              <span class="asd-card-need">按模型登记 · 仅本地展示，不代扣费</span>
+              <span class="asd-card-need">按能力位登记 · 仅本地展示，不代扣费</span>
             </div>
             <p class="asd-billing-note">
-              本功能用你自己的 API Key 直连第三方服务商（如阿里云百炼）<strong>按量计费</strong>，本项目不经手、不加价。
-              费用按<strong>模型</strong>登记：在下方每个模型卡片的「计费」里展开填写该模型的「单价（元/张）」，
-              同一模型被多个工具复用时只需填一次；运行区会按「所用模型单价 × 张数」自动预估。
-              单价请照你所用模型的官方定价填写。免费额度用尽后接口会返回 403（额度或权限不足），需到服务商控制台充值或开通。
+              本功能用你自己的 API Key 直连第三方服务商（如阿里云百炼）<strong>按量计费</strong>，
+              本项目不经手、不加价。费用按<strong>能力位</strong>登记：在下方每张能力卡片的
+              「计费」里展开填写「单价（元/张）」，运行区会按「单价 × 张数」自动预估。
+              改用了不同价格的服务商时，请顺手改一次这里。免费额度用尽后接口会返回 403
+              （额度或权限不足），需到服务商控制台充值或开通。
             </p>
             <label class="asd-field asd-currency">
               <span class="asd-label">币种符号</span>
@@ -255,7 +470,7 @@ async function test(kind: AiProviderKind) {
             </label>
           </section>
 
-          <!-- 本地增强模型（FEAT-164）：复用扫描的下载机制，不再只给外链 -->
+          <!-- ══ 本地增强模型（FEAT-164）══ -->
           <section class="asd-card asd-local">
             <div class="asd-card-head">
               <h3 class="asd-card-title">本地增强模型</h3>
@@ -273,6 +488,7 @@ async function test(kind: AiProviderKind) {
             </div>
           </section>
 
+          <!-- ══ 三个能力位：选供应商 + 填模型 ══ -->
           <section v-for="k in KINDS" :key="k.key" class="asd-card">
             <div class="asd-card-head">
               <h3 class="asd-card-title">{{ k.title }}</h3>
@@ -281,50 +497,29 @@ async function test(kind: AiProviderKind) {
 
             <div class="asd-grid">
               <label class="asd-field">
-                <span class="asd-label">baseUrl</span>
-                <input
-                  v-model="form[k.key].baseUrl"
-                  class="ai-inp ai-inp-full"
-                  placeholder="https://…/compatible-mode/v1"
-                  spellcheck="false"
-                />
+                <span class="asd-label">供应商</span>
+                <select v-model="bindings[k.key].providerUid" class="ai-sel ai-inp-full">
+                  <option value="">（未配置）</option>
+                  <option v-for="o in providerOptions" :key="o.uid" :value="o.uid">
+                    {{ o.label }}
+                  </option>
+                </select>
               </label>
-              <div class="asd-presets">
-                <span class="asd-presets-label">快捷填入</span>
-                <button
-                  v-for="p in BASE_PRESETS"
-                  :key="p.key"
-                  type="button"
-                  class="asd-preset"
-                  :title="p.baseUrl"
-                  @click="applyPreset(k.key, p)"
-                >
-                  {{ p.label }}
-                </button>
-              </div>
 
               <label class="asd-field">
                 <span class="asd-label">模型</span>
                 <input
-                  v-model="form[k.key].model"
+                  v-model="bindings[k.key].model"
                   class="ai-inp ai-inp-full"
                   :placeholder="k.hint"
                   spellcheck="false"
                 />
               </label>
-
-              <label class="asd-field asd-field-wide">
-                <span class="asd-label">apiKey</span>
-                <input
-                  v-model="form[k.key].apiKey"
-                  class="ai-inp ai-inp-full"
-                  type="password"
-                  autocomplete="off"
-                  :placeholder="form[k.key].hasKey ? '已保存，留空则不修改' : '粘贴 API Key'"
-                  spellcheck="false"
-                />
-              </label>
             </div>
+
+            <p v-if="!providerOptions.length" class="asd-hint-inline">
+              上面还没有可用供应商 —— 先在上面「供应商库」里新增一个并把 baseUrl 填好。
+            </p>
 
             <div class="asd-billing-sub">
               <button type="button" class="asd-billing-toggle" @click="toggleBilling(k.key)">
@@ -348,19 +543,6 @@ async function test(kind: AiProviderKind) {
                   照该模型官方定价填写；填 0 或留空 = 未配置。参考价以服务商官方为准，可随时修改。
                 </p>
               </div>
-            </div>
-
-            <div class="asd-card-foot">
-              <button class="ai-ghost" type="button" :disabled="form[k.key].testing" @click="test(k.key)">
-                {{ form[k.key].testing ? "测试中…" : "测试连接" }}
-              </button>
-              <span
-                v-if="form[k.key].testMsg"
-                class="asd-test"
-                :class="form[k.key].testOk === true ? 'ok' : form[k.key].testOk === false ? 'bad' : ''"
-              >
-                {{ form[k.key].testMsg }}
-              </span>
             </div>
           </section>
         </div>
@@ -469,28 +651,101 @@ async function test(kind: AiProviderKind) {
   color: var(--fg-2);
 }
 
-/* 计费规则（feat: 按模型登记） */
-.asd-billing {
+/* ---------- 供应商库 ---------- */
+.asd-providers {
   border-color: color-mix(in srgb, var(--c-accent) 32%, var(--c-rule));
 }
-/* 本地模型卡：与计费卡同等的强调（两者都是"设置里的独立子域"） */
-.asd-local {
-  border-color: color-mix(in srgb, var(--c-accent) 24%, var(--c-rule));
+.asd-empty {
+  margin: 2px 0 10px;
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+  line-height: 1.6;
 }
-
-/* 快捷填入本机/常用服务：小而密的一排，不抢输入框的注意力 */
-.asd-presets {
+.asd-prov {
+  border: 1px solid var(--c-rule);
+  border-radius: var(--r-ui);
+  margin-bottom: 8px;
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+}
+.asd-prov-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font-size: var(--fs-body);
+  text-align: left;
+  cursor: pointer;
+}
+.asd-prov-head:hover {
+  background: var(--hover);
+}
+.asd-prov-caret {
+  width: 1em;
+  flex: none;
+  color: var(--c-accent);
+}
+.asd-prov-name {
+  flex: none;
+  font-weight: var(--fw-em);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.asd-prov-url {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.asd-prov-key {
+  flex: none;
+  font-size: 11px;
+}
+.asd-prov-body {
+  padding: 4px 10px 10px;
+  border-top: 1px dashed var(--c-rule);
+}
+.asd-prov-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.asd-del {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--c-rule);
+  border-radius: 7px;
+  background: none;
+  color: var(--c-danger);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+.asd-del:hover {
+  border-color: var(--c-danger);
+  background: color-mix(in srgb, var(--c-danger) 10%, transparent);
+}
+.asd-prov-add {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  grid-column: 1 / -1;
-  margin-top: -4px;
+  margin-top: 4px;
 }
 .asd-presets-label {
+  margin-left: 4px;
   font-size: var(--fs-label);
   letter-spacing: 0.12em;
-  color: var(--fg-2);
+  color: var(--fg-3);
 }
 .asd-preset {
   height: 22px;
@@ -507,6 +762,16 @@ async function test(kind: AiProviderKind) {
   color: var(--fg);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-accent) 45%, transparent);
 }
+
+/* 计费规则（按能力位登记） */
+.asd-billing {
+  border-color: color-mix(in srgb, var(--c-accent) 32%, var(--c-rule));
+}
+/* 本地模型卡：与计费卡同等的强调（两者都是"设置里的独立子域"） */
+.asd-local {
+  border-color: color-mix(in srgb, var(--c-accent) 24%, var(--c-rule));
+}
+
 .asd-billing-note {
   margin: 0 0 10px;
   font-size: var(--fs-meta);
@@ -557,6 +822,13 @@ async function test(kind: AiProviderKind) {
   font-size: var(--fs-meta);
   color: var(--fg-2);
   opacity: 0.85;
+  line-height: 1.5;
+}
+
+.asd-hint-inline {
+  margin: 8px 0 0;
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
   line-height: 1.5;
 }
 

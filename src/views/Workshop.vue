@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 创意工坊（FEAT-150 → FEAT-168 三层 IA → FEAT-169 按类型分组）
+ * 创意工坊（FEAT-150 → FEAT-168 三层 IA → FEAT-169 按类型分组 → FEAT-197 工作台模式）
  * ===================================================================
  * ## 定位
  *
@@ -11,19 +11,16 @@
  * ## 三层 IA（按「要不要自己选步骤」分，不按本机/云端分）
  *
  *   ① 一键出片（默认落地页）：选图 → 选配方 → 出片，不暴露任何单算子
- *   ② 批量套用：独立路由 /workshop/workbench，前后对比交互不同，但共用配方选择器
+ *   ② 工作台：独立路由 /workshop/workbench，进入时**默认载入本页素材托盘**；
+ *      三条路线（配方 / 模型理解 / 自己组合）+ 前后对比 + 批量出片
  *   ③ 单步工具：默认折叠，按**类型**分组（影调与滤镜 / 人像 / 画质 / 创作 / 处理），
  *      规划中项沉底
  *
- * FEAT-169 把三层里的第 ③ 层从「本机 / 模型 / 规划中」改成按类型分组：运行位置
- * 是用户不关心的技术口径，同一件事「本机」「模型」各出现一次时用户还得先理解
- * 后者才能选。分组口径集中在 `op_catalog.json` 的 `groups`，这里只渲染。
+ * FEAT-197 把 ② 从「批量套用」改名为「工作台」：它已经不是「把某个配方套到一批图」
+ * 的单向动作，而是一个能看前后对比、能选三条路线、能自己拼组件的工作空间。
+ * 入口文案改「空间名」，页面内的「批量套用」按钮保留「动作名」——两者语义不同。
  *
- * ## 结构保全（FEAT-169）
- *
- * 用户规则：滤镜迁移与美颜不得改变物体形状。本机工具天然满足（逐色查表 +
- * 局部 ROI）；云端工具靠 `presets.STRUCTURE_LOCK` 提示词硬段 + `critic.structure_compare`
- * 出图后校验双保险。界面在页脚把这句承诺写出来，不让用户去猜哪个工具安全。
+ * 分组只是展示口径，不改变任何工具归属或后端能力。
  *
  * 工具定义全部来自 `op_catalog.json`（经 `utils/toolCatalog.ts`），新增工具只改那一份 JSON。
  *
@@ -50,6 +47,7 @@ import AutoGradeTool from "../components/workshop/ai/AutoGradeTool.vue";
 import LocalBeautyTool from "../components/workshop/ai/LocalBeautyTool.vue";
 import LocalReshapeTool from "../components/workshop/ai/LocalReshapeTool.vue";
 import OcrTool from "../components/workshop/ai/OcrTool.vue";
+import OriginTag from "../components/workshop/ai/OriginTag.vue";
 import { pickPhotos } from "../composables/useOpenDialog";
 import {
   primaryTool,
@@ -63,12 +61,14 @@ import { useWorkshopUiStore } from "../stores/workshopUi";
 import { useCompressTaskStore } from "../stores/compressTask";
 import { useAiStudioStore } from "../stores/aiStudio";
 import { dedupePhotoPaths, splitPhotoPaths } from "../utils/workshopHandoff";
+import { originOfRecipeSet, originOfTool, type OriginInfo } from "../utils/modelOrigin";
+import { RECIPES } from "../utils/workbenchPlan";
 import "../assets/ai-tool.css";
 
 const route = useRoute();
 const router = useRouter();
 
-/** 进入 ② 批量套用（独立视图，前后对比交互不同） */
+/** 进入 ② 工作台（独立视图：三条路线 + 前后对比 + 批量出片） */
 function goWorkbench() {
   router.push("/workshop/workbench");
 }
@@ -132,11 +132,32 @@ const activeDef = computed<CatalogToolDef>(
 );
 const activeComponent = computed(() => TOOL_COMPONENTS[active.value] ?? null);
 
+/**
+ * 工具来源（FEAT-199）：本机算法 / 本机模型 / 云端 API / 未配置模型。
+ *
+ * 判据全在 `utils/modelOrigin.ts`：执行方式取 catalog，模型位置取已绑定供应商的
+ * baseUrl。**不能**直接用 `activeDef.backend` —— 那个字段只说明「跑本机算子还是
+ * 调模型」，既分不出「零模型算法」与「本地 ONNX 模型」，也会把绑到本机 Ollama
+ * 的云端工具误报成「云端 API」（照片其实没出本机）。
+ */
+const activeOrigin = computed<OriginInfo>(() => originOfTool(active.value, aiStore.settings));
+
+/** 主入口「一键出片」背后是四条配方，来源要按配方集合判（人像配方要本地模型） */
+const primaryOrigin = computed<OriginInfo>(() =>
+  originOfRecipeSet(
+    RECIPES.map((r) => r.id),
+    aiStore.settings,
+  ),
+);
+
+/** 左栏每一项的来源角标；主入口也走同一函数，不另写一份判定 */
+function originTag(toolId: string): OriginInfo {
+  return originOfTool(toolId, aiStore.settings);
+}
+
 const headerMeta = computed(
   () =>
-    `${activeDef.value.label} · 素材 ${tray.value.length} 张 · ${
-      activeDef.value.backend === "cloud" ? "模型处理" : "本机处理"
-    }`,
+    `${activeDef.value.label} · 素材 ${tray.value.length} 张 · ${activeOrigin.value.label}`,
 );
 
 /* ---------------- 入口：从相册/灯箱带照片进来 ---------------- */
@@ -157,6 +178,10 @@ onMounted(() => {
   }
   // `?tool=` 优先于默认工位（校验合法性，避免深链把界面切到不存在的工具）
   if (typeof q.tool === "string" && isWorkshopTool(q.tool)) active.value = q.tool;
+  // 来源标注要读已绑定的供应商地址（FEAT-199）：不主动拉一次，用户没进过
+  // 「模型设置」时所有云端工具会一直停在「配置未载入」的兜底文案。
+  // 失败静默：标注只是提示，不该因读设置失败而挡住工坊。
+  void aiStore.loadSettings().catch(() => undefined);
 });
 
 async function addPhotos() {
@@ -196,10 +221,16 @@ function selectTool(t: CatalogToolDef) {
             <span class="side-ico"><ToolIcon :name="primary.icon" :size="15" /></span>
             <span class="side-name">{{ primary.label }}</span>
             <span v-if="toolBusy(primary.id)" class="side-dot" title="任务运行中" aria-label="任务运行中" />
+            <OriginTag v-else :info="primaryOrigin" variant="short" no-title />
           </button>
-          <button class="side-item" type="button" title="一批图套用同一配方" @click="goWorkbench">
+          <button
+            class="side-item"
+            type="button"
+            title="工作台模式：带入当前素材，逐图对比、批量出片"
+            @click="goWorkbench"
+          >
             <span class="side-ico"><ToolIcon name="upscale" :size="15" /></span>
-            <span class="side-name">批量套用</span>
+            <span class="side-name">工作台</span>
             <span class="side-arrow" aria-hidden="true">↗</span>
           </button>
         </div>
@@ -227,7 +258,10 @@ function selectTool(t: CatalogToolDef) {
                 <span class="side-name">{{ t.label }}</span>
                 <span v-if="toolBusy(t.id)" class="side-dot" title="任务运行中" aria-label="任务运行中" />
                 <span v-else-if="!t.ready" class="side-tag">规划</span>
-                <span v-else-if="t.backend === 'cloud'" class="side-tag" title="调用你配置的模型">模型</span>
+                <!-- 来源角标（FEAT-199）：本机算法 / 本机模型 / 云端 API / 未配置模型。
+                     不再按 backend 一律写「模型」—— 那会把绑到本机 Ollama 的云端
+                     工具也标成「调用你配置的模型」。悬停说明由 OriginTag 自带。 -->
+                <OriginTag v-else :info="originTag(t.id)" />
               </button>
             </template>
           </template>
@@ -244,6 +278,13 @@ function selectTool(t: CatalogToolDef) {
             ⚙ 模型设置
           </button>
         </header>
+
+        <!-- 来源行（FEAT-199）：切到哪个工具就说清「这一步跑在哪、花不花钱」。
+             只在这一处渲染，不在 14 个面板组件里各加一遍 —— 面板只管自己的参数区。 -->
+        <p class="origin-row" :class="activeOrigin.origin">
+          <OriginTag :info="activeOrigin" no-title />
+          <span class="origin-detail">{{ activeOrigin.detail }}</span>
+        </p>
 
         <!-- 素材托盘：所有工具共用一份输入 -->
         <PhotoTray :paths="tray" @add="addPhotos" @remove="removePhoto" @clear="clearTray" />
@@ -492,6 +533,37 @@ function selectTool(t: CatalogToolDef) {
   color: var(--fg-2);
   line-height: 1.5;
   min-width: 0;
+}
+
+/* 来源行（FEAT-199）：一枚档位角标 + 一句说明。
+   不做成卡片或彩色条 —— 它是「切到这个工具时顺手确认一句」的信息，
+   与页脚旁注同级；用分隔线压住一段空间即可。 */
+.origin-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--c-rule);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+}
+
+/* 档位角标在这里承担「首要信息」，给一点字重；颜色仍由 OriginTag 决定 */
+.origin-row :deep(.origin-tag) {
+  font-weight: 600;
+  flex: none;
+}
+
+.origin-detail {
+  min-width: 0;
+  color: var(--fg-2);
+  text-wrap: pretty;
+}
+
+/* 未配置模型：这一行是「现在点了会报错」的预告，底色点到为止 */
+.origin-row.unconfigured {
+  border-bottom-color: color-mix(in srgb, var(--c-danger) 35%, var(--c-rule));
 }
 
 /* ---------- 规划中 ---------- */

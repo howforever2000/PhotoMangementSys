@@ -101,7 +101,8 @@ async fn probe(client: &reqwest::Client, base: &str) -> bool {
 fn pid_alive(pid: u32) -> bool {
     #[cfg(target_os = "windows")]
     {
-        let out = Command::new("tasklist")
+        // 必须走 proc_cmd：发布版是 GUI 子系统，裸 Command 会弹出控制台窗口
+        let out = crate::proc_cmd::command("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH"])
             .output();
         match out {
@@ -122,7 +123,7 @@ fn pid_alive(pid: u32) -> bool {
 fn kill_pid(pid: u32) {
     #[cfg(target_os = "windows")]
     {
-        let _ = Command::new("taskkill")
+        let _ = crate::proc_cmd::command("taskkill")
             .args(["/PID", &pid.to_string(), "/F", "/T"])
             .output();
     }
@@ -188,20 +189,13 @@ fn spawn(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
         .map(|d| d.join("ai").join("ai-server.exe"))
         .filter(|p| p.is_file());
 
+    // 两个分支都走 proc_cmd：打包 exe / 开发版解释器都是控制台程序，
+    // 发布版（GUI 子系统）漏掉标志就会弹窗（BUG-2026-1119-001）
     let mut cmd: Command;
     let python_dir = project_python_dir();
 
     if let Some(exe) = resource_exe {
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd = Command::new(&exe);
-            cmd.creation_flags(0x0800_0000);
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            cmd = Command::new(&exe);
-        }
+        cmd = crate::proc_cmd::command(&exe);
     } else {
         // 开发版：python -m ai_studio.server（cwd=python，保证包导入）
         let script = python_dir.join("ai_studio").join("server.py");
@@ -213,16 +207,7 @@ fn spawn(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
             ));
         }
         let interp = crate::vision::resolve_python_interpreter()?;
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd = Command::new(&interp);
-            cmd.creation_flags(0x0800_0000);
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            cmd = Command::new(&interp);
-        }
+        cmd = crate::proc_cmd::command(&interp);
         cmd.arg("-m").arg("ai_studio.server").current_dir(&python_dir);
     }
 

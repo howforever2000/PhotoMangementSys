@@ -67,7 +67,7 @@ fn check_policy(policy: &str, vision: &Option<PlainProvider>, edit: &Option<Plai
 }
 
 use crate::ai_service;
-use crate::ai_settings::{provider_for, AiProviderInput, PlainProvider};
+use crate::ai_settings::{provider_entry, provider_for, PlainProvider};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -296,17 +296,31 @@ async fn cancel_inner(job_id: &str, app: &tauri::AppHandle) -> Result<bool, Stri
     Ok(resp.status().is_success())
 }
 
-/// 测试连通性：provider 为空时用已保存配置；密钥为掩码时沿用已保存密钥。
+/// 测试连通性（FEAT-196 改口径：按「供应商 + 模型」测，而不是按能力位测）。
+///
+/// 参数三件套都是**界面上的当前值**（可能还没保存）：
+/// - `provider_id`：已保存的供应商 id（用于取旧密钥；新建的供应商为空）
+/// - `base_url`：界面上当前填的地址（空则回落该 id 对应的已存地址）
+/// - `model`：界面上当前填的模型名
+/// - `api_key`：界面上的密钥；空或掩码表示沿用该 id 已保存的密钥
+///
+/// 为什么不再按 `kind` 取已存配置：改多供应商后，「这条供应商能不能通」与
+/// 「它被哪个能力位引用」是两件事 —— 用户常在保存前先测一下新建的供应商。
 #[tauri::command]
 pub async fn ai_test_provider(
-    kind: String,
-    provider: Option<AiProviderInput>,
+    provider_id: Option<String>,
+    base_url: Option<String>,
+    model: Option<String>,
+    api_key: Option<String>,
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
     session: tauri::State<'_, crate::SessionState>,
 ) -> Result<serde_json::Value, String> {
-    let t = log_call!("ai_test_provider", &format!("kind={kind}"));
-    let r = test_provider_inner(kind, provider, app, state, session).await;
+    let t = log_call!(
+        "ai_test_provider",
+        &format!("provider={provider_id:?} model={model:?}")
+    );
+    let r = test_provider_inner(provider_id, base_url, model, api_key, app, state, session).await;
     match &r {
         Ok(v) => {
             let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
@@ -318,51 +332,63 @@ pub async fn ai_test_provider(
 }
 
 async fn test_provider_inner(
-    kind: String,
-    provider: Option<AiProviderInput>,
+    provider_id: Option<String>,
+    base_url: Option<String>,
+    model: Option<String>,
+    api_key: Option<String>,
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
     session: tauri::State<'_, crate::SessionState>,
 ) -> Result<serde_json::Value, String> {
     let uid = crate::require_user(&session)?;
+    let pid = provider_id.unwrap_or_default().trim().to_string();
     let saved = {
         let db = state.0.lock().map_err(|e| e.to_string())?;
-        provider_for(&db, uid, &kind)?
-    };
-
-    let chosen: PlainProvider = match provider {
-        Some(p) => {
-            let base = p.base_url.trim().to_string();
-            let model = p.model.trim().to_string();
-            let mut key = p.api_key.trim().to_string();
-            if key.is_empty() || key.contains('…') || key.contains("****") {
-                key = saved.as_ref().map(|s| s.api_key.clone()).unwrap_or_default();
-            }
-            PlainProvider {
-                base_url: base,
-                api_key: key,
-                model,
-            }
+        if pid.is_empty() {
+            None
+        } else {
+            provider_entry(&db, uid, &pid)?
         }
-        None => saved.ok_or_else(|| "该能力尚未配置，请先填写 baseUrl / model / apiKey".to_string())?,
     };
 
-    if chosen.base_url.trim().is_empty() {
-        return Err("baseUrl 不能为空".to_string());
+    // 地址：界面值优先，空则回落已存值
+    let chosen_base = base_url
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let chosen_base = if chosen_base.is_empty() {
+        saved.as_ref().map(|(b, _)| b.clone()).unwrap_or_default()
+    } else {
+        chosen_base
+    };
+    // 密钥：空或掩码 → 沿用已存密钥；新建供应商（pid 空）则用界面值
+    let key_in = api_key.unwrap_or_default().trim().to_string();
+    let keep_old = key_in.is_empty() || key_in.contains('…') || key_in.contains("****");
+    let chosen_key = if keep_old {
+        saved.as_ref().map(|(_, k)| k.clone()).unwrap_or_default()
+    } else {
+        key_in
+    };
+    let chosen_model = model.unwrap_or_default().trim().to_string();
+
+    if chosen_base.is_empty() {
+        return Err("请先填写 baseUrl".to_string());
+    }
+    if chosen_model.is_empty() {
+        return Err("请先填写模型名".to_string());
     }
     crate::logger::log_info(&format!(
-        "[ai-studio] 连通性测试 kind={kind} model={} base={}",
-        chosen.model, chosen.base_url
+        "[ai-studio] 连通性测试 provider={pid} model={chosen_model} base={chosen_base}"
     ));
 
     let base = ai_service::ensure_ready(&app).await?;
     let client = http_client();
     let body = serde_json::json!({
-        "kind": kind,
+        "kind": "vision",
         "provider": {
-            "baseUrl": chosen.base_url,
-            "apiKey": chosen.api_key,
-            "model": chosen.model,
+            "baseUrl": chosen_base,
+            "apiKey": chosen_key,
+            "model": chosen_model,
         }
     });
     let resp = client

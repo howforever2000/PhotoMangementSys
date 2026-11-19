@@ -16,8 +16,6 @@ import { trace } from "../utils/trace";
 import { toolLabel } from "../utils/toolCatalog";
 import type {
   AiJobStatus,
-  AiProviderInput,
-  AiProviderKind,
   AiRunRequest,
   AiSettings,
   AiSettingsInput,
@@ -59,13 +57,28 @@ export const useAiStudioStore = defineStore("aiStudio", () => {
     return settings.value;
   }
 
-  async function testProvider(
-    kind: AiProviderKind,
-    provider?: AiProviderInput,
-  ): Promise<AiTestResult> {
+  /**
+   * 连通性测试（FEAT-196：按「供应商 + 模型」测，不再按能力位测）。
+   *
+   * 三个入参都是**界面上的当前值**，允许还没保存：
+   * - `providerId` 用于取该供应商已存的密钥（新建供应商传空串）
+   * - `baseUrl` / `model` 用界面值，空则回落已存值
+   * - `apiKey` 空或掩码 = 沿用已存密钥
+   *
+   * 为什么不再传 kind：改多供应商后，「这条供应商能不能通」与「它被哪个能力位
+   * 引用」是两件事，用户常在保存前先测一下新建的供应商。
+   */
+  async function testProvider(req: {
+    providerId: string;
+    baseUrl: string;
+    model: string;
+    apiKey: string;
+  }): Promise<AiTestResult> {
     return await invoke<AiTestResult>("ai_test_provider", {
-      kind,
-      provider: provider ?? null,
+      providerId: req.providerId || null,
+      baseUrl: req.baseUrl,
+      model: req.model,
+      apiKey: req.apiKey,
     });
   }
 

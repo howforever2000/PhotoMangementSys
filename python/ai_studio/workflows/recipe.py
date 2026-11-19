@@ -23,6 +23,7 @@ from typing import Any, Dict, List
 from PIL import Image
 
 from .. import catalog, critic, pipeline, recipecatalog
+from ..renderopts import RunContext, clamp_render_steps
 from ..steptrace import StepTrace
 from .base import filter_inputs, read_image, save_image, stem_of
 from .batch import Outcome, run_batch
@@ -57,11 +58,19 @@ def run_plan(
     emit,
     base_pct: float,
     span: float,
+    ctx: Any = None,
 ) -> Image.Image:
-    """唯一执行函数：A 配方 / B 大模型计划都走这里。"""
+    """唯一执行函数：A 配方 / B 大模型计划都走这里。
+
+    `ctx` 是作业级渲染参数（文生图采样步数等），原样透传到每步算子；
+    缺省 `None` 时执行层回落「不向网关声明步数」。
+    """
+    kwargs: Dict[str, Any] = {}
+    if ctx is not None:
+        kwargs["ctx"] = ctx
     return pipeline.execute_plan(
         img, plan, providers, cancel,
-        on_step=_on_step_factory(trace, base_pct, span, emit),
+        on_step=_on_step_factory(trace, base_pct, span, emit), **kwargs,
     )
 
 
@@ -109,6 +118,8 @@ def run(req, progress, cancel) -> dict:
     opts = req.options or {}
     plan, recipe_id, skipped_ops = _resolve_plan(opts, warnings)
     total = len(paths)
+    # 作业级渲染参数（文生图采样步数）：自己组合里也可能有云端步，所以 A 模式同样接。
+    ctx = RunContext(clamp_render_steps(opts.get("steps", opts.get("renderSteps", 1))))
 
     # 并行完成后按序收：steps_all / verifications 必须与 paths 对齐
     steps_by_photo: Dict[int, List[Dict[str, Any]]] = {}
@@ -146,7 +157,7 @@ def run(req, progress, cancel) -> dict:
 
         emit = emit_for(index, label)
         emit(int(base_pct + span * 0.05), "准备", trace.snapshot())
-        result = run_plan(img, plan, req.providers, cancel, trace, emit, base_pct, span)
+        result = run_plan(img, plan, req.providers, cancel, trace, emit, base_pct, span, ctx)
         steps_by_photo[index] = trace.snapshot()
 
         # 本地零模型 critic：默认开（Q4）；不调用任何外部模型
@@ -200,5 +211,6 @@ def run(req, progress, cancel) -> dict:
             "verifications": verifications,
             "steps": steps_all,
             "stats": stats,
+            "renderSteps": ctx.render_steps,
         },
     }

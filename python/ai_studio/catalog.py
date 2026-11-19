@@ -69,6 +69,19 @@ def local_ops() -> frozenset[str]:
     return frozenset(o["id"] for o in ops() if o.get("backend") == "local")
 
 
+def cloud_ops() -> frozenset[str]:
+    """可编排的云端算子：排除 internal 与 backend=local。
+
+    「模型理解」路线只让语言模型编排云端编辑步骤（FEAT-197）：本机算子要跑在
+    用户机器上，属于另一条产品路线（自己组合），混进规划会让「按模型计费」的
+    口径失真，也会让链路从「原图 → 1080 理解 → 文生图 → 1K 输出」变成
+    「本机算子和云端算子交替跑」。所以规划侧只保留 cloud 白名单。
+    """
+    return frozenset(
+        o["id"] for o in ops() if not o.get("internal") and o.get("backend") != "local"
+    )
+
+
 def groups() -> List[tuple[str, str]]:
     """单步工具的展示分组（id, 中文名），按 `groups` 声明顺序。
 
@@ -101,13 +114,19 @@ def python_modules() -> List[str]:
     return out
 
 
-def op_catalog_prompt() -> str:
-    """规划提示词里的算子表：由清单生成，避免与可用算子漂移。"""
+def op_catalog_prompt(only: frozenset[str] | None = None) -> str:
+    """规划提示词里的算子表：由清单生成，避免与可用算子漂移。
+
+    `only` 给出时只列这部分算子（「模型理解」只允许云端算子，见 `cloud_ops()`）；
+    缺省列全部可编排算子（自己组合 / 配方校验用）。
+    """
     lines = [
         "可用算子（线性执行，后一步吃前一步输出；按顺序依赖，只有确实需要组合时才多步）："
     ]
     for o in ops():
         if o.get("internal"):
+            continue
+        if only is not None and o["id"] not in only:
             continue
         parts = []
         for key, p in (o.get("params") or {}).items():
@@ -238,6 +257,7 @@ __all__ = [
     "tool_spec",
     "allowed_ops",
     "local_ops",
+    "cloud_ops",
     "groups",
     "group_ids",
     "requires_before",

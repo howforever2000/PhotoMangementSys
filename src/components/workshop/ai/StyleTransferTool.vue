@@ -155,7 +155,7 @@ async function onCancel() {
       </button>
     </div>
 
-    <AiCostHint tool="style_transfer" :count="paths.length" />
+    <AiCostHint tool="style_transfer" :count="paths.length" :settings="store.settings" />
 
     <AiResultPanel :job="job" @cancel="onCancel" />
   </section>

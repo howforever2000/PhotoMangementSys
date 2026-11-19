@@ -8,7 +8,7 @@
 交给视觉模型理解后直接上屏的文本。
 """
 
-from . import catalog
+from . import catalog, modelstyle
 
 # ---------------- 全局硬约束：结构保全（FEAT-169） ----------------
 # 用户规则：「滤镜迁移不能改变每个物体的形状，包括人物、主体、背景；人物美颜只做
@@ -333,36 +333,80 @@ def auto_grade_prompt(extra: str = "") -> str:
 # 规划器可用算子目录：告诉模型有哪些白名单算子与参数，避免它凭空发明算子。
 # 实际强约束在 pipeline.validate_plan（白名单 + 参数夹取 + 顺序规范化），此文本只是「告知」。
 #
-# FEAT-164：算子目录里加入**本地组件**（local_film / local_upscale）——它们跑在本机、
-# 算子表由 `op_catalog.json` 生成（唯一真相源）：新增算子不再需要手抄进提示词，
-# 也不会出现「规划器以为能用、执行器其实没有」的漂移。
-OP_CATALOG = catalog.op_catalog_prompt()
+# 算子表由 `op_catalog.json` 生成（唯一真相源），规划提示词只取其中的云端子集
+# （`CLOUD_OP_CATALOG`）；完整表留给配方校验与「自己组合」的前端使用。
+# 「模型理解」路线只编排云端算子（FEAT-197）：本机算子属于「自己组合」那条路线，
+# 混进规划会让「按模型计费」的口径失真，也会把一句话出片变成本机长等待。
+CLOUD_OP_CATALOG = catalog.op_catalog_prompt(only=catalog.cloud_ops())
 
 
-def planner_prompt(user_intent: str, local_first: bool = False) -> str:
+def planner_prompt(
+    user_intent: str,
+    strength: float | None = None,
+    style_id: str = "",
+) -> str:
     """给规划模型（多模态）的提示：看意图 + 照片，产出受约束 JSON 计划。
 
-    local_first=True 时追加「优先本地」偏好 —— 只在用户显式勾选时传，
-    默认让模型按效果自行选择（本地组件能省外部调用，但表现力弱于云端模型）。
+    只列云端算子：这条链路的产物是「原图 → 理解 → 文生图 → 1K 出图」，
+    全程按模型计费；能跑在本机的调色/胶片/形变/磨皮请走「自己组合」。
+
+    `strength`（0~1，可缺省）是界面上的「强度」滑杆。**必须真的进提示词**：
+    前端传了而后端不读，就是绑定却不生效的死控件（FEAT-168 / BUG-2026-1118-003
+    的同类教训）。它表达的是「改动幅度偏好」，不是某个算子的参数。
+
+    `style_id`（FEAT-198）只影响**规划方向**：告诉模型「用户挑了一款影调风格，
+    应该走调色/滤镜迁移这条线」。真正的风格段落由算子层 `with_style()` 确定性追加，
+    不依赖模型把它抄进 `extra` —— 抄漏就静默失效（见 `ai_studio/modelstyle.py`）。
     """
     intent = (user_intent or "").strip() or "自然、得体地优化这张照片"
-    prefer = (
-        "偏好：在能满足意图的前提下优先使用本地算子（local_*），尽量少调用外部模型。\n"
-        if local_first
+    amount = ""
+    if strength is not None:
+        try:
+            s = max(0.0, min(1.0, float(strength)))
+        except (TypeError, ValueError):
+            s = 0.64
+        if s < 0.34:
+            amount = "改动幅度：保守，尽量贴近原片，不要明显的风格化。\n"
+        elif s < 0.67:
+            amount = "改动幅度：适中，能看出修过但保持自然。\n"
+        else:
+            amount = "改动幅度：明显，风格与影调可以更强烈，但不得改变构图与形状。\n"
+    picked = modelstyle.label_of(style_id)
+    style_hint = (
+        f"用户还挑了一款影调风格「{picked}」（id={style_id}），"
+        "请把调色/滤镜迁移排在计划里（风格段落由执行层自动追加，你不需要复述它）。\n"
+        if picked
         else ""
     )
+    style_list = modelstyle.prompt_lines()
     return (
         "你是照片后期编排助手。根据用户意图和这张照片，规划一个线性、可复现的修图步骤序列。\n"
-        f"{OP_CATALOG}\n"
+        f"{CLOUD_OP_CATALOG}\n"
+        f"可选影调风格（用户可在界面里挑一款，你没挑到时不要自己编）：\n{style_list}\n"
         f"用户意图：{intent}\n"
-        f"{prefer}"
-        "注意：步骤必须按上面标注的前置顺序排列；缺资源的本地步骤会被自动跳过，"
-        "不要因为担心模型缺失而减少必要步骤。\n"
-        "重要：改形状是例外而不是默认。除非用户明确要求瘦脸 / 放大眼睛 / 改变脸型，"
-        "否则不许编排 face_reshape —— 调色、滤镜、美颜都只改颜色与质感。\n"
+        f"{amount}"
+        f"{style_hint}"
+        "注意：步骤必须按上面标注的前置顺序排列；最多 4 步，只排真正必要的步骤。\n"
+        "重要：改形状是例外而不是默认。除非用户明确要求改变脸型，否则不要编排改变几何的步骤 —— "
+        "调色、滤镜、美颜都只改颜色与质感。\n"
         "只输出 JSON，不要解释，格式："
-        '{"intent":"简述意图","steps":[{"op":"auto_grade","params":{}}]}'
+        '{"intent":"简述意图","steps":[{"op":"style_transfer","params":{}}]}'
     )
+
+
+def with_style(extra: str, style_id: str) -> str:
+    """把风格段落追加到 `extra` 末尾（FEAT-198）。
+
+    **注意别在链路里用它拼 `params.extra`**：`catalog.norm_params` 对 string 参数
+    截到 500 字，而一条风格描述（中文原文 + 英文要点）常到 600~1300 字 —— 塞进去会
+    被静默截断。真正生效的注入点是 `ops._run_edit` 读作业级 `RunContext.style_prompt`
+    （不经过参数夹取）。本函数留给不需要过 `norm_params` 的调用方。
+    """
+    base = (extra or "").strip()
+    block = modelstyle.compose(style_id)
+    if not block:
+        return base
+    return f"{base} {block}".strip() if base else block
 
 
 def verifier_prompt(intent: str, extra: str = "") -> str:
