@@ -13,6 +13,13 @@ SERVICE_NAME = "ai-studio"
 # 单作业并发上限：图像编辑多为网络等待，2 路并发足够，过多会触发服务商限流
 JOB_WORKERS = 2
 
+# 本机 ONNX 会话的 CPU 线程口径（与 VCR 的 `config.threads()` 同一纪律）：
+#   - intra_op：单个算子内部并行度。默认按 ORT 满核开，而本服务同时有
+#     「作业 worker ×2 + 预览线程池」，多会话叠加会 CPU 超订、互相抢核反而更慢；
+#   - inter_op 固定 1（算子级并行同样会和并发会话打架，见 vcr/model_registry.py）。
+# 取半核、上限 8：既能吃满中低核机器，又不会在 16 核以上把线程铺满。
+ONNX_INTRA_OP = max(1, min(8, (os.cpu_count() or 4) // 2))
+
 # 单次 provider 请求超时（秒）：图像编辑可能较慢，给足。
 # 本地网关（image2_1turbo / sd.cpp，qwen-image-2.1-turbo）在 1K 尺寸上一张要 2~5
 # 分钟（CPU 文本编码 + Vulkan 扩散），180s 会稳定超时；云端网关通常 <60s，

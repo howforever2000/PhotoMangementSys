@@ -31,7 +31,7 @@ import math
 import numpy as np
 from PIL import Image
 
-from . import localmodels
+from . import gpu_lock, localmodels
 from .logutil import call_model
 
 MODEL_FILE = "peppa_wutz.onnx"
@@ -119,7 +119,7 @@ def detect_68(img: Image.Image, bbox, kps=None) -> tuple[np.ndarray, float] | No
     sess = localmodels.get_session(config_path())
     blob = (np.asarray(crop, dtype=np.float32) / 255.0).transpose(2, 0, 1)[None]
     with call_model("onnx", "peppa_wutz.onnx (landmark68)", "68pts"):
-        raw = sess.run(None, {sess.get_inputs()[0].name: blob})[0][0]
+        raw = gpu_lock.run(sess, {sess.get_inputs()[0].name: blob})[0][0]
 
     points = raw[:, :2] / _COORD_SCALE * _INPUT_SIZE          # → 256 空间
     confidence = float(raw[:, 2].mean()) if raw.shape[1] >= 3 else 1.0

@@ -24,7 +24,7 @@ import os
 import numpy as np
 from PIL import Image
 
-from . import config, localmodels
+from . import config, gpu_lock, localmodels
 from .logutil import call_model
 
 DET_SIZE = 640              # det letterbox 边长（与扫描侧 DET_SIZE 同口径）
@@ -125,7 +125,7 @@ def find_text_lines(img: Image.Image) -> list[tuple[float, float, float, float]]
     sess = localmodels.get_session(config.OCR_MODELS["paddleocr_det"])
     tensor, scale, pad_x, pad_y = _det_tensor(img)
     with call_model("onnx", "paddleocr-det.onnx", f"{img.size[0]}x{img.size[1]}"):
-        out = sess.run(None, {sess.get_inputs()[0].name: tensor})[0]
+        out = gpu_lock.run(sess, {sess.get_inputs()[0].name: tensor})[0]
     prob = np.asarray(out[0, 0], dtype=np.float32)  # (Hout,Wout) sigmoid 概率图
 
     # 输出分辨率随导出而异（本 RapidOCR 导出是 640×640 全分辨率；有的导出是 H/4），
@@ -226,7 +226,7 @@ def recognize(img: Image.Image) -> tuple[list[str], float, int]:
             crop = img.crop(
                 (int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2)))
             )
-            logits = sess.run(None, {iname: _rec_tensor(crop)})[0]
+            logits = gpu_lock.run(sess, {iname: _rec_tensor(crop)})[0]
             text, conf = ctc_decode(np.asarray(logits), chars)
             text = text.strip()
             if text:

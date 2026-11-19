@@ -12,15 +12,19 @@ onnxruntime 采用惰性导入：胶片/颜色/其它工具在没装 ORT 的环�
 from __future__ import annotations
 
 import os
+import threading
 from typing import Optional
 
 import numpy as np
 from PIL import Image
 
-from . import config, facedetect
+from . import config, facedetect, gpu_lock
 from .logutil import call_model
 
+# 会话缓存 + 文件指纹：模型被重新下载/替换后自动重建（否则旧会话会一直用旧权重）。
 _sessions: dict[str, object] = {}
+_session_stamp: dict[str, tuple[float, int]] = {}
+_sessions_lock = threading.Lock()
 
 
 def _ort():
@@ -37,20 +41,54 @@ def _providers() -> list[str]:
     return chosen or ["CPUExecutionProvider"]
 
 
+def _session_options(ort) -> "object":
+    """统一 SessionOptions：intra 固定档、inter=1（对齐 VCR 的线程口径）。
+
+    为什么必须显式设：ai_studio 同时有「作业 worker ×2 + 预览线程池」，
+    ORT 默认按满核开 intra 线程，多会话叠加会 CPU 超订、互相抢核反而更慢。
+    """
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = config.ONNX_INTRA_OP
+    so.inter_op_num_threads = 1
+    return so
+
+
+def _file_stamp(path: str) -> tuple[float, int]:
+    st = os.stat(path)
+    return (st.st_mtime, st.st_size)
+
+
 def get_session(path: str):
-    """按绝对路径缓存会话；文件缺失时抛出带中文提示的 FileNotFoundError。"""
+    """按绝对路径缓存会话；文件缺失时抛出带中文提示的 FileNotFoundError。
+
+    并发首次加载会被 `_sessions_lock` 串行化：两个作业线程 + 预览线程同时要同一个
+    模型时，只建一份会话（否则后建者覆盖前者，DML 显存要等 GC 才回收）。
+    文件 mtime/size 变化（用户重新下载模型）时重建会话，避免拿旧权重跑到进程重启。
+    """
     if not os.path.isfile(path):
         raise FileNotFoundError(os.path.basename(path))
     key = os.path.abspath(path)
-    sess = _sessions.get(key)
-    if sess is None:
+    try:
+        stamp = _file_stamp(key)
+    except OSError:
+        # isfile 与 stat 之间文件被移走 / 权限变化：统一报「缺失」而不是裸 OSError
+        raise FileNotFoundError(os.path.basename(path)) from None
+    with _sessions_lock:
+        sess = _sessions.get(key)
+        if sess is not None and _session_stamp.get(key) == stamp:
+            return sess
         ort = _ort()
         try:
-            sess = ort.InferenceSession(key, providers=_providers())
+            sess = ort.InferenceSession(
+                key, sess_options=_session_options(ort), providers=_providers()
+            )
         except Exception:
-            sess = ort.InferenceSession(key, providers=["CPUExecutionProvider"])
+            sess = ort.InferenceSession(
+                key, sess_options=_session_options(ort), providers=["CPUExecutionProvider"]
+            )
         _sessions[key] = sess
-    return sess
+        _session_stamp[key] = stamp
+        return sess
 
 
 def esrgan_ready() -> bool:
@@ -104,7 +142,7 @@ def _esrgan_tiles(arr, out, iname, sess, h, w, t, o, stride, check_cancel, cance
             check_cancel(cancel)
             sub = arr[y0:y1, x0:x1]
             xin = sub.transpose(2, 0, 1)[None]
-            res = sess.run(None, {iname: xin})[0][0]  # (3, 4h, 4w)
+            res = gpu_lock.run(sess, {iname: xin})[0][0]  # (3, 4h, 4w)
             res = np.clip(res.transpose(1, 2, 0), 0.0, 1.0)
             res_u8 = (res * 255.0 + 0.5).astype(np.uint8)
             # 只写核心区（边缘块保留到图像边界）
@@ -126,7 +164,7 @@ def run_gfpgan(face512: Image.Image) -> Image.Image:
     x = (x - 0.5) / 0.5
     x = x.transpose(2, 0, 1)[None]
     with call_model("onnx", "gfpgan_1.4.onnx", "512x512 face"):
-        out = sess.run(None, {iname: x})[0][0]
+        out = gpu_lock.run(sess, {iname: x})[0][0]
     y = np.clip(out.transpose(1, 2, 0) * 0.5 + 0.5, 0.0, 1.0)
     return Image.fromarray((y * 255.0 + 0.5).astype(np.uint8))
 

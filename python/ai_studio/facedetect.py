@@ -13,6 +13,8 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
+from . import gpu_lock
+
 STRIDES = [8, 16, 32]
 DET_SIZE = 640
 CONF = 0.5            # 人脸框最低检测分数
@@ -165,5 +167,5 @@ def detect(session, img: Image.Image) -> list[dict]:
     tensor, scale, pad_x, pad_y = _letterbox_tensor(img)
     iname = session.get_inputs()[0].name
     with call_model("onnx", "det_10g.onnx (SCRFD)", f"{img.size[0]}x{img.size[1]}"):
-        outputs = session.run(None, {iname: tensor})
+        outputs = gpu_lock.run(session, {iname: tensor})
     return decode(outputs, scale, pad_x, pad_y)

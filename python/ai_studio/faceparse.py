@@ -16,7 +16,7 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
-from . import config, localmodels
+from . import config, gpu_lock, localmodels
 from .logutil import call_model
 
 # 19 类标签（顺序即模型输出通道，不可改）
@@ -62,7 +62,7 @@ def predict(face_rgb: Image.Image) -> np.ndarray:
 
     iname = sess.get_inputs()[0].name
     with call_model("onnx", "face_parsing_bisenet_r34.onnx", f"{w}x{h} face"):
-        out = sess.run(None, {iname: x})[0]                # [1,19,512,512]
+        out = gpu_lock.run(sess, {iname: x})[0]                # [1,19,512,512]
     cls = np.argmax(out[0], axis=0).astype(np.uint8)   # [512,512]
 
     # 回原尺寸用最近邻：类别图不能插值，否则会造出不存在的类别编号
