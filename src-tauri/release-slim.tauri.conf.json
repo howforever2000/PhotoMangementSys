@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PhotoManagementSys",
+  "version": "5.0.0",
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "resources": {
+      "../python/dist/ai-server.exe": "ai/ai-server.exe",
+      "../python/dist/vcr-server.exe": "vcr/vcr-server.exe"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

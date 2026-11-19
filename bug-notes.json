@@ -976,7 +976,16 @@
         "python/build_vcr_exe.ps1",
         "python/vcr-server.spec"
       ],
-      "keywords": ["打包", "PyInstaller", "pip", "GBK", "cp936", "requirements", "vcr-server.exe", "BUG-2026-0920-001"],
+      "keywords": [
+        "打包",
+        "PyInstaller",
+        "pip",
+        "GBK",
+        "cp936",
+        "requirements",
+        "vcr-server.exe",
+        "BUG-2026-0920-001"
+      ],
       "created_at": "2026-09-20T21:20:00+08:00",
       "fixed_at": "2026-09-20T21:20:00+08:00"
     },
@@ -1020,7 +1029,16 @@
         "python/vcr/services/clip_subgraph.py",
         "python/download_models.py"
       ],
-      "keywords": ["模型下载", "落位", "tokenizer", "vocab", "chinese-clip", "fp32", "DlSpec", "BUG-2026-0920-002"],
+      "keywords": [
+        "模型下载",
+        "落位",
+        "tokenizer",
+        "vocab",
+        "chinese-clip",
+        "fp32",
+        "DlSpec",
+        "BUG-2026-0920-002"
+      ],
       "created_at": "2026-09-20T22:05:00+08:00",
       "fixed_at": "2026-09-20T22:05:00+08:00"
     },
@@ -1064,7 +1082,15 @@
         "python/vcr/model_registry.py",
         "python/bench/verify_clip_tiers.py"
       ],
-      "keywords": ["CLIP", "provider", "DirectML", "fp16", "数值 bug", "GPU 开关", "BUG-2026-0920-003"],
+      "keywords": [
+        "CLIP",
+        "provider",
+        "DirectML",
+        "fp16",
+        "数值 bug",
+        "GPU 开关",
+        "BUG-2026-0920-003"
+      ],
       "created_at": "2026-09-20T22:20:00+08:00",
       "fixed_at": "2026-09-20T22:20:00+08:00"
     },
@@ -1107,7 +1133,14 @@
         "python/build_vcr_exe.ps1",
         "src/components/ModelGpuSettings.vue"
       ],
-      "keywords": ["打包", "DirectML", "onnxruntime-directml", "GPU 加速", "发布版", "BUG-2026-0920-004"],
+      "keywords": [
+        "打包",
+        "DirectML",
+        "onnxruntime-directml",
+        "GPU 加速",
+        "发布版",
+        "BUG-2026-0920-004"
+      ],
       "created_at": "2026-09-20T22:20:00+08:00"
     },
     {
@@ -1157,7 +1190,17 @@
         "src/views/SmartSearch.vue",
         "release.ps1"
       ],
-      "keywords": ["语义检索失效", "回归", "VCR_MODEL_DIR", "启动分支", "静默降级", "可观测性", "雪山", "天空", "BUG-2026-0920-006"],
+      "keywords": [
+        "语义检索失效",
+        "回归",
+        "VCR_MODEL_DIR",
+        "启动分支",
+        "静默降级",
+        "可观测性",
+        "雪山",
+        "天空",
+        "BUG-2026-0920-006"
+      ],
       "created_at": "2026-09-20T22:35:00+08:00",
       "fixed_at": "2026-09-20T22:35:00+08:00"
     },
@@ -1206,7 +1249,17 @@
         "python/server.py",
         "python/build_vcr_exe.ps1"
       ],
-      "keywords": ["onnx", "PyInstaller", "hiddenimports", "拆图", "ModuleNotFoundError", "裸 500", "全新安装", "语义不可用", "BUG-2026-0920-005"],
+      "keywords": [
+        "onnx",
+        "PyInstaller",
+        "hiddenimports",
+        "拆图",
+        "ModuleNotFoundError",
+        "裸 500",
+        "全新安装",
+        "语义不可用",
+        "BUG-2026-0920-005"
+      ],
       "created_at": "2026-09-20T22:35:00+08:00",
       "fixed_at": "2026-09-20T22:35:00+08:00"
     },
@@ -1253,7 +1306,16 @@
         "python/download_models.py",
         "python/vcr/config.py"
       ],
-      "keywords": ["模型下载", "404", "URL 拼接", "repo_file", "rel_file", "DlSpec", "应用内下载", "BUG-2026-0921-001"],
+      "keywords": [
+        "模型下载",
+        "404",
+        "URL 拼接",
+        "repo_file",
+        "rel_file",
+        "DlSpec",
+        "应用内下载",
+        "BUG-2026-0921-001"
+      ],
       "created_at": "2026-09-21T09:45:00+08:00",
       "fixed_at": "2026-09-21T09:45:00+08:00"
     },
@@ -1301,7 +1363,15 @@
         "src/components/ModelGpuSettings.vue",
         "design/semantic-real-album-e2e.md"
       ],
-      "keywords": ["onnxruntime", "版本回归", "打包", "性能", "CLIP 编码", "线程数", "BUG-2026-0921-002"],
+      "keywords": [
+        "onnxruntime",
+        "版本回归",
+        "打包",
+        "性能",
+        "CLIP 编码",
+        "线程数",
+        "BUG-2026-0921-002"
+      ],
       "created_at": "2026-09-21T11:50:00+08:00",
       "fixed_at": "2026-09-21T11:55:00+08:00"
     },
@@ -1344,7 +1414,16 @@
         "src-tauri/src/model_dl.rs",
         "src-tauri/src/lib.rs"
       ],
-      "keywords": ["CARGO_MANIFEST_DIR", "VCR_MODEL_DIR", "resolve_model_dir", "模型目录", "打包态", "clip_model_present", "models_dir", "应用内下载"],
+      "keywords": [
+        "CARGO_MANIFEST_DIR",
+        "VCR_MODEL_DIR",
+        "resolve_model_dir",
+        "模型目录",
+        "打包态",
+        "clip_model_present",
+        "models_dir",
+        "应用内下载"
+      ],
       "created_at": "2026-09-16T13:10:00+08:00",
       "fixed_at": "2026-09-16T13:20:00+08:00"
     },
@@ -1390,7 +1469,18 @@
         "python/vcr/services/clip_subgraph.py",
         "python/vcr/config.py"
       ],
-      "keywords": ["ALLUSERS", "Program Files", "只读", "PermissionError", "installMode", "currentUser", "硬链接", "hard_link", "vcr-models", "InstallScope"],
+      "keywords": [
+        "ALLUSERS",
+        "Program Files",
+        "只读",
+        "PermissionError",
+        "installMode",
+        "currentUser",
+        "硬链接",
+        "hard_link",
+        "vcr-models",
+        "InstallScope"
+      ],
       "created_at": "2026-09-16T13:10:00+08:00",
       "fixed_at": "2026-09-16T13:20:00+08:00"
     },
@@ -1434,7 +1524,16 @@
         "src-tauri/src/vision.rs",
         "python/vcr/config.py"
       ],
-      "keywords": ["persons.db", "VCR_DATA_DIR", "CARGO_MANIFEST_DIR", "读写分裂", "数据目录统一", "人物注册表不存在", "app_data", "路径口径"],
+      "keywords": [
+        "persons.db",
+        "VCR_DATA_DIR",
+        "CARGO_MANIFEST_DIR",
+        "读写分裂",
+        "数据目录统一",
+        "人物注册表不存在",
+        "app_data",
+        "路径口径"
+      ],
       "created_at": "2026-09-16T14:10:00+08:00",
       "fixed_at": "2026-09-16T14:40:00+08:00"
     },
@@ -1472,7 +1571,16 @@
         "src-tauri/src/lib.rs",
         "src/components/ModelGpuSettings.vue"
       ],
-      "keywords": ["模型下载", "无反应", "静默挂起", "hf-mirror", "TLS", "超时", "多源", "源自检"],
+      "keywords": [
+        "模型下载",
+        "无反应",
+        "静默挂起",
+        "hf-mirror",
+        "TLS",
+        "超时",
+        "多源",
+        "源自检"
+      ],
       "created_at": "2026-09-25T11:00:00+08:00",
       "fixed_at": "2026-09-25T11:30:00+08:00"
     },
@@ -1508,7 +1616,14 @@
         "src/components/GlobalScanPanel.vue",
         "src/components/ModelGpuSettings.vue"
       ],
-      "keywords": ["按钮", "太透明", "深色模式", "选择器权重", "禁用态", "opacity"],
+      "keywords": [
+        "按钮",
+        "太透明",
+        "深色模式",
+        "选择器权重",
+        "禁用态",
+        "opacity"
+      ],
       "created_at": "2026-09-25T11:10:00+08:00",
       "fixed_at": "2026-09-25T11:35:00+08:00"
     },
@@ -1558,7 +1673,19 @@
         "src/components/ModelGpuSettings.vue",
         "python/build_vcr_exe.ps1"
       ],
-      "keywords": ["性能设置", "模型下载", "识别服务不可用", "Python", "Microsoft Store", "应用执行别名", "WindowsApps", "venv", "spawn", "子进程输出", "降级态"],
+      "keywords": [
+        "性能设置",
+        "模型下载",
+        "识别服务不可用",
+        "Python",
+        "Microsoft Store",
+        "应用执行别名",
+        "WindowsApps",
+        "venv",
+        "spawn",
+        "子进程输出",
+        "降级态"
+      ],
       "created_at": "2026-09-18T11:35:00+08:00",
       "fixed_at": "2026-09-18T12:05:00+08:00"
     },
@@ -1597,7 +1724,16 @@
       "related_files": [
         "src-tauri/src/thumbnail.rs"
       ],
-      "keywords": ["缩略图", "缩略图缓存", "WebP", "legacy", "旧缓存复用", "升级", "safe_stem", "兼容"],
+      "keywords": [
+        "缩略图",
+        "缩略图缓存",
+        "WebP",
+        "legacy",
+        "旧缓存复用",
+        "升级",
+        "safe_stem",
+        "兼容"
+      ],
       "created_at": "2026-09-18T12:20:00+08:00",
       "fixed_at": "2026-09-18T12:45:00+08:00"
     },
@@ -1640,7 +1776,16 @@
         "src-tauri/src/model_dl.rs",
         "src-tauri/src/thumbnail.rs"
       ],
-      "keywords": ["单元测试", "cargo test", "并行测试", "全局状态", "断言过期", "WebP", "多源下载", "测试腐烂"],
+      "keywords": [
+        "单元测试",
+        "cargo test",
+        "并行测试",
+        "全局状态",
+        "断言过期",
+        "WebP",
+        "多源下载",
+        "测试腐烂"
+      ],
       "created_at": "2026-09-18T12:25:00+08:00",
       "fixed_at": "2026-09-18T12:45:00+08:00"
     },
@@ -1681,7 +1826,17 @@
       "related_files": [
         "src/views/Home.vue"
       ],
-      "keywords": ["主页", "设置菜单", "下拉菜单", "z-index", "层叠上下文", "backdrop-filter", "position fixed 包含块", "遮罩", "点击外部关闭"],
+      "keywords": [
+        "主页",
+        "设置菜单",
+        "下拉菜单",
+        "z-index",
+        "层叠上下文",
+        "backdrop-filter",
+        "position fixed 包含块",
+        "遮罩",
+        "点击外部关闭"
+      ],
       "created_at": "2026-09-18T13:20:00+08:00",
       "fixed_at": "2026-09-18T13:35:00+08:00"
     },
@@ -1893,7 +2048,18 @@
       "related_files": [
         "src/components/workshop/WorkshopImageProcess.vue"
       ],
-      "keywords": ["创意工坊", "蒙版", "红色叠加", "结果态", "overlay", "redraw", "clearRect", "canvas", "showResult", "自动切回原图"],
+      "keywords": [
+        "创意工坊",
+        "蒙版",
+        "红色叠加",
+        "结果态",
+        "overlay",
+        "redraw",
+        "clearRect",
+        "canvas",
+        "showResult",
+        "自动切回原图"
+      ],
       "created_at": "2026-09-18T19:15:00+08:00",
       "fixed_at": "2026-09-18T19:15:00+08:00"
     },
@@ -1930,7 +2096,13 @@
         "「背景图太透明」的用户表述通常指遮罩过重，应优先调遮罩 alpha 而不是改图片",
         "玻璃卡片要在深色场景保持通透感：深色半透明底 + 高斯模糊 + 饱和度补偿"
       ],
-      "keywords": ["登录页", "遮罩", "透明度", "玻璃态", "auth-overlay"],
+      "keywords": [
+        "登录页",
+        "遮罩",
+        "透明度",
+        "玻璃态",
+        "auth-overlay"
+      ],
       "created_at": "2026-09-19T22:40:00+08:00",
       "fixed_at": "2026-09-19T22:40:00+08:00"
     },
@@ -1970,7 +2142,14 @@
         "背景图平均色采样用离屏 canvas 32×32 足够，异步计算不阻塞启动",
         "CSS 变量写在 body 内联样式可覆盖 :root 与 body.theme-dark 的类选择器定义"
       ],
-      "keywords": ["主题", "文字颜色", "对比度", "WCAG", "背景图", "CSS变量"],
+      "keywords": [
+        "主题",
+        "文字颜色",
+        "对比度",
+        "WCAG",
+        "背景图",
+        "CSS变量"
+      ],
       "created_at": "2026-09-19T22:45:00+08:00",
       "fixed_at": "2026-09-19T22:45:00+08:00"
     },
@@ -2007,7 +2186,13 @@
         "嵌入式『子面板』展示全局数据时必须显式声明数据域（相册/用户），否则跨语境数据混入",
         "路径归属过滤必须复用统一的 p_is_under，不要在 SQL LIKE 里另写一套前缀匹配"
       ],
-      "keywords": ["人物注册表", "相册过滤", "list_persons_in_album", "faces", "p_is_under"],
+      "keywords": [
+        "人物注册表",
+        "相册过滤",
+        "list_persons_in_album",
+        "faces",
+        "p_is_under"
+      ],
       "created_at": "2026-09-19T22:50:00+08:00",
       "fixed_at": "2026-09-19T22:50:00+08:00"
     },
@@ -2046,7 +2231,14 @@
         "改全局主题变量前先统计其全部消费点并按语境分类，不能只看最高频用法",
         "主题类改动的回归验证必须覆盖「非默认背景」组合（深色模式×浅背景、浅色模式×深背景）"
       ],
-      "keywords": ["主题", "回归", "两层文字模型", "--color-on-bg", "深色模式", "对比度"],
+      "keywords": [
+        "主题",
+        "回归",
+        "两层文字模型",
+        "--color-on-bg",
+        "深色模式",
+        "对比度"
+      ],
       "created_at": "2026-09-19T23:05:00+08:00",
       "fixed_at": "2026-09-19T23:05:00+08:00"
     },
@@ -2085,7 +2277,14 @@
         "发布版「下载即用」的依赖必须在构建期内置，凡是要用户手动 pip 的能力对普通用户等于不存在",
         "同名互斥三包切换时必须先卸载，否则 import 解析到旧包静默失效"
       ],
-      "keywords": ["onnxruntime-directml", "DirectML", "DmlExecutionProvider", "GPU 加速", "方案A", "构建期内置"],
+      "keywords": [
+        "onnxruntime-directml",
+        "DirectML",
+        "DmlExecutionProvider",
+        "GPU 加速",
+        "方案A",
+        "构建期内置"
+      ],
       "created_at": "2026-09-19T23:40:00+08:00",
       "fixed_at": "2026-09-19T23:40:00+08:00"
     },
@@ -2121,7 +2320,16 @@
         "会被 Windows 工具链按 locale 读取的文本文件（requirements/.ps1/.bat 等）写非 ASCII 内容时，要么带 BOM，要么调用方强制 PYTHONUTF8=1",
         "「以前能过」不等于「现在能过」：注释内容也是构建输入"
       ],
-      "keywords": ["requirements", "BOM", "GBK", "UnicodeDecodeError", "pip", "auto_decode", "构建流水线", "中文注释"],
+      "keywords": [
+        "requirements",
+        "BOM",
+        "GBK",
+        "UnicodeDecodeError",
+        "pip",
+        "auto_decode",
+        "构建流水线",
+        "中文注释"
+      ],
       "created_at": "2026-09-20T09:30:00+08:00",
       "fixed_at": "2026-09-20T09:30:00+08:00"
     },
@@ -2164,7 +2372,17 @@
       "related_files": [
         "src/views/SmartSearch.vue"
       ],
-      "keywords": ["以图搜图", "语义未就绪", "v-if", "v-else-if", "条件链", "结果被吞", "semReady", "警告横幅", "BUG-2026-0920-009"],
+      "keywords": [
+        "以图搜图",
+        "语义未就绪",
+        "v-if",
+        "v-else-if",
+        "条件链",
+        "结果被吞",
+        "semReady",
+        "警告横幅",
+        "BUG-2026-0920-009"
+      ],
       "fix": {
         "summary": "警告横幅改为独立区块（与结果区彻底解耦）；结果区改为完整四态且不含任何语义变量；语义状态由 bool 升级为分档状态并支持退避到期自动重探 + 手动重试",
         "changes": [
@@ -2228,7 +2446,17 @@
         "src-tauri/src/textdesc.rs",
         "src/views/SmartSearch.vue"
       ],
-      "keywords": ["语义退避", "SEMANTIC_DOWN_TTL", "embedding 响应缺少 results", "detail 丢失", "瞬时失败", "CLIP 懒加载", "503", "可观测性", "BUG-2026-0920-008"],
+      "keywords": [
+        "语义退避",
+        "SEMANTIC_DOWN_TTL",
+        "embedding 响应缺少 results",
+        "detail 丢失",
+        "瞬时失败",
+        "CLIP 懒加载",
+        "503",
+        "可观测性",
+        "BUG-2026-0920-008"
+      ],
       "fix": {
         "summary": "错误分类化：先判 HTTP 状态并把 detail 落 app.log；503「未就绪/加载中」按可重试处理（1s/2s/4s 退让）；只有确定性失败才进退避；退避 TTL 180s → 20s",
         "changes": [
@@ -2300,7 +2528,16 @@
         "src/components/ModelGpuSettings.vue",
         "src-tauri/src/model_dl.rs"
       ],
-      "keywords": ["模型下载", "进度条", "model-dl-progress", "监听注册时机", "ensureProgressListener", "断点续传", "双路竞速", "BUG-2026-0921-003"],
+      "keywords": [
+        "模型下载",
+        "进度条",
+        "model-dl-progress",
+        "监听注册时机",
+        "ensureProgressListener",
+        "断点续传",
+        "双路竞速",
+        "BUG-2026-0921-003"
+      ],
       "created_at": "2026-09-21T10:20:00+08:00"
     },
     {
@@ -2349,7 +2586,17 @@
         "src-tauri/src/db/category.rs",
         "python/vcr/config.py"
       ],
-      "keywords": ["向量失配", "model 标识", "静默兜底", "索引不可达", "描述向量", "stale", "换档重建", "clip_model_id", "BUG-2026-0921-004"],
+      "keywords": [
+        "向量失配",
+        "model 标识",
+        "静默兜底",
+        "索引不可达",
+        "描述向量",
+        "stale",
+        "换档重建",
+        "clip_model_id",
+        "BUG-2026-0921-004"
+      ],
       "fix": {
         "summary": "去掉写入侧写死的档位兜底（改为显式中止），并把档位失配作为独立原因档暴露给前端",
         "files": [
@@ -2408,7 +2655,15 @@
         "src/components/ConfirmDialog.vue",
         "src/components/AlbumMeta.vue"
       ],
-      "keywords": ["深色模式", "对比度", "主题令牌", "硬编码背景", "软色板", "surface-2", "BUG-2026-0921-005"],
+      "keywords": [
+        "深色模式",
+        "对比度",
+        "主题令牌",
+        "硬编码背景",
+        "软色板",
+        "surface-2",
+        "BUG-2026-0921-005"
+      ],
       "fix": {
         "summary": "软色板令牌化：新增 9 个深/浅成对令牌，四个组件全部改用变量；深色下面板变深底、文字变浅字，对比度恢复",
         "files": [
@@ -2582,7 +2837,15 @@
         "单飞锁 + 需求位合并的模式，释放锁与复查需求必须成对且顺序是「先放后查」，否则需求位会丢",
         "detached 异步任务里的全局锁标志，必须用 RAII guard 兜底，不能只靠正常路径释放"
       ],
-      "keywords": ["单飞锁", "lost-update", "竞态", "需求位", "panic守卫", "PostScanState", "收尾"],
+      "keywords": [
+        "单飞锁",
+        "lost-update",
+        "竞态",
+        "需求位",
+        "panic守卫",
+        "PostScanState",
+        "收尾"
+      ],
       "related_files": [
         "src-tauri/src/content.rs",
         "src-tauri/src/lib.rs"
@@ -2611,7 +2874,14 @@
       "lessons": [
         "用进程级单飞合并「每相册」型任务时，完成通知必须覆盖所有被服务的相册，否则 UI 状态机不闭合"
       ],
-      "keywords": ["scan-post-done", "徽标", "索引更新中", "合并", "album_id", "事件路由"],
+      "keywords": [
+        "scan-post-done",
+        "徽标",
+        "索引更新中",
+        "合并",
+        "album_id",
+        "事件路由"
+      ],
       "related_files": [
         "src-tauri/src/content.rs",
         "src/stores/content.ts"
@@ -2639,7 +2909,13 @@
       "lessons": [
         "用单飞合并时，「每任务型」参数（进度、路径集）需要显式的累加器载体，否则合并即丢失"
       ],
-      "keywords": ["prewarm", "缩略图预热", "合并丢失", "重复执行", "PostScanState"],
+      "keywords": [
+        "prewarm",
+        "缩略图预热",
+        "合并丢失",
+        "重复执行",
+        "PostScanState"
+      ],
       "related_files": [
         "src-tauri/src/content.rs"
       ]
@@ -2667,7 +2943,14 @@
       "lessons": [
         "阶段重排时要逐个核对「被重排的产物在下游还有没有消费方」，没有消费方就不该生产"
       ],
-      "keywords": ["EXIF双读", "T1", "do_basic && !do_ai", "冗余IO", "回归", "增量"],
+      "keywords": [
+        "EXIF双读",
+        "T1",
+        "do_basic && !do_ai",
+        "冗余IO",
+        "回归",
+        "增量"
+      ],
       "related_files": [
         "src-tauri/src/content.rs",
         "src-tauri/src/photo_scan.rs"
@@ -2697,7 +2980,14 @@
       "lessons": [
         "把「走一遍」作为约束落地时，要检查每个下游函数是否还持有自己的遍历入口，否则只是消掉了旧分支的新代码、漏了最深的那个"
       ],
-      "keywords": ["T10", "目录遍历", "walk_image_paths", "collect_images", "双走", "阻塞异步运行时"],
+      "keywords": [
+        "T10",
+        "目录遍历",
+        "walk_image_paths",
+        "collect_images",
+        "双走",
+        "阻塞异步运行时"
+      ],
       "related_files": [
         "src-tauri/src/content.rs",
         "src-tauri/src/vision.rs"
@@ -2727,7 +3017,14 @@
       "lessons": [
         "任何「增量跳过」功能落地前，先确认被跳过的产物是否已持久化，否则是无根之木"
       ],
-      "keywords": ["影调落库", "EXIF落库", "written:0", "增量无判据", "数据刷新丢失", "photo_content_scan"],
+      "keywords": [
+        "影调落库",
+        "EXIF落库",
+        "written:0",
+        "增量无判据",
+        "数据刷新丢失",
+        "photo_content_scan"
+      ],
       "related_files": [
         "src-tauri/src/content.rs",
         "src-tauri/src/db/content.rs",
@@ -2759,7 +3056,14 @@
       "lessons": [
         "日志是优化的对账依据，字段口径与命名必须与实现一致，否则会误导下一轮优化决策"
       ],
-      "keywords": ["scan.incr", "scan.phase", "日志失真", "skipped", "ms_walk", "idle"],
+      "keywords": [
+        "scan.incr",
+        "scan.phase",
+        "日志失真",
+        "skipped",
+        "ms_walk",
+        "idle"
+      ],
       "related_files": [
         "src-tauri/src/content.rs"
       ]
@@ -2789,7 +3093,15 @@
       "lessons": [
         "把长任务从主流程拆到后台时，要同时评估它与新到前台任务的资源竞争——本地不阻塞 ≠ 服务端不争抢"
       ],
-      "keywords": ["微服务争抢", "核心超订", "T3", "收尾后台化", "foreground_busy", "intra_op", "inter_op"],
+      "keywords": [
+        "微服务争抢",
+        "核心超订",
+        "T3",
+        "收尾后台化",
+        "foreground_busy",
+        "intra_op",
+        "inter_op"
+      ],
       "related_files": [
         "src-tauri/src/content.rs",
         "src-tauri/src/lib.rs",
@@ -2825,7 +3137,15 @@
         "源码断言测试是「调用点类缺陷」的对症防线：真跑要 AppHandle + 识别服务，但失败模式就是「调用点被删」，读源码数调用次数即可锁住，且已实测能红",
         "增量早退路径是容易漏的第二条路径：本例缺口照片的 photo_hash 已在库内 → 差集恒空 → 必然早退，只在正常路径补调用等于没修"
       ],
-      "keywords": ["描述索引", "rebuild_text_index", "回归", "语义搜索", "T2", "时间地点搜索", "source_hash"],
+      "keywords": [
+        "描述索引",
+        "rebuild_text_index",
+        "回归",
+        "语义搜索",
+        "T2",
+        "时间地点搜索",
+        "source_hash"
+      ],
       "related_files": [
         "src-tauri/src/content.rs",
         "src-tauri/src/textdesc.rs",
@@ -2950,7 +3270,17 @@
       ],
       "fix": "content.rs 语义腿改调 thumbnail::ensure_grid_thumbs_missing_parallel 并补 [scan.thumb] 三档埋点；thumbnail.rs 新增并行生成函数 + 单测 + 可复跑基准。",
       "log_hint": "新日志三档：grep '[scan.thumb]' 应出现 开始/进度/完成 三类；若仍有上百秒空白段，看 [scan.timing] 里语义腿是否远大于 AI 腿。",
-      "keywords": ["缩略图生成", "单线程", "P19", "关键路径", "三腿并发", "scan.thumb", "并行化", "零埋点", "169.8s"],
+      "keywords": [
+        "缩略图生成",
+        "单线程",
+        "P19",
+        "关键路径",
+        "三腿并发",
+        "scan.thumb",
+        "并行化",
+        "零埋点",
+        "169.8s"
+      ],
       "related_files": [
         "src-tauri/src/content.rs",
         "src-tauri/src/thumbnail.rs"
@@ -2992,7 +3322,14 @@
         "[user screenshot] 线程测速「4 线程 · 当前」vs 会话实测「8 线程」同屏矛盾"
       ],
       "log_hint": "改线程后无需点测速，会话实测应在 1.5s 内与下拉显示的线程数一致；若仍是旧值即本缺陷。",
-      "keywords": ["会话实测", "applyThreads", "fetchVcrModels", "stale", "线程不同步", "P21"],
+      "keywords": [
+        "会话实测",
+        "applyThreads",
+        "fetchVcrModels",
+        "stale",
+        "线程不同步",
+        "P21"
+      ],
       "related_files": [
         "src/components/settings/BenchmarkSection.vue",
         "python/vcr/model_registry.py"
@@ -3047,7 +3384,16 @@
         "[校验] python ast.parse 双文件通过；npx vue-tsc --noEmit 0 错误"
       ],
       "log_hint": "看会话实测是否同时列出图塔与文本塔、且两者之和等于档位显示的双塔体积；provider 文案若出现「CPU 兜底」字样即 GPU 实际生效。",
-      "keywords": ["体积口径", "MiB", "十进制MB", "bytes_disk", "provider文案", "加载中徽标", "P20", "P22"],
+      "keywords": [
+        "体积口径",
+        "MiB",
+        "十进制MB",
+        "bytes_disk",
+        "provider文案",
+        "加载中徽标",
+        "P20",
+        "P22"
+      ],
       "related_files": [
         "python/vcr/config.py",
         "python/vcr/model_registry.py",
@@ -4617,7 +4963,17 @@
         "凡有「两个地方各自维护同一个事实」（对象状态 + 注册表 is_ready）的地方，对外暴露的 active 必须要求两者同时成立",
         "回归脚本 python/bench/verify_ov_clip_broken_stderr.py 常驻：任何新增的 stderr 输出只要落在状态提交之前/之内，这条脚本就会红"
       ],
-      "keywords": ["stderr", "OSError 22", "Invalid argument", "NPU 占用 0", "clip_ready false", "OpenVINO", "状态分叉", "logutil", "pipe"],
+      "keywords": [
+        "stderr",
+        "OSError 22",
+        "Invalid argument",
+        "NPU 占用 0",
+        "clip_ready false",
+        "OpenVINO",
+        "状态分叉",
+        "logutil",
+        "pipe"
+      ],
       "created_at": "2026-11-01T23:20:00+08:00",
       "updated_at": "2026-11-01T23:20:00+08:00"
     },
@@ -4648,7 +5004,14 @@
         "凡「就绪」判据涉及多个子资源时，任何「重建」入口都必须把全部子资源一起建起来，不能只建热点的那个",
         "同一状态若有两个可观测面（UI 的 active 与 health 的 clip_ready），对外必须要求两者同时成立"
       ],
-      "keywords": ["clip_ready", "false", "懒加载", "rebuild", "宿主跳过语义腿", "NPU 无痕迹"],
+      "keywords": [
+        "clip_ready",
+        "false",
+        "懒加载",
+        "rebuild",
+        "宿主跳过语义腿",
+        "NPU 无痕迹"
+      ],
       "created_at": "2026-11-01T23:59:00+08:00",
       "updated_at": "2026-11-01T23:59:00+08:00"
     },
@@ -4680,7 +5043,16 @@
         "<script setup> 的顶层副作用调用一律放文件末尾：script setup 不是普通模块，函数体内的引用是延时求值，任何「定义后立刻调用」都可能被后续插入的代码破坏顺序",
         "「静默地没数据」类缺陷优先怀疑被吞的异常 —— void promise / 空 catch 会把 TDZ、undefined 全部变成「字段为空」"
       ],
-      "keywords": ["TDZ", "before initialization", "metaOverrides", "script setup", "灯箱", "首次打开", "EXIF 不显示", "拍摄时间为空"],
+      "keywords": [
+        "TDZ",
+        "before initialization",
+        "metaOverrides",
+        "script setup",
+        "灯箱",
+        "首次打开",
+        "EXIF 不显示",
+        "拍摄时间为空"
+      ],
       "created_at": "2026-10-30T16:40:00+08:00",
       "updated_at": "2026-10-30T16:40:00+08:00"
     },
@@ -4714,7 +5086,17 @@
         "「同一个文件出现两次」必须在三层都挡住：收集期（身份键）、分组期（组内合并）、渲染期（前端兜底），任何一层漏了都会变成用户可见的脏数据",
         "同一路径出现两次在清理类功能里是危险状态（一次勾选 = 两次删除指令），要写成断言/单测而不是靠复查"
       ],
-      "keywords": ["重复照片", "dedupe", "同址重复", "嵌套相册", "canonicalize", "路径身份", "junction", "短名", "collapse_same_target"],
+      "keywords": [
+        "重复照片",
+        "dedupe",
+        "同址重复",
+        "嵌套相册",
+        "canonicalize",
+        "路径身份",
+        "junction",
+        "短名",
+        "collapse_same_target"
+      ],
       "created_at": "2026-11-01T12:40:47+08:00",
       "updated_at": "2026-11-01T12:40:47+08:00"
     },
@@ -4741,7 +5123,16 @@
         "「懒加载图片」和「懒加载列表」是两件事：判断长列表是否真的懒，看 document.querySelectorAll(卡片).length 是否等于总数，而不是看有没有 observer",
         "分页 ≠ 节流：分页只减少「总量」，单页内一次全渲染仍然会卡；按屏幕数算预算才是与设备无关的口径"
       ],
-      "keywords": ["重复照片", "卡顿", "增量渲染", "热加载", "IntersectionObserver", "useIncrementalReveal", "分页", "缩略图"],
+      "keywords": [
+        "重复照片",
+        "卡顿",
+        "增量渲染",
+        "热加载",
+        "IntersectionObserver",
+        "useIncrementalReveal",
+        "分页",
+        "缩略图"
+      ],
       "created_at": "2026-11-01T12:40:47+08:00",
       "updated_at": "2026-11-01T14:15:12+08:00"
     },
@@ -4776,7 +5167,16 @@
         "一切「路径类文本的截断」都要先问：截断后还能不能区分两个不同对象？地址只留末尾两级、文件名省略中段，都会直接制造误判",
         "清理类功能里「与保留项同址」是最容易引发误删恐惧的形状，要在数据层（可删集合）而不是仅在 UI 层排除"
       ],
-      "keywords": ["重复照片", "dedupe", "同一文件夹", "折叠", "误删", "地址截断", "folderCells", "deletablePathsOf"],
+      "keywords": [
+        "重复照片",
+        "dedupe",
+        "同一文件夹",
+        "折叠",
+        "误删",
+        "地址截断",
+        "folderCells",
+        "deletablePathsOf"
+      ],
       "created_at": "2026-11-01T14:15:12+08:00",
       "updated_at": "2026-11-01T14:15:12+08:00"
     },
@@ -4809,7 +5209,15 @@
         "「换档 / 下线某档」这类改动的检查清单里必须包含发布配置与打包脚本的资源清单（不只是运行时代码与下载表）",
         "硬编码的资源清单要和真值源（config 常量）互相校验，否则退役项会安静地留在打包路径里"
       ],
-      "keywords": ["release.tauri.conf.json", "release.ps1", "fp16", "chinese-clip-fp32", "FEAT-137", "退役模型", "打包清单"],
+      "keywords": [
+        "release.tauri.conf.json",
+        "release.ps1",
+        "fp16",
+        "chinese-clip-fp32",
+        "FEAT-137",
+        "退役模型",
+        "打包清单"
+      ],
       "created_at": "2026-11-01T17:41:12+08:00",
       "updated_at": "2026-11-01T21:07:42+08:00"
     },
@@ -4849,7 +5257,18 @@
         "模板化文本（同文本→同向量）必须做同分折叠，否则它在任何按分排序的表里都会霸占名额",
         "评测台 python/bench/eval_search_quality.py 常在：三组配置离线复算 P@10/R@10/nDCG@10/第一屏命中/同分最大簇，改检索前先跑基线"
       ],
-      "keywords": ["智能搜索", "AI 匹配度", "语义检索", "阈值", "RRF", "描述向量", "同分", "相对相关度", "FEAT-154", "FEAT-155"],
+      "keywords": [
+        "智能搜索",
+        "AI 匹配度",
+        "语义检索",
+        "阈值",
+        "RRF",
+        "描述向量",
+        "同分",
+        "相对相关度",
+        "FEAT-154",
+        "FEAT-155"
+      ],
       "created_at": "2026-11-01T20:34:47+08:00",
       "updated_at": "2026-11-01T20:34:47+08:00"
     },
@@ -4889,7 +5308,18 @@
         "报错提示里引用的脚本/路径必须是真实存在的；本次提示提到的 setup-env.ps1 在仓库中不存在，属误导",
         "用户环境变动（换机/清 venv/换 Python 版本）会静默打断 dev 链路，交付前应至少探一次 /health 证明服务真的能起来"
       ],
-      "keywords": ["Python 解释器", "resolve_python_interpreter", "python_candidates", "venv-vcr", "Microsoft Store 占位符", "应用执行别名", "fastapi", "Anaconda", "AI 创作", "FEAT-152"],
+      "keywords": [
+        "Python 解释器",
+        "resolve_python_interpreter",
+        "python_candidates",
+        "venv-vcr",
+        "Microsoft Store 占位符",
+        "应用执行别名",
+        "fastapi",
+        "Anaconda",
+        "AI 创作",
+        "FEAT-152"
+      ],
       "created_at": "2026-11-11T12:20:00+08:00",
       "updated_at": "2026-11-11T12:20:00+08:00"
     },
@@ -4934,7 +5364,19 @@
         "图生图结果要用可控特征图 A/B（同图带 image vs 不带 image）证明真的在编辑，而非纯文生图",
         "反复测试会消耗免费额度，可能返回 403 AccessDenied.Unpurchased / insufficient_quota，注意节流，勿在验证时刷爆额度"
       ],
-      "keywords": ["图像编辑", "images/edits", "images/generations", "10054", "ConnectionReset", "qwen-image-3.0", "OpenAI 兼容", "图生图", "edit_input_bytes", "style_transfer", "FEAT-152"],
+      "keywords": [
+        "图像编辑",
+        "images/edits",
+        "images/generations",
+        "10054",
+        "ConnectionReset",
+        "qwen-image-3.0",
+        "OpenAI 兼容",
+        "图生图",
+        "edit_input_bytes",
+        "style_transfer",
+        "FEAT-152"
+      ],
       "created_at": "2026-11-11T13:58:00+08:00",
       "updated_at": "2026-11-11T13:58:00+08:00"
     },
@@ -4959,7 +5401,19 @@
         "py_compile base.py / openai_compat.py 通过",
         "python/bench/verify_i2i_area.py：400x556→435x604(area 262740)、100x80→573x458、300x200→628x419、512x512 不变；常规图 1200x1600→768x1024、4000x3000→1024x768 无回归；超分 4000x3000@3072→2956x2217(area 6553452≤MAX)、3072x3072→2560x2560(=MAX)；RESULT: ALL OK"
       ],
-      "keywords": ["图像编辑", "图生图", "i2i", "Image area", "400 InvalidParameter", "512x512", "2560x2560", "edit_input_bytes", "_fit_i2i_size", "小图放大", "FEAT-152"],
+      "keywords": [
+        "图像编辑",
+        "图生图",
+        "i2i",
+        "Image area",
+        "400 InvalidParameter",
+        "512x512",
+        "2560x2560",
+        "edit_input_bytes",
+        "_fit_i2i_size",
+        "小图放大",
+        "FEAT-152"
+      ],
       "created_at": "2026-11-11T15:09:00+08:00",
       "fixed_at": "2026-11-11T15:09:00+08:00",
       "updated_at": "2026-11-11T15:09:00+08:00"
@@ -5000,7 +5454,18 @@
         "生产 Rust 代码一律不得直接 env!(CARGO_MANIFEST_DIR)，只能走 devpath::dev_project_dir()（release 返回空路径）",
         "新增微服务时对照 vision.rs（VCR）的完整落地清单逐一核对，避免只做开发分支"
       ],
-      "keywords": ["打包", "bundle.resources", "ai-server.exe", "CARGO_MANIFEST_DIR", "devpath", "PyInstaller", "ai_studio", "FEAT-152", "装机版", "FEAT-150"],
+      "keywords": [
+        "打包",
+        "bundle.resources",
+        "ai-server.exe",
+        "CARGO_MANIFEST_DIR",
+        "devpath",
+        "PyInstaller",
+        "ai_studio",
+        "FEAT-152",
+        "装机版",
+        "FEAT-150"
+      ],
       "created_at": "2026-11-12T14:20:00+08:00",
       "updated_at": "2026-11-12T14:20:00+08:00"
     },
@@ -5038,7 +5503,19 @@
         "生产/开发共用的 resolve_python_interpreter 不要塞服务专属依赖，按服务拆专用解析函数 + 专用缓存，避免两种口径成功/失败互相污染",
         "解释器在端口绑定前 import 失败会导致 poll_alive 空转；启动前置校验依赖可把 87s 死循环降为秒级明确报错"
       ],
-      "keywords": ["onnxruntime", "VCR", "解释器解析", "INTERP_PROBE", "venv-vcr", "poll_alive", "死循环", "开发包", "vision.rs", "Anaconda", "ensurepip"],
+      "keywords": [
+        "onnxruntime",
+        "VCR",
+        "解释器解析",
+        "INTERP_PROBE",
+        "venv-vcr",
+        "poll_alive",
+        "死循环",
+        "开发包",
+        "vision.rs",
+        "Anaconda",
+        "ensurepip"
+      ],
       "created_at": "2026-11-12T16:33:00+08:00",
       "updated_at": "2026-11-12T16:33:00+08:00"
     },
@@ -5077,7 +5554,18 @@
         "requirements.txt 安装后逐项 import 验证：fastapi,uvicorn,python-multipart,requests,Pillow,onnxruntime,cv2,tokenizers,onnx,numpy,pydantic",
         "微服务『启动即退出』时先看 *_service.log 的末行堆栈再猜依赖；ai_service 的提示文案可把日志末行/路径直接带出来，减少一轮来回"
       ],
-      "keywords": ["requests", "tokenizers", "venv-vcr", "ai_studio", "启动即退出", "ModuleNotFoundError", "依赖不全", "提交失败", "FEAT-152", "FEAT-163"],
+      "keywords": [
+        "requests",
+        "tokenizers",
+        "venv-vcr",
+        "ai_studio",
+        "启动即退出",
+        "ModuleNotFoundError",
+        "依赖不全",
+        "提交失败",
+        "FEAT-152",
+        "FEAT-163"
+      ],
       "created_at": "2026-11-12T22:35:00+08:00",
       "updated_at": "2026-11-12T22:35:00+08:00"
     },
@@ -5118,7 +5606,20 @@
         "客户端原图尺寸不满足后端 32 对齐/上限约束时，网关应归一而不是 400（夹上限 + 向下对齐 32）",
         "本地慢 provider 要单独评估超时：出图 2~5 分钟时 REQUEST_TIMEOUT 必须大于该量级，否则正常出图会被当失败"
       ],
-      "keywords": ["10061", "测试连接", "本地网关", "openai_gateway", "init_image", "img2img", "strength", "sd.cpp", "qwen-image-2.1-turbo", "REQUEST_TIMEOUT", "AI 修图工作台", "FEAT-152"],
+      "keywords": [
+        "10061",
+        "测试连接",
+        "本地网关",
+        "openai_gateway",
+        "init_image",
+        "img2img",
+        "strength",
+        "sd.cpp",
+        "qwen-image-2.1-turbo",
+        "REQUEST_TIMEOUT",
+        "AI 修图工作台",
+        "FEAT-152"
+      ],
       "created_at": "2026-11-12T22:52:00+08:00",
       "updated_at": "2026-11-12T22:52:00+08:00"
     },
@@ -5133,7 +5634,16 @@
       "evidence_log": "对照 python/ai_studio/config.py 的 MODELS_DIR 与 model_dl.rs 的 models_dir()；打包配置 release.tauri.conf.json 把 ai-server.exe 作为 resources 下发（单文件解包）。",
       "solution": "Rust 拉起 ai_studio 时注入 AI_STUDIO_MODELS_DIR = model_dl::models_dir()（models_dir 提升为 pub），config.py 改为 os.environ.get(\"AI_STUDIO_MODELS_DIR\") or 源码兜底。下载与读取从此同一口径，开发/打包一致。",
       "prevention": "凡是「Rust 下载落位 + Python 读取」的共享资源，一律由 Rust 注入目录 env，Python 不自行推算 __file__ 相对路径（打包后 __file__ 不指向安装目录）。新增本地模型时三处同步：model_dl 注册项 / config.LOCAL_MODELS / 前端 DL_NAMES 映射。",
-      "keywords": ["本地模型", "模型目录", "AI_STUDIO_MODELS_DIR", "ai-server.exe", "PyInstaller", "下完找不到", "创意工坊", "Real-ESRGAN"],
+      "keywords": [
+        "本地模型",
+        "模型目录",
+        "AI_STUDIO_MODELS_DIR",
+        "ai-server.exe",
+        "PyInstaller",
+        "下完找不到",
+        "创意工坊",
+        "Real-ESRGAN"
+      ],
       "created_at": "2026-11-12T23:20:00+08:00",
       "updated_at": "2026-11-12T23:20:00+08:00"
     },
@@ -5148,7 +5658,14 @@
       "evidence_log": "content.ts 中 ensureProgressListener 仅在 574/723 行被调用；listModelDownloads / startModelDownload 均未调用。",
       "solution": "listModelDownloads() 开头调用 this.ensureProgressListener()，任何拿到下载列表的入口都顺带挂上监听；已注册时函数内部自行短路，重复调用无副作用。",
       "prevention": "共享进度类事件（下载/扫描/作业）的监听要跟着「数据入口」注册，而不是跟着「页面」注册；新增消费方时先确认 ensureXxxListener 是否在该 action 内。",
-      "keywords": ["模型下载", "进度条", "model-dl-progress", "ensureProgressListener", "创意工坊", "本地模型"],
+      "keywords": [
+        "模型下载",
+        "进度条",
+        "model-dl-progress",
+        "ensureProgressListener",
+        "创意工坊",
+        "本地模型"
+      ],
       "created_at": "2026-11-12T23:30:00+08:00",
       "updated_at": "2026-11-12T23:30:00+08:00"
     },
@@ -5163,7 +5680,19 @@
       "evidence_log": "icacls 工作区根 = `Low Mandatory Level:(OI)(CI)(NW)`（无 (I)）；icacls exe = `Low Mandatory Level:(I)(NW)`；同机 High IL 的 pwsh 对同一 %APPDATA% 目录写探针成功、目录 ACL 中 Administrator 为 (I)(OI)(CI)(F)、所有者完整 → 排除 ACL/杀软/占用；%TEMP% 对照实验证明「对根目录 setintegritylevel 会传播到已有子对象」，故单条命令即可修复全树，无需 /T。修复后直接启动 exe：app.log 出现「数据库初始化完成」「已恢复上次登录用户 id=1」，窗口标题「本地相册搭子」。",
       "solution": "icacls \"<工作区根>\" /setintegritylevel (OI)(CI)M；实测 exe 立刻由 Low(I) 变 Medium(I)。另新增幂等脚本 scripts/fix-workspace-integrity.ps1：检测 icacls 输出中的 Low Mandatory Level 或 SID S-1-16-4096，命中则提升根目录到 Medium 并补修被显式标 Low 的 exe；挂到 package.json 的 predev（`npm run tauri dev` 的 beforeDevCommand 是 `npm run dev`，故也会触发）与 scripts/dev-outside.ps1 开头，覆盖三条启动入口。",
       "prevention": "① 这是环境态问题，外部工具/沙箱会把它打回去，修一次不等于永久修，别把它登记成代码 bug 就收工；② 判「拒绝访问」先看 icacls 输出**最后一行**的 Mandatory Label，只看 ACL 会得出「权限明明给足了」的错误结论；③ .ps1 含中文必须存成 UTF-8 **带 BOM**，否则 Windows PowerShell 5.1 按 GBK 解码直接语法崩（本次新增脚本首版就踩到，报一堆 Unexpected token）；④ 新增启动入口时确认是否经过 predev，否则自检形同虚设。",
-      "keywords": ["完整性级别", "Low IL", "Mandatory Label", "os error 5", "数据目录不可写", "icacls", "setintegritylevel", "MIC", "沙箱", "predev", "UTF-8 BOM"],
+      "keywords": [
+        "完整性级别",
+        "Low IL",
+        "Mandatory Label",
+        "os error 5",
+        "数据目录不可写",
+        "icacls",
+        "setintegritylevel",
+        "MIC",
+        "沙箱",
+        "predev",
+        "UTF-8 BOM"
+      ],
       "created_at": "2026-11-12T23:45:00+08:00",
       "updated_at": "2026-11-12T23:45:00+08:00"
     },
@@ -5178,7 +5707,17 @@
       "evidence_log": "代码证据：ModelMissingDialog.vue 旧实现 allReady = store.modelDownloads.length > 0 && every(done)；ModelDownloadRows.vue 旧实现只剔除 openvino-runtime 与按 only-names 过滤，缺省即全量。",
       "solution": "按「归属分区」呈现同一张下载表：新增 src/utils/modelCatalog.ts（isWorkshopModel / modelsInArea，local- 前缀 = 创意工坊），ModelDownloadRows 增加 area: 'scan'|'workshop' 属性；扫描侧三处（ModelDownloadsSection / ModelMissingDialog / ModelSourcesSection）显式 area=\"scan\"，缺模型弹窗的 allReady 改用 modelsInArea(...,'scan') 判定；创意工坊侧（AiSettingsDialog / LocalModelHint）area=\"workshop\"。Rust 下载表与下载器一律不改。",
       "prevention": "一张表可以服务多个入口，但「谁该看到哪些行」必须有一处单一真值（这里放在 utils 纯函数并配单测），不要在各视图里各写一遍前缀判断或 only-names 清单；给共用列表组件加新条目时同步检查所有「全部就绪 / 缺失统计」类判定的分母。",
-      "keywords": ["模型缺失弹窗", "已全部就绪", "modelDownloads", "local-esrgan", "local-gfpgan", "模型管理", "分区", "ModelDownloadRows", "allReady"],
+      "keywords": [
+        "模型缺失弹窗",
+        "已全部就绪",
+        "modelDownloads",
+        "local-esrgan",
+        "local-gfpgan",
+        "模型管理",
+        "分区",
+        "ModelDownloadRows",
+        "allReady"
+      ],
       "created_at": "2026-11-13T11:45:00+08:00",
       "updated_at": "2026-11-13T11:45:00+08:00"
     },
@@ -5193,7 +5732,17 @@
       "evidence_log": "用 PyInstaller 按旧 spec 重建 ai-server.exe 后启动，进程立即退出；新版 spec 重建 57.5MB 产物，/health 返回 {\"ok\":true,\"api_version\":1}，/local/models 显示 7 个内置 LUT 全部 exists=true，auto_grade 与 film_sim 均真实出图。",
       "solution": "① excludes 去掉 numpy/onnxruntime，改排除 cv2/onnx/scipy；② hiddenimports 补 onnxruntime 与 onnxruntime.capi._pybind_state（原生绑定动态加载，静态分析抓不到）；③ datas 增加 ('ai_studio/luts','ai_studio/luts')；④ requirements-ai-packaging.txt 补 numpy>=1.26 与 onnxruntime-directml==1.24.4（与 VCR 侧 pin 同版本，避免 BUG-2026-0921-002 的 2.9× 回归）；⑤ config.LUTS_DIR 增加 sys._MEIPASS 兜底。",
       "prevention": "加任何本地功能前，先确认「打包 venv 里有没有它 import 的包」；判据不是「工具能不能跑」，而是「服务能不能起来」——因为 workflows/__init__.py 是无条件 import。新增本地模型走 model_dl/config/LocalModelHint 三处同步。",
-      "keywords": ["打包", "PyInstaller", "numpy", "onnxruntime", "ai-server", "ModuleNotFoundError", "spec", "LUT", "FEAT-166"],
+      "keywords": [
+        "打包",
+        "PyInstaller",
+        "numpy",
+        "onnxruntime",
+        "ai-server",
+        "ModuleNotFoundError",
+        "spec",
+        "LUT",
+        "FEAT-166"
+      ],
       "created_at": "2026-11-13T11:32:00+08:00",
       "updated_at": "2026-11-13T11:32:00+08:00"
     },
@@ -5208,7 +5757,17 @@
       "evidence_log": "读首字节：build_ai_exe.ps1 = 23 20 3D 3D（无 BOM），build_vcr_exe.ps1 = EF BB BF 23（有 BOM）。补 BOM 后脚本正常走到 [1/5] 创建 venv、[2/5] 安装依赖；release.ps1 同样无 BOM，补后 Parser::ParseFile 返回 0 error。",
       "solution": "用 UTF8Encoding(True) 覆写这两个文件；并核查 scripts/fix-workspace-integrity.ps1、scripts/dev-outside.ps1、setup-env.ps1 均已有 BOM。",
       "prevention": "新增或改写任何含中文的 .ps1 时，写入必须带 BOM；提交前用「首三字节 == EF BB BF」自查。看到 PS 报 Unexpected token 但脚本看起来完全正常时，先怀疑编码而不是语法。",
-      "keywords": ["PowerShell", "BOM", "UTF-8", "GBK", "cp936", "构建脚本", "release", "Unexpected token", "编码"],
+      "keywords": [
+        "PowerShell",
+        "BOM",
+        "UTF-8",
+        "GBK",
+        "cp936",
+        "构建脚本",
+        "release",
+        "Unexpected token",
+        "编码"
+      ],
       "created_at": "2026-11-13T11:33:00+08:00",
       "updated_at": "2026-11-13T11:33:00+08:00"
     },
@@ -5223,7 +5782,15 @@
       "evidence_log": "逐步隔离（autograde→film→reshape 每步测 luma/hi/jaw-ipd）：+luma 与 +hi 全部发生在前两步，reshape 恒等参数 diff=0；grade stats 输出 gamma=0.82、white=0.9633。修复后同图：gamma 0.9307、luma 95.7→98.5（+2.9%）、hi≥250 0.13%→0.08%（低于原图）。",
       "solution": "① 中间调目标从常数 0.46 改为「合理曝光带 [0.40,0.50]」：均亮已在带内的图 gamma=1 完全不动亮度，欠曝向上修、过曝向下修；gamma 区间 [0.75,1.35] 收紧到 [0.85,1.30]。② _levels 加端点保护：white≥0.93 / black≤0.07 时该端直接置 1.0/0.0 不拉伸。回归验证：暗图（×0.45）仍被提亮 43→85，过亮图（×1.35）gamma=1.0 不再拉亮。",
       "prevention": "统计驱动的「把 X 拉向常数目标」必须先假设检查：目标带而不是目标点，已在带内的图要完全不动；色阶端点已贴边时禁止该端拉伸。验收不能只看「效果是否明显」，必须用「曝光正确的图是否保持不动」做对照组。详见 .dsh/knowledge/local-enhance.md §9。",
-      "keywords": ["自动调色", "过曝", "脸变胖", "gamma", "高光溢出", "autograde", "高光保护"],
+      "keywords": [
+        "自动调色",
+        "过曝",
+        "脸变胖",
+        "gamma",
+        "高光溢出",
+        "autograde",
+        "高光保护"
+      ],
       "created_at": "2026-11-14T20:00:00+08:00",
       "updated_at": "2026-11-14T20:00:00+08:00"
     },
@@ -5238,7 +5805,16 @@
       "evidence_log": "A/B 实验（同一张真实人像，slim=0.5/eyes=0.3）：当前符号 span +3.2%、ipd -4.9%、mouth +4.4%；翻转符号后 span -4.1%、mouth -0.1%。合成图（黑椭圆眼 + 手工 68 点）：大眼环 +0.8%（意图 15%）→ 证明稀释；位移场探针：眼边缘 (360,300) 处 dx=0.07px（意图 8.4px）。",
       "solution": "① 下颌动点 offset 改为 (px-center_x) 正号（反向映射语义），大眼单独抽成 _eye_bump 加性径向凸起场（不走归一化 RBF，中心位移恰为 0、无需锚点、无稀释）；② 回归判据改为方向单调性：slim 0.2/0.5/0.8 → 下颌 span -2.9%/-4.3%/-5.4%（单调变瘦）；eyes 0.3/0.5 → 眼部暗像素（固定 ROI 像素法，绕开重检测漂移）+6.2%/+12.8%（单调放大）；合成图 eye half-width +8.3%/+11.7%。",
       "prevention": "写 warp 类算子时，先写死一句注释「本场的位移语义是 目标→源 还是 源→目标」，两个方向的 offset 取反号；验收必须包含「方向单调性 sweep」（最小/默认/最大三档，量必须单调且方向正确）+ 一个与检测器无关的合成几何用例（画圆测半径），恒等自检不能替代方向验证。详见 .dsh/knowledge/local-enhance.md §10。",
-      "keywords": ["瘦脸", "大眼", "facewarp", "位移符号", "反向映射", "remap", "RBF稀释", "单调性验收"],
+      "keywords": [
+        "瘦脸",
+        "大眼",
+        "facewarp",
+        "位移符号",
+        "反向映射",
+        "remap",
+        "RBF稀释",
+        "单调性验收"
+      ],
       "created_at": "2026-11-14T20:05:00+08:00",
       "updated_at": "2026-11-14T20:05:00+08:00"
     },
@@ -5252,7 +5828,13 @@
       "root_cause": "`float(opts.get(\"strength\", 0.6) or 0.6)`：`or` 把 0 当假值，缺省值与「用户明确填 0」无法区分。同类写法在 ops_local 的 default 参数上也有。",
       "solution": "抽 `_opt_float(opts, key, default)`，只在 `None` / 空串时才用默认值，0 原样透传；ops_local 与 facewarp 的默认值同步改为新档位。",
       "prevention": "取「0 是合法值」的数值参数时禁止用 `or` 兜底，必须 `is None` 判空。验收要包含「参数=0 时效果确实为 0」这一档。",
-      "keywords": ["美颜", "or吞0", "默认值", "local_beauty", "参数校验"],
+      "keywords": [
+        "美颜",
+        "or吞0",
+        "默认值",
+        "local_beauty",
+        "参数校验"
+      ],
       "created_at": "2026-11-17T17:20:00+08:00",
       "updated_at": "2026-11-17T17:20:00+08:00"
     },
@@ -5266,7 +5848,14 @@
       "root_cause": "两处：① metrics 只算 `gray>=250`，而蓝天照是 B 通道到顶、灰度均值远低于 250；② 报警阈值 8 个百分点，实测恶化通常在 0.1%~7% 之间，永远触发不到。",
       "solution": "metrics 增加 `clipAny`（任一通道≥250 的占比）；阈值拆成 `_CLIP_DELTA=0.01`（灰度）与 `_CLIP_ANY_DELTA=0.005`（单通道）。修后能抓住旧输出的 25.3% 截断。",
       "prevention": "质检指标必须与「用户看到的症状」对齐：用户说「细节没了」指的是通道饱和而非灰度均值。阈值要用真实退化样本反推，不能凭感觉取大数。",
-      "keywords": ["critic", "质检", "高光截断", "单通道饱和", "clipAny", "阈值"],
+      "keywords": [
+        "critic",
+        "质检",
+        "高光截断",
+        "单通道饱和",
+        "clipAny",
+        "阈值"
+      ],
       "created_at": "2026-11-17T17:21:00+08:00",
       "updated_at": "2026-11-17T17:21:00+08:00"
     },
@@ -5280,7 +5869,14 @@
       "root_cause": "`_limit_long_edge(img, _LOCAL_UP_MAX_LONG=2000)` 先把长边压到 2000，ESRGAN ×4 得 8000，再因 `scale==2` 降采样到 `src*2`=4000。净效果 6000→4000。",
       "solution": "① 四条配方全部移除 local_upscale；② ops.py 加守卫：输出像素数小于输入时退回原图，宁可「没放大」也不「悄悄变糊」。修后尺寸 1.0× 保持，耗时 69.8s→5.0s。",
       "prevention": "任何「放大」算子必须断言 `out.area >= in.area`，否则是净损失。超分类算子要明确它是「在缩略图上跑」还是「对原图跑」，混用会静默降质。",
-      "keywords": ["超分", "local_upscale", "分辨率缩水", "recipes", "ESRGAN", "性能"],
+      "keywords": [
+        "超分",
+        "local_upscale",
+        "分辨率缩水",
+        "recipes",
+        "ESRGAN",
+        "性能"
+      ],
       "created_at": "2026-11-17T17:22:00+08:00",
       "updated_at": "2026-11-17T17:22:00+08:00"
     },
@@ -5294,7 +5890,14 @@
       "root_cause": "衰减窗 `1 - (dist-radius)/(0.4*radius)` 让位移在极短距离内从峰值降到 0，|∇d| 远超肉眼可辨的 0.3；strength=eyes*0.5 进一步放大。",
       "solution": "① 衰减窗加宽到 1.6×radius；② 强度系数 0.5→0.35；③ 新增 `_limit_strain` 把 |∇d| 夹到 0.18 以下。限制器用**扩散式混合**（向模糊版位移场混合），不用乘性缩放——实测乘性缩放会因自身边界引入新梯度，把应变从 0.53 推到 1.97 并稳定在那里。",
       "prevention": "形变类算子必须量化局部应变（|∇d|），阈值 0.18；限制器只能用「向平滑场混合」这类不产生新梯度的方式，乘性缩放会自我反噬。",
-      "keywords": ["大眼", "形变畸变", "应变", "strain", "facewarp", "衰减窗"],
+      "keywords": [
+        "大眼",
+        "形变畸变",
+        "应变",
+        "strain",
+        "facewarp",
+        "衰减窗"
+      ],
       "created_at": "2026-11-17T17:23:00+08:00",
       "updated_at": "2026-11-17T17:23:00+08:00"
     },
@@ -5308,7 +5911,13 @@
       "root_cause": "半径取 `min(h,w)*0.006`，6000px 原图上约 6px，把毛孔级高频当噪点抹掉；同一张脸在 1024 缩略图上脸宽相同但半径只有 1px。",
       "solution": "新增 `radius_for_face(face_width_px)` = `clip(fw*0.02, 2, 8)`，两个调用方（ops_local.smooth_image、local_beauty.run）都改为传脸宽推导的半径。",
       "prevention": "磨皮这类「抹掉毛孔级高频」的半径必须跟着脸的物理尺度走，不能跟图幅走——同一张脸在不同分辨率下视觉尺度不变。",
-      "keywords": ["磨皮", "skinretouch", "半径", "脸宽", "高频保留"],
+      "keywords": [
+        "磨皮",
+        "skinretouch",
+        "半径",
+        "脸宽",
+        "高频保留"
+      ],
       "created_at": "2026-11-17T17:24:00+08:00",
       "updated_at": "2026-11-17T17:24:00+08:00"
     },
@@ -5322,7 +5931,15 @@
       "root_cause": "三层叠加：① `_levels` 只用**亮度**分位定白点，而亮度是 R/G/B 加权和，蓝天照 B 通道可达 250 而亮度仅 190，按 0.843→1.0 的 1.19× 拉伸必然把 B 推出边界；② `eval_colors` 每步用硬 `np.clip` 收口，通道到顶即整段丢层次；③ 白平衡增益（R×1.091）在中间步就被硬裁剪，信息在肩部介入前已丢失。",
       "solution": "① 白点改为「各通道 99.5 分位最大值」；② 新增 `_shoulder`（knee=0.86、target=0.97 的 smoothstep 软压缩）替换高光侧硬裁剪，并在白平衡/gamma/色温这三个会推高单通道的步骤后启用；③ 只在链路末端统一压一次，避免多次压缩累积把 P99 压掉 30 级。修后三张图单通道≥250 全部归零，亮度变化收敛到 +8.4/-7.4/-4.2。",
       "prevention": "按通道做增益/拉伸的链路，白点必须按通道分位取，不能只看亮度；任何乘法/幂运算后接硬 clip 都会静默丢层次，高光侧一律用 shoulder。验收指标要用「任一通道≥250」而非灰度均值。",
-      "keywords": ["自动调色", "高光截断", "单通道饱和", "白点", "shoulder", "autograde", "细节丢失"],
+      "keywords": [
+        "自动调色",
+        "高光截断",
+        "单通道饱和",
+        "白点",
+        "shoulder",
+        "autograde",
+        "细节丢失"
+      ],
       "created_at": "2026-11-17T17:25:00+08:00",
       "updated_at": "2026-11-17T17:25:00+08:00"
     },
@@ -5336,7 +5953,13 @@
       "root_cause": "normal 档 `saturation=1.08 + vibrance=0.20` 在提饱和时会把暖肤色 R/G 自然推高约 0.18，恰好越过 0.18 的阈值。逐项归因证实：auto_grade 贡献 +0.185，local_film(0.22) 仅 +0.009。",
       "solution": "阈值提到 0.25（在正常波动之上），同时把 portrait 的 local_film strength 从 0.4 降到 0.22 减少胶片偏色叠加。修后 6 组出片全部 unknown，且仍能抓住旧输出的 25.3% 截断。",
       "prevention": "质检阈值必须用「正常处理链路的自然波动」做基线校准，不能只看「是否超过某个绝对数」；否则质检会变成噪音源，反而掩盖真问题。",
-      "keywords": ["critic", "肤色偏移", "误报", "饱和度", "阈值校准"],
+      "keywords": [
+        "critic",
+        "肤色偏移",
+        "误报",
+        "饱和度",
+        "阈值校准"
+      ],
       "created_at": "2026-11-17T17:26:00+08:00",
       "updated_at": "2026-11-17T17:26:00+08:00"
     },
@@ -5350,7 +5973,15 @@
       "root_cause": "`uint8 → uint8` 的映射只有 256 种输入取值，但旧实现对 7200 万个像素逐个执行 `astype(float32) * scale + 0.5 → clip → astype(int32)`（索引阶段）以及 `take → *255 + 0.5 → clip → astype(uint8)`（输出阶段）。这些运算的结果全部落在 256 项的表里，属于纯重复计算。",
       "solution": "① 索引预计算成 256 项 int32 表，`idx_tab[img]` 一次查表替代浮点乘加；② 输出表在建表时（97³×3 ≈ 27 万次）就量化为 uint8，gather 出来即成品；③ 函数拆成 `_index_table`（索引表缓存）/ `_dense_u8`（量化表缓存）/ `_apply_nearest`（编排）三个单一职责小函数。实测 24MP 1213ms → 289ms（4.2×），8 组用例**逐位一致、最大差 0 级**。",
       "prevention": "逐像素处理 `uint8 → uint8` 映射时，先问「输入有多少种取值」：有限就预计算成表，把 `O(H·W)` 的浮点运算降成 `O(H·W)` 的整数查表。量化要放在建表侧（`O(d³)`）而不是套用侧（`O(H·W)`）。改这类热点必须用「改前存基线 .npy → 改后逐位对比」验收，不能只看肉眼或均值。",
-      "keywords": ["LUT", "查表", "性能", "lutcube", "uint8", "预计算", "逐位一致"],
+      "keywords": [
+        "LUT",
+        "查表",
+        "性能",
+        "lutcube",
+        "uint8",
+        "预计算",
+        "逐位一致"
+      ],
       "created_at": "2026-11-17T21:30:00+08:00",
       "updated_at": "2026-11-17T21:30:00+08:00"
     },
@@ -5364,7 +5995,15 @@
       "root_cause": "`autograde` 每张照片都会新建 LUT 数组（生命周期短），而 `_dense_flat` / `_dense_u8` 的缓存 key 是 `id(lut)`。`id()` 只是内存地址，数组被 GC 后新数组可能复用同一地址，于是命中上一张照片留下的表 —— 静默错色。旧实现同样有此问题，本次新增 `_DENSE_U8_CACHE` 会把风险面扩大一倍。",
       "solution": "缓存值改为 `(lut 引用, 表, 边长)` 三元组，命中时用 `hit[0] is lut` 校验身份，不匹配即当未命中重算。内存代价：一条 33³ LUT 仅 431KB。验证：手动往缓存塞「key 对得上但 lut 是别的对象」的条目，输出必须仍是正确那张表的结果（实测最大差 2 级，即稠密表固有最近邻误差，非错表）。",
       "prevention": "任何以 `id(obj)` 为 key 的缓存，必须在值里持有该对象并做 `is` 身份校验。这条对 numpy 数组、模型句柄、文件对象一律适用 —— 只要对象的生命周期短于缓存。",
-      "keywords": ["缓存", "id复用", "LUT", "lutcube", "GC", "错色", "身份校验"],
+      "keywords": [
+        "缓存",
+        "id复用",
+        "LUT",
+        "lutcube",
+        "GC",
+        "错色",
+        "身份校验"
+      ],
       "created_at": "2026-11-17T21:31:00+08:00",
       "updated_at": "2026-11-17T21:31:00+08:00"
     },
@@ -5378,7 +6017,15 @@
       "root_cause": "链路叠加：auto_grade 黑白场拉伸已把黑场压到 0；随后 classic_neg 等负片 LUT 的「哑光曲线」再次抬黑位压对比——LUT 单独用是风格，叠在已调色的图上是二次发灰。颗粒(σ=18*0.12)与暗角进一步加重灰感。",
       "solution": "新增 lutcube.restore_black_white（固定锚点 0.10 线性拉伸，按 amount 比例还原黑白场），op_local_film 在 LUT 后、颗粒前调用；胶片配方 anchor=0.4。实测 p1 0.029→0.000、p99 0.949→0.987。",
       "prevention": "风格化算子（LUT/滤镜）与校正算子（黑白场拉伸）叠加时，必须逐步测量 p1/p50/p99 定位灰感来源，不能只看平均饱和度；「黑位悬空 + 白位不到顶」= 灰感的指纹。",
-      "keywords": ["发灰", "黑位", "LUT", "负片", "哑光", "anchor", "restore_black_white"],
+      "keywords": [
+        "发灰",
+        "黑位",
+        "LUT",
+        "负片",
+        "哑光",
+        "anchor",
+        "restore_black_white"
+      ],
       "created_at": "2026-11-18T16:05:00+08:00",
       "updated_at": "2026-11-18T16:05:00+08:00"
     },
@@ -5392,7 +6039,14 @@
       "root_cause": "双重加饱和：cool 风格自带 saturation 1.05+vibrance 0.18+色温偏移，auto_grade 刚把饱和推上去，astia LUT 又叠加自己的色彩倾向。strength 0.9 时 cool 的派生饱和被进一步放大。",
       "solution": "胶片强度 0.45→0.30（LUT 步 Δsat +0.035→+0.022）、调色力度 0.9→0.8。曾计划加 anchor 0.15 防灰，实测数据否决：astia 不抬黑位，anchor 的黑场拉伸反推高饱和 +0.010，已移除。",
       "prevention": "多步调色链路里，每一步都要单独测 Δsat/Δp1——「第二步的问题」必须定位到具体步骤再动手，凭整体观感调参容易调错方向（本次 anchor 方案即被数据否决）。",
-      "keywords": ["过饱和", "通透", "astia", "叠加", "强度", "饱和度"],
+      "keywords": [
+        "过饱和",
+        "通透",
+        "astia",
+        "叠加",
+        "强度",
+        "饱和度"
+      ],
       "created_at": "2026-11-18T16:06:00+08:00",
       "updated_at": "2026-11-18T16:06:00+08:00"
     },
@@ -5406,7 +6060,15 @@
       "root_cause": "五段式右栏改造时把承载微调的 UI 组件丢了，只在 ② 留了 RecipePicker；store 与 sampleTune 的微调代码作为死链路保留，编译与单测全绿，掩盖了功能缺失。",
       "solution": "新增 WorkbenchTune.vue（默认折叠，抽完样片自动展开一次，逐步手风琴 + 每步复位/全部复位）；参数表改由 op_catalog.json 驱动（paramViews），store 改为 tuneSteps/tuneBase + paramsOverride 差量覆盖；删除 sampleTune 的字段表与 buildOverrides，抽样拆成 samplePick.ts，LUT 标签迁入 workbenchPlan。",
       "prevention": "① 重构后做「入口盘点」：store 里被写但 UI 没有入口的字段一律按死链路处理；② 纯函数单测通过不等于入口存在，UI 验收必须真的点得到；③ 参数表只留 op_catalog 一个真相源，前端不再手抄白名单（手抄表会与后端 TUNABLE_PARAMS 悄悄漂移）。",
-      "keywords": ["工作台", "单步微调", "死链路", "参数覆盖", "paramsOverride", "WorkbenchTune", "入口盘点"],
+      "keywords": [
+        "工作台",
+        "单步微调",
+        "死链路",
+        "参数覆盖",
+        "paramsOverride",
+        "WorkbenchTune",
+        "入口盘点"
+      ],
       "created_at": "2026-11-18T18:20:00+08:00",
       "updated_at": "2026-11-18T18:20:00+08:00"
     },
@@ -5420,8 +6082,18 @@
       "root_cause": "lutcube._DENSE_CACHE 以 (id(lut), n) 为 key 且无淘汰；autograde 每张照片都 build_lut 新建一张 33³ LUT，再经 apply_cube 生成 97³ 稠密表（约 11MB）常驻。同一文件里 _DENSE_U8_CACHE 却有 8 条上限，两处口径不一致才被忽略。",
       "solution": "apply_cube 区分「路径 LUT」（内置 .cube，可复用）与「运行时 LUT」（cache=False，算完即丢）：按 isinstance(path_or_lut, str) 判定，cache 标志一路传到 _dense_flat/_dense_u8/_apply_nearest。_DENSE_CACHE 另加 24 条安全上限。",
       "prevention": "给一次性对象设 LRU/FIFO 不是修复：命中率恒为 0，还会挤掉真正可复用的条目（7 个内置 LUT 的稠密表），表现为胶片强度滑杆越拖越慢。正确做法是在入口区分「可复用 / 一次性」并让一次性路径不进缓存。",
-      "keywords": ["内存泄漏", "LUT", "缓存上限", "autograde", "ai_studio", "RSS"],
-      "related_files": ["python/ai_studio/lutcube.py", "python/ai_studio/autograde.py"],
+      "keywords": [
+        "内存泄漏",
+        "LUT",
+        "缓存上限",
+        "autograde",
+        "ai_studio",
+        "RSS"
+      ],
+      "related_files": [
+        "python/ai_studio/lutcube.py",
+        "python/ai_studio/autograde.py"
+      ],
       "verification": "新增 python/tests/test_ai_studio_lut_cache.py；冒烟 natural 连续 5 次预览后 _DENSE_CACHE 与 _DENSE_U8_CACHE 均为 0 条；film 首次 722ms、之后 336~342ms（内置 LUT 缓存命中 1 条，未被挤掉）。",
       "created_at": "2026-11-19T09:45:00+08:00",
       "updated_at": "2026-11-19T09:45:00+08:00"
@@ -5436,8 +6108,16 @@
       "root_cause": "start() 的防重入只读 STORE.status[name].running，但首次下载前 status 里根本没有该条目（list() 只 clone 不 insert，set_status 才 insert），两次快速调用都读到 false；running=true 由锁外的 set_status 写入，补不上这个窗口。两个任务交错写同一份 .dl_* 分片，cancel 标记互相覆盖，先完成者 remove cancel 后另一个永久不可取消。",
       "solution": "Store 增加独立的 inflight: HashSet<String>，在持同一把锁的临界区内 insert，终态（done/failed/cancelled）在同一临界区 remove；守卫抽成 begin_inflight 以便单测（不构造 AppHandle）。",
       "prevention": "防重入状态要选「一定先于业务副作用存在」的载体，不能用可能尚未初始化的状态表字段；判断与置位必须在同一临界区，放在锁外等于没加。",
-      "keywords": ["并发竞态", "TOCTOU", "模型下载", "防重入", "model_dl"],
-      "related_files": ["src-tauri/src/model_dl.rs"],
+      "keywords": [
+        "并发竞态",
+        "TOCTOU",
+        "模型下载",
+        "防重入",
+        "model_dl"
+      ],
+      "related_files": [
+        "src-tauri/src/model_dl.rs"
+      ],
       "verification": "cargo test --lib model_dl 8 passed（新增 begin_inflight_rejects_concurrent_start：首次成功 / 二次被拒 / 清掉后可重下）。",
       "created_at": "2026-11-19T09:45:00+08:00",
       "updated_at": "2026-11-19T09:45:00+08:00"
@@ -5452,8 +6132,16 @@
       "root_cause": "unique_path 用「os.path.exists 判定 → 返回路径」两步，判定与真正的写盘之间有时窗。串行时无害；改成照片级并行后，IMG_1.jpg 与 IMG_1.png 归一成同一 stem、同时进入 unique_path，两边都判定「不存在」→ 拿到同一路径 → 后写者覆盖先写者，全程无异常。",
       "solution": "改为 O_CREAT|O_EXCL 原子占位：谁创建成功谁拿到该名字，失败就换 _1/_2；父目录不可写时退回旧行为让写盘报可读错误。",
       "prevention": "「判定可用 → 使用」这对操作只要可能并发，就必须合成一个原子动作（O_EXCL / 唯一名分配 / 数据库唯一约束），不能靠「串行时没问题」推断。",
-      "keywords": ["并发竞态", "TOCTOU", "文件命名", "unique_path", "照片级并行"],
-      "related_files": ["python/ai_studio/workflows/base.py"],
+      "keywords": [
+        "并发竞态",
+        "TOCTOU",
+        "文件命名",
+        "unique_path",
+        "照片级并行"
+      ],
+      "related_files": [
+        "python/ai_studio/workflows/base.py"
+      ],
       "verification": "python/tests/test_ai_studio_unique_path.py：16 线程并发取同名路径拿到 16 个互不相同的路径且全部已占位。",
       "created_at": "2026-11-19T10:45:00+08:00",
       "updated_at": "2026-11-19T10:45:00+08:00"
@@ -5468,8 +6156,16 @@
       "root_cause": "ensure_into 写死 max_edge.clamp(512, 8192)（当时只有大图预览一个调用方）。新增 384 的工坊缩略图后，clamp 把请求值抬到 512 并写进缓存文件名，缓存键与请求参数分叉。",
       "solution": "下限降到 64；合法区间由各调用方自己声明（workbench_thumb 再 clamp 到 [64, 1024]）。",
       "prevention": "「输入参数的静默修正」必须写在调用方或显式回传 —— 在下层悄悄改值会让缓存键与调用方认知分叉，症状是「缓存永远不命中」而不是报错。",
-      "keywords": ["缓存键", "静默修正", "preview", "缩略图", "clamp"],
-      "related_files": ["src-tauri/src/preview.rs"],
+      "keywords": [
+        "缓存键",
+        "静默修正",
+        "preview",
+        "缩略图",
+        "clamp"
+      ],
+      "related_files": [
+        "src-tauri/src/preview.rs"
+      ],
       "verification": "cargo test --lib preview：different_max_edge_uses_different_cache_file 与 workbench_thumb_renders_any_format_and_caches 通过。",
       "created_at": "2026-11-19T10:45:00+08:00",
       "updated_at": "2026-11-19T10:45:00+08:00"
@@ -5481,17 +6177,135 @@
       "title": "Lab→线性 sRGB 漏写矩阵转置：所有 sRGB 原色被判为越色域，拉饱和把颜色削成灰",
       "module": "python/ai_studio/autograde.py::_lab_to_linear / _chroma_headroom",
       "severity": "high",
-      "symptom": ["守卫测试 test_gamut_corner_hue_exact 失败，纯色色相角偏移达 -102.85° / +163.62°", "纯红 (255,0,0) 经 _saturate_lch(k=1.6) 输出 (160,117,106) —— 颜色被削成灰", "test_hue_shift_not_worse_than_rgb 失败：|ΔHue| 36.20°，远大于 RGB 版的 0.63°", "过程无任何报错、无异常日志：只在成片上表现为「饱和度失效 / 颜色变脏」"],
+      "symptom": [
+        "守卫测试 test_gamut_corner_hue_exact 失败，纯色色相角偏移达 -102.85° / +163.62°",
+        "纯红 (255,0,0) 经 _saturate_lch(k=1.6) 输出 (160,117,106) —— 颜色被削成灰",
+        "test_hue_shift_not_worse_than_rgb 失败：|ΔHue| 36.20°，远大于 RGB 版的 0.63°",
+        "过程无任何报错、无异常日志：只在成片上表现为「饱和度失效 / 颜色变脏」"
+      ],
       "root_cause": "第一版 _lab_to_linear 写成 `xyz @ M`（自己抄了一份 XYZ→sRGB 矩阵数值），漏了转置。项目里所有矩阵都按「行向量左乘」约定（colortransfer 用的是 `xyz @ _MINV.T`）。结果：纯红 (255,0,0) 的线性值算出 [1.13, -0.24, -0.18] 而不是 [1,0,0]；于是 _chroma_headroom 把 6 个 sRGB 原色的 headroom 判成 [0.188, 0.875, 0.062, 0, 0, 0.062]，缩放倍数被压到 0.06~0.19，彩度几乎全被削掉。",
       "fix": "1) 改为 `xyz @ colortransfer._MINV.T`；2) **删掉自己抄的 _WHITE_XYZ / _XYZ_TO_RGB_LIN 常量**，直接复用 colortransfer 的同一份 —— 常量只存一份就不可能再抄错；3) 补 _GAMUT_EPS=1e-5 容差：sRGB 原色正好落在色域边界，浮点误差 1e-7 量级越界会让 headroom 归零。",
       "verification": "修复后 6 个 sRGB 原色 Lab→linear 精确得到 [1,0,0]/[0,1,0]/[0,0,1]/[1,1,0]/[0,1,1]/[1,0,1]，headroom 全为 1.0；守卫测试 test_gamut_corner_hue_exact 通过（|Δh| < 0.5°）。",
       "lesson": "矩阵/色彩空间常量的转置方向错误**不报错**，只表现为效果失效。凡是需要同一套矩阵的多个函数，必须共用一份常量，不允许按数值手抄第二份。",
-      "related_files": ["python/ai_studio/autograde.py", "python/ai_studio/colortransfer.py", "python/tests/test_autograde_lch_sat.py"],
-      "keywords": ["Lab", "sRGB", "矩阵转置", "色域", "gamut", "headroom", "色相偏移", "饱和度失效", "静默错误", "LCh"],
+      "related_files": [
+        "python/ai_studio/autograde.py",
+        "python/ai_studio/colortransfer.py",
+        "python/tests/test_autograde_lch_sat.py"
+      ],
+      "keywords": [
+        "Lab",
+        "sRGB",
+        "矩阵转置",
+        "色域",
+        "gamut",
+        "headroom",
+        "色相偏移",
+        "饱和度失效",
+        "静默错误",
+        "LCh"
+      ],
       "log_hint": "无报错、无日志；只能靠守卫测试（纯色色相角）发现",
       "created_at": "2026-11-19T16:20:00+08:00",
       "fixed_at": "2026-11-19T16:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1119-005",
+      "date": "2026-11-19",
+      "status": "fixed",
+      "title": "tauri dev 反复报 Port 1420 is already in use：beforeDevCommand 每次新起 vite，残留进程占固定端口",
+      "module": "启动链 / tauri.conf.json beforeDevCommand + vite.config.ts strictPort + scripts/dev-outside.ps1",
+      "symptom": [
+        "npm run tauri dev 报 error when starting dev server: Port 1420 is already in use，随后 The \"beforeDevCommand\" terminated with a non-zero status code",
+        "Rust 后端其实已正常启动（日志有 APP START），仅前端 dev server 起不来",
+        "同一错误跨多天复发（11-18、11-19），每次手动杀掉 node 进程后恢复，过段时间又出现"
+      ],
+      "root_cause": "链路：vite.config.ts 设 strictPort:true（端口占用即报错退出，不自动换端口）→ tauri.conf.json 的 beforeDevCommand 原为 npm run dev（每次都独立新起一个 vite @1420）→ scripts/dev-outside.ps1 用 Start-Process cmd.exe detached 起 vite 且从不回收，遗留常驻监听 1420 → 下一次 tauri dev 的新 vite 撞端口、strictPort 拒绝、命令非零退出 → Tauri 判 beforeDevCommand 失败。每次只杀进程不改配置，故必然复发。",
+      "solution": "新增 scripts/ensure-vite.ps1：先 Test-Port 1420，已监听则复用（不新起、不杀进程），否则 Start-Process 起 vite 并轮询等待就绪，15s 未起报失败；显式调用 fix-workspace-integrity.ps1 补偿 npm predev 钩子不再经过的问题。tauri.conf.json 的 beforeDevCommand 改指向该脚本。脚本纯 ASCII 避免 PowerShell 5.1 GBK 解析坑；用 $PSScriptRoot 定位文件路径，不依赖 beforeDevCommand 的 cwd（其基准在不同 Tauri CLI 版本间变化过）。",
+      "prevention": [
+        "固定端口 + strictPort 的 dev server，启动入口必须做『检测已有监听则复用』，不能无条件新起；否则残留进程必然导致后续启动失败",
+        "detached 启动的子进程（Start-Process）要有回收机制或可复用检测，否则残留是常态",
+        "Tauri beforeDevCommand 的工作目录在不同 CLI 版本间不一致，脚本内用 $PSScriptRoot 等绝对路径定位，别赌 cwd"
+      ],
+      "keywords": [
+        "端口占用",
+        "1420",
+        "strictPort",
+        "beforeDevCommand",
+        "vite 残留",
+        "tauri dev"
+      ],
+      "related_files": [
+        "src-tauri/tauri.conf.json",
+        "vite.config.ts",
+        "scripts/ensure-vite.ps1",
+        "scripts/dev-outside.ps1"
+      ],
+      "verification": "tauri.conf.json 经 ConvertFrom-Json 校验合法、beforeDevCommand 指向新脚本；ensure-vite.ps1 经 PowerShell Parser 解析零错误、纯 ASCII（nonAsciiBytes=0）；脚本与 fix-workspace-integrity.ps1 均存在于项目根 scripts/。运行期复验需用户在正常 IL 终端执行 npm run tauri dev 观察是否复用旧 vite。",
+      "created_at": "2026-11-19T13:50:00+08:00",
+      "updated_at": "2026-11-19T13:50:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1120-001",
+      "title": "部分界面「字体和背景都是白色」：原生下拉展开层白字白底（创意工坊选预设滤镜时最明显）",
+      "status": "fixed",
+      "severity": "medium",
+      "symptom": "用户原话「部分界面字体和背景都是白色，比如创意工坊下拉选择预设滤镜」。点开 <select> 的瞬间，选项列表是白底 + 近白文字，看不见选项；闭合态正常。浅色预设下反而正常。",
+      "root_cause": "不是文字色下发错，是**背景没下发**。两个前提同时成立：①全仓 27 个 <select> 里 26 个只给 <select> 元素设 color/background，没有任何 <option> 规则（唯一有 option 规则的 Timeline.vue 还写死了深色）；②主窗口从未声明 color-scheme（src/main.ts 只给 dev 副窗口设了）。WebView2/Chromium 在无 color-scheme 时用 UA 浅色绘制弹出列表的底，选项文字却继承 <select> 的近白 color（深色档 --fg=#f0eef3 / --color-text=#f5f7ff）→ 白字白底。另有一条容易走错的支路：main.css 的 `body.theme-dark .select` 深色兜底只认字面类名 `select`，而全仓 27 个下拉的类名分别是 ai-sel / wt-select / f-select / filter-select / sps-select / sel / tl-year-select，**一个都不叫 select**，所以那条兜底等于不存在（不是它压过了组件样式）。",
+      "fix": "两层，缺一不可：①theme store 的 applyCompColor 新增下发 --popup-bg / --popup-fg / --popup-scheme 三个令牌（**必须不透明** —— --color-surface 带 alpha 且按组件透明度下发，拿它做原生弹层底会透出桌面等于没修），判据用 glassTone.onDark（跟实际底色走，不跟 mode 走，避免「浅色预设 + 深色模式」错配）；main.css 加一条全局 `select option, select optgroup { background-color: var(--popup-bg); color: var(--popup-fg) }`，并给 select 下发 `color-scheme: var(--popup-scheme)` 让 UA 接管弹层/滚动条/焦点环。②清掉两处写死的底色：Timeline.vue 的 `.tl-year-select option{background:#1e1b22}`（浅色预设下是孤立的深色列表）删除、改走全局令牌；ScanPerfSettings.vue 的 --ts-* 令牌全仓从未定义（grep 只命中消费处），恒定落到白底深字兜底（深色主题里是一块白卡），全部替换为 --color-* 真实令牌。③顺带修 PhotoGrid 的 .chip / .pg-dialog 写死 #fff + 继承文字导致的同类白字白底。",
+      "related_files": [
+        "src/assets/main.css",
+        "src/stores/theme.ts",
+        "src/views/Timeline.vue",
+        "src/components/ScanPerfSettings.vue",
+        "src/components/PhotoGrid.vue"
+      ],
+      "log_hint": "日志中无报错；纯样式问题，只能靠截图或 getComputedStyle(option) 核验",
+      "created_at": "2026-11-19T18:10:16+08:00",
+      "fixed_at": "2026-11-19T18:10:16+08:00"
+    },
+    {
+      "id": "BUG-2026-1120-002",
+      "title": "离线包 model.zip 三处口径互不相等 + URL 钉死版本号，发版后会下到旧包",
+      "status": "fixed",
+      "severity": "medium",
+      "symptom": "同一个离线包，UI 说「约 529MB」、README 说「856MB」、代码实算 979MB。且 URL 写死 releases/download/v0.4.5/model.zip —— 发 5.0 之后不改这两行，用户点「离线包」会拿到 0.4.5 的旧包（含已下线的 fp16 语义档），装上去语义仍不可用，全程不报错。另：解压路径文案漏了「轻量包 / 无内置模型目录」这一最常见情形，用户按文案解压到安装根目录后模型永远读不到。",
+      "root_cause": "①同一份事实被抄了两份（ModelDownloadsSection.vue 与 ModelMissingDialog.vue 各一个 MODEL_ZIP 常量），改一处另一处必漏；②529MB 是 v0.4.2 的值（feature-notes 记「model.zip（v0.4.2，528.9MB）」），v0.4.5 换 fp32 语义档（754MB 整图 vs fp16 360MB，+394MB）后没跟着改；③离线包一直是手工制作 + 手工上传（.gitignore 有 /*.zip，release.ps1 里 model.zip 0 命中，git 正文里手工记「361.1MB / 7 个文件」），没有代码路径会提醒你「体积变了」；④解压文案按「安装根目录 / MSI 只读」两分支写，漏了 vision::resolve_model_dir() 的分支 ③：内置 vcr/models 目录不存在时（轻量包正是如此）直接落 app_data/vcr-models，此时解压到安装根目录无效。",
+      "fix": "①新增 src/utils/modelOfflinePackage.ts 作单一事实源（URL 改 releases/latest/download 稳定别名，与 openvino 组件同口径；体积改为「解压后 979MB」由 specs() 的 expect_bytes 之和推导并写清推导依据；三种安装形态的落点与判据），两个 .vue 删掉各自的 MODEL_ZIP 只做渲染。②新增 Rust 命令 model_dir 回传 models_dir() 实际值，配合「📂 打开我的模型目录」按钮 —— 不让前端猜/拼路径（可写机器在 resource_dir、只读机器在 app_data，前端复制判定必然漂移）。③新增 scripts/pack-model-zip.ps1，**从 model_dl.rs 注册表解析**打包清单（const 声明 + DlSpec 引用两段解析，分区判据与 utils/modelCatalog.ts 一致），缺文件直接失败；release.ps1 加 2c 步调用并把 model.zip 写进上传清单。④README / docs 口径同步，7.2 补三形态落点表。",
+      "related_files": [
+        "src/utils/modelOfflinePackage.ts",
+        "src/components/settings/ModelDownloadsSection.vue",
+        "src/components/settings/ModelMissingDialog.vue",
+        "scripts/pack-model-zip.ps1",
+        "release.ps1",
+        "src-tauri/src/model_dl.rs",
+        "README.md"
+      ],
+      "log_hint": "日志中无报错；用 scripts/pack-model-zip.ps1 -CheckOnly 可随时核对「解压后体积」与前端常量是否一致",
+      "created_at": "2026-11-19T18:10:16+08:00",
+      "fixed_at": "2026-11-19T18:10:16+08:00"
+    },
+    {
+      "id": "BUG-2026-1119-001",
+      "title": "偶尔闪 cmd 面板；打开「资源使用情况」后按 2s 节奏连续闪黑窗，单轮采样还被拖到 2.3s",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": "发布版偶尔有控制台黑窗一闪而过；一旦打开开发者视角的「资源使用情况」窗口就变成持续闪烁（约每 2s 一轮，每轮 2~4 个黑窗）。同时该面板每轮耗时 2.3s 而非 2s 节奏，日志逐轮 WARN SLOW；面板顶部「系统 CPU 0.0% / 系统内存 0MB」长期不变。开发态（npm run tauri dev）几乎看不到闪烁。",
+      "root_cause": "①发布版主进程是 GUI 子系统（src-tauri/src/main.rs 的 windows_subsystem = \"windows\"），没有可继承的控制台；此时拉起任何控制台子程序，系统都会为它新建控制台窗口，除非显式传 CREATE_NO_WINDOW。而 PID 正身核验用的 tasklist / powershell、清场用的 taskkill、盘型探测的 reg / powershell 全部是裸 std::process::Command::new，只有「服务本体」（vcr-server.exe / python server.py）与解释器探针加了标志 —— 服务本体不闪，核验子进程闪。②资源面板每 2s 轮询，每轮流程：resource_usage_snapshot → known_pids()（vision::current_vcr_pid 里 pid_alive + pid_image_name，开发版 python 还要 pid_cmdline_has 拉 powershell；AI 侧 current_ai_pid 再一个 tasklist）→ gpu_status_readonly() 又调一次 vision::current_vcr_pid() 重复核验一遍。即每轮 4~6 个 tasklist 级子进程 + 最多 2 个 powershell（冷启动 0.5~1s），于是闪烁与 2.3s 耗时同源。③System::new() 等价 RefreshKind::nothing()（sysinfo 0.33.1 src/common/system.rs:47），collect_components 之后只 refresh_processes，从未 refresh_memory / refresh_cpu_usage，故 total_memory/used_memory/global_cpu_usage 恒为 0。④tauri dev 下父进程是控制台程序、子进程继承控制台，所以开发态完全复现不到，问题长期只在发布版可见。",
+      "fix": "①新增 src-tauri/src/proc_cmd.rs 作单一封装：proc_cmd::command(program) 在 Windows 上恒定带 CREATE_NO_WINDOW，全仓库控制台程序调用点（vision.rs 的 tasklist×2 / powershell / taskkill×2、ai_service.rs 的 tasklist / taskkill、scan_perf.rs 的 reg / powershell、model_dl.rs 的 reg / powershell、以及 vcr/ai 服务与解释器探针的 spawn）统一改走它；explorer / open / xdg-open 属 GUI 程序保持原样。②sys_monitor：known_pids 的核验结果随本轮采样一起返回，gpu_status_readonly 改吃 (app, vcr_pid)，删掉每轮第二次核验 —— 每轮核验次数减半，且全部保留在既有 spawn_blocking 内。③collect_components 每轮补 sys.refresh_memory() + sys.refresh_cpu_usage()，系统 CPU / 内存恢复真实值。④scan_perf 的 cpu_model() / disk_kind() 加 OnceLock 进程内缓存 —— 二者被 topology() 反复调用（设置页、实测校准、每次扫描启动的 effective_threads），此前每次都拉 reg / powershell，正是「面板外偶尔闪」的来源。⑤proc_cmd 内加两条单测：命令可执行且能捕获 stdout；源码级防回归扫描（禁止 tasklist/taskkill/powershell/reg 再出现裸 Command::new）。",
+      "related_files": [
+        "src-tauri/src/proc_cmd.rs",
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/ai_service.rs",
+        "src-tauri/src/scan_perf.rs",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/sys_monitor.rs",
+        "src-tauri/src/lib.rs",
+        "src/stores/resourceUsage.ts"
+      ],
+      "log_hint": "app.log 现场：16:26:52 / 16:26:56 / 16:27:00 / 16:27:04 四轮 resource_usage_snapshot 均耗时 2320~2368ms（其中 ensure + /gpu 各仅 7ms，2.3s 全在 PID 核验子进程上）；VCR 停止、vcr-instance.json 清掉后同命令骤降至 11ms，直接锁定「实例存在时的核验子进程」为唯一变量。",
+      "created_at": "2026-11-19T18:40:00+08:00",
+      "fixed_at": "2026-11-19T18:40:00+08:00"
     }
-],
-  "updated": "2026-11-19T09:45:00+08:00"
+  ],
+  "updated": "2026-11-19"
 }

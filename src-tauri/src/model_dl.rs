@@ -1360,6 +1360,18 @@ pub fn detect_npu_hardware() -> bool {
     crate::model_dl::npu_hardware_cached()
 }
 
+/// BUG-2026-1119-002：当前生效的模型目录（供「离线包 → 打开模型目录」按钮用）。
+///
+/// 为什么要有这条命令：离线包的兜底路径有两个（内置资源目录 / app_data 副本），
+/// 选哪一个由 `vision::resolve_model_dir()` 在启动时决定并写进 `VCR_MODEL_DIR`。
+/// 前端若自己拼 `%APPDATA%\com.photomanagementsys.app\vcr-models`，在「安装目录可写」
+/// 的机器上会指到错误位置（模型其实在内置目录里）。这里直接回传后端实际使用的
+/// 那个目录，与扫描、下载、Python 子进程三方同源，前端不复制判定逻辑。
+#[tauri::command]
+pub fn model_dir() -> String {
+    crate::model_dl::models_dir().to_string_lossy().to_string()
+}
+
 }
 
 // =====================================================================
@@ -1382,7 +1394,7 @@ fn npu_hardware_probe() -> bool {
 fn cpu_is_intel() -> bool {
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("reg")
+        crate::proc_cmd::command("reg")
             .args([
                 "query",
                 r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
@@ -1408,7 +1420,7 @@ fn npu_device_present() -> bool {
     #[cfg(target_os = "windows")]
     {
         let script = "Get-CimInstance Win32_PnPEntity -Filter \"Name LIKE '%AI Boost%' OR Name LIKE '%NPU%'\" | Select-Object -First 1 -ExpandProperty Name";
-        std::process::Command::new("powershell")
+        crate::proc_cmd::command("powershell")
             .args(["-NoProfile", "-Command", script])
             .output()
             .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
@@ -1752,8 +1764,8 @@ mod tests {
 
     /// 精简包（不含模型）的**安全前提**：安装包移出的每个模型都必须能从应用内下载补齐。
     ///
-    /// 守卫对象 = `src-tauri/release-5.0-beta-no-models.tauri.conf.json` 不再内置、
-    /// 而全量包 `release-5.0-beta.tauri.conf.json` 原本内置的那些 onnx。
+    /// 守卫对象 = `src-tauri/release-slim.tauri.conf.json` 不再内置、
+    /// 而全量包 `release.tauri.conf.json` 原本内置的那些 onnx。
     ///
     /// 为什么必须测：BUG-2026-1028-011 就是「发行包不带模型 + 下载表漏了
     /// yolov8n-det.onnx」→ 新装用户 /health.ok 恒为 false、人物与扫描永远不可用，
@@ -1790,9 +1802,9 @@ mod tests {
     #[test]
     fn slim_package_config_only_ships_sidecars() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("release-5.0-beta-no-models.tauri.conf.json");
+            .join("release-slim.tauri.conf.json");
         let text = std::fs::read_to_string(&path)
-            .expect("精简包配置应存在于 src-tauri/release-5.0-beta-no-models.tauri.conf.json");
+            .expect("精简包配置应存在于 src-tauri/release-slim.tauri.conf.json");
         let cfg: serde_json::Value = serde_json::from_str(&text).expect("精简包配置必须是合法 JSON");
         let resources = cfg["bundle"]["resources"]
             .as_object()

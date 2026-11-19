@@ -20,6 +20,11 @@ import { useThemeStore } from "../../stores/theme";
 import { useContentStore } from "../../stores/content";
 import { useNotify } from "../../composables/useNotify";
 import { modelsInArea } from "../../utils/modelCatalog";
+import {
+  OFFLINE_PACKAGE_ARCHIVE_ROOT,
+  offlinePackageSizeText,
+  openOfflinePackagePage,
+} from "../../utils/modelOfflinePackage";
 import ModelDownloadRows from "./ModelDownloadRows.vue";
 
 const props = defineProps<{
@@ -36,8 +41,11 @@ const theme = useThemeStore();
 const store = useContentStore();
 const notify = useNotify();
 
-const MODEL_ZIP =
-  "https://github.com/howforever2000/PhotoMangementSys/releases/download/v0.4.5/model.zip";
+/**
+ * 兜底通道的 URL 与体积**不再在本文件定义**（BUG-2026-1119-002）：
+ * 这里曾与 ModelDownloadsSection 各写一份 `v0.4.5/model.zip` + 「529MB」，
+ * 而实测识别链路已是 979MB。文案与地址统一从 utils/modelOfflinePackage.ts 取。
+ */
 
 const title = computed(() => {
   if (props.reason === "det") return "人物检测模型缺失";
@@ -79,8 +87,7 @@ async function refresh() {
 
 async function openModelZip() {
   try {
-    const { openUrl } = await import("@tauri-apps/plugin-opener");
-    await openUrl(MODEL_ZIP);
+    await openOfflinePackagePage();
   } catch (e) {
     notify.error("打开下载页失败", String(e));
   }
@@ -119,10 +126,10 @@ defineExpose({ open });
         <p class="mmd-fallback">
           网络受限时，也可下载离线包
           <button class="mmd-link" type="button" @click="openModelZip">
-            model.zip（约 529MB）
+            model.zip（{{ offlinePackageSizeText() }}）
           </button>
-          ，解压到安装根目录（MSI 只读安装为
-          <code>%APPDATA%\com.photomanagementsys.app\vcr-models</code>）后重启应用。
+          ，解压到模型目录（包内已是 <code>{{ OFFLINE_PACKAGE_ARCHIVE_ROOT }}</code> 结构，
+          不要再套一层）后重启应用。具体落点见「性能设置 → 模型管理」里的离线包说明。
         </p>
 
         <div class="pm-actions">

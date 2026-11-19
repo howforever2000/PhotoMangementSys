@@ -6,6 +6,8 @@
 #   1b. 构建 AI 创作微服务单文件 exe（python/build_ai_exe.ps1）→ ai-server.exe
 #   2. 校验/补齐模型文件（python/models/，download_models.py 下载 face+ocr+clip；
 #      cls/det 需 ultralytics 导出，缺失则给出提示）
+#   2b. 确保 OpenVINO 裁剪运行时 zip 存在（可选组件，走 Release 资产）
+#   2c. 生成离线模型包 model.zip（清单由 model_dl::specs() 派生，不做手工打包）
 #   3. 校验前端构建依赖（node_modules）
 #   4. tauri build --config release.tauri.conf.json —— 产出 MSI / NSIS 安装包，
 #      内嵌 vcr-server.exe + 模型（release 专用配置合并，避免污染开发用的基础配置）
@@ -137,6 +139,27 @@ Write-Host @"
       路径: $OvZip
 "@ -ForegroundColor Yellow
 
+# --- 2c. 离线模型包 model.zip（BUG-2026-1119-002）---
+#
+# 为什么进流程：这个包一直是**手工制作 + 手工上传**，于是体积口径漂到三处不等
+# （UI「529MB」/ README「856MB」/ 注册表实算 979MB），而 UI 里的 URL 还钉死在
+# v0.4.5 —— 发 5.0 之后用户点「离线包」会下到 0.4.5 的旧包（含已下线的 fp16 语义档）。
+# 现在清单由 model_dl::specs() 派生、URL 走 releases/latest，两边都不再靠人记。
+#
+# 只在「有模型」的完整包流程里生成：轻量包（-SkipModels）本来就没有模型可打。
+if ($SkipModels) {
+    Write-Host "[2c/5] 跳过离线包（-SkipModels：无模型可打包）" -ForegroundColor Yellow
+} else {
+    Write-Host "[2c/5] 生成离线模型包 model.zip..." -ForegroundColor Green
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\pack-model-zip.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "pack-model-zip.ps1 执行失败" }
+    Write-Host @"
+    ⚠ 必须在 GitHub Release 里附上资产: model.zip
+      （应用内的「离线包」按钮走 releases/latest/download/model.zip；缺资产即 404）
+      路径: $(Join-Path $Root "model.zip")
+"@ -ForegroundColor Yellow
+}
+
 # --- 3. 前端依赖 ---
 Write-Host "[3/5] 校验前端依赖..." -ForegroundColor Green
 if (-not (Test-Path (Join-Path $Root "node_modules"))) {
@@ -195,3 +218,6 @@ Write-Host "    安装包位于 src-tauri/target/release/bundle/msi/ 与 nsis/�
 Write-Host "    请将以下两处上传到 GitHub Release（与源码 release_body.json 一致）：" -ForegroundColor Cyan
 Write-Host "      - PhotoManagementSys_<version>_x64_en-US.msi"
 Write-Host "      - PhotoManagementSys_<version>_x64-setup.exe"
+Write-Host "    另有资产（应用内按钮直接指向，缺了就是 404）：" -ForegroundColor Cyan
+Write-Host "      - openvino-npu-win-x64.zip（仅 Intel NPU 用户需要）"
+Write-Host "      - model.zip（离线模型包；内层已是 vcr\\models\\…）"

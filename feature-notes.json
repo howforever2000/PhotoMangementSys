@@ -7621,7 +7621,382 @@
       ],
       "created_at": "2026-11-19T16:45:00+08:00",
       "updated_at": "2026-11-19T16:45:00+08:00"
+    },
+    {
+      "id": "FEAT-192",
+      "name": "启动壁纸换星空银河 + 登录页配色改星空蓝白（遮罩同步调轻）",
+      "module": "covers/login-starfield.jpg、src/assets/auth.css、src/utils/loginTheme.ts(+test)、src/utils/prefs.ts(+test)、src/stores/theme.ts、src/components/{AuthShell,ThemeDialog}.vue、src/views/Login.vue、.visual/verify-starfield.cjs",
+      "status": "done",
+      "date": "2026-11-19",
+      "purpose": "用户提供一张银河星空照片（2464×1702 / 1.03MB），要求同时换掉「默认登录界面」与「应用背景图」。原启动封面是落日山峦（covers/login-sunset.jpg，2560×1440 / 176KB）+ 落日紫金配色；新图是暗调星空，沿用旧配色会在蓝紫壁纸上摆一套暖金 UI（补色对撞），旧遮罩密度也会把银河压成一片纯深蓝。",
+      "implementation": {
+        "素材落位": "covers/login-starfield.jpg：源图 2464×1702 直接 Pillow JPEG quality=88 progressive+optimize 重编码，1023KB（压缩后 MAE 1.10、最大偏差小），按用户要求保原尺寸不做缩放。旧图 covers/login-sunset.jpg 保留可一键回滚。",
+        "引用切换": "auth.css 的 .auth-cover url() 与 theme.ts 的 `import defaultWallpaper from \"../../covers/login-starfield.jpg\"` 同指新图（登录页 = 应用默认外观，必须同源）。图片作为构建产物资源引用（Vite 带哈希 URL），1MB 图片**不进 localStorage**，避免撞配额拖垮整套偏好保存。",
+        "壁纸实测与配色重标定": "loginTheme.ts 的 AUTH_WALLPAPER_SAMPLES 按新图重测：最亮区块 #666b94（相对亮度 0.27，落在卡片区 = 对比度最坏情况）、卡片区均值 #2d2c47、最暗 #070218。AUTH_PALETTE 由落日紫金改星空蓝白：link #ffd9a0→#a8c8ff、accent #e8a33d→#8db8ff、accentInk #2a1a08→#08111f、sub→#eaf1ff、label→#dfe9fb、placeholder→#b9c6de；cardTone / cardAlpha / fieldAlpha / fieldBorder 不变（与 DEFAULTS.compColor 同源的锚点保留）。",
+        "遮罩调轻（用户明确要求）": "登录页 AUTH_SCRIM：top 0.36→0.16、bottom 0.50→0.28、vignette 0.35→0.26、alphaUnderCard 0.35→0.18。应用层 theme.ts SCRIM_STOPS：0.52/0.34/0.26/0.38 → 0.34/0.18/0.12/0.22。判据：新图中位亮度仅 0.017（旧图最亮 0.55），旧口径叠上去银河不可见，属 BUG-2026-0919-001「遮罩盖死封面」同类风险；调轻后最亮星团处白字仍有 11.3:1（要求 4.5:1）。",
+        "默认背景透明度": "DEFAULTS.bgOpacity 0.55→0.75：星空极暗，55% 叠在 #1a1428 底下银河几乎只剩隐约一层；提高到 75% 后银河可读，页面级文字色由 theme store 按实测色带现算（实测 15.41:1）。",
+        "文案与注释同步": "AuthShell.vue / Login.vue / auth.css / ThemeDialog.vue / prefs.ts 里「落日紫金 / 日落山峦 / 176KB / 55%」等描述全部改到新事实，避免注释与实现漂移。ThemeDialog 默认卡的三个色点保持不变并注明理由（全站强调色仍是落日金，只有登录三页换蓝白）。"
+      },
+      "verification": {
+        "单元测试": "npm test：275 项全通过（loginTheme.test.ts 的壁纸采样与蓝白按钮断言、prefs.test.ts 的 bgOpacity=0.75 均已按新值重标定）。",
+        "构建": "npm run build 通过（vue-tsc 0 错误）；产物含 dist/assets/login-starfield-*.jpg（1023KB），确认壁纸进构建。",
+        "真实渲染（.visual/verify-starfield.cjs）": "1280×800 下登录页 + 主页全项通过：壁纸 URL = covers/login-starfield.jpg；壁纸可见度 49%/104%/52%（遮罩未压死画面）；品牌主名 14.78:1、标语 13.04:1、标签 12.10:1、链接 8.71:1、主按钮墨字 9.40:1（按钮填充确为星光蓝 rgb(141,184,255)）；主页背景图透明度 0.75、页面级文字 15.41:1；两页控制台 0 error。截图 .visual/starfield-login.png / starfield-home.png。"
+      },
+      "notes": [
+        "换壁纸的四步固定动作：①素材落 covers/ 压缩 ②auth.css url() + theme.ts import 同改 ③loginTheme.ts 按新图重采样并重跑对比度断言 ④遮罩/透明度按新图明度重标定。少任一步都会出现「图换了但字看不清」或「注释与实现漂移」。",
+        "极暗壁纸（中位亮度 < 0.02）与亮壁纸的遮罩口径相反：亮图靠遮罩压住亮斑保对比，暗图靠**收轻**遮罩保住画面；判断依据看 AUTH_SCRIM.alphaUnderCard 处的实测对比是否仍 ≫4.5:1。"
+      ],
+      "keywords": [
+        "壁纸",
+        "登录页",
+        "登录主题",
+        "星空",
+        "background",
+        "auth",
+        "scrim",
+        "遮罩",
+        "对比度",
+        "FEAT-192"
+      ],
+      "created_at": "2026-11-19T16:59:33+08:00",
+      "updated_at": "2026-11-19T16:59:33+08:00"
+    },
+    {
+      "id": "FEAT-193",
+      "name": "智慧相册新增「截图」规则分类（文件名识别）",
+      "module": "src-tauri/src/db/category.rs、src-tauri/src/category.rs、src/utils/categoryLabel.ts、.dsh/features/semantic-search.md",
+      "status": "done",
+      "date": "2026-11-19",
+      "purpose": "用户要求智慧相册新增一个「截图」类别，判据是文件名自带 Screenshot 字样。现状是截图只以 document 的子类 sub_category=screenshot 存在（python/vcr/services/arbitrator.py::is_screenshot），被 replace_builtin_hits 按 category 粗聚合吞进「文档」卡片；而该启发式要求 PNG + 无 EXIF + 屏幕比例 + 短边>=600，对重命名过 / 非 PNG / 有 EXIF 的截图全部漏召回。文件名里的 Screenshot 恰恰是最稳线索。",
+      "implementation": {
+        "新 slug 走 builtin 通道": "db/category.rs::BUILTIN_CATEGORIES 追加 (SCREENSHOT_SLUG=screenshot, 截图, 🖼️, 文件名规则)。选 builtin 而非新 source：前端 CategoryGallery/CategoryManager 已按 source==='builtin' 出「规则」标签、隐藏关键词编辑区与匹配度滑块、且不走语义指纹短路，零前端改动即复用。迁移零成本：builtin_ready 判据是条数 >= BUILTIN_CATEGORIES.len()，老用户下次进页面自动 INSERT OR IGNORE 补齐。",
+        "持久层只取数据不判规则": "db/category.rs 新增 list_known_photo_paths(user_id)：photo_content_scan.path ∪ photo_thumb_cache.source_path ∪ photo_embeddings.path 三表 UNION 去重。不能只读 photo_content_scan（那只覆盖扫过内容的照片，会漏召回），三表并集才接近用户相册实际张数。本函数不做任何匹配，匹配在服务层。",
+        "服务层纯函数判规则": "category.rs 新增 SCREENSHOT_MARKERS（screenshot/截屏/截图/屏幕截图/snipaste/scr_）+ path_looks_like_screenshot() + screenshot_marker()。对**整条路径**做小写包含匹配而非只看文件名：用户常按 Screenshot/2024/ 目录归档，只匹配文件名会漏整目录；普通相册目录不会叫 screenshot，误伤风险低。",
+        "重建编排接线": "rebuild_inner 第 1 段（builtin，永久重算、不进语义指纹）内按 slug 分流：screenshot 走 rebuild_screenshot_hits，其余仍走 replace_builtin_hits。未改动 replace_builtin_hits 本身，保持它「只物化 photo_content_scan」的单一职责。放错段位（放进语义腿）会因指纹未变被 skipped 短路，表现是「改了规则但结果不变」。",
+        "命中行的两个关键约定": "① photo_hash 必须用 content::photo_hash（路径+大小+mtime）而非自造键 —— list_category_photos 靠它 LEFT JOIN photo_thumb_cache/photo_content_scan 取缩略图与相册归属，键不一致会导致分类里全是灰块。② score 固定 1.0：规则命中是「确定」不是「语义强度」，满分让它在 ORDER BY score DESC 时压过语义命中，也避免前端显示成「匹配度 0」；matched_keyword 记实际命中的标记，供关键词 chips 与卡片副标题展示。",
+        "前端标签与色卡": "categoryLabel.ts 的 LABELS / SUB_LABELS / TONES 各加 screenshot 一行（截图 / #e8f1fb 蓝调），否则未知 key 回退「其他」灰色。"
+      },
+      "verification": {
+        "单元测试": "cargo test --lib screenshot：3 项全通过（常见命名命中 Windows/手机/中文/Snipaste/SCR_ 五类；IMG_/DSC_/微信图片_ 等普通照片不误伤；Screenshot/ 目录归档命中；大小写不敏感）。",
+        "全量回归": "cargo test --manifest-path src-tauri/Cargo.toml --lib：241 passed / 0 failed / 11 ignored，无回归。",
+        "类型检查": "npx vue-tsc --noEmit：0 错误。"
+      },
+      "notes": [
+        "新增规则型（非语义）分类的固定动作：①db/category.rs 加 slug ②如果命中不来自 photo_content_scan，就别改 replace_builtin_hits，而是在 rebuild_inner 的 builtin 段按 slug 分流 ③命中行的 photo_hash 必须复用 content::photo_hash ④前端 categoryLabel.ts 三张映射表各加一行。",
+        "规则腿必须在 builtin 段（永久重算）而不是语义段（可被指纹短路），否则会出现「改了文件名规则但重建后结果没变」的幽灵现象。",
+        "preset 语义分类无法承载文件名规则：PRESETS 元组无规则类型字段、落库 source 恒为 preset、重建时无关键词会被直接跳过、评分函数签名里根本没有 path。想加规则型分类只能走 builtin 或新增 source。"
+      ],
+      "keywords": [
+        "截图",
+        "分类",
+        "screenshot",
+        "规则分类",
+        "builtin",
+        "文件名",
+        "智慧相册",
+        "FEAT-193"
+      ],
+      "created_at": "2026-11-19T17:40:00+08:00",
+      "updated_at": "2026-11-19T17:40:00+08:00"
+    },
+    {
+      "id": "FEAT-194",
+      "name": "相册支持视频/动图导入（首帧封面 + 类型分栏，不做内嵌播放）",
+      "module": "src-tauri/src/media_kind.rs、video_frame.rs、thumbnail.rs、album.rs、db/mod.rs、tests_video_frame.rs、Cargo.toml、src/utils/mediaKind.ts(+test)、src/components/{PhotoGrid,AlbumCard}.vue、src/types/album.ts、.dsh/knowledge/video-first-frame.md",
+      "status": "done",
+      "date": "2026-11-19",
+      "purpose": "用户要求相册导入支持视频与动图，第一帧作封面，并明确不做播放，相册内部再分图片/视频/动图三个子分类、计数分开显示。改造前的硬事实：三份漂移的扩展名白名单（photo_scan.rs:17 / thumbnail.rs:20 / vision.rs:479）把视频挡在列表外；即使加进去，视频进 AI 链路会在 content.rs 静默跳过落库（error.is_some() 就 continue），表现为「相册里看得见、时间线永远没有」；size_bytes 累加所有文件而 photo_count 只数图片，加视频后会出现「0 张但 3GB」的怪值。",
+      "implementation": {
+        "媒体类型单一真相点": "新增 src-tauri/src/media_kind.rs：MediaKind{Image,AnimatedImage,Video} + STILL_IMAGE_EXTS/ANIMATED_EXTS/VIDEO_EXTS + kind_of/kind_of_name/is_media/is_decodable_image。删除三份重复的 IMAGE_EXTS 与两个 is_image_file 副本，photo_scan.rs 的 is_image_file 改为委托。对视频故意不收 mkv/avi/3gp：Tauri asset 协议嗅探不出 MIME 会退回 text/html，浏览器直接拒播，收进来只会「能导入但打不开」。",
+        "遍历拆两路（关键）": "vision.rs::walk_image_paths 是唯一遍历入口且被 6 处复用（EXIF/影调/AI/去重/扫描）。没有往它的白名单里加视频，而是改成过滤 is_decodable_image（静态图+动图）——若加进视频，三条腿都会解码失败并静默跳过落库。相册浏览/统计/缩略图另走 thumbnail.rs::list_album_images 的 is_media（含视频）。",
+        "视频首帧": "src-tauri/src/video_frame.rs 走 Media Foundation IMFSourceReader（路径转 file:/// 百分号编码 + ENABLE_VIDEO_PROCESSING 让它做 NV12→RGB32 转换 + ReadSample 取首帧 + 缩到 512 内 + BGRA→RGBA）。产物层完全复用 thumbnail.rs 既有实现：GEN_GATE 闸门、THUMB_POOL 线程池、临时文件+rename 原子落盘、指纹缓存，不另建第二套缓存（避免知识库记录的「双键空间导致全库冷重建」）。",
+        "否决 Shell 通道的过程（重要）": "最初实现走 IShellItemImageFactory::GetImage（约 80 行、与资源管理器缩略图同源）。实测发现：加 SIIGBF_THUMBNAILONLY 回 0x8004B200；去掉 THUMBNAILONLY 返回 512x512「成功」，但内容是 Windows 通用视频文件图标（胶片框+播放三角），不是首帧。立即否决——拿得到图不等于拿到首帧，不做内容校验会把一墙播放按钮当封面。ffmpeg sidecar 同样否决（沿用 Cargo.toml 对 HEIC 的取舍：不引入 C 库/避开 AGPL）。",
+        "分类型计数": "thumbnail::AlbumScan 增加 animated_count / video_count，photo_count 语义收紧为静态图片数；封面候选按「图片 > 动图 > 视频」优先级取第一个（纯视频相册也有封面）。album_stats 加 animated_count/video_count 两列 + 旧库 ALTER 迁移（沿用 db/mod.rs 既有的 let _ = ALTER 写法）；upsert_album_stats 与 AlbumStats 同步扩参。",
+        "封面失败必须短路": "fill_album_stats 的「cover_path 为空就重扫补封面」分支若不加限制，在缺解码器环境下 cover_path 永远为 None，于是每次列表加载都对该相册全目录 walkdir。现按「album_stats.cover_source 指向视频 = 已尝试过」短路；图片不加短路（解码不依赖外部解码器，失败多为瞬时 IO，保留自愈语义）。封面失败改为 log_warn 留痕而非静默。",
+        "前端": "src/utils/mediaKind.ts 与后端逐字对齐（扩展名表 + kind_of + filterByMedia）；PhotoGrid 增加「类型」分栏（全部/图片/动图/视频，只出有内容的档位，与 AI「分类」分栏正交不合并）+ 缩略图左下角媒体角标（视频给强调色背景）；视频点击改用 openPath 交系统播放器而非进 PhotoLightbox（查看器舞台是 img，视频进去只会是坏图）。AlbumCard 计数改分列显示「N 张 · M 视频」。"
+      },
+      "verification": {
+        "Rust 单测": "cargo test --lib：256 passed / 0 failed / 11 ignored。新增 media_kind 8 项（静态/动图/视频分类、视频不得混入静态、故意不收的容器、非媒体、路径与文件名口径一致、序列化标识稳定）+ video_frame 3 项（缺文件可读错误、图片走 imgio 不受视频通道影响、非视频内容不 panic）。",
+        "前端单测": "npm test：286 passed / 0 failed（新增 mediaKind.test.ts 11 项，样例集与 Rust 侧同批，钉住前后端规则不漂移）。",
+        "类型检查与构建": "npx vue-tsc --noEmit 0 错误；cargo build --lib 通过。",
+        "首帧真机实测（结论：环境缺解码器）": "拿到真实 H.264 mp4（avc1/mp41）验证：Shell 通道加 THUMBNAILONLY 回 0x8004B200、去 flag 回通用视频图标（.pi/probe_out/probe_bigonly.png 留档）；改 MF 后仍回 0xC00D36C4。进一步查环境：本机 mfh264dec.dll / mfhevcdec.dll / mfaacdec.dll 全部缺失、仅存 mfh264enc.dll（Windows 10 Pro for Workstations 26H2 build 26300，属精简掉解码器的镜像）。同一套代码对图片走 imgio 正常解出 2560x1440，证明分流逻辑正确、失败源于环境。集成测试设计为「找得到样本才断言、找不到则 skip 并打印原因」，避免环境不足时误报红。"
+      },
+      "notes": [
+        "视频封面这条链路的第一个坑不是代码而是验证方式：Shell 的 GetImage 在拿不到缩略图时会回退成文件类型图标并返回成功。任何「取视频首帧」的实现都必须做内容校验，否则静默产出图标墙。判据：不同视频的封面字节完全相同。",
+        "MF 的 0xC00D36C4（不支持字节流类型）在缺解码器时也会出现，极易误判为 URL 写法错误。排查顺序应是先 Test-Path mfh264dec.dll，再怀疑 URL —— 因为「换裸路径/换 file:/// 编码后错误码一模一样」本身就是环境问题的强信号。",
+        "凡是「失败后 cover_path 一直为空」的兜底分支，都要配一个「上次已尝试」的判据，否则会退化成每次加载都全量重扫。本项目已有 file_count 做目录变更探测，可以顺带把 cover_source 当作「已尝试封面源」的标记复用。",
+        "媒体类型这类「由路径唯一决定」的属性不要落库成列，否则改名/移动/换扩展名都要同步维护；但前后端各留一份判定时必须用同一批样例双向钉住（本例 Rust 8 项 + TS 11 项同批样例），单边改动会立刻红。"
+      ],
+      "keywords": [
+        "视频",
+        "动图",
+        "gif",
+        "封面",
+        "首帧",
+        "media_type",
+        "MediaFoundation",
+        "相册导入",
+        "FEAT-194"
+      ],
+      "created_at": "2026-11-19T17:50:00+08:00",
+      "updated_at": "2026-11-19T17:50:00+08:00"
+    },
+    {
+      "id": "FEAT-195",
+      "name": "离线模型包（model.zip）收口为单一事实源：URL 走稳定别名 + 体积按注册表实算 + 打包进发布流程",
+      "module": "src/utils/modelOfflinePackage.ts、src/components/settings/ModelDownloadsSection.vue、ModelMissingDialog.vue、src-tauri/src/model_dl.rs（model_dir 命令）、src-tauri/src/lib.rs、scripts/pack-model-zip.ps1、release.ps1、README.md、docs/intro/软件介绍.html",
+      "status": "done",
+      "date": "2026-11-19",
+      "purpose": "用户要求「扫描功能中下载离线包需要更新一下」。核查发现三处口径互不相等：两个 .vue 各写一份 `releases/download/v0.4.5/model.zip` + 「约 529MB」；README 同 URL 但写「856MB」；model_dl::specs() 的识别链路 expect_bytes 实算 979.2MB（python/models 磁盘实算 979.3MB）。529MB 是 v0.4.2 的值，v0.4.5 换 fp32 语义档（754MB 整图 vs fp16 360MB）后没跟着改。更严重的是 URL 钉死 v0.4.5：发 5.0 后用户点「离线包」会下到 0.4.5 的旧包（含已下线的 fp16 语义档），装上去语义仍不可用，且全程不报错。",
+      "implementation": {
+        "单一事实源": "新增 src/utils/modelOfflinePackage.ts：OFFLINE_PACKAGE_URL（releases/latest/download/model.zip，与 openvino 组件同口径的稳定别名）、OFFLINE_PACKAGE_UNPACKED_MB=979（由 specs() 识别链路 5 项 expect_bytes 之和推导，注释写明推导依据与「改动注册表后必须同步」）、OFFLINE_PACKAGE_CONTENTS、OFFLINE_PACKAGE_TARGETS、offlinePackageSizeText()、openOfflinePackagePage()、openModelsDir()。两个 .vue 全部改为消费它，删掉各自的 MODEL_ZIP 常量。",
+        "解压落点补第三种形态": "原文案只说「解压到安装根目录（MSI 只读安装为 %APPDATA%\\…\\vcr-models）」，漏了 vision::resolve_model_dir() 的分支 ③「内置 vcr/models 目录根本不存在 → 直接落 app_data/vcr-models」。而分支 ③ 恰恰最常见（0.4.x 起发行包就是不含模型的轻量形态）。轻量包用户照文案解压到安装根目录时 bundled.is_dir() 为 false，模型永远读不到且不报错。现按三种安装形态分别给出落点与判据。",
+        "打开模型目录按钮": "新增 Rust 命令 model_dir（model_dl::commands），回传 models_dir() 的实际值，前端用 open_folder 打开。为什么不让前端拼路径：可写机器上模型在 resource_dir/vcr/models、只读机器上在 app_data/vcr-models，前端复制这套判定必然漂移。现在后端唯一判定、前端只展示。",
+        "打包进发布流程": "新增 scripts/pack-model-zip.ps1：**从 model_dl.rs 的注册表解析**要打包的文件（两段解析：const X: &[DlFile] 声明 + DlSpec 的 files: X 引用），分区判据与 utils/modelCatalog.ts 一致（local-* 与 openvino-runtime 不进包）。缺任一源文件直接失败（不产出「看起来成功但少文件」的包）。release.ps1 增加 2c 步调用它（-SkipModels 时跳过），并在收尾的上传清单里补上 model.zip。实测 -CheckOnly 解析出 9 个文件 / 979.3MB，与前端常量一致。",
+        "文档口径": "README 6.1 / 7.3 / 发版记录、docs/intro/软件介绍.html 的体积与落点说明同步；7.2 新增「模型目录到底是哪个目录」三形态表格 + 「不确定就点打开我的模型目录」的指引。"
+      },
+      "highlights": [
+        "手工打包 → 注册表派生：离线包与应用内下载从此同构，加模型不会再漏改",
+        "URL 用 releases/latest 稳定别名，把「发版必须手改 URL」这个人肉环节从流程里删掉",
+        "体积改为「解压后 979MB」而非写死压缩后数字（压缩率取决于打包时级别，写死必漂移）"
+      ],
+      "tests": [
+        "pack-model-zip.ps1 -CheckOnly 实跑：9 个文件 / 979.3MB，与 OFFLINE_PACKAGE_UNPACKED_MB 一致",
+        "vue-tsc --noEmit 通过；npm test 286/286；vite build 通过",
+        "两处 .vue 已无 MODEL_ZIP 常量（grep 确认）"
+      ],
+      "related_files": [
+        "src/utils/modelOfflinePackage.ts",
+        "src/components/settings/ModelDownloadsSection.vue",
+        "src/components/settings/ModelMissingDialog.vue",
+        "scripts/pack-model-zip.ps1",
+        "release.ps1",
+        "src-tauri/src/model_dl.rs"
+      ],
+      "keywords": [
+        "离线包",
+        "model.zip",
+        "模型下载",
+        "pack-model-zip",
+        "releases/latest",
+        "模型目录",
+        "979MB"
+      ],
+      "created_at": "2026-11-19T18:09:41+08:00",
+      "updated_at": "2026-11-19T18:09:41+08:00"
+    },
+    {
+      "id": "FEAT-196",
+      "name": "AI 供应商库：配置模型支持多个供应商，能力位下拉选择",
+      "module": "src-tauri/src/ai_settings.rs、src-tauri/src/ai_studio.rs、src/types/ai.ts、src/stores/aiStudio.ts、src/components/workshop/ai/AiSettingsDialog.vue",
+      "status": "done",
+      "date": "2026-11-19",
+      "purpose": "用户要求「配置模型支持多个供应商配置，用户可以下拉选择」。改造前是三个能力位（vision/edit/upscale）各自内联 baseUrl+apiKey+model：同一家服务商三个能力位都用时要把地址和密钥填三遍、换 key 要改三处，且完全没有可选项（只能手打地址）。全仓没有「供应商」这一层实体（BASE_PRESETS 是 4 个只覆盖 baseUrl 的按钮，不落库）。",
+      "implementation": {
+        "两层结构": "providers（供应商库：id/name/baseUrl/apiKey，凭证只存一份，可被多个能力位共用）+ vision/edit/upscale 绑定（{providerId, model}）。模型名留在绑定上而不是供应商上 —— 同一家服务商在「图像理解」用 qwen-vl-max、在「图像编辑」用 qwen-image-edit 是常态，跟着供应商走会表达不出来。",
+        "向后兼容旧数据（关键）": "旧版落库是 {vision:{base_url,api_key_enc,model},…}。**不能**靠 serde(default) 判格式：新旧子结构都带 default，旧对象会被静默解析成 {provider_id:\"\", model:\"旧模型名\"}，绑定随即被过滤掉，用户看到「配置凭空消失」。改为在 parse_stored 里显式判据：看 JSON 顶层有没有 `providers` 键（新版保存必写，旧版没有），有则新解析、无则按 LegacyTriple 解析并 migrate_legacy 迁移。不需要单独迁移脚本，下次保存即落成新结构。",
+        "迁移口径": "相同 baseUrl + api_key_enc 的三个能力位合并成一个供应商（正是用户手工重复填了三遍的那一家）；name 取 base_url 的 host（旧版无名字段）。",
+        "绑定完整性": "merge_binding 会把指向不存在供应商的绑定清掉而不是留死引用 —— 否则界面选了供应商、运行时报「未配置」，很难查。前端删除供应商时同步把引用它的下拉置空。保存时「没选供应商」显式传 null 而不是省略字段（省略＝保留旧值，与「解除绑定」意图相反）。",
+        "测试命令改口径": "ai_test_provider 从 (kind, provider) 改为 (providerId, baseUrl, model, apiKey)：改多供应商后「这条供应商能不能通」与「它被哪个能力位引用」是两件事，用户常在保存前先测新建的供应商。密钥空/掩码沿用已存值，地址空则回落已存地址。",
+        "计费结构保持不变": "modelPrices 仍按能力位（vision/edit/upscale）登记。理由：供应商库是凭证管理，计费是「一张多少钱」的估算口径，强行耦合会让用户换成免费本地 Ollama 后仍残留云端单价，反而误导。切换供应商后单价由用户自行改一次。",
+        "零改动确认": "5 个云端工具组件（Journal/SmartEdit/Beauty/StyleTransfer/Upscale）不碰 provider，只传 tool + 业务参数，全部走 store.run → Rust 统一取配置；Python 侧 /jobs 的 providers 仍按能力位传，契约未变。"
+      },
+      "highlights": [
+        "同一服务商只登记一次，三个能力位下拉复用",
+        "旧配置自动迁移成供应商条目，不丢数据、不弹迁移提示",
+        "换 key 只需改一处；新增供应商用「快捷填入」一键带出地址"
+      ],
+      "tests": [
+        "cargo test --lib ai_settings：10/10 通过（含 migrate_merges_same_endpoint / parse_stored_detects_legacy_format / binding_to_missing_provider_is_dropped / ensure_ids_fills_blanks_and_dedupes / merge_providers_keeps_old_key_on_mask 等）",
+        "cargo check 无 error；vue-tsc --noEmit 通过；npm test 286/286"
+      ],
+      "related_files": [
+        "src-tauri/src/ai_settings.rs",
+        "src-tauri/src/ai_studio.rs",
+        "src/types/ai.ts",
+        "src/stores/aiStudio.ts",
+        "src/components/workshop/ai/AiSettingsDialog.vue"
+      ],
+      "keywords": [
+        "供应商",
+        "provider",
+        "AI 模型设置",
+        "下拉选择",
+        "多供应商",
+        "ai_settings",
+        "密钥迁移"
+      ],
+      "created_at": "2026-11-19T18:09:41+08:00",
+      "updated_at": "2026-11-19T18:09:41+08:00"
+    },
+    {
+      "id": "FEAT-197",
+      "name": "创意工坊工作台三改：模型理解链路收敛为纯云端 + 文生图步数/上采样、自己组合放开云端与重复插入（10 步）、批量套用改名工作台并默认载入工坊素材",
+      "status": "done",
+      "date": "2026-11-19",
+      "created_at": "2026-11-19T19:05:00+08:00",
+      "updated_at": "2026-11-19T19:05:00+08:00",
+      "module": "python/ai_studio/{catalog,presets,pipeline,upsample,renderopts,ops,ops_local}.py、python/ai_studio/workflows/{smart_edit,recipe}.py、src/utils/workbenchPlan.ts、src/stores/workbench.ts、src/views/{AiWorkbench,Workshop}.vue、src/components/workshop/ai/{WorkbenchSteps,WorkbenchTune,SmartEditTool}.vue",
+      "purpose": "用户对创意工坊提出三条要求。①「模型处理应该不涉及本地处理，就原图→1080p→语言模型理解生成提示词→文生图模型处理→1k 输出；几轮应该是设置文生图模型的步数，不可设置默认为 1；之后默认不勾选上采样，用户可自己勾，上采样默认 2x，4x 就 2x 跑两遍效果更好」。改造前「模型理解」的规划器把本机算子（自适应调色 / 胶片 / 形变 / 磨皮 / 本机超分）也排进计划，链路变成「本机+云端交替跑」，与「按模型计费」的口径冲突；「几轮」的真实语义是「失败后最多重试几轮」（每轮先复核、通过即 break），既不固定也不等于步数；后端 `images_edit` 虽有 `steps` 参数但所有调用点都没传，跨网关永远没有步数。②「自己组合里所有原子组件都能组合，包括模型和本地，且支持同一个组件多次插入，上限 10 步，也支持超分」。改造前 `chainableOps()` 只收 backend=local，`insertOp` 幂等去重（插第二次按钮直接禁用），`pipeline._one_superres` 会静默丢掉第二个超分步，`MAX_STEPS=6` 且超出静默截断。③「批量套用改为工作台模式，工作台模式默认载入工坊素材」。",
+      "implementation": {
+        "模型理解收敛为纯云端": "新增 `catalog.cloud_ops()`（排除 internal 与 backend=local），`presets.planner_prompt` 只取云端子集 `CLOUD_OP_CATALOG`（原 `OP_CATALOG` 全表删除）；`smart_edit._plan_one` 用`validate_plan(..., allowed=cloud_ops())` 硬校验，本机算子进规划直接 PlanError。删除「优先本地组件」开关（前端 store/workbench、AiWorkbench、SmartEditTool 三处）。",
+        "文生图步数": "新建 `ai_studio/renderopts.py`：`RunContext(render_steps)` + `clamp_render_steps`（1~50，非法回落 1）；`gateway_steps()` 在默认档返回 None —— 即「默认 1」是界面语义，不替用户向网关声明步数。沿 `execute_plan(ctx=) → 算子(fn(...ctx))` 下传，云端四算子把 `steps=` 交给 `images_edit`（该参数早已存在但从未被传）。算子签名统一加 `ctx` 形参（本机算子收下不用），避免「云端能收、本机报 TypeError」。",
+        "上采样": "新建 `ai_studio/upsample.py`：`plan_with_upsample(plan, enabled, scale)` —— 先摘掉规划器自带的超分步（否则叠加用户勾的两遍会变 3 步被拒），勾 2× 补 1 步 2×、勾 4× 补 2 步 2×（PASS_SCALE=2），步数是 `upscale` 云端算子（scale 只进提示词，网关没有倍率参数，两次 2× 才是真细节增益）。默认不勾、默认 2×。meta 回 `upsample/upsampleScale/upsamplePasses`。",
+        "重复插入与 10 步": "`WbChainStep` 增稳定 `uid`（`op#序号`），`insertOp/removeOp/setEnabled/setParam/paramsOverride/restoreTune/effectiveTuneSteps` 与 store 的 chain/tune actions、两个组件的 `:key`/手风琴/事件全部按 uid；`TuneOff` 键改 `uid.key`。`MAX_CHAIN_STEPS=10`（前端口径），后端 `MAX_STEPS` 6→10 且**超限报错**（原来是 `steps[:6]` 静默截断）。",
+        "自己组合放开云端": "`chainableOps()` 改为「非 internal 且非 ocr」，云端算子进链标「模型」；`isCloudOp/chainHasCloud` 驱动费用文案（本机步免费 / 云端步按模型计费）与预览提示。云端步在即时预览里仍是摘掉的（`preview.py`），对比框提示补上「正式出片时仍会执行」。",
+        "超分同族": "`_one_superres` 静默去重改为 `_check_superres`：最多 2 次（4×=2× 跑两遍），3 次以上报错。依赖校验 `positions`（唯一位置表，重复 op 后值覆盖前值）改为 `first_pos`（首次出现位置）。",
+        "工作台改名与默认载入": "`Workshop.vue` 左栏「批量套用」→「工作台」（title 改「工作台模式：带入当前素材，逐图对比、批量出片」）；`AiWorkbench.onMounted` 在 `items` 为空时载入 `ui.tray`（用 `workshopHandoff.splitPhotoPaths/dedupePhotoPaths`，顺手修掉原来手写 `split(\"|\")` 的漂移）。页面内的「批量套用」按钮保留动作名。",
+        "顺手修的静默失效": "① `strength` 一直是死参数（前端传、后端 smart_edit 全仓不读）→ 现在进 `planner_prompt` 作为「改动幅度」偏好；② `chainModelIds` 原来手抄 op→模型映射（漏 gfpgan/face_parse 会静默不提示）→ 改读 catalog 的 `requires.models`；③ 预览请求不再塞 `steps`（Rust `ai_preview` 命令没有该参数）。"
+      },
+      "highlights": [
+        "「模型理解」= 原图 → 短边 1080 JPEG → 语言模型规划 → 文生图执行 → 1K 出图 →（可选）上采样；全程云端计费，本机组件走「自己组合」",
+        "步数默认 1 且默认档不写进请求体（不替用户改网关默认质量）",
+        "上采样默认不勾、默认 2×；4× = 2× 跑两遍（网关无倍率参数，两次 2× 细节更实、费用也是两倍）",
+        "自己组合：云端+本机任意混排、同名组件可重复插入、上限 10 步、超分可两遍",
+        "步数上限前后端同口径（前端 10 / 后端 10），且后端从静默截断改为报错",
+        "工作台模式默认带入工坊素材（仅当工作集为空，不覆盖已调参的批次）"
+      ],
+      "related_files": [
+        "python/ai_studio/catalog.py",
+        "python/ai_studio/renderopts.py",
+        "python/ai_studio/upsample.py",
+        "python/ai_studio/pipeline.py",
+        "python/ai_studio/presets.py",
+        "python/ai_studio/ops.py",
+        "python/ai_studio/ops_local.py",
+        "python/ai_studio/workflows/smart_edit.py",
+        "python/ai_studio/workflows/recipe.py",
+        "python/tests/test_plan_feat197.py",
+        "src/utils/workbenchPlan.ts",
+        "src/utils/workbenchPlan.test.ts",
+        "src/stores/workbench.ts",
+        "src/views/AiWorkbench.vue",
+        "src/views/Workshop.vue",
+        "src/components/workshop/ai/WorkbenchSteps.vue",
+        "src/components/workshop/ai/WorkbenchTune.vue",
+        "src/components/workshop/ai/SmartEditTool.vue",
+        "src/components/workshop/ai/RecipePicker.vue",
+        "src/router/index.ts"
+      ],
+      "tests": "npm test 293 passed（workbenchPlan 29 项，含重复插入/uid 定位/10 步上限/云端枚举标签）；python unittest 82 passed（新增 test_plan_feat197.py 20 项：重复算子、步数上限报错、超分两遍/三次被拒、云端白名单、上采样改写、RunContext 默认档不发送、前后端步数上限同口径）；vue-tsc 0 错误；npm run build 通过；cargo check 通过（5 条既有 warning，与本次无关）。",
+      "keywords": [
+        "创意工坊",
+        "工作台",
+        "模型理解",
+        "文生图步数",
+        "上采样",
+        "自己组合",
+        "重复插入",
+        "10 步上限",
+        "workbench",
+        "upsample",
+        "renderSteps",
+        "cloud_ops"
+      ]
+    },
+    {
+      "id": "FEAT-198",
+      "name": "模型风格提示词预设：6 款胶片/港片影调（中文原文可见可编辑 + 英文要点注入）",
+      "status": "done",
+      "date": "2026-11-19",
+      "created_at": "2026-11-19T19:40:00+08:00",
+      "updated_at": "2026-11-19T19:40:00+08:00",
+      "module": "python/ai_studio/{model_styles.json,modelstyle.py,presets.py,renderopts.py,ops.py}.py、python/ai_studio/workflows/smart_edit.py、python/ai-studio.spec、src/utils/modelStylePresets.ts(+test)、src/stores/workbench.ts、src/views/AiWorkbench.vue、src/components/workshop/ai/SmartEditTool.vue",
+      "purpose": "用户提供 6 张「STYLE PROMPT · 风格提示词」截图（90 年代港片 / 柯达金 200 / 王家卫式 / CineStill 800T / 柯达 Portra 400 / 富士 Pro 160NS），要求「这一批模型提示词也注入到模型预设中」。截图底部写明用法：「接在你的画面描述后面」。改造前工作台只有 3 个手写 chip（胶片暖调/通透人像/夜景降噪），走的是 `wb.prompt = '...'` **覆盖**语义，且智能修图单步工具完全没有 chip；后端也没有任何「风格」概念 —— 用户意图只进规划器，真正发给网关的提示词由算子（auto_grade_prompt / transfer_prompt）生成。",
+      "implementation": {
+        "单一真相源": "新建 `python/ai_studio/model_styles.json`（6 条，每条 id/label/zh/en），`modelstyle.py` 载入并做启动校验（空字段、重复 id、描述过长 >2000 字一律 ValueError）。前端 `modelStylePresets.ts` 用 Vite 构建期 `import ... with {type:'json'}` 内联同一份 JSON，只镜像 id/label/zh —— 不手抄正文。",
+        "双通道注入（关键设计）": "中文原文走**前端可见通道**：选中即 `appendStyleText` 追加进 textarea（Q4(a)：可见可编辑，不覆盖用户已写的意图，幂等，切风格时摘旧接新）。英文要点走**后端注入通道**：`RunContext.style_prompt` → `ops._run_edit` 追加到图像编辑提示词末尾。两边各发各的，同一段描述不会进提示词两次（重复描述会推高权重，出图比预期过火）。",
+        "为什么不经 params.extra": "`catalog.norm_params` 对 string 参数截到 500 字，而一条风格描述（中文 227 + 英文 458 字）远超此限 —— 塞进 `params.extra` 会被**静默截断**，表现为「选了风格但只有前半段生效」。作业级 `RunContext` 不经过参数夹取，是唯一能完整送达的位置。守卫测试按源码断言防止回退。",
+        "超分步不叠风格": "`op_upscale` 直接调 `images_edit` 并显式不套 `apply_style`：那一步只负责分辨率，把影调段落再叠一遍等于把调好的颜色重刷一次；而「4× = 2× 跑两遍」会各带一次风格重绘，颜色逐遍漂移。已加源码级守卫（`op_upscale` 体内不得出现 `apply_style`）。",
+        "规划器只做方向提示": "`presets.planner_prompt` 增加可选风格清单（id + 中文名，不塞全文），选中某款时点名它并提示「风格段落由执行层自动追加，你不需要复述」。风格生效不依赖规划器抄写 —— 它抄漏也不会失效，只是计划方向可能不够准。",
+        "两处入口": "工作台「模型理解」面板 chips（原 3 个手写 chip 全部替换为 6 款 + 「清空风格」）与单步「智能修图」工具（新增同款 chips，`.sty-chip` 观感对齐）。两处都走同一份`MODEL_STYLES` 与同一套 `switchStyleText/toggleStyle`。",
+        "品牌名": "胶片型号名（柯达/富士/CineStill/Portra/Pro 160NS/800T）按用户 Q3 裁定保留。与 FEAT-170「手账不点名第三方 IP」不冲突：那条例针对动画工作室名（网关会随机拒答），胶片型号是真实产品规格。守卫测试仍拦动画工作室/IP 名。"
+      },
+      "highlights": [
+        "6 款影调预设：90 年代港片 / 柯达金 200 / 王家卫式 / CineStill 800T / 柯达 Portra 400 / 富士 Pro 160NS",
+        "中文原文可见可编辑（追加进输入框，不覆盖用户意图）；英文要点由后端确定性注入",
+        "风格段走作业级 RunContext 而非 params.extra —— 避开 norm_params 的 500 字静默截断",
+        "超分步不叠风格，避免两遍 2× 各自重绘导致颜色漂移",
+        "镜像式双端声明 + 三层守卫（前端 19 项 / 后端 16 项 / 源码级断言）"
+      ],
+      "related_files": [
+        "python/ai_studio/model_styles.json",
+        "python/ai_studio/modelstyle.py",
+        "python/ai_studio/presets.py",
+        "python/ai_studio/renderopts.py",
+        "python/ai_studio/ops.py",
+        "python/ai_studio/workflows/smart_edit.py",
+        "python/ai-studio.spec",
+        "python/tests/test_model_styles_feat198.py",
+        "src/utils/modelStylePresets.ts",
+        "src/utils/modelStylePresets.test.ts",
+        "src/stores/workbench.ts",
+        "src/views/AiWorkbench.vue",
+        "src/components/workshop/ai/SmartEditTool.vue"
+      ],
+      "tests": "npm test 312 passed（新增 modelStylePresets.test.ts 19 项：id/label/zh 三向 parity、追加幂等与不覆盖、strip 不动用户编辑、切风格摘旧接新、超分步不叠风格的源码断言、品牌保留与 IP 黑名单）；python unittest 98 passed（新增 test_model_styles_feat198.py 16 项：载入/未知 id 不抛错/双通道不重复/apply_style 追加与空态透传/规划提示词含清单且仍云端-only）；vue-tsc 0 错误；npm run build 通过；cargo check 通过。",
+      "keywords": [
+        "风格提示词",
+        "模型预设",
+        "影调风格",
+        "港片",
+        "胶片",
+        "Portra",
+        "CineStill",
+        "style prompt",
+        "modelstyle",
+        "RunContext"
+      ]
+    },
+    {
+      "id": "FEAT-199",
+      "name": "打赏入口「支持栖影」：爱发电平台代收 + 内嵌二维码素材（解码校验 + SHA-256 钉死）",
+      "status": "done",
+      "date": "2026-11-19",
+      "created_at": "2026-11-19",
+      "updated_at": "2026-11-19",
+      "module": "src/utils/support.ts、src/utils/openExternal.ts、src/components/SupportDialog.vue、src/assets/support/afdian-qr.png、src/assets/support/afdianQr.test.ts、src/views/Home.vue、package.json",
+      "purpose": "给应用加一个不打扰的打赏入口。放弃微信/支付宝个人静态收款码（不可吊销、个人静态码不得用于远程非面对面收款、暴露收款账户、无法对账），改用爱发电平台代收；应用内只存一条赞助页 URL + 一张内容被解码校验过的二维码素材，用户同时可扫码、可复制链接、可在浏览器打开。",
+      "implementation": {
+        "载体选型（为什么不用个人收款码）": "个人静态收款码有四个绕不开的问题：① 不可吊销（换码后旧码继续能收钱）；② 个人静态码原则上不得用于远程非面对面收款（银发〔2021〕259 号口径），公开放进软件存在账户被风控的风险；③ 暴露收款账户；④ 无订单号、无法对账。改用平台代收后收款主体是平台，个人账户不暴露，页面可随时改绑/下线。",
+        "二维码素材的生成与校验": "assets/support/afdian-qr.png 由 SUPPORT_URL 生成（纠错 M、29 模块、每模块 16px、quiet zone 4，592×592，3590 字节），生成时用独立解码器（jsQR，仅本地临时安装）回读，确认解出来 === https://afdian.com/a/howforever；SHA-256 钉进 assets/support/afdianQr.test.ts，换图/误传别的码单测立即红。素材小于 Vite 的 4KB 阈值，构建时被内联成 data:image/png;base64 进 JS chunk，安装目录里不存在可被单独替换的图片文件。",
+        "反面教材（实测）": "爱发电主页「分享图」里那张二维码解出来是 https://afdian.com/dashboard/stats?utm_source=qrpic&utm_medium=link —— 创作者后台 + 追踪参数，不是公开赞助页。结论：任何二维码进仓前必须先解码核对目标地址，不能凭「看起来是我的码」就发。",
+        "单一事实源与运行时校验": "utils/support.ts 导出 SUPPORT_URL / SUPPORT_HOST（由 URL 派生，不另写死）/ SUPPORT_PLATFORM / SUPPORT_CREATOR；isOfficialSupportUrl 用「https + host 全等 + path 全等」拦住仿冒域名（afdian.com.evil.example 之类），openSupportPage 打开前必过此校验；support.test.ts 把三条锁死。",
+        "入口位置（最小侵入）": "Home「⚙️ 设置」菜单末尾加一项，用 border-top 分隔线（.settings-item-sep）与上面三个开发者工具隔开：零布局改动、主题随 --pm-* 自动跟随、用户不主动点就看不到。",
+        "通用外部链接封装": "把原先内联在 modelOfflinePackage.ts 里的「动态 import opener → openUrl」抽成 utils/openExternal.ts，打赏入口与离线模型包共用一份，避免第二份实现漂移；仍在调用时才动态加载插件。",
+        "主题安全": "弹窗复用全局 .pm-modal/.pm-dialog 与 theme.dialogVarStyle；二维码素材本身黑白、刻意不吃主题令牌（半透明或深底近白会扫不出来）。"
+      },
+      "highlights": [
+        "改图即单测红：二维码素材的 SHA-256 与尺寸被测试钉死，误传别人的码不会悄悄发布",
+        "素材构建时内联进 JS chunk，安装目录里没有可单独替换的 PNG",
+        "扫码后地址栏显示 afdian.com，用户可核对；这是个人静态收款码给不了的一层校验",
+        "文案明确「自愿赞助 · 不解锁任何功能 · 不构成商业授权」，与 PolyForm Noncommercial 许可一致"
+      ],
+      "related_files": [
+        "src/utils/support.ts",
+        "src/utils/support.test.ts",
+        "src/utils/openExternal.ts",
+        "src/components/SupportDialog.vue",
+        "src/assets/support/afdian-qr.png",
+        "src/assets/support/afdianQr.test.ts",
+        "src/views/Home.vue",
+        "src/utils/modelOfflinePackage.ts"
+      ],
+      "tests": "npm test 325 passed（新增 support.test.ts 10 项：https/域名/主页标识、展示名与 slug 分离、仿冒前后缀域名与 http 明文与换路径全部被拒；新增 afdianQr.test.ts 3 项：SHA-256 与钉住值一致、PNG 魔数、592×592 尺寸）；npx vite build 通过，素材被内联为 data:image/png;base64；Playwright 实拍深/浅两套主题无 console 错误，弹窗内 <img> 解码结果 === 赞助页 URL。",
+      "keywords": [
+        "打赏",
+        "赞助",
+        "爱发电",
+        "afdian",
+        "二维码",
+        "qrcode",
+        "解码校验",
+        "SHA-256",
+        "单一事实源",
+        "openUrl",
+        "PolyForm"
+      ]
     }
   ],
-  "updated": "2026年11月19日 16:45:00"
+  "updated": "2026-11-19"
 }
