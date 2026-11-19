@@ -67,6 +67,22 @@ fn pick_port() -> Result<u16, String> {
     Ok(port)
 }
 
+/// 进程内复用的 HTTP 客户端：`ensure_ready` 在 700ms 轮询里每轮都会被调用，
+/// 每次重建 Client 会把连接池 / TLS 会话 / fd 一起丢掉（本地 127.0.0.1 尤其浪费）。
+/// 探活超时仍按请求设（2s），与客户端默认值无关。
+static AI_HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+fn http_client() -> reqwest::Client {
+    AI_HTTP
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new())
+        })
+        .clone()
+}
+
 async fn probe(client: &reqwest::Client, base: &str) -> bool {
     match client
         .get(format!("{base}/health"))
@@ -248,10 +264,7 @@ fn spawn(app: &tauri::AppHandle, port: u16) -> Result<u32, String> {
 /// 确保 AI 创作服务就绪，返回 base url（如 `http://127.0.0.1:52341`）。
 pub async fn ensure_ready(app: &tauri::AppHandle) -> Result<String, String> {
     let _guard = AI_ENSURE.lock().await;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    let client = http_client();
 
     // A. 本进程已就绪
     if let Some(base) = current_base() {

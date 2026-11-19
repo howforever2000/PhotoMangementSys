@@ -95,11 +95,19 @@ fn prov_json(p: &Option<PlainProvider>) -> serde_json::Value {
     }
 }
 
-fn http_client(secs: u64) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(secs))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))
+/// 进程内复用的 HTTP 客户端：连接池 / keep-alive 跨命令保留，不再每次命令重建。
+/// 超时按请求设（作业 120s / 预览 60s / 状态查询 15s），单个固定超时会误伤长任务。
+static AI_HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+fn http_client() -> reqwest::Client {
+    AI_HTTP
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new())
+        })
+        .clone()
 }
 
 /// 提交一个 AI 创作作业，返回 jobId（进度用 `ai_job_status` 轮询）。
@@ -178,9 +186,10 @@ async fn run_job_inner(
     });
 
     let base = ai_service::ensure_ready(&app).await?;
-    let client = http_client(120)?;
+    let client = http_client();
     let resp = client
         .post(format!("{base}/jobs"))
+        .timeout(Duration::from_secs(120))
         .json(&body)
         .send()
         .await
@@ -248,9 +257,10 @@ async fn status_inner(
     app: &tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     let base = ai_service::ensure_ready(app).await?;
-    let client = http_client(15)?;
+    let client = http_client();
     let resp = client
         .get(format!("{base}{path}"))
+        .timeout(Duration::from_secs(15))
         .send()
         .await
         .map_err(|e| format!("查询 AI 状态失败: {e}"))?;
@@ -276,9 +286,10 @@ pub async fn ai_cancel_job(job_id: String, app: tauri::AppHandle) -> Result<bool
 
 async fn cancel_inner(job_id: &str, app: &tauri::AppHandle) -> Result<bool, String> {
     let base = ai_service::ensure_ready(app).await?;
-    let client = http_client(15)?;
+    let client = http_client();
     let resp = client
         .post(format!("{base}/jobs/{job_id}/cancel"))
+        .timeout(Duration::from_secs(15))
         .send()
         .await
         .map_err(|e| format!("取消 AI 作业失败: {e}"))?;
@@ -345,7 +356,7 @@ async fn test_provider_inner(
     ));
 
     let base = ai_service::ensure_ready(&app).await?;
-    let client = http_client(60)?;
+    let client = http_client();
     let body = serde_json::json!({
         "kind": kind,
         "provider": {
@@ -356,6 +367,7 @@ async fn test_provider_inner(
     });
     let resp = client
         .post(format!("{base}/providers/test"))
+        .timeout(Duration::from_secs(60))
         .json(&body)
         .send()
         .await
@@ -435,9 +447,10 @@ async fn preview_inner(
 
     let base = ai_service::ensure_ready(&app).await?;
     // 60s：预览是同步交互，上限比作业（120s）短；滑杆连发时前端自己丢弃过期请求。
-    let client = http_client(60)?;
+    let client = http_client();
     let resp = client
         .post(format!("{base}/preview"))
+        .timeout(Duration::from_secs(60))
         .json(&body)
         .send()
         .await
