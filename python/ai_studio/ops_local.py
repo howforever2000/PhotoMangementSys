@@ -31,11 +31,20 @@ def _emit(warn: Warn, text: str) -> None:
 
 
 def grade_image(
-    img: Image.Image, style: str = "natural", strength: float = 1.0
+    img: Image.Image,
+    style: str = "natural",
+    strength: float = 1.0,
+    vibrance_extra: float = 0.0,
 ) -> tuple[Image.Image, Any, Any]:
-    """自适应调色：统计 → 逐图 LUT → 查表。返回 (成片, GradeStats, (lut, n))。"""
+    """自适应调色：统计 → 逐图 LUT → 查表。返回 (成片, GradeStats, (lut, n))。
+
+    `vibrance_extra` 是配方级自然饱和度微调（默认 0 = 与旧版逐字节一致），
+    语义与边界见 `autograde.analyze`。
+    """
     arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
-    graded, stats, lut = autograde.grade(arr, style=style, strength=strength)
+    graded, stats, lut = autograde.grade(
+        arr, style=style, strength=strength, vibrance_extra=vibrance_extra
+    )
     return Image.fromarray(graded), stats, lut
 
 
@@ -147,6 +156,7 @@ def op_auto_grade(img: Image.Image, params: Dict[str, Any], providers: Any) -> I
         img,
         str(params.get("style", "natural")),
         float(params.get("strength", 1.0)),
+        float(params.get("vibrance", 0.0) or 0.0),
     )
     return out
 

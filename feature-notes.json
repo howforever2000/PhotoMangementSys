@@ -7347,6 +7347,54 @@
       "updated_at": "2026-11-19T10:45:00+08:00"
     },
     {
+      "id": "FEAT-186",
+      "name": "工作台微调新增「自然饱和度」：加在第一步 auto_grade 的配方级量（default 0，配方默认零漂移）",
+      "module": "python/ai_studio/{op_catalog.json,autograde.py,ops_local.py,recipecatalog.py}、python/ai_studio/workflows/auto_grade.py、src/components/workshop/ai/AutoGradeTool.vue、python/tests/{test_autograde_vibrance.py,test_recipe_overrides.py}、src/utils/toolCatalog.test.ts",
+      "status": "done",
+      "date": "2026-11-19",
+      "purpose": "用户问「工作台要不要加饱和度和 RGB 曲线微调」。结论：曲线属 .dsh/knowledge/workshop-positioning.md 不做清单（精修调参），不加；饱和度一侧能力其实已在跑（autograde.STYLES 四档都带 saturation + vibrance），缺的只是把「自然饱和度」暴露成一个可微调的配方级量。需求收窄为：只加自然饱和度，位置在第一步 auto_grade。",
+      "implementation": {
+        "为什么落在 auto_grade 而不是新算子": "样片微调的覆盖通道 recipecatalog.apply_overrides 只能改已有步的参数，无法插入新算子 —— 新增独立算子（如 local_vibrance）会让只含 auto_grade 的「自然」配方永远用不上，除非改走「显式 plan」通道，等于为一个滑杆造两套提交语义。",
+        "为什么不放在 LUT 之后": "local_film 在 auto_grade 之后，把自然饱和度挂到 LUT 后能压住 astia/velvia 的饱和度，但需要一个新算子承载（回到上一条死结）。而「调了看不见」并不成立：工作台预览跑的是整条链（preview.py:render → execute_plan），拖滑杆看到的就是 LUT 之后的成片；且 astia 那步的饱和度贡献只有 +0.035，不是主导项。",
+        "加法语义": "vibrance = (风格派生值 + extra) * strength。先加后乘，保证「力度 0」时叠加量也为 0，与工作台「滑杆拉到 0 就是不做」（workbenchPlan.ts:394）一致；上限仍由 _clamp_output 的 0.45 兜底。",
+        "无死控件长尾": "滑杆值域取 0~0.25 而非 0~0.45：vivid 档派生值已是 0.32，距硬上限只剩 0.13，若滑杆开满 0.45 会出现「推了没反应」的长尾（同 BUG-2026-1118-003 那类死链路观感）。",
+        "改动清单": "op_catalog.json 的 auto_grade.params 增 vibrance（range 0~0.25 默认 0，label「自然饱和度」）；autograde.analyze/grade 增 vibrance_extra，_clamp_output 不动；ops_local.grade_image/op_auto_grade 透传 params.vibrance；workflows/auto_grade.py 读 options.vibrance 并写进 meta；recipecatalog.TUNABLE_PARAMS 的 auto_grade 放行 vibrance；AutoGradeTool.vue 手写滑杆（值域从 opById 读 max，不手抄）。",
+        "为什么不用 SchemaForm 自动渲染": "它把 enum 直接渲染成原始值按钮，会把「自然/鲜明/暖调/冷调」退化成 natural/vivid/...，比手写一根滑杆的收益更小。"
+      },
+      "highlights": [
+        "默认零漂移是硬验收：四条配方在 vibrance 缺省与显式 0 两种提交下成片逐字节相同（natural/clear/film/portrait 全 True）",
+        "不是死控件：vibrance=0.25 时 mean_abs_diff=0.963、86.6% 像素变化",
+        "越界值 9.0 被 catalog.norm_params 夹到 0.25；显式 plan 通道同样认这个键",
+        "顺带补了跨越 4 个文件的人工约定守卫：catalog 参数键集 == recipecatalog.TUNABLE_PARAMS（双向断言），此前只靠人工逐键一致"
+      ],
+      "tests": "python：新增 tests/test_autograde_vibrance.py（5 例：默认 0 逐字节等价 / 加法叠加 / 力度 0 = 不做 / 上限夹取 / 真的改变输出）+ tests/test_recipe_overrides.py 增 2 例（白名单放行与夹取、缺省补 0）；全量 unittest 54 passed。前端：npm test 266 passed（新增 2 例守卫）、vue-tsc 0 错误。端到端 py 脚本：四配方默认与显式 0 逐字节相同、0.25 生效、越界夹取、plan 通道识别。",
+      "not_done": "未实测 critic 肤色阈值（critic.py:108-111，0.25 按「normal 档自然饱和度推高肤色约 0.18」标定）在人像叠加 +0.25 后的误报率 —— 属已知风险，需要真实人像样张才能判定。",
+      "related_files": [
+        "python/ai_studio/op_catalog.json",
+        "python/ai_studio/autograde.py",
+        "python/ai_studio/ops_local.py",
+        "python/ai_studio/recipecatalog.py",
+        "python/ai_studio/workflows/auto_grade.py",
+        "src/components/workshop/ai/AutoGradeTool.vue",
+        "python/tests/test_autograde_vibrance.py",
+        "src/utils/toolCatalog.test.ts"
+      ],
+      "keywords": [
+        "自然饱和度",
+        "vibrance",
+        "工作台微调",
+        "auto_grade",
+        "配方级量",
+        "TUNABLE_PARAMS",
+        "默认零漂移",
+        "不做曲线",
+        "FEAT-180",
+        "工坊"
+      ],
+      "created_at": "2026-11-19T12:40:00+08:00",
+      "updated_at": "2026-11-19T12:40:00+08:00"
+    },
+    {
       "id": "FEAT-187",
       "name": "多选照片批量送创意工坊：四个画廊多选条 + 右键菜单统一入口",
       "module": "src/utils/workshopHandoff.ts（新建）、src/composables/usePhotoActions.ts、src/views/Workshop.vue、src/components/{PhotoGrid,PersonGallery,CategoryGallery,LocationGallery,PhotoActionMenu,PhotoLightbox}.vue",
@@ -7394,5 +7442,5 @@
       "updated_at": "2026-11-19T13:10:00+08:00"
     }
   ],
-  "updated": "2026-11-19T13:10:00+08:00"
+  "updated": "2026-11-19T12:40:00+08:00"
 }

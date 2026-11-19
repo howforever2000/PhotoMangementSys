@@ -191,3 +191,57 @@ describe("跨语言注册点（含 LocalModelHint 第三处）", () => {
     assert.ok(!t.includes('| "face_reshape"'), "AiTool 联合应从 catalog 派生");
   });
 });
+
+describe("样片微调白名单与清单同源（FEAT-186）", () => {
+  /**
+   * `paramViews`（前端滑杆）与 `TUNABLE_PARAMS`（后端可用键）一直是**人工约定**
+   * 逐键一致，没有任何守卫。少写一处就是静默失效：滑杆出现了、拖了、预览没变。
+   * 这里从两侧各读一份，做双向断言。
+   */
+  test("catalog 里每个可微调算子的参数键 == TUNABLE_PARAMS", () => {
+    const c = json("python/ai_studio/op_catalog.json");
+    const py = read("python/ai_studio/recipecatalog.py");
+    // 只解析 TUNABLE_PARAMS 字面量那一段：从声明处截到**顶格收尾的** `}`。
+    // 收尾花括号用「行首的 }」定位而不是字面量 "\n}\n" —— 本仓库同时存在 LF 与
+    // CRLF 检出（git autocrlf 视平台而定），按 \n 写死会在 CRLF 下定位失败。
+    const start = py.indexOf("TUNABLE_PARAMS");
+    assert.ok(start >= 0, "recipecatalog.py 里找不到 TUNABLE_PARAMS");
+    const close = /^}/m.exec(py.slice(start));
+    assert.ok(close, "TUNABLE_PARAMS 字面量收尾花括号定位失败");
+    const block = py.slice(start, start + close.index + 1);
+    const allowed = new Map<string, Set<string>>();
+    for (const m of block.matchAll(/"([a-z_]+)":\s*frozenset\(\{([^}]*)\}\)/g)) {
+      const keys = new Set<string>();
+      for (const k of m[2].matchAll(/"([a-z_]+)"/g)) keys.add(k[1]);
+      allowed.set(m[1], keys);
+    }
+    assert.ok(allowed.size > 0, "TUNABLE_PARAMS 解析失败");
+
+    for (const [op, keys] of allowed) {
+      const spec = c.ops.find((o: { id: string }) => o.id === op);
+      assert.ok(spec, `TUNABLE_PARAMS 里的 ${op} 在 catalog 中不存在`);
+      const catalogKeys = Object.keys(spec.params ?? {}).sort();
+      assert.deepEqual(
+        [...keys].sort(),
+        catalogKeys,
+        `${op} 的前端滑杆与后端白名单已漂移：catalog=[${catalogKeys}] 白名单=[${[...keys]}]`,
+      );
+    }
+    // 反向：catalog 里有参数的本地算子，若没进白名单，说明滑杆会静默失效
+    for (const o of c.ops) {
+      if (o.internal || !o.params || !Object.keys(o.params).length) continue;
+      if (o.backend !== "local") continue;
+      if (["local_upscale", "ocr"].includes(o.id)) continue; // 不参与样片微调
+      assert.ok(allowed.has(o.id), `${o.id} 有参数但不在 TUNABLE_PARAMS，微调会静默失效`);
+    }
+  });
+
+  test("auto_grade 的自然饱和度：默认 0、上限 0.25（配方默认不受影响）", () => {
+    const c = json("python/ai_studio/op_catalog.json");
+    const op = c.ops.find((o: { id: string }) => o.id === "auto_grade");
+    assert.ok(op?.params?.vibrance, "auto_grade 缺 vibrance 参数");
+    assert.equal(op.params.vibrance.type, "range");
+    assert.equal(op.params.vibrance.default, 0, "默认必须是 0，否则四条配方出图会变");
+    assert.equal(op.params.vibrance.max, 0.25);
+  });
+});

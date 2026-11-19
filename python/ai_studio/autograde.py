@@ -182,10 +182,21 @@ def _clamp_output(stats: GradeStats) -> GradeStats:
     )
 
 
-def analyze(img_u8: np.ndarray, style: str = DEFAULT_STYLE, strength: float = 1.0) -> GradeStats:
+def analyze(
+    img_u8: np.ndarray,
+    style: str = DEFAULT_STYLE,
+    strength: float = 1.0,
+    vibrance_extra: float = 0.0,
+) -> GradeStats:
     """看图推导调色参数。strength∈[0,1] 把「推导值」向「中性值」插值。
 
     strength 只影响幅度，不改变映射的函数形式，所以产物仍是一个合法 LUT。
+
+    vibrance_extra（FEAT-186）是**配方级微调量**，加法语义、默认 0：
+        vibrance = (风格派生值 + extra) * strength
+    默认 0 时与旧版逐字节相同（`x + 0.0` 在 IEEE754 下是恒等）；上限仍由
+    `_clamp_output` 的 0.45 兜底，所以「推到底没反应」只可能出现在 vivid 档，
+    不会出现越界毁图。0 乘 strength 的语义让「力度 0」依然等于「什么都不做」。
 
     BUG-2026-1114-001 修复：中间调目标从「盲拉 0.46」改为「向合理曝光带收敛」。
     旧逻辑把晴天人像（均亮 ~0.38，曝光本来正确）强行提亮 20%：天空/云高光溢出
@@ -229,6 +240,9 @@ def analyze(img_u8: np.ndarray, style: str = DEFAULT_STYLE, strength: float = 1.
         gains = np.ones(3, dtype=np.float32)
 
     s = float(max(0.0, min(1.0, strength)))
+    # 配方级自然饱和度微调：加法叠加在风格派生值上，再乘力度（FEAT-186）。
+    # 先加后乘，保证「力度 0」时叠加量也为 0 —— 与工作台「滑杆拉到 0 就是不做」一致。
+    extra = float(vibrance_extra or 0.0)
 
     def toward(derived: float, neutral: float) -> float:
         return neutral + (derived - neutral) * s
@@ -242,7 +256,7 @@ def analyze(img_u8: np.ndarray, style: str = DEFAULT_STYLE, strength: float = 1.
             gain_g=toward(float(gains[1]), 1.0),
             gain_b=toward(float(gains[2]), 1.0),
             saturation=toward(cfg["saturation"], 1.0),
-            vibrance=cfg["vibrance"] * s,
+            vibrance=(cfg["vibrance"] + extra) * s,
             warmth=cfg["warmth"] * s,
         )
     )
@@ -336,13 +350,15 @@ def build_lut(stats: GradeStats, size: int = 33) -> tuple[np.ndarray, int]:
 
 
 def grade(img_u8: np.ndarray, style: str = DEFAULT_STYLE, strength: float = 1.0,
-          lut_size: int = 33) -> tuple[np.ndarray, GradeStats, tuple[np.ndarray, int]]:
+          lut_size: int = 33, vibrance_extra: float = 0.0,
+          ) -> tuple[np.ndarray, GradeStats, tuple[np.ndarray, int]]:
     """一步到位：分析 → 建 LUT → 套用。返回 (成片, 统计, LUT)。
 
     暴露 LUT 是为了让调用方可以导出 .cube 复用，而不必重算统计。
+    `vibrance_extra` 透传给 `analyze`（配方级微调量，默认 0 = 与旧版一致）。
     """
     from . import lutcube
 
-    stats = analyze(img_u8, style=style, strength=strength)
+    stats = analyze(img_u8, style=style, strength=strength, vibrance_extra=vibrance_extra)
     lut = build_lut(stats, size=lut_size)
     return lutcube.apply_cube(img_u8, lut, strength=1.0), stats, lut

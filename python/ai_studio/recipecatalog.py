@@ -73,7 +73,7 @@ def plan_from_llm(raw: Dict[str, Any]) -> Dict[str, Any]:
 # 样片微调（workshop-positioning.md 修订记录）：允许被前端覆盖的配方级参数白名单。
 # 只有这些键能进计划——曲线/蒙版/画笔等精修参数根本不在这张表里，想传也传不进。
 TUNABLE_PARAMS: Dict[str, frozenset] = {
-    "auto_grade": frozenset({"style", "strength"}),
+    "auto_grade": frozenset({"style", "strength", "vibrance"}),
     "local_film": frozenset({"lut", "strength", "anchor", "grain", "vignette"}),
     "face_reshape": frozenset({"slim", "eyes"}),
     "skin_smooth": frozenset({"strength", "texture"}),

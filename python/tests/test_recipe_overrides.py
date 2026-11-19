@@ -60,6 +60,22 @@ class TestApplyOverrides(unittest.TestCase):
         p = recipecatalog.apply_overrides("portrait", "garbage")
         self.assertEqual(len(p["steps"]), 4)
 
+    def test_vibrance_whitelisted_and_clamped(self):
+        """FEAT-186：自然饱和度是可覆盖量，且越界值按 catalog 夹到 0~0.25。"""
+        p = recipecatalog.apply_overrides("natural", {"auto_grade": {"vibrance": 0.2}})
+        step = next(s for s in p["steps"] if s["op"] == "auto_grade")
+        self.assertAlmostEqual(step["params"]["vibrance"], 0.2)
+
+        p2 = recipecatalog.apply_overrides("natural", {"auto_grade": {"vibrance": 9.0}})
+        step2 = next(s for s in p2["steps"] if s["op"] == "auto_grade")
+        self.assertLessEqual(step2["params"]["vibrance"], 0.25)
+
+    def test_vibrance_default_zero_keeps_recipe(self):
+        """没传 vibrance 时由 catalog 补默认 0，配方出图不受影响。"""
+        p = recipecatalog.apply_overrides("natural", {})
+        step = next(s for s in p["steps"] if s["op"] == "auto_grade")
+        self.assertEqual(step["params"]["vibrance"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

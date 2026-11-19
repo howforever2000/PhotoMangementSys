@@ -9,6 +9,7 @@ import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
 import { dirName, joinPath } from "../../../utils/pathParts";
 import { AUTOGRADE_STYLES } from "../../../utils/aiPresets";
+import { opById } from "../../../utils/toolCatalog";
 import OutputDirField from "./OutputDirField.vue";
 import AiResultPanel from "./AiResultPanel.vue";
 
@@ -18,9 +19,16 @@ const notify = useNotify();
 
 const style = ref("natural");
 const strength = ref(100);
+/** 自然饱和度微调（FEAT-186）：0 = 不做，50 = 半个上限。值域取自 catalog，不手抄。 */
+const vibrance = ref(0);
 const exportCube = ref(false);
 const outputDir = ref("");
 const outputTouched = ref(false);
+
+/** `auto_grade.vibrance` 的上限来自 `op_catalog.json`（默认 0.25）。 */
+const VIBRANCE_MAX = Number(opById("auto_grade")?.params.vibrance?.max ?? 0.25);
+/** 滑杆 0~100 → catalog 值域 */
+const vibranceRaw = computed(() => (vibrance.value / 100) * VIBRANCE_MAX);
 
 onMounted(() => {
   /* 参数全在本机，无需预取远端状态 */
@@ -57,6 +65,7 @@ async function run() {
       options: {
         style: style.value,
         strength: strength.value / 100,
+        vibrance: vibranceRaw.value,
         exportCube: exportCube.value,
       },
     });
@@ -99,6 +108,11 @@ async function onCancel() {
       <div class="ai-field">
         <label class="ai-label">力度 {{ strength }}%</label>
         <input v-model.number="strength" type="range" min="0" max="100" :disabled="busy" />
+      </div>
+
+      <div class="ai-field">
+        <label class="ai-label">自然饱和度 {{ vibrance }}%（0 = 不做）</label>
+        <input v-model.number="vibrance" type="range" min="0" max="100" :disabled="busy" />
       </div>
 
       <div class="ai-field">
