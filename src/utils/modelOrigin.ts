@@ -77,8 +77,9 @@ export interface ResolvedProvider {
  * 能力位 → 供应商。找不到返回 null。
  *
  * `upscale` 缺省时回落 `edit` —— 与设置界面那句「未配置时回落图像编辑」同一口径
- * （`AiSettingsDialog.vue` 的能力卡说明）。不回落会让「画质增强」在只配了编辑模型
- * 时被误标「未配置」，而实际上后端能跑。
+ * （`AiSettingsDialog.vue` 的能力卡说明）。不回落会让「创意组合的云端超分步 /
+ * 模型理解上采样」在只配了编辑模型时被误标「未配置」，而实际上后端能跑。
+ * 注：「画质增强」工具已切本机 Real-ESRGAN，不再消费这个能力位。
  */
 export function resolveBinding(
   kind: AiProviderKind,
@@ -218,7 +219,7 @@ export function originOfRecipe(recipeId: string, settings?: AiSettings | null): 
   return aggregateOrigins(r.steps.map((s) => originOfOp(s.op, settings)));
 }
 
-/** 自己组合的步骤链：只看启用中的步 */
+/** 创意组合的步骤链：只看启用中的步 */
 export function originOfChain(
   steps: ReadonlyArray<{ op: string; enabled: boolean }>,
   settings?: AiSettings | null,

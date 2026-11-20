@@ -209,6 +209,42 @@
       ]
     },
     {
+      "id": "color_transfer",
+      "label": "参考图调色",
+      "desc": "按参考图的 Lab 统计迁移色调（Reinhard / 直方图），须给定参考图路径",
+      "backend": "local",
+      "stage": 1,
+      "module": "ai_studio.ops_local",
+      "params": {
+        "method": {
+          "type": "enum",
+          "values": [
+            "reinhard",
+            "histogram"
+          ],
+          "default": "reinhard",
+          "label": "方法"
+        },
+        "strength": {
+          "type": "range",
+          "min": 0,
+          "max": 1,
+          "default": 1.0,
+          "step": 0.05,
+          "label": "强度"
+        },
+        "reference_path": {
+          "type": "string",
+          "default": "",
+          "label": "参考图"
+        }
+      },
+      "requires": {},
+      "requiresBefore": [
+        "auto_grade"
+      ]
+    },
+    {
       "id": "beauty",
       "label": "人物美颜",
       "desc": "外部图像编辑模型精修",
@@ -283,7 +319,7 @@
     },
     {
       "id": "upscale",
-      "label": "画质增强",
+      "label": "云端超分",
       "desc": "外部超分 / 图像编辑模型",
       "backend": "cloud",
       "stage": 4,
@@ -407,6 +443,7 @@
       "runtime": "python",
       "backend": "local",
       "module": "ai_studio.workflows.color_transfer",
+      "op": "color_transfer",
       "costModel": "local-free",
       "params": {
         "method": {
@@ -546,18 +583,18 @@
     {
       "id": "upscale",
       "label": "画质增强",
-      "desc": "低分辨率照片 2×/4× 超分放大，去噪与细节还原",
+      "desc": "Real-ESRGAN 2×/4× 超分放大 + 去噪，输出高清 JPG 副本（本机、免费）",
       "icon": "upscale",
       "runtime": "python",
-      "backend": "cloud",
+      "backend": "local",
       "module": "ai_studio.workflows.upscale",
-      "op": "upscale",
-      "costModel": "cloud",
+      "op": "local_upscale",
+      "costModel": "local-free",
       "surface": "single",
       "group": "quality",
       "order": 150,
       "ready": true,
-      "providerPolicy": "upscale|edit"
+      "providerPolicy": "none"
     },
     {
       "id": "compress",

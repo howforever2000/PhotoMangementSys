@@ -1,23 +1,23 @@
 <script setup lang="ts">
 /**
- * 画质增强 / 超分工具（FEAT-152）
- * 2× / 4× 放大 + 可选提示词 → 逐张超分，输出 JPG。
+ * 画质增强 / 超分工具（FEAT-152 → 切本机）
+ * Real-ESRGAN 2×/4× 放大 + 去噪，纯本机推理，输出高清 JPG 副本。
+ * 与「画质修复」的分工：本工具不做 GFPGAN 人脸修复（那是修复工具的事）。
  */
 import { computed, ref, watch } from "vue";
 import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
 import { dirName, joinPath } from "../../../utils/pathParts";
 import { UPSCALE_SCALES } from "../../../utils/aiPresets";
-import AiPromptPanel from "./AiPromptPanel.vue";
+import OutputDirField from "./OutputDirField.vue";
+import LocalModelHint from "./LocalModelHint.vue";
 import AiResultPanel from "./AiResultPanel.vue";
-import AiCostHint from "./AiCostHint.vue";
 
 const props = defineProps<{ paths: string[] }>();
 const store = useAiStudioStore();
 const notify = useNotify();
 
 const scale = ref("2");
-const prompt = ref("");
 const outputDir = ref("");
 const outputTouched = ref(false);
 
@@ -48,7 +48,7 @@ async function run() {
     await store.run({
       tool: "upscale",
       paths: props.paths,
-      prompt: prompt.value,
+      prompt: "",
       outputDir: outputDir.value,
       options: { scale: Number(scale.value) || 2 },
     });
@@ -88,19 +88,16 @@ async function onCancel() {
       </div>
     </div>
 
+    <div style="margin-top: 12px">
+      <LocalModelHint :ids="['real_esrgan_x4']" />
+    </div>
+
     <div class="ai-panel" style="margin-top: 12px">
-      <AiPromptPanel
-        :prompt="prompt"
-        :output-dir="outputDir"
-        :disabled="busy"
-        placeholder="补充要求（可选），例如：重点还原人脸细节、去掉压缩噪点…"
-        @update:prompt="prompt = $event"
-        @update:outputDir="onDir"
-      />
+      <OutputDirField :output-dir="outputDir" :disabled="busy" @update:output-dir="onDir" />
     </div>
 
     <p class="ai-note">
-      超分走独立配置的超分模型（未配置时回落图像编辑模型）；输出高清 JPG 副本，不覆盖原图。放大后的实际分辨率取决于服务商模型能力。
+      用 Real-ESRGAN 放大并重建细节；全程本机 GPU/CPU 推理、不上传、免费。输出高清 JPG 副本，不覆盖原图。原图很大时（长边超过 2000px）会先适度缩小再放大，以控制体积。需要修复人脸请用「画质修复」。
     </p>
 
     <div class="ai-actions">
@@ -108,8 +105,6 @@ async function onCancel() {
         {{ busy ? "处理中…" : `开始增强（${paths.length} 张）` }}
       </button>
     </div>
-
-    <AiCostHint tool="upscale" :count="paths.length" :settings="store.settings" />
 
     <AiResultPanel :job="job" @cancel="onCancel" />
   </section>

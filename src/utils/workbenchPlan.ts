@@ -1,5 +1,5 @@
 /**
- * 工作台「自己组合」步骤链 —— 纯计算层（FEAT-177 / FEAT-197）
+ * 工作台「创意组合」步骤链 —— 纯计算层（FEAT-177 / FEAT-197）
  * ===================================================================
  * 职责只有一件事：**链条 ⇄ 执行计划** 的转换，以及围绕它的纯函数
  * （默认值、依赖排序、参数视图、摘要、配方导入）。
@@ -18,7 +18,7 @@
  *   - 单步微调的基线 / 「不处理」标记也按 uid 对齐；
  *   - 排序仍按 stage 稳定排序，同 stage 的多次插入保持用户插入顺序。
  *
- * 另外放开了算子来源：云端模型（美颜 / 滤镜迁移 / 画质增强）与本地组件都能进链条。
+ * 另外放开了算子来源：云端模型（美颜 / 滤镜迁移 / 云端超分）与本地组件都能进链条。
  * 预览只跑本机步（`preview.py` 会摘掉云端步并给提示），提交时云端步照常执行。
  *
  * 不发请求、不碰 store、不 import 任何组件。
@@ -32,7 +32,7 @@ import {
   type OpSpec,
   type ParamSpec,
 } from "./toolCatalog.ts";
-import { AUTOGRADE_STYLES, UPSCALE_SCALES } from "./aiPresets.ts";
+import { AUTOGRADE_STYLES, CT_METHODS, UPSCALE_SCALES } from "./aiPresets.ts";
 import type { RunPlan } from "../types/ai";
 
 /** 链条里的一步：稳定 uid + 算子 id + 是否启用 + 原始参数（与 catalog 同值域） */
@@ -44,7 +44,7 @@ export interface WbChainStep {
   params: Record<string, number | string | boolean>;
 }
 
-/** 自己组合的步骤上限（与后端 `pipeline.MAX_STEPS` 同一口径） */
+/** 创意组合的步骤上限（与后端 `pipeline.MAX_STEPS` 同一口径） */
 export const MAX_CHAIN_STEPS = 10;
 
 /** uid 计数器：模块级自增，保证同一次会话内不重复（测试可预测） */
@@ -59,7 +59,7 @@ function nextUid(op: string): string {
 export interface ChainParamView {
   key: string;
   label: string;
-  kind: "range" | "select";
+  kind: "range" | "select" | "reference";
   /** range：0~100 */
   min: number;
   max: number;
@@ -234,6 +234,9 @@ function enumOptions(op: string, key: string): { value: string; label: string }[
   if ((op === "local_upscale" || op === "upscale") && key === "scale") {
     return UPSCALE_SCALES.map((o) => ({ value: String(o.value), label: o.label }));
   }
+  if (op === "color_transfer" && key === "method") {
+    return CT_METHODS.map((o) => ({ value: o.value, label: o.label }));
+  }
   if (op === "beauty" && key === "style") {
     return [
       { value: "natural", label: "自然" },
@@ -301,7 +304,20 @@ export function paramViews(step: WbChainStep): ChainParamView[] {
         value: "",
       };
     }
-    // bool / string 参数按只读文本展示（云端算子的说明性字段）
+    // 参考图路径：界面上渲染成「选择参考图」按钮，不是只读文本
+    if (p.type === "string" && key === "reference_path") {
+      return {
+        key,
+        label: p.label,
+        kind: "reference" as const,
+        min: 0,
+        max: 100,
+        slider: 0,
+        options: [],
+        value: String(step.params[key] ?? p.default),
+      };
+    }
+    // 其余 bool / string 参数按只读文本展示（云端算子的说明性字段）
     return {
       key,
       label: p.label,

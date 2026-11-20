@@ -166,7 +166,7 @@ const KINDS: { key: AiProviderKind; title: string; need: string; hint: string }[
   {
     key: "upscale",
     title: "图像超分",
-    need: "画质增强（未配置时回落图像编辑）",
+    need: "创意组合的云端超分步 / 模型理解上采样（未配置时回落图像编辑）",
     hint: "独立超分模型，可选",
   },
 ];

@@ -44,10 +44,11 @@ export const AI_MODEL_LABELS: Record<AiProviderKind, string> = {
 /**
  * 工具 → 所用模型（决定费用预估取哪个模型的单价）。
  * 本机工具一律不计费（local-free）；云端工具按既有口径：
- * 画质增强走超分、智能修图/手账走编辑（规划的视觉调用在工具内单独估算）。
+ * 智能修图/手账走编辑（规划的视觉调用在工具内单独估算）。
+ * 画质增强已切本机 Real-ESRGAN（local-free）；云端超分算子（链上步 / 模型理解
+ * 上采样）的费用走 smart_edit 的 stats 口径，不在这里登记。
  */
 const CLOUD_TOOL_MODEL: Record<string, AiProviderKind> = {
-  upscale: "upscale",
   smart_edit: "edit",
   journal: "edit",
   beauty: "edit",

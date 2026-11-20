@@ -14,7 +14,7 @@
  *
  * FEAT-177 的两处结构性调整：
  *   ① 出片方式从「配方 / AI / 本地增强（再选 7 个工具之一）」改成
- *      「配方 / 模型理解 / 自己组合（步骤链）」，本地工具不再是并列选项；
+ *      「配方 / 模型理解 / 创意组合（步骤链）」，本地工具不再是并列选项；
  *   ② 输出目录只留一个：`outputDir` 既是产物落盘处，也是「创意工坊」相册的
  *      指向目录。原 `albumDir` 与它并列，导致用户要选两次、且漏选时
  *      「自动导入」会静默失效。
@@ -43,7 +43,7 @@ export type WbItemStatus = "idle" | "queued" | "running" | "done" | "failed";
  * 出片方案（FEAT-177 / FEAT-197）：
  *   - recipe ：现成配方（懒人主路径，与创意工坊「一键出片」同一条链路）
  *   - ai     ：模型理解意图后规划步骤（语言模型 + 文生图模型，按调用计费）
- *   - chain  ：自己组合原子组件（本机 + 云端都能插，同名组件可重复，最多 10 步）
+ *   - chain  ：创意组合原子组件（本机 + 云端都能插，同名组件可重复，最多 10 步）
  * 三者共用同一套「导入 → 群图状态 → 前后对比 → 导出并配册」流程。
  */
 export type WbEngine = "recipe" | "ai" | "chain";
@@ -83,7 +83,7 @@ interface WbState {
   engine: WbEngine;
   /** 配方引擎：配方 id（与 recipes.json 同源） */
   recipeId: string;
-  /** 自己组合：步骤链（顺序由依赖决定，见 utils/workbenchPlan） */
+  /** 创意组合：步骤链（顺序由依赖决定，见 utils/workbenchPlan） */
   chain: WbChainStep[];
   /* ---------------- AI 引擎 ---------------- */
   /** 修图意图（一句话） */
@@ -249,10 +249,17 @@ export const useWorkbenchStore = defineStore("workbench", {
     clearSelection(): void {
       this.selected = [];
     },
-    /* ---------------- 步骤链（自己组合） ---------------- */
+    /* ---------------- 步骤链（创意组合） ---------------- */
     /** 加一步（允许同一组件多次插入；到 10 步上限时原样返回） */
     addChainOp(op: string): void {
       this.chain = insertOp(this.chain, op);
+    },
+    /**
+     * 链条重置为**只含一个算子**（单步工具「在创意组合中打开」的落地动作）。
+     * 不是追加：跳转语义是「以这个工具为起点组合」，残留旧链反而困惑。
+     */
+    resetChainToOp(op: string): void {
+      this.chain = insertOp([], op);
     },
     removeChainOp(uid: string): void {
       this.chain = removeOp(this.chain, uid);

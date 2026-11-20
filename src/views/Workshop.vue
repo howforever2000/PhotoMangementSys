@@ -12,7 +12,7 @@
  *
  *   ① 一键出片（默认落地页）：选图 → 选配方 → 出片，不暴露任何单算子
  *   ② 工作台：独立路由 /workshop/workbench，进入时**默认载入本页素材托盘**；
- *      三条路线（配方 / 模型理解 / 自己组合）+ 前后对比 + 批量出片
+ *      三条路线（配方 / 模型理解 / 创意组合）+ 前后对比 + 批量出片
  *   ③ 单步工具：默认折叠，按**类型**分组（影调与滤镜 / 人像 / 画质 / 创作 / 处理），
  *      规划中项沉底
  *
@@ -60,9 +60,9 @@ import { isWorkshopTool, type WorkshopToolId } from "../stores/workshopUi";
 import { useWorkshopUiStore } from "../stores/workshopUi";
 import { useCompressTaskStore } from "../stores/compressTask";
 import { useAiStudioStore } from "../stores/aiStudio";
-import { dedupePhotoPaths, splitPhotoPaths } from "../utils/workshopHandoff";
+import { dedupePhotoPaths, splitPhotoPaths, workbenchRouteTarget } from "../utils/workshopHandoff";
 import { originOfRecipeSet, originOfTool, type OriginInfo } from "../utils/modelOrigin";
-import { RECIPES } from "../utils/workbenchPlan";
+import { RECIPES, chainableOps } from "../utils/workbenchPlan";
 import "../assets/ai-tool.css";
 
 const route = useRoute();
@@ -71,6 +71,22 @@ const router = useRouter();
 /** 进入 ② 工作台（独立视图：三条路线 + 前后对比 + 批量出片） */
 function goWorkbench() {
   router.push("/workshop/workbench");
+}
+
+/**
+ * 当前工具是否有对应的链上算子（决定「在创意组合中打开」是否显示）。
+ * 判据与工作台候选表同源（`chainableOps`）：图像压缩 / 文字提取这类
+ * 产物不是图像链一环的工具不显示入口，而不是显示后让用户扑空。
+ */
+const chainOpId = computed(() => {
+  const op = activeDef.value.op;
+  return op && chainableOps().some((o) => o.id === op) ? op : "";
+});
+
+/** 带素材跳工作台：落地创意组合，链里只预置当前工具对应的算子 */
+function openInChain() {
+  const target = workbenchRouteTarget(tray.value, { engine: "chain", op: chainOpId.value });
+  if (target) router.push(target);
 }
 
 type ToolId = WorkshopToolId;
@@ -274,7 +290,22 @@ function selectTool(t: CatalogToolDef) {
           <span class="main-ico"><ToolIcon :name="activeDef.icon" :size="18" /></span>
           <h2 class="main-title">{{ activeDef.label }}</h2>
           <span class="main-sub">{{ activeDef.desc }}</span>
-          <button class="ai-ghost" type="button" style="margin-left: auto" @click="settingsOpen = true">
+          <button
+            v-if="chainOpId"
+            class="ai-ghost"
+            type="button"
+            style="margin-left: auto"
+            title="带到工作台的创意组合：素材与本工具对应的组件已就位，可继续串其它组件"
+            @click="openInChain"
+          >
+            在创意组合中打开 ↗
+          </button>
+          <button
+            class="ai-ghost"
+            type="button"
+            :style="chainOpId ? '' : 'margin-left: auto'"
+            @click="settingsOpen = true"
+          >
             ⚙ 模型设置
           </button>
         </header>

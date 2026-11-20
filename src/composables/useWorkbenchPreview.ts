@@ -27,7 +27,7 @@ export interface PreviewRequest {
   /** 配方引擎：配方 id + 覆盖参数（值域与 op_catalog 一致，含布尔/枚举） */
   recipeId?: string;
   paramsOverride?: Record<string, Record<string, number | string | boolean>>;
-  /** 自己组合：显式计划（优先于 recipeId） */
+  /** 创意组合：显式计划（优先于 recipeId） */
   plan?: RunPlan;
   /** 预览长边，默认 1280 */
   maxEdge?: number;

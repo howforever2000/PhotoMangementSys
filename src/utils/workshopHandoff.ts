@@ -76,3 +76,38 @@ export function workshopRouteTarget(
   if (tool) query.tool = tool;
   return { name: "workshop", query };
 }
+
+/* ---------------- 工坊 → 工作台的跳转协议 ---------------- */
+
+/** 工作台路由目标（`name` + `query`），与 router 定义同源 */
+export interface WorkbenchRouteTarget {
+  name: "ai-workbench";
+  query: Record<string, string>;
+}
+
+export interface WorkbenchJumpOptions {
+  /** 落地引擎；当前只支持「创意组合」（chain） */
+  engine?: "chain";
+  /** 预置的原子算子 id（engine=chain 时生效；合法性由工作台侧校验） */
+  op?: string;
+}
+
+/**
+ * 生成「带照片进工作台」的路由目标。
+ *
+ * 与 `workshopRouteTarget` 同一纪律：URL 里怎么表达一组路径只有这一份实现。
+ * 照片为空时**允许**只带 engine/op（从空托盘的单步工具跳过去也成立）；
+ * 三样都没有才返回 null。
+ */
+export function workbenchRouteTarget(
+  paths: readonly string[],
+  opts: WorkbenchJumpOptions = {},
+): WorkbenchRouteTarget | null {
+  const query: Record<string, string> = {};
+  const photos = joinPhotoPaths(paths);
+  if (photos) query.photos = photos;
+  if (opts.engine) query.engine = opts.engine;
+  if (opts.op) query.op = opts.op;
+  if (!photos && !opts.engine && !opts.op) return null;
+  return { name: "ai-workbench", query };
+}

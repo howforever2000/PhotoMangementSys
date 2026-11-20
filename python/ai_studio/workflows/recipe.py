@@ -118,7 +118,7 @@ def run(req, progress, cancel) -> dict:
     opts = req.options or {}
     plan, recipe_id, skipped_ops = _resolve_plan(opts, warnings)
     total = len(paths)
-    # 作业级渲染参数（文生图采样步数）：自己组合里也可能有云端步，所以 A 模式同样接。
+    # 作业级渲染参数（文生图采样步数）：创意组合里也可能有云端步，所以 A 模式同样接。
     ctx = RunContext(clamp_render_steps(opts.get("steps", opts.get("renderSteps", 1))))
 
     # 并行完成后按序收：steps_all / verifications 必须与 paths 对齐

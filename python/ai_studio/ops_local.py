@@ -11,12 +11,13 @@
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 from PIL import Image
 
-from . import autograde, faceparse, facewarp, landmark, localmodels, skinretouch
+from . import autograde, colortransfer, faceparse, facewarp, landmark, localmodels, skinretouch
 from .renderopts import EMPTY as EMPTY_CTX, RunContext
 
 Warn = Optional[Callable[[str], None]]
@@ -24,6 +25,9 @@ Warn = Optional[Callable[[str], None]]
 # 与 workflows/local_beauty.py 原有口径一致：检测框外扩比例 / 过小脸阈值
 _CONTEXT_MARGIN = 0.30
 _MIN_FACE_PX = 48
+
+# 参考图分析用的长边（与 workflows/color_transfer.py 的 _REF_LONG_EDGE 同口径）
+_REF_LONG_EDGE = 1024
 
 
 def _emit(warn: Warn, text: str) -> None:
@@ -184,8 +188,42 @@ def op_skin_smooth(
     )
 
 
+def op_color_transfer(
+    img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
+) -> Image.Image:
+    """参考图调色：按参考图的 Lab 统计迁移（Reinhard / 直方图）。
+
+    参考图以**路径参数**进链（`referencePath`）：链条的每步只能带标量参数，
+    塞不下一张图，所以步骤参数里存路径、执行时在此处解码。参考图只取统计量，
+    降到长边 1024 再转 Lab（与 `workflows/color_transfer.py` 同一口径，24MP
+    全量转 Lab 要 2145ms，1MP 只要 24ms，统计量与分辨率无关）。
+    """
+    ref_path = str(params.get("reference_path", "") or "").strip()
+    if not ref_path:
+        raise ValueError("未选择参考图（展开这一步，在「参考图」里选择一张图片）")
+    if not os.path.isfile(ref_path):
+        raise FileNotFoundError(f"参考图不存在: {ref_path}")
+
+    ref = Image.open(ref_path).convert("RGB")
+    w, h = ref.size
+    m = max(w, h)
+    if m > _REF_LONG_EDGE:
+        s = _REF_LONG_EDGE / float(m)
+        ref = ref.resize((max(1, int(round(w * s))), max(1, int(round(h * s)))), Image.LANCZOS)
+    ref_arr = np.asarray(ref, dtype=np.uint8)
+
+    arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
+    strength = max(0.0, min(1.0, float(params.get("strength", 1.0))))
+    if str(params.get("method", "reinhard")) == "histogram":
+        out = colortransfer.histogram_match(arr, ref_arr, strength=strength)
+    else:
+        out = colortransfer.reinhard_transfer(arr, ref_arr, strength=strength)
+    return Image.fromarray(out)
+
+
 OPS_LOCAL = {
     "auto_grade": op_auto_grade,
+    "color_transfer": op_color_transfer,
     "face_reshape": op_face_reshape,
     "skin_smooth": op_skin_smooth,
 }
@@ -195,6 +233,7 @@ __all__ = [
     "reshape_image",
     "smooth_image",
     "op_auto_grade",
+    "op_color_transfer",
     "op_face_reshape",
     "op_skin_smooth",
     "OPS_LOCAL",

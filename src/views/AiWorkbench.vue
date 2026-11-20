@@ -11,7 +11,7 @@
  *   ② 模型理解：语言模型规划 + 文生图模型执行（按调用计费）。
  *      **只用云端模型**：原图 → 短边 1080 → 规划 → 执行 → 1K 出图 →（可选）上采样。
  *      可调「文生图步数」与「上采样」（默认不勾、默认 2×、4× 用 2× 跑两遍）。
- *   ③ 自己组合：原子组件串成链，本机与云端都能插、同一组件可重复、上限 10 步。
+ *   ③ 创意组合：原子组件串成链，本机与云端都能插、同一组件可重复、上限 10 步。
  * 三者只换「提交哪个作业、带什么参数」，导入/进度回填/前后对比/导出配册完全共用。
  *
  * ## 固定工作区（FEAT-180）
@@ -77,6 +77,7 @@ import {
   chainHasCloud,
   chainPlan,
   chainSummary,
+  chainableOps,
   isCloudOp,
   opLabel,
   planRunnable,
@@ -206,11 +207,11 @@ const previewOn = ref(true);
 
 /**
  * 本次出片的参数载体（预览 / 样片 / 全量共用一处，避免三处各拼一份）：
- *   - 自己组合 → 显式 plan；
+ *   - 创意组合 → 显式 plan；
  *   - 配方且存在「不处理」→ 显式 plan（recipeId + 覆盖参数无法跳过步骤）；
  *   - 配方且没有不处理 → recipeId + 差量覆盖（保持原路径与后端白名单语义）。
  *
- * `steps` 是文生图采样步数：只有自己组合里出现云端步时才随配方通道下发
+ * `steps` 是文生图采样步数：只有创意组合里出现云端步时才随配方通道下发
  * （纯本机链条无云端调用，传了也没人读）。
  */
 type EditOptions =
@@ -264,6 +265,10 @@ const viewerZoom = ref(1);
  *   1. `?photos=a|b|c` / 旧键 `?photo=`：从相册/灯箱/多选条带进来的；
  *   2. 工坊素材托盘：**工作台模式默认载入**（FEAT-197）。只在本次工作集为空时载入，
  *      否则「离开再回来」会把已经调过参数的批次和托盘混在一起。
+ *
+ * 还接受 `?engine=chain&op=<算子id>`（单步工具「在创意组合中打开」的落地协议）：
+ * 切到创意组合并把链重置为只含该算子。op 必须在可入链清单里，且不覆盖用户
+ * 已经在跑的作业（busy 时只带照片、不动方案）。
  */
 onMounted(async () => {
   const q = route.query;
@@ -274,6 +279,18 @@ onMounted(async () => {
   if (!wb.items.length && ui.tray.length) {
     wb.addPaths(dedupePhotoPaths(ui.tray));
     notify.info("已载入工坊素材", `${ui.tray.length} 张照片进入工作集`);
+  }
+
+  // 落地协议：engine=chain + 可选 op（合法性这里校验，拼装在 workshopHandoff）
+  if (q.engine === "chain" && !wb.busy) {
+    const op = typeof q.op === "string" ? q.op : "";
+    if (op && chainableOps().some((o) => o.id === op)) {
+      wb.engine = "chain";
+      wb.resetChainToOp(op);
+      notify.info("已进入创意组合", `步骤链预置「${opLabel(op)}」，可继续添加组件`);
+    } else if (!op) {
+      wb.engine = "chain";
+    }
   }
 
   // 来源标注（FEAT-199）要读已绑定的供应商地址；读失败静默（标注只是提示）
@@ -340,7 +357,7 @@ const targetCount = computed(() => (wb.selectedCount > 0 ? wb.selectedCount : wb
  *   - 模型理解：规划 1 次理解；规划出的云端步各 1 次编辑（步数在跑之前未知，
  *     所以按「最少 1 次」估下限，并在文案里标明「按实际步数」）；上采样 N 遍超分；
  *     反思再 +1 次理解。
- *   - 配方 / 自己组合：按计划里云端步的数量算（本机步 0 元）。
+ *   - 配方 / 创意组合：按计划里云端步的数量算（本机步 0 元）。
  */
 function expectedCalls(): { v: number; e: number; u: number } {
   if (wb.engine === "ai") {
@@ -587,7 +604,7 @@ async function applyBatch(): Promise<boolean> {
 
   const paths = target.map((i) => i.path);
   const what =
-    wb.engine === "recipe" ? "一键出片" : wb.engine === "ai" ? "智能修图" : "自己组合";
+    wb.engine === "recipe" ? "一键出片" : wb.engine === "ai" ? "智能修图" : "创意组合";
   const ok = await notify.confirm(
     `批量${what} ${paths.length} 张？`,
     `${estimateText.value}；产物写到 ${wb.outputDir}，原图不动。`,
@@ -740,7 +757,7 @@ function toggleAll() {
 const modeNotes: Record<WbEngine, string> = {
   recipe: "选一个配方整批跑完；主路径两次点击出片。",
   ai: "一句话说需求：语言模型规划 → 文生图模型执行 → 1K 出图；按调用计费。",
-  chain: "自己组合原子组件：本机与云端都能插，同一组件可重复；本机步免费。",
+  chain: "创意组合原子组件：本机与云端都能插，同一组件可重复；本机步免费。",
 };
 
 /**
@@ -750,7 +767,7 @@ const modeNotes: Record<WbEngine, string> = {
  *   - 配方 → 该配方的算子集合（「人像」要本地形变/磨皮，「自然」是纯算法）；
  *   - 模型理解 → 只用云端（FEAT-197 已锁死），但仍可能被绑到本机网关，所以照常
  *     走 `originOfTool` 读绑定地址，而不是硬编码「云端 API」；
- *   - 自己组合 → 只看启用中的步。
+ *   - 创意组合 → 只看启用中的步。
  */
 const engineOrigin = computed<OriginInfo>(() => {
   if (wb.engine === "ai") return originOfTool("smart_edit", ai.settings);
@@ -1024,7 +1041,7 @@ const previewNote = computed(() => {
                   :disabled="busy"
                   @click="setMode(m)"
                 >
-                  {{ m === "recipe" ? "配方 · 一键" : m === "ai" ? "模型理解" : "自己组合" }}
+                  {{ m === "recipe" ? "配方 · 一键" : m === "ai" ? "模型理解" : "创意组合" }}
                 </button>
               </div>
               <p class="side-note">{{ modeNotes[wb.engine] }}</p>
@@ -1138,7 +1155,7 @@ const previewNote = computed(() => {
                 </label>
                 <p class="side-note">
                   这条路线只用云端模型：原图 → 短边 1080 → 语言模型规划 → 文生图执行 → 1K 出图。
-                  想用本机免费组件请切「自己组合」。
+                  想用本机免费组件请切「创意组合」。
                 </p>
               </template>
 

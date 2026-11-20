@@ -2,7 +2,7 @@
 /**
  * 工作台步骤链编辑器（FEAT-177 / FEAT-197）
  * ===================================================================
- * 「自己组合」是一条有序的原子组件链：点「添加」即加入、参数就地改、不要的删掉。
+ * 「创意组合」是一条有序的原子组件链：点「添加」即加入、参数就地改、不要的删掉。
  *
  * ## FEAT-197 的三处变化
  *
@@ -24,6 +24,7 @@
  * 纯展示 + 事件：不改自己的 props，所有变更 emit 给页面 → store。
  */
 import { computed, ref, watch } from "vue";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import { GROUPS, localToolDefs } from "../../../utils/toolCatalog";
 import { originOfOp, type OriginInfo } from "../../../utils/modelOrigin";
@@ -58,6 +59,17 @@ const emit = defineEmits<{
   toggle: [uid: string];
   param: [uid: string, key: string, value: number | string | boolean];
 }>();
+
+/** 参考图调色步：就地选参考图（路径作为该步的 string 参数进链） */
+async function pickReference(step: WbChainStep): Promise<void> {
+  const picked = await openDialog({
+    multiple: false,
+    directory: false,
+    title: "选择参考图（调色来源）",
+    filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp"] }],
+  });
+  if (typeof picked === "string") emit("param", step.uid, "reference_path", picked);
+}
 
 /** 手风琴：同时只展开一步，步骤多了卡片也不会长到视口外（按 uid） */
 const openUid = ref<string | null>(props.steps[0]?.uid ?? null);
@@ -104,7 +116,6 @@ const excluded = computed(() => {
   const chainableIds = new Set(ops.value.map((o) => o.id));
   const reason: Record<string, string> = {
     ocr: "产物是文本",
-    color_transfer: "需要参考图",
     compress: "走压缩管线",
   };
   return local
@@ -129,6 +140,12 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
 function addOp(op: string): void {
   if (atLimit.value) return;
   emit("add", op);
+}
+
+/** 参考图按钮里只显示文件名（完整路径放 title 提示） */
+function fileNameOf(path: string): string {
+  const i = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
+  return i >= 0 ? path.slice(i + 1) : path;
 }
 </script>
 
@@ -181,7 +198,7 @@ function addOp(op: string): void {
               <div class="wbs-field-h">
                 <span>{{ p.label }}</span>
                 <span v-if="p.kind === 'range'" class="wbs-val">{{ sliderOf(step, p.key) }}%</span>
-                <span v-else class="wbs-val">{{ enumText(step, p.key) }}</span>
+                <span v-else-if="p.kind === 'select'" class="wbs-val">{{ enumText(step, p.key) }}</span>
               </div>
               <select
                 v-if="p.kind === 'select' && p.options.length"
@@ -202,8 +219,28 @@ function addOp(op: string): void {
                 :disabled="disabled"
                 @input="onRange(step, p.key, $event)"
               />
+              <!-- 参考图：路径进不了下拉/滑杆，就地给一个选图按钮 -->
+              <div v-else-if="p.kind === 'reference'" class="wbs-ref">
+                <span class="wbs-ref-path" :title="p.value || '尚未选择'">
+                  {{ p.value ? fileNameOf(p.value) : "尚未选择参考图" }}
+                </span>
+                <button
+                  type="button"
+                  class="wbs-ref-btn"
+                  :disabled="disabled"
+                  @click="pickReference(step)"
+                >
+                  选择参考图…
+                </button>
+              </div>
             </div>
             <p v-if="!paramViews(step).length" class="wbs-tip">这一步没有可调参数。</p>
+            <p
+              v-if="step.op === 'color_transfer' && !String(step.params.reference_path || '').trim()"
+              class="wbs-tip"
+            >
+              这一步需要参考图：先在上面选一张，否则运行时会跳过并提示。
+            </p>
             <p v-if="isCloudOp(step.op)" class="wbs-tip">
               云端步：即时预览里不跑（每次预览都是计费调用），出片时照常执行。
             </p>
@@ -405,6 +442,42 @@ function addOp(op: string): void {
   color: var(--fg);
   font: inherit;
   font-size: var(--fs-meta);
+}
+
+/* 参考图行：文件名 + 选图按钮，一行放下（与候选按钮同一视觉语言） */
+.wbs-ref {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wbs-ref-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+}
+.wbs-ref-btn {
+  flex: none;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--c-rule);
+  border-radius: 6px;
+  background: none;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+.wbs-ref-btn:hover:not(:disabled) {
+  color: var(--c-accent);
+  border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
+}
+.wbs-ref-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .wbs-add {

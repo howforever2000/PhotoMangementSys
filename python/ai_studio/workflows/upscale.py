@@ -1,18 +1,37 @@
-"""超分工作流（FEAT-152 → FEAT-169）：每张图 → 超分 provider → 落盘。
+"""画质增强工作流（FEAT-152 → 切本机）：每张图 → Real-ESRGAN 超分 → 落盘。
 
-超分走**独立配置的 upscale provider**（baseUrl + model 单独指定）；未配置时回落 edit，
-并用「放大 {scale}x」提示词表达意图（服务商若不支持真超分，至少做增强）。
+历史上这条链路走云端 provider（提示词超分）；现在与「画质修复」同一本机链路
+（`localmodels.run_esrgan`），区别只在**不做 GFPGAN 人脸修复**：
+  - 画质增强 = 纯超分放大 + 去噪（风景 / 静物 / 通用）；
+  - 画质修复 = 超分 + 人脸修复（老照片 / 人脸受损）。
+纯本机、零付费、照片不出本机。模型缺失时明确报错，不假跑。
 
-FEAT-169：提示词经 `presets.upscale_prompt` 拼装并带结构保全硬段；出图后做结构验收
-（超分是唯一**允许放大**的保真工具，所以这里只核对宽高比，不参与「回退」策略）。
+性能纪律与 `workflows/restore.py` 同一口径：超大图先按长边 2000 缩，
+tile=256 是 DML 最优单块尺寸（实测 512 反而更慢），不要动。
 """
 from __future__ import annotations
 
 import os
 
-from .. import critic, presets
-from ..providers import openai_compat as oc
-from .base import check_cancel, edit_input_bytes, filter_inputs, read_image, save_image, stem_of, to_image
+from PIL import Image
+
+from .. import localmodels
+from .base import filter_inputs, read_image, save_image, stem_of
+from .batch import Outcome, run_batch
+
+# 控制 4× 输出体积：超大图先按长边缩到这个上限，避免几百 MP 的内存峰值
+_MAX_INPUT_LONG = 2000
+
+_ONNX_HEAVY = True
+
+
+def _limit(img: Image.Image) -> tuple[Image.Image, bool]:
+    w, h = img.size
+    m = max(w, h)
+    if m <= _MAX_INPUT_LONG:
+        return img, False
+    s = _MAX_INPUT_LONG / float(m)
+    return img.resize((max(1, int(round(w * s))), max(1, int(round(h * s)))), Image.LANCZOS), True
 
 
 def run(req, progress, cancel) -> dict:
@@ -21,35 +40,49 @@ def run(req, progress, cancel) -> dict:
         raise ValueError("未指定输出目录")
     if not req.paths:
         raise ValueError("没有可处理的照片")
-    scale = int((req.options or {}).get("scale", 2) or 2)
-    prov = req.providers.upscale or req.providers.edit
-    if not prov or not prov.baseUrl or not prov.model:
-        raise ValueError("未配置超分 provider（设置里填写 baseUrl / model）")
+
+    opts = req.options or {}
+    scale = int(opts.get("scale", 2) or 2)
+    if scale not in (2, 4):
+        scale = 2
+
+    if not localmodels.esrgan_ready():
+        raise FileNotFoundError(
+            "超分模型未就绪（real_esrgan_x4.onnx），请在创意工坊「本地模型」里下载后重试"
+        )
 
     warnings: list[str] = []
-    paths = filter_inputs(list(req.paths), warnings)
+    req.paths = filter_inputs(list(req.paths), warnings)
 
-    outputs: list[str] = []
-    n = len(paths)
-    for i, path in enumerate(paths):
-        check_cancel(cancel)
-        progress(3 + int(i / n * 92), "超分处理中", f"{i + 1}/{n}")
-        img = read_image(path)
-        data = oc.images_edit(
-            prov.baseUrl,
-            prov.apiKey,
-            prov.model,
-            [edit_input_bytes(img, max_long_edge=3072, quality=95)],
-            presets.upscale_prompt(scale),
-        )
-        result = to_image(data[0])
-        check = critic.structure_compare(img, result)
-        # 只报画幅比问题：像素尺寸变化是超分的本职，宽高比变了才是构图被改
-        aspect = [x for x in check["issues"] if "画幅比例" in x]
-        if aspect:
-            warnings.append(f"{os.path.basename(path)}：画幅比例被改动 —— " + "；".join(aspect))
-        out = save_image(result, out_dir, f"{stem_of(path)}_超分", ".jpg", quality=95)
-        outputs.append(out)
+    def process(index: int, p: str) -> Outcome:
+        w: list[str] = []
+        img = read_image(p)
+        small, capped = _limit(img)
+        if capped:
+            w.append(
+                f"{os.path.basename(p)}: 原图较大，已按长边 {_MAX_INPUT_LONG}px 处理后放大"
+            )
 
-    progress(100, "完成", f"{len(outputs)} 张")
-    return {"outputs": outputs, "warnings": warnings, "meta": {"scale": scale}}
+        up = localmodels.run_esrgan(small, tile=256, cancel=cancel)
+        if scale == 2:
+            up = up.resize((small.width * 2, small.height * 2), Image.LANCZOS)
+
+        out = save_image(up, out_dir, f"{stem_of(p)}_超分", ".jpg", 95)
+        return Outcome(outputs=[out], warnings=w)
+
+    res = run_batch(
+        req.paths,
+        process,
+        progress,
+        cancel,
+        stage="超分处理中",
+        onnx_heavy=_ONNX_HEAVY,
+        initial_warnings=warnings,
+    )
+
+    progress(100, "完成", f"{len(res.outputs)} 张")
+    return {
+        "outputs": res.outputs,
+        "warnings": res.warnings,
+        "meta": {"scale": scale},
+    }

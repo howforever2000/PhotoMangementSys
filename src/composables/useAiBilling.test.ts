@@ -23,7 +23,7 @@ test("默认未配置单价：不显示金额，total=0 且 configured=false", (
   assert.equal(e.model, "edit");
 });
 
-test("按模型单价预估：美颜/滤镜/手账取编辑模型，画质增强取超分模型", () => {
+test("按模型单价预估：美颜/滤镜/手账取编辑模型，画质增强已切本机不计费", () => {
   const { save, estimate } = useAiBilling();
   const saved = save({ currency: "¥", modelPrices: { vision: 1, edit: 0.2, upscale: 0.5 } });
   assert.equal(saved.modelPrices.edit, 0.2);
@@ -41,9 +41,10 @@ test("按模型单价预估：美颜/滤镜/手账取编辑模型，画质增强
   assert.equal(journal.model, "edit"); // 手账只计图像编辑出图成本
   assert.ok(Math.abs(journal.total - 0.4) < 1e-9);
 
+  // 画质增强已切本机 Real-ESRGAN（local-free）：无论单价填多少都不计费
   const up = estimate("upscale", 2);
-  assert.equal(up.model, "upscale");
-  assert.ok(Math.abs(up.total - 1.0) < 1e-9);
+  assert.equal(up.configured, false);
+  assert.equal(up.total, 0);
 
   const odd = estimate("beauty", 2.9);
   assert.equal(odd.count, 2); // 向下取整
@@ -63,8 +64,9 @@ test("旧版按工具单价自动迁移到按模型", () => {
   assert.equal(migrated.modelPrices.upscale, 0.5);
   assert.equal(migrated.modelPrices.vision, 0);
 
+  // 规则层保留了旧超分价，但画质增强工具已切本机，预估恒为 0
   const up = estimate("upscale", 2);
-  assert.ok(Math.abs(up.total - 1.0) < 1e-9);
+  assert.equal(up.total, 0);
 });
 
 test("formatMoney 去尾零", () => {

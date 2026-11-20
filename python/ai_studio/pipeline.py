@@ -14,7 +14,7 @@
 
 ## 重复算子（FEAT-197）
 
-链条里允许**同一算子出现多次**（自己组合支持「同一组件多次插入」）。三条相关纪律：
+链条里允许**同一算子出现多次**（创意组合支持「同一组件多次插入」）。三条相关纪律：
   - 步骤的**位置**不再由 op 唯一，依赖校验按「是否存在更早的同名步」判断；
   - 超分同族**不再静默丢弃**第二个（旧 `_one_superres` 会把 4×=2×跑两遍的设计
     悄悄吃掉，用户看到「选了两次只放大一次」）；改为超过 2 次直接报错，
@@ -38,7 +38,7 @@ from .workflows.base import check_cancel, parse_json_loose, understand_bytes
 # 3 次以上是误操作（×8 起步，体积与伪影都失控），在校验期直接拒。
 _SUPERRES_OPS = frozenset({"upscale", "local_upscale"})
 _MAX_SUPERRES = 2
-MAX_STEPS = 10  # 自己组合的上限（FEAT-197：与前端 stepper 上限同一口径）
+MAX_STEPS = 10  # 创意组合的上限（FEAT-197：与前端 stepper 上限同一口径）
 
 StepEvent = Callable[[Dict[str, Any]], None]
 
