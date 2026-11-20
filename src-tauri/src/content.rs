@@ -1174,6 +1174,7 @@ async fn scan_album_embeddings(
     user_id: i64,
     paths: &[std::path::PathBuf],
     batch_size: usize,
+    overwrite: bool,
     app: &tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -1293,8 +1294,13 @@ async fn scan_album_embeddings(
     let model = crate::vision::clip_model_id(app)
         .await
         .map_err(|e| format!("无法确定当前语义模型档位，已中止向量写入以免写错标签：{e}"))?;
-    let all_hashes: Vec<String> = meta.iter().map(|(_, h, _)| h.clone()).collect();
-    let existing: std::collections::HashSet<String> = {
+    // overwrite（全量覆盖）必须传导到向量腿：历史缺陷是只传导到照片差集，
+    // 向量腿仍按「已有同档位向量跳过」过滤 → 模型档位未变时坏向量永远
+    // 无法被重编替换（覆盖扫描形同虚设）。覆盖模式下直接全量重编。
+    let existing: std::collections::HashSet<String> = if overwrite {
+        std::collections::HashSet::new()
+    } else {
+        let all_hashes: Vec<String> = meta.iter().map(|(_, h, _)| h.clone()).collect();
         let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
         db.lookup_embedding_hashes(&all_hashes, &model).unwrap_or_default()
     };
@@ -2079,6 +2085,7 @@ pub mod commands {
                         user_id,
                         pending_ref,
                         batch,
+                        overwrite,
                         app_ref,
                         state_ref,
                         cancel_sem,
