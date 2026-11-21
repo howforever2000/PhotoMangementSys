@@ -33,10 +33,8 @@ def run(req, progress, cancel) -> dict:
     if style not in autograde.STYLES:
         style = autograde.DEFAULT_STYLE
     strength = float(opts.get("strength", 1.0) or 1.0)
-    # 自然饱和度微调（FEAT-186）：加法叠加在风格派生值上，默认 0 = 与旧版一致。
-    # 上限夹取交给 catalog.norm_params（op_catalog.json 声明 0~0.25）与
-    # autograde._clamp_output（0.45 兜底），这里只做类型收敛。
-    vibrance = float(opts.get("vibrance", 0.0) or 0.0)
+    # 自然饱和度微调已拆为独立的 local_vibrance 算子（FEAT-206），
+    # 调色工作流不再接收 vibrance 选项。
     export_cube = bool(opts.get("exportCube", False))
 
     warnings: list[str] = []
@@ -45,9 +43,7 @@ def run(req, progress, cancel) -> dict:
     def process(index: int, p: str) -> Outcome:
         img = read_image(p)
         arr = np.asarray(img, dtype=np.uint8)
-        graded, stats, lut = autograde.grade(
-            arr, style=style, strength=strength, vibrance_extra=vibrance
-        )
+        graded, stats, lut = autograde.grade(arr, style=style, strength=strength)
         out = save_image(
             Image.fromarray(graded), out_dir, f"{stem_of(p)}_自适应调色", ".jpg", 95
         )
@@ -93,7 +89,6 @@ def run(req, progress, cancel) -> dict:
         "meta": {
             "style": style,
             "strength": round(strength, 4),
-            "vibrance": round(vibrance, 4),
             "stats": last_stats.as_meta() if last_stats else None,
         },
     }

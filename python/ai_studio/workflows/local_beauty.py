@@ -1,4 +1,5 @@
-"""本地美颜（磨皮）工作流：SCRFD 找人脸 → BiSeNet 分区 → 只磨皮肤 → 羽化贴回。
+"""本地美颜（磨皮 + 肤色保真）工作流：SCRFD 找人脸 → BiSeNet 分区 → 只磨皮肤
+→ 羽化贴回 → 肤色朝原图锚点拉回并叠加白黄·嫩红偏置（FEAT-208）。
 
 纯本机、零付费。两个模型：`det_10g.onnx`（扫描入库已有，无需下载）与
 `face_parsing_bisenet_r34.onnx`（应用内下载，约 93MB）。
@@ -10,6 +11,9 @@
   - `_MIN_FACE_PX` 判的是**原图像素**（不是预览缩放后的比例），所以预览链路也不能
     先把图缩了再进来（见 `preview.py` 的同类说明）。
 
+肤色复用纪律（FEAT-208）：本工具没有调色/滤镜在前面，输入图就是原图 ——
+磨皮已经跑过的那份人脸分析直接用作肤色锚点与应用掩码，**零重复推理**。
+
 并行：照片级但按「ONNX 链路」折半取线程 —— 每张图要跑 1 次 SCRFD + 每张脸 1 次
 BiSeNet，会话自身已有 intra_op 线程，两层叠满会超订。
 """
@@ -20,7 +24,7 @@ import os
 import numpy as np
 from PIL import Image
 
-from .. import faceparse, localmodels, skinretouch
+from .. import faceparse, localmodels, ops_local, skinretouch, skintone
 from .base import filter_inputs, read_image, save_image, stem_of
 from .batch import Outcome, run_batch
 
@@ -45,6 +49,14 @@ def run(req, progress, cancel) -> dict:
     # 导致「磨皮拖到 0 = 关闭」在界面上无效（BUG-2026-1117-001）。
     strength = _opt_float(opts, "strength", 0.45)
     keep_texture = _opt_float(opts, "texture", 0.55)
+    # 肤色保真（FEAT-208）：四项全 0 = 关闭；缺省走「自然」档（与前端默认档一致）
+    _skin_defaults = skintone.SkinParams()
+    skin_params = {
+        "hue_shift": _opt_float(opts, "hue_shift", _skin_defaults.hue_shift),
+        "chroma": _opt_float(opts, "chroma", _skin_defaults.chroma),
+        "brighten": _opt_float(opts, "brighten", _skin_defaults.brighten),
+        "blush": _opt_float(opts, "blush", _skin_defaults.blush),
+    }
 
     if not localmodels.face_det_ready():
         raise FileNotFoundError(
@@ -83,6 +95,7 @@ def run(req, progress, cancel) -> dict:
 
         result = arr
         faces_touched = 0
+        analysis: list[tuple] = []
         for f in usable:
             box = _context_box(f["bbox"], arr.shape[1], arr.shape[0], _CONTEXT_MARGIN)
             if box is None:
@@ -97,6 +110,7 @@ def run(req, progress, cancel) -> dict:
             mask = faceparse.skin_mask(cls_map)
             if mask.max() <= 0:
                 continue
+            analysis.append((tuple(f["bbox"]), box, mask))
             radius = skinretouch.radius_for_face(f["bbox"][2] - f["bbox"][0])
             patch = skinretouch.smooth_skin(
                 arr[y1:y2, x1:x2],
@@ -114,8 +128,24 @@ def run(req, progress, cancel) -> dict:
             )
             faces_touched += 1
 
+        # 肤色保真（FEAT-208）：输入图就是原图 → 磨皮的分析既当锚点又当应用掩码，
+        # 磨皮只改皮肤像素的纹理不改几何，掩码对磨皮输出依然对得上。
+        skin_touched = 0
+        if analysis and not skintone.SkinParams.from_raw(skin_params).is_noop():
+            toned = ops_local.skin_tone_image(
+                Image.fromarray(result),
+                skin_params,
+                source=img,
+                faces_cur=analysis,
+                faces_src=analysis,
+                warn=lambda msg: w.append(f"{os.path.basename(p)}: {msg}"),
+            )
+            result = np.asarray(toned, dtype=np.uint8)
+            skin_touched = faces_touched
+
         out = save_image(Image.fromarray(result), out_dir, out_name, ".jpg", 95)
-        return Outcome(outputs=[out], warnings=w, meta={"faces": faces_touched})
+        return Outcome(outputs=[out], warnings=w,
+                        meta={"faces": faces_touched, "skin_faces": skin_touched})
 
     stats = {"faces": 0}
     res = run_batch(
@@ -137,6 +167,7 @@ def run(req, progress, cancel) -> dict:
             "strength": round(strength, 4),
             "texture": round(keep_texture, 4),
             "faces": stats.get("faces", 0),
+            "skin": {k: round(v, 4) for k, v in skin_params.items()},
         },
     }
 

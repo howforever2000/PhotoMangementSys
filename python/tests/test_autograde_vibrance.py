@@ -1,22 +1,26 @@
-"""autograde 自然饱和度微调（FEAT-186）单测。
+"""自然饱和度单测（FEAT-206/207 口径）。
 
-钉死的语义（这四条一旦破了，就是「改了但不生效」或「默认变了」）：
-  1. **默认 0 逐字节等价**：`vibrance_extra=0` 与不传参的 `GradeStats` 完全相同，
-     且成片像素完全一致 —— 四条配方不改一个字，出图不许有肉眼可见变化；
-  2. **加法叠加**：`vibrance = (风格派生值 + extra) * strength`；
-  3. **力度 0 = 什么都不做**：`strength=0` 时 extra 也被乘成 0；
-  4. **上限仍由 `_clamp_output` 兜底**（0.45），extra 拉满也不会越界。
+钉死的语义：
+  1. **独立算子 `local_vibrance`**：`vibrance_adjust` 复用调色管线第 6 步的
+     `_vibrance_lch` 数学（淡色多动、艳色少动、headroom 回收）；
+  2. **0 = 逐字节恒等**：中性值下原图原样返回，配方默认值不改出图；
+  3. **双向**：正提升淡色、负收敛；权重语义成立（低饱和像素比高饱和动得多）；
+  4. **内嵌链路已拆**：`analyze` / `grade` 不再收 `vibrance_extra`（FEAT-186 的
+     配方级微调随内嵌滑条移除），catalog 里 auto_grade 不再声明 vibrance 参数。
 """
+import inspect
+import json
 import os
 import sys
 import unittest
+from pathlib import Path
 
 import numpy as np
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.insert(0, os.path.join(ROOT, "python"))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "python"))
 
-from ai_studio import autograde  # noqa: E402
+from ai_studio import autograde, ops, ops_local  # noqa: E402
 
 
 def _photo(seed: int = 7) -> np.ndarray:
@@ -31,52 +35,61 @@ def _photo(seed: int = 7) -> np.ndarray:
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
-class TestVibranceExtra(unittest.TestCase):
-    def test_default_zero_is_identical(self):
-        """不传 extra 与传 0 必须完全等价（默认行为不许漂移）。"""
+class TestStandaloneVibrance(unittest.TestCase):
+    def test_zero_is_byte_identical(self):
+        """中性 0 必须逐字节恒等（配方默认值不改出图）。"""
         img = _photo()
-        a = autograde.analyze(img, style="natural", strength=0.85)
-        b = autograde.analyze(img, style="natural", strength=0.85, vibrance_extra=0.0)
-        self.assertEqual(a, b)
+        out = autograde.vibrance_adjust(img, 0.0)
+        self.assertTrue(np.array_equal(out, img))
 
-        out_a, _, _ = autograde.grade(img, style="natural", strength=0.85)
-        out_b, _, _ = autograde.grade(
-            img, style="natural", strength=0.85, vibrance_extra=0.0
-        )
-        self.assertTrue(np.array_equal(out_a, out_b), "默认 0 时成片必须逐字节相同")
+        tiny = autograde.vibrance_adjust(img, 1e-4)  # 低于阈值也走恒等
+        self.assertTrue(np.array_equal(tiny, img))
 
-    def test_additive_over_style_value(self):
-        """extra 是加法叠加在风格派生值上，再乘力度。"""
+    def test_positive_changes_pixels(self):
         img = _photo()
-        s = 0.8
-        base = autograde.analyze(img, style="natural", strength=s)
-        more = autograde.analyze(img, style="natural", strength=s, vibrance_extra=0.2)
-        # 上限内时差值应正好等于 extra * strength
-        if (base.vibrance + 0.2 * s) <= 0.45:
-            self.assertAlmostEqual(more.vibrance - base.vibrance, 0.2 * s, places=5)
-        self.assertGreaterEqual(more.vibrance, base.vibrance)
+        out = autograde.vibrance_adjust(img, 0.25)
+        self.assertFalse(np.array_equal(out, img), "正向必须有像素变化")
 
-    def test_strength_zero_means_noop(self):
-        """力度 0 时额外量也被乘成 0 —— 与「滑杆拉到 0 就是不做」一致。"""
+    def test_negative_changes_pixels(self):
         img = _photo()
-        a = autograde.analyze(img, style="natural", strength=0.0, vibrance_extra=0.25)
-        self.assertAlmostEqual(a.vibrance, 0.0, places=6)
-        self.assertEqual(a.saturation, 1.0)
+        out = autograde.vibrance_adjust(img, -0.25)
+        self.assertFalse(np.array_equal(out, img), "负向必须有像素变化")
 
-    def test_clamped_by_output_bounds(self):
-        """extra 拉满也过不了 _clamp_output 的 0.45 上限。"""
+    def test_low_saturation_moves_more(self):
+        """自然饱和度语义：淡色（低通道差）应比艳色动得更狠。"""
         img = _photo()
-        stats = autograde.analyze(img, style="vivid", strength=1.0, vibrance_extra=0.25)
-        self.assertLessEqual(stats.vibrance, 0.45 + 1e-9)
+        base = img.astype(np.int16)
+        up = autograde.vibrance_adjust(img, 0.25).astype(np.int16)
+        spread = base.max(axis=-1) - base.min(axis=-1)
+        low = np.abs(up - base)[spread < 30].mean()
+        high = np.abs(up - base)[spread > 120].mean()
+        self.assertGreater(low, 0.0)
+        self.assertGreater(low, high * 0.5, "淡色像素的变化量应显著大于艳色像素")
 
-    def test_graded_output_changes_when_extra_given(self):
-        """给了 extra 就得真的有像素变化，不能是死控件。"""
-        img = _photo()
-        out_a, _, _ = autograde.grade(img, style="natural", strength=0.85)
-        out_b, _, _ = autograde.grade(
-            img, style="natural", strength=0.85, vibrance_extra=0.25
-        )
-        self.assertFalse(np.array_equal(out_a, out_b), "加了自然饱和度但图没变")
+    def test_op_registered_and_identity_via_dispatch(self):
+        self.assertIn("local_vibrance", ops_local.OPS_LOCAL)
+        self.assertIn("local_vibrance", ops.LOCAL_OPS)
+        self.assertTrue(ops.local_op_ready("local_vibrance"))
+        from PIL import Image
+
+        img = Image.fromarray(_photo())
+        out0 = ops.resolve("local_vibrance")(img, {"vibrance": 0.0}, None)
+        self.assertEqual(list(out0.getdata()), list(img.getdata()))
+
+
+class TestEmbeddedVibranceRemoved(unittest.TestCase):
+    def test_analyze_grade_no_vibrance_extra(self):
+        """FEAT-186 的 vibrance_extra 链路必须拆干净（独立算子替代）。"""
+        self.assertNotIn("vibrance_extra", inspect.signature(autograde.analyze).parameters)
+        self.assertNotIn("vibrance_extra", inspect.signature(autograde.grade).parameters)
+        self.assertNotIn("vibrance_extra", inspect.signature(ops_local.grade_image).parameters)
+
+    def test_auto_grade_schema_has_no_vibrance(self):
+        cat = json.loads((ROOT / "python" / "ai_studio" / "op_catalog.json").read_text("utf-8"))
+        ag = next(o for o in cat["ops"] if o["id"] == "auto_grade")
+        self.assertNotIn("vibrance", ag["params"], "调色算子不得再内嵌 vibrance 滑条")
+        lv = next(o for o in cat["ops"] if o["id"] == "local_vibrance")
+        self.assertIn("vibrance", lv["params"], "独立自然饱和度算子必须声明 vibrance")
 
 
 if __name__ == "__main__":

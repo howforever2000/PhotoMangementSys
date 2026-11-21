@@ -194,8 +194,12 @@ def run(req, progress, cancel) -> dict:
                     providers, ctx,
                 )
 
-        # 本地零模型 critic（默认开，免费）
-        c = critic.compare(img, result)
+        # 本地零模型 critic（默认开，免费）；计划含「肤色保真」时豁免肤色告警（FEAT-208）
+        c = critic.compare(
+            img, result,
+            expect_skin_shift=any(st.get("op") == "skin_tone"
+                                  for st in plan.get("steps") or []),
+        )
         verifications.append(c)
         if c["issues"]:
             warnings.append(f"{stem_of(path)}：客观指标提示 " + "；".join(c["issues"]))

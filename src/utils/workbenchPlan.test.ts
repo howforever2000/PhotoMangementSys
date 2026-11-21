@@ -190,6 +190,15 @@ test("滑杆与值域互转：slim 上限 0.8 → 滑杆 80", () => {
   assert.equal(params.slim, 0.4);
 });
 
+// FEAT-206：双向值域（自然饱和度）——中性 0 落在滑条中间 50，两侧对称换算
+test("双向值域：自然饱和度默认滑杆在中间 50，左右对称映射", () => {
+  const s = defaultStep("local_vibrance");
+  assert.equal(sliderOf(s, "vibrance"), 50, "默认 0 必须落在滑条中间，不是最左");
+  assert.equal(applySlider(s, "vibrance", 50).vibrance, 0, "滑条 50 = 不做");
+  assert.equal(applySlider(s, "vibrance", 100).vibrance, 0.25, "最右 = +0.25 提升");
+  assert.equal(applySlider(s, "vibrance", 0).vibrance, -0.25, "最左 = -0.25 收敛");
+});
+
 test("枚举参数带中文标签（复用 aiPresets / LUT 表）", () => {
   const film = defaultStep("local_film");
   assert.equal(enumText(film, "lut"), "标准彩负");
@@ -232,7 +241,16 @@ test("整条链摘要按执行顺序串起来，重复算子各列一次", () =>
 
 test("从配方起步保留配方参数，不是 catalog 默认值", () => {
   const s = chainFromRecipe("portrait");
-  assert.deepEqual(opsOf(s), ["auto_grade", "local_film", "face_reshape", "skin_smooth"]);
+  // FEAT-206：配方末尾新增 local_vibrance（默认 0 = 不改出图）
+  // FEAT-208：磨皮后新增 skin_tone（肤色保真，复用磨皮的人脸分析）
+  assert.deepEqual(opsOf(s), [
+    "auto_grade",
+    "local_film",
+    "face_reshape",
+    "skin_smooth",
+    "skin_tone",
+    "local_vibrance",
+  ]);
   const film = s.find((x) => x.op === "local_film");
   // recipes.json 里人像配方的胶片强度是 0.22，catalog 默认是 1.0
   assert.equal(film?.params.strength, 0.22);
@@ -347,7 +365,7 @@ test("tunePlan 只收启用步、按依赖排序并带上 intent", () => {
   assert.equal(plan.intent, "人像");
   assert.deepEqual(
     plan.steps.map((s) => s.op),
-    ["auto_grade", "face_reshape", "skin_smooth"],
+    ["auto_grade", "face_reshape", "skin_smooth", "skin_tone", "local_vibrance"],
   );
   const stopped = restoreTune(base, base).map((s) => ({ ...s, enabled: false }));
   assert.deepEqual(tunePlan(stopped, {}).steps, []);

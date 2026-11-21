@@ -58,22 +58,29 @@ class TestApplyOverrides(unittest.TestCase):
 
     def test_garbage_input_no_crash(self):
         p = recipecatalog.apply_overrides("portrait", "garbage")
-        self.assertEqual(len(p["steps"]), 4)
+        self.assertEqual(len(p["steps"]), 6)  # FEAT-206 vibrance + FEAT-208 skin_tone（磨皮后）
 
-    def test_vibrance_whitelisted_and_clamped(self):
-        """FEAT-186：自然饱和度是可覆盖量，且越界值按 catalog 夹到 0~0.25。"""
-        p = recipecatalog.apply_overrides("natural", {"auto_grade": {"vibrance": 0.2}})
-        step = next(s for s in p["steps"] if s["op"] == "auto_grade")
+    def test_vibrance_on_standalone_step_whitelisted_and_clamped(self):
+        """FEAT-206/207：自然饱和度只在 local_vibrance 独立步上可覆盖，
+        越界值按 catalog 夹到 -0.25~0.25；auto_grade 不再内嵌 vibrance。"""
+        p = recipecatalog.apply_overrides("natural", {"local_vibrance": {"vibrance": 0.2}})
+        step = next(s for s in p["steps"] if s["op"] == "local_vibrance")
         self.assertAlmostEqual(step["params"]["vibrance"], 0.2)
 
-        p2 = recipecatalog.apply_overrides("natural", {"auto_grade": {"vibrance": 9.0}})
-        step2 = next(s for s in p2["steps"] if s["op"] == "auto_grade")
-        self.assertLessEqual(step2["params"]["vibrance"], 0.25)
+        p2 = recipecatalog.apply_overrides("natural", {"local_vibrance": {"vibrance": -9.0}})
+        step2 = next(s for s in p2["steps"] if s["op"] == "local_vibrance")
+        self.assertGreaterEqual(step2["params"]["vibrance"], -0.25)
+
+        p3 = recipecatalog.apply_overrides("natural", {"auto_grade": {"vibrance": 0.2}})
+        self.assertNotIn("vibrance", next(
+            s for s in p3["steps"] if s["op"] == "auto_grade"
+        )["params"], "auto_grade 不得再接收 vibrance 覆盖"
+        )
 
     def test_vibrance_default_zero_keeps_recipe(self):
         """没传 vibrance 时由 catalog 补默认 0，配方出图不受影响。"""
         p = recipecatalog.apply_overrides("natural", {})
-        step = next(s for s in p["steps"] if s["op"] == "auto_grade")
+        step = next(s for s in p["steps"] if s["op"] == "local_vibrance")
         self.assertEqual(step["params"]["vibrance"], 0.0)
 
 

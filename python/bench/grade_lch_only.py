@@ -183,8 +183,7 @@ def eval_colors_lch(stats: autograde.GradeStats, rgb: np.ndarray) -> np.ndarray:
 
 
 def grade_lch(img_u8: np.ndarray, style: str = autograde.DEFAULT_STYLE,
-              strength: float = 1.0, lut_size: int = 33,
-              vibrance_extra: float = 0.0):
+              strength: float = 1.0, lut_size: int = 33):
     """一步到位：复用 `autograde.analyze` 的统计 → 用 LCh 版建 LUT → 查表。
 
     返回 `(成片, stats, lut)`，与 `autograde.grade` 完全同形。
@@ -192,8 +191,7 @@ def grade_lch(img_u8: np.ndarray, style: str = autograde.DEFAULT_STYLE,
     """
     from ai_studio import lutcube
 
-    stats = autograde.analyze(img_u8, style=style, strength=strength,
-                              vibrance_extra=vibrance_extra)
+    stats = autograde.analyze(img_u8, style=style, strength=strength)
     n = int(max(9, min(65, lut_size)))
     line = np.linspace(0.0, 1.0, n, dtype=np.float32)
     b, g, r = np.meshgrid(line, line, line, indexing="ij")

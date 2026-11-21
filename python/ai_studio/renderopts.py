@@ -23,8 +23,10 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+
+from PIL import Image
 
 # 界面默认档（「不可设置时默认为 1」）
 DEFAULT_RENDER_STEPS = 1
@@ -43,7 +45,13 @@ def clamp_render_steps(raw: Any) -> int:
 
 @dataclass(frozen=True)
 class RunContext:
-    """一次作业的渲染上下文。本机算子接收但不使用（保持算子签名统一）。"""
+    """一次作业的渲染上下文。本机算子接收但不使用（保持算子签名统一）。
+
+    FEAT-208 起，「照片级」字段随本对象一并下传，由 `pipeline.execute_plan`
+    在**每张照片**入口处用 `dataclasses.replace` 派生独立副本（作业级字段
+    render_steps / style_prompt 原样继承，照片级字段每图新建）—— 批量照片级
+    并行下互不可见，不存在跨照片串味。
+    """
 
     render_steps: int = DEFAULT_RENDER_STEPS
     """文生图采样步数（FEAT-197）。"""
@@ -55,6 +63,25 @@ class RunContext:
     500 字，而一段风格描述（中文原文 + 英文要点）常到 600~900 字 —— 塞进去会被
     **静默截断**，用户看到「选了风格但只有前半段生效」。作业级上下文不经过参数
     夹取，是唯一能完整送达的位置。
+    """
+
+    source: Image.Image | None = field(default=None, compare=False)
+    """本张照片的原图引用（FEAT-208，照片级）。
+
+    「肤色保真」必须拿滤镜链**之前**的像素当锚点，而算子链只传上一步输出 ——
+    execute_plan 的入参 img 就是原图，经此字段下传给需要它的算子。不进参数
+    夹取（schema 只收标量），也不可比较（PIL Image 无稳定相等语义）。
+    """
+
+    scratch: dict = field(default_factory=dict, compare=False)
+    """同一条链内、同一次 execute_plan 里的跨步共享槽（FEAT-208，照片级）。
+
+    现在只有一个键：`face_analysis` —— 分区磨皮已经跑过的 SCRFD + BiSeNet
+    结果（[(bbox, box, skin_mask)]），肤色保真直接复用，不再重复推理。
+    纪律：
+      - 只在同一次 execute_plan 内有效（每张照片 replace 出新 dict）；
+      - 改几何的算子（形变/超分）必须清掉它，防止掩码与像素错位；
+      - 消费方用 pop 取走，杜绝二次误用。
     """
 
     def gateway_steps(self) -> int | None:

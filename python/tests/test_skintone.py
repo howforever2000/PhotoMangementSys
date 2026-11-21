@@ -1,0 +1,234 @@
+"""肤色保真（FEAT-208）的守卫单测。
+
+钉死的语义（破了就是「改了但没生效」或「悄悄改坏了别的」）：
+
+  1. **已在目标处 = 恒等**：锚点与当前统计一致且参数为 0 时逐字节不变
+     （不做无谓的 Lab 往返）。
+  2. **还原收敛**：人为把色相角转偏后，校正能把中位 h 拉回锚点附近。
+  3. **偏置方向**：hue_shift>0 → 结果比锚点更黄（h 增大）。
+  4. **彩度加性平移保 C_sd**：这是「加性」而不是「比例」存在的理由
+     （比例缩放会把面部彩度层次整体压扁）。
+  5. **掩码外零改动**：头发/衣物/背景像素逐字节不变（硬约束）。
+  6. **高光保护**：L ≥ L_SAFE 的反光像素明度不动（local-enhance §9 纪律）。
+  7. **色相/彩度校正幂等**：校正到位后二次应用不再漂移（明度提亮是
+     一次性手感量，不在此列 —— 与整条链路非幂等同一口径）。
+  8. **低彩度像素不被染色**：C < C_LOW 的灰区不参与色相旋转与彩度平移。
+  9. **参数夹取**：任意来源的越界值必须被夹回合法区间。
+"""
+import os
+import sys
+import unittest
+
+import numpy as np
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(ROOT, "python"))
+
+from ai_studio import colortransfer, skintone  # noqa: E402
+
+
+def _skin_rgb(h_deg: float, chroma: float, light: float,
+              size: tuple[int, int] = (180, 220), seed: int = 7) -> np.ndarray:
+    """造一张 L/C/h 已知的「皮肤」测试图：带渐变与噪声（不是均匀色块）。"""
+    rng = np.random.default_rng(seed)
+    h, w = size
+    yy, xx = np.mgrid[0:h, 0:w]
+    L = light + (xx / w - 0.5) * 6.0 + rng.normal(0.0, 1.2, size)
+    C = chroma + rng.normal(0.0, 1.5, size)
+    ang = h_deg + rng.normal(0.0, 4.0, size)
+    lab = np.stack([
+        np.clip(L, 20.0, 92.0),
+        C * np.cos(np.radians(ang)),
+        C * np.sin(np.radians(ang)),
+    ], axis=-1)
+    return colortransfer.lab_to_rgb(lab)
+
+
+def _rotate_hue(rgb_u8: np.ndarray, delta_deg: float) -> np.ndarray:
+    """把整图色相角转 delta 度（模拟滤镜把肤色推偏），L/C 保持。"""
+    lab = colortransfer.rgb_to_lab(rgb_u8).astype(np.float32)
+    C = np.hypot(lab[..., 1], lab[..., 2])
+    ang = np.radians(np.degrees(np.arctan2(lab[..., 2], lab[..., 1])) + delta_deg)
+    new = np.stack([lab[..., 0], C * np.cos(ang), C * np.sin(ang)], axis=-1)
+    return colortransfer.lab_to_rgb(new)
+
+
+def _median_stats(rgb_u8: np.ndarray, mask: np.ndarray,
+                  cheek: np.ndarray | None = None) -> dict[str, float]:
+    lab = colortransfer.rgb_to_lab(rgb_u8)
+    sel = lab[mask > 0]
+    mean_a = float(np.mean(sel[:, 1]))
+    mean_b = float(np.mean(sel[:, 2]))
+    out = {
+        "a": mean_a, "b": mean_b,
+        "hue": float(np.degrees(np.arctan2(mean_b, mean_a))),
+        "chroma": float(np.hypot(mean_a, mean_b)),
+    }
+    if cheek is not None:
+        cm = (mask > 0) & (cheek > 0)
+        out["cheek_a"] = float(np.median(lab[cm][:, 1]))
+    return out
+
+
+def _wrap(d: float) -> float:
+    return (d + 180.0) % 360.0 - 180.0
+
+
+FULL = np.ones((180, 220), dtype=np.float32)
+ZERO = np.zeros((180, 220), dtype=np.float32)
+RIGHT_CHEEK = skintone.cheek_region((180, 220))
+OFF_PARAMS = skintone.SkinParams(hue_shift=0.0, chroma=0.0, brighten=0.0, blush=0.0)
+
+# 评估口径与算法统计口径一致：排除羽化带（那里的像素是原值与校正值的混合，
+# 混进统计会把收敛残差虚报成 ~1.8°）。脸的「本体」就是羽化带以内的部分。
+CORE = skintone._erode(FULL, skintone.FEATHER_RADIUS) > 0.5
+
+
+class TestIdentityAtTarget(unittest.TestCase):
+    def test_already_at_target_is_byte_identical(self):
+        """锚点=当前统计且参数全 0 → 早退，逐字节不变。"""
+        img = _skin_rgb(50.0, 20.0, 65.0)
+        anchor = skintone.anchor_from_pixels(img, FULL, RIGHT_CHEEK)
+        out = skintone.correct_region(img, FULL, RIGHT_CHEEK, anchor, OFF_PARAMS)
+        self.assertTrue(np.array_equal(out, img))
+
+class TestRestoreAndBias(unittest.TestCase):
+    def test_restore_recovers_filtered_hue(self):
+        """滤镜把 h 转偏 −10° 后，零参数校正应把中位 h 拉回锚点 ±0.6°。"""
+        src = _skin_rgb(50.0, 20.0, 65.0, seed=11)
+        anchor = skintone.anchor_from_pixels(src, FULL, RIGHT_CHEEK)
+        filtered = _rotate_hue(src, -10.0)
+        out = skintone.correct_region(filtered, FULL, RIGHT_CHEEK, anchor, OFF_PARAMS)
+        s = _median_stats(out, CORE)
+        self.assertLess(abs(_wrap(s["hue"] - anchor.hue)), 0.6)
+
+    def test_bias_pushes_toward_yellow(self):
+        """hue_shift=+3 → 结果中位 h 应落在锚点+3 附近（方向性：更黄）。"""
+        src = _skin_rgb(50.0, 20.0, 65.0, seed=12)
+        anchor = skintone.anchor_from_pixels(src, FULL, RIGHT_CHEEK)
+        filtered = _rotate_hue(src, -10.0)
+        out = skintone.correct_region(
+            filtered, FULL, RIGHT_CHEEK, anchor,
+            skintone.SkinParams(hue_shift=3.0, chroma=0.0, brighten=0.0, blush=0.0),
+        )
+        s = _median_stats(out, CORE)
+        self.assertLess(abs(_wrap(s["hue"] - (anchor.hue + 3.0))), 0.8)
+
+    def test_blush_raises_cheek_a(self):
+        """blush>0 → 颊部 a* 中位应高于全脸 a* 中位（嫩红集中在苹果肌）。"""
+        src = _skin_rgb(50.0, 20.0, 65.0, seed=13)
+        anchor = skintone.anchor_from_pixels(src, FULL, RIGHT_CHEEK)
+        out = skintone.correct_region(
+            src, FULL, RIGHT_CHEEK, anchor,
+            skintone.SkinParams(hue_shift=0.0, chroma=0.0, brighten=0.0, blush=1.5),
+        )
+        all_a = _median_stats(out, CORE)
+        cheek_a = _median_stats(out, CORE, RIGHT_CHEEK)
+        # 全脸 a 基本不变（只有颊部 +blush），颊部应高出 blush 的大部分
+        self.assertGreater(cheek_a["cheek_a"] - all_a["a"], 0.6)
+
+
+class TestChromaAdditive(unittest.TestCase):
+    def test_additive_shift_preserves_sd(self):
+        """加性平移（不是比例缩放）：校正前后彩度标准差几乎不变。"""
+        src = _skin_rgb(50.0, 18.0, 65.0, seed=14)
+        anchor = skintone.anchor_from_pixels(src, FULL, RIGHT_CHEEK)
+        filtered = _rotate_hue(src, 0.0)  # 只走 Lab 往返
+        before = colortransfer.rgb_to_lab(filtered)[FULL > 0][:, 1:3]
+        sd_before = float(np.std(np.hypot(before[:, 0], before[:, 1])))
+        out = skintone.correct_region(
+            filtered, FULL, RIGHT_CHEEK, anchor,
+            skintone.SkinParams(hue_shift=0.0, chroma=3.0, brighten=0.0, blush=0.0),
+        )
+        after = colortransfer.rgb_to_lab(out)[CORE][:, 1:3]
+        sd_after = float(np.std(np.hypot(after[:, 0], after[:, 1])))
+        self.assertLess(abs(sd_after - sd_before), 0.5)
+
+
+class TestGuards(unittest.TestCase):
+    def test_outside_mask_byte_identical(self):
+        """掩码外像素逐字节不变（头发/衣物/背景安全的硬约束）。"""
+        src = _skin_rgb(50.0, 20.0, 65.0, seed=15)
+        anchor = skintone.anchor_from_pixels(src, FULL, RIGHT_CHEEK)
+        mask = np.zeros(FULL.shape, dtype=np.float32)
+        mask[:, : 110] = 1.0
+        cheek = skintone.cheek_region(FULL.shape)
+        out = skintone.correct_region(
+            src, mask, cheek, anchor,
+            skintone.SkinParams(hue_shift=5.0, chroma=2.0, brighten=2.0, blush=2.0),
+        )
+        diff = np.abs(out.astype(np.int16) - src.astype(np.int16)).max(axis=2)
+        self.assertEqual(int(diff[mask <= 0].max()), 0)
+
+    def test_highlight_protected(self):
+        """L ≥ L_SAFE 的反光像素：brighten 不提亮（其余量不动时逐字节不变）。"""
+        img = _skin_rgb(50.0, 20.0, 65.0, seed=16)
+        img = img.astype(np.float32).copy()
+        img[40:80, 40:120] = 245.0          # 一块高光斑
+        img = np.clip(img + 0.5, 0, 255).astype(np.uint8)
+        anchor = skintone.anchor_from_pixels(img, FULL, RIGHT_CHEEK)
+        out = skintone.correct_region(
+            img, FULL, RIGHT_CHEEK, anchor,
+            skintone.SkinParams(hue_shift=0.0, chroma=0.0, brighten=2.0, blush=0.0),
+        )
+        diff = np.abs(out.astype(np.int16) - img.astype(np.int16)).max(axis=2)
+        self.assertEqual(int(diff[40:80, 40:120].max()), 0)
+
+    def test_low_chroma_pixels_not_tinted(self):
+        """C < C_LOW 的灰区不参与色相旋转与色度平移。"""
+        img = _skin_rgb(50.0, 20.0, 65.0, seed=17)
+        img = img.astype(np.float32).copy()
+        img[40:80, 40:120] = 200.0          # 一块低彩度斑（反光）
+        img = np.clip(img + 0.5, 0, 255).astype(np.uint8)
+        anchor = skintone.anchor_from_pixels(img, FULL, RIGHT_CHEEK)
+        out = skintone.correct_region(
+            img, FULL, RIGHT_CHEEK, anchor,
+            skintone.SkinParams(hue_shift=6.0, chroma=4.0, brighten=0.0, blush=0.0),
+        )
+        diff = np.abs(out.astype(np.int16) - img.astype(np.int16)).max(axis=2)
+        self.assertLessEqual(int(diff[40:80, 40:120].max()), 1)
+
+    def test_hue_chroma_correction_is_idempotent(self):
+        """校正到位后二次应用（同锚点）不再漂移：中位 h/C 变化 < 0.3。"""
+        src = _skin_rgb(50.0, 20.0, 65.0, seed=18)
+        anchor = skintone.anchor_from_pixels(src, FULL, RIGHT_CHEEK)
+        filtered = _rotate_hue(src, -10.0)
+        p = skintone.SkinParams(hue_shift=3.0, chroma=1.5, brighten=0.0, blush=0.0)
+        once = skintone.correct_region(filtered, FULL, RIGHT_CHEEK, anchor, p)
+        twice = skintone.correct_region(once, FULL, RIGHT_CHEEK, anchor, p)
+        s1 = _median_stats(once, CORE)
+        s2 = _median_stats(twice, CORE)
+        self.assertLess(abs(_wrap(s2["hue"] - s1["hue"])), 0.3)
+        self.assertLess(abs(s2["chroma"] - s1["chroma"]), 0.3)
+
+    def test_params_clamped(self):
+        raw = {"hue_shift": 99, "chroma": -99, "brighten": 50, "blush": "abc"}
+        p = skintone.SkinParams.from_raw(raw)
+        self.assertEqual(p.hue_shift, 8.0)
+        self.assertEqual(p.chroma, -6.0)
+        self.assertEqual(p.brighten, 4.0)
+        self.assertEqual(p.blush, 1.2)      # 非法回落默认
+
+    def test_wrap_deg(self):
+        self.assertAlmostEqual(skintone.wrap_deg(20.0), 20.0)
+        self.assertAlmostEqual(skintone.wrap_deg(400.0), 40.0)
+        self.assertAlmostEqual(skintone.wrap_deg(-350.0), 10.0)
+        self.assertAlmostEqual(skintone.wrap_deg(-190.0), 170.0)
+
+    def test_correction_amounts_wrap(self):
+        """锚点 h=10、当前 h=350 → dh 应为 +20（最短弧），不是 -340。"""
+        anchor = skintone.SkinAnchor(hue=10.0, chroma=20.0, cheek_a=14.0)
+        cur = {
+            "hue": 350.0, "chroma": 20.0, "cheek_a": 14.0,
+            "mean_a": 20.0 * np.cos(np.radians(350.0)),
+            "mean_b": 20.0 * np.sin(np.radians(350.0)),
+        }
+        p = skintone.SkinParams(hue_shift=0.0, chroma=0.0, brighten=0.0, blush=0.0)
+        dh, dax, day = skintone.correction_amounts(anchor, cur, p)
+        self.assertAlmostEqual(dh, 20.0, places=4)
+        self.assertAlmostEqual(dax, 0.0, places=3)
+        self.assertAlmostEqual(day, 0.0, places=3)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -8,7 +8,7 @@ import { computed, ref, watch } from "vue";
 import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
 import { dirName, joinPath } from "../../../utils/pathParts";
-import { LOCAL_BEAUTY_LEVELS } from "../../../utils/aiPresets";
+import { LOCAL_BEAUTY_LEVELS, SKIN_PRESETS } from "../../../utils/aiPresets";
 import OutputDirField from "./OutputDirField.vue";
 import LocalModelHint from "./LocalModelHint.vue";
 import AiResultPanel from "./AiResultPanel.vue";
@@ -19,8 +19,13 @@ const notify = useNotify();
 
 const level = ref("0.6");
 const texture = ref(35);
+const skin = ref("natural");
 const outputDir = ref("");
 const outputTouched = ref(false);
+
+const skinPreset = computed(
+  () => SKIN_PRESETS.find((s) => s.value === skin.value) ?? SKIN_PRESETS[1],
+);
 
 watch(
   () => props.paths,
@@ -53,6 +58,7 @@ async function run() {
       options: {
         strength: Number(level.value) || 0.6,
         texture: texture.value / 100,
+        ...skinPreset.value.params,
       },
     });
   } catch (e) {
@@ -96,6 +102,26 @@ async function onCancel() {
         <input v-model.number="texture" type="range" min="0" max="90" :disabled="busy" />
         <p class="ai-note" style="margin: 4px 0 0">
           越高越接近原皮肤纹理；调到 0 会明显「塑料脸」，不建议。
+        </p>
+      </div>
+
+      <div class="ai-field">
+        <label class="ai-label">肤色</label>
+        <div class="ai-seg">
+          <button
+            v-for="s in SKIN_PRESETS"
+            :key="s.value"
+            type="button"
+            class="ai-seg-btn"
+            :class="{ on: skin === s.value }"
+            :disabled="busy"
+            @click="skin = s.value"
+          >
+            {{ s.label }}
+          </button>
+        </div>
+        <p class="ai-note" style="margin: 4px 0 0">
+          以原图肤色为基准：先把滤镜/调色带偏的肤色拉回来，再按档位微调白黄与血色；只改皮肤区，五官与背景不动。
         </p>
       </div>
     </div>

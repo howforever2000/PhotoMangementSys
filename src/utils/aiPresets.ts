@@ -91,6 +91,42 @@ export const LOCAL_BEAUTY_LEVELS: AiOption[] = [
   { value: "0.9", label: "强", hint: "明显平滑，适合低分辨率或手机前置" },
 ];
 
+/** 肤色档位（FEAT-208）：映射到 Python `skintone.SkinParams` 的四个配方级量。
+ *  数值必须与 `op_catalog.json` 里 skin_tone 参数的 min/max 一致（守卫测试兜底） */
+export interface SkinPreset {
+  value: string;
+  label: string;
+  hint: string;
+  params: { hue_shift: number; chroma: number; brighten: number; blush: number };
+}
+
+export const SKIN_PRESETS: SkinPreset[] = [
+  {
+    value: "off",
+    label: "关闭",
+    hint: "不做肤色调整，只磨皮",
+    params: { hue_shift: 0, chroma: 0, brighten: 0, blush: 0 },
+  },
+  {
+    value: "natural",
+    label: "自然",
+    hint: "先把滤镜带偏的肤色拉回原图，再微调白黄与苹果肌嫩红（推荐）",
+    params: { hue_shift: 3, chroma: 1.5, brighten: 1.5, blush: 1.2 },
+  },
+  {
+    value: "fair",
+    label: "白皙",
+    hint: "更亮更净，血色收敛，适合想突出通透感的照片",
+    params: { hue_shift: 3, chroma: 1.0, brighten: 2.5, blush: 0.8 },
+  },
+  {
+    value: "rosy",
+    label: "红润",
+    hint: "血色更明显，适合气色差或室内灯光偏黄的照片",
+    params: { hue_shift: 3, chroma: 2.0, brighten: 1.5, blush: 2.2 },
+  },
+];
+
 /** 人像形变（本地）：瘦脸强度档。上限 0.8 —— 再高会明显失真（实测） */
 export const RESHAPE_SLIM_LEVELS: AiOption[] = [
   { value: "0.3", label: "轻", hint: "只收一点下颌，几乎看不出修过" },

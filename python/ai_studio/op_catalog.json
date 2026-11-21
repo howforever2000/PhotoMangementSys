@@ -1,630 +1,718 @@
 {
-  "version": 1,
-  "note": "创意工坊算子/工具唯一真相源。Python 直接载入；前端经 Vite 构建期内联；Rust 用 parity 测试解析；ai-studio.spec 用 json.load 生成 hiddenimports。新增工具只改本文件一处。",
-  "groups": [
-    { "id": "tone", "label": "影调与滤镜", "desc": "只改颜色与质感，构图与物体形状保持不变" },
-    { "id": "portrait", "label": "人像", "desc": "人脸与皮肤；默认只动皮肤质感，不动脸型" },
-    { "id": "quality", "label": "画质", "desc": "分辨率与清晰度" },
-    { "id": "creative", "label": "创作", "desc": "让模型理解画面并生成新内容" },
-    { "id": "utility", "label": "处理", "desc": "与视觉效果无关的通用处理" }
-  ],
-  "ops": [
-    {
-      "id": "auto_grade",
-      "label": "自适应调色",
-      "desc": "按本图明暗与色偏统计推导 LUT，逐图不同；不过网、零模型",
-      "backend": "local",
-      "stage": 0,
-      "module": "ai_studio.ops_local",
-      "params": {
-        "style": {
-          "type": "enum",
-          "values": [
-            "natural",
-            "vivid",
-            "warm",
-            "cool"
-          ],
-          "default": "natural",
-          "label": "风格"
-        },
-        "strength": {
-          "type": "range",
-          "min": 0,
-          "max": 1,
-          "default": 1.0,
-          "step": 0.05,
-          "label": "强度"
-        },
-        "vibrance": {
-          "type": "range",
-          "min": 0,
-          "max": 0.25,
-          "default": 0.0,
-          "step": 0.05,
-          "label": "自然饱和度"
-        }
-      },
-      "requires": {},
-      "requiresBefore": []
+ "version": 1,
+ "note": "创意工坊算子/工具唯一真相源。Python 直接载入；前端经 Vite 构建期内联；Rust 用 parity 测试解析；ai-studio.spec 用 json.load 生成 hiddenimports。新增工具只改本文件一处。",
+ "groups": [
+  {
+   "id": "tone",
+   "label": "影调与滤镜",
+   "desc": "只改颜色与质感，构图与物体形状保持不变"
+  },
+  {
+   "id": "portrait",
+   "label": "人像",
+   "desc": "人脸与皮肤；默认只动皮肤质感，不动脸型"
+  },
+  {
+   "id": "quality",
+   "label": "画质",
+   "desc": "分辨率与清晰度"
+  },
+  {
+   "id": "creative",
+   "label": "创作",
+   "desc": "让模型理解画面并生成新内容"
+  },
+  {
+   "id": "utility",
+   "label": "处理",
+   "desc": "与视觉效果无关的通用处理"
+  }
+ ],
+ "ops": [
+  {
+   "id": "auto_grade",
+   "label": "自适应调色",
+   "desc": "按本图明暗与色偏统计推导 LUT，逐图不同；不过网、零模型",
+   "backend": "local",
+   "stage": 0,
+   "module": "ai_studio.ops_local",
+   "params": {
+    "style": {
+     "type": "enum",
+     "values": [
+      "natural",
+      "vivid",
+      "warm",
+      "cool"
+     ],
+     "default": "natural",
+     "label": "风格"
     },
-    {
-      "id": "local_film",
-      "label": "胶片模拟",
-      "desc": "内置 .cube 3D LUT 套用，可加颗粒与暗角",
-      "backend": "local",
-      "stage": 1,
-      "module": "ai_studio.ops",
-      "params": {
-        "lut": {
-          "type": "enum",
-          "values": [
-            "provia",
-            "velvia",
-            "astia",
-            "classic_chrome",
-            "classic_neg",
-            "eterna",
-            "nostalgic_neg"
-          ],
-          "default": "provia",
-          "label": "胶片"
-        },
-        "strength": {
-          "type": "range",
-          "min": 0,
-          "max": 1,
-          "default": 1.0,
-          "step": 0.05,
-          "label": "强度"
-        },
-        "anchor": {
-          "type": "range",
-          "min": 0,
-          "max": 1,
-          "default": 0.0,
-          "step": 0.05,
-          "label": "黑白场还原"
-        },
-        "grain": {
-          "type": "range",
-          "min": 0,
-          "max": 1,
-          "default": 0.0,
-          "step": 0.05,
-          "label": "颗粒"
-        },
-        "vignette": {
-          "type": "range",
-          "min": 0,
-          "max": 1,
-          "default": 0.0,
-          "step": 0.05,
-          "label": "暗角"
-        }
-      },
-      "requires": {
-        "luts": true
-      },
-      "requiresBefore": [
-        "auto_grade"
-      ]
-    },
-    {
-      "id": "face_reshape",
-      "label": "人像形变",
-      "desc": "68 点关键点驱动的瘦脸 + 大眼局部液化，五官比例不变",
-      "backend": "local",
-      "stage": 2,
-      "module": "ai_studio.ops_local",
-      "params": {
-        "slim": {
-          "type": "range",
-          "min": 0,
-          "max": 0.8,
-          "default": 0.3,
-          "step": 0.05,
-          "label": "瘦脸"
-        },
-        "eyes": {
-          "type": "range",
-          "min": 0,
-          "max": 0.5,
-          "default": 0.15,
-          "step": 0.05,
-          "label": "大眼"
-        }
-      },
-      "requires": {
-        "models": [
-          "det_10g",
-          "face_landmark_68"
-        ]
-      },
-      "requiresBefore": [
-        "local_film"
-      ]
-    },
-    {
-      "id": "skin_smooth",
-      "label": "分区磨皮",
-      "desc": "只磨皮肤区，五官与眼饰强制排除；形变之后执行才对得上掩码",
-      "backend": "local",
-      "stage": 3,
-      "module": "ai_studio.ops_local",
-      "params": {
-        "strength": {
-          "type": "range",
-          "min": 0,
-          "max": 1,
-          "default": 0.45,
-          "step": 0.05,
-          "label": "磨皮"
-        },
-        "texture": {
-          "type": "range",
-          "min": 0,
-          "max": 1,
-          "default": 0.55,
-          "step": 0.05,
-          "label": "保留质感"
-        }
-      },
-      "requires": {
-        "models": [
-          "det_10g",
-          "face_parsing_r34"
-        ]
-      },
-      "requiresBefore": [
-        "face_reshape"
-      ]
-    },
-    {
-      "id": "local_upscale",
-      "label": "本机超分",
-      "desc": "Real-ESRGAN 2×/4×，最贵，放链路最后避免前面都跑在高分辨率上",
-      "backend": "local",
-      "preview": false,
-      "stage": 4,
-      "module": "ai_studio.ops",
-      "params": {
-        "scale": {
-          "type": "enum",
-          "values": [
-            2,
-            4
-          ],
-          "default": 4,
-          "label": "倍率"
-        }
-      },
-      "requires": {
-        "models": [
-          "real_esrgan_x4"
-        ]
-      },
-      "requiresBefore": [
-        "skin_smooth"
-      ]
-    },
-    {
-      "id": "color_transfer",
-      "label": "参考图调色",
-      "desc": "按参考图的 Lab 统计迁移色调（Reinhard / 直方图），须给定参考图路径",
-      "backend": "local",
-      "stage": 1,
-      "module": "ai_studio.ops_local",
-      "params": {
-        "method": {
-          "type": "enum",
-          "values": [
-            "reinhard",
-            "histogram"
-          ],
-          "default": "reinhard",
-          "label": "方法"
-        },
-        "strength": {
-          "type": "range",
-          "min": 0,
-          "max": 1,
-          "default": 1.0,
-          "step": 0.05,
-          "label": "强度"
-        },
-        "reference_path": {
-          "type": "string",
-          "default": "",
-          "label": "参考图"
-        }
-      },
-      "requires": {},
-      "requiresBefore": [
-        "auto_grade"
-      ]
-    },
-    {
-      "id": "beauty",
-      "label": "人物美颜",
-      "desc": "外部图像编辑模型精修",
-      "backend": "cloud",
-      "stage": 0,
-      "module": "ai_studio.ops",
-      "params": {
-        "style": {
-          "type": "enum",
-          "values": [
-            "natural",
-            "crisp",
-            "film"
-          ],
-          "default": "natural",
-          "label": "风格"
-        },
-        "level": {
-          "type": "enum",
-          "values": [
-            "light",
-            "medium",
-            "strong"
-          ],
-          "default": "medium",
-          "label": "级别"
-        }
-      },
-      "requires": {
-        "providers": [
-          "edit"
-        ]
-      },
-      "requiresBefore": []
-    },
-    {
-      "id": "style_transfer",
-      "label": "调色 / 滤镜迁移",
-      "desc": "按参考图迁移影调，或一句话自动调色；物体形状与构图保持不变",
-      "backend": "cloud",
-      "stage": 1,
-      "module": "ai_studio.ops",
-      "params": {
-        "mode": {
-          "type": "enum",
-          "values": [
-            "autograde",
-            "transfer"
-          ],
-          "default": "autograde",
-          "label": "模式"
-        },
-        "referenceDesc": {
-          "type": "string",
-          "default": "",
-          "label": "参考风格"
-        },
-        "extra": {
-          "type": "string",
-          "default": "",
-          "label": "补充要求"
-        }
-      },
-      "requires": {
-        "providers": [
-          "edit"
-        ]
-      },
-      "requiresBefore": [
-        "beauty"
-      ]
-    },
-    {
-      "id": "upscale",
-      "label": "云端超分",
-      "desc": "外部超分 / 图像编辑模型",
-      "backend": "cloud",
-      "stage": 4,
-      "module": "ai_studio.ops",
-      "params": {
-        "scale": {
-          "type": "range",
-          "min": 1,
-          "max": 4,
-          "default": 2,
-          "step": 1,
-          "label": "倍率"
-        }
-      },
-      "requires": {
-        "providers": [
-          "upscale"
-        ]
-      },
-      "requiresBefore": [
-        "style_transfer"
-      ]
-    },
-    {
-      "id": "refine",
-      "label": "反思微调",
-      "desc": "仅反思循环内部调用，不允许 planner / 配方直接编排",
-      "backend": "cloud",
-      "stage": 5,
-      "module": "ai_studio.ops",
-      "internal": true,
-      "params": {
-        "issues": {
-          "type": "string",
-          "default": "",
-          "label": "问题点"
-        },
-        "extra": {
-          "type": "string",
-          "default": "",
-          "label": "补充要求"
-        }
-      },
-      "requires": {
-        "providers": [
-          "edit"
-        ]
-      },
-      "requiresBefore": []
-    },
-    {
-      "id": "ocr",
-      "label": "文字提取",
-      "desc": "PaddleOCR det+rec 本机离线识别，仅由 ocr 工作流编排，不允许 planner / 配方直接调用",
-      "backend": "local",
-      "stage": 0,
-      "module": "ai_studio.ocr_engine",
-      "internal": true,
-      "params": {},
-      "requires": {
-        "models": [
-          "paddleocr_rec"
-        ],
-        "notes": "det 模型是扫描区共享件（模型管理下载，非工坊区），由 workflows/ocr.py 运行时自检并给可操作报错"
-      },
-      "requiresBefore": []
+    "strength": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 1.0,
+     "step": 0.05,
+     "label": "强度"
     }
-  ],
-  "tools": [
-    {
-      "id": "recipe",
-      "label": "一键出片",
-      "desc": "选图 → 选配方 → 出片；调色 / 滤镜 / 人像 / 高清一条链跑完",
-      "icon": "enhance",
-      "runtime": "python",
-      "backend": "local",
-      "module": "ai_studio.workflows.recipe",
-      "costModel": "local-free",
-      "surface": "primary",
-      "group": "primary",
-      "ready": true,
-      "providerPolicy": "none"
+   },
+   "requires": {},
+   "requiresBefore": []
+  },
+  {
+   "id": "local_film",
+   "label": "胶片模拟",
+   "desc": "内置 .cube 3D LUT 套用，可加颗粒与暗角",
+   "backend": "local",
+   "stage": 1,
+   "module": "ai_studio.ops",
+   "params": {
+    "lut": {
+     "type": "enum",
+     "values": [
+      "provia",
+      "velvia",
+      "astia",
+      "classic_chrome",
+      "classic_neg",
+      "eterna",
+      "nostalgic_neg"
+     ],
+     "default": "provia",
+     "label": "胶片"
     },
-    {
-      "id": "auto_grade",
-      "label": "智能调色",
-      "desc": "按画面明暗与色偏自动调色，可导出 .cube 当滤镜复用（本机、免费）",
-      "icon": "style",
-      "runtime": "python",
-      "backend": "local",
-      "module": "ai_studio.workflows.auto_grade",
-      "op": "auto_grade",
-      "costModel": "local-free",
-      "surface": "single",
-      "group": "tone",
-      "order": 10,
-      "ready": true,
-      "providerPolicy": "none"
+    "strength": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 1.0,
+     "step": 0.05,
+     "label": "强度"
     },
-    {
-      "id": "film_sim",
-      "label": "胶片模拟",
-      "desc": "内置多款胶片 LUT，一键套用，可加颗粒与暗角（本机、免费）",
-      "icon": "style",
-      "runtime": "python",
-      "backend": "local",
-      "module": "ai_studio.workflows.film_sim",
-      "op": "local_film",
-      "costModel": "local-free",
-      "surface": "single",
-      "group": "tone",
-      "order": 20,
-      "ready": true,
-      "providerPolicy": "none"
+    "anchor": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 0.0,
+     "step": 0.05,
+     "label": "黑白场还原"
     },
-    {
-      "id": "color_transfer",
-      "label": "参考图调色",
-      "desc": "把参考图的色调与影调迁移到素材图（本机、免费）",
-      "icon": "style",
-      "runtime": "python",
-      "backend": "local",
-      "module": "ai_studio.workflows.color_transfer",
-      "op": "color_transfer",
-      "costModel": "local-free",
-      "params": {
-        "method": {
-          "type": "enum",
-          "values": [
-            "reinhard",
-            "histogram"
-          ],
-          "default": "reinhard",
-          "label": "方法"
-        },
-        "strength": {
-          "type": "range",
-          "min": 0,
-          "max": 1,
-          "default": 1.0,
-          "step": 0.05,
-          "label": "强度"
-        }
-      },
-      "surface": "single",
-      "group": "tone",
-      "order": 30,
-      "ready": true,
-      "providerPolicy": "none"
+    "grain": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 0.0,
+     "step": 0.05,
+     "label": "颗粒"
     },
-    {
-      "id": "restore",
-      "label": "画质修复",
-      "desc": "Real-ESRGAN 2×/4× 超分 + 人脸修复，输出高清 JPG 副本（本机、免费）",
-      "icon": "enhance",
-      "runtime": "python",
-      "backend": "local",
-      "module": "ai_studio.workflows.restore",
-      "op": "local_upscale",
-      "costModel": "local-free",
-      "surface": "single",
-      "group": "quality",
-      "order": 40,
-      "ready": true,
-      "providerPolicy": "none"
-    },
-    {
-      "id": "local_beauty",
-      "label": "本地美颜",
-      "desc": "只磨皮肤、不动五官，五官与背景像素原样保留（本机、免费）",
-      "icon": "beauty",
-      "runtime": "python",
-      "backend": "local",
-      "module": "ai_studio.workflows.local_beauty",
-      "op": "skin_smooth",
-      "costModel": "local-free",
-      "surface": "single",
-      "group": "portrait",
-      "order": 50,
-      "ready": true,
-      "providerPolicy": "none"
-    },
-    {
-      "id": "face_reshape",
-      "label": "人像形变",
-      "desc": "自动瘦脸 + 大眼：按 68 点关键点局部液化（本机、免费）",
-      "icon": "beauty",
-      "runtime": "python",
-      "backend": "local",
-      "module": "ai_studio.workflows.reshape",
-      "op": "face_reshape",
-      "costModel": "local-free",
-      "surface": "single",
-      "group": "portrait",
-      "order": 60,
-      "ready": true,
-      "providerPolicy": "none"
-    },
-    {
-      "id": "smart_edit",
-      "label": "智能修图",
-      "desc": "一句话描述效果，AI 规划修图步骤并逐步执行；可开启多轮反思",
-      "icon": "enhance",
-      "runtime": "python",
-      "backend": "cloud",
-      "module": "ai_studio.workflows.smart_edit",
-      "costModel": "cloud",
-      "surface": "single",
-      "group": "creative",
-      "order": 110,
-      "ready": true,
-      "providerPolicy": "vision+edit"
-    },
-    {
-      "id": "journal",
-      "label": "主题手账",
-      "desc": "从一组照片提炼主题、写配文并做风格化，排成一本手账",
-      "icon": "journal",
-      "runtime": "python",
-      "backend": "cloud",
-      "module": "ai_studio.workflows.journal",
-      "costModel": "cloud",
-      "surface": "single",
-      "group": "creative",
-      "order": 120,
-      "ready": true,
-      "providerPolicy": "vision+edit"
-    },
-    {
-      "id": "beauty",
-      "label": "人物美颜",
-      "desc": "预设美颜风格与级别，只做皮肤质感与细节，脸型体型保持不变",
-      "icon": "beauty",
-      "runtime": "python",
-      "backend": "cloud",
-      "module": "ai_studio.workflows.beauty",
-      "op": "beauty",
-      "costModel": "cloud",
-      "surface": "single",
-      "group": "portrait",
-      "order": 130,
-      "ready": true,
-      "providerPolicy": "edit"
-    },
-    {
-      "id": "style_transfer",
-      "label": "滤镜迁移",
-      "desc": "按参考图迁移影调，或一句话自动调色；构图与物体形状保持不变",
-      "icon": "style",
-      "runtime": "python",
-      "backend": "cloud",
-      "module": "ai_studio.workflows.style_transfer",
-      "op": "style_transfer",
-      "costModel": "cloud",
-      "surface": "single",
-      "group": "tone",
-      "order": 140,
-      "ready": true,
-      "providerPolicy": "edit"
-    },
-    {
-      "id": "upscale",
-      "label": "画质增强",
-      "desc": "Real-ESRGAN 2×/4× 超分放大 + 去噪，输出高清 JPG 副本（本机、免费）",
-      "icon": "upscale",
-      "runtime": "python",
-      "backend": "local",
-      "module": "ai_studio.workflows.upscale",
-      "op": "local_upscale",
-      "costModel": "local-free",
-      "surface": "single",
-      "group": "quality",
-      "order": 150,
-      "ready": true,
-      "providerPolicy": "none"
-    },
-    {
-      "id": "compress",
-      "label": "图像压缩",
-      "desc": "体积瘦身：指定目标大小、长边上限与居中裁切，输出 JPEG 副本，原图不动",
-      "icon": "compress",
-      "runtime": "rust",
-      "backend": "local",
-      "costModel": "local-free",
-      "surface": "single",
-      "group": "utility",
-      "order": 0,
-      "ready": true,
-      "providerPolicy": "none"
-    },
-    {
-      "id": "ocr",
-      "label": "文字提取",
-      "desc": "识别照片里的文字，生成可复制的 TXT 文本（本机、免费、离线）",
-      "icon": "text",
-      "runtime": "python",
-      "backend": "local",
-      "module": "ai_studio.workflows.ocr",
-      "op": "ocr",
-      "costModel": "local-free",
-      "surface": "single",
-      "group": "utility",
-      "order": 70,
-      "ready": true,
-      "providerPolicy": "none"
+    "vignette": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 0.0,
+     "step": 0.05,
+     "label": "暗角"
     }
-  ]
+   },
+   "requires": {
+    "luts": true
+   },
+   "requiresBefore": [
+    "auto_grade"
+   ]
+  },
+  {
+   "id": "face_reshape",
+   "label": "人像形变",
+   "desc": "68 点关键点驱动的瘦脸 + 大眼局部液化，五官比例不变",
+   "backend": "local",
+   "stage": 2,
+   "module": "ai_studio.ops_local",
+   "params": {
+    "slim": {
+     "type": "range",
+     "min": 0,
+     "max": 0.8,
+     "default": 0.3,
+     "step": 0.05,
+     "label": "瘦脸"
+    },
+    "eyes": {
+     "type": "range",
+     "min": 0,
+     "max": 0.5,
+     "default": 0.15,
+     "step": 0.05,
+     "label": "大眼"
+    }
+   },
+   "requires": {
+    "models": [
+     "det_10g",
+     "face_landmark_68"
+    ]
+   },
+   "requiresBefore": [
+    "local_film"
+   ]
+  },
+  {
+   "id": "skin_smooth",
+   "label": "分区磨皮",
+   "desc": "只磨皮肤区，五官与眼饰强制排除；形变之后执行才对得上掩码",
+   "backend": "local",
+   "stage": 3,
+   "module": "ai_studio.ops_local",
+   "params": {
+    "strength": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 0.45,
+     "step": 0.05,
+     "label": "磨皮"
+    },
+    "texture": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 0.55,
+     "step": 0.05,
+     "label": "保留质感"
+    }
+   },
+   "requires": {
+    "models": [
+     "det_10g",
+     "face_parsing_r34"
+    ]
+   },
+   "requiresBefore": [
+    "face_reshape"
+   ]
+  },
+  {
+   "id": "skin_tone",
+   "label": "肤色保真",
+   "desc": "以原图肤色为锚，抵消调色/滤镜带来的偏色，再按幅度叠加白黄与嫩红；逐像素增量保留面部色相层次，只作用识别出的皮肤区（磨皮之后执行可直接复用其人脸分析，不重复推理）",
+   "backend": "local",
+   "stage": 4,
+   "group": "portrait",
+   "module": "ai_studio.ops_local",
+   "params": {
+    "hue_shift": {
+     "type": "range",
+     "min": -8,
+     "max": 8,
+     "default": 3.0,
+     "step": 0.5,
+     "label": "色相（负偏红/正偏黄）"
+    },
+    "chroma": {
+     "type": "range",
+     "min": -6,
+     "max": 6,
+     "default": 1.5,
+     "step": 0.5,
+     "label": "彩度"
+    },
+    "brighten": {
+     "type": "range",
+     "min": 0,
+     "max": 4,
+     "default": 1.5,
+     "step": 0.5,
+     "label": "提亮"
+    },
+    "blush": {
+     "type": "range",
+     "min": 0,
+     "max": 3,
+     "default": 1.2,
+     "step": 0.2,
+     "label": "嫩红"
+    }
+   },
+   "requires": {
+    "models": [
+     "det_10g",
+     "face_parsing_r34"
+    ]
+   },
+   "requiresBefore": [
+    "auto_grade",
+    "local_film",
+    "color_transfer",
+    "skin_smooth"
+   ]
+  },
+  {
+   "id": "local_vibrance",
+   "label": "自然饱和度",
+   "desc": "独立自然饱和度：淡色多加、艳色少加，负值收敛；放在调色/滤镜之后作最后一步。0 = 不做，滑条中间 50 即中性",
+   "backend": "local",
+   "stage": 6,
+   "group": "tone",
+   "module": "ai_studio.ops_local",
+   "params": {
+    "vibrance": {
+     "type": "range",
+     "min": -0.25,
+     "max": 0.25,
+     "default": 0.0,
+     "step": 0.05,
+     "label": "自然饱和度"
+    }
+   },
+   "requires": {},
+   "requiresBefore": []
+  },
+  {
+   "id": "local_upscale",
+   "label": "本机超分",
+   "desc": "Real-ESRGAN 2×/4×，最贵，放链路最后避免前面都跑在高分辨率上",
+   "backend": "local",
+   "preview": false,
+   "stage": 5,
+   "module": "ai_studio.ops",
+   "params": {
+    "scale": {
+     "type": "enum",
+     "values": [
+      2,
+      4
+     ],
+     "default": 4,
+     "label": "倍率"
+    }
+   },
+   "requires": {
+    "models": [
+     "real_esrgan_x4"
+    ]
+   },
+   "requiresBefore": [
+    "skin_smooth"
+   ]
+  },
+  {
+   "id": "color_transfer",
+   "label": "参考图调色",
+   "desc": "按参考图的 Lab 统计迁移色调（Reinhard / 直方图），须给定参考图路径",
+   "backend": "local",
+   "stage": 1,
+   "module": "ai_studio.ops_local",
+   "params": {
+    "method": {
+     "type": "enum",
+     "values": [
+      "reinhard",
+      "histogram"
+     ],
+     "default": "reinhard",
+     "label": "方法"
+    },
+    "strength": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 1.0,
+     "step": 0.05,
+     "label": "强度"
+    },
+    "reference_path": {
+     "type": "string",
+     "default": "",
+     "label": "参考图"
+    }
+   },
+   "requires": {},
+   "requiresBefore": [
+    "auto_grade"
+   ]
+  },
+  {
+   "id": "beauty",
+   "label": "人物美颜",
+   "desc": "外部图像编辑模型精修",
+   "backend": "cloud",
+   "stage": 0,
+   "module": "ai_studio.ops",
+   "params": {
+    "style": {
+     "type": "enum",
+     "values": [
+      "natural",
+      "crisp",
+      "film"
+     ],
+     "default": "natural",
+     "label": "风格"
+    },
+    "level": {
+     "type": "enum",
+     "values": [
+      "light",
+      "medium",
+      "strong"
+     ],
+     "default": "medium",
+     "label": "级别"
+    }
+   },
+   "requires": {
+    "providers": [
+     "edit"
+    ]
+   },
+   "requiresBefore": []
+  },
+  {
+   "id": "style_transfer",
+   "label": "调色 / 滤镜迁移",
+   "desc": "按参考图迁移影调，或一句话自动调色；物体形状与构图保持不变",
+   "backend": "cloud",
+   "stage": 1,
+   "module": "ai_studio.ops",
+   "params": {
+    "mode": {
+     "type": "enum",
+     "values": [
+      "autograde",
+      "transfer"
+     ],
+     "default": "autograde",
+     "label": "模式"
+    },
+    "referenceDesc": {
+     "type": "string",
+     "default": "",
+     "label": "参考风格"
+    },
+    "extra": {
+     "type": "string",
+     "default": "",
+     "label": "补充要求"
+    }
+   },
+   "requires": {
+    "providers": [
+     "edit"
+    ]
+   },
+   "requiresBefore": [
+    "beauty"
+   ]
+  },
+  {
+   "id": "upscale",
+   "label": "云端超分",
+   "desc": "外部超分 / 图像编辑模型",
+   "backend": "cloud",
+   "stage": 4,
+   "module": "ai_studio.ops",
+   "params": {
+    "scale": {
+     "type": "range",
+     "min": 1,
+     "max": 4,
+     "default": 2,
+     "step": 1,
+     "label": "倍率"
+    }
+   },
+   "requires": {
+    "providers": [
+     "upscale"
+    ]
+   },
+   "requiresBefore": [
+    "style_transfer"
+   ]
+  },
+  {
+   "id": "refine",
+   "label": "反思微调",
+   "desc": "仅反思循环内部调用，不允许 planner / 配方直接编排",
+   "backend": "cloud",
+   "stage": 5,
+   "module": "ai_studio.ops",
+   "internal": true,
+   "params": {
+    "issues": {
+     "type": "string",
+     "default": "",
+     "label": "问题点"
+    },
+    "extra": {
+     "type": "string",
+     "default": "",
+     "label": "补充要求"
+    }
+   },
+   "requires": {
+    "providers": [
+     "edit"
+    ]
+   },
+   "requiresBefore": []
+  },
+  {
+   "id": "ocr",
+   "label": "文字提取",
+   "desc": "PaddleOCR det+rec 本机离线识别，仅由 ocr 工作流编排，不允许 planner / 配方直接调用",
+   "backend": "local",
+   "stage": 0,
+   "module": "ai_studio.ocr_engine",
+   "internal": true,
+   "params": {},
+   "requires": {
+    "models": [
+     "paddleocr_rec"
+    ],
+    "notes": "det 模型是扫描区共享件（模型管理下载，非工坊区），由 workflows/ocr.py 运行时自检并给可操作报错"
+   },
+   "requiresBefore": []
+  }
+ ],
+ "tools": [
+  {
+   "id": "recipe",
+   "label": "一键出片",
+   "desc": "选图 → 选配方 → 出片；调色 / 滤镜 / 人像 / 高清一条链跑完",
+   "icon": "enhance",
+   "runtime": "python",
+   "backend": "local",
+   "module": "ai_studio.workflows.recipe",
+   "costModel": "local-free",
+   "surface": "primary",
+   "group": "primary",
+   "ready": true,
+   "providerPolicy": "none"
+  },
+  {
+   "id": "auto_grade",
+   "label": "智能调色",
+   "desc": "按画面明暗与色偏自动调色，可导出 .cube 当滤镜复用（本机、免费）",
+   "icon": "style",
+   "runtime": "python",
+   "backend": "local",
+   "module": "ai_studio.workflows.auto_grade",
+   "op": "auto_grade",
+   "costModel": "local-free",
+   "surface": "single",
+   "group": "tone",
+   "order": 10,
+   "ready": true,
+   "providerPolicy": "none"
+  },
+  {
+   "id": "film_sim",
+   "label": "胶片模拟",
+   "desc": "内置多款胶片 LUT，一键套用，可加颗粒与暗角（本机、免费）",
+   "icon": "style",
+   "runtime": "python",
+   "backend": "local",
+   "module": "ai_studio.workflows.film_sim",
+   "op": "local_film",
+   "costModel": "local-free",
+   "surface": "single",
+   "group": "tone",
+   "order": 20,
+   "ready": true,
+   "providerPolicy": "none"
+  },
+  {
+   "id": "color_transfer",
+   "label": "参考图调色",
+   "desc": "把参考图的色调与影调迁移到素材图（本机、免费）",
+   "icon": "style",
+   "runtime": "python",
+   "backend": "local",
+   "module": "ai_studio.workflows.color_transfer",
+   "op": "color_transfer",
+   "costModel": "local-free",
+   "params": {
+    "method": {
+     "type": "enum",
+     "values": [
+      "reinhard",
+      "histogram"
+     ],
+     "default": "reinhard",
+     "label": "方法"
+    },
+    "strength": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 1.0,
+     "step": 0.05,
+     "label": "强度"
+    }
+   },
+   "surface": "single",
+   "group": "tone",
+   "order": 30,
+   "ready": true,
+   "providerPolicy": "none"
+  },
+  {
+   "id": "restore",
+   "label": "画质修复",
+   "desc": "Real-ESRGAN 2×/4× 超分 + 人脸修复，输出高清 JPG 副本（本机、免费）",
+   "icon": "enhance",
+   "runtime": "python",
+   "backend": "local",
+   "module": "ai_studio.workflows.restore",
+   "op": "local_upscale",
+   "costModel": "local-free",
+   "surface": "single",
+   "group": "quality",
+   "order": 40,
+   "ready": true,
+   "providerPolicy": "none"
+  },
+  {
+   "id": "local_beauty",
+   "label": "本地美颜",
+   "desc": "只磨皮肤、不动五官，五官与背景像素原样保留（本机、免费）",
+   "icon": "beauty",
+   "runtime": "python",
+   "backend": "local",
+   "module": "ai_studio.workflows.local_beauty",
+   "op": "skin_smooth",
+   "costModel": "local-free",
+   "surface": "single",
+   "group": "portrait",
+   "order": 50,
+   "ready": true,
+   "providerPolicy": "none"
+  },
+  {
+   "id": "face_reshape",
+   "label": "人像形变",
+   "desc": "自动瘦脸 + 大眼：按 68 点关键点局部液化（本机、免费）",
+   "icon": "beauty",
+   "runtime": "python",
+   "backend": "local",
+   "module": "ai_studio.workflows.reshape",
+   "op": "face_reshape",
+   "costModel": "local-free",
+   "surface": "single",
+   "group": "portrait",
+   "order": 60,
+   "ready": true,
+   "providerPolicy": "none"
+  },
+  {
+   "id": "smart_edit",
+   "label": "智能修图",
+   "desc": "一句话描述效果，AI 规划修图步骤并逐步执行；可开启多轮反思",
+   "icon": "enhance",
+   "runtime": "python",
+   "backend": "cloud",
+   "module": "ai_studio.workflows.smart_edit",
+   "costModel": "cloud",
+   "surface": "single",
+   "group": "creative",
+   "order": 110,
+   "ready": true,
+   "providerPolicy": "vision+edit"
+  },
+  {
+   "id": "journal",
+   "label": "主题手账",
+   "desc": "从一组照片提炼主题、写配文并做风格化，排成一本手账",
+   "icon": "journal",
+   "runtime": "python",
+   "backend": "cloud",
+   "module": "ai_studio.workflows.journal",
+   "costModel": "cloud",
+   "surface": "single",
+   "group": "creative",
+   "order": 120,
+   "ready": true,
+   "providerPolicy": "vision+edit"
+  },
+  {
+   "id": "beauty",
+   "label": "人物美颜",
+   "desc": "预设美颜风格与级别，只做皮肤质感与细节，脸型体型保持不变",
+   "icon": "beauty",
+   "runtime": "python",
+   "backend": "cloud",
+   "module": "ai_studio.workflows.beauty",
+   "op": "beauty",
+   "costModel": "cloud",
+   "surface": "single",
+   "group": "portrait",
+   "order": 130,
+   "ready": true,
+   "providerPolicy": "edit"
+  },
+  {
+   "id": "style_transfer",
+   "label": "滤镜迁移",
+   "desc": "按参考图迁移影调，或一句话自动调色；构图与物体形状保持不变",
+   "icon": "style",
+   "runtime": "python",
+   "backend": "cloud",
+   "module": "ai_studio.workflows.style_transfer",
+   "op": "style_transfer",
+   "costModel": "cloud",
+   "surface": "single",
+   "group": "tone",
+   "order": 140,
+   "ready": true,
+   "providerPolicy": "edit"
+  },
+  {
+   "id": "upscale",
+   "label": "画质增强",
+   "desc": "Real-ESRGAN 2×/4× 超分放大 + 去噪，输出高清 JPG 副本（本机、免费）",
+   "icon": "upscale",
+   "runtime": "python",
+   "backend": "local",
+   "module": "ai_studio.workflows.upscale",
+   "op": "local_upscale",
+   "costModel": "local-free",
+   "surface": "single",
+   "group": "quality",
+   "order": 150,
+   "ready": true,
+   "providerPolicy": "none"
+  },
+  {
+   "id": "compress",
+   "label": "图像压缩",
+   "desc": "体积瘦身：指定目标大小、长边上限与居中裁切，输出 JPEG 副本，原图不动",
+   "icon": "compress",
+   "runtime": "rust",
+   "backend": "local",
+   "costModel": "local-free",
+   "surface": "single",
+   "group": "utility",
+   "order": 0,
+   "ready": true,
+   "providerPolicy": "none"
+  },
+  {
+   "id": "ocr",
+   "label": "文字提取",
+   "desc": "识别照片里的文字，生成可复制的 TXT 文本（本机、免费、离线）",
+   "icon": "text",
+   "runtime": "python",
+   "backend": "local",
+   "module": "ai_studio.workflows.ocr",
+   "op": "ocr",
+   "costModel": "local-free",
+   "surface": "single",
+   "group": "utility",
+   "order": 70,
+   "ready": true,
+   "providerPolicy": "none"
+  }
+ ]
 }

@@ -97,6 +97,7 @@ def op_upscale(
 ) -> Image.Image:
     """云端超分一次。`scale` 只进提示词（网关没有倍率参数），所以「4×」由**两次 2×**
     组合实现（见 `ai_studio/upsample.py`），比一次写 4× 更接近真实细节增益。"""
+    _drop_face_analysis(ctx)  # 尺寸变了，磨皮留下的掩码与新图不再对齐（FEAT-208）
     prov = getattr(providers, "upscale", None) or getattr(providers, "edit", None)
     if not prov or not getattr(prov, "baseUrl", "") or not getattr(prov, "model", ""):
         raise ValueError("未配置超分 provider（设置里填写 baseUrl / model）")
@@ -135,6 +136,17 @@ def _clamp01(v: Any, default: float) -> float:
         return max(0.0, min(1.0, float(v)))
     except Exception:
         return default
+
+
+def _drop_face_analysis(ctx: RunContext) -> None:
+    """几何被改动的算子（超分/形变）作废跨步共享的人脸分析（FEAT-208）。
+
+    ctx.scratch['face_analysis'] 是磨皮在本图上算的掩码；图一旦被缩放/液化，
+    掩码与新像素不再对齐，肤色校正复用它会把头发/背景当成皮肤改色。
+    """
+    scratch = getattr(ctx, "scratch", None)
+    if scratch:
+        scratch.pop("face_analysis", None)
 
 
 def _limit_long_edge(img: Image.Image, max_long: int) -> Image.Image:
@@ -178,6 +190,7 @@ def op_local_upscale(
     img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
 ) -> Image.Image:
     """本机 Real-ESRGAN ×4 超分（2× 时再降采样）。模型未就绪抛 FileNotFoundError。"""
+    _drop_face_analysis(ctx)  # 尺寸变了，磨皮留下的掩码与新图不再对齐（FEAT-208）
     if not localmodels.esrgan_ready():
         raise FileNotFoundError(
             "本地超分模型未就绪（real_esrgan_x4.onnx），请在「模型设置 › 本地模型」下载后重试"

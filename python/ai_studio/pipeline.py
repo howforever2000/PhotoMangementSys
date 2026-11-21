@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import Any, Callable, Dict, FrozenSet, List
 
 from PIL import Image
@@ -134,7 +135,10 @@ def execute_plan(
     回退既保住形状，也保住其余步骤的成果。
     """
     cur = img
-    context = ctx or EMPTY_CTX
+    # 照片级上下文派生（FEAT-208）：作业级字段（render_steps/style_prompt）原样继承，
+    # source = 本张原图（肤色保真的锚点）、scratch = 本张的跨步共享槽（磨皮的人脸
+    # 分析结果供肤色复用）。每次调用新建 dict/Image 引用，照片级并行下互不可见。
+    context = replace(ctx or EMPTY_CTX, source=img, scratch={})
     steps = plan.get("steps") or []
     total = len(steps)
     for i, st in enumerate(steps, start=1):

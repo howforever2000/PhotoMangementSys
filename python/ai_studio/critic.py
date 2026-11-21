@@ -76,11 +76,20 @@ def metrics(img: Image.Image) -> Dict[str, float]:
     }
 
 
-def compare(source: Image.Image, result: Image.Image) -> Dict[str, Any]:
+def compare(
+    source: Image.Image,
+    result: Image.Image,
+    expect_skin_shift: bool = False,
+) -> Dict[str, Any]:
     """原图 ↔ 结果对照，返回 `{verdict, score, dims, issues}`。
 
-    verdict 只用 pass | fail | unknown 三态：指标只能抓「明显退化」，
+    verdict 只用 pass | fail | unknown 三态：指标只能抓「明显退化」,
     抓不到的（构图、身份、审美）一律 unknown，绝不冒充通过。
+
+    `expect_skin_shift`（FEAT-208）：链路里含有「肤色保真」时，肤色 R/G 变化
+    是**算子的本职**而不是退化 —— 这一项告警跳过，其余指标照常。
+    为什么是显式豁免而不是放宽阈值：放宽会把真偏色也放过去
+    （knowledge/local-enhance.md §17：阈值过松漏报、过紧变噪音源，两个方向都坏）。
     """
     s, r = metrics(source), metrics(result)
     issues: List[str] = []
@@ -108,7 +117,14 @@ def compare(source: Image.Image, result: Image.Image) -> Dict[str, Any]:
     #    阈值 0.25：normal 档 saturation 1.08 + vibrance 0.20 会把暖肤色自然推高
     #    约 0.18（实测 1.36 → 1.54），这是「自然饱和度」的正常效果而非偏色。
     #    旧阈值 0.18 恰好卡在正常波动上，导致每张人像都误报（BUG-2026-1117-007）。
-    if s["skinRG"] > 0 and r["skinRG"] > 0 and abs(r["skinRG"] - s["skinRG"]) > _SKIN_RG_DELTA:
+    #    FEAT-208：链路含「肤色保真」时本项由调用方豁免 —— 实测滤镜链自身就能把
+    #    ΔR/G 推到 +0.356，肤色算子的本职就是把这些拉回去。
+    if (
+        not expect_skin_shift
+        and s["skinRG"] > 0
+        and r["skinRG"] > 0
+        and abs(r["skinRG"] - s["skinRG"]) > _SKIN_RG_DELTA
+    ):
         issues.append(f"肤色偏移（R/G {s['skinRG']:.2f} → {r['skinRG']:.2f}）")
 
     # 5) 整体亮度漂移过大

@@ -7996,7 +7996,331 @@
         "openUrl",
         "PolyForm"
       ]
+    },
+    {
+      "id": "FEAT-200",
+      "name": "分类/人物画廊分页热加载 + 人物详情改全页二级视图",
+      "status": "done",
+      "date": "2026-11-21",
+      "created_at": "2026-11-21",
+      "updated_at": "2026-11-21",
+      "module": "src-tauri/src/db/category.rs、src-tauri/src/category.rs、src-tauri/src/lib.rs、src-tauri/src/persons.rs、src/components/CategoryGallery.vue、src/components/PersonGallery.vue",
+      "purpose": "分类照片网格此前一次 list_category_photos 拉 2000 条 + 全量缩略图入队，大分类点开要等很久；人物点卡片弹 760×580 小窗，与地点/内容分类的全页二级视图不一致。改成分页热加载 + 全页视图。",
+      "implementation": "后端：list_category_photos 加 offset/keyword 参数（ORDER BY score DESC,photo_hash ASC 稳定，OFFSET 不重不漏）；新增 list_category_keyword_counts 聚合（chips 全量口径）；get_person_photos 加 limit/offset，切片在缩略图构建之前（千张级人物首屏只建当前页缩略图）。前端：两画廊首屏 300 张、IntersectionObserver rootMargin 400px 每次追加 150 张、缩略图按页入队、哨兵追加后若仍在视口自动续拉；chips 改后端聚合口径；PersonGallery 弹窗（ResizableDialog）改页面内 v-if 二级视图 + 「← 返回人物」，批量管理/格子缩放/设头像/右键/focusPid 全保留。",
+      "highlights": [
+        "分页排序键 score+photo_hash 稳定，OFFSET 翻页不重不漏",
+        "人物照片切片前置到 spawn_blocking 之前，缩略图重活只落在当前页",
+        "chips 计数与分页解耦（后端 GROUP BY 聚合，筛选态走 keyword 参数分页）",
+        "追加后 rAF 复查哨兵是否仍在视口，页面没撑出滚动条时自动续页",
+        "人物详情标题显示 已加载/总数（list_person_photos 纯 DB 读供总数）"
+      ],
+      "related_files": [
+        "src-tauri/src/db/category.rs",
+        "src-tauri/src/category.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/persons.rs",
+        "src/components/CategoryGallery.vue",
+        "src/components/PersonGallery.vue"
+      ],
+      "tests": "cargo test --lib category::（17 通过，含分页/keyword/聚合新断言）；cargo check --all-targets；npx vue-tsc --noEmit；@vue/compiler-sfc 编译两 SFC 通过",
+      "keywords": [
+        "分页",
+        "热加载",
+        "IntersectionObserver",
+        "OFFSET",
+        "关键词聚合",
+        "全页二级视图",
+        "人物画廊",
+        "分类画廊"
+      ]
+    },
+    {
+      "id": "FEAT-201",
+      "name": "通用照片集合全页（共享组件）+ 概览入口改直达：那年今日按天 / 最近导入",
+      "status": "done",
+      "date": "2026-11-21",
+      "created_at": "2026-11-21",
+      "updated_at": "2026-11-21",
+      "module": "src-tauri/src/db/content.rs、src-tauri/src/content.rs、src-tauri/src/lib.rs、src/components/PhotoCollectionPage.vue、src/views/CollectionView.vue、src/router/index.ts、src/components/OverviewPane.vue、src/types/collection.ts",
+      "purpose": "概览「那年今日」此前跳回忆页 ?day 弹当日浏览框（要为看一天的照片拉 15MB 全量时间线），「最近导入」整块泛跳时间线、单张跳所属相册，都到不了目标照片本身；且各处点击跳转缺一套统一的全页呈现。改为共享 PhotoCollectionPage 全页组件（FEAT-200 同款分页热加载）。",
+      "implementation": "后端：timeline_day(day,limit,offset)/timeline_recent(limit,offset) 两条分页查询（TimelineCard 行结构 + 死链缩略图清理，与 timeline_month 同款；day 日内按 shoot_time 升序与回忆页当日框同口径，recent 按 p.id 倒序与快照 recent 同口径），lib.rs 注册。前端：新建共享 PhotoCollectionPage（loader 解耦后端、首屏 300/步进 150、哨兵 IO 400px、缩略图按页、PhotoZoomBar、Lightbox 纯浏览无删除）、CollectionView 路由页解析 ?type=day&date / ?type=recent、/collection 路由注册；OverviewPane 那年今日与最近导入（整块+单张封面）均改跳集合页，移除泛跳。Memories ?day 入口保留兼容 deep-link。",
+      "highlights": [
+        "PhotoCollectionPage 与后端解耦：宿主传 loader(limit,offset)，不足一页即无更多，任意命令行结构映射 CollectionPhoto 即可接入",
+        "timeline_day/recent 与 timeline_month 共用 TIMELINE_CARD_SELECT 行清单，排序键含 id 兜底，OFFSET 不重不漏",
+        "看一天照片不再拉 15MB 全量时间线（Memories ?day 时代代价）",
+        "集合页纯浏览定位：删除/归档/批量管理留在相册与画廊，避免整套删除链路进通用组件"
+      ],
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/lib.rs",
+        "src/components/PhotoCollectionPage.vue",
+        "src/views/CollectionView.vue",
+        "src/router/index.ts",
+        "src/components/OverviewPane.vue",
+        "src/types/collection.ts"
+      ],
+      "tests": "cargo test --lib db::content::tests::timeline_day_and_recent_pagination（新增分页/排序/多用户断言）；cargo test --lib content:: 31/31；cargo check --all-targets；vue-tsc 零错误；三个 SFC 编译通过",
+      "keywords": [
+        "照片集合",
+        "全页二级视图",
+        "共享组件",
+        "那年今日",
+        "最近导入",
+        "分页热加载",
+        "timeline_day",
+        "timeline_recent"
+      ]
+    },
+    {
+      "id": "FEAT-202",
+      "name": "按地点批量「识别所有地点」按钮 + 自动分类卡片 Ctrl+滚轮缩放",
+      "status": "done",
+      "date": "2026-11-21",
+      "created_at": "2026-11-21",
+      "updated_at": "2026-11-21",
+      "module": "src-tauri/src/photo_scan.rs、src-tauri/src/album.rs、src-tauri/src/lib.rs、src/views/AlbumList.vue、src/components/CategoryGallery.vue",
+      "purpose": "相册管理「按地点」视图此前只能逐相册在 AlbumMeta 里单点识别地点，批量场景全靠手点；自动分类卡片网格固定 4 列，卡片大小无法调整。",
+      "implementation": "后端：photo_scan 新增 detect_album_location_first_hit（按文件名序逐张读 EXIF，首张带 GPS 即返回，批量时把 N 张解析降为 1 张）；album.rs 新增 auto_detect_all_album_locations(force)——遍历全部普通相册（kind=normal，排除归档/隐藏虚拟相册），已有地点且 !force 直接跳过，逐相册 首命中GPS→geo_index 离线反查→联网兜底→update_album_location 落库，单相册失败只记进度状态不中断，每相册发 album-location-detect-progress 事件，返回写入数；lib.rs 注册。前端：AlbumList 地点模式提示栏加「📍 识别所有地点」按钮 + 事件驱动进度（识别中 done/total：相册名），完成后 fetchAlbums 刷新并 notify 汇总；CategoryGallery 卡片网格列数改 CSS 变量 --cat-cols（1~10，默认 4）驱动、行高按 186*4/cols 反算保持比例，Ctrl+滚轮 preventDefault 步进（上滚放大=列变少），档位持久化 localStorage，工具栏加提示字样。",
+      "highlights": [
+        "首命中语义（第一张带 GPS 即停）与既有 detect_album_location 众数语义并存，批量按钮走首命中提速度",
+        "force=false 不覆盖已有地点标签，与单相册 auto_detect_album_location 行为一致",
+        "单相册 no_gps/fail 只上报进度不中断批量，联网反查不持数据库锁",
+        "分类卡缩放复用 PersonGallery 的 Ctrl+滚轮交互口径，窄屏媒体查询断点保留"
+      ],
+      "related_files": [
+        "src-tauri/src/photo_scan.rs",
+        "src-tauri/src/album.rs",
+        "src-tauri/src/lib.rs",
+        "src/views/AlbumList.vue",
+        "src/components/CategoryGallery.vue"
+      ],
+      "tests": "cargo check 通过（仅既有警告）；npx vue-tsc --noEmit 零错误",
+      "keywords": [
+        "地点识别",
+        "批量识别所有地点",
+        "首命中 GPS",
+        "reverse geocode",
+        "Ctrl+滚轮缩放",
+        "分类卡片缩放",
+        "album-location-detect-progress"
+      ]
+    },
+    {
+      "id": "FEAT-203",
+      "name": "FEAT-202 三项跟进：分类卡缩放宽度修复 + 手动排序卡片 Ctrl+滚轮缩放 + 地点批量识别 rayon 并行",
+      "status": "done",
+      "date": "2026-11-21",
+      "created_at": "2026-11-21",
+      "updated_at": "2026-11-21",
+      "module": "src/components/CategoryGallery.vue、src/views/ManualSort.vue、src/components/AlbumMiniCard.vue、src-tauri/src/album.rs",
+      "purpose": "①分类卡片缩放实测只有高度变（窄屏媒体查询覆盖 var 列数，见 BUG-2026-1121-003）；②手动排序的迷你相册卡无缩放能力，需与分类/人物画廊同口径的 Ctrl+滚轮缩放；③「识别所有地点」串行逐相册太慢，改多线程提速。",
+      "implementation": "前端：CategoryGallery 删除 .cat-grid 三条列数媒体查询，列数全程由 --cat-cols 决定；ManualSort 新增 miniSize 档位（60~200px 步进 10，localStorage manual-mini-size）+ 根容器 @wheel Ctrl+滚轮步进（上滚放大），经 --mini-card-w 变量注入；AlbumMiniCard 固定 px 改 calc(var(--mini-card-w,90px)) 等比反算（卡片宽/封面宽高/名称字号/max-width/角标位置），未设置时回落 90px 历史默认。后端：auto_detect_all_album_locations 改 rayon par_iter 并行——整体放 tauri::async_runtime::spawn_blocking（不阻塞 async runtime），线程内经 app.state::<AppState>() 取状态（State 不能跨线程 move）；按相册粒度并行（EXIF 首命中是随机 IO+解析的延迟敏感任务，相册是天然独立工作单元），done 按 AtomicUsize 完成数计数（并行下完成顺序不定），changed 同口径累计；数据库锁只在写库瞬间短持，锁中毒按单相册失败处理不中断整体。",
+      "highlights": [
+        "变量化布局属性时必须同步清除旧断点对同一属性的硬编码覆盖（BUG-2026-1121-003 教训）",
+        "AlbumMiniCard 全部尺寸用 calc 从单一宽度变量反算，一处档位全卡联动，未注入时回落 90px 不破坏其他使用方",
+        "rayon 并行保持单相册失败语义：no_gps/fail 只发进度事件不中断；spawn_blocking + app.state 模式与 get_albums 一致",
+        "并行后进度事件完成顺序不定，done=完成数而非序号，前端展示口径不变"
+      ],
+      "related_files": [
+        "src/components/CategoryGallery.vue",
+        "src/views/ManualSort.vue",
+        "src/components/AlbumMiniCard.vue",
+        "src-tauri/src/album.rs"
+      ],
+      "tests": "cargo check 通过（仅既有警告）；npx vue-tsc --noEmit 零错误",
+      "keywords": [
+        "Ctrl+滚轮缩放",
+        "媒体查询覆盖",
+        "CSS 变量",
+        "AlbumMiniCard",
+        "rayon 并行",
+        "spawn_blocking",
+        "地点批量识别"
+      ]
+    },
+    {
+      "id": "FEAT-204",
+      "name": "地点详情照片网格分页热加载（首屏 300 / 步进 150 / 哨兵预加载 / 缩略图按页）",
+      "status": "done",
+      "date": "2026-11-21",
+      "created_at": "2026-11-21",
+      "updated_at": "2026-11-21",
+      "module": "src-tauri/src/db/content.rs、src-tauri/src/content.rs、src/components/LocationGallery.vue",
+      "purpose": "智慧相册地点点击进照片网格是「硬解」：一次 invoke 拉全量 list_photos_by_location + 全量缩略图生成全部完成后才见首屏，大地点（数千张）点击后长时间白屏骨架。",
+      "implementation": "后端：list_photos_by_location 加 limit/offset（db 层两个 SQL 分支各加 LIMIT ?n OFFSET ?n；命令层 Option<i64> 不传回退全量兼容旧调用）；排序末位 p.id DESC 稳定兜底 → OFFSET 不重不漏。前端：LocationGallery 视图 2 改 FEAT-200 同口径——首屏 PAGE_FIRST=300 / 步进 PAGE_STEP=150 / 哨兵 IntersectionObserver rootMargin 400px（滚到底之前下一页已在路上 = 预加载）；loadGridThumbs 改收 rows 参数只给新追加的一页入队（thumbMap 全局缓存去重）；追加后 rAF 复查哨兵仍相交则手动续拉（IO 不对持续相交重发回调，防短页卡死）；返回条数 < 步长即 photosDone 断流；标题栏计数改「已加载 X / Y 张」，末页显示「已全部加载」；返回/卸载时 teardown 观察器。",
+      "highlights": [
+        "与 FEAT-200（分类/人物/集合页）同一套分页口径，行为一致无学习成本",
+        "缩略图按页入队：首屏只为 300 张付费，后续每页 150 张增量生成",
+        "命令层 limit/offset 可选不传=全量，旧调用方零改动兼容",
+        "加载失败不置 done，哨兵继续观察，用户滚动可重试"
+      ],
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src/components/LocationGallery.vue"
+      ],
+      "tests": "cargo check 通过（仅既有警告）；npx vue-tsc --noEmit 零错误",
+      "keywords": [
+        "分页热加载",
+        "地点照片网格",
+        "哨兵预加载",
+        "IntersectionObserver",
+        "缩略图按页",
+        "OFFSET 稳定排序",
+        "list_photos_by_location"
+      ]
+    },
+    {
+      "id": "FEAT-205",
+      "name": "回忆页年/月改共享集合全页 + timeline_year 分页命令（月度浏览框下线）",
+      "status": "done",
+      "date": "2026-11-21",
+      "created_at": "2026-11-21",
+      "updated_at": "2026-11-21",
+      "module": "src-tauri/src/db/content.rs、src-tauri/src/content.rs、src-tauri/src/lib.rs、src/views/Memories.vue、src/views/CollectionView.vue",
+      "purpose": "回忆页月度故事卡点击弹「月度浏览框」小窗（整月一次性灌进弹窗、无格子缩放），年度卡跳时间线页（要拉全量 15MB 时间线）；用户要求与地点/人物一致改全页组件呈现并支持缩放。",
+      "implementation": "后端：timeline_year(year,limit,offset) 整年分页查询（含残缺拍摄时间如「2024」，shoot_time 升序 id 兜底）；月份复用既有 timeline_month 分页命令。前端：CollectionView 增加 ?type=month&year&month 与 ?type=year&year 两种集合；Memories 月度卡→/collection?type=month、年度卡→/collection?type=year（Meta 文案改「点击查看全部」）、旧 /memories?day deep-link 兼容跳 ?type=day；月度浏览框整套移除（脚本机制/模板/CSS 约 300 行，含 ESC 拦截、框内回顶、缩略图骨架动画）。",
+      "highlights": [
+        "月度集合零新查询：直接复用 timeline_month 的 limit/offset 分页",
+        "年度查询含残缺拍摄时间（如只有年没有月日）不丢数据，时间线页仍单独成组互不影响",
+        "月度浏览框整体下线，回忆页不再维护弹窗生命周期（ESC 拦截/背景锁滚/框内回顶）",
+        "共享 PhotoCollectionPage 自带格子缩放（PhotoZoomBar）与分页热加载，四处入口（日/月/年/最近导入）同一套呈现"
+      ],
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/content.rs",
+        "src-tauri/src/lib.rs",
+        "src/views/Memories.vue",
+        "src/views/CollectionView.vue"
+      ],
+      "tests": "cargo test --lib db::content:: 14/14（timeline_day_and_recent_pagination 扩展 timeline_year 断言：整年聚合/残缺值/分页/空页）；cargo check --all-targets；vue-tsc 零错误；两 SFC 编译通过",
+      "keywords": [
+        "回忆页",
+        "月度浏览框",
+        "集合全页",
+        "timeline_year",
+        "timeline_month",
+        "分页",
+        "格子缩放"
+      ]
+    },
+    {
+      "id": "FEAT-206",
+      "name": "批量套用独立「自然饱和度」末步算子：双向滑条中性 50（调色完之后收尾）",
+      "status": "done",
+      "date": "2026-11-21",
+      "created_at": "2026-11-21",
+      "updated_at": "2026-11-21",
+      "module": "python/ai_studio/autograde.py、python/ai_studio/ops_local.py、python/ai_studio/op_catalog.json、python/ai_studio/recipes.json、python/ai_studio/recipecatalog.py、python/tests/test_recipe_overrides.py、src/utils/workbenchPlan.ts、src/utils/toolCatalog.ts、src/utils/toolCatalog.test.ts、src/utils/workbenchPlan.test.ts、src/components/workshop/ai/WorkbenchTune.vue",
+      "purpose": "批量套用（工作台·配方）里自然饱和度只内嵌在调色算子里（0=不做、滑条压在最左），用户要求：①滑条放到调色完之后（或最后一步）；②多一个独立自然饱和度；③滑条中性位置应是中间 50 而不是 0。",
+      "implementation": "新增独立算子 local_vibrance（stage 5，最后一步）：autograde.vibrance_adjust 复用 _vibrance_lch 同一套 LCh 数学（淡色权重高、艳色权重低、越色域 headroom 回收），amount 双向（负=收敛），0 逐字节恒等；ops_local 注册 + TUNABLE_PARAMS 白名单；四条配方末尾追加该步（默认 0 = 不改出图）。前端：rawToSlider/sliderToRaw 开始尊重 spec.min（双向值域中性 0 落在滑条中间 50，既有 min:0 参数结果不变）；OpSpec 支持可选 group（自然饱和度→影调分组）；微调面板脚注说明中性值口径。",
+      "highlights": [
+        "双向滑条：中间 50 = 不做，右 +0.25 提升、左 -0.25 收敛（值域与调色内嵌 vibrance 上限同档）",
+        "配方默认 0 逐字节恒等，四条配方出图不变（有守卫测试钉住）",
+        "同一套 LCh 数学复用，不新写算法；op 分发/夹取/预览/质检链路零改动（schema 驱动自动生效）",
+        "批量套用、创意组合、智能调色单步工具三处口径一致；独立滑条在配方与创意组合里都可用"
+      ],
+      "related_files": [
+        "python/ai_studio/autograde.py",
+        "python/ai_studio/ops_local.py",
+        "python/ai_studio/op_catalog.json",
+        "python/ai_studio/recipes.json",
+        "python/ai_studio/recipecatalog.py",
+        "src/utils/workbenchPlan.ts",
+        "src/utils/toolCatalog.ts"
+      ],
+      "tests": "python：catalog.validate + 四条配方 validate_plan + apply_overrides 夹取 + vibrance_adjust 数值 smoke（中性恒等/淡色权重/负向收敛/0 值恒等）+ pytest 目标 22/22；前端 npm test 328/328（新增双向滑条/算子 schema/配方收尾断言）；vue-tsc 零错误；SFC 编译通过",
+      "keywords": [
+        "自然饱和度",
+        "vibrance",
+        "双向滑条",
+        "中性值",
+        "local_vibrance",
+        "批量套用",
+        "配方",
+        "最后一步"
+      ]
+    },
+    {
+      "id": "FEAT-207",
+      "name": "移除其他地方的内嵌自然饱和度滑条（只保留 local_vibrance 独立算子）",
+      "status": "done",
+      "date": "2026-11-21",
+      "created_at": "2026-11-21",
+      "updated_at": "2026-11-21",
+      "module": "python/ai_studio/autograde.py、python/ai_studio/ops_local.py、python/ai_studio/workflows/auto_grade.py、python/ai_studio/op_catalog.json、python/ai_studio/recipecatalog.py、python/bench/grade_lch_only.py、python/tests/test_autograde_vibrance.py、python/tests/test_recipe_overrides.py、src/components/workshop/ai/AutoGradeTool.vue、src/utils/toolCatalog.test.ts",
+      "purpose": "FEAT-206 落地独立自然饱和度算子后，其余位置的内嵌滑条成为冗余口径（调色内嵌 0=不做 vs 独立步中性 50），用户要求全部去掉：单步工具「智能调色」的 vibrance 滑条、批量套用微调面板里调色步骤的 vibrance 参数。",
+      "implementation": "整条 FEAT-186 内嵌链路拆除：op_catalog 的 auto_grade 去掉 vibrance 参数（norm_params 不再下发）；TUNABLE_PARAMS 白名单同步；workflows/auto_grade.py 不再读 vibrance 选项（meta 也不回传）；ops_local.grade_image / op_auto_grade 去参；autograde.analyze/grade 去掉 vibrance_extra 形参（风格派生 stats.vibrance 保留，管线第 6 步不变）；bench/grade_lch_only.py 同步；AutoGradeTool.vue 删滑条与 vibrance 选项。Python 改动需重启 ai_studio 服务才生效（无热重载）。",
+      "highlights": [
+        "自然饱和度只在一个地方可调：local_vibrance 独立步（双向、中性 50）",
+        "vibrance_extra=0 恒等语义本就逐字节中性，拆除不改变任何既有出图",
+        "守卫测试反向钉死：auto_grade schema 不得再声明 vibrance，grade/analyze/grade_image 签名不得再有 vibrance_extra",
+        "catalog schema 驱动的微调面板/单步工具自动少一个字段，前端零散 UI 无残留"
+      ],
+      "related_files": [
+        "python/ai_studio/autograde.py",
+        "python/ai_studio/ops_local.py",
+        "python/ai_studio/workflows/auto_grade.py",
+        "python/ai_studio/op_catalog.json",
+        "python/ai_studio/recipecatalog.py",
+        "src/components/workshop/ai/AutoGradeTool.vue"
+      ],
+      "tests": "python pytest 目标 44/44（test_autograde_vibrance 重写为独立算子+拆除断言；test_recipe_overrides 改测 local_vibrance 覆盖/夹取/auto_grade 不收 vibrance）；npm test 全绿；vue-tsc 零错误；SFC 编译通过；grep 确认 src 与 python 源码无残留引用（仅注释）",
+      "keywords": [
+        "自然饱和度",
+        "vibrance",
+        "移除内嵌滑条",
+        "auto_grade",
+        "local_vibrance",
+        "FEAT-186 拆除"
+      ]
+    },
+      {
+      "id": "FEAT-208",
+      "name": "人像肤色保真：以原图肤色为锚抵消调色/滤镜偏色，再叠加白黄·嫩红偏置（独立算子 skin_tone，复用磨皮人脸分析零重复推理）",
+      "status": "done",
+      "date": "2026-11-21",
+      "created_at": "2026-11-21",
+      "updated_at": "2026-11-21",
+      "module": "python/ai_studio/skintone.py、python/ai_studio/ops_local.py、python/ai_studio/pipeline.py、python/ai_studio/renderopts.py、python/ai_studio/ops.py、python/ai_studio/op_catalog.json、python/ai_studio/recipes.json、python/ai_studio/recipecatalog.py、python/ai_studio/critic.py、python/ai_studio/workflows/recipe.py、python/ai_studio/workflows/smart_edit.py、python/ai_studio/workflows/local_beauty.py、python/tests/test_skintone.py、src/utils/aiPresets.ts、src/components/workshop/ai/LocalBeautyTool.vue",
+      "purpose": "创意工坊人像链路里，调色/滤镜把皮肤色相角系统性往红推（实测 Δh 平均 9.01°、最大 −22.4°，皮肤 R/G 最大 +0.356 已超 critic 阈值 0.25）。新增 skin_tone 本机算子：以原图皮肤色度为锚（锚点=原图+有界偏移，不是固定白黄值——素材一半是室内暖光人像本就偏红），在 LCh 空间逐像素增量旋转色相+全脸向量平移色度，把滤镜造成的偏色拉回，再叠加白黄·嫩红偏置；只作用 BiSeNet 皮肤掩码内，五官/头发/背景逐字节不动",
+      "highlights": [
+        "核心统计口径用 L 分位过滤后的向量均值（不是中位数）：旋转/平移下均值线性 → 目标精确命中、二次应用幂等；中位数口径实测残差 1.6~2.2°（atan2(中位a,中位b) 对旋转非线性）",
+        "颊部嫩红增量 da 必须在「旋转+平移后」的预测值上算（predicted_cheek_a）：否则旋转副作用被误判成红润变化，实测产生 −2.4 伪校正把向量拽偏 ~2°",
+        "统计集合排除羽化带（掩码腐蚀 FEATHER_RADIUS）：羽化带像素是原值与校正值的混合，混进统计会把收敛残差虚报成 ~1.8°",
+        "色域回收只对越界像素子集做 8 轮二分（先整查一次）：肤色步耗时 286ms→142ms 减半",
+        "明度提亮带高光保护（L≥78 权重衰减到 0）；彩度用向量平移（保 C_sd，比例缩放实测把面部彩度层次 7.12 压到 4.70）",
+        "跨算子状态通道：RunContext 新增照片级 source（原图锚点）与 scratch（face_analysis），execute_plan 每张照片 dataclasses.replace 派生独立副本，批量并行安全；磨皮写入分析、肤色消费（pop）、形变/超分作废",
+        "配方 portrait 插入 skin_tone（skin_smooth 后、vibrance 前）；stage 重排：skin_tone=4、local_upscale 4→5、local_vibrance 5→6（catalog 校验要求前置 stage 严格更小，3.5 放不下）",
+        "critic.compare 新增 expect_skin_shift 显式豁免位（由调用方按计划是否含 skin_tone 传入），不放宽阈值——放宽会让真偏色也漏掉",
+        "本地美颜单步工具：磨皮分析既当锚点又当应用掩码（输入即原图），零重复推理；前端加肤色档位（关闭/自然/白皙/红润）",
+        "端到端实测（8 张真实人像，完整链 auto_grade→film→形变→磨皮→skin_tone→vibrance）：core 口径 Δh 均值 +1.46°（目标 +3，残差为形变后评估掩码口径差）、单图无形变时 +3 精确命中、critic 误报 0、skin_tone 步 142ms/张"
+      ],
+      "related_files": [
+        "python/ai_studio/skintone.py",
+        "python/ai_studio/ops_local.py",
+        "python/ai_studio/pipeline.py",
+        "python/ai_studio/renderopts.py",
+        "python/ai_studio/op_catalog.json",
+        "python/ai_studio/recipes.json",
+        "python/ai_studio/critic.py",
+        "python/tests/test_skintone.py",
+        "src/components/workshop/ai/LocalBeautyTool.vue",
+        "docs/创意工坊-肤色保真与自然化-优化方案.md"
+      ],
+      "tests": "python unittest 62/62（新增 test_skintone 12 项：恒等/还原收敛±0.6/偏置方向/加性保C_sd/掩码外零改动/高光保护/低彩度不染色/h+c幂等/参数夹取/wrap）；npm test 328/328；vue-tsc 零错误；端到端 8 张真实人像全链验证 done 8/8",
+      "keywords": [
+        "肤色保真",
+        "skin_tone",
+        "肤色还原",
+        "白黄嫩红",
+        "LCh 色相旋转",
+        "向量均值口径",
+        "原图锚点",
+        "FEAT-208"
+      ]
     }
   ],
-  "updated": "2026-11-19"
+  "updated": "2026-11-21"
 }

@@ -74,12 +74,24 @@ def run_plan(
     )
 
 
-def _critic(source: Image.Image, result: Image.Image) -> Dict[str, Any]:
-    """本地零模型客观指标复核：免费、离线、每批只跑一次（不按轮次计费）。"""
+def _critic(
+    source: Image.Image,
+    result: Image.Image,
+    expect_skin_shift: bool = False,
+) -> Dict[str, Any]:
+    """本地零模型客观指标复核：免费、离线、每批只跑一次（不按轮次计费）。
+
+    链路含「肤色保真」时豁免肤色偏移告警（FEAT-208）：那是算子的本职。
+    """
     try:
-        return critic.compare(source, result)
+        return critic.compare(source, result, expect_skin_shift=expect_skin_shift)
     except Exception:  # noqa: BLE001 —— critic 失败绝不影响出图
         return {"verdict": "unknown", "score": 0, "dims": {}, "issues": []}
+
+
+def _has_skin_tone(plan: Dict[str, Any]) -> bool:
+    """计划里是否有「肤色保真」步（决定 critic 是否豁免肤色偏移告警）。"""
+    return any(st.get("op") == "skin_tone" for st in plan.get("steps") or [])
 
 
 def _resolve_plan(opts: Dict[str, Any], warnings: List[str]) -> tuple[Dict[str, Any], str, List[str]]:
@@ -161,7 +173,9 @@ def run(req, progress, cancel) -> dict:
         steps_by_photo[index] = trace.snapshot()
 
         # 本地零模型 critic：默认开（Q4）；不调用任何外部模型
-        verification = _critic(img, result)
+        verification = _critic(
+            img, result, expect_skin_shift=_has_skin_tone(plan)
+        )
         verify_by_photo[index] = verification
         if verification["issues"]:
             w.append(f"{stem_of(path)}：客观指标提示 " + "；".join(verification["issues"]))
