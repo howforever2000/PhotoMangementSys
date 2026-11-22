@@ -8276,7 +8276,7 @@
         "FEAT-186 拆除"
       ]
     },
-      {
+    {
       "id": "FEAT-208",
       "name": "人像肤色保真：以原图肤色为锚抵消调色/滤镜偏色，再叠加白黄·嫩红偏置（独立算子 skin_tone，复用磨皮人脸分析零重复推理）",
       "status": "done",
@@ -8413,7 +8413,149 @@
         "大眼 20%",
         "FEAT-210"
       ]
+    },
+    {
+      "id": "FEAT-211",
+      "name": "模型目录迁出安装目录：升级/重装不再丢模型（用户数据落点 + 内置模型种子 + 安装器卸载钩子）",
+      "status": "done",
+      "date": "2026-11-22",
+      "created_at": "2026-11-22",
+      "updated_at": "2026-11-22",
+      "module": "src-tauri/src/vision.rs、src-tauri/src/lib.rs、src-tauri/src/devdata.rs、src-tauri/src/model_dl.rs、src-tauri/installer-hooks.nsh（新建）、src-tauri/tauri.conf.json 与 4 个 release 配置、src/utils/modelOfflinePackage.ts、src/components/settings/ModelDownloadsSection.vue、README.md、README.en.md",
+      "purpose": "用户反馈：每次下载新版 exe 安装后原有 model 被删除、必须重新安装。根因是 release 模型目录落在安装目录，而 Tauri NSIS 升级默认「先卸载旧版再安装」，旧 uninstall.exe 会删掉上一版登记过的 vcr\\models\\*。修复目标：模型目录永久搬出安装器管辖范围，并让安装包内置模型只作种子、卸载也不删模型（BUG-2026-1122-001）",
+      "highlights": [
+        "落点唯一：release 恒为 app_data_dir/vcr-models（%APPDATA%\\<identifier>\\vcr-models），debug 仍用源码 python/models，VCR_MODEL_DIR 仍可显式覆盖",
+        "种子语义（vision::merge_missing_tree / seed_missing_models）：只补缺失、绝不覆盖（安装包里可能是旧档，用户目录可能是新下载的档位）；硬链接优先（同卷零拷贝），跨卷/失败退回真实复制；单文件失败只计数不中断；幂等，第二次启动全部计入 kept；有落地动作或失败才写一行 [vcr] 日志",
+        "安装器兜底（installer-hooks.nsh，NSIS_HOOK_PREUNINSTALL）：卸载前 robocopy /E /XC /XN /XO 把 $INSTDIR\\vcr\\models 残留按缺失补进用户目录 —— 三个排除开关等价于「只拷目标不存在的文件」，与 Rust 种子语义一致；路径里的 identifier 需与 tauri.conf.json 同步",
+        "文档/文案同步：数据与路径面板按 debug/release 分口径；离线包落点从三分支收口为单一目录（OFFLINE_PACKAGE_TARGETS 由 3 项降为 1 项）；README 中英文与 .dsh 知识库同步",
+        "测试：cargo test --lib vision:: 16 passed（新增 3 个单测：幂等只补缺失 / 同名文件保用户版本 / 删掉的文件再次 seed 补回）；npm run build（vue-tsc + vite）通过；5 个 tauri 配置 JSON 可解析",
+        "顺带修了既有测试竞态：SEMANTIC_DOWN_AT 是进程级全局，semantic_backoff_tests 两个用例并行互踩 → 加 BACKOFF_TEST_LOCK 互斥（被测逻辑未改）"
+      ],
+      "related_files": [
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/devdata.rs",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/installer-hooks.nsh",
+        "src-tauri/tauri.conf.json",
+        "src-tauri/release.tauri.conf.json",
+        "src-tauri/release-slim.tauri.conf.json",
+        "src-tauri/release-nomodel.tauri.conf.json",
+        "src-tauri/release.tauri.conf.no-models.json",
+        "src/utils/modelOfflinePackage.ts",
+        "src/components/settings/ModelDownloadsSection.vue",
+        "README.md",
+        "README.en.md",
+        ".dsh/knowledge/data-path-and-packaging.md"
+      ],
+      "tests": "cargo test --lib vision:: 16 passed；npm run build 通过；tauri 配置 5 份 JSON 解析通过",
+      "keywords": [
+        "模型目录",
+        "升级丢模型",
+        "vcr-models",
+        "app_data",
+        "NSIS installerHooks",
+        "卸载不删模型",
+        "硬链接种子",
+        "BUG-2026-1122-001",
+        "FEAT-211"
+      ]
+    },
+    {
+      "id": "FEAT-212",
+      "name": "应用内更新：GitHub Release 检查 + 镜像测速多段并发下载 + 一键安装（升级不丢模型）",
+      "status": "done",
+      "date": "2026-11-22",
+      "created_at": "2026-11-22",
+      "updated_at": "2026-11-22",
+      "module": "src-tauri/src/update.rs（新建）、src-tauri/src/model_dl.rs（UA/镜像表可见性 pub(crate)）、src-tauri/src/lib.rs（mod + 6 命令注册 + 启动 8s 自检）、src/types/update.ts（新建）、src/stores/update.ts（新建）、src/components/UpdateDialog.vue（新建）、src/utils/updateFormat.ts（新建）、src/views/Home.vue、src/App.vue、src/composables/useNotify.ts（notify.action）",
+      "purpose": "用户要求：内置更新检测器，检测 GitHub Release 是否高于当前版本，并用多线程 + GitHub 加速优化下载速度。落地：启动 8s 后静默检查（6 小时节流、debug 构建默认不联网）→ 设置菜单「检查更新」弹窗 → 一键下载 NSIS 安装包（镜像优先 + 256KB 实测测速 + 4 段并发）→ 校验字节数 → 确认后退出本应用并延迟 2s 启动安装器",
+      "highlights": [
+        "检查双通道：GitHub API releases/latest（拿到 tag/发布时间/更新说明/资产体积，三重校验仓库+文件名+URL）→ 失败回退 releases/latest 302 后的 tag 页，按 PhotoManagementSys_<ver>_x64-setup.exe 约定拼资产；6 小时节流落盘 app_data/update-check.json",
+        "下载选路：候选 expand_github_mirrors（ghfast.top / gh-proxy.com / 直连）串行 256KB 测速（并发测速会互相抢带宽、排序失真）→ ≥16MB 且 206 → model_dl_seg 4 段轮转（只用 ≥ 最优 25% 且 range_ok 的通道，最多 3 个）；否则单流续传；段键带版本号避免跨版本拼错",
+        "安装时序：cmd /C ping -n 3 127.0.0.1 >nul & start \"\" \"<安装包>\"（先等 2s 让本进程退出，NSIS 的 CheckIfAppIsRunning 就不会弹「应用正在运行」）；命令先返回，600ms 后 app.exit(0)，前端能先提示「正在退出」",
+        "实测（2026-11-22 本机）：直连 0.03MB/s；ghfast.top 单连接 0.49MB/s、4 段 0.60MB/s；gh-proxy.com 403；ghproxy.net/mirror.ghproxy/hub.gitmirror/github.moeyy/ghproxy.cc 均不可达 —— 所以直连只作兜底，镜像必须测速后再用",
+        "前端：store 持有状态（下载/进度事件），弹窗只渲染；同一版本只弹一次 toast；进度显示速率+剩余时间（按 emit 窗口增量算，避免分段并发导致曲线乱跳）；下载可取消、分片保留续传",
+        "边界：只下载本仓库 release 资产、文件名白名单（仅 ASCII .exe）、字节数必须等于 API 资产大小；不自动静默安装、不做差分升级、不引入 tauri-plugin-updater 与新 crate"
+      ],
+      "related_files": [
+        "src-tauri/src/update.rs",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/src/lib.rs",
+        "src/types/update.ts",
+        "src/stores/update.ts",
+        "src/components/UpdateDialog.vue",
+        "src/utils/updateFormat.ts",
+        "src/utils/updateFormat.test.ts",
+        "src/views/Home.vue",
+        "src/App.vue",
+        "src/composables/useNotify.ts",
+        "README.md",
+        "README.en.md",
+        ".dsh/knowledge/update-checker.md"
+      ],
+      "tests": "cargo test --lib update:: 9 passed + 1 ignored（版本比较/资产挑选/URL 白名单/文件名清洗/Content-Range/节流/API 解析）；cargo test --lib 283 passed；联网自测（--ignored）实测 API + 测速 + 8MiB 分段拼接与直链 Range 逐字节一致；npm run build 通过；npm test 340 passed（含 updateFormat 12 例）",
+      "keywords": [
+        "应用内更新",
+        "检查更新",
+        "GitHub Release",
+        "多线程下载",
+        "分段并发",
+        "镜像测速",
+        "ghfast",
+        "NSIS 安装",
+        "FEAT-212"
+      ]
+    },
+    {
+      "id": "FEAT-213",
+      "name": "重复清理删除提速与入库读数对账",
+      "status": "done",
+      "date": "2026-11-22",
+      "created_at": "2026-11-22T18:00:00+08:00",
+      "updated_at": "2026-11-22T18:00:00+08:00",
+      "module": "src-tauri/src/trash_delete.rs（新）+ scan_stats.rs（新）+ heic.rs / photos.rs / db/content.rs / dedupe.rs；src/composables/useScanTotals.ts（新）+ stores/dedupe.ts + DedupePanel.vue + ScanHub.vue + AlbumList.vue",
+      "purpose": "把「移入回收站」从逐张 Shell 调用改成 分块 + 多线程 + 进度可见，并修掉 COM 公寓冲突导致的删除 panic；同时把页面「已入库」从「Σ 每册前缀行数」改成「按路径去重的全库行数」，并提供历史冗余行清理。",
+      "highlights": [
+        "删除：64 张/块、最多 4 路 worker、块内一次 trash::delete_all；每块发 delete-progress；以「文件是否还在」结算成败；catch_unwind 隔离 panic",
+        "COM 纪律：heic 的 CoInitializeEx(MTA) 改为 RAII（仅 S_OK 才 CoUninitialize）；删除改由自建干净线程执行，不再借用 tokio 阻塞池",
+        "读数：scan_library_totals 返回 rows / paths / duplicate_rows；AlbumList 与 ScanHub 的「已入库」统一读 paths",
+        "对账：prune_duplicate_scan_rows 每路径保留最新一行，级联清向量/描述向量/分类命中/缩略图缓存行（不动磁盘文件）",
+        "呈现：重复清理页在 duplicate_rows>0 时给清理入口；「待入库」补单位「个相册」；hash 阶段文案改为「同尺寸候选 / 全库」双口径"
+      ],
+      "related_files": [
+        "src-tauri/src/trash_delete.rs",
+        "src-tauri/src/scan_stats.rs",
+        "src-tauri/src/heic.rs",
+        "src-tauri/src/photos.rs",
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/dedupe.rs",
+        "src-tauri/src/lib.rs",
+        "src/composables/useScanTotals.ts",
+        "src/stores/dedupe.ts",
+        "src/types/dedupe.ts",
+        "src/components/DedupePanel.vue",
+        "src/views/ScanHub.vue",
+        "src/views/AlbumList.vue"
+      ],
+      "tests": [
+        "cargo test --lib：287 passed / 0 failed（含 trash_delete 3 例 + scan_totals_and_prune_duplicate_paths）",
+        "npm test：340 passed / 0 failed",
+        "npx vue-tsc --noEmit：通过"
+      ],
+      "keywords": [
+        "重复清理",
+        "回收站",
+        "trash",
+        "多线程删除",
+        "delete-progress",
+        "COM",
+        "0x80010106",
+        "已入库",
+        "去重口径",
+        "对账"
+      ]
     }
   ],
-  "updated": "2026-11-22"
+  "updated": "2026-11-22T18:00:00+08:00"
 }

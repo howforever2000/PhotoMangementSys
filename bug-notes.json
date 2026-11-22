@@ -6305,7 +6305,274 @@
       "log_hint": "app.log 现场：16:26:52 / 16:26:56 / 16:27:00 / 16:27:04 四轮 resource_usage_snapshot 均耗时 2320~2368ms（其中 ensure + /gpu 各仅 7ms，2.3s 全在 PID 核验子进程上）；VCR 停止、vcr-instance.json 清掉后同命令骤降至 11ms，直接锁定「实例存在时的核验子进程」为唯一变量。",
       "created_at": "2026-11-19T18:40:00+08:00",
       "fixed_at": "2026-11-19T18:40:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1120-003",
+      "title": "以图搜图恒返回空：FEAT-155 漏改命令层，旧绝对阈值 0.45 被误当图→图路的相对相关度下限（高于理论上限 0.423，恒空集）",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": "以图搜图任何查询都显示「没有找到匹配的照片」；FEAT-155 之前正常。关键词搜索不受影响。",
+      "root_cause": "FEAT-155（2d3fb98）把召回从「绝对余弦阈值」改为「相对相关度 rel = cos − 本路全库中位数」，关键词路已改用 SEMANTIC_REL_FLOOR_DEFAULT=0.005，但 smart_search_by_image 命令层仍沿用旧常量 MIN_SIM_DEFAULT=0.45（clamp 0.05~0.95）当 rel 下限。实测（photos.db · chinese-clip-vit-b16 · 25154 条，抽样 4000 算两两余弦）：图→图全库 median=0.577、p99=0.793 ⇒ rel 理论上限（查自己 cos=1.0）仅 0.423 < 0.45，门槛高于天花板，任何查询恒为空集（实测通过率 0/7998000）。教训：注释声明「已无生产调用点」的常量必须直接删除（或降为私有），否则一定有人再引用——本次正是它在唯一漏改的调用点被当新语义用。",
+      "fix": "textdesc.rs 新增 IMG_QUERY_REL_FLOOR_DEFAULT=0.10（图→图路自己的相对下限：实测 0.10 =「cos 比全库中位高 0.10」的可信相似带，约 11.6% 的对能过，topK=60 截断下足以分离真相似与噪声）+ 纯函数 img_query_rel_floor（None→0.10，显式值夹取 [0.0, 0.40]，上限必须低于 rel 理论上限 0.423）；命令层改调它。MIN_SIM_DEFAULT 删除，历史单测改用 tests 内本地 LEGACY_MIN_SIM。关键词路（content.rs）与 vecindex.rs 零改动，两路互不影响。回归单测 img_query_rel_floor_default_and_clamp 断言两路常量独立且各自默认值正确。cargo check --all-targets 干净（仅既有 5 条无关警告）、cargo test --lib textdesc 11/11 通过。",
+      "related_files": [
+        "src-tauri/src/textdesc.rs"
+      ],
+      "log_hint": "日志 smart_search_by_image 行 OK | hits=N；若恒 0 且 ERR 为「索引为空」则属另一类问题（model 档位失配，看 /health 的 model_id 与 photo_embeddings.model 是否等值）",
+      "created_at": "2026-11-20T22:20:00+08:00",
+      "fixed_at": "2026-11-20T22:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1121-002",
+      "title": "缩略图缩放条点＋/－显示 NaN%",
+      "status": "fixed",
+      "severity": "medium",
+      "symptom": "人物画廊 / 集合页 / 照片矩阵的缩放条点加号或减号后，百分比文案变成 NaN%，格子尺寸跟着崩",
+      "root_cause": "PhotoZoomBar.vue 模板 @click=\"step(-step)\" 中 step 既是 props 步长又是 setup 函数名；模板里 setup 绑定遮蔽同名 prop，-step 把函数转数字得 NaN，normalize 未挡非有限值原样 emit（教训：setup 函数命名禁止与 props 同名，模板解析 setup 绑定优先于 prop）",
+      "fix": "步进函数改名 stepGear(dir)（dir=±1，内部乘 props.step）；normalize 增加非有限值回落 min 防线；三个使用方（PersonGallery/PhotoCollectionPage/PhotoGrid）矩阵容器加 @wheel=onGridWheel，Ctrl+滚轮按档位步进，preventDefault 拦 WebView2 页面缩放。vue-tsc --noEmit 通过",
+      "related_files": [
+        "src/components/PhotoZoomBar.vue",
+        "src/components/PersonGallery.vue",
+        "src/components/PhotoCollectionPage.vue",
+        "src/components/PhotoGrid.vue"
+      ],
+      "log_hint": "前端无日志；复现路径：人物画廊进照片矩阵 → 点缩放条＋；修复后应显示档位百分比文案，Ctrl+滚轮可逐档缩放",
+      "created_at": "2026-11-21T15:58:00+08:00",
+      "fixed_at": "2026-11-21T15:58:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1121-003",
+      "title": "内容分类卡片 Ctrl+滚轮缩放只有高度变化、宽度不变（窄屏媒体查询覆盖 var 列数）",
+      "status": "fixed",
+      "severity": "medium",
+      "symptom": "分类画廊 Ctrl+滚轮缩放：卡片行高（高度）随档位变化，但列数不变 → 卡片长度不变，缩放无感",
+      "root_cause": ".cat-grid 列数改由 --cat-cols 变量驱动时，残留的三条窄屏媒体查询（max-width 1280/900/560px）以相同选择器在样式表后部覆盖 grid-template-columns；应用窗口内容宽 ≤1280px（侧栏挤占后常态），列数被钉死在 3，缩放只剩行高在变（教训：变量化一个布局属性时，必须同步清除旧断点对该属性的硬编码覆盖）",
+      "fix": "删除 .cat-grid 的三条列数媒体查询，列数全程由 --cat-cols 决定（缩放是显式用户意图）；行为变更点写入注释防回归。vue-tsc 通过",
+      "related_files": [
+        "src/components/CategoryGallery.vue"
+      ],
+      "log_hint": "前端无日志；复现路径：智慧相册 → 内容分类 → Ctrl+滚轮，修复后列数应随档位 1~10 变化",
+      "created_at": "2026-11-21T16:20:00+08:00",
+      "fixed_at": "2026-11-21T16:20:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1121-004",
+      "title": "地点识别失败 toast 堆满整屏且永不自动消失（error 类默认 duration=0 持久化 + 无堆叠上限）",
+      "status": "fixed",
+      "severity": "medium",
+      "symptom": "逐相册点「自动识别地点」时，无 GPS 的相册每弹一条红色「自动识别地点失败」，全部常驻不消失，8 条摞满整屏只能手动逐条点 ×",
+      "root_cause": "toast.ts 的 error 类默认 duration=0（设计注释「错误默认持久化，避免用户错过关键信息」），scheduleDismiss 对 0 直接不启动计时；且 add() 无堆叠上限，连续失败时同屏条数不受限。「无 GPS 坐标」本是预期结果（相册没拍过带定位的照片），被当持久化错误呈现，两条设计叠加放大成堆屏",
+      "fix": "①error 类默认 duration 0→6000ms（toast.ts defaultDuration + error() 签名 + useNotify 两层同步改），确需用户必须看到的保留 persistentError（带「知道了」按钮，行为不变）；②add() 加 MAX_STACK=6 堆叠上限，超限丢最旧（连计时器一起清）；③AlbumMeta 对错误串含「无 GPS」的分支降级为 warning（4s 自动消失），文案改「未能识别地点，可手动填写地点标签」。confirm/action 的 duration=0 保持不变（带按钮的交互式弹层本就需用户点击）。vue-tsc 通过",
+      "related_files": [
+        "src/stores/toast.ts",
+        "src/composables/useNotify.ts",
+        "src/components/AlbumMeta.vue"
+      ],
+      "log_hint": "前端无日志；复现路径：相册详情 → 手动地点栏「识别」按钮，无 GPS 相册应弹黄色警告 4s 自动消失，错误 toast 6s 自动消失，同屏最多 6 条",
+      "created_at": "2026-11-21T16:22:00+08:00",
+      "fixed_at": "2026-11-21T16:22:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1122-001",
+      "title": "每次装新版 exe 后模型被删、必须重下：release 模型目录落在安装目录，NSIS 升级默认先卸载旧版",
+      "status": "fixed",
+      "severity": "high",
+      "symptom": "用户从 GitHub 下载新版安装包覆盖安装后，语义 / 人脸 / OCR 模型全部或部分消失，「性能设置 → 模型管理」显示未下载，必须重新下载约 1GB；安装版启动日志的「模型目录」打印为 %LOCALAPPDATA%\\PhotoManagementSys\\vcr\\models（安装目录）",
+      "root_cause": "vision::resolve_model_dir 的 release 分支是「resource_dir/vcr/models 可写就直接用」。NSIS installMode=currentUser 装到 %LOCALAPPDATA%\\PhotoManagementSys（可写），于是内置模型与应用内下载的模型全落在安装目录。而 Tauri NSIS 升级页默认勾选「卸载旧版后安装」（installer.nsi 的 PageReinstall：检测到 older 版本时默认选中 uninstallBeforeInstalling，随后 ExecWait 旧 uninstall.exe），旧卸载器会 Delete 掉上一版安装器登记过的 vcr\\models\\*；精简包又不带模型，装完模型目录就空了。证据：app.log 2026-11-22 16:24 启动 v0.4.5 打印「模型目录: C:\\Users\\Administrator\\AppData\\Local\\PhotoManagementSys\\vcr\\models」",
+      "fix": "① release 模型目录固定到 app_data_dir/vcr-models（%APPDATA%\\<identifier>\\vcr-models），安装目录不再作为运行期模型目录；② resource_dir/vcr/models 只作种子：启动时 merge_missing_tree 按缺失硬链接（跨卷/失败退回复制）进用户目录，已存在文件不覆盖不删除，幂等；③ 新增 src-tauri/installer-hooks.nsh（bundle.windows.nsis.installerHooks 的 NSIS_HOOK_PREUNINSTALL）：卸载前用 robocopy /E /XC /XN /XO 把 $INSTDIR\\vcr\\models 残留按缺失补进用户目录，做到卸载也不删模型；④ 前端离线包落点收口为单一目录、README 中英同步。验证：cargo test --lib vision:: 16 passed（含 3 个种子单测）；npm run build 通过",
+      "related_files": [
+        "src-tauri/src/vision.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/devdata.rs",
+        "src-tauri/src/model_dl.rs",
+        "src-tauri/installer-hooks.nsh",
+        "src-tauri/tauri.conf.json",
+        "src-tauri/release.tauri.conf.json",
+        "src-tauri/release-slim.tauri.conf.json",
+        "src-tauri/release-nomodel.tauri.conf.json",
+        "src-tauri/release.tauri.conf.no-models.json",
+        "src/utils/modelOfflinePackage.ts",
+        "src/components/settings/ModelDownloadsSection.vue",
+        "README.md",
+        "README.en.md"
+      ],
+      "log_hint": "启动日志「模型目录: ...」应恒为 %APPDATA%\\com.photomanagementsys.app\\vcr-models；首次从安装目录接管时会多一行「[vcr] 内置模型补入用户模型目录: 硬链接 x / 复制 y / 已存在 z / 失败 w（来源 ...）」。旧版复现：安装目录下 vcr\\models 即为模型目录",
+      "created_at": "2026-11-22T16:55:00+08:00",
+      "fixed_at": "2026-11-22T16:55:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1122-002",
+      "title": "重复清理删除 2654 张耗时 211 秒且全程无进度，扫描按钮静默变灰",
+      "status": "fixed",
+      "severity": "medium",
+      "module": "src-tauri/src/photos.rs::delete_photos_to_trash + src/components/DedupePanel.vue + src/stores/dedupe.ts",
+      "symptom": [
+        "点「移入回收站」后确认框消失，之后 3 分半钟界面没有任何提示，用户以为删除失败或程序卡死",
+        "这段时间「开始扫描全库」按钮是灰的、点不动（没有任何文字说明为什么）",
+        "整批结束时才补一条成功 toast，此时用户早已放弃等待"
+      ],
+      "root_cause": {
+        "summary": "逐张 trash::delete（每张新建一次 IFileOperation，实测 ≈80ms/张）+ 整批塞在单个 invoke 里没有任何进度事件 + 按钮只按 deleting 静默禁用。",
+        "detail": [
+          "日志铁证：`delete_photos_to_trash END | SLOW | 耗时 211536ms | 结果 OK | deleted=2654 failed=0`（2654×80ms≈212s）",
+          "旧实现 `for p in paths { trash::delete(p) }`；trash 自带 delete_all，一次 IFileOperation 可提交整批",
+          "进度只在返回后由前端 toast 呈现，期间 store.deleting=true → `canScan = !running && !deleting` 把扫描按钮 disabled",
+          "删除本身是成功的：25339 − 2654 = 22685，与删完再扫得到的 22685 张完全吻合"
+        ]
+      },
+      "solution": {
+        "summary": "新增 trash_delete 服务：64 张一块、最多 4 路 worker，块内 trash::delete_all，每块发 delete-progress；前端出「正在处理 x/y 张」进度条并把按钮文案改成「删除处理中…」。",
+        "steps": [
+          "src-tauri/src/trash_delete.rs：delete_paths_parallel（分块 + std::thread::scope + 逐块进度回调 + catch_unwind），以「文件是否还在」结算成功/失败",
+          "photos.rs：命令层只做 清缩略图 → 调服务（转发 delete-progress 事件）→ 级联清扫描记录 → 收尾记账",
+          "stores/dedupe.ts：删除期间监听 delete-progress，暴露 deleteDone/deleteTotal/deleteOk/deleteFailed",
+          "DedupePanel.vue：顶部危险色进度条 + 底部按钮在 deleting 时显示「删除处理中…」，并把禁用原因写进 title"
+        ]
+      },
+      "evidence_log": [
+        "[app.log] 2026-11-22 17:22:43 [WARN] [AOP:RET] delete_photos_to_trash END | SLOW | 耗时 211536ms | 结果 OK | deleted=2654 failed=0",
+        "[app.log] 2026-11-22 17:08:49 / 17:17:58 两次扫描各 2618 组（25339 张）",
+        "[app.log] 2026-11-22 17:22:56 删完再扫：85 组 / 22685 张（= 25339 − 2654）"
+      ],
+      "log_hint": "grep '删除' 或 '[trash] 回收站删除' 取 worker/分块/耗时；旧版只有 AOP:RET 的 SLOW 行、没有任何中间进度日志，即为本缺陷。",
+      "related_files": [
+        "src-tauri/src/trash_delete.rs",
+        "src-tauri/src/photos.rs",
+        "src/stores/dedupe.ts",
+        "src/components/DedupePanel.vue",
+        "src/types/dedupe.ts"
+      ],
+      "created_at": "2026-11-22T18:00:00+08:00",
+      "fixed_at": "2026-11-22T18:00:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1122-003",
+      "title": "回收站删除 panic：Call to CoInitializeEx failed HRESULT 0x80010106（COM 公寓冲突）",
+      "status": "fixed",
+      "severity": "high",
+      "module": "src-tauri/src/heic.rs（ensure_com）+ photos.rs 删除线程 + trash 5.2.7 默认 feature",
+      "symptom": [
+        "点删除弹出：`delete_photos_to_trash task failed: task N panicked with message \"Call to CoInitializeEx failed. HRESULT: HRESULT(0x80010106). Consider using 'trash' with the feature 'coinit_multithreaded'\"`",
+        "表现为偶发：同一批重试有时成功、有时报错（取决于调度到哪条池线程）",
+        "panic 会打断整批，且 DB 级联清理（删扫描行）不执行，可能留下「文件已进回收站、库里行还在」的半截状态"
+      ],
+      "root_cause": {
+        "summary": "trash 5.2.7 默认 feature `coinit_apartmentthreaded`：在调用线程上 CoInitializeEx(STA)；而本项目 heic.rs 把同一条 tokio 阻塞池线程初始化成 MTA 且从不 CoUninitialize → 线程身份冲突 → trash 源码 windows.rs:299 直接 panic!。",
+        "detail": [
+          "0x80010106 = RPC_E_CHANGED_MODE：同一线程已用另一种公寓模型初始化过",
+          "COM apartment 是**每线程**属性；heic.rs 旧注释「进程内只需初始化一次」是错误前提，`let _ = CoInitializeEx(MTA)` 从未配对 CoUninitialize",
+          "撞上的高频路径：dedupe_scan 收尾在阻塞线程里调 heic::support()（dedupe.rs），紧接着同一线程被回收站删除复用",
+          "报错文案逐字来自 trash 源码：`panic!(\"Call to CoInitializeEx failed. HRESULT: {:?}. Consider using `trash` with the feature `coinit_multithreaded`\", hr)`"
+        ]
+      },
+      "solution": {
+        "summary": "两头都收口：heic 改成「谁初始化谁反初始化」的 RAII 守卫；删除不再跑在池线程上，而是由 trash_delete 每次自己开干净线程（新线程无 COM 状态，STA 初始化必成功），并用 catch_unwind 把 panic 限制在单块。",
+        "steps": [
+          "heic.rs：ComGuard::acquire()（仅 S_OK 才 owned，Drop 时 CoUninitialize），decode/dimensions/support 三个入口各持一次；factory() 不再自行初始化",
+          "trash_delete.rs：std::thread::scope 起自己的 worker，不碰 tokio blocking 池",
+          "每块 catch_unwind + 逐张兜底重试，失败如实上报，不再一张照片 panic 掉整批"
+        ]
+      },
+      "evidence_log": [
+        "用户截图（v5.0.0 分发包）：delete_photos_to_trash task failed: task 1654 panicked ... HRESULT(0x80010106)",
+        "trash-5.2.7/src/windows.rs:272-314：thread_local CO_INITIALIZER，STA 初始化失败即 panic",
+        "src-tauri/src/heic.rs:134-139（旧实现）：CoInitializeEx(COINIT_MULTITHREADED) 后无 CoUninitialize"
+      ],
+      "log_hint": "应用日志里看不到该 panic（Tauri 任务 panic 走 stderr，不进 app.log）；复现看 Toast 文案里的 HRESULT(0x80010106) 与「Consider using 'trash' with the feature」即可确认。",
+      "related_files": [
+        "src-tauri/src/heic.rs",
+        "src-tauri/src/trash_delete.rs",
+        "src-tauri/src/photos.rs",
+        "src-tauri/Cargo.toml"
+      ],
+      "created_at": "2026-11-22T18:00:00+08:00",
+      "fixed_at": "2026-11-22T18:00:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1122-004",
+      "title": "重复清理「只扫了 333 张」的误解：进度口径把候选数当成了全库张数",
+      "status": "fixed",
+      "severity": "low",
+      "module": "src-tauri/src/dedupe.rs（hash 阶段进度文案）+ src/components/DedupePanel.vue",
+      "symptom": [
+        "2.2 万张的库，重复清理进度只显示「已比对 333/333 张」，用户以为 2 万张里只扫了 300 张",
+        "用户进一步怀疑「全库扫描坏了」，实际报告里全库照片数与分组数都正常"
+      ],
+      "root_cause": {
+        "summary": "完全重复判定先按文件大小分桶，只对「同尺寸出现 ≥2 次」的文件算内容哈希（正确且必要的优化：大小不同 ⇒ 内容必不同）。但进度事件的 total 用的是候选数，文案只写「已比对 N/M 张」，没有交代全库张数与跳过的数量。",
+        "detail": [
+          "日志：`精确预筛：22685 张 → 唯一体积 22514 种 · 出现 ≥2 次的体积 162 种 · 待哈希 333 张（跳过 22352 张体积唯一的图）`",
+          "旧代码在进入哈希前还先发一条 `0/全库张数` 的事件，于是进度条从 0/22685 直接跳到 333/333",
+          "截图里「画面相似」未勾选：只勾完全重复时只能找字节完全一致的副本，同图不同尺寸/压缩本就不会命中"
+        ]
+      },
+      "solution": {
+        "summary": "把两个数同时写进文案：「同尺寸候选 333/333 张（全库 22685 张，体积唯一的 22352 张无需比对）」；阶段名改「比对同尺寸候选」；删掉进入哈希前那条 0/全库 事件。",
+        "steps": [
+          "dedupe.rs：hash 回调里用 total_photos.saturating_sub(total) 算出跳过量并一起播报",
+          "去掉 `on_progress(\"hash\", 0, total_photos, ...)`，避免分母跳变",
+          "DedupePanel：stageLabel 的 hash 阶段文案同步改口径"
+        ]
+      },
+      "evidence_log": [
+        "[app.log] 2026-11-22 17:24:06 [dedupe] 精确预筛：22685 张 → 待哈希 333 张（跳过 22352 张体积唯一的图，避免白读盘）",
+        "[app.log] 2026-11-22 17:24:07 [dedupe] 完成 | 照片 22685 张 · 组 85 个（精确 85 / 相似 0）"
+      ],
+      "log_hint": "grep '[dedupe] 精确预筛' 看「待哈希 / 跳过」两个数；两者之和应等于全库张数。",
+      "related_files": [
+        "src-tauri/src/dedupe.rs",
+        "src/components/DedupePanel.vue"
+      ],
+      "created_at": "2026-11-22T18:00:00+08:00",
+      "fixed_at": "2026-11-22T18:00:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1122-005",
+      "title": "「已入库 60585」超过「照片 25384」：页头把每册前缀统计相加，且行从不与磁盘对账",
+      "status": "fixed",
+      "severity": "high",
+      "module": "src/views/AlbumList.vue（statItems）+ ScanHub.vue + db/content.rs::count_scanned_by_prefix",
+      "symptom": [
+        "相册管理页：照片 25384 / 已入库 60585 / 待入库 0（已入库是照片的 2.4 倍）",
+        "用户反馈：扫描入库两次后入库数变成实际的两倍；做一次重复清理后又恢复正常",
+        "「待入库 0」没有单位，读起来像「待入库 0 张」，与 6 万张并列时自相矛盾"
+      ],
+      "root_cause": {
+        "summary": "页头「已入库」= Σ 每册 scanned_photo_count，而它是「该相册目录子树下的扫描行数」（count_scanned_by_prefix）：同一张照片会被父子相册/重复导入各算一次；行主键是 路径+大小+mtime 的哈希，路径写法或 mtime 一变就是新行且旧行不删；文件移走/外部删除后行也不回收。",
+        "detail": [
+          "count_scanned_by_prefix 的设计目标是「这册覆盖了多少」（父子各显示完整覆盖是对的），但不适合再做一次跨册求和",
+          "photo_hash 含 path（content.rs::photo_hash）：盘符大小写 / junction / 8.3 短名 / 尾斜杠差异都会为同一照片插新行",
+          "只有「删相册」才按 album_id 清行，而 album_id 会被后续扫描改写，删相册时反而清不到",
+          "「重复清理后正常」的原因：清理按路径删掉命中项的扫描行（photos.rs 调 delete_content_by_paths），把冗余行一起删了",
+          "「待入库 0」这一格数的是「一册都没入库的相册数」（normalAlbums.length - scannedAlbums），不是照片数"
+        ]
+      },
+      "solution": {
+        "summary": "页面汇总改用后端 COUNT(DISTINCT path)（新命令 scan_library_totals），并提供 prune_duplicate_scan_rows 一键清历史冗余行；「待入库」补单位「个相册」；扫描/删除后自动刷新读数。",
+        "steps": [
+          "db/content.rs：新增 ScanLibraryTotals（rows/paths/duplicate_rows）与 prune_duplicate_scan_rows（每路径保留最新一行，级联清 photo_embeddings / photo_text_embeddings / photo_category_hits / photo_thumb_cache）",
+          "scan_stats.rs：两个薄壳命令（读数 / 清理），lib.rs 注册",
+          "useScanTotals.ts：共享 composable；ScanHub 与 AlbumList 的「已入库」都读它，并在相册列表变化时刷新",
+          "DedupePanel：duplicate_rows > 0 时给「清理重复行」入口（二次确认，只删数据库冗余，不动照片）",
+          "AlbumList：「待入库」补 unit「个相册」"
+        ]
+      },
+      "evidence_log": [
+        "本机 DB 实测：photo_content_scan 22576 行 = 22576 个不同路径（该库没有冗余行），说明旧逻辑不会凭空翻倍，60585 那台是行冗余",
+        "[app.log] overview_stats | total=25232 known=25238 —— 已入库行数已经略多于照片数（失效行累积的早期信号）",
+        "[app.log] [dedupe] 同址归并 4667 条（嵌套相册 / 同一文件多种写法），实际照片 22685 张 —— 前缀/路径统计会被嵌套放大"
+      ],
+      "log_hint": "sqlite 只读查 `SELECT COUNT(*), COUNT(DISTINCT path) FROM photo_content_scan WHERE user_id=?`：两者不等即有冗余行；页面修复后「已入库」读第二个数。",
+      "related_files": [
+        "src-tauri/src/db/content.rs",
+        "src-tauri/src/scan_stats.rs",
+        "src/composables/useScanTotals.ts",
+        "src/views/AlbumList.vue",
+        "src/views/ScanHub.vue",
+        "src/components/DedupePanel.vue"
+      ],
+      "created_at": "2026-11-22T18:00:00+08:00",
+      "fixed_at": "2026-11-22T18:00:00+08:00"
     }
   ],
-  "updated": "2026-11-19"
+  "updated": "2026-11-22T18:00:00+08:00"
 }
