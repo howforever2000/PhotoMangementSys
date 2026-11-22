@@ -8320,7 +8320,58 @@
         "原图锚点",
         "FEAT-208"
       ]
+    },
+    {
+      "id": "FEAT-209",
+      "name": "肤色美化加档 + 逐脸性别侧重（发长判定，零新增模型）+ 锚点复用省掉原图重复人脸推理",
+      "status": "done",
+      "date": "2026-11-22",
+      "created_at": "2026-11-22",
+      "updated_at": "2026-11-22",
+      "module": "python/ai_studio/hairlength.py（新建）、python/ai_studio/skintone.py、python/ai_studio/ops_local.py、python/ai_studio/renderopts.py、python/ai_studio/ops.py、python/ai_studio/workflows/local_beauty.py、python/ai_studio/op_catalog.json、python/ai_studio/recipes.json、src/utils/aiPresets.ts、src/components/workshop/ai/LocalBeautyTool.vue、python/tests/test_skintone.py、python/tests/test_hairlength.py（新建）、python/tests/test_context_channel.py（新建）",
+      "purpose": "用户两条反馈：①当前肤色贴近原图但「不够白、不够嫩红」；②希望按性别分侧重（男性保留原肤色白一点、女性更白更嫩红），且性别可用发长判断；③顺带把肤色步的性能优化掉。落地：hairlength.py 纯函数从 BiSeNet 的 hair 类 + 检测框几何判「头发是否垂到下颌线以下」，逐脸选侧重档（长发=更白更嫩红；其余=还原原肤色+轻提亮）；提亮曲线把中间调权重从 0.5 提到 1.0 并加默认量，颊部掩码羽化后嫩红可加档；锚点改为复用本图人脸掩码，省掉对原图的第二次 SCRFD+BiSeNet",
+      "highlights": [
+        "发长判定是双条件而不是单条件：底边有成片头发（edge_ratio≥0.04）与脸侧占比（side_ratio≥0.05）同时成立才判长发 —— 只按底边会误判帽子/兜帽（实测婴儿兜帽 edge=0.21、侧向 0.01）；零新增模型、复用同一次 BiSeNet 输出，单脸开销 <1ms",
+        "性别侧重只改偏置层不改锚点层：男性档 hue_shift/chroma/blush 归零、brighten×0.4（默认 2.2→0.88），但「还原原肤色」由锚点差算出仍会执行 —— 实测男档 L +0.7~+0.8、颊部 a* 回到原图；女档 L +1.7~+1.9、颊部 a* +1.4~+1.5",
+        "「不够白」的机制根因：旧提亮权重 w=(78−L)/38，中间调肤色 L≈59 只拿 0.5 权重，标称 1.5 实际 +0.75 L*，且 brighten 上限 4.0 意味着中间调最多 +2.0。改为 L≤70 全量、70~78 收口后，默认 2.2 即 +1.9 L*（高光保护 L≥78 逐字节不动不变）",
+        "「不够嫩红」的机制根因：颊部是框内比例矩形且无羽化，强嫩红会在脸上留直线色块（blush=3 实测边界 a* 阶跃 3.5 个 Lab 单位）。改为羽化 alpha 后默认 blush 1.2→1.8，边界阶跃降到 <0.6",
+        "锚点复用（性能主体）：RunContext.drop_face_analysis 只作废掩码、mark_geometry_changed 才置脏位；几何一致且同尺寸时原图锚点直接用本图掩码。实测 skin_tone 步 152~211ms，旧路径 569~657ms，省 388~492ms（65~75%，2 脸/张、CPU）",
+        "形变不算「整幅重绘」的依据：slim=0.8 强形变下用形变后掩码回标原图取锚点，相对原图重新检测的偏差 Δh ≤0.52°、ΔC ≤0.45、Δcheek_a ≤0.54（slim=0.3 时 ≤0.21）",
+        "顺带修掉三个隐患：①src_arr 与「哪个掩码对象」耦合，传了 source 又复用同一份分析时锚点会静默退化成滤镜后图；②原图重新检测后按序号 zip 配对，强形变会改变 SCRFD 检测顺序导致配错脸（实测两法锚点差到 ΔC≈4）；③local_beauty 自己又写了一遍 detect→parse→smooth 与 _context_box，参数迟早漂移",
+        "验证口径：python unittest 130/130（新增 test_hairlength 6 项、test_context_channel 7 项、test_skintone 新增 5 项）；npm test 328/328；vue-tsc 0 错误；3 张 12MP 真实人像全链（auto_grade→film→形变→磨皮→skin_tone）通道截断 0→0 px"
+      ],
+      "related_files": [
+        "python/ai_studio/hairlength.py",
+        "python/ai_studio/skintone.py",
+        "python/ai_studio/ops_local.py",
+        "python/ai_studio/renderopts.py",
+        "python/ai_studio/ops.py",
+        "python/ai_studio/workflows/local_beauty.py",
+        "python/ai_studio/op_catalog.json",
+        "python/ai_studio/recipes.json",
+        "python/tests/test_hairlength.py",
+        "python/tests/test_context_channel.py",
+        "python/tests/test_skintone.py",
+        "src/utils/aiPresets.ts",
+        "src/components/workshop/ai/LocalBeautyTool.vue",
+        "docs/创意工坊-肤色保真与自然化-优化方案.md",
+        ".dsh/features/workshop.md",
+        ".dsh/knowledge/local-enhance.md"
+      ],
+      "tests": "python unittest 130/130；npm test 328/328；vue-tsc 零错误；端到端 3 张 12MP 人像：skin_tone 152~211ms/张（旧 569~657ms），男档 L +0.7~0.8、女档 L +1.7~1.9、颊部 a* +1.4~1.5，截断 0→0",
+      "keywords": [
+        "性别侧重",
+        "发长判定",
+        "hairlength",
+        "for_gender",
+        "更白更嫩红",
+        "提亮曲线",
+        "颊部羽化",
+        "锚点复用",
+        "性能优化",
+        "FEAT-209"
+      ]
     }
   ],
-  "updated": "2026-11-21"
+  "updated": "2026-11-22"
 }

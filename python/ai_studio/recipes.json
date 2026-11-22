@@ -124,8 +124,8 @@
           "params": {
             "hue_shift": 3.0,
             "chroma": 1.5,
-            "brighten": 1.5,
-            "blush": 1.2
+            "brighten": 2.2,
+            "blush": 1.8
           },
           "optional": true
         },

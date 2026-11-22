@@ -145,6 +145,74 @@ class TestChromaAdditive(unittest.TestCase):
         self.assertLess(abs(sd_after - sd_before), 0.5)
 
 
+class TestGenderTier(unittest.TestCase):
+    """性别侧重（FEAT-209）：男性档只还原 + 轻提亮，不加白黄也不加嫩红。"""
+
+    def test_female_keeps_user_params(self):
+        p = skintone.SkinParams(hue_shift=4.0, chroma=2.0, brighten=3.0, blush=2.5)
+        self.assertEqual(skintone.for_gender(p, True), p)
+
+    def test_male_drops_bias_and_blush(self):
+        p = skintone.SkinParams(hue_shift=4.0, chroma=2.0, brighten=3.0, blush=2.5)
+        male = skintone.for_gender(p, False)
+        self.assertEqual(male.hue_shift, 0.0)
+        self.assertEqual(male.chroma, 0.0)
+        self.assertEqual(male.blush, 0.0)
+        self.assertAlmostEqual(male.brighten, 3.0 * skintone.MALE_BRIGHTEN_RATIO)
+
+    def test_male_still_restores_original_hue(self):
+        """男性档不做偏置，但「还原」由锚点差算出 —— 仍要把偏色拉回原图。"""
+        src = _skin_rgb(50.0, 20.0, 65.0, seed=21)
+        anchor = skintone.anchor_from_pixels(src, FULL, RIGHT_CHEEK)
+        filtered = _rotate_hue(src, -10.0)
+        male = skintone.for_gender(skintone.SkinParams(), False)
+        out = skintone.correct_region(filtered, FULL, RIGHT_CHEEK, anchor, male)
+        s = _median_stats(out, CORE)
+        self.assertLess(abs(_wrap(s["hue"] - anchor.hue)), 0.6)
+        # 男性档不加嫩红：颊部与全脸的 a* 差值在校正前后基本不变
+        before = _median_stats(filtered, CORE)
+        before_cheek = _median_stats(filtered, CORE, RIGHT_CHEEK)["cheek_a"]
+        after_cheek = _median_stats(out, CORE, RIGHT_CHEEK)["cheek_a"]
+        gap_before = before_cheek - before["a"]
+        gap_after = after_cheek - s["a"]
+        self.assertLess(abs(gap_after - gap_before), 0.4)
+
+
+class TestBrightenCurve(unittest.TestCase):
+    """提亮曲线（FEAT-209）：中间调拿满权重，高光仍完全保护。"""
+
+    def test_midtone_gets_full_amount(self):
+        img = _skin_rgb(50.0, 20.0, 60.0, seed=22)
+        anchor = skintone.anchor_from_pixels(img, FULL, RIGHT_CHEEK)
+        out = skintone.correct_region(
+            img, FULL, RIGHT_CHEEK, anchor,
+            skintone.SkinParams(hue_shift=0.0, chroma=0.0, brighten=2.0, blush=0.0),
+        )
+        before = colortransfer.rgb_to_lab(img)[..., 0][CORE].mean()
+        after = colortransfer.rgb_to_lab(out)[..., 0][CORE].mean()
+        # L≈60 落在全量带（≤L_FULL=70）：抬升量应接近标称 2.0，而不是旧的 ~1.0
+        self.assertGreater(after - before, 1.6)
+
+
+class TestCheekFeather(unittest.TestCase):
+    """颊部硬边（FEAT-209）：嫩红必须软边，矩形边界两侧不能出现阶跃色块。"""
+
+    def test_blush_boundary_is_soft(self):
+        img = _skin_rgb(50.0, 20.0, 65.0, seed=23)
+        anchor = skintone.anchor_from_pixels(img, FULL, RIGHT_CHEEK)
+        p = skintone.SkinParams(hue_shift=0.0, chroma=0.0, brighten=0.0, blush=3.0)
+        out = skintone.correct_region(img, FULL, RIGHT_CHEEK, anchor, p)
+        d = colortransfer.rgb_to_lab(out)[..., 1] - colortransfer.rgb_to_lab(img)[..., 1]
+        h, w = d.shape
+        col = int(0.46 * (w - 1))
+        yy = np.arange(h)[:, None]
+        band = yy > int(0.42 * h)
+        inside = band & (np.arange(w)[None, :] >= col - 2) & (np.arange(w)[None, :] < col)
+        outside = band & (np.arange(w)[None, :] >= col) & (np.arange(w)[None, :] < col + 2)
+        step = float(d[inside].mean() - d[outside].mean())
+        self.assertLess(abs(step), 0.6)
+
+
 class TestGuards(unittest.TestCase):
     def test_outside_mask_byte_identical(self):
         """掩码外像素逐字节不变（头发/衣物/背景安全的硬约束）。"""
@@ -207,7 +275,7 @@ class TestGuards(unittest.TestCase):
         self.assertEqual(p.hue_shift, 8.0)
         self.assertEqual(p.chroma, -6.0)
         self.assertEqual(p.brighten, 4.0)
-        self.assertEqual(p.blush, 1.2)      # 非法回落默认
+        self.assertEqual(p.blush, 1.8)      # 非法回落默认（女性侧重档）
 
     def test_wrap_deg(self):
         self.assertAlmostEqual(skintone.wrap_deg(20.0), 20.0)

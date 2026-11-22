@@ -21,7 +21,13 @@
      （local-enhance §9：提亮会洗掉面部立体感）。
 
 「嫩红」的实现：颊部 a* 的**加性增量**，同样朝锚点+偏置拉 —— 血色集中在苹果肌
-而不是全脸泛红。颊部定位用检测框几何近似（零新增模型依赖），68 点留作后续增强。
+而不是全脸泛红。颊部定位用检测框几何近似（零新增模型依赖），68 点留作后续增强；
+颊部掩码必须**羽化**后再作用（硬边的矩形边界在强嫩红下会出现直线色块，实测
+blush=3 时边界阶跃 3.5 个 Lab 单位）。
+
+性别侧重（FEAT-209，2026-11-22）：「女性更白更嫩红、男性保留原肤色白一点」由
+`for_gender` 表达 —— 它只改**偏置层**，不改锚点还原层，所以两档都会先把滤镜带来
+的偏色拉回原图。判定的发长启发式在 `hairlength`（零新增模型）。
 """
 from __future__ import annotations
 
@@ -41,9 +47,14 @@ _GAMUT_EPS = 1e-5
 _GAMUT_ITERS = 8
 # 低于此彩度不做色相旋转/彩度平移：C≈0 时色相角是噪声，动了只会给灰区染色。
 C_LOW = 4.0
-# 明度提亮的高光保护：L ≥ L_SAFE 视为反光/油光，权重衰减到 0；L ≤ L_MID 全量提。
+# 明度提亮的高光保护：L ≥ L_SAFE 视为反光/油光，权重衰减到 0；L ≤ L_FULL 全量提。
+# L_FULL 从 40 提到 70（FEAT-209）：旧曲线在中间调肤色（L≈59）只给 0.5 权重，标称
+# 1.5 的提亮实际只有 +0.75 L*，用户反馈「不够白」。现在中间调拿满权重，只在
+# 70~78 这段收口，高光保护（L≥78 逐字节不动）不变。
 L_SAFE = 78.0
-L_MID = 40.0
+L_FULL = 70.0
+# 颊部掩码羽化半径（占脸短边的比例）：嫩红必须软边，否则矩形边界露出直线色块。
+CHEEK_FEATHER_RATIO = 0.045
 # 皮肤掩码羽化半径（px）：与验证脚本同口径；贴回无硬边即可，不需要跟脸宽走。
 FEATHER_RADIUS = 3
 # 统计可信下限：掩码像素低于此值时中位数不稳，该脸跳过（宁不动不动歪）。
@@ -57,34 +68,40 @@ PARAM_RANGES = {
     "blush": (0.0, 3.0),
 }
 
+# 男性侧重档：只还原原图肤色 + 轻提亮（用户口径「保有原肤色、白一点」）。
+# 不做白黄偏置、不加嫩红；提亮按这个比例打折（默认 2.2 → 男 0.88 L*）。
+MALE_BRIGHTEN_RATIO = 0.4
+
 
 @dataclass(frozen=True)
 class SkinParams:
-    """一次肤色校正的四个配方级量。默认值即「人像」配方档（用户已确认）。"""
+    """一次肤色校正的四个配方级量。默认值即「人像」配方档（女性侧重档）。"""
 
     hue_shift: float = 3.0    # 色相偏移（度，>0 往黄，「白黄」）
     chroma: float = 1.5       # 彩度平移（Lab C 单位，>0 更透亮）
-    brighten: float = 1.5     # 提亮（L* 单位，带高光保护）
-    blush: float = 1.2        # 颊部 a* 增量（嫩红）
+    brighten: float = 2.2     # 提亮（L* 单位，带高光保护；中间调全额生效）
+    blush: float = 1.8        # 颊部 a* 增量（嫩红）
 
     @classmethod
     def from_raw(cls, raw: dict | None) -> "SkinParams":
         """任意来源（配方 / 前端 options）→ 夹到合法区间。缺省用配方默认档。"""
         raw = raw if isinstance(raw, dict) else {}
+        defaults = cls()
 
-        def _one(key: str, default: float) -> float:
+        def _one(key: str) -> float:
+            fallback = getattr(defaults, key)
             try:
-                v = float(raw.get(key, default))
+                v = float(raw.get(key, fallback))
             except (TypeError, ValueError):
-                return default
+                return fallback
             lo, hi = PARAM_RANGES[key]
             return max(lo, min(hi, v))
 
         return cls(
-            hue_shift=_one("hue_shift", 3.0),
-            chroma=_one("chroma", 1.5),
-            brighten=_one("brighten", 1.5),
-            blush=_one("blush", 1.2),
+            hue_shift=_one("hue_shift"),
+            chroma=_one("chroma"),
+            brighten=_one("brighten"),
+            blush=_one("blush"),
         )
 
     def is_noop(self) -> bool:
@@ -95,6 +112,25 @@ class SkinParams:
             and self.brighten < 1e-3
             and self.blush < 1e-3
         )
+
+
+def for_gender(p: SkinParams, long_hair: bool) -> SkinParams:
+    """这一张脸实际使用的四个量（性别侧重，FEAT-209）。
+
+    - 长发（女性侧重）：用户档位原样生效 —— 更白（提亮）+ 更嫩红（颊部 a*）；
+    - 非长发（男性侧重）：只保留「还原原肤色 + 轻提亮」，白黄偏置与嫩红归零。
+
+    注意「还原」不靠参数：它由锚点差算出（`correction_amounts`），所以男性档
+    依然会把滤镜带偏的肤色拉回原图，只是不再往上加黄和红。
+    """
+    if long_hair:
+        return p
+    return SkinParams(
+        hue_shift=0.0,
+        chroma=0.0,
+        brighten=p.brighten * MALE_BRIGHTEN_RATIO,
+        blush=0.0,
+    )
 
 
 @dataclass(frozen=True)
@@ -127,6 +163,17 @@ def cheek_region(shape: tuple[int, int]) -> np.ndarray:
     fx = xx / max(w - 1, 1)
     fy = yy / max(h - 1, 1)
     return (((fx > 0.18) & (fx < 0.46)) | ((fx > 0.54) & (fx < 0.82))) & (fy > 0.42)
+
+
+def _cheek_alpha(cheek_mask: np.ndarray) -> np.ndarray:
+    """颊部掩码 → 羽化 alpha（半径挂脸短边，复用磨皮的同一把羽化刀）。
+
+    统计口径仍用二值掩码（`predicted_cheek_a`），只有**作用**用羽化后的 alpha：
+    边界不再是一刀切的阶跃，强嫩红也不会在脸上留下矩形色块。
+    """
+    h, w = cheek_mask.shape
+    radius = max(2, int(round(CHEEK_FEATHER_RATIO * min(h, w))))
+    return skinretouch._feather(np.clip(cheek_mask, 0.0, 1.0), radius)
 
 
 def _to_lab(rgb_u8: np.ndarray) -> np.ndarray:
@@ -349,13 +396,14 @@ def correct_region(
     # 2) 色度向量：逐像素旋转后的 (a,b) 上叠加全脸统一平移（灰区不动）
     a2 = C * np.cos(hr) + np.where(confident, dax, 0.0)
     b2 = C * np.sin(hr) + np.where(confident, day, 0.0)
-    # 3) 颊部嫩红：a* 加性增量（为负 = 滤镜把颊部推太红，往回拉）
+    # 3) 颊部嫩红：a* 加性增量（为负 = 滤镜把颊部推太红，往回拉）。
+    #    掩码必须羽化：颊部区域是框内矩形，硬边在强嫩红下会露出直线色块。
     if abs(da) > 1e-3:
-        alpha_c = np.clip(cheek_mask, 0.0, 1.0).astype(np.float32)
+        alpha_c = _cheek_alpha(cheek_mask)
         a2 = a2 + da * alpha_c
     # 4) 明度：一次性提亮 + 高光保护（唯一不幂等的量，属「手感」范畴）
     if p.brighten > 1e-3:
-        w = np.clip((L_SAFE - L) / max(L_SAFE - L_MID, 1.0), 0.0, 1.0)
+        w = np.clip((L_SAFE - L) / max(L_SAFE - L_FULL, 1.0), 0.0, 1.0)
         L2 = np.clip(L + p.brighten * w, 0.0, 100.0)
     else:
         L2 = L
@@ -374,10 +422,14 @@ def correct_region(
 
 __all__ = [
     "PARAM_RANGES",
+    "MALE_BRIGHTEN_RATIO",
     "SkinAnchor",
     "SkinParams",
+    "for_gender",
     "MIN_SKIN_PX",
     "C_LOW",
+    "L_SAFE",
+    "L_FULL",
     "wrap_deg",
     "cheek_region",
     "region_stats",

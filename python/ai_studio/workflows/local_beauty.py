@@ -1,5 +1,6 @@
 """本地美颜（磨皮 + 肤色保真）工作流：SCRFD 找人脸 → BiSeNet 分区 → 只磨皮肤
-→ 羽化贴回 → 肤色朝原图锚点拉回并叠加白黄·嫩红偏置（FEAT-208）。
+→ 羽化贴回 → 肤色朝原图锚点拉回并叠加白黄·嫩红偏置（FEAT-208），逐脸按发长侧重
+（FEAT-209：长发更白更嫩红，其余还原原肤色 + 轻提亮）。
 
 纯本机、零付费。两个模型：`det_10g.onnx`（扫描入库已有，无需下载）与
 `face_parsing_bisenet_r34.onnx`（应用内下载，约 93MB）。
@@ -7,12 +8,13 @@
 设计纪律：
   - 检不到人脸 / 模型缺失 → 记 warning 继续下一张，**绝不整批失败**（与 FEAT-164 一致）；
   - 检测或解析失败时该张原样输出并告警，不产出「半张糊掉」的结果；
-  - 逐张的检测框外扩边距，遵循 `local-enhance.md` §2「紧裁人脸检出率低」的既有经验；
+  - 逐张的检测框外扩边距、过小脸阈值都走 `ops_local` 的单一真相源
+    （本文件不再自己写一份 detect→parse→smooth 循环，避免两份参数逐渐漂移）；
   - `_MIN_FACE_PX` 判的是**原图像素**（不是预览缩放后的比例），所以预览链路也不能
     先把图缩了再进来（见 `preview.py` 的同类说明）。
 
-肤色复用纪律（FEAT-208）：本工具没有调色/滤镜在前面，输入图就是原图 ——
-磨皮已经跑过的那份人脸分析直接用作肤色锚点与应用掩码，**零重复推理**。
+肤色复用纪律（FEAT-208/209）：本工具没有调色/滤镜在前面，输入图就是原图 ——
+磨皮已经跑过的那份人脸分析（含发长）直接用作肤色锚点与应用掩码，**零重复推理**。
 
 并行：照片级但按「ONNX 链路」折半取线程 —— 每张图要跑 1 次 SCRFD + 每张脸 1 次
 BiSeNet，会话自身已有 intra_op 线程，两层叠满会超订。
@@ -24,15 +26,9 @@ import os
 import numpy as np
 from PIL import Image
 
-from .. import faceparse, localmodels, ops_local, skinretouch, skintone
+from .. import faceparse, localmodels, ops_local, skintone
 from .base import filter_inputs, read_image, save_image, stem_of
 from .batch import Outcome, run_batch
-
-# 送进解析模型前，在检测框外扩的比例。紧裁人脸会让分割碎裂，
-# 留出脸颊/发际/下巴上下文才稳（与 SCRFD 检测的既有坑同源）。
-_CONTEXT_MARGIN = 0.30
-# 过小的人脸不做处理：解析在 512 上跑，再缩回去细节已不可信，磨了反而糊。
-_MIN_FACE_PX = 48
 
 _ONNX_HEAVY = True
 
@@ -73,79 +69,38 @@ def run(req, progress, cancel) -> dict:
 
     def process(index: int, p: str) -> Outcome:
         img = read_image(p)
-        arr = np.asarray(img, dtype=np.uint8)
         w: list[str] = []
         out_name = f"{stem_of(p)}_美颜"
 
-        try:
-            faces = localmodels.detect_faces(img)
-        except Exception as e:  # noqa: BLE001 —— 单张失败不拖垮整批
-            w.append(f"{os.path.basename(p)}: 人脸检测失败，已跳过（{e}）")
-            return Outcome(
-                outputs=[save_image(img, out_dir, out_name, ".jpg", 95)], warnings=w
-            )
+        def warn(msg: str) -> None:
+            w.append(f"{os.path.basename(p)}: {msg}")
 
-        usable = [f for f in faces if min(f["bbox"][2] - f["bbox"][0],
-                                          f["bbox"][3] - f["bbox"][1]) >= _MIN_FACE_PX]
-        if not usable:
-            w.append(f"{os.path.basename(p)}: 未检测到可用人脸，已原样输出")
-            return Outcome(
-                outputs=[save_image(img, out_dir, out_name, ".jpg", 95)], warnings=w
-            )
+        # 磨皮：检测框外扩、过小脸过滤、失败降级都在 ops_local 里，参数只有一份
+        scratch: dict = {}
+        smoothed = ops_local.smooth_image(
+            img, strength, keep_texture, warn=warn, stats=stats, scratch=scratch
+        )
+        analysis = scratch.get("face_analysis") or []
 
-        result = arr
-        faces_touched = 0
-        analysis: list[tuple] = []
-        for f in usable:
-            box = _context_box(f["bbox"], arr.shape[1], arr.shape[0], _CONTEXT_MARGIN)
-            if box is None:
-                continue
-            x1, y1, x2, y2 = box
-            crop = Image.fromarray(arr[y1:y2, x1:x2])
-            try:
-                cls_map = faceparse.predict(crop)
-            except Exception as e:  # noqa: BLE001
-                w.append(f"{os.path.basename(p)}: 人脸解析失败，该脸已跳过（{e}）")
-                continue
-            mask = faceparse.skin_mask(cls_map)
-            if mask.max() <= 0:
-                continue
-            analysis.append((tuple(f["bbox"]), box, mask))
-            radius = skinretouch.radius_for_face(f["bbox"][2] - f["bbox"][0])
-            patch = skinretouch.smooth_skin(
-                arr[y1:y2, x1:x2],
-                mask,
-                strength=strength,
-                radius=radius,
-                keep_texture=keep_texture,
-            )
-            # 贴回时用同一张 mask 做 alpha，块边界不出现硬接缝
-            result = skinretouch.paste_region(
-                result,
-                patch,
-                box,
-                skinretouch._feather(mask, max(1, int(round(radius)))),
-            )
-            faces_touched += 1
-
-        # 肤色保真（FEAT-208）：输入图就是原图 → 磨皮的分析既当锚点又当应用掩码，
-        # 磨皮只改皮肤像素的纹理不改几何，掩码对磨皮输出依然对得上。
+        # 肤色保真（FEAT-208/209）：输入图就是原图 → 磨皮的分析（含发长）既当锚点
+        # 又当应用掩码；磨皮只改皮肤纹理不改几何，掩码对磨皮输出依然对得上。
+        result = np.asarray(smoothed, dtype=np.uint8)
         skin_touched = 0
         if analysis and not skintone.SkinParams.from_raw(skin_params).is_noop():
             toned = ops_local.skin_tone_image(
-                Image.fromarray(result),
+                smoothed,
                 skin_params,
                 source=img,
                 faces_cur=analysis,
                 faces_src=analysis,
-                warn=lambda msg: w.append(f"{os.path.basename(p)}: {msg}"),
+                warn=warn,
             )
             result = np.asarray(toned, dtype=np.uint8)
-            skin_touched = faces_touched
+            skin_touched = len(analysis)
 
         out = save_image(Image.fromarray(result), out_dir, out_name, ".jpg", 95)
         return Outcome(outputs=[out], warnings=w,
-                        meta={"faces": faces_touched, "skin_faces": skin_touched})
+                        meta={"faces": len(analysis), "skin_faces": skin_touched})
 
     stats = {"faces": 0}
     res = run_batch(
@@ -178,17 +133,3 @@ def _opt_float(opts: dict, key: str, default: float) -> float:
     if v is None or v == "":
         return float(default)
     return float(v)
-
-
-def _context_box(bbox, width: int, height: int, margin: float):
-    """检测框外扩 `margin` 并夹到图像内；退化框返回 None。"""
-    x1, y1, x2, y2 = bbox
-    bw, bh = x2 - x1, y2 - y1
-    if bw <= 0 or bh <= 0:
-        return None
-    mx, my = int(bw * margin), int(bh * margin)
-    bx1, by1 = max(0, int(x1) - mx), max(0, int(y1) - my)
-    bx2, by2 = min(width, int(x2) + mx), min(height, int(y2) + my)
-    if bx2 - bx1 < _MIN_FACE_PX or by2 - by1 < _MIN_FACE_PX:
-        return None
-    return bx1, by1, bx2, by2

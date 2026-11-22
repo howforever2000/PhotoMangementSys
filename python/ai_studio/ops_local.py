@@ -12,12 +12,23 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 from PIL import Image
 
-from . import autograde, colortransfer, faceparse, facewarp, landmark, localmodels, skinretouch, skintone
+from . import (
+    autograde,
+    colortransfer,
+    faceparse,
+    facewarp,
+    hairlength,
+    landmark,
+    localmodels,
+    skinretouch,
+    skintone,
+)
 from .renderopts import EMPTY as EMPTY_CTX, RunContext
 
 Warn = Optional[Callable[[str], None]]
@@ -28,6 +39,21 @@ _MIN_FACE_PX = 48
 
 # 参考图分析用的长边（与 workflows/color_transfer.py 的 _REF_LONG_EDGE 同口径）
 _REF_LONG_EDGE = 1024
+
+
+@dataclass
+class FaceAnalysis:
+    """一张脸的分析结果（FEAT-208 起的跨算子共享单元）。
+
+    `mask` 是 BiSeNet 皮肤权重；`long_hair` 是发长判定（`hairlength`，零新增模型），
+    供肤色保真的性别侧重使用。判不出长发时为 False —— 按男性侧重档（还原 + 轻提亮）
+    处理，这是刻意的宽松失败模式。
+    """
+
+    bbox: tuple[int, int, int, int]
+    box: tuple[int, int, int, int]
+    mask: np.ndarray
+    long_hair: bool = False
 
 
 def _emit(warn: Warn, text: str) -> None:
@@ -87,6 +113,11 @@ def reshape_image(
     return result
 
 
+def _long_hair_of(cls_map: np.ndarray, bbox, box) -> bool:
+    """由解析类别图判发长（`hairlength` 的入口，两处共用同一口径）。"""
+    return hairlength.looks_long_hair(cls_map == faceparse.IDX["hair"], bbox, box)
+
+
 def _context_box(bbox, width: int, height: int, margin: float):
     x1, y1, x2, y2 = bbox
     bw, bh = x2 - x1, y2 - y1
@@ -100,8 +131,8 @@ def _context_box(bbox, width: int, height: int, margin: float):
     return bx1, by1, bx2, by2
 
 
-def _analyze_faces(img: Image.Image, warn: Warn, purpose: str) -> list[tuple]:
-    """SCRFD 检测 + BiSeNet 解析，逐脸收集皮肤掩码：[(bbox, box, mask)]。
+def _analyze_faces(img: Image.Image, warn: Warn, purpose: str) -> list[FaceAnalysis]:
+    """SCRFD 检测 + BiSeNet 解析，逐脸收集皮肤掩码与发长：list[FaceAnalysis]。
 
     磨皮与肤色校正共用（FEAT-208）：同一条链里模型只跑一次，后到的算子
     从 ctx.scratch 复用先到的结果，不再重复推理。
@@ -118,9 +149,10 @@ def _analyze_faces(img: Image.Image, warn: Warn, purpose: str) -> list[tuple]:
     if not usable:
         _emit(warn, f"未检测到可用人脸，{purpose}步骤原样通过")
         return []
-    out: list[tuple] = []
+    out: list[FaceAnalysis] = []
     for f in usable:
-        box = _context_box(f["bbox"], img.width, img.height, _CONTEXT_MARGIN)
+        bbox = tuple(f["bbox"])
+        box = _context_box(bbox, img.width, img.height, _CONTEXT_MARGIN)
         if box is None:
             continue
         x1, y1, x2, y2 = box
@@ -132,7 +164,14 @@ def _analyze_faces(img: Image.Image, warn: Warn, purpose: str) -> list[tuple]:
         mask = faceparse.skin_mask(cls_map)
         if mask.max() <= 0:
             continue
-        out.append((tuple(f["bbox"]), box, mask))
+        out.append(
+            FaceAnalysis(
+                bbox=bbox,
+                box=box,
+                mask=mask,
+                long_hair=_long_hair_of(cls_map, bbox, box),
+            )
+        )
     return out
 
 
@@ -159,15 +198,15 @@ def smooth_image(
     arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
     result = arr
     touched = 0
-    for bbox, box, mask in analysis:
-        x1, y1, x2, y2 = box
+    for face in analysis:
+        x1, y1, x2, y2 = face.box
         # 半径挂钩脸宽（不是图幅）：高分辨率原图不再被过度抹平
-        r = skinretouch.radius_for_face(bbox[2] - bbox[0])
+        r = skinretouch.radius_for_face(face.bbox[2] - face.bbox[0])
         patch = skinretouch.smooth_skin(
-            arr[y1:y2, x1:x2], mask, strength=strength, radius=r, keep_texture=texture
+            arr[y1:y2, x1:x2], face.mask, strength=strength, radius=r, keep_texture=texture
         )
         result = skinretouch.paste_region(
-            result, patch, box, skinretouch._feather(mask, max(1, int(round(r))))
+            result, patch, face.box, skinretouch._feather(face.mask, max(1, int(round(r))))
         )
         touched += 1
     if stats is not None:
@@ -192,10 +231,9 @@ def op_auto_grade(
 def op_face_reshape(
     img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
 ) -> Image.Image:
-    scratch = getattr(ctx, "scratch", None)
-    if scratch:
-        # 形变移动了像素：磨皮算过的掩码与本图不再对齐，必须作废（FEAT-208）
-        scratch.pop("face_analysis", None)
+    # 形变移动了像素：磨皮算过的掩码与本图不再对齐，必须作废（FEAT-208）。
+    # 但不置 geometry_dirty —— 局部液化后掩码仍能标回原图取锚点（实测 ≤0.52°）。
+    ctx.drop_face_analysis()
     return reshape_image(
         img,
         float(params.get("slim", 0.3)),
@@ -206,11 +244,13 @@ def op_face_reshape(
 def op_skin_smooth(
     img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
 ) -> Image.Image:
+    # 默认上下文（直接调用算子）没有跨步通道：不往模块级单例 EMPTY 里写分析结果
+    scratch = None if ctx is EMPTY_CTX else getattr(ctx, "scratch", None)
     return smooth_image(
         img,
         float(params.get("strength", 0.45)),
         float(params.get("texture", 0.55)),
-        scratch=getattr(ctx, "scratch", None),
+        scratch=scratch,
     )
 
 
@@ -260,19 +300,21 @@ def op_local_vibrance(
     return Image.fromarray(autograde.vibrance_adjust(arr, amount))
 
 def _pair_faces(
-    faces_cur: list[tuple], faces_src: list[tuple]
-) -> list[tuple[tuple, tuple]]:
-    """当前图与原图的脸配对：数量一致按检测顺序（SCRFD 确定性）；
-    不一致（形变丢脸 / 误检差异）按框中心最近邻贪心配对，落单的跳过。"""
-    if len(faces_cur) == len(faces_src):
-        return list(zip(faces_cur, faces_src))
+    faces_cur: list[FaceAnalysis], faces_src: list[FaceAnalysis]
+) -> list[tuple[FaceAnalysis, FaceAnalysis]]:
+    """当前图与原图的脸配对：**一律按框中心最近邻贪心**，落单的跳过。
 
-    def _center(face: tuple) -> tuple[float, float]:
-        x1, y1, x2, y2 = face[1]
+    为什么不按检测序号 zip：SCRFD 的输出顺序会随图像内容变化（形变/调色后都可能重排），
+    数量相等时按序号配也可能把两张脸配错 —— 实测强形变下两次锚点差到 ΔC≈4。
+    几何一致的同尺寸链路根本走不到这里（肤色锚点直接复用掩码），这里只服务
+    「整幅重绘后再肤色」这类需要跨图配对的场景。
+    """
+    def _center(face: FaceAnalysis) -> tuple[float, float]:
+        x1, y1, x2, y2 = face.box
         return ((x1 + x2) * 0.5, (y1 + y2) * 0.5)
 
     used: set[int] = set()
-    out: list[tuple[tuple, tuple]] = []
+    out: list[tuple[FaceAnalysis, FaceAnalysis]] = []
     for f in faces_cur:
         cx, cy = _center(f)
         best, best_d = None, None
@@ -290,20 +332,46 @@ def _pair_faces(
     return out
 
 
+def _can_reuse_anchor_masks(
+    img: Image.Image, source: Image.Image | None, source_aligned: bool
+) -> bool:
+    """原图锚点能否直接复用本图的人脸掩码：几何一致 + 同尺寸。
+
+    实测（2026-11-22，3 张 12MP 人像、每人 2 脸）：几何一致时复用掩码取锚点，相对
+    「在原图上重新检测」的偏差 Δh ≤0.11°、ΔC ≤0.10、Δcheek_a ≤0.21；连形变后
+    （slim=0.8）也只有 Δh ≤0.52°、ΔC ≤0.45、Δcheek_a ≤0.54 —— 可忽略，却省掉一次
+    SCRFD + 每脸一次 BiSeNet（2 脸实测 ~375ms/张，占肤色步的 65%）。
+    只有整幅重绘/缩放（`mark_geometry_changed`）或尺寸不同才必须回退重分析。
+
+    另外：复用掩码还顺带绕开了「原图重新检测后按序号配对」的隐患 —— 强形变会改变
+    SCRFD 的检测顺序，序号 zip 可能把两张脸配错（实测两次锚点差到 ΔC≈4）；复用同一份
+    掩码时根本没有配对这一步。
+    """
+    return source is not None and source_aligned and source.size == img.size
+
+
 def skin_tone_image(
     img: Image.Image,
     params: Dict[str, Any],
     source: Image.Image | None = None,
-    faces_cur: Optional[list[tuple]] = None,
-    faces_src: Optional[list[tuple]] = None,
+    faces_cur: Optional[list[FaceAnalysis]] = None,
+    faces_src: Optional[list[FaceAnalysis]] = None,
+    source_aligned: bool = True,
     warn: Warn = None,
     stats: Optional[dict] = None,
 ) -> Image.Image:
-    """分区肤色保真（FEAT-208）：皮肤掩码内把色度朝原图锚点拉回，再叠加白黄·嫩红偏置。
+    """分区肤色保真（FEAT-208/209）：皮肤掩码内把色度朝原图锚点拉回，再叠加偏置。
 
-    `faces_cur` / `faces_src`：已分析好的 [(bbox, box, skin_mask)]。
+    `faces_cur` / `faces_src`：已分析好的 `FaceAnalysis` 列表。
     复用纪律：磨皮刚跑过的分析直接传入（几何未变掩码对得上），不重复推理；
     没有就现算。`source` 缺省 → 锚点退化为当前图（还原项归零，只剩偏置）。
+
+    `source_aligned`（FEAT-209）：本图与 `source` 的几何是否一致。一致且同尺寸时
+    原图锚点**复用本图的掩码**，不再对原图重跑检测/解析；改过几何（形变/超分/缩放）
+    才回退到原图重新分析。
+
+    性别侧重（FEAT-209）：逐脸按发长取 `skintone.for_gender` —— 长发用用户档位
+    （更白更嫩红），其余只还原原肤色 + 轻提亮。判错只会让妆感变淡，不会毁片。
     """
     p = skintone.SkinParams.from_raw(params)
     if p.is_noop():
@@ -313,32 +381,43 @@ def skin_tone_image(
     if not faces_cur:
         return img
     if faces_src is None:
-        if source is not None:
+        if _can_reuse_anchor_masks(img, source, source_aligned):
+            faces_src = faces_cur
+        elif source is not None:
             faces_src = _analyze_faces(source, None, "肤色锚点")
         else:
             faces_src = faces_cur
     if not faces_src:
         faces_src = faces_cur
 
+    # 锚点像素：复用掩码时几何一致 → 取原图；锚点来自原图自己的分析 → 取原图；
+    # 都没有（source 缺省）→ 退化为当前图。
+    if faces_src is faces_cur:
+        src_img = source if (source is not None and source.size == img.size) else img
+    else:
+        src_img = source if source is not None else img
+
     arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
-    src_arr = (
-        np.asarray(source.convert("RGB"), dtype=np.uint8)
-        if source is not None and faces_src is not faces_cur
-        else arr
-    )
+    src_arr = arr if src_img is img else np.asarray(src_img.convert("RGB"), dtype=np.uint8)
     result = arr
     touched = 0
-    for (_bbox, box, mask), (_s_bbox, s_box, s_mask) in _pair_faces(faces_cur, faces_src):
-        cheek = skintone.cheek_region(mask.shape)
-        s_cheek = skintone.cheek_region(s_mask.shape)
-        x1, y1, x2, y2 = s_box
+    for face, s_face in _pair_faces(faces_cur, faces_src):
+        cheek = skintone.cheek_region(face.mask.shape)
+        s_cheek = skintone.cheek_region(s_face.mask.shape)
+        x1, y1, x2, y2 = s_face.box
         anchor = skintone.anchor_from_pixels(
-            src_arr[y1:y2, x1:x2], s_mask, s_cheek
+            src_arr[y1:y2, x1:x2], s_face.mask, s_cheek
         )
-        x1, y1, x2, y2 = box
-        patch = skintone.correct_region(arr[y1:y2, x1:x2], mask, cheek, anchor, p)
+        x1, y1, x2, y2 = face.box
+        patch = skintone.correct_region(
+            arr[y1:y2, x1:x2],
+            face.mask,
+            cheek,
+            anchor,
+            skintone.for_gender(p, face.long_hair),
+        )
         result = skinretouch.paste_region(
-            result, patch, box, skinretouch._feather(mask, skintone.FEATHER_RADIUS)
+            result, patch, face.box, skinretouch._feather(face.mask, skintone.FEATHER_RADIUS)
         )
         touched += 1
     if stats is not None:
@@ -356,7 +435,11 @@ def op_skin_tone(
     if scratch:
         faces_cur = scratch.pop("face_analysis", None)
     return skin_tone_image(
-        img, params, source=getattr(ctx, "source", None), faces_cur=faces_cur
+        img,
+        params,
+        source=getattr(ctx, "source", None),
+        faces_cur=faces_cur,
+        source_aligned=not getattr(ctx, "geometry_dirty", False),
     )
 
 
@@ -370,6 +453,7 @@ OPS_LOCAL = {
 }
 
 __all__ = [
+    "FaceAnalysis",
     "grade_image",
     "reshape_image",
     "smooth_image",

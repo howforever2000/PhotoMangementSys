@@ -76,13 +76,42 @@ class RunContext:
     scratch: dict = field(default_factory=dict, compare=False)
     """同一条链内、同一次 execute_plan 里的跨步共享槽（FEAT-208，照片级）。
 
-    现在只有一个键：`face_analysis` —— 分区磨皮已经跑过的 SCRFD + BiSeNet
-    结果（[(bbox, box, skin_mask)]），肤色保真直接复用，不再重复推理。
+    现在有两个键：
+      - `face_analysis` —— 分区磨皮已经跑过的 SCRFD + BiSeNet 结果
+        （[`FaceAnalysis`] 列表），肤色保真直接复用，不再重复推理；
+      - `geometry_dirty` —— 本张图是否被**整幅重绘/缩放**（超分）动过；局部形变不算。
+        肤色保真据此决定「原图锚点能不能复用本图的掩码」：几何一致且同尺寸时，
+        掩码可以直接标到原图上（实测锚点误差 ≤0.21°，形变后 ≤0.54°），省掉一次
+        SCRFD + 每脸 BiSeNet（2 脸实测 ~375ms/张）。
     纪律：
       - 只在同一次 execute_plan 内有效（每张照片 replace 出新 dict）；
-      - 改几何的算子（形变/超分）必须清掉它，防止掩码与像素错位；
+      - 局部形变调 `drop_face_analysis()`（只作废掩码）；整幅重绘调
+        `mark_geometry_changed()`（作废掩码 + 置脏位，锚点必须回原图重分析）；
       - 消费方用 pop 取走，杜绝二次误用。
     """
+
+    def drop_face_analysis(self) -> None:
+        """几何有轻微变化（形变）：作废跨步人脸分析，但锚点仍可复用本图掩码。
+
+        为什么形变不算「整幅重绘」：形变是局部液化，实测 slim=0.8 强形变下，用形变后
+        的框+掩码在原图上取锚点，相对「在原图上重新检测」的偏差 Δh ≤0.52°、ΔC ≤0.45、
+        Δcheek_a ≤0.54 —— 可忽略；而重跑一次 SCRFD + 每脸 BiSeNet 要 ~375ms。
+        默认上下文（`EMPTY`，直接调用算子时用）没有跨步通道，不写。
+        """
+        if self is EMPTY:
+            return
+        self.scratch.pop("face_analysis", None)
+
+    def mark_geometry_changed(self) -> None:
+        """整幅重绘或缩放（超分）：掩码作废，且锚点不能再复用本图掩码。"""
+        self.drop_face_analysis()
+        if self is not EMPTY:
+            self.scratch["geometry_dirty"] = True
+
+    @property
+    def geometry_dirty(self) -> bool:
+        """本张图是否被整幅重绘/缩放动过（形变不算，见 `drop_face_analysis`）。"""
+        return bool(self.scratch.get("geometry_dirty")) if self.scratch else False
 
     def gateway_steps(self) -> int | None:
         """要写进请求体的 `steps`；None = 不写（让网关用自己的默认值）。"""
