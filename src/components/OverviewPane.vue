@@ -223,12 +223,16 @@ const memoryYearsAgo = computed(() =>
 );
 
 /**
- * FEAT-153：那年今日按天跳转。
- * 之前整块点击只跳 /memories 泛回忆页，用户到不了"那一天"；
- * 现在带上那天的日期（YYYY-MM-DD），Memories 页读 ?day 自动弹出当日浏览框。
+ * FEAT-153 → FEAT-201：那年今日按天直达。
+ * FEAT-153 时代跳 /memories?day=… 弹当日浏览框（要为看一天的照片拉 15 MB
+ * 全量时间线）；FEAT-201 改跳 /collection?type=day&date=… —— 共享
+ * PhotoCollectionPage 全页网格，timeline_day 分页拉取（首屏 300 张）。
+ * Memories 的 ?day 入口保留（其他 deep-link 仍可用）。
  */
 const memoryDay = computed(() => memoryHero.value?.shoot_time?.slice(0, 10) ?? "");
-const memoryTo = computed(() => (memoryDay.value ? `/memories?day=${memoryDay.value}` : "/memories"));
+const memoryTo = computed(() =>
+  memoryDay.value ? `/collection?type=day&date=${memoryDay.value}` : "/smart",
+);
 function goMemory() {
   router.push(memoryTo.value);
 }
@@ -298,9 +302,6 @@ function goFace(pid?: string) {
 }
 function goLocation() {
   router.push({ path: "/smart", query: { tab: "location" } });
-}
-function goAlbum(id?: number | null) {
-  if (id != null) router.push(`/album/${id}`);
 }
 </script>
 
@@ -392,8 +393,8 @@ function goAlbum(id?: number | null) {
         <p class="w-stat-note ov-foot">{{ (faceRatio * 100).toFixed(1) }}% 的照片含人物 · {{ facePhotos.toLocaleString() }} 张</p>
       </UiWidget>
 
-      <!-- 那年今日（FEAT-153 竖幅锚点）：整块就是一张照片，span4×rows4 右侧贯通四行。
-           标题浮在照片上；点击带 ?day=YYYY-MM-DD 跳回忆页当日浏览框。 -->
+      <!-- 那年今日（FEAT-153 竖幅锚点 / FEAT-201 改全页直达）：整块就是一张照片，span4×rows4 右侧贯通四行。
+           标题浮在照片上；点击跳 /collection?type=day&date=… 共享集合全页（分页热加载）。 -->
       <UiWidget :span="4" :rows="4" label-cn="那年今日" cover :to="memoryTo">
         <MemoryCore
           v-if="memoryHero"
@@ -429,15 +430,17 @@ function goAlbum(id?: number | null) {
 
       <!-- ══ 行末｜内容为主 ══════════════════════════════════════════════ -->
 
-      <!-- 最近导入（FEAT-153 升通栏）：span12 胶片条，照片下出血铺到板缘 ——
-           板是相框，不是"贴着照片的纸"；加宽后每张封面更接近真实比例 -->
-      <UiWidget :span="12" :rows="2" label-cn="最近导入" bleed class="ov-film" :to="'/timeline'">
-        <template #right>时间线 →</template>
+      <!-- 最近导入（FEAT-153 升通栏 / FEAT-201 改直达）：span12 胶片条，照片下出血铺到板缘 ——
+           板是相框，不是"贴着照片的纸"；加宽后每张封面更接近真实比例。
+           整块与单张封面点击都去 /collection?type=recent（最近导入照片全页）——
+           旧版整块泛跳时间线、单张跳所属相册，都到不了"最近导入的照片"本身。 -->
+      <UiWidget :span="12" :rows="2" label-cn="最近导入" bleed class="ov-film" :to="'/collection?type=recent'">
+        <template #right>查看全部 →</template>
         <CoversCore
           v-if="recentCovers.length"
           :items="recentCovers"
           variant="strip"
-          @pick="(i: number) => goAlbum(recent[i]?.album_id)"
+          @pick="() => router.push('/collection?type=recent')"
         />
         <div v-else class="ov-empty">还没有已入库的照片</div>
       </UiWidget>

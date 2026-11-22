@@ -875,6 +875,99 @@ impl Database {
         Ok(out)
     }
 
+    /// 时间线卡片行统一列清单（FEAT-201：timeline_day / timeline_recent 与
+    /// timeline_month 的 BASE 同源；独立成模块级常量便于新查询复用）
+    const TIMELINE_CARD_SELECT: &str = "SELECT p.id, p.path, p.album_id, a.name, p.shoot_time,
+                    p.location, p.label, t.thumb_path
+             FROM photo_content_scan p
+             LEFT JOIN albums a ON a.id = p.album_id AND a.user_id = p.user_id
+             LEFT JOIN photo_thumb_cache t ON t.photo_hash = p.photo_hash";
+
+    /// 时间线卡片行映射（与 TIMELINE_CARD_SELECT 列序严格对应，同 timeline_month 的 map_card）
+    fn map_timeline_card(r: &rusqlite::Row) -> rusqlite::Result<TimelineCard> {
+        Ok(TimelineCard {
+            id: r.get(0)?,
+            path: r.get(1)?,
+            album_id: r.get(2)?,
+            album_name: r.get(3)?,
+            shoot_time: r.get(4)?,
+            location: r.get(5)?,
+            label: r.get(6)?,
+            thumb_path: r.get::<_, Option<String>>(7)?,
+        })
+    }
+
+    /// FEAT-201：某拍摄日（YYYY-MM-DD）的一页照片
+    ///
+    /// 概览「那年今日」全页直达用：substr(shoot_time,1,10) 等值命中，
+    /// 日内按拍摄时间升序（与回忆页当日浏览框 openDayBox 的排序同口径）。
+    /// 排序含 id 兜底 → OFFSET 翻页不重不漏。
+    pub fn timeline_day(
+        &self,
+        user_id: i64,
+        day: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<TimelineCard>, DbError> {
+        let sql = format!(
+            "{} \
+             WHERE p.user_id = ?1 AND length(p.shoot_time) >= 10 AND substr(p.shoot_time, 1, 10) = ?2 \
+             ORDER BY p.shoot_time ASC, p.id ASC LIMIT ?3 OFFSET ?4",
+            Self::TIMELINE_CARD_SELECT
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![user_id, day, limit, offset], Self::map_timeline_card)?;
+        let out = rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)?;
+        Ok(out)
+    }
+
+    /// FEAT-201：最近导入的一页照片（按入库序 p.id 倒序，与概览快照 recent 同口径）
+    ///
+    /// 排序键 p.id 单调 → OFFSET 翻页不重不漏；不筛拍摄时间（未扫出时间的
+    /// 新导入照片也在最近导入里，与快照 recent 行为一致）。
+    pub fn timeline_recent(
+        &self,
+        user_id: i64,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<TimelineCard>, DbError> {
+        let sql = format!(
+            "{} \
+             WHERE p.user_id = ?1 \
+             ORDER BY p.id DESC LIMIT ?2 OFFSET ?3",
+            Self::TIMELINE_CARD_SELECT
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![user_id, limit, offset], Self::map_timeline_card)?;
+        let out = rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)?;
+        Ok(out)
+    }
+
+    /// FEAT-205：某拍摄年份（YYYY）的一页照片（回忆页「年度回顾」全页直达）
+    ///
+    /// 该年全部**有拍摄时间**的行（含 "2024" / "2024-" 残缺值 —— 时间线页把它们
+    /// 单独成组，集合页不细分，不丢数据）；年内按 shoot_time 升序、id 兜底 →
+    /// OFFSET 翻页不重不漏。整年可能上万张，分页是硬要求。
+    pub fn timeline_year(
+        &self,
+        user_id: i64,
+        year: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<TimelineCard>, DbError> {
+        let sql = format!(
+            "{} \
+             WHERE p.user_id = ?1 AND p.shoot_time IS NOT NULL AND length(p.shoot_time) >= 4 \
+                   AND substr(p.shoot_time, 1, 4) = ?2 \
+             ORDER BY p.shoot_time ASC, p.id ASC LIMIT ?3 OFFSET ?4",
+            Self::TIMELINE_CARD_SELECT
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![user_id, year, limit, offset], Self::map_timeline_card)?;
+        let out = rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)?;
+        Ok(out)
+    }
+
     /// FEAT-048：按大类/细类列出照片（分类浏览二级视图）
     ///
     /// - `sub_category = None` → 该大类全部照片（含细类为空的行）
@@ -1070,20 +1163,28 @@ impl Database {
     /// FEAT-049：按地点列出照片（地点浏览二级视图）
     ///
     /// `location = None` → 「未记录地点」组（location 列为空的全部照片）。
+    ///
+    /// 分页（FEAT-204）：`offset` + `limit` 翻页（首屏 300 / 步进 150），
+    /// 与 list_category_photos / get_person_photos 同口径。
+    /// 排序末位 `p.id DESC` 稳定兜底 → OFFSET 语义正确（不重不漏）。
     pub fn list_photos_by_location(
         &self,
         user_id: i64,
         location: Option<&str>,
+        limit: i64,
+        offset: i64,
     ) -> Result<Vec<ContentSearchHit>, DbError> {
         let sql = match location {
             Some(_) => format!(
                 "{CONTENT_HIT_SELECT} WHERE p.user_id = ?1 AND p.location = ?2
-                 ORDER BY (p.shoot_time IS NULL), p.shoot_time DESC, p.id DESC"
+                 ORDER BY (p.shoot_time IS NULL), p.shoot_time DESC, p.id DESC
+                 LIMIT ?3 OFFSET ?4"
             ),
             None => format!(
                 "{CONTENT_HIT_SELECT} WHERE p.user_id = ?1
                     AND (p.location IS NULL OR p.location = '')
-                 ORDER BY (p.shoot_time IS NULL), p.shoot_time DESC, p.id DESC"
+                 ORDER BY (p.shoot_time IS NULL), p.shoot_time DESC, p.id DESC
+                 LIMIT ?2 OFFSET ?3"
             ),
         };
         let mut stmt = self.conn.prepare(&sql)?;
@@ -1091,6 +1192,8 @@ impl Database {
         if let Some(loc) = location {
             pv.push(Box::new(loc.to_string()));
         }
+        pv.push(Box::new(limit.max(0)));
+        pv.push(Box::new(offset.max(0)));
         let params_ref: Vec<&dyn rusqlite::ToSql> = pv.iter().map(|b| b.as_ref()).collect();
         let rows = stmt.query_map(params_ref.as_slice(), map_content_search_hit)?;
         rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
@@ -1978,6 +2081,69 @@ mod tests {
             // 与引入 `owns` 之前的旧行为一致（既有测试无需逐条改写）。
             owns: FieldGroups::ALL,
         }
+    }
+
+    /// FEAT-201：timeline_day / timeline_recent 的分页与排序语义
+    #[test]
+    fn timeline_day_and_recent_pagination() {
+        let db = mem_db();
+        // 4 张：3 张 2023-11-21（往年今天场景），1 张 2024-01-01
+        let mut a = sample_rec("h1", "D:/a/1.jpg");
+        a.shoot_time = Some("2023-11-21 08:00:00".into());
+        let mut b = sample_rec("h2", "D:/a/2.jpg");
+        b.shoot_time = Some("2023-11-21 09:30:00".into());
+        let mut c = sample_rec("h3", "D:/a/3.jpg");
+        c.shoot_time = Some("2023-11-21 07:00:00".into());
+        let mut d = sample_rec("h4", "D:/a/4.jpg");
+        d.shoot_time = Some("2024-01-01 12:00:00".into());
+        // 按时间序写入：h1 → h2 → h3 → h4（p.id 递增）
+        db.upsert_photo_contents(&[a, b, c, d]).unwrap();
+
+        // timeline_day：只含当天；日内按拍摄时间升序（与回忆页当日浏览框同口径）
+        let day = db.timeline_day(1, "2023-11-21", 2, 0).unwrap();
+        assert_eq!(
+            day.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(),
+            ["D:/a/3.jpg", "D:/a/1.jpg"]
+        );
+        // offset 翻页不重不漏
+        let day2 = db.timeline_day(1, "2023-11-21", 2, 2).unwrap();
+        assert_eq!(day2.len(), 1);
+        assert_eq!(day2[0].path, "D:/a/2.jpg");
+        // 无照片的日期 → 空页（前端据此判「没有更多」）
+        assert!(db.timeline_day(1, "2025-11-21", 10, 0).unwrap().is_empty());
+        // 多用户隔离
+        assert!(db.timeline_day(2, "2023-11-21", 10, 0).unwrap().is_empty());
+
+        // timeline_recent：按入库序 p.id 倒序（最后导入的在前），与概览快照 recent 同口径
+        let recent = db.timeline_recent(1, 3, 0).unwrap();
+        assert_eq!(
+            recent.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(),
+            ["D:/a/4.jpg", "D:/a/3.jpg", "D:/a/2.jpg"]
+        );
+        let recent2 = db.timeline_recent(1, 3, 3).unwrap();
+        assert_eq!(recent2.len(), 1);
+        assert_eq!(recent2[0].path, "D:/a/1.jpg");
+
+        // FEAT-205 timeline_year：整年聚合（含残缺拍摄时间），年内 shoot_time 升序
+        let mut e = sample_rec("h5", "D:/a/5.jpg");
+        e.shoot_time = Some("2024-06-01 09:00:00".into());
+        let mut f = sample_rec("h6", "D:/a/6.jpg");
+        f.shoot_time = Some("2024".into()); // 残缺值：时间线单独成组，集合页不丢
+        db.upsert_photo_contents(&[e, f]).unwrap();
+        let year = db.timeline_year(1, "2024", 10, 0).unwrap();
+        assert_eq!(
+            year.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(),
+            // "2024" < "2024-01-01…" < "2024-06-01…"（字典序即时间序），id 兜底
+            ["D:/a/6.jpg", "D:/a/4.jpg", "D:/a/5.jpg"]
+        );
+        let year_paged = db.timeline_year(1, "2024", 2, 0).unwrap();
+        assert_eq!(year_paged.len(), 2);
+        assert_eq!(year_paged[0].path, "D:/a/6.jpg");
+        let year_next = db.timeline_year(1, "2024", 2, 2).unwrap();
+        assert_eq!(year_next.len(), 1);
+        assert_eq!(year_next[0].path, "D:/a/5.jpg");
+        // 无照片年份 → 空页
+        assert!(db.timeline_year(1, "2020", 10, 0).unwrap().is_empty());
     }
 
     /// P2 核心安全网：**非 AI 分支的落库不得抹掉 AI 分支的成果**。

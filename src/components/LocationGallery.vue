@@ -10,7 +10,7 @@
  *  1. 地点卡片网格：地名 + 张数徽标 + 代表封面
  *  2. 点击地点 → 照片网格 + PhotoLightbox 大图
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useThemeStore } from "../stores/theme";
 import { useNotify } from "../composables/useNotify";
@@ -145,9 +145,24 @@ async function loadCoverThumbs() {
 }
 
 /* -------------------- 视图 2：地点照片网格 -------------------- */
+/* 分页热加载（FEAT-204）：旧实现一次 invoke 拉全量 + 全量缩略图生成，
+   大地点（数千张）点击后要等完全部解码才见首屏（「硬解」）。
+   与 FEAT-200（分类/人物画廊）同口径：首屏 300 / 步进 150 /
+   哨兵 IntersectionObserver rootMargin 400px（提前预加载），
+   缩略图只给**新追加的一页**入队（thumbMap 全局缓存去重）。 */
+const PAGE_FIRST = 300;
+const PAGE_STEP = 150;
+
 const activeGroup = ref<LocationGroupRow | null>(null);
 const photos = ref<ContentSearchHit[]>([]);
 const photosLoading = ref(false);
+/** 翻页中（第 2 页起；首屏用 photosLoading） */
+const loadingMore = ref(false);
+/** 已到末页（返回条数 < 步长即认定，与后端 OFFSET 稳定排序配合） */
+const photosDone = ref(false);
+/** 哨兵元素与观察器（进入视口前 400px 就开始拉下一页 = 预加载） */
+const sentinelEl = ref<HTMLElement | null>(null);
+let moreIo: IntersectionObserver | null = null;
 
 /** 地点卡片标题（None → 未记录地点） */
 function groupLabel(g: LocationGroupRow): string {
@@ -157,22 +172,84 @@ function groupLabel(g: LocationGroupRow): string {
 async function openGroup(g: LocationGroupRow) {
   activeGroup.value = g;
   photosLoading.value = true;
+  photos.value = [];
+  photosDone.value = false;
+  teardownMoreIo();
   try {
-    photos.value = await invoke<ContentSearchHit[]>("list_photos_by_location", {
+    const batch = await invoke<ContentSearchHit[]>("list_photos_by_location", {
       location: g.location,
+      limit: PAGE_FIRST,
+      offset: 0,
     });
-    await loadGridThumbs();
+    photos.value = batch;
+    await loadGridThumbs(batch);
+    if (batch.length < PAGE_FIRST) photosDone.value = true;
   } catch (e) {
     notify.error("加载地点照片失败", String(e));
     photos.value = [];
+    photosDone.value = true;
   } finally {
     photosLoading.value = false;
   }
+  // 首屏渲染出网格后再挂哨兵（v-if 依赖 photosLoading，需等 DOM 更新）
+  await nextTick();
+  observeMore();
 }
 
-async function loadGridThumbs() {
+/** 挂哨兵：距视口 400px 即触发（用户滚到底之前下一页已在路上） */
+function observeMore() {
+  teardownMoreIo();
+  if (!sentinelEl.value || photosDone.value) return;
+  moreIo = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((en) => en.isIntersecting)) void loadMore();
+    },
+    { rootMargin: "400px" },
+  );
+  moreIo.observe(sentinelEl.value);
+}
+
+function teardownMoreIo() {
+  moreIo?.disconnect();
+  moreIo = null;
+}
+
+async function loadMore() {
+  if (loadingMore.value || photosDone.value || photosLoading.value || !activeGroup.value) return;
+  loadingMore.value = true;
+  try {
+    const batch = await invoke<ContentSearchHit[]>("list_photos_by_location", {
+      location: activeGroup.value.location,
+      limit: PAGE_STEP,
+      offset: photos.value.length,
+    });
+    photos.value.push(...batch);
+    await loadGridThumbs(batch);
+    if (batch.length < PAGE_STEP) {
+      photosDone.value = true;
+      teardownMoreIo();
+      return;
+    }
+    // 追加后哨兵可能仍在视口内（短页/快速滚动）：IO 只在越过阈值时触发，
+    // 不会对"持续相交"重发回调 —— rAF 复查仍相交则手动续拉（FEAT-200 同款防卡死）
+    await nextTick();
+    requestAnimationFrame(() => {
+      const el = sentinelEl.value;
+      if (!el || photosDone.value || loadingMore.value) return;
+      if (el.getBoundingClientRect().top < window.innerHeight + 400) void loadMore();
+    });
+  } catch (e) {
+    notify.error("加载更多失败", String(e));
+    // 失败不置 done：哨兵仍在观察，用户继续滚动会再次触发（可重试）
+  } finally {
+    loadingMore.value = false;
+  }
+}
+
+/** 只给传入的这批照片生成缩略图（按相册分组并发；thumbMap 已有的跳过） */
+async function loadGridThumbs(rows: ContentSearchHit[]) {
   const byAlbum = new Map<number, string[]>();
-  for (const r of photos.value) {
+  for (const r of rows) {
     if (thumbMap.value[r.path]) continue;
     const aid = r.album_id ?? 0;
     if (!byAlbum.has(aid)) byAlbum.set(aid, []);
@@ -191,6 +268,7 @@ async function loadGridThumbs() {
 }
 
 function backToCards() {
+  teardownMoreIo();
   activeGroup.value = null;
   photos.value = [];
 }
@@ -357,6 +435,10 @@ function fileUrl(p: string): string {
 }
 
 onMounted(load);
+
+onBeforeUnmount(() => {
+  teardownMoreIo();
+});
 </script>
 
 <template>
@@ -463,7 +545,9 @@ onMounted(load);
       <div class="lg-detail-head">
         <button class="btn" @click="backToCards">← 返回地点</button>
         <h2 class="lg-detail-title">📍 {{ groupLabel(activeGroup) }}</h2>
-        <span class="lg-detail-count">{{ activeGroup.count }} 张</span>
+        <span class="lg-detail-count">
+          {{ photos.length === activeGroup.count ? `${activeGroup.count} 张` : `已加载 ${photos.length} / ${activeGroup.count} 张` }}
+        </span>
         <span class="lg-spacer"></span>
         <button class="btn" :class="{ active: selectMode }" @click="toggleSelectMode">
           {{ selectMode ? "退出批量" : "☑ 批量管理" }}
@@ -514,6 +598,16 @@ onMounted(load);
           </span>
         </figure>
       </div>
+
+      <!-- 分页热加载（FEAT-204）：哨兵压在网格之后，距视口 400px 即预拉下一页 -->
+      <div
+        v-if="!photosLoading && !photosDone && photos.length"
+        ref="sentinelEl"
+        class="lg-sentinel"
+        aria-hidden="true"
+      ></div>
+      <p v-if="loadingMore" class="lg-more">正在加载更多…</p>
+      <p v-else-if="photosDone && photos.length" class="lg-more">已全部加载（{{ photos.length }} 张）</p>
     </template>
 
     <!-- FEAT-095：原图预览同样启用归档 / 隐藏（与缩略图右键菜单功能对齐） -->
@@ -804,6 +898,19 @@ body:not(.theme-dark) .lg-seg-btn.on {
   justify-content: center;
   font-size: 28px;
   opacity: 0.6;
+}
+
+/* 分页热加载（FEAT-204）：哨兵（无尺寸语义，只做 IntersectionObserver 靶点）与进度行 */
+.lg-sentinel {
+  height: 2px;
+  width: 100%;
+}
+.lg-more {
+  margin: 10px 0 0;
+  text-align: center;
+  font-size: var(--fs-meta);
+  color: var(--c-fg-2);
+  letter-spacing: var(--ls-meta);
 }
 
 @media (max-width: 640px) {

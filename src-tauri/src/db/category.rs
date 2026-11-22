@@ -568,11 +568,16 @@ impl Database {
     }
 
     /// 分类下的照片（按语义强度降序；三表 LEFT JOIN 兼容未跑 AI 扫描的照片）
+    ///
+    /// 分页（FEAT-200）：`offset` + `limit` 翻页；`keyword` 命中关键词筛选态分页。
+    /// 排序 `score DESC, photo_hash ASC` 稳定 → OFFSET 语义正确（不重不漏）。
     pub fn list_category_photos(
         &self,
         category_id: i64,
         user_id: i64,
         limit: i64,
+        offset: i64,
+        keyword: Option<&str>,
     ) -> Result<Vec<CategoryPhotoRow>, DbError> {
         let mut stmt = self.conn.prepare(
             "SELECT h.photo_hash, h.path, h.score, COALESCE(h.matched_keyword, ''),
@@ -587,10 +592,13 @@ impl Database {
                     ON a.id = COALESCE(p.album_id, t.album_id) AND a.user_id = h.user_id
              JOIN photo_categories c ON c.id = h.category_id
              WHERE h.category_id = ?1 AND h.user_id = ?2
+                   AND (?3 IS NULL OR COALESCE(h.matched_keyword, '') = ?3)
              ORDER BY h.score DESC, h.photo_hash ASC
-             LIMIT ?3",
+             LIMIT ?4 OFFSET ?5",
         )?;
-        let rows = stmt.query_map(params![category_id, user_id, limit], |r| {
+        let rows = stmt.query_map(
+            params![category_id, user_id, keyword, limit, offset.max(0)],
+            |r| {
             let person_ids: Option<String> = r.get(9)?;
             Ok(CategoryPhotoRow {
                 photo_hash: r.get(0)?,
@@ -610,6 +618,29 @@ impl Database {
                 category_name: r.get(12)?,
                 category_id: r.get(13)?,
             })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
+    }
+
+    /// 分类内各命中关键词的计数（FEAT-200：chips 全量口径）
+    ///
+    /// 分页后前端只有已加载页，chips 无法再由前端内存统计 —— 改由后端
+    /// GROUP BY 聚合一次返回（单表扫描，万级毫秒内）。返回 (keyword, count)，
+    /// keyword 空串 = 未记关键词（对应前端「全部」以外的兜底）；按 count 降序。
+    pub fn list_category_keyword_counts(
+        &self,
+        category_id: i64,
+        user_id: i64,
+    ) -> Result<Vec<(String, i64)>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT COALESCE(h.matched_keyword, '') AS kw, COUNT(*) AS n
+             FROM photo_category_hits h
+             WHERE h.category_id = ?1 AND h.user_id = ?2
+             GROUP BY kw
+             ORDER BY n DESC, kw ASC",
+        )?;
+        let rows = stmt.query_map(params![category_id, user_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
         })?;
         rows.collect::<Result<_, _>>().map_err(DbError::Sqlite)
     }
@@ -862,11 +893,31 @@ mod tests {
         assert_eq!(row.keywords, vec!["一只猫"]);
 
         // 浏览按语义强度降序
-        let photos = db.list_category_photos(id, 1, 100).unwrap();
+        let photos = db.list_category_photos(id, 1, 100, 0, None).unwrap();
         assert_eq!(photos.len(), 3);
         assert_eq!(photos[0].photo_hash, "h2");
         assert_eq!(photos[2].matched_keyword, "猫咪");
         assert_eq!(photos[1].score, 0.05);
+
+        // FEAT-200：分页（offset 翻页不重不漏，排序稳定）
+        let page1 = db.list_category_photos(id, 1, 2, 0, None).unwrap();
+        let page2 = db.list_category_photos(id, 1, 2, 2, None).unwrap();
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page1[0].photo_hash, photos[0].photo_hash);
+        assert_eq!(page2[0].photo_hash, photos[2].photo_hash);
+
+        // FEAT-200：keyword 筛选态分页
+        let kw = db.list_category_photos(id, 1, 100, 0, Some("一只猫")).unwrap();
+        assert_eq!(kw.len(), 2);
+        assert!(kw.iter().all(|p| p.matched_keyword == "一只猫"));
+        let kw_paged = db.list_category_photos(id, 1, 1, 1, Some("一只猫")).unwrap();
+        assert_eq!(kw_paged.len(), 1);
+        assert_eq!(kw_paged[0].photo_hash, kw[1].photo_hash);
+
+        // FEAT-200：关键词计数聚合（全量口径，与筛选无关）
+        let counts = db.list_category_keyword_counts(id, 1).unwrap();
+        assert_eq!(counts, vec![("一只猫".into(), 2), ("猫咪".into(), 1)]);
 
         // 替换（不是追加）：第二次只留 1 条
         assert_eq!(db.replace_category_hits(id, 1, &[hit(id, "h1", "/a/1.jpg", 0.05, "一只猫")]).unwrap(), 1);
@@ -905,7 +956,7 @@ mod tests {
 
         assert_eq!(db.replace_builtin_hits(portrait.id, 1, "portrait").unwrap(), 1);
         assert_eq!(db.replace_builtin_hits(night.id, 1, "night_scene").unwrap(), 1);
-        let rows = db.list_category_photos(portrait.id, 1, 10).unwrap();
+        let rows = db.list_category_photos(portrait.id, 1, 10, 0, None).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].path, "/p/1.jpg");
         assert_eq!(rows[0].category.as_deref(), Some("portrait"));
@@ -919,11 +970,11 @@ mod tests {
             .unwrap();
         // 移动：path 跟着走
         assert_eq!(db.move_category_hit_path(1, "/old/1.jpg", "/new/1.jpg").unwrap(), 1);
-        let photos = db.list_category_photos(id, 1, 10).unwrap();
+        let photos = db.list_category_photos(id, 1, 10, 0, None).unwrap();
         assert_eq!(photos[0].path, "/new/1.jpg");
         // 路径删除级联
         assert_eq!(db.delete_category_hits_by_paths(&["/new/1.jpg".into()]).unwrap(), 1);
-        assert!(db.list_category_photos(id, 1, 10).unwrap().is_empty());
+        assert!(db.list_category_photos(id, 1, 10, 0, None).unwrap().is_empty());
     }
 
     #[test]

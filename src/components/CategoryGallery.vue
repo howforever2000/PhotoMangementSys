@@ -14,7 +14,7 @@
  * 复用底层：list_categories / list_category_photos / rebuild_categories 命令、
  * PhotoLightbox 大图、ContextMenu、theme 暗色适配、骨架/空/错误三态。
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useNotify } from "../composables/useNotify";
 import { useContentStore } from "../stores/content";
@@ -108,6 +108,31 @@ function isWideCat(i: number): boolean {
   return i % 5 === 4;
 }
 
+/* ---- 分类卡片缩放（Ctrl+滚轮）----
+   缩放语义与 PersonGallery/PhotoZoomBar 一致：上滚放大 = 卡变大 = 列变少。
+   用列数做档位（1~10 列，默认 4），行高按默认 4 列 186px 的比例反算，
+   保持卡片宽高比不随缩放漂移；档位持久化到 localStorage。 */
+const CAT_COLS_MIN = 1;
+const CAT_COLS_MAX = 10;
+/** clampCols(0/NaN) 会回落 4，防止越界值进 grid 把布局挤崩 */
+function clampCols(v: number): number {
+  if (!Number.isFinite(v) || v <= 0) return 4;
+  return Math.min(CAT_COLS_MAX, Math.max(CAT_COLS_MIN, Math.round(v)));
+}
+const cardCols = ref(clampCols(Number(localStorage.getItem("category-card-cols")) || 4));
+/** 行高随列数反算：4 列时回到 186px（与 FEAT-113 原始设计一致） */
+const catRowH = computed(() => Math.round((186 * 4) / cardCols.value));
+
+function onCatWheel(e: WheelEvent) {
+  if (!e.ctrlKey) return;
+  e.preventDefault(); // 拦住 WebView2 的 Ctrl+滚轮页面缩放
+  const next = clampCols(cardCols.value + (e.deltaY < 0 ? -1 : 1));
+  if (next !== cardCols.value) {
+    cardCols.value = next;
+    localStorage.setItem("category-card-cols", String(next));
+  }
+}
+
 /** 语义索引是否为空（分类极可能空 → 优先提示建索引） */
 const indexEmpty = computed(() => (stats.value?.indexed ?? 0) === 0);
 /** 换过语义档位（旧档向量还在 → 提示重建索引） */
@@ -183,23 +208,31 @@ const activeKw = ref<string | null>(null);
 const photos = ref<CategoryPhoto[]>([]);
 const photosLoading = ref(false);
 
-/** 关键词 chips（按「实际命中的关键词」统计，即时过滤零请求） */
+/* FEAT-200 分页热加载：全量拉取 + 全量缩略图是大分类「点开要等很久」的根因。
+   首屏 300 张（约 5 屏），滚动到距底部 400px（IntersectionObserver rootMargin，
+   与 DedupePanel 同款预取距离）时每次追加 150 张，缩略图也按页取。 */
+const PAGE_INITIAL = 300;
+const PAGE_STEP = 150;
+/** 已拉取的行数（对当前筛选口径而言，后端 OFFSET 即按此语义切片） */
+const photosOffset = ref(0);
+/** 不足一整页 = 没有更多了 */
+const photosDone = ref(false);
+const loadingMore = ref(false);
+/** 追加页哨兵元素（网格末尾） */
+const sentinelEl = ref<HTMLElement | null>(null);
+/** 关键词计数（FEAT-200：后端聚合，全量口径；分页后前端无法内存统计） */
+const kwCounts = ref<{ key: string; count: number }[]>([]);
+
+/** 关键词 chips（全量口径聚合；仅当命中 >1 种关键词时展示，与旧版一致） */
 const kwChips = computed(() => {
-  if (!activeCard.value) return [];
-  const map = new Map<string, number>();
-  for (const p of photos.value) {
-    const k = p.matched_keyword || "";
-    if (!k) continue;
-    map.set(k, (map.get(k) ?? 0) + 1);
-  }
-  if (map.size <= 1) return [];
-  const chips = [...map.entries()].map(([key, count]) => ({
-    key,
-    label: kwLabel(activeCard.value!, key),
-    count,
+  if (!activeCard.value || kwCounts.value.length <= 1) return [];
+  const chips = kwCounts.value.map((c) => ({
+    key: c.key,
+    label: kwLabel(activeCard.value!, c.key),
+    count: c.count,
   }));
   chips.sort((a, b) => b.count - a.count);
-  return [{ key: "", label: "全部", count: photos.value.length }, ...chips];
+  return [{ key: "", label: "全部", count: activeCard.value.count }, ...chips];
 });
 
 /** 关键词中文展示：规则分类的 matched_keyword 是类别 key，需要映射 */
@@ -208,35 +241,138 @@ function kwLabel(card: CategoryCard, key: string): string {
   return key;
 }
 
-/** chips 过滤纯前端内存过滤 */
-const filteredPhotos = computed(() => {
-  if (!activeKw.value) return photos.value;
-  return photos.value.filter((p) => (p.matched_keyword || "") === activeKw.value);
-});
+/** 筛选已下沉到后端（list_category_photos 的 keyword 参数），前端不再内存过滤 */
+const filteredPhotos = computed(() => photos.value);
 
 /** 命中强度展示：与分类设置里的「AI 匹配度」同一刻度（换算见 utils/matchScore） */
 function strengthLabel(score: number): string {
   return String(relToMatch(score));
 }
 
+/** 本页期望行数（首屏 vs 追加页），用于「不足一页 = 没有更多」判定 */
+function expectedPage(): number {
+  return photosOffset.value === 0 ? PAGE_INITIAL : PAGE_STEP;
+}
+
+/** 拉取下一页并追加；缩略图按页入队，不再全量 */
+async function fetchPhotosPage(): Promise<CategoryPhoto[]> {
+  const card = activeCard.value;
+  if (!card) return [];
+  const want = expectedPage();
+  const page = await invoke<CategoryPhoto[]>("list_category_photos", {
+    id: card.id,
+    limit: want,
+    offset: photosOffset.value,
+    keyword: activeKw.value,
+  });
+  const isFirst = photosOffset.value === 0;
+  photosOffset.value += page.length;
+  if (page.length < want) photosDone.value = true;
+  photos.value = isFirst ? page : [...photos.value, ...page];
+  void loadThumbsFor(page);
+  return page;
+}
+
+/** 关键词计数聚合（全量口径，一次轻量 SQL；失败不阻塞浏览） */
+async function fetchKwCounts() {
+  const card = activeCard.value;
+  if (!card) return;
+  try {
+    const rows = await invoke<[string, number][]>("list_category_keyword_counts", { id: card.id });
+    // 空串 = 未记关键词：chips 只列有词的（与旧版内存统计口径一致），它们归在「全部」里
+    kwCounts.value = rows.filter(([k]) => k).map(([key, count]) => ({ key, count }));
+  } catch {
+    kwCounts.value = [];
+  }
+}
+
 async function openCategory(t: CategoryCard) {
   activeCard.value = t;
   activeKw.value = null;
+  photos.value = [];
+  photosOffset.value = 0;
+  photosDone.value = false;
+  kwCounts.value = [];
   photosLoading.value = true;
   try {
-    photos.value = await invoke<CategoryPhoto[]>("list_category_photos", { id: t.id, limit: null });
-    await loadGridThumbs();
+    await Promise.all([fetchPhotosPage(), fetchKwCounts()]);
   } catch (e) {
     notify.error("加载分类照片失败", String(e));
     photos.value = [];
+    photosDone.value = true;
   } finally {
     photosLoading.value = false;
   }
 }
 
-async function loadGridThumbs() {
+/** 关键词切换：换口径重置分页，从第 0 页重新拉 */
+async function selectKw(key: string) {
+  if (!activeCard.value) return;
+  activeKw.value = key || null;
+  photos.value = [];
+  photosOffset.value = 0;
+  photosDone.value = false;
+  photosLoading.value = true;
+  try {
+    await fetchPhotosPage();
+  } catch (e) {
+    notify.error("加载分类照片失败", String(e));
+    photos.value = [];
+    photosDone.value = true;
+  } finally {
+    photosLoading.value = false;
+  }
+}
+
+async function loadMorePhotos() {
+  if (!activeCard.value || photosDone.value || loadingMore.value || photosLoading.value) return;
+  loadingMore.value = true;
+  try {
+    await fetchPhotosPage();
+  } catch (e) {
+    notify.error("加载更多失败", String(e));
+    photosDone.value = true;
+  } finally {
+    loadingMore.value = false;
+    // 追加后哨兵可能仍在视口内（本页没撑出滚动条）→ 继续补页直到撑出为止
+    requestAnimationFrame(() => {
+      const el = sentinelEl.value;
+      if (el && el.getBoundingClientRect().top < window.innerHeight + 400) void loadMorePhotos();
+    });
+  }
+}
+
+/* 哨兵观察：滚近底部 400px 即触发追加（rootMargin 与 DedupePanel 同款） */
+let moreIo: IntersectionObserver | null = null;
+
+function ensureMoreIo(): IntersectionObserver | null {
+  if (typeof IntersectionObserver === "undefined") return null;
+  if (!moreIo) {
+    moreIo = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) void loadMorePhotos();
+      },
+      { rootMargin: "400px 0px" },
+    );
+  }
+  return moreIo;
+}
+
+watch([sentinelEl, activeCard, photosDone, photosLoading], () => {
+  const io = ensureMoreIo();
+  if (!io) return;
+  io.disconnect();
+  if (sentinelEl.value && activeCard.value && !photosDone.value && !photosLoading.value) {
+    io.observe(sentinelEl.value);
+  }
+});
+
+onBeforeUnmount(() => moreIo?.disconnect());
+
+/** 按页取缩略图（按相册分组，复用真实相册缓存命名；失败回退占位） */
+async function loadThumbsFor(rows: CategoryPhoto[]) {
   const byAlbum = new Map<number, string[]>();
-  for (const r of photos.value) {
+  for (const r of rows) {
     if (thumbMap.value[r.path]) continue;
     const aid = r.album_id ?? 0;
     if (!byAlbum.has(aid)) byAlbum.set(aid, []);
@@ -255,13 +391,13 @@ async function loadGridThumbs() {
 }
 
 function backToCards() {
+  moreIo?.disconnect();
   activeCard.value = null;
   activeKw.value = null;
   photos.value = [];
-}
-
-function selectKw(key: string) {
-  activeKw.value = key || null;
+  photosOffset.value = 0;
+  photosDone.value = false;
+  kwCounts.value = [];
 }
 
 /* -------------------- 重建 / 管理 -------------------- */
@@ -460,6 +596,8 @@ async function refreshCards() {
   try {
     cats.value = await contentStore.listCategories();
     await loadCoverThumbs();
+    // FEAT-200：chips 计数是全量聚合口径，删除后需同步重取
+    void fetchKwCounts();
   } catch {
     /* 计数刷新失败不阻塞 */
   }
@@ -487,6 +625,7 @@ onMounted(load);
         <span class="cg-spacer"></span>
         <span v-if="building" class="cg-index">首次匹配中…（正在用关键词检索全库）</span>
         <span class="cg-total">共 {{ totalHits }} 张次</span>
+        <span class="cg-zoom-hint" title="在卡片上按住 Ctrl 滚动滚轮即可放大/缩小">🔍 Ctrl+滚轮缩放</span>
         <button class="btn" :disabled="rebuilding" @click="rebuildAll">
           {{ rebuilding ? "重建中…" : "🔄 重建分类" }}
         </button>
@@ -513,8 +652,13 @@ onMounted(load);
         <button class="btn" @click="load">重试</button>
       </div>
 
-      <!-- 分类卡片网格 -->
-      <div v-else class="cat-grid">
+      <!-- 分类卡片网格（Ctrl+滚轮缩放：列数 1~10，档位持久化） -->
+      <div
+        v-else
+        class="cat-grid"
+        :style="{ '--cat-cols': cardCols, '--cat-rows': `${catRowH}px` }"
+        @wheel="onCatWheel"
+      >
         <article
           v-for="(t, ti) in cards"
           :key="t.id"
@@ -626,6 +770,14 @@ onMounted(load);
           </span>
         </figure>
       </div>
+      <!-- FEAT-200：追加页哨兵（滚近底部 400px 自动热加载下一页） -->
+      <div
+        v-if="!photosLoading && filteredPhotos.length && !photosDone"
+        ref="sentinelEl"
+        class="cg-more-sentinel"
+      >
+        <span v-if="loadingMore" class="cg-more-tip">加载中…</span>
+      </div>
     </template>
 
     <!-- 大图看图器（复用；FEAT-095 启用删除 + 归档 / 隐藏） -->
@@ -693,6 +845,12 @@ onMounted(load);
 .cg-total {
   font-size: 12.5px;
   opacity: 0.65;
+}
+/* Ctrl+滚轮缩放的可见性提示（低调灰字，鼠标悬停有 title 说明） */
+.cg-zoom-hint {
+  font-size: 12px;
+  opacity: 0.55;
+  white-space: nowrap;
 }
 .cg-tip {
   margin: 0 0 12px;
@@ -785,16 +943,17 @@ onMounted(load);
    大规模重排（justifyRows 会影响后续所有行）。 */
 .cat-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  grid-auto-rows: 186px;
+  /* 列数/行高由 Ctrl+滚轮缩放驱动（默认 4 列 / 186px，与 FEAT-113 原始设计一致）。
+     ⚠️ 不加窄屏媒体查询覆盖列数：max-width 断点会盖掉 var() 列数，
+     用户缩放时就会「只有高度变、宽度不变」（BUG-2026-1121-003 实测根因）。
+     缩放是显式用户意图，列数全程由变量决定。 */
+  grid-template-columns: repeat(var(--cat-cols, 4), 1fr);
+  grid-auto-rows: var(--cat-rows, 186px);
   /* grid-auto-flow: dense 是“大图占两列后留下的空位用小卡回填”的关键。
      不用它时，大图后面的那个空位会空着，出现洞。 */
   grid-auto-flow: dense;
   gap: 14px;
 }
-@media (max-width: 1280px) { .cat-grid { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 900px)  { .cat-grid { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 560px)  { .cat-grid { grid-template-columns: 1fr; } }
 
 .cat-card {
   display: block;
@@ -1056,6 +1215,18 @@ onMounted(load);
 /* ---- FEAT-050：批量选择 / 删除 ---- */
 .cg-spacer {
   flex: 1;
+}
+/* FEAT-200：追加页哨兵（给一点高度，保证 IntersectionObserver 可靠触发） */
+.cg-more-sentinel {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 28px;
+  padding: 6px 0 2px;
+}
+.cg-more-tip {
+  font-size: 12px;
+  opacity: 0.6;
 }
 .btn.active {
   border-color: var(--color-link);

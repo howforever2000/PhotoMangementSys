@@ -2584,6 +2584,102 @@ pub(super) fn drop_dead_thumb_links(cards: &mut [db::TimelineCard]) -> usize {
         r
     }
 
+    /// FEAT-201：某拍摄日（YYYY-MM-DD）的一页照片（概览「那年今日」全页直达）
+    ///
+    /// 与 timeline_month 同款分页 + 死链缩略图清理；首屏 300 张，前端滚动追加。
+    #[tauri::command]
+    pub async fn timeline_day(
+        day: String,
+        limit: Option<i64>,
+        offset: Option<i64>,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Vec<db::TimelineCard>, String> {
+        let _t = log_call!("timeline_day", &format!("{day}"));
+        let user_id = require_user(&session)?;
+        let mut r = (|| -> Result<Vec<db::TimelineCard>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.timeline_day(user_id, &day, limit.unwrap_or(300).clamp(1, 20000), offset.unwrap_or(0).max(0))
+                .map_err(|e| format!("{:?}", e))
+        })();
+        let mut dead_links = 0usize;
+        if let Ok(cards) = r.as_mut() {
+            dead_links = drop_dead_thumb_links(cards);
+        }
+        match &r {
+            Ok(cards) => logger::log_call_end_with(
+                "timeline_day",
+                _t,
+                &format!("OK | rows={} with_thumb={} dead_thumb={dead_links}", cards.len(), cards.iter().filter(|c| c.thumb_path.is_some()).count()),
+            ),
+            Err(e) => logger::log_call_end_with("timeline_day", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
+    /// FEAT-201：最近导入的一页照片（按入库序倒序，概览「最近导入」全页直达）
+    #[tauri::command]
+    pub async fn timeline_recent(
+        limit: Option<i64>,
+        offset: Option<i64>,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Vec<db::TimelineCard>, String> {
+        let _t = log_call!("timeline_recent", "");
+        let user_id = require_user(&session)?;
+        let mut r = (|| -> Result<Vec<db::TimelineCard>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.timeline_recent(user_id, limit.unwrap_or(300).clamp(1, 20000), offset.unwrap_or(0).max(0))
+                .map_err(|e| format!("{:?}", e))
+        })();
+        let mut dead_links = 0usize;
+        if let Ok(cards) = r.as_mut() {
+            dead_links = drop_dead_thumb_links(cards);
+        }
+        match &r {
+            Ok(cards) => logger::log_call_end_with(
+                "timeline_recent",
+                _t,
+                &format!("OK | rows={} with_thumb={} dead_thumb={dead_links}", cards.len(), cards.iter().filter(|c| c.thumb_path.is_some()).count()),
+            ),
+            Err(e) => logger::log_call_end_with("timeline_recent", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
+    /// FEAT-205：某拍摄年份（YYYY）的一页照片（回忆页「年度回顾」全页直达）
+    ///
+    /// 与 timeline_month 同款分页 + 死链缩略图清理；整年上万张时分页是硬要求。
+    #[tauri::command]
+    pub async fn timeline_year(
+        year: String,
+        limit: Option<i64>,
+        offset: Option<i64>,
+        state: tauri::State<'_, AppState>,
+        session: tauri::State<'_, SessionState>,
+    ) -> Result<Vec<db::TimelineCard>, String> {
+        let _t = log_call!("timeline_year", &format!("{year}"));
+        let user_id = require_user(&session)?;
+        let mut r = (|| -> Result<Vec<db::TimelineCard>, String> {
+            let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
+            db.timeline_year(user_id, &year, limit.unwrap_or(300).clamp(1, 20000), offset.unwrap_or(0).max(0))
+                .map_err(|e| format!("{:?}", e))
+        })();
+        let mut dead_links = 0usize;
+        if let Ok(cards) = r.as_mut() {
+            dead_links = drop_dead_thumb_links(cards);
+        }
+        match &r {
+            Ok(cards) => logger::log_call_end_with(
+                "timeline_year",
+                _t,
+                &format!("OK | rows={} with_thumb={} dead_thumb={dead_links}", cards.len(), cards.iter().filter(|c| c.thumb_path.is_some()).count()),
+            ),
+            Err(e) => logger::log_call_end_with("timeline_year", _t, &format!("ERR | {e}")),
+        }
+        r
+    }
+
     /// FEAT-123：全局概览快照
     ///
     /// 改前：概览页要拉 `list_timeline`（24,980 行 / 14,438 KB）+ 5 个命令，
@@ -2707,18 +2803,31 @@ pub(super) fn drop_dead_thumb_links(cards: &mut [db::TimelineCard]) -> usize {
     }
 
     /// 按地点列出照片（FEAT-049 地点浏览二级视图；None = 未记录地点组）
+    ///
+    /// 分页（FEAT-204）：limit/offset 可选——不传时回退全量（兼容旧调用方）；
+    /// 前端地点详情页按「首屏 300 / 步进 150」翻页 + 缩略图按页生成。
     #[tauri::command]
     pub async fn list_photos_by_location(
         location: Option<String>,
+        limit: Option<i64>,
+        offset: Option<i64>,
         state: tauri::State<'_, AppState>,
         session: tauri::State<'_, SessionState>,
     ) -> Result<Vec<db::ContentSearchHit>, String> {
-        let _t = log_call!("list_photos_by_location", &format!("location={location:?}"));
+        let _t = log_call!(
+            "list_photos_by_location",
+            &format!("location={location:?} limit={limit:?} offset={offset:?}")
+        );
         let user_id = require_user(&session)?;
         let r = (|| -> Result<Vec<db::ContentSearchHit>, String> {
             let db = state.0.lock().map_err(|e| format!("{:?}", e))?;
-            db.list_photos_by_location(user_id, location.as_deref())
-                .map_err(|e| format!("{:?}", e))
+            db.list_photos_by_location(
+                user_id,
+                location.as_deref(),
+                limit.unwrap_or(1_000_000),
+                offset.unwrap_or(0),
+            )
+            .map_err(|e| format!("{:?}", e))
         })();
         match &r {
             Ok(list) => logger::log_call_end_with(

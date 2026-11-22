@@ -1276,8 +1276,12 @@ pub async fn get_person_covers_bulk(
     Ok(out)
 }
 
-/// 读取某人物出现的全部照片：直接查询已算好的缩略图缓存地址；
+/// 读取某人物出现的照片：直接查询已算好的缩略图缓存地址；
 /// 未缓存的照片现场补齐（BUG-2026-0916-001，原文档“不重新运算缩略图”已过时）。
+///
+/// FEAT-200 分页：`limit` + `offset` 切片发生在**缩略图构建之前** ——
+/// 大人物（千张级）首屏只构建当前页的缩略图，滚动再补，与分类页同款节奏。
+/// 排序来自 list_person_photos 的 `ORDER BY created_at, id`，稳定 → OFFSET 不重不漏。
 ///
 /// 必须 async + spawn_blocking（BUG-2026-0910-003）：大人物全缺图时现场生成
 /// 缩略图实测 1.7s（884 张），同步命令跑在主线程会冻结全部窗口——所有界面卡死、
@@ -1285,13 +1289,22 @@ pub async fn get_person_covers_bulk(
 #[tauri::command]
 pub async fn get_person_photos(
     pid: String,
+    limit: Option<usize>,
+    offset: Option<usize>,
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
     session: tauri::State<'_, crate::SessionState>,
 ) -> Result<Vec<PersonPhotoItem>, String> {
-    let _t = log_call!("get_person_photos", &format!("pid={pid}"));
+    let _t = log_call!(
+        "get_person_photos",
+        &format!("pid={pid} limit={:?} offset={:?}", limit, offset)
+    );
     let user_id = crate::require_user(&session)?;
-    let paths = crate::persons::list_person_photos(&pid)?;
+    let mut paths = crate::persons::list_person_photos(&pid)?;
+    // 分页切片：放在 spawn_blocking 之前，缺图补齐的重活只落在当前页
+    let offset = offset.unwrap_or(0).min(paths.len());
+    let limit = limit.unwrap_or(300).clamp(1, 5000);
+    paths = paths.drain(offset..).take(limit).collect::<Vec<_>>();
     // 短锁取归属数据（MutexGuard 不得跨 spawn_blocking 边界，同 get_photo_thumbs 模式）
     let albums: Vec<(i64, String)> = {
         let db = state.0.lock().map_err(|e| e.to_string())?;

@@ -88,6 +88,13 @@ const router = createRouter({
       component: () => import("../views/Memories.vue"),
     },
     {
+      // 通用照片集合全页（FEAT-201）：概览「那年今日」按天 /「最近导入」直达；
+      // 共享 PhotoCollectionPage（FEAT-200 同款分页热加载）
+      path: "/collection",
+      name: "photo-collection",
+      component: () => import("../views/CollectionView.vue"),
+    },
+    {
       // 智能搜索（FEAT-034）
       path: "/search",
       name: "smart-search",

@@ -337,6 +337,16 @@ const photoActions = usePhotoActions();
 /** FEAT-095（R1）：网格格子尺寸（缩略图缩放条驱动） */
 const cellSize = ref(180);
 
+/** PhotoZoomBar 模板引用（Ctrl+滚轮复用同一套档位步进） */
+const zoomBarRef = ref<InstanceType<typeof PhotoZoomBar> | null>(null);
+
+/** Ctrl+滚轮调整格子尺寸（与缩放条同档位；preventDefault 拦住 WebView2 页面缩放） */
+function onGridWheel(e: WheelEvent) {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  zoomBarRef.value?.stepGear(e.deltaY < 0 ? 1 : -1);
+}
+
 /** 当前相册对应的标记状态（普通相册为 null） */
 const albumMarkState = computed<PhotoMarkState | null>(() => {
   if (props.albumKind === "archived") return "archived";
@@ -898,7 +908,7 @@ function onKey(e: KeyboardEvent) {
       <h3 class="pg-title">照片浏览</h3>
       <span v-if="!loading" class="pg-count">{{ visiblePhotos.length }} / {{ photos.length }} 张</span>
       <!-- FEAT-095（R1）：缩略图缩放条 -->
-      <PhotoZoomBar v-model="cellSize" :disabled="!photos.length" />
+      <PhotoZoomBar ref="zoomBarRef" v-model="cellSize" :disabled="!photos.length" />
       <button
         v-if="photos.length"
         class="btn pg-action pg-action-select"
@@ -1018,7 +1028,11 @@ function onKey(e: KeyboardEvent) {
     <!-- 照片子框：照片多时只在框内滚动，整页不动；右下角提供回到顶部 -->
     <div v-else class="pg-scroll" ref="scrollEl" @scroll.passive="onScroll">
       <!-- FEAT-095：格子尺寸由缩放条驱动；兜底值写在 .pg-grid 的 CSS 里 -->
-      <div class="pg-grid" :style="{ gridTemplateColumns: `repeat(auto-fill, minmax(${cellSize}px, 1fr))` }">
+      <div
+        class="pg-grid"
+        :style="{ gridTemplateColumns: `repeat(auto-fill, minmax(${cellSize}px, 1fr))` }"
+        @wheel="onGridWheel"
+      >
       <figure
         v-for="(ph, i) in visiblePhotos"
         :key="ph.path"

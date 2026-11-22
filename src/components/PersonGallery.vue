@@ -6,7 +6,7 @@
  * 支持：行内重命名 / 合并到其他人物（二次确认）。
  * 人物注册表/人物浏览的唯一入口（相册页扫描面板已不再展示注册表）。
  */
-import { computed, onBeforeUnmount, onMounted, ref, type Directive } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch, type Directive } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { PersonInfo, PersonPhotoItem } from "../types/photo";
@@ -17,7 +17,6 @@ import PhotoDeleteDialog, { type DeleteMode } from "./PhotoDeleteDialog.vue";
 import PhotoActionMenu from "./PhotoActionMenu.vue";
 import PhotoZoomBar from "./PhotoZoomBar.vue";
 import SelectAllCheckbox from "./SelectAllCheckbox.vue";
-import ResizableDialog from "./ResizableDialog.vue";
 import { useAlbumStore } from "../stores/album";
 import { useThemeStore } from "../stores/theme";
 import { usePhotoActions } from "../composables/usePhotoActions";
@@ -203,6 +202,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   unlistenAvatarRefresh?.();
   unlistenCoverRefresh?.();
+  personIo?.disconnect();
 });
 
 /* ---- 查看该人物的照片（复用预计算缩略图 + 大图看图器）---- */
@@ -212,6 +212,18 @@ const viewingLoading = ref(false);
 const viewingError = ref("");
 const lightboxOpen = ref(false);
 const lightboxIndex = ref(0);
+
+/* FEAT-200：照片列表分页（与分类页同款节奏）——
+   千张级人物一次 get_person_photos 会把缩略图补齐重活全压在一页；
+   首屏 300 张，滚动近底部 400px 每次追加 150 张。总张数由 list_person_photos
+   （纯 DB 读，毫秒级）提供，不因分页丢失。 */
+const PAGE_INITIAL = 300;
+const PAGE_STEP = 150;
+const personOffset = ref(0);
+const personDone = ref(false);
+const personLoadingMore = ref(false);
+const personTotal = ref(0);
+const sentinelEl = ref<HTMLElement | null>(null);
 
 /** 缩略图优先用已算好的缓存；未缓存时展示占位（不退回原图，避免 4K 大图拉慢） */
 function photoThumbSrc(p: PersonPhotoItem): string {
@@ -228,6 +240,9 @@ async function openPhotos(p: PersonInfo) {
   viewingPhotos.value = [];
   viewingError.value = "";
   viewingLoading.value = true;
+  personOffset.value = 0;
+  personDone.value = false;
+  personTotal.value = 0;
   exitSelectMode();
   // BUG-2026-0910-002：未缓存头像按需裁剪——画廊加载不再为缺缓存的少数人物现场解码，
   // 用户点开该人物时才裁剪并补上（代价转移到真正看它的那一刻）
@@ -241,31 +256,13 @@ async function openPhotos(p: PersonInfo) {
       });
   }
   try {
-    // 第一次拉取：后端已自动补齐缩略图（缺图则 ensure_grid_thumb 生成后落盘）
-    let items = await invoke<PersonPhotoItem[]>("get_person_photos", { pid: p.id });
-    // 兜底：若仍有 thumb=null，按相册分组显式预热一次（覆盖"原图丢失导致补齐失败"的边角场景）
-    const missing = items.filter((it) => !it.thumb && it.album_id != null);
-    if (missing.length) {
-      const byAlbum = new Map<number, string[]>();
-      for (const it of missing) {
-        const aid = it.album_id!;
-        if (!byAlbum.has(aid)) byAlbum.set(aid, []);
-        byAlbum.get(aid)!.push(it.path);
-      }
-      // 预热各相册（失败也不阻塞）
-      await Promise.all(
-        [...byAlbum.entries()].map(([aid, paths]) =>
-          albumStore.prewarmThumbs(aid, paths).catch(() => null),
-        ),
-      );
-      // 再拉一次：此时缓存应已就绪，thumb 字段会带路径
-      items = await invoke<PersonPhotoItem[]>("get_person_photos", { pid: p.id });
+    // 总数（纯 persons.db 读，不碰缩略图）→ 详情页标题与进度可见
+    personTotal.value = (await invoke<string[]>("list_person_photos", { pid: p.id })).length;
+    if (!personTotal.value) {
+      viewingError.value = "该人物暂无登记照片。";
+      return;
     }
-    viewingPhotos.value = items;
-    if (!items.length) viewingError.value = "该人物暂无登记照片。";
-    // FEAT-095：批量读评分 + 标记状态（右键打分菜单 / 归档按钮文案都依赖它）
-    void loadRatings(items.map((i) => i.path));
-    void photoActions.loadMarkStates(items.map((i) => i.path));
+    await fetchPersonPage();
   } catch (e) {
     viewingError.value = String(e);
   } finally {
@@ -273,7 +270,91 @@ async function openPhotos(p: PersonInfo) {
   }
 }
 
+/** 拉取下一页：缩略图补齐的重活只落在当前页（后端先切片再建图） */
+async function fetchPersonPage(): Promise<void> {
+  const p = viewingPerson.value;
+  if (!p) return;
+  const want = personOffset.value === 0 ? PAGE_INITIAL : PAGE_STEP;
+  let items = await invoke<PersonPhotoItem[]>("get_person_photos", {
+    pid: p.id,
+    limit: want,
+    offset: personOffset.value,
+  });
+  // 兜底：本页内仍有 thumb=null → 按相册分组显式预热一次后重拉本页
+  const missing = items.filter((it) => !it.thumb && it.album_id != null);
+  if (missing.length) {
+    const byAlbum = new Map<number, string[]>();
+    for (const it of missing) {
+      const aid = it.album_id!;
+      if (!byAlbum.has(aid)) byAlbum.set(aid, []);
+      byAlbum.get(aid)!.push(it.path);
+    }
+    await Promise.all(
+      [...byAlbum.entries()].map(([aid, paths]) =>
+        albumStore.prewarmThumbs(aid, paths).catch(() => null),
+      ),
+    );
+    items = await invoke<PersonPhotoItem[]>("get_person_photos", {
+      pid: p.id,
+      limit: want,
+      offset: personOffset.value,
+    });
+  }
+  const isFirst = personOffset.value === 0;
+  personOffset.value += items.length;
+  if (items.length < want) personDone.value = true;
+  viewingPhotos.value = isFirst ? items : [...viewingPhotos.value, ...items];
+  // FEAT-095：批量读评分 + 标记状态（右键打分菜单 / 归档按钮文案都依赖它），按页增量
+  void loadRatings(items.map((i) => i.path));
+  void photoActions.loadMarkStates(items.map((i) => i.path));
+}
+
+/** 追加页热加载（滚动近底部触发；不足一整页 = 没有更多） */
+async function loadMorePerson() {
+  if (!viewingPerson.value || personDone.value || personLoadingMore.value || viewingLoading.value) return;
+  personLoadingMore.value = true;
+  try {
+    await fetchPersonPage();
+  } catch (e) {
+    flash(`加载更多失败：${String(e)}`);
+    personDone.value = true;
+  } finally {
+    personLoadingMore.value = false;
+    // 追加后哨兵可能仍在视口内（本页没撑出滚动条）→ 继续补页直到撑出为止
+    requestAnimationFrame(() => {
+      const el = sentinelEl.value;
+      if (el && el.getBoundingClientRect().top < window.innerHeight + 400) void loadMorePerson();
+    });
+  }
+}
+
+/* 哨兵观察：滚近底部 400px 即触发追加（与分类页 / DedupePanel 同款） */
+let personIo: IntersectionObserver | null = null;
+
+function ensurePersonIo(): IntersectionObserver | null {
+  if (typeof IntersectionObserver === "undefined") return null;
+  if (!personIo) {
+    personIo = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) void loadMorePerson();
+      },
+      { rootMargin: "400px 0px" },
+    );
+  }
+  return personIo;
+}
+
+watch([sentinelEl, viewingPerson, personDone, viewingLoading], () => {
+  const io = ensurePersonIo();
+  if (!io) return;
+  io.disconnect();
+  if (sentinelEl.value && viewingPerson.value && !personDone.value && !viewingLoading.value) {
+    io.observe(sentinelEl.value);
+  }
+});
+
 function closePhotos() {
+  personIo?.disconnect();
   viewingPerson.value = null;
   viewingPhotos.value = [];
   lightboxOpen.value = false;
@@ -285,6 +366,16 @@ function closePhotos() {
  * 缩略图缓存固定 256px，放大只做 CSS 拉伸（不触发重新生成），
  * 故上限取 320px —— 再大只是糊图。上限集中在 PhotoZoomBar 内维护。 */
 const cellSize = ref(140);
+
+/** PhotoZoomBar 模板引用（Ctrl+滚轮复用同一套档位步进） */
+const zoomBarRef = ref<InstanceType<typeof PhotoZoomBar> | null>(null);
+
+/** Ctrl+滚轮调整格子尺寸（与缩放条同档位；preventDefault 拦住 WebView2 页面缩放） */
+function onGridWheel(e: WheelEvent) {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  zoomBarRef.value?.stepGear(e.deltaY < 0 ? 1 : -1);
+}
 
 function openPhoto(i: number) {
   lightboxIndex.value = i;
@@ -695,6 +786,8 @@ const vFocus: Directive<HTMLElement> = {
 
 <template>
   <div class="pg-wrap" :style="{ color: theme.textColor }">
+    <!-- ============ 视图 1：人物列表（FEAT-200：点击人物 → 全页二级视图，不再是弹窗） ============ -->
+    <template v-if="!viewingPerson">
     <div class="pg-toolbar">
       <span class="pg-summary" v-if="!loading && !loadError">共 {{ persons.length }} 位人物（按出现次数排序）</span>
       <button
@@ -783,6 +876,126 @@ const vFocus: Directive<HTMLElement> = {
         </div>
       </article>
     </div>
+    </template>
+
+    <!-- ============ 视图 2：人物照片全页（FEAT-200：与分类/地点画廊同构的二级视图） ============ -->
+    <template v-else>
+      <div class="pg-detail-head">
+        <button class="btn" @click="closePhotos">← 返回人物</button>
+        <h2 class="pg-detail-title">{{ displayName(viewingPerson) }} 的照片</h2>
+        <span class="pg-detail-count">{{ viewingPhotos.length }} / {{ personTotal }} 张</span>
+        <!-- FEAT-095（R1）：矩阵格子缩放 -->
+        <PhotoZoomBar ref="zoomBarRef" v-model="cellSize" :disabled="!viewingPhotos.length" />
+        <span class="pg-spacer"></span>
+        <template v-if="selectMode">
+          <!-- FEAT-096：三态全选复选框（空圈 → 打勾；全选后再点即取消全选） -->
+          <SelectAllCheckbox
+            :selected-count="selected.size"
+            :total-count="viewingPhotos.length"
+            @toggle="selectAllPhotos"
+          />
+          <!-- FEAT-095：多选批量归档 / 隐藏（针对照片，非相册整体） -->
+          <button class="mini-btn" :disabled="!selected.size || photoActions.busy.value" @click="doArchive([...selected], true)">
+            📦 归档（{{ selected.size }}）
+          </button>
+          <button class="mini-btn" :disabled="!selected.size || photoActions.busy.value" @click="doHide([...selected], true)">
+            🔒 隐藏（{{ selected.size }}）
+          </button>
+          <!-- FEAT-187：选中照片一起送进创意工坊 -->
+          <button
+            class="mini-btn"
+            :disabled="!selected.size"
+            :title="selected.size ? `把选中的 ${selected.size} 张送到创意工坊` : '请先勾选照片'"
+            @click="photoActions.openInWorkshop([...selected])"
+          >🧰 工坊（{{ selected.size }}）</button>
+          <button class="mini-btn danger" :disabled="!selected.size || deleting" @click="openDeleteDialog">
+            🗑 删除选中（{{ selected.size }}）
+          </button>
+          <button class="mini-btn" @click="exitSelectMode">退出</button>
+        </template>
+        <button v-else class="mini-btn" @click="enterSelectMode">☑ 多选</button>
+      </div>
+
+      <!-- 头像挑选模式提示（由头像右键菜单「更换头像…」进入） -->
+      <div v-if="avatarPickMode && !selectMode" class="viewer-pick-hint">
+        正在更换封面：鼠标移到照片上点「设为头像」即可（选完自动关闭）
+      </div>
+
+      <div v-if="viewingLoading" class="pg-state">正在读取缩略图…</div>
+      <div v-else-if="viewingError" class="pg-state pg-error">{{ viewingError }}</div>
+      <div
+        v-else
+        class="pg-detail-grid"
+        :style="{ gridTemplateColumns: `repeat(auto-fill, minmax(${cellSize}px, 1fr))` }"
+        @wheel="onGridWheel"
+      >
+        <div
+          v-for="(it, i) in viewingPhotos"
+          :key="it.path"
+          class="viewer-cell"
+          :class="{ checked: selectMode && selected.has(it.path) }"
+          @click="selectMode ? toggleSelect(it.path) : openPhoto(i)"
+          @contextmenu.prevent.stop="onCellContextMenu($event, it.path)"
+        >
+          <img
+            v-if="it.thumb"
+            :src="photoThumbSrc(it)"
+            class="viewer-photo"
+            :title="`${it.path}\n右键可打分 / 标签 / 编辑 / 归档 / 隐藏 / 删除`"
+            loading="lazy"
+            alt=""
+            draggable="false"
+            @click.stop="selectMode ? toggleSelect(it.path) : openPhoto(i)"
+          />
+          <div v-else class="viewer-photo viewer-photo-missing" :title="`缩略图生成中或原图不可用：${it.path}`">🖼</div>
+          <!-- FEAT-095：评分星标角标（与 PhotoGrid 一致，右键打分后即时反映） -->
+          <span v-if="ratingOf(it.path) > 0" class="cell-rating" :title="`打分 ${ratingOf(it.path)} 星`">
+            {{ "★".repeat(ratingOf(it.path)) }}
+          </span>
+          <!-- FEAT-095：归档 / 隐藏状态角标 -->
+          <span v-if="photoActions.markStateOf(it.path)" class="cell-mark" :title="photoActions.markStateOf(it.path) === 'archived' ? '已归档' : '已隐藏'">
+            {{ photoActions.markStateOf(it.path) === "archived" ? "📦" : "🔒" }}
+          </span>
+          <!-- FEAT-047：自选头像入口（多选模式下隐藏） -->
+          <button
+            v-if="!selectMode"
+            class="viewer-set-avatar"
+            :class="{ 'always-on': avatarPickMode }"
+            title="设为该人物的头像"
+            :disabled="settingAvatar === it.path"
+            @click.stop="onSetAvatar(it.path)"
+          >
+            {{ settingAvatar === it.path ? "设置中…" : "设为头像" }}
+          </button>
+          <span v-if="selectMode" class="cell-check" :class="{ on: selected.has(it.path) }">
+            {{ selected.has(it.path) ? "✓" : "" }}
+          </span>
+        </div>
+      </div>
+      <!-- FEAT-200：追加页哨兵（滚近底部 400px 自动热加载下一页） -->
+      <div
+        v-if="!viewingLoading && !viewingError && !personDone && viewingPhotos.length"
+        ref="sentinelEl"
+        class="pg-more-sentinel"
+      >
+        <span v-if="personLoadingMore" class="pg-more-tip">加载中…</span>
+      </div>
+
+      <!-- 原图看图器（启用删除 / 归档 / 隐藏按钮） -->
+      <PhotoLightbox
+        v-if="lightboxOpen"
+        :photos="lightboxPhotos"
+        :index="lightboxIndex"
+        deletable
+        markable
+        :archived="currentMarkState(lightboxPhotos[lightboxIndex]?.path ?? '') === 'archived'"
+        :hidden="currentMarkState(lightboxPhotos[lightboxIndex]?.path ?? '') === 'hidden'"
+        @close="lightboxOpen = false"
+        @delete="askDeleteCurrent"
+        @archive="(p, m) => doArchive([p], m)"
+        @hide="(p, m) => doHide([p], m)"
+      />
+    </template>
 
     <!-- 合并：选择目标人物弹窗 -->
     <Teleport to="body">
@@ -826,125 +1039,7 @@ const vFocus: Directive<HTMLElement> = {
       @cancel="pendingTarget = null"
     />
 
-    <!-- 查看该人物的照片（缩略图网格）—— FEAT-096（R3）：窗口式可拖边缩放 + 拖标题栏移动 + 全屏 -->
-    <Teleport to="body">
-      <div v-if="viewingPerson" class="viewer-mask" @click.self="closePhotos">
-        <ResizableDialog
-          class="viewer-dialog"
-          :style="surfaceStyle"
-          :initial-width="760"
-          :initial-height="580"
-          :min-width="440"
-          :min-height="320"
-        >
-          <template #head="{ fullscreen, toggleFullscreen }">
-            <div class="viewer-head">
-              <span class="viewer-title">{{ displayName(viewingPerson) }} 的照片</span>
-              <span class="viewer-count">{{ viewingPhotos.length }} 张</span>
-              <!-- FEAT-095（R1）：矩阵格子缩放 -->
-              <PhotoZoomBar v-model="cellSize" :disabled="!viewingPhotos.length" />
-              <span class="viewer-spacer"></span>
-              <template v-if="selectMode">
-                <!-- FEAT-096：三态全选复选框（空圈 → 打勾；全选后再点即取消全选） -->
-                <SelectAllCheckbox
-                  :selected-count="selected.size"
-                  :total-count="viewingPhotos.length"
-                  @toggle="selectAllPhotos"
-                />
-                <!-- FEAT-095：多选批量归档 / 隐藏（针对照片，非相册整体） -->
-                <button class="mini-btn" :disabled="!selected.size || photoActions.busy.value" @click="doArchive([...selected], true)">
-                  📦 归档（{{ selected.size }}）
-                </button>
-                <button class="mini-btn" :disabled="!selected.size || photoActions.busy.value" @click="doHide([...selected], true)">
-                  🔒 隐藏（{{ selected.size }}）
-                </button>
-                <!-- FEAT-187：选中照片一起送进创意工坊 -->
-                <button
-                  class="mini-btn"
-                  :disabled="!selected.size"
-                  :title="selected.size ? `把选中的 ${selected.size} 张送到创意工坊` : '请先勾选照片'"
-                  @click="photoActions.openInWorkshop([...selected])"
-                >🧰 工坊（{{ selected.size }}）</button>
-                <button class="mini-btn danger" :disabled="!selected.size || deleting" @click="openDeleteDialog">
-                  🗑 删除选中（{{ selected.size }}）
-                </button>
-                <button class="mini-btn" @click="exitSelectMode">退出</button>
-              </template>
-              <button v-else class="mini-btn" @click="enterSelectMode">☑ 多选</button>
-              <!-- FEAT-096（R3）：全屏 / 还原（双击标题栏同效） -->
-              <button class="mini-btn" :title="fullscreen ? '还原窗口 (F11)' : '全屏查看 (F11)'" @click="toggleFullscreen">
-                {{ fullscreen ? "🗗 还原" : "⛶ 全屏" }}
-              </button>
-              <button class="btn viewer-close" @click="closePhotos">✕</button>
-            </div>
-          </template>
-          <!-- 头像挑选模式提示（由头像右键菜单「更换头像…」进入） -->
-          <div v-if="avatarPickMode && !selectMode" class="viewer-pick-hint">
-            正在更换封面：鼠标移到照片上点「设为头像」即可（选完自动关闭）
-          </div>
-          <div v-if="viewingLoading" class="viewer-state">正在读取缩略图…</div>
-          <div v-else-if="viewingError" class="viewer-state viewer-error">{{ viewingError }}</div>
-          <div v-else class="viewer-grid" :style="{ gridTemplateColumns: `repeat(auto-fill, minmax(${cellSize}px, 1fr))` }">
-            <div
-              v-for="(it, i) in viewingPhotos"
-              :key="it.path"
-              class="viewer-cell"
-              :class="{ checked: selectMode && selected.has(it.path) }"
-              @click="selectMode ? toggleSelect(it.path) : openPhoto(i)"
-              @contextmenu.prevent.stop="onCellContextMenu($event, it.path)"
-            >
-              <img
-                v-if="it.thumb"
-                :src="photoThumbSrc(it)"
-                class="viewer-photo"
-                :title="`${it.path}\n右键可打分 / 标签 / 编辑 / 归档 / 隐藏 / 删除`"
-                loading="lazy"
-                alt=""
-                draggable="false"
-                @click.stop="selectMode ? toggleSelect(it.path) : openPhoto(i)"
-              />
-              <div v-else class="viewer-photo viewer-photo-missing" :title="`缩略图生成中或原图不可用：${it.path}`">🖼</div>
-              <!-- FEAT-095：评分星标角标（与 PhotoGrid 一致，右键打分后即时反映） -->
-              <span v-if="ratingOf(it.path) > 0" class="cell-rating" :title="`打分 ${ratingOf(it.path)} 星`">
-                {{ "★".repeat(ratingOf(it.path)) }}
-              </span>
-              <!-- FEAT-095：归档 / 隐藏状态角标 -->
-              <span v-if="photoActions.markStateOf(it.path)" class="cell-mark" :title="photoActions.markStateOf(it.path) === 'archived' ? '已归档' : '已隐藏'">
-                {{ photoActions.markStateOf(it.path) === "archived" ? "📦" : "🔒" }}
-              </span>
-              <!-- FEAT-047：自选头像入口（多选模式下隐藏） -->
-              <button
-                v-if="!selectMode"
-                class="viewer-set-avatar"
-                :class="{ 'always-on': avatarPickMode }"
-                title="设为该人物的头像"
-                :disabled="settingAvatar === it.path"
-                @click.stop="onSetAvatar(it.path)"
-              >
-                {{ settingAvatar === it.path ? "设置中…" : "设为头像" }}
-              </button>
-              <span v-if="selectMode" class="cell-check" :class="{ on: selected.has(it.path) }">
-                {{ selected.has(it.path) ? "✓" : "" }}
-              </span>
-            </div>
-          </div>
-          <!-- 原图看图器（启用删除 / 归档 / 隐藏按钮） -->
-          <PhotoLightbox
-            v-if="lightboxOpen"
-            :photos="lightboxPhotos"
-            :index="lightboxIndex"
-            deletable
-            markable
-            :archived="currentMarkState(lightboxPhotos[lightboxIndex]?.path ?? '') === 'archived'"
-            :hidden="currentMarkState(lightboxPhotos[lightboxIndex]?.path ?? '') === 'hidden'"
-            @close="lightboxOpen = false"
-            @delete="askDeleteCurrent"
-            @archive="(p, m) => doArchive([p], m)"
-            @hide="(p, m) => doHide([p], m)"
-          />
-        </ResizableDialog>
-      </div>
-    </Teleport>
+
 
     <!-- 人物页处理方式：从此人移除 / 移到其他人物 / 清除数据库记录 / 回收站 -->
     <PhotoDeleteDialog
@@ -1301,45 +1396,51 @@ body.theme-dark .pg-action-msg {
 /* 人物头像：可点击进入照片查看 */
 .person-avatar-wrap { cursor: pointer; }
 
-/* 查看某人物照片弹窗 */
-.viewer-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 1200;
-  background: rgba(0, 0, 0, 0.55);
-}
-/* FEAT-096（R3）：窗口尺寸由 ResizableDialog 的拖边把手接管，
-   这里不能再写死 width / max-height（否则会和拖出来的实际尺寸打架） */
-.viewer-dialog {
-  padding: 16px 18px 18px;
-  display: flex;
-  flex-direction: column;
-}
-.viewer-head {
+/* ── FEAT-200：人物照片全页二级视图（原 760×580 弹窗已废弃） ───────────
+   与分类/地点画廊同构：页面内 v-if 切换 + 「← 返回人物」。
+   格子样式（viewer-photo / viewer-cell 等）沿用弹窗时代的选择器，
+   这里只补页面级容器：不再内部滚动（交给页面滚动容器），所以
+   不写 overflow-y / flex 撑满。 */
+.pg-detail-head {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
   margin-bottom: 12px;
   padding: 0 2px;
 }
-.viewer-title { font-size: 17px; font-weight: 700; }
-.viewer-count { font-size: 13px; opacity: 0.7; }
-.viewer-close { margin-left: auto; padding: 4px 12px; font-size: 14px; }
-.viewer-state { text-align: center; padding: 40px 20px; opacity: 0.8; }
-.viewer-error { color: var(--color-danger); }
-.viewer-grid {
-  overflow-y: auto;
-  /* FEAT-096（R3）：窗口可缩放后网格必须自己撑满剩余高度并在内部滚动，
-     否则窗口拉高时网格仍只占原高度，底部留一大片空白 */
-  flex: 1;
-  min-height: 0;
-  display: grid;
+.pg-detail-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+}
+.pg-detail-count {
+  font-size: 12.5px;
+  opacity: 0.65;
+  font-variant-numeric: tabular-nums;
+}
+.pg-spacer { flex: 1; }
+.pg-detail-grid {
   /* 格子尺寸由 PhotoZoomBar 的 v-model 驱动（style 绑定在模板上），此处只给兜底值 */
+  display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 8px;
   align-content: start;
 }
 .viewer-cell { position: relative; }
+
+/* FEAT-200：追加页哨兵（给一点高度，保证 IntersectionObserver 可靠触发） */
+.pg-more-sentinel {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 28px;
+  padding: 6px 0 2px;
+}
+.pg-more-tip {
+  font-size: 12px;
+  opacity: 0.6;
+}
 
 /* FEAT-095：评分星标 / 归档隐藏角标 */
 .cell-rating {
@@ -1364,10 +1465,6 @@ body.theme-dark .pg-action-msg {
   z-index: 1;
 }
 
-/* FEAT-050：多选删除 */
-.viewer-spacer {
-  flex: 1;
-}
 /* 头像挑选模式提示条（由头像右键菜单「更换头像…」进入） */
 .viewer-pick-hint {
   margin: -4px 0 10px;

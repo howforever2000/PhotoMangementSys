@@ -34,6 +34,8 @@ const emit = defineEmits<{ (e: "update:modelValue", v: number): void }>();
 
 /** 归一到步长网格并夹在 [min, max] 内（防止外部传入越界值导致布局崩） */
 function normalize(v: number): number {
+  // 非有限值（NaN/Infinity）直接回落最小档：NaN 进 grid 尺寸会整块布局崩掉
+  if (!Number.isFinite(v)) return props.min;
   const stepped = Math.round(v / props.step) * props.step;
   return Math.min(props.max, Math.max(props.min, stepped));
 }
@@ -42,24 +44,41 @@ const current = computed(() => normalize(props.modelValue));
 const canZoomOut = computed(() => !props.disabled && current.value > props.min);
 const canZoomIn = computed(() => !props.disabled && current.value < props.max);
 
-function step(delta: number) {
-  const next = normalize(current.value + delta);
+/** 按 ±deltaPx 步进并 emit（内部使用；模板按钮与父组件滚轮都走 stepGear） */
+function nudge(deltaPx: number) {
+  const next = normalize(current.value + deltaPx);
   if (next !== current.value) emit("update:modelValue", next);
+}
+
+/**
+ * 按 ±1 档步进（dir 取 -1 / +1，实际像素 = dir × step）
+ *
+ * ⚠ 命名注意：不能叫 `step` —— props 里已有步长 `step`，模板中 setup 函数
+ * 会遮蔽同名 prop，`step(-step)` 里的 `step` 解析成函数本身，函数转数字
+ * 得 NaN 并 emit 出去（缩放条显示 NaN% 的根因，BUG-2026-1121-002）。
+ */
+function stepGear(dir: number) {
+  nudge(dir * props.step);
 }
 
 /** 倍率文案：以 160px 为基准（≈ 常见笔记本窗口一屏 7-8 列的观感） */
 const ratioText = computed(() => `${Math.round((current.value / 160) * 100)}%`);
 
-defineExpose({ step, normalize });
+defineExpose({ stepGear, nudge, normalize });
 </script>
 
 <template>
-  <div class="pzb" role="group" aria-label="缩略图缩放">
+  <div
+    class="pzb"
+    role="group"
+    aria-label="缩略图缩放"
+    title="Ctrl + 滚轮 也可以缩放照片矩阵"
+  >
     <button
       class="pzb-btn"
       :disabled="!canZoomOut"
       title="缩小缩略图"
-      @click="step(-step)"
+      @click="stepGear(-1)"
     >－</button>
     <input
       class="pzb-range"
@@ -76,7 +95,7 @@ defineExpose({ step, normalize });
       class="pzb-btn"
       :disabled="!canZoomIn"
       title="放大缩略图"
-      @click="step(step)"
+      @click="stepGear(1)"
     >＋</button>
     <span class="pzb-value" :title="`格子边长 ${current}px`">{{ ratioText }}</span>
     <slot name="extra" />

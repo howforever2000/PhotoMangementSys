@@ -912,19 +912,33 @@ pub mod commands {
     }
 
     /// 某分类下的照片（按语义强度降序）
+    ///
+    /// FEAT-200 分页：前端首屏 300 张，滚动到底部附近再按 offset 追加；
+    /// keyword 传入时为「关键词筛选态」的分页（与 chips 过滤同口径）。
     #[tauri::command]
     pub async fn list_category_photos(
         id: i64,
         limit: Option<i64>,
+        offset: Option<i64>,
+        keyword: Option<String>,
         state: State<'_, AppState>,
         session: State<'_, SessionState>,
     ) -> Result<Vec<crate::db::CategoryPhotoRow>, String> {
         let user_id = require_user(&session)?;
-        let _t = crate::logger::log_call_start("list_category_photos", &format!("id={id}"));
+        let _t = crate::logger::log_call_start(
+            "list_category_photos",
+            &format!("id={id} kw={}", keyword.as_deref().unwrap_or("-")),
+        );
         let r = {
             let db = state.0.lock().map_err(|e| format!("{e}"))?;
-            db.list_category_photos(id, user_id, limit.unwrap_or(2000).clamp(1, 20000))
-                .map_err(|e| format!("{e}"))
+            db.list_category_photos(
+                id,
+                user_id,
+                limit.unwrap_or(300).clamp(1, 20000),
+                offset.unwrap_or(0).max(0),
+                keyword.as_deref().filter(|k| !k.is_empty()),
+            )
+            .map_err(|e| format!("{e}"))
         };
         match &r {
             Ok(rows) => crate::logger::log_call_end_with(
@@ -933,6 +947,32 @@ pub mod commands {
                 &format!("OK | photos={}", rows.len()),
             ),
             Err(e) => crate::logger::log_call_end_with("list_category_photos", _t, &format!("ERR | {e}")),
+        }
+        r.map_err(|e| e.to_string())
+    }
+
+    /// 某分类下各命中关键词的计数（FEAT-200：chips 全量口径，与分页无关）
+    #[tauri::command]
+    pub async fn list_category_keyword_counts(
+        id: i64,
+        state: State<'_, AppState>,
+        session: State<'_, SessionState>,
+    ) -> Result<Vec<(String, i64)>, String> {
+        let user_id = require_user(&session)?;
+        let _t = crate::logger::log_call_start("list_category_keyword_counts", &format!("id={id}"));
+        let r = {
+            let db = state.0.lock().map_err(|e| format!("{e}"))?;
+            db.list_category_keyword_counts(id, user_id).map_err(|e| format!("{e}"))
+        };
+        match &r {
+            Ok(rows) => crate::logger::log_call_end_with(
+                "list_category_keyword_counts",
+                _t,
+                &format!("OK | kw={}", rows.len()),
+            ),
+            Err(e) => {
+                crate::logger::log_call_end_with("list_category_keyword_counts", _t, &format!("ERR | {e}"))
+            }
         }
         r.map_err(|e| e.to_string())
     }
