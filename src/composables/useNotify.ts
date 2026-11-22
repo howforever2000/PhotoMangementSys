@@ -15,8 +15,8 @@ export function useNotify() {
 
   const success = (title: string, message?: string, duration = 3000) => toast.success(title, message, duration);
   const warning = (title: string, message?: string, duration = 4000) => toast.warning(title, message, duration);
-  /** 错误提示（默认持久化，需手动关闭/点"知道了"） */
-  const error = (title: string, message?: string, duration = 0) => toast.error(title, message, duration);
+  /** 错误提示（默认 6s 自动消失；确需用户必须看到的用 persistentError） */
+  const error = (title: string, message?: string, duration = 6000) => toast.error(title, message, duration);
   const info = (title: string, message?: string, duration = 3000) => toast.info(title, message, duration);
   const persistentError = (title: string, message?: string) => toast.persistentError(title, message);
 
@@ -66,7 +66,7 @@ export function useNotify() {
 export const notify = {
   success: (title: string, message?: string, duration = 3000) => useToastStore().success(title, message, duration),
   warning: (title: string, message?: string, duration = 4000) => useToastStore().warning(title, message, duration),
-  error: (title: string, message?: string, duration = 0) => useToastStore().error(title, message, duration),
+  error: (title: string, message?: string, duration = 6000) => useToastStore().error(title, message, duration),
   info: (title: string, message?: string, duration = 3000) => useToastStore().info(title, message, duration),
   persistentError: (title: string, message?: string) => useToastStore().persistentError(title, message),
   confirm: (
@@ -91,4 +91,17 @@ export const notify = {
       );
     }),
   clear: () => useToastStore().clear(),
+  /**
+   * 带动作按钮的提示（store / 工具函数里用）
+   *
+   * 与 `useNotify().action` 同一签名：此前便捷对象漏了这一个，导致
+   * 无法从 store 里发出「发现新版本 v5.0.1 ｜ 去更新 / 稍后」这种带按钮的提示。
+   */
+  action: (
+    type: "success" | "warning" | "error" | "info",
+    title: string,
+    actions: { label: string; onClick: () => void; style?: "primary" | "secondary" | "danger" }[],
+    message?: string,
+    duration = 0,
+  ) => useToastStore().action(type, title, actions, message, duration),
 };

@@ -134,7 +134,14 @@ const autoDetectLocation = trace("autoDetectLocation", async () => {
     }
     notify.success("自动识别地点成功", `${r.location}（${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}）`);
   } catch (e) {
-    notify.error("自动识别地点失败", String(e));
+    const msg = String(e);
+    // 「相册内照片无 GPS 坐标」是预期结果而非故障：降级为警告（4s 自动消失），
+    // 避免逐相册识别时红色「失败」toast 一条条摞住不消失（BUG-2026-1121-004）
+    if (msg.includes("无 GPS")) {
+      notify.warning("未能识别地点", "相册内照片没有 GPS 坐标，可手动填写地点标签");
+    } else {
+      notify.error("自动识别地点失败", msg);
+    }
   } finally {
     detectingLocation.value = false;
   }

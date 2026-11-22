@@ -21,6 +21,9 @@ export interface Toast {
 
 let toastIdCounter = 0;
 
+/** 同屏最多同时存在的 toast 数：超限丢最旧（add 内强制执行） */
+const MAX_STACK = 6;
+
 /** 全局 Toast 通知状态管理：支持多实例堆叠、自动消失、手动关闭、动作按钮 */
 export const useToastStore = defineStore("toast", () => {
   const toasts = ref<Toast[]>([]);
@@ -42,6 +45,12 @@ export const useToastStore = defineStore("toast", () => {
       createdAt: Date.now(),
     };
     toasts.value.push(toast);
+    // 堆叠上限：超过 MAX_STACK 时丢掉最旧的（连计时器一起清），
+    // 防止连续失败时一层层摞满整屏（BUG-2026-1121-004：8 条地点识别失败堆屏不消失）
+    if (toasts.value.length > MAX_STACK) {
+      const oldest = toasts.value[0];
+      remove(oldest.id);
+    }
     return id;
   }
 
@@ -104,7 +113,7 @@ export const useToastStore = defineStore("toast", () => {
     scheduleDismiss(id, duration);
     return id;
   }
-  function error(title: string, message?: string, duration = 0) {
+  function error(title: string, message?: string, duration = 6000) {
     const id = add("error", title, { message, duration });
     scheduleDismiss(id, duration);
     return id;
@@ -145,7 +154,7 @@ function defaultDuration(type: ToastType): number {
     case "warning":
       return 4000;
     case "error":
-      return 0; // 错误默认持久化，避免用户错过关键信息
+      return 6000; // 错误默认 6s 自动消失；确需用户必须看到的用 persistentError（带「知道了」按钮）
     case "info":
       return 3000;
   }
