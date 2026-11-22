@@ -139,6 +139,15 @@
   line-height: 1.5;
 }
 
+/* 独立成段的长说明（顶格那段「这个工具会做什么、跑在哪、输出什么」）。
+   与行内小注（参数旁的补充，带内联 margin 的那些）分开：
+   行内小注加承载面会变成"一堆小卡片"，长说明则需要在壁纸模式下有承载面
+   （见 main.css 的 .ai-note-block 规则）。
+   纯色/渐变背景下不额外加底 —— .ai-panel 的底已经够了。 */
+.ai-note-block {
+  margin: 10px 0 0;
+}
+
 .ai-privacy {
   margin: 0;
   padding: 8px 12px;

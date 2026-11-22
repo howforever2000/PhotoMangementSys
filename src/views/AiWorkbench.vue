@@ -51,7 +51,7 @@ import WorkbenchTune from "../components/workshop/ai/WorkbenchTune.vue";
 import WorkbenchFilmstrip from "../components/workshop/ai/WorkbenchFilmstrip.vue";
 import WorkbenchGrid from "../components/workshop/ai/WorkbenchGrid.vue";
 import { pickPhotos, pickDirectory } from "../composables/useOpenDialog";
-import { opById, toolLabel } from "../utils/toolCatalog";import { useWorkbenchStore, type WbEngine } from "../stores/workbench";
+import { opById } from "../utils/toolCatalog";import { useWorkbenchStore, type WbEngine } from "../stores/workbench";
 import { useWorkshopUiStore } from "../stores/workshopUi";
 import { useAiStudioStore } from "../stores/aiStudio";
 import { useAlbumStore } from "../stores/album";
@@ -62,6 +62,11 @@ import { useWorkbenchPreview } from "../composables/useWorkbenchPreview";
 import { usePhotoSrcMap } from "../composables/usePhotoSrcMap";
 import { useWorkbenchThumbs } from "../composables/useWorkbenchThumbs";
 import { baseName } from "../utils/pathParts";
+import {
+  scopeText as scopeTextOf,
+  scopeWord,
+  targetCount as targetCountOf,
+} from "../utils/workbenchScope";
 import { dedupePhotoPaths, splitPhotoPaths } from "../utils/workshopHandoff";
 import { qcHeadline, qcTone, summarizeQc, verdictLabel } from "../utils/workbenchQc";
 import { pickSample } from "../utils/samplePick";
@@ -350,7 +355,17 @@ function removeSelected() {
 const visionPrice = computed(() => billing.modelPrice("vision"));
 const editPrice = computed(() => billing.modelPrice("edit"));
 const upscalePrice = computed(() => billing.modelPrice("upscale"));
-const targetCount = computed(() => (wb.selectedCount > 0 ? wb.selectedCount : wb.total));
+/**
+ * 本次要处理多少张。
+ *
+ * 有勾选 = 勾选的那些；没勾选 = 全量（`wb.targets` 的回退规则）。
+ * 两种情况**说法必须不同**：不勾选时按钮要说「全部 N 张」，
+ * 否则用户看到「批量套用到 12 张」会以为只处理了勾选的那 12 张 ——
+ * 而实际是全量 12 张里一张没勾。
+ */
+const targetCount = computed(() => targetCountOf(wb.items, wb.selected));
+/** 按钮文案里的张数说法：「已选 N 张」还是「全部 N 张」 */
+const targetWord = computed(() => scopeWord(wb.selectedCount));
 
 /**
  * 每张预计调用次数（**必须与后端真实调用一致**，否则用户在确认框里看到的是假价）：
@@ -375,11 +390,23 @@ function expectedCalls(): { v: number; e: number; u: number } {
   return { v: 0, e, u };
 }
 
+/** 当前方案的完整说法。配方路线要说清是**哪一个**配方（自然/通透/胶片/人像）——
+    原来只写「配方 · 一键出片」，那是工具名不是方案名，用户看不出这批会用哪套参数。 */
+const currentPlanLabel = computed(() => {
+  if (wb.engine === "recipe") {
+    const r = recipeById(wb.recipeId);
+    return r ? `配方 · ${r.label}` : "配方";
+  }
+  if (wb.engine === "ai") return "模型理解";
+  return chainOpsLabel;
+});
+
 const estimateText = computed(() => {
   const n = targetCount.value;
   // 未配置模型（FEAT-199）：比「多少钱」更该先说「现在还跑不起来」
   if (engineOrigin.value.origin === "unconfigured") return `⚠ ${engineOrigin.value.detail}`;
-  // 整条路线都不出本机（含绑到本机地址的本地服务）→ 直接说免费，不摆价格栏
+  // 整条路线都不出本机（纯算法 / 自带模型 / 回环地址的本地 API）→ 直接说免费，
+  // 不摆价格栏；只有「API 模型 · 云端」那一档才走下面的金额计算
   if (!engineOrigin.value.leavesDevice) {
     return `免费（${engineOrigin.value.detail}）`;
   }
@@ -395,7 +422,14 @@ const estimateText = computed(() => {
     wb.engine === "ai" ? `编辑 ≥${e}` : e ? `编辑 ${e}` : "",
     u ? `超分 ${u}` : "",
   ].filter(Boolean);
-  return `≈ ${billing.formatMoney(total)}（${n} 张 × [${parts.join(" + ")}]）`;
+  /* 「≈」是承诺，「至少」是事实 —— 这里的数字是**下界**：
+     模型理解路线的规划步数在跑之前未知（expectedCalls 的 e 恒取 1），
+     实际编辑次数可能高出好几倍。用「≈」会让人以为这就是最终价。
+     所以正文说「至少」，把上界由什么决定写清楚。 */
+  if (wb.engine === "ai") {
+    return `至少 ${billing.formatMoney(total)}（${n} 张 × [${parts.join(" + ")}]；编辑步数按实际规划结果，可多可少）`;
+  }
+  return `约 ${billing.formatMoney(total)}（${n} 张 × [${parts.join(" + ")}]）`;
 });
 
 /* ---------------- 样片两阶段 ---------------- */
@@ -605,13 +639,15 @@ async function applyBatch(): Promise<boolean> {
   const paths = target.map((i) => i.path);
   const what =
     wb.engine === "recipe" ? "一键出片" : wb.engine === "ai" ? "智能修图" : "创意组合";
+  /* 确认框要把「范围」说清楚：没勾选时是**全量**，不是「处理了一部分」。
+     这是花钱的动作，范围含糊不得。 */
+  const scope = scopeTextOf(wb.selectedCount, paths.length);
   const ok = await notify.confirm(
     `批量${what} ${paths.length} 张？`,
-    `${estimateText.value}；产物写到 ${wb.outputDir}，原图不动。`,
+    `${scope}；${estimateText.value}；产物写到 ${wb.outputDir}，原图不动。`,
     { confirmText: "开始处理", type: "primary" },
   );
-  if (!ok) return false;
-  wb.runningBatch = paths;
+  if (!ok) return false;  wb.runningBatch = paths;
   for (const p of paths) wb.patch(p, { status: "queued", progress: 0, error: undefined });
   try {
     await ai.run(
@@ -790,7 +826,7 @@ const previewNote = computed(() => {
 <template>
   <div class="wb-page">
     <AppHeader
-      title="AI 修图工作台"
+      title="工作台"
       icon="🖼"
       :meta="`${wb.total} 张 · 已完成 ${wb.doneCount} · 进行中 ${wb.runningCount}`"
     />
@@ -798,7 +834,7 @@ const previewNote = computed(() => {
     <div class="wb-crumb">
       <button class="wb-back" type="button" @click="router.push('/workshop')">← 创意工坊</button>
       <span class="wb-sep">/</span>
-      <span class="wb-cur">AI 修图工作台</span>
+      <span class="wb-cur">工作台</span>
       <span class="crumb-hint">固定工作区 · 胶片条横向滑动 · 网格一次看完</span>
     </div>
 
@@ -913,6 +949,10 @@ const previewNote = computed(() => {
               删除所选
             </button>
             <span v-if="wb.selectedCount" class="sel-n">{{ wb.selectedCount }} 张已选</span>
+            <!--
+              主 CTA 只在「有勾选」时出现在中栏（勾选 = 用户明确表态要处理哪几张）。
+              没勾选时右栏常驻条承担这个动作 —— 两处说的是同一件事，用同一个词。
+            -->
             <button
               v-if="wb.selectedCount"
               class="apply-sel"
@@ -921,7 +961,7 @@ const previewNote = computed(() => {
               :title="estimateText"
               @click="applyBatch"
             >
-              批量套用
+              出片
             </button>
           </div>
         </div>
@@ -1041,10 +1081,30 @@ const previewNote = computed(() => {
                   :disabled="busy"
                   @click="setMode(m)"
                 >
-                  {{ m === "recipe" ? "配方 · 一键" : m === "ai" ? "模型理解" : "创意组合" }}
+                  {{ m === "recipe" ? "配方" : m === "ai" ? "模型理解" : "创意组合" }}
                 </button>
               </div>
               <p class="side-note">{{ modeNotes[wb.engine] }}</p>
+              <!--
+                隐私提示（BUG-2026-1122-010）：「模型理解」这条路线会把照片发到
+                云端模型。费用栏写了「按调用计费」，但**没说照片会离开本机** ——
+                对在意隐私的用户，这比多少钱更该先说。
+                「创意组合」也可能含云端步，所以两条路线都要说清。
+              -->
+              <p
+                v-if="wb.engine === 'ai'"
+                class="side-note side-note-warn"
+                title="这条路线会用云端模型处理照片：照片会发到你配置的模型服务"
+              >
+                ⚠ 这条路线会用云端模型：<b>所选照片会发到你配置的模型服务</b>。
+              </p>
+              <p
+                v-else-if="wb.engine === 'chain' && chainHasCloud(wb.chain)"
+                class="side-note side-note-warn"
+                title="这条链里含云端步骤：相关照片会发到你配置的模型服务"
+              >
+                ⚠ 这条链含云端步骤：<b>相关照片会发到你配置的模型服务</b>。
+              </p>
             </section>
 
             <!-- 2 对应方案的细调面板 -->
@@ -1243,6 +1303,8 @@ const previewNote = computed(() => {
                     要改就展开 <b>② 单步微调</b>（同一处改参，右侧对比框即时刷新）。
                   </p>
                   <div class="sample-actions">
+                    <!-- 「应用」与「出片」是两件事：这里是把样片阶段调好的参数
+                         推到全量，不是再跑一遍新配方。所以动词保持「应用」。 -->
                     <button class="sample-apply" type="button" :disabled="busy" @click="applyTuned">
                       应用到全部 {{ targetCount }} 张
                     </button>
@@ -1281,14 +1343,23 @@ const previewNote = computed(() => {
                 <div><dt>格式</dt><dd>JPG · 品质高</dd></div>
                 <div><dt>尺寸</dt><dd>{{ chainPlan(wb.chain).steps.some((s) => s.op === "local_upscale") ? "按倍数放大" : "保持原图" }}</dd></div>
                 <div><dt>加入相册</dt><dd>{{ wb.autoImport ? "「创意工坊」" : "关闭" }}</dd></div>
-                <div><dt>当前方案</dt><dd>{{ wb.engine === "recipe" ? `配方 · ${toolLabel("recipe")}` : wb.engine === "ai" ? "模型理解" : chainOpsLabel }}</dd></div>
+                <div><dt>当前方案</dt><dd>{{ currentPlanLabel }}</dd></div>
               </dl>
-              <div class="cost">{{ estimateText }}</div>
-              <button class="apply" type="button" :disabled="busy || !wb.total" @click="applyBatch">
-                {{ busy ? "处理中…" : `批量套用到 ${targetCount} 张` }}
-              </button>
               <button v-if="busy" class="cancel" type="button" @click="onCancel">取消</button>
             </section>
+          </div>
+
+          <!--
+            常驻操作条（BUG-2026-1122-008）：主 CTA 从 ⑤ 导出卡里挪出来，钉在右栏底部。
+            原来它排在第 5 张卡的末尾 —— 右栏要滚到底才看得见那个按钮，
+            而"点了会花钱"的动作恰恰最不该需要滚动才能找到。
+            费用预估与张数也一起放进来：出片前必须同屏看到"多少张、大概多少钱"。
+          -->
+          <div class="rail-action">
+            <div class="cost">{{ estimateText }}</div>
+            <button class="apply" type="button" :disabled="busy || !wb.total" @click="applyBatch">
+              {{ busy ? "处理中…" : `出片 · ${targetWord} ${targetCount} 张` }}
+            </button>
           </div>
         </template>
 
@@ -1562,6 +1633,15 @@ const previewNote = computed(() => {
 }
 .side-note b {
   color: var(--fg-2);
+  font-weight: 600;
+}
+/* 隐私提示：照片要离开本机 —— 这条比费用更该先说，用危险色点出来。
+   只在「真的会出本机」时出现（模型理解 / 含云端步的链）。 */
+.side-note-warn {
+  color: var(--c-danger);
+}
+.side-note-warn b {
+  color: var(--c-danger);
   font-weight: 600;
 }
 .dir-row {
@@ -2275,6 +2355,19 @@ const previewNote = computed(() => {
   font-size: var(--fs-meta);
   color: var(--fg-2);
   line-height: 1.5;
+}
+
+/* 常驻操作条：钉在右栏底部，不随内容滚动 */
+.rail-action {
+  flex: none;
+  margin-top: 10px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--c-rule);
+  border-radius: var(--r-ui);
+  background: var(--wb-surface);
+}
+.rail-action .cost {
+  margin-top: 0;
 }
 .apply {
   width: 100%;

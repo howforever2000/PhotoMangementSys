@@ -2327,20 +2327,23 @@ function onKey(e: KeyboardEvent) {
   color: var(--fg);
   background: var(--hover);
 }
-/* 选中 = 左侧 2px 竖条 + 文字提亮；底只给 --hover（≈5% 白，几乎不可见）。
-   不用“整块高亮”：一列十几项，每项都有一块底就是十几个小卡片。 */
+/* 选中 = 文字提亮 + 字重 + 底部 1.5px 强调下划线；底只给 --hover（≈5% 白，几乎不可见）。
+   不用“整块高亮”：一列十几项，每项都有一块底就是十几个小卡片。
+   不用左侧 2px 竖条：那是「圆角盒子单侧边条」（craft-floor 绝对禁令）——
+   border-radius 会把竖条两端切出弯钩，读起来像独立的小板块。
+   下划线与顶栏导航 `.mh-nav-item.on::after` 用同一套语言（全站只有一种"当前项"）。 */
 .side-item.on {
   color: var(--fg);
   font-weight: 600;
   background: var(--hover);
 }
-.side-item.on::before {
+.side-item.on::after {
   content: "";
   position: absolute;
-  left: 0;
-  top: 7px;
-  bottom: 7px;
-  width: 2px;
+  left: 9px;
+  right: 7px;
+  bottom: 2px;
+  height: 1.5px;
   border-radius: 2px;
   background: var(--c-accent);
 }

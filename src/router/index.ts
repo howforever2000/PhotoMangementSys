@@ -114,8 +114,9 @@ const router = createRouter({
       component: () => import("../views/Workshop.vue"),
     },
     {
-      // AI 修图工作台（独立视图）：从创意工坊「进入工作台」进入的批量修图空间
+      // 工作台（独立视图）：从创意工坊「工作台」进入的批量修图空间
       // 两页按新定位互补（FEAT-168 / FEAT-197）：单张一键出片 vs 工作台（三条路线 + 群图批量出片），共用 RecipePicker
+      // 路由名保持 ai-workbench 不变（书签 / 深链兼容），只是页面标题统一叫「工作台」
       path: "/workshop/workbench",
       name: "ai-workbench",
       component: () => import("../views/AiWorkbench.vue"),

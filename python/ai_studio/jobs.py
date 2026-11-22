@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import config
 from .logutil import elog, log
+from .providers import preflight
 from .workflows import REGISTRY
 from .workflows.base import Cancelled
 
@@ -113,6 +114,9 @@ def create(req) -> str:
                         j["steps"] = steps
 
         try:
+            # 先探一次 provider 可达性：端口没服务时立刻失败并说清「该启动什么」，
+            # 不让一批照片逐张撞同一个网络错误（BUG-2026-1122-007）。
+            preflight.ensure_reachable(req.providers, req.tool)
             res = fn(req, progress, cancel)
             with _lock:
                 _mark_terminal(

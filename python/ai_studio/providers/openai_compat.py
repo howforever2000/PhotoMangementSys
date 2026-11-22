@@ -19,6 +19,7 @@ from PIL import Image
 
 from .. import config
 from ..logutil import call_model
+from .neterr import describe as describe_net_error
 
 
 class ProviderError(RuntimeError):
@@ -153,7 +154,7 @@ def chat_vision(
                 timeout=timeout,
             )
     except Exception as e:  # 网络层
-        raise ProviderError(f"调用图像理解服务失败: {e}") from e
+        raise ProviderError(f"调用图像理解服务失败：{describe_net_error(base, e)}") from e
     if r.status_code != 200:
         raise ProviderError(f"图像理解服务返回 HTTP {r.status_code}: {_err_text(r)}")
     try:
@@ -216,10 +217,9 @@ def images_edit(
             try:
                 r = requests.post(url, headers=headers, json=body, timeout=timeout)
             except requests.exceptions.ConnectionError as e:
-                # 10054 / 连接被重置：多半是上传体过大或网关前置代理拒绝
-                raise ProviderError(
-                    "上传图片过大或端点不可达（连接被重置 10054），请减小输入分辨率或检查 baseUrl"
-                ) from e
+                # 连接层失败不重试：10061（没人监听）与 10054（被掐断）都不会自愈，
+                # 重试只会在每张图上各烧一遍 TTL。文案按 WinError 分流（neterr）。
+                raise ProviderError(describe_net_error(base, e)) from e
             except Exception as e:
                 last_err = e
                 if attempt < 2:
@@ -268,7 +268,7 @@ def images_generate(
             timeout=timeout,
         )
     except Exception as e:
-        raise ProviderError(f"调用文生图服务失败: {e}") from e
+        raise ProviderError(f"调用文生图服务失败：{describe_net_error(base, e)}") from e
     if r.status_code != 200:
         raise ProviderError(f"文生图服务返回 HTTP {r.status_code}: {_err_text(r)}")
     return _decode_image_items(r.json(), api_key)
@@ -290,7 +290,7 @@ def test_provider(kind: str, base: str, api_key: str, model: str) -> dict:
             }
         models_err = f"HTTP {r.status_code}: {_err_text(r)}"
     except Exception as e:
-        models_err = str(e)
+        models_err = describe_net_error(base, e)
 
     # 2) /models 不可用时：对视觉能力补一次 chat 探测
     if kind == "vision" and model:
@@ -304,3 +304,18 @@ def test_provider(kind: str, base: str, api_key: str, model: str) -> dict:
         except Exception as e:
             return {"ok": False, "message": f"/models 失败({models_err})；chat 失败({e})", "latencyMs": int((time.time() - t0) * 1000)}
     return {"ok": False, "message": f"连接失败：{models_err}", "latencyMs": int((time.time() - t0) * 1000)}
+
+
+def probe_reachable(base: str, api_key: str, timeout: float = 5.0) -> int:
+    """连通性探针（GET `{base}/models`）：只判「端口通不通」，返回 HTTP 状态码。
+
+    不按状态码下结论：不少 OpenAI 兼容服务（本地网关、中转站）根本不实现
+    `/models`，404 / 401 同样证明「服务活着」，只有连接层失败才算不可达 —— 那时
+    抛 `ProviderError`，文案由 `neterr.describe` 给出「该启动服务还是该压分辨率」。
+    """
+    url = f"{_norm(base)}/models"
+    try:
+        r = requests.get(url, headers=_headers(api_key), timeout=timeout)
+    except requests.exceptions.RequestException as e:
+        raise ProviderError(describe_net_error(base, e)) from e
+    return r.status_code

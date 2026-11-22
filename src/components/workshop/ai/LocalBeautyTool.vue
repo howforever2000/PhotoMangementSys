@@ -134,13 +134,13 @@ async function onCancel() {
       <OutputDirField :output-dir="outputDir" :disabled="busy" @update:output-dir="onDir" />
     </div>
 
-    <p class="ai-note">
+    <p class="ai-note ai-note-block">
       只对识别出的皮肤区域做柔化，五官、头发、衣物与背景像素原样保留，分辨率不变；
       全程本机完成；输出为新 JPG，不覆盖原图。未检出人脸的照片会原样输出并提示。
     </p>
 
     <div class="ai-actions">
-      <button class="ai-primary" type="button" :disabled="!canRun" @click="run">
+      <button class="ai-run" type="button" :disabled="!canRun" @click="run">
         开始美颜（{{ paths.length }} 张）
       </button>
     </div>

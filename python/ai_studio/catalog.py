@@ -99,6 +99,26 @@ def requires_before(op_id: str) -> List[str]:
     return list(spec.get("requiresBefore") or []) if spec else []
 
 
+def provider_kind_groups(tool_id: str) -> List[List[str]]:
+    """工具真正会用到的能力位，按「必需组」返回（`+` 分组，`|` 组内备选）。
+
+    - `vision+edit`  → [["vision"], ["edit"]]          两样都要
+    - `upscale|edit` → [["upscale", "edit"]]          优先超分，没配再回落编辑
+    - `edit` / `none`→ [["edit"]] / []
+
+    与前端 `utils/modelOrigin.ts` 的 `kindsOfTool` 读同一份 `providerPolicy`，
+    不在这里另抄「工具 → 能力位」表；`|` 的回落语义由调用方（preflight）落实。
+    """
+    spec = tool_spec(tool_id)
+    policy = (spec or {}).get("providerPolicy") or "none"
+    groups: List[List[str]] = []
+    for part in policy.split("+"):
+        kinds = [k for k in part.split("|") if k in ("vision", "edit", "upscale")]
+        if kinds:
+            groups.append(kinds)
+    return groups
+
+
 def stage_of(op_id: str) -> int:
     spec = op_spec(op_id)
     return int(spec.get("stage", 0)) if spec else 0
@@ -261,6 +281,7 @@ __all__ = [
     "groups",
     "group_ids",
     "requires_before",
+    "provider_kind_groups",
     "stage_of",
     "python_modules",
     "op_catalog_prompt",

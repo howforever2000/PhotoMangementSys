@@ -2,7 +2,7 @@
 /**
  * 模型来源角标（FEAT-199）
  *
- * 一枚弱色小字，回答「这一步是本地模型，还是要调 API？」。判据全部来自
+ * 一枚弱色小字，回答「这一步是在本机跑，还是把照片发出去？」。判据全部来自
  * `utils/modelOrigin.ts`（纯函数，派生自 catalog + 已绑定的供应商地址），
  * 本组件只负责呈现，不含任何判定。
  *
@@ -53,9 +53,10 @@ const title = computed(() => (props.noTitle ? undefined : props.info.detail));
   color: var(--c-danger);
 }
 
-/* 本机两档保持弱色：免费离线是默认预期，不需要每次都被强调 */
+/* 本机三档保持弱色：免费离线是默认预期，不需要每次都被强调 */
 .origin-tag.local-algo,
-.origin-tag.local-model {
+.origin-tag.local-model,
+.origin-tag.api-local {
   color: var(--fg-3, var(--fg-2));
 }
 </style>

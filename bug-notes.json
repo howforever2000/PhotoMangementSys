@@ -6572,7 +6572,115 @@
       ],
       "created_at": "2026-11-22T18:00:00+08:00",
       "fixed_at": "2026-11-22T18:00:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1122-006",
+      "title": "设置菜单分隔线被圆角切断成「小板块」，且「检查更新 / 支持栖影」被切成两块",
+      "status": "fixed",
+      "severity": "low",
+      "module": "src/views/Home.vue（.settings-menu / .settings-item / .settings-sep）",
+      "symptom": [
+        "首页右上 ⚙ 下拉菜单里，「检查更新」「支持栖影」两项上方各有一条横线，放大看每条线两端都向下拐出短竖边",
+        "视觉读起来像两个独立的小卡片/小板块，而不是「开发者工具组 | 应用级组」两个分组",
+        "「爱发电 · 自愿赞助，不解锁任何功能」从词中间折行（…不解锁任 / 何功能）",
+        "菜单弹出/收起是瞬间的，没有过渡，衔接生硬"
+      ],
+      "root_cause": {
+        "summary": "分隔线用 border-top 画在 .settings-item（border-radius:9px 的按钮）上：CSS 边框沿圆角弧线绘制，两端向下拐出短竖边，等于把线画成了两个圆角矩形的上边缘 —— 读作「小板块」而非分隔线。同时「检查更新」「支持栖影」各自都挂了分隔线，把本属同组的「应用级」两项切成了两块。",
+        "detail": [
+          "实测用户截图：y=254~256 行在 x=5 与 x=252 处均有竖向笔画（线两端下拐），中段 x=7..250 才是横线本体",
+          "Playwright 复刻同构 CSS 对比：BEFORE 两条线（各带弯钩）、AFTER 独立元素一条线（端点下 3px 亮度=背景亮度 39.1，即完全平直）",
+          "副标题折行另有根因：菜单是绝对定位，定位祖先只有 .settings-wrap（就 ⚙ 按钮那么宽），shrink-to-fit 被这个「可用宽度」夹住，副标题被迫折行 —— 与分隔线无关，需单独用 width:max-content 解决",
+          "加收起动画会引出遮罩时序问题：遮罩是「点外部关闭」的拦截层，若随 settingsOpen 一起撤，动画那 180ms 里点击会穿透到下面的卡片"
+        ]
+      },
+      "solution": [
+        "分隔线改为独立元素 <span class=\"settings-sep\" role=\"separator\">，用 background + height:1px 绘制，完全不经过圆角裁剪，两端平直",
+        "只保留一条分隔线：「检查更新」与「支持栖影」同属「应用级」一组，中间不再加线，消掉被切成两块的碎片感",
+        "分隔线左右各内缩 10px、上下各留 5px：不顶菜单圆角边框，与条目文字左缘对齐，上下留白对称",
+        "菜单宽度改 width:max-content + max-width:min(320px, calc(100vw - 32px))：不再被窄定位祖先的可用宽度夹住，副标题不再从词中间断行",
+        "菜单加 <Transition name=\"menu-pop\"> 淡入+位移（transform-origin:top right 从 ⚙ 一侧展开），并给 .settings-item 补 :focus-visible 焦点环",
+        "遮罩改用独立的 settingsMaskOn 控制，由 Transition 的 after-leave 收口：动画期间遮罩不撤，杜绝点击穿透；after-leave 里再判一次 settingsOpen，防止动画期间重开时遮罩被误撤"
+      ],
+      "evidence_log": [
+        "用户截图像素扫描：y=254 横线 x=7..250，y=255/256 在 x=5、x=252 仍有笔画（圆角下拐）",
+        "Playwright 量化（修复后）：分隔线 1 条，y=501..503，x=51..701，端点下 3px 亮度 39.1 == 背景 39.1（平直无拐角），左内缩 17.0px / 右内缩 16.3px",
+        "修复后菜单尺寸 249.4 x 283.0 CSS px（修复前被 max-width 夹到 320px 且副标题折行）",
+        "5 条副标题实测均为单行（高 15.0px = 单行高 17.8px）",
+        "交互时序断言 6/6 通过：打开→menu+mask；关闭动画中→mask 仍在；动画结束→menu+mask 都撤；动画中重开→遮罩未被误撤；点遮罩→正常关闭",
+        "npm test：340 passed / 0 failed；npx vue-tsc --noEmit：通过；SFC parse/compileScript/compileTemplate 全通过"
+      ],
+      "log_hint": "改动集中在 src/views/Home.vue 的设置菜单：.settings-menu / .settings-item / .settings-sep 三条规则 + 模板里 settings-sep 元素与 settingsMaskOn 遮罩时序。复现视觉：把 .settings-sep 换回 border-top 的 .settings-item-sep 即可看到小板块复现。",
+      "related_files": [
+        "src/views/Home.vue"
+      ],
+      "created_at": "2026-11-22T18:15:00+08:00",
+      "fixed_at": "2026-11-22T18:15:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1122-007",
+      "date": "2026-11-22",
+      "status": "fixed",
+      "severity": "medium",
+      "title": "人物美颜报「上传图片过大（10054）」，实为图像编辑 baseUrl 指向的 127.0.0.1:8000 无服务（10061）",
+      "module": "创意工坊 / 人物美颜 · python/ai_studio/providers/{neterr,preflight,openai_compat}.py · catalog.py · jobs.py",
+      "symptom": [
+        "「人物美颜」提交后立刻失败 1/1，红字：上传图片过大或端点不可达（连接被重置 10054），请减小输入分辨率或检查 baseUrl",
+        "左栏与面板角标显示「本机模型 · 走你本机运行的模型服务（127.0.0.1），免费、照片不出本机」，但用户认为自己在用云端模型（模型名 qwen-image-2.1-turbo 听起来像云端）",
+        "按文案提示去压分辨率永远修不好，真正的动作是「启动本地网关」或「换 baseUrl」"
+      ],
+      "root_cause": {
+        "summary": "三层叠加：① openai_compat.images_edit 把所有 requests.ConnectionError 无条件归一成「10054 上传过大」；② 图像编辑能力位绑的是「本地图生图网关」预设 http://127.0.0.1:8000/v1，而当时 8000 端口无监听 → 真实错误是 WinError 10061 连接被拒绝；③ 侧栏「本机模型」角标按 baseUrl 是否回环判定（src/utils/modelOrigin.ts），与用户「我配的是云端」的认知冲突 —— 决定链路的永远是 baseUrl，不是模型名。",
+        "detail": [
+          "ai_studio_service.log 栈：HTTPConnectionPool(host='127.0.0.1', port=8000) ... [WinError 10061] 由于目标计算机积极拒绝，无法连接 → 被 except ConnectionError 包成 10054 文案",
+          "netstat 实测 8000 / 11434 / 1234 均无监听；qwen-image-2.1-turbo 在本机正是 8000 网关背后的 sd.cpp GGUF 模型名（见 .dsh/knowledge/local-ai-gateway.md），所以「本地名字 + 本地地址」是对的，错的是用户想要云端却填了本地预设",
+          "requests 把 10061 包成 MaxRetryError → NewConnectionError，str 里保留 `[WinError 10061]` 数字，可按数字分流而不必依赖异常类型",
+          "images_edit 对 ConnectionError 不重试（原本就不重试，但每张图各撞一次同样的错，文案却指向分辨率）"
+        ]
+      },
+      "solution": [
+        "新增 providers/neterr.py：纯字符串判定把连接层失败分成 refused(10061) / reset(10054) / timeout / dns / tls，并给出「该启动服务」还是「该压分辨率」的中文说明；host:port 单独点名（不回显路径与 key）",
+        "openai_compat：images_edit / images_generate / chat_vision / test_provider 全部改用 neterr.describe；新增 probe_reachable()（GET {base}/models，只判连接层，任何 HTTP 状态码都算「端口活着」）",
+        "新增 providers/preflight.py：作业开跑前按 catalog.provider_kind_groups(providerPolicy) 选能力位，每组取第一个已配的（upscale|edit 回落语义与设置界面一致）、同地址去重、超时让步、拒绝/重置立刻失败",
+        "catalog.py 新增 provider_kind_groups()：`+` 拆成必需组、`|` 作为组内备选，能力位口径仍只有 op_catalog.json 一份真相源（与前端 modelOrigin.ts 同源）",
+        "jobs.py worker 在调用工作流前先 preflight.ensure_reachable，失败即落 failed 状态，不进逐张循环",
+        "新增 python/tests/test_ai_studio_provider_net.py（16 条）：文案分类、能力位分组、回落与去重、预检失败/超时让步"
+      ],
+      "evidence_log": [
+        "修复前 ai_studio_service.log：WinError 10061 → 用户看到「10054 上传过大」（两条互斥事实同时出现）",
+        "单元测试：新增 16/16 通过；python/tests 全量 52/52 通过",
+        "冒烟（脱离 HTTP，直接 jobs.create）：beauty + edit=http://127.0.0.1:8000/v1（无监听）→ 2.0s 后 failed，error=「「edit」能力位预检失败 —— 无法连接 127.0.0.1:8000：该端口没有服务在监听（WinError 10061 连接被拒绝）…」"
+      ],
+      "log_hint": "grep -n \"PREFLIGHT\" ai_studio_service.log 看预检结果；grep -n \"WinError 10061\" 定位拒绝连接。注意服务日志中文在 Windows 控制台按 cp936 解码会显示乱码，UI 侧（HTTP JSON）文案正常。",
+      "prevention": [
+        "错误归一必须按「用户下一步动作」分流：10061 让人启服务，10054 让人压分辨率，绝不能共用一句话",
+        "「模型名」不是链路判据：同名模型既可能在本机 sd.cpp，也可能在云端；判据只有 baseUrl，文案里要把 host:port 点出来",
+        "新增 provider 调用点时，网络层失败一律走 neterr.describe，不允许再手写「连接失败: {e}」"
+      ],
+      "related_files": [
+        "python/ai_studio/providers/neterr.py",
+        "python/ai_studio/providers/preflight.py",
+        "python/ai_studio/providers/openai_compat.py",
+        "python/ai_studio/catalog.py",
+        "python/ai_studio/jobs.py",
+        "python/tests/test_ai_studio_provider_net.py",
+        ".dsh/knowledge/local-ai-gateway.md"
+      ],
+      "keywords": [
+        "10061",
+        "10054",
+        "预检",
+        "preflight",
+        "baseUrl",
+        "本机模型角标",
+        "人物美颜",
+        "qwen-image-2.1-turbo",
+        "本地图生图网关",
+        "WinError"
+      ],
+      "created_at": "2026-11-22T22:55:00+08:00",
+      "fixed_at": "2026-11-22T22:55:00+08:00"
     }
   ],
-  "updated": "2026-11-22T18:00:00+08:00"
+  "updated": "2026-11-22T22:55:00+08:00"
 }

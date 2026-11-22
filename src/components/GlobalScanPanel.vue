@@ -673,22 +673,14 @@ body .gs-area.glass-surface {
   font-size: 13px;
 }
 .gs-album-row:last-child { border-bottom: none; }
-/* FEAT-115：选中态从"整块底色"改成"左侧 2px 竖条 + 5% 微光"。
-   一屏十几行，每行一块底就是十几个小卡片；竖条只占 2px 却能把"选中"
-   表达清楚，而且与左栏筛选（.side-item.on）用同一套语言。 */
+/* FEAT-115 的竖条已撤（BUG-2026-1122-007）：「圆角盒子单侧边条」是 craft-floor
+   绝对禁令 —— 圆角把竖条两端切出弯钩，读起来像独立的小板块。
+   勾选态另有更强的信号：行首那个**已勾选的复选框**本身就是"已选"的权威指示，
+   再叠一根竖条是重复表达。底色微光（5% 白）保留，它区分的是"这一行被点过"，
+   与复选框的"已勾选"是两件事（半选、全选、焦点态都不同）。 */
 .gs-album-row { position: relative; }
 .gs-album-row:hover { background: color-mix(in srgb, var(--c-fg) 5%, transparent); }
 .gs-album-row.checked { background: color-mix(in srgb, var(--c-fg) 5%, transparent); }
-.gs-album-row.checked::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 6px;
-  bottom: 6px;
-  width: 2px;
-  border-radius: 2px;
-  background: var(--c-accent);
-}
 .gs-album-row.locked { cursor: default; }
 .gs-album-row input[type="checkbox"] { flex: none; }
 

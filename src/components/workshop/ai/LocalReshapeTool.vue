@@ -141,13 +141,13 @@ async function onCancel() {
       <OutputDirField :output-dir="outputDir" :disabled="busy" @update:output-dir="onDir" />
     </div>
 
-    <p class="ai-note">
+    <p class="ai-note ai-note-block">
       全程本机完成，照片不上传、不花钱；输出为新 JPG，分辨率不变，原图不动。
       未检出人脸的照片会原样输出并提示。
     </p>
 
     <div class="ai-actions">
-      <button class="ai-primary" type="button" :disabled="!canRun" @click="run">
+      <button class="ai-run" type="button" :disabled="!canRun" @click="run">
         开始形变（{{ paths.length }} 张）
       </button>
     </div>

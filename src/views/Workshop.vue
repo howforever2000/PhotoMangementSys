@@ -27,7 +27,7 @@
  * 布局沿用相册页/时间线页的「左栏导航 + 右栏内容」，视觉沿用既有设计系统
  * （design/design-system.md），只做 refinement 不 redesign。
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppHeader from "../components/ui/AppHeader.vue";
 import PhotoTray from "../components/workshop/PhotoTray.vue";
@@ -113,6 +113,58 @@ const primary = primaryTool();
 const grouped = singleToolsByGroup();
 const singleOpen = ref(false);
 
+/* ---------------- 单步工具：分组手风琴 + 搜索（BUG-2026-1122-009） ---------------- */
+
+/**
+ * 展开的分组 id（一次只展开一组）。
+ *
+ * 为什么一次只开一组：14 个工具平铺在一栏里是 **17 个可读项**（含 5 个分组头），
+ * 远超人一次能扫读的量（工作记忆 4±1）。改成手风琴后，
+ * 任一决策点上的可见选项回到「1 个分组 + ≤4 个工具」。
+ *
+ * 一次只开一组（而不是允许多组同开）是刻意的：多组同开等于回到平铺，
+ * 只是多了几道折叠的仪式。
+ */
+const openGroup = ref<string>("");
+
+/** 工具搜索框的内容（空 = 不筛选） */
+const toolQuery = ref("");
+
+/** 当前激活工具所属的分组：切工具时自动展开它，用户不用先找 */
+function ensureGroupVisible(groupId: string) {
+  if (groupId) openGroup.value = groupId;
+}
+
+/**
+ * 按搜索词过滤后的分组列表。
+ * 搜到工具名、描述或分组名都算命中 —— 分组名命中时整组都留下，
+ * 否则搜「人像」会把「人像」组里的工具全滤掉，用户以为没搜到。
+ */
+const filteredGroups = computed(() => {
+  const q = toolQuery.value.trim().toLowerCase();
+  if (!q) return grouped;
+  const out: typeof grouped = [];
+  for (const g of grouped) {
+    const groupHit = g.label.toLowerCase().includes(q);
+    const items = groupHit
+      ? g.items
+      : g.items.filter(
+          (t) =>
+            t.label.toLowerCase().includes(q) ||
+            t.desc.toLowerCase().includes(q) ||
+            t.id.toLowerCase().includes(q),
+        );
+    if (items.length) out.push({ ...g, items });
+  }
+  return out;
+});
+
+/** 搜索时自动展开所有命中的分组（否则搜到了却看不见） */
+watch(filteredGroups, (gs) => {
+  if (!toolQuery.value.trim()) return;
+  if (gs.length === 1) openGroup.value = gs[0].id;
+});
+
 /* ---------------- 工具状态 / 素材托盘 ---------------- */
 
 /** 工具选择与素材托盘提在 store：离开页面再回来不重置，任务状态也不丢 */
@@ -149,12 +201,11 @@ const activeDef = computed<CatalogToolDef>(
 const activeComponent = computed(() => TOOL_COMPONENTS[active.value] ?? null);
 
 /**
- * 工具来源（FEAT-199）：本机算法 / 本机模型 / 云端 API / 未配置模型。
+ * 工具来源（FEAT-199）：本机算法 / 本机模型 / API 模型·本地 / API 模型·云端 / 未配置。
  *
- * 判据全在 `utils/modelOrigin.ts`：执行方式取 catalog，模型位置取已绑定供应商的
- * baseUrl。**不能**直接用 `activeDef.backend` —— 那个字段只说明「跑本机算子还是
- * 调模型」，既分不出「零模型算法」与「本地 ONNX 模型」，也会把绑到本机 Ollama
- * 的云端工具误报成「云端 API」（照片其实没出本机）。
+ * 判据全在 `utils/modelOrigin.ts`：执行方式取 catalog，走供应商的按 baseUrl 主机名分流
+ * （回环 → 本地，免费；其它 → 云端，计费）。**不能**直接用 `activeDef.backend` ——
+ * 那个字段只说明「跑本机算子还是调模型」，分不出「零模型算法」与「本地 ONNX 模型」。
  */
 const activeOrigin = computed<OriginInfo>(() => originOfTool(active.value, aiStore.settings));
 
@@ -215,6 +266,9 @@ function clearTray() {
 
 function selectTool(t: CatalogToolDef) {
   active.value = t.id;
+  // 切到某个工具时，把它所在的分组展开 —— 否则用户点了深链进来
+  // 看到的是"选中了某个工具，但它在收起的组里"，等于没选。
+  ensureGroupVisible(t.group);
 }
 </script>
 
@@ -245,7 +299,7 @@ function selectTool(t: CatalogToolDef) {
             title="工作台模式：带入当前素材，逐图对比、批量出片"
             @click="goWorkbench"
           >
-            <span class="side-ico"><ToolIcon name="upscale" :size="15" /></span>
+            <span class="side-ico"><ToolIcon name="workbench" :size="15" /></span>
             <span class="side-name">工作台</span>
             <span class="side-arrow" aria-hidden="true">↗</span>
           </button>
@@ -258,27 +312,66 @@ function selectTool(t: CatalogToolDef) {
           </button>
 
           <template v-if="singleOpen">
-            <!-- 按类型分组（FEAT-169）：用户想的是「我要改什么」，不是「跑在哪」 -->
-            <template v-for="g in grouped" :key="g.id">
-              <h4 class="side-sub" :title="g.desc">{{ g.label }}</h4>
+            <!--
+              工具搜索（BUG-2026-1122-009）：14 个工具不再靠扫读。
+              放在分组之上 —— 搜索是"跨分组找"的入口，位置必须在所有分组之上。
+            -->
+            <label class="side-search">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="7" cy="7" r="4.2" />
+                <path d="M10 10l3.5 3.5" />
+              </svg>
+              <input
+                v-model="toolQuery"
+                type="search"
+                placeholder="搜工具"
+                aria-label="搜索单步工具"
+                @keydown.esc="toolQuery = ''"
+              />
+            </label>
+
+            <p v-if="toolQuery.trim() && !filteredGroups.length" class="side-empty">
+              没有匹配「{{ toolQuery.trim() }}」的工具
+            </p>
+
+            <!--
+              按类型分组（FEAT-169）：用户想的是「我要改什么」，不是「跑在哪」。
+              改成手风琴（BUG-2026-1122-009）：一次只展开一组，
+              任一决策点的可见选项回到 ≤4。
+            -->
+            <template v-for="g in filteredGroups" :key="g.id">
               <button
-                v-for="t in g.items"
-                :key="t.id"
-                class="side-item"
-                :class="{ on: active === t.id }"
+                class="side-sub side-sub-toggle"
                 type="button"
-                :title="t.ready ? t.desc : `${t.desc}（规划中）`"
-                @click="selectTool(t)"
+                :aria-expanded="openGroup === g.id"
+                :title="g.desc"
+                @click="openGroup = openGroup === g.id ? '' : g.id"
               >
-                <span class="side-ico"><ToolIcon :name="t.icon" :size="15" /></span>
-                <span class="side-name">{{ t.label }}</span>
-                <span v-if="toolBusy(t.id)" class="side-dot" title="任务运行中" aria-label="任务运行中" />
-                <span v-else-if="!t.ready" class="side-tag">规划</span>
-                <!-- 来源角标（FEAT-199）：本机算法 / 本机模型 / 云端 API / 未配置模型。
-                     不再按 backend 一律写「模型」—— 那会把绑到本机 Ollama 的云端
-                     工具也标成「调用你配置的模型」。悬停说明由 OriginTag 自带。 -->
-                <OriginTag v-else :info="originTag(t.id)" />
+                <span>{{ g.label }}</span>
+                <span class="side-sub-count">{{ g.items.length }}</span>
+                <span class="side-chevron" :class="{ open: openGroup === g.id }" aria-hidden="true">›</span>
               </button>
+
+              <div v-show="openGroup === g.id" class="side-sub-items">
+                <button
+                  v-for="t in g.items"
+                  :key="t.id"
+                  class="side-item"
+                  :class="{ on: active === t.id }"
+                  type="button"
+                  :title="t.ready ? t.desc : `${t.desc}（规划中）`"
+                  @click="selectTool(t)"
+                >
+                  <span class="side-ico"><ToolIcon :name="t.icon" :size="15" /></span>
+                  <span class="side-name">{{ t.label }}</span>
+                  <span v-if="toolBusy(t.id)" class="side-dot" title="任务运行中" aria-label="任务运行中" />
+                  <span v-else-if="!t.ready" class="side-tag">规划</span>
+                  <!-- 来源角标（FEAT-199）：本机算法 / 本机模型 / API 模型·本地 / API 模型·云端 / 未配置。
+                       左栏窄，用 short 形态（本机 / 本地 API / 云端 API）；完整标签在标题行。
+                       悬停说明由 OriginTag 自带。 -->
+                  <OriginTag v-else :info="originTag(t.id)" variant="short" />
+                </button>
+              </div>
             </template>
           </template>
         </div>
@@ -344,11 +437,11 @@ function selectTool(t: CatalogToolDef) {
           <p class="planned-note dim">工具已在清单中登记（{{ TOOLS.length }} 项），面板组件待补齐。</p>
         </section>
 
-        <p class="colophon">
+        <p class="colophon pm-reading-surface">
           这里只接 LR 导出的 JPG/PNG：本机步骤免费离线、照片不上传；模型步骤会把所选照片发到你配置的服务
           （可用本机 Ollama / LM Studio，也可用云端 API）。产物只写进你自己选的文件夹，原图不动。
         </p>
-        <p class="colophon lock-note">
+        <p class="colophon lock-note pm-reading-surface">
           <span class="lock-h">形状不变</span>
           影调与滤镜类工具只改颜色与质感，不改任何物体的形状：本机走逐色查表天然几何恒等；
           模型步骤会额外做结构校验，一旦检出脸型或构图被改就告警并回退。
@@ -387,12 +480,18 @@ function selectTool(t: CatalogToolDef) {
   margin-top: 18px;
 }
 
-/* ③ 单步工具默认折叠：一个折叠开关，不是再加一层分组壳 */
+/* ③ 单步工具默认折叠：一个折叠开关，不是再加一层分组壳。
+   高度显式给 26px：里面是 9.5px 的 h3，内容撑出来只有 16px —— 那不是可点的行，
+   是个碰运气的小目标。
+   position:relative 是必需的：.side-toggle 没有定位时，
+   绝对定位的箭头会退回 .ws-side（sticky）当包含块，被推到容器右缘外 6px。 */
 .side-toggle {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
+  height: 26px;
   padding: 0;
   border: none;
   background: none;
@@ -401,10 +500,26 @@ function selectTool(t: CatalogToolDef) {
 }
 .side-toggle .side-h {
   margin-bottom: 0;
+  /* 标题吸收剩余空间，箭头贴右。
+     用 flex:1（basis auto）而不是 1 1 0：flex-basis:0 时浏览器按
+     min-content 兜底算最小尺寸，「单步工具」+ .15em 字距的 min-content
+     仍比可用空间宽，于是标题占 166px，把 16px 的箭头挤出容器（实测溢出 6px）。 */
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .side-chevron {
   margin-left: auto;
+  flex-shrink: 0;
+  /* 固定宽度 + 文字居中：箭头是 4.3px 宽的字形，rotate(90deg) 绕自身原点转后
+     变成 16px 宽，若按字形原点转就会向右溢出容器（实测 6px）。
+     给一个 16px 的槽位并让字形居中，旋转后仍在槽内。 */
+  width: 16px;
+  text-align: center;
   font-size: var(--fs-body);
+  line-height: 1;
   color: var(--fg-2);
   transition: transform var(--dur-2) var(--ease-out);
 }
@@ -418,6 +533,93 @@ function selectTool(t: CatalogToolDef) {
   font-weight: 600;
   color: var(--fg-3, var(--fg-2));
 }
+
+/* 分组手风琴（BUG-2026-1122-009）：分组头从静态小标变成可点的开关。
+   一次只展开一组 —— 任一决策点的可见选项回到 ≤4（原来是 17 个可读项）。 */
+.side-sub-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: calc(100% - 9px);
+  height: 26px;
+  margin: 8px 0 0 9px;
+  padding: 0 6px 0 0;
+  border: none;
+  border-radius: var(--r-cover);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
+}
+.side-sub-toggle:hover {
+  color: var(--fg-2);
+  background: var(--hover);
+}
+.side-sub-toggle .side-chevron {
+  margin-left: 0;
+  font-size: var(--fs-meta);
+}
+.side-sub-count {
+  font-size: var(--fs-label);
+  color: var(--fg-3, var(--fg-2));
+  font-variant-numeric: tabular-nums;
+}
+/* 展开的分组：标题提亮，让"当前这一组是开着的"一眼可见 */
+.side-sub-toggle[aria-expanded="true"] {
+  color: var(--fg-2);
+}
+/* 组内工具：缩进一级，视觉上从属于分组头 */
+.side-sub-items {
+  margin: 3px 0 0;
+}
+
+/* 工具搜索框：跨分组找工具的入口，位置在所有分组之上。
+   高度 28px：与 .side-item 同档，别做成一条缝。 */
+.side-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  margin: 8px 0 2px;
+  padding: 0 9px;
+  border-radius: var(--r-ui);
+  background: var(--slip-fill, rgba(255, 255, 255, 0.034));
+  border: 1px solid var(--ctrl-line, rgba(255, 255, 255, 0.115));
+  transition: border-color var(--dur-2) var(--ease-out);
+}
+.side-search:focus-within {
+  border-color: color-mix(in srgb, var(--c-accent) 50%, transparent);
+}
+.side-search svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  stroke: var(--fg-3, var(--fg-2));
+  fill: none;
+  stroke-width: 1.5;
+}
+.side-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-meta);
+}
+.side-search input::placeholder {
+  color: var(--fg-3, var(--fg-2));
+}
+/* 搜索无结果时的空态：说清"没有"，并给一个退出的动作 */
+.side-empty {
+  margin: 10px 0 0 9px;
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+}
+
 .side-arrow {
   font-size: var(--fs-meta);
   color: var(--fg-2);
@@ -433,10 +635,12 @@ function selectTool(t: CatalogToolDef) {
   color: var(--fg-2);
 }
 
-/* 工具项：整行可点。选中 = 左侧 2px 金条 + 文字提亮，底只给 --hover ——
+/* 工具项：整行可点。选中 = 文字提亮 + 底部 1.5px 强调下划线，底只给 --hover ——
    不用整块高亮：一栏 4 项每项一块底，会变成"一堆小卡片"，读不出层级。
-   行高 27px / 金条上下内缩 7px 与相册页 `.side-item` 取同一组值 ——
-   两页的左栏在同一屏里切换时不能差 3px，否则会被读成"两个组件"。 */
+   不用左侧 2px 竖条：那是「圆角盒子单侧边条」（craft-floor 绝对禁令）——
+   border-radius 会把竖条两端切出弯钩，读起来像独立的小板块。
+   下划线与相册页 `.side-item.on`、顶栏导航 `.mh-nav-item.on` 用同一套语言 ——
+   三处左栏/导航在同一屏里切换时不能差 3px，否则会被读成"两个组件"。 */
 .side-item {
   position: relative;
   display: flex;
@@ -468,13 +672,13 @@ function selectTool(t: CatalogToolDef) {
   background: var(--hover);
 }
 
-.side-item.on::before {
+.side-item.on::after {
   content: "";
   position: absolute;
-  left: 0;
-  top: 7px;
-  bottom: 7px;
-  width: 2px;
+  left: 9px;
+  right: 7px;
+  bottom: 2px;
+  height: 1.5px;
   border-radius: 2px;
   background: var(--c-accent);
 }
@@ -676,11 +880,24 @@ function selectTool(t: CatalogToolDef) {
   line-height: 1.65;
 }
 
-/* 第二条旁注接着排，不再重复一条分隔线（同一段承诺的两句） */
+/* 第二条旁注接着排，不再重复一条分隔线（同一段承诺的两句）。
+   背景图模式下两条各自带承载面（.pm-reading-surface）：承载面本身就是分隔，
+   所以原来的 border-top 分隔线要去掉（否则会叠在承载面上缘外侧，读作两条线），
+   间距改用承载面之间的 8px 间隙；纯色模式下仍是原来那条连排的排版。 */
 .colophon + .colophon {
   margin-top: 8px;
   padding-top: 0;
   border-top: none;
+}
+body.theme-on-image .colophon {
+  /* 承载面自带内边距与圆角，上方的 border-top 分隔线要撤掉 */
+  margin-top: 22px;
+  padding-top: 10px;
+  border-top: none;
+}
+body.theme-on-image .colophon + .colophon {
+  margin-top: 8px;
+  padding-top: 10px;
 }
 
 /* 「形状不变」这句是硬承诺，不是补充说明：用小标 + 提亮一词点出来，
@@ -708,13 +925,22 @@ function selectTool(t: CatalogToolDef) {
     position: static;
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 6px;
     overflow-x: auto;
     padding-bottom: 2px;
-    scrollbar-width: none;
+    /* 滚动条不再藏：原来 scrollbar-width:none + ::-webkit-scrollbar{display:none}
+       把提示一起藏了 —— 390px 下 12/15 个工具在视口外，用户完全不知道右边还有。
+       改成细滚动条（6px），横向溢出有形可见的提示。 */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
   }
   .ws-side::-webkit-scrollbar {
-    display: none;
+    height: 6px;
+  }
+  .ws-side::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 3px;
   }
   .side-group,
   .side-group + .side-group {
@@ -723,8 +949,54 @@ function selectTool(t: CatalogToolDef) {
     gap: 6px;
     margin-top: 0;
   }
+  /* 「单步工具」组内部要能换行：搜索框独占一行，分组与工具各自成行 */
+  .side-group:last-child {
+    flex: 1 0 100%;
+    flex-wrap: wrap;
+  }
+  /* 搜索框独占一行（它是跨分组找工具的入口，不能挤在工具条里） */
+  .side-search {
+    flex: 1 0 100%;
+    margin: 6px 0 0;
+  }
+  .side-empty {
+    flex: 1 0 100%;
+    margin: 6px 0 0;
+  }
+  /* 分组标题在窄窗里不再被压成 10.5px 宽的竖排（那是原来没处理 h4 的后果）：
+     它现在是可点的开关，做成药丸，整行可点、不会挤成一列字。 */
+  .side-sub-toggle {
+    width: auto;
+    margin: 6px 0 0;
+    padding: 0 9px;
+    height: 26px;
+    border-radius: var(--r-ui);
+    background: var(--hover);
+    box-shadow: inset 0 0 0 1px var(--c-rule);
+  }
+  .side-sub-items {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 6px 0 0;
+    flex-wrap: wrap;
+  }
   .side-h {
     display: none;
+  }
+  /* 「单步工具」那个总开关：不能塌成 4×16px（原来 h3 隐藏后只剩一个箭头）。
+     给它一个药丸形态，标题也留着 —— 窄窗下它就是那 5 个分组药丸的上一个入口。 */
+  .side-toggle {
+    width: auto;
+    height: 26px;
+    padding: 0 9px;
+    border-radius: var(--r-ui);
+    background: var(--hover);
+    box-shadow: inset 0 0 0 1px var(--c-rule);
+  }
+  .side-toggle .side-h {
+    display: block;
+    margin: 0;
   }
   .side-item {
     width: auto;
@@ -733,8 +1005,10 @@ function selectTool(t: CatalogToolDef) {
     white-space: nowrap;
     box-shadow: inset 0 0 0 1px var(--c-rule);
   }
-  /* 横向条里"左侧金条"读不出方向，改成底色 + 描边 */
-  .side-item.on::before {
+  /* 横向条里下划线贴在药丸内侧读不出来（药丸有描边，底部空间只有 1px），
+     改成整圈强调色描边 —— 这是 craft-floor 允许的"full border"形态，
+     而不是被禁的"单侧边条"。 */
+  .side-item.on::after {
     display: none;
   }
   .side-item.on {

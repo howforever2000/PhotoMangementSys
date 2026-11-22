@@ -147,16 +147,23 @@ watch(
   color: var(--fg-2);
 }
 
+/* 空态里的「＋ 添加照片」：它是这一屏**唯一能往下走**的动作，
+   裸文字链接只有 16px 高 —— 那是个碰运气的小目标。
+   给它 24px 的行高与左右留白（不改视觉重量，只把热区撑起来）。 */
 .tray-add-inline {
   border: none;
   background: none;
-  padding: 0;
+  padding: 4px 8px;
+  margin: -4px -8px;
+  border-radius: var(--r-cover);
   font-size: var(--fs-body);
+  line-height: 16px;
   color: var(--c-accent);
   cursor: pointer;
+  transition: background var(--dur-2) var(--ease-out);
 }
 .tray-add-inline:hover {
-  text-decoration: underline;
+  background: var(--hover, rgba(255, 255, 255, 0.055));
 }
 
 .tray-strip {

@@ -36,6 +36,7 @@ import {
   type TuneOff,
   type WbChainStep,
 } from "../utils/workbenchPlan";
+import { targetItems } from "../utils/workbenchScope";
 
 export type WbItemStatus = "idle" | "queued" | "running" | "done" | "failed";
 
@@ -169,8 +170,8 @@ export const useWorkbenchStore = defineStore("workbench", {
     selectedCount: (s) => s.selected.length,
     /** 正在跑（用于禁用按钮） */
     busy: (s) => s.items.some((i) => i.status === "running" || i.status === "queued"),
-    /** 本次要处理的目标：有勾选就是勾选的，否则全量 */
-    targets: (s) => (s.selected.length ? s.items.filter((i) => s.selected.includes(i.path)) : s.items),
+    /** 本次要处理的目标：有勾选就是勾选的，否则全量（语义见 utils/workbenchScope.ts） */
+    targets: (s) => targetItems(s.items, s.selected),
     /** 单步微调的差量覆盖（只含改过的键；空对象 = 完全走配方原值） */
     tuneOverrides: (s) => paramsOverride(s.tuneSteps, s.tuneBase),
     /** 改过的参数个数（不含被标为「不处理」的键，避免与「跳过」重复计数） */
@@ -198,14 +199,24 @@ export const useWorkbenchStore = defineStore("workbench", {
   },
 
   actions: {
-    /** 追加照片（去重；新加入的默认勾选，方便直接批量套用） */
+    /**
+     * 追加照片（去重）。
+     *
+     * **不自动勾选**（BUG-2026-1122-008）：原来每张新加入都 push 进 selected，
+     * 于是「导入 200 张」= 「默认勾选 200 张」，用户没做任何选择动作，
+     * 却可能直接点「批量出片」把 200 张发到云端 —— 而费用栏当时只显示一个
+     * 带「≈」的下界。勾选是用户对「哪些照片要处理」的明确表态，
+     * 不该由程序替他做。
+     *
+     * 不勾选时 `targets` 仍回退到全量（见 getters），所以「全量」这条路没断，
+     * 只是按钮文案会明说「全部 N 张」而不是含糊的「N 张」。
+     */
     addPaths(list: string[]): void {
       const have = new Set(this.items.map((i) => i.path));
       for (const p of list) {
         if (!p || have.has(p)) continue;
         have.add(p);
         this.items.push({ path: p, name: baseName(p), status: "idle", progress: 0 });
-        if (!this.selected.includes(p)) this.selected.push(p);
       }
     },
     /** 单张移出工作集（不动原图） */

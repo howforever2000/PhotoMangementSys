@@ -44,11 +44,15 @@ const billing = useAiBilling();
 
 /**
  * 常见 OpenAI 兼容服务：一键填 baseUrl。
- * Ollama / LM Studio 是「本地模型」的直接落点（本机端口，无需联网）。
+ *
+ * 只省输入，不决定来源判定：来源按**地址**分流（2026-11-22 定调）——回环地址
+ * （Ollama / LM Studio / 本地网关）→「API 模型 · 本地」免费；其它地址 →
+ * 「API 模型 · 云端」按调用计费。所以预设名称里不再带「（本机）」，
+ * 免得名字和上面三家云端预设看起来是两个体系。
  */
 const BASE_PRESETS: { key: string; label: string; baseUrl: string; name: string }[] = [
-  { key: "ollama", label: "Ollama（本机）", baseUrl: "http://127.0.0.1:11434/v1", name: "Ollama（本机）" },
-  { key: "lmstudio", label: "LM Studio（本机）", baseUrl: "http://127.0.0.1:1234/v1", name: "LM Studio（本机）" },
+  { key: "ollama", label: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", name: "Ollama" },
+  { key: "lmstudio", label: "LM Studio", baseUrl: "http://127.0.0.1:1234/v1", name: "LM Studio" },
   {
     key: "local-gateway",
     label: "本地图生图网关",

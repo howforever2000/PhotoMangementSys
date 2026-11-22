@@ -36,13 +36,13 @@ const runLabel = computed(() => `一键出片（${props.paths.length} 张）`);
       <OutputDirField :output-dir="outputDir" :disabled="busy" @update:output-dir="onDir" />
     </div>
 
-    <p class="ai-note">
+    <p class="ai-note ai-note-block">
       只处理 LR 导出的 JPG/PNG：调色、滤镜、人像与高清按配方一次跑完，原图不动。
       缺模型的可选步骤会自动跳过并提示，不会让整批失败。
     </p>
 
     <div class="ai-actions">
-      <button class="ai-primary" type="button" :disabled="!canRun" @click="run">
+      <button class="ai-run" type="button" :disabled="!canRun" @click="run">
         {{ runLabel }}
       </button>
     </div>

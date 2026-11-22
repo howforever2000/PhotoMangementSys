@@ -232,6 +232,54 @@ body.theme-on-image {
   text-shadow: var(--pm-text-shadow, 0 1px 3px rgba(0, 0, 0, 0.35));
 }
 
+/* 背景图模式 · 长段正文承载面（BUG-2026-1122-007）
+   ------------------------------------------------------------------
+   为什么需要：1px 阴影只托住字的**边缘**，托不住字**背后**那片亮斑。
+   实测（字形差分法，1440×900 星空壁纸）：
+     无承载面时，11px 正文最差 5% 字形像素对比度 p05 = 4.04:1（低于 AA 4.5），
+     「形状不变」那段承诺 p05 = 4.32:1 —— 恰好是最该被读到的一段最不达标。
+   承载面用**深色半透明底**而不是 --slip：--slip 在深色模式是「提亮 3.4% 白」，
+   那是"给卡片一层厚度"的材质；这里的诉求相反 —— 要把亮斑**压下去**。
+
+   数值：.62 透明度下 p05 = 5.92:1，四个目标元素全部达标；
+   .78 能到 6.27 但会显得是块重底色，.62 是"刚好读清、看不出有块"的档。
+   只在背景图模式生效 —— 纯色/渐变背景上正文本来就有等效底色，加承载面是多余的容器。 */
+body.theme-on-image .pm-reading-surface {
+  background: rgba(10, 9, 13, 0.62);
+  padding: 10px 14px;
+  border-radius: var(--r-ui, 8px);
+  /* inline-block + fit-content：承载面贴着文字宽度收，
+     不铺满整行 —— 满宽横条里只放两行短字，右侧那一大片空白
+     读作"一个空容器"，而不是"这段话有底"。 */
+  display: inline-block;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* 工具面板里的独立长说明（.ai-note-block）：
+   与 .pm-reading-surface 同一套承载面。实测这类说明在星空壁纸上的 p05 最低到
+   3.86:1（ocr / restore / local_beauty 的「下载完成后立即可用…」段）——
+   注意它们虽然写在 .ai-panel 里，但 .ai-panel 的底色只有 6% 灰（--hover），
+   几乎等于没有承载，所以仍要单独给一层。
+   行内小注（带内联 style 的 .ai-note）不加 —— 它们是参数旁的补充，
+   加了承载面会变成"一堆小卡片"。 */
+body.theme-on-image .ai-note-block {
+  background: rgba(10, 9, 13, 0.62);
+  padding: 10px 14px;
+  border-radius: var(--r-ui, 8px);
+  /* 同 .pm-reading-surface：贴着文字宽度收，不铺满整行 */
+  display: inline-block;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* 行内参数说明（.ai-note 但不是 .ai-note-block）：紧贴滑块/控件的那几行。
+   它们不加承载面（会变成"一堆小卡片"），改为把文字提亮一档 —— 它是参数的
+   一部分，不该弱到读不清。实测提到 .82 白后 p05 = 6.00:1 达标。 */
+body.theme-on-image .ai-note:not(.ai-note-block) {
+  color: rgba(240, 238, 243, 0.82);
+}
+
 /* ==========================================================================
    卡片材质预设（FEAT-086 / FEAT-100）：theme store 在 body 上挂 mat-plain / mat-liquid。
    - 普通 plain：无模糊、无纹理、无光池 —— 干净实心卡片（默认）

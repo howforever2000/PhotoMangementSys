@@ -8555,7 +8555,62 @@
         "去重口径",
         "对账"
       ]
+    },
+    {
+      "id": "FEAT-214",
+      "name": "云端工具作业前 provider 连通性预检 + 网络错误按 WinError 分流",
+      "status": "done",
+      "date": "2026-11-22",
+      "created_at": "2026-11-22T22:55:00+08:00",
+      "updated_at": "2026-11-22T22:55:00+08:00",
+      "module": "python/ai_studio/providers/neterr.py（新）+ preflight.py（新）+ openai_compat.py + catalog.py + jobs.py + python/tests/test_ai_studio_provider_net.py（新）",
+      "purpose": "把「端点连不上」与「图片太大」分开：端口无服务时立刻失败并说清该启动什么，而不是让一批照片逐张撞同一个网络错误后再给一句泛化文案。",
+      "highlights": [
+        "neterr：refused(10061) / reset(10054) / timeout / dns / tls 五类分流，文案直指下一步动作，并点名 host:port",
+        "probe_reachable：GET {base}/models 只判连接层；404/401 也算端口活着（不少兼容服务不实现 /models）",
+        "preflight：能力位口径派生自 op_catalog.json 的 providerPolicy（与前端 modelOrigin.ts 同源），upscale|edit 回落编辑位、同地址去重、超时让步",
+        "jobs.worker：作业开跑前预检一次，失败直接落 failed 态，不进逐张循环",
+        "测试：python/tests/test_ai_studio_provider_net.py 16 条钉死上述语义"
+      ],
+      "related_files": [
+        "python/ai_studio/providers/neterr.py",
+        "python/ai_studio/providers/preflight.py",
+        "python/ai_studio/providers/openai_compat.py",
+        "python/ai_studio/catalog.py",
+        "python/ai_studio/jobs.py",
+        "python/tests/test_ai_studio_provider_net.py"
+      ]
+    },
+    {
+      "id": "FEAT-215",
+      "name": "供应商来源拆成「API 模型 · 本地 / API 模型 · 云端」并按地址判定",
+      "status": "done",
+      "date": "2026-11-22",
+      "created_at": "2026-11-22T23:10:00+08:00",
+      "updated_at": "2026-11-22T23:32:00+08:00",
+      "module": "src/utils/modelOrigin.ts + src/composables/useAiBilling.ts + src/components/workshop/ai/{AiCostHint,AiSettingsDialog,WorkbenchSteps}.vue + src/views/{Workshop,AiWorkbench}.vue + src/utils/modelOrigin.test.ts（新）",
+      "purpose": "用户定调：OpenAI 格式的供应商按 baseUrl 地址分流——回环地址是「API 模型 · 本地」（免费、请求不出本机网络），其它是「API 模型 · 云端」（按调用计费）。「本机模型」只保留给 catalog 里 requires.models 的自带推理，避免「本地网关」被叫成本机模型而让人以为不用配置。",
+      "highlights": [
+        "modelOrigin：新增 api-local 档（标签「API 模型 · 本地」/ 短标签「本地 API」），providerOrigin 用 isLoopbackHost 按地址分流；cloud-api 标签改为「API 模型 · 云端」/「云端 API」",
+        "计费：api-local 不计费（billable/leavesDevice 均为 false），云端档照旧按登记单价；AiCostHint 与工作台预估自动跟随，不再两处各判",
+        "文案：api-local 只说「请求不出本机网络」，不承诺「照片不出本机」（本机端点是否再转发判不出来）；说明里点出供应商名与实际 host",
+        "聚合：优先级 未配置 > 云端 > 本地 API > 本机模型 > 本机算法；混合链在云端说明里点明有几个能力位走本机",
+        "UI：左栏角标改 short 形态（本机 / 本地 API / 云端 API），完整标签留在标题行；OriginTag 给 api-local 补弱色档",
+        "测试：src/utils/modelOrigin.test.ts 扩到 10 条（回环→本地、远端→云端、混合、未配置、未载入、本机模型/算法、链聚合）"
+      ],
+      "related_files": [
+        "src/utils/modelOrigin.ts",
+        "src/utils/modelOrigin.test.ts",
+        "src/composables/useAiBilling.ts",
+        "src/components/workshop/ai/OriginTag.vue",
+        "src/components/workshop/ai/AiCostHint.vue",
+        "src/components/workshop/ai/AiSettingsDialog.vue",
+        "src/components/workshop/ai/WorkbenchSteps.vue",
+        "src/views/Workshop.vue",
+        "src/views/AiWorkbench.vue",
+        ".dsh/knowledge/ai-provider-origin.md"
+      ]
     }
   ],
-  "updated": "2026-11-22T18:00:00+08:00"
+  "updated": "2026-11-22T23:32:00+08:00"
 }

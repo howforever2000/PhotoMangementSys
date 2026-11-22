@@ -56,7 +56,7 @@ async function openDir() {
 
     <ModelDownloadRows area="workshop" :only-names="dlNames" />
 
-    <p class="ai-note" style="margin-top: 6px">
+    <p class="ai-note ai-note-block" style="margin-top: 6px">
       下载完成后立即可用；断点续传与多镜像择优由应用内下载器负责，不需要手动解压或改名。
     </p>
   </div>

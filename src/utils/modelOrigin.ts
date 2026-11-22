@@ -6,27 +6,37 @@
  * ## 为什么不能只看 tool.backend
  *
  * `op_catalog.json` 的 `backend` 描述的是**执行方式**（本机算子 / 调模型），
- * 不是**模型跑在哪**。两个方向都会判错：
- *   - 本机侧：智能调色 / 胶片模拟 / 参考图调色是纯算法 + LUT，**不跑任何模型**，
- *     与要下 340MB 模型的画质修复不是一回事；
- *   - 云端侧：FEAT-196 起「供应商库」允许把一个后端工具绑到本机
- *     Ollama / LM Studio / 本地图生图网关（baseUrl 是 127.0.0.1），这时照片其实
- *     没出本机、也不花钱，标「云端 API」是错的。
+ * 不是**模型跑在哪**：智能调色 / 胶片模拟 / 参考图调色是纯算法 + LUT，**不跑任何
+ * 模型**，与要下 340MB 模型的画质修复不是一回事，两者都标「本机」会失真。
+ *
+ * ## 供应商绑定的工具分两档（按地址判定）
+ *
+ * 供应商条目本质是「OpenAI 兼容端点」，落点不同，对用户的意义就不同（2026-11-22 定调）：
+ *   - baseUrl 主机是回环地址（`127.0.0.1` / `localhost` / `::1`）→ `api-local`
+ *     「API 模型 · 本地」：请求不出本机网络，免费；
+ *   - 其它地址 → `cloud-api`「API 模型 · 云端」：照片会离开本机，按调用计费。
+ *
+ * 判据只有 baseUrl 的 host（`utils/urlHost` 的 `isLoopbackHost`），不猜服务端实现；
+ * 说明里点出实际 host，端口没起 / 地址填错时用户能自查。
+ *
+ * 「本地 API」不能叫「本机模型」：`local-model` 专指 catalog 里 `requires.models`
+ * 声明的自带推理（Real-ESRGAN / CLIP，随应用分发、离线可跑）。两者免费口径相同，
+ * 但「谁在跑」不同 —— 混用会让人以为本地网关不用配置、不用启动。
  *
  * ## 判据全部派生，不新增手写名单
  *   - 执行方式 ← catalog 的 `backend` 与 `requires.models`（`utils/toolCatalog`）
- *   - 模型位置 ← 设置里绑定供应商的 `baseUrl` 主机名（`utils/urlHost`）
+ *   - 供应商落在本机还是云端 ← 绑定条目的 `baseUrl` 主机名（`utils/urlHost`）
  *   - 云端算子用哪个能力位 ← catalog 的 `requires.providers`（不是另抄一张表）
  *
  * 纯函数：不发请求、不读 store、不 import 组件。设置对象由调用方传入。
  */
 import { opById, toolById } from "./toolCatalog.ts";
 import { recipeById } from "./workbenchPlan.ts";
-import { isLoopbackHost, hostOf } from "./urlHost.ts";
+import { hostOf, isLoopbackHost } from "./urlHost.ts";
 import type { AiProviderEntryView, AiProviderKind, AiSettings } from "../types/ai";
 
-/** 四档来源：本机纯算法 / 本机模型（含绑到本机的本地服务）/ 云端 API / 还没配 */
-export type ModelOrigin = "local-algo" | "local-model" | "cloud-api" | "unconfigured";
+/** 五档来源：本机纯算法 / 本机自带模型 / API 本地 / API 云端 / 还没配 */
+export type ModelOrigin = "local-algo" | "local-model" | "api-local" | "cloud-api" | "unconfigured";
 
 export interface OriginInfo {
   origin: ModelOrigin;
@@ -40,14 +50,13 @@ export interface OriginInfo {
   billable: boolean;
   /** 照片是否会离开本机 */
   leavesDevice: boolean;
-  /** 云端工具但绑到了本机地址（Ollama / LM Studio / 本地网关） */
-  viaLocalApi: boolean;
 }
 
 const LABELS: Record<ModelOrigin, { label: string; short: string }> = {
   "local-algo": { label: "本机算法", short: "本机" },
   "local-model": { label: "本机模型", short: "本机" },
-  "cloud-api": { label: "云端 API", short: "云端" },
+  "api-local": { label: "API 模型 · 本地", short: "本地 API" },
+  "cloud-api": { label: "API 模型 · 云端", short: "云端 API" },
   unconfigured: { label: "未配置模型", short: "未配置" },
 };
 
@@ -59,7 +68,6 @@ function make(origin: ModelOrigin, extra: Partial<OriginInfo> = {}): OriginInfo 
     detail: "",
     billable: origin === "cloud-api",
     leavesDevice: origin === "cloud-api",
-    viaLocalApi: false,
     ...extra,
   };
 }
@@ -136,22 +144,25 @@ function localDetail(origin: ModelOrigin, models: unknown): string {
 }
 
 /**
- * 云端工具的来源：按能力位逐个解析供应商。
+ * 供应商绑定的工具：按绑定地址分成「API 模型 · 本地」与「API 模型 · 云端」。
+ *
+ * 判据只有 host 是否回环（2026-11-22 定调）：
+ *   - 全部落在回环地址 → `api-local`：请求不出本机网络、免费；
+ *   - 任一非回环 → `cloud-api`：照片会出去、按调用计费；混合时在说明里点明。
+ * 说明里一律点出供应商名与**实际 host** —— 端口没起 / 地址填错时（如
+ * `127.0.0.1:8000` 没人监听），用户从这句话就能自查。
  *
  * - 全都解析不出来 → 未配置模型（照常允许点，运行时报后端原有报错）；
- * - 全部落在回环地址 → 本机模型（文案点明「本机 API」，因为链路确实走 HTTP，
- *   只是不出本机）；
- * - 任一非回环 → 云端 API（照片会出去，且按调用计费）；混合时在说明里点明。
  * - `settings` 未载入（undefined）→ 按云端显示但不诬告「未配置」。
  */
-function cloudOrigin(kinds: AiProviderKind[], settings?: AiSettings | null): OriginInfo {
+function providerOrigin(kinds: AiProviderKind[], settings?: AiSettings | null): OriginInfo {
   const resolved = kinds.map((k) => resolveBinding(k, settings)).filter(Boolean) as ResolvedProvider[];
   const allResolved = resolved.length === kinds.length && kinds.length > 0;
 
   if (!allResolved) {
     if (!settings) {
       return make("cloud-api", {
-        detail: "模型来自你配置的云端服务；配置尚未载入，打开「⚙ 模型设置」可确认",
+        detail: "模型来自你配置的 OpenAI 兼容服务；配置尚未载入，打开「⚙ 模型设置」可确认",
       });
     }
     return make("unconfigured", {
@@ -161,26 +172,29 @@ function cloudOrigin(kinds: AiProviderKind[], settings?: AiSettings | null): Ori
     });
   }
 
-  const hosts = resolved.map((r) => hostOf(r.provider.baseUrl));
-  const allLocal = resolved.every((r) => isLoopbackHost(hostOf(r.provider.baseUrl)));
-  if (allLocal) {
-    const names = [...new Set(resolved.map((r) => r.provider.name.trim() || hostOf(r.provider.baseUrl)))]
-      .join(" / ");
-    return make("local-model", {
-      viaLocalApi: true,
-      detail: `走你本机运行的模型服务（${names}），免费、照片不出本机`,
+  const local = resolved.filter((r) => isLoopbackHost(hostOf(r.provider.baseUrl)));
+  if (local.length === resolved.length) {
+    const names = [...new Set(resolved.map((r) => labelOf(r.provider)))].join(" / ");
+    return make("api-local", {
+      detail: `走本机的 OpenAI 兼容服务（${names}）：免费，请求不出本机网络`,
     });
   }
 
   const remote = resolved
     .filter((r) => !isLoopbackHost(hostOf(r.provider.baseUrl)))
-    .map((r) => r.provider.name.trim() || hostOf(r.provider.baseUrl));
-  const mixed = resolved.length > remote.length;
+    .map((r) => labelOf(r.provider));
+  const mixed = local.length > 0 ? `；另有 ${local.length} 个能力位走本机 API` : "";
   return make("cloud-api", {
-    detail:
-      `照片会发到你配置的服务商（${[...new Set(remote)].join(" / ")}），按调用计费` +
-      (mixed ? `；另有部分能力位走本机（${hosts.join(" / ")}）` : ""),
+    detail: `照片会发到你配置的服务商（${[...new Set(remote)].join(" / ")}），按调用计费${mixed}`,
   });
+}
+
+/** 供应商的一句话标识：名称 · host（取不到 host 时只留名称，不留空） */
+function labelOf(p: AiProviderEntryView): string {
+  const name = p.name.trim();
+  const host = hostOf(p.baseUrl);
+  if (name && host) return `${name} · ${host}`;
+  return name || host || "未命名供应商";
 }
 
 /* ---------------- 对外入口 ---------------- */
@@ -194,7 +208,7 @@ export function originOfTool(toolId: string, settings?: AiSettings | null): Orig
     const origin = localOriginOf(models);
     return make(origin, { detail: localDetail(origin, models) });
   }
-  return cloudOrigin(kindsOfTool(toolId), settings);
+  return providerOrigin(kindsOfTool(toolId), settings);
 }
 
 /** 某个原子算子的来源（工作台步骤链每一步） */
@@ -205,7 +219,7 @@ export function originOfOp(opId: string, settings?: AiSettings | null): OriginIn
     const origin = localOriginOf(op.requires?.models);
     return make(origin, { detail: localDetail(origin, op.requires?.models) });
   }
-  return cloudOrigin(kindsOfOp(opId), settings);
+  return providerOrigin(kindsOfOp(opId), settings);
 }
 
 /**
@@ -251,8 +265,10 @@ export function originOfRecipeSet(ids: readonly string[], settings?: AiSettings 
 /**
  * 一组来源合成一个（链条 / 配方 / 批量）。
  *
- * 优先级按「用户最需要知道的那件事」排：未配置 > 出网计费 > 本机模型 > 本机算法。
- * 未配置排最前是因为它会让整条链跑不起来，其它三档都只是花费与隐私差异。
+ * 优先级按「用户最需要知道的那件事」排：
+ * 未配置 > 出网计费（API 云端）> 本机 API > 本机模型 > 本机算法。
+ * 未配置排最前是因为它会让整条链跑不起来；其余四档都只是花费与隐私差异，
+ * 越靠后越「免费且不出本机」。
  *
  * `unit` 只是文案用词：链条说「步」，配方集合说「条配方」。
  */
@@ -275,22 +291,23 @@ export function aggregateOrigins(
   }
   if (has("cloud-api")) {
     return make("cloud-api", {
-      detail: `${counts("cloud-api")} ${unit}走云端 API（照片会离开本机，按调用计费）；其余 ${counts(
+      detail: `${counts("cloud-api")} ${unit}走 API 模型 · 云端（照片会离开本机，按调用计费）；其余 ${counts(
+        "api-local",
+      )} ${unit}走本机 API、${counts("local-model")} ${unit}本机模型、${counts("local-algo")} ${unit}本机算法`,
+    });
+  }
+  if (has("api-local")) {
+    return make("api-local", {
+      detail: `本机全部免费：${counts("api-local")} ${unit}走本机 API、${counts(
         "local-model",
-      )} ${unit}本机模型、${counts("local-algo")} ${unit}本机算法`,
+      )} ${unit}本机模型、${counts("local-algo")} ${unit}纯算法，请求不出本机网络`,
     });
   }
   if (has("local-model")) {
-    const api = list.some((x) => x.viaLocalApi);
     return make("local-model", {
-      viaLocalApi: api,
-      detail: api
-        ? `本机全部免费：${counts("local-model")} ${unit}调用本机模型服务，${counts(
-            "local-algo",
-          )} ${unit}纯算法，照片不出本机`
-        : `全本机免费：${counts("local-model")} ${unit}跑本地模型，${counts(
-            "local-algo",
-          )} ${unit}纯算法，照片不出本机`,
+      detail: `全本机免费：${counts("local-model")} ${unit}跑本地模型，${counts(
+        "local-algo",
+      )} ${unit}纯算法，照片不出本机`,
     });
   }
   return make("local-algo", {

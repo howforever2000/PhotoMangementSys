@@ -220,13 +220,44 @@ function openTheme() {
 const settingsOpen = ref(false);
 
 /**
+ * 遮罩的存活期要比菜单长：菜单收起有 --dur-2 的过渡动画，
+ * 遮罩（点外部关闭的拦截层）必须撑到动画结束。
+ * 否则那 180ms 里遮罩先没了，点下面的卡片会「穿透」直接跳走。
+ * 遮罩开关独立于菜单开关，由 Transition 的 after-leave 收口。
+ */
+const settingsMaskOn = ref(false);
+
+function openSettings() {
+  settingsOpen.value = true;
+  settingsMaskOn.value = true;
+}
+
+function closeSettings() {
+  settingsOpen.value = false;
+}
+
+function toggleSettings() {
+  if (settingsOpen.value) closeSettings();
+  else openSettings();
+}
+
+/**
+ * 菜单收起动画结束后的收口：撤遮罩。
+ * 期间若用户又把菜单点开了（settingsOpen 为 true），遮罩必须留着 ——
+ * 否则菜单还在，遮罩却没了，点菜单外面关不掉它。
+ */
+function onMenuAfterLeave() {
+  if (!settingsOpen.value) settingsMaskOn.value = false;
+}
+
+/**
  * 打赏弹窗（FEAT-199）：入口放在设置菜单末尾，与上面的开发者工具用一条分隔线隔开。
  * Esc 由 SupportDialog 自持（capture 监听），这里不接管，也不与 settingsOpen 联动。
  */
 const supportOpen = ref(false);
 
 function openSupport() {
-  settingsOpen.value = false;
+  closeSettings();
   supportOpen.value = true;
 }
 
@@ -235,13 +266,13 @@ function openSupport() {
  * （全局常驻，下载/安装要能活过菜单关闭）。先关菜单，避免菜单压在弹窗上面。
  */
 function openUpdate() {
-  settingsOpen.value = false;
+  closeSettings();
   update.openDialog();
 }
 
 /** 打开开发者视角日志窗口（后端保证单例：已开则聚焦） */
 async function openDevLog() {
-  settingsOpen.value = false;
+  closeSettings();
   try {
     await invoke("open_dev_log_window");
   } catch (e) {
@@ -251,7 +282,7 @@ async function openDevLog() {
 
 /** 打开「数据与路径」副窗口（DB/缓存/模型位置 + 只读预览；后端保证单例） */
 async function openDevData() {
-  settingsOpen.value = false;
+  closeSettings();
   try {
     await invoke("open_dev_data_window");
   } catch (e) {
@@ -261,7 +292,7 @@ async function openDevData() {
 
 /** 打开「资源使用情况」副窗口（全量进程 PID/CPU/内存 + GPU 配置态；后端保证单例） */
 async function openDevResources() {
-  settingsOpen.value = false;
+  closeSettings();
   try {
     await invoke("open_dev_resource_window");
   } catch (e) {
@@ -279,7 +310,7 @@ function onGlobalKey(e: KeyboardEvent) {
   } else if (settingsOpen.value) {
     e.preventDefault();
     e.stopPropagation();
-    settingsOpen.value = false;
+    closeSettings();
   }
   // themeOpen 的 Esc 由 ThemeDialog 组件自持（capture 监听），这里不重复处理
 }
@@ -341,49 +372,62 @@ onBeforeUnmount(() => {
               aria-haspopup="menu"
               :aria-expanded="settingsOpen"
               title="设置"
-              @click="settingsOpen = !settingsOpen"
+              @click="toggleSettings"
             >
               ⚙️
             </button>
-              <div v-if="settingsOpen" class="settings-menu" :style="pmStyle" role="menu">
-                <button class="settings-item" type="button" role="menuitem" @click="openDevLog">
-                  <span class="settings-item-icon">🧪</span>
-                  <span>
-                    <b>开发者视角</b>
-                    <i>打开实时日志副窗口</i>
-                  </span>
-                </button>
-                <button class="settings-item" type="button" role="menuitem" @click="openDevData">
-                  <span class="settings-item-icon">🗂️</span>
-                  <span>
-                    <b>数据与路径</b>
-                    <i>DB / 缓存 / 模型位置 · 只读预览</i>
-                  </span>
-                </button>
-                <button class="settings-item" type="button" role="menuitem" @click="openDevResources">
-                  <span class="settings-item-icon">📊</span>
-                  <span>
-                    <b>资源使用情况</b>
-                    <i>进程 PID / CPU / 内存 / GPU 配置态</i>
-                  </span>
-                </button>
+              <Transition name="menu-pop" @after-leave="onMenuAfterLeave">
+                <div v-if="settingsOpen" class="settings-menu" :style="pmStyle" role="menu">
+                  <button class="settings-item" type="button" role="menuitem" @click="openDevLog">
+                    <span class="settings-item-icon">🧪</span>
+                    <span class="settings-item-text">
+                      <b>开发者视角</b>
+                      <i>打开实时日志副窗口</i>
+                    </span>
+                  </button>
+                  <button class="settings-item" type="button" role="menuitem" @click="openDevData">
+                    <span class="settings-item-icon">🗂️</span>
+                    <span class="settings-item-text">
+                      <b>数据与路径</b>
+                      <i>DB / 缓存 / 模型位置 · 只读预览</i>
+                    </span>
+                  </button>
+                  <button class="settings-item" type="button" role="menuitem" @click="openDevResources">
+                    <span class="settings-item-icon">📊</span>
+                    <span class="settings-item-text">
+                      <b>资源使用情况</b>
+                      <i>进程 PID / CPU / 内存 / GPU 配置态</i>
+                    </span>
+                  </button>
 
-                <button class="settings-item settings-item-sep" type="button" role="menuitem" @click="openUpdate">
-                  <span class="settings-item-icon">🔄</span>
-                  <span>
-                    <b>检查更新<span v-if="update.hasUpdate" class="update-dot" aria-hidden="true"></span></b>
-                    <i>{{ update.hasUpdate ? `发现新版本 v${update.info?.latest}` : `当前版本 v${update.current || "…"}` }}</i>
-                  </span>
-                </button>
+                  <!--
+                    分组分隔线：独立 1px 元素，**不**用按钮的 border-top。
+                    border-top 画在 border-radius:9px 的按钮上会沿圆角弧线收窄、
+                    两端向下拐出短竖边（实测截图 y=254~256 行 x=5/x=252 有竖笔），
+                    放大看是两条带弯钩的短横线 —— 读起来像两个独立小板块。
+                    独立元素两端完全平直。
+                    只切这一刀：「检查更新」与「支持栖影」同属「应用级」一组，
+                    原来各自再加一条线会把这个组切成两块，碎片感翻倍。
+                  -->
+                  <span class="settings-sep" role="separator" aria-hidden="true"></span>
 
-                <button class="settings-item settings-item-sep" type="button" role="menuitem" @click="openSupport">
-                  <span class="settings-item-icon">💗</span>
-                  <span>
-                    <b>支持栖影</b>
-                    <i>爱发电 · 自愿赞助，不解锁任何功能</i>
-                  </span>
-                </button>
-              </div>
+                  <button class="settings-item" type="button" role="menuitem" @click="openUpdate">
+                    <span class="settings-item-icon">🔄</span>
+                    <span class="settings-item-text">
+                      <b>检查更新<span v-if="update.hasUpdate" class="update-dot" aria-hidden="true"></span></b>
+                      <i>{{ update.hasUpdate ? `发现新版本 v${update.info?.latest}` : `当前版本 v${update.current || "…"}` }}</i>
+                    </span>
+                  </button>
+
+                  <button class="settings-item" type="button" role="menuitem" @click="openSupport">
+                    <span class="settings-item-icon">💗</span>
+                    <span class="settings-item-text">
+                      <b>支持栖影</b>
+                      <i>爱发电 · 自愿赞助，不解锁任何功能</i>
+                    </span>
+                  </button>
+                </div>
+              </Transition>
           </div>
           <button class="logout-btn" type="button" @click="handleLogout">退出登录</button>
         </div>
@@ -396,8 +440,10 @@ onBeforeUnmount(() => {
         点页面其他地方关不掉菜单。
         层级：module-card(0) < 遮罩(8) < home-header(20)：既挡住下面的卡片，
         又不会盖住 header 里的菜单本身。
+        遮罩的显示条件用 settingsMaskOn 而不是 settingsOpen：菜单收起有淡出动画，
+        遮罩要撑到动画结束再撤，否则动画期间点击会穿透到下面的卡片。
       -->
-      <div v-if="settingsOpen" class="settings-mask" @click="settingsOpen = false"></div>
+      <div v-if="settingsMaskOn" class="settings-mask" @click="closeSettings"></div>
 
       <main class="module-grid">
         <article
@@ -761,9 +807,19 @@ onBeforeUnmount(() => {
   right: 0;
   z-index: 901;
   min-width: 220px;
+  /* 菜单的定位祖先只有 .settings-wrap（就 ⚙ 按钮那么宽），绝对定位元素的
+     shrink-to-fit 会被这个「可用宽度」夹住 —— 副标题因此被迫折行，
+     中文从词中间断开（"…不解锁任 / 何功能"）。
+     改用 width:max-content 让菜单按内容本身定宽，文字不再被迫断行；
+     max-width 兜底窄屏，左侧超出时由 max-width 收口而不是溢出视口。 */
+  width: max-content;
+  max-width: min(320px, calc(100vw - 32px));
   padding: 6px;
   border-radius: 12px;
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.28);
+  /* 弹出方向锚定右上角：菜单从 ⚙ 按钮下方展开，缩放/位移的变换原点跟按钮同侧，
+     避免菜单在展开时"从左往右生长"造成的错位感。 */
+  transform-origin: top right;
 }
 
 .settings-item {
@@ -784,8 +840,21 @@ onBeforeUnmount(() => {
   background: var(--pm-btn-hover);
 }
 
+.settings-item:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
 .settings-item-icon {
   font-size: 17px;
+  /* emoji 图标自带基线偏移，与两行文字并排时视觉偏下；压一点并允许收缩，
+     避免在窄菜单里把文字挤走。 */
+  flex: 0 0 auto;
+  line-height: 1;
+}
+
+.settings-item-text {
+  min-width: 0;
 }
 
 .settings-item b {
@@ -803,10 +872,27 @@ onBeforeUnmount(() => {
   margin-top: 1px;
 }
 
-/* 打赏入口与开发者工具之间的分隔：border-top 比插一个空 div 更省 DOM */
-.settings-item-sep {
-  margin-top: 6px;
-  border-top: 1px solid var(--pm-soft-border);
+/* 分组分隔线：独立 1px 元素（见模板注释）。
+   独立于按钮的 border-top —— 后者会被 border-radius 沿圆角切断，两端向下拐出
+   短竖边，视觉上读作"小板块"而非一条分隔线。
+   左右各留 10px 内缩：线不顶到菜单圆角边框，与上方条目文字左缘对齐；
+   上下留白对称（5px），避免"上挤下松"的不平滑感。 */
+.settings-sep {
+  display: block;
+  height: 1px;
+  margin: 5px 10px;
+  background: var(--pm-soft-border);
+}
+
+/* 菜单弹出/收起动效：轻量位移+淡入，时长用 --dur-2（与 hover 同档，不拖沓）。 */
+.menu-pop-enter-active,
+.menu-pop-leave-active {
+  transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out);
+}
+.menu-pop-enter-from,
+.menu-pop-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.98);
 }
 
 /* 菜单里的「发现新版本」小圆点（FEAT-212）：只做存在感提示，不占独立一行；

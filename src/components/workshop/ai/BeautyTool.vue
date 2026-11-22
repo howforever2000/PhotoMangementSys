@@ -128,7 +128,7 @@ async function onCancel() {
       />
     </div>
 
-    <p class="ai-note">
+    <p class="ai-note ai-note-block">
       只按所选风格与级别调整肤质、瑕疵与光线，<strong class="lock">{{ STRUCTURE_LOCK_ZH }}</strong>
       每张出图后会做结构校验，检出脸型或体型被改会改用原图并提示。
       要绝对保证形状不变，用下面这条路。

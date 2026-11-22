@@ -131,7 +131,7 @@ async function onCancel() {
       />
     </div>
 
-    <p class="ai-note">
+    <p class="ai-note ai-note-block">
       1 张照片输出 JPG，多张输出多页 PDF（每张一页，附首图预览）。模型负责提炼主题、写配文与画面风格化；文字与版式由本地模板确定渲染。
     </p>
 

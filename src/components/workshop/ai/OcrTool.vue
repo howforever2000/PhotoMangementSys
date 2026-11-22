@@ -151,7 +151,7 @@ async function copyText() {
       <OutputDirField :output-dir="outputDir" :disabled="busy" @update:output-dir="onDir" />
     </div>
 
-    <p class="ai-note">
+    <p class="ai-note ai-note-block">
       全程在本机离线完成，照片不上传；识别结果按阅读顺序写入
       <code>_文字.txt</code>，同时回显在结果区可一键复制。
     </p>

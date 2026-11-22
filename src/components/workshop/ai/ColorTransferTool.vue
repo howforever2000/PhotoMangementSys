@@ -134,7 +134,7 @@ async function onCancel() {
       <OutputDirField :output-dir="outputDir" :disabled="busy" @update:output-dir="onDir" />
     </div>
 
-    <p class="ai-note">
+    <p class="ai-note ai-note-block">
       把参考图的色调与影调迁移到素材图，保留原构图；全程本机完成、不上传。输出为新 JPG；勾选导出后会额外生成一个 .cube 滤镜文件。
     </p>
 

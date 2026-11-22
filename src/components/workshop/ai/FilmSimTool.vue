@@ -115,7 +115,7 @@ async function onCancel() {
       <OutputDirField :output-dir="outputDir" :disabled="busy" @update:output-dir="onDir" />
     </div>
 
-    <p class="ai-note">
+    <p class="ai-note ai-note-block">
       内置富士系胶片 LUT（随包提供，无需下载），全程在本机完成，照片不上传；输出为新 JPG，不覆盖原图。
     </p>
 

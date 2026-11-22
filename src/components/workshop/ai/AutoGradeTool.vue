@@ -116,13 +116,13 @@ async function onCancel() {
       <OutputDirField :output-dir="outputDir" :disabled="busy" @update:output-dir="onDir" />
     </div>
 
-    <p class="ai-note">
+    <p class="ai-note ai-note-block">
       逐张分析画面的明暗、色偏与饱和度后自动调色，不重绘像素、不改变分辨率，
       全程本机完成；输出为新 JPG，不覆盖原图。
     </p>
 
     <div class="ai-actions">
-      <button class="ai-primary" type="button" :disabled="!canRun" @click="run">
+      <button class="ai-run" type="button" :disabled="!canRun" @click="run">
         开始调色（{{ paths.length }} 张）
       </button>
     </div>
