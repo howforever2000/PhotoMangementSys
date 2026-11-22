@@ -76,6 +76,20 @@ export interface DedupeProgress {
   message: string;
 }
 
+/**
+ * 回收站删除进度事件载荷（`delete-progress`）
+ *
+ * 数字都是**照片张数**：`done` = 已处理（成功 + 失败）。
+ * 为什么要这个事件：2654 张的一次删除实测要几分钟，旧实现期间界面
+ * 完全没反馈，按钮还静默变灰（BUG-2026-1122-002）。
+ */
+export interface DedupeDeleteProgress {
+  done: number;
+  total: number;
+  ok: number;
+  failed: number;
+}
+
 /** 删除结果（与后端 `PhotoDeleteOutcome` 对应） */
 export interface DedupeDeleteOutcome {
   requested: number;

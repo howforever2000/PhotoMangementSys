@@ -17,6 +17,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAlbumStore } from "../stores/album";
 import { useContentStore } from "../stores/content";
+import { useScanTotals } from "../composables/useScanTotals";
 import GlobalScanPanel from "../components/GlobalScanPanel.vue";
 import DedupePanel from "../components/DedupePanel.vue";
 import AlbumHealthPanel from "../components/AlbumHealthPanel.vue";
@@ -33,6 +34,8 @@ const route = useRoute();
 const router = useRouter();
 const albumStore = useAlbumStore();
 const contentStore = useContentStore();
+/** 全库入库读数（去重口径）：见 composable 头注释，不能用相册列表相加 */
+const scanTotals = useScanTotals();
 
 /** 页头分区：状态型（本页内切换）+ 路由型（/scan/test）由 AppHeader 自动分流 */
 const moduleTabs = scanModuleTabs();
@@ -81,7 +84,14 @@ watch(
 const totalAlbums = ref(0);
 const totalPhotos = ref(0);
 const scannedAlbums = ref(0);
-const scannedIn = ref(0);
+/**
+ * 已入库照片（去重路径数）
+ *
+ * BUG-2026-1122-005：这里原来是「每册 scanned_photo_count 相加」，父子相册 /
+ * 重复导入 / 历史冗余行都会让同一张照片被算多次，页头能出现
+ * 「照片 25384 / 已入库 60585」。改为读后端 `scan_library_totals().paths`。
+ */
+const scannedIn = computed(() => scanTotals.totals.value?.paths ?? 0);
 /** 全局扫描任务状态（用于数据带与页头读数） */
 const globalRunning = computed(() => contentStore.globalScanJob.running);
 const globalDoneCount = computed(
@@ -98,8 +108,9 @@ watch(
     totalAlbums.value = list.length;
     scannedAlbums.value = list.filter((a) => (a.scanned_photo_count || 0) > 0).length;
     // BUG-2026-0917-002：此前 scannedIn 声明后从未赋值，第四格「已入库照片」永远显示 0，
-    // 与智慧相册页「653 已扫描入库照片」自相矛盾。这里按相册累加已入库照片数。
-    scannedIn.value = list.reduce((n, a) => n + (a.scanned_photo_count || 0), 0);
+    // 与智慧相册页「653 已扫描入库照片」自相矛盾。
+    // BUG-2026-1122-005：现在改读去重口径（相册列表变化 = 扫描/删除/导入之后，正是读数该刷新的时刻）。
+    void scanTotals.refresh();
   },
   { immediate: true },
 );

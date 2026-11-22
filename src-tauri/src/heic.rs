@@ -117,7 +117,7 @@ mod platform {
     use std::path::Path;
 
     use windows::core::{Interface, GUID, PCWSTR};
-    use windows::Win32::Foundation::GENERIC_READ;
+    use windows::Win32::Foundation::{GENERIC_READ, S_OK};
     use windows::Win32::Graphics::Imaging::{
         IWICBitmapCodecInfo, IWICBitmapDecoder, IWICBitmapSource, IWICImagingFactory,
         CLSID_WICImagingFactory, GUID_ContainerFormatHeif, GUID_WICPixelFormat32bppBGRA,
@@ -125,16 +125,41 @@ mod platform {
         WICDecodeMetadataCacheOnLoad, WICDecoder,
     };
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_MULTITHREADED,
     };
 
     use super::HeicSupport;
 
-    /// 进程内只需成功初始化一次 COM（重复调用返回 RPC_E_CHANGED_MODE 也无需处理）
-    fn ensure_com() {
-        // SAFETY: 纯 FFI 调用；返回值忽略是刻意为之（已初始化/模式不同都算「可用」）
-        unsafe {
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    /// COM 单次调用守卫：**谁初始化、谁反初始化**
+    ///
+    /// 旧实现只 `CoInitializeEx(MTA)` 从不 `CoUninitialize`，注释里还写着"进程内只需
+    /// 一次" —— 但 COM apartment 是**每线程**属性：这条线程随后被 tokio 阻塞池复用，
+    /// 下一份工作如果是 `trash`（默认按 STA 初始化）就会拿到
+    /// `RPC_E_CHANGED_MODE(0x80010106)` 并直接 panic（用户实测的删除报错）。
+    ///
+    /// 现在的纪律：
+    /// - `S_OK` → 本次真的初始化了 → 作用域结束必须 `CoUninitialize` 还回去；
+    /// - `S_FALSE` / 失败 → 线程已有别人的公寓（或已是 STA）→ **不动它**，
+    ///   WIC 是进程内组件，在两种公寓下都能用，探针不因此误报"不支持 HEIC"。
+    struct ComGuard {
+        owned: bool,
+    }
+
+    impl ComGuard {
+        fn acquire() -> Self {
+            // SAFETY: 纯 FFI；返回值不参与控制流以外的判断
+            let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            ComGuard { owned: hr == S_OK }
+        }
+    }
+
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            if self.owned {
+                // SAFETY: 与本次 acquire 的 CoInitializeEx 严格配对
+                unsafe { CoUninitialize() };
+            }
         }
     }
 
@@ -145,8 +170,8 @@ mod platform {
             .collect()
     }
 
+    /// 建 WIC 工厂（**调用方必须已持有 [`ComGuard`]**）
     fn factory() -> Result<IWICImagingFactory, String> {
-        ensure_com();
         // SAFETY: COM 已初始化；CLSID 为 WIC 官方工厂
         unsafe {
             CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
@@ -175,6 +200,8 @@ mod platform {
     }
 
     pub(super) fn support() -> HeicSupport {
+        // COM 只在本次调用内持有，返回前已归还（见 ComGuard 的纪律说明）
+        let _com = ComGuard::acquire();
         let probe = (|| -> Result<Option<String>, String> {
             let f = factory()?;
             // SAFETY: 枚举注册的 WIC 组件；只读
@@ -231,6 +258,7 @@ mod platform {
     }
 
     pub(super) fn dimensions(path: &Path) -> Option<(u32, u32)> {
+        let _com = ComGuard::acquire();
         let decoder = open_decoder(path).ok()?;
         let frame = unsafe { decoder.GetFrame(0) }.ok()?;
         let (mut w, mut h) = (0u32, 0u32);
@@ -239,6 +267,8 @@ mod platform {
     }
 
     pub(super) fn decode(path: &Path) -> Result<image::DynamicImage, String> {
+        // 声明在最前 → 最后析构：所有 WIC 对象先释放，再还公寓
+        let _com = ComGuard::acquire();
         let decoder = open_decoder(path)?;
         // 容器校验：确认确实走了 HEIF 解码器（避免把别的 ISO-BMFF 当图片）
         let fmt = unsafe { decoder.GetContainerFormat() }.map_err(|e| format!("读取容器格式失败: {e}"))?;

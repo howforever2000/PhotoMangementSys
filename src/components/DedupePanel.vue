@@ -19,8 +19,10 @@
  */
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
+import { invoke } from "@tauri-apps/api/core";
 import { useDedupeStore, thresholdHint } from "../stores/dedupe";
 import { useNotify } from "../composables/useNotify";
+import { useScanTotals } from "../composables/useScanTotals";
 import { getThumbs } from "../utils/thumbQueue";
 import { formatSize } from "../types/album";
 import type { DedupeDeleteMode, DupGroup } from "../types/dedupe";
@@ -32,6 +34,8 @@ import EmptyState from "./EmptyState.vue";
 const store = useDedupeStore();
 const notify = useNotify();
 const router = useRouter();
+/** 全库入库读数：这里只用它的 `duplicate_rows`（历史冗余行）做可清理提示 */
+const scanTotals = useScanTotals();
 
 /* ---------------- 缩略图：卡片进视口才排队（全局限流在 thumbQueue 里） ---------------- */
 const thumbs = shallowRef<Record<string, string>>({});
@@ -139,15 +143,42 @@ watch(
     if (n === 0) previewGroup.value = null;
   },
 );
-/* 结果被清空 / 重新扫描时关掉灯箱（否则会在旧组上翻页） */
-watch(
-  () => store.groups.length,
-  (n) => {
-    if (n === 0) previewGroup.value = null;
-  },
-);
 
 void store.refreshHeicSupport();
+/** 挂载即取一次入库总量：历史冗余行 > 0 时给出「可清理」提示 */
+void scanTotals.refresh();
+
+/* ---------------- 入库重复行（历史冗余） ---------------- */
+/** 同一路径被记了多行的数量：> 0 会让「已入库」读数虚高 */
+const dupRows = computed(() => scanTotals.totals.value?.duplicate_rows ?? 0);
+const askPrune = ref(false);
+const pruning = ref(false);
+
+/**
+ * 清理「同一路径多行」的入库冗余
+ *
+ * 只删数据库里的冗余扫描记录（及其向量/分类命中/缩略图缓存行），**不动照片文件**。
+ * 这类行来自「行主键 = 路径+大小+mtime」：路径写法漂移或 mtime 变化就会为同一张照片
+ * 再写一行，旧行不自动消失 —— 用户看到「扫两次入库数翻倍」就是它。
+ */
+async function pruneDuplicateRows() {
+  askPrune.value = false;
+  if (pruning.value) return;
+  pruning.value = true;
+  try {
+    const removed = await invoke<number>("prune_duplicate_scan_rows");
+    await scanTotals.refresh();
+    if (removed > 0) {
+      notify.success("已清理入库重复行", `删除 ${removed} 行历史冗余记录（照片文件未动）`);
+    } else {
+      notify.info("无需清理", "没有发现同一路径的重复入库记录");
+    }
+  } catch (e) {
+    notify.error("清理失败", String(e));
+  } finally {
+    pruning.value = false;
+  }
+}
 
 /* ---------------- 参数联动 ---------------- */
 const hint = computed(() => thresholdHint(store.threshold));
@@ -157,7 +188,8 @@ const stageLabel = computed(() => {
     case "collect":
       return "遍历相册目录";
     case "hash":
-      return "比对文件内容";
+      // 口径：这一阶段只比对**同尺寸候选**（体积唯一的照片不可能有字节相同的副本）
+      return "比对同尺寸候选";
     case "similar":
       return "向量相似聚类";
     case "done":
@@ -170,6 +202,12 @@ const stageLabel = computed(() => {
 const progressPercent = computed(() => {
   if (store.progressTotal <= 0) return 0;
   return Math.min(100, Math.round((store.progressDone / store.progressTotal) * 100));
+});
+
+/** 回收站删除进度（按张数；旧实现整整 3 分半钟界面无反馈） */
+const deletePercent = computed(() => {
+  if (store.deleteTotal <= 0) return 0;
+  return Math.min(100, Math.round((store.deleteDone / store.deleteTotal) * 100));
 });
 
 /* ---------------- 结果汇总 ---------------- */
@@ -252,6 +290,8 @@ async function confirmDelete() {
       `共处理 ${outcome.deleted} 张`,
     );
   }
+  // 删完照片行也少了：刷新入库读数（顺带更新「可清理重复行」提示）
+  void scanTotals.refresh();
 }
 
 function goScan() {
@@ -310,8 +350,14 @@ function goScan() {
       </div>
 
       <div class="dp-run">
-        <button v-if="!store.running" class="btn btn-primary" :disabled="!canScan" @click="start">
-          ▶ 开始扫描全库
+        <button
+          v-if="!store.running"
+          class="btn btn-primary"
+          :disabled="!canScan"
+          :title="store.deleting ? '正在删除已勾选的照片，完成或失败后即可重新扫描' : '全库查重'"
+          @click="start"
+        >
+          {{ store.deleting ? "删除处理中…" : "▶ 开始扫描全库" }}
         </button>
         <button v-else class="btn" :disabled="store.stopping" @click="store.stop()">
           {{ store.stopping ? "正在停止…" : "■ 停止" }}
@@ -330,6 +376,30 @@ function goScan() {
         </span>
       </div>
       <div class="dp-bar"><i :style="{ width: `${progressPercent}%` }" /></div>
+    </div>
+
+    <!-- ②b 删除进度：移入回收站是批量磁盘操作，必须让用户看见"还在动" -->
+    <div v-if="store.deleting && store.deleteTotal > 0" class="dp-progress dp-progress-del">
+      <div class="dp-progress-head">
+        <span class="dp-stage">移入回收站</span>
+        <span class="dp-progress-text">
+          正在处理 {{ store.deleteDone }} / {{ store.deleteTotal }} 张（成功
+          {{ store.deleteOk }} · 失败 {{ store.deleteFailed }}）
+        </span>
+        <span v-if="store.deleteTotal" class="dp-progress-num">{{ deletePercent }}%</span>
+      </div>
+      <div class="dp-bar"><i :style="{ width: `${deletePercent}%` }" /></div>
+    </div>
+
+    <!-- 入库历史冗余行：同一张照片被记了多行 → 「已入库」读数虚高，可一键清理 -->
+    <div v-if="dupRows > 0 && !store.running" class="dp-warn dp-warn-soft">
+      <div>
+        库里有 <b>{{ dupRows }}</b> 行重复的入库记录（同一张照片被记了多次，「已入库」读数会因此虚高）。
+        清理只删数据库里的冗余行，<b>不动磁盘照片</b>。
+      </div>
+      <button class="dp-mini" :disabled="pruning" @click="askPrune = true">
+        {{ pruning ? "清理中…" : "清理重复行" }}
+      </button>
     </div>
 
     <!-- 错误态 -->
@@ -484,6 +554,18 @@ function goScan() {
       @confirm="confirmDelete"
       @cancel="pendingMode = null"
     />
+
+    <!-- 清理入库重复行（只删数据库冗余，不动文件） -->
+    <ConfirmDialog
+      :visible="askPrune"
+      title="清理重复入库行"
+      :message="`将删除 ${dupRows} 行历史冗余的入库记录（同一张照片被记了多次），并级联清掉它们对应的向量、分类命中与缩略图缓存行。\n磁盘上的照片文件不会被删除，清理后「已入库」读数会回到真实张数。`"
+      confirm-text="清理"
+      cancel-text="取消"
+      :danger="true"
+      @confirm="pruneDuplicateRows"
+      @cancel="askPrune = false"
+    />
   </section>
 </template>
 
@@ -627,6 +709,15 @@ function goScan() {
   border-radius: 999px;
   background: var(--color-primary);
   transition: width var(--dur-2);
+}
+
+/* 删除进度：用危险色与「扫描进度」区分开（一个在算、一个在删文件） */
+.dp-progress-del {
+  border-color: color-mix(in srgb, var(--color-danger) 45%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 6%, transparent);
+}
+.dp-progress-del .dp-bar i {
+  background: var(--color-danger);
 }
 
 /* ---- 提示与错误 ---- */

@@ -58,6 +58,10 @@ mod tests_video_frame;
 mod thumb_migrate;
 mod thumbnail;
 mod tone;
+// 回收站批量删除（分块 + 多线程 + 进度；见模块头对 COM 公寓纪律的说明）
+mod trash_delete;
+// 入库读数与对账（页面「已入库」的唯一口径：按路径去重，不与磁盘对账）
+mod scan_stats;
 // 创意工坊（FEAT-150）：压缩与旧调色配方清理
 mod tools;
 // 创意工坊（FEAT-150）：图像压缩后台任务状态（退出页面不中断 + 可停止）
@@ -623,6 +627,9 @@ pub fn run() {
             get_photo_info,
             delete_photo_records,
             delete_photos_to_trash,
+            // 入库读数（去重口径）与重复行清理：页头「已入库」不再 Σ 每册前缀数
+            scan_stats::scan_library_totals,
+            scan_stats::prune_duplicate_scan_rows,
             delete_photo_records_by_paths,
             purge_photo_data,
             delete_photo_files,

@@ -478,7 +478,13 @@ pub fn cleanup_thumb_caches_for_paths(db: &crate::db::Database, app: &tauri::App
 ///
 /// 与 delete_photo_files（永久删除不可恢复）的区别：文件可在回收站找回。
 /// 前端必须二次确认后才调用。无需相册 id（分类/地点视图照片可能无归属）。
-/// async + spawn_blocking：逐张移入回收站是批量磁盘 IO，不占主线程。
+///
+/// 删除本体在 `trash_delete::delete_paths_parallel`（分块 + 多线程 + 逐块进度事件），
+/// 本命令只负责：入口校验 → 清缩略图（必须在文件消失前）→ 调服务 → 级联清库 → 收尾记账。
+///
+/// 为什么不在 tokio 阻塞池线程里直接调 `trash::delete`：池线程会被 HEIC/WIC 等
+/// 模块初始化成 MTA 并复用，而 trash 默认按 STA 初始化，撞上就
+/// `RPC_E_CHANGED_MODE(0x80010106)` panic（用户实测报错）。服务层自己开干净线程。
 #[tauri::command]
 pub async fn delete_photos_to_trash(
     paths: Vec<String>,
@@ -488,6 +494,7 @@ pub async fn delete_photos_to_trash(
     let _t = log_call!("delete_photos_to_trash", &format!("paths={}", paths.len()));
     let _user_id = crate::require_user(&session)?;
     let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<PhotoDeleteOutcome, String> {
+        use tauri::Emitter;
         use tauri::Manager;
         let requested = paths.len();
         if paths.is_empty() {
@@ -499,26 +506,30 @@ pub async fn delete_photos_to_trash(
             let db = state.0.lock().map_err(|e| e.to_string())?;
             crate::photos::cleanup_thumb_caches_for_paths(&db, &app, &paths);
         }
-        // 2. 逐张移入系统回收站
-        let mut deleted = 0usize;
-        let mut failed_paths = Vec::new();
-        for p in &paths {
-            match trash::delete(std::path::Path::new(p)) {
-                Ok(_) => deleted += 1,
-                Err(e) => {
-                    crate::logger::log_warn(&format!("[delete_photos_to_trash] 回收站删除失败 path={p} err={e}"));
-                    failed_paths.push(p.clone());
-                }
-            }
-        }
+        // 2. 分块多线程移入回收站；每块完成发一次 delete-progress（前端画进度）
+        let app_progress = app.clone();
+        let r = crate::trash_delete::delete_paths_parallel(paths.clone(), move |p| {
+            let _ = app_progress.emit("delete-progress", p);
+        });
+        crate::logger::log_info(&format!(
+            "[trash] 回收站删除：{} 张 → 成功 {} / 失败 {} · worker {} · 分块 {} · {}ms",
+            requested,
+            r.deleted,
+            r.failed_paths.len(),
+            r.workers,
+            r.chunks,
+            r.elapsed_ms
+        ));
         // 3. 级联清扫描记录（仅成功项；失败项保留原状可重试）
-        if deleted > 0 {
-            let ok_paths: Vec<String> = paths.iter().filter(|p| !failed_paths.contains(p)).cloned().collect();
+        if r.deleted > 0 {
+            let failed: std::collections::HashSet<&String> = r.failed_paths.iter().collect();
+            let ok_paths: Vec<String> =
+                paths.iter().filter(|p| !failed.contains(*p)).cloned().collect();
             let db = state.0.lock().map_err(|e| e.to_string())?;
             let _ = db.delete_content_by_paths(&ok_paths);
         }
-        let failed = failed_paths.len();
-        Ok(PhotoDeleteOutcome { requested, deleted, failed, failed_paths })
+        let failed = r.failed_paths.len();
+        Ok(PhotoDeleteOutcome { requested, deleted: r.deleted, failed, failed_paths: r.failed_paths })
     })
     .await
     .map_err(|e| format!("delete_photos_to_trash 任务失败: {e}"))

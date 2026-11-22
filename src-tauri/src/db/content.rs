@@ -35,6 +35,21 @@ fn is_fts_corrupt(e: &DbError) -> bool {
     )
 }
 
+/// 全库入库读数（页面「已入库」的唯一口径：**按路径去重**）
+///
+/// 为什么不能把每册的前缀统计加起来：父子相册 / 重复导入时同一张照片会被
+/// 每个包含它的相册各算一次；再加上路径写法漂移产生的历史冗余行，
+/// Σ 会超过真实照片数（用户实测 25384 张 → 60585）。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ScanLibraryTotals {
+    /// `photo_content_scan` 行数（含历史冗余行）
+    pub rows: i64,
+    /// 去重后的照片路径数（页面该显示这个）
+    pub paths: i64,
+    /// 同一路径的多余行数（`rows - paths`）：> 0 说明库里有可清理的历史冗余
+    pub duplicate_rows: i64,
+}
+
 /// 待写入的内容扫描记录（一次扫描一行，按 photo_hash upsert）
 ///
 /// `person_ids` / `top3_json` 以 JSON 文本存库（其余为标量），读取时反序列化。
@@ -1246,6 +1261,63 @@ impl Database {
         Ok(map)
     }
 
+    /// 全库入库读数（**按路径去重**）
+    ///
+    /// 页面汇总口径：`paths`。每册徽标仍用 `count_scanned_by_prefix`（那里
+    /// 语义是「这册覆盖了多少」，父子相册各显示完整覆盖是对的），但页头汇总
+    /// 不能把每册的数加起来 —— 同一张照片会被多个相册各算一次。
+    ///
+    /// `duplicate_rows > 0` 说明表里还留着「同一路径多行」的历史冗余
+    /// （行主键是 路径+大小+mtime 的哈希，路径写法或 mtime 一变就是新行），
+    /// 前端据此提示可清理；清理走 [`Self::prune_duplicate_scan_rows`]。
+    pub fn scan_library_totals(&self, user_id: i64) -> Result<ScanLibraryTotals, DbError> {
+        let (rows, paths): (i64, i64) = self.conn.query_row(
+            "SELECT COUNT(*), COUNT(DISTINCT path) FROM photo_content_scan WHERE user_id = ?1",
+            params![user_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok(ScanLibraryTotals { rows, paths, duplicate_rows: (rows - paths).max(0) })
+    }
+
+    /// 清理「同一路径被记了多行」的历史冗余（每路径保留最新一行）
+    ///
+    /// 只删扫描记录及其派生数据，**不碰磁盘上的照片**：
+    /// - `photo_content_scan`：多余行（`rowid` 非该路径最大者）
+    /// - `photo_embeddings` / `photo_text_embeddings`：被删行的向量（按 photo_hash）
+    /// - `photo_category_hits`：被删行的分类命中（按 photo_hash）
+    /// - `photo_thumb_cache`：被删行的缩略图缓存行（按 photo_hash；文件由既有缓存清理逻辑兜底）
+    ///
+    /// 保留「最新一行」而不是「任意一行」：新行才带最近一次扫描的 EXIF/AI 结果。
+    /// 返回清理掉的多余行数。
+    pub fn prune_duplicate_scan_rows(&self, user_id: i64) -> Result<usize, DbError> {
+        // 先取待删行（同一 path 只留 rowid 最大的一行）
+        let stale: Vec<(i64, String)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT rowid, photo_hash FROM photo_content_scan
+                 WHERE user_id = ?1 AND rowid NOT IN (
+                     SELECT MAX(rowid) FROM photo_content_scan WHERE user_id = ?1 GROUP BY path
+                 )",
+            )?;
+            let rows = stmt.query_map(params![user_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        if stale.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for (rowid, hash) in &stale {
+            tx.execute("DELETE FROM photo_content_scan WHERE rowid = ?1", params![rowid])?;
+            tx.execute("DELETE FROM photo_embeddings WHERE photo_hash = ?1", params![hash])?;
+            tx.execute("DELETE FROM photo_text_embeddings WHERE photo_hash = ?1", params![hash])?;
+            tx.execute("DELETE FROM photo_category_hits WHERE photo_hash = ?1", params![hash])?;
+            tx.execute("DELETE FROM photo_thumb_cache WHERE photo_hash = ?1", params![hash])?;
+        }
+        tx.commit()?;
+        Ok(stale.len())
+    }
+
     /// 按 path 读取单张照片已扫描的内容（FEAT-D）
     ///
     /// 大图查看器在打开原图时调用：若 photo_content_scan 中已有该 path 的记录，
@@ -2410,6 +2482,48 @@ mod tests {
         // 其他用户看不到
         let map_u2 = db.count_scanned_by_prefix(2, &pairs).unwrap();
         assert_eq!(map_u2.get(&1), Some(&0));
+    }
+
+    /// BUG-2026-1122-005：同一路径被记了两行（路径写法/mtime 漂移）时，
+    /// 页面读数必须按路径去重，且能一键清掉多余行。
+    ///
+    /// 真实症状：相册 25384 张照片、页头「已入库 60585」——那个数原先是
+    /// Σ 每册前缀统计，行数一旦多于照片数就会超过 100%。
+    #[test]
+    fn scan_totals_and_prune_duplicate_paths() {
+        let db = mem_db();
+        // 同一张照片两条不同哈希的行（模拟 mtime / 路径写法漂移）
+        db.upsert_photo_content(&sample_rec("H1", "/alb1/a.jpg")).unwrap();
+        db.upsert_photo_content(&sample_rec("H2", "/alb1/a.jpg")).unwrap();
+        // 另一张正常照片
+        db.upsert_photo_content(&sample_rec("H3", "/alb1/b.jpg")).unwrap();
+
+        let t = db.scan_library_totals(1).unwrap();
+        assert_eq!(t.rows, 3, "行数把同一路径的两行都算进去");
+        assert_eq!(t.paths, 2, "页面读数必须按路径去重");
+        assert_eq!(t.duplicate_rows, 1);
+
+        // 其他用户的口径互不影响
+        let other = db.scan_library_totals(2).unwrap();
+        assert_eq!(other.paths, 0);
+
+        let removed = db.prune_duplicate_scan_rows(1).unwrap();
+        assert_eq!(removed, 1, "只清掉同一路径里较旧的那一行");
+        let after = db.scan_library_totals(1).unwrap();
+        assert_eq!(after.rows, 2);
+        assert_eq!(after.paths, 2);
+        assert_eq!(after.duplicate_rows, 0);
+
+        // 保留的是**最新**一行（H2），不是任意一行
+        let kept: String = db
+            .conn
+            .query_row(
+                "SELECT photo_hash FROM photo_content_scan WHERE path = '/alb1/a.jpg'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, "H2");
     }
 
     /// 构造「FTS5 索引与主表失步」状态：主表保留数据，索引被替换为空表

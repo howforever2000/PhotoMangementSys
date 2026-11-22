@@ -21,6 +21,7 @@ import ConfirmDialog from "../components/ConfirmDialog.vue";
 import ImportErrorsDialog from "../components/ImportErrorsDialog.vue";
 import EmptyState from "../components/EmptyState.vue";
 import { useNotify } from "../composables/useNotify";
+import { useScanTotals } from "../composables/useScanTotals";
 import type { ImportResult } from "../stores/album";
 
 const router = useRouter();
@@ -29,6 +30,8 @@ const store = useAlbumStore();
 const contentStore = useContentStore();
 const theme = useThemeStore();
 const notify = useNotify();
+/** 全库入库读数（去重口径）：见 composable 头注释 */
+const scanTotals = useScanTotals();
 /** FEAT-095：隐藏相册解锁态（未解锁时该相册不在 store.albums 里） */
 const vault = useVaultStore();
 
@@ -975,7 +978,16 @@ const statItems = computed<StatItem[]>(() => {
   const totalPhotos = all.reduce((n, a) => n + (a.photo_count || 0), 0);
   const scannedAlbums = all.filter((a) => (a.scanned_photo_count || 0) > 0).length;
   const pending = all.length - scannedAlbums;
-  const scannedPhotos = all.reduce((n, a) => n + (a.scanned_photo_count || 0), 0);
+  /**
+   * 全库已入库照片数（去重路径数）
+   *
+   * BUG-2026-1122-005：原来把每册 `scanned_photo_count` 相加 —— 父子相册 /
+   * 重复导入 / 历史冗余行都会让同一张照片被算多次，页头出现
+   * 「照片 25384 / 已入库 60585」。去重读数由后端 `scan_library_totals` 给；
+   * 还没拿到（首帧）时先退回逐册相加，避免闪一下 0。
+   */
+  const scannedFromAlbums = all.reduce((n, a) => n + (a.scanned_photo_count || 0), 0);
+  const scannedPhotos = scanTotals.totals.value?.paths ?? scannedFromAlbums;
   const totalBytes = all.reduce((n, a) => n + (a.size_bytes || 0), 0);
   const gb = totalBytes / 1024 / 1024 / 1024;
 
@@ -994,7 +1006,7 @@ const statItems = computed<StatItem[]>(() => {
       label: "照片",
       value: totalPhotos,
       // 照片数没有天然上限，用「已入库比例」作为它的进度（与「已入库」格呼应）
-      progress: totalPhotos ? scannedPhotos / totalPhotos : 0,
+      progress: totalPhotos ? Math.min(1, scannedPhotos / totalPhotos) : 0,
       progressTone: "muted",
     },
     {
@@ -1005,16 +1017,20 @@ const statItems = computed<StatItem[]>(() => {
          原来 tone:"up" → .u-stat-aux.up → --c-accent-bright，同屏 3 处金色。 */
       tone: "mute",
       // FEAT-106：进度条 = 入库完成度（已入库照片 / 总照片）
-      progress: totalPhotos ? scannedPhotos / totalPhotos : 0,
+      progress: totalPhotos ? Math.min(1, scannedPhotos / totalPhotos) : 0,
     },
     {
       label: "待入库",
       value: pending,
+      /* 单位是「个相册」！这一格数的是「一册都没入库的相册数」，
+         不是照片数 —— 与旁边 25384 / 60585 并列时若不写单位，
+         会被读成「待入库 0 张，那 6 万张是从哪来的」（BUG-2026-1122-005） */
+      unit: "个相册",
       delta: pending ? "需要扫描" : "全部已扫",
       /* 待入库的语义是"还差多少"，属于欠缺而非增长 → down，不是 up */
       tone: pending ? "down" : "mute",
       // 待入库：显示的是「还差多少」的补数进度，用弱化色（不抢"已入库"的强调色）
-      progress: totalPhotos ? 1 - scannedPhotos / totalPhotos : 0,
+      progress: scannedPhotos && totalPhotos ? Math.max(0, 1 - scannedPhotos / totalPhotos) : 0,
       progressTone: "muted",
     },
     {
@@ -1027,6 +1043,14 @@ const statItems = computed<StatItem[]>(() => {
     },
   ];
 });
+
+/**
+ * 相册列表每次变化（导入 / 扫描入库 / 删除照片）都重取一次去重读数
+ *
+ * 列表本身会刷新（徽标、待入库相册数），页头的「已入库」也必须跟着刷新，
+ * 否则会停在旧数字上——那正是原来"扫两次变两倍、清理后又正常"的观感来源之一。
+ */
+watch(() => store.albums, () => void scanTotals.refresh(), { immediate: true });
 
 /** 页头读数：一行说清这页装了多少（取代旧工具栏里的"我的相册"大标题） */
 const headerMeta = computed(() => {

@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   DedupeDeleteMode,
   DedupeDeleteOutcome,
+  DedupeDeleteProgress,
   DedupeProgress,
   DedupeReport,
   DupGroup,
@@ -73,6 +74,11 @@ export const useDedupeStore = defineStore("dedupe", () => {
   const selected = ref<Set<string>>(new Set());
   /** 删除中（防重复点击） */
   const deleting = ref(false);
+  /** 删除进度（`delete-progress` 事件）：移入回收站要几分钟，必须让用户看得见 */
+  const deleteDone = ref(0);
+  const deleteTotal = ref(0);
+  const deleteOk = ref(0);
+  const deleteFailed = ref(0);
   /** 上一轮删除的失败明细（要如实呈现，不能静默） */
   const lastFailures = ref<string[]>([]);
   /** HEIC 解码能力（缺 HEIF 扩展时顶部提示） */
@@ -350,9 +356,23 @@ export const useDedupeStore = defineStore("dedupe", () => {
     error.value = "";
     lastFailures.value = [];
     const paths = [...selected.value];
+    deleteDone.value = 0;
+    deleteTotal.value = mode === "trash" ? paths.length : 0;
+    deleteOk.value = 0;
+    deleteFailed.value = 0;
+    /** 回收站删除的进度监听（仅本次调用生命周期） */
+    let unlistenDelete: UnlistenFn | null = null;
     try {
       let outcome: DedupeDeleteOutcome;
       if (mode === "trash") {
+        // 后端分块多线程删除，每块发一条 delete-progress（数字是照片张数）
+        unlistenDelete = await listen<DedupeDeleteProgress>("delete-progress", (ev) => {
+          const p = ev.payload;
+          deleteDone.value = p.done;
+          deleteTotal.value = p.total;
+          deleteOk.value = p.ok;
+          deleteFailed.value = p.failed;
+        });
         outcome = await invoke<DedupeDeleteOutcome>("delete_photos_to_trash", { paths });
       } else {
         // 「仅删记录」按相册分组调用：只有带 album 的删除才会把照片移出网格视图
@@ -395,6 +415,7 @@ export const useDedupeStore = defineStore("dedupe", () => {
       error.value = String(e);
       return null;
     } finally {
+      unlistenDelete?.();
       deleting.value = false;
     }
   }
@@ -450,6 +471,10 @@ export const useDedupeStore = defineStore("dedupe", () => {
     report,
     heic,
     deleting,
+    deleteDone,
+    deleteTotal,
+    deleteOk,
+    deleteFailed,
     lastFailures,
     selected,
     groups,

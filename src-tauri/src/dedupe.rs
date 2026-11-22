@@ -279,10 +279,21 @@ pub fn scan_library(
     /// 同一真实文件被合并掉的条目数（全流程累计）
     let mut collapsed_same_file = 0usize;
     if include_exact {
-        on_progress("hash", 0, total_photos, "正在比对文件内容…");
+        // 不在进入哈希前先发「0/全库张数」：那会让进度条从 0/22685 跳到 333/333。
+        // 第一条 hash 事件由 exact_groups 在体积预筛后发出（0/候选数），口径一致。
         let t_hash = std::time::Instant::now();
+        // 进度口径：`total` 是「同尺寸候选数」而不是全库张数 —— 体积唯一的照片
+        // 不可能有字节相同的副本，被体积预筛直接跳过（见 exact_groups）。
+        // 两个数必须同时出现在文案里，否则用户会把「已比对 333/333」读成
+        // 「2 万张只扫了 333 张」（用户实测困惑，BUG-2026-1122-004）。
         let (exact, hashed, collapsed) = exact_groups(&entries, &|done, total| {
-            on_progress("hash", done, total, &format!("已比对 {done}/{total} 张"));
+            let skipped = total_photos.saturating_sub(total);
+            on_progress(
+                "hash",
+                done,
+                total,
+                &format!("同尺寸候选 {done}/{total} 张（全库 {total_photos} 张，体积唯一的 {skipped} 张无需比对）"),
+            );
         })?;
         hash_ms = t_hash.elapsed().as_millis() as u64;
         hashed_files = hashed;
