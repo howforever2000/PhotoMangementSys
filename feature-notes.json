@@ -8371,6 +8371,48 @@
         "性能优化",
         "FEAT-209"
       ]
+    },
+    {
+      "id": "FEAT-210",
+      "name": "人像形变分性别瘦脸（男10%/女15%）+ 大眼 20% + 新增眼睛提亮滑条（默认10%）",
+      "status": "done",
+      "date": "2026-11-22",
+      "created_at": "2026-11-22",
+      "updated_at": "2026-11-22",
+      "module": "python/ai_studio/eyebright.py（新建）、python/ai_studio/ops_local.py、python/ai_studio/workflows/reshape.py、python/ai_studio/op_catalog.json、python/ai_studio/recipes.json、python/ai_studio/recipecatalog.py、python/tests/test_eyebright.py（新建）、src/components/workshop/ai/LocalReshapeTool.vue、src/utils/toolCatalog.test.ts",
+      "purpose": "用户要求：瘦脸男生默认 10%、女生 15%，大眼两档都 20%，并新增「眼睛提亮」滑条（默认 10%）。落地：face_reshape 的 slim/eyes 默认改 0.15/0.20 并新增 eye_bright（0~1，默认 0.10）；瘦脸按发长逐脸收敛（男 = 女 × 2/3，0.15 → 0.10）；眼睛提亮用 68 点眼周多边形 + 彩度加权提亮（巩膜提得多、虹膜只保底），零新增模型；手动「人像形变」工具改为复用同一原语但按用户所选强度执行",
+      "highlights": [
+        "性别折算放在偏置层：`slim_for_gender(slim, long_hair)` —— 男性 ×2/3（0.15→0.10），女性原值；`None`（BiSeNet 未就绪/解析失败）不折算，宁可不动也不按错误性别打折。解析失败不会让形变失败（形变的硬依赖仍只有 det_10g + peppa_wutz）",
+        "眼睛提亮实现（eyebright.py，纯函数）：68 点眼轮廓 → 多边形向质心收缩 8% 后填充 + 羽化（半径挂眼高）→ 在 Lab 里按彩度加权提亮：巩膜 `w_c` 拿满 `MAX_LIFT=30`，虹膜/睫毛固定只提 `IRIS_LIFT=3`（提多了发灰）；同时按 `w_c` 轻微削彩度去黄；高光保护最多吃掉剩余余量的 60%",
+        "顺序必须是「先提亮、再液化」：液化是对同一张图重采样，提亮结果跟着眼睛一起被放大，掩码与像素始终对得上；反过来会用到已过时的 68 点，眼睑边缘漏色",
+        "实测（婚礼样本，无墨镜）：巩膜 10% → +1.23 L*、30% → +3.62、100% → +10.68，通道截断零增量；毕业照 18 脸全判男性 → slim 实际用 0.10",
+        "性能：性别判定每脸多一次 BiSeNet（~120ms）。加「脸框指纹 LRU 缓存（128 条，键=图尺寸+检测框+脸框 8×8 灰度哈希）」后，工作台反复调参时命中缓存 —— 实测 reshape 189~262ms（冷启 322~553ms）；三项参数全 0 时连人脸检测都跳过",
+        "去重：`workflows/reshape.py` 原本自己写了一遍 detect→landmark→warp 与降级逻辑，现改为调用 `ops_local.reshape_image`；手动工具传 `auto_gender=False`（用户选多强就多强），配方/工作台自动档才按发长收敛",
+        "前端：工作台微调滑条由 catalog 自动派生（无需改代码）；单步「人像形变」工具新增「自然」档（瘦脸 0.15 / 大眼 0.2）并设为默认，另加 0~100% 眼睛提亮滑条（默认 10）；`TUNABLE_PARAMS` 补 eye_bright"
+      ],
+      "related_files": [
+        "python/ai_studio/eyebright.py",
+        "python/ai_studio/ops_local.py",
+        "python/ai_studio/workflows/reshape.py",
+        "python/ai_studio/op_catalog.json",
+        "python/ai_studio/recipes.json",
+        "python/ai_studio/recipecatalog.py",
+        "python/tests/test_eyebright.py",
+        "src/components/workshop/ai/LocalReshapeTool.vue",
+        ".dsh/features/workshop.md",
+        ".dsh/knowledge/local-enhance.md"
+      ],
+      "tests": "python unittest 139/139（新增 test_eyebright 9 项：关=恒等/矩形外零改动/巩膜强于虹膜/强度单调/退化输入/瘦脸折算）；npm test 328/328（同步更新 toolCatalog 的 face_reshape 默认值断言）；vue-tsc 零错误；真实人像实测见 highlights",
+      "keywords": [
+        "分性别瘦脸",
+        "slim_for_gender",
+        "眼睛提亮",
+        "eye_bright",
+        "eyebright",
+        "68 点眼周",
+        "大眼 20%",
+        "FEAT-210"
+      ]
     }
   ],
   "updated": "2026-11-22"

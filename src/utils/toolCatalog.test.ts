@@ -141,7 +141,7 @@ describe("前端适配层", () => {
 
   test("defaultParams / toolLabel 由 catalog 派生", () => {
     const op = OPS.find((o) => o.id === "face_reshape")!;
-    assert.deepEqual(defaultParams(op), { slim: 0.3, eyes: 0.15 });
+    assert.deepEqual(defaultParams(op), { slim: 0.15, eyes: 0.2, eye_bright: 0.1 });
     assert.equal(toolLabel("face_reshape"), "人像形变");
     assert.equal(toolLabel("__unknown__"), "__unknown__");
   });

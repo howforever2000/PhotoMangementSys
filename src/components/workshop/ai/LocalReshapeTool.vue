@@ -22,8 +22,11 @@ const props = defineProps<{ paths: string[] }>();
 const store = useAiStudioStore();
 const notify = useNotify();
 
-const slim = ref("0.5");
-const eyes = ref("0.3");
+// 默认档与配方一致（FEAT-210）：自然瘦脸 15%、大眼 20%、眼睛提亮 10%
+const slim = ref("0.15");
+const eyes = ref("0.2");
+// 眼睛提亮（FEAT-210）：0~100 的百分数滑条，默认 10%；提交时换算成 0~1
+const eyeBright = ref(10);
 const outputDir = ref("");
 const outputTouched = ref(false);
 
@@ -58,6 +61,7 @@ async function run() {
       options: {
         slim: Number(slim.value) || 0,
         eyes: Number(eyes.value) || 0,
+        eye_bright: (Number(eyeBright.value) || 0) / 100,
       },
     });
   } catch (e) {
@@ -115,8 +119,17 @@ async function onCancel() {
         </div>
       </div>
 
+      <div class="ai-field">
+        <label class="ai-label">眼睛提亮 {{ eyeBright }}%</label>
+        <input v-model.number="eyeBright" type="range" min="0" max="100" step="5" :disabled="busy" />
+        <p class="ai-note" style="margin: 4px 0 0">
+          只提亮眼白（低彩度区），虹膜与眼线基本不动；调到 0 = 不处理。
+        </p>
+      </div>
+
       <p class="ai-note" style="margin: 0">
-        只收下颌与放大眼睛，五官位置与比例不变；侧脸、遮挡或关键点置信度低时会自动跳过该脸，不会硬修。
+        只收下颌、放大眼睛并提亮眼神，五官位置与比例不变；侧脸、遮挡或关键点置信度低时会自动跳过该脸，不会硬修。
+        这里按你选的强度执行（配方/工作台自动档才会按发长收敛）。
       </p>
     </div>
 

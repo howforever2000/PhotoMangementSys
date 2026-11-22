@@ -11,7 +11,9 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
@@ -21,6 +23,7 @@ from PIL import Image
 from . import (
     autograde,
     colortransfer,
+    eyebright,
     faceparse,
     facewarp,
     hairlength,
@@ -39,6 +42,15 @@ _MIN_FACE_PX = 48
 
 # 参考图分析用的长边（与 workflows/color_transfer.py 的 _REF_LONG_EDGE 同口径）
 _REF_LONG_EDGE = 1024
+
+# 性别侧重的瘦脸比例（FEAT-210）：用户口径「男生默认 10%、女生 15%」→ 男 = 女 × 2/3。
+# 大眼不区分性别（两档都是 20%）。
+MALE_SLIM_RATIO = 2.0 / 3.0
+
+# 发长判定结果的记忆表（脸框指纹 → 是否长发）：工作台调参时同一张脸反复请求，
+# 命中即省掉一次 BiSeNet 解析（~120ms/脸）。有界 LRU，键含图尺寸与脸框内容哈希。
+_HAIR_CACHE: "OrderedDict[tuple, bool]" = OrderedDict()
+_HAIR_CACHE_MAX = 128
 
 
 @dataclass
@@ -78,12 +90,24 @@ def grade_image(
 
 def reshape_image(
     img: Image.Image,
-    slim: float = 0.3,
-    eyes: float = 0.15,
+    slim: float = 0.15,
+    eyes: float = 0.20,
+    eye_bright: float = 0.10,
     warn: Warn = None,
     stats: Optional[dict] = None,
+    auto_gender: bool = True,
 ) -> Image.Image:
-    """68 点关键点驱动的瘦脸 + 大眼。单脸失败只跳过该脸，不抛（懒人链路纪律）。"""
+    """68 点关键点驱动的瘦脸 + 大眼 + 眼睛提亮。单脸失败只跳过该脸，不抛。
+
+    性别侧重（FEAT-210）：`auto_gender` 打开时逐脸按发长收敛瘦脸强度
+    （男性 = 女性档 × `MALE_SLIM_RATIO`，用户口径 15% → 10%）；大眼两档相同，
+    眼睛提亮也不分性别。判不出/解析模型未就绪 → 按用户给的值，不做收敛。
+
+    顺序：**先提亮眼睛、再液化** —— 液化是对同一张图重采样，提亮结果跟着眼睛走，
+    掩码与像素始终对得上（反过来会用到已过时的 68 点，眼睑边缘漏色）。
+    """
+    if slim <= 1e-3 and eyes <= 1e-3 and eye_bright <= 1e-3:
+        return img                     # 三项都为 0 = 不处理，连检测都不必跑
     try:
         faces = localmodels.detect_faces(img)
     except Exception as e:  # noqa: BLE001
@@ -104,13 +128,78 @@ def reshape_image(
             if confidence < landmark.MIN_CONFIDENCE:
                 _emit(warn, f"关键点置信度偏低（{confidence:.2f}），已跳过该脸")
                 continue
-            result = facewarp.reshape(result, points, slim=slim, eyes=eyes)
+            slim_face = slim
+            if auto_gender:
+                slim_face = slim_for_gender(slim, long_hair_hint(result, face["bbox"], warn))
+            if eye_bright > 1e-3:
+                result = eyebright.brighten_eyes(result, points, eye_bright)
+            result = facewarp.reshape(result, points, slim=slim_face, eyes=eyes)
             touched += 1
         except Exception as e:  # noqa: BLE001
             _emit(warn, f"形变失败，该脸已跳过（{e}）")
     if stats is not None:
         stats["faces"] = stats.get("faces", 0) + touched
     return result
+
+
+def slim_for_gender(slim: float, long_hair: bool | None) -> float:
+    """性别侧重的瘦脸强度：长发（女性）用原值，非长发（男性）×2/3，未知不收敛。
+
+    `None` = 无法判定（解析模型未就绪 / 解析失败）→ 用用户给的值，不悄悄按男性打折。
+    """
+    if long_hair is None:
+        return slim
+    return slim if long_hair else slim * MALE_SLIM_RATIO
+
+
+def long_hair_hint(
+    img: Image.Image, bbox: tuple[int, int, int, int], warn: Warn = None
+) -> bool | None:
+    """单脸发长（性别侧重）：只跑一次 BiSeNet 解析，复用调用方已有的检测框。
+
+    返回 None 表示「无法判定」：解析模型未就绪（形变的唯一硬依赖是 det+68 点，
+    不该因为缺 BiSeNet 就报错）或解析抛异常。宁可不动，也不要按错误的性别打折。
+
+    带一个按「脸框指纹」的记忆表：工作台调参时同一张脸会被反复请求，指纹不变就
+    直接命中，省掉每次 ~120ms 的解析（指纹 = 图尺寸 + 检测框 + 脸框 8×8 灰度哈希，
+    照片被改动则指纹变化，不会读到旧结论）。
+    """
+    if not faceparse.ready():
+        return None
+    key = _face_key(img, bbox)
+    if key is not None:
+        hit = _HAIR_CACHE.get(key)
+        if hit is not None:
+            _HAIR_CACHE.move_to_end(key)
+            return hit
+    box = _context_box(bbox, img.width, img.height, _CONTEXT_MARGIN)
+    if box is None:
+        return None
+    try:
+        cls_map = faceparse.predict(img.crop(box))
+    except Exception as e:  # noqa: BLE001
+        _emit(warn, f"人脸解析失败，性别侧重已跳过（{e}）")
+        return None
+    verdict = _long_hair_of(cls_map, bbox, box)
+    if key is not None:
+        _HAIR_CACHE[key] = verdict
+        if len(_HAIR_CACHE) > _HAIR_CACHE_MAX:
+            _HAIR_CACHE.popitem(last=False)
+    return verdict
+
+
+def _face_key(
+    img: Image.Image, bbox: tuple[int, int, int, int]
+) -> tuple | None:
+    """脸框指纹（发长判定的缓存键）。裁剪退化时返回 None（不缓存，照常解析）。"""
+    x1, y1, x2, y2 = (int(round(v)) for v in bbox)
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(img.width, x2), min(img.height, y2)
+    if x2 - x1 < 8 or y2 - y1 < 8:
+        return None
+    thumb = img.crop((x1, y1, x2, y2)).convert("L").resize((8, 8))
+    digest = hashlib.blake2b(thumb.tobytes(), digest_size=8).digest()
+    return (img.size, (x1, y1, x2, y2), digest)
 
 
 def _long_hair_of(cls_map: np.ndarray, bbox, box) -> bool:
@@ -236,8 +325,10 @@ def op_face_reshape(
     ctx.drop_face_analysis()
     return reshape_image(
         img,
-        float(params.get("slim", 0.3)),
-        float(params.get("eyes", 0.15)),
+        float(params.get("slim", 0.15)),
+        float(params.get("eyes", 0.20)),
+        float(params.get("eye_bright", 0.10)),
+        auto_gender=True,
     )
 
 
@@ -454,8 +545,11 @@ OPS_LOCAL = {
 
 __all__ = [
     "FaceAnalysis",
+    "MALE_SLIM_RATIO",
     "grade_image",
     "reshape_image",
+    "slim_for_gender",
+    "long_hair_hint",
     "smooth_image",
     "skin_tone_image",
     "op_auto_grade",

@@ -106,8 +106,9 @@
         {
           "op": "face_reshape",
           "params": {
-            "slim": 0.3,
-            "eyes": 0.15
+            "slim": 0.15,
+            "eyes": 0.2,
+            "eye_bright": 0.1
           },
           "optional": true
         },

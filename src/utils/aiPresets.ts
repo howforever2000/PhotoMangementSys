@@ -128,16 +128,19 @@ export const SKIN_PRESETS: SkinPreset[] = [
   },
 ];
 
-/** 人像形变（本地）：瘦脸强度档。上限 0.8 —— 再高会明显失真（实测） */
+/** 人像形变（本地）：瘦脸强度档。上限 0.8 —— 再高会明显失真（实测）。
+ *  「自然」是 FEAT-210 起的默认档（0.15 = 配方默认值；配方链路里男脸按 2/3 折算成 0.10）。 */
 export const RESHAPE_SLIM_LEVELS: AiOption[] = [
-  { value: "0.3", label: "轻", hint: "只收一点下颌，几乎看不出修过" },
-  { value: "0.5", label: "标准", hint: "推荐档：脸型明显收窄，五官不动" },
+  { value: "0.15", label: "自然", hint: "只收一点点下颌线，几乎看不出修过（默认）" },
+  { value: "0.3", label: "轻", hint: "下颌线略微收窄，五官不动" },
+  { value: "0.5", label: "标准", hint: "脸型明显收窄，五官不动" },
   { value: "0.8", label: "强", hint: "脸型收窄明显；再高会失真，已到上限" },
 ];
 
-/** 人像形变（本地）：大眼强度档。上限 0.5 */
+/** 人像形变（本地）：大眼强度档。上限 0.5。「自然」是 FEAT-210 起的默认档（0.20） */
 export const RESHAPE_EYE_LEVELS: AiOption[] = [
   { value: "0", label: "关", hint: "只瘦脸，不动眼睛" },
-  { value: "0.3", label: "标准", hint: "推荐档：眼睛略微放大，眼周自然" },
+  { value: "0.2", label: "自然", hint: "眼睛略微放大，眼周自然（默认）" },
+  { value: "0.3", label: "标准", hint: "眼睛放大明显，适合近景" },
   { value: "0.5", label: "强", hint: "眼睛放大明显；再高会失真，已到上限" },
 ];

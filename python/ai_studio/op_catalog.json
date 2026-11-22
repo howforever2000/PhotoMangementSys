@@ -125,7 +125,7 @@
   {
    "id": "face_reshape",
    "label": "人像形变",
-   "desc": "68 点关键点驱动的瘦脸 + 大眼局部液化，五官比例不变",
+   "desc": "68 点关键点驱动的瘦脸 + 大眼 + 眼睛提亮：局部液化，五官比例不变；瘦脸逐脸按发长收敛（男性约为滑条值的 2/3），大眼与眼睛提亮不分性别",
    "backend": "local",
    "stage": 2,
    "module": "ai_studio.ops_local",
@@ -134,7 +134,7 @@
      "type": "range",
      "min": 0,
      "max": 0.8,
-     "default": 0.3,
+     "default": 0.15,
      "step": 0.05,
      "label": "瘦脸"
     },
@@ -142,9 +142,17 @@
      "type": "range",
      "min": 0,
      "max": 0.5,
-     "default": 0.15,
+     "default": 0.2,
      "step": 0.05,
      "label": "大眼"
+    },
+    "eye_bright": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 0.1,
+     "step": 0.05,
+     "label": "眼睛提亮"
     }
    },
    "requires": {
