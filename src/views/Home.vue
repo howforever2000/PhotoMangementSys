@@ -7,6 +7,7 @@ import { useAuthStore } from "../stores/auth";
 import { useThemeStore } from "../stores/theme";
 import { useAlbumStore } from "../stores/album";
 import { useVaultStore } from "../stores/vault";
+import { useUpdateStore } from "../stores/update";
 import ThemeDialog from "../components/ThemeDialog.vue";
 import SupportDialog from "../components/SupportDialog.vue";
 import BrandMark from "../components/ui/BrandMark.vue";
@@ -17,6 +18,8 @@ const theme = useThemeStore();
 const albumStore = useAlbumStore();
 /** FEAT-095：隐藏相册解锁态（会话内存，不落 localStorage） */
 const vault = useVaultStore();
+/** FEAT-212：应用内更新状态（弹窗由 App.vue 渲染，这里只负责入口与状态） */
+const update = useUpdateStore();
 
 /**
  * 弹窗面板主题样式（--pm-* 变量包）：由 theme store 统一下发（FEAT-086 上收），
@@ -227,6 +230,15 @@ function openSupport() {
   supportOpen.value = true;
 }
 
+/**
+ * 更新弹窗（FEAT-212）：与打赏入口同一分组，但点击后弹窗渲染在 App.vue
+ * （全局常驻，下载/安装要能活过菜单关闭）。先关菜单，避免菜单压在弹窗上面。
+ */
+function openUpdate() {
+  settingsOpen.value = false;
+  update.openDialog();
+}
+
 /** 打开开发者视角日志窗口（后端保证单例：已开则聚焦） */
 async function openDevLog() {
   settingsOpen.value = false;
@@ -273,6 +285,9 @@ function onGlobalKey(e: KeyboardEvent) {
 }
 onMounted(() => {
   document.addEventListener("keydown", onGlobalKey);
+  /* FEAT-212：左下角版本号要立刻有值。App.vue 的 init 时序不保证在直接落地 /home
+     时已经跑完，所以这里补一次快照同步（只读后端 package_info，不联网）。 */
+  void update.refresh();
 });
 onBeforeUnmount(() => {
   document.removeEventListener("keydown", onGlobalKey);
@@ -350,6 +365,14 @@ onBeforeUnmount(() => {
                   <span>
                     <b>资源使用情况</b>
                     <i>进程 PID / CPU / 内存 / GPU 配置态</i>
+                  </span>
+                </button>
+
+                <button class="settings-item settings-item-sep" type="button" role="menuitem" @click="openUpdate">
+                  <span class="settings-item-icon">🔄</span>
+                  <span>
+                    <b>检查更新<span v-if="update.hasUpdate" class="update-dot" aria-hidden="true"></span></b>
+                    <i>{{ update.hasUpdate ? `发现新版本 v${update.info?.latest}` : `当前版本 v${update.current || "…"}` }}</i>
                   </span>
                 </button>
 
@@ -494,6 +517,26 @@ onBeforeUnmount(() => {
       <ThemeDialog v-if="themeOpen" @close="themeOpen = false" />
       <SupportDialog v-if="supportOpen" @close="supportOpen = false" />
     </teleport>
+
+    <!-- 版本与更新状态（FEAT-212）：主界面左下角常显，点一下就走现有的更新弹窗。
+         为什么不做成菜单项：版本号属于「随手能瞟一眼」的信息，藏进 ⚙ 菜单就没人看得到；
+         为什么用 fixed：主页内容长短不一，随页面滚动就会跑到视口外。 -->
+    <button
+      class="home-version"
+      type="button"
+      :class="{ 'has-update': update.hasUpdate }"
+      :title="update.hasUpdate ? `发现新版本 v${update.info?.latest}，点击查看` : '查看版本与检查更新'"
+      :aria-label="update.hasUpdate ? `当前版本 v${update.current || '未知'}，发现新版本 v${update.info?.latest}，点击查看` : `当前版本 v${update.current || '未知'}，点击检查更新`"
+      @click="openUpdate"
+    >
+      <span class="hv-num">v{{ update.current || "…" }}</span>
+      <span v-if="update.hasUpdate" class="hv-state hv-state-new">
+        <span class="hv-dot" aria-hidden="true"></span>有新版本 v{{ update.info?.latest }}
+      </span>
+      <span v-else-if="update.info" class="hv-state hv-state-ok">
+        <span class="hv-dot" aria-hidden="true"></span>已是最新
+      </span>
+    </button>
   </div>
 </template>
 
@@ -764,6 +807,91 @@ onBeforeUnmount(() => {
 .settings-item-sep {
   margin-top: 6px;
   border-top: 1px solid var(--pm-soft-border);
+}
+
+/* 菜单里的「发现新版本」小圆点（FEAT-212）：只做存在感提示，不占独立一行；
+   用基线对齐贴在标题文字右侧，字号改变时不会浮起来。 */
+.update-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  vertical-align: baseline;
+}
+
+/* 版本与更新状态（FEAT-212）：左下角常显。
+   层级 6 = 卡片(2) 之上、设置菜单遮罩(8) 之下 —— 菜单打开时被遮罩盖住，不会浮在菜单上。
+   令牌说明：--pm-* 一组（--pm-btn-bg / --pm-input-bg / --pm-soft-border / --pm-hint / --pm-text）
+   只由 theme.dialogVarStyle 内联下发到弹窗根节点，继承不到这里（根节点只挂了 --card-shadow），
+   直接写会解析失败 —— 描边与底色整条声明被丢弃，胶囊会变成透明无框。
+   因此改用 :root + theme-dark 都有定义的全局令牌，语义一一对应：
+   --pm-hint -> --color-text-2、--pm-text -> --color-text、--pm-btn-bg -> --color-neutral-soft、
+   --pm-input-bg -> --color-soft-accent（原本就是「选中/高亮软底」的语义）、--pm-soft-border -> --color-border。 */
+.home-version {
+  position: fixed;
+  left: 18px;
+  bottom: 14px;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 36px);
+  padding: 5px 10px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--color-text-2);
+  background: var(--color-neutral-soft);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: color var(--dur-2), border-color var(--dur-2), background var(--dur-2);
+}
+.home-version:hover,
+.home-version:focus-visible {
+  color: var(--color-text);
+  border-color: var(--color-primary);
+}
+.home-version:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.hv-num {
+  font-weight: 600;
+  color: var(--color-text);
+}
+.hv-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hv-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-ok-text);
+  flex: 0 0 auto;
+}
+/* 有更新：整块换主题强调色 + 圆点变强调色，扫一眼就能分辨 */
+.home-version.has-update {
+  color: var(--color-text);
+  border-color: var(--color-primary);
+  background: var(--color-soft-accent);
+}
+.home-version.has-update .hv-dot {
+  background: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 22%, transparent);
+}
+/* 窄屏：只留版本号与圆点，把「有新版本 vX」文字藏掉（仍可点开弹窗看详情） */
+@media (max-width: 560px) {
+  .hv-state {
+    display: none;
+  }
 }
 
 .logout-btn {

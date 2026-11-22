@@ -192,6 +192,14 @@ Notable optimizations implemented during development:
 - Photos, thumbnails, and person data all reside under the local `app_data_dir` and are never uploaded.
 - For cross-machine migration, copy the photo folder and re-import it; album metadata can be migrated together with `photos.db`.
 
+### 6.5 Check for Updates
+
+- **Automatic**: 8 seconds after startup the app silently checks GitHub Releases (6-hour throttle persisted to disk; offline or failed checks are skipped silently). When a newer version exists a toast offers "Go to update", and the settings menu (⚙) always has "🔄 Check for updates" with a dot when one is available. The current version is always shown at the bottom-left of the main screen; when an update exists the pill highlights with "New version vX" and opens the update dialog on click.
+- **Manual**: ⚙ → Check for updates → "Check now" (forced, real request). The dialog shows the current version, the latest version, its publish date and the release notes.
+- **Download**: one click fetches the NSIS installer (~170MB, varies by release) using GitHub mirrors first, runtime speed probing and 4-way segmented parallel transfer, falling back to direct GitHub when mirrors fail. The progress bar shows downloaded/total, live speed and ETA; downloads can be cancelled and resumed from the retained segments.
+- **Install**: after the byte count is verified, "Install now" exits this app and launches the installer; reopening gives the new version. Albums, accounts and models live under `%APPDATA%` and survive the overwrite (see 7.2 for the model directory).
+- **Security boundary**: only NSIS installers named by this repository's GitHub Releases are accepted (repository, file name and URL are all validated), and installation is never silent — it always requires a user confirmation.
+
 ---
 
 ## 7. Build & Release

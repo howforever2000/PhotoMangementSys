@@ -4,7 +4,9 @@ import { useRouter } from "vue-router";
 import { useAlbumStore } from "./stores/album";
 import { useAuthStore } from "./stores/auth";
 import { useThemeStore } from "./stores/theme";
+import { useUpdateStore } from "./stores/update";
 import ToastContainer from "./components/ToastContainer.vue";
+import UpdateDialog from "./components/UpdateDialog.vue";
 import GlassFilters from "./components/ui/GlassFilters.vue";
 
 // 应用根组件：渲染全局背景层 + 路由出口 + 全局 Toast 容器
@@ -17,6 +19,7 @@ import GlassFilters from "./components/ui/GlassFilters.vue";
 const auth = useAuthStore();
 const store = useAlbumStore();
 const theme = useThemeStore();
+const update = useUpdateStore();
 const router = useRouter();
 
 /* FEAT-101：液态材质不再「追光」。
@@ -60,6 +63,10 @@ function onGlobalEsc(e: KeyboardEvent) {
 }
 
 onMounted(async () => {
+  // FEAT-212：更新事件监听必须**应用一启动**就位。
+  // 后端自动检查会在启动 8s 后 emit `update-available`，晚注册就丢事件（用户看不到提示）；
+  // 失败不阻塞任何主流程（更新是附加能力，不该挡住登录/相册加载）。
+  update.init().catch(() => {});
   await auth.checkSession();
   if (auth.user) {
     store.fetchAlbums().catch(() => {});
@@ -89,6 +96,8 @@ onBeforeUnmount(() => {
     <div class="app-content">
       <router-view />
     </div>
+    <!-- 更新弹窗（FEAT-212）：挂在根节点，与登录态无关 —— 未登录时也要能提示更新 -->
+    <UpdateDialog v-if="update.dialogOpen" @close="update.closeDialog()" />
     <ToastContainer />
   </div>
 </template>

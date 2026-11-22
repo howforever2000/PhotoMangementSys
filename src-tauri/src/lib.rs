@@ -36,6 +36,8 @@ mod media_kind;
 mod model_dl;
 // 模型下载的分段并行传输层（只管「切段 → 并发拉 → 按序拼」，不碰注册表/UI）
 mod model_dl_seg;
+// 应用内更新（检查 → 镜像优先下载安装包 → 拉起 NSIS 安装器）
+mod update;
 mod photo_info;
 mod photo_scan;
 mod persons;
@@ -532,6 +534,22 @@ pub fn run() {
                     }
                 });
             }
+            // 应用内更新自检（FEAT 见 feature-notes；BUG-2026-1122-001 的后续）：
+            // 启动 8s 后再查，避开首帧与识别服务拉起；失败只记日志，不打扰用户。
+            {
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                    match update::auto_check(h).await {
+                        Ok(Some(info)) if info.has_update => logger::log_info(&format!(
+                            "[update] 发现新版本 {}（当前 {}）",
+                            info.latest, info.current
+                        )),
+                        Ok(_) => {}
+                        Err(e) => logger::log_info(&format!("[update] 自动检查失败（忽略）: {e}")),
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -693,6 +711,13 @@ pub fn run() {
             set_model_sources,
             detect_npu_hardware,
             model_dir,
+            // 应用内更新（检查 / 状态 / 下载 / 取消 / 安装 / 下载目录）
+            update::check_update,
+            update::update_state,
+            update::start_update_download,
+            update::cancel_update_download,
+            update::install_update,
+            update::update_download_dir,
             set_vcr_gpu,
             get_vcr_threads,
             set_vcr_threads,
