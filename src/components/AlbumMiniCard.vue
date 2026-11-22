@@ -63,11 +63,13 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
 </template>
 
 <style scoped>
+/* 卡片宽度由宿主（ManualSort）的 --mini-card-w 变量驱动（Ctrl+滚轮缩放），
+   未设置时回落 90px 保持历史默认；封面/名称按宽度等比反算，宽高比不漂移。 */
 .album-mini {
   display: flex;
   flex-direction: column;
   align-items: center;
-  width: 90px;
+  width: var(--mini-card-w, 90px);
   padding: 8px;
   border-radius: 8px;
   cursor: grab;
@@ -83,8 +85,8 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
 }
 
 .mini-cover {
-  width: 70px;
-  height: 50px;
+  width: calc(var(--mini-card-w, 90px) - 20px);
+  height: calc((var(--mini-card-w, 90px) - 20px) * 50 / 70);
   object-fit: cover;
   border-radius: 6px;
   margin-bottom: 6px;
@@ -95,15 +97,15 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: calc(var(--mini-card-w, 90px) * 0.22);
 }
 
 .mini-name {
-  font-size: 12px;
+  font-size: calc(var(--mini-card-w, 90px) * 0.133);
   font-weight: 500;
   text-align: center;
   color: var(--color-text);
-  max-width: 80px;
+  max-width: calc(var(--mini-card-w, 90px) - 10px);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -156,11 +158,12 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
   position: relative;
 }
 
-/* FEAT-036：已入库 / 未入库 小圆点（封面右下角，避免与勾选角标冲突） */
+/* FEAT-036：已入库 / 未入库 小圆点（封面右下角，避免与勾选角标冲突）；
+   位置随卡片宽度等比缩放（90px 时即历史默认 26/12px） */
 .mini-scan {
   position: absolute;
-  bottom: 26px;
-  right: 12px;
+  bottom: calc(var(--mini-card-w, 90px) * 0.29);
+  right: calc(var(--mini-card-w, 90px) * 0.13);
   width: 10px;
   height: 10px;
   border-radius: 50%;

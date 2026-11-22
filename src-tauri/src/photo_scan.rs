@@ -174,6 +174,29 @@ pub fn detect_album_location(dir: &str) -> Result<Option<(f64, f64)>, String> {
     Ok(Some((gx as f64 / 100.0, gy as f64 / 100.0)))
 }
 
+/// 首命中版相册地点检测：按文件名顺序逐张读 EXIF，遇到第一张带 GPS 的照片立即返回。
+///
+/// 与 [`detect_album_location`]（全量扫描取众数）的区别：批量「识别所有地点」
+/// 场景下相册通常整组在同一地点拍摄，首张带 GPS 的照片即可代表整组，
+/// 提前退出可以把 N 张的 EXIF 解析降到 1 张，批量时收益是数量级的。
+/// 无 GPS 照片返回 None（不报错，调用方决定提示）。
+pub fn detect_album_location_first_hit(dir: &str) -> Result<Option<(f64, f64)>, String> {
+    let mut paths = crate::vision::walk_image_paths(dir)?;
+    // 与 scan_album_photos 的「文件名升序」口径一致（取相册里最靠前的照片）
+    paths.sort();
+    for p in &paths {
+        let name = p
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let exif = read_photo_exif(p, &name);
+        if let (Some(lat), Some(lon)) = (exif.lat, exif.lon) {
+            return Ok(Some((lat, lon)));
+        }
+    }
+    Ok(None)
+}
+
 /// 反向地理编码单点坐标（供地点自动识别命令复用）
 ///
 /// BigDataCloud 为主（免 key、国内直连、中文），Nominatim 备选。

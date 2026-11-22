@@ -491,6 +491,148 @@ pub async fn auto_detect_album_location(
 }
 
 
+/// 批量识别所有相册的地点（「按地点」视图的「识别所有地点」按钮）
+///
+/// rayon 并行执行：遍历照片（首张带 GPS 的即停，见 `detect_album_location_first_hit`）
+/// → 本地行政区划反查（离线秒回）→ 联网兜底 → 落库。
+///
+/// - `force=false`：已有地点标签的相册直接跳过（不覆盖手动/既有结果）
+/// - 单个相册失败（无 GPS / 反查失败 / 目录不可读）只记进度状态，不中断整体
+/// - 每处理完一个相册发 `album-location-detect-progress` 事件（done/total/状态，
+///   done 按**完成数**计数，并行下完成顺序不定），前端用它展示进度并在结束后刷新列表
+/// - 返回写入地点的相册数
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AlbumLocationDetectProgress {
+    done: usize,
+    total: usize,
+    album_id: i64,
+    name: String,
+    /// ok=已写入 / skip=已有地点跳过 / no_gps=相册内无 GPS 照片 / fail=反查或落库失败
+    status: String,
+    location: Option<String>,
+}
+
+#[tauri::command]
+pub async fn auto_detect_all_album_locations(
+    force: bool,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+    session: tauri::State<'_, crate::SessionState>,
+) -> Result<usize, String> {
+    let _t = log_call!("auto_detect_all_album_locations", &format!("force={force}"));
+    let user_id = crate::require_user(&session)?;
+    // 1) 取全部普通相册（归档/隐藏等虚拟相册没有真实文件夹，排除）
+    let albums = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        db.get_albums(user_id).map_err(|e| e.to_string())?
+    };
+    let targets: Vec<crate::db::Album> =
+        albums.into_iter().filter(|a| a.kind == "normal").collect();
+    let total = targets.len();
+
+    // 2) rayon 并行批处理：EXIF 首命中是「随机 IO + 容器解析」的延迟敏感任务，
+    //    与 EXIF 扫描同理多线程能真实摊薄等待；联网反查仅离线未命中时偶发。
+    //    相册是天然独立的工作单元（各自目录 + 各自落库行），按相册粒度并行。
+    //    整体放进 spawn_blocking 不阻塞 async runtime；State 不能跨线程 move，
+    //    在阻塞线程内经 app.state::<AppState>() 重新取（get_albums 同款模式）。
+    //    数据库锁只在写库瞬间短持，walk/网络 IO 期间不持有。
+    use tauri::Manager;
+    let app_for_state = app.clone();
+    let changed = tauri::async_runtime::spawn_blocking(move || -> usize {
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let state = app_for_state.state::<crate::AppState>();
+        let done = AtomicUsize::new(0);
+        let changed_n = AtomicUsize::new(0);
+        targets.par_iter().for_each(|album| {
+            // done 按「完成数」计数（并行下完成顺序不定，前端只展示进度比）
+            let done_n = done.fetch_add(1, Ordering::SeqCst) + 1;
+            let progress = |status: &str, location: Option<String>| {
+                let _ = app.emit(
+                    "album-location-detect-progress",
+                    AlbumLocationDetectProgress {
+                        done: done_n,
+                        total,
+                        album_id: album.id,
+                        name: album.name.clone(),
+                        status: status.to_string(),
+                        location,
+                    },
+                );
+            };
+            if album.location.is_some() && !force {
+                progress("skip", album.location.clone());
+                return;
+            }
+            let coord = match crate::photo_scan::detect_album_location_first_hit(&album.path) {
+                Ok(Some(c)) => c,
+                Ok(None) => {
+                    progress("no_gps", None);
+                    return;
+                }
+                Err(e) => {
+                    crate::logger::log_call_end_with(
+                        "auto_detect_all_album_locations",
+                        _t,
+                        &format!("FAIL | album={} walk: {e}", album.name),
+                    );
+                    progress("fail", None);
+                    return;
+                }
+            };
+            // 反向地理编码：本地省/市优先（离线秒回），未命中再联网精确查询
+            let place = match crate::geo_index::find_region(coord.0, coord.1) {
+                Some(p) => p,
+                None => match crate::photo_scan::reverse_geocode_coord(coord.0, coord.1) {
+                    Some(p) => p,
+                    None => {
+                        progress("fail", None);
+                        return;
+                    }
+                },
+            };
+            // 落库（不动 updated_at）；锁中毒时按单相册失败处理，不中断整体
+            let r = match state.0.lock() {
+                Ok(db) => db.update_album_location(album.id, user_id, &place),
+                Err(e) => {
+                    crate::logger::log_call_end_with(
+                        "auto_detect_all_album_locations",
+                        _t,
+                        &format!("FAIL | album={} db lock poisoned: {e}", album.name),
+                    );
+                    progress("fail", None);
+                    return;
+                }
+            };
+            match r {
+                Ok(()) => {
+                    changed_n.fetch_add(1, Ordering::SeqCst);
+                    progress("ok", Some(place));
+                }
+                Err(e) => {
+                    crate::logger::log_call_end_with(
+                        "auto_detect_all_album_locations",
+                        _t,
+                        &format!("FAIL | album={} db: {e}", album.name),
+                    );
+                    progress("fail", None);
+                }
+            }
+        });
+        changed_n.load(Ordering::SeqCst)
+    })
+    .await
+    .map_err(|e| format!("批处理任务失败: {e}"))?;
+
+    crate::logger::log_call_end_with(
+        "auto_detect_all_album_locations",
+        _t,
+        &format!("OK | total={total} changed={changed}"),
+    );
+    Ok(changed)
+}
+
+
 /// 重命名相册（可同时重命名绑定的本地文件夹）
 ///
 /// - 先重命名本地文件夹（`rename_folder=true` 时），成功后才更新数据库，

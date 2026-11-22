@@ -498,6 +498,31 @@ function cleanupDrag() {
   dragInsertIndex.value = null;
 }
 
+// ---------- 卡片缩放（Ctrl+滚轮，与分类画廊/人物画廊同口径） ----------
+/** 迷你卡片宽度档位（px），经 --mini-card-w 变量注入 AlbumMiniCard；
+ *  上滚放大下滚缩小，档位持久化到 localStorage。 */
+const MINI_SIZE_MIN = 60;
+const MINI_SIZE_MAX = 200;
+const MINI_SIZE_STEP = 10;
+const MINI_SIZE_DEFAULT = 90;
+/** clampMini(0/NaN) 回落默认档，防止越界值把布局挤崩 */
+function clampMini(v: number): number {
+  if (!Number.isFinite(v) || v <= 0) return MINI_SIZE_DEFAULT;
+  const stepped = Math.round(v / MINI_SIZE_STEP) * MINI_SIZE_STEP;
+  return Math.min(MINI_SIZE_MAX, Math.max(MINI_SIZE_MIN, stepped));
+}
+const miniSize = ref(clampMini(Number(localStorage.getItem("manual-mini-size")) || MINI_SIZE_DEFAULT));
+
+function onManualWheel(e: WheelEvent) {
+  if (!e.ctrlKey) return;
+  e.preventDefault(); // 拦住 WebView2 的 Ctrl+滚轮页面缩放
+  const next = clampMini(miniSize.value + (e.deltaY < 0 ? MINI_SIZE_STEP : -MINI_SIZE_STEP));
+  if (next !== miniSize.value) {
+    miniSize.value = next;
+    localStorage.setItem("manual-mini-size", String(next));
+  }
+}
+
 // ---------- 右键菜单 ----------
 function onRightClick(target: "folder" | "album", id: number, event: MouseEvent) {
   event.preventDefault();
@@ -552,11 +577,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="manual-sort" :style="msVars">
+  <div class="manual-sort" :style="{ ...msVars, '--mini-card-w': `${miniSize}px` }" @wheel="onManualWheel">
     <!-- 顶部工具栏 -->
     <div class="manual-toolbar">
       <button class="btn btn-primary" @click="openCreateFolder(null)">新建分组</button>
       <span class="manual-hint">拖拽相册到分组中即可归类，最多支持三级</span>
+      <span class="manual-hint manual-zoom-hint" title="按住 Ctrl 滚动滚轮即可放大/缩小卡片">🔍 Ctrl+滚轮缩放卡片</span>
     </div>
 
     <!-- 目录导航（类似日期排序的路线图，点击跳转分组） -->
@@ -803,6 +829,8 @@ onBeforeUnmount(() => {
 .manual-sort { padding-bottom: 30px; color: var(--ms-text); }
 .manual-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .manual-hint { color: var(--ms-muted); font-size: 13px; }
+/* 缩放提示：推到工具栏右侧，低调灰字 */
+.manual-zoom-hint { margin-left: auto; opacity: 0.7; }
 
 /* 目录导航 */
 .manual-nav {

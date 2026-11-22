@@ -888,6 +888,41 @@ const locationGroups = computed<Array<{ location: string | null; albums: Album[]
 /** 折叠状态：key 为地点分组的唯一标识（日期墙是扁平密排，没有折叠分组） */
 const collapsed = ref<Set<string>>(new Set());
 
+/* -------------------- 批量地点识别（「识别所有地点」按钮） --------------------
+   后端逐相册「遍历照片 → 首张带 GPS 的即停 → 离线反查 → 联网兜底 → 落库」，
+   已有地点的相册自动跳过（force=false，不覆盖既有标签）。
+   进度走 album-location-detect-progress 事件（每处理完一个相册发一条）。 */
+interface LocDetectProgress {
+  done: number;
+  total: number;
+  album_id: number;
+  name: string;
+  status: "ok" | "skip" | "no_gps" | "fail";
+  location: string | null;
+}
+const locDetect = ref({ running: false, done: 0, total: 0, current: "" });
+let unlistenLocDetect: (() => void) | null = null;
+
+async function detectAllLocations() {
+  if (locDetect.value.running) return;
+  locDetect.value = { running: true, done: 0, total: normalAlbums.value.length, current: "" };
+  try {
+    const changed = await invoke<number>("auto_detect_all_album_locations", { force: false });
+    // 重新拉列表，让新写入的地点立刻体现在分组上
+    await store.fetchAlbums();
+    if (changed > 0) {
+      notify.success("地点识别完成", `已为 ${changed} 个相册写入地点标签`);
+    } else {
+      notify.info("地点识别完成", "没有相册需要写入（其余均无 GPS 照片或已有地点）");
+    }
+  } catch (e) {
+    notify.error("地点识别失败", String(e));
+  } finally {
+    locDetect.value.running = false;
+    locDetect.value.current = "";
+  }
+}
+
 /** 年份筛选下的可见相册数（左栏右上角那个"12 个相册 · 653 张"用它） */
 const visibleCount = computed(() => visibleAlbums.value.length);
 
@@ -1258,6 +1293,15 @@ function jumpToFolderInManual(folderId: number) {
 // ---------- 列表加载 ----------
 onMounted(() => {
   store.fetchAlbums();
+  // 批量地点识别进度（后端每处理完一个相册发一条）
+  listen<LocDetectProgress>("album-location-detect-progress", (e) => {
+    const p = e.payload;
+    locDetect.value.done = p.done;
+    locDetect.value.total = p.total;
+    locDetect.value.current = p.name;
+  }).then((un) => {
+    unlistenLocDetect = un;
+  });
   // 全局点击关闭右键菜单
   window.addEventListener("click", onGlobalClick);
   // 滚动监听（用于回到顶部按钮显示）
@@ -1279,6 +1323,8 @@ onMounted(() => {
   }
 });
 onBeforeUnmount(() => {
+  unlistenLocDetect?.();
+  unlistenLocDetect = null;
   window.removeEventListener("click", onGlobalClick);
   window.removeEventListener("scroll", onScroll);
   window.removeEventListener("scroll", closeContextMenu);
@@ -1626,6 +1672,20 @@ function onKey(e: KeyboardEvent) {
       <span class="view-bar-label">按地点排序</span>
       <span v-if="store.albums.length === 0" class="bc-empty">暂无相册</span>
       <span v-else class="bc-item">{{ store.albums.filter((a) => a.location).length }} 个相册有地点</span>
+      <!-- 批量地点识别：遍历每个相册的照片，遇到第一张带 GPS 的即停并写入
+           （FEAT：识别所有地点；已有地点的相册自动跳过，不会覆盖） -->
+      <span class="loc-detect-spacer"></span>
+      <span v-if="locDetect.running" class="bc-item loc-detect-status">
+        识别中 {{ locDetect.done }}/{{ locDetect.total }}：{{ locDetect.current }}
+      </span>
+      <button
+        class="btn btn-sm loc-detect-btn"
+        :disabled="locDetect.running || normalAlbums.length === 0"
+        :title="locDetect.running ? '' : '遍历所有相册的照片，取第一张带 GPS 的写入相册地点；已有地点的相册跳过'"
+        @click="detectAllLocations"
+      >
+        {{ locDetect.running ? "识别中…" : "📍 识别所有地点" }}
+      </button>
     </div>
 
     <!-- 批量导入进度条 -->
@@ -2483,6 +2543,16 @@ function onKey(e: KeyboardEvent) {
   background: var(--color-primary);
   color: var(--color-on-primary);
 }
+
+/* 批量地点识别（地点模式提示栏右侧）：占位 + 进度文案 + 按钮 */
+.loc-detect-spacer { flex: 1; }
+.loc-detect-status {
+  color: var(--sub-text);
+  max-width: 38%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.loc-detect-btn { flex-shrink: 0; }
 
 /* 搜索行（FEAT-107）：输入框 + 范围后缀 + 去智能搜索的出口。
 

@@ -89,6 +89,7 @@ use devtools::{
 };
 use album::{
     auto_detect_album_location,
+    auto_detect_all_album_locations,
     batch_move_album_to_folder,
     batch_set_album_location,
     batch_set_album_tag,
@@ -558,6 +559,7 @@ pub fn run() {
             list_album_photos,
             get_photo_thumbs,
             auto_detect_album_location,
+            auto_detect_all_album_locations,
             rename_album,
             update_album_tags,
             delete_album,
