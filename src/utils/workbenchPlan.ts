@@ -97,7 +97,7 @@ export function opSpec(op: string): OpSpec | undefined {
  * 算子本身没有 group；链条按「影调与滤镜 / 人像 / 画质 / 创作」分组时走这里查。
  */
 export function opGroup(op: string): string {
-  return TOOLS.find((t) => t.op === op)?.group ?? "utility";
+  return TOOLS.find((t) => t.op === op)?.group ?? opById(op)?.group ?? "utility";
 }
 
 export function opStage(op: string): number {
@@ -260,16 +260,28 @@ function enumOptions(op: string, key: string): { value: string; label: string }[
   return [];
 }
 
+/**
+ * raw → 滑杆（0~100）。
+ *
+ * FEAT-206：开始尊重 `spec.min` —— 旧实现写死 `n / max * 100`，隐含「min 恒为 0」，
+ * 所有既有参数（min:0）结果不变；但独立自然饱和度是**双向值域**（-0.25~+0.25），
+ * 中性值 0 必须落在滑条**中间 50**（用户口径：不是压在最左的 0），否则
+ * 「往右拉才加饱和、往左没东西」且默认位置看起来像「已经减到底」。
+ */
 function rawToSlider(spec: ParamSpec, raw: unknown): number {
   const n = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isFinite(n)) return 100;
+  const min = spec.min ?? 0;
   const max = spec.max ?? RANGE_MAX_RAW;
-  return Math.max(0, Math.min(100, Math.round((n / max) * 100)));
+  const span = max - min || 1;
+  return Math.max(0, Math.min(100, Math.round(((n - min) / span) * 100)));
 }
 
 function sliderToRaw(spec: ParamSpec, slider: number): number {
+  const min = spec.min ?? 0;
   const max = spec.max ?? RANGE_MAX_RAW;
-  const v = (Math.max(0, Math.min(100, slider)) / 100) * max;
+  const span = max - min || 1;
+  const v = min + (Math.max(0, Math.min(100, slider)) / 100) * span;
   return Math.round(v * 1000) / 1000;
 }
 
@@ -483,9 +495,10 @@ export const tuneOffKey = (uid: string, key: string): string => `${uid}.${key}`;
  * 「不处理」→ 真正下发到计划里的步骤。
  *
  * 语义（与界面一致）：
- *   - **滑杆（range）**：不设单独开关，拉到 0 就是不做（现有可调 range 全部以 0 为中性：
- *     调色力度 / 胶片强度 / 颗粒 / 暗角 / 瘦脸 / 大眼 / 磨皮）。0 只是一个普通参数值，
- *     因此数值参数不会让步骤消失；
+ *   - **滑杆（range）**：不设单独开关，拉到中性值就是不做 —— 既有可调 range 全部
+ *     以 0 为中性（调色力度 / 胶片强度 / 颗粒 / 暗角 / 瘦脸 / 大眼 / 磨皮）；
+ *     FEAT-206 起自然饱和度是**双向值域**（-0.25~+0.25），中性 0 落在滑条中间 50。
+ *     0 只是一个普通参数值，因此数值参数不会让步骤消失；
  *   - **下拉（enum）**：LUT / 风格没有中性值，选「不处理」→ 整步不参与；
  *   - bool/string 当前算子族没有可调项，保持原值。
  *

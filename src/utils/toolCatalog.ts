@@ -40,6 +40,8 @@ export interface OpSpec {
   requires: Record<string, unknown>;
   requiresBefore: string[];
   internal?: boolean;
+  /** 链条候选的展示分组（FEAT-206：无工具映射的纯算子也能声明归属，如自然饱和度→tone） */
+  group?: string;
 }
 
 export interface ToolDef {
@@ -79,7 +81,7 @@ interface RawCatalog {
 interface RawOp {
   id: string; label: string; desc: string; backend: Backend; stage: number;
   module: string; params: Record<string, ParamSpec>; requires: Record<string, unknown>;
-  requiresBefore: string[]; internal?: boolean;
+  requiresBefore: string[]; internal?: boolean; group?: string;
 }
 interface RawTool {
   id: string; label: string; desc: string; icon: string; runtime: Runtime;

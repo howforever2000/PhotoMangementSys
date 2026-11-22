@@ -236,12 +236,40 @@ describe("样片微调白名单与清单同源（FEAT-186）", () => {
     }
   });
 
-  test("auto_grade 的自然饱和度：默认 0、上限 0.25（配方默认不受影响）", () => {
+  // FEAT-207：内嵌自然饱和度滑条已移除——auto_grade 不再声明 vibrance 参数，
+  // 独立自然饱和度由 local_vibrance 算子承担（双向、中性 50）。
+  test("auto_grade 不再内嵌 vibrance；独立算子 local_vibrance 接管", () => {
     const c = json("python/ai_studio/op_catalog.json");
-    const op = c.ops.find((o: { id: string }) => o.id === "auto_grade");
-    assert.ok(op?.params?.vibrance, "auto_grade 缺 vibrance 参数");
-    assert.equal(op.params.vibrance.type, "range");
-    assert.equal(op.params.vibrance.default, 0, "默认必须是 0，否则四条配方出图会变");
-    assert.equal(op.params.vibrance.max, 0.25);
+    const ag = c.ops.find((o: { id: string }) => o.id === "auto_grade");
+    assert.ok(ag, "缺 auto_grade 算子");
+    assert.equal(ag.params.vibrance, undefined, "调色算子不得再内嵌 vibrance 滑条");
+    const lv = c.ops.find((o: { id: string }) => o.id === "local_vibrance");
+    assert.ok(lv?.params?.vibrance, "独立自然饱和度算子必须声明 vibrance");
+  });
+
+  // FEAT-206：独立自然饱和度算子（批量套用「调色完之后/最后一步」）
+  test("local_vibrance：独立算子、双向值域、默认 0（中性）", () => {
+    const c = json("python/ai_studio/op_catalog.json");
+    const op = c.ops.find((o: { id: string }) => o.id === "local_vibrance");
+    assert.ok(op, "缺 local_vibrance 算子");
+    assert.equal(op.backend, "local");
+    const v = op.params.vibrance;
+    assert.equal(v.type, "range");
+    assert.equal(v.default, 0, "默认必须是 0（中性），否则四条配方出图会变");
+    assert.equal(v.min, -0.25, "必须双向值域，中性 0 才能落在滑条中间 50");
+    assert.equal(v.max, 0.25);
+  });
+
+  test("四条配方都以 local_vibrance 收尾（调色完之后的最后一步）", () => {
+    const c = json("python/ai_studio/op_catalog.json");
+    const stage = c.ops.find((o: { id: string }) => o.id === "local_vibrance")?.stage;
+    assert.ok((stage ?? 0) >= 4, "自然饱和度 stage 必须晚于调色/胶片/人像");
+    const recipes = json("python/ai_studio/recipes.json").recipes;
+    assert.ok(recipes.length >= 4);
+    for (const r of recipes) {
+      const last = r.steps[r.steps.length - 1];
+      assert.equal(last.op, "local_vibrance", `${r.id} 末步不是自然饱和度`);
+      assert.equal(last.params.vibrance, 0, `${r.id} 的自然饱和度默认必须为 0`);
+    }
   });
 });

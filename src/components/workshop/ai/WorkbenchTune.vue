@@ -240,7 +240,8 @@ function onSelect(step: WbChainStep, key: string, e: Event): void {
 
       <div class="wt-foot">
         <span class="wt-foot-note">
-          滑杆拉到 0 = 不处理；下拉选「不处理」= 整步跳过。只重算当前这张，免费。
+          数值滑杆拉到中性值 = 不做（多数是 0；自然饱和度是中间 50，两侧分别为收敛/提升）；
+          下拉选「不处理」= 整步跳过。只重算当前这张，免费。
         </span>
         <button
           v-if="changedCount || skippedCount"
