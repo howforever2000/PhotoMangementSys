@@ -21,14 +21,35 @@ use crate::db::embedding::TextEmbeddingRecord;
 use crate::db::SmartHit;
 use crate::{AppState, SessionState};
 
-/// 语义相似度下限（**已下线口径**，仅旧单测参考）
+/// 以图搜图（图→图）路的相对相关度默认下限（BUG-2026-1120-003）
 ///
-/// FEAT-154 曾把它抬到 0.45（0.30 低到「几乎全库命中」）。
-/// FEAT-155 后关键词搜索与以图搜图都改用「相对相关度下限」
-/// （`content::SEMANTIC_REL_FLOOR_DEFAULT` / `content::SEMANTIC_LANE_MIN_LIFT`），
-/// **绝对余弦阈值在语义检索里已无生产调用点** —— 图像塔与描述塔的余弦尺度差一倍以上，
-/// 同一个绝对值不可能同时对两路成立（BUG-2026-1101-007）。
-pub const MIN_SIM_DEFAULT: f64 = 0.45;
+/// **与关键词搜索的下限（`content::SEMANTIC_REL_FLOOR_DEFAULT` = 0.005）互不共用、
+/// 互不影响**：两路的余弦分布形态完全不同，必须各用各的刻度。
+///
+/// 历史：FEAT-155 把召回从「绝对余弦阈值」改成「相对相关度 rel = cos − 本路中位数」，
+/// 但本命令层误沿用了旧的绝对阈值 0.45（原 `MIN_SIM_DEFAULT`）当 rel 下限。
+/// 本机实测（photos.db · chinese-clip-vit-b16 · 25154 条，抽样 4000 算两两余弦）：
+/// 图→图全库 median = 0.577、p99 = 0.793 ⇒ rel 理论上限（查自己 cos=1.0）只有
+/// **0.423 < 0.45**，门槛高于天花板，任何查询恒为空集（实测通过率 0/7998000）。
+///
+/// 取 0.10 =「cos 至少比全库中位高 0.10」的可信相似带（实测约 11.6% 的对能过，
+/// p99 邻域），在 topK=60 截断下足以把真相似与库内噪声分开。
+pub const IMG_QUERY_REL_FLOOR_DEFAULT: f64 = 0.10;
+/// rel 入参夹取上限：必须低于图→图 rel 理论上限 ≈0.423，高于它恒空集
+const IMG_QUERY_REL_FLOOR_MAX: f64 = 0.40;
+
+/// 解析以图搜图的相对相关度下限（纯函数，单测覆盖）
+///
+/// - `None` → [`IMG_QUERY_REL_FLOOR_DEFAULT`]（0.10）
+/// - 显式值夹取到 `[0.0, IMG_QUERY_REL_FLOOR_MAX]`
+///
+/// 注意：这里是**相对**相关度（rel = cos − 全库中位），不是绝对余弦——
+/// 同一个数字在两套口径下含义完全不同，禁止互相代用。
+pub fn img_query_rel_floor(min_similarity: Option<f64>) -> f64 {
+    min_similarity
+        .unwrap_or(IMG_QUERY_REL_FLOOR_DEFAULT)
+        .clamp(0.0, IMG_QUERY_REL_FLOOR_MAX)
+}
 /// 以图搜图默认返回条数
 const IMAGE_TOPK_DEFAULT: usize = 60;
 
@@ -644,9 +665,10 @@ pub mod commands {
     ) -> Result<Vec<SmartHit>, String> {
         let _t = log_call!("smart_search_by_image", &format!("path={path}"));
         let user_id = require_user(&session)?;
-        let min_sim = min_similarity.unwrap_or(MIN_SIM_DEFAULT).clamp(0.05, 0.95);
+        // BUG-2026-1120-003：图→图路用自己的相对下限（默认 0.10），与关键词路（0.005）互不影响
+        let rel_floor = img_query_rel_floor(min_similarity);
         let topk = limit.unwrap_or(IMAGE_TOPK_DEFAULT as i64).clamp(1, 500) as usize;
-        let r = recall_by_image(&app, &state, user_id, &path, topk, min_sim).await;
+        let r = recall_by_image(&app, &state, user_id, &path, topk, rel_floor).await;
         match &r {
             Ok(list) => logger::log_call_end_with(
                 "smart_search_by_image",
@@ -720,6 +742,10 @@ pub mod commands {
 mod tests {
     use super::*;
 
+    /// 旧绝对余弦阈值（FEAT-155 已下线口径），仅供 rank_by_cosine 的历史单测参考；
+    /// 生产路径禁止再引用——它当 rel 下限用会恒空集（BUG-2026-1120-003）。
+    const LEGACY_MIN_SIM: f64 = 0.45;
+
     fn norm(v: Vec<f32>) -> Vec<f32> {
         let mut v = v;
         l2_normalize(&mut v);
@@ -735,7 +761,7 @@ mod tests {
             ("self".to_string(), a.clone()),
             ("c".to_string(), norm(vec![-0.1, -0.2, 0.9, 0.1])),
         ];
-        let out = rank_by_cosine(&items, &a, 10, MIN_SIM_DEFAULT);
+        let out = rank_by_cosine(&items, &a, 10, LEGACY_MIN_SIM);
         assert_eq!(out[0].0, "self");
         assert!(out[0].1 >= 0.999, "自身余弦应≈1，实际 {}", out[0].1);
         // 降序
@@ -753,14 +779,34 @@ mod tests {
             ("mid".to_string(), norm(vec![0.5, 0.866])),
             ("low".to_string(), norm(vec![0.0, 1.0])),
         ];
-        let all = rank_by_cosine(&items, &q, 10, MIN_SIM_DEFAULT);
+        let all = rank_by_cosine(&items, &q, 10, LEGACY_MIN_SIM);
         assert_eq!(all.len(), 2, "正交向量余弦 0 应被阈值滤掉");
         assert_eq!(all[0].0, "high");
-        let one = rank_by_cosine(&items, &q, 1, MIN_SIM_DEFAULT);
+        let one = rank_by_cosine(&items, &q, 1, LEGACY_MIN_SIM);
         assert_eq!(one.len(), 1);
         // 维度不一致 / 空向量直接跳过
         let bad = vec![("x".to_string(), vec![1.0]), ("y".to_string(), Vec::new())];
-        assert!(rank_by_cosine(&bad, &q, 10, MIN_SIM_DEFAULT).is_empty());
+        assert!(rank_by_cosine(&bad, &q, 10, LEGACY_MIN_SIM).is_empty());
+    }
+
+    /// BUG-2026-1120-003 回归：以图搜图的 rel 下限解析
+    ///
+    /// 依据实测：图→图全库两两余弦 median≈0.577，rel 理论上限（查自己）≈0.423，
+    /// 旧的绝对阈值 0.45 当 rel 下限用 ⇒ 恒空集。
+    #[test]
+    fn img_query_rel_floor_default_and_clamp() {
+        // 前端传 null → 走图→图路自己的默认 0.10（不是关键词路的 0.005）
+        assert_eq!(img_query_rel_floor(None), 0.10);
+        // 显式值夹取到 [0.0, 0.40]：上限必须低于 rel 理论上限 0.423
+        assert_eq!(img_query_rel_floor(Some(0.99)), 0.40);
+        assert_eq!(img_query_rel_floor(Some(-1.0)), 0.0);
+        assert_eq!(img_query_rel_floor(Some(0.30)), 0.30);
+        // 两路下限互不影响：常量独立且语义不同
+        assert_ne!(
+            IMG_QUERY_REL_FLOOR_DEFAULT,
+            crate::content::SEMANTIC_REL_FLOOR_DEFAULT
+        );
+        assert_eq!(crate::content::SEMANTIC_REL_FLOOR_DEFAULT, 0.005);
     }
 
     /// 描述模板（验收第 4 条）：固定顺序 + 固定分隔符，空字段整体跳过
