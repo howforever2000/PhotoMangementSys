@@ -445,9 +445,9 @@ fn begin_inflight(st: &mut Store, name: &str) -> Result<(), String> {
 /// `pub` 的原因：ai_service 拉起 ai_studio 子进程时要把同一个根注入
 /// `AI_STUDIO_MODELS_DIR`，否则打包版两侧各算一套路径（下完找不到）。
 pub fn models_dir() -> PathBuf {
-    // VCR_MODEL_DIR 优先：打包版由 lib.rs::setup 指向 resource_dir/vcr/models，
-    // 子进程（vcr-server.exe）也按同一路径注入；未设置时回落源码目录
-    // python/models（开发态）。
+    // VCR_MODEL_DIR 优先：由 lib.rs::setup 解析后指向应用数据目录
+    // app_data/vcr-models（release），子进程（vcr-server.exe）也按同一路径注入；
+    // 未设置时回落源码目录 python/models（开发态）。
     if let Ok(v) = std::env::var("VCR_MODEL_DIR") {
         if !v.is_empty() {
             return PathBuf::from(v);
@@ -573,6 +573,7 @@ async fn run(app: &AppHandle, spec: &DlSpec) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建模型目录失败: {e}"))?;
 
     let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(3600))
         .read_timeout(READ_TIMEOUT)
@@ -983,6 +984,17 @@ const READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// 单源自检超时
 const PROBE_TIMEOUT: Duration = Duration::from_secs(12);
 
+/// 请求 User-Agent。
+///
+/// ModelScope 的 WAF 对**空 UA** 的请求直接回 403（2026-11-21 实测：
+/// `UA=""` → 403；`reqwest/x` / `python-requests` / 浏览器 UA → 206/200）。
+/// reqwest 默认**不发** User-Agent，导致 OCR 等绝对 URL（ModelScope）
+/// 在应用内探测与下载全部 403，而浏览器/curl 正常。此处统一补 UA。
+///
+/// `pub(crate)`：update 模块复用同一 UA / 同一镜像表，避免两份口径漂移
+/// （GitHub API 会对不同 UA 给出不同的限流口径，镜像站同样按 UA 做白名单）。
+pub(crate) const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PhotoMangementSys-ModelDownloader";
+
 /// 内置镜像源模板（FEAT-061）
 ///
 /// `{repo}` = HF 仓库 id；`{path}` = 仓库内相对路径（如 `onnx/model_fp16.onnx`）。
@@ -1007,7 +1019,10 @@ const GITHUB_MIRRORS: [&str; 2] = [
 ///
 /// 为什么不只留镜像：镜像站是第三方公益服务，随时可能下线或限流；
 /// 直连虽慢（0.06~0.14 MB/s）但永远是最权威的兜底，保住它才不会把下载能力押在别人身上。
-fn expand_github_mirrors(url: &str) -> Vec<String> {
+///
+/// `pub(crate)`：update 模块复用同一 UA / 同一镜像表，避免两份口径漂移
+/// —— 镜像站换域名、排序调整时只改这一处，模型下载与应用内更新同时生效。
+pub(crate) fn expand_github_mirrors(url: &str) -> Vec<String> {
     if !is_github_download(url) {
         return vec![url.to_string()];
     }
@@ -1163,6 +1178,7 @@ pub async fn probe_sources(name: &str) -> Result<Vec<SourceProbe>, String> {
     };
     let file = spec.main_file();
     let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(PROBE_TIMEOUT)
         .build()
@@ -1362,10 +1378,11 @@ pub fn detect_npu_hardware() -> bool {
 
 /// BUG-2026-1119-002：当前生效的模型目录（供「离线包 → 打开模型目录」按钮用）。
 ///
-/// 为什么要有这条命令：离线包的兜底路径有两个（内置资源目录 / app_data 副本），
-/// 选哪一个由 `vision::resolve_model_dir()` 在启动时决定并写进 `VCR_MODEL_DIR`。
-/// 前端若自己拼 `%APPDATA%\com.photomanagementsys.app\vcr-models`，在「安装目录可写」
-/// 的机器上会指到错误位置（模型其实在内置目录里）。这里直接回传后端实际使用的
+/// 为什么要有这条命令：release 只有应用数据目录（app_data/vcr-models）一个落点，
+/// 内置资源目录只在启动时补缺、不再作为运行期模型目录，具体目录由
+/// `vision::resolve_model_dir()` 决定并写进 `VCR_MODEL_DIR`。
+/// 前端若自己拼 `%APPDATA%\com.photomanagementsys.app\vcr-models`，在标识符或
+/// 自定义 VCR_MODEL_DIR 的场景下会指到错误位置。这里直接回传后端实际使用的
 /// 那个目录，与扫描、下载、Python 子进程三方同源，前端不复制判定逻辑。
 #[tauri::command]
 pub fn model_dir() -> String {

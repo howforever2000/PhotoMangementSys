@@ -385,10 +385,12 @@ pub fn run() {
                 data_dir.display()
             ));
             // 打包版：解析「模型目录」并写入进程环境变量（VCR_MODEL_DIR）
-            //   - 随 MSI/NSIS 安装的模型位于 resource_dir/vcr/models；
-            //   - MSI 默认装到 Program Files（普通权限进程不可写），而语义子图拆分 /
-            //     档位持久化 / 应用内模型下载都要写模型目录 → 该目录不可写时自动在
-            //     app_data_dir 下建立硬链接（或复制）副本并改用它，
+            //   - release 构建**固定**落应用数据目录 `app_data_dir/vcr-models`
+            //     （%APPDATA%\<identifier>\vcr-models）；绝不落在安装目录——NSIS 升级
+            //     默认「先卸载旧版再安装」，旧 uninstall.exe 会删掉上一版登记过的
+            //     `vcr\models\*`，放安装目录等于每次升级都重下模型（BUG-2026-1122-001）；
+            //   - 随安装包分发的模型（resource_dir/vcr/models）此后**只作种子**：启动时
+            //     按缺失硬链接（跨卷/失败退回复制）补进用户目录，已有文件不覆盖不删除，
             //     见 vision::resolve_model_dir；
             //   - clip_model_present()（vision.rs）与 model_dl::models_dir() 均按
             //     VCR_MODEL_DIR 解析（此前硬编码 CARGO_MANIFEST_DIR，打包后指向构建机

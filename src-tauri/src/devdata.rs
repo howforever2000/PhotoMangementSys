@@ -233,12 +233,10 @@ pub fn paths(app: &AppHandle) -> Result<Vec<PathEntry>, String> {
         .resource_dir()
         .ok()
         .map(|r| r.join("vcr").join("models"));
-    let model_note = match &bundled {
-        Some(b) if *b != model_dir => {
-            "安装包内置目录只读（MSI 装到 Program Files）→ 已启用 app_data 下的可写硬链接副本，语义拆图/档位/下载都写这里（BUG-2026-0916-004）"
-        }
-        Some(_) => "安装包内置目录且可写（NSIS 按用户安装），直接使用",
-        None => "未找到安装包内置模型目录 → 回落应用数据目录 app_data/vcr-models（开发态为源码目录 python/models）。模型可在此按需下载",
+    let model_note = if cfg!(debug_assertions) {
+        "开发态：直接使用源码目录 python/models"
+    } else {
+        "模型固定落应用数据目录，不随安装包卸载/升级删除；随安装包分发的模型启动时按缺失补进来（BUG-2026-1122-001）"
     };
     out.push(dir_entry(
         "model_dir",
@@ -254,7 +252,7 @@ pub fn paths(app: &AppHandle) -> Result<Vec<PathEntry>, String> {
                 "模型",
                 "模型目录（安装包内置）",
                 b,
-                "随安装包分发，只读；缺失的档位由「性能设置 → 模型下载」按需获取",
+                "随安装包分发；仅作为种子在启动时补进用户模型目录，不再作为运行期模型目录",
             ));
         }
     }

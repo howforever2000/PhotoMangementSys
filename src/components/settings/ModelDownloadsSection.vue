@@ -80,8 +80,8 @@ async function openDir() {
         下载
         <button class="link" type="button" @click="downloadOffline">model.zip</button>
         后解压。包内已是
-        <code>{{ OFFLINE_PACKAGE_ARCHIVE_ROOT }}</code> 结构，<strong>直接解压到下面这个目录</strong>，
-        不要再额外套一层文件夹。解压完重启应用即可（程序只在启动时扫描模型目录）。
+        <code>{{ OFFLINE_PACKAGE_ARCHIVE_ROOT }}</code> 结构：把其中<strong>之下的文件</strong>
+        解压到下面这个目录（不要再套一层 <code>vcr\models</code>）。解压完重启应用即可（程序只在启动时扫描模型目录）。
       </p>
 
       <button class="btn-dir" type="button" @click="openDir">📂 打开我的模型目录</button>

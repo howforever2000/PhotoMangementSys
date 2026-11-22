@@ -54,22 +54,20 @@ export const OFFLINE_PACKAGE_CONTENTS: readonly string[] = [
 ];
 
 /**
- * 安装形态决定「解压到哪里」—— 判据是 `vision::resolve_model_dir()` 的分支，
- * 不是「猜用户怎么装的」。
+ * 离线包解压落点 —— 与 `vision::resolve_model_dir()` 同源：**所有安装形态只有一个目录**。
  *
- * 三种落点（`src-tauri/src/vision.rs`）：
- *   ① `resource_dir/vcr/models` 存在且**可写** → 直接用它（NSIS 按用户安装）
- *   ② 存在但**只读** → 启动时硬链接/复制到 `%APPDATA%\<identifier>\vcr-models` 并用副本（MSI）
- *   ③ **不存在** → 直接落 `%APPDATA%\<identifier>\vcr-models`（轻量包 / 无模型包）
+ * 旧实现按安装形态分三种落点（内置目录可写就直接用 / 只读才硬链接到 app_data /
+ * 轻量包直接落 app_data），于是「NSIS 按用户安装」的用户模型住在安装目录里——
+ * 而 Tauri NSIS 升级默认「先卸载旧版再安装」，旧 uninstall.exe 会删掉上一版登记过的
+ * `vcr\models\*`，每次升级模型都要重下（BUG-2026-1122-001）。
  *
- * 修前文案只说「解压到安装根目录（MSI 只读安装为 %APPDATA%\…\vcr-models）」，
- * 漏掉分支 ③ —— 而分支 ③ 恰恰是**最常见**的情形（0.4.x 起发行包就是不含模型的
- * 轻量形态）。轻量包用户照文案解压到安装根目录，`vcr/models` 目录本来就不存在，
- * 应用启动时 `bundled.is_dir()` 为 false 直接跳过，模型永远读不到，且不报错。
+ * 现在固定落应用数据目录：模型是用户数据、不是程序文件，卸载/覆盖安装/升级都不碰它；
+ * 安装包里内置的模型启动时按缺失补进来（硬链接优先、跨卷复制、已存在不覆盖）。
+ * 因此这里只保留一个落点，不再按安装形态分叉。
  */
 export interface OfflinePackageTarget {
-  /** 落点标识：slim = 无内置模型目录的轻量包 */
-  key: "portable" | "msi" | "slim";
+  /** 落点标识（保留字段便于视图层 v-for 渲染） */
+  key: "user-data";
   /** 一行标题 */
   title: string;
   /** 具体的解压目标路径说明 */
@@ -83,26 +81,18 @@ const APP_MODELS_DIR = "%APPDATA%\\com.photomanagementsys.app\\vcr-models";
 
 export const OFFLINE_PACKAGE_TARGETS: readonly OfflinePackageTarget[] = [
   {
-    key: "slim",
-    title: "轻量包 / 不含模型的安装包（最常见）",
+    key: "user-data",
+    title: "所有安装形态（NSIS / MSI / 轻量包 / 全量包）",
     path: `${APP_MODELS_DIR}\\`,
-    why: "安装目录里没有 vcr\\models，应用会直接读这里",
-  },
-  {
-    key: "portable",
-    title: "NSIS 按用户安装（可写）",
-    path: "<安装根目录>\\",
-    why: "zip 内层自带 vcr\\models\\，解压后即被内置资源目录直接采用",
-  },
-  {
-    key: "msi",
-    title: "MSI 装到 Program Files（只读）",
-    path: `${APP_MODELS_DIR}\\`,
-    why: "内置目录只读，应用首次启动会把模型硬链接到这个副本目录",
+    why: "模型固定落应用数据目录，卸载、升级、覆盖安装都不会删除；安装包内置的模型启动时自动按缺失补进来",
   },
 ];
 
-/** zip 内层的目录结构（前缀提醒：包内已是 vcr/models/…，不要再多套一层） */
+/**
+ * zip 内层的目录结构（前缀提醒：包内已是 vcr/models/…，不要再多套一层）
+ *
+ * 解压时把 `vcr\models\` **之下的内容**放进模型目录，不要再套一层 `vcr\models`。
+ */
 export const OFFLINE_PACKAGE_ARCHIVE_ROOT = "vcr\\models\\";
 
 /** 「约 979MB（解压后）」—— 两处 UI 共用同一句，避免再出现两个体积 */

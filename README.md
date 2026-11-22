@@ -239,17 +239,15 @@ vcr/models/
 
 已下线（不再需要）：`yolov8*-cls.onnx`、`resnet18_places365.onnx`、`album_groups.json`、`imagenet_*.txt/json`。
 
-**「模型目录」到底是哪个目录**（三种安装形态不同，照自己的安装方式对号入座）：
+**「模型目录」永远是同一个目录**（与安装形态无关）：
 
-| 安装形态 | 模型应放在 | 为什么 |
-|---|---|---|
-| 轻量包 / 不含模型的安装包（**最常见**） | `%APPDATA%\com.photomanagementsys.app\vcr-models\` | 安装目录里没有 `vcr\models`，程序启动时直接读这里 |
-| NSIS 按用户安装（装到 `%LOCALAPPDATA%`，可写） | `<安装根目录>\`（即 `…\vcr\models\`） | 内置资源目录可写，直接被采用 |
-| MSI 装到 `Program Files`（只读） | `%APPDATA%\com.photomanagementsys.app\vcr-models\` | 内置目录只读，程序首次启动会把模型硬链接到这个副本目录 |
+`%APPDATA%\com.photomanagementsys.app\vcr-models\`（应用数据目录）
 
-不确定就用应用内 **性能设置 → 模型管理 → 离线包 → 「📂 打开我的模型目录」** —— 它打开的是程序**当前实际读取**的那一个目录（后端 `model_dir` 命令，与扫描、Python 子进程同源），解压进去就对了。
+模型是用户数据、不是程序文件：程序把模型目录固定在应用数据目录，**卸载、覆盖安装、升级重装都不会删除它**。旧实现是「安装目录可写就直接用」，而 Tauri NSIS 升级默认「先卸载旧版再安装」，旧 uninstall.exe 会删掉上一版登记过的 `vcr\models\*` → 每次升级都要重下模型（BUG-2026-1122-001）。安装包内置的模型现在只作**种子**：启动时按缺失补进用户目录（同卷硬链接=零拷贝，跨卷复制），已存在的文件一律不覆盖——不会拿安装包里的旧档盖掉你下载的新档。
 
-`model.zip` 内层已是 `vcr\models\…` 结构，解压时不要再额外套一层文件夹。对于上表第一、三种，程序实际上读的是 `vcr-models\` 里面的内容，因此要把 zip 内的 `vcr\models\` 之下的文件直接解到 `vcr-models\`（或解压后把 `vcr\models\*` 挪进去）。解压完**需要重启应用**：模型目录只在启动时扫描一次。
+不确定就用应用内 **性能设置 → 模型管理 → 离线包 → 「📂 打开我的模型目录」** —— 它打开的就是程序当前实际读取的目录（后端 `model_dir` 命令，与扫描、Python 子进程同源）。
+
+`model.zip` 内层已是 `vcr\models\…` 结构：把 `vcr\models\` **之下的内容**解压/移动到 `vcr-models\` 里（不要再套一层 `vcr\models`）。解压完**需要重启应用**：模型目录只在启动时扫描一次。
 
 ### 7.3 模型获取与更新
 
@@ -280,7 +278,7 @@ npx tauri build --config src-tauri\release-slim.tauri.conf.json
 
 - **内嵌模型走显式清单**：`src-tauri/release.tauri.conf.json` 的 `bundle.resources` 逐项列出运行必需模型（不再整目录内嵌），避免把开发用 / 已下线的模型打进安装包（v0.3.0 安装包因此从 574MB 降到 457MB）。新增必需模型时记得同步该清单与 `release.ps1` 的校验列表。
 - **精简包的安全前提**：`release-slim.tauri.conf.json` 只带两个微服务、**不带任何 `.onnx`**（`cargo test --lib model_dl` 有守卫：移出的每个模型都必须能从应用内下载补齐）。**不要**用「无模型配置 + 下载表漏项」的组合发版 —— 那正是 BUG-2026-1028-011 的事故形态。
-- **模型目录可写性**：语义拆图 / 档位持久化 / 应用内模型下载都要写模型目录，而 MSI 默认装到 `Program Files`（普通权限进程只读）。应用启动时由 `vision::resolve_model_dir` 统一解析模型目录，检测到只读即自动在 `%APPDATA%\<identifier>\vcr-models` 建立硬链接副本（同卷零拷贝）并改用它；NSIS 按用户安装（`%LOCALAPPDATA%`）时可写，直接用安装目录。
+- **模型目录固定在用户数据目录**（BUG-2026-1122-001）：release 构建的模型目录永远是 `%APPDATA%\<identifier>\vcr-models`，绝不落安装目录——NSIS 升级默认「先卸载旧版再安装」，旧 uninstall.exe 会删掉上一版登记过的 `vcr\models\*`。`bundle.resources` 里的内置模型此后**只作种子**：启动时按缺失硬链接（同卷零拷贝）或复制进用户目录，已有文件不覆盖（用户可能已经下载了更新的档位）。安装器侧另有 `bundle.windows.nsis.installerHooks`（`src-tauri/installer-hooks.nsh`）兜底：卸载前用 robocopy（/XC /XN /XO）把 `$INSTDIR\vcr\models` 里残留的模型按缺失补进用户目录，做到「卸载也不删模型」。
 - **离线包体积只有一个事实源**（v5.0，FEAT-195）：`model.zip` 的清单与「解压后体积」由 `model_dl::specs()` 派生，`scripts/pack-model-zip.ps1 -CheckOnly` 可随时核对；前端只读 `utils/modelOfflinePackage.ts`，不再各处手写数字与版本号。
 
 产物位置：`src-tauri/target/release/bundle/msi/` 与 `nsis/`；发布资产另有根目录 `model.zip` 与 `python/dist/openvino-npu-win-x64.zip`。应用内按钮用 `releases/latest/download/` 抓这两个资产，**每次发版必须都带上**。

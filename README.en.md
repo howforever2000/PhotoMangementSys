@@ -206,6 +206,8 @@ Notable optimizations implemented during development:
 
 Installers include the models by default. If a given installer does not, verify that the model directory contains the following files (v0.3.0 architecture: **image-classification models were retired**; content classification is now driven by the semantic model):
 
+The model directory is always `%APPDATA%\com.photomanagementsys.app\vcr-models` regardless of installer type (NSIS per-user, MSI, slim or full bundle). Models are user data: uninstalling, overwriting or upgrading never deletes them. Models shipped inside the installer are only a **seed** — at startup the missing ones are hard-linked (zero-copy on the same volume) or copied into the user directory, and existing files are never overwritten (BUG-2026-1122-001).
+
 ```
 vcr/models/
 ├─ yolov8n-det.onnx                          # COCO detection / people (required)
@@ -242,7 +244,7 @@ The script performs: ① build `python/dist/vcr-server.exe` in a minimal venv �
 Two conventions (since v0.3.0):
 
 - **Explicit model list**: `bundle.resources` in `src-tauri/release.tauri.conf.json` lists the runtime-required models one by one instead of embedding the whole directory, so dev-only / retired models never ship (this shrank the v0.3.0 installer from 574 MB to 457 MB). When adding a required model, update both that list and the validation list in `release.ps1`.
-- **Model directory writability**: semantic graph splitting, tier persistence and in-app model downloads all write into the model directory, while the MSI installs into `Program Files` (read-only for non-elevated processes). At startup `vision::resolve_model_dir` resolves the model directory and, when the bundled one is read-only, creates a **hard-link copy** under `%APPDATA%\<identifier>\vcr-models` (zero-copy on the same volume) and uses it; the NSIS per-user install (`%LOCALAPPDATA%`) is writable and is used directly.
+- **Model directory lives in user data** (BUG-2026-1122-001): release builds always resolve the model directory to `%APPDATA%\<identifier>\vcr-models`, never to the install directory — the Tauri NSIS upgrade defaults to "uninstall the old version first", and the previous uninstaller deletes the `vcr\models\*` files it registered. Models embedded via `bundle.resources` are only a seed: missing files are hard-linked (zero-copy) or copied at startup and existing files are never overwritten. As a second line of defence, `bundle.windows.nsis.installerHooks` (`src-tauri/installer-hooks.nsh`) runs robocopy (`/XC /XN /XO`, i.e. only missing files) before uninstall to move any leftover models from `$INSTDIR\vcr\models` into the user directory.
 
 Output location: `src-tauri/target/release/bundle/msi/` and `nsis/`.
 

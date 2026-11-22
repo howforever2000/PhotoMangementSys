@@ -1238,62 +1238,173 @@ fn http_failure_err(status: reqwest::StatusCode, detail: &str) -> String {
     }
 }
 
-/// 目录是否可写（试写探针：MSI 装到 Program Files 时普通权限进程不可写）
-fn dir_writable(dir: &Path) -> bool {
-    let probe = dir.join(".pms-write-probe");
-    match std::fs::File::create(&probe) {
-        Ok(_) => {
-            let _ = std::fs::remove_file(&probe);
-            true
+/// 种子补缺的统计（一次启动最多一行日志，数值直接说明"补了什么、没补什么"）
+#[derive(Default, Debug)]
+struct SeedStats {
+    linked: usize,
+    copied: usize,
+    kept: usize,
+    failed: usize,
+}
+
+/// 运行期会被应用改写的文本/配置类文件后缀：这些文件不硬链接，一律复制
+///
+/// 硬链接共享同一个文件对象的安全描述符与只读属性：从只读安装目录
+/// （MSI 装到 Program Files）链进用户目录的配置，应用改写时仍会被拒
+/// （BUG-2026-1122-001 的伴随坑）。这类文件体积只有 KB 级，复制代价可忽略，
+/// 且复制后「用户设置」与「安装包里的旧默认值」彻底解耦。
+const COPY_ONLY_EXT: &[&str] = &["json", "txt", "yaml", "yml", "md"];
+
+fn is_copy_only(name: &std::ffi::OsStr) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| COPY_ONLY_EXT.iter().any(|x| e.eq_ignore_ascii_case(x)))
+        .unwrap_or(false)
+}
+
+/// 复制到临时名再改名，避免断电/被杀在目标处留下半截文件
+///
+/// 为什么必须原子：种子只在「目标缺失」时执行，而 `to.exists()` 为真就永远跳过——
+/// 半截文件会被当成已就位永久跳过，模型通道静默损坏（比报错更难查）。
+/// 失败时清掉临时文件；同目录 rename 在 Windows 上是原子替换。
+fn copy_atomic(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut tmp = to.as_os_str().to_os_string();
+    tmp.push(".seedtmp");
+    let tmp = PathBuf::from(tmp);
+    let r = std::fs::copy(from, &tmp).and_then(|_| std::fs::rename(&tmp, to));
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
+}
+
+/// 递归把 src 中「目标缺失」的文件补进 dst（大文件/模型二进制硬链接优先，
+/// 跨卷/失败退回复制）
+///
+/// 链接策略：大文件/模型二进制硬链接零拷贝；json/txt/yaml/yml/md 这类运行期
+/// 会被应用改写的配置一律复制——硬链接共享同一个文件对象的安全描述符与只读
+/// 属性（ACL 跟文件走，不跟路径走），从只读安装目录链进用户目录后改写仍会被拒。
+///
+/// 复制走「临时名 + 原子改名」（见 `copy_atomic`），不会在目标处留下半截文件：
+/// 半截文件一旦被下一次启动当成「已就位」，模型通道就会静默损坏。
+///
+/// 语义关键：**只补缺失，绝不覆盖**——安装包里可能是旧档，用户目录里可能是
+/// 用户新下载的档位，覆盖等于静默降级。单个文件失败只计数不中断（模型还能
+/// 在应用内重新下载，启动不能被它拖死）。
+fn merge_missing_tree(src: &Path, dst: &Path, stats: &mut SeedStats) {
+    let entries = match std::fs::read_dir(src) {
+        Ok(e) => e,
+        Err(_) => {
+            stats.failed += 1;
+            return;
         }
-        Err(_) => false,
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => {
+                stats.failed += 1;
+                continue;
+            }
+        };
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => {
+                stats.failed += 1;
+                continue;
+            }
+        };
+        if file_type.is_dir() {
+            if std::fs::create_dir_all(&to).is_err() {
+                stats.failed += 1;
+                continue;
+            }
+            merge_missing_tree(&from, &to, stats);
+            continue;
+        }
+        if to.exists() {
+            stats.kept += 1;
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                stats.failed += 1;
+                continue;
+            }
+        }
+        // 运行期会被改写的配置类文件直接复制，不尝试硬链接（见 COPY_ONLY_EXT）
+        if is_copy_only(entry.file_name().as_os_str()) {
+            if copy_atomic(&from, &to).is_ok() {
+                stats.copied += 1;
+            } else {
+                stats.failed += 1;
+            }
+            continue;
+        }
+        if std::fs::hard_link(&from, &to).is_ok() {
+            stats.linked += 1;
+        } else if copy_atomic(&from, &to).is_ok() {
+            stats.copied += 1;
+        } else {
+            stats.failed += 1;
+        }
     }
 }
 
-/// 把只读目录树「链接」到可写目录（硬链接优先=零拷贝；跨卷/失败退回真实复制）
+/// 把安装包内置（或旧安装目录残留）的模型补进用户模型目录
 ///
-/// 已存在且大小相同的文件跳过，因此可重复调用；应用后续新增的文件
-/// （clip_vision.onnx / clip_text.onnx / current_clip.json 等）天然落在可写侧。
-fn link_or_copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            link_or_copy_tree(&from, &to)?;
-            continue;
-        }
-        let src_len = entry.metadata().map(|m| m.len()).ok();
-        let same = match (std::fs::metadata(&to), src_len) {
-            (Ok(m), Some(n)) => m.len() == n,
-            _ => false,
-        };
-        if same {
-            continue;
-        }
-        let _ = std::fs::remove_file(&to);
-        if std::fs::hard_link(&from, &to).is_err() {
-            std::fs::copy(&from, &to)?;
-        }
+/// - 幂等：已存在的文件只计入 kept，不重复拷贝；
+/// - 补入方式：大文件/模型二进制硬链接零拷贝；例外是 json/txt/yaml/yml/md 这类
+///   运行期会被改写的配置，一律复制而不是硬链接（硬链接会共享 ACL 与只读属性，
+///   从只读安装目录链进用户目录后应用改写会被拒）；
+/// - 有落地动作或失败时写一行日志（走 crate::logger::log_info + eprintln，
+///   与仓库其它启动日志同渠道），没有动作时保持安静；
+/// - src 不存在 / src == dst 直接返回。
+fn seed_missing_models(src: &Path, dst: &Path) -> SeedStats {
+    let mut stats = SeedStats::default();
+    if !src.is_dir() || src == dst {
+        return stats;
     }
-    Ok(())
+    merge_missing_tree(src, dst, &mut stats);
+    if stats.linked + stats.copied + stats.failed > 0 {
+        let line = format!(
+            "[vcr] 内置模型补入用户模型目录: 硬链接 {} / 复制 {} / 已存在 {} / 失败 {}（来源 {}）",
+            stats.linked,
+            stats.copied,
+            stats.kept,
+            stats.failed,
+            src.display()
+        );
+        eprintln!("{line}");
+        crate::logger::log_info(&line);
+    }
+    stats
 }
 
 /// 解析「模型目录」（全应用唯一口径）
 ///
-/// 0. **debug 构建（开发态）→ 源码目录 `python/models`**：开发时唯一的模型真源。
+/// 0. 环境变量 `VCR_MODEL_DIR`（已设置则直接采用，便于调试 / 自定义部署）
+/// 1. **debug 构建（开发态）→ 源码目录 `python/models`**：开发时唯一的模型真源。
 ///    曾经的坑（BUG-2026-1001-016）：debug 构建里 `resource_dir()` 就是 `target/debug`，
 ///    而那里恰好残留着一份早期拷贝的 `vcr/models` →「资源目录优先」用的是那份**陈旧副本**：
 ///    往 python/models 放新模型，服务却按旧目录找，人脸通道报「模型文件缺失」并静默降级
 ///    （扫完 0 位人物）。debug 构建不发布、不存在“内置资源”，锁定源码目录最不容易错。
-/// 1. 环境变量 `VCR_MODEL_DIR`（已设置则直接采用，便于调试 / 自定义部署）
-/// 2. 打包版内置资源 `resource_dir/vcr/models`：
-///    - 可写（NSIS 默认按用户安装）→ 直接用它；
-///    - 只读（MSI 默认装到 Program Files）→ 在 `app_data_dir/vcr-models` 建
-///      硬链接 / 复制副本并改用副本——语义子图拆分、档位持久化、应用内模型
-///      下载都要写模型目录，只读目录会让这些功能直接失败。
-/// 3. 开发态 → 源码目录 `python/models`
+/// 2. **release（以及 debug 找不到源码目录时）→ `app_data_dir/vcr-models`**：
+///    即 `%APPDATA%\<identifier>\vcr-models`，取不到 app_data_dir 时回落相对路径
+///    `vcr-models`（不回编译期源码路径，见下方 BUG-2026-1013-001）。
+///    落点确定后，若 `resource_dir/vcr/models` 存在，把内置模型**按缺失**硬链接 /
+///    复制进来（`seed_missing_models`），然后返回用户目录。
+///
+/// 为什么 release 绝不把模型目录放在安装目录（BUG-2026-1122-001）：
+/// NSIS 升级默认「先卸载旧版再安装」，旧 uninstall.exe 会 Delete 掉上一版登记过的
+/// `vcr\models\*`；而 NSIS 按用户安装到 `%LOCALAPPDATA%` 时安装目录是可写的，旧逻辑
+/// 「内置目录可写就直接用它」于是把模型全落在**安装目录** → 每次升级模型都要重下。
+/// 现在口径固定：模型目录永远在应用数据目录（卸载/升级不碰它），随安装包分发的模型
+/// 只作**种子**，启动时按缺失硬链接/复制进用户目录，已有文件不覆盖不删除（用户可能
+/// 已经下载了更新的档位，覆盖等于静默降级）。
 pub fn resolve_model_dir(app: &tauri::AppHandle) -> PathBuf {
     if let Ok(v) = std::env::var("VCR_MODEL_DIR") {
         if !v.is_empty() {
@@ -1307,29 +1418,7 @@ pub fn resolve_model_dir(app: &tauri::AppHandle) -> PathBuf {
             return std::fs::canonicalize(&dev_dir).unwrap_or(dev_dir);
         }
     }
-    if let Ok(res) = app.path().resource_dir() {
-        let bundled = res.join("vcr").join("models");
-        if bundled.is_dir() {
-            if dir_writable(&bundled) {
-                return bundled;
-            }
-            if let Ok(data) = app.path().app_data_dir() {
-                let cache = data.join("vcr-models");
-                match link_or_copy_tree(&bundled, &cache) {
-                    Ok(()) => {
-                        eprintln!("[vcr] 内置模型目录只读，已就绪可写副本: {}", cache.display());
-                        return cache;
-                    }
-                    Err(e) => eprintln!(
-                        "[vcr] 模型副本创建失败（{e}），退回只读内置目录 {}",
-                        bundled.display()
-                    ),
-                }
-            }
-            return bundled;
-        }
-    }
-    // 兜底：app_data 下的可写模型目录。
+    // release（以及 debug 找不到源码目录时）：固定落应用数据目录。
     //
     // 【此处曾回落 project_python_dir()，即编译期源码路径】—— `env!("CARGO_MANIFEST_DIR")`
     // 在编译期展开为构建机绝对路径并写进二进制，装到别人机器上时「开发者视角 →
@@ -1337,10 +1426,20 @@ pub fn resolve_model_dir(app: &tauri::AppHandle) -> PathBuf {
     // 暴露作者本机用户名与目录（BUG-2026-1013-001）。安装包未内置模型时尤其高频命中。
     //
     // 现在一律落到 app_data：既是真实可用的位置，也不含任何构建机信息。
-    app.path()
+    let user_dir = app
+        .path()
         .app_data_dir()
         .map(|d| d.join("vcr-models"))
-        .unwrap_or_else(|_| PathBuf::from("vcr-models"))
+        .unwrap_or_else(|_| PathBuf::from("vcr-models"));
+    // 内置（或旧安装目录残留的）模型只当种子：只补缺失，不覆盖不删除。
+    // 读不到 resource_dir（或包里没有 vcr/models）时静默跳过，用户目录照常可用。
+    if let Ok(res) = app.path().resource_dir() {
+        let bundled = res.join("vcr").join("models");
+        if bundled.is_dir() {
+            seed_missing_models(&bundled, &user_dir);
+        }
+    }
+    user_dir
 }
 
 /// CLIP 模型文件是否已下载（未下载则不预热服务，避免无谓进程与等待）
@@ -2601,6 +2700,207 @@ mod tests {
         assert_eq!(parse_tasklist_image("   \n  \n"), None);
     }
 
+    // ------------------------------------------------------------------
+    // 内置模型「只补缺失」的种子逻辑（BUG-2026-1122-001）
+    // ------------------------------------------------------------------
+
+    /// 造一个本次进程专用、不会与其他测试撞车的临时目录（不含新依赖）
+    fn unique_tmp_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "pms-vision-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("临时目录应可创建");
+        dir
+    }
+
+    /// 第一次把内置模型全部补进来；第二次必须一个都不再动（幂等）
+    #[test]
+    fn seed_missing_models_fills_only_missing_and_is_idempotent() {
+        let root = unique_tmp_dir("seed-idempotent");
+        let src = root.join("src");
+        let dst = root.join("dst");
+        std::fs::create_dir_all(src.join("chinese-clip").join("onnx")).unwrap();
+        std::fs::write(src.join("top.txt"), b"top-level").unwrap();
+        std::fs::write(
+            src.join("chinese-clip").join("onnx").join("model_fp16.onnx"),
+            b"nested-bytes",
+        )
+        .unwrap();
+
+        let first = seed_missing_models(&src, &dst);
+        assert_eq!(
+            first.linked + first.copied,
+            2,
+            "首轮应补入 2 个缺失文件: {first:?}"
+        );
+        assert_eq!(first.failed, 0, "首轮不应有失败: {first:?}");
+
+        let second = seed_missing_models(&src, &dst);
+        assert_eq!(second.linked, 0, "第二轮不得再硬链接: {second:?}");
+        assert_eq!(second.copied, 0, "第二轮不得再复制: {second:?}");
+        assert!(second.kept >= 2, "已存在文件应计入 kept: {second:?}");
+
+        // 内容与源一致（硬链接与复制都应该一致）
+        assert_eq!(
+            std::fs::read(dst.join("top.txt")).unwrap(),
+            b"top-level".to_vec()
+        );
+        assert_eq!(
+            std::fs::read(
+                dst.join("chinese-clip")
+                    .join("onnx")
+                    .join("model_fp16.onnx")
+            )
+            .unwrap(),
+            b"nested-bytes".to_vec()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 用户目录里已有的同名文件是用户版本，绝不能被安装包里的旧档覆盖
+    #[test]
+    fn seed_missing_models_keeps_user_file_with_same_name() {
+        let root = unique_tmp_dir("seed-keep-user");
+        let src = root.join("src");
+        let dst = root.join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("current_clip.json"), b"bundled-old").unwrap();
+        std::fs::write(src.join("fresh.onnx"), b"bundled-new").unwrap();
+        std::fs::write(dst.join("current_clip.json"), b"user-version").unwrap();
+
+        let stats = seed_missing_models(&src, &dst);
+        assert_eq!(
+            stats.kept, 1,
+            "同名已存在文件应计入 kept: {stats:?}"
+        );
+        assert_eq!(
+            stats.linked + stats.copied,
+            1,
+            "只应补入那个缺失文件: {stats:?}"
+        );
+        assert_eq!(
+            std::fs::read(dst.join("current_clip.json")).unwrap(),
+            b"user-version".to_vec(),
+            "用户版本被覆盖等于静默降级"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 用户删掉某个档位后，下次启动会被种子里重新补回（自愈）
+    #[test]
+    fn seed_missing_models_relinks_deleted_file() {
+        let root = unique_tmp_dir("seed-relink");
+        let src = root.join("src");
+        let dst = root.join("dst");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub").join("a.onnx"), b"a-bytes").unwrap();
+        std::fs::write(src.join("b.onnx"), b"b-bytes").unwrap();
+
+        let first = seed_missing_models(&src, &dst);
+        assert_eq!(first.linked + first.copied, 2, "首轮应补入 2 个: {first:?}");
+
+        std::fs::remove_file(dst.join("b.onnx")).unwrap();
+        let second = seed_missing_models(&src, &dst);
+        assert_eq!(
+            second.linked + second.copied,
+            1,
+            "被删的文件应重新补回: {second:?}"
+        );
+        assert!(dst.join("b.onnx").is_file(), "被删文件未重新出现");
+        assert!(
+            dst.join("sub").join("a.onnx").is_file(),
+            "未被删除的文件不得因再次 seed 而丢失"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 运行期会被改写的配置类文件必须**复制**而不是硬链接：硬链接共享同一个文件
+    /// 对象的安全描述符与只读属性，从只读安装目录（MSI 装到 Program Files）链进
+    /// 用户目录后，应用改写配置仍会被拒（BUG-2026-1122-001 的伴随坑）。
+    #[test]
+    fn seed_missing_models_copies_mutable_configs_instead_of_linking() {
+        let root = unique_tmp_dir("seed-copy-config");
+        let src = root.join("src");
+        let dst = root.join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("current_clip.json"), b"bundled-old").unwrap();
+        std::fs::write(src.join("w600k_r50.onnx"), b"model-bytes").unwrap();
+
+        let stats = seed_missing_models(&src, &dst);
+        assert_eq!(
+            stats.linked + stats.copied,
+            2,
+            "两个缺失文件都应补入: {stats:?}"
+        );
+
+        // 目标是独立副本：改写目标不得回流到源文件（硬链接会同时改到 src）
+        std::fs::write(dst.join("current_clip.json"), b"user-changed").unwrap();
+        assert_eq!(
+            std::fs::read(src.join("current_clip.json")).unwrap(),
+            b"bundled-old".to_vec(),
+            "配置类文件必须是复制而非硬链接，否则改写会回流到安装目录源文件"
+        );
+        assert_eq!(
+            std::fs::read(dst.join("w600k_r50.onnx")).unwrap(),
+            b"model-bytes".to_vec(),
+            "模型二进制内容应与源一致"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 目标所在目录里不得残留 `.seedtmp` 临时文件
+    fn assert_no_seedtmp(dir: &Path) {
+        let leftovers: Vec<String> = std::fs::read_dir(dir)
+            .expect("应能读取目录")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".seedtmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
+    }
+
+    /// 种子复制必须做到「目标处要么是完整文件、要么根本不存在」：
+    /// 先复制到 `dst.seedtmp` 再原子改名，成功后不留临时文件；
+    /// 覆盖已存在的目标同样成功（Windows 上 rename 是原子替换）。
+    #[test]
+    fn copy_atomic_moves_content_and_leaves_no_temp() {
+        let root = unique_tmp_dir("copy-atomic");
+        let src = root.join("src.bin");
+        let dst = root.join("dst.bin");
+        std::fs::write(&src, b"first-payload").unwrap();
+
+        copy_atomic(&src, &dst).expect("首次复制应成功");
+        assert_eq!(
+            std::fs::read(&dst).unwrap(),
+            std::fs::read(&src).unwrap(),
+            "目标内容必须与源一致"
+        );
+        assert_no_seedtmp(&root);
+
+        // 覆盖场景：目标已存在时 rename 必须能原子替换，而不是失败
+        std::fs::write(&src, b"second-payload").unwrap();
+        copy_atomic(&src, &dst).expect("覆盖已存在目标也应成功");
+        assert_eq!(
+            std::fs::read(&dst).unwrap(),
+            std::fs::read(&src).unwrap(),
+            "已存在的目标必须被新内容整体替换"
+        );
+        assert_no_seedtmp(&root);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// 实例记录解析：新格式带 wait_fails；旧格式（升级前写入的）必须按 0 兼容
     #[test]
     fn test_parse_instance_json_backward_compatible() {
@@ -2616,12 +2916,19 @@ mod tests {
 mod semantic_backoff_tests {
     use super::*;
 
+    /// 回归用例互斥锁：`SEMANTIC_DOWN_AT` 是**进程级全局**，下面两个用例都会改它。
+    /// 并行跑时 `not_ready_must_not_enter_backoff` 刚 clear 的标记会被
+    /// `fatal_error_enters_backoff` 重新 mark，表现为随机 FAILED（与实现无关的测试竞态）。
+    /// 只给「写全局」的用例加锁，不动被测逻辑。
+    static BACKOFF_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     /// 回归：CLIP **强制未就绪**（503「加载中」）必须判为可重试，不得进入退避窗口
     ///
     /// 旧实现「任何失败都 mark_semantic_down」，于是重启后 CLIP 首次加载期的一次 503
     /// 就把整条语义链路锁死 180s——表现正是「向量明明在库里，却一条都搜不出来」。
     #[test]
     fn not_ready_must_not_enter_backoff() {
+        let _guard = BACKOFF_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let zh = http_failure_err(reqwest::StatusCode::SERVICE_UNAVAILABLE, "CLIP 模型加载中");
         assert!(is_retryable_err(&zh), "503 加载中必须判为可重试: {zh}");
         assert!(!should_enter_backoff(&zh), "可重试错误不得进退避: {zh}");
@@ -2643,6 +2950,7 @@ mod semantic_backoff_tests {
     /// 确定性失败仍须进退避，否则每次搜索都要白等连接超时
     #[test]
     fn fatal_error_enters_backoff() {
+        let _guard = BACKOFF_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let missing = http_failure_err(reqwest::StatusCode::NOT_FOUND, "模型缺失");
         assert!(!is_retryable_err(&missing), "{missing}");
         assert!(should_enter_backoff(&missing));
