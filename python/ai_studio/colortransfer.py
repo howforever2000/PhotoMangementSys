@@ -59,16 +59,34 @@ def lab_to_rgb(lab: np.ndarray) -> np.ndarray:
     return np.clip(srgb * 255.0 + 0.5, 0, 255).astype(np.uint8)
 
 
-def _reinhard_lab(src_lab: np.ndarray, ref_lab: np.ndarray, l_weight: float) -> np.ndarray:
+def reinhard_transfer_stats(
+    src_u8: np.ndarray,
+    ref_stats: dict,
+    l_weight: float = 1.0,
+    strength: float = 1.0,
+) -> np.ndarray:
+    """用**预先提取的参考图 Lab 统计**做 Reinhard 迁移。
+
+    与逐像素传 ref 的 `reinhard_transfer` 等价，但统计量可以来自多张参考图的
+    `merge_reference_stats` 合并结果（多图共性调色的入口）。l_weight<1 时只迁移
+    色度、少动亮度（0 = 只迁 a/b，完全保留素材自身明暗）；strength∈[0,1] 为与
+    原图的最终混合比例（0 = 原图，1 = 完全迁移）。
+    """
+    src_lab = rgb_to_lab(src_u8)
     out = src_lab.copy()
     weights = (l_weight, 1.0, 1.0)
     for i in range(3):
         ms, ss = src_lab[..., i].mean(), src_lab[..., i].std() + 1e-6
-        mr, sr = ref_lab[..., i].mean(), ref_lab[..., i].std() + 1e-6
+        mr, sr = ref_stats["mean"][i], ref_stats["std"][i]
         target = (src_lab[..., i] - ms) * (sr / ss) + mr
         out[..., i] = src_lab[..., i] * (1 - weights[i]) + target * weights[i]
     out[..., 0] = np.clip(out[..., 0], 0.0, 100.0)
-    return out
+    transferred = lab_to_rgb(out)
+    strength = float(max(0.0, min(1.0, strength)))
+    if strength >= 1.0:
+        return transferred
+    blended = src_u8.astype(np.float32) * (1.0 - strength) + transferred.astype(np.float32) * strength
+    return np.clip(blended + 0.5, 0, 255).astype(np.uint8)
 
 
 def reinhard_transfer(
@@ -77,27 +95,72 @@ def reinhard_transfer(
     l_weight: float = 1.0,
     strength: float = 1.0,
 ) -> np.ndarray:
-    """把 ref 的 Lab 均值/标准差迁到 src；l_weight<1 时只迁移色度、少动亮度。
+    """把 ref 的 Lab 均值/标准差迁到 src（多参考图请走 `reinhard_transfer_stats`）。"""
+    return reinhard_transfer_stats(src_u8, reference_stats(ref_u8), l_weight=l_weight, strength=strength)
 
-    strength∈[0,1] 为与原图的最终混合比例（0 = 原图，1 = 完全迁移）。
+
+def merge_reference_stats(stats_list: list[dict]) -> dict:
+    """把多张参考图的 Lab 统计等权合并成一份「共性」统计。
+
+    合并均值 = 各参考图均值的等权平均；合并方差用全方差公式
+    `E[σ²] + Var[μ]`（组内方差均值 + 组间均值偏差），数学上等价于把所有参考图
+    的像素混进一个样本池再算统计（忽略各图像素数差异），不引入任何新依赖。
     """
-    src_lab = rgb_to_lab(src_u8)
-    ref_lab = rgb_to_lab(ref_u8)
-    transferred = lab_to_rgb(_reinhard_lab(src_lab, ref_lab, l_weight))
-    strength = float(max(0.0, min(1.0, strength)))
-    if strength >= 1.0:
-        return transferred
-    blended = src_u8.astype(np.float32) * (1.0 - strength) + transferred.astype(np.float32) * strength
-    return np.clip(blended + 0.5, 0, 255).astype(np.uint8)
+    if not stats_list:
+        raise ValueError("没有可合并的参考图统计")
+    if len(stats_list) == 1:
+        return stats_list[0]
+    means = np.asarray([s["mean"] for s in stats_list], dtype=np.float64)
+    stds = np.asarray([s["std"] for s in stats_list], dtype=np.float64)
+    merged_mean = means.mean(axis=0)
+    var_within = (stds.astype(np.float64) ** 2).mean(axis=0)
+    var_between = ((means - merged_mean) ** 2).mean(axis=0)
+    merged_std = np.sqrt(var_within + var_between)
+    return {"mean": merged_mean.tolist(), "std": (merged_std + 1e-6).tolist()}
 
 
-def histogram_match(src_u8: np.ndarray, ref_u8: np.ndarray, strength: float = 1.0) -> np.ndarray:
-    """逐 RGB 通道直方图匹配（对照组）。strength 与 reinhard 同义。"""
+def stats_divergence(stats_list: list[dict]) -> float:
+    """参考图之间的色偏分歧度：a/b 均值两两距离的最大值（Lab 单位，近似 ΔE 的色度分量）。
+
+    供工作流判断「多张参考图色调差异是否过大」（差异过大时合并共性会得到
+    不伦不类的中间态，需要提示用户）。
+    """
+    if len(stats_list) < 2:
+        return 0.0
+    chroma = np.asarray([s["mean"][1:3] for s in stats_list], dtype=np.float64)
+    d = 0.0
+    for i in range(len(chroma)):
+        for j in range(i + 1, len(chroma)):
+            d = max(d, float(np.linalg.norm(chroma[i] - chroma[j])))
+    return d
+
+
+def histogram_ref_sorted(refs) -> list[np.ndarray]:
+    """把一张或多张参考图整理成直方图匹配用的**逐通道已排序像素列**。
+
+    接受单个 `np.ndarray` 或 `list[np.ndarray]`；多张参考图直接把像素拼进同一条
+    列（等价于混池采样）——直方图匹配只看排序后的分位分布，拼接顺序不影响结果。
+    """
+    if isinstance(refs, np.ndarray):
+        refs = [refs]
+    if not refs:
+        raise ValueError("没有可用的参考图像素")
+    # 先拼后排：多张参考图必须混进**同一个样本池**再排序（各图分别排序再拼接
+    # 会破坏整体分位分布，且结果随列表顺序变化）。
+    return [np.sort(np.concatenate([r[..., i].ravel() for r in refs])) for i in range(3)]
+
+
+def histogram_match_sorted(src_u8: np.ndarray, ref_sorted: list[np.ndarray], strength: float = 1.0) -> np.ndarray:
+    """逐 RGB 通道直方图匹配，参考侧给 `histogram_ref_sorted` 的已排序列。
+
+    参考侧预排序一次即可整批复用（批量下省掉每张图重排参考像素的开销）。
+    strength 与 reinhard 同义（与原图的最终混合比例）。
+    """
     out = np.empty_like(src_u8)
     h, w = src_u8.shape[:2]
     for i in range(3):
         s = src_u8[..., i].ravel()
-        r_sorted = np.sort(ref_u8[..., i].ravel())
+        r_sorted = ref_sorted[i]
         order = np.argsort(s, kind="stable")
         ranks = np.empty_like(order)
         ranks[order] = np.arange(s.size)
@@ -111,6 +174,11 @@ def histogram_match(src_u8: np.ndarray, ref_u8: np.ndarray, strength: float = 1.
     return np.clip(blended + 0.5, 0, 255).astype(np.uint8)
 
 
+def histogram_match(src_u8: np.ndarray, ref_u8, strength: float = 1.0) -> np.ndarray:
+    """逐 RGB 通道直方图匹配（对照组）。`ref_u8` 可为单张图或图片列表（多图共性）。"""
+    return histogram_match_sorted(src_u8, histogram_ref_sorted(ref_u8), strength=strength)
+
+
 def reference_stats(ref_u8: np.ndarray) -> dict:
     """提取参考图 Lab 的均值/标准差，供「先描述后套用」或导出 .cube 复用。"""
     lab = rgb_to_lab(ref_u8)
@@ -122,14 +190,23 @@ def reference_stats(ref_u8: np.ndarray) -> dict:
 
 def build_cube_text(ref_u8: np.ndarray, size: int = 33, l_weight: float = 1.0) -> str:
     """把「参考图 Reinhard 迁移」固化成 .cube 文本：采样 size^3 个 sRGB 色点做迁移。"""
+    return build_cube_text_from_stats(reference_stats(ref_u8), size=size, l_weight=l_weight)
+
+
+def build_cube_text_from_stats(ref_stats: dict, size: int = 33, l_weight: float = 1.0) -> str:
+    """把「按参考图统计的 Reinhard 迁移」固化成 .cube 文本。
+
+    多参考图时传 `merge_reference_stats` 的合并统计即可导出「共性」滤镜。
+    """
     line = np.linspace(0.0, 1.0, size, dtype=np.float32)
     b, g, r = np.meshgrid(line, line, line, indexing="ij")  # 轴序 [b,g,r]
     grid = np.stack([r, g, b], axis=-1)
     grid_u8 = np.clip(grid * 255.0 + 0.5, 0, 255).astype(np.uint8).reshape(-1, 3)
     # 逐色点迁移（全局统计，等价于对整幅图做同一变换）——按 256K 一批控制内存
-    out = reinhard_transfer(grid_u8.reshape(1, -1, 3), ref_u8, l_weight=l_weight, strength=1.0)
+    out = reinhard_transfer_stats(grid_u8.reshape(1, -1, 3), ref_stats, l_weight=l_weight, strength=1.0)
     out = out.reshape(-1, 3)
-    return cube_text_from_flat(out, size)
+    # 迁移产物是 uint8，而 .cube 规范要 0~1 归一化浮点（cube_text_from_flat 不猜量纲）
+    return cube_text_from_flat(out.astype(np.float32) / 255.0, size)
 
 
 def cube_text_from_lut(lut: np.ndarray, size: int) -> str:

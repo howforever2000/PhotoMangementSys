@@ -65,6 +65,58 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def _providers_tag(providers) -> str:
+    """已配置的 provider 压成一行摘要（不含 apiKey）：kind=model@host。
+
+    回答「这次作业跑在哪」：云端步的 host:port、用的什么模型一眼可读；
+    全空 = 纯本机（零模型或本地 ONNX）。"""
+    parts: list[str] = []
+    for kind in ("vision", "edit", "upscale"):
+        p = getattr(providers, kind, None)
+        base = (getattr(p, "baseUrl", "") or "").strip() if p else ""
+        if not base:
+            continue
+        host = base.split("://", 1)[-1].rstrip("/")
+        model = (getattr(p, "model", "") or "").strip() or "?"
+        parts.append(f"{kind}={model}@{host}")
+    return ",".join(parts) if parts else "本机"
+
+
+def _ops_of(meta: dict) -> list[str]:
+    """从作业 meta 的 plans 里收「实际执行了哪些组件（算子）」，保序去重。
+
+    配方 / 智能修图 / 创意组合的计划都存在 meta.plans[].steps[].op；
+    非计划型工作流（压缩、OCR 等本机单步）没有 plans，返回空 ——
+    它们的「组件」就是 tool 本身，启动行已经带了。"""
+    out: list[str] = []
+    for plan in (meta or {}).get("plans") or []:
+        for st in plan.get("steps") or []:
+            op = str(st.get("op") or "")
+            if op and op not in out:
+                out.append(op)
+    return out
+
+
+def _stats_tag(meta: dict) -> str:
+    """meta.stats 压成 `k:v,k:v` 一行（无 stats 返回空串）。"""
+    stats = (meta or {}).get("stats")
+    if not isinstance(stats, dict) or not stats:
+        return ""
+    return ",".join(f"{k}:{v}" for k, v in stats.items())
+
+
+def _job_component_tag(meta: dict) -> str:
+    """完成行的组件摘要尾巴：` ops=[a,b,c] stats=images:3,steps:15`（无则空串）。"""
+    parts = []
+    ops_list = _ops_of(meta)
+    if ops_list:
+        parts.append(f"ops=[{','.join(ops_list)}]")
+    stats_tag = _stats_tag(meta)
+    if stats_tag:
+        parts.append(f"stats={stats_tag}")
+    return (" " + " ".join(parts)) if parts else ""
+
+
 def create(req) -> str:
     job_id = _new_id()
     cancel = threading.Event()
@@ -98,7 +150,10 @@ def create(req) -> str:
         with _lock:
             _jobs[job_id]["status"] = "running"
             _jobs[job_id]["stage"] = "开始"
-        log(f"job {job_id} 启动 tool={req.tool} n={len(req.paths)}")
+        log(
+            f"job {job_id} 启动 tool={req.tool} n={len(req.paths)} "
+            f"providers={_providers_tag(req.providers)}"
+        )
 
         def progress(
             pct: int, stage: str, message: str = "", steps: list | None = None
@@ -128,7 +183,12 @@ def create(req) -> str:
                     warnings=res.get("warnings", []) or [],
                     meta=res.get("meta", {}) or {},
                 )
-            log(f"job {job_id} 完成 tool={req.tool} outputs={len(_jobs[job_id]['outputs'])} | 总耗时 {int((time.perf_counter()-t0)*1000)}ms")
+            log(
+                f"job {job_id} 完成 tool={req.tool} "
+                f"outputs={len(_jobs[job_id]['outputs'])}"
+                + _job_component_tag(_jobs[job_id].get("meta") or {})
+                + f" | 总耗时 {int((time.perf_counter()-t0)*1000)}ms"
+            )
         except Cancelled:
             with _lock:
                 _mark_terminal(job_id, status="cancelled", stage="已取消")

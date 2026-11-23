@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * 参考图调色（FEAT-163）
+ * 参考图调色（FEAT-163；多参考图共性 FEAT-211）
  * 把参考图的色调 / 影调迁到素材图（Reinhard 自然 / 直方图强匹配），纯本机；
- * 可选把这次迁移导出成 .cube 供以后当滤镜复用。
+ * 支持选多张参考图等权提取共性色调；可选把这次迁移导出成 .cube 供以后当滤镜复用。
  */
 import { computed, ref, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -19,10 +19,13 @@ const notify = useNotify();
 
 const method = ref("reinhard");
 const strength = ref(80);
+const lWeight = ref(100);
 const exportCube = ref(false);
-const referencePath = ref("");
+const referencePaths = ref<string[]>([]);
 const outputDir = ref("");
 const outputTouched = ref(false);
+
+const MAX_REFS = 10;
 
 watch(
   () => props.paths,
@@ -43,12 +46,31 @@ const canRun = computed(() => props.paths.length > 0 && !busy.value);
 
 async function pickRef() {
   const picked = await openDialog({
-    multiple: false,
+    multiple: true,
     directory: false,
-    title: "选择参考图（调色来源）",
+    title: "选择参考图（可多选，提取共性色调）",
     filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp"] }],
   });
-  if (typeof picked === "string") referencePath.value = picked;
+  if (!picked) return;
+  const list = Array.isArray(picked) ? picked : [picked];
+  const merged = [...referencePaths.value];
+  let overflow = 0;
+  for (const p of list) {
+    if (merged.includes(p)) continue;
+    if (merged.length >= MAX_REFS) {
+      overflow += 1;
+      continue;
+    }
+    merged.push(p);
+  }
+  referencePaths.value = merged;
+  if (overflow > 0) {
+    notify.warning("参考图过多", `最多 ${MAX_REFS} 张，多余的 ${overflow} 张没有加入`);
+  }
+}
+
+function removeRef(p: string) {
+  referencePaths.value = referencePaths.value.filter((x) => x !== p);
 }
 
 async function run() {
@@ -56,8 +78,8 @@ async function run() {
     notify.warning("还没有输出目录", "先选择结果要放在哪个文件夹");
     return;
   }
-  if (!referencePath.value) {
-    notify.warning("缺少参考图", "参考图调色需要选择一张参考图");
+  if (!referencePaths.value.length) {
+    notify.warning("缺少参考图", "参考图调色至少需要选择一张参考图");
     return;
   }
   try {
@@ -67,9 +89,10 @@ async function run() {
       prompt: "",
       outputDir: outputDir.value,
       options: {
-        referencePath: referencePath.value,
+        referencePaths: referencePaths.value,
         method: method.value,
         strength: strength.value / 100,
+        lWeight: lWeight.value / 100,
         exportCube: exportCube.value,
       },
     });
@@ -93,12 +116,23 @@ async function onCancel() {
   <section class="ai-tool">
     <div class="ai-panel">
       <div class="ai-field">
-        <label class="ai-label">参考图</label>
-        <div class="ai-row">
-          <span class="ai-ref-path" :title="referencePath || '尚未选择'">
-            {{ referencePath ? baseName(referencePath) : "尚未选择参考图" }}
+        <label class="ai-label">参考图{{ referencePaths.length > 1 ? `（${referencePaths.length} 张，等权提取共性）` : "" }}</label>
+        <div v-if="referencePaths.length" class="ai-ref-list">
+          <span
+            v-for="p in referencePaths"
+            :key="p"
+            class="ai-ref-chip"
+            :title="p"
+          >
+            {{ baseName(p) }}
+            <button type="button" class="ai-ref-x" :disabled="busy" @click="removeRef(p)">×</button>
           </span>
-          <button class="ai-ghost" type="button" :disabled="busy" @click="pickRef">选择参考图…</button>
+        </div>
+        <div class="ai-row">
+          <span v-if="!referencePaths.length" class="ai-ref-path">尚未选择参考图</span>
+          <button class="ai-ghost" type="button" :disabled="busy" @click="pickRef">
+            {{ referencePaths.length ? "添加参考图…" : "选择参考图…" }}
+          </button>
         </div>
       </div>
 
@@ -122,6 +156,11 @@ async function onCancel() {
       <div class="ai-field">
         <label class="ai-label">迁移强度 {{ strength }}%</label>
         <input v-model.number="strength" type="range" min="0" max="100" :disabled="busy" />
+      </div>
+
+      <div class="ai-field">
+        <label class="ai-label">明度迁移 {{ lWeight }}%</label>
+        <input v-model.number="lWeight" type="range" min="0" max="100" :disabled="busy" />
       </div>
 
       <label class="ai-row" style="gap: 6px; cursor: pointer">

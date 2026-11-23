@@ -209,7 +209,8 @@ def render(
 
     events: List[Dict[str, Any]] = []
     # providers=None：本机算子不读它；万一漏进云端步，会立刻抛「未配置 provider」而不是真的计费。
-    out = pipeline.execute_plan(src, ready_plan, None, on_step=events.append)
+    # log_tag=None：拖滑杆的同步预览，每步打日志就是日志洪水，显式关掉。
+    out = pipeline.execute_plan(src, ready_plan, None, on_step=events.append, log_tag=None)
     warnings = warnings + _step_warnings(events)
 
     fitted = _fit_long_edge(out, edge)

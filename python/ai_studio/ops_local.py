@@ -345,36 +345,84 @@ def op_skin_smooth(
     )
 
 
-def op_color_transfer(
-    img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
-) -> Image.Image:
-    """参考图调色：按参考图的 Lab 统计迁移（Reinhard / 直方图）。
+# 参考图迁移产物的批量复用表（键含 mtime/size，改图即失效）：链条批量执行时
+# 同一批参考图逐图重算 Lab 统计是纯浪费。有界 LRU，模式与 _HAIR_CACHE 一致。
+_REF_CACHE: "OrderedDict[tuple, object]" = OrderedDict()
+_REF_CACHE_MAX = 16
 
-    参考图以**路径参数**进链（`referencePath`）：链条的每步只能带标量参数，
-    塞不下一张图，所以步骤参数里存路径、执行时在此处解码。参考图只取统计量，
-    降到长边 1024 再转 Lab（与 `workflows/color_transfer.py` 同一口径，24MP
-    全量转 Lab 要 2145ms，1MP 只要 24ms，统计量与分辨率无关）。
-    """
-    ref_path = str(params.get("reference_path", "") or "").strip()
-    if not ref_path:
-        raise ValueError("未选择参考图（展开这一步，在「参考图」里选择一张图片）")
-    if not os.path.isfile(ref_path):
-        raise FileNotFoundError(f"参考图不存在: {ref_path}")
 
-    ref = Image.open(ref_path).convert("RGB")
-    w, h = ref.size
+def _split_ref_paths(raw: str) -> list[str]:
+    """链条步参数是标量，多张参考图用 `|` 拼接（Windows 文件名不允许 `|`，无歧义）。"""
+    seen, uniq = set(), []
+    for part in raw.split("|"):
+        p = part.strip()
+        if p and p not in seen:
+            seen.add(p)
+            uniq.append(p)
+    return uniq
+
+
+def _fit_ref_image(img: Image.Image) -> np.ndarray:
+    """参考图降到长边 `_REF_LONG_EDGE` 再转数组（与 workflows/color_transfer.py 同口径）。"""
+    w, h = img.size
     m = max(w, h)
     if m > _REF_LONG_EDGE:
         s = _REF_LONG_EDGE / float(m)
-        ref = ref.resize((max(1, int(round(w * s))), max(1, int(round(h * s)))), Image.LANCZOS)
-    ref_arr = np.asarray(ref, dtype=np.uint8)
+        img = img.resize((max(1, int(round(w * s))), max(1, int(round(h * s)))), Image.LANCZOS)
+    return np.asarray(img, dtype=np.uint8)
 
-    arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
-    strength = max(0.0, min(1.0, float(params.get("strength", 1.0))))
-    if str(params.get("method", "reinhard")) == "histogram":
-        out = colortransfer.histogram_match(arr, ref_arr, strength=strength)
+
+def _ref_artifact(paths: list[str], method: str):
+    """取参考图迁移产物（LRU 缓存）：reinhard → 合并 Lab 统计；histogram → 逐通道已排序像素列。
+
+    单张参考图时 `merge_reference_stats` 直取该图统计，行为与旧版逐像素传图完全一致。
+    """
+    key = (method, tuple((p, os.stat(p).st_mtime_ns, os.stat(p).st_size) for p in paths))
+    hit = _REF_CACHE.get(key)
+    if hit is not None:
+        _REF_CACHE.move_to_end(key)
+        return hit
+    arrs = [_fit_ref_image(Image.open(p).convert("RGB")) for p in paths]
+    if method == "histogram":
+        artifact = colortransfer.histogram_ref_sorted(arrs)
     else:
-        out = colortransfer.reinhard_transfer(arr, ref_arr, strength=strength)
+        artifact = colortransfer.merge_reference_stats(
+            [colortransfer.reference_stats(a) for a in arrs]
+        )
+    while len(_REF_CACHE) >= _REF_CACHE_MAX:
+        _REF_CACHE.popitem(last=False)
+    _REF_CACHE[key] = artifact
+    return artifact
+
+
+def op_color_transfer(
+    img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
+) -> Image.Image:
+    """参考图调色：按参考图的 Lab 统计迁移（Reinhard / 直方图），支持多张参考图等权提取共性。
+
+    参考图以**路径参数**进链（`reference_path`）：链条的每步只能带标量参数，
+    塞不下一张图，所以步骤参数里存路径（多张用 `|` 拼接）、执行时在此处解码。
+    参考图只取统计量，降到长边 1024 再转 Lab（与 `workflows/color_transfer.py`
+    同一口径，24MP 全量转 Lab 要 2145ms，1MP 只要 24ms，统计量与分辨率无关）。
+    `l_weight` 控制明度迁移比例（1 = 与参考图明暗一致，0 = 只迁色彩不动明暗）。
+    """
+    paths = _split_ref_paths(str(params.get("reference_path", "") or ""))
+    if not paths:
+        raise ValueError("未选择参考图（展开这一步，在「参考图」里选择一张图片）")
+    missing = [p for p in paths if not os.path.isfile(p)]
+    if missing:
+        raise FileNotFoundError(f"参考图不存在: {missing[0]}")
+    if len(paths) > 10:
+        raise ValueError(f"参考图最多 10 张（当前 {len(paths)} 张），请删掉一些后再试")
+
+    method = str(params.get("method", "reinhard"))
+    strength = max(0.0, min(1.0, float(params.get("strength", 1.0))))
+    l_weight = max(0.0, min(1.0, float(params.get("l_weight", 1.0))))
+    arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
+    if method == "histogram":
+        out = colortransfer.histogram_match_sorted(arr, _ref_artifact(paths, "histogram"), strength=strength)
+    else:
+        out = colortransfer.reinhard_transfer_stats(arr, _ref_artifact(paths, "reinhard"), l_weight=l_weight, strength=strength)
     return Image.fromarray(out)
 
 

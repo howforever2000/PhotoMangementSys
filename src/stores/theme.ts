@@ -674,6 +674,11 @@ export const useThemeStore = defineStore("theme", () => {
     body.style.setProperty("--glass-bg", compFill(containerAlpha.value));
     body.style.setProperty("--liquid-bg", compFill(panelAlpha.value));
     body.style.setProperty("--glass-border", tone.border);
+    /* 弹层档统一令牌（材质统一修复）：老 main.css 的 body.theme-dark .dialog
+       把弹窗底写死成 rgba(30,34,46,.96)，弹窗从不跟随组件色/透明度/材质。
+       现在按统一管线的弹层档（dialogAlpha = compAlpha + 0.36，下限 0.55）下发；
+       compAlpha 默认 0.64 时该值为 0.95，与旧硬编码逐像素可比。 */
+    body.style.setProperty("--dialog-bg", compFill(dialogAlpha.value));
     /* ---------- 原生下拉展开层（BUG-2026-1119-001） ----------
        <option> 的弹出列表是**浏览器原生窗口**，不吃 CSS 背景（除了 option 的
        background-color），也不吃 backdrop-filter。所以要给它一对**不透明**的

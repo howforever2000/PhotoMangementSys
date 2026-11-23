@@ -26,6 +26,23 @@ import type {
 /** 轮询句柄（非响应式，放模块级） */
 const pollTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+/**
+ * 从 options.plan 里收「这次要跑哪些组件（算子）」，保序去重。
+ * 创意组合 / 智能修图的提交 options 带完整 plan；单步工具没有 plan 返回空。
+ * 只做读取与去重，不做校验（白名单/夹取在 Python 端 validate_plan）。
+ */
+function planOpsOf(options: Record<string, unknown> | undefined): string[] {
+  const plan = options?.plan as { steps?: { op?: unknown }[] } | undefined;
+  const steps = plan?.steps;
+  if (!Array.isArray(steps)) return [];
+  const out: string[] = [];
+  for (const s of steps) {
+    const op = typeof s?.op === "string" ? s.op : "";
+    if (op && !out.includes(op)) out.push(op);
+  }
+  return out;
+}
+
 export const useAiStudioStore = defineStore("aiStudio", () => {
   const settings = ref<AiSettings | null>(null);
   const settingsLoading = ref(false);
@@ -142,8 +159,12 @@ export const useAiStudioStore = defineStore("aiStudio", () => {
     "工坊.提交作业",
     async function submitJob(req: AiRunRequest): Promise<string> {
       const label = toolLabel(req.tool);
+      // 组件清单：创意组合 / 智能修图提交时 plan 里带着算子序列，
+      // 日志里点出「这次用了哪些组件」，排障时不用再翻 options 原文。
+      const ops = planOpsOf(req.options);
+      const opsTag = ops.length ? ` ops=[${ops.join(",")}]` : "";
       console.info(
-        `[工坊][提交] tool=${req.tool}（${label}） n=${req.paths.length} out=${req.outputDir}`,
+        `[工坊][提交] tool=${req.tool}（${label}） n=${req.paths.length} out=${req.outputDir}${opsTag}`,
       );
       const jobId = await invoke<string>("ai_run_job", { req });
       jobs.value[jobId] = {

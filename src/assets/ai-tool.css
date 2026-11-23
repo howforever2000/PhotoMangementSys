@@ -13,8 +13,25 @@
   gap: 12px 18px;
   padding: 14px 16px 12px;
   border-radius: var(--r-ui);
-  border: 1px solid var(--c-rule);
-  background: var(--hover, rgba(120, 120, 130, 0.06));
+  /* 材质统一（FEAT-086 管线）：面板从「写死的 var(--hover) 中性底」升级为
+     卡片材质的消费方 —— 填充/描边/模糊/壁厚阴影全部读主题下发的令牌
+     （theme store 按材质 plain/liquid 与背景明度现算），
+     换材质、调组件色/透明度时与全站卡片同步变化，不再自成一套。
+     液态的湿边高光层与 1px 棱环由 main.css 的 body.mat-liquid .ai-panel 规则补齐。 */
+  position: relative;
+  border: 1px solid var(--glass-border, var(--c-rule));
+  background-color: var(--glass-bg, var(--hover, rgba(120, 120, 130, 0.06)));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 0px)) saturate(var(--glass-saturate, 1))
+    brightness(var(--glass-brightness, 1)) contrast(var(--glass-contrast, 1));
+  backdrop-filter: blur(var(--glass-blur, 0px)) saturate(var(--glass-saturate, 1))
+    brightness(var(--glass-brightness, 1)) contrast(var(--glass-contrast, 1));
+  box-shadow: var(--shadow-1);
+}
+
+/* 普通材质：与 body.mat-plain .glass-surface 同一口径 —— 关掉模糊与明度位移 */
+body.mat-plain .ai-panel {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .ai-2col {
@@ -302,6 +319,45 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 多张参考图 chips（FEAT-211） */
+.ai-ref-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.ai-ref-chip {
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px 3px 10px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--c-rule);
+  background: color-mix(in srgb, var(--c-accent) 8%, transparent);
+  font-size: var(--fs-meta);
+  color: var(--fg-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-ref-x {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.ai-ref-x:hover:not(:disabled) {
+  color: var(--c-danger);
+}
+.ai-ref-x:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 @media (max-width: 1080px) {

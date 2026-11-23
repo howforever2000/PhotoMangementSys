@@ -59,15 +59,21 @@ def run_plan(
     base_pct: float,
     span: float,
     ctx: Any = None,
+    log_tag: str | None = "",
 ) -> Image.Image:
     """唯一执行函数：A 配方 / B 大模型计划都走这里。
 
     `ctx` 是作业级渲染参数（文生图采样步数等），原样透传到每步算子；
     缺省 `None` 时执行层回落「不向网关声明步数」。
+
+    `log_tag` 原样透传给 `pipeline.execute_plan`（每步组件日志的照片标签，
+    如 `photo=2/5:IMG_1234`）；`None` 表示不打每步日志（同步预览用）。
     """
     kwargs: Dict[str, Any] = {}
     if ctx is not None:
         kwargs["ctx"] = ctx
+    if log_tag is not None:
+        kwargs["log_tag"] = log_tag
     return pipeline.execute_plan(
         img, plan, providers, cancel,
         on_step=_on_step_factory(trace, base_pct, span, emit), **kwargs,
@@ -169,7 +175,10 @@ def run(req, progress, cancel) -> dict:
 
         emit = emit_for(index, label)
         emit(int(base_pct + span * 0.05), "准备", trace.snapshot())
-        result = run_plan(img, plan, req.providers, cancel, trace, emit, base_pct, span, ctx)
+        # 每步组件日志的照片标签：并行下多张的 step 行会交错，靠这张标签分得清谁是谁
+        photo_tag = f"photo={index + 1}/{total}:{stem_of(path)}"
+        result = run_plan(img, plan, req.providers, cancel, trace, emit, base_pct, span, ctx,
+                          log_tag=photo_tag)
         steps_by_photo[index] = trace.snapshot()
 
         # 本地零模型 critic：默认开（Q4）；不调用任何外部模型

@@ -422,7 +422,12 @@ body.mat-plain .glass-card::after {
    环只需要那 1px —— 这也是它叫「棱环」而不是「高光层」的原因。
    成本：一个伪元素 + 一次 mask 合成，不增加滤镜/位移。 */
 body.mat-liquid .glass-surface::after,
-body.mat-liquid .glass-card::after {
+body.mat-liquid .glass-card::after,
+body.mat-liquid .ai-panel::after,
+body.mat-liquid .wb-card::after,
+body.mat-liquid .rail-panel::after,
+body.mat-liquid .rail-action::after,
+body.mat-liquid .album-mini::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -590,7 +595,10 @@ body.theme-dark .pm-dialog,
 body.theme-dark .ss-dialog,
 body.theme-dark .tl-dialog,
 body.theme-dark .mem-dialog {
-  background: rgba(30, 34, 46, 0.96);
+  /* 弹层底改走统一材质管线的弹层档（theme store 按组件色/透明度/材质下发 --dialog-bg），
+     不再写死 rgba(30,34,46,.96) —— 那正是「弹窗不随材质调节变化」的残留。
+     fallback 保留旧值：store 尚未挂载时兜底。 */
+  background: var(--dialog-bg, rgba(30, 34, 46, 0.96));
   color: var(--color-text);
   border-color: rgba(255, 255, 255, 0.1);
 }
@@ -600,7 +608,9 @@ body.theme-dark .confirm-title {
   color: var(--color-text);
 }
 
-/* 按钮（在各页面经常被写死为白底庆边） */
+/* 按钮（在各页面经常被写死为白底庆边）。
+   按钮是控件不是卡片：保持中性半透填充，不接玻璃材质管线
+   （用户反馈：小控件做成玻璃芯片反而违和）。 */
 body.theme-dark .btn:not(.btn-primary):not(.btn-danger):not(.btn-home):not(.gs-btn-primary):not(.gs-btn-danger):not(.btn-ghost),
 body.theme-dark .btn-home,
 body.theme-dark .btn-default {
@@ -725,7 +735,12 @@ body.theme-dark kbd {
    普通卡片不命中此规则，零额外绘制。
    ========================================================================== */
 body.mat-liquid .glass-surface,
-body.mat-liquid .glass-card {
+body.mat-liquid .glass-card,
+body.mat-liquid .ai-panel,
+body.mat-liquid .wb-card,
+body.mat-liquid .rail-panel,
+body.mat-liquid .rail-action,
+body.mat-liquid .album-mini {
   /* 静态光学全部落在元素自身（见 M3 图层分工）：
      ① 上缘湿边水光（一道极窄亮带：玻璃刚被擦过的湿感）
      ② 底部透光/厚度（浅底上是**暗**带：光从底缘穿进厚壁，板才看得出厚度）

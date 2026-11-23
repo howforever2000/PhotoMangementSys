@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, FrozenSet, List
 from PIL import Image
 
 from . import catalog, critic, ops
+from .logutil import log
 from .providers import openai_compat as oc
 from .renderopts import EMPTY as EMPTY_CTX, RunContext
 from .workflows.base import check_cancel, parse_json_loose, understand_bytes
@@ -120,6 +121,7 @@ def execute_plan(
     cancel=None,
     on_step: StepEvent | None = None,
     ctx: RunContext | None = None,
+    log_tag: str | None = "",
 ) -> Image.Image:
     """按计划逐步执行；每步前检查取消、每步发一次结构化事件。返回终图。
 
@@ -128,6 +130,13 @@ def execute_plan(
 
     `ctx` 是作业级渲染参数（文生图采样步数等），原样交给每个算子；本机算子收下
     但不使用。缺省等于「不向网关声明步数」。
+
+    `log_tag` 控制每步组件日志（「这次作业用了哪些组件」的排障主线索）：
+      - `""`（缺省）：打日志，无前缀标签；
+      - 非空字符串：打日志并带上照片/来源标签（如 `photo=2/5:IMG_1234`），
+        并行下多张的步骤行可按标签区分；
+      - `None`：不打日志 —— 同步预览（preview.py）每次拖滑杆都调一次本函数，
+        打日志就是日志洪水，必须显式关掉。
 
     FEAT-169 结构保全：云端步（整幅重绘）执行后用 `critic.structure_compare` 硬验收；
     一旦检出几何被改动，**以该步输入回退**并把原因写进 issues。为什么是回退而不是
@@ -141,6 +150,7 @@ def execute_plan(
     context = replace(ctx or EMPTY_CTX, source=img, scratch={})
     steps = plan.get("steps") or []
     total = len(steps)
+    prefix = f"{log_tag} " if log_tag else ""
     for i, st in enumerate(steps, start=1):
         check_cancel(cancel)
         op = st.get("op")
@@ -150,6 +160,8 @@ def execute_plan(
             if on_step:
                 on_step({"index": i, "total": total, "op": op, "label": label,
                          "status": "skipped", "ms": 0, "issues": ["算子实现缺失"]})
+            if log_tag is not None:
+                log(f"step {i}/{total} {prefix}op={op}（{label}） skipped | 算子实现缺失")
             continue
         t0 = time.perf_counter()
         if on_step:
@@ -176,6 +188,9 @@ def execute_plan(
         if on_step:
             on_step({"index": i, "total": total, "op": op, "label": label,
                      "status": status, "ms": ms, "issues": issues})
+        if log_tag is not None:
+            tail = f" | {'；'.join(issues)}" if issues else ""
+            log(f"step {i}/{total} {prefix}op={op}（{label}） {status} | {ms}ms{tail}")
     return cur
 
 

@@ -73,10 +73,24 @@ const isScanned = computed(() => (props.album?.scanned_photo_count || 0) > 0);
   padding: 8px;
   border-radius: 8px;
   cursor: grab;
-  background: var(--color-surface, #fff);
-  border: 1px solid var(--color-border, #f0f0f0);
+  /* 材质统一（FEAT-086 管线）：此前只有 var(--color-surface) 填充，
+     切材质时外观不变。现在填充/描边/模糊/壁厚阴影读主题下发令牌，
+     液态自动带模糊与湿边高光（main.css 的 body.mat-liquid .album-mini 补齐），
+     普通自动回落实心。 */
+  background-color: var(--glass-bg, var(--color-surface, #fff));
+  border: 1px solid var(--glass-border, var(--color-border, #f0f0f0));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 0px)) saturate(var(--glass-saturate, 1))
+    brightness(var(--glass-brightness, 1)) contrast(var(--glass-contrast, 1));
+  backdrop-filter: blur(var(--glass-blur, 0px)) saturate(var(--glass-saturate, 1))
+    brightness(var(--glass-brightness, 1)) contrast(var(--glass-contrast, 1));
+  box-shadow: var(--shadow-1);
   transition: all var(--dur-2);
   color: var(--color-text);
+}
+/* 普通材质：与 body.mat-plain .glass-surface 同一口径 —— 关掉模糊与明度位移 */
+body.mat-plain .album-mini {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .album-mini:hover {

@@ -12,7 +12,7 @@ import type { Album, CreateAlbumInput } from "../types/album";
 import { isVirtualAlbum } from "../types/album";
 import { useVaultStore } from "../stores/vault";
 import type { Folder, ManualTree } from "../types/folder";
-import { justifyRows, type JustifiedRow } from "../utils/justifiedRows";
+import { justifyRows, type JustifiedCell, type JustifiedRow } from "../utils/justifiedRows";
 import ManualSort from "./ManualSort.vue";
 import AlbumCard from "../components/AlbumCard.vue";
 import StatBand, { type StatItem } from "../components/ui/StatBand.vue";
@@ -1080,27 +1080,34 @@ const wallWidth = ref(0);
 const wallEl = ref<HTMLElement | null>(null);
 let wallRO: ResizeObserver | null = null;
 
-/** 相册墙的行式密排结果 */
+/** 相册墙的行式密排参数 —— 时间墙 / 地点分组墙**共用同一套形状**：
+ *  两个排序模式的卡片形态一致（用户要求：地点直接复用时间的卡片呈现方式），
+ *  切换排序时瓦片尺寸、错落节奏不跳变。 */
+const WALL_JUSTIFY = {
+  gap: 12,
+  /* FEAT-117：图注回到封面内部（嵌入落款）→ 行高 = 封面高，不再预留图注条 */
+  captionH: 0,
+  // 名义高度 232：实际封面高由缩放决定（≤ 232）。
+  // 基础比例 1.28（约 5:4）比 4:3 更方 —— 参考图里的照片面板接近正方形，
+  // 而不是扁扁的横幅。1.28 × 232 ≈ 297px 宽（行内 3~4 块），
+  // 封面高约 232px，接近方形。
+  nominalHeight: 232,
+  baseAspect: 1.28,
+  wideEvery: 5,
+  /* FEAT-115：1.8 → 1.5。
+     1.8 倍宽时，宽幅块在 3 列屏上会占掉半个视口 —— 观感接近"一张铺满"，
+     而用户明确否掉了"一个相册占满整个屏幕"。1.5 足够读出"这块不一样"。 */
+  wideFactor: 1.5,
+  minCoverH: 130,
+  maxCoverH: 260,
+} as const;
+
+/** 相册墙（时间模式）的行式密排结果 */
 const wallRows = computed<JustifiedRow[]>(() =>
   justifyRows({
     count: dateOrderedAlbums.value.length,
     containerWidth: wallWidth.value,
-    gap: 12,
-    /* FEAT-117：图注回到封面内部（嵌入落款）→ 行高 = 封面高，不再预留图注条 */
-    captionH: 0,
-    // 名义高度 232：实际封面高由缩放决定（≤ 232）。
-    // 基础比例 1.28（约 5:4）比 4:3 更方 —— 参考图里的照片面板接近正方形，
-    // 而不是扁扁的横幅。1.28 × 232 ≈ 297px 宽（行内 3~4 块），
-    // 封面高约 232px，接近方形。
-    nominalHeight: 232,
-    baseAspect: 1.28,
-    wideEvery: 5,
-    /* FEAT-115：1.8 → 1.5。
-       1.8 倍宽时，宽幅块在 3 列屏上会占掉半个视口 —— 观感接近"一张铺满"，
-       而用户明确否掉了"一个相册占满整个屏幕"。1.5 足够读出"这块不一样"。 */
-    wideFactor: 1.5,
-    minCoverH: 130,
-    maxCoverH: 260,
+    ...WALL_JUSTIFY,
   }),
 );
 
@@ -1111,6 +1118,85 @@ const wallRowGroups = computed(() =>
     items: row.cells.map((cell) => ({ cell, album: dateOrderedAlbums.value[cell.index] })),
   })),
 );
+
+/* ── 地点墙：每个地点分组各一块 .album-wall，版式与时间墙完全一致 ──────
+   复用同一套密排参数（WALL_JUSTIFY）与同一个 AlbumCard tile/wall 变体。
+   宽度按分组各自测量（折叠状态 / 分组头都不影响行宽），
+   ResizeObserver 跟随窗口与布局回流。 */
+
+/** 各地点墙的实测宽度（key = locationKey；0 = 还没量到） */
+const locWallWidths = ref<Record<string, number>>({});
+const locWallEls = new Map<string, HTMLElement>();
+/** v-for 的函数 ref 工厂缓存：每次渲染生成新函数会让 Vue 反复 unbind/rebind */
+const locRefFns = new Map<string, (el: unknown) => void>();
+let locRO: ResizeObserver | null = null;
+let rafLocId: number | null = null;
+
+function measureLocWalls() {
+  let next: Record<string, number> | null = null;
+  for (const [key, el] of locWallEls) {
+    const w = el.clientWidth;
+    if (w > 0 && Math.abs(w - (locWallWidths.value[key] || 0)) > 1) {
+      (next ??= { ...locWallWidths.value })[key] = w;
+    }
+  }
+  if (next) locWallWidths.value = next;
+}
+
+/** 模板里 :ref="locWallRef(locationKey(g.location))" 用的函数 ref */
+function locWallRef(key: string) {
+  let fn = locRefFns.get(key);
+  if (!fn) {
+    fn = (el: unknown) => {
+      if (el) {
+        const wall = el as HTMLElement;
+        locWallEls.set(key, wall);
+        // 挂载立即量一次（ResizeObserver 只在尺寸**变化**时才触发）
+        const w = wall.clientWidth;
+        if (w > 0) locWallWidths.value = { ...locWallWidths.value, [key]: w };
+        if (typeof ResizeObserver !== "undefined" && !locRO) {
+          locRO = new ResizeObserver(() => {
+            if (rafLocId != null) return;
+            rafLocId = requestAnimationFrame(() => {
+              rafLocId = null;
+              measureLocWalls();
+            });
+          });
+        }
+        locRO?.observe(wall);
+      } else {
+        const old = locWallEls.get(key);
+        if (old) {
+          locRO?.unobserve(old);
+          locWallEls.delete(key);
+        }
+      }
+    };
+    locRefFns.set(key, fn);
+  }
+  return fn;
+}
+
+/** 各地点分组的行式密排结果（key = locationKey），渲染时逐组输出行 */
+const locWallRows = computed(() => {
+  const out: Record<
+    string,
+    Array<{ row: JustifiedRow; items: Array<{ cell: JustifiedCell; album: Album }> }>
+  > = {};
+  for (const g of locationGroups.value) {
+    const key = locationKey(g.location);
+    const rows = justifyRows({
+      count: g.albums.length,
+      containerWidth: locWallWidths.value[key] || 0,
+      ...WALL_JUSTIFY,
+    });
+    out[key] = rows.map((row) => ({
+      row,
+      items: row.cells.map((cell) => ({ cell, album: g.albums[cell.index] })),
+    }));
+  }
+  return out;
+});
 
 /** 量容器宽度；用 requestAnimationFrame 节流，避免 resize 风暴时反复重排 */
 function measureWall() {
@@ -1151,6 +1237,11 @@ onBeforeUnmount(() => {
   wallRO?.disconnect();
   wallRO = null;
   if (rafWallId != null) cancelAnimationFrame(rafWallId);
+  // 地点墙的观察与待执行的重排帧
+  locRO?.disconnect();
+  locRO = null;
+  locWallEls.clear();
+  if (rafLocId != null) cancelAnimationFrame(rafLocId);
 });
 
 /** 数据变化（筛选/排序）后重算一次行宽 */
@@ -1423,12 +1514,14 @@ function onKey(e: KeyboardEvent) {
       '--muted': theme.onBgSubColor,
       '--card-bg': theme.cardBg,
       '--card-border': theme.cardBorder,
-      '--panel-bg': theme.onBgDark ? 'rgba(0,0,0,.04)' : 'rgba(255,255,255,.06)',
+      /* 弱底统一走主题令牌 --hover（theme store 按实际背景明度下发方向），
+         不再各自写死 rgba 双档 —— 与全站 hover/弱底同一来源 */
+      '--panel-bg': 'var(--hover)',
       '--input-bg': theme.onBgDark ? 'rgba(255,255,255,.65)' : 'rgba(20,22,30,.7)',
       '--input-border': theme.onBgDark ? 'rgba(0,0,0,.14)' : 'rgba(255,255,255,.14)',
       '--tint-bg': theme.onBgDark ? 'color-mix(in srgb, var(--color-primary) 14%, transparent)' : 'color-mix(in srgb, var(--color-primary) 18%, transparent)',
       '--tint-border': theme.onBgDark ? 'color-mix(in srgb, var(--color-primary) 40%, transparent)' : 'color-mix(in srgb, var(--color-primary) 35%, transparent)',
-      '--hover-bg': theme.onBgDark ? 'color-mix(in srgb, var(--color-primary) 8%, transparent)' : 'rgba(255,255,255,.07)',
+      '--hover-bg': 'var(--hover)',
       '--danger-bg': theme.onBgDark ? 'color-mix(in srgb, var(--color-danger) 12%, transparent)' : 'color-mix(in srgb, var(--color-danger) 15%, transparent)',
     }"
   >
@@ -1645,7 +1738,7 @@ function onKey(e: KeyboardEvent) {
     </div>
 
     <!-- 搜索结果面板：只有「相册」一组（内容检索已移到智能搜索） -->
-    <div v-if="isSearchingActive" class="search-results">
+    <div v-if="isSearchingActive" class="search-results glass-surface">
       <div v-if="isSearching" class="search-status">正在搜索…</div>
       <template v-else>
         <!-- 相册匹配 -->
@@ -1796,6 +1889,8 @@ function onKey(e: KeyboardEvent) {
     </main>
 
     <!-- 地点模式：按地点分组（A-Z 顺序，可折叠） -->
+    <!-- FEAT：地点分组复用时间墙的卡片形态（.album-wall 行式密排 + AlbumCard tile/wall），
+         两个排序模式视觉统一；地点信息由分组头承担，瓦片内不再重复地点徽标。 -->
     <main v-else-if="sortMode === 'location'" class="location-view">
       <template v-for="g in locationGroups" :key="g.location ?? '__none__'">
         <section class="location-group" :class="{ collapsed: isCollapsed(locationKey(g.location)) }">
@@ -1805,19 +1900,37 @@ function onKey(e: KeyboardEvent) {
             <span class="group-count">{{ g.albums.length }} 个相册</span>
           </h3>
           <div v-show="!isCollapsed(locationKey(g.location))" class="group-body">
-            <div class="album-grid">
-              <div v-for="album in g.albums" :key="album.id" class="location-card-wrap">
-                <AlbumCard
-                  :album="album"
-                  :select-mode="isSelectMode"
-                  :selected="selectedIds.has(album.id)"
-                  show-location
-                  @click="isSelectMode ? toggleSelect(album.id) : router.push(`/album/${album.id}`)"
-                  @contextmenu="onRightClick(album.id, $event)"
-                  @toggle-select="toggleSelect(album.id, $event)"
-                  @open-path="openAlbumPath(album.path, $event)"
-                  @open-source-path="openSourcePath($event)"
-                />
+            <div
+              class="album-wall"
+              :style="{ '--wall-gap': '12px' }"
+              :ref="locWallRef(locationKey(g.location))"
+            >
+              <div
+                v-for="(rg, ri) in locWallRows[locationKey(g.location)] || []"
+                :key="ri"
+                class="album-wall-row"
+                :style="{ height: `${rg.row.height}px` }"
+              >
+                <div
+                  v-for="item in rg.items"
+                  :key="item.album.id"
+                  class="album-wall-cell"
+                  :style="{ width: `${item.cell.width}px`, '--cover-h': `${item.cell.coverH}px` }"
+                >
+                  <AlbumCard
+                    :album="item.album"
+                    variant="tile"
+                    wall
+                    :mosaic="item.cell.wide"
+                    :select-mode="isSelectMode"
+                    :selected="selectedIds.has(item.album.id)"
+                    @click="isSelectMode ? toggleSelect(item.album.id) : router.push(`/album/${item.album.id}`)"
+                    @contextmenu="onRightClick(item.album.id, $event)"
+                    @toggle-select="toggleSelect(item.album.id, $event)"
+                    @open-path="openAlbumPath(item.album.path, $event)"
+                    @open-source-path="openSourcePath($event)"
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -1853,7 +1966,7 @@ function onKey(e: KeyboardEvent) {
     <!-- 右键菜单 -->
     <div
       v-if="contextMenu.visible"
-      class="context-menu"
+      class="context-menu glass-surface"
       :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
       @click.stop
     >
@@ -1871,7 +1984,7 @@ function onKey(e: KeyboardEvent) {
 
     <!-- 新建相册对话框（模态） -->
     <div v-if="showCreateDialog" class="dialog-mask" @click.self="showCreateDialog = false">
-      <div class="dialog">
+      <div class="dialog glass-surface">
         <h2 class="dialog-title">新建相册</h2>
 
         <!-- 文件夹选择 -->
@@ -1921,7 +2034,7 @@ function onKey(e: KeyboardEvent) {
 
     <!-- 重命名相册对话框（右键菜单） -->
     <div v-if="showRenameDialog" class="dialog-mask" @click.self="showRenameDialog = false">
-      <div class="dialog">
+      <div class="dialog glass-surface">
         <h2 class="dialog-title">重命名相册</h2>
         <div class="form-field">
           <label class="form-label">相册名称</label>
@@ -1954,7 +2067,7 @@ function onKey(e: KeyboardEvent) {
 
     <!-- 批量整理：移动分组 -->
     <div v-if="moveFolderOpen" class="dialog-mask" @click.self="moveFolderOpen = false">
-      <div class="dialog">
+      <div class="dialog glass-surface">
         <h2 class="dialog-title">移动分组</h2>
         <p v-if="moveSelectedFolders.length" class="batch-current-tip">
           当前所在：<b>{{ moveSelectedFolders.join(" · ") }}</b>
@@ -1984,7 +2097,7 @@ function onKey(e: KeyboardEvent) {
 
     <!-- FEAT-037：批量扫描入库弹窗（扫描方式选择，默认三种全选） -->
     <div v-if="scanDialogOpen" class="dialog-mask" @click.self="scanDialogOpen = false">
-      <div class="dialog dialog-scan-feature">
+      <div class="dialog dialog-scan-feature glass-surface">
         <h2 class="dialog-title dialog-title-accent">📥 批量扫描入库</h2>
         <p class="batch-select-tip">
           将对选中的 <b>{{ selectedIds.size }}</b> 个相册执行内容识别并写入内容库（用于智能搜索与库存统计）。
@@ -2034,7 +2147,7 @@ function onKey(e: KeyboardEvent) {
 
     <!-- 批量整理：打标签 -->
     <div v-if="tagDialogOpen" class="dialog-mask" @click.self="tagDialogOpen = false">
-      <div class="dialog">
+      <div class="dialog glass-surface">
         <h2 class="dialog-title">批量标签</h2>
         <p class="batch-select-tip">模式：</p>
         <div class="tag-mode">
@@ -2066,7 +2179,7 @@ function onKey(e: KeyboardEvent) {
 
     <!-- 批量整理：改地点 -->
     <div v-if="locDialogOpen" class="dialog-mask" @click.self="locDialogOpen = false">
-      <div class="dialog">
+      <div class="dialog glass-surface">
         <h2 class="dialog-title">批量改地点</h2>
         <p v-if="locCurrent.length" class="batch-current-tip">
           当前地点：<b>{{ locCurrent.join(" · ") }}</b>
@@ -2093,7 +2206,7 @@ function onKey(e: KeyboardEvent) {
 
     <!-- 批量整理：合并相册目标选择 -->
     <div v-if="mergeOpen" class="dialog-mask" @click.self="mergeOpen = false">
-      <div class="dialog">
+      <div class="dialog glass-surface">
         <h2 class="dialog-title">合并到目标相册</h2>
         <div class="merge-mode">
           <button class="bmode" :class="{ active: mergeMode === 'move' }" @click="mergeMode = 'move'">物理移动</button>
@@ -2532,6 +2645,7 @@ function onKey(e: KeyboardEvent) {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* 提示条是普通组件：弱底 + 描边即可，不接玻璃材质管线（用户反馈违和感） */
   background: var(--panel-bg);
   border: 1px solid var(--card-border);
   border-radius: 8px;
@@ -2622,6 +2736,7 @@ function onKey(e: KeyboardEvent) {
   outline: none;
   box-sizing: border-box;
   color: var(--fg);
+  /* 控件保持普通填充：不接玻璃材质管线（用户反馈违和感） */
   background: color-mix(in srgb, var(--fg) 5%, transparent);
   transition: border-color var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
 }
@@ -2696,9 +2811,10 @@ function onKey(e: KeyboardEvent) {
   color: var(--fg);
 }
 
-/* 搜索结果面板 */
-.search-results {
-  background: var(--card-bg);
+/* 搜索结果面板 —— 材质走 glass-surface 统一管线；填充用弹层档 --dialog-bg
+   （它是浮出面板，和弹窗同档；.album-page 前缀压过 main.css mat-liquid 规则的容器档填充） */
+.album-page .search-results {
+  background-color: var(--dialog-bg, var(--glass-bg));
   border: 1px solid var(--card-border);
   border-radius: 10px;
   padding: 12px;
@@ -2962,46 +3078,20 @@ function onKey(e: KeyboardEvent) {
   margin: 20px 0 4px;
 }
 
-/* tile 网格：比 card 网格更密（封面不需要内边距，可以排到 216px）。
-   小图密排是相册浏览的正确密度：一屏多看到 3~4 张，扫视成本更低。
-   auto-fill + minmax 保证窄窗自动降列，不用写断点。
+/* FEAT-106：tile 网格（.album-grid.is-tile）与 mosaic 网格样式已删除。
+   dense 回填会造成行尾空洞，且位置不稳定 —— 时间与地点两个排序模式
+   均已改用行式密排（.album-wall，同一套密排参数），旧网格规则无消费者。 */
 
-   FEAT-105：gap 30/26 → 12/12，并加 grid-auto-flow: dense。
-   为什么只动间距不动瓦片尺寸：一屏的信息量由"列数 × 行距"决定，
-   而封面本身已经是内容，不需要再加底、加框、加影（加了就成了"贴纸墙"）。
-   间距收窄后同宽度下每行能多容纳一列，视觉上就是"更密但不更乱"。
-   dense 负责把被展开分组撑剩的尾位填满，避免折叠分组后留下空洞。 */
-.album-grid.is-tile {
-  grid-template-columns: repeat(auto-fill, minmax(208px, 1fr));
-  grid-auto-flow: dense;
-  gap: 12px;
-}
-
-/* FEAT-106：旧的 mosaic 网格样式已删除。
-   dense 回填会造成行尾空洞，且位置不稳定 —— 改用行式密排（.album-wall）。
-   保留 .album-grid.is-tile（地点/手动视图仍用普通网格）。 */
-.album-grid.is-tile {
-  grid-template-columns: repeat(auto-fill, minmax(208px, 1fr));
-  grid-auto-flow: dense;
-  gap: 12px;
-}
-
-@media (max-width: 900px) {
-  .album-grid.is-tile {
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 10px;
-  }
-}
-
-/* 右键菜单 */
-.context-menu {
+/* 右键菜单 —— 材质走 glass-surface 统一管线（liquid 下有模糊 + 液态壁厚阴影）；
+   填充用弹层档 --dialog-bg（浮出面板与弹窗同档，压过容器档） */
+.album-page .context-menu {
   position: fixed;
   z-index: 200;
   min-width: 140px;
-  background: var(--card-bg);
+  background-color: var(--dialog-bg, var(--glass-bg));
   border: 1px solid var(--card-border);
   border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+  /* 阴影交给 .glass-surface 的 var(--shadow-1)（普通=柔和投影，液态=壁厚内影） */
   padding: 6px;
 }
 
@@ -3044,6 +3134,7 @@ function onKey(e: KeyboardEvent) {
   height: 32px;
   padding: 0 13px;
   border-radius: 8px;
+  /* 按钮是控件不是卡片：保持中性半透填充，不接玻璃材质管线（用户反馈违和感） */
   border: 1px solid var(--c-rule);
   background: color-mix(in srgb, var(--fg) 5%, transparent);
   color: var(--fg-2);
@@ -3259,12 +3350,9 @@ function onKey(e: KeyboardEvent) {
 }
 
 .group-location {
+  /* 分组头条是普通组件：主题弱染色即可，不接玻璃材质管线（用户反馈违和感） */
   background: var(--tint-bg);
   border-bottom: 1px solid var(--tint-border);
-}
-
-.location-card-wrap {
-  break-inside: avoid;
 }
 
 /* 对话框 */
@@ -3278,13 +3366,18 @@ function onKey(e: KeyboardEvent) {
   z-index: 100;
 }
 
-.dialog {
+/* 弹窗 —— 材质走 glass-surface 统一管线：liquid 下自动带模糊、湿边高光与棱环，
+   plain 下自动回落实心（backdrop-filter: none）。
+   填充用统一管线的弹层档 --dialog-bg（compAlpha+0.36，下限 0.55），不再写死；
+   用 background-color 而不是简写：保住 main.css 液态规则下发的 background-image 高光层；
+   .album-page 前缀把特异性抬到 (0,3,0)，压过 body.theme-dark .dialog / mat-liquid 的 (0,2,1)。 */
+.album-page .dialog {
   width: 520px;
   max-width: 90vw;
-  background: var(--card-bg);
+  background-color: var(--dialog-bg, var(--glass-bg));
   border-radius: 12px;
   padding: 24px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
+  /* 阴影交给 .glass-surface 的 var(--shadow-1)，与全站弹层同一壁厚语言 */
 }
 
 .dialog-title {

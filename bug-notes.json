@@ -6680,7 +6680,79 @@
       ],
       "created_at": "2026-11-22T22:55:00+08:00",
       "fixed_at": "2026-11-22T22:55:00+08:00"
+    },
+    {
+      "id": "BUG-2026-1123-001",
+      "date": "2026-11-23",
+      "status": "resolved",
+      "title": "创意工坊工具面板与相册管理弹层不跟随主题「材质」调节，材质只对挂 .glass-surface/.glass-card 的页面生效",
+      "module": "全局卡片材质管线（FEAT-086） / 创意工坊 ai-tool.css / 相册管理 AlbumList.vue / main.css 弹窗硬编码",
+      "symptom": [
+        "主题弹窗里把卡片材质切到液态玻璃，主页等页面卡片变成玻璃，创意工坊的工具面板、相册管理的弹窗/右键菜单/搜索面板外观毫无变化",
+        "computed 探针实测（修复前）：工坊 .ai-panel 的 backdrop-filter 恒为 none、background 恒为 var(--hover) 中性半透，与主题组件色/透明度/材质完全无关",
+        "main.css 的 body.theme-dark .dialog 把弹窗底写死 rgba(30,34,46,.96)，全站弹窗不随材质/组件色变化"
+      ],
+      "root_cause": {
+        "summary": "三类表面绕开了统一材质管线：① 工坊 .ai-panel / .ct-opts 用写死的 var(--hover) 中性底；② 相册管理弹窗/右键菜单/搜索面板没有挂 glass-surface 类，且 --panel-bg/--hover-bg 用 onBgDark 双档手写 rgba；③ main.css 老规则 body.theme-dark .dialog 硬编码弹窗底色",
+        "detail": [
+          "统一材质系统的两条消费路径（.glass-surface/.glass-card 类 与 cardStyle 内联）都要求表面显式接入；.ai-panel 只消费了 --c-rule/--hover 这类『无容器阅读层』令牌，不在任何一条路径上",
+          "main.css 的液态高光层与棱环规则（body.mat-liquid .glass-surface(::after)）的选择器列表也没有 .ai-panel，即使手动加模糊也拿不到液态光学",
+          "body.theme-dark .dialog 的特异性 (0,2,1) 压过组件 scoped 规则 (0,2,0)，弹窗填充永远是硬编码值；液态下又被更靠后的 body.mat-liquid .glass-surface 规则抢回容器档填充（实测 0.64），普通/液态两档行为互相矛盾"
+        ]
+      },
+      "evidence_log": [
+        "scripts/probe-material-unify.cjs（Tauri 桩 + Playwright computed 探针）修复后实测：",
+        "工坊 .ai-panel plain：bg=主题玻璃填充 0.64、backdrop-filter=none、无 inset 阴影、::after=none",
+        "工坊 .ai-panel liquid：blur(16px) saturate(1.1) brightness(1.06) contrast(1.02)、box-shadow 含 inset 壁厚、::after content=空串（棱环渲染）、background-image 5 层高光",
+        "相册 .dialog plain：rgba(42,38,48,0.95)（弹层档 = compAlpha+0.36 封顶，对齐旧硬编码 0.96）、无模糊",
+        "相册 .dialog liquid：rgba(68,64,73,0.95) + 同上全套液态光学"
+      ],
+      "solution": {
+        "summary": "三处接入统一管线：ai-tool.css .ai-panel 直读主题令牌并加入 main.css 液态选择器；AlbumList 弹层挂 glass-surface 并新增 --dialog-bg 弹层档令牌替换硬编码",
+        "steps": [
+          "ai-tool.css：.ai-panel 填充/描边/模糊/阴影改为 var(--glass-bg)/var(--glass-border)/模糊令牌链/var(--shadow-1)，补 body.mat-plain .ai-panel 关模糊",
+          "main.css：body.mat-liquid .glass-surface(::after) 两条选择器追加 .ai-panel，让工坊面板拿到湿边高光层与 1px 棱环",
+          "CompressTool.vue：.ct-opts 挂 ai-panel 类，scoped 规则只留自己的网格布局",
+          "theme.ts applyCompColor：新增下发 --dialog-bg = compFill(dialogAlpha)（compAlpha+0.36 下限 0.55，默认 compAlpha 0.64 → 0.95，与旧硬编码 0.96 逐像素可比）",
+          "main.css：body.theme-dark .dialog 系列 background 改 var(--dialog-bg, rgba(30,34,46,.96))，全站弹窗统一走弹层档",
+          "AlbumList.vue：.dialog/.context-menu/.search-results 挂 glass-surface；scoped 规则用 .album-page 前缀抬到 (0,3,0) 压过 mat-liquid 的容器档填充，且用 background-color 长手性保住液态 background-image 高光层；--panel-bg/--hover-bg 改为 var(--hover) 统一弱底来源",
+          "追加（用户反馈仍有漏网）：创意工坊-工作台的 .wb-card/.rail-panel/.rail-action 与相册管理手动排序的 .album-mini 只有主题填充、没有材质光学 —— AiWorkbench 三类卡片面收进共享材质规则（填充/描边/模糊/阴影读令牌 + body.mat-plain 关模糊）；AlbumMiniCard 同法接入；main.css 两条 body.mat-liquid 选择器追加这四个类，补湿边高光层与棱环",
+          "探针实测：液态下四类卡片的 computed 均为 blur(16px) + inset 壁厚 + 棱环 ::after + 5 层高光；普通下回落实心、blur=none",
+          "二次追加（截图反馈：工具栏按钮/搜索框/视图条/分组头条仍不受材质调控）：main.css 的 body.theme-dark .btn 把次要按钮写死 rgba(255,255,255,.1) → 改 var(--glass-bg/--glass-border)（全站统一）；AlbumList 的 .btn（浅色分支）、.search-input、.view-bar、.group-location 全部接入玻璃令牌，条带类补模糊/壁厚阴影/液态高光与棱环（main.css mat-liquid 选择器追加 .view-bar/.group-location），body.mat-plain 关模糊。按钮保持控件级（无模糊/阴影，避免小控件重饰）",
+          "探针实测：液态下 search-input/view-bar/group-location = blur(16px)+inset 壁厚（条带另带 5 层高光+棱环），按钮填充随材质变（68,64,73 vs 42,38,48）；普通全部回落实心",
+          "回退（用户反馈「小卡片还是作为普通组件，不然违和感」）：控件级表面（.btn/.search-input/.view-bar/.group-location）的玻璃化全部撤销，回到中性半透/tint 普通填充；mat-liquid 选择器移除 .view-bar/.group-location。确立边界：材质管线只收卡片/面板/弹层，控件保持普通组件"
+        ]
+      },
+      "lessons": [
+        "材质/令牌系统的覆盖面要靠消费方清单来保证：新增一个表面时若不挂 glass-* 类或读 cardStyle，它就静默留在管线外 —— 「主题改了某页没反应」先查该页表面的填充来源",
+        "浮出面板（弹窗/菜单/下拉）应该用比卡片更高一档的填充（弹层档），而不是复用容器档 —— 容器档在照片背景上透字",
+        "scoped 规则 (0,2,0) 与 main.css 的 body.theme-dark .xxx / body.mat-liquid .xxx (0,2,1) 的特异性差一档，跨文件接管填充时要么用父级前缀抬高，要么接受被压；用 background 简写会连带清掉 background-image 高光层，接管填充一律用 background-color 长手性"
+      ],
+      "related_files": [
+        "src/assets/ai-tool.css",
+        "src/assets/main.css",
+        "src/stores/theme.ts",
+        "src/views/AlbumList.vue",
+        "src/components/workshop/CompressTool.vue",
+        "scripts/probe-material-unify.cjs",
+        "src/views/AiWorkbench.vue",
+        "src/components/AlbumMiniCard.vue"
+      ],
+      "keywords": [
+        "材质",
+        "液态玻璃",
+        "ai-panel",
+        "glass-surface",
+        "dialog-bg",
+        "弹层档",
+        "主题不生效",
+        "相册管理弹窗"
+      ],
+      "created_at": "2026-11-23T09:39:00+08:00",
+      "fixed_at": "2026-11-23T10:20:00+08:00",
+      "fix": [],
+      "updated_at": "2026-11-23T10:35:00+08:00"
     }
   ],
-  "updated": "2026-11-22T22:55:00+08:00"
+  "updated": "2026-11-23T11:15:00+08:00"
 }

@@ -30,6 +30,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { GROUPS, localToolDefs } from "../../../utils/toolCatalog";
 import { originOfOp, type OriginInfo } from "../../../utils/modelOrigin";
 import type { AiSettings } from "../../../types/ai";
+import { useNotify } from "../../../composables/useNotify";
 import {
   applySlider,
   canAddOp,
@@ -61,15 +62,46 @@ const emit = defineEmits<{
   param: [uid: string, key: string, value: number | string | boolean];
 }>();
 
-/** 参考图调色步：就地选参考图（路径作为该步的 string 参数进链） */
+/** 参考图调色步：就地选参考图（路径作为该步的 string 参数进链，多张用 `|` 拼接） */
+const MAX_REFS = 10;
+const notify = useNotify();
+
+/** 步骤参数里的多参考图：`|` 拼接的路径串 → 数组（与后端 _split_ref_paths 同口径） */
+function refPathsOf(step: WbChainStep): string[] {
+  return String(step.params.reference_path ?? "")
+    .split("|")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 async function pickReference(step: WbChainStep): Promise<void> {
   const picked = await openDialog({
-    multiple: false,
+    multiple: true,
     directory: false,
-    title: "选择参考图（调色来源）",
+    title: "选择参考图（可多选，提取共性色调）",
     filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "bmp"] }],
   });
-  if (typeof picked === "string") emit("param", step.uid, "reference_path", picked);
+  if (!picked) return;
+  const list = Array.isArray(picked) ? picked : [picked];
+  const merged = [...refPathsOf(step)];
+  let overflow = 0;
+  for (const p of list) {
+    if (merged.includes(p)) continue;
+    if (merged.length >= MAX_REFS) {
+      overflow += 1;
+      continue;
+    }
+    merged.push(p);
+  }
+  if (overflow > 0) {
+    notify.warning("参考图过多", `最多 ${MAX_REFS} 张，多余的 ${overflow} 张没有加入`);
+  }
+  if (merged.length) emit("param", step.uid, "reference_path", merged.join("|"));
+}
+
+/** 清掉这一步的全部参考图 */
+function clearReference(step: WbChainStep): void {
+  emit("param", step.uid, "reference_path", "");
 }
 
 /** 手风琴：同时只展开一步，步骤多了卡片也不会长到视口外（按 uid） */
@@ -220,18 +252,37 @@ function fileNameOf(path: string): string {
                 :disabled="disabled"
                 @input="onRange(step, p.key, $event)"
               />
-              <!-- 参考图：路径进不了下拉/滑杆，就地给一个选图按钮 -->
+              <!-- 参考图：路径进不了下拉/滑杆，就地给一个选图按钮（可多选，`|` 拼接） -->
               <div v-else-if="p.kind === 'reference'" class="wbs-ref">
-                <span class="wbs-ref-path" :title="p.value || '尚未选择'">
-                  {{ p.value ? fileNameOf(p.value) : "尚未选择参考图" }}
+                <span
+                  class="wbs-ref-path"
+                  :title="refPathsOf(step).map(fileNameOf).join('、') || '尚未选择'"
+                >
+                  {{
+                    refPathsOf(step).length > 1
+                      ? `已选 ${refPathsOf(step).length} 张：${fileNameOf(refPathsOf(step)[0])} 等`
+                      : refPathsOf(step).length === 1
+                        ? fileNameOf(refPathsOf(step)[0])
+                        : "尚未选择参考图"
+                  }}
                 </span>
+                <button
+                  v-if="refPathsOf(step).length"
+                  type="button"
+                  class="wbs-ref-btn"
+                  :disabled="disabled"
+                  title="清除全部参考图"
+                  @click="clearReference(step)"
+                >
+                  清除
+                </button>
                 <button
                   type="button"
                   class="wbs-ref-btn"
                   :disabled="disabled"
                   @click="pickReference(step)"
                 >
-                  选择参考图…
+                  {{ refPathsOf(step).length ? "添加参考图…" : "选择参考图…" }}
                 </button>
               </div>
             </div>
@@ -240,7 +291,7 @@ function fileNameOf(path: string): string {
               v-if="step.op === 'color_transfer' && !String(step.params.reference_path || '').trim()"
               class="wbs-tip"
             >
-              这一步需要参考图：先在上面选一张，否则运行时会跳过并提示。
+              这一步需要参考图：先在上面选择（可多张提取共性色调），否则运行时会跳过并提示。
             </p>
             <p v-if="isCloudOp(step.op)" class="wbs-tip">
               云端步：即时预览里不跑（每次预览都是计费调用），出片时照常执行。

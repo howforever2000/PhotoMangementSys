@@ -175,7 +175,8 @@ async function openDest() {
 <template>
   <section class="ct">
     <!-- 参数：四项排成一行。前两项是"压缩到什么程度"，后两项是"裁成什么形状 / 放到哪里" -->
-    <div class="ct-opts">
+    <!-- ai-panel 类：与其它工具面板共用同一套统一材质外壳（填充/模糊/壁厚随主题材质走） -->
+    <div class="ct-opts ai-panel">
       <div class="field">
         <label class="f-label">目标大小</label>
         <div class="f-body">
@@ -308,15 +309,10 @@ async function openDest() {
 
 /* ---------- 参数行 ---------- */
 .ct-opts {
-  display: grid;
-  /* 宽屏下输出目录列限宽：路径框拉成 900px 只会让右侧变空 */
+  /* 外观（填充/描边/模糊/阴影/圆角）由 .ai-panel 统一下发（材质随主题走），
+     这里只保留本工具自己的网格布局。 */
   grid-template-columns: 300px 150px 150px minmax(220px, 460px);
-  gap: 12px 18px;
   align-items: end;
-  padding: 14px 16px 12px;
-  border-radius: var(--r-ui);
-  border: 1px solid var(--c-rule);
-  background: var(--hover, rgba(120, 120, 130, 0.06));
 }
 
 .field {

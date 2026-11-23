@@ -307,7 +307,7 @@
   {
    "id": "color_transfer",
    "label": "参考图调色",
-   "desc": "按参考图的 Lab 统计迁移色调（Reinhard / 直方图），须给定参考图路径",
+   "desc": "按参考图的 Lab 统计迁移色调（Reinhard / 直方图），须给定参考图路径；可多张用 | 拼接等权提取共性",
    "backend": "local",
    "stage": 1,
    "module": "ai_studio.ops_local",
@@ -328,6 +328,14 @@
      "default": 1.0,
      "step": 0.05,
      "label": "强度"
+    },
+    "l_weight": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 1.0,
+     "step": 0.05,
+     "label": "明度迁移"
     },
     "reference_path": {
      "type": "string",
@@ -534,7 +542,7 @@
   {
    "id": "color_transfer",
    "label": "参考图调色",
-   "desc": "把参考图的色调与影调迁移到素材图（本机、免费）",
+   "desc": "把参考图的色调与影调迁移到素材图（本机、免费）；可多张参考图等权提取共性色调",
    "icon": "transfer",
    "runtime": "python",
    "backend": "local",
@@ -558,6 +566,14 @@
      "default": 1.0,
      "step": 0.05,
      "label": "强度"
+    },
+    "l_weight": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 1.0,
+     "step": 0.05,
+     "label": "明度迁移"
     }
    },
    "surface": "single",

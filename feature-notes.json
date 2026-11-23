@@ -8610,7 +8610,81 @@
         "src/views/AiWorkbench.vue",
         ".dsh/knowledge/ai-provider-origin.md"
       ]
+    },
+    {
+      "id": "FEAT-216",
+      "name": "创意工坊日志点出「用了哪些组件」：每步算子行 + 作业级组件摘要",
+      "status": "done",
+      "date": "2026-11-23",
+      "created_at": "2026-11-23T10:30:00+08:00",
+      "updated_at": "2026-11-23T10:30:00+08:00",
+      "module": "python/ai_studio/{pipeline,jobs,preview}.py + python/ai_studio/workflows/{recipe,smart_edit}.py + src/stores/aiStudio.ts",
+      "purpose": "此前 ai_studio_service.log 里一次作业只有 job 启动/完成两行（tool=英文id），配方/创意组合/智能修图实际跑了哪些组件（算子）、每步耗时多少、哪步失败为什么失败，日志里完全看不出；[MODEL] 行有模型名但没有照片上下文。排障时只能靠 UI 步骤卡，日志窗口等于半盲。",
+      "highlights": [
+        "pipeline.execute_plan：每个算子终态打一行「step i/N photo=x/y:文件名 op=id（中文名） done|failed|skipped | Xms | 原因」，覆盖配方/智能修图/创意组合三条链路；并行下多张按照片标签区分",
+        "log_tag 三态设计：空串=打日志无标签；非空=带照片标签；None=不打（preview.py 同步预览每次拖滑杆都调 execute_plan，必须显式关掉，防日志洪水）",
+        "jobs.py 启动行加 providers 摘要（kind=model@host，apiKey 不落日志；全空=本机）；完成行加 ops=[保序去重算子清单] + stats=计数尾巴（来自 meta.plans/stats，非计划型工作流自动留空）",
+        "recipe.run_plan 增加 log_tag 透传参数，process 按照片拼标签；smart_edit 顺序循环同样带标签",
+        "前端 aiStudio.run 提交日志追加 ops=[...]（从 options.plan.steps 收集，与 Python 端同一语义）",
+        "验证：Python 156 测试 155 过（唯一失败 test_ov_runtime_discovery 为已知环境问题）；行为级 sanity 实测 step 行与作业摘要格式；vue-tsc + npm test 356/356 通过"
+      ],
+      "related_files": [
+        "python/ai_studio/pipeline.py",
+        "python/ai_studio/jobs.py",
+        "python/ai_studio/preview.py",
+        "python/ai_studio/workflows/recipe.py",
+        "python/ai_studio/workflows/smart_edit.py",
+        "src/stores/aiStudio.ts"
+      ]
+    },
+    {
+      "id": "FEAT-217",
+      "name": "相册管理地点视图复用时间墙的卡片形态（行式密排瓦片）",
+      "status": "done",
+      "date": "2026-11-23",
+      "created_at": "2026-11-23T10:50:00+08:00",
+      "updated_at": "2026-11-23T10:50:00+08:00",
+      "module": "src/views/AlbumList.vue",
+      "purpose": "用户指出按时间与按地点的卡片形式不一致（时间=行式密排瓦片墙，地点=普通网格 glass 卡片），要求地点按时间的呈现方式、并直接复用时间墙组件。",
+      "highlights": [
+        "地点每个分组各一块 .album-wall（行式密排 + AlbumCard tile/wall 变体），与时间墙共用同一套密排参数（抽出 WALL_JUSTIFY 常量），切排序模式瓦片尺寸与错落节奏不跳变",
+        "每个地点墙独立测宽：函数 ref 工厂按 locationKey 缓存（避免 v-for 渲染反复 unbind/rebind），ResizeObserver rAF 节流跟随回流；折叠分组（v-show）展开时 RO 自动触发重排",
+        "地点信息由分组头承担，瓦片内不再重复 show-location 徽标；选择模式/右键菜单/打开路径等交互与时间墙同一套",
+        "清理死样式：.location-card-wrap、.album-grid.is-tile（地点/时间均已改用 album-wall，无消费者）",
+        "验证：vue-tsc 通过、npm test 356/356、vite build 通过；探针实测地点 3 个分组各渲染 album-tile tile-wall，行宽精确铺满（宽度和 + gap = 容器宽），与时间墙同构"
+      ],
+      "related_files": [
+        "src/views/AlbumList.vue"
+      ]
+    },
+    {
+      "id": "FEAT-218",
+      "name": "参考图调色：多参考图等权提取共性 + 明度迁移滑条（工具与链条步双入口）",
+      "status": "done",
+      "date": "2026-11-23",
+      "created_at": "2026-11-23T14:34:35+08:00",
+      "updated_at": "2026-11-23T14:34:35+08:00",
+      "module": "python/ai_studio/colortransfer.py、python/ai_studio/workflows/color_transfer.py、python/ai_studio/ops_local.py、python/ai_studio/op_catalog.json、python/ai_studio/recipecatalog.py、src/components/workshop/ai/ColorTransferTool.vue、src/components/workshop/ai/WorkbenchSteps.vue、src/assets/ai-tool.css、python/tests/test_colortransfer_multi.py",
+      "purpose": "用户提出参考图调色支持多张参考图提取共性色调：多图等权合并 Lab 统计后统一迁移（均值取平均、方差用全方差公式 E[σ²]+Var[μ]，等价于像素混池）；同时暴露算法层一直存在但未接线的 l_weight（明度迁移比例，默认 1.0 保持旧行为）；多图色调差异过大时后端 warning 提示。工具与链条步两个入口都支持多选。",
+      "highlights": [
+        "数学核心在 colortransfer.py：merge_reference_stats（等权混池统计，单条目直返）、stats_divergence（a/b 均值两两最大距离，>20 Lab 单位告警）、reinhard_transfer_stats（按预提取统计迁移，与逐像素传图单图逐字节等价）、histogram_ref_sorted/histogram_match_sorted（参考侧预排序复用）、build_cube_text_from_stats（按合并统计导出共性 .cube，命名 参考图调色_共N张.cube）",
+        "链条步多参考图用 `|` 拼接 reference_path（Windows 文件名不允许 `|`，无歧义），ops_local._split_ref_paths 解析 + _REF_CACHE LRU（键含 mtime_ns/size，改图即失效，批量链条不重算统计）；工具工作流兼容旧 referencePath 单值键",
+        "修复两个存量坑：① build_cube_text 一直把 uint8 色值喂给只收 0~1 浮点的 cube_text_from_flat，.cube 导出自上线起就会抛 ValueError（本次重构由单测钉死后修复，补 /255）；② histogram_ref_sorted 原实现各图分别排序再拼接，sorted(a)+sorted(b) ≠ sorted(a+b)，多图直方图匹配结果随参考图列表顺序变化（改为先拼接后排序，混池语义）",
+        "前端双入口多选（上限 10、去重、超出 warning）：ColorTransferTool.vue chips 列表 + lWeight 滑条；WorkbenchSteps.vue 链条步参考图行支持多选/清除/计数展示；op_catalog.json 声明 l_weight range 参数（paramViews 自动渲染滑条），recipecatalog.py TUNABLE_PARAMS 同步放行",
+        "验证：unittest 15 项新测试全绿（merge 数学等价混池、单图逐字节等价旧链路、直方图多图=拼接、l_weight=0 保明度、cube 导出、| 解析）；回归 test_recipe_overrides / test_autograde_vibrance 全绿；vue-tsc --noEmit exit 0"
+      ],
+      "related_files": [
+        "python/ai_studio/colortransfer.py",
+        "python/ai_studio/workflows/color_transfer.py",
+        "python/ai_studio/ops_local.py",
+        "python/ai_studio/op_catalog.json",
+        "python/ai_studio/recipecatalog.py",
+        "src/components/workshop/ai/ColorTransferTool.vue",
+        "src/components/workshop/ai/WorkbenchSteps.vue",
+        "src/assets/ai-tool.css",
+        "python/tests/test_colortransfer_multi.py"
+      ]
     }
   ],
-  "updated": "2026-11-22T23:32:00+08:00"
+  "updated": "2026-11-23T14:34:35+08:00"
 }

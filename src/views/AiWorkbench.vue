@@ -1454,12 +1454,11 @@ const previewNote = computed(() => {
   overflow-y: auto;
   scrollbar-width: thin;
 }
-/* 左栏整块是一个组件面板：底色与其他卡片一致，内容不再直接压在壁纸上 */
+/* 左栏整块是一个组件面板：底色与其他卡片一致，内容不再直接压在壁纸上
+   （填充/描边/材质已由上方 .rail-panel 共享规则统一下发，这里只留排版） */
 .rail-panel {
   padding: 10px 10px 12px;
-  border: 1px solid var(--c-rule);
   border-radius: var(--r-ui);
-  background: var(--wb-surface);
 }
 .wb-right {
   display: flex;
@@ -1966,11 +1965,35 @@ const previewNote = computed(() => {
   border-radius: 3px;
 }
 
+/* ── 材质统一（FEAT-086 管线）：工作台三类卡片面全部成为材质消费方 ──
+   此前它们只有 var(--wb-surface) 主题填充，切材质时外观完全不变（模糊、
+   壁厚阴影、液态高光与棱环统统没有）。现在填充/描边/模糊/阴影全部读主题
+   下发令牌：液态自动带 blur(16px) + 壁厚 inset 阴影 + 湿边高光层 + 1px 棱环
+   （高光/棱环由 main.css 的 body.mat-liquid .wb-card 系列规则补齐），
+   普通（plain）自动回落实心、关模糊。--wb-surface 只作令牌缺失时的兜底。 */
+.wb-card,
+.rail-panel,
+.rail-action {
+  position: relative;
+  border: 1px solid var(--glass-border, var(--c-rule));
+  background-color: var(--glass-bg, var(--wb-surface));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 0px)) saturate(var(--glass-saturate, 1))
+    brightness(var(--glass-brightness, 1)) contrast(var(--glass-contrast, 1));
+  backdrop-filter: blur(var(--glass-blur, 0px)) saturate(var(--glass-saturate, 1))
+    brightness(var(--glass-brightness, 1)) contrast(var(--glass-contrast, 1));
+  box-shadow: var(--shadow-1);
+}
+/* 普通材质：与 body.mat-plain .glass-surface 同一口径 —— 关掉模糊与明度位移 */
+body.mat-plain .wb-card,
+body.mat-plain .rail-panel,
+body.mat-plain .rail-action {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 .wb-card {
-  border: 1px solid var(--c-rule);
   border-radius: var(--r-ui);
   padding: 12px 14px;
-  background: var(--wb-surface);
 }
 .card-h {
   display: flex;
@@ -2357,14 +2380,12 @@ const previewNote = computed(() => {
   line-height: 1.5;
 }
 
-/* 常驻操作条：钉在右栏底部，不随内容滚动 */
+/* 常驻操作条：钉在右栏底部，不随内容滚动（材质由共享规则统一下发） */
 .rail-action {
   flex: none;
   margin-top: 10px;
   padding: 10px 12px 12px;
-  border: 1px solid var(--c-rule);
   border-radius: var(--r-ui);
-  background: var(--wb-surface);
 }
 .rail-action .cost {
   margin-top: 0;

@@ -164,7 +164,8 @@ def run(req, progress, cancel) -> dict:
             progress(max(0, min(100, pct)), stage, f"{i + 1}/{n}", steps)
 
         result = recipe_flow.run_plan(
-            img, plan, providers, cancel, trace, emit, base_pct, span, ctx
+            img, plan, providers, cancel, trace, emit, base_pct, span, ctx,
+            log_tag=f"photo={i + 1}/{n}:{stem_of(path)}",
         )
         steps_all.extend(trace.snapshot())
 
