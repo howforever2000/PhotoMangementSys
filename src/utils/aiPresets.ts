@@ -66,8 +66,9 @@ export const UPSCALE_SCALES: AiOption[] = [
 
 /** 参考图调色（本地）：算法 */
 export const CT_METHODS: AiOption[] = [
-  { value: "reinhard", label: "自然", hint: "按均值/方差迁移，柔和自然（推荐）" },
-  { value: "histogram", label: "强匹配", hint: "逐通道直方图匹配，风格更强烈" },
+  { value: "adaptive", label: "智能分层", hint: "影调、色偏、同色三层解耦，100% 强度可用（推荐，FEAT-219）" },
+  { value: "reinhard", label: "经典统计", hint: "按均值/方差迁移；高强度和明度迁移容易过火（兼容旧档）" },
+  { value: "histogram", label: "强匹配", hint: "逐通道直方图匹配，风格强烈但不稳定（不推荐）" },
 ];
 
 /** 画质修复（本地）：放大倍数（模型固定 4× 推理，2× 会再缩到目标） */

@@ -209,3 +209,6 @@ pip-unpack-*/
 /prototype/
 # 临时测试图（已删除，防止再次误入库）
 /workshop-test.png
+
+# FEAT-219 调色实验产物（lab/ 下的对比图、metrics 等评测输出，体积大可重建，不入库）
+/lab/

@@ -307,7 +307,7 @@
   {
    "id": "color_transfer",
    "label": "参考图调色",
-   "desc": "按参考图的 Lab 统计迁移色调（Reinhard / 直方图），须给定参考图路径；可多张用 | 拼接等权提取共性",
+   "desc": "按参考图迁移色调与影调（adaptive 三层解耦 / Reinhard / 直方图），须给定参考图路径；可多张用 | 拼接提取共性",
    "backend": "local",
    "stage": 1,
    "module": "ai_studio.ops_local",
@@ -316,7 +316,8 @@
      "type": "enum",
      "values": [
       "reinhard",
-      "histogram"
+      "histogram",
+      "adaptive"
      ],
      "default": "reinhard",
      "label": "方法"
@@ -329,13 +330,39 @@
      "step": 0.05,
      "label": "强度"
     },
+    "tone_weight": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 0.85,
+     "step": 0.05,
+     "label": "影调强度（adaptive）"
+    },
+    "chroma_weight": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 1.0,
+     "step": 0.05,
+     "label": "色调强度（adaptive）"
+    },
+    "keep_exposure": {
+     "type": "bool",
+     "default": true,
+     "label": "保持曝光（adaptive）"
+    },
+    "protect_skin": {
+     "type": "bool",
+     "default": false,
+     "label": "保护肤色（adaptive）"
+    },
     "l_weight": {
      "type": "range",
      "min": 0,
      "max": 1,
      "default": 1.0,
      "step": 0.05,
-     "label": "明度迁移"
+     "label": "明度迁移（经典）"
     },
     "reference_path": {
      "type": "string",
@@ -542,7 +569,7 @@
   {
    "id": "color_transfer",
    "label": "参考图调色",
-   "desc": "把参考图的色调与影调迁移到素材图（本机、免费）；可多张参考图等权提取共性色调",
+   "desc": "把参考图的色调与影调迁移到素材图（本机、免费）；默认三层解耦，可多张参考图聚类提取共性",
    "icon": "transfer",
    "runtime": "python",
    "backend": "local",
@@ -553,10 +580,11 @@
     "method": {
      "type": "enum",
      "values": [
+      "adaptive",
       "reinhard",
       "histogram"
      ],
-     "default": "reinhard",
+     "default": "adaptive",
      "label": "方法"
     },
     "strength": {
@@ -567,13 +595,39 @@
      "step": 0.05,
      "label": "强度"
     },
+    "tone_weight": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 0.85,
+     "step": 0.05,
+     "label": "影调强度"
+    },
+    "chroma_weight": {
+     "type": "range",
+     "min": 0,
+     "max": 1,
+     "default": 1.0,
+     "step": 0.05,
+     "label": "色调强度"
+    },
+    "keep_exposure": {
+     "type": "bool",
+     "default": true,
+     "label": "保持曝光"
+    },
+    "protect_skin": {
+     "type": "bool",
+     "default": false,
+     "label": "保护肤色"
+    },
     "l_weight": {
      "type": "range",
      "min": 0,
      "max": 1,
      "default": 1.0,
      "step": 0.05,
-     "label": "明度迁移"
+     "label": "明度迁移（经典）"
     }
    },
    "surface": "single",

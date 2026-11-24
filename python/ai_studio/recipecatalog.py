@@ -75,7 +75,10 @@ def plan_from_llm(raw: Dict[str, Any]) -> Dict[str, Any]:
 TUNABLE_PARAMS: Dict[str, frozenset] = {
     "auto_grade": frozenset({"style", "strength"}),
     "local_film": frozenset({"lut", "strength", "anchor", "grain", "vignette"}),
-    "color_transfer": frozenset({"method", "strength", "l_weight", "reference_path"}),
+    "color_transfer": frozenset(
+        {"method", "strength", "l_weight", "tone_weight", "chroma_weight",
+         "keep_exposure", "protect_skin", "reference_path"}
+    ),
     "face_reshape": frozenset({"slim", "eyes", "eye_bright"}),
     "skin_smooth": frozenset({"strength", "texture"}),
     "skin_tone": frozenset({"hue_shift", "chroma", "brighten", "blush"}),

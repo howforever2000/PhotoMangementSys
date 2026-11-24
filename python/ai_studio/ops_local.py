@@ -29,6 +29,7 @@ from . import (
     hairlength,
     landmark,
     localmodels,
+    refgrade,
     skinretouch,
     skintone,
 )
@@ -373,9 +374,11 @@ def _fit_ref_image(img: Image.Image) -> np.ndarray:
 
 
 def _ref_artifact(paths: list[str], method: str):
-    """取参考图迁移产物（LRU 缓存）：reinhard → 合并 Lab 统计；histogram → 逐通道已排序像素列。
+    """取参考图迁移产物（LRU 缓存）。
 
-    单张参考图时 `merge_reference_stats` 直取该图统计，行为与旧版逐像素传图完全一致。
+    adaptive → `RefProfile`（三层解耦，FEAT-219）；reinhard → 合并 Lab 统计；
+    histogram → 逐通道已排序像素列。单张参考图时 `merge_reference_stats` 直取该图统计，
+    行为与旧版逐像素传图完全一致。
     """
     key = (method, tuple((p, os.stat(p).st_mtime_ns, os.stat(p).st_size) for p in paths))
     hit = _REF_CACHE.get(key)
@@ -383,7 +386,9 @@ def _ref_artifact(paths: list[str], method: str):
         _REF_CACHE.move_to_end(key)
         return hit
     arrs = [_fit_ref_image(Image.open(p).convert("RGB")) for p in paths]
-    if method == "histogram":
+    if method == "adaptive":
+        artifact = refgrade.build_profile(arrs)
+    elif method == "histogram":
         artifact = colortransfer.histogram_ref_sorted(arrs)
     else:
         artifact = colortransfer.merge_reference_stats(
@@ -395,16 +400,25 @@ def _ref_artifact(paths: list[str], method: str):
     return artifact
 
 
+def _as_bool(v, default: bool = False) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
 def op_color_transfer(
     img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
 ) -> Image.Image:
-    """参考图调色：按参考图的 Lab 统计迁移（Reinhard / 直方图），支持多张参考图等权提取共性。
+    """参考图调色：按参考图迁移色调 / 影调（adaptive / Reinhard / 直方图），支持多张参考图。
 
     参考图以**路径参数**进链（`reference_path`）：链条的每步只能带标量参数，
     塞不下一张图，所以步骤参数里存路径（多张用 `|` 拼接）、执行时在此处解码。
     参考图只取统计量，降到长边 1024 再转 Lab（与 `workflows/color_transfer.py`
     同一口径，24MP 全量转 Lab 要 2145ms，1MP 只要 24ms，统计量与分辨率无关）。
-    `l_weight` 控制明度迁移比例（1 = 与参考图明暗一致，0 = 只迁色彩不动明暗）。
+    旧参数 `l_weight` 只对 reinhard 生效；adaptive 用 `tone_weight` / `chroma_weight`
+    与两个开关（`keep_exposure` / `protect_skin`），FEAT-219。
     """
     paths = _split_ref_paths(str(params.get("reference_path", "") or ""))
     if not paths:
@@ -419,7 +433,17 @@ def op_color_transfer(
     strength = max(0.0, min(1.0, float(params.get("strength", 1.0))))
     l_weight = max(0.0, min(1.0, float(params.get("l_weight", 1.0))))
     arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
-    if method == "histogram":
+    if method == "adaptive":
+        tone_weight = max(0.0, min(1.0, float(params.get("tone_weight", 0.85))))
+        chroma_weight = max(0.0, min(1.0, float(params.get("chroma_weight", 1.0))))
+        keep_exposure = _as_bool(params.get("keep_exposure", True), True)
+        protect_skin = _as_bool(params.get("protect_skin", False), False)
+        out, _, _ = refgrade.transfer(
+            arr, _ref_artifact(paths, "adaptive"), strength=strength,
+            tone_weight=tone_weight, chroma_weight=chroma_weight,
+            keep_exposure=keep_exposure, protect_skin=protect_skin,
+        )
+    elif method == "histogram":
         out = colortransfer.histogram_match_sorted(arr, _ref_artifact(paths, "histogram"), strength=strength)
     else:
         out = colortransfer.reinhard_transfer_stats(arr, _ref_artifact(paths, "reinhard"), l_weight=l_weight, strength=strength)

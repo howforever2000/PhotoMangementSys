@@ -8684,7 +8684,37 @@
         "src/assets/ai-tool.css",
         "python/tests/test_colortransfer_multi.py"
       ]
+    },
+    {
+      "id": "FEAT-219",
+      "name": "参考图调色：三层解耦（影调/分区色偏/同色残差）+ LUT 烘焙，默认 adaptive",
+      "status": "done",
+      "date": "2026-11-24",
+      "created_at": "2026-11-24T14:59:41+08:00",
+      "updated_at": "2026-11-24T14:59:41+08:00",
+      "module": "python/ai_studio/refgrade.py、python/ai_studio/workflows/color_transfer.py、python/ai_studio/ops_local.py、python/ai_studio/op_catalog.json、python/ai_studio/recipecatalog.py、src/utils/aiPresets.ts、src/components/workshop/ai/ColorTransferTool.vue、python/tests/test_refgrade.py、python/bench/grade_ref_eval.py、docs/FEAT-219-参考图调色三层解耦.md",
+      "purpose": "解决现有 Reinhard 参考图调色「强度和明度都只能 25% 才可用」：100% 强度下 L 也被整段搬走、σr/σs 无上限、Lab→sRGB 硬裁、sRGB 空间混合，实测 clip 8.6–14.5%、对比度塌到 0.81–0.97。新算法把影调形状、整体色偏、同色换色拆成三层分别限幅，默认 100% 强度可用；旧 reinhard/histogram 保留兼容，链条步默认仍是 reinhard 以保证旧配方零回归。",
+      "highlights": [
+        "新增 refgrade.py（纯 numpy 逐色函数，零模型零网络）：A1 分位曲线（KNOTS 2/10/25/50/75/90/98，逐点 ±22、前缀最大值强制单调、默认扣中位差锚定曝光）；A2 10 个 L 分带的 Δa/Δb（带轴 1-2-1 平滑、矢量限幅 30）；A3 12 色相扇区×3 影调层同色残差（min_count 0.2%、60 轮邻域外推、色相循环+影调边缘平滑、Δab≤12/ΔL≤12、总权重 0.45）；A4 肤色软门控（h 20–60°、C 8–45、L 35–95，最多压 65% 色偏）；A5 _chroma_headroom 只缩 C 回收色域；A6 高光肩部改为按亮度等比缩放保色相，再加 0.95 起的窄通道兜底（实测只判 >1 不够，250–254 的贴顶像素仍被 clip% 计入）",
+        "A1/A2/A3 的参数都按「素材统计 + 参考池」拟合后烘 33³ LUT（轴序 [b,g,r]），复用 lutcube.apply_cube 的 97³ 稠密表缓存；参考侧 RefProfile 整批复用（1024 长边、90k/张抽样），每张素材各拟合一次（200k 抽样在 RGB 域先降采样再转 Lab，12MP 单张 1.1–1.3s）",
+        "多参考从等权混池改为按 10 带 Δab 均值并查集聚类取最大簇，簇外参考剔除并 warning；`.cube` 导出语义改为「冻结第一张素材的映射」，meta 带 cubeFrozenFrom，UI 与文档明示",
+        "实测（贵阳测试 2 张 × 清橙/日系各 3 参考，100% 强度）：clip 1.42–2.21%（现有 100% 为 8.6–14.5%）、对比度 0.987–1.039、ΔE 12.0–24.7、高光区彩度比 ratio 0.286–1.155 且普遍优于逐通道版；profile 70–88ms、单张 1.06–1.27s",
+        "前端：CT_METHODS 新增「智能分层（推荐）」置首，ColorTransferTool 默认 adaptive/强度 100，新增影调强度、色调强度、保持曝光、保护肤色；经典模式仍显示明度迁移；导出 .cube 标注「按第一张素材冻结」。op_catalog 链条步 values 加 adaptive 但 default 保持 reinhard；工作流 default 改 adaptive",
+        "验证：test_refgrade.py 16 项全绿（strength=0 恒等、影调单调/锚定、残差无台阶、纯色保色相、肩部保彩度、LUT 直算等价、.cube 往返、聚类、肤色门控、限幅、工作流 adaptive 端到端 + reinhard 旧路径 + 链条步双入口）；test_colortransfer_multi.py 15 项全绿；test_recipe_overrides / test_autograde_vibrance / test_autograde_lch_sat 24 项全绿；vue-tsc --noEmit 与 vite build 通过；op_catalog json.tool 通过"
+      ],
+      "related_files": [
+        "python/ai_studio/refgrade.py",
+        "python/ai_studio/workflows/color_transfer.py",
+        "python/ai_studio/ops_local.py",
+        "python/ai_studio/op_catalog.json",
+        "python/ai_studio/recipecatalog.py",
+        "src/utils/aiPresets.ts",
+        "src/components/workshop/ai/ColorTransferTool.vue",
+        "python/tests/test_refgrade.py",
+        "python/bench/grade_ref_eval.py",
+        "docs/FEAT-219-参考图调色三层解耦.md"
+      ]
     }
   ],
-  "updated": "2026-11-23T14:34:35+08:00"
+  "updated": "2026-11-24T14:59:41+08:00"
 }
