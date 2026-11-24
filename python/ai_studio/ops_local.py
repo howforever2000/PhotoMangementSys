@@ -417,6 +417,7 @@ def op_color_transfer(
     塞不下一张图，所以步骤参数里存路径（多张用 `|` 拼接）、执行时在此处解码。
     参考图只取统计量，降到长边 1024 再转 Lab（与 `workflows/color_transfer.py`
     同一口径，24MP 全量转 Lab 要 2145ms，1MP 只要 24ms，统计量与分辨率无关）。
+    方法默认 adaptive（FEAT-220：界面只保留智能分层，旧值仍可显式传入走旧算法）。
     旧参数 `l_weight` 只对 reinhard 生效；adaptive 用 `tone_weight` / `chroma_weight`
     与两个开关（`keep_exposure` / `protect_skin`），FEAT-219。
     """
@@ -429,7 +430,7 @@ def op_color_transfer(
     if len(paths) > 10:
         raise ValueError(f"参考图最多 10 张（当前 {len(paths)} 张），请删掉一些后再试")
 
-    method = str(params.get("method", "reinhard"))
+    method = str(params.get("method", "adaptive"))
     strength = max(0.0, min(1.0, float(params.get("strength", 1.0))))
     l_weight = max(0.0, min(1.0, float(params.get("l_weight", 1.0))))
     arr = np.asarray(img.convert("RGB"), dtype=np.uint8)

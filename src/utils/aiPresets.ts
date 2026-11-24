@@ -64,11 +64,12 @@ export const UPSCALE_SCALES: AiOption[] = [
   { value: "4", label: "4×" },
 ];
 
-/** 参考图调色（本地）：算法 */
+/** 参考图调色（本地）：算法。界面已不再暴露选择（FEAT-220 只留「智能分层」），
+ *  这里仍保留完整枚举，供已保存的链条步骤回显方法名走旧算法。 */
 export const CT_METHODS: AiOption[] = [
-  { value: "adaptive", label: "智能分层", hint: "影调、色偏、同色三层解耦，100% 强度可用（推荐，FEAT-219）" },
-  { value: "reinhard", label: "经典统计", hint: "按均值/方差迁移；高强度和明度迁移容易过火（兼容旧档）" },
-  { value: "histogram", label: "强匹配", hint: "逐通道直方图匹配，风格强烈但不稳定（不推荐）" },
+  { value: "adaptive", label: "智能分层", hint: "影调、色偏、同色三层解耦，100% 强度可用（FEAT-219）" },
+  { value: "reinhard", label: "经典统计", hint: "按均值/方差迁移；仅兼容旧档，界面已不再提供" },
+  { value: "histogram", label: "强匹配", hint: "逐通道直方图匹配；仅兼容旧档，界面已不再提供" },
 ];
 
 /** 画质修复（本地）：放大倍数（模型固定 4× 推理，2× 会再缩到目标） */

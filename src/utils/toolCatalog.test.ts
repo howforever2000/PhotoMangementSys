@@ -210,7 +210,10 @@ describe("样片微调白名单与清单同源（FEAT-186）", () => {
     assert.ok(close, "TUNABLE_PARAMS 字面量收尾花括号定位失败");
     const block = py.slice(start, start + close.index + 1);
     const allowed = new Map<string, Set<string>>();
-    for (const m of block.matchAll(/"([a-z_]+)":\s*frozenset\(\{([^}]*)\}\)/g)) {
+    // `frozenset(` 与 `{` 之间、`}` 与 `)` 之间都可能有换行（参数多时 ruff 会折行）——
+    // FEAT-219 给 color_transfer 加到 8 个键后折行，旧正则的 `\}\)` 就再也匹配不到它，
+    // 守卫对那个算子静默失效（FEAT-220 修）。这两处必须允许空白。
+    for (const m of block.matchAll(/"([a-z_]+)":\s*frozenset\(\s*\{([^}]*)\}\s*\)/g)) {
       const keys = new Set<string>();
       for (const k of m[2].matchAll(/"([a-z_]+)"/g)) keys.add(k[1]);
       allowed.set(m[1], keys);

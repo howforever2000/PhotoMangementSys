@@ -8691,7 +8691,7 @@
       "status": "done",
       "date": "2026-11-24",
       "created_at": "2026-11-24T14:59:41+08:00",
-      "updated_at": "2026-11-24T14:59:41+08:00",
+      "updated_at": "2026-11-24T22:50:00+08:00",
       "module": "python/ai_studio/refgrade.py、python/ai_studio/workflows/color_transfer.py、python/ai_studio/ops_local.py、python/ai_studio/op_catalog.json、python/ai_studio/recipecatalog.py、src/utils/aiPresets.ts、src/components/workshop/ai/ColorTransferTool.vue、python/tests/test_refgrade.py、python/bench/grade_ref_eval.py、docs/FEAT-219-参考图调色三层解耦.md",
       "purpose": "解决现有 Reinhard 参考图调色「强度和明度都只能 25% 才可用」：100% 强度下 L 也被整段搬走、σr/σs 无上限、Lab→sRGB 硬裁、sRGB 空间混合，实测 clip 8.6–14.5%、对比度塌到 0.81–0.97。新算法把影调形状、整体色偏、同色换色拆成三层分别限幅，默认 100% 强度可用；旧 reinhard/histogram 保留兼容，链条步默认仍是 reinhard 以保证旧配方零回归。",
       "highlights": [
@@ -8700,7 +8700,8 @@
         "多参考从等权混池改为按 10 带 Δab 均值并查集聚类取最大簇，簇外参考剔除并 warning；`.cube` 导出语义改为「冻结第一张素材的映射」，meta 带 cubeFrozenFrom，UI 与文档明示",
         "实测（贵阳测试 2 张 × 清橙/日系各 3 参考，100% 强度）：clip 1.42–2.21%（现有 100% 为 8.6–14.5%）、对比度 0.987–1.039、ΔE 12.0–24.7、高光区彩度比 ratio 0.286–1.155 且普遍优于逐通道版；profile 70–88ms、单张 1.06–1.27s",
         "前端：CT_METHODS 新增「智能分层（推荐）」置首，ColorTransferTool 默认 adaptive/强度 100，新增影调强度、色调强度、保持曝光、保护肤色；经典模式仍显示明度迁移；导出 .cube 标注「按第一张素材冻结」。op_catalog 链条步 values 加 adaptive 但 default 保持 reinhard；工作流 default 改 adaptive",
-        "验证：test_refgrade.py 16 项全绿（strength=0 恒等、影调单调/锚定、残差无台阶、纯色保色相、肩部保彩度、LUT 直算等价、.cube 往返、聚类、肤色门控、限幅、工作流 adaptive 端到端 + reinhard 旧路径 + 链条步双入口）；test_colortransfer_multi.py 15 项全绿；test_recipe_overrides / test_autograde_vibrance / test_autograde_lch_sat 24 项全绿；vue-tsc --noEmit 与 vite build 通过；op_catalog json.tool 通过"
+        "验证：test_refgrade.py 16 项全绿（strength=0 恒等、影调单调/锚定、残差无台阶、纯色保色相、肩部保彩度、LUT 直算等价、.cube 往返、聚类、肤色门控、限幅、工作流 adaptive 端到端 + reinhard 旧路径 + 链条步双入口）；test_colortransfer_multi.py 15 项全绿；test_recipe_overrides / test_autograde_vibrance / test_autograde_lch_sat 24 项全绿；vue-tsc --noEmit 与 vite build 通过；op_catalog json.tool 通过",
+        "【2026-11-24 勘误 · FEAT-220】本条原记「python/tests/test_refgrade.py 新增、16 项全绿」，实际该文件从未入库（git 无任何历史），refgrade 当时零单测覆盖；单测由 FEAT-220 补齐为 python/tests/test_refgrade.py（18 项）。"
       ],
       "related_files": [
         "python/ai_studio/refgrade.py",
@@ -8710,11 +8711,45 @@
         "python/ai_studio/recipecatalog.py",
         "src/utils/aiPresets.ts",
         "src/components/workshop/ai/ColorTransferTool.vue",
-        "python/tests/test_refgrade.py",
         "python/bench/grade_ref_eval.py",
         "docs/FEAT-219-参考图调色三层解耦.md"
       ]
+    },
+    {
+      "id": "FEAT-220",
+      "name": "参考图调色：A3 覆盖率门控 + 参数面收敛为「强度」一个滑条",
+      "status": "done",
+      "date": "2026-11-24",
+      "created_at": "2026-11-24T22:50:00+08:00",
+      "updated_at": "2026-11-24T22:50:00+08:00",
+      "module": "python/ai_studio/refgrade.py、python/ai_studio/workflows/color_transfer.py、python/ai_studio/ops_local.py、python/ai_studio/op_catalog.json、python/ai_studio/catalog.py、python/tests/test_refgrade.py、src/utils/toolCatalog.ts、src/utils/workbenchPlan.ts、src/utils/aiPresets.ts、src/utils/toolCatalog.test.ts、src/components/workshop/ai/ColorTransferTool.vue、docs/FEAT-220-参考图调色A3覆盖率门控与参数收敛.md",
+      "purpose": "① FEAT-219 的 A3 同色残差靠「12 固定扇区 + 60 轮邻域外推」补齐空格，会把参考图**没有**的颜色也推上一份编造的 Δab —— 实测清橙胶片参考下把蓝天染成品红/暖雾；改为按参考图真实色相覆盖度门控后，未覆盖颜色保持原样。② 工作台面板把 op_catalog 的 8 个参数无条件全量渲染（无对 method 的条件显示），且链条新增步骤的 method 默认还是 reinhard（经典统计），用户看到 1 个下拉 + 6 个滑条/开关无法理解；收敛为「选择参考图 + 强度」一个滑条，方法固定智能分层，旧方法仅保留执行兼容。",
+      "highlights": [
+        "门控实现在 refgrade.py：`_support_mask` 按 (3 影调层 × 36 个 10° 色相格) 统计参考池覆盖度（彩度≥4 口径、环向平滑两遍防台阶），RefProfile 与 Mapping 各加一个 `support` 字段，`eval_mapping` 里 A3 的分层残差按 `_support_at` 逐像素衰减；A1/A2 完全不受影响（A2 仍负责整体风格），仍是逐色函数、可原样烘 33³ LUT。",
+        "覆盖率统计只依赖参考池，故放在 RefProfile 一次性构建；`refgrade.support_coverage()` 暴露平均覆盖度，工作流侧 <0.25 时 warning「参考图只覆盖约 N% 的色相范围，其余颜色已保持原样」，meta 记 `gateCoverage`。实测覆盖度：清橙 10 张 0.398、日系 10 张 0.611、单张 0.139~0.213。",
+        "实测（清橙 10 参考 × IMG_20260505_063809）：全链 ΔE 30.0→27.4、clip 1.99%→2.21%（均 <3.5% 门槛）、高光彩度比 0.733→0.491、5bit 色数比 0.962→0.913；100% 裁切下天空从「明显品红」回到「偏冷的中性灰蓝」——A3 编造的品红消失，A2 的整体暖调按设计保留。门控前后全图平均 ΔE 3.68。",
+        "参数面收敛：op_catalog 两段的 method/tone_weight/chroma_weight/keep_exposure/protect_skin/l_weight 全部标 `hidden: true`（用隐藏而非删键，保证 catalog.norm_params 不会丢弃旧配方里已保存的值），ops 段 method.default 由 reinhard 改 adaptive；`toolCatalog.ParamSpec` 加 `hidden?`，`workbenchPlan.paramViews` 跳过 hidden，`stepSummary` 保留 hidden 枚举（方法名）但跳过 hidden 滑条；单步工具页删掉方法下拉与 4 个控件，只留「迁移强度 + 保护肤色 + 导出 .cube」。ops_local 与工作流入口的 method 缺省值同步改 adaptive。",
+        "顺带修 catalog.norm_params 的 bool 缺省值：`bool(None)` 会把 keep_exposure（schema 默认 true）静默变成 false —— 链条步一直没开曝光锚定（FEAT-219 实测该锚定把 100% 强度 clip 从 20.1% 压到 13.2%）。改为缺省回 schema default、字符串按真值解析（`bool(\"false\")` 曾得 True），显式值照旧保留；新增 python/tests/test_catalog_norm.py 6 个用例钉住。",
+        "补齐单测 python/tests/test_refgrade.py（FEAT-219 §6 的 10 条 + FEAT-220 门控 4 条，共 14 个测试用例）：恒等/影调单调锚定/无层台阶/色域回收保色相/肩部等比/LUT 等价与 .cube 往返/多参考聚类/肤色门控/旧路径 golden 哈希/双层限幅，以及门控的「覆盖全 1 等价」「未覆盖色相不作用」「不影响 A2」「形状与覆盖度」。",
+        "顺带修守卫测试：toolCatalog.test.ts 解析 TUNABLE_PARAMS 的正则要求 `frozenset({` 与 `})` 紧邻，FEAT-219 把 color_transfer 加到 8 个键后 ruff 折行成 `}\\n    )`，该算子从此不再被守卫覆盖（npm test 自 FEAT-219 起一直是红的，只是没人跑）；正则改为允许空白后 356 项全过。",
+        "验证：python unittest discover 184 项全绿（含新 14 项）；npm test 356 项全绿；vue-tsc --noEmit 0 错；op_catalog.json json.tool 通过；生产链路真图出片 A/B 见 _ab_out/_验收_门控前后_天空裁切.jpg"
+      ],
+      "related_files": [
+        "python/ai_studio/refgrade.py",
+        "python/ai_studio/workflows/color_transfer.py",
+        "python/ai_studio/ops_local.py",
+        "python/ai_studio/op_catalog.json",
+        "python/ai_studio/catalog.py",
+        "python/tests/test_catalog_norm.py",
+        "python/tests/test_refgrade.py",
+        "src/utils/toolCatalog.ts",
+        "src/utils/workbenchPlan.ts",
+        "src/utils/aiPresets.ts",
+        "src/utils/toolCatalog.test.ts",
+        "src/components/workshop/ai/ColorTransferTool.vue",
+        "docs/FEAT-220-参考图调色A3覆盖率门控与参数收敛.md"
+      ]
     }
   ],
-  "updated": "2026-11-24T14:59:41+08:00"
+  "updated": "2026-11-24T22:50:00+08:00"
 }

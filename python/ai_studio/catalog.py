@@ -179,7 +179,16 @@ def _norm_one(raw: Any, spec: Dict[str, Any]) -> Any:
     if kind == "string":
         return str(raw or "")[:500]
     if kind == "bool":
-        return bool(raw)
+        # 缺省必须回 schema 默认值：`bool(None)` 会得到 False，把
+        # `keep_exposure` 这类「默认开」的开关静默关掉（FEAT-220 实测发现，
+        # 链条步一直没开曝光锚定）。字符串则按常见真值解析，避免 bool("false")→True。
+        if raw is None or raw == "":
+            return bool(spec.get("default", False))
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return raw != 0
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
     return spec.get("default")
 
 

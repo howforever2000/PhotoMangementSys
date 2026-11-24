@@ -285,11 +285,12 @@ function sliderToRaw(spec: ParamSpec, slider: number): number {
   return Math.round(v * 1000) / 1000;
 }
 
-/** 某一步在界面上要渲染的参数列表（顺序即 catalog 声明顺序） */
+/** 某一步在界面上要渲染的参数列表（顺序即 catalog 声明顺序；`hidden` 的契约参数不渲染） */
 export function paramViews(step: WbChainStep): ChainParamView[] {
   const spec = opById(step.op);
   if (!spec) return [];
-  return Object.entries(spec.params).map(([key, p]) => {
+  return Object.entries(spec.params).flatMap(([key, p]) => {
+    if (p.hidden) return [];
     if (p.type === "enum") {
       const opts = enumOptions(step.op, key);
       const raw = String(step.params[key] ?? p.default);
@@ -380,6 +381,7 @@ export function enumText(step: WbChainStep, key: string): string {
 /**
  * 步骤摘要：界面上每一步右侧那行小字。
  * 只取前两个 range 参数，枚举单独处理（换滤镜比滑杆更值得先说）。
+ * `hidden` 的枚举仍要显示（方法名是有效信息），`hidden` 的滑条/开关不占名额。
  */
 export function stepSummary(step: WbChainStep): string {
   const parts: string[] = [];
@@ -391,6 +393,7 @@ export function stepSummary(step: WbChainStep): string {
       if (t) parts.push(t);
       continue;
     }
+    if (p.hidden) continue;
     if (p.type === "range" && parts.length < 2) {
       parts.push(`${p.label} ${sliderOf(step, key)}%`);
     }

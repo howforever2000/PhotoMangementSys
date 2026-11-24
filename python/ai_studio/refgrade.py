@@ -7,6 +7,9 @@
   A3 同色残差：12 个色相扇区 × 3 个影调层，表达「这里的蓝应该更青一点」这类同色换色。
 
 A4/A5/A6 是收口：肤色门控、色域回收（只缩 C）、高光肩部（按亮度等比缩放，保色相）。
+A3 另有一道**覆盖率门控**（FEAT-220）：参考图在某个「影调层 × 色相」没有像素时，
+该处的同色残差不作用 —— 落实「参考图未覆盖的颜色保持原样」，避免 12 扇区外推把
+参考图没有的颜色也推上一份编造的 Δab（实测会把清橙参考下的蓝天染成暖雾）。
 整条链路没有任何空间运算，因此可以原样烘焙进 33³ LUT（轴序 [b,g,r]）。
 
 与 `colortransfer.py` 的关系：只复用它的 Lab↔sRGB 矩阵常量与 `.cube` 写出，
@@ -58,6 +61,13 @@ _SKIN_C = (3.0, 8.0, 40.0, 50.0)
 _SKIN_L = (30.0, 40.0, 90.0, 100.0)
 _SKIN_KEEP = 0.35   # 肤色区域最多保留 35% 的色偏（即压掉 65%）
 
+# A3 覆盖率门控（FEAT-220）：参考图在「影调层 × 10° 色相格」里像素太少时，
+# 该处的同色残差乘 0。理由见 docs/FEAT-220：12 个固定扇区 + 60 轮邻域外推会把
+# 参考图**没有**的颜色（如清橙参考里的蓝天）也推上一份凭空编造的 Δab。
+# 分带轴用明度、门控轴用色相，都不含内容信息，故仍是逐色函数、可烘 LUT。
+_SUPPORT_BINS = 36
+_SUPPORT_SMOOTH = 2
+
 
 @dataclass(frozen=True)
 class RefProfile:
@@ -67,6 +77,7 @@ class RefProfile:
     band_ab: np.ndarray              # (10,2) 池化带均值
     kept: tuple[int, ...]            # 参与池化的参考图下标
     dropped: tuple[int, ...]         # 因色调分歧被剔除的参考图下标
+    support: np.ndarray | None = None  # (3,36) 色相覆盖度（10° 一格，0~1）
 
 
 @dataclass(frozen=True)
@@ -83,6 +94,7 @@ class Mapping:
     shoulder_mode: str = "ratio"     # "ratio"（等比保色相）或 "channel"（旧逐通道）
     tone_weight: float = 0.85
     chroma_weight: float = 1.0
+    support: np.ndarray | None = None  # (3,36) A3 覆盖率门控；None = 不门控
 
 
 # ---------------- 基础工具 ----------------
@@ -122,6 +134,45 @@ def _band_stats(samples_lab: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         for j, s in enumerate(sums):
             vals[:, j] = np.interp(np.arange(_BANDS), src, s[valid] / counts[valid])
     return _smooth_bands(vals).astype(np.float32), counts
+
+
+def _support_mask(ref_lab: np.ndarray, min_count: int) -> np.ndarray:
+    """参考池的色相覆盖度：(3 影调层, 36 个 10° 格)，环向平滑两遍防台阶。
+
+    只统计彩度 ≥4 的像素（近中性的色相不可信，与 `_residual_grid` 同口径）。
+    边缘用环形复制，不把两端拉向 0。
+    """
+    hue = np.degrees(np.arctan2(ref_lab[:, 2], ref_lab[:, 1])) % 360.0
+    L = ref_lab[:, 0]
+    zone = np.clip((L // 33.0).astype(np.int16), 0, 2)
+    idx = np.clip((hue // (360.0 / _SUPPORT_BINS)).astype(np.int16), 0, _SUPPORT_BINS - 1)
+    mask = np.zeros((3, _SUPPORT_BINS), dtype=np.float64)
+    for z in range(3):
+        m = zone == z
+        if not m.any():
+            continue
+        counts = np.bincount(idx[m], minlength=_SUPPORT_BINS).astype(np.float64)
+        mask[z] = (counts >= float(min_count)).astype(np.float64)
+    for _ in range(_SUPPORT_SMOOTH):
+        p = np.concatenate((mask[:, -1:], mask, mask[:, :1]), axis=1)
+        mask = (p[:, :-2] + 2.0 * p[:, 1:-1] + p[:, 2:]) / 4.0
+    return np.clip(mask, 0.0, 1.0).astype(np.float32)
+
+
+def _support_at(support: np.ndarray, hue: np.ndarray, zone: int) -> np.ndarray:
+    """按色相在覆盖度的 36 格上做环向线性插值（逐像素，无空间运算）。"""
+    pos = hue / (360.0 / _SUPPORT_BINS)
+    i0 = np.floor(pos).astype(np.int32) % _SUPPORT_BINS
+    i1 = (i0 + 1) % _SUPPORT_BINS
+    f = (pos - np.floor(pos)).astype(np.float32)
+    return support[zone][i0] * (1.0 - f) + support[zone][i1] * f
+
+
+def support_coverage(support: np.ndarray | None) -> float:
+    """门控的平均覆盖度（0~1）；供上层决定是否提示「参考图未覆盖的颜色已保持原样」。"""
+    if support is None:
+        return 1.0
+    return float(np.mean(support))
 
 
 def _largest_cluster(band_abs: list[np.ndarray], threshold: float) -> list[int]:
@@ -283,7 +334,9 @@ def build_profile(refs_u8: list[np.ndarray], cluster_threshold: float = 12.0) ->
     dropped = [i for i in range(len(labs)) if i not in kept]
     pooled = np.ascontiguousarray(np.concatenate([labs[i] for i in kept], axis=0), dtype=np.float32)
     band_ab, _ = _band_stats(pooled)
-    return RefProfile(pooled, band_ab, tuple(kept), tuple(dropped))
+    chroma = np.hypot(pooled[:, 1], pooled[:, 2])
+    support = _support_mask(pooled[chroma >= 4.0], max(64, int(_MIN_CELL_FRAC * pooled.shape[0])))
+    return RefProfile(pooled, band_ab, tuple(kept), tuple(dropped), support)
 
 
 def fit_mapping(
@@ -320,6 +373,7 @@ def fit_mapping(
         shoulder_mode=str(shoulder_mode),
         tone_weight=float(np.clip(tone_weight, 0.0, 1.0)),
         chroma_weight=float(np.clip(chroma_weight, 0.0, 1.0)),
+        support=profile.support,
     )
 
 
@@ -388,7 +442,13 @@ def eval_mapping(m: Mapping, rgb01: np.ndarray, strength: float | None = None) -
     r = m.residual[sec] * (1.0 - frac)[:, None, None] + m.residual[(sec + 1) % _HUE_SECTORS] * frac[:, None, None]
     zw = np.maximum(0.0, 1.0 - np.abs(L[:, None] - _ZONE_CENTERS[None, :]) / _ZONE_HALF)
     zw /= np.maximum(zw.sum(axis=1, keepdims=True), 1e-6)
-    d = (r * zw[:, :, None]).sum(axis=1)
+    if m.support is None:
+        d = (r * zw[:, :, None]).sum(axis=1)
+    else:
+        # 覆盖率门控：参考图在该 (影调层, 色相) 没有像素 → 该层残差不作用，避免凭空编造
+        d = np.zeros((hue.size, 3), dtype=np.float64)
+        for z in range(3):
+            d += (zw[:, z] * _support_at(m.support, hue, z))[:, None] * r[:, z, :]
 
     # 彩度门控：近中性少动（下限 0.3、C≥6 饱和），防止灰底被染色
     gate = np.clip(c / 6.0, 0.3, 1.0)

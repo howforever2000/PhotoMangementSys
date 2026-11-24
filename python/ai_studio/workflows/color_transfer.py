@@ -39,6 +39,9 @@ _TONE_WEIGHT = 0.85
 _CHROMA_WEIGHT = 1.0
 _PROTECT_SKIN = False
 
+# FEAT-220：A3 覆盖率门控的平均覆盖度低于该值时提示「其余颜色已保持原样」。
+_LOW_COVERAGE_WARN = 0.25
+
 
 def _opt(opts: dict, keys: tuple[str, ...], default):
     """按 camelCase → snake_case 顺序取参数；0/False 是合法值，不能用 `or` 兜底。"""
@@ -132,7 +135,7 @@ def run(req, progress, cancel) -> dict:
         raise ValueError("没有可处理的照片")
 
     opts = req.options or {}
-    method = str(opts.get("method", "reinhard") or "reinhard")
+    method = str(opts.get("method", "adaptive") or "adaptive")
     strength = _clamp01(_opt(opts, ("strength",), 1.0))
     l_weight = _clamp01(_opt(opts, ("lWeight", "l_weight"), 1.0))
     tone_weight = _clamp01(_opt(opts, ("toneWeight", "tone_weight"), _TONE_WEIGHT))
@@ -220,14 +223,23 @@ def run(req, progress, cancel) -> dict:
     progress(100, "完成", f"{len(res.outputs)} 张")
     meta = {"method": method, "references": len(ref_paths)}
     if method == "adaptive":
+        coverage = refgrade.support_coverage(profile.support)
         meta.update(
             {
                 "toneWeight": tone_weight,
                 "chromaWeight": chroma_weight,
                 "keepExposure": keep_exposure,
                 "protectSkin": protect_skin,
+                "gateCoverage": round(coverage, 3),
             }
         )
+        # 覆盖率门控（FEAT-220）：参考图只覆盖部分色相时，其余颜色按承诺保持原样，
+        # 必须告知用户，否则会被当成「没生效」。
+        if coverage < _LOW_COVERAGE_WARN:
+            res.warnings.append(
+                f"参考图只覆盖约 {coverage * 100:.0f}% 的色相范围，其余颜色已保持原样"
+                f"（想要更强的整体偏色，可增加不同题材的参考图）"
+            )
         if cube_frozen_from:
             meta["cubeFrozenFrom"] = cube_frozen_from
         if "lWeight" in opts or "l_weight" in opts:

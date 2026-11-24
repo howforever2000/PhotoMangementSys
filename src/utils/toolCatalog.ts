@@ -27,6 +27,8 @@ export interface ParamSpec {
   max?: number;
   step?: number;
   values?: Array<string | number>;
+  /** 契约保留但界面不渲染（FEAT-220：参考图调色的旧参数只留兼容，不再暴露滑条）。 */
+  hidden?: boolean;
 }
 
 export interface OpSpec {

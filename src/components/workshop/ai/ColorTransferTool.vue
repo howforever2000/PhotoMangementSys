@@ -1,16 +1,16 @@
 <script setup lang="ts">
 /**
- * 参考图调色（FEAT-163；多参考图共性 FEAT-211；三层解耦 FEAT-219）
- * 把参考图的色调 / 影调迁到素材图：默认「智能分层」（影调/色偏/同色三层解耦），
- * 保留「经典统计」「强匹配」兼容旧档；支持多张参考图聚类提取共性；
- * 可选把这次迁移导出成 .cube（按首张素材冻结）。
+ * 参考图调色（FEAT-163；多参考图共性 FEAT-211；三层解耦 FEAT-219；参数收敛 FEAT-220）
+ * 把参考图的色调 / 影调迁到素材图。算法只保留「智能分层」（影调/色偏/同色三层解耦），
+ * 旧「经典统计」「强匹配」仅继续服务已保存的链条步骤，这里不再暴露入口；
+ * 用户侧只留「强度」一个滑条 + 「保护肤色」开关。
+ * 支持多张参考图聚类提取共性；可选把这次迁移导出成 .cube（按首张素材冻结）。
  */
 import { computed, ref, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
 import { baseName, dirName, joinPath } from "../../../utils/pathParts";
-import { CT_METHODS } from "../../../utils/aiPresets";
 import OutputDirField from "./OutputDirField.vue";
 import AiResultPanel from "./AiResultPanel.vue";
 
@@ -18,20 +18,14 @@ const props = defineProps<{ paths: string[] }>();
 const store = useAiStudioStore();
 const notify = useNotify();
 
-const method = ref("adaptive");
 const strength = ref(100);
-const toneWeight = ref(85);
-const chromaWeight = ref(100);
-const keepExposure = ref(true);
 const protectSkin = ref(false);
-const lWeight = ref(100);
 const exportCube = ref(false);
 const referencePaths = ref<string[]>([]);
 const outputDir = ref("");
 const outputTouched = ref(false);
 
 const MAX_REFS = 10;
-const isAdaptive = computed(() => method.value === "adaptive");
 
 watch(
   () => props.paths,
@@ -94,24 +88,13 @@ async function run() {
       paths: props.paths,
       prompt: "",
       outputDir: outputDir.value,
-      options: isAdaptive.value
-        ? {
-            referencePaths: referencePaths.value,
-            method: method.value,
-            strength: strength.value / 100,
-            toneWeight: toneWeight.value / 100,
-            chromaWeight: chromaWeight.value / 100,
-            keepExposure: keepExposure.value,
-            protectSkin: protectSkin.value,
-            exportCube: exportCube.value,
-          }
-        : {
-            referencePaths: referencePaths.value,
-            method: method.value,
-            strength: strength.value / 100,
-            lWeight: lWeight.value / 100,
-            exportCube: exportCube.value,
-          },
+      options: {
+        referencePaths: referencePaths.value,
+        method: "adaptive",
+        strength: strength.value / 100,
+        protectSkin: protectSkin.value,
+        exportCube: exportCube.value,
+      },
     });
   } catch (e) {
     notify.error("提交失败", String(e));
@@ -154,58 +137,19 @@ async function onCancel() {
       </div>
 
       <div class="ai-field">
-        <label class="ai-label">迁移方式</label>
-        <div class="ai-seg">
-          <button
-            v-for="m in CT_METHODS"
-            :key="m.value"
-            type="button"
-            class="ai-seg-btn"
-            :class="{ on: method === m.value }"
-            :title="m.hint"
-            @click="method = m.value"
-          >
-            {{ m.label }}
-          </button>
-        </div>
-      </div>
-
-      <div class="ai-field">
         <label class="ai-label">迁移强度 {{ strength }}%</label>
         <input v-model.number="strength" type="range" min="0" max="100" :disabled="busy" />
       </div>
 
-      <template v-if="isAdaptive">
-        <div class="ai-field">
-          <label class="ai-label">影调强度 {{ toneWeight }}%</label>
-          <input v-model.number="toneWeight" type="range" min="0" max="100" :disabled="busy" />
-        </div>
-
-        <div class="ai-field">
-          <label class="ai-label">色调强度 {{ chromaWeight }}%</label>
-          <input v-model.number="chromaWeight" type="range" min="0" max="100" :disabled="busy" />
-        </div>
-
-        <label class="ai-row" style="gap: 6px; cursor: pointer">
-          <input v-model="keepExposure" type="checkbox" :disabled="busy" />
-          <span class="ai-label" style="letter-spacing: normal">保持曝光（只搬参考图的影调形状）</span>
-        </label>
-
-        <label class="ai-row" style="gap: 6px; cursor: pointer">
-          <input v-model="protectSkin" type="checkbox" :disabled="busy" />
-          <span class="ai-label" style="letter-spacing: normal">保护肤色（人像的色相少被整体色调带走）</span>
-        </label>
-      </template>
-
-      <div v-else class="ai-field">
-        <label class="ai-label">明度迁移 {{ lWeight }}%</label>
-        <input v-model.number="lWeight" type="range" min="0" max="100" :disabled="busy" />
-      </div>
+      <label class="ai-row" style="gap: 6px; cursor: pointer">
+        <input v-model="protectSkin" type="checkbox" :disabled="busy" />
+        <span class="ai-label" style="letter-spacing: normal">保护肤色（人像的色相少被整体色调带走）</span>
+      </label>
 
       <label class="ai-row" style="gap: 6px; cursor: pointer">
         <input v-model="exportCube" type="checkbox" :disabled="busy" />
         <span class="ai-label" style="letter-spacing: normal">
-          同时导出一份 .cube 滤镜{{ isAdaptive ? "（按第一张素材冻结）" : "" }}
+          同时导出一份 .cube 滤镜（按第一张素材冻结）
         </span>
       </label>
     </div>
@@ -215,7 +159,7 @@ async function onCancel() {
     </div>
 
     <p class="ai-note ai-note-block">
-      默认「智能分层」把影调、整体色偏、同色换色分开迁移，100% 强度也能保持曝光与高光；全程本机完成、不上传。输出为新 JPG；勾选导出后会额外生成一个 .cube 滤镜文件。
+      智能分层：把影调、整体色偏、同色换色分开迁移，100% 强度也能保持曝光与高光。参考图里没有的颜色会保持原样（不会硬套成参考色）。全程本机完成、不上传。输出为新 JPG；勾选导出后会额外生成一个 .cube 滤镜文件。
     </p>
 
     <div class="ai-actions">

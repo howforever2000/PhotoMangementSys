@@ -319,8 +319,9 @@
       "histogram",
       "adaptive"
      ],
-     "default": "reinhard",
-     "label": "方法"
+     "default": "adaptive",
+     "label": "方法",
+     "hidden": true
     },
     "strength": {
      "type": "range",
@@ -336,7 +337,8 @@
      "max": 1,
      "default": 0.85,
      "step": 0.05,
-     "label": "影调强度（adaptive）"
+     "label": "影调强度",
+     "hidden": true
     },
     "chroma_weight": {
      "type": "range",
@@ -344,17 +346,20 @@
      "max": 1,
      "default": 1.0,
      "step": 0.05,
-     "label": "色调强度（adaptive）"
+     "label": "色调强度",
+     "hidden": true
     },
     "keep_exposure": {
      "type": "bool",
      "default": true,
-     "label": "保持曝光（adaptive）"
+     "label": "保持曝光",
+     "hidden": true
     },
     "protect_skin": {
      "type": "bool",
      "default": false,
-     "label": "保护肤色（adaptive）"
+     "label": "保护肤色",
+     "hidden": true
     },
     "l_weight": {
      "type": "range",
@@ -362,7 +367,8 @@
      "max": 1,
      "default": 1.0,
      "step": 0.05,
-     "label": "明度迁移（经典）"
+     "label": "明度迁移",
+     "hidden": true
     },
     "reference_path": {
      "type": "string",
@@ -585,7 +591,8 @@
       "histogram"
      ],
      "default": "adaptive",
-     "label": "方法"
+     "label": "方法",
+     "hidden": true
     },
     "strength": {
      "type": "range",
@@ -601,7 +608,8 @@
      "max": 1,
      "default": 0.85,
      "step": 0.05,
-     "label": "影调强度"
+     "label": "影调强度",
+     "hidden": true
     },
     "chroma_weight": {
      "type": "range",
@@ -609,17 +617,20 @@
      "max": 1,
      "default": 1.0,
      "step": 0.05,
-     "label": "色调强度"
+     "label": "色调强度",
+     "hidden": true
     },
     "keep_exposure": {
      "type": "bool",
      "default": true,
-     "label": "保持曝光"
+     "label": "保持曝光",
+     "hidden": true
     },
     "protect_skin": {
      "type": "bool",
      "default": false,
-     "label": "保护肤色"
+     "label": "保护肤色",
+     "hidden": true
     },
     "l_weight": {
      "type": "range",
@@ -627,7 +638,8 @@
      "max": 1,
      "default": 1.0,
      "step": 0.05,
-     "label": "明度迁移（经典）"
+     "label": "明度迁移",
+     "hidden": true
     }
    },
    "surface": "single",

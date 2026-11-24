@@ -258,7 +258,7 @@ if Y > knee(0.88):
 | 5 | `src/utils/aiPresets.ts` | 修改 | `CT_METHODS` 首位加 `{value:"adaptive", label:"智能分层", hint:"影调/色偏/同色三层解耦，100% 强度可用（推荐）"}`；reinhard 改 label「经典统计」，histogram 标「（不推荐）」 |
 | 6 | `src/components/workshop/ai/ColorTransferTool.vue` | 修改 | method 默认 `adaptive`；strength 默认 100；adaptive 下显示「影调强度 toneWeight=85」「色调强度 chromaWeight=100」+ 开关「保持曝光」（默认开）「保护肤色」（M4 后默认开）；reinhard 下保留旧「明度迁移 lWeight」；options 透传新字段 |
 | 7 | `src-tauri/src/ai_studio.rs` | **零改动（已确认）** | options 为透传 JSON（`pub options: serde_json::Value`）；前端 build 已通过 |
-| 8 | `python/tests/test_refgrade.py` | **新增** | §6 测试清单 |
+| 8 | `python/tests/test_refgrade.py` | **新增** | §6 测试清单（**勘误**：本期该文件未入库，由 FEAT-220 补齐） |
 | 9 | `python/bench/grade_ref_eval.py` | **新增** | 指标+拼图基准（从 lab 实验移植，公式见附录 A） |
 | 10 | `feature-notes.json` | 修改 | 新增 FEAT-219 条目（当前最大 id 为 FEAT-218，已核实） |
 | 11 | `docs/FEAT-219-参考图调色三层解耦.md` | 本文档 | 已补实施结果、实测指标与 A/B 结论 |
@@ -329,6 +329,10 @@ strength 在 `eval_mapping` 内做 Lab 混合（烘焙进 LUT），`apply_cube` 
 ---
 
 ## 6. 测试清单（python/tests/test_refgrade.py，unittest 风格对齐 test_colortransfer_multi.py）
+
+> **勘误（2026-11-24，FEAT-220）**：本条清单当时并未落盘成文件（git 无任何历史），
+> refgrade 自上线起零单测覆盖。清单由 FEAT-220 原样实现为 `python/tests/test_refgrade.py`（14 个用例），
+> 并补了 4 条覆盖率门控用例。
 
 1. **恒等**：strength=0 → 与输入逐字节一致；toneWeight=0 且 chromaWeight=0 且残差全零格 → 仅肩部路径，knee 以下逐字节一致。
 2. **影调单调**：合成 L 斜坡（0→100）输入，输出 L 单调不减；keepExposure=True 时中位 L 偏移 ≤2。
