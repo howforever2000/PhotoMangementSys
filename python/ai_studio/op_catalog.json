@@ -63,7 +63,7 @@
   {
    "id": "local_film",
    "label": "胶片模拟",
-   "desc": "内置 .cube 3D LUT 套用，可加颗粒与暗角",
+   "desc": "7 套内置 .cube LUT + 参数化自适应引擎（含人像 Portra 400 / 电影 2383），可加颗粒与暗角",
    "backend": "local",
    "stage": 1,
    "module": "ai_studio.ops",
@@ -77,10 +77,53 @@
       "classic_chrome",
       "classic_neg",
       "eterna",
-      "nostalgic_neg"
+      "nostalgic_neg",
+      "portra400",
+      "kodak_2383"
      ],
      "default": "provia",
      "label": "胶片"
+    },
+    "engine": {
+     "type": "enum",
+     "values": [
+      "auto",
+      "lut",
+      "film"
+     ],
+     "default": "auto",
+     "label": "引擎",
+     "hidden": true
+    },
+    "look": {
+     "type": "range",
+     "min": 0.6,
+     "max": 1.4,
+     "default": 1.0,
+     "step": 0.1,
+     "label": "风格强度",
+     "hidden": true
+    },
+    "grade": {
+     "type": "enum",
+     "values": [
+      "",
+      "teal_orange",
+      "vintage_amber",
+      "cold_cyan"
+     ],
+     "default": "",
+     "label": "后调",
+     "hidden": true
+    },
+    "grade_strength": {
+     "type": "range",
+     "min": 0,
+     "max": 1.4,
+     "default": 1.0,
+     "step": 0.1,
+     "label": "后调强度",
+     "hidden": true
     },
     "strength": {
      "type": "range",
@@ -559,7 +602,7 @@
   {
    "id": "film_sim",
    "label": "胶片模拟",
-   "desc": "内置多款胶片 LUT，一键套用，可加颗粒与暗角（本机、免费）",
+   "desc": "7 套胶片 LUT（默认，行为不变）+ 参数化自适应引擎，新增人像 Portra 400 / 电影 2383（本机、免费）",
    "icon": "film",
    "runtime": "python",
    "backend": "local",

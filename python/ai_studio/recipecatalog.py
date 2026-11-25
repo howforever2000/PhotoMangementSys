@@ -74,7 +74,10 @@ def plan_from_llm(raw: Dict[str, Any]) -> Dict[str, Any]:
 # 只有这些键能进计划——曲线/蒙版/画笔等精修参数根本不在这张表里，想传也传不进。
 TUNABLE_PARAMS: Dict[str, frozenset] = {
     "auto_grade": frozenset({"style", "strength"}),
-    "local_film": frozenset({"lut", "strength", "anchor", "grain", "vignette"}),
+    "local_film": frozenset(
+        {"lut", "style", "engine", "strength", "look", "grade", "grade_strength",
+         "anchor", "grain", "vignette"}
+    ),
     "color_transfer": frozenset(
         {"method", "strength", "l_weight", "tone_weight", "chroma_weight",
          "keep_exposure", "protect_skin", "reference_path"}

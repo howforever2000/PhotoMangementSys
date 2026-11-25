@@ -164,6 +164,18 @@ export interface LocalLutEntry {
   name: string;
   file: string;
   exists: boolean;
+  /** 默认引擎：lut（老的 .cube） / film（参数化自适应渲染） */
+  engine?: "lut" | "film";
+  /** 是否真有 .cube（新增风格没有） */
+  hasLut?: boolean;
+  /** 是否有参数化配方（7 套内置也有，显式切 film 时用） */
+  film?: boolean;
+  /** 推荐场景，如「人像 / 自拍 / 日常」 */
+  scene?: string;
+  /** 一句话理由 */
+  why?: string;
+  /** 本次新增（没有对应 .cube） */
+  new?: boolean;
 }
 
 export interface LocalModelsStatus {

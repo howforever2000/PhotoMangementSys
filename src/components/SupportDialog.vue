@@ -6,20 +6,21 @@
  * （页头 `.user-box` 带 backdrop-filter，会把它变成 position:fixed 的包含块）。
  *
  * 设计取舍：
- *   · 二维码用**构建期生成的 PNG 素材**（`assets/support/afdian-qr.png`，内容实测解码
- *     等于 `SUPPORT_URL`），由 `afdianQr.test.ts` 钉住 SHA-256 —— 换图或误传别的码，单测直接红；
- *   · 明示平台域名，让用户扫码后能在地址栏核对「这是不是官方赞助页」，
- *     这是静态个人收款码给不了的一层校验；
+ *   · 二维码用**字节原样入库的素材**（`assets/support/wechat-qr.jpg`，解码实测
+ *     为微信「关注公众号」跳转码，见 `SUPPORT_QR_DECODED`），由 `wechatQr.test.ts`
+ *     钉住 SHA-256 —— 换图或误传别的码，单测直接红；
+ *   · 码内容 ≠ 文章链接是事实而非失误（2026-11-25 cv2 解码核对），两条 URL
+ *     在 `utils/support.ts` 里分开维护；
  *   · 文案不许写成「购买/解锁」：本项目是自愿赞助，功能全部免费
  *     （许可证 PolyForm Noncommercial，商用需另行授权）。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useThemeStore } from "../stores/theme";
-import qrSrc from "../assets/support/afdian-qr.png";
+import qrSrc from "../assets/support/wechat-qr.jpg";
 import {
   SUPPORT_CREATOR,
-  SUPPORT_HOST,
   SUPPORT_PLATFORM,
+  SUPPORT_QR_DECODED,
   SUPPORT_URL,
   openSupportPage,
 } from "../utils/support";
@@ -91,14 +92,14 @@ async function onCopy() {
 
         <p class="sd-lede">
           栖影是一个人业余做的本地相册，全部功能免费，打赏与否都能照常用。
-          如果你愿意支持，可以走{{ SUPPORT_PLATFORM }}——费用会用在代码签名证书、模型托管和测试设备上。
+          如果你愿意支持，可以扫码关注{{ SUPPORT_PLATFORM }}——更新和打赏（文章内「喜欢作者」）都在那里，费用会用在代码签名证书、模型托管和测试设备上。
         </p>
 
         <div class="sd-qr">
           <img
             class="sd-qr-img"
             :src="qrSrc"
-            :alt="`${SUPPORT_PLATFORM}赞助页二维码`"
+            :alt="`${SUPPORT_PLATFORM}二维码`"
             width="196"
             height="196"
             decoding="async"
@@ -107,8 +108,10 @@ async function onCopy() {
         </div>
 
         <p class="sd-verify">
-          扫码后请确认浏览器地址栏为 <b>{{ SUPPORT_HOST }}</b>，才是本项目官方赞助页。
+          请用微信扫码；码内容已解码核对（{{ SUPPORT_QR_DECODED }}），是关注入口而非收款码。
         </p>
+
+        <p class="sd-verify">最新文章也可直接在浏览器打开：</p>
 
         <p class="sd-url" :title="SUPPORT_URL">{{ SUPPORT_URL }}</p>
 
@@ -150,8 +153,8 @@ async function onCopy() {
   display: block;
   border-radius: 8px;
   box-shadow: 0 0 0 1px var(--pm-soft-border);
-  /* 素材是 592×592、每模块 16px 的整数倍位图：按 196 显示会非整数缩放，
-     交给浏览器平滑缩小时边缘仍清晰；不要加 image-rendering: pixelated（会出锯齿）。 */
+  /* 素材是 430×430 的 QQ 原图（字节原样入库）：按 196 显示交给浏览器平滑
+     缩小，边缘仍清晰；不要加 image-rendering: pixelated（会出锯齿）。 */
 }
 
 .sd-qr-cap {

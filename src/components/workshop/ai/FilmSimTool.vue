@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
  * 胶片模拟（FEAT-163）
- * 内置多款胶片 LUT，可选强度 / 颗粒 / 暗角，纯本机推理，输出 JPG 副本。
+ * 两条引擎：内置 .cube LUT（默认，老行为不变）与参数化自适应渲染（新增 2 款风格只有这条）。
+ * 强度分两条线：look（轻/标准/浓）动「偏离原厂」的程度，strength 动「成片与原图」的混合比例。
  */
 import { computed, onMounted, ref, watch } from "vue";
 import { useAiStudioStore } from "../../../stores/aiStudio";
@@ -18,10 +19,16 @@ const notify = useNotify();
 const luts = ref<LocalLutEntry[]>([]);
 const lut = ref("provia");
 const strength = ref(100);
+const look = ref(100);
+const grade = ref("");
+const gradeStrength = ref(100);
 const grain = ref(0);
 const vignette = ref(0);
 const outputDir = ref("");
 const outputTouched = ref(false);
+
+const selected = computed(() => luts.value.find((l) => l.id === lut.value));
+const isFilm = computed(() => selected.value?.engine === "film");
 
 onMounted(async () => {
   try {
@@ -63,7 +70,11 @@ async function run() {
       outputDir: outputDir.value,
       options: {
         lut: lut.value,
+        engine: selected.value?.engine ?? "auto",
         strength: strength.value / 100,
+        look: look.value / 100,
+        grade: isFilm.value ? grade.value : "",
+        grade_strength: gradeStrength.value / 100,
         grain: grain.value / 100,
         vignette: vignette.value / 100,
       },
@@ -95,12 +106,38 @@ async function onCancel() {
             <option v-if="!luts.length" value="provia">Provia 标准</option>
           </select>
         </div>
+        <p v-if="selected?.scene" class="ai-note" style="margin-top: 6px">
+          {{ selected.scene }}<template v-if="selected.why"> · {{ selected.why }}</template>
+        </p>
       </div>
 
       <div class="ai-field">
         <label class="ai-label">滤镜强度 {{ strength }}%</label>
         <input v-model.number="strength" type="range" min="0" max="100" :disabled="busy" />
       </div>
+
+      <template v-if="isFilm">
+        <div class="ai-field">
+          <label class="ai-label">风格强度（轻 / 标准 / 浓）{{ look }}%</label>
+          <input v-model.number="look" type="range" min="60" max="140" :disabled="busy" />
+        </div>
+        <div class="ai-field">
+          <label class="ai-label">后调（偏色层）</label>
+          <div class="ai-row">
+            <select v-model="grade" class="ai-sel" :disabled="busy">
+              <option value="">不叠加</option>
+              <option value="teal_orange">青橙</option>
+              <option value="vintage_amber">复古琥珀</option>
+              <option value="cold_cyan">冷青灰</option>
+            </select>
+          </div>
+        </div>
+        <div v-if="grade" class="ai-field">
+          <label class="ai-label">后调强度 {{ gradeStrength }}%</label>
+          <input v-model.number="gradeStrength" type="range" min="0" max="140" :disabled="busy" />
+        </div>
+      </template>
+
       <div class="ai-field">
         <label class="ai-label">胶片颗粒 {{ grain }}%</label>
         <input v-model.number="grain" type="range" min="0" max="100" :disabled="busy" />
@@ -116,7 +153,8 @@ async function onCancel() {
     </div>
 
     <p class="ai-note ai-note-block">
-      内置富士系胶片 LUT（随包提供，无需下载），全程在本机完成，照片不上传；输出为新 JPG，不覆盖原图。
+      内置富士系 LUT（老路径，逐位不变）与参数化自适应引擎（按场景统计渲染，高光截断 ≤0.5%）。
+      新增「人像 Portra 400 / 电影 2383」只有参数化版；全程本机，照片不上传，输出为新 JPG。
     </p>
 
     <div class="ai-actions">

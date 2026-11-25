@@ -423,7 +423,7 @@ onBeforeUnmount(() => {
                     <span class="settings-item-icon">💗</span>
                     <span class="settings-item-text">
                       <b>支持栖影</b>
-                      <i>爱发电 · 自愿赞助，不解锁任何功能</i>
+                      <i>微信公众号 · 自愿赞助，不解锁任何功能</i>
                     </span>
                   </button>
                 </div>

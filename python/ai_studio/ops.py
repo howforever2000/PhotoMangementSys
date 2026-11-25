@@ -25,7 +25,8 @@ from typing import Any, Callable, Dict
 import numpy as np
 from PIL import Image
 
-from . import catalog, config, faceparse, landmark, localmodels, lutcube, ocr_engine, presets
+from . import (catalog, config, faceparse, film_render, film_styles, landmark, localmodels,
+               ocr_engine, presets)
 from .providers import openai_compat as oc
 from .renderopts import EMPTY as EMPTY_CTX, RunContext
 from .workflows.base import edit_input_bytes, to_image
@@ -150,29 +151,41 @@ def _limit_long_edge(img: Image.Image, max_long: int) -> Image.Image:
 def op_local_film(
     img: Image.Image, params: Dict[str, Any], providers: Any, ctx: RunContext = EMPTY_CTX
 ) -> Image.Image:
-    """本机胶片模拟：内置 .cube 查表 + 可选颗粒/暗角。不读 providers / ctx。"""
-    lut_id = str(params.get("lut", "provia") or "provia")
-    entry = next((lut for lut in config.LUTS if lut["id"] == lut_id), None)
-    if entry is None:
-        raise ValueError(f"未知的胶片风格: {lut_id}")
-    path = config.lut_path(entry["file"])
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f"内置 LUT 缺失: {entry['file']}")
+    """本机胶片模拟：内置 .cube 查表（默认）或参数化引擎，可选颗粒/暗角。不读 providers / ctx。
+
+    引擎分支统一在 `film_render.apply`，与批量工作流 `workflows/film_sim` 同一份像素实现，
+    避免「预览一个样、出片另一个样」。
+    """
+    style_id = str(params.get("style") or params.get("lut") or "provia")
+    engine, _recipe = film_styles.resolve(style_id, str(params.get("engine") or "auto"))
+
+    lut_path = None
+    if engine == "lut":
+        entry = film_styles.lut_entry(style_id)
+        if entry is None:
+            raise ValueError(f"未知的胶片风格: {style_id}")
+        lut_path = config.lut_path(entry["file"])
+        if not os.path.isfile(lut_path):
+            raise FileNotFoundError(f"内置 LUT 缺失: {entry['file']}")
 
     arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
-    arr = lutcube.apply_cube(arr, path, strength=_clamp01(params.get("strength", 1.0), 1.0))
-    # 黑白场还原（FEAT-176）：负片类 LUT 抬黑位造成发灰，按用户设定的比例拉回。
-    # 放在颗粒/暗角之前——颗粒噪声混进黑位后再拉伸会把噪声一起放大。
-    anchor = _clamp01(params.get("anchor", 0.0), 0.0)
-    if anchor > 0:
-        arr = lutcube.restore_black_white(arr, anchor)
-    grain = _clamp01(params.get("grain", 0.0), 0.0)
-    if grain > 0:
-        arr = lutcube.apply_grain(arr, grain, seed=0)
-    vignette = _clamp01(params.get("vignette", 0.0), 0.0)
-    if vignette > 0:
-        arr = lutcube.apply_vignette(arr, vignette)
-    return Image.fromarray(arr)
+    out, _meta = film_render.apply(
+        arr,
+        {
+            "style": style_id,
+            "engine": engine,
+            "strength": _clamp01(params.get("strength", 1.0), 1.0),
+            "look": float(params.get("look", 1.0) or 1.0),
+            "grade": str(params.get("grade") or ""),
+            "grade_strength": float(params.get("grade_strength", 1.0) or 1.0),
+            "anchor": _clamp01(params.get("anchor", 0.0), 0.0),
+            "grain": _clamp01(params.get("grain", 0.0), 0.0),
+            "vignette": _clamp01(params.get("vignette", 0.0), 0.0),
+        },
+        lut_file_path=lut_path,
+        seed=0,
+    )
+    return Image.fromarray(out)
 
 
 def op_local_upscale(

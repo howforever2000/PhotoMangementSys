@@ -20,7 +20,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
-from . import config, jobs
+from . import config, film_styles, jobs
 from . import preview as preview_service
 from .logutil import elog, log
 from .providers import openai_compat
@@ -114,8 +114,11 @@ def local_models() -> dict:
             }
         )
     luts = []
-    for lut in config.LUTS:
-        luts.append({**lut, "exists": os.path.isfile(config.lut_path(lut["file"]))})
+    for item in film_styles.catalog():
+        # 老 7 套的 exists 仍按 .cube 实际存在与否；新增风格没有 .cube，恒为「可用」
+        if item["file"]:
+            item["exists"] = os.path.isfile(config.lut_path(item["file"]))
+        luts.append(item)
     return {
         "models": models,
         "luts": luts,

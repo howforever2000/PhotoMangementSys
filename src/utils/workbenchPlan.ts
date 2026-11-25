@@ -221,6 +221,9 @@ const FILM_LUTS: { value: string; label: string }[] = [
   { value: "classic_neg", label: "经典负片" },
   { value: "eterna", label: "电影" },
   { value: "nostalgic_neg", label: "怀旧" },
+  // 场景化新增：没有 .cube，走参数化引擎（id 与 film_styles.RECIPES 对齐）
+  { value: "portra400", label: "人像（Portra 400）" },
+  { value: "kodak_2383", label: "电影印片（2383）" },
 ];
 
 /** 枚举标签：复用 aiPresets 的既有表，不另抄一份 */

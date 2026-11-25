@@ -1,24 +1,28 @@
 /**
- * 打赏入口的**唯一事实源**（FEAT-199）
+ * 打赏入口的**唯一事实源**（FEAT-199，2026-11-25 迁移到微信公众号）
  *
- * ## 为什么不用微信 / 支付宝个人收款码
+ * ## 入口形态：公众号关注码 + 最新文章链接
  *
- * 个人静态收款码有四个绕不开的问题，且都不是「把图片加密」能解决的：
- *   ① **不可吊销** —— 静态码没有作废动作，换码之后旧码继续能收钱。一旦泄露或被
- *      贴到别处，作者无法关闭它。
- *   ② **远程收款合规** —— 个人静态收款码原则上不得用于远程非面对面收款
- *      （银发〔2021〕259 号口径），把码公开放在软件里让人远程扫，存在账户被风控的风险。
- *   ③ **暴露收款账户** —— 收款码内含可被反查的账户标识，公开传播等于把收款入口交出去。
- *   ④ **无法对账** —— 没有订单号，不知道谁付的、也无法按单退款。
+ * 打赏入口由爱发电迁移为微信公众号：用户扫码关注公众号，打赏在公众号
+ * 文章内的「喜欢作者」完成；「在浏览器打开 / 复制链接」走最新一期文章
+ * （`SUPPORT_URL`）。原爱发电入口（afdian.com/a/howforever）下线。
  *
- * 改用平台代收（爱发电）后：收款主体是平台，个人账户不暴露；页面可随时改绑/下线；
- * 有订单与留言可对账。
+ * ## 两条 URL 刻意分开维护
  *
- * ## 二维码为什么是一张「被钉住的素材」而不是随手截的图
+ *   · `SUPPORT_QR_DECODED` —— 二维码**图片素材**实际编码的内容。用 cv2
+ *     QRCodeDetector 解码 `assets/support/wechat-qr.jpg` 实测（2026-11-25）：
+ *     `http://weixin.qq.com/r/mp/3hklPc3EfpABrYle90zM`，即微信「关注公众号」
+ *     跳转码，**不是**文章链接、也不是收款码。
+ *   · `SUPPORT_URL` —— 弹窗里展示 / 复制 / 浏览器打开的文章地址。
  *
- * `assets/support/afdian-qr.png` 由 `SUPPORT_URL` 生成（592×592、每模块 16px、quiet zone 4），
- * 生成后用独立解码器回读校验「解出来 === SUPPORT_URL」，并把 SHA-256 钉进
- * `assets/support/afdianQr.test.ts`：图片被换掉或被误传成别的码，单测立刻红。
+ * 两者不一致是事实而非失误（反面教材的延续，2026-11-19 爱发电分享图实测：
+ * 码内容 ≠ 页面地址）。任何二维码进仓前都必须先解码核对目标地址，
+ * 解码结果就记录在这里，并被 `wechatQr.test.ts` 的 SHA-256 钉死对应关系。
+ *
+ * ## 为什么图片素材是「被钉住的文件」而不是随手截的图
+ *
+ * 素材来自 QQ 原图（430×430 JPEG），字节原样入库，SHA-256 钉进
+ * `assets/support/wechatQr.test.ts`：图片被换掉或被误传成别的码，单测立刻红。
  *
  * 反面教材（2026-11-19 实测）：爱发电「分享图」里那张二维码解出来是
  * `afdian.com/dashboard/stats?utm_source=qrpic&utm_medium=link` —— 创作者后台 + 追踪参数，
@@ -28,30 +32,31 @@
 import { openExternalUrl } from "./openExternal.ts";
 
 
-/** 赞助页地址（全仓唯一出现处；改这里即改全站） */
-export const SUPPORT_URL = "https://afdian.com/a/howforever";
+/** 最新公众号文章地址（弹窗展示 / 复制链接 / 浏览器打开；全仓唯一出现处） */
+export const SUPPORT_URL =
+  "https://mp.weixin.qq.com/s/0lVyyRfoXZw4PcZH-lLYTw";
 
-/** 收款平台名（弹窗里给用户核对用） */
-export const SUPPORT_PLATFORM = "爱发电";
+/**
+ * 二维码素材（`assets/support/wechat-qr.jpg`）解码核对结果（2026-11-25 cv2 实测）。
+ * 微信「关注公众号」跳转码：微信扫码 → 公众号资料页；浏览器打开无效属正常。
+ */
+export const SUPPORT_QR_DECODED = "http://weixin.qq.com/r/mp/3hklPc3EfpABrYle90zM";
+
+/** 收款/关注平台名（弹窗里给用户核对用） */
+export const SUPPORT_PLATFORM = "微信公众号";
 
 /** 平台域名：从 URL 派生，禁止再写死第二份 */
 export const SUPPORT_HOST = new URL(SUPPORT_URL).host;
 
-/** 创作者主页标识（取自 URL slug；弹窗里不直接展示，展示用 `SUPPORT_CREATOR`） */
-export const SUPPORT_AUTHOR = new URL(SUPPORT_URL).pathname.replace(/^\/a\//, "");
+/** 公众号展示名（2026-11-25 实读文章页署名：来自小程序 howforever灵光匣） */
+export const SUPPORT_CREATOR = "howforever灵光匣";
 
 /**
- * 爱发电主页的**展示名**（2026-11-19 实拍主页确认：创作者名为 `hao`，
- * 与 URL slug `howforever` 不一致 —— 两者别混用，用户核对时看的是展示名）。
- */
-export const SUPPORT_CREATOR = "hao";
-
-/**
- * 自检：要打开的地址确实是本项目的赞助页。
+ * 自检：要打开的地址确实是本项目的公众号文章。
  *
  * 判据刻意收得很紧（https + 域名全等 + 路径全等）——「长得像」的仿冒域名
- * （`afdian.com.evil.example`、`afdian.hk`）一律拒掉。这是本方案唯一可篡改的
- * 数据，值得多一道运行时检查。
+ * （`mp.weixin.qq.com.evil.example`）与**别人家的文章**一律拒掉。这是本方案
+ * 唯一可篡改的数据，值得多一道运行时检查。
  */
 export function isOfficialSupportUrl(url: string): boolean {
   try {
@@ -67,7 +72,7 @@ export function isOfficialSupportUrl(url: string): boolean {
   }
 }
 
-/** 打开赞助页（调用前先过 `isOfficialSupportUrl`，防止被改成钓鱼地址） */
+/** 打开赞助入口（调用前先过 `isOfficialSupportUrl`，防止被改成钓鱼地址） */
 export async function openSupportPage(): Promise<void> {
   if (!isOfficialSupportUrl(SUPPORT_URL)) {
     throw new Error("赞助页地址校验未通过，已阻止打开");
