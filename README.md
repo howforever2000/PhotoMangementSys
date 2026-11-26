@@ -168,15 +168,15 @@ python/
 
 ### 6.1 安装
 
-- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新正式版 **v5.1.0**，NSIS 约 169MB / MSI 约 172MB，内含 VCR / AI 双微服务，**不含可下载模型**——装完按下方说明补齐模型即可离线使用）：
-  - [`PhotoManagementSys_5.1.0_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v5.1.0/PhotoManagementSys_5.1.0_x64-setup.exe)（NSIS，按用户安装到 `%LOCALAPPDATA%`，无需管理员权限，推荐）
-  - 或 [`PhotoManagementSys_5.1.0_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v5.1.0/PhotoManagementSys_5.1.0_x64_en-US.msi)（MSI，按机器安装到 `Program Files`，需管理员权限）
-  - 模型（**单独下载**）：[`model.zip`](https://github.com/howforever2000/PhotoMangementSys/releases/latest/download/model.zip)（**解压后约 979MB**，含语义模型 **B/16 fp32 单档** + 人脸两档 + 人物检测 + OCR），解压到模型目录即可（落点见 7.2，三种安装方式不同）；也可在应用内 **性能设置 → 模型管理** 一键下载（国内双镜像 + 分段并行）——**这是推荐方式**，装完再下需要的模型即可
-  - 可选组件（仅 Intel NPU 用户需要）：[`openvino-npu-win-x64.zip`](https://github.com/howforever2000/PhotoMangementSys/releases/latest/download/openvino-npu-win-x64.zip)（15.5MB）—— 不装则全部走 ONNX Runtime，行为与旧版一致；装了可在「性能设置」里让检测 / OCR / 人脸编码走 NPU
+- **方式一（推荐）**：下载 Release 中的安装包并双击安装（最新正式版 **v5.2.0**，NSIS 约 169MB / MSI 约 172MB，内含 VCR / AI 双微服务，**不含可下载模型**——装完按下方说明补齐模型即可离线使用）：
+  - [`PhotoManagementSys_5.2.0_x64-setup.exe`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v5.2.0/PhotoManagementSys_5.2.0_x64-setup.exe)（NSIS，按用户安装到 `%LOCALAPPDATA%`，无需管理员权限，推荐）
+  - 或 [`PhotoManagementSys_5.2.0_x64_en-US.msi`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v5.2.0/PhotoManagementSys_5.2.0_x64_en-US.msi)（MSI，按机器安装到 `Program Files`，需管理员权限）
+  - 模型（**单独下载**）：[`model.zip`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v5.1.0/model.zip)（**解压后约 979MB**，含语义模型 **B/16 fp32 单档** + 人脸两档 + 人物检测 + OCR）—— **v5.2.0 起安装包不再附带模型，模型包仍发布在 v5.1.0 那个 Release 里**，解压到模型目录即可（落点见 7.2，三种安装方式不同）；也可在应用内 **性能设置 → 模型管理** 一键下载（国内双镜像 + 分段并行）——**这是推荐方式**，装完再下需要的模型即可
+  - 可选组件（仅 Intel NPU 用户需要）：[`openvino-npu-win-x64.zip`](https://github.com/howforever2000/PhotoMangementSys/releases/download/v5.1.0/openvino-npu-win-x64.zip)（15.5MB，同样在 v5.1.0 Release）—— 不装则全部走 ONNX Runtime，行为与旧版一致；装了可在「性能设置」里让检测 / OCR / 人脸编码走 NPU
   - 从旧版升级：建议先卸载旧版再安装（两种安装范围不同，否则会同时存在两份）；数据目录与模型目录不变，覆盖安装即可保留全部相册与账户
-  - 历史版本（v5.0.0 / v0.4.5 / v0.4.4 / v0.4.3 / v0.4.2 / v0.4.1 / v0.4.0-beta / v0.3.x / v0.2.0 / v0.1.0）见 [Releases](https://github.com/howforever2000/PhotoMangementSys/releases)
+  - 历史版本（v5.1.0 / v5.0.0 / v0.4.5 / v0.4.4 / v0.4.3 / v0.4.2 / v0.4.1 / v0.4.0-beta / v0.3.x / v0.2.0 / v0.1.0）见 [Releases](https://github.com/howforever2000/PhotoMangementSys/releases)
 - ⚠ **v0.4.3 起应用标识符改为 `com.photomanagementsys.app`**（原 `com.haoyuan.photo-management-sys` 会把作者姓名带进每台用户机的 `%APPDATA%` 目录名）。数据目录随之变化，首次启动会自动把 `photos.db` / `thumbs` / `vcr-data` / `app.key` 一次性迁移到新目录（优先 rename，失败则复制，**仅在复制成功后删旧目录**；新目录已有数据则不覆盖、只提示旧目录位置）。
-- **v5.1.0 安装包不含可下载模型**（NSIS 约 169MB / MSI 约 172MB，含 VCR / AI 双微服务）。首次启动后请在 **性能设置 → 模型管理** 按需下载（推荐），或解压 `model.zip` 到模型目录；模型到位前看图 / 相册管理 / 压缩 / 本机编辑可用，识别与语义搜索不可用。5.1 起应用内置**自动更新**（见 6.5），后续升级不必再手动下载安装包，且**已下载的模型不会再因升级丢失**。
+- **v5.2.0 安装包仍不含可下载模型**（NSIS 约 169MB / MSI 约 172MB，含 VCR / AI 双微服务）。首次启动后请在 **性能设置 → 模型管理** 按需下载（推荐），或解压 `model.zip`（见 6.1，仍在 v5.1.0 Release）到模型目录；模型到位前看图 / 相册管理 / 压缩 / 本机编辑可用，识别与语义搜索不可用。5.1 起应用内置**自动更新**（见 6.5），后续升级不必再手动下载安装包，且**已下载的模型不会再因升级丢失**。
 
 ### 6.2 首次使用
 
@@ -368,6 +368,35 @@ PhotoMangementSys/
 ---
 
 ## 十一、版本历史
+
+### v5.2.0（2026-11-26）— 体验修补：创意工坊参数记忆 / 相册管理「按地点」卡死修复
+
+一次以**修补**为主的版本，两条主线：
+
+**一、创意工坊参数记忆（FEAT-222）**
+
+- **调好的参数会留住了**：有滑条的 6 个单步工具（智能调色 / 胶片模拟 / 参考图调色 / 人像形变 / 本地美颜 /
+  智能修图）现在记住你设过的参数——切走再回来、重启应用都还在；每个工具多了一个「恢复默认参数」，只清自己那份。
+- **记的口径是「真的调过的量」**：滑条强度、瘦脸 / 大眼档位、胶片档与调色档都记；肤色、饱和度这类
+  「中性值 = 不处理」的档位不记。只进去看过、没动过滑条的工具不会留下记录，所以不会出现「明明没调过却回不到默认」。
+- **坏数据不会带进界面**：恢复时按当前滑条范围与档位表校验，越界值夹回边界、已下线的档位退回默认值，
+  升级后参数表结构变化则整份丢弃回默认。存储是本机一段 JSON（按工具分桶），不联网、不同步。
+
+**二、相册管理「按地点」卡死修复（BUG-2026-1126-001）**
+
+- **现象**：v5.1.0 里如果上次把排序方式切到「按地点」，再次点「相册管理」会整窗卡死不再重绘，
+  等一两分钟后渲染进程内存耗尽崩溃（窗口变成「此页存在问题 / Out of Memory」）。
+- **根因**：地点分组墙给每个分组挂了函数 ref，而函数 ref 在每次渲染 patch 时都会被重新调用；
+  回调里无条件写新的布局宽度对象，导致依赖它的排布 computed 失效 → 立即重渲染 → 再写，自激成无限循环。
+  开发构建有 Vue 的「递归更新超过 100 次」保护会抛错停下（所以本地开发看不到），打包版没有这条保护。
+- **修复**：宽度回写加「真的变了才写」守卫（差值 >1px），与同文件另一处测量逻辑同口径。
+  实测：按地点视图 20 个地点分组 / 130 张瓦片正常渲染，22 秒内持续可交互，渲染进程 CPU 增量归零。
+
+**三、安装包仍是轻量包**
+
+- 安装包继续**不含可下载模型**（NSIS 约 169MB / MSI 约 172MB，仅含程序主体 + VCR / AI 双微服务）；
+  `model.zip` 与 OpenVINO NPU 运行时仍发布在 [v5.1.0 Release](https://github.com/howforever2000/PhotoMangementSys/releases/tag/v5.1.0)，
+  应用内的离线包与组件下载入口已指向该地址（不再依赖 `releases/latest`，避免 latest 指向 5.2 后 404）。
 
 ### v5.1.0（2026-11-25）— 算法升级：参考图调色智能分层 / 美颜三连（肤色保真 · 分性别形变）/ 应用内自动更新（FEAT-200~220）
 
