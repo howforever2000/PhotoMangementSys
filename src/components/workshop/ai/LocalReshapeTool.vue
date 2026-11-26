@@ -9,9 +9,10 @@
  * `python/ai_studio/facewarp.py` 头注释。形变过火**没有其它参数能救回来**，
  * 这与 `knowledge/local-enhance.md` §9「宁可欠一点，不要过火」是同一条纪律。
  */
-import { computed, ref, watch } from "vue";
+import { computed, ref, toRef, watch } from "vue";
 import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
+import { useRememberedParams } from "../../../composables/useRememberedParams";
 import { dirName, joinPath } from "../../../utils/pathParts";
 import { RESHAPE_EYE_LEVELS, RESHAPE_SLIM_LEVELS } from "../../../utils/aiPresets";
 import OutputDirField from "./OutputDirField.vue";
@@ -22,11 +23,26 @@ const props = defineProps<{ paths: string[] }>();
 const store = useAiStudioStore();
 const notify = useNotify();
 
-// 默认档与配方一致（FEAT-210）：自然瘦脸 15%、大眼 20%、眼睛提亮 10%
-const slim = ref("0.15");
-const eyes = ref("0.2");
-// 眼睛提亮（FEAT-210）：0~100 的百分数滑条，默认 10%；提交时换算成 0~1
-const eyeBright = ref(10);
+/*
+ * 参数跨会话记住（FEAT-210 的默认档 = 没记忆时的初值）：
+ * 瘦脸 / 大眼 / 眼睛提亮 —— 都是用户「调过一次就不想再调」的量。
+ * 枚举值按当前档位表校验，旧版本删掉的档位会退回默认，不会把非法值提交给后端。
+ */
+const { params: remembered, resetToDefault } = useRememberedParams(
+  "face_reshape",
+  { slim: "0.15", eyes: "0.2", eyeBright: 10 },
+  {
+    clamp: { eyeBright: [0, 100] },
+    allowed: {
+      slim: RESHAPE_SLIM_LEVELS.map((s) => s.value),
+      eyes: RESHAPE_EYE_LEVELS.map((s) => s.value),
+    },
+  },
+);
+const slim = toRef(remembered, "slim");
+const eyes = toRef(remembered, "eyes");
+// 眼睛提亮（FEAT-210）：0~100 的百分数滑条，提交时换算成 0~1
+const eyeBright = toRef(remembered, "eyeBright");
 const outputDir = ref("");
 const outputTouched = ref(false);
 
@@ -149,6 +165,15 @@ async function onCancel() {
     <div class="ai-actions">
       <button class="ai-run" type="button" :disabled="!canRun" @click="run">
         开始形变（{{ paths.length }} 张）
+      </button>
+      <button
+        class="ai-ghost"
+        type="button"
+        :disabled="busy"
+        title="只把本工具的参数恢复成默认值，不影响其它工具"
+        @click="resetToDefault"
+      >
+        恢复默认参数
       </button>
     </div>
 

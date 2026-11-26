@@ -4,9 +4,10 @@
  * 按画面统计自动推导调色参数，本机查表出图，可导出 .cube 复用。
  * 纯本机、零模型、零费用、保分辨率（不做任何重绘）。
  */
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, toRef, watch } from "vue";
 import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
+import { useRememberedParams } from "../../../composables/useRememberedParams";
 import { dirName, joinPath } from "../../../utils/pathParts";
 import { AUTOGRADE_STYLES } from "../../../utils/aiPresets";
 import OutputDirField from "./OutputDirField.vue";
@@ -17,7 +18,13 @@ const store = useAiStudioStore();
 const notify = useNotify();
 
 const style = ref("natural");
-const strength = ref(100);
+/** 力度：跨会话记住（调好的力度下次重进还在）；风格档不记（见 toolParamsMemory 白名单） */
+const { params: remembered, resetToDefault } = useRememberedParams(
+  "auto_grade",
+  { strength: 100 },
+  { clamp: { strength: [0, 100] } },
+);
+const strength = toRef(remembered, "strength");
 /** 自然饱和度滑条已移除（FEAT-207）：内嵌 vibrance（0=不做）由独立的
  *  `local_vibrance` 算子/配方末步替代（双向、中性 50），调色算子自身
  *  只按风格派生值走。 */
@@ -124,6 +131,15 @@ async function onCancel() {
     <div class="ai-actions">
       <button class="ai-run" type="button" :disabled="!canRun" @click="run">
         开始调色（{{ paths.length }} 张）
+      </button>
+      <button
+        class="ai-ghost"
+        type="button"
+        :disabled="busy"
+        title="只把本工具的参数恢复成默认值，不影响其它工具"
+        @click="resetToDefault"
+      >
+        恢复默认参数
       </button>
     </div>
 

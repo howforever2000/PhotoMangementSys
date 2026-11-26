@@ -8,10 +8,11 @@
  * 走「工作台 › 创意组合」，不再由规划器混编 —— 混编会让「按模型计费」的口径失真，
  * 也会把一句话出片变成本机长等待。所以旧的「优先本地组件」开关已删除。
  */
-import { computed, ref, watch } from "vue";
+import { computed, ref, toRef, watch } from "vue";
 import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
 import { useAiBilling } from "../../../composables/useAiBilling";
+import { useRememberedParams } from "../../../composables/useRememberedParams";
 import { dirName, joinPath } from "../../../utils/pathParts";
 import {
   MODEL_STYLES,
@@ -31,11 +32,20 @@ const outputDir = ref("");
 const outputTouched = ref(false);
 const reflect = ref(false); // 默认不勾选反思
 const rounds = ref(1); // 固定 1 轮：界面给了「多轮」但每轮都是计费调用
+/**
+ * 采样步数 / 上采样倍率跨会话记住（用户单次调好就不用每次再调）。
+ * prompt、风格、反思不记：它们跟着「这一次想修什么」走，记了反而要每次清空。
+ */
+const { params: remembered, resetToDefault } = useRememberedParams(
+  "smart_edit",
+  { renderSteps: 1, upsampleScale: 2 },
+  { clamp: { renderSteps: [1, 30] }, allowed: { upsampleScale: [2, 4] } },
+);
 /** 文生图采样步数（FEAT-197）：默认 1，默认档不写进请求体 */
-const renderSteps = ref(1);
+const renderSteps = toRef(remembered, "renderSteps");
 /** 上采样：默认不勾（每张多一次云端调用） */
 const upsample = ref(false);
-const upsampleScale = ref(2);
+const upsampleScale = toRef(remembered, "upsampleScale");
 /** 影调风格预设（FEAT-198）：选中即把中文原文接在提示词后面（可见可编辑） */
 const styleId = ref("");
 
@@ -301,6 +311,15 @@ async function onCancel() {
     <div class="ai-actions">
       <button class="ai-run" type="button" :disabled="!canRun" @click="run">
         {{ busy ? "处理中…" : `开始修图（${paths.length} 张）` }}
+      </button>
+      <button
+        class="ai-ghost"
+        type="button"
+        :disabled="busy"
+        title="只把本工具的参数恢复成默认值，不影响其它工具"
+        @click="resetToDefault"
+      >
+        恢复默认参数
       </button>
     </div>
 

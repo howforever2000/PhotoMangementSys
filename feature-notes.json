@@ -8776,7 +8776,36 @@
         "python/ai_studio/workflows/local_beauty.py",
         "python/tests/test_skintone.py"
       ]
+    },
+    {
+      "id": "FEAT-222",
+      "name": "创意工坊参数记忆：有滑条的 6 个单步工具跨会话记住参数，且每个工具可单独恢复默认",
+      "status": "done",
+      "date": "2026-11-26",
+      "created_at": "2026-11-26T21:35:00+08:00",
+      "updated_at": "2026-11-26T21:35:00+08:00",
+      "module": "src/utils/toolParamsMemory.ts、src/composables/useRememberedParams.ts、src/components/workshop/ai/AutoGradeTool.vue、FilmSimTool.vue、ColorTransferTool.vue、LocalReshapeTool.vue、LocalBeautyTool.vue、SmartEditTool.vue",
+      "purpose": "工坊 13 个单步工具的参数原本都是组件内 ref(默认值)，而 Workshop.vue 用 <component :is> 切换（无 keep-alive），切走即卸载、回来就回默认值。用户要求「记住用户设置的参数表（滑条位置），下次重进还在」。范围按用户口径收敛为「有滑条的 6 个单步工具」，并排除「中性值 = 不调节」的档位（肤色、饱和度、保护肤色开关）。",
+      "highlights": [
+        "两层落位（CS1）：持久层 src/utils/toolParamsMemory.ts 只做读/写/校验/版本/白名单；绑定层 src/composables/useRememberedParams.ts 只做 reactive + 300ms 防抖 + 卸载补落 + 复位抑制。面板各加 3 行接入（useRememberedParams + toRef），模板零改动 —— toRef 保持「一个值一个 ref」的原有写法，避免几十处绑定改名制造无用 diff。",
+        "REMEMBERED_FIELDS 是唯一真相点：auto_grade=strength；film_sim=lut/strength/look/grade/gradeStrength/grain/vignette；color_transfer=strength；face_reshape=slim/eyes/eyeBright；local_beauty=level/texture；smart_edit=renderSteps/upsampleScale。不记：肤色 skin、保护肤色开关 protectSkin、prompt/风格/反思、导出 LUT 勾选、输出目录、素材路径。存储键 pm-tool-params，结构 {v:1, tools:{<toolId>:{...}}}，按 tool.id 分桶避免同名参数（strength/scale）互相串。",
+        "恢复时三重校验后回默认：类型对不上（如 texture:\"60\"）、数值越界（按调用方给的当前控件范围夹取，如 strength 999→100）、枚举不在档位表（slim/eyes/level/upsampleScale）一律退回默认值；版本号不匹配或 JSON 坏掉整份丢弃。film_sim 的 lut 由既有 onMounted 守卫兜底（列表里没有就回落第一款）。",
+        "只在「真的偏离默认」时落盘：differsFromDefaults 为 false（只比白名单字段）就删掉该工具记录，最后一条也不剩时把整条键删掉 —— 只进去看过、没动过滑条的工具不留记录，否则「恢复默认」看起来像没生效。300ms 防抖之外，onBeforeUnmount 补落一次，避免「拖完立刻切走」丢值。",
+        "每个面板一个「恢复默认参数」按钮，复用全局 .ai-ghost（不新增组件、不新增 CSS），只清当前工具；复位期间抑制一次自动保存，避免刚清完又把默认值写回去。",
+        "验证：src/utils/toolParamsMemory.test.ts 新增 13 项（白名单/类型/夹取/枚举/版本/坏 JSON/按工具隔离/空表删键/无 localStorage/differsFromDefaults）；全量 node --test 368 pass 0 fail；vue-tsc --noEmit exit 0；CDP 端到端冒烟（vite dev + debug 壳）实测：进工具不动→无记录、拖 texture 到 70→落盘、切走再切回→恢复 70、恢复默认→回 35 且存储键消失、大眼档位改「标准」后跨工具切换仍保留且同面板眼睛提亮仍是默认 10。"
+      ],
+      "related_files": [
+        "src/utils/toolParamsMemory.ts",
+        "src/utils/toolParamsMemory.test.ts",
+        "src/composables/useRememberedParams.ts",
+        "src/components/workshop/ai/AutoGradeTool.vue",
+        "src/components/workshop/ai/FilmSimTool.vue",
+        "src/components/workshop/ai/ColorTransferTool.vue",
+        "src/components/workshop/ai/LocalReshapeTool.vue",
+        "src/components/workshop/ai/LocalBeautyTool.vue",
+        "src/components/workshop/ai/SmartEditTool.vue"
+      ]
     }
   ],
-  "updated": "2026-11-26T16:35:00+08:00"
+  "updated": "2026-11-26T21:35:00+08:00"
 }

@@ -4,9 +4,10 @@
  * SCRFD 找人脸 → BiSeNet 分区 → 只磨皮肤 → 羽化贴回。五官/头发/背景像素不动。
  * 纯本机、零费用；需要本地人脸解析模型（应用内下载）。
  */
-import { computed, ref, watch } from "vue";
+import { computed, ref, toRef, watch } from "vue";
 import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
+import { useRememberedParams } from "../../../composables/useRememberedParams";
 import { dirName, joinPath } from "../../../utils/pathParts";
 import { LOCAL_BEAUTY_LEVELS, SKIN_PRESETS } from "../../../utils/aiPresets";
 import OutputDirField from "./OutputDirField.vue";
@@ -17,8 +18,17 @@ const props = defineProps<{ paths: string[] }>();
 const store = useAiStudioStore();
 const notify = useNotify();
 
-const level = ref("0.6");
-const texture = ref(35);
+/** 档位 + 保留皮肤质感跨会话记住；肤色按「中性档不记」的口径排除（见 toolParamsMemory 白名单） */
+const { params: remembered, resetToDefault } = useRememberedParams(
+  "local_beauty",
+  { level: "0.6", texture: 35 },
+  {
+    clamp: { texture: [0, 90] },
+    allowed: { level: LOCAL_BEAUTY_LEVELS.map((s) => s.value) },
+  },
+);
+const level = toRef(remembered, "level");
+const texture = toRef(remembered, "texture");
 const skin = ref("natural");
 const outputDir = ref("");
 const outputTouched = ref(false);
@@ -142,6 +152,15 @@ async function onCancel() {
     <div class="ai-actions">
       <button class="ai-run" type="button" :disabled="!canRun" @click="run">
         开始美颜（{{ paths.length }} 张）
+      </button>
+      <button
+        class="ai-ghost"
+        type="button"
+        :disabled="busy"
+        title="只把本工具的参数恢复成默认值，不影响其它工具"
+        @click="resetToDefault"
+      >
+        恢复默认参数
       </button>
     </div>
 

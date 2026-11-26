@@ -6,10 +6,11 @@
  * 用户侧只留「强度」一个滑条 + 「保护肤色」开关。
  * 支持多张参考图聚类提取共性；可选把这次迁移导出成 .cube（按首张素材冻结）。
  */
-import { computed, ref, watch } from "vue";
+import { computed, ref, toRef, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
+import { useRememberedParams } from "../../../composables/useRememberedParams";
 import { baseName, dirName, joinPath } from "../../../utils/pathParts";
 import OutputDirField from "./OutputDirField.vue";
 import AiResultPanel from "./AiResultPanel.vue";
@@ -18,7 +19,13 @@ const props = defineProps<{ paths: string[] }>();
 const store = useAiStudioStore();
 const notify = useNotify();
 
-const strength = ref(100);
+/** 强度：跨会话记住；保护肤色开关按「肤色不记」的口径排除（见 toolParamsMemory 白名单） */
+const { params: remembered, resetToDefault } = useRememberedParams(
+  "color_transfer",
+  { strength: 100 },
+  { clamp: { strength: [0, 100] } },
+);
+const strength = toRef(remembered, "strength");
 const protectSkin = ref(false);
 const exportCube = ref(false);
 const referencePaths = ref<string[]>([]);
@@ -165,6 +172,15 @@ async function onCancel() {
     <div class="ai-actions">
       <button class="ai-run" type="button" :disabled="!canRun" @click="run">
         {{ busy ? "处理中…" : `开始调色（${paths.length} 张）` }}
+      </button>
+      <button
+        class="ai-ghost"
+        type="button"
+        :disabled="busy"
+        title="只把本工具的参数恢复成默认值，不影响其它工具"
+        @click="resetToDefault"
+      >
+        恢复默认参数
       </button>
     </div>
 

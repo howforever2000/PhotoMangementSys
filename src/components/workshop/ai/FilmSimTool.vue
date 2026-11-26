@@ -4,9 +4,10 @@
  * 两条引擎：内置 .cube LUT（默认，老行为不变）与参数化自适应渲染（新增 2 款风格只有这条）。
  * 强度分两条线：look（轻/标准/浓）动「偏离原厂」的程度，strength 动「成片与原图」的混合比例。
  */
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, toRef, watch } from "vue";
 import { useAiStudioStore } from "../../../stores/aiStudio";
 import { useNotify } from "../../../composables/useNotify";
+import { useRememberedParams } from "../../../composables/useRememberedParams";
 import { dirName, joinPath } from "../../../utils/pathParts";
 import type { LocalLutEntry } from "../../../types/ai";
 import OutputDirField from "./OutputDirField.vue";
@@ -17,13 +18,30 @@ const store = useAiStudioStore();
 const notify = useNotify();
 
 const luts = ref<LocalLutEntry[]>([]);
-const lut = ref("provia");
-const strength = ref(100);
-const look = ref(100);
-const grade = ref("");
-const gradeStrength = ref(100);
-const grain = ref(0);
-const vignette = ref(0);
+/**
+ * 参数跨会话记住：两条强度线 + 颗粒/暗角 + 胶片档与调色档。
+ * `lut` 的合法性由下面 onMounted 的 LUT 列表兜底（记的档案已不存在就回落第一款）。
+ */
+const { params: remembered, resetToDefault } = useRememberedParams(
+  "film_sim",
+  { lut: "provia", strength: 100, look: 100, grade: "", gradeStrength: 100, grain: 0, vignette: 0 },
+  {
+    clamp: {
+      strength: [0, 100],
+      look: [60, 140],
+      gradeStrength: [0, 140],
+      grain: [0, 100],
+      vignette: [0, 100],
+    },
+  },
+);
+const lut = toRef(remembered, "lut");
+const strength = toRef(remembered, "strength");
+const look = toRef(remembered, "look");
+const grade = toRef(remembered, "grade");
+const gradeStrength = toRef(remembered, "gradeStrength");
+const grain = toRef(remembered, "grain");
+const vignette = toRef(remembered, "vignette");
 const outputDir = ref("");
 const outputTouched = ref(false);
 
@@ -160,6 +178,15 @@ async function onCancel() {
     <div class="ai-actions">
       <button class="ai-run" type="button" :disabled="!canRun" @click="run">
         {{ busy ? "处理中…" : `开始模拟（${paths.length} 张）` }}
+      </button>
+      <button
+        class="ai-ghost"
+        type="button"
+        :disabled="busy"
+        title="只把本工具的参数恢复成默认值，不影响其它工具"
+        @click="resetToDefault"
+      >
+        恢复默认参数
       </button>
     </div>
 
