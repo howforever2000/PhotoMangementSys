@@ -195,10 +195,12 @@ fn specs() -> Vec<DlSpec> {
     const OPENVINO_RUNTIME: &[DlFile] = &[DlFile {
         remote: "",
         local: "_runtime/openvino-npu-win-x64.zip",
-        // releases/latest/download 是 GitHub 的稳定别名，不随版本号改 URL；
-        // 资产由 python/scripts/build_ov_runtime_zip.py 产出并随 release 上传。
+        // v5.1.0 那个 Release 的资产直链（不是 releases/latest 别名）。
+        // 为什么钉死版本号：5.2 起发包**不含模型与运行时**（轻量包），新 Release 不再
+        // 上传这两个 zip；若继续用 latest 别名，latest 一旦指向新版本就会 404。
+        // 代价是以后换资产要手动改这一行 —— 已有单测钉住 URL（见下方 specs 测试）。
         abs_url: Some(
-            "https://github.com/howforever2000/PhotoMangementSys/releases/latest/download/openvino-npu-win-x64.zip",
+            "https://github.com/howforever2000/PhotoMangementSys/releases/download/v5.1.0/openvino-npu-win-x64.zip",
         ),
         expect_min: 5_000_000,
     }];
@@ -1582,8 +1584,8 @@ mod tests {
             f.files[0]
                 .abs_url
                 .unwrap_or("")
-                .ends_with("/releases/latest/download/openvino-npu-win-x64.zip"),
-            "必须走 releases/latest/download 稳定别名"
+                .ends_with("/releases/download/v5.1.0/openvino-npu-win-x64.zip"),
+            "资产仍在 v5.1.0 那个 Release 里；5.2 起发包不带模型/运行时，不能再用 latest 别名"
         );
         let py_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()

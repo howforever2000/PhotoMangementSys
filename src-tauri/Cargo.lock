@@ -2795,7 +2795,7 @@ dependencies = [
 
 [[package]]
 name = "photo-management-sys"
-version = "5.1.0"
+version = "5.2.0"
 dependencies = [
  "aes-gcm",
  "argon2",

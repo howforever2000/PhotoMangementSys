@@ -12,12 +12,17 @@
  * 本模块只放「描述离线包这个发布资产」的事实，不放任何视图逻辑：
  * 体积、URL、解压落点、装了什么。视图层（设置页 / 缺模型弹窗）只负责渲染它。
  *
- * ## 为什么 URL 用 `releases/latest/download`
+ * ## 为什么 URL 钉在 v5.1.0（而不是 `releases/latest/download`）
  *
- * 与 OpenVINO 组件同一个口径（`src-tauri/src/model_dl.rs` 的 `openvino-runtime`）。
- * 写死 `v0.4.5` 的后果是：发了 5.0 之后这一行没人改，用户点「离线包」下到的是
- * 0.4.5 的旧包（内含已下线的 fp16 语义档，装上去语义照样不可用），而且不会报错。
- * 稳定别名把「发版必须同步改 URL」这个人肉环节从流程里删掉了。
+ * 5.1 时用的确实是稳定别名，理由见下：写死 `v0.4.5` 的后果是发了 5.0 之后这一行没人改，
+ * 用户点「离线包」下到的是 0.4.5 的旧包（内含已下线的 fp16 语义档，装上去语义照样不可用），
+ * 而且不会报错；稳定别名把「发版必须同步改 URL」这个人肉环节删掉了。
+ *
+ * **5.2 起反过来**：5.2 是**轻量包**（安装包不含模型，README 已写明），新 Release 不再
+ * 上传 model.zip 与 openvino zip —— 这两个资产只存在于 v5.1.0 那个 Release。
+ * 若继续用 `latest`，latest 一旦指向 5.2 就立刻 404。所以这里改成 v5.1.0 的**资产直链**。
+ * 代价又变回「改资产要手动改这一行」：以后重新上传模型包时，务必同步改这里
+ * （`src-tauri/src/model_dl.rs` 的 openvino 直链同理，已有单测钉住）。
  *
  * ## 体积为什么是「解压后」
  *
@@ -28,9 +33,9 @@
 
 import { openExternalUrl } from "./openExternal.ts";
 
-/** 离线包下载地址（GitHub Release 稳定别名，不随版本号改） */
+/** 离线包下载地址（**钉死在 v5.1.0 的资产直链**：5.2 轻量包起新 Release 不再上传 model.zip） */
 export const OFFLINE_PACKAGE_URL =
-  "https://github.com/howforever2000/PhotoMangementSys/releases/latest/download/model.zip";
+  "https://github.com/howforever2000/PhotoMangementSys/releases/download/v5.1.0/model.zip";
 
 /**
  * 离线包解压后的模型体积（十进制 MB，与 `ModelDownloadRows.vue` 的 `fmtMB`
