@@ -1153,7 +1153,14 @@ function locWallRef(key: string) {
         locWallEls.set(key, wall);
         // 挂载立即量一次（ResizeObserver 只在尺寸**变化**时才触发）
         const w = wall.clientWidth;
-        if (w > 0) locWallWidths.value = { ...locWallWidths.value, [key]: w };
+        /* ⚠️ 必须「宽度真的变了才写」：函数 ref 在**每次 patch** 都会被重新调用，
+           无条件写会新建对象 → 依赖它的 locWallRows 失效 → 同一组件立即重渲染 →
+           再 patch → 再写，自激成无限循环。开发构建有 Vue 的递归更新上限会抛错停下，
+           打包后的生产构建没有这条保护，表现为整窗卡死 + 渲染进程 OOM
+           （BUG-2026-1126-001）。与下面 measureLocWalls 的守卫保持同一口径。 */
+        if (w > 0 && Math.abs(w - (locWallWidths.value[key] || 0)) > 1) {
+          locWallWidths.value = { ...locWallWidths.value, [key]: w };
+        }
         if (typeof ResizeObserver !== "undefined" && !locRO) {
           locRO = new ResizeObserver(() => {
             if (rafLocId != null) return;

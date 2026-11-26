@@ -6752,7 +6752,73 @@
       "fixed_at": "2026-11-23T10:20:00+08:00",
       "fix": [],
       "updated_at": "2026-11-23T10:35:00+08:00"
+    },
+        {
+      "id": "BUG-2026-1126-001",
+      "date": "2026-11-26",
+      "status": "resolved",
+      "title": "相册管理「按地点」视图整窗卡死：v-for 函数 ref 在 patch 阶段无条件写 locWallWidths 形成无限重渲染，生产包无递归更新保护，渲染进程最终 OOM",
+      "module": "src/views/AlbumList.vue（FEAT-217 地点分组墙；v5.1.0 新增代码）",
+      "symptom": [
+        "打包版 v5.1.0 点首页「相册管理」后整个窗口卡住不再重绘，所有点击无响应；日志副窗/ app.log 最后只有 scan_library_totals 与 get_albums 两条，之后没有任何后端调用",
+        "停留一两分钟后渲染进程 OOM，窗口变成 Chromium 错误页「此页存在问题 · 错误代码 Out of Memory」",
+        "npm run dev（vite）环境看不到：进入地点视图只是有几条 Vue 告警，页面照常渲染",
+        "只有上次把排序方式切到「按地点」的用户必现（album-sort-mode 存 localStorage，重启仍生效）"
+      ],
+      "root_cause": {
+        "summary": "按地点视图给每个分组墙挂了函数 ref（:ref=\"locWallRef(locationKey(g.location))\"）。函数 ref 在**每次 patch 都会被重新调用**，而回调里 locWallWidths.value = { ...locWallWidths.value, [key]: w } 无条件创建新对象（没有「宽度真的变了才写」的守卫）→ 依赖它的 locWallRows computed 失效 → 同一组件立即重渲染 → 再 patch → 再写…… 自激循环。vite dev 的 Vue 带「Maximum recursive updates exceeded」100 次上限，会抛错停下（所以开发时只看到告警）；打包后的 vue runtime-core 不含该保护，于是无限循环且每轮分配新对象，JS 堆 2.5 秒涨约 500MB，最终渲染进程 OOM。",
+        "detail": [
+          "触发前提是 album-sort-mode === \"location\"（现场读到该值：20 个 .location-group、20 个 .album-wall、130 个 .album-wall-cell、0 个 .timeline-view）",
+          "同文件 measureLocWalls() 有 Math.abs(w - 旧值) > 1 守卫，所以 ResizeObserver 那条路径不会自激 —— 只有「挂载/patch 时的函数 ref」这条路径会",
+          "后端全程空闲（Rust 进程 CPU 0.00，两条 IPC 都正常返回），排除「非 async 命令占主线程」那一类；用 CDP 屏蔽 *asset.localhost* 后照样卡死、照样 4.5GB 内存，排除封面解码",
+          "打包版没有 devtools：临时用 WebView2 策略 HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge\\WebView2\\AdditionalBrowserArguments 给 photo-management-sys.exe 加 --remote-debugging-port 才拿到 CDP（用完已删除）"
+        ]
+      },
+      "evidence_log": [
+        "安装版复现（两次）：点击后 app.log 停在「scan_library_totals 13ms」「get_albums 41ms」，此后再无 IPC",
+        "渲染进程 CPU 10 秒内 27.35 秒（≈273%），GPU/utility 进程全 idle",
+        "CDP 暂停栈：$i(renderComponentRoot) comp=AlbumList 反复进入，栈深 14~38 帧、每次从头再来（不是递归爆栈）",
+        "卡死现场 DOM 节点稳定在 1271（不增长），但 JS 堆 150MB → 668MB（2.5 秒）→ 渲染进程 OOM",
+        "A/B 对照：同版本、同 URL、同 130 个相册，只把 album-sort-mode 改成 date → 立即恢复正常（130 cells、0 location-group、可响应）",
+        "反证：屏蔽 asset 图片、换回 plain/liquid 主题、换 prod bundle 在 localhost:1420 下都仍能正常渲染 → 差异只在打包环境",
+        "修复后实测（同一台机器、同一份 132 册数据）：按地点进入相册管理 → 6s/14s/22s 三次采样 groups=20 walls=20 cells=130，DOM 节点稳定 1286，evaluate 均即时返回（不再卡死）",
+        "修复后渲染进程 5 秒 CPU 增量 0（修复前 10 秒 27.35s ≈ 273%，最终 OOM）"
+      ],
+      "solution": {
+        "summary": "已修：给 locWallRef 的宽度回写加上「真的变了才写」守卫（差值 >1px），与 measureLocWalls 同一口径，切断「patch → 写响应式状态 → 重渲染 → 再 patch」的自激回路。",
+        "steps": [
+          "src/views/AlbumList.vue 的 locWallRef 回调：if (w > 0) 改为 if (w > 0 && Math.abs(w - (locWallWidths.value[key] || 0)) > 1)，并在注释里写清自激机理与该 BUG 编号",
+          "验收①：vite dev + debug 壳，localStorage album-sort-mode=location，点首页「相册管理」→ 6s / 14s / 22s 三次采样均为 20 分组 / 20 地点墙 / 130 瓦片，DOM 节点稳定 1286，页面持续可响应",
+          "验收②：同一操作渲染进程 5 秒 CPU 增量 0（修复前为 27.35s/10s ≈ 273% 并最终 OOM）",
+          "验收③：同页切回「按时间」→ 130 瓦片、0 分组，两条路径都正常",
+          "回归：vue-tsc --noEmit exit 0；node --test 全量 368 pass 0 fail"
+        ]
+      },
+      "lessons": [
+        "v-for 里的函数 ref 每次 patch 都会被调用；回调中写响应式状态必须带「值真的变了」守卫，否则就是渲染自激",
+        "只在打包版出现的「卡死 / OOM」先想到 dev-only 的 Vue 递归更新保护：dev 抛错停下、prod 无限循环",
+        "判定「前端死循环 vs 后端阻塞」看进程 CPU：Rust 进程 0、渲染进程 273% 就锁定在渲染侧",
+        "诊断打包版无 devtools 时，可用 WebView2 的 AdditionalBrowserArguments 策略给指定 exe 开 --remote-debugging-port，用完即删（本项目已按此做过一次）",
+        "A/B 要控制到「只改一个变量」：本次只改 localStorage 里的排序模式即可闭环因果，不必重打包"
+      ],
+      "related_files": [
+        "src/views/AlbumList.vue"
+      ],
+      "keywords": [
+        "卡死",
+        "OOM",
+        "按地点",
+        "locWallRef",
+        "函数 ref",
+        "递归更新",
+        "AlbumList",
+        "v5.1.0"
+      ],
+      "created_at": "2026-11-26T21:35:00+08:00",
+      "fix": [],
+      "updated_at": "2026-11-26T21:50:00+08:00",
+      "fixed_at": "2026-11-26T21:50:00+08:00"
     }
   ],
-  "updated": "2026-11-23T11:15:00+08:00"
+  "updated": "2026-11-26T21:50:00+08:00"
 }
