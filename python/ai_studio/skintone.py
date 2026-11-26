@@ -19,6 +19,14 @@
   3. **明度提亮必须带高光保护**：硬提 +2 无收口实测引入 40009px 通道截断；
      权重随 L 升高线性衰减，L ≥ L_SAFE 的高光（额头油光/鼻尖反光）完全不动
      （local-enhance §9：提亮会洗掉面部立体感）。
+  4. **明度双向（白皙↔黝黑，交互简化 2026-11-26）**：brighten 扩为 -4~+4，
+     0=中性（滑条中点）。<0 压暗必须带**暗部保护**（与高光保护镜像）：
+     L ≤ L_DARK_SAFE 的深阴影/发丝完全不动，防止压成死黑。
+  5. **变白是「自然白」不是干提曝光**（用户口径 2026-11-26）：单滑条契约下
+     白黄/透亮偏置随提亮幅度联动推导（`SkinParams.from_raw`）—— brighten=4
+     时正好是实测人像档 3.0°/1.5C；压暗侧反向收白黄、轻微增饱和（晒黑暖调，
+     不是往灰里压）。显式给 hue_shift/chroma 的旧契约（本地美颜档位/旧存档）
+     不做联动、原样生效。
 
 「嫩红」的实现：颊部 a* 的**加性增量**，同样朝锚点+偏置拉 —— 血色集中在苹果肌
 而不是全脸泛红。颊部定位用检测框几何近似（零新增模型依赖），68 点留作后续增强；
@@ -53,6 +61,11 @@ C_LOW = 4.0
 # 70~78 这段收口，高光保护（L≥78 逐字节不动）不变。
 L_SAFE = 78.0
 L_FULL = 70.0
+# 压暗（brighten < 0）的暗部保护：与提亮的高光保护镜像 —— L ≤ L_DARK_SAFE 视为
+# 深阴影/发丝，权重衰减到 0（压暗最怕把暗部推成死黑）；L ≥ L_DARK_FULL 全量压。
+# 取值与 L_SAFE/L_FULL 关于中点 50 镜像（100-78=22、100-70=30）。
+L_DARK_SAFE = 22.0
+L_DARK_FULL = 30.0
 # 颊部掩码羽化半径（占脸短边的比例）：嫩红必须软边，否则矩形边界露出直线色块。
 CHEEK_FEATHER_RATIO = 0.045
 # 皮肤掩码羽化半径（px）：与验证脚本同口径；贴回无硬边即可，不需要跟脸宽走。
@@ -64,32 +77,52 @@ MIN_SKIN_PX = 800
 PARAM_RANGES = {
     "hue_shift": (-8.0, 8.0),
     "chroma": (-6.0, 6.0),
-    "brighten": (0.0, 4.0),
+    "brighten": (-4.0, 4.0),
     "blush": (0.0, 3.0),
 }
 
+# 双向滑条（白皙↔黝黑）的联动偏置（设计定案 #5）：白皙侧 t=brighten/4 随幅度加
+# 「白黄+透亮」，配比与 FEAT-209 实测人像档一致（t=1 时 3.0°/1.5C），保证是自然白
+# 而不是干提曝光；黝黑侧反向收白黄、轻微增饱和（晒黑暖调，不偏灰）。
+WHITEN_HUE = 3.0
+WHITEN_CHROMA = 1.5
+DARKEN_HUE = 2.0
+DARKEN_CHROMA = 1.0
+# brighten 的单侧满幅（联动推导的分母，= PARAM_RANGES brighten 上界）。
+TONE_SPAN = 4.0
+
 # 男性侧重档：只还原原图肤色 + 轻提亮（用户口径「保有原肤色、白一点」）。
-# 不做白黄偏置、不加嫩红；提亮按这个比例打折（默认 2.2 → 男 0.88 L*）。
+# 不做白黄偏置、不加嫩红；提亮/压暗幅度按这个比例打折。
 MALE_BRIGHTEN_RATIO = 0.4
 
 
 @dataclass(frozen=True)
 class SkinParams:
-    """一次肤色校正的四个配方级量。默认值即「人像」配方档（女性侧重档）。"""
+    """一次肤色校正的四个配方级量。默认值即「人像」配方档（中性亮度 + 5% 红嫩）。
 
-    hue_shift: float = 3.0    # 色相偏移（度，>0 往黄，「白黄」）
-    chroma: float = 1.5       # 彩度平移（Lab C 单位，>0 更透亮）
-    brighten: float = 2.2     # 提亮（L* 单位，带高光保护；中间调全额生效）
-    blush: float = 1.8        # 颊部 a* 增量（嫩红）
+    hue_shift/chroma 现在由两种来源填充：单滑条契约下由 `from_raw` 按 brighten
+    联动推导（自然白/晒黑暖调）；显式给键的旧契约（本地美颜档位）原样生效。
+    """
+
+    hue_shift: float = 0.0    # 色相偏移（度，>0 往黄「白黄」，<0 收黄偏红棕）
+    chroma: float = 0.0       # 彩度平移（Lab C 单位，>0 更透亮）
+    brighten: float = 0.0     # 明度（L* 单位，>0 提亮带高光保护 / <0 压暗带暗部保护；0=中性）
+    blush: float = 0.15       # 颊部 a* 增量（红嫩；0.15 = 0~3 量程的 5%）
 
     @classmethod
     def from_raw(cls, raw: dict | None) -> "SkinParams":
-        """任意来源（配方 / 前端 options）→ 夹到合法区间。缺省用配方默认档。"""
+        """任意来源（配方 / 前端 options）→ 夹到合法区间。
+
+        双契约（交互简化 2026-11-26）：
+        - raw 显式含 hue_shift/chroma 键（本地美颜档位 / 旧存档配方）→ 旧四参
+          契约，偏置原样夹取生效，不做联动；
+        - 否则为单滑条契约：hue_shift/chroma 由 brighten 联动推导 —— 白皙侧随
+          幅度加白黄+透亮（自然白，不是干提曝光），黝黑侧反向收白黄并轻微增饱和。
+        """
         raw = raw if isinstance(raw, dict) else {}
         defaults = cls()
 
-        def _one(key: str) -> float:
-            fallback = getattr(defaults, key)
+        def _one(key: str, fallback: float) -> float:
             try:
                 v = float(raw.get(key, fallback))
             except (TypeError, ValueError):
@@ -97,11 +130,25 @@ class SkinParams:
             lo, hi = PARAM_RANGES[key]
             return max(lo, min(hi, v))
 
+        if "hue_shift" in raw or "chroma" in raw:
+            return cls(
+                hue_shift=_one("hue_shift", defaults.hue_shift),
+                chroma=_one("chroma", defaults.chroma),
+                brighten=_one("brighten", defaults.brighten),
+                blush=_one("blush", defaults.blush),
+            )
+
+        brighten = _one("brighten", 0.0)
+        t = brighten / TONE_SPAN
+        if t >= 0.0:
+            hue, chroma = WHITEN_HUE * t, WHITEN_CHROMA * t
+        else:
+            hue, chroma = -DARKEN_HUE * abs(t), DARKEN_CHROMA * abs(t)
         return cls(
-            hue_shift=_one("hue_shift"),
-            chroma=_one("chroma"),
-            brighten=_one("brighten"),
-            blush=_one("blush"),
+            hue_shift=hue,
+            chroma=chroma,
+            brighten=brighten,
+            blush=_one("blush", defaults.blush),
         )
 
     def is_noop(self) -> bool:
@@ -109,8 +156,8 @@ class SkinParams:
         return (
             abs(self.hue_shift) < 1e-3
             and abs(self.chroma) < 1e-3
-            and self.brighten < 1e-3
-            and self.blush < 1e-3
+            and abs(self.brighten) < 1e-3
+            and abs(self.blush) < 1e-3
         )
 
 
@@ -380,7 +427,7 @@ def correct_region(
     # 「完全不跑」由调用方用 SkinParams.is_noop() 判断后直接不进来。
     if (
         abs(dh) < 1e-3 and abs(dax) < 1e-3 and abs(day) < 1e-3
-        and abs(da) < 1e-3 and p.brighten < 1e-3
+        and abs(da) < 1e-3 and abs(p.brighten) < 1e-3
     ):
         return rgb_u8
 
@@ -401,9 +448,14 @@ def correct_region(
     if abs(da) > 1e-3:
         alpha_c = _cheek_alpha(cheek_mask)
         a2 = a2 + da * alpha_c
-    # 4) 明度：一次性提亮 + 高光保护（唯一不幂等的量，属「手感」范畴）
+    # 4) 明度：一次性提亮/压暗（唯一不幂等的量，属「手感」范畴）。
+    #    >0 提亮带高光保护（L ≥ L_SAFE 不动）；<0 压暗带暗部保护（L ≤ L_DARK_SAFE
+    #    的深阴影/发丝不动，防止压成死黑）；两条权重曲线关于中点 50 互为镜像。
     if p.brighten > 1e-3:
         w = np.clip((L_SAFE - L) / max(L_SAFE - L_FULL, 1.0), 0.0, 1.0)
+        L2 = np.clip(L + p.brighten * w, 0.0, 100.0)
+    elif p.brighten < -1e-3:
+        w = np.clip((L - L_DARK_SAFE) / max(L_DARK_FULL - L_DARK_SAFE, 1.0), 0.0, 1.0)
         L2 = np.clip(L + p.brighten * w, 0.0, 100.0)
     else:
         L2 = L
@@ -430,6 +482,13 @@ __all__ = [
     "C_LOW",
     "L_SAFE",
     "L_FULL",
+    "L_DARK_SAFE",
+    "L_DARK_FULL",
+    "WHITEN_HUE",
+    "WHITEN_CHROMA",
+    "DARKEN_HUE",
+    "DARKEN_CHROMA",
+    "TONE_SPAN",
     "wrap_deg",
     "cheek_region",
     "region_stats",

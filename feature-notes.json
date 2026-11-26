@@ -8749,7 +8749,34 @@
         "src/components/workshop/ai/ColorTransferTool.vue",
         "docs/FEAT-220-参考图调色A3覆盖率门控与参数收敛.md"
       ]
+    },
+    {
+      "id": "FEAT-221",
+      "name": "肤色保真交互简化：4 滑条收敛为「黝黑↔白皙 + 红嫩」2 滑条，变白是自然白",
+      "status": "done",
+      "date": "2026-11-26",
+      "created_at": "2026-11-26T16:35:00+08:00",
+      "updated_at": "2026-11-26T16:35:00+08:00",
+      "module": "python/ai_studio/skintone.py、python/ai_studio/op_catalog.json、python/ai_studio/recipes.json、python/ai_studio/recipecatalog.py、python/ai_studio/workflows/local_beauty.py、python/tests/test_skintone.py",
+      "purpose": "工作台「肤色保真」面板 4 个滑条（色相/彩度/提亮/嫩红）无法理解、交互成本高。收敛为 2 个滑条：①「黝黑 ↔ 白皙」双向明度（中点 50=中性原图，往右越白、往左越黑）；②「红嫩」= 在原图基础上加 5% 红嫩（blush 默认 0.15 = 0~3 量程的 5%）。用户口径：变白必须是自然白（白黄+透亮随幅度联动），不是干提曝光或拉白阶。",
+      "highlights": [
+        "参数面收敛：op_catalog.json skin_tone 只声明 brighten(min -4, max 4, default 0, step 0.2, label「黝黑 ↔ 白皙」) + blush(min 0, max 3, default 0.15, label「红嫩」)，hue_shift/chroma 整体删键——catalog.norm_params 不再填充它们，SkinParams.from_raw 凭键缺失识别单滑条契约。前端零改动（workbenchPlan.rawToSlider/sliderToRaw 本就尊重 spec.min，双向值域 0 自动落在滑条中点 50）。TUNABLE_PARAMS 同步为 {\"brighten\",\"blush\"}，toolCatalog.test.ts 键集合守卫两侧一致自动通过。",
+        "自然白联动（skintone.SkinParams.from_raw 双契约）：单滑条契约下 t=brighten/TONE_SPAN(4)——白皙侧 hue_shift=WHITEN_HUE(3.0)*t + chroma=WHITEN_CHROMA(1.5)*t（配比与 FEAT-209 实测人像档一致，brighten=4 时正好 3.0°/1.5C，半幅线性减半，幅度小=偏置轻）；黝黑侧 hue_shift=-DARKEN_HUE(2.0)*|t|（负偏红棕）+ chroma=DARKEN_CHROMA(1.0)*|t|（轻微增饱和，晒黑暖调不偏灰）。显式含 hue_shift/chroma 键的旧契约（本地美颜档位/旧存档配方）原样夹取、不做联动。",
+        "双向明度与暗部保护：PARAM_RANGES brighten (0,4)→(-4,4)；correct_region 新增压暗分支 w=clip((L-L_DARK_SAFE)/(L_DARK_FULL-L_DARK_SAFE),0,1)，L_DARK_SAFE=22、L_DARK_FULL=30（与高光保护 L_SAFE=78/L_FULL=70 关于中点 50 镜像——L≤22 的深阴影/发丝完全不动，防止压成死黑）；is_noop 与 correct_region 早退条件全部改 abs(brighten)（旧代码 brighten<1e-3 会把负值误判为不做）。",
+        "默认档换血：SkinParams 默认从人像档(3.0/1.5/2.2/1.8)改为中性+5%红嫩(0/0/0/0.15)；recipes.json 人像配方 skin_tone params 同步 {brighten:0, blush:0.15}——配方起步即「原图肤色 + 5% 红嫩」，拖滑条才偏离。",
+        "本地美颜（LocalBeautyTool）SKIN_PRESETS 档位语义保持不变（用户确认暂不同步）：workflows/local_beauty.py 总是显式给 hue_shift/chroma/brighten/blush 四键 → from_raw 走旧四参契约，off/natural/fair/rosy 档位出图与改造前完全一致。",
+        "顺带修预存守卫漂移：recipecatalog.py local_film 白名单里的 \"style\" 键在 op_catalog 中早已不存在（前端无人发送、ops_local 无 local_film 算子、film_sim 的 style 只是 lut 的别名回退），导致 toolCatalog.test.ts FEAT-186 键集合守卫在 HEAD 上本来就红；删除该键后守卫恢复绿。",
+        "验证：python unittest tests.test_skintone+test_recipe_overrides 34 项 OK（新增 TestDarken 3 项：负值非 noop/压暗中间调>1.6/深阴影逐字节不变；TestToneContract 5 项：中性全 0/+4 推导=3.0°/1.5C 半幅减半/-4 推导=-2.0°+1.0C/blush 缺省 0.15/legacy 原样；负夹取 -50→-4.0）；全量 discover 195 项（仅 2 个预存导入错误：.venv-proto 缺 pydantic/pytest，与本次无关）；pnpm test 355 pass 0 fail；tsc -p tsconfig.test.json 与 vue-tsc --noEmit 均 exit 0。"
+      ],
+      "related_files": [
+        "python/ai_studio/skintone.py",
+        "python/ai_studio/op_catalog.json",
+        "python/ai_studio/recipes.json",
+        "python/ai_studio/recipecatalog.py",
+        "python/ai_studio/workflows/local_beauty.py",
+        "python/tests/test_skintone.py"
+      ]
     }
   ],
-  "updated": "2026-11-24T22:50:00+08:00"
+  "updated": "2026-11-26T16:35:00+08:00"
 }

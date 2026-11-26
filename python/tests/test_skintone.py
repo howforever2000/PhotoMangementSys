@@ -194,6 +194,85 @@ class TestBrightenCurve(unittest.TestCase):
         self.assertGreater(after - before, 1.6)
 
 
+class TestDarken(unittest.TestCase):
+    """压暗（brighten < 0，交互简化 2026-11-26）：中间调拿满权重，深阴影完全保护。"""
+
+    def test_negative_brighten_is_not_noop(self):
+        """负提亮必须被识别为有效操作（守卫 is_noop 的 abs 判断）。"""
+        self.assertFalse(
+            skintone.SkinParams(hue_shift=0.0, chroma=0.0, brighten=-2.0, blush=0.0).is_noop()
+        )
+
+    def test_darken_midtone_gets_full_amount(self):
+        img = _skin_rgb(50.0, 20.0, 60.0, seed=22)
+        anchor = skintone.anchor_from_pixels(img, FULL, RIGHT_CHEEK)
+        out = skintone.correct_region(
+            img, FULL, RIGHT_CHEEK, anchor,
+            skintone.SkinParams(hue_shift=0.0, chroma=0.0, brighten=-2.0, blush=0.0),
+        )
+        before = colortransfer.rgb_to_lab(img)[..., 0][CORE].mean()
+        after = colortransfer.rgb_to_lab(out)[..., 0][CORE].mean()
+        # L≈60 在全量带（≥L_DARK_FULL=30）：压暗量应接近标称 -2.0（与提亮镜像）
+        self.assertLess(after - before, -1.6)
+
+    def test_shadow_protected(self):
+        """L ≤ L_DARK_SAFE 的深阴影：brighten 不压暗（其余量不动时逐字节不变）。"""
+        img = _skin_rgb(50.0, 20.0, 65.0, seed=24)
+        img = img.astype(np.float32).copy()
+        img[40:80, 40:120] = 30.0           # 一块深阴影（L*≈11，≤L_DARK_SAFE=22）
+        img = np.clip(img + 0.5, 0, 255).astype(np.uint8)
+        anchor = skintone.anchor_from_pixels(img, FULL, RIGHT_CHEEK)
+        out = skintone.correct_region(
+            img, FULL, RIGHT_CHEEK, anchor,
+            skintone.SkinParams(hue_shift=0.0, chroma=0.0, brighten=-2.0, blush=0.0),
+        )
+        diff = np.abs(out.astype(np.int16) - img.astype(np.int16)).max(axis=2)
+        self.assertEqual(int(diff[40:80, 40:120].max()), 0)
+
+
+class TestToneContract(unittest.TestCase):
+    """双契约 from_raw（交互简化 2026-11-26 + 用户口径「自然白」）：
+
+    - 单滑条契约（无 hue_shift/chroma 键）：偏置随 brighten 联动推导；
+    - 旧四参契约（显式 hue_shift/chroma）：原样夹取，本地美颜档位不受影响。
+    """
+
+    def test_single_slider_neutral(self):
+        p = skintone.SkinParams.from_raw({"brighten": 0, "blush": 0.15})
+        self.assertEqual(p.hue_shift, 0.0)
+        self.assertEqual(p.chroma, 0.0)
+        self.assertEqual(p.brighten, 0.0)
+        self.assertEqual(p.blush, 0.15)
+
+    def test_single_slider_whiten_derives_natural_bias(self):
+        # brighten=+4（最白）→ 白黄+透亮正好是实测人像档 3.0°/1.5C
+        p = skintone.SkinParams.from_raw({"brighten": 4.0})
+        self.assertAlmostEqual(p.hue_shift, skintone.WHITEN_HUE, places=6)
+        self.assertAlmostEqual(p.chroma, skintone.WHITEN_CHROMA, places=6)
+        # 半幅 → 线性减半：幅度小=偏置轻，保证「自然白」而非干提曝光
+        half = skintone.SkinParams.from_raw({"brighten": 2.0})
+        self.assertAlmostEqual(half.hue_shift, skintone.WHITEN_HUE * 0.5, places=6)
+        self.assertAlmostEqual(half.chroma, skintone.WHITEN_CHROMA * 0.5, places=6)
+
+    def test_single_slider_darken_derives_warm_tan(self):
+        # brighten=-4（最黑）→ 反向收白黄（负偏红棕）+ 轻微增饱和（晒黑暖调，不偏灰）
+        p = skintone.SkinParams.from_raw({"brighten": -4.0})
+        self.assertAlmostEqual(p.hue_shift, -skintone.DARKEN_HUE, places=6)
+        self.assertAlmostEqual(p.chroma, skintone.DARKEN_CHROMA, places=6)
+        self.assertEqual(p.brighten, -4.0)
+
+    def test_single_slider_blush_defaults_5_percent(self):
+        p = skintone.SkinParams.from_raw({"brighten": 1.0})
+        self.assertAlmostEqual(p.blush, 0.15, places=6)   # 0~3 量程的 5%
+
+    def test_legacy_contract_unchanged(self):
+        """显式四键（本地美颜档位 / 旧存档）不做联动，原样夹取。"""
+        p = skintone.SkinParams.from_raw(
+            {"hue_shift": 3.0, "chroma": 1.5, "brighten": 2.2, "blush": 1.8}
+        )
+        self.assertEqual((p.hue_shift, p.chroma, p.brighten, p.blush), (3.0, 1.5, 2.2, 1.8))
+
+
 class TestCheekFeather(unittest.TestCase):
     """颊部硬边（FEAT-209）：嫩红必须软边，矩形边界两侧不能出现阶跃色块。"""
 
@@ -275,7 +354,10 @@ class TestGuards(unittest.TestCase):
         self.assertEqual(p.hue_shift, 8.0)
         self.assertEqual(p.chroma, -6.0)
         self.assertEqual(p.brighten, 4.0)
-        self.assertEqual(p.blush, 1.8)      # 非法回落默认（女性侧重档）
+        self.assertEqual(p.blush, 0.15)     # 非法回落默认（中性亮度 + 5% 红嫩）
+        # 双向值域下界（压暗侧）同样要夹取
+        neg = skintone.SkinParams.from_raw({"brighten": -50})
+        self.assertEqual(neg.brighten, -4.0)
 
     def test_wrap_deg(self):
         self.assertAlmostEqual(skintone.wrap_deg(20.0), 20.0)

@@ -123,10 +123,8 @@
         {
           "op": "skin_tone",
           "params": {
-            "hue_shift": 3.0,
-            "chroma": 1.5,
-            "brighten": 2.2,
-            "blush": 1.8
+            "brighten": 0,
+            "blush": 0.15
           },
           "optional": true
         },

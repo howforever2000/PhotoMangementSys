@@ -75,7 +75,7 @@ def plan_from_llm(raw: Dict[str, Any]) -> Dict[str, Any]:
 TUNABLE_PARAMS: Dict[str, frozenset] = {
     "auto_grade": frozenset({"style", "strength"}),
     "local_film": frozenset(
-        {"lut", "style", "engine", "strength", "look", "grade", "grade_strength",
+        {"lut", "engine", "strength", "look", "grade", "grade_strength",
          "anchor", "grain", "vignette"}
     ),
     "color_transfer": frozenset(
@@ -84,7 +84,10 @@ TUNABLE_PARAMS: Dict[str, frozenset] = {
     ),
     "face_reshape": frozenset({"slim", "eyes", "eye_bright"}),
     "skin_smooth": frozenset({"strength", "texture"}),
-    "skin_tone": frozenset({"hue_shift", "chroma", "brighten", "blush"}),
+    # 交互简化（2026-11-26）：界面只暴露「黝黑↔白皙 + 红嫩」两个滑条；hue_shift/chroma
+    # 不再进 catalog/白名单，由 SkinParams.from_raw 在单滑条契约下按 brighten 联动推导
+    # （白皙侧自然白、黝黑侧晒黑暖调）。显式四键的旧存档由 from_raw 双契约兼容。
+    "skin_tone": frozenset({"brighten", "blush"}),
     "local_vibrance": frozenset({"vibrance"}),
 }
 

@@ -246,43 +246,27 @@
   {
    "id": "skin_tone",
    "label": "肤色保真",
-   "desc": "以原图肤色为锚，抵消调色/滤镜带来的偏色，再按幅度叠加白黄与嫩红；逐像素增量保留面部色相层次，只作用识别出的皮肤区。逐脸按发长侧重：长发更白更嫩红，其余只还原原肤色并轻提亮（磨皮之后执行可直接复用其人脸分析，不重复推理）",
+   "desc": "以原图肤色为锚，抵消调色/滤镜带来的偏色，在原图基础上加 5% 红嫩；一个滑条控制白皙↔黝黑——中点 50 为中性，往右自然白（白黄+透亮随幅度联动，非干提曝光）带高光保护，往左晒黑暖调带暗部保护。逐像素增量保留面部色相层次，只作用识别出的皮肤区。逐脸按发长侧重：长发档位原样生效，其余只还原原肤色并轻幅收放（磨皮之后执行可直接复用其人脸分析，不重复推理）",
    "backend": "local",
    "stage": 4,
    "group": "portrait",
    "module": "ai_studio.ops_local",
    "params": {
-    "hue_shift": {
-     "type": "range",
-     "min": -8,
-     "max": 8,
-     "default": 3.0,
-     "step": 0.5,
-     "label": "色相（负偏红/正偏黄）"
-    },
-    "chroma": {
-     "type": "range",
-     "min": -6,
-     "max": 6,
-     "default": 1.5,
-     "step": 0.5,
-     "label": "彩度"
-    },
     "brighten": {
      "type": "range",
-     "min": 0,
+     "min": -4,
      "max": 4,
-     "default": 2.2,
+     "default": 0,
      "step": 0.2,
-     "label": "提亮"
+     "label": "黝黑 ↔ 白皙"
     },
     "blush": {
      "type": "range",
      "min": 0,
      "max": 3,
-     "default": 1.8,
+     "default": 0.15,
      "step": 0.2,
-     "label": "嫩红"
+     "label": "红嫩"
     }
    },
    "requires": {

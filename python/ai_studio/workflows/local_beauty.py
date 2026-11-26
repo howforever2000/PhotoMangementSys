@@ -45,7 +45,9 @@ def run(req, progress, cancel) -> dict:
     # 导致「磨皮拖到 0 = 关闭」在界面上无效（BUG-2026-1117-001）。
     strength = _opt_float(opts, "strength", 0.45)
     keep_texture = _opt_float(opts, "texture", 0.55)
-    # 肤色保真（FEAT-208）：四项全 0 = 关闭；缺省走「自然」档（与前端默认档一致）
+    # 肤色保真（FEAT-208）：四项全 0 = 关闭；缺省 = 配方默认档（中性亮度 + 5% 红嫩）。
+    # 这里总是显式给 hue_shift/chroma 键 → from_raw 走旧四参契约：前端档位原样生效，
+    # 不做工作台单滑条的「自然白」联动推导（交互简化 2026-11-26 保持档位语义不变）。
     _skin_defaults = skintone.SkinParams()
     skin_params = {
         "hue_shift": _opt_float(opts, "hue_shift", _skin_defaults.hue_shift),
